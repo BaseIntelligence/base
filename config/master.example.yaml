@@ -1,0 +1,33 @@
+network:
+  name: platform
+  netuid: 0
+  chain_endpoint: null
+  wallet_name: default
+  wallet_hotkey: default
+  master_uid: 0
+
+master:
+  registry_url: https://rpc.platform.network
+  admin_host: 0.0.0.0
+  admin_port: 8080
+  proxy_host: 0.0.0.0
+  proxy_port: 8081
+  epoch_interval_seconds: 360
+  metagraph_cache_ttl_seconds: 300
+  registry_state_file: /var/lib/platform/registry.json
+
+database:
+  url: postgresql+asyncpg://platform:CHANGE_ME@localhost:5432/platform
+
+docker:
+  network_name: platform_challenges
+  secret_dir: /var/lib/platform/secrets
+  internal_network: true
+
+security:
+  admin_token_file: /var/lib/platform/secrets/admin_token
+
+observability:
+  log_json: true
+  sentry_dsn: null
+  otel_service_name: platform-master

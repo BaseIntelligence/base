@@ -1,0 +1,26 @@
+"""SDK configuration helpers."""
+
+from __future__ import annotations
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ChallengeSettings(BaseSettings):
+    """Runtime settings for a Platform challenge service."""
+
+    model_config = SettingsConfigDict(env_prefix="CHALLENGE_", extra="ignore")
+
+    slug: str = "{{ slug }}"
+    name: str = "{{ name }}"
+    version: str = "{{ challenge_version }}"
+    api_version: str = "{{ api_version }}"
+    sdk_version: str = "{{ sdk_version }}"
+    database_url: str = "sqlite+aiosqlite:////data/challenge.sqlite3"
+    shared_token: str | None = Field(default=None, repr=False)
+    shared_token_file: str | None = Field(
+        default="/run/secrets/platform/challenge_token",
+        repr=False,
+    )
+    host: str = "0.0.0.0"
+    port: int = 8000

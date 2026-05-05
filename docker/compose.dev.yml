@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_POSTGRES_PASSWORD:?set PLATFORM_POSTGRES_PASSWORD}
+    volumes:
+      - platform_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform_backend
+
+  master:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.master
+    environment:
+      DATABASE_URL: postgresql+asyncpg://platform:${PLATFORM_POSTGRES_PASSWORD:?set PLATFORM_POSTGRES_PASSWORD}@postgres:5432/platform
+      PLATFORM_DATABASE__URL: postgresql+asyncpg://platform:${PLATFORM_POSTGRES_PASSWORD:?set PLATFORM_POSTGRES_PASSWORD}@postgres:5432/platform
+      PLATFORM_DOCKER__NETWORK_NAME: platform_challenges
+      PLATFORM_DOCKER__SECRET_DIR: /var/lib/platform/secrets
+      PLATFORM_SECURITY__ADMIN_TOKEN_FILE: /var/lib/platform/secrets/admin_token
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      PLATFORM_MASTER__REGISTRY_STATE_FILE: /var/lib/platform/registry.json
+      PLATFORM_MASTER__ADMIN_PORT: "8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.platform/secrets:/var/lib/platform/secrets
+      - ./.platform/state:/var/lib/platform
+      - ../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.master
+    environment:
+      PLATFORM_DOCKER__NETWORK_NAME: platform_challenges
+      PLATFORM_MASTER__REGISTRY_STATE_FILE: /var/lib/platform/registry.json
+      PLATFORM_MASTER__PROXY_PORT: "8080"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    command: ["platform", "master", "proxy", "--config", "config/master.example.yaml"]
+    volumes:
+      - ./.platform/state:/var/lib/platform
+      - ../config:/app/config:ro
+    depends_on:
+      master:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - platform_backend
+
+volumes:
+  platform_postgres:
+
+networks:
+  platform_backend:
+    driver: bridge
+  platform_challenges:
+    name: platform_challenges
+    driver: bridge
+    internal: true

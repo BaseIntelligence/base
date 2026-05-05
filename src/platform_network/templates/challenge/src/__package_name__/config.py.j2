@@ -1,0 +1,13 @@
+"""Challenge configuration."""
+
+from __future__ import annotations
+
+from .sdk.config import ChallengeSettings
+
+settings = ChallengeSettings(
+    slug="{{ slug }}",
+    name="{{ name }}",
+    version="{{ challenge_version }}",
+    api_version="{{ api_version }}",
+    sdk_version="{{ sdk_version }}",
+)

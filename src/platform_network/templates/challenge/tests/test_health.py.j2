@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+
+async def test_health(client):
+    response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "slug": "{{ slug }}",
+        "version": "{{ challenge_version }}",
+    }
+
+
+async def test_version(client):
+    response = await client.get("/version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["api_version"] == "{{ api_version }}"
+    assert payload["challenge_version"] == "{{ challenge_version }}"
+    assert payload["sdk_version"] == "{{ sdk_version }}"
+    assert "get_weights" in payload["capabilities"]
+    assert "proxy_routes" in payload["capabilities"]

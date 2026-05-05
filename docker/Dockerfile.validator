@@ -1,0 +1,21 @@
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_SYSTEM_PYTHON=1 \
+    PLATFORM_DOCKER__NETWORK_NAME=platform_challenges \
+    PLATFORM_DOCKER__SECRET_DIR=/var/lib/platform/secrets
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir uv docker
+
+COPY . .
+RUN if [ -f pyproject.toml ]; then uv pip install --system -e ".[validator]"; fi
+
+VOLUME ["/var/lib/platform"]
+
+CMD ["platform", "validator", "run", "--config", "config/validator.example.yaml"]

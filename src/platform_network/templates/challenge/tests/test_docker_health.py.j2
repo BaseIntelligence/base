@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def test_dockerfile_defines_healthcheck():
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+    content = dockerfile.read_text(encoding="utf-8")
+
+    assert "HEALTHCHECK" in content
+    assert "http://127.0.0.1:8000/health" in content
