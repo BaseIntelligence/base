@@ -26,7 +26,14 @@ dependencies = [
 
 [project.optional-dependencies]
 bittensor = ["bittensor>=9"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21", "ruff>=0.6", "mypy>=1.10"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5",
+  "respx>=0.21",
+  "ruff>=0.6",
+  "mypy>=1.10"
+]
 master = []
 validator = []
 
@@ -58,3 +65,17 @@ warn_unused_ignores = false
 pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["platform_network"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]
