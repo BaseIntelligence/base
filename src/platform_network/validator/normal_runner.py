@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from platform_network.master.docker_orchestrator import (
+    ChallengeResources,
     ChallengeSpec,
     DockerOrchestrator,
 )
@@ -32,6 +33,7 @@ class NormalValidatorRunner:
                 image=challenge.image,
                 version=challenge.version,
                 env=challenge.env,
+                resources=ChallengeResources.from_mapping(challenge.resources),
                 required_capabilities=tuple(challenge.required_capabilities),
             )
             self.orchestrator.start_challenge(spec)

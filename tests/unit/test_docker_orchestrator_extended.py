@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from platform_network.master.docker_orchestrator import (
+    DEFAULT_DOCKER_SOCKET,
     ChallengeResources,
     ChallengeSpec,
     DockerOrchestrationError,
@@ -73,6 +74,9 @@ def test_challenge_spec_and_resource_validation() -> None:
         "nano_cpus": 1_500_000_000,
         "mem_limit": "1g",
     }
+    assert ChallengeResources.from_mapping(
+        {"cpu": "2", "memory": "512m"}
+    ) == ChallengeResources(cpu=2.0, memory="512m")
     with pytest.raises(DockerOrchestrationError):
         ChallengeResources(cpu=0).as_container_kwargs()
     with pytest.raises(DockerOrchestrationError):
@@ -103,6 +107,54 @@ def test_orchestrator_client_network_volume_pull_and_env(tmp_path: Path) -> None
     paths = orchestrator._write_secret_files(spec)  # noqa: SLF001
     assert paths["challenge_token"].read_text(encoding="utf-8") == "tok"
     assert paths["api-key"].read_text(encoding="utf-8") == "secret"
+
+
+def test_orchestrator_enables_docker_executor_socket(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_exists = Path.exists
+
+    def fake_exists(path: Path) -> bool:
+        if str(path) == DEFAULT_DOCKER_SOCKET:
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    orchestrator = DockerOrchestrator(client=FakeClient(), secret_dir=tmp_path)
+    spec = ChallengeSpec(
+        slug="agent",
+        image="ghcr.io/org/agent:1",
+        required_capabilities=("get_weights", "proxy_routes", "docker_executor"),
+    )
+
+    env = orchestrator._build_environment(spec)  # noqa: SLF001
+    mounts = orchestrator._build_mounts(spec)  # noqa: SLF001
+
+    assert env["CHALLENGE_DOCKER_ENABLED"] == "true"
+    assert env["CHALLENGE_DOCKER_BIN"] == "docker"
+    assert DEFAULT_DOCKER_SOCKET in repr(mounts)
+
+
+def test_orchestrator_fails_without_docker_socket(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_exists = Path.exists
+
+    def fake_exists(path: Path) -> bool:
+        if str(path) == DEFAULT_DOCKER_SOCKET:
+            return False
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    orchestrator = DockerOrchestrator(client=FakeClient(), secret_dir=tmp_path)
+    spec = ChallengeSpec(
+        slug="agent",
+        image="ghcr.io/org/agent:1",
+        required_capabilities=("docker_executor",),
+    )
+
+    with pytest.raises(DockerOrchestrationError, match="Docker executor requested"):
+        orchestrator._build_mounts(spec)  # noqa: SLF001
 
 
 def test_orchestrator_validation_and_start(

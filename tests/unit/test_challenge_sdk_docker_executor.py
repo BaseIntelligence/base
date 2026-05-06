@@ -95,3 +95,14 @@ def test_cleanup_job_uses_labels(monkeypatch: pytest.MonkeyPatch) -> None:
         "label=platform.job=job-1",
     ]
     assert calls[1] == ["docker", "rm", "-f", "abc", "def"]
+
+
+def test_template_executor_matches_shared_sdk() -> None:
+    root = Path(__file__).resolve().parents[2]
+    shared = root / "src/platform_network/challenge_sdk/executors/docker.py"
+    template = (
+        root
+        / "src/platform_network/templates/challenge/src"
+        / "__package_name__/sdk/executors/docker.py.j2"
+    )
+    assert template.read_text(encoding="utf-8") == shared.read_text(encoding="utf-8")

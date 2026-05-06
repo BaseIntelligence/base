@@ -196,17 +196,27 @@ class DockerExecutor:
     def _validate_spec(self, spec: DockerRunSpec) -> None:
         if not _IMAGE_RE.match(spec.image) or spec.image.startswith("-"):
             raise DockerExecutorError(f"unsafe Docker image reference: {spec.image!r}")
-        if self.allowed_images and not _matches_allowed(spec.image, self.allowed_images):
+        if self.allowed_images and not _matches_allowed(
+            spec.image, self.allowed_images
+        ):
             raise DockerExecutorError(f"Docker image is not allowed: {spec.image}")
         if not spec.command:
             raise DockerExecutorError("Docker command cannot be empty")
-        if spec.limits.network != "none" and not spec.limits.network.startswith("platform_"):
-            raise DockerExecutorError("Docker network must be 'none' or a platform network")
+        if spec.limits.network != "none" and not spec.limits.network.startswith(
+            "platform_"
+        ):
+            raise DockerExecutorError(
+                "Docker network must be 'none' or a platform network"
+            )
         for mount in spec.mounts:
             if not mount.source.exists():
-                raise DockerExecutorError(f"mount source does not exist: {mount.source}")
+                raise DockerExecutorError(
+                    f"mount source does not exist: {mount.source}"
+                )
             if not mount.target.startswith("/"):
-                raise DockerExecutorError(f"mount target must be absolute: {mount.target}")
+                raise DockerExecutorError(
+                    f"mount target must be absolute: {mount.target}"
+                )
 
     def _cap(self, value: str | bytes) -> str:
         if isinstance(value, bytes):

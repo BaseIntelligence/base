@@ -131,7 +131,7 @@ async def test_master_weight_service_and_validator_runner() -> None:
         internal_base_url="http://challenge-demo:8000",
         public_proxy_base_path="/challenges/demo",
         required_capabilities=["get_weights", "proxy_routes"],
-        resources={},
+        resources={"cpu": "2", "memory": "1g"},
         volumes={},
         env={},
         secrets=[],
@@ -161,6 +161,8 @@ async def test_master_weight_service_and_validator_runner() -> None:
     )  # type: ignore[arg-type]
     await runner.run_once()
     assert orchestrator.specs[0].slug == "demo"
+    assert orchestrator.specs[0].resources.cpu == 2.0
+    assert orchestrator.specs[0].resources.memory == "1g"
 
 
 @pytest.mark.asyncio
@@ -255,23 +257,34 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
         tmp_path / "registry.json", secret_dir=tmp_path / "secrets"
     )
     registry.create(
-        ChallengeCreate(slug="demo", name="Demo", image="ghcr.io/o/demo:1", version="1")
+        ChallengeCreate(
+            slug="demo",
+            name="Demo",
+            image="ghcr.io/o/demo:1",
+            version="1",
+            resources={"cpus": "1.5", "memory": "2g"},
+        )
     )
 
     class Orchestrator:
         def __init__(self) -> None:
             self.runtime = {}
             self.pulled = []
+            self.specs = []
 
         def pull_image(self, image: str) -> None:
             self.pulled.append(image)
 
         def restart_challenge(self, spec):
+            self.specs.append(spec)
             return SimpleNamespace(container_name=spec.container_name)
 
-    controller = DockerRuntimeController(registry, Orchestrator())  # type: ignore[arg-type]
+    orchestrator = Orchestrator()
+    controller = DockerRuntimeController(registry, orchestrator)  # type: ignore[arg-type]
     assert asyncio.run(controller.pull("demo"))["status"] == "ok"
     assert asyncio.run(controller.restart("demo"))["detail"] == "challenge-demo"
+    assert orchestrator.specs[0].resources.cpu == 1.5
+    assert orchestrator.specs[0].resources.memory == "2g"
     assert asyncio.run(controller.status("demo"))["status"] == "unknown"
 
 

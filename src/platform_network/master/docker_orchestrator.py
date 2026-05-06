@@ -26,6 +26,7 @@ DEFAULT_NETWORK_NAME = "platform_challenges"
 DEFAULT_SECRET_DIR = "/var/lib/platform/secrets"
 DEFAULT_SQLITE_PATH = "/data/challenge.sqlite3"
 DEFAULT_SECRET_MOUNT_DIR = "/run/secrets/platform"
+DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 
@@ -45,6 +46,12 @@ class ChallengeResources:
 
     cpu: float | None = None
     memory: str | None = None
+
+    @classmethod
+    def from_mapping(cls, resources: dict[str, str]) -> ChallengeResources:
+        cpu = resources.get("cpu") or resources.get("cpus")
+        memory = resources.get("memory")
+        return cls(cpu=float(cpu) if cpu else None, memory=memory)
 
     def as_container_kwargs(self) -> dict[str, Any]:
         """Return docker-py container keyword arguments for limits."""
@@ -355,6 +362,21 @@ class DockerOrchestrator:
                     read_only=True,
                 )
             )
+        if "docker_executor" in spec.required_capabilities:
+            socket = Path(DEFAULT_DOCKER_SOCKET)
+            if not socket.exists():
+                raise DockerOrchestrationError(
+                    "Docker executor requested but "
+                    f"{DEFAULT_DOCKER_SOCKET} is unavailable"
+                )
+            mounts.append(
+                Mount(
+                    target=DEFAULT_DOCKER_SOCKET,
+                    source=DEFAULT_DOCKER_SOCKET,
+                    type="bind",
+                    read_only=False,
+                )
+            )
         return mounts
 
     def _build_environment(self, spec: ChallengeSpec) -> dict[str, str]:
@@ -374,6 +396,9 @@ class DockerOrchestrator:
                     "CHALLENGE_SHARED_TOKEN_FILE",
                     f"{DEFAULT_SECRET_MOUNT_DIR}/{secret_name}",
                 )
+        if "docker_executor" in spec.required_capabilities:
+            environment.setdefault("CHALLENGE_DOCKER_ENABLED", "true")
+            environment.setdefault("CHALLENGE_DOCKER_BIN", "docker")
         return environment
 
     def _write_secret_files(self, spec: ChallengeSpec) -> dict[str, Path]:

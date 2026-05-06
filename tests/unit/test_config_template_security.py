@@ -28,4 +28,8 @@ def test_render_challenge_template(tmp_path: Path) -> None:
         out, ChallengeTemplateContext.from_slug("demo-challenge")
     )
     assert Path("pyproject.toml") in files
+    assert Path("Dockerfile") in files
+    assert Path("src/demo_challenge/sdk/executors/docker.py") in files
     assert (out / "src" / "demo_challenge" / "app.py").exists()
+    assert (out / "src" / "demo_challenge" / "sdk" / "executors" / "docker.py").exists()
+    assert "docker-cli" in (out / "Dockerfile").read_text(encoding="utf-8")

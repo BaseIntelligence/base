@@ -10,6 +10,7 @@ from platform_network.config import load_settings
 from platform_network.master.app_admin import create_admin_app
 from platform_network.master.app_proxy import create_proxy_app
 from platform_network.master.docker_orchestrator import (
+    ChallengeResources,
     ChallengeSpec,
     DockerOrchestrator,
 )
@@ -77,6 +78,7 @@ class DockerRuntimeController:
             version=record.version,
             challenge_token=self.registry.get_token(slug),
             env=record.env,
+            resources=ChallengeResources.from_mapping(record.resources),
             required_capabilities=tuple(record.required_capabilities),
         )
 
