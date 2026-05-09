@@ -97,7 +97,8 @@ sequenceDiagram
 ## Quick Start
 
 ```bash
-cd /droid/platform-v10
+git clone https://github.com/PlatformNetwork/platform.git
+cd ./platform
 uv sync --extra dev
 uv run pytest
 uv run platform --help
@@ -159,7 +160,7 @@ The master normalizes each challenge, applies fixed emission percentages, ignore
 ## Repository Layout
 
 ```text
-platform-v10/
+platform/
   src/platform_network/      # CLI, APIs, orchestration, Bittensor wrappers
   alembic/                   # PostgreSQL migrations
   config/                    # YAML example configs
