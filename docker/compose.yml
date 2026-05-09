@@ -1,0 +1,171 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_POSTGRES_PASSWORD:?set PLATFORM_POSTGRES_PASSWORD}
+    volumes:
+      - platform_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform_backend
+
+  master-admin:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.master
+    command: ["platform", "master", "run", "--config", "config/master.example.yaml"]
+    environment:
+      PLATFORM_DATABASE__URL: postgresql+asyncpg://platform:${PLATFORM_POSTGRES_PASSWORD:?set PLATFORM_POSTGRES_PASSWORD}@postgres:5432/platform
+      PLATFORM_MASTER__ADMIN_HOST: 0.0.0.0
+      PLATFORM_MASTER__ADMIN_PORT: "8000"
+      PLATFORM_MASTER__REGISTRY_STATE_FILE: /var/lib/platform/registry.json
+      PLATFORM_DOCKER__NETWORK_NAME: platform_challenges
+      PLATFORM_DOCKER__SECRET_DIR: /var/lib/platform/secrets
+      PLATFORM_DOCKER__BROKER_URL: http://platform-docker-broker:8082
+      PLATFORM_DOCKER__GPU_SERVER_STATE_FILE: /var/lib/platform/gpu_servers.json
+      PLATFORM_WEIGHTS__LATEST_WEIGHTS_FILE: /var/lib/platform/latest_weights.json
+      PLATFORM_SECURITY__ADMIN_TOKEN_FILE: /var/lib/platform/secrets/admin_token
+      PLATFORM_WEIGHTS__FALLBACK_TOKEN_FILE: /var/lib/platform/secrets/weights_token
+      PLATFORM_WEIGHTS__SIGNING_SECRET_FILE: /var/lib/platform/secrets/weights_signing_secret
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - platform_state:/var/lib/platform
+      - platform_secrets:/var/lib/platform/secrets
+      - ../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  master-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.master
+    command: ["platform", "master", "proxy", "--config", "config/master.example.yaml"]
+    environment:
+      PLATFORM_MASTER__PROXY_HOST: 0.0.0.0
+      PLATFORM_MASTER__PROXY_PORT: "8080"
+      PLATFORM_MASTER__REGISTRY_STATE_FILE: /var/lib/platform/registry.json
+    volumes:
+      - platform_state:/var/lib/platform
+      - ../config:/app/config:ro
+    depends_on:
+      - master-admin
+    ports:
+      - "8080:8080"
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  platform-docker-broker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.master
+    command: ["platform", "master", "broker", "--config", "config/master.example.yaml"]
+    environment:
+      PLATFORM_DOCKER__BROKER_HOST: 0.0.0.0
+      PLATFORM_DOCKER__BROKER_PORT: "8082"
+      PLATFORM_DOCKER__BROKER_WORKSPACE_DIR: /tmp/platform-docker-broker
+      PLATFORM_DOCKER__BROKER_ALLOWED_IMAGES: '["platformnetwork/","ghcr.io/platformnetwork/"]'
+      PLATFORM_MASTER__REGISTRY_STATE_FILE: /var/lib/platform/registry.json
+      PLATFORM_DOCKER__SECRET_DIR: /var/lib/platform/secrets
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - platform_state:/var/lib/platform
+      - platform_secrets:/var/lib/platform/secrets
+      - ../config:/app/config:ro
+    depends_on:
+      - master-admin
+    networks:
+      platform_challenges:
+        aliases:
+          - platform-docker-broker
+
+  validator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.validator
+    command: ["platform", "validator", "run", "--config", "config/validator.example.yaml"]
+    environment:
+      PLATFORM_VALIDATOR__REGISTRY_URL: http://master-admin:8000
+      PLATFORM_DOCKER__BROKER_URL: http://platform-docker-broker:8082
+      PLATFORM_DOCKER__GPU_SERVER_STATE_FILE: /var/lib/platform/gpu_servers.json
+      PLATFORM_WEIGHTS__FALLBACK_ENABLED: "true"
+      PLATFORM_WEIGHTS__PRIMARY_URL: http://master-admin:8000
+      PLATFORM_WEIGHTS__FALLBACK_TOKEN_FILE: /var/lib/platform/secrets/weights_token
+      PLATFORM_WEIGHTS__SIGNING_SECRET_FILE: /var/lib/platform/secrets/weights_signing_secret
+    volumes:
+      - platform_state:/var/lib/platform
+      - platform_secrets:/var/lib/platform/secrets
+      - ../config:/app/config:ro
+    depends_on:
+      - master-admin
+      - platform-docker-broker
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  gpu-agent:
+    profiles: ["gpu"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.validator
+    command:
+      - platform
+      - gpu-agent
+      - run
+      - --config
+      - config/validator.example.yaml
+      - --token-file
+      - /var/lib/platform/secrets/gpu_agent_token
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    environment:
+      PLATFORM_DOCKER__NETWORK_NAME: platform_challenges
+      PLATFORM_DOCKER__SECRET_DIR: /var/lib/platform/secrets
+      PLATFORM_DOCKER__BROKER_URL: http://platform-docker-broker:8082
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - platform_state:/var/lib/platform
+      - platform_secrets:/var/lib/platform/secrets
+      - ../config:/app/config:ro
+    networks:
+      - platform_backend
+      - platform_challenges
+
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - platform_backend
+
+volumes:
+  platform_postgres:
+  platform_state:
+  platform_secrets:
+
+networks:
+  platform_backend:
+    driver: bridge
+  platform_challenges:
+    name: platform_challenges
+    driver: bridge
+    attachable: true

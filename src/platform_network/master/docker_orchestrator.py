@@ -46,12 +46,31 @@ class ChallengeResources:
 
     cpu: float | None = None
     memory: str | None = None
+    gpu_server: str | None = None
+    gpu_count: int | None = None
+    gpu_device_ids: tuple[str, ...] = ()
+    gpu_capabilities: tuple[str, ...] = ("gpu",)
+
+    def __post_init__(self) -> None:
+        if self.gpu_server is not None and _SAFE_NAME_RE.search(self.gpu_server):
+            raise DockerOrchestrationError("GPU server id contains unsafe characters")
 
     @classmethod
     def from_mapping(cls, resources: dict[str, str]) -> ChallengeResources:
         cpu = resources.get("cpu") or resources.get("cpus")
         memory = resources.get("memory")
-        return cls(cpu=float(cpu) if cpu else None, memory=memory)
+        gpu_server = resources.get("gpu_server")
+        gpu_count = resources.get("gpu_count") or resources.get("gpus")
+        gpu_device_ids = _split_csv(resources.get("gpu_device_ids"))
+        gpu_capabilities = _split_csv(resources.get("gpu_capabilities")) or ("gpu",)
+        return cls(
+            cpu=float(cpu) if cpu else None,
+            memory=memory,
+            gpu_server=gpu_server,
+            gpu_count=int(gpu_count) if gpu_count else None,
+            gpu_device_ids=gpu_device_ids,
+            gpu_capabilities=gpu_capabilities,
+        )
 
     def as_container_kwargs(self) -> dict[str, Any]:
         """Return docker-py container keyword arguments for limits."""
@@ -65,6 +84,25 @@ class ChallengeResources:
             kwargs["nano_cpus"] = int(self.cpu * 1_000_000_000)
         if self.memory:
             kwargs["mem_limit"] = self.memory
+        if self.gpu_count is not None:
+            if self.gpu_count <= 0:
+                raise DockerOrchestrationError("GPU count must be positive")
+            try:
+                from docker.types import DeviceRequest
+            except ImportError as exc:  # pragma: no cover - environment-specific
+                raise DockerOrchestrationError(
+                    "docker-py SDK is required for GPU device requests"
+                ) from exc
+            request_kwargs: dict[str, Any] = {
+                "capabilities": [list(self.gpu_capabilities)]
+            }
+            if self.gpu_device_ids:
+                request_kwargs["device_ids"] = list(self.gpu_device_ids)
+            else:
+                request_kwargs["count"] = self.gpu_count
+            kwargs["device_requests"] = [
+                DeviceRequest(**request_kwargs)
+            ]
         return kwargs
 
 
@@ -474,6 +512,12 @@ def _safe_slug(slug: str) -> str:
     if not value:
         raise DockerOrchestrationError("Challenge slug cannot be empty")
     return value.lower()
+
+
+def _split_csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def _safe_secret_name(secret_name: str) -> str:

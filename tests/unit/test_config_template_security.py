@@ -22,6 +22,30 @@ def test_load_settings_yaml(tmp_path: Path) -> None:
     assert load_settings(config).network.netuid == 42
 
 
+def test_load_settings_gpu_servers(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "gpu_servers:",
+                "  - id: gpu-a",
+                "    base_url: https://gpu-a.internal",
+                "    token: secret",
+                "    enabled: true",
+                "    verify_tls: false",
+                "    timeout_seconds: 12",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    server = load_settings(config).gpu_servers[0]
+    assert server.id == "gpu-a"
+    assert server.base_url == "https://gpu-a.internal"
+    assert server.token == "secret"
+    assert server.verify_tls is False
+    assert server.timeout_seconds == 12
+
+
 def test_render_challenge_template(tmp_path: Path) -> None:
     out = tmp_path / "challenge"
     files = render_challenge_template(

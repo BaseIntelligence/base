@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
@@ -11,11 +12,16 @@ from platform_network.master.app_admin import create_admin_app
 from platform_network.master.app_proxy import create_proxy_app, is_blocked_proxy_path
 from platform_network.master.challenge_dashboard import ChallengeMetrics
 from platform_network.master.registry import ChallengeRegistry
+from platform_network.master.weight_fallback import (
+    LatestWeightsStore,
+    SignedWeightsService,
+)
 from platform_network.schemas.challenge import (
     ChallengeCreate,
     ChallengeRecord,
     ChallengeStatus,
 )
+from platform_network.schemas.weights import FinalWeights
 
 
 def _payload(slug: str = "demo") -> dict[str, object]:
@@ -116,6 +122,45 @@ def test_challenges_dashboard_svg_includes_all_statuses_without_secrets() -> Non
     assert "challenge_token" not in svg
 
 
+def test_challenges_dashboard_svg_uses_mock_preview_when_empty() -> None:
+    client = TestClient(create_admin_app(registry=ChallengeRegistry()))
+
+    response = client.get("/v1/challenges/dashboard.svg")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    svg = response.text
+    assert "Prism" in svg
+    assert "Agent Challenge" in svg
+    assert "Data Fabrication" in svg
+    assert "0%" in svg
+    assert "Evaluate reasoning quality" in svg
+    assert "Benchmark autonomous agents" in svg
+    assert "Score synthetic data pipelines" in svg
+
+
+def test_challenges_dashboard_svg_live_data_replaces_mock_preview() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("live-one"),
+                "name": "Live <unsafe>",
+                "description": "Live & useful challenge",
+            }
+        )
+    )
+    client = TestClient(create_admin_app(registry=registry))
+
+    response = client.get("/v1/challenges/dashboard.svg")
+
+    assert response.status_code == 200
+    svg = response.text
+    assert "Live &lt;unsafe&gt;" in svg
+    assert "Live &amp; useful challenge" in svg
+    assert "Prism" not in svg
+
+
 def test_challenges_dashboard_svg_accepts_future_metrics_provider() -> None:
     class StaticMetricsProvider:
         def metrics_for(self, challenge: ChallengeRecord) -> ChallengeMetrics:
@@ -131,6 +176,73 @@ def test_challenges_dashboard_svg_accepts_future_metrics_provider() -> None:
 
     assert response.status_code == 200
     assert ">7</text>" in response.text
+
+
+def test_admin_gpu_servers_pages_and_api_without_secret_leak() -> None:
+    client = TestClient(
+        create_admin_app(
+            registry=ChallengeRegistry(),
+            admin_token_provider=lambda: "admin-secret",
+        )
+    )
+    headers = {"X-Admin-Token": "admin-secret"}
+
+    create_response = client.post(
+        "/v1/admin/gpu-servers",
+        headers=headers,
+        json={
+            "id": "gpu-a",
+            "base_url": "https://gpu-a",
+            "token": "secret-token",
+            "min_gpu_count": 1,
+        },
+    )
+
+    assert create_response.status_code == 201
+    body = create_response.json()
+    assert body["id"] == "gpu-a"
+    assert "secret-token" not in create_response.text
+
+    list_response = client.get("/v1/admin/gpu-servers", headers=headers)
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == "gpu-a"
+
+    page_response = client.get("/admin/gpu-servers", headers=headers)
+    assert page_response.status_code == 200
+    assert "gpu-a" in page_response.text
+
+    disable_response = client.post(
+        "/v1/admin/gpu-servers/gpu-a/disable", headers=headers
+    )
+    assert disable_response.json()["enabled"] is False
+
+    delete_response = client.delete("/v1/admin/gpu-servers/gpu-a", headers=headers)
+    assert delete_response.status_code == 204
+
+
+def test_admin_signed_weights_endpoint(tmp_path: Path) -> None:
+    store = LatestWeightsStore(tmp_path / "weights.json")
+    store.write_final(
+        FinalWeights(uids=[1], weights=[1.0], hotkey_weights={"hk": 1.0})
+    )
+    client = TestClient(
+        create_admin_app(
+            weights_service=SignedWeightsService(store=store, signing_secret="sign"),
+            admin_token_provider=lambda: "admin-secret",
+            weights_token_provider=lambda: "weights-token",
+        )
+    )
+
+    unauthorized = client.get("/v1/weights/latest")
+    assert unauthorized.status_code == 401
+
+    response = client.get(
+        "/v1/weights/latest?challenge_slug=demo",
+        headers={"authorization": "Bearer weights-token"},
+    )
+    assert response.status_code == 200
+    assert response.json()["payload"]["challenge_slug"] == "demo"
+    assert response.json()["payload"]["weights"] == {"hk": 1.0}
 
 
 def test_proxy_blocks_internal_health_and_version_paths() -> None:

@@ -42,9 +42,31 @@ class DockerSettings(BaseModel):
     broker_port: int = 8082
     broker_url: str = "http://platform-docker-broker:8082"
     broker_workspace_dir: str = "/tmp/platform-docker-broker"
+    gpu_server_state_file: str = "/var/lib/platform/gpu_servers.json"
     broker_allowed_images: list[str] = Field(
         default_factory=lambda: ["platformnetwork/", "ghcr.io/platformnetwork/"]
     )
+
+
+class GpuServerSettings(BaseModel):
+    id: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
+    base_url: str = Field(..., min_length=1)
+    token: str | None = None
+    token_file: str | None = None
+    enabled: bool = True
+    verify_tls: bool = True
+    timeout_seconds: float = 30.0
+
+
+class WeightsSettings(BaseModel):
+    primary_url: str | None = None
+    fallback_token: str | None = None
+    fallback_token_file: str | None = None
+    signing_secret: str | None = None
+    signing_secret_file: str | None = None
+    max_age_seconds: int = 600
+    fallback_enabled: bool = False
+    latest_weights_file: str = "/var/lib/platform/latest_weights.json"
 
 
 class SecuritySettings(BaseModel):
@@ -64,5 +86,7 @@ class Settings(BaseModel):
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     docker: DockerSettings = Field(default_factory=DockerSettings)
+    gpu_servers: list[GpuServerSettings] = Field(default_factory=list)
+    weights: WeightsSettings = Field(default_factory=WeightsSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)

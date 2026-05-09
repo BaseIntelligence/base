@@ -75,6 +75,20 @@ class DockerRunResult:
     timed_out: bool = False
 
 
+@dataclass(frozen=True)
+class DockerContainerInfo:
+    """Docker container metadata scoped to a single challenge."""
+
+    container_id: str
+    container_name: str
+    image: str = ""
+    status: str = ""
+    job_id: str | None = None
+    task_id: str | None = None
+    created: str | None = None
+    labels: Mapping[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class DockerExecutor:
     """Run labelled, resource-limited Docker containers via Docker CLI."""
@@ -163,10 +177,11 @@ class DockerExecutor:
             cmd.extend(["-w", spec.workdir])
         for key, value in spec.env.items():
             cmd.extend(["-e", f"{key}={value}"])
-        labels = {
-            "platform.challenge": self.challenge,
-            **dict(spec.labels),
-        }
+        labels = {**dict(spec.labels), "platform.challenge": self.challenge}
+        if "platform.job" in spec.labels:
+            labels["platform.job"] = str(spec.labels["platform.job"])
+        if "platform.task" in spec.labels:
+            labels["platform.task"] = str(spec.labels["platform.task"])
         for key, value in labels.items():
             cmd.extend(["--label", f"{key}={value}"])
         cmd.extend([spec.image, *spec.command])
@@ -198,6 +213,53 @@ class DockerExecutor:
                 text=True,
                 check=False,
             )
+
+    def list_containers(self, job_id: str | None = None) -> list[DockerContainerInfo]:
+        if self.backend == "broker":
+            payload: dict[str, object] = {}
+            if job_id:
+                payload["job_id"] = job_id
+            data = self._post_broker("/v1/docker/list", payload, timeout_seconds=30)
+            containers = data.get("containers", [])
+            if not isinstance(containers, list):
+                raise DockerExecutorError("Docker broker returned invalid list payload")
+            return [
+                DockerContainerInfo(
+                    container_id=str(item.get("container_id") or ""),
+                    container_name=str(item.get("container_name") or ""),
+                    image=str(item.get("image") or ""),
+                    status=str(item.get("status") or ""),
+                    job_id=item.get("job_id"),
+                    task_id=item.get("task_id"),
+                    created=item.get("created"),
+                    labels=dict(item.get("labels") or {}),
+                )
+                for item in containers
+                if isinstance(item, dict)
+            ]
+        filters = ["--filter", f"label=platform.challenge={self.challenge}"]
+        if job_id:
+            filters.extend(["--filter", f"label=platform.job={job_id}"])
+        proc = subprocess.run(
+            [
+                self.docker_bin,
+                "ps",
+                "-a",
+                *filters,
+                "--format",
+                "{{json .}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise DockerExecutorError(f"Docker list failed: {self._cap(proc.stderr)}")
+        return [
+            _container_from_ps_json(line)
+            for line in proc.stdout.splitlines()
+            if line.strip()
+        ]
 
     def remove_container(self, name: str) -> None:
         subprocess.run(
@@ -324,6 +386,31 @@ def _safe_fragment(value: str, limit: int) -> str:
 
 def _matches_allowed(image: str, allowed: Sequence[str]) -> bool:
     return any(image == item or image.startswith(item.rstrip("*")) for item in allowed)
+
+
+def _container_from_ps_json(line: str) -> DockerContainerInfo:
+    data = json.loads(line)
+    labels = _parse_label_string(str(data.get("Labels") or ""))
+    return DockerContainerInfo(
+        container_id=str(data.get("ID") or ""),
+        container_name=str(data.get("Names") or ""),
+        image=str(data.get("Image") or ""),
+        status=str(data.get("Status") or ""),
+        created=str(data.get("CreatedAt") or "") or None,
+        job_id=labels.get("platform.job"),
+        task_id=labels.get("platform.task"),
+        labels=labels,
+    )
+
+
+def _parse_label_string(raw: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for item in raw.split(","):
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        labels[key] = value
+    return labels
 
 
 def _encode_mount(mount: DockerMount) -> dict[str, object]:

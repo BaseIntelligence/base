@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
-    DockerOrchestrator,
 )
 from platform_network.validator.registry_client import RegistryClient
 
@@ -18,7 +18,7 @@ class NormalValidatorRunner:
         self,
         *,
         registry_client: RegistryClient,
-        orchestrator: DockerOrchestrator,
+        orchestrator: Any,
         retry_seconds: int = 15,
     ) -> None:
         self.registry_client = registry_client

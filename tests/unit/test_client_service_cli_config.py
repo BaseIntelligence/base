@@ -8,11 +8,13 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+import platform_network.cli_app.main as cli_module
 from platform_network.bittensor.metagraph_cache import MetagraphCache
 from platform_network.bittensor.validator_loop import run_epoch_loop
 from platform_network.bittensor.weight_setter import WeightSetter
-from platform_network.cli import DockerRuntimeController, app
+from platform_network.cli_app.main import DockerRuntimeController, app
 from platform_network.config.loader import load_settings
+from platform_network.gpu.capabilities import CapabilityDecision
 from platform_network.master.challenge_client import ChallengeClient
 from platform_network.master.registry import FileChallengeRegistry
 from platform_network.master.service import MasterWeightService
@@ -166,6 +168,62 @@ async def test_master_weight_service_and_validator_runner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_master_weight_service_uses_fallback_when_capability_blocked() -> None:
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"hk": 5}
+
+    class Setter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[int], list[float]]] = []
+
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            self.calls.append((uids, weights))
+
+    class Checker:
+        def check(self, resources) -> CapabilityDecision:
+            return CapabilityDecision(False, "gpu_server_unknown")
+
+    class Fallback:
+        async def get_weights(
+            self, *, slug: str, emission_percent: float
+        ) -> ChallengeWeightsResult:
+            return ChallengeWeightsResult(
+                slug=slug,
+                emission_percent=emission_percent,
+                weights={"hk": 1.0},
+            )
+
+    challenge = RegistryChallenge(
+        slug="gpu-demo",
+        name="GPU Demo",
+        image="ghcr.io/o/demo:1",
+        version="1",
+        emission_percent=10,
+        status=ChallengeStatus.ACTIVE,
+        internal_base_url="http://challenge-demo:8000",
+        public_proxy_base_path="/challenges/demo",
+        required_capabilities=["get_weights", "proxy_routes"],
+        resources={"gpu_server": "missing", "gpu_count": "1"},
+        volumes={},
+        env={},
+        secrets=[],
+    )
+    setter = Setter()
+    service = MasterWeightService(
+        metagraph_cache=Cache(),  # type: ignore[arg-type]
+        weight_setter=setter,  # type: ignore[arg-type]
+        capability_checker=Checker(),  # type: ignore[arg-type]
+        fallback_client=Fallback(),  # type: ignore[arg-type]
+    )
+
+    final = await service.run_epoch([challenge], {})
+
+    assert final.uids == [5]
+    assert setter.calls == [([5], [1.0])]
+
+
+@pytest.mark.asyncio
 async def test_run_epoch_loop_logs_and_sleeps(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
 
@@ -246,6 +304,9 @@ def test_bittensor_cache_and_setter() -> None:
         [0], [1.0]
     )
     assert result["ok"] is True
+    assert WeightSetter(subtensor=subtensor, wallet="wallet", netuid=12).set_weights(
+        [], []
+    )["skipped"] is True
 
 
 def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
@@ -288,6 +349,209 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
     assert orchestrator.specs[0].resources.cpu == 1.5
     assert orchestrator.specs[0].resources.memory == "2g"
     assert asyncio.run(controller.status("demo"))["status"] == "unknown"
+
+
+def test_cli_master_weights_once_wires_bittensor_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    secret_dir = tmp_path / "secrets"
+    config = tmp_path / "master.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "network:",
+                "  netuid: 12",
+                "  chain_endpoint: ws://chain",
+                "  wallet_name: wallet",
+                "  wallet_hotkey: hotkey",
+                "master:",
+                f"  registry_state_file: {registry_path}",
+                "  metagraph_cache_ttl_seconds: 3",
+                "  challenge_timeout_seconds: 1.5",
+                "  challenge_retries: 2",
+                "docker:",
+                f"  secret_dir: {secret_dir}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    registry = FileChallengeRegistry(registry_path, secret_dir=secret_dir)
+    registry.create(
+        ChallengeCreate(
+            slug="demo",
+            name="Demo",
+            image="ghcr.io/o/demo:1",
+            version="1",
+            emission_percent=10,
+            status=ChallengeStatus.ACTIVE,
+        )
+    )
+    created_runtime: dict[str, object] = {}
+    setter_calls: list[tuple[list[int], list[float]]] = []
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"hk": 7}
+
+    class Setter:
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            setter_calls.append((uids, weights))
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            created_runtime["client_kwargs"] = kwargs
+
+        async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
+            assert kwargs["token"]
+            return ChallengeWeightsResult(
+                slug=str(kwargs["slug"]),
+                emission_percent=float(kwargs["emission_percent"]),
+                weights={"hk": 2.0},
+            )
+
+    def create_runtime(settings, *, dry_run: bool):
+        created_runtime["netuid"] = settings.network.netuid
+        created_runtime["chain_endpoint"] = settings.network.chain_endpoint
+        created_runtime["wallet_name"] = settings.network.wallet_name
+        created_runtime["wallet_hotkey"] = settings.network.wallet_hotkey
+        created_runtime["dry_run"] = dry_run
+        return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
+
+    monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
+    monkeypatch.setattr(cli_module, "ChallengeClient", Client)
+
+    result = CliRunner().invoke(
+        app, ["master", "weights", "--config", str(config), "--once"]
+    )
+
+    assert result.exit_code == 0
+    assert "dry-run: computed 1 weights" in result.output
+    assert created_runtime == {
+        "netuid": 12,
+        "chain_endpoint": "ws://chain",
+        "wallet_name": "wallet",
+        "wallet_hotkey": "hotkey",
+        "dry_run": True,
+        "client_kwargs": {"timeout_seconds": 1.5, "retries": 2},
+    }
+    assert setter_calls == [([7], [1.0])]
+
+
+def test_cli_master_weights_loop_uses_epoch_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    config = tmp_path / "master.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "master:",
+                f"  registry_state_file: {registry_path}",
+                "  epoch_interval_seconds: 11",
+                "docker:",
+                f"  secret_dir: {tmp_path / 'secrets'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    intervals: list[int] = []
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {}
+
+    class Setter:
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            return None
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    def create_runtime(settings, *, dry_run: bool):
+        return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
+
+    async def run_loop(interval_seconds: int, callback):
+        intervals.append(interval_seconds)
+        await callback()
+
+    monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
+    monkeypatch.setattr(cli_module, "ChallengeClient", Client)
+    monkeypatch.setattr(cli_module, "run_epoch_loop", run_loop)
+
+    result = CliRunner().invoke(app, ["master", "weights", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert intervals == [11]
+
+
+def test_cli_gpu_clients_loads_enabled_servers(tmp_path: Path) -> None:
+    token_file = tmp_path / "gpu-token"
+    token_file.write_text("file-token", encoding="utf-8")
+    config = tmp_path / "validator.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "gpu_servers:",
+                "  - id: gpu-a",
+                "    base_url: https://gpu-a",
+                f"    token_file: {token_file}",
+                "    verify_tls: false",
+                "    timeout_seconds: 9",
+                "  - id: gpu-b",
+                "    base_url: https://gpu-b",
+                "    token: disabled",
+                "    enabled: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    clients = cli_module._gpu_clients(load_settings(config))  # noqa: SLF001
+
+    assert list(clients) == ["gpu-a"]
+    assert clients["gpu-a"].token == "file-token"
+    assert clients["gpu-a"].verify_tls is False
+    assert clients["gpu-a"].timeout_seconds == 9
+
+
+def test_cli_gpu_server_commands_call_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def admin_request(
+        config: Path,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        calls.append((method, path, payload))
+
+    monkeypatch.setattr(cli_module, "_admin_request", admin_request)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "gpu-server",
+            "add",
+            "gpu-a",
+            "--url",
+            "https://gpu-a",
+            "--token",
+            "tok",
+            "--no-verify-tls",
+        ],
+    )
+    assert result.exit_code == 0
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "/v1/admin/gpu-servers"
+    assert calls[0][2]["id"] == "gpu-a"  # type: ignore[index]
+    assert calls[0][2]["verify_tls"] is False  # type: ignore[index]
+
+    result = runner.invoke(app, ["gpu-server", "list"])
+    assert result.exit_code == 0
+    assert calls[1] == ("GET", "/v1/admin/gpu-servers", None)
 
 
 def test_registry_client_with_mock_transport() -> None:

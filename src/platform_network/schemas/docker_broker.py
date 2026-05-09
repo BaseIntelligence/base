@@ -46,6 +46,25 @@ class BrokerRunResponse(BaseModel):
     timed_out: bool = False
 
 
+class BrokerContainerInfo(BaseModel):
+    container_id: str
+    container_name: str
+    image: str = ""
+    status: str = ""
+    job_id: str | None = None
+    task_id: str | None = None
+    created: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class BrokerListRequest(BaseModel):
+    job_id: str | None = Field(default=None, max_length=128)
+
+
+class BrokerListResponse(BaseModel):
+    containers: list[BrokerContainerInfo] = Field(default_factory=list)
+
+
 class BrokerCleanupRequest(BaseModel):
     job_id: str = Field(..., min_length=1, max_length=128)
 

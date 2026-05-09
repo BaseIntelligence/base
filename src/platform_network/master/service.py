@@ -4,8 +4,11 @@ import logging
 
 from platform_network.bittensor.metagraph_cache import MetagraphCache
 from platform_network.bittensor.weight_setter import WeightSetter
+from platform_network.gpu.capabilities import ResourceCapabilityChecker
 from platform_network.master.aggregator import aggregate_challenge_weights
 from platform_network.master.challenge_client import ChallengeClient
+from platform_network.master.docker_orchestrator import ChallengeResources
+from platform_network.master.weight_fallback import FallbackWeightClient
 from platform_network.schemas.challenge import RegistryChallenge
 from platform_network.schemas.weights import ChallengeWeightsResult, FinalWeights
 
@@ -19,16 +22,30 @@ class MasterWeightService:
         metagraph_cache: MetagraphCache,
         weight_setter: WeightSetter,
         challenge_client: ChallengeClient | None = None,
+        capability_checker: ResourceCapabilityChecker | None = None,
+        fallback_client: FallbackWeightClient | None = None,
     ) -> None:
         self.metagraph_cache = metagraph_cache
         self.weight_setter = weight_setter
         self.challenge_client = challenge_client or ChallengeClient()
+        self.capability_checker = capability_checker
+        self.fallback_client = fallback_client
 
     async def collect_weights(
         self, challenges: list[RegistryChallenge], tokens: dict[str, str]
     ) -> list[ChallengeWeightsResult]:
         results: list[ChallengeWeightsResult] = []
         for challenge in challenges:
+            decision = (
+                self.capability_checker.check(
+                    ChallengeResources.from_mapping(challenge.resources)
+                )
+                if self.capability_checker is not None
+                else None
+            )
+            if decision is not None and not decision.can_run:
+                results.append(await self._fallback_weights(challenge, decision.reason))
+                continue
             token = tokens.get(challenge.slug, "")
             result = await self.challenge_client.get_weights(
                 slug=challenge.slug,
@@ -36,6 +53,8 @@ class MasterWeightService:
                 token=token,
                 emission_percent=float(challenge.emission_percent),
             )
+            if not result.ok and self.fallback_client is not None:
+                result = await self._fallback_weights(challenge, result.error)
             if not result.ok:
                 logger.warning(
                     "challenge weights failed", extra={"slug": challenge.slug}
@@ -55,3 +74,32 @@ class MasterWeightService:
             extra={"uids": len(final.uids), "challenges": len(challenges)},
         )
         return final
+
+    async def _fallback_weights(
+        self, challenge: RegistryChallenge, reason: str | None
+    ) -> ChallengeWeightsResult:
+        if self.fallback_client is None:
+            return ChallengeWeightsResult(
+                slug=challenge.slug,
+                emission_percent=float(challenge.emission_percent),
+                weights={},
+                ok=False,
+                error=reason or "capability_check_failed",
+            )
+        try:
+            logger.info(
+                "using fallback weights",
+                extra={"slug": challenge.slug, "reason": reason},
+            )
+            return await self.fallback_client.get_weights(
+                slug=challenge.slug,
+                emission_percent=float(challenge.emission_percent),
+            )
+        except Exception as exc:
+            return ChallengeWeightsResult(
+                slug=challenge.slug,
+                emission_percent=float(challenge.emission_percent),
+                weights={},
+                ok=False,
+                error=str(exc),
+            )

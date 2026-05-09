@@ -12,6 +12,7 @@ from platform_network.master.docker_broker import (
     DockerBrokerService,
     create_docker_broker_app,
 )
+from platform_network.schemas.docker_broker import BrokerListResponse
 
 
 class Registry:
@@ -108,3 +109,50 @@ def test_broker_rejects_disallowed_image(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "Docker image is not allowed" in response.text
+
+
+def test_broker_list_is_scoped_to_authenticated_challenge(tmp_path: Path) -> None:
+    class Service(DockerBrokerService):
+        def __init__(self) -> None:
+            pass
+
+        def list_containers(self, challenge_slug, request):
+            assert challenge_slug == "agent"
+            assert request.job_id == "job-1"
+            return BrokerListResponse(
+                containers=[
+                    {
+                        "container_id": "abc",
+                        "container_name": "agent-job",
+                        "image": "python",
+                        "status": "running",
+                        "job_id": "job-1",
+                        "labels": {"platform.challenge": "agent"},
+                    }
+                ]
+            )
+
+    app = create_docker_broker_app(registry=Registry(), service=Service())
+    client = TestClient(app)
+
+    unauthorized = client.post(
+        "/v1/docker/list",
+        headers={
+            "authorization": "Bearer tok",
+            "x-platform-challenge-slug": "other",
+        },
+        json={"job_id": "job-1"},
+    )
+    assert unauthorized.status_code == 401
+
+    response = client.post(
+        "/v1/docker/list",
+        headers={
+            "authorization": "Bearer tok",
+            "x-platform-challenge-slug": "agent",
+        },
+        json={"job_id": "job-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["containers"][0]["container_name"] == "agent-job"

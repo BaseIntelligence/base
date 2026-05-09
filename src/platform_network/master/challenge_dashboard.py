@@ -15,6 +15,16 @@ class ChallengeMetrics:
     miner_count: int | None = None
 
 
+@dataclass(frozen=True)
+class DashboardChallenge:
+    slug: str
+    name: str
+    description: str
+    emission_percent: Decimal
+    status: ChallengeStatus | str
+    source: str = "live"
+
+
 class ChallengeMetricsProvider(Protocol):
     def metrics_for(self, challenge: ChallengeRecord) -> ChallengeMetrics:
         """Return runtime metrics for a challenge."""
@@ -61,19 +71,75 @@ def _format_miner_count(count: int | None) -> str:
     return "N/A" if count is None else str(count)
 
 
+def _shorten(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[: max(0, limit - 1)].rstrip()}…"
+
+
+def _mock_challenges() -> list[DashboardChallenge]:
+    return [
+        DashboardChallenge(
+            slug="prism",
+            name="Prism",
+            description="Evaluate reasoning quality across multi-step prompts.",
+            emission_percent=Decimal("0"),
+            status=ChallengeStatus.DRAFT,
+            source="preview",
+        ),
+        DashboardChallenge(
+            slug="agent-challenge",
+            name="Agent Challenge",
+            description="Benchmark autonomous agents on practical execution tasks.",
+            emission_percent=Decimal("0"),
+            status=ChallengeStatus.DRAFT,
+            source="preview",
+        ),
+        DashboardChallenge(
+            slug="data-fabrication",
+            name="Data Fabrication",
+            description="Score synthetic data pipelines for usefulness and integrity.",
+            emission_percent=Decimal("0"),
+            status=ChallengeStatus.DRAFT,
+            source="preview",
+        ),
+    ]
+
+
+def _to_dashboard_challenges(
+    challenges: list[ChallengeRecord],
+) -> list[DashboardChallenge]:
+    if not challenges:
+        return _mock_challenges()
+    return [
+        DashboardChallenge(
+            slug=challenge.slug,
+            name=challenge.name,
+            description=challenge.description or "Live Platform challenge",
+            emission_percent=challenge.emission_percent,
+            status=challenge.status,
+        )
+        for challenge in challenges
+    ]
+
+
 def render_challenges_dashboard_svg(
     challenges: list[ChallengeRecord],
     *,
     metrics_provider: ChallengeMetricsProvider | None = None,
 ) -> str:
     provider = metrics_provider or EmptyChallengeMetricsProvider()
-    sorted_challenges = sorted(challenges, key=lambda challenge: challenge.slug)
-    row_height = 56
+    dashboard_challenges = _to_dashboard_challenges(challenges)
+    sorted_challenges = sorted(
+        dashboard_challenges, key=lambda challenge: challenge.slug
+    )
+    live_by_slug = {challenge.slug: challenge for challenge in challenges}
+    row_height = 68
     header_height = 178
-    width = 1000
+    width = 1120
     table_x = 34
     table_width = width - table_x * 2
-    height = max(420, header_height + row_height * len(challenges) + 46)
+    height = max(430, header_height + row_height * len(sorted_challenges) + 48)
     total_emission = sum(
         (challenge.emission_percent for challenge in sorted_challenges), Decimal("0")
     )
@@ -87,7 +153,12 @@ def render_challenges_dashboard_svg(
     for index, challenge in enumerate(sorted_challenges):
         y = header_height + index * row_height
         status = str(challenge.status)
-        metrics = provider.metrics_for(challenge)
+        metrics_record = live_by_slug.get(challenge.slug)
+        metrics = (
+            provider.metrics_for(metrics_record)
+            if metrics_record
+            else ChallengeMetrics()
+        )
         status_color = _status_color(challenge.status)
         status_bg = _status_background(challenge.status)
         online = _online_label(challenge.status)
@@ -97,45 +168,29 @@ def render_challenges_dashboard_svg(
             "\n".join(
                 [
                     f'<rect x="{table_x}" y="{y + 3}" width="{table_width}" '
-                    'height="46" rx="23" fill="#ffffff" fill-opacity="0.94" '
+                    'height="58" rx="24" fill="#ffffff" fill-opacity="0.94" '
                     'filter="url(#rowShadow)"/>',
-                    f'<circle cx="62" cy="{y + 26}" r="11" fill="{status_bg}"/>',
-                    f'<circle cx="62" cy="{y + 26}" r="5" fill="{status_color}"/>',
-                    f'<text x="84" y="{y + 31}" class="cell strong">'
-                    f"{escape(challenge.slug)}</text>",
-                    f'<text x="260" y="{y + 31}" class="cell">'
+                    f'<circle cx="62" cy="{y + 32}" r="12" fill="{status_bg}"/>',
+                    f'<circle cx="62" cy="{y + 32}" r="5" fill="{status_color}"/>',
+                    f'<text x="84" y="{y + 26}" class="cell strong">'
                     f"{escape(challenge.name)}</text>",
-                    f'<rect x="518" y="{y + 14}" width="100" height="24" rx="12" '
+                    f'<text x="84" y="{y + 46}" class="small muted">'
+                    f"{escape(challenge.slug)} · "
+                    f"{escape(_shorten(challenge.description, 62))}</text>",
+                    f'<rect x="562" y="{y + 20}" width="96" height="24" rx="12" '
                     f'fill="{status_bg}"/>',
-                    f'<text x="536" y="{y + 31}" class="pill" fill="{status_color}">'
+                    f'<text x="580" y="{y + 37}" class="pill" fill="{status_color}">'
                     f"{escape(status)}</text>",
-                    f'<rect x="654" y="{y + 14}" width="86" height="24" rx="12" '
+                    f'<rect x="688" y="{y + 20}" width="86" height="24" rx="12" '
                     f'fill="{online_bg}"/>',
-                    f'<text x="672" y="{y + 31}" class="pill" fill="{online_color}">'
+                    f'<text x="706" y="{y + 37}" class="pill" fill="{online_color}">'
                     f"{online}</text>",
-                    f'<text x="792" y="{y + 31}" class="cell number">'
+                    f'<text x="830" y="{y + 37}" class="cell number">'
                     f"{escape(_format_miner_count(metrics.miner_count))}</text>",
-                    f'<text x="900" y="{y + 31}" class="cell number">'
+                    f'<text x="950" y="{y + 37}" class="cell number">'
                     f"{escape(_format_emission(challenge.emission_percent))}</text>",
                 ]
             )
-        )
-
-    if not rows:
-        rows.append(
-            f'<rect x="{table_x}" y="{header_height + 8}" width="{table_width}" '
-            'height="140" rx="32" fill="#ffffff" fill-opacity="0.94" '
-            'filter="url(#rowShadow)"/>'
-            f'<circle cx="{width // 2}" cy="{header_height + 58}" r="18" '
-            'fill="#e0f2fe"/>'
-            f'<text x="{width // 2}" y="{header_height + 65}" '
-            'text-anchor="middle" class="emptyIcon">0</text>'
-            f'<text x="{width // 2}" y="{header_height + 100}" '
-            'text-anchor="middle" class="emptyTitle">'
-            "No challenges registered yet</text>"
-            f'<text x="{width // 2}" y="{header_height + 124}" '
-            'text-anchor="middle" class="emptyText">'
-            "Register challenges to populate this live dashboard</text>"
         )
 
     return "\n".join(
@@ -177,6 +232,7 @@ def render_challenges_dashboard_svg(
             ".kpiValue{font-size:22px;font-weight:850;fill:#0f172a}",
             ".head{font-size:11px;font-weight:850;fill:#cbd5e1;letter-spacing:.10em}",
             ".cell{font-size:14px;fill:#1e293b}",
+            ".small{font-size:12px;fill:#64748b}",
             ".strong{font-weight:750}",
             ".muted{fill:#64748b}",
             ".pill{font-size:12px;font-weight:850}",
@@ -197,7 +253,8 @@ def render_challenges_dashboard_svg(
             '<text id="title" x="64" y="76" class="title">Platform challenges</text>',
             f'<text id="desc" x="64" y="100" class="summary">'
             f"{len(sorted_challenges)} challenges · {active_count} active · "
-            f"{escape(_format_emission(total_emission))} emissions</text>",
+            f"{escape(_format_emission(total_emission))} emissions · refreshable"
+            "</text>",
             '<rect x="612" y="54" width="86" height="56" rx="18" fill="#eff6ff"/>',
             f'<text x="632" y="76" class="kpiValue">{len(sorted_challenges)}</text>',
             '<text x="632" y="96" class="kpiLabel">TOTAL</text>',
@@ -212,11 +269,10 @@ def render_challenges_dashboard_svg(
             'rx="19" fill="#ffffff" fill-opacity="0.14" stroke="#ffffff" '
             'stroke-opacity="0.12"/>',
             '<text x="84" y="174" class="head">Challenge</text>',
-            '<text x="260" y="174" class="head">Name</text>',
-            '<text x="536" y="174" class="head">Status</text>',
-            '<text x="672" y="174" class="head">Online</text>',
-            '<text x="792" y="174" class="head">Miners</text>',
-            '<text x="900" y="174" class="head">Emissions</text>',
+            '<text x="580" y="174" class="head">Status</text>',
+            '<text x="706" y="174" class="head">Online</text>',
+            '<text x="830" y="174" class="head">Miners</text>',
+            '<text x="950" y="174" class="head">Emissions</text>',
             *rows,
             "</svg>",
         ]

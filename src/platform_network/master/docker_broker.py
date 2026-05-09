@@ -22,6 +22,9 @@ from platform_network.challenge_sdk.executors.docker import (
 from platform_network.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerCleanupResponse,
+    BrokerContainerInfo,
+    BrokerListRequest,
+    BrokerListResponse,
     BrokerMount,
     BrokerRunRequest,
     BrokerRunResponse,
@@ -61,9 +64,9 @@ class DockerBrokerService:
                 allowed_images=self.config.allowed_images,
                 log_limit_bytes=self.config.log_limit_bytes,
             )
-            labels = {"platform.job": request.job_id, **request.labels}
+            labels = {**request.labels, "platform.job": request.job_id}
             if request.task_id:
-                labels.setdefault("platform.task", request.task_id)
+                labels["platform.task"] = request.task_id
             result = executor.run(
                 DockerRunSpec(
                     image=request.image,
@@ -95,6 +98,35 @@ class DockerBrokerService:
             log_limit_bytes=self.config.log_limit_bytes,
         ).cleanup_job(request.job_id)
         return BrokerCleanupResponse()
+
+    def list_containers(
+        self, challenge_slug: str, request: BrokerListRequest
+    ) -> BrokerListResponse:
+        containers = DockerExecutor(
+            challenge=challenge_slug,
+            docker_bin=self.config.docker_bin,
+            allowed_images=self.config.allowed_images,
+            log_limit_bytes=self.config.log_limit_bytes,
+        ).list_containers(request.job_id)
+        return BrokerListResponse(
+            containers=[
+                BrokerContainerInfo(
+                    container_id=container.container_id,
+                    container_name=container.container_name,
+                    image=container.image,
+                    status=container.status,
+                    job_id=container.job_id,
+                    task_id=container.task_id,
+                    created=container.created,
+                    labels={
+                        key: value
+                        for key, value in container.labels.items()
+                        if key.startswith("platform.")
+                    },
+                )
+                for container in containers
+            ]
+        )
 
     def _materialize_mount(
         self, root: Path, index: int, mount: BrokerMount
@@ -155,6 +187,17 @@ def create_docker_broker_app(
         slug: str | None = Header(default=None, alias="X-Platform-Challenge-Slug"),
     ) -> BrokerCleanupResponse:
         return broker.cleanup(
+            _authenticate(registry, slug, authorization),
+            request,
+        )
+
+    @app.post("/v1/docker/list", response_model=BrokerListResponse)
+    def list_containers(
+        request: BrokerListRequest,
+        authorization: str | None = Header(default=None),
+        slug: str | None = Header(default=None, alias="X-Platform-Challenge-Slug"),
+    ) -> BrokerListResponse:
+        return broker.list_containers(
             _authenticate(registry, slug, authorization),
             request,
         )

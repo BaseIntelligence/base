@@ -11,6 +11,13 @@ class WeightSetter:
     netuid: int
 
     def set_weights(self, uids: list[int], weights: list[float]) -> Any:
+        if not uids:
+            return {
+                "skipped": True,
+                "reason": "empty_weights",
+                "uids": [],
+                "weights": [],
+            }
         if self.subtensor is None:
             return {"dry_run": True, "uids": uids, "weights": weights}
         return self.subtensor.set_weights(
