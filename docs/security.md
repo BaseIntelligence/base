@@ -1,6 +1,6 @@
 # Security Model
 
-![Platform Banner](https://raw.githubusercontent.com/PlatformNetwork/platform/main/assets/banner.jpg)
+![Platform Banner](../assets/banner.jpg)
 
 ## Isolation rules
 

@@ -222,9 +222,7 @@ def test_admin_gpu_servers_pages_and_api_without_secret_leak() -> None:
 
 def test_admin_signed_weights_endpoint(tmp_path: Path) -> None:
     store = LatestWeightsStore(tmp_path / "weights.json")
-    store.write_final(
-        FinalWeights(uids=[1], weights=[1.0], hotkey_weights={"hk": 1.0})
-    )
+    store.write_final(FinalWeights(uids=[1], weights=[1.0], hotkey_weights={"hk": 1.0}))
     client = TestClient(
         create_admin_app(
             weights_service=SignedWeightsService(store=store, signing_secret="sign"),

@@ -345,9 +345,7 @@ def create_admin_app(
             raise _gpu_not_found(server_id) from exc
         token = gpu_servers.get_token(server_id)
         if not token:
-            return GpuServerHealth(
-                id=server_id, status="error", detail="missing token"
-            )
+            return GpuServerHealth(id=server_id, status="error", detail="missing token")
         try:
             client = GpuAgentClient(
                 server_id=record.id,

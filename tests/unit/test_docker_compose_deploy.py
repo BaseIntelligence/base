@@ -27,8 +27,7 @@ def test_compose_deploy_has_expected_services_and_socket_scope() -> None:
         name
         for name, service in services.items()
         if any(
-            "/var/run/docker.sock" in volume
-            for volume in service.get("volumes", [])
+            "/var/run/docker.sock" in volume for volume in service.get("volumes", [])
         )
     }
     assert socket_services == {

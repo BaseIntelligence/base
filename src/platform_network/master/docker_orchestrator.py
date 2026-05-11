@@ -100,9 +100,7 @@ class ChallengeResources:
                 request_kwargs["device_ids"] = list(self.gpu_device_ids)
             else:
                 request_kwargs["count"] = self.gpu_count
-            kwargs["device_requests"] = [
-                DeviceRequest(**request_kwargs)
-            ]
+            kwargs["device_requests"] = [DeviceRequest(**request_kwargs)]
         return kwargs
 
 

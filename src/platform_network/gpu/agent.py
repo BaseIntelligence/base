@@ -85,9 +85,7 @@ def create_gpu_agent_app(
         _authenticate(token_provider, authorization)
         return service.stop(request)
 
-    @app.get(
-        "/v1/challenges/{slug}/status", response_model=GpuChallengeRuntimeResponse
-    )
+    @app.get("/v1/challenges/{slug}/status", response_model=GpuChallengeRuntimeResponse)
     def challenge_status(
         slug: str,
         authorization: str | None = Header(default=None),

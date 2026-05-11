@@ -304,9 +304,12 @@ def test_bittensor_cache_and_setter() -> None:
         [0], [1.0]
     )
     assert result["ok"] is True
-    assert WeightSetter(subtensor=subtensor, wallet="wallet", netuid=12).set_weights(
-        [], []
-    )["skipped"] is True
+    assert (
+        WeightSetter(subtensor=subtensor, wallet="wallet", netuid=12).set_weights(
+            [], []
+        )["skipped"]
+        is True
+    )
 
 
 def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:

@@ -12,9 +12,9 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-platform-009688.svg)](https://fastapi.tiangolo.com/)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
 
-![Platform Banner](https://raw.githubusercontent.com/PlatformNetwork/platform/main/assets/banner.jpg)
+![Platform Banner](assets/banner.jpg)
 
-![Live challenge board](https://raw.githubusercontent.com/PlatformNetwork/platform/v3/assets/challenges.svg)
+![Live challenge board](assets/challenges.svg)
 
 </div>
 
