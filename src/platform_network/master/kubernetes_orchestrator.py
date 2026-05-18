@@ -279,12 +279,16 @@ class KubernetesTargetRouter:
         self,
         *,
         default_orchestrator: KubernetesOrchestrator,
-        target_orchestrators: dict[str, Any],
-        target_capacities: dict[str, int],
+        target_orchestrators: dict[str, Any] | None = None,
+        target_capacities: dict[str, int] | None = None,
+        settings: Any | None = None,
+        target_registry: Any | None = None,
     ) -> None:
         self.default_orchestrator = default_orchestrator
-        self.target_orchestrators = target_orchestrators
-        self.target_capacities = target_capacities
+        self.target_orchestrators = target_orchestrators or {}
+        self.target_capacities = target_capacities or {}
+        self.settings = settings
+        self.target_registry = target_registry
         self._slug_to_target: dict[str, str] = {}
 
     @property
@@ -301,15 +305,17 @@ class KubernetesTargetRouter:
         runtime = orchestrator.start_challenge(spec, recreate=recreate)
         if target_id:
             self._slug_to_target[spec.slug] = target_id
+            self._assign(spec.slug, target_id)
         return runtime
 
     def restart_challenge(self, spec: ChallengeSpec) -> ChallengeRuntime:
         return self.start_challenge(spec, recreate=True)
 
     def stop_challenge(self, slug: str, *, remove: bool = False) -> None:
-        target_id = self._slug_to_target.pop(slug, None)
+        target_id = self._assignment_for(slug) or self._slug_to_target.pop(slug, None)
         if target_id:
-            self.target_orchestrators[target_id].stop_challenge(slug, remove=remove)
+            self._orchestrator_for_target(target_id).stop_challenge(slug, remove=remove)
+            self._clear_assignment(slug)
             return
         self.default_orchestrator.stop_challenge(slug, remove=remove)
 
@@ -320,84 +326,139 @@ class KubernetesTargetRouter:
         return self.start_challenge(spec, recreate=False)
 
     def _select(self, spec: ChallengeSpec) -> tuple[str | None, Any]:
+        assigned = self._assignment_for(spec.slug)
+        if assigned:
+            return assigned, self._orchestrator_for_target(assigned)
         requested = spec.resources.gpu_server
         if requested:
-            orchestrator = self.target_orchestrators.get(requested)
-            if orchestrator is None:
-                raise DockerOrchestrationError(
-                    f"Unknown Kubernetes target: {requested}"
-                )
-            return requested, orchestrator
+            return requested, self._orchestrator_for_target(requested)
         if spec.resources.gpu_count:
-            for target_id, orchestrator in self.target_orchestrators.items():
-                if self.target_capacities.get(target_id, 0) >= spec.resources.gpu_count:
+            for target_id, orchestrator in self._target_orchestrators().items():
+                if (
+                    self._target_capacities().get(target_id, 0)
+                    >= spec.resources.gpu_count
+                ):
                     return target_id, orchestrator
         return None, self.default_orchestrator
+
+    def _target_orchestrators(self) -> dict[str, Any]:
+        if self.target_registry is None or self.settings is None:
+            return self.target_orchestrators
+        return self._build_targets()[0]
+
+    def _target_capacities(self) -> dict[str, int]:
+        if self.target_registry is None or self.settings is None:
+            return self.target_capacities
+        return self._build_targets()[1]
+
+    def _orchestrator_for_target(self, target_id: str) -> Any:
+        orchestrator = self._target_orchestrators().get(target_id)
+        if (
+            orchestrator is None
+            and self.target_registry is not None
+            and self.settings is not None
+        ):
+            orchestrator = self._build_target_orchestrator(
+                self.target_registry.get(target_id)
+            )
+        if orchestrator is None:
+            raise DockerOrchestrationError(f"Unknown Kubernetes target: {target_id}")
+        return orchestrator
+
+    def _assign(self, slug: str, target_id: str) -> None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "assign_challenge"
+        ):
+            self.target_registry.assign_challenge(slug, target_id)
+
+    def _assignment_for(self, slug: str) -> str | None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "get_assignment"
+        ):
+            return self.target_registry.get_assignment(slug)
+        return self._slug_to_target.get(slug)
+
+    def _clear_assignment(self, slug: str) -> None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "clear_assignment"
+        ):
+            self.target_registry.clear_assignment(slug)
+        self._slug_to_target.pop(slug, None)
+
+    def _build_targets(self) -> tuple[dict[str, Any], dict[str, int]]:
+        assert self.settings is not None
+        assert self.target_registry is not None
+        target_orchestrators: dict[str, Any] = {}
+        target_capacities: dict[str, int] = {}
+        for target in self.target_registry.list():
+            if not target.enabled:
+                continue
+            target_orchestrators[target.id] = self._build_target_orchestrator(target)
+            target_capacities[target.id] = target.gpu_count
+        return target_orchestrators, target_capacities
+
+    def _build_target_orchestrator(self, target: Any) -> Any:
+        assert self.settings is not None
+        assert self.target_registry is not None
+        if target.mode == "agent":
+            from platform_network.kubernetes.agent import KubernetesAgentClient
+
+            token = self.target_registry.get_agent_token(target.id)
+            if not target.agent_url or not token:
+                raise DockerOrchestrationError(
+                    f"Kubernetes agent target {target.id!r} is missing URL or token"
+                )
+            return KubernetesAgentClient(
+                target_id=target.id,
+                base_url=target.agent_url,
+                token=token,
+                timeout_seconds=target.timeout_seconds,
+                verify_tls=target.verify_tls,
+                docker_broker_url=self.settings.docker.broker_url,
+            )
+        defaults = self.settings.kubernetes.target_defaults
+        return KubernetesOrchestrator(
+            namespace=target.namespace,
+            mode=self.settings.kubernetes.challenge_mode,
+            storage_class_name=target.storage_class
+            or self.settings.kubernetes.storage_class,
+            storage_size=self.settings.kubernetes.storage_size,
+            gpu_resource_name=defaults.gpu_resource_name
+            or self.settings.kubernetes.gpu_resource_name,
+            node_selector={
+                **self.settings.kubernetes.node_selector,
+                **defaults.node_selector,
+                **target.node_selector,
+            },
+            tolerations=target.tolerations
+            or defaults.tolerations
+            or self.settings.kubernetes.tolerations,
+            runtime_class_name=target.runtime_class_name
+            or defaults.runtime_class_name
+            or self.settings.kubernetes.runtime_class_name,
+            image_pull_secrets=defaults.image_pull_secrets
+            or self.settings.kubernetes.image_pull_secrets,
+            autoscaling_enabled=self.settings.kubernetes.autoscaling.enabled,
+            autoscaling_keda_enabled=self.settings.kubernetes.autoscaling.keda_enabled,
+            autoscaling_min_replicas=self.settings.kubernetes.autoscaling.min_replicas,
+            autoscaling_max_replicas=self.settings.kubernetes.autoscaling.max_replicas,
+            autoscaling_target_cpu_utilization=(
+                self.settings.kubernetes.autoscaling.target_cpu_utilization
+            ),
+            docker_broker_url=self.settings.docker.broker_url,
+            health_check_mode="service_proxy",
+            kubeconfig=target.kubeconfig_file,
+            in_cluster=False,
+        )
 
     @classmethod
     def from_settings(
         cls, settings: Any, target_registry: Any
     ) -> KubernetesTargetRouter:
-        default = KubernetesOrchestrator.from_settings(settings)
-        target_orchestrators: dict[str, Any] = {}
-        target_capacities: dict[str, int] = {}
-        for target in target_registry.list():
-            if not target.enabled:
-                continue
-            if target.mode == "agent":
-                from platform_network.kubernetes.agent import KubernetesAgentClient
-
-                token = target_registry.get_agent_token(target.id)
-                if not target.agent_url or not token:
-                    continue
-                target_orchestrators[target.id] = KubernetesAgentClient(
-                    target_id=target.id,
-                    base_url=target.agent_url,
-                    token=token,
-                    timeout_seconds=target.timeout_seconds,
-                    verify_tls=target.verify_tls,
-                )
-                target_capacities[target.id] = target.gpu_count
-                continue
-            defaults = settings.kubernetes.target_defaults
-            target_orchestrators[target.id] = KubernetesOrchestrator(
-                namespace=target.namespace,
-                mode=settings.kubernetes.challenge_mode,
-                storage_class_name=target.storage_class
-                or settings.kubernetes.storage_class,
-                storage_size=settings.kubernetes.storage_size,
-                gpu_resource_name=defaults.gpu_resource_name
-                or settings.kubernetes.gpu_resource_name,
-                node_selector={
-                    **settings.kubernetes.node_selector,
-                    **defaults.node_selector,
-                    **target.node_selector,
-                },
-                tolerations=target.tolerations
-                or defaults.tolerations
-                or settings.kubernetes.tolerations,
-                runtime_class_name=target.runtime_class_name
-                or defaults.runtime_class_name
-                or settings.kubernetes.runtime_class_name,
-                image_pull_secrets=defaults.image_pull_secrets
-                or settings.kubernetes.image_pull_secrets,
-                autoscaling_enabled=settings.kubernetes.autoscaling.enabled,
-                autoscaling_keda_enabled=settings.kubernetes.autoscaling.keda_enabled,
-                autoscaling_min_replicas=settings.kubernetes.autoscaling.min_replicas,
-                autoscaling_max_replicas=settings.kubernetes.autoscaling.max_replicas,
-                autoscaling_target_cpu_utilization=(
-                    settings.kubernetes.autoscaling.target_cpu_utilization
-                ),
-                docker_broker_url=settings.docker.broker_url,
-                health_check_mode="service_proxy",
-                kubeconfig=target.kubeconfig_file,
-                in_cluster=False,
-            )
-            target_capacities[target.id] = target.gpu_count
         return cls(
-            default_orchestrator=default,
-            target_orchestrators=target_orchestrators,
-            target_capacities=target_capacities,
+            default_orchestrator=KubernetesOrchestrator.from_settings(settings),
+            settings=settings,
+            target_registry=target_registry,
         )
 
 

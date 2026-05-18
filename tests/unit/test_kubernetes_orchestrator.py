@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -240,6 +241,59 @@ def test_kubernetes_target_router_routes_explicit_and_gpu_targets() -> None:
                 resources=ChallengeResources(gpu_server="missing"),
             )
         )
+
+
+def test_kubernetes_target_router_uses_dynamic_agent_assignments() -> None:
+    registry = DynamicTargetRegistry()
+    router = DynamicRouter(
+        default_orchestrator=StubOrchestrator("default"),  # type: ignore[arg-type]
+        settings=SimpleNamespace(),
+        target_registry=registry,
+    )
+
+    registry.targets["agent-a"] = SimpleNamespace(
+        id="agent-a", enabled=True, gpu_count=2
+    )
+    runtime = router.start_challenge(
+        ChallengeSpec(
+            slug="automatic",
+            image="ghcr.io/org/demo:1",
+            resources=ChallengeResources(gpu_count=1),
+        )
+    )
+
+    assert runtime.container_name == "agent-a-automatic"
+    assert registry.assignments == {"automatic": "agent-a"}
+
+    registry.targets["agent-a"].enabled = False
+    router.stop_challenge("automatic", remove=True)
+    assert registry.assignments == {}
+
+
+class DynamicTargetRegistry:
+    def __init__(self) -> None:
+        self.targets: dict[str, Any] = {}
+        self.assignments: dict[str, str] = {}
+
+    def list(self) -> list[Any]:
+        return list(self.targets.values())
+
+    def get(self, target_id: str) -> Any:
+        return self.targets[target_id]
+
+    def assign_challenge(self, slug: str, target_id: str) -> None:
+        self.assignments[slug] = target_id
+
+    def get_assignment(self, slug: str) -> str | None:
+        return self.assignments.get(slug)
+
+    def clear_assignment(self, slug: str) -> None:
+        self.assignments.pop(slug, None)
+
+
+class DynamicRouter(KubernetesTargetRouter):
+    def _build_target_orchestrator(self, target: Any) -> Any:
+        return StubOrchestrator(target.id)
 
 
 class StubOrchestrator:

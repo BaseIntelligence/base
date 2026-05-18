@@ -3,10 +3,12 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 
+from platform_network.kubernetes.names import challenge_name
 from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeRuntime,
@@ -39,12 +41,15 @@ class KubernetesAgentClient:
     token: str
     timeout_seconds: float = 30.0
     verify_tls: bool = True
+    docker_broker_url: str | None = None
     _runtime: dict[str, ChallengeRuntime] = field(default_factory=dict, init=False)
 
     def start_challenge(
         self, spec: ChallengeSpec, *, recreate: bool = False
     ) -> ChallengeRuntime:
-        request = _from_challenge_spec(spec, recreate=recreate)
+        request = _from_challenge_spec(
+            spec, recreate=recreate, docker_broker_url=self.docker_broker_url
+        )
         runtime = _runtime_from_response(
             self._post("/v1/challenges/start", request.model_dump())
         )
@@ -52,7 +57,9 @@ class KubernetesAgentClient:
         return runtime
 
     def restart_challenge(self, spec: ChallengeSpec) -> ChallengeRuntime:
-        request = _from_challenge_spec(spec, recreate=True)
+        request = _from_challenge_spec(
+            spec, recreate=True, docker_broker_url=self.docker_broker_url
+        )
         runtime = _runtime_from_response(
             self._post("/v1/challenges/restart", request.model_dump())
         )
@@ -122,6 +129,48 @@ class KubernetesAgentClient:
             response = client.get("/health", headers=self._headers())
         return self._validated(response)
 
+    async def forward_challenge_request(
+        self,
+        *,
+        slug: str,
+        method: str,
+        path: str,
+        query: str = "",
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        safe_path = quote(path.lstrip("/"), safe="/")
+        url = f"/v1/challenges/{quote(slug, safe='')}/proxy/{safe_path}"
+        if query:
+            url = f"{url}?{query}"
+        forwarded_headers = dict(headers or {})
+        challenge_authorization = forwarded_headers.pop("Authorization", None)
+        if challenge_authorization is None:
+            challenge_authorization = forwarded_headers.pop("authorization", None)
+        if challenge_authorization is not None:
+            forwarded_headers["X-Platform-Forward-Authorization"] = (
+                challenge_authorization
+            )
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout_seconds,
+            verify=self.verify_tls,
+            follow_redirects=False,
+        ) as client:
+            response = await client.request(
+                method,
+                url,
+                content=content,
+                headers={**forwarded_headers, **self._headers()},
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DockerOrchestrationError(
+                f"Kubernetes target {self.target_id!r} proxy failed: {response.text}"
+            ) from exc
+        return response
+
     def _post(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         with httpx.Client(
             base_url=self.base_url,
@@ -178,6 +227,73 @@ def create_kubernetes_agent_app(
     @app.get("/health", include_in_schema=False)
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.api_route(
+        "/v1/challenges/{slug}/proxy/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    )
+    async def challenge_proxy(
+        slug: str,
+        path: str,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        _authenticate(token_provider, authorization)
+        upstream_url = _challenge_url(slug, path, request.url.query)
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower()
+            not in {
+                "authorization",
+                "host",
+                "connection",
+                "content-length",
+                "transfer-encoding",
+                "x-platform-forward-authorization",
+            }
+        }
+        forwarded_authorization = request.headers.get(
+            "x-platform-forward-authorization"
+        )
+        if forwarded_authorization:
+            headers["Authorization"] = forwarded_authorization
+        try:
+            async with httpx.AsyncClient(
+                timeout=orchestrator.request_timeout_seconds,
+                follow_redirects=False,
+            ) as client:
+                upstream = await client.request(
+                    request.method,
+                    upstream_url,
+                    content=await request.body(),
+                    headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="challenge unavailable",
+            ) from exc
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers={
+                key: value
+                for key, value in upstream.headers.items()
+                if key.lower()
+                not in {
+                    "connection",
+                    "keep-alive",
+                    "proxy-authenticate",
+                    "proxy-authorization",
+                    "te",
+                    "trailer",
+                    "transfer-encoding",
+                    "upgrade",
+                }
+            },
+            media_type=upstream.headers.get("content-type"),
+        )
 
     @app.post("/v1/images/pull")
     def pull_image(
@@ -275,15 +391,18 @@ def _authenticate(token_provider: Callable[[], str], authorization: str | None) 
 
 
 def _from_challenge_spec(
-    spec: ChallengeSpec, *, recreate: bool
+    spec: ChallengeSpec, *, recreate: bool, docker_broker_url: str | None = None
 ) -> GpuChallengeSpecRequest:
+    env = dict(spec.env)
+    if docker_broker_url and "docker_executor" in spec.required_capabilities:
+        env["CHALLENGE_DOCKER_BROKER_URL"] = docker_broker_url
     return GpuChallengeSpecRequest(
         slug=spec.slug,
         image=spec.image,
         version=spec.version,
         challenge_token=spec.challenge_token,
         docker_broker_token=spec.docker_broker_token,
-        env=spec.env,
+        env=env,
         secrets=spec.secrets,
         resources=GpuChallengeResources(
             cpu=spec.resources.cpu,
@@ -333,3 +452,11 @@ def _runtime_from_response(payload: dict[str, object]) -> ChallengeRuntime:
         health=response.health,
         version=response.version,
     )
+
+
+def _challenge_url(slug: str, path: str, query: str) -> str:
+    safe_path = quote(path.lstrip("/"), safe="/")
+    url = f"http://{challenge_name(slug)}:8000/{safe_path}"
+    if query:
+        url = f"{url}?{query}"
+    return url

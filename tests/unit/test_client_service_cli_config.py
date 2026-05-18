@@ -100,6 +100,58 @@ async def test_challenge_client_success_and_failure(
     assert result.error
 
 
+@pytest.mark.asyncio
+async def test_challenge_client_routes_weights_through_assigned_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class AgentClient:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        async def forward_challenge_request(self, **kwargs: object) -> httpx.Response:
+            calls.append(kwargs)
+            return httpx.Response(
+                200,
+                json={"challenge_slug": "demo", "weights": {"hk": 1.0}},
+            )
+
+    class TargetRegistry:
+        def get_assignment(self, slug: str) -> str | None:
+            return "agent-a"
+
+        def get(self, target_id: str):
+            return SimpleNamespace(
+                id=target_id,
+                mode="agent",
+                agent_url="https://agent-a",
+                timeout_seconds=12,
+                verify_tls=False,
+            )
+
+        def get_agent_token(self, target_id: str) -> str:
+            return "agent-token"
+
+    import platform_network.master.challenge_client as challenge_client_module
+
+    monkeypatch.setattr(challenge_client_module, "KubernetesAgentClient", AgentClient)
+    result = await ChallengeClient(
+        retries=1,
+        kubernetes_target_registry=TargetRegistry(),
+    ).get_weights(
+        slug="demo",
+        base_url="http://unreachable",
+        token="challenge-token",
+        emission_percent=5,
+    )
+
+    assert result.ok
+    assert calls[0]["base_url"] == "https://agent-a"
+    assert calls[1]["path"] == "/internal/v1/get_weights"
+    assert calls[1]["headers"]["Authorization"] == "Bearer challenge-token"
+
+
 async def async_noop(*args: object, **kwargs: object) -> None:
     return None
 
@@ -422,7 +474,11 @@ def test_cli_master_weights_once_wires_bittensor_runtime(
         "chain_endpoint": "ws://chain",
         "wallet_name": "wallet",
         "wallet_hotkey": "hotkey",
-        "client_kwargs": {"timeout_seconds": 1.5, "retries": 2},
+        "client_kwargs": {
+            "timeout_seconds": 1.5,
+            "retries": 2,
+            "kubernetes_target_registry": None,
+        },
     }
     assert setter_calls == [([7], [1.0])]
 
@@ -597,13 +653,50 @@ def test_cli_k8s_server_commands_call_admin(
     assert calls[0][2]["labels"] == {"region": "eu"}  # type: ignore[index]
     assert calls[0][2]["verify_tls"] is False  # type: ignore[index]
 
+    token_file = tmp_path / "agent-token"
+    token_file.write_text("agent-token\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "k8s-server",
+            "add",
+            "agent-a",
+            "--url",
+            "https://agent-a",
+            "--token-file",
+            str(token_file),
+            "--gpu-count",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0
+    assert calls[1][0] == "POST"
+    assert calls[1][1] == "/v1/admin/kubernetes-targets"
+    assert calls[1][2]["id"] == "agent-a"  # type: ignore[index]
+    assert calls[1][2]["mode"] == "agent"  # type: ignore[index]
+    assert calls[1][2]["agent_url"] == "https://agent-a"  # type: ignore[index]
+    assert calls[1][2]["agent_token"] == "agent-token"  # type: ignore[index]
+    assert calls[1][2]["gpu_count"] == 4  # type: ignore[index]
+
     result = runner.invoke(app, ["k8s-server", "list"])
     assert result.exit_code == 0
-    assert calls[1] == ("GET", "/v1/admin/kubernetes-targets", None)
+    assert calls[2] == ("GET", "/v1/admin/kubernetes-targets", None)
 
     result = runner.invoke(app, ["k8s-server", "health", "k8s-a"])
     assert result.exit_code == 0
-    assert calls[2] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/health", None)
+    assert calls[3] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/health", None)
+
+    result = runner.invoke(app, ["k8s-server", "disable", "k8s-a"])
+    assert result.exit_code == 0
+    assert calls[4] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/disable", None)
+
+    result = runner.invoke(app, ["k8s-server", "enable", "k8s-a"])
+    assert result.exit_code == 0
+    assert calls[5] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/enable", None)
+
+    result = runner.invoke(app, ["k8s-server", "remove", "k8s-a"])
+    assert result.exit_code == 0
+    assert calls[6] == ("DELETE", "/v1/admin/kubernetes-targets/k8s-a", None)
 
 
 def test_registry_client_with_asgi_transport() -> None:

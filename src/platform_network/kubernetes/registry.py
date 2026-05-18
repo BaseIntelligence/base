@@ -39,6 +39,7 @@ class FileKubernetesTargetRegistry:
         self.state_file = Path(state_file)
         self.secret_dir = Path(secret_dir)
         self._records: dict[str, KubernetesTargetRecord] = {}
+        self._assignments: dict[str, str] = {}
         self._configured_agent_tokens: dict[str, str] = {}
         self._load()
         for target in configured_targets or []:
@@ -160,6 +161,11 @@ class FileKubernetesTargetRegistry:
     def delete(self, target_id: str) -> None:
         self.get(target_id)
         self._records.pop(target_id, None)
+        self._assignments = {
+            slug: assigned
+            for slug, assigned in self._assignments.items()
+            if assigned != target_id
+        }
         self._kubeconfig_path(target_id).unlink(missing_ok=True)
         self._agent_token_path(target_id).unlink(missing_ok=True)
         self._save()
@@ -242,6 +248,20 @@ class FileKubernetesTargetRegistry:
             return KubernetesTargetHealth(id=target_id, status="error", detail=str(exc))
         return KubernetesTargetHealth(id=target_id, status="ok", detail="agent")
 
+    def assign_challenge(self, slug: str, target_id: str) -> None:
+        self.get(target_id)
+        self._assignments[slug] = target_id
+        self._save()
+
+    def get_assignment(self, slug: str) -> str | None:
+        self._load()
+        return self._assignments.get(slug)
+
+    def clear_assignment(self, slug: str) -> None:
+        self._load()
+        if self._assignments.pop(slug, None) is not None:
+            self._save()
+
     def _load(self) -> None:
         if not self.state_file.is_file():
             return
@@ -252,6 +272,13 @@ class FileKubernetesTargetRegistry:
                 target_id: KubernetesTargetRecord.model_validate(record)
                 for target_id, record in records.items()
             }
+        assignments = payload.get("assignments", {})
+        if isinstance(assignments, dict):
+            self._assignments = {
+                str(slug): str(target_id)
+                for slug, target_id in assignments.items()
+                if target_id in self._records
+            }
 
     def _save(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -259,7 +286,8 @@ class FileKubernetesTargetRegistry:
             "records": {
                 target_id: record.model_dump(mode="json")
                 for target_id, record in self._records.items()
-            }
+            },
+            "assignments": dict(self._assignments),
         }
         self.state_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

@@ -57,14 +57,21 @@ def test_file_kubernetes_target_registry_crud_and_secret_redaction(
     assert updated.node_selector == {"accelerator": "nvidia"}
     assert registry.set_enabled("gpu-a", True).enabled is True
     assert registry.health("gpu-a").status == "ok"
+    registry.assign_challenge("demo", "gpu-a")
+    assert registry.get_assignment("demo") == "gpu-a"
 
     reloaded = FileKubernetesTargetRegistry(
         tmp_path / "kubernetes_targets.json",
         secret_dir=tmp_path / "secrets",
     )
     assert reloaded.get("gpu-a").namespace == "platform-gpu"
+    assert reloaded.get_assignment("demo") == "gpu-a"
+    reloaded.clear_assignment("demo")
+    assert reloaded.get_assignment("demo") is None
+    reloaded.assign_challenge("demo", "gpu-a")
     reloaded.delete("gpu-a")
     assert reloaded.list() == []
+    assert reloaded.get_assignment("demo") is None
     assert not kubeconfig_path.exists()
 
 

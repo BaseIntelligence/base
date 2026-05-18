@@ -200,14 +200,18 @@ class KubernetesBrokerRouterService:
         self,
         *,
         default_service: Any,
-        target_services: dict[str, Any],
-        target_capacities: dict[str, int],
+        target_services: dict[str, Any] | None = None,
+        target_capacities: dict[str, int] | None = None,
         challenge_registry: Any,
+        settings: Any | None = None,
+        target_registry: Any | None = None,
     ) -> None:
         self.default_service = default_service
-        self.target_services = target_services
-        self.target_capacities = target_capacities
+        self.target_services = target_services or {}
+        self.target_capacities = target_capacities or {}
         self.challenge_registry = challenge_registry
+        self.settings = settings
+        self.target_registry = target_registry
 
     def run(self, challenge_slug: str, request: BrokerRunRequest) -> BrokerRunResponse:
         return self._service_for(challenge_slug).run(challenge_slug, request)
@@ -227,67 +231,120 @@ class KubernetesBrokerRouterService:
     def _service_for(self, challenge_slug: str) -> Any:
         record = _resolve_sync(self.challenge_registry.get(challenge_slug))
         resources = ChallengeResources.from_mapping(record.resources)
+        assigned = self._assignment_for(challenge_slug)
+        if assigned:
+            return self._service_for_target(assigned)
         target_id = resources.gpu_server
         if target_id:
-            service = self.target_services.get(target_id)
-            if service is None:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"Unknown Kubernetes target: {target_id}",
-                )
+            service = self._service_for_target(target_id)
+            self._assign(challenge_slug, target_id)
             return service
         if resources.gpu_count:
-            for candidate_id, service in self.target_services.items():
-                if self.target_capacities.get(candidate_id, 0) >= resources.gpu_count:
+            for candidate_id, service in self._target_services().items():
+                if (
+                    self._target_capacities().get(candidate_id, 0)
+                    >= resources.gpu_count
+                ):
+                    self._assign(challenge_slug, candidate_id)
                     return service
         return self.default_service
+
+    def _target_services(self) -> dict[str, Any]:
+        if self.target_registry is None or self.settings is None:
+            return self.target_services
+        return self._build_targets()[0]
+
+    def _target_capacities(self) -> dict[str, int]:
+        if self.target_registry is None or self.settings is None:
+            return self.target_capacities
+        return self._build_targets()[1]
+
+    def _service_for_target(self, target_id: str) -> Any:
+        service = self._target_services().get(target_id)
+        if (
+            service is None
+            and self.target_registry is not None
+            and self.settings is not None
+        ):
+            service = self._build_service(self.target_registry.get(target_id))
+        if service is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Unknown Kubernetes target: {target_id}",
+            )
+        return service
+
+    def _assignment_for(self, slug: str) -> str | None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "get_assignment"
+        ):
+            return self.target_registry.get_assignment(slug)
+        return None
+
+    def _assign(self, slug: str, target_id: str) -> None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "assign_challenge"
+        ):
+            self.target_registry.assign_challenge(slug, target_id)
+
+    def _build_targets(self) -> tuple[dict[str, Any], dict[str, int]]:
+        assert self.settings is not None
+        assert self.target_registry is not None
+        services: dict[str, Any] = {}
+        capacities: dict[str, int] = {}
+        for target in self.target_registry.list():
+            if not target.enabled:
+                continue
+            services[target.id] = self._build_service(target)
+            capacities[target.id] = target.gpu_count
+        return services, capacities
+
+    def _build_service(self, target: Any) -> Any:
+        assert self.settings is not None
+        assert self.target_registry is not None
+        if target.mode == "agent":
+            from platform_network.kubernetes.agent import (
+                KubernetesAgentBrokerService,
+                KubernetesAgentClient,
+            )
+
+            token = self.target_registry.get_agent_token(target.id)
+            if not target.agent_url or not token:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Kubernetes agent target {target.id!r} is missing URL or token",
+                )
+            client = KubernetesAgentClient(
+                target_id=target.id,
+                base_url=target.agent_url,
+                token=token,
+                timeout_seconds=target.timeout_seconds,
+                verify_tls=target.verify_tls,
+                docker_broker_url=self.settings.docker.broker_url,
+            )
+            return KubernetesAgentBrokerService(client)
+        return KubernetesBrokerService(
+            client=KubernetesClient(
+                namespace=target.namespace,
+                kubeconfig=target.kubeconfig_file,
+                in_cluster=False,
+            ),
+            namespace=target.namespace,
+            service_account_name=(
+                target.service_account or self.settings.kubernetes.service_account
+            ),
+            allowed_images=tuple(self.settings.docker.broker_allowed_images),
+        )
 
     @classmethod
     def from_settings(
         cls, *, settings: Any, challenge_registry: Any, target_registry: Any
     ) -> KubernetesBrokerRouterService:
-        default = KubernetesBrokerService.from_settings(settings)
-        services: dict[str, Any] = {}
-        capacities: dict[str, int] = {}
-        for target in target_registry.list():
-            if not target.enabled:
-                continue
-            if target.mode == "agent":
-                from platform_network.kubernetes.agent import (
-                    KubernetesAgentBrokerService,
-                    KubernetesAgentClient,
-                )
-
-                token = target_registry.get_agent_token(target.id)
-                if not target.agent_url or not token:
-                    continue
-                client = KubernetesAgentClient(
-                    target_id=target.id,
-                    base_url=target.agent_url,
-                    token=token,
-                    timeout_seconds=target.timeout_seconds,
-                    verify_tls=target.verify_tls,
-                )
-                services[target.id] = KubernetesAgentBrokerService(client)
-            else:
-                services[target.id] = KubernetesBrokerService(
-                    client=KubernetesClient(
-                        namespace=target.namespace,
-                        kubeconfig=target.kubeconfig_file,
-                        in_cluster=False,
-                    ),
-                    namespace=target.namespace,
-                    service_account_name=(
-                        target.service_account or settings.kubernetes.service_account
-                    ),
-                    allowed_images=tuple(settings.docker.broker_allowed_images),
-                )
-            capacities[target.id] = target.gpu_count
         return cls(
-            default_service=default,
-            target_services=services,
-            target_capacities=capacities,
+            default_service=KubernetesBrokerService.from_settings(settings),
             challenge_registry=challenge_registry,
+            settings=settings,
+            target_registry=target_registry,
         )
 
 

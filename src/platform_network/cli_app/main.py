@@ -312,6 +312,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     engine = create_engine(settings.database.url)
     session_factory = create_session_factory(engine)
     registry = _master_registry(settings, session_factory)
+    kubernetes_targets = _kubernetes_target_registry(settings)
     runtime = create_bittensor_runtime(settings)
     nonce_store = SqlAlchemyMinerNonceStore(
         session_factory,
@@ -326,6 +327,9 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         upload_nonce_ttl_seconds=settings.master.upload_nonce_ttl_seconds,
         upload_max_body_bytes=settings.master.upload_max_body_bytes,
         upload_require_registered_hotkey=settings.master.upload_require_registered_hotkey,
+        kubernetes_target_registry=(
+            kubernetes_targets if settings.runtime.backend == "kubernetes" else None
+        ),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")
@@ -526,6 +530,39 @@ def k8s_server_add_kubeconfig(
     )
 
 
+@k8s_server_app.command("add")
+def k8s_server_add_agent(
+    target_id: str,
+    url: str = typer.Option(..., "--url", help="Kubernetes agent URL."),
+    token: str | None = typer.Option(None, "--token"),
+    token_file: Path | None = typer.Option(None, "--token-file"),
+    gpu_count: int = typer.Option(1, "--gpu-count"),
+    enabled: bool = typer.Option(True, "--enabled/--disabled"),
+    verify_tls: bool = typer.Option(True, "--verify-tls/--no-verify-tls"),
+    timeout_seconds: float = typer.Option(30.0),
+    label: list[str] | None = typer.Option(None, "--label"),
+    config: Path = typer.Option(Path("config/validator.example.yaml")),
+):
+    agent_token = read_secret(token, str(token_file) if token_file else None)
+    if not agent_token:
+        raise typer.BadParameter("Kubernetes agent token or token file is required")
+    _admin_post(
+        config,
+        "/v1/admin/kubernetes-targets",
+        {
+            "id": target_id,
+            "mode": "agent",
+            "agent_url": url,
+            "agent_token": agent_token,
+            "enabled": enabled,
+            "verify_tls": verify_tls,
+            "timeout_seconds": timeout_seconds,
+            "gpu_count": gpu_count,
+            "labels": _parse_labels(label),
+        },
+    )
+
+
 @k8s_server_app.command("list")
 def k8s_server_list(config: Path = typer.Option(Path("config/validator.example.yaml"))):
     _admin_request(config, "GET", "/v1/admin/kubernetes-targets")
@@ -545,6 +582,27 @@ def k8s_server_health(
     _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/health")
 
 
+@k8s_server_app.command("enable")
+def k8s_server_enable(
+    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
+):
+    _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/enable")
+
+
+@k8s_server_app.command("disable")
+def k8s_server_disable(
+    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
+):
+    _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/disable")
+
+
+@k8s_server_app.command("remove")
+def k8s_server_remove(
+    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
+):
+    _admin_request(config, "DELETE", f"/v1/admin/kubernetes-targets/{target_id}")
+
+
 @master_app.command("weights")
 def master_weights(
     config: Path = typer.Option(Path("config/master.example.yaml")),
@@ -555,17 +613,23 @@ def master_weights(
     _run_startup_migrations(settings)
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
-    gpu_registry = _gpu_registry(settings)
+    kubernetes_targets = _kubernetes_target_registry(settings)
+    capability_records = (
+        {target.id: target for target in kubernetes_targets.list()}
+        if settings.runtime.backend == "kubernetes"
+        else {server.id: server for server in _gpu_registry(settings).list()}
+    )
     service = MasterWeightService(
         metagraph_cache=runtime.metagraph_cache,
         weight_setter=runtime.weight_setter,
         challenge_client=ChallengeClient(
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
+            kubernetes_target_registry=(
+                kubernetes_targets if settings.runtime.backend == "kubernetes" else None
+            ),
         ),
-        capability_checker=ResourceCapabilityChecker(
-            {server.id: server for server in gpu_registry.list()}
-        ),
+        capability_checker=ResourceCapabilityChecker(capability_records),
     )
 
     async def epoch() -> None:

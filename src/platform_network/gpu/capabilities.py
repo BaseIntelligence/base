@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from platform_network.master.docker_orchestrator import ChallengeResources
-from platform_network.schemas.gpu_server import GpuServerRecord
 
 
 @dataclass(frozen=True)
@@ -13,7 +13,7 @@ class CapabilityDecision:
 
 
 class ResourceCapabilityChecker:
-    def __init__(self, gpu_servers: dict[str, GpuServerRecord] | None = None) -> None:
+    def __init__(self, gpu_servers: dict[str, Any] | None = None) -> None:
         self.gpu_servers = gpu_servers or {}
 
     def check(self, resources: ChallengeResources) -> CapabilityDecision:
@@ -27,6 +27,7 @@ class ResourceCapabilityChecker:
         if not server.enabled:
             return CapabilityDecision(False, "gpu_server_disabled")
         required_gpus = resources.gpu_count or 1
-        if server.min_gpu_count < required_gpus:
+        capacity = getattr(server, "min_gpu_count", getattr(server, "gpu_count", 0))
+        if capacity < required_gpus:
             return CapabilityDecision(False, "gpu_capacity_insufficient")
         return CapabilityDecision(True)

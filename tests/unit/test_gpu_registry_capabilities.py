@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from platform_network.gpu.capabilities import ResourceCapabilityChecker
 from platform_network.gpu.registry import FileGpuServerRegistry
@@ -56,5 +57,17 @@ def test_resource_capability_checker_gpu_decisions(tmp_path: Path) -> None:
     )
     assert (
         checker.check(ChallengeResources(gpu_server="gpu-a", gpu_count=2)).reason
+        == "gpu_capacity_insufficient"
+    )
+
+
+def test_resource_capability_checker_accepts_kubernetes_targets() -> None:
+    checker = ResourceCapabilityChecker(
+        {"agent-a": SimpleNamespace(id="agent-a", enabled=True, gpu_count=2)}
+    )
+
+    assert checker.check(ChallengeResources(gpu_server="agent-a", gpu_count=2)).can_run
+    assert (
+        checker.check(ChallengeResources(gpu_server="agent-a", gpu_count=3)).reason
         == "gpu_capacity_insufficient"
     )

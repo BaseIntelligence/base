@@ -33,6 +33,9 @@ def test_kubernetes_agent_auth_runtime_and_broker_routes() -> None:
     assert start.status_code == 200
     assert start.json()["container_name"] == "challenge-demo"
     assert orchestrator.recreate is True
+    status = client.get("/v1/challenges/demo/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["slug"] == "demo"
 
     broker_run = client.post(
         "/v1/broker/demo/run",
@@ -51,19 +54,27 @@ def test_kubernetes_agent_auth_runtime_and_broker_routes() -> None:
 class FakeOrchestrator:
     def __init__(self) -> None:
         self.recreate = False
+        self._runtime = {}
+        self.request_timeout_seconds = 5.0
+
+    @property
+    def runtime(self):
+        return dict(self._runtime)
 
     def pull_image(self, image: str):
         return {"image": image}
 
     def start_challenge(self, spec, *, recreate: bool = False):
         self.recreate = recreate
-        return _runtime(spec.slug, spec.image)
+        runtime = _runtime(spec.slug, spec.image)
+        self._runtime[spec.slug] = runtime
+        return runtime
 
     def restart_challenge(self, spec):
-        return _runtime(spec.slug, spec.image)
+        return self.start_challenge(spec, recreate=True)
 
     def stop_challenge(self, slug: str, *, remove: bool = False) -> None:
-        return None
+        self._runtime.pop(slug, None)
 
 
 class FakeBrokerService:

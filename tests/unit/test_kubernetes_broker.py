@@ -160,6 +160,46 @@ def test_kubernetes_broker_router_uses_explicit_and_gpu_targets() -> None:
     assert router.run("local", _run_payload()).container_name == "default"
 
 
+def test_kubernetes_broker_router_uses_persisted_assignment() -> None:
+    default = StubBrokerService("default")
+    gpu = StubBrokerService("gpu-a")
+    registry = SimpleNamespace(get=lambda slug: SimpleNamespace(resources={}))
+    target_registry = DynamicTargetRegistry()
+    target_registry.assignments["assigned"] = "gpu-a"
+    router = DynamicBrokerRouter(
+        default_service=default,
+        challenge_registry=registry,
+        settings=SimpleNamespace(),
+        target_registry=target_registry,
+    )
+    router.services["gpu-a"] = gpu
+
+    assert router.run("assigned", _run_payload()).container_name == "gpu-a"
+
+
+class DynamicTargetRegistry:
+    def __init__(self) -> None:
+        self.assignments: dict[str, str] = {}
+
+    def get_assignment(self, slug: str) -> str | None:
+        return self.assignments.get(slug)
+
+    def assign_challenge(self, slug: str, target_id: str) -> None:
+        self.assignments[slug] = target_id
+
+
+class DynamicBrokerRouter(KubernetesBrokerRouterService):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.services: dict[str, Any] = {}
+
+    def _build_targets(self) -> tuple[dict[str, Any], dict[str, int]]:
+        return self.services, {"gpu-a": 2}
+
+    def _build_service(self, target: Any) -> Any:
+        return self.services[target.id]
+
+
 class StubBrokerService:
     def __init__(self, name: str) -> None:
         self.name = name

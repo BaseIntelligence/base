@@ -13,6 +13,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, status
 
 from platform_network.bittensor.metagraph_cache import MetagraphCache
+from platform_network.kubernetes.agent import KubernetesAgentClient
+from platform_network.master.docker_orchestrator import DockerOrchestrationError
 from platform_network.master.registry import ChallengeNotFoundError
 from platform_network.schemas.challenge import ChallengeRecord, ChallengeStatus
 from platform_network.security.miner_auth import (
@@ -105,6 +107,29 @@ def _target_url(base_url: str, path: str, query: str) -> str:
     return url
 
 
+def _agent_client_for_challenge(
+    target_registry: Any | None, challenge_slug: str
+) -> KubernetesAgentClient | None:
+    if target_registry is None or not hasattr(target_registry, "get_assignment"):
+        return None
+    target_id = target_registry.get_assignment(challenge_slug)
+    if not target_id:
+        return None
+    target = target_registry.get(target_id)
+    if target.mode != "agent" or not target.agent_url:
+        return None
+    token = target_registry.get_agent_token(target.id)
+    if not token:
+        return None
+    return KubernetesAgentClient(
+        target_id=target.id,
+        base_url=target.agent_url,
+        token=token,
+        timeout_seconds=target.timeout_seconds,
+        verify_tls=target.verify_tls,
+    )
+
+
 def _challenge_token_provider(registry: Any) -> ChallengeTokenProvider:
     def provider(slug: str) -> str:
         get_token = getattr(registry, "get_token", None)
@@ -163,6 +188,7 @@ def create_proxy_app(
     nonce_store: MinerNonceStore | None = None,
     metagraph_cache: MetagraphCache | None = None,
     challenge_token_provider: ChallengeTokenProvider | None = None,
+    kubernetes_target_registry: Any | None = None,
     netuid: int = 0,
     upload_signature_ttl_seconds: int = 300,
     upload_nonce_ttl_seconds: int = 86_400,
@@ -200,6 +226,34 @@ def create_proxy_app(
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    async def forward_upstream(
+        challenge: ChallengeRecord,
+        *,
+        method: str,
+        path: str,
+        query: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        agent = _agent_client_for_challenge(kubernetes_target_registry, challenge.slug)
+        if agent is not None:
+            return await agent.forward_challenge_request(
+                slug=challenge.slug,
+                method=method,
+                path=path,
+                query=query,
+                content=body,
+                headers=headers,
+            )
+        url = _target_url(challenge.internal_base_url, path, query)
+        async with client_factory() as client:
+            return await client.request(
+                method,
+                url,
+                content=body,
+                headers=headers,
+            )
+
     async def proxy_request(slug: str, path: str, request: Request) -> Response:
         if is_blocked_proxy_path(path):
             raise HTTPException(
@@ -212,17 +266,16 @@ def create_proxy_app(
         body = await request.body()
         headers = _forward_headers(request)
         headers["X-Platform-Challenge-Slug"] = slug
-        url = _target_url(challenge.internal_base_url, path, request.url.query)
-
         try:
-            async with client_factory() as client:
-                upstream = await client.request(
-                    request.method,
-                    url,
-                    content=body,
-                    headers=headers,
-                )
-        except httpx.HTTPError as exc:
+            upstream = await forward_upstream(
+                challenge,
+                method=request.method,
+                path=path,
+                query=request.url.query,
+                body=body,
+                headers=headers,
+            )
+        except (httpx.HTTPError, DockerOrchestrationError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="Challenge unavailable"
             ) from exc
@@ -276,15 +329,16 @@ def create_proxy_app(
         filename = request.headers.get("x-submission-filename")
         if filename:
             headers["X-Submission-Filename"] = filename
-        url = _target_url(
-            challenge.internal_base_url,
-            "/internal/v1/bridge/submissions",
-            request.url.query,
-        )
         try:
-            async with client_factory() as client:
-                upstream = await client.post(url, content=body, headers=headers)
-        except httpx.HTTPError as exc:
+            upstream = await forward_upstream(
+                challenge,
+                method="POST",
+                path="/internal/v1/bridge/submissions",
+                query=request.url.query,
+                body=body,
+                headers=headers,
+            )
+        except (httpx.HTTPError, DockerOrchestrationError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="Challenge unavailable"
             ) from exc
@@ -299,15 +353,16 @@ def create_proxy_app(
         challenge_name: str, submission_id: str, request: Request
     ) -> Response:
         challenge = await _active_challenge(challenge_registry, challenge_name)
-        url = _target_url(
-            challenge.internal_base_url,
-            f"/v1/submissions/{submission_id}",
-            request.url.query,
-        )
         try:
-            async with client_factory() as client:
-                upstream = await client.get(url, headers=_forward_headers(request))
-        except httpx.HTTPError as exc:
+            upstream = await forward_upstream(
+                challenge,
+                method="GET",
+                path=f"/v1/submissions/{submission_id}",
+                query=request.url.query,
+                body=b"",
+                headers=_forward_headers(request),
+            )
+        except (httpx.HTTPError, DockerOrchestrationError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="Challenge unavailable"
             ) from exc

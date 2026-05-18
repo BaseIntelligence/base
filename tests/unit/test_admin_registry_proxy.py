@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 
 import httpx
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -109,6 +110,8 @@ class FakeGpuServerRegistry:
 class FakeKubernetesTargetRegistry:
     def __init__(self) -> None:
         self.records: dict[str, KubernetesTargetRecord] = {}
+        self.tokens: dict[str, str] = {}
+        self.assignments: dict[str, str] = {}
 
     def list(self) -> list[KubernetesTargetRecord]:
         return list(self.records.values())
@@ -137,6 +140,8 @@ class FakeKubernetesTargetRegistry:
             runtime_class_name=payload.runtime_class_name,
         )
         self.records[payload.id] = record
+        if payload.agent_token:
+            self.tokens[payload.id] = payload.agent_token
         return record
 
     def update(
@@ -159,6 +164,12 @@ class FakeKubernetesTargetRegistry:
     def health(self, target_id: str) -> KubernetesTargetHealth:
         self.get(target_id)
         return KubernetesTargetHealth(id=target_id, status="ok", detail="direct")
+
+    def get_agent_token(self, target_id: str) -> str:
+        return self.tokens.get(target_id, "agent-token")
+
+    def get_assignment(self, slug: str) -> str | None:
+        return self.assignments.get(slug)
 
 
 class FakeNonceStore:
@@ -498,6 +509,48 @@ def test_proxy_forwards_public_request_without_sensitive_headers() -> None:
     assert "x-admin-token" not in captured
     assert "x-platform-verified-hotkey" not in captured
     assert "x-signature" not in captured
+
+
+def test_proxy_routes_assigned_kubernetes_agent_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_payload()))
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+    target_registry = FakeKubernetesTargetRegistry()
+    target_registry.records["agent-a"] = KubernetesTargetRecord(
+        id="agent-a",
+        mode="agent",
+        agent_url="https://agent-a",
+        enabled=True,
+        verify_tls=False,
+        timeout_seconds=9,
+    )
+    target_registry.assignments["demo"] = "agent-a"
+    calls: list[dict[str, object]] = []
+
+    class AgentClient:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        async def forward_challenge_request(self, **kwargs: object) -> httpx.Response:
+            calls.append(kwargs)
+            return httpx.Response(200, json={"ok": True})
+
+    import platform_network.master.app_proxy as proxy_module
+
+    monkeypatch.setattr(proxy_module, "KubernetesAgentClient", AgentClient)
+    proxy_client = TestClient(
+        _proxy_app(registry, kubernetes_target_registry=target_registry)
+    )
+
+    response = proxy_client.get("/challenges/demo/public")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert calls[0]["base_url"] == "https://agent-a"
+    assert calls[1]["slug"] == "demo"
+    assert calls[1]["path"] == "public"
 
 
 def test_signed_upload_bridge_verifies_and_forwards_internal_request() -> None:
