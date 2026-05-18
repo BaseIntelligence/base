@@ -614,7 +614,7 @@ def master_weights(
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
     kubernetes_targets = _kubernetes_target_registry(settings)
-    capability_records = (
+    capability_records: dict[str, Any] = (
         {target.id: target for target in kubernetes_targets.list()}
         if settings.runtime.backend == "kubernetes"
         else {server.id: server for server in _gpu_registry(settings).list()}
