@@ -1606,6 +1606,7 @@ dev = [
     { name = "respx" },
     { name = "ruff" },
     { name = "types-docker" },
+    { name = "types-pyyaml" },
 ]
 master = [
     { name = "bittensor" },
@@ -1641,6 +1642,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "types-docker", marker = "extra == 'dev'", specifier = ">=7.1" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 provides-extras = ["bittensor", "dev", "master", "validator"]
@@ -2273,6 +2275,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/05/e4/4ab4df17433a3c576ee3f0c11b74038b5ac19b618cae4eda0a461510e8f6/types_paramiko-4.0.0.20260508.tar.gz", hash = "sha256:3a00f0847fc4097ec99cfa53dca566169a50baefc93e2cace624642edec32bc1", size = 29167, upload-time = "2026-05-08T04:51:11.562Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ba/7d/f3661f4b69ca8b104e871151b419ee8495945895a9a6bc8bbff40c142b25/types_paramiko-4.0.0.20260508-py3-none-any.whl", hash = "sha256:a4389857b497b8eef8159cbf21dbd76c471c8d388acb2bca376c5ff023daa306", size = 38784, upload-time = "2026-05-08T04:51:10.357Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/83/4a1afc3fbfcf5b8d46fc390cd95ed6b0dc9010a265f4e9f46314efffa37a/types_pyyaml-6.0.12.20260518.tar.gz", hash = "sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466", size = 17850, upload-time = "2026-05-18T06:01:58.675Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/a2/c01db32be2ae7d6a1689972f3c492b149ee4e164b12fdfd9f64b50888215/types_pyyaml-6.0.12.20260518-py3-none-any.whl", hash = "sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd", size = 20312, upload-time = "2026-05-18T06:01:57.368Z" },
 ]
 
 [[package]]

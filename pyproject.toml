@@ -33,7 +33,8 @@ dev = [
   "respx>=0.21",
   "ruff>=0.6",
   "mypy>=1.10",
-  "types-docker>=7.1"
+  "types-docker>=7.1",
+  "types-PyYAML>=6.0"
 ]
 master = ["bittensor>=9", "kubernetes>=30"]
 validator = []
