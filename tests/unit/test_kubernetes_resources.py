@@ -3,7 +3,11 @@ from __future__ import annotations
 import base64
 import io
 import re
+import subprocess
+import sys
 import tarfile
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -79,11 +83,134 @@ def test_challenge_resources_include_secrets_gpu_and_pull_secrets() -> None:
     assert pod_spec["nodeSelector"] == {"accelerator": "nvidia"}
     assert pod_spec["runtimeClassName"] == "nvidia"
     assert pod_spec["imagePullSecrets"] == [{"name": "ghcr-auth"}]
+    assert container["resources"]["requests"] == {"cpu": "2", "memory": "4Gi"}
+    assert container["resources"]["limits"]["cpu"] == "2"
+    assert container["resources"]["limits"]["memory"] == "4Gi"
     assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert (
+        "pids_limit is not a Kubernetes PodSpec field"
+        in (
+            workload["spec"]["template"]["metadata"]["annotations"][
+                "platform.network/kubernetes-pid-semantics"
+            ]
+        )
+    )
     assert env["CHALLENGE_DOCKER_BACKEND"] == "broker"
     assert env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
         f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
     )
+
+
+def test_production_challenge_workload_requires_digest_image_and_postgres() -> None:
+    spec = ChallengeSpec(
+        slug="demo",
+        image=(
+            "ghcr.io/org/demo:1.2.3@"
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ),
+        env={"CHALLENGE_DATABASE_URL": "postgresql+asyncpg://db.example/demo"},
+    )
+
+    workload = build_challenge_workload(
+        spec,
+        namespace="platform",
+        mode="deployment",
+        replicas=2,
+        production=True,
+    )
+    container = workload["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item["value"] for item in container["env"]}
+
+    assert container["image"] == (
+        "ghcr.io/org/demo:1.2.3@"
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    )
+    assert ":latest" not in container["image"]
+    assert env["CHALLENGE_DATABASE_URL"].startswith("postgresql+asyncpg://")
+    assert "sqlite" not in repr(workload).lower()
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        (
+            ChallengeSpec(slug="demo", image="ghcr.io/org/demo:latest"),
+            "semver-tagged digest-pinned images",
+        ),
+        (
+            ChallengeSpec(
+                slug="demo",
+                image=(
+                    "ghcr.io/org/demo@"
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+            ),
+            "semver-tagged digest-pinned images",
+        ),
+        (
+            ChallengeSpec(
+                slug="demo",
+                image=(
+                    "ghcr.io/org/demo:1.2.3@"
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+                env={
+                    "CHALLENGE_DATABASE_URL": "sqlite+aiosqlite:////data/demo.sqlite3"
+                },
+            ),
+            "PostgreSQL",
+        ),
+    ],
+)
+def test_production_challenge_workload_rejects_unsafe_image_or_database(
+    spec: ChallengeSpec, expected: str
+) -> None:
+    with pytest.raises(ValueError, match=expected):
+        build_challenge_workload(
+            spec,
+            namespace="platform",
+            mode="deployment",
+            production=True,
+        )
+
+
+def test_kubernetes_challenge_workload_rejects_unsupported_docker_only_limits() -> None:
+    with pytest.raises(ValueError, match="pids_limit"):
+        build_challenge_workload(
+            ChallengeSpec(
+                slug="demo",
+                image="ghcr.io/org/demo:1",
+                resources=ChallengeResources(pids_limit=64),
+            ),
+            namespace="platform",
+        )
+    with pytest.raises(ValueError, match="memory_swap"):
+        build_challenge_workload(
+            ChallengeSpec(
+                slug="demo",
+                image="ghcr.io/org/demo:1",
+                resources=ChallengeResources(memory_swap=None),
+            ),
+            namespace="platform",
+        )
+
+
+def test_production_challenge_workload_requires_cpu_and_memory_bounds() -> None:
+    with pytest.raises(ValueError, match="CPU and memory requests/limits"):
+        build_challenge_workload(
+            ChallengeSpec(
+                slug="demo",
+                image=(
+                    "ghcr.io/org/demo:1.2.3@"
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+                env={"CHALLENGE_DATABASE_URL": "postgresql+asyncpg://db/demo"},
+                resources=ChallengeResources(cpu=None, memory="4Gi"),
+            ),
+            namespace="platform",
+            mode="deployment",
+            production=True,
+        )
 
 
 def test_statefulset_guards_sqlite_replica_count_and_hpa_target() -> None:
@@ -138,6 +265,18 @@ def test_broker_job_is_non_privileged_and_supports_tmpfs_and_archive_mounts() ->
 
     assert job["metadata"]["name"] == broker_job_name("demo", "job-1", "task-1")
     assert job["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+    assert container["resources"] == {
+        "requests": {"cpu": "1.0", "memory": "512Mi"},
+        "limits": {"cpu": "1.0", "memory": "512Mi"},
+    }
+    assert (
+        "memory_swap is not a Kubernetes PodSpec field"
+        in (
+            job["spec"]["template"]["metadata"]["annotations"][
+                "platform.network/kubernetes-swap-semantics"
+            ]
+        )
+    )
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert job["spec"]["activeDeadlineSeconds"] == request.timeout_seconds
@@ -153,6 +292,8 @@ def test_broker_job_is_non_privileged_and_supports_tmpfs_and_archive_mounts() ->
     assert network_policy["spec"]["podSelector"] == {
         "matchLabels": {"job-name": job["metadata"]["name"]}
     }
+    assert network_policy["spec"]["policyTypes"] == ["Ingress", "Egress"]
+    assert "egress" not in network_policy["spec"]
 
     archive = _archive_b64()
     mounted = request.model_copy(
@@ -184,11 +325,76 @@ def test_broker_job_is_non_privileged_and_supports_tmpfs_and_archive_mounts() ->
     assert mount_secret["stringData"]["mount-0.tar.gz.b64"] == archive
 
 
-def _archive_b64() -> str:
+def test_broker_mount_init_extractor_validates_archive_members(tmp_path: Path) -> None:
+    mounted = BrokerRunRequest(
+        job_id="job-1",
+        image="ghcr.io/platformnetwork/worker:1",
+        command=["python", "-V"],
+        mounts=[BrokerMount(target="/work", archive_b64=_archive_b64())],
+    )
+    job = build_broker_job(
+        "demo",
+        mounted,
+        namespace="platform",
+        service_account_name="platform-master",
+    )
+    command = job["spec"]["template"]["spec"]["initContainers"][0]["command"]
+    script = command[2]
+
+    assert "getmembers()" in script
+    assert "filter='data'" in script
+    assert ".extractall(sys.argv[2])" not in script
+
+    archive_path = tmp_path / "mount.tar.gz.b64"
+    archive_path.write_text(_archive_b64(), encoding="ascii")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    good = subprocess.run(
+        [sys.executable, "-c", script, str(archive_path), str(workdir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert good.returncode == 0, good.stderr
+    assert (workdir / "input.txt").read_text(encoding="utf-8") == "ok"
+
+    archive_path.write_text(_archive_b64("../escape.txt"), encoding="ascii")
+    bad = subprocess.run(
+        [sys.executable, "-c", script, str(archive_path), str(workdir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bad.returncode != 0
+    assert "unsafe mount archive" in bad.stderr
+
+
+def test_broker_job_rejects_unsupported_docker_only_limits() -> None:
+    base: dict[str, Any] = {
+        "job_id": "job-1",
+        "image": "ghcr.io/platformnetwork/worker:1",
+        "command": ["python", "-V"],
+    }
+    cases = [
+        (BrokerLimits(pids_limit=64), "pids_limit"),
+        (BrokerLimits(memory_swap=None), "memory_swap"),
+        (BrokerLimits(network="host"), "Docker-specific network modes"),
+    ]
+    for limits, message in cases:
+        with pytest.raises(ValueError, match=message):
+            build_broker_job(
+                "demo",
+                BrokerRunRequest(**base, limits=limits),
+                namespace="platform",
+                service_account_name="platform-master",
+            )
+
+
+def _archive_b64(name: str = "input.txt") -> str:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as tar:
         data = b"ok"
-        info = tarfile.TarInfo("input.txt")
+        info = tarfile.TarInfo(name)
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     return base64.b64encode(stream.getvalue()).decode("ascii")
