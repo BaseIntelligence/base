@@ -2,6 +2,16 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "policy": {
+      "type": "object",
+      "properties": {
+        "enforceProduction": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["development", "staging", "production", "prod"]
+    },
     "runtime": {
       "type": "object",
       "properties": {
@@ -13,6 +23,11 @@
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string", "minLength": 1 },
+        "digest": {
+          "type": "string",
+          "pattern": "^(|sha256:[a-f0-9]{64})$"
+        },
+        "production": { "type": "boolean" },
         "pullPolicy": { "type": "string" },
         "pullSecrets": {
           "type": "array",
@@ -20,6 +35,19 @@
         }
       },
       "required": ["repository", "tag"]
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "urlSecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "key": { "type": "string", "minLength": 1 }
+          },
+          "required": ["name", "key"]
+        }
+      }
     },
     "persistence": {
       "type": "object",
@@ -131,6 +159,31 @@
         "publicUrl": { "type": "string" }
       }
     },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "brokerAllowedImages": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "validator": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "resources": { "type": "object" }
+      }
+    },
+    "weights": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "schedule": { "type": "string", "minLength": 1 },
+        "resources": { "type": "object" }
+      }
+    },
     "kubernetesAgent": {
       "type": "object",
       "properties": {
@@ -173,5 +226,62 @@
         "enabled": { "type": "boolean" }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["image"],
+        "properties": {
+          "image": {
+            "required": ["production"],
+            "properties": { "production": { "const": true } }
+          }
+        }
+      },
+      "then": {
+        "required": ["database", "networkPolicy", "docker"],
+        "properties": {
+          "image": {
+            "required": ["digest"],
+            "properties": {
+              "tag": {
+                "not": { "const": "latest" },
+                "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+              },
+              "digest": { "pattern": "^sha256:[a-f0-9]{64}$" }
+            }
+          },
+          "database": {
+            "required": ["urlSecret"],
+            "properties": {
+              "urlSecret": { "required": ["name", "key"] }
+            }
+          },
+          "docker": {
+            "required": ["brokerAllowedImages"],
+            "properties": {
+              "brokerAllowedImages": {
+                "minItems": 1,
+                "not": {
+                  "contains": {
+                    "enum": ["*", "docker.io/", "ghcr.io/", "platformnetwork/"]
+                  }
+                }
+              }
+            }
+          },
+          "networkPolicy": {
+            "required": ["enabled", "egress"],
+            "properties": {
+              "enabled": { "const": true },
+              "egress": {
+                "required": ["allowAll"],
+                "properties": { "allowAll": { "const": false } }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

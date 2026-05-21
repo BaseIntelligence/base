@@ -1,6 +1,13 @@
+policy:
+  enforceProduction: false
+
+environment: development
+
 image:
   repository: ghcr.io/platformnetwork/platform
   tag: latest
+  digest: ""
+  production: false
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -94,13 +101,32 @@ broker:
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
 
+docker:
+  brokerAllowedImages:
+    - platformnetwork/
+    - ghcr.io/platformnetwork/
+
 validator:
   enabled: true
   replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 weights:
   enabled: true
   schedule: "*/6 * * * *"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 gpuAgent:
   enabled: false

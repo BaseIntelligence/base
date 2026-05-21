@@ -1,0 +1,89 @@
+policy:
+  enforceProduction: true
+
+environment: production
+
+image:
+  repository: ghcr.io/platformnetwork/platform
+  tag: v0.1.0
+  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  production: true
+  pullPolicy: IfNotPresent
+  pullSecrets:
+    - platform-registry-pull
+
+database:
+  urlSecret:
+    name: platform-production-postgres
+    key: url
+
+security:
+  existingSecret: platform-production-secrets
+  adminTokenKey: admin_token
+
+persistence:
+  enabled: true
+  storageClass: platform-retain
+  size: 50Gi
+
+kubernetes:
+  namespace: platform
+  serviceAccount: platform-master
+  challengeMode: deployment
+  storageClass: platform-retain
+  storageSize: 50Gi
+  targetDefaults:
+    imagePullSecrets:
+      - platform-registry-pull
+
+masterAdmin:
+  replicas: 2
+
+masterProxy:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+broker:
+  enabled: true
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+docker:
+  brokerAllowedImages:
+    - ghcr.io/platformnetwork/
+
+validator:
+  enabled: true
+  replicas: 1
+
+weights:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  ingress:
+    allowRuntimePods: true
+    extraFrom: []
+  egress:
+    allowAll: false
+    extraRules:
+      - to:
+          - ipBlock:
+              cidr: 203.0.113.0/24
+        ports:
+          - protocol: TCP
+            port: 5432
+      - to:
+          - ipBlock:
+              cidr: 198.51.100.0/24
+        ports:
+          - protocol: TCP
+            port: 443
