@@ -40,12 +40,19 @@ class ChallengeResources:
     """Container resource limits for a challenge.
 
     Attributes:
-        cpu: Optional CPU count, translated to Docker nano CPUs.
-        memory: Optional Docker memory limit such as ``"4g"`` or ``"512m"``.
+        cpu: CPU count, translated to Docker nano CPUs.
+        memory: Docker memory limit such as ``"4g"`` or ``"512m"``.
     """
 
-    cpu: float | None = None
-    memory: str | None = None
+    cpu: float | None = 2.0
+    memory: str | None = "4g"
+    memory_swap: str | None = "4g"
+    pids_limit: int = 512
+    read_only: bool = True
+    init: bool = True
+    tmpfs: tuple[str, ...] = ("/tmp:rw,noexec,nosuid,size=512m",)
+    cap_drop: tuple[str, ...] = ("ALL",)
+    security_opt: tuple[str, ...] = ("no-new-privileges",)
     gpu_server: str | None = None
     gpu_count: int | None = None
     gpu_device_ids: tuple[str, ...] = ()
@@ -59,13 +66,17 @@ class ChallengeResources:
     def from_mapping(cls, resources: dict[str, str]) -> ChallengeResources:
         cpu = resources.get("cpu") or resources.get("cpus")
         memory = resources.get("memory")
+        memory_swap = resources.get("memory_swap") or resources.get("memswap_limit")
+        pids_limit = resources.get("pids_limit") or resources.get("pids")
         gpu_server = resources.get("gpu_server")
         gpu_count = resources.get("gpu_count") or resources.get("gpus")
         gpu_device_ids = _split_csv(resources.get("gpu_device_ids"))
         gpu_capabilities = _split_csv(resources.get("gpu_capabilities")) or ("gpu",)
         return cls(
-            cpu=float(cpu) if cpu else None,
-            memory=memory,
+            cpu=float(cpu) if cpu else 2.0,
+            memory=memory or "4g",
+            memory_swap=memory_swap or "4g",
+            pids_limit=int(pids_limit) if pids_limit else 512,
             gpu_server=gpu_server,
             gpu_count=int(gpu_count) if gpu_count else None,
             gpu_device_ids=gpu_device_ids,
@@ -84,6 +95,17 @@ class ChallengeResources:
             kwargs["nano_cpus"] = int(self.cpu * 1_000_000_000)
         if self.memory:
             kwargs["mem_limit"] = self.memory
+        if self.memory_swap:
+            kwargs["memswap_limit"] = self.memory_swap
+        if self.pids_limit < 1:
+            raise DockerOrchestrationError("PID limit must be at least 1")
+        kwargs["pids_limit"] = self.pids_limit
+        kwargs["read_only"] = self.read_only
+        kwargs["init"] = self.init
+        kwargs["cap_drop"] = list(self.cap_drop)
+        kwargs["security_opt"] = list(self.security_opt)
+        if self.tmpfs:
+            kwargs["tmpfs"] = _tmpfs_mapping(self.tmpfs)
         if self.gpu_count is not None:
             if self.gpu_count <= 0:
                 raise DockerOrchestrationError("GPU count must be positive")
@@ -519,6 +541,16 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _tmpfs_mapping(values: tuple[str, ...]) -> dict[str, str]:
+    tmpfs: dict[str, str] = {}
+    for value in values:
+        path, separator, options = value.partition(":")
+        if not path.startswith("/"):
+            raise DockerOrchestrationError(f"tmpfs mount must be absolute: {path}")
+        tmpfs[path] = options if separator else ""
+    return tmpfs
 
 
 def _safe_secret_name(secret_name: str) -> str:

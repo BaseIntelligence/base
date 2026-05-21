@@ -70,10 +70,16 @@ def test_challenge_spec_and_resource_validation() -> None:
     assert spec.container_name == "challenge-demo-one"
     assert spec.sqlite_volume_name == "platform_demo_one_sqlite"
     assert spec.internal_base_url == "http://challenge-demo-one:9000"
-    assert ChallengeResources(cpu=1.5, memory="1g").as_container_kwargs() == {
-        "nano_cpus": 1_500_000_000,
-        "mem_limit": "1g",
-    }
+    kwargs = ChallengeResources(cpu=1.5, memory="1g").as_container_kwargs()
+    assert kwargs["nano_cpus"] == 1_500_000_000
+    assert kwargs["mem_limit"] == "1g"
+    assert kwargs["memswap_limit"] == "4g"
+    assert kwargs["pids_limit"] == 512
+    assert kwargs["read_only"] is True
+    assert kwargs["init"] is True
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges"]
+    assert kwargs["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=512m"}
     assert ChallengeResources.from_mapping(
         {"cpu": "2", "memory": "512m"}
     ) == ChallengeResources(cpu=2.0, memory="512m")
@@ -91,6 +97,10 @@ def test_challenge_spec_and_resource_validation() -> None:
     assert gpu_resources.gpu_capabilities == ("gpu", "compute")
     with pytest.raises(DockerOrchestrationError):
         ChallengeResources(cpu=0).as_container_kwargs()
+    with pytest.raises(DockerOrchestrationError):
+        ChallengeResources(pids_limit=0).as_container_kwargs()
+    with pytest.raises(DockerOrchestrationError):
+        ChallengeResources(tmpfs=("tmp:rw",)).as_container_kwargs()
     with pytest.raises(DockerOrchestrationError):
         ChallengeResources(gpu_server="../bad")
     with pytest.raises(DockerOrchestrationError):
@@ -169,7 +179,17 @@ def test_orchestrator_validation_and_start(
     runtime = orchestrator.start_challenge(spec)
     assert runtime.container_name == "challenge-demo"
     assert orchestrator.runtime["demo"].image == spec.image
-    assert client.containers.runs[0]["name"] == "challenge-demo"
+    run_kwargs = client.containers.runs[0]
+    assert run_kwargs["name"] == "challenge-demo"
+    assert run_kwargs["nano_cpus"] == 2_000_000_000
+    assert run_kwargs["mem_limit"] == "4g"
+    assert run_kwargs["memswap_limit"] == "4g"
+    assert run_kwargs["pids_limit"] == 512
+    assert run_kwargs["init"] is True
+    assert run_kwargs["read_only"] is True
+    assert run_kwargs["cap_drop"] == ["ALL"]
+    assert run_kwargs["security_opt"] == ["no-new-privileges"]
+    assert run_kwargs["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=512m"}
 
     orchestrator._validate_health(spec, {"status": "ok", "slug": "demo"})  # noqa: SLF001
     orchestrator._validate_version(  # noqa: SLF001
