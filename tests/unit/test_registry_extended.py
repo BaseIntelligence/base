@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ def payload(slug: str = "demo") -> ChallengeCreate:
         name="Demo",
         image="ghcr.io/platformnetwork/demo:1.0.0",
         version="1.0.0",
-        emission_percent=10,
+        emission_percent=Decimal("10"),
     )
 
 
@@ -154,3 +155,47 @@ def test_database_registry_uses_sqlite_source_of_truth(tmp_path: Path) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_production_registry_rejects_mutable_and_untagged_images() -> None:
+    registry = ChallengeRegistry(production_policy=True)
+    digest = "sha256:" + "a" * 64
+
+    accepted, _ = registry.create(
+        ChallengeCreate(
+            slug="prod-demo",
+            name="Prod",
+            image=f"ghcr.io/platformnetwork/demo:1.2.3@{digest}",
+            version="1.2.3",
+        )
+    )
+    assert accepted.image.endswith(digest)
+
+    for image, message in (
+        ("ghcr.io/platformnetwork/demo:latest", "latest"),
+        ("ghcr.io/platformnetwork/demo", "tag"),
+        ("ghcr.io/platformnetwork/demo:1.2.3", "digest"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            registry.create(
+                ChallengeCreate(
+                    slug=f"bad-{message}",
+                    name="Bad",
+                    image=image,
+                    version="1.2.3",
+                )
+            )
+
+
+def test_dev_registry_still_accepts_local_mutable_images() -> None:
+    registry = ChallengeRegistry()
+    record, _ = registry.create(
+        ChallengeCreate(
+            slug="local-demo",
+            name="Local",
+            image="localhost:5000/platform/demo:latest",
+            version="dev",
+        )
+    )
+
+    assert record.image == "localhost:5000/platform/demo:latest"

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from platform_network.config.policy import validate_database_url
 from platform_network.db import (
     Base,
     Challenge,
@@ -114,8 +115,8 @@ def test_repository_methods_with_fake_session() -> None:
 
     class Session:
         def __init__(self) -> None:
-            self.added = []
-            self.deleted = []
+            self.added: list[object] = []
+            self.deleted: list[object] = []
 
         def add(self, value):
             self.added.append(value)
@@ -147,3 +148,10 @@ def test_repository_methods_with_fake_session() -> None:
     import asyncio
 
     asyncio.run(run())
+
+
+def test_database_policy_rejects_sqlite_for_production() -> None:
+    validate_database_url("sqlite+aiosqlite:///:memory:", production=False)
+    validate_database_url("postgresql+asyncpg://user:pass@db/platform", production=True)
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        validate_database_url("sqlite+aiosqlite:///:memory:", production=True)

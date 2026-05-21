@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from platform_network.config.policy import validate_image_reference
 from platform_network.db.models import (
     Challenge,
     ChallengeAuth,
@@ -93,10 +94,12 @@ class ChallengeRegistry:
         network: str = "platform",
         api_version: str = "1.0",
         master_uid: int = 0,
+        production_policy: bool = False,
     ) -> None:
         self.network = network
         self.api_version = api_version
         self.master_uid = master_uid
+        self.production_policy = production_policy
         self._records: dict[str, ChallengeRecord] = {}
         self._tokens: dict[str, str] = {}
         self._broker_tokens: dict[str, str] = {}
@@ -108,6 +111,7 @@ class ChallengeRegistry:
         with self._lock:
             if payload.slug in self._records:
                 raise ChallengeAlreadyExistsError(payload.slug)
+            validate_image_reference(payload.image, production=self.production_policy)
 
             token = secrets.token_urlsafe(32)
             broker_token = secrets.token_urlsafe(32)
@@ -151,6 +155,10 @@ class ChallengeRegistry:
         with self._lock:
             record = self._get_locked(slug)
             updates = payload.model_dump(exclude_unset=True)
+            if "image" in updates:
+                validate_image_reference(
+                    updates["image"], production=self.production_policy
+                )
             if not updates:
                 return record
 
@@ -330,14 +338,17 @@ class DatabaseChallengeRegistry:
         network: str = "platform",
         api_version: str = "1.0",
         master_uid: int = 0,
+        production_policy: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.secret_dir = Path(secret_dir)
         self.network = network
         self.api_version = api_version
         self.master_uid = master_uid
+        self.production_policy = production_policy
 
     async def create(self, payload: ChallengeCreate) -> tuple[ChallengeRecord, str]:
+        validate_image_reference(payload.image, production=self.production_policy)
         token = secrets.token_urlsafe(32)
         broker_token = secrets.token_urlsafe(32)
         async with session_scope(self.session_factory) as session:
@@ -359,6 +370,10 @@ class DatabaseChallengeRegistry:
             model = await self._get_model(session, slug)
             assert model is not None
             updates = payload.model_dump(exclude_unset=True)
+            if "image" in updates:
+                validate_image_reference(
+                    updates["image"], production=self.production_policy
+                )
             if not updates:
                 return _record_from_model(model)
             _apply_model_updates(model, updates)
