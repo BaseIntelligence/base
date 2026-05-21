@@ -1,5 +1,19 @@
+x-platform-hardening-defaults: &platform-hardening-defaults
+  init: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 512
+  cpus: 2
+  mem_limit: 4g
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+
 services:
   master-admin:
+    <<: *platform-hardening-defaults
     build:
       context: ..
       dockerfile: docker/Dockerfile.master
@@ -20,6 +34,9 @@ services:
       - platform_state:/var/lib/platform
       - platform_secrets:/var/lib/platform/secrets
       - ../config:/app/config:ro
+    labels:
+      platform.security.docker-socket: local-control-plane-required
+      platform.security.docker-socket-risk: host-daemon-access-is-not-production-isolation
     ports:
       - "8000:8000"
     healthcheck:
@@ -32,6 +49,7 @@ services:
       - platform_challenges
 
   master-proxy:
+    <<: *platform-hardening-defaults
     build:
       context: ..
       dockerfile: docker/Dockerfile.master
@@ -47,6 +65,7 @@ services:
       - platform_db:/var/lib/platform-db
       - platform_state:/var/lib/platform
       - platform_secrets:/var/lib/platform/secrets
+      - platform_bittensor:/root/.bittensor
       - ../config:/app/config:ro
     depends_on:
       master-admin:
@@ -63,6 +82,7 @@ services:
       - platform_challenges
 
   platform-docker-broker:
+    <<: *platform-hardening-defaults
     build:
       context: ..
       dockerfile: docker/Dockerfile.master
@@ -79,6 +99,9 @@ services:
       - platform_state:/var/lib/platform
       - platform_secrets:/var/lib/platform/secrets
       - ../config:/app/config:ro
+    labels:
+      platform.security.docker-socket: broker-required-for-local-docker-jobs
+      platform.security.docker-socket-risk: host-daemon-access-is-not-production-isolation
     depends_on:
       master-admin:
         condition: service_healthy
@@ -93,6 +116,7 @@ services:
           - platform-docker-broker
 
   validator:
+    <<: *platform-hardening-defaults
     build:
       context: ..
       dockerfile: docker/Dockerfile.validator
@@ -113,6 +137,7 @@ services:
       - platform_challenges
 
   gpu-agent:
+    <<: *platform-hardening-defaults
     profiles: ["gpu"]
     build:
       context: ..
@@ -138,11 +163,15 @@ services:
       - platform_state:/var/lib/platform
       - platform_secrets:/var/lib/platform/secrets
       - ../config:/app/config:ro
+    labels:
+      platform.security.docker-socket: gpu-profile-local-control-plane-required
+      platform.security.docker-socket-risk: host-daemon-access-is-not-production-isolation
     networks:
       - platform_backend
       - platform_challenges
 
   otel-collector:
+    <<: *platform-hardening-defaults
     profiles: ["observability"]
     image: otel/opentelemetry-collector-contrib:0.100.0
     command: ["--config=/etc/otel-collector.yaml"]
@@ -158,6 +187,7 @@ volumes:
   platform_db:
   platform_state:
   platform_secrets:
+  platform_bittensor:
 
 networks:
   platform_backend:
@@ -166,3 +196,4 @@ networks:
     name: platform_challenges
     driver: bridge
     attachable: true
+    internal: true
