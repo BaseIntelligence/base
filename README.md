@@ -145,6 +145,56 @@ platform/
   tests/                     # Unit/runtime validation tests
 ```
 
+
+## Deployment Policy
+
+Platform separates local development defaults from production and Kubernetes deployment policy:
+
+- Dev, test, and local Compose workflows may use SQLite for the master database and local or mutable challenge images while iterating.
+- Production and Kubernetes deployments require an external PostgreSQL database provided through an explicit secret or URL. SQLite is rejected for production and Kubernetes control-plane state.
+- Production challenge and control-plane images must use a semver tag plus a `sha256` digest, for example `ghcr.io/platformnetwork/demo:1.2.3@sha256:<64-hex-digest>`. Production rejects `latest`, untagged images, and missing digests.
+- Production remote GPU servers and Kubernetes targets must keep `verify_tls=true`; `verify_tls=false` is only acceptable for clearly local or test-only endpoints.
+- Multi-server and Kubernetes target routing trusts only enabled, healthy, non-draining targets with remaining GPU capacity. Production agent targets must use HTTPS and `verify_tls=true`; persisted insecure targets are rejected when production policy is active.
+- Kubernetes broker jobs and challenge workloads map CPU and memory to PodSpec requests and limits. Docker-only `pids_limit`, `memory_swap`, and custom Docker network modes are rejected for Kubernetes because PID and swap enforcement belongs at the cluster or admission-policy boundary.
+- Docker Compose services that mount `/var/run/docker.sock` are local control-plane paths with host Docker daemon access. Treat that socket as root-equivalent host access, not as production isolation.
+- Watchtower is only for the explicit local and staging Compose overlay and uses `nickfedor/watchtower:1.17.1` for Docker 29 API compatibility. Do not add Watchtower labels to challenge containers, broker-created jobs, databases, or Kubernetes manifests.
+
+Use `deploy/helm/platform/values.production.example.yaml` as the production policy fixture and keep local examples explicitly labeled as local or development-only.
+
+## Validation Quick Reference
+
+Run these commands from `/droid/platform-v10` when validating the platform locally. Some commands require Docker, Helm, kubeconform, kind, and kubectl. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
+
+```bash
+uv sync --extra dev --extra master
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src tests
+uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
+
+docker compose -f docker/compose.yml config --quiet
+docker compose -f docker/compose.dev.yml config --quiet
+docker compose -f docker/compose.yml -f docker/compose.watchtower.yml config --quiet
+
+helm lint deploy/helm/platform
+helm template platform deploy/helm/platform > /tmp/platform-default.yaml
+kubeconform -strict -summary /tmp/platform-default.yaml
+helm template platform deploy/helm/platform -f deploy/helm/platform/values.production.example.yaml > /tmp/platform-production.yaml
+kubeconform -strict -summary /tmp/platform-production.yaml
+
+kind delete cluster --name platform-validation
+kind create cluster --name platform-validation
+kind get kubeconfig --name platform-validation > /tmp/platform-validation-kubeconfig
+KUBECONFIG=/tmp/platform-validation-kubeconfig kubectl apply --dry-run=server -f /tmp/platform-default.yaml
+KUBECONFIG=/tmp/platform-validation-kubeconfig kubectl apply --dry-run=server -f /tmp/platform-production.yaml
+kind delete cluster --name platform-validation
+docker compose -f docker/compose.yml -f docker/compose.watchtower.yml down --remove-orphans
+```
+
+Evidence for local validation should live under `.omo/evidence/` and must not contain kubeconfigs, tokens, credentialed database URLs, private registry credentials, or bearer secrets.
+
+Current Task 12 evidence records the Python quality gates as passing without lowering the documented gates: `uv run ruff format --check .`, `uv run mypy src tests`, `uv run ruff check .`, and the full coverage command all pass. Historical Task 11 evidence recorded Ruff format and mypy blockers, but those blockers are resolved in the current validation state.
+
 ---
 
 ## License
