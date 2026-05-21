@@ -4,7 +4,7 @@
 
 ## Scope
 
-Run these commands from `/droid/platform-v10`. They are the local validation surfaces used for the corrected Python `platform-network` work. If Docker, Helm, kubeconform, kind, kubectl, or a Python tool is missing, record the blocker in evidence and don't mark that surface as tested.
+Run these commands from the repository root. They are the local validation surfaces used for the corrected Python `platform-network` work. If Docker, Helm, kubeconform, kind, kubectl, or a Python tool is missing, record the blocker in evidence and don't mark that surface as tested.
 
 ## Python Validation
 
@@ -107,12 +107,12 @@ Kubernetes broker cleanup evidence should cover deletion attempts for the Job, N
 
 ## Evidence Expectations
 
-Save validation output under `.omo/evidence/` with task-scoped names. Evidence should include:
+Save validation output in a local, gitignored evidence directory with task-scoped names. Evidence should include:
 
 - command logs for Python, Compose, Helm, kubeconform, kind, and kubectl dry-run surfaces that were actually executed;
 - policy guard output showing Watchtower scope, Docker socket risk wording, production PostgreSQL, semver plus digest images, `verify_tls=true`, Kubernetes PID boundary, multi-server target trust, and cleanup commands are documented;
 - explicit limitations for unavailable tools or historical blockers, including the resolved Task 11 Ruff format and mypy blockers only when labeled historical or resolved, plus current Task 12 evidence showing Ruff check, Ruff format check, mypy, and full coverage passing;
-- a redaction or grep check showing evidence does not contain bearer tokens, private keys, kubeconfigs, credentialed database URLs, or private registry credentials.
+- a redaction or grep check showing evidence does not contain bearer tokens, private keys, kubeconfigs, credentialed database URLs, private registry credentials, or Docker registry auth.
 
 ## Master Deployment Checklist
 

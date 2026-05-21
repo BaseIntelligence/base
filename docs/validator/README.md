@@ -139,7 +139,7 @@ Platform intentionally keeps local workflows usable while enforcing stricter pro
 
 ## Validation Commands
 
-Run project validators before releases from `/droid/platform-v10`:
+Run project validators before releases from the repository root:
 
 ```bash
 uv sync --extra dev --extra master

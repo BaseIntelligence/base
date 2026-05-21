@@ -163,7 +163,7 @@ Use `deploy/helm/platform/values.production.example.yaml` as the production poli
 
 ## Validation Quick Reference
 
-Run these commands from `/droid/platform-v10` when validating the platform locally. Some commands require Docker, Helm, kubeconform, kind, and kubectl. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
+Run these commands from the repository root when validating the platform locally. Some commands require Docker, Helm, kubeconform, kind, and kubectl. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
 
 ```bash
 uv sync --extra dev --extra master
@@ -191,7 +191,7 @@ kind delete cluster --name platform-validation
 docker compose -f docker/compose.yml -f docker/compose.watchtower.yml down --remove-orphans
 ```
 
-Evidence for local validation should live under `.omo/evidence/` and must not contain kubeconfigs, tokens, credentialed database URLs, private registry credentials, or bearer secrets.
+Evidence for local validation should live in a local, gitignored evidence directory and must not contain kubeconfigs, tokens, credentialed database URLs, private registry credentials, bearer secrets, private keys, or Docker registry auth.
 
 Current Task 12 evidence records the Python quality gates as passing without lowering the documented gates: `uv run ruff format --check .`, `uv run mypy src tests`, `uv run ruff check .`, and the full coverage command all pass. Historical Task 11 evidence recorded Ruff format and mypy blockers, but those blockers are resolved in the current validation state.
 
