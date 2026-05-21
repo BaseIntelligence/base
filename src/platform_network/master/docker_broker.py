@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import secrets
 import tarfile
 from dataclasses import dataclass
@@ -67,6 +68,7 @@ class DockerBrokerService:
             labels = {**request.labels, "platform.job": request.job_id}
             if request.task_id:
                 labels["platform.task"] = request.task_id
+            limits = self._hardened_limits(request)
             result = executor.run(
                 DockerRunSpec(
                     image=request.image,
@@ -76,7 +78,7 @@ class DockerBrokerService:
                     env=request.env,
                     labels=labels,
                     name=executor.container_name(request.job_id, request.task_id),
-                    limits=DockerLimits(**request.limits.model_dump()),
+                    limits=limits,
                 ),
                 timeout_seconds=request.timeout_seconds,
             )
@@ -133,12 +135,20 @@ class DockerBrokerService:
     ) -> DockerMount:
         mount_root = root / f"mount-{index}"
         mount_root.mkdir(parents=True)
-        archive = base64.b64decode(mount.archive_b64)
         archive_path = mount_root / "payload.tar.gz"
-        archive_path.write_bytes(archive)
-        with tarfile.open(archive_path, mode="r:gz") as tar:
-            _validate_tar_members(tar)
-            tar.extractall(mount_root, filter="data")
+        try:
+            archive = base64.b64decode(mount.archive_b64, validate=True)
+            archive_path.write_bytes(archive)
+            with tarfile.open(archive_path, mode="r:gz") as tar:
+                _validate_tar_members(tar)
+                tar.extractall(mount_root, filter="data")
+        except HTTPException:
+            raise
+        except (binascii.Error, tarfile.TarError, ValueError, OSError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid mount archive",
+            ) from exc
         archive_path.unlink(missing_ok=True)
         if mount.source_type == "file":
             source_name = Path(mount.source_name)
@@ -169,6 +179,30 @@ class DockerBrokerService:
         return DockerMount(
             source=source, target=mount.target, read_only=mount.read_only
         )
+
+    def _hardened_limits(self, request: BrokerRunRequest) -> DockerLimits:
+        limits = DockerLimits(**request.limits.model_dump())
+        if not limits.read_only:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="broker Docker jobs require a read-only root filesystem",
+            )
+        if not limits.init:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="broker Docker jobs require Docker init for process cleanup",
+            )
+        if "ALL" not in limits.cap_drop:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="broker Docker jobs must drop all Linux capabilities",
+            )
+        if not any(opt.startswith("no-new-privileges") for opt in limits.security_opt):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="broker Docker jobs require no-new-privileges",
+            )
+        return limits
 
 
 def create_docker_broker_app(
@@ -241,7 +275,13 @@ def _authenticate(
 def _validate_tar_members(tar: tarfile.TarFile) -> None:
     for member in tar.getmembers():
         path = Path(member.name)
-        if path.is_absolute() or ".." in path.parts:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or member.issym()
+            or member.islnk()
+            or member.isdev()
+        ):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "unsafe mount archive")
 
 

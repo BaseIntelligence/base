@@ -14,15 +14,18 @@ class BrokerMount(BaseModel):
 
 
 class BrokerLimits(BaseModel):
-    cpus: float = 2.0
-    memory: str = "4g"
-    memory_swap: str | None = "4g"
-    pids_limit: int = 512
+    cpus: float = Field(default=2.0, gt=0)
+    memory: str = Field(default="4g", min_length=1)
+    memory_swap: str | None = Field(default="4g", min_length=1)
+    pids_limit: int = Field(default=512, ge=1)
     network: str = "none"
     read_only: bool = True
     user: str | None = None
     tmpfs: tuple[str, ...] = ("/tmp:rw,noexec,nosuid,size=512m",)
     ulimits: tuple[str, ...] = ("nofile=1024:1024",)
+    cap_drop: tuple[str, ...] = ("ALL",)
+    security_opt: tuple[str, ...] = ("no-new-privileges",)
+    init: bool = True
 
 
 class BrokerRunRequest(BaseModel):
