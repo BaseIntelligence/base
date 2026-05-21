@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import inspect
 import io
+import re
 import secrets
 import tarfile
 from pathlib import Path
@@ -18,6 +20,7 @@ from platform_network.kubernetes.resources import (
     build_broker_job,
     build_broker_mount_secret,
     build_broker_network_policy,
+    validate_broker_kubernetes_limits,
 )
 from platform_network.master.docker_broker import BrokerTokenRegistry
 from platform_network.master.docker_orchestrator import ChallengeResources
@@ -30,6 +33,8 @@ from platform_network.schemas.docker_broker import (
     BrokerRunRequest,
     BrokerRunResponse,
 )
+
+_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9./_:@+-]{0,254}$")
 
 
 class BrokerKubernetesClient(Protocol):
@@ -93,28 +98,27 @@ class KubernetesBrokerService:
         mount_secret = build_broker_mount_secret(
             challenge_slug, request, namespace=self.namespace, run_id=run_id
         )
-        if mount_secret is not None:
-            self.client.apply(mount_secret)
-        if request.limits.network == "none":
-            self.client.apply(
-                build_broker_network_policy(
-                    challenge_slug,
-                    request,
-                    namespace=self.namespace,
-                    run_id=run_id,
-                )
-            )
-        self.client.apply(job)
         try:
+            if mount_secret is not None:
+                self.client.apply(mount_secret)
+            if request.limits.network == "none":
+                self.client.apply(
+                    build_broker_network_policy(
+                        challenge_slug,
+                        request,
+                        namespace=self.namespace,
+                        run_id=run_id,
+                    )
+                )
+            self.client.apply(job)
             code = self.client.wait_job_complete(
                 name, timeout_seconds=request.timeout_seconds
             )
             logs = self.client.pod_logs_for_job(name)
             if len(logs.encode()) > self.log_limit_bytes:
                 logs = logs.encode()[-self.log_limit_bytes :].decode(errors="replace")
-            if code == 124:
-                self.client.delete("Job", name)
         finally:
+            self.client.delete("Job", name)
             self.client.delete("NetworkPolicy", name)
             self.client.delete("Secret", broker_mount_secret_name(name))
         return BrokerRunResponse(
@@ -170,15 +174,19 @@ class KubernetesBrokerService:
         return BrokerListResponse(containers=containers)
 
     def _validate_request(self, request: BrokerRunRequest) -> None:
+        if not _IMAGE_RE.match(request.image) or request.image.startswith("-"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unsafe Docker image reference: {request.image!r}",
+            )
         if not request.image.startswith(self.allowed_images):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "Docker image is not allowed"
             )
-        if request.limits.network not in {"none", "default"}:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "Kubernetes broker supports only network=none or network=default",
-            )
+        try:
+            validate_broker_kubernetes_limits(request.limits)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         for mount in request.mounts:
             _validate_mount_archive(mount.archive_b64)
             if mount.source_type == "file":
@@ -232,21 +240,37 @@ class KubernetesBrokerRouterService:
         record = _resolve_sync(self.challenge_registry.get(challenge_slug))
         resources = ChallengeResources.from_mapping(record.resources)
         assigned = self._assignment_for(challenge_slug)
-        if assigned:
+        if assigned and self._target_eligible(
+            assigned, resources, exclude_slug=challenge_slug
+        ):
             return self._service_for_target(assigned)
+        if assigned:
+            self._clear_assignment(challenge_slug)
         target_id = resources.gpu_server
         if target_id:
+            if not self._target_eligible(
+                target_id, resources, exclude_slug=challenge_slug
+            ):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "No valid Kubernetes target available for challenge "
+                    f"{challenge_slug!r}",
+                )
             service = self._service_for_target(target_id)
-            self._assign(challenge_slug, target_id)
+            self._assign(challenge_slug, target_id, resources.gpu_count)
             return service
         if resources.gpu_count:
             for candidate_id, service in self._target_services().items():
-                if (
-                    self._target_capacities().get(candidate_id, 0)
-                    >= resources.gpu_count
+                if self._target_eligible(
+                    candidate_id, resources, exclude_slug=challenge_slug
                 ):
-                    self._assign(challenge_slug, candidate_id)
+                    self._assign(challenge_slug, candidate_id, resources.gpu_count)
                     return service
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No valid Kubernetes target available for challenge "
+                f"{challenge_slug!r}",
+            )
         return self.default_service
 
     def _target_services(self) -> dict[str, Any]:
@@ -281,11 +305,20 @@ class KubernetesBrokerRouterService:
             return self.target_registry.get_assignment(slug)
         return None
 
-    def _assign(self, slug: str, target_id: str) -> None:
+    def _clear_assignment(self, slug: str) -> None:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "clear_assignment"
+        ):
+            self.target_registry.clear_assignment(slug)
+
+    def _assign(self, slug: str, target_id: str, gpu_count: int | None = None) -> None:
         if self.target_registry is not None and hasattr(
             self.target_registry, "assign_challenge"
         ):
-            self.target_registry.assign_challenge(slug, target_id)
+            try:
+                self.target_registry.assign_challenge(slug, target_id, gpu_count)
+            except TypeError:
+                self.target_registry.assign_challenge(slug, target_id)
 
     def _build_targets(self) -> tuple[dict[str, Any], dict[str, int]]:
         assert self.settings is not None
@@ -293,11 +326,70 @@ class KubernetesBrokerRouterService:
         services: dict[str, Any] = {}
         capacities: dict[str, int] = {}
         for target in self.target_registry.list():
-            if not target.enabled:
+            if not target.enabled or getattr(target, "draining", False):
                 continue
             services[target.id] = self._build_service(target)
             capacities[target.id] = target.gpu_count
         return services, capacities
+
+    def _target_eligible(
+        self,
+        target_id: str,
+        resources: ChallengeResources,
+        *,
+        exclude_slug: str | None = None,
+    ) -> bool:
+        try:
+            target = self._target_record(target_id)
+        except Exception:
+            return False
+        if target is not None:
+            if not getattr(target, "enabled", True) or getattr(
+                target, "draining", False
+            ):
+                return False
+        if self.target_registry is not None and hasattr(self.target_registry, "health"):
+            try:
+                health = self.target_registry.health(target_id)
+            except Exception:
+                return False
+            if getattr(health, "status", None) != "ok":
+                return False
+        requested_gpu = int(resources.gpu_count or 0)
+        if requested_gpu <= 0:
+            return True
+        capacity = self._target_capacities().get(target_id, 0)
+        return capacity >= requested_gpu + self._assigned_gpu_count(
+            target_id, exclude_slug=exclude_slug
+        )
+
+    def _target_record(self, target_id: str) -> Any | None:
+        if self.target_registry is not None and hasattr(self.target_registry, "get"):
+            return self.target_registry.get(target_id)
+        if target_id in self._target_services():
+            return None
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Unknown Kubernetes target: {target_id}"
+        )
+
+    def _assigned_gpu_count(
+        self, target_id: str, *, exclude_slug: str | None = None
+    ) -> int:
+        if self.target_registry is None or not hasattr(
+            self.target_registry, "assignments"
+        ):
+            return 0
+        total = 0
+        assignments = self.target_registry.assignments
+        if callable(assignments):
+            assignments = assignments()
+        for slug, assigned in dict(assignments).items():
+            if slug == exclude_slug or assigned != target_id:
+                continue
+            if hasattr(self.target_registry, "get_assignment_metadata"):
+                metadata = self.target_registry.get_assignment_metadata(slug) or {}
+                total += int(metadata.get("gpu_count") or 0)
+        return total
 
     def _build_service(self, target: Any) -> Any:
         assert self.settings is not None
@@ -356,17 +448,23 @@ def _resolve_sync(value: Any) -> Any:
 
 def _validate_mount_archive(archive_b64: str) -> None:
     try:
-        archive = base64.b64decode(archive_b64)
+        archive = base64.b64decode(archive_b64, validate=True)
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
             for member in tar.getmembers():
                 path = Path(member.name)
-                if path.is_absolute() or ".." in path.parts:
+                if (
+                    path.is_absolute()
+                    or ".." in path.parts
+                    or member.issym()
+                    or member.islnk()
+                    or member.isdev()
+                ):
                     raise HTTPException(
                         status.HTTP_400_BAD_REQUEST, "unsafe mount archive"
                     )
     except HTTPException:
         raise
-    except Exception as exc:
+    except (binascii.Error, tarfile.TarError, ValueError, OSError) as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "invalid mount archive"
         ) from exc
