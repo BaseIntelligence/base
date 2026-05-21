@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from platform_network.config.policy import production_policy_enabled_for_settings
 from platform_network.kubernetes.client import KubernetesClient
 from platform_network.kubernetes.names import challenge_name, challenge_secret_name
 from platform_network.kubernetes.resources import (
@@ -51,6 +52,7 @@ class KubernetesOrchestrator:
         health_check_mode: str = "direct",
         kubeconfig: str | None = None,
         in_cluster: bool = True,
+        production_policy: bool = False,
     ) -> None:
         self.client = client or KubernetesClient(
             namespace=namespace, kubeconfig=kubeconfig, in_cluster=in_cluster
@@ -75,6 +77,7 @@ class KubernetesOrchestrator:
         self.autoscaling_target_cpu_utilization = autoscaling_target_cpu_utilization
         self.docker_broker_url = docker_broker_url
         self.health_check_mode = health_check_mode
+        self.production_policy = production_policy
         self._runtime: dict[str, ChallengeRuntime] = {}
 
     @property
@@ -90,11 +93,6 @@ class KubernetesOrchestrator:
         self, spec: ChallengeSpec, *, recreate: bool = False
     ) -> ChallengeRuntime:
         self.pull_image(spec.image)
-        if recreate:
-            self.stop_challenge(spec.slug, remove=True)
-        secret = build_challenge_secret(spec, namespace=self.namespace)
-        if secret is not None:
-            self.client.apply(secret)
         workload = build_challenge_workload(
             spec,
             namespace=self.namespace,
@@ -108,7 +106,13 @@ class KubernetesOrchestrator:
             runtime_class_name=self.runtime_class_name,
             image_pull_secrets=self.image_pull_secrets,
             docker_broker_url=self.docker_broker_url,
+            production=self.production_policy,
         )
+        if recreate:
+            self.stop_challenge(spec.slug, remove=True)
+        secret = build_challenge_secret(spec, namespace=self.namespace)
+        if secret is not None:
+            self.client.apply(secret)
         service = build_challenge_service(spec, namespace=self.namespace)
         self.client.apply(service)
         self.client.apply(workload)
@@ -248,6 +252,7 @@ class KubernetesOrchestrator:
 
     @classmethod
     def from_settings(cls, settings: Any) -> KubernetesOrchestrator:
+        production_policy = production_policy_enabled_for_settings(settings)
         return cls(
             namespace=settings.kubernetes.namespace,
             mode=settings.kubernetes.challenge_mode,
@@ -271,6 +276,7 @@ class KubernetesOrchestrator:
             ),
             kubeconfig=settings.kubernetes.kubeconfig,
             in_cluster=settings.kubernetes.in_cluster,
+            production_policy=production_policy,
         )
 
 
@@ -290,6 +296,7 @@ class KubernetesTargetRouter:
         self.settings = settings
         self.target_registry = target_registry
         self._slug_to_target: dict[str, str] = {}
+        self._slug_gpu_counts: dict[str, int] = {}
 
     @property
     def runtime(self) -> dict[str, ChallengeRuntime]:
@@ -305,6 +312,7 @@ class KubernetesTargetRouter:
         runtime = orchestrator.start_challenge(spec, recreate=recreate)
         if target_id:
             self._slug_to_target[spec.slug] = target_id
+            self._slug_gpu_counts[spec.slug] = int(spec.resources.gpu_count or 0)
             self._assign(spec.slug, target_id)
         return runtime
 
@@ -327,18 +335,24 @@ class KubernetesTargetRouter:
 
     def _select(self, spec: ChallengeSpec) -> tuple[str | None, Any]:
         assigned = self._assignment_for(spec.slug)
-        if assigned:
+        if assigned and self._target_eligible(assigned, spec, exclude_slug=spec.slug):
             return assigned, self._orchestrator_for_target(assigned)
+        if assigned:
+            self._clear_assignment(spec.slug)
         requested = spec.resources.gpu_server
         if requested:
+            if not self._target_eligible(requested, spec, exclude_slug=spec.slug):
+                raise DockerOrchestrationError(
+                    f"No valid Kubernetes target available for challenge {spec.slug!r}"
+                )
             return requested, self._orchestrator_for_target(requested)
         if spec.resources.gpu_count:
             for target_id, orchestrator in self._target_orchestrators().items():
-                if (
-                    self._target_capacities().get(target_id, 0)
-                    >= spec.resources.gpu_count
-                ):
+                if self._target_eligible(target_id, spec, exclude_slug=spec.slug):
                     return target_id, orchestrator
+            raise DockerOrchestrationError(
+                f"No valid Kubernetes target available for challenge {spec.slug!r}"
+            )
         return None, self.default_orchestrator
 
     def _target_orchestrators(self) -> dict[str, Any]:
@@ -366,10 +380,15 @@ class KubernetesTargetRouter:
         return orchestrator
 
     def _assign(self, slug: str, target_id: str) -> None:
+        gpu_count = self._slug_gpu_counts.get(slug, 0)
         if self.target_registry is not None and hasattr(
             self.target_registry, "assign_challenge"
         ):
-            self.target_registry.assign_challenge(slug, target_id)
+            try:
+                self.target_registry.assign_challenge(slug, target_id, gpu_count)
+            except TypeError:
+                self.target_registry.assign_challenge(slug, target_id)
+        self._slug_gpu_counts[slug] = gpu_count
 
     def _assignment_for(self, slug: str) -> str | None:
         if self.target_registry is not None and hasattr(
@@ -384,6 +403,7 @@ class KubernetesTargetRouter:
         ):
             self.target_registry.clear_assignment(slug)
         self._slug_to_target.pop(slug, None)
+        self._slug_gpu_counts.pop(slug, None)
 
     def _build_targets(self) -> tuple[dict[str, Any], dict[str, int]]:
         assert self.settings is not None
@@ -391,11 +411,73 @@ class KubernetesTargetRouter:
         target_orchestrators: dict[str, Any] = {}
         target_capacities: dict[str, int] = {}
         for target in self.target_registry.list():
-            if not target.enabled:
+            if not target.enabled or getattr(target, "draining", False):
                 continue
             target_orchestrators[target.id] = self._build_target_orchestrator(target)
             target_capacities[target.id] = target.gpu_count
         return target_orchestrators, target_capacities
+
+    def _target_eligible(
+        self, target_id: str, spec: ChallengeSpec, *, exclude_slug: str | None = None
+    ) -> bool:
+        try:
+            target = self._target_record(target_id)
+        except Exception:
+            return False
+        if target is not None:
+            if not getattr(target, "enabled", True) or getattr(
+                target, "draining", False
+            ):
+                return False
+        if self.target_registry is not None and hasattr(self.target_registry, "health"):
+            try:
+                health = self.target_registry.health(target_id)
+            except Exception:
+                return False
+            if getattr(health, "status", None) != "ok":
+                return False
+        requested_gpu = int(spec.resources.gpu_count or 0)
+        if requested_gpu <= 0:
+            return True
+        capacity = self._target_capacities().get(target_id, 0)
+        return capacity >= requested_gpu + self._assigned_gpu_count(
+            target_id, exclude_slug=exclude_slug
+        )
+
+    def _target_record(self, target_id: str) -> Any | None:
+        if self.target_registry is not None and hasattr(self.target_registry, "get"):
+            return self.target_registry.get(target_id)
+        if target_id in self._target_orchestrators():
+            return None
+        raise DockerOrchestrationError(f"Unknown Kubernetes target: {target_id}")
+
+    def _assigned_gpu_count(
+        self, target_id: str, *, exclude_slug: str | None = None
+    ) -> int:
+        total = 0
+        for slug, assigned in self._assignments_snapshot().items():
+            if slug == exclude_slug or assigned != target_id:
+                continue
+            total += self._assignment_gpu_count(slug)
+        return total
+
+    def _assignments_snapshot(self) -> dict[str, str]:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "assignments"
+        ):
+            assignments = self.target_registry.assignments
+            if callable(assignments):
+                return assignments()
+            return dict(assignments)
+        return dict(self._slug_to_target)
+
+    def _assignment_gpu_count(self, slug: str) -> int:
+        if self.target_registry is not None and hasattr(
+            self.target_registry, "get_assignment_metadata"
+        ):
+            metadata = self.target_registry.get_assignment_metadata(slug) or {}
+            return int(metadata.get("gpu_count") or 0)
+        return self._slug_gpu_counts.get(slug, 0)
 
     def _build_target_orchestrator(self, target: Any) -> Any:
         assert self.settings is not None
@@ -417,6 +499,7 @@ class KubernetesTargetRouter:
                 docker_broker_url=self.settings.docker.broker_url,
             )
         defaults = self.settings.kubernetes.target_defaults
+        production_policy = production_policy_enabled_for_settings(self.settings)
         return KubernetesOrchestrator(
             namespace=target.namespace,
             mode=self.settings.kubernetes.challenge_mode,
@@ -449,6 +532,7 @@ class KubernetesTargetRouter:
             health_check_mode="service_proxy",
             kubeconfig=target.kubeconfig_file,
             in_cluster=False,
+            production_policy=production_policy,
         )
 
     @classmethod
