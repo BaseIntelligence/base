@@ -639,7 +639,9 @@ def test_cli_master_weights_dry_run_does_not_submit(
 
 
 def test_cli_master_weights_help_documents_dry_run() -> None:
-    result = CliRunner().invoke(app, ["master", "weights", "--help"])
+    result = CliRunner().invoke(
+        app, ["master", "weights", "--help"], env={"TERM": "dumb"}
+    )
 
     assert result.exit_code == 0
     assert "--dry-run" in result.output
