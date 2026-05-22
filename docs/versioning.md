@@ -54,7 +54,7 @@ ghcr.io/platformnetwork/platform:3.0.0@sha256:<64-hex-digest>
 
 The digest is the immutable deployment selector. The tag provides human-readable release context. Production policy rejects `latest`, untagged image references, missing digests, and non-SemVer tags.
 
-Mutable tags such as `latest` are allowed only for local, development, and explicitly documented staging flows. The validator installer includes an image-updater CronJob so mutable GHCR tags are repulled after a rollout restart, but production should prefer digest-pinned image references.
+Mutable tags such as `latest` are allowed only for local, development, and explicitly documented staging flows. The validator installer includes an image-updater CronJob that checks mutable GHCR tag digests and patches the Deployment only when the digest changed, but production should prefer digest-pinned image references.
 
 ## Release Execution Boundary
 
