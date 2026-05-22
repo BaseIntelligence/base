@@ -32,7 +32,7 @@ The script performs these actions:
 2. Applies Namespace, validator ServiceAccount/RBAC, updater ServiceAccount/RBAC, PVC, ConfigMap, Deployment, and updater CronJob.
 3. Prompts silently for the validator hotkey mnemonic.
 4. Creates the `platform-validator-wallet` Kubernetes Secret from generated hotkey files.
-5. Starts the validator Deployment in Kubernetes mode and schedules updater rollouts.
+5. Starts the validator Deployment in Kubernetes mode and schedules digest-gated updater checks.
 
 Useful options:
 
@@ -50,8 +50,8 @@ Useful options:
 
 The installer always performs a real cluster installation and always imports a
 hotkey Secret. It also installs a scoped CronJob that periodically restarts the
-validator Deployment so mutable GHCR tags such as `latest` are repulled by
-Kubernetes. Automated validation must use a disposable cluster, disposable
+validator image tag digest and patches the Deployment only when mutable GHCR
+tags such as `latest` point to new image content. Automated validation must use a disposable cluster, disposable
 namespace, and disposable test mnemonic supplied through a secure channel.
 
 `--cleanup` is scoped to objects created by this installer:

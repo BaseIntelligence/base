@@ -13,9 +13,8 @@ Automatic Kubernetes install:
 
 The installer performs real Kubernetes changes and prompts for the validator
 hotkey mnemonic. It creates a validator image-updater CronJob that periodically
-runs `kubectl rollout restart deployment/platform-validator`; with
-`imagePullPolicy: Always`, this repulls updated mutable GHCR tags when the Pod
-restarts. Validate the full install flow only against a disposable cluster or
+resolves the configured validator image tag digest and patches the Deployment
+only when that digest changes. Unchanged tags do not trigger restarts. Validate the full install flow only against a disposable cluster or
 namespace with disposable test hotkey material.
 
 Stop only installer-managed validator objects:
@@ -94,7 +93,7 @@ Kubernetes context, namespace, and hotkey material are safe to mutate. CI
 publishes Docker images to GHCR only from trusted events: PRs build with
 `push: false`, while `main`, `v*.*.*` tags, and confirmed manual runs publish.
 Kubernetes does not notice GHCR tag changes by itself; the installed CronJob
-creates the rollout needed for the validator Pod to repull a mutable tag.
+checks the tag digest and creates a rollout only when the digest changed.
 
 If Kubernetes or a Python tool is unavailable, record the missing tool as a
 blocker instead of marking that surface as tested.
