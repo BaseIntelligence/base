@@ -16,6 +16,7 @@ from platform_network.bittensor.validator_loop import run_epoch_loop
 from platform_network.bittensor.weight_setter import WeightSetter
 from platform_network.cli_app.main import DockerRuntimeController, app
 from platform_network.config.loader import load_settings
+from platform_network.config.settings import ValidatorSettings
 from platform_network.gpu.capabilities import CapabilityDecision
 from platform_network.master.challenge_client import ChallengeClient
 from platform_network.master.docker_orchestrator import ChallengeSpec
@@ -721,7 +722,7 @@ def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) ->
 
     class Client(httpx.AsyncClient):
         def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(transport=transport, base_url="http://x")
+            super().__init__(transport=transport)
 
     async def run() -> None:
         import platform_network.validator.registry_client as module
@@ -731,3 +732,77 @@ def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) ->
         assert response.challenges == []
 
     asyncio.run(run())
+
+
+def test_registry_client_default_validator_url_requests_public_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "network": "platform",
+                "api_version": "1",
+                "master_uid": 0,
+                "challenges": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class Client(httpx.AsyncClient):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(transport=transport)
+
+    async def run() -> None:
+        import platform_network.validator.registry_client as module
+
+        monkeypatch.setattr(module.httpx, "AsyncClient", Client)
+        response = await RegistryClient(
+            ValidatorSettings().registry_url
+        ).fetch_registry()
+        assert response.challenges == []
+
+    asyncio.run(run())
+
+    assert requested_urls == ["https://chain.platform.network/v1/registry"]
+
+
+def test_registry_client_trailing_slash_requests_single_registry_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "network": "platform",
+                "api_version": "1",
+                "master_uid": 0,
+                "challenges": [],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class Client(httpx.AsyncClient):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(transport=transport)
+
+    async def run() -> None:
+        import platform_network.validator.registry_client as module
+
+        monkeypatch.setattr(module.httpx, "AsyncClient", Client)
+        response = await RegistryClient(
+            "https://chain.platform.network/"
+        ).fetch_registry()
+        assert response.challenges == []
+
+    asyncio.run(run())
+
+    assert requested_urls == ["https://chain.platform.network/v1/registry"]

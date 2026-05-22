@@ -106,6 +106,10 @@ def test_compose_deploy_has_expected_services_and_socket_scope() -> None:
     assert services["master-admin"]["environment"]["PLATFORM_DATABASE__URL"].startswith(
         "sqlite+aiosqlite:///"
     )
+    assert (
+        services["validator"]["environment"]["PLATFORM_VALIDATOR__REGISTRY_URL"]
+        == "http://master-admin:8000"
+    )
     assert "PLATFORM_DOCKER__BROKER_ALLOWED_IMAGES" not in services[
         "platform-docker-broker"
     ].get("environment", {})

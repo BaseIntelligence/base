@@ -3,13 +3,55 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from platform_network.config.loader import load_settings
+from platform_network.config.settings import MasterSettings, ValidatorSettings
 from platform_network.security.tokens import generate_token, hash_token, verify_token
 from platform_network.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
 )
+
+
+def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
+    root = Path(__file__).resolve().parents[2]
+    expected = "https://chain.platform.network"
+
+    assert MasterSettings().registry_url == expected
+    assert ValidatorSettings().registry_url == expected
+
+    master_example = yaml.safe_load(
+        (root / "config" / "master.example.yaml").read_text(encoding="utf-8")
+    )
+    validator_example = yaml.safe_load(
+        (root / "config" / "validator.example.yaml").read_text(encoding="utf-8")
+    )
+
+    assert master_example["master"]["registry_url"] == expected
+    assert validator_example["validator"]["registry_url"] == expected
+
+
+def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() -> None:
+    root = Path(__file__).resolve().parents[2]
+    registry_facing_files = [
+        root / "src" / "platform_network" / "config" / "settings.py",
+        root / "config" / "master.example.yaml",
+        root / "config" / "validator.example.yaml",
+        root / "docs" / "validator.md",
+        root / "docs" / "validator" / "README.md",
+        root / "deploy" / "helm" / "platform" / "values.yaml",
+        root / "deploy" / "helm" / "platform" / "values.production.example.yaml",
+    ]
+
+    retired_rpc_host = ".".join(["rpc", "platform", "network"])
+    retired_rpc_base_url = "https://" + retired_rpc_host
+    retired_registry_url_path = retired_rpc_host + "/v1/registry"
+
+    for registry_facing_file in registry_facing_files:
+        content = registry_facing_file.read_text(encoding="utf-8")
+        assert retired_rpc_base_url not in content
+        assert retired_registry_url_path not in content
 
 
 def test_token_hash_verify() -> None:
