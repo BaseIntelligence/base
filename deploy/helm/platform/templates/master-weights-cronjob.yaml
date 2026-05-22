@@ -30,8 +30,8 @@ spec:
             {{- include "platform.podSecurityContext" . | nindent 12 }}
           containers:
             - name: weights
-              image: {{ include "platform.image" . | quote }}
-              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              image: {{ include "platform.imageValue" (dict "image" .Values.images.master) | quote }}
+              imagePullPolicy: {{ default .Values.image.pullPolicy .Values.images.master.pullPolicy }}
               command:
                 - platform
                 - master

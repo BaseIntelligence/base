@@ -31,8 +31,8 @@ spec:
         {{- include "platform.podSecurityContext" . | nindent 8 }}
       containers:
         - name: validator
-          image: {{ include "platform.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "platform.imageValue" (dict "image" .Values.images.validator) | quote }}
+          imagePullPolicy: {{ default .Values.image.pullPolicy .Values.images.validator.pullPolicy }}
           command:
             - platform
             - validator
