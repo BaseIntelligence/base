@@ -11,11 +11,9 @@ Automatic Kubernetes install:
 ./scripts/install-validator.sh
 ```
 
-Dry-run the generated objects without changing the cluster:
-
-```bash
-./scripts/install-validator.sh --dry-run --skip-hotkey-import
-```
+The installer performs real Kubernetes changes and prompts for the validator
+hotkey mnemonic. Validate the full install flow only against a disposable
+cluster or namespace with disposable test hotkey material.
 
 Stop only installer-managed validator objects:
 
@@ -78,13 +76,15 @@ broad prefixes such as `platformnetwork/` fail settings validation.
 
 ```bash
 bash -n scripts/install-validator.sh
-./scripts/install-validator.sh --dry-run --skip-hotkey-import
 uv run pytest tests/unit/test_validator_install_docs.py
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
 uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
 ```
+
+The full installer is an interactive real install. Run it only when the current
+Kubernetes context, namespace, and hotkey material are safe to mutate.
 
 If Kubernetes or a Python tool is unavailable, record the missing tool as a
 blocker instead of marking that surface as tested.

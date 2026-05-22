@@ -37,8 +37,6 @@ The script performs these actions:
 Useful options:
 
 ```bash
-./scripts/install-validator.sh --dry-run
-./scripts/install-validator.sh --skip-hotkey-import
 ./scripts/install-validator.sh --namespace platform-validator
 ./scripts/install-validator.sh --image ghcr.io/platformnetwork/platform:v1.2.3@sha256:<digest>
 ./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
@@ -48,6 +46,10 @@ Useful options:
 ./scripts/install-validator.sh --wallet-name platform-validator --wallet-hotkey validator
 ./scripts/install-validator.sh --cleanup
 ```
+
+The installer always performs a real cluster installation and always imports a
+hotkey Secret. Automated validation must use a disposable cluster, disposable
+namespace, and disposable test mnemonic supplied through a secure channel.
 
 `--cleanup` is scoped to objects created by this installer:
 
@@ -127,9 +129,11 @@ Before changing the installer or docs, run:
 
 ```bash
 bash -n scripts/install-validator.sh
-./scripts/install-validator.sh --dry-run --skip-hotkey-import
 uv run pytest tests/unit/test_validator_install_docs.py
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
 ```
+
+Run the full installer only when you intend to mutate a real Kubernetes context
+and can provide the validator hotkey mnemonic interactively.

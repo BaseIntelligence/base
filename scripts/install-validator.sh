@@ -14,12 +14,9 @@ WALLET_PATH="/var/lib/platform/wallets"
 STORAGE_SIZE="${PLATFORM_VALIDATOR_STORAGE_SIZE:-10Gi}"
 DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://platform-validator.invalid/platform}"
 BROKER_ALLOWED_IMAGES="${PLATFORM_BROKER_ALLOWED_IMAGES:-ghcr.io/platformnetwork/}"
-DRY_RUN=0
 CLEANUP_ONLY=0
-RENDER_ONLY=0
-SKIP_HOTKEY_IMPORT=0
-WALLET_SECRET_OPTIONAL="false"
 TMP_DIR=""
+PYTHON_CMD=()
 
 usage() {
   cat <<'USAGE'
@@ -28,10 +25,7 @@ Usage: scripts/install-validator.sh [options]
 Kubernetes-only validator installer. It asks only for the validator hotkey mnemonic.
 
 Options:
-  --dry-run                  Print kubectl actions without applying them.
   --cleanup                  Delete this installer-managed validator deployment and exit.
-  --skip-hotkey-import       Do not prompt for or import a hotkey mnemonic.
-  --render-manifests         Print Kubernetes manifests and exit.
   --namespace NAME           Kubernetes namespace. Default: platform-validator
   --image IMAGE              Platform validator image. Default: ghcr.io/platformnetwork/platform:latest
   --registry-url URL         Registry API URL. Default: https://chain.platform.network
@@ -48,10 +42,7 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run) DRY_RUN=1 ;;
     --cleanup) CLEANUP_ONLY=1 ;;
-    --skip-hotkey-import) SKIP_HOTKEY_IMPORT=1; WALLET_SECRET_OPTIONAL="true" ;;
-    --render-manifests) RENDER_ONLY=1 ;;
     --namespace) NAMESPACE="${2:?missing NAME}"; shift ;;
     --image) IMAGE="${2:?missing IMAGE}"; shift ;;
     --registry-url) REGISTRY_URL="${2:?missing URL}"; shift ;;
@@ -75,33 +66,32 @@ cleanup_tmp() {
 }
 trap cleanup_tmp EXIT
 
-require_tools() {
+require_kubectl() {
   if ! command -v kubectl >/dev/null 2>&1; then
     echo "kubectl is required" >&2
     exit 1
   fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is required to import the hotkey mnemonic" >&2
-    exit 1
+}
+
+select_hotkey_python() {
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import bittensor' >/dev/null 2>&1; then
+    PYTHON_CMD=(python3)
+    return
   fi
+  if command -v uv >/dev/null 2>&1 && uv run python -c 'import bittensor' >/dev/null 2>&1; then
+    PYTHON_CMD=(uv run python)
+    return
+  fi
+  echo "python with bittensor is required to import the hotkey mnemonic" >&2
+  exit 1
 }
 
 kubectl_apply() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    kubectl apply --dry-run=client -f -
-  else
-    kubectl apply -f -
-  fi
+  kubectl apply -f -
 }
 
 kubectl_delete() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[dry-run]'
-    printf ' %q' kubectl "$@"
-    printf '\n'
-  else
-    kubectl "$@" || true
-  fi
+  kubectl "$@" || true
 }
 
 render_broker_allowed_images() {
@@ -130,14 +120,6 @@ cleanup_validator() {
 }
 
 import_hotkey_secret() {
-  if [ "$SKIP_HOTKEY_IMPORT" -eq 1 ]; then
-    return
-  fi
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] would prompt for validator hotkey mnemonic and create Secret ${APP}-wallet"
-    return
-  fi
-
   printf 'Validator hotkey mnemonic: '
   IFS= read -r -s HOTKEY_MNEMONIC
   printf '\n'
@@ -148,7 +130,7 @@ import_hotkey_secret() {
 
   TMP_DIR="$(mktemp -d)"
   export TMP_DIR WALLET_NAME WALLET_HOTKEY
-  printf '%s\n' "$HOTKEY_MNEMONIC" | python3 -c '
+  printf '%s\n' "$HOTKEY_MNEMONIC" | "${PYTHON_CMD[@]}" -c '
 import os
 import sys
 from pathlib import Path
@@ -178,8 +160,7 @@ wallet.regenerate_hotkey(
   HOTKEY_DIR="$TMP_DIR/wallets/$WALLET_NAME/hotkeys"
   kubectl -n "$NAMESPACE" create secret generic "$APP-wallet" \
     --from-file=hotkey="$HOTKEY_DIR/$WALLET_HOTKEY" \
-    --from-file=hotkeypub.txt="$HOTKEY_DIR/${WALLET_HOTKEY}pub.txt" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --from-file=hotkeypub.txt="$HOTKEY_DIR/${WALLET_HOTKEY}pub.txt"
 }
 
 render_manifests() {
@@ -364,7 +345,6 @@ spec:
         - name: wallet
           secret:
             secretName: ${APP}-wallet
-            optional: ${WALLET_SECRET_OPTIONAL}
             items:
               - key: hotkey
                 path: ${WALLET_HOTKEY}
@@ -374,17 +354,14 @@ YAML
 }
 
 main() {
-  require_tools
-  if [ "$RENDER_ONLY" -eq 1 ]; then
-    render_manifests
-    exit 0
-  fi
-
-  cleanup_validator
+  require_kubectl
   if [ "$CLEANUP_ONLY" -eq 1 ]; then
+    cleanup_validator
     exit 0
   fi
 
+  select_hotkey_python
+  cleanup_validator
   render_manifests | kubectl_apply
   import_hotkey_secret
   echo "Validator Kubernetes install complete."

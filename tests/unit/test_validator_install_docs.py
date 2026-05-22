@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
-
-import yaml
 
 from platform_network.config import load_settings
 
@@ -19,22 +18,44 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _render_installer_manifests(*args: str) -> list[dict]:
-    import subprocess
-
-    result = subprocess.run(
-        [
-            str(SCRIPT),
-            "--render-manifests",
-            "--skip-hotkey-import",
-            *args,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
+def _validator_config(
+    *,
+    database_url: str = "postgresql+asyncpg://platform-validator.invalid/platform",
+    broker_allowed_images: list[str] | None = None,
+) -> str:
+    allowed = broker_allowed_images or ["ghcr.io/platformnetwork/"]
+    allowed_yaml = "\n".join(f"    - {item}" for item in allowed)
+    return f"""runtime:
+  backend: kubernetes
+database:
+  url: {database_url}
+network:
+  netuid: 0
+  chain_endpoint: ""
+  wallet_name: platform-validator
+  wallet_hotkey: validator
+  wallet_path: /var/lib/platform/wallets
+  master_uid: 0
+validator:
+  registry_url: https://chain.platform.network
+  registry_retry_seconds: 15
+docker:
+  broker_url: http://platform-validator-broker:8082
+  secret_dir: /var/lib/platform/secrets
+  broker_allowed_images:
+{allowed_yaml}
+kubernetes:
+  namespace: platform-validator
+  in_cluster: true
+  target_state_file: /var/lib/platform/kubernetes_targets.json
+  service_account: platform-validator
+  challenge_mode: statefulset
+  broker_backend: kubernetes
+  storage_size: 10Gi
+observability:
+  log_json: true
+  otel_service_name: platform-validator
+"""
 
 
 def test_validator_install_docs_are_kubernetes_only() -> None:
@@ -59,6 +80,9 @@ def test_validator_install_docs_are_kubernetes_only() -> None:
         assert "Kubernetes" in content
         assert "https://chain.platform.network" in content
         assert "platform-validator.invalid" not in content
+        assert "--dry-run" not in content
+        assert "--skip-hotkey-import" not in content
+        assert "--render-manifests" not in content
 
 
 def test_validator_docs_document_kubernetes_policy_and_secret_behavior() -> None:
@@ -97,6 +121,114 @@ def test_installer_prompts_only_for_hotkey_mnemonic() -> None:
     assert "regen_coldkey" not in script.lower()
     assert "new_coldkey" not in script.lower()
     assert "coldkey mnemonic" not in script.lower()
+
+
+def test_installer_has_no_smoke_modes() -> None:
+    script = _read(SCRIPT)
+
+    forbidden = [
+        "--dry-run",
+        "--skip-hotkey-import",
+        "--render-manifests",
+        "DRY_RUN",
+        "SKIP_HOTKEY_IMPORT",
+        "RENDER_ONLY",
+        "WALLET_SECRET_OPTIONAL",
+        "[dry-run]",
+        "dry-run=client",
+    ]
+    for token in forbidden:
+        assert token not in script
+
+
+def test_removed_installer_smoke_options_are_rejected() -> None:
+    for option in ["--dry-run", "--skip-hotkey-import", "--render-manifests"]:
+        result = subprocess.run(
+            [str(SCRIPT), option],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert f"Unknown option: {option}" in result.stderr
+        assert "Validator hotkey mnemonic" not in result.stdout
+        assert "kubectl is required" not in result.stderr
+
+
+def _write_fake_kubectl(tmp_path: Path) -> Path:
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$KUBECTL_LOG"\n'
+        'if [ "$1" = apply ]; then cat >/dev/null; fi\n',
+        encoding="utf-8",
+    )
+    kubectl.chmod(0o700)
+    return kubectl
+
+
+def _write_unusable_hotkey_python(tmp_path: Path) -> None:
+    for name in ["python3", "uv"]:
+        executable = tmp_path / name
+        executable.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+        executable.chmod(0o700)
+
+
+def test_cleanup_requires_only_kubectl(tmp_path: Path) -> None:
+    _write_fake_kubectl(tmp_path)
+    _write_unusable_hotkey_python(tmp_path)
+    log = tmp_path / "kubectl.log"
+    env = {
+        "PATH": f"{tmp_path}:/usr/bin:/bin",
+        "KUBECTL_LOG": str(log),
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--cleanup", "--namespace", "validator-test"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "python with bittensor" not in result.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        "-n validator-test delete deployment platform-validator",
+        "-n validator-test delete configmap platform-validator-config",
+        "-n validator-test delete secret platform-validator-wallet",
+        "-n validator-test delete role platform-validator-runtime",
+        "-n validator-test delete rolebinding platform-validator-runtime",
+        "-n validator-test delete serviceaccount platform-validator",
+    ]
+
+
+def test_install_requires_hotkey_python_before_cleanup(tmp_path: Path) -> None:
+    _write_fake_kubectl(tmp_path)
+    _write_unusable_hotkey_python(tmp_path)
+    log = tmp_path / "kubectl.log"
+    env = {
+        "PATH": f"{tmp_path}:/usr/bin:/bin",
+        "KUBECTL_LOG": str(log),
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--namespace", "validator-test"],
+        cwd=ROOT,
+        env=env,
+        input="unused mnemonic\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "python with bittensor is required" in result.stderr
+    assert not log.exists()
 
 
 def test_installer_cleanup_is_scoped_to_kubernetes_validator_objects() -> None:
@@ -139,36 +271,40 @@ def test_validator_extra_includes_kubernetes_runtime_dependencies() -> None:
     assert any(item.startswith("kubernetes") for item in validator_extra)
 
 
-def test_generated_validator_config_passes_settings_policy(tmp_path: Path) -> None:
-    configmap = next(
-        doc for doc in _render_installer_manifests() if doc.get("kind") == "ConfigMap"
-    )
+def test_installer_default_config_values_pass_settings_policy(tmp_path: Path) -> None:
+    script = _read(SCRIPT)
     config = tmp_path / "validator.yaml"
-    config.write_text(configmap["data"]["validator.yaml"], encoding="utf-8")
+    config.write_text(_validator_config(), encoding="utf-8")
 
     settings = load_settings(config)
 
+    assert 'DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://' in script
+    assert (
+        'REGISTRY_URL="${PLATFORM_VALIDATOR_REGISTRY_URL:-https://chain.platform.network}"'
+        in script
+    )
+    assert (
+        'BROKER_ALLOWED_IMAGES="${PLATFORM_BROKER_ALLOWED_IMAGES:-ghcr.io/platformnetwork/}"'
+        in script
+    )
     assert settings.runtime.backend == "kubernetes"
     assert settings.validator.registry_url == "https://chain.platform.network"
     assert settings.database.url.startswith("postgresql+asyncpg://")
     assert settings.docker.broker_allowed_images == ["ghcr.io/platformnetwork/"]
 
 
-def test_generated_validator_config_supports_custom_policy_values(
-    tmp_path: Path,
-) -> None:
-    configmap = next(
-        doc
-        for doc in _render_installer_manifests(
-            "--database-url",
-            "postgresql://platform:secret@postgres.platform/platform",
-            "--broker-allowed-images",
-            "ghcr.io/platformnetwork/,registry.example.com/platform/",
-        )
-        if doc.get("kind") == "ConfigMap"
-    )
+def test_validator_config_supports_custom_policy_values(tmp_path: Path) -> None:
     config = tmp_path / "validator-custom.yaml"
-    config.write_text(configmap["data"]["validator.yaml"], encoding="utf-8")
+    config.write_text(
+        _validator_config(
+            database_url="postgresql://platform:secret@postgres.platform/platform",
+            broker_allowed_images=[
+                "ghcr.io/platformnetwork/",
+                "registry.example.com/platform/",
+            ],
+        ),
+        encoding="utf-8",
+    )
 
     settings = load_settings(config)
 
@@ -251,19 +387,10 @@ def test_manual_validator_kubernetes_config_must_satisfy_policy(tmp_path: Path) 
         raise AssertionError("manual Kubernetes config accepted broad image allowlist")
 
 
-def test_generated_manifest_uses_non_root_accessible_wallet_path() -> None:
-    deployment = next(
-        doc for doc in _render_installer_manifests() if doc.get("kind") == "Deployment"
-    )
-    pod_spec = deployment["spec"]["template"]["spec"]
-    container = pod_spec["containers"][0]
-    mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+def test_generated_manifest_uses_non_root_accessible_required_wallet_path() -> None:
+    script = _read(SCRIPT)
 
-    assert pod_spec["securityContext"]["runAsNonRoot"] is True
-    assert mounts["wallet"]["mountPath"] == (
-        "/var/lib/platform/wallets/platform-validator/hotkeys"
-    )
-    assert (
-        deployment["spec"]["template"]["spec"]["volumes"][2]["secret"]["optional"]
-        is True
-    )
+    assert "runAsNonRoot: true" in script
+    assert "mountPath: ${WALLET_PATH}/${WALLET_NAME}/hotkeys" in script
+    assert "secretName: ${APP}-wallet" in script
+    assert "optional:" not in script
