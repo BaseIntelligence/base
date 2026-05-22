@@ -11,10 +11,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_NAME = "platform-kind-registry"
+RUN_ID = str(os.getpid())
+REGISTRY_NAME = f"platform-kind-registry-{RUN_ID}"
 REGISTRY_PORT = "5001"
-CLUSTER = "platform-validator-mutable-tag"
-IMAGE = f"localhost:{REGISTRY_PORT}/platform-validator-mutable:latest"
+CLUSTER = f"platform-validator-mutable-tag-{RUN_ID}"
+PUSH_IMAGE = f"localhost:{REGISTRY_PORT}/platform-validator-mutable:latest"
+CLUSTER_IMAGE = PUSH_IMAGE
+UPDATER_PUSH_IMAGE = f"localhost:{REGISTRY_PORT}/platform-updater:latest"
+UPDATER_CLUSTER_IMAGE = UPDATER_PUSH_IMAGE
 NAMESPACE = "platform-validator-mutable"
 
 
@@ -98,8 +102,21 @@ def _build_and_push(tag_marker: str) -> None:
             'CMD ["sh", "-c", "sleep 3600"]\n',
             encoding="utf-8",
         )
-        _docker("build", "-t", IMAGE, tmp, timeout=180)
-    _docker("push", IMAGE, timeout=180)
+        _docker("build", "-t", PUSH_IMAGE, tmp, timeout=180)
+    _docker("push", PUSH_IMAGE, timeout=180)
+
+
+def _build_and_push_updater() -> None:
+    _docker(
+        "build",
+        "-f",
+        "docker/Dockerfile.validator",
+        "-t",
+        UPDATER_PUSH_IMAGE,
+        ".",
+        timeout=300,
+    )
+    _docker("push", UPDATER_PUSH_IMAGE, timeout=180)
 
 
 def _generate_mnemonic() -> str:
@@ -140,6 +157,51 @@ def _validator_image_id(previous_uid: str | None = None) -> tuple[str, str]:
     raise AssertionError("validator pod imageID was not observed")
 
 
+def _run_updater_job(name: str) -> None:
+    _kubectl(
+        "-n",
+        NAMESPACE,
+        "create",
+        "job",
+        "--from=cronjob/platform-validator-image-updater",
+        name,
+    )
+    try:
+        _kubectl(
+            "-n",
+            NAMESPACE,
+            "wait",
+            "--for=condition=complete",
+            f"job/{name}",
+            "--timeout=180s",
+            timeout=240,
+        )
+    except AssertionError as exc:
+        pods = _kubectl("-n", NAMESPACE, "get", "pods", "-o", "wide")
+        describe = _kubectl("-n", NAMESPACE, "describe", f"job/{name}")
+        logs = _kubectl("-n", NAMESPACE, "logs", f"job/{name}", timeout=60)
+        raise AssertionError(
+            f"{exc}\nPods:\n{pods}\nDescribe:\n{describe}\nLogs:\n{logs}"
+        ) from exc
+
+
+def _assert_no_replacement_pod(uid: str) -> None:
+    time.sleep(10)
+    current_uid, _ = _validator_image_id()
+    assert current_uid == uid
+
+
+def _deployment_digest_annotation() -> str:
+    return _kubectl(
+        "-n",
+        NAMESPACE,
+        "get",
+        "deployment/platform-validator",
+        "-o",
+        r"jsonpath={.metadata.annotations.platform\.network/validator-image-digest}",
+    ).strip()
+
+
 def test_validator_updater_repulls_changed_mutable_tag() -> None:
     if os.environ.get("PLATFORM_RUN_KIND_MUTABLE_TAG_TEST") != "1":
         pytest.skip(
@@ -153,6 +215,7 @@ def test_validator_updater_repulls_changed_mutable_tag() -> None:
         _create_cluster()
         try:
             _build_and_push("a")
+            _build_and_push_updater()
             mnemonic = _generate_mnemonic()
             _run(
                 [
@@ -161,7 +224,11 @@ def test_validator_updater_repulls_changed_mutable_tag() -> None:
                     "--namespace",
                     NAMESPACE,
                     "--image",
-                    IMAGE,
+                    CLUSTER_IMAGE,
+                    "--auto-update-image",
+                    UPDATER_CLUSTER_IMAGE,
+                    "--auto-update-registry-endpoint",
+                    f"http://{REGISTRY_NAME}:5000",
                     "--auto-update-schedule",
                     "*/1 * * * *",
                 ],
@@ -170,27 +237,20 @@ def test_validator_updater_repulls_changed_mutable_tag() -> None:
             )
             first_uid, first_image_id = _validator_image_id()
 
-            _build_and_push("b")
-            _kubectl(
-                "-n",
-                NAMESPACE,
-                "create",
-                "job",
-                "--from=cronjob/platform-validator-image-updater",
-                "updater-manual",
-            )
-            _kubectl(
-                "-n",
-                NAMESPACE,
-                "wait",
-                "--for=condition=complete",
-                "job/updater-manual",
-                "--timeout=180s",
-                timeout=240,
-            )
-            _, second_image_id = _validator_image_id(previous_uid=first_uid)
+            _run_updater_job("updater-initial")
+            _assert_no_replacement_pod(first_uid)
+            first_digest = _deployment_digest_annotation()
 
+            _build_and_push("b")
+            _run_updater_job("updater-change")
+            second_uid, second_image_id = _validator_image_id(previous_uid=first_uid)
+
+            assert second_uid != first_uid
             assert first_image_id != second_image_id
+            assert _deployment_digest_annotation() != first_digest
+
+            _run_updater_job("updater-current")
+            _assert_no_replacement_pod(second_uid)
         finally:
             _run(["kind", "delete", "cluster", "--name", CLUSTER], timeout=120)
     finally:
