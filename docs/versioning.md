@@ -36,6 +36,14 @@ This means a `v3.0.0` Git tag publishes both the canonical `3.0.0` image tag and
 
 Pull requests build Docker images with `push: false`. GHCR publication happens only from trusted events: `main`, `v*.*.*` tags, or a manual `workflow_dispatch` where `confirm_publish` is set to `true`.
 
+## GitHub Releases
+
+Pushing a `v*.*.*` tag creates a GitHub Release only after CI validation and both GHCR image publish jobs succeed. Branch pushes and manual `workflow_dispatch` runs can publish images under the trusted-event rules above, but they do not create GitHub Releases.
+
+Release descriptions combine GitHub-generated release notes with a maintained body that lists the published `platform` and `platform-master` GHCR tags: canonical SemVer, compatibility `v` tag, and traceable `sha-<commit>` tag. The body also includes deployment notes that production should pin the SemVer tag plus immutable digest.
+
+Tags containing a hyphen, such as `v3.1.0-rc.1`, are marked as prereleases. Stable tags are marked as the latest GitHub Release.
+
 ## Production Image Policy
 
 Production and Kubernetes deployment references must use a SemVer image tag plus a digest:
