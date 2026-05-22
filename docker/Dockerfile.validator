@@ -3,6 +3,7 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_SYSTEM_PYTHON=1 \
+    HOME=/var/lib/platform \
     PLATFORM_DOCKER__NETWORK_NAME=platform_challenges \
     PLATFORM_DOCKER__SECRET_DIR=/var/lib/platform/secrets
 

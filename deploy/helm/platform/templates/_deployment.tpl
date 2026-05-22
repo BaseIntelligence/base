@@ -38,6 +38,8 @@ spec:
             - name: http
               containerPort: {{ .port }}
           env:
+            - name: HOME
+              value: /var/lib/platform
             - name: PLATFORM_DATABASE__URL
               valueFrom:
                 secretKeyRef:

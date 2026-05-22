@@ -40,6 +40,8 @@ spec:
                 - config/master.kubernetes.yaml
                 - --once
               env:
+                - name: HOME
+                  value: /var/lib/platform
                 - name: PLATFORM_DATABASE__URL
                   valueFrom:
                     secretKeyRef:
