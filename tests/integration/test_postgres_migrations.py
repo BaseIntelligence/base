@@ -21,13 +21,13 @@ pytestmark = pytest.mark.postgres
 def _current_alembic_head() -> str:
     config = Config(str(ROOT_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT_DIR / "alembic"))
-    return ScriptDirectory.from_config(config).get_current_head()
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _migration_challenge_status_literals() -> list[str]:
-    migration_ast = ast.parse(
-        CHALLENGE_REGISTRY_MIGRATION.read_text(encoding="utf-8")
-    )
+    migration_ast = ast.parse(CHALLENGE_REGISTRY_MIGRATION.read_text(encoding="utf-8"))
 
     for node in migration_ast.body:
         if not isinstance(node, ast.Assign):
@@ -64,18 +64,22 @@ async def test_postgres_migration_reaches_head_with_non_native_status_enum(
                 )
             ).scalar_one()
             status_column = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         SELECT data_type, udt_name
                         FROM information_schema.columns
                         WHERE table_schema = current_schema()
                           AND table_name = 'challenges'
                           AND column_name = 'status'
                         """
+                        )
                     )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             challenge_status_type_count = (
                 await connection.execute(
                     text(
