@@ -106,6 +106,22 @@ def test_helm_template_renders_validator_registry_url_default_and_override(
         assert config["master"]["registry_url"] == "http://platform-admin:8000"
 
 
+def test_helm_validator_deployment_uses_configured_image_pull_policy() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART), "--set", "image.pullPolicy=Always"],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    validator = _document(documents, "Deployment", "platform-validator")
+    container = validator["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["imagePullPolicy"] == "Always"
+
+
 def test_helm_template_renders_target_gpu_and_remote_agent_security_values(
     tmp_path: Path,
 ) -> None:
