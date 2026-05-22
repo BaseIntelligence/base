@@ -461,17 +461,16 @@ def test_validator_installer_renders_auto_update_cronjob() -> None:
         'AUTO_UPDATE_SCHEDULE="${PLATFORM_VALIDATOR_AUTO_UPDATE_SCHEDULE:-*/5 * * * *}"'
         in script
     )
-    assert (
-        'AUTO_UPDATE_IMAGE="${PLATFORM_VALIDATOR_AUTO_UPDATE_IMAGE:-registry.k8s.io/kubectl@sha256:99b37df34bc4f99ee322521d4c85cb98c1ceb8f70ff0618bef84eec9fe1ebc20}"'
-        in script
-    )
+    assert 'AUTO_UPDATE_IMAGE="${PLATFORM_VALIDATOR_AUTO_UPDATE_IMAGE:-}"' in script
+    assert 'AUTO_UPDATE_IMAGE="$IMAGE"' in script
+    assert "AUTO_UPDATE_REGISTRY_ENDPOINT=" in script
     assert "kind: CronJob" in script
     assert "name: ${APP}-image-updater" in script
-    assert "rollout" in script
-    assert "restart" in script
-    assert "deployment/${APP}" in script
+    assert "refresh-image" in script
+    assert "rollout" not in script
     assert 'resources: ["jobs"]' in script
     assert 'resources: ["deployments"]' in script
+    assert 'resources: ["pods"]' in script
     assert 'resourceNames: ["${APP}"]' in script
     assert 'delete cronjob "$APP-image-updater"' in script
     assert 'delete serviceaccount "$APP-image-updater"' in script
@@ -513,17 +512,52 @@ def test_validator_installer_auto_updater_uses_scoped_service_account(
 
     assert cronjob["spec"]["schedule"] == "*/5 * * * *"
     assert pod_spec["serviceAccountName"] == "platform-validator-image-updater"
+    assert pod_spec["automountServiceAccountToken"] is True
     assert pod_spec["restartPolicy"] == "OnFailure"
-    assert container["image"] == (
-        "registry.k8s.io/kubectl@"
-        "sha256:99b37df34bc4f99ee322521d4c85cb98c1ceb8f70ff0618bef84eec9fe1ebc20"
-    )
+    assert container["image"] == "ghcr.io/platformnetwork/platform:latest"
     assert container["imagePullPolicy"] == "Always"
+    assert container["volumeMounts"] == [
+        {
+            "name": "kube-api-access",
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "readOnly": True,
+        }
+    ]
+    assert pod_spec["volumes"][0]["name"] == "kube-api-access"
+    assert pod_spec["volumes"][0]["projected"]["sources"][0] == {
+        "serviceAccountToken": {"path": "token", "expirationSeconds": 3600}
+    }
     assert container["command"] == [
-        "kubectl",
-        "-n",
+        "platform",
+        "validator",
+        "refresh-image",
+        "--namespace",
         "validator-test",
-        "rollout",
-        "restart",
-        "deployment/platform-validator",
+        "--deployment",
+        "platform-validator",
+        "--container",
+        "validator",
+        "--image",
+        "ghcr.io/platformnetwork/platform:latest",
+        "--registry-endpoint",
+        "",
+    ]
+    updater_role = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Role"
+        and doc.get("metadata", {}).get("name") == "platform-validator-image-updater"
+    )
+    assert updater_role["rules"] == [
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "resourceNames": ["platform-validator"],
+            "verbs": ["get", "patch"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["pods"],
+            "verbs": ["get", "list"],
+        },
     ]

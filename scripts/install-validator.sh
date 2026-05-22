@@ -6,7 +6,8 @@ APP="platform-validator"
 NAMESPACE="${PLATFORM_NAMESPACE:-platform-validator}"
 IMAGE="${PLATFORM_IMAGE:-ghcr.io/platformnetwork/platform:latest}"
 AUTO_UPDATE_SCHEDULE="${PLATFORM_VALIDATOR_AUTO_UPDATE_SCHEDULE:-*/5 * * * *}"
-AUTO_UPDATE_IMAGE="${PLATFORM_VALIDATOR_AUTO_UPDATE_IMAGE:-registry.k8s.io/kubectl@sha256:99b37df34bc4f99ee322521d4c85cb98c1ceb8f70ff0618bef84eec9fe1ebc20}"
+AUTO_UPDATE_IMAGE="${PLATFORM_VALIDATOR_AUTO_UPDATE_IMAGE:-}"
+AUTO_UPDATE_REGISTRY_ENDPOINT="${PLATFORM_VALIDATOR_AUTO_UPDATE_REGISTRY_ENDPOINT:-}"
 REGISTRY_URL="${PLATFORM_VALIDATOR_REGISTRY_URL:-https://chain.platform.network}"
 NETUID="${PLATFORM_NETUID:-0}"
 CHAIN_ENDPOINT="${PLATFORM_CHAIN_ENDPOINT:-}"
@@ -30,8 +31,9 @@ Options:
   --cleanup                  Delete this installer-managed validator deployment and exit.
   --namespace NAME           Kubernetes namespace. Default: platform-validator
   --image IMAGE              Platform validator image. Default: ghcr.io/platformnetwork/platform:latest
-  --auto-update-schedule S   Cron schedule for validator image restarts. Default: */5 * * * *
-  --auto-update-image IMAGE  kubectl image used by the updater CronJob. Default: registry.k8s.io/kubectl@sha256:99b37df34bc4f99ee322521d4c85cb98c1ceb8f70ff0618bef84eec9fe1ebc20
+  --auto-update-schedule S   Cron schedule for validator image digest checks. Default: */5 * * * *
+  --auto-update-image IMAGE  Image used by the updater CronJob. Default: same as --image
+  --auto-update-registry-endpoint URL  Optional registry API endpoint override for digest checks.
   --registry-url URL         Registry API URL. Default: https://chain.platform.network
   --netuid NETUID            Bittensor subnet UID. Default: 0
   --chain-endpoint ENDPOINT  Optional Bittensor chain endpoint.
@@ -51,6 +53,7 @@ while [ "$#" -gt 0 ]; do
     --image) IMAGE="${2:?missing IMAGE}"; shift ;;
     --auto-update-schedule) AUTO_UPDATE_SCHEDULE="${2:?missing SCHEDULE}"; shift ;;
     --auto-update-image) AUTO_UPDATE_IMAGE="${2:?missing IMAGE}"; shift ;;
+    --auto-update-registry-endpoint) AUTO_UPDATE_REGISTRY_ENDPOINT="${2:?missing URL}"; shift ;;
     --registry-url) REGISTRY_URL="${2:?missing URL}"; shift ;;
     --netuid) NETUID="${2:?missing NETUID}"; shift ;;
     --chain-endpoint) CHAIN_ENDPOINT="${2:?missing ENDPOINT}"; shift ;;
@@ -64,6 +67,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ -z "$AUTO_UPDATE_IMAGE" ]; then
+  AUTO_UPDATE_IMAGE="$IMAGE"
+fi
 
 cleanup_tmp() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
@@ -239,6 +246,9 @@ rules:
     resources: ["deployments"]
     resourceNames: ["${APP}"]
     verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -424,6 +434,7 @@ spec:
             platform.component: validator-image-updater
         spec:
           serviceAccountName: ${APP}-image-updater
+          automountServiceAccountToken: true
           restartPolicy: OnFailure
           securityContext:
             runAsNonRoot: true
@@ -436,16 +447,46 @@ spec:
               image: ${AUTO_UPDATE_IMAGE}
               imagePullPolicy: Always
               command:
-                - kubectl
-                - -n
+                - platform
+                - validator
+                - refresh-image
+                - --namespace
                 - ${NAMESPACE}
-                - rollout
-                - restart
-                - deployment/${APP}
+                - --deployment
+                - ${APP}
+                - --container
+                - validator
+                - --image
+                - ${IMAGE}
+                - --registry-endpoint
+                - "${AUTO_UPDATE_REGISTRY_ENDPOINT}"
+              volumeMounts:
+                - name: kube-api-access
+                  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  readOnly: true
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+          volumes:
+            - name: kube-api-access
+              projected:
+                defaultMode: 420
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3600
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - path: namespace
+                          fieldRef:
+                            apiVersion: v1
+                            fieldPath: metadata.namespace
 YAML
 }
 
