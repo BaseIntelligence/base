@@ -67,6 +67,7 @@ warn_unused_ignores = false
 pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["postgres: integration tests that require an external PostgreSQL database"]
 
 [tool.coverage.run]
 source = ["platform_network"]
