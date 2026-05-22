@@ -8,6 +8,7 @@ from platform_network.validator import image_updater
 from platform_network.validator.image_updater import (
     DIGEST_ANNOTATION,
     ValidatorImageUpdater,
+    _parse_www_authenticate,
     extract_digest,
     parse_image_reference,
 )
@@ -132,6 +133,19 @@ def test_parse_image_reference_defaults_registry_and_tag() -> None:
 
 def test_extract_digest_from_container_image_id() -> None:
     assert extract_digest(f"docker-pullable://example@{DIGEST_A}") == DIGEST_A
+
+
+def test_parse_www_authenticate_strips_quoted_ghcr_values() -> None:
+    parsed = _parse_www_authenticate(
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+        'scope="repository:platformnetwork/platform-master:pull"'
+    )
+
+    assert parsed == {
+        "realm": "https://ghcr.io/token",
+        "service": "ghcr.io",
+        "scope": "repository:platformnetwork/platform-master:pull",
+    }
 
 
 def test_digest_pinned_images_do_not_patch(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.request import parse_http_list, parse_keqv_list
 
 import httpx
 
@@ -77,10 +77,8 @@ def _parse_www_authenticate(header: str) -> dict[str, str]:
     scheme, _, params = header.partition(" ")
     if scheme.lower() != "bearer":
         return {}
-    parsed: dict[str, str] = {}
-    for key, value in parse_qsl(params.replace(",", "&")):
-        parsed[key] = value
-    return parsed
+    parsed = parse_keqv_list(parse_http_list(params))
+    return {str(key): str(value) for key, value in parsed.items()}
 
 
 def resolve_remote_digest(
