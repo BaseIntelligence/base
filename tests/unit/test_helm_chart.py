@@ -128,6 +128,153 @@ def test_helm_validator_deployment_uses_configured_image_pull_policy() -> None:
     assert container["imagePullPolicy"] == "Always"
 
 
+def test_helm_mutable_auto_update_renders_master_and_validator_latest_images() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+
+    for name, container_name in (
+        ("platform-admin", "admin"),
+        ("platform-proxy", "proxy"),
+        ("platform-broker", "broker"),
+    ):
+        deployment = _document(documents, "Deployment", name)
+        container = _named_container(_pod_spec(deployment), container_name)
+        assert container["image"] == "ghcr.io/platformnetwork/platform-master:latest"
+        assert container["imagePullPolicy"] == "Always"
+
+    validator = _document(documents, "Deployment", "platform-validator")
+    validator_container = _named_container(_pod_spec(validator), "validator")
+    assert validator_container["image"] == "ghcr.io/platformnetwork/platform:latest"
+    assert validator_container["imagePullPolicy"] == "Always"
+
+    weights = _document(documents, "CronJob", "platform-weights")
+    weights_container = _named_container(_pod_spec(weights), "weights")
+    assert (
+        weights_container["image"] == "ghcr.io/platformnetwork/platform-master:latest"
+    )
+    assert weights_container["imagePullPolicy"] == "Always"
+
+
+def test_helm_renders_one_minute_image_updaters_for_master_and_validator() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    expected = {
+        "platform-admin-image-updater": (
+            "deployment",
+            "platform-admin",
+            "admin",
+            "ghcr.io/platformnetwork/platform-master:latest",
+        ),
+        "platform-proxy-image-updater": (
+            "deployment",
+            "platform-proxy",
+            "proxy",
+            "ghcr.io/platformnetwork/platform-master:latest",
+        ),
+        "platform-broker-image-updater": (
+            "deployment",
+            "platform-broker",
+            "broker",
+            "ghcr.io/platformnetwork/platform-master:latest",
+        ),
+        "platform-weights-image-updater": (
+            "cronjob",
+            "platform-weights",
+            "weights",
+            "ghcr.io/platformnetwork/platform-master:latest",
+        ),
+        "platform-validator-image-updater": (
+            "deployment",
+            "platform-validator",
+            "validator",
+            "ghcr.io/platformnetwork/platform:latest",
+        ),
+    }
+
+    for cronjob_name, (kind, resource, container_name, image) in expected.items():
+        cronjob = _document(documents, "CronJob", cronjob_name)
+        pod_spec = _pod_spec(cronjob)
+        assert pod_spec is not None
+        updater = _named_container(pod_spec, "image-updater")
+
+        assert cronjob["spec"]["schedule"] == "*/1 * * * *"
+        assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
+        assert pod_spec["serviceAccountName"] == "platform-image-updater"
+        assert pod_spec["restartPolicy"] == "OnFailure"
+        assert updater["image"] == "ghcr.io/platformnetwork/platform:latest"
+        assert updater["imagePullPolicy"] == "Always"
+        assert updater["command"] == [
+            "platform",
+            "validator",
+            "refresh-image",
+            "--namespace",
+            "default",
+            "--resource-kind",
+            kind,
+            "--name",
+            resource,
+            "--container",
+            container_name,
+            "--image",
+            image,
+            "--registry-endpoint",
+            "",
+        ]
+
+
+def test_helm_image_updater_rbac_is_namespace_scoped() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    service_account = _document(documents, "ServiceAccount", "platform-image-updater")
+    role = _document(documents, "Role", "platform-image-updater")
+    role_binding = _document(documents, "RoleBinding", "platform-image-updater")
+
+    assert service_account["automountServiceAccountToken"] is True
+    assert role_binding["subjects"] == [
+        {"kind": "ServiceAccount", "name": "platform-image-updater"}
+    ]
+    assert "ClusterRole" not in {doc["kind"] for doc in documents}
+    assert "ClusterRoleBinding" not in {doc["kind"] for doc in documents}
+    rules = role["rules"]
+    deployment_rule = next(
+        rule for rule in rules if rule["resources"] == ["deployments"]
+    )
+    cronjob_rule = next(rule for rule in rules if rule["resources"] == ["cronjobs"])
+    pods_rule = next(rule for rule in rules if rule["resources"] == ["pods"])
+
+    assert set(deployment_rule["resourceNames"]) == {
+        "platform-admin",
+        "platform-proxy",
+        "platform-broker",
+        "platform-validator",
+    }
+    assert deployment_rule["verbs"] == ["get", "patch"]
+    assert cronjob_rule["resourceNames"] == ["platform-weights"]
+    assert cronjob_rule["verbs"] == ["get", "patch"]
+    assert pods_rule["verbs"] == ["get", "list"]
+
+
 def test_helm_template_renders_target_gpu_and_remote_agent_security_values(
     tmp_path: Path,
 ) -> None:
@@ -243,6 +390,7 @@ def test_helm_production_values_render_safe_control_plane() -> None:
 
     assert "sqlite" not in rendered_lower
     assert ":latest" not in rendered_lower
+    assert "image-updater" not in rendered
     assert "imagePullSecrets" not in rendered
     assert (
         "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -383,6 +531,14 @@ def _pod_spec(doc: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _named_container(pod_spec: dict[str, Any] | None, name: str) -> dict[str, Any]:
+    assert pod_spec is not None
+    for container in pod_spec.get("containers", []):
+        if container.get("name") == name:
+            return container
+    raise AssertionError(f"container {name!r} not rendered")
+
+
 def _document(documents: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
     for doc in documents:
         if doc.get("kind") == kind and doc.get("metadata", {}).get("name") == name:
@@ -391,15 +547,14 @@ def _document(documents: list[dict[str, Any]], kind: str, name: str) -> dict[str
 
 
 def _role_resources(documents: list[dict[str, Any]], api_group: str) -> set[str]:
+    resources: set[str] = set()
     for doc in documents:
         if doc.get("kind") != "Role":
             continue
-        resources: set[str] = set()
         for rule in doc.get("rules", []):
             if api_group in rule.get("apiGroups", []):
                 resources.update(rule.get("resources", []))
-        return resources
-    return set()
+    return resources
 
 
 def test_helm_production_policy_rejects_unsafe_values(tmp_path: Path) -> None:
@@ -424,6 +579,11 @@ def test_helm_production_policy_rejects_unsafe_values(tmp_path: Path) -> None:
                 """
             ),
             "verify_tls=true",
+        ),
+        (
+            "mutable-autoupdate.yaml",
+            "imageAutoUpdate:\n  enabled: true\n",
+            "imageAutoUpdate.enabled=true",
         ),
         (
             "missing-db-secret.yaml",
@@ -469,6 +629,22 @@ def test_helm_policy_can_be_disabled_for_local_dev_images(tmp_path: Path) -> Non
               repository: localhost:5000/platform
               tag: latest
               digest: ''
+            images:
+              master:
+                repository: localhost:5000/platform-master
+                tag: latest
+                digest: ''
+                pullPolicy: Always
+              validator:
+                repository: localhost:5000/platform
+                tag: latest
+                digest: ''
+                pullPolicy: Always
+              updater:
+                repository: localhost:5000/platform
+                tag: latest
+                digest: ''
+                pullPolicy: Always
             """
         ),
         encoding="utf-8",
