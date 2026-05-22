@@ -61,6 +61,51 @@ def test_helm_template_switches_from_hpa_to_keda_scaledobjects() -> None:
     assert _role_resources(documents, "keda.sh") == {"scaledobjects"}
 
 
+def test_helm_template_renders_validator_registry_url_default_and_override(
+    tmp_path: Path,
+) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    override_file = tmp_path / "override.yaml"
+    override_file.write_text(
+        textwrap.dedent(
+            """
+            validator:
+              registryUrl: https://registry.override.test
+            network:
+              walletPath: /var/lib/platform/wallets
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    cases = [
+        ([], "https://chain.platform.network", ""),
+        (
+            ["-f", str(override_file)],
+            "https://registry.override.test",
+            "/var/lib/platform/wallets",
+        ),
+    ]
+    for args, expected, expected_wallet_path in cases:
+        rendered = subprocess.check_output(
+            [helm, "template", "platform", str(CHART), *args],
+            text=True,
+        )
+        documents = [
+            doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)
+        ]
+        config = yaml.safe_load(
+            _document(documents, "ConfigMap", "platform-config")["data"]["master.yaml"]
+        )
+
+        assert config["validator"]["registry_url"] == expected
+        assert config["network"]["wallet_path"] == expected_wallet_path
+        assert config["master"]["registry_url"] == "http://platform-admin:8000"
+
+
 def test_helm_template_renders_target_gpu_and_remote_agent_security_values(
     tmp_path: Path,
 ) -> None:

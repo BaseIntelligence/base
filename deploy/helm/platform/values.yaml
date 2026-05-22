@@ -33,6 +33,7 @@ network:
   chainEndpoint: ""
   walletName: default
   walletHotkey: default
+  walletPath: ""
 
 kubernetes:
   namespace: platform
@@ -109,6 +110,7 @@ docker:
 validator:
   enabled: true
   replicas: 1
+  registryUrl: https://chain.platform.network
   resources:
     requests:
       cpu: 250m

@@ -36,6 +36,16 @@
       },
       "required": ["repository", "tag"]
     },
+    "network": {
+      "type": "object",
+      "properties": {
+        "netuid": { "type": "integer", "minimum": 0 },
+        "chainEndpoint": { "type": "string" },
+        "walletName": { "type": "string", "minLength": 1 },
+        "walletHotkey": { "type": "string", "minLength": 1 },
+        "walletPath": { "type": "string" }
+      }
+    },
     "database": {
       "type": "object",
       "properties": {
@@ -173,6 +183,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "replicas": { "type": "integer", "minimum": 1 },
+        "registryUrl": { "type": "string", "minLength": 1 },
         "resources": { "type": "object" }
       }
     },
@@ -251,7 +262,7 @@
               "digest": { "pattern": "^sha256:[a-f0-9]{64}$" }
             }
           },
-          "database": {
+"database": {
             "required": ["urlSecret"],
             "properties": {
               "urlSecret": { "required": ["name", "key"] }

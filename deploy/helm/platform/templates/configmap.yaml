@@ -17,6 +17,10 @@ data:
       chain_endpoint: {{ .Values.network.chainEndpoint | quote }}
       wallet_name: {{ .Values.network.walletName | quote }}
       wallet_hotkey: {{ .Values.network.walletHotkey | quote }}
+      wallet_path: {{ .Values.network.walletPath | quote }}
+    validator:
+      registry_url: {{ .Values.validator.registryUrl | quote }}
+      registry_retry_seconds: 15
     master:
       registry_url: "http://{{ include "platform.fullname" . }}-admin:{{ .Values.masterAdmin.port }}"
       admin_host: "0.0.0.0"
