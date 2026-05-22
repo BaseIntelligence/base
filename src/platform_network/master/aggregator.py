@@ -63,7 +63,7 @@ def aggregate_challenge_weights(
     if total > 0:
         normalized = {uid: value / total for uid, value in uid_scores.items()}
     else:
-        normalized = {}
+        normalized = {0: 1.0}
 
     ordered = sorted(normalized.items())
     return FinalWeights(

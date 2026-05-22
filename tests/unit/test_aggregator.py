@@ -38,3 +38,33 @@ def test_failed_challenge_contributes_zero() -> None:
     final = aggregate_challenge_weights(results, {"hk1": 1, "hk2": 2})
     assert final.uids == [1]
     assert final.weights == [1.0]
+
+
+def test_aggregate_falls_back_to_uid_zero_without_active_challenges() -> None:
+    final = aggregate_challenge_weights([], {})
+
+    assert final.uids == [0]
+    assert final.weights == [1.0]
+    assert final.hotkey_weights == {}
+
+
+def test_aggregate_falls_back_to_uid_zero_for_empty_challenge_weights() -> None:
+    results = [ChallengeWeightsResult(slug="a", emission_percent=100, weights={})]
+
+    final = aggregate_challenge_weights(results, {"validator": 0})
+
+    assert final.uids == [0]
+    assert final.weights == [1.0]
+    assert final.hotkey_weights == {}
+
+
+def test_aggregate_falls_back_to_uid_zero_for_uid_zero_only_weights() -> None:
+    results = [
+        ChallengeWeightsResult(slug="a", emission_percent=100, weights={"validator": 1})
+    ]
+
+    final = aggregate_challenge_weights(results, {"validator": 0})
+
+    assert final.uids == [0]
+    assert final.weights == [1.0]
+    assert final.hotkey_weights == {}

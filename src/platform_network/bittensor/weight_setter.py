@@ -11,8 +11,6 @@ class WeightSetter:
     netuid: int
 
     def set_weights(self, uids: list[int], weights: list[float]) -> Any:
-        if 0 in uids:
-            raise ValueError("UID 0 cannot receive submitted weights")
         if not uids:
             raise ValueError("Cannot submit empty weights")
         if self.subtensor is None:

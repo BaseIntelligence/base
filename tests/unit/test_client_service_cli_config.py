@@ -227,6 +227,47 @@ async def test_master_weight_service_and_validator_runner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_master_weight_service_uid_zero_fallback_without_challenges() -> None:
+    class Subtensor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def metagraph(self, netuid: int) -> SimpleNamespace:
+            return SimpleNamespace(hotkeys=["validator"] if netuid == 42 else [])
+
+        def set_weights(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(kwargs)
+            return {"ok": True, **kwargs}
+
+    class Client:
+        async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
+            raise AssertionError("get_weights should not be called without challenges")
+
+    subtensor = Subtensor()
+    wallet = object()
+    service = MasterWeightService(
+        metagraph_cache=MetagraphCache(netuid=42, ttl_seconds=0, subtensor=subtensor),
+        weight_setter=WeightSetter(subtensor=subtensor, wallet=wallet, netuid=42),
+        challenge_client=cast(ChallengeClient, Client()),
+    )
+
+    final = await service.run_epoch([], {})
+
+    assert final.uids == [0]
+    assert final.weights == [1.0]
+    assert subtensor.calls == [
+        {
+            "wallet": wallet,
+            "netuid": 42,
+            "uids": [0],
+            "weights": [1.0],
+            "wait_for_inclusion": False,
+            "wait_for_finalization": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_master_weight_service_fails_when_capability_blocked() -> None:
     class Cache:
         def get(self) -> dict[str, int]:
