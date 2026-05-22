@@ -1,4 +1,5 @@
 {{- define "platform.deployment" -}}
+{{- $image := default .root.Values.image .image -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,8 +32,8 @@ spec:
         {{- include "platform.podSecurityContext" .root | nindent 8 }}
       containers:
         - name: {{ .name }}
-          image: {{ include "platform.image" .root | quote }}
-          imagePullPolicy: {{ .root.Values.image.pullPolicy }}
+          image: {{ include "platform.imageValue" (dict "image" $image) | quote }}
+          imagePullPolicy: {{ default .root.Values.image.pullPolicy $image.pullPolicy }}
           command: {{ toJson .command }}
           ports:
             - name: http
