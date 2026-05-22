@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 
@@ -31,9 +32,16 @@ class KubernetesClient:
             ) from exc
         if in_cluster:
             config.load_incluster_config()
+            configuration = client.Configuration.get_default_copy()
+            token = Path(
+                "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            ).read_text(encoding="utf-8")
+            configuration.api_key["BearerToken"] = token.strip()
+            configuration.api_key_prefix["BearerToken"] = "Bearer"
+            api_client = client.ApiClient(configuration)
         else:
             config.load_kube_config(config_file=kubeconfig)
-        api_client = client.ApiClient()
+            api_client = client.ApiClient()
         self._dynamic = dynamic.DynamicClient(api_client)
         self._core = client.CoreV1Api(api_client)
         self._batch = client.BatchV1Api(api_client)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 
 from platform_network.kubernetes.client import KubernetesClient
@@ -53,3 +57,53 @@ def test_service_json_rejects_non_object_proxy_response() -> None:
 
     with pytest.raises(ValueError, match="returned non-object"):
         client.service_json("challenge-demo", "health", port=8000)
+
+
+def test_incluster_client_sets_bearer_token_alias(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token_path = tmp_path / "token"
+    token_path.write_text("token-value\n", encoding="utf-8")
+    created: dict[str, object] = {}
+
+    class FakeConfiguration:
+        def __init__(self) -> None:
+            self.api_key: dict[str, str] = {}
+            self.api_key_prefix: dict[str, str] = {}
+
+        @classmethod
+        def get_default_copy(cls):
+            return cls()
+
+    class FakeApiClient:
+        def __init__(self, configuration=None) -> None:
+            created["configuration"] = configuration
+
+    fake_client = SimpleNamespace(
+        ApiClient=FakeApiClient,
+        Configuration=FakeConfiguration,
+        CoreV1Api=lambda api_client: None,
+        BatchV1Api=lambda api_client: None,
+    )
+    fake_config = SimpleNamespace(load_incluster_config=lambda: None)
+    fake_dynamic = SimpleNamespace(DynamicClient=lambda api_client: None)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "kubernetes",
+        SimpleNamespace(
+            client=fake_client,
+            config=fake_config,
+            dynamic=fake_dynamic,
+        ),
+    )
+    monkeypatch.setattr(
+        "platform_network.kubernetes.client.Path",
+        lambda _path: token_path,
+    )
+
+    KubernetesClient(namespace="platform", in_cluster=True)
+
+    configuration = cast(FakeConfiguration, created["configuration"])
+    assert configuration.api_key["BearerToken"] == "token-value"
+    assert configuration.api_key_prefix["BearerToken"] == "Bearer"
