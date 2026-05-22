@@ -93,3 +93,52 @@ def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> No
     assert publish_step["with"]["push"] is True
     assert publish_step["with"]["tags"] == "${{ steps.meta.outputs.tags }}"
     assert publish_step["with"]["labels"] == "${{ steps.meta.outputs.labels }}"
+
+
+def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
+    workflow = _workflow()
+    release_job = workflow["jobs"]["github-release"]
+
+    assert release_job["needs"] == ["docker-publish"]
+    assert release_job["runs-on"] == "ubuntu-latest"
+    assert release_job["permissions"] == {"contents": "write"}
+    assert "packages" not in release_job["permissions"]
+    assert "github.event_name == 'push'" in release_job["if"]
+    assert "startsWith(github.ref, 'refs/tags/v')" in release_job["if"]
+    assert "workflow_dispatch" not in release_job["if"]
+    assert "refs/heads/main" not in release_job["if"]
+
+    release_step = next(
+        step
+        for step in release_job["steps"]
+        if step.get("uses") == "softprops/action-gh-release@v2"
+    )
+    release_config = release_step["with"]
+    release_body = release_config["body"]
+
+    assert release_config["tag_name"] == "${{ github.ref_name }}"
+    assert release_config["name"] == "Platform ${{ steps.release.outputs.version }}"
+    assert release_config["generate_release_notes"] is True
+    assert release_config["append_body"] is True
+    assert release_config["draft"] is False
+    assert release_config["prerelease"] == "${{ contains(github.ref_name, '-') }}"
+    assert release_config["make_latest"] == "${{ !contains(github.ref_name, '-') }}"
+    assert "## Container Images" in release_body
+    assert (
+        "ghcr.io/platformnetwork/platform:${{ steps.release.outputs.version }}"
+        in release_body
+    )
+    assert "ghcr.io/platformnetwork/platform:${{ github.ref_name }}" in release_body
+    assert "ghcr.io/platformnetwork/platform:sha-${{ github.sha }}" in release_body
+    assert (
+        "ghcr.io/platformnetwork/platform-master:${{ steps.release.outputs.version }}"
+        in release_body
+    )
+    assert (
+        "ghcr.io/platformnetwork/platform-master:${{ github.ref_name }}" in release_body
+    )
+    assert (
+        "ghcr.io/platformnetwork/platform-master:sha-${{ github.sha }}" in release_body
+    )
+    assert "Production deployments should pin" in release_body
+    assert "docs/versioning.md" in release_body

@@ -207,3 +207,43 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+
+  github-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - docker-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Prepare release metadata
+        id: release
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Platform ${{ steps.release.outputs.version }}
+          generate_release_notes: true
+          append_body: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+          body: |
+            ## Container Images
+
+            - `ghcr.io/platformnetwork/platform:${{ steps.release.outputs.version }}`
+            - `ghcr.io/platformnetwork/platform:${{ github.ref_name }}`
+            - `ghcr.io/platformnetwork/platform:sha-${{ github.sha }}`
+            - `ghcr.io/platformnetwork/platform-master:${{ steps.release.outputs.version }}`
+            - `ghcr.io/platformnetwork/platform-master:${{ github.ref_name }}`
+            - `ghcr.io/platformnetwork/platform-master:sha-${{ github.sha }}`
+
+            ## Deployment Notes
+
+            Production deployments should pin the SemVer image tag plus the immutable digest. The `latest` tag is published only from `main`, not from release tags.
+
+            ## Documentation
+
+            See `docs/versioning.md` for the SemVer, Git tag, GHCR tag, GitHub Release, and production image policy.
