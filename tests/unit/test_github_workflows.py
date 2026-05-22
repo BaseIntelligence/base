@@ -132,6 +132,7 @@ def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> No
         if step.get("uses") == "docker/metadata-action@v5"
     )
     assert metadata["with"]["images"] == "ghcr.io/platformnetwork/${{ matrix.image }}"
+    assert "type=ref,event=branch" in metadata["with"]["tags"]
     assert "type=sha,prefix=sha-" in metadata["with"]["tags"]
     assert "type=semver,pattern={{version}}" in metadata["with"]["tags"]
     assert "type=semver,pattern={{raw}}" in metadata["with"]["tags"]
