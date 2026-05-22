@@ -23,13 +23,13 @@ def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
 
     assert workflow["permissions"] == {"contents": "read"}
     assert "pull_request:" in CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "compose-validation" not in jobs
     assert "packages" not in docker_build.get("permissions", {})
     assert docker_build["needs"] == [
         "ruff",
         "format",
         "mypy",
         "coverage",
-        "compose-validation",
         "helm-kubeconform",
         "production-policy",
     ]
@@ -50,6 +50,18 @@ def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
         if step.get("uses") == "docker/build-push-action@v6"
     )
     assert build_step["with"]["push"] is False
+
+
+def test_ci_workflow_has_no_compose_or_watchtower_validation() -> None:
+    workflow_text = CI_WORKFLOW.read_text(encoding="utf-8").lower()
+    workflow = _workflow()
+
+    assert "compose-validation" not in workflow["jobs"]
+    assert "docker compose" not in workflow_text
+    assert "compose.yml" not in workflow_text
+    assert "compose.dev.yml" not in workflow_text
+    assert "compose.watchtower.yml" not in workflow_text
+    assert "watchtower" not in workflow_text
 
 
 def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> None:

@@ -70,17 +70,6 @@ jobs:
       - name: Coverage
         run: uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
 
-  compose-validation:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Base Compose config
-        run: docker compose -f docker/compose.yml config --quiet
-      - name: Dev Compose config
-        run: docker compose -f docker/compose.dev.yml config --quiet
-      - name: Watchtower Compose overlay config
-        run: docker compose -f docker/compose.yml -f docker/compose.watchtower.yml config --quiet
-
   helm-kubeconform:
     runs-on: ubuntu-latest
     steps:
@@ -118,8 +107,6 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Install dependencies
         run: uv sync --extra dev --extra master
-      - name: Compose policy tests
-        run: uv run pytest tests/unit/test_docker_compose_deploy.py -q
       - name: Helm production policy tests
         run: uv run pytest tests/unit/test_helm_chart.py -q
       - name: Runtime production policy tests
@@ -138,7 +125,6 @@ jobs:
       - format
       - mypy
       - coverage
-      - compose-validation
       - helm-kubeconform
       - production-policy
     runs-on: ubuntu-latest
