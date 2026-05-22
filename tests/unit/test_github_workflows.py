@@ -16,6 +16,44 @@ def _step_uses(job: dict) -> set[str]:
     return {step.get("uses", "") for step in job["steps"] if "uses" in step}
 
 
+def test_ci_workflow_runs_postgres_orm_integration_gate() -> None:
+    workflow = _workflow()
+    postgres_orm = workflow["jobs"]["postgres-orm"]
+
+    assert postgres_orm["runs-on"] == "ubuntu-latest"
+    assert "continue-on-error" not in postgres_orm
+    assert postgres_orm["env"] == {
+        "PLATFORM_TEST_DATABASE_URL": (
+            "postgresql+asyncpg://platform:platform@localhost:5432/"
+            "platform_network_test"
+        ),
+    }
+
+    service = postgres_orm["services"]["postgres"]
+    assert service["image"] == "postgres:16-alpine"
+    assert service["env"] == {
+        "POSTGRES_USER": "platform",
+        "POSTGRES_PASSWORD": "platform",
+        "POSTGRES_DB": "platform_network_test",
+    }
+    assert service["ports"] == ["5432:5432"]
+    assert "pg_isready -U platform -d platform_network_test" in service["options"]
+
+    assert _step_uses(postgres_orm) >= {
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "astral-sh/setup-uv@v5",
+    }
+    assert any(
+        step.get("run") == "uv sync --extra dev --extra master"
+        for step in postgres_orm["steps"]
+    )
+    assert any(
+        step.get("run") == "uv run pytest tests/integration -m postgres -q"
+        for step in postgres_orm["steps"]
+    )
+
+
 def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
@@ -32,6 +70,7 @@ def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
         "coverage",
         "helm-kubeconform",
         "production-policy",
+        "postgres-orm",
     ]
     assert {
         item["image"] for item in docker_build["strategy"]["matrix"]["include"]
@@ -74,6 +113,7 @@ def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> No
     assert "refs/heads/main" in docker_publish["if"]
     assert "refs/tags/v" in docker_publish["if"]
     assert "pull_request" in docker_publish["if"]
+    assert docker_publish["needs"] == ["docker-build", "postgres-orm"]
     assert docker_publish["permissions"] == {
         "contents": "read",
         "packages": "write",
@@ -111,7 +151,7 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     workflow = _workflow()
     release_job = workflow["jobs"]["github-release"]
 
-    assert release_job["needs"] == ["docker-publish"]
+    assert release_job["needs"] == ["docker-publish", "postgres-orm"]
     assert release_job["runs-on"] == "ubuntu-latest"
     assert release_job["permissions"] == {"contents": "write"}
     assert "packages" not in release_job["permissions"]
@@ -154,3 +194,17 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     )
     assert "Production deployments should pin" in release_body
     assert "docs/versioning.md" in release_body
+
+
+def test_ci_workflow_publish_and_release_jobs_need_postgres_orm() -> None:
+    workflow = _workflow()
+    release_path_jobs = {
+        name: job
+        for name, job in workflow["jobs"].items()
+        if "publish" in name or "release" in name
+    }
+
+    assert set(release_path_jobs) == {"docker-publish", "github-release"}
+    for job in release_path_jobs.values():
+        assert "postgres-orm" in job["needs"]
+
