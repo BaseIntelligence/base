@@ -207,4 +207,3 @@ def test_ci_workflow_publish_and_release_jobs_need_postgres_orm() -> None:
     assert set(release_path_jobs) == {"docker-publish", "github-release"}
     for job in release_path_jobs.values():
         assert "postgres-orm" in job["needs"]
-

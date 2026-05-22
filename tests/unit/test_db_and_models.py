@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from sqlalchemy import Enum as SQLAlchemyEnum
 
 from platform_network.config.policy import validate_database_url
 from platform_network.db import (
@@ -69,10 +71,11 @@ def test_db_models_construct_and_metadata() -> None:
 
 def test_challenge_status_orm_enum_matches_migration_metadata() -> None:
     status_column = Challenge.__table__.c.status
+    status_type = cast(SQLAlchemyEnum, status_column.type)
 
-    assert status_column.type.name == "challenge_status"
-    assert status_column.type.native_enum is False
-    assert status_column.type.enums == [status.value for status in ChallengeStatus]
+    assert status_type.name == "challenge_status"
+    assert status_type.native_enum is False
+    assert status_type.enums == [status.value for status in ChallengeStatus]
 
 
 def test_challenge_status_migration_literals_match_model_enum() -> None:
