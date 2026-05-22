@@ -667,7 +667,9 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
 @validator_app.command("refresh-image")
 def validator_refresh_image(
     namespace: str = typer.Option(..., "--namespace"),
-    deployment: str = typer.Option(..., "--deployment"),
+    deployment: str | None = typer.Option(None, "--deployment"),
+    name: str | None = typer.Option(None, "--name"),
+    resource_kind: str = typer.Option("deployment", "--resource-kind"),
     container: str = typer.Option("validator", "--container"),
     image: str = typer.Option(..., "--image"),
     registry_endpoint: str = typer.Option("", "--registry-endpoint"),
@@ -675,6 +677,8 @@ def validator_refresh_image(
     updated = create_incluster_updater().refresh(
         namespace=namespace,
         deployment=deployment,
+        name=name,
+        resource_kind=resource_kind,
         container=container,
         image=image,
         registry_endpoint=registry_endpoint or None,

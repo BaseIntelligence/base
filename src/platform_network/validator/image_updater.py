@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl
 
 import httpx
 
-DIGEST_ANNOTATION = "platform.network/validator-image-digest"
+DIGEST_ANNOTATION = "platform.network/image-digest"
 MEDIA_TYPES = ", ".join(
     [
         "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -136,11 +136,46 @@ def resolve_remote_digest(
 
 
 class ValidatorImageUpdater:
-    def __init__(self, apps_api: Any, core_api: Any) -> None:
+    def __init__(
+        self, apps_api: Any, core_api: Any, batch_api: Any | None = None
+    ) -> None:
         self.apps_api = apps_api
         self.core_api = core_api
+        self.batch_api = batch_api
 
     def refresh(
+        self,
+        *,
+        namespace: str,
+        deployment: str | None = None,
+        name: str | None = None,
+        resource_kind: str = "deployment",
+        container: str,
+        image: str,
+        registry_endpoint: str | None = None,
+    ) -> bool:
+        target = name or deployment
+        if not target:
+            raise ValueError("resource name is required")
+        if resource_kind == "cronjob":
+            return self._refresh_cronjob(
+                namespace=namespace,
+                cronjob=target,
+                container=container,
+                image=image,
+                registry_endpoint=registry_endpoint,
+            )
+        if resource_kind != "deployment":
+            raise ValueError(f"unsupported resource kind: {resource_kind}")
+        return self._refresh_deployment(
+            namespace=namespace,
+            deployment=target,
+            container=container,
+            image=image,
+            registry_endpoint=registry_endpoint,
+        )
+
+    def _refresh_deployment(
         self,
         *,
         namespace: str,
@@ -181,6 +216,45 @@ class ValidatorImageUpdater:
         self._patch_template(
             namespace=namespace,
             deployment=deployment,
+            container=container,
+            image=reference.pinned(remote_digest),
+            digest=remote_digest,
+        )
+        return True
+
+    def _refresh_cronjob(
+        self,
+        *,
+        namespace: str,
+        cronjob: str,
+        container: str,
+        image: str,
+        registry_endpoint: str | None = None,
+    ) -> bool:
+        if self.batch_api is None:
+            raise ValueError("batch API is required for cronjob image updates")
+        reference = parse_image_reference(image)
+        if reference.immutable:
+            return False
+        remote_digest = resolve_remote_digest(
+            reference,
+            registry_endpoint=registry_endpoint or None,
+        )
+        current = self.batch_api.read_namespaced_cron_job(cronjob, namespace)
+        if _annotation(current.metadata, DIGEST_ANNOTATION) == remote_digest:
+            return False
+        template_metadata = current.spec.job_template.spec.template.metadata
+        if _annotation(template_metadata, DIGEST_ANNOTATION) == remote_digest:
+            self._patch_cronjob_metadata_annotation(namespace, cronjob, remote_digest)
+            return False
+        if _cronjob_container_image(current, container) == reference.pinned(
+            remote_digest
+        ):
+            self._patch_cronjob_metadata_annotation(namespace, cronjob, remote_digest)
+            return False
+        self._patch_cronjob_template(
+            namespace=namespace,
+            cronjob=cronjob,
             container=container,
             image=reference.pinned(remote_digest),
             digest=remote_digest,
@@ -251,9 +325,63 @@ class ValidatorImageUpdater:
             },
         )
 
+    def _patch_cronjob_metadata_annotation(
+        self,
+        namespace: str,
+        cronjob: str,
+        digest: str,
+    ) -> None:
+        if self.batch_api is None:
+            raise ValueError("batch API is required for cronjob image updates")
+        self.batch_api.patch_namespaced_cron_job(
+            cronjob,
+            namespace,
+            {"metadata": {"annotations": {DIGEST_ANNOTATION: digest}}},
+        )
+
+    def _patch_cronjob_template(
+        self,
+        *,
+        namespace: str,
+        cronjob: str,
+        container: str,
+        image: str,
+        digest: str,
+    ) -> None:
+        if self.batch_api is None:
+            raise ValueError("batch API is required for cronjob image updates")
+        self.batch_api.patch_namespaced_cron_job(
+            cronjob,
+            namespace,
+            {
+                "metadata": {"annotations": {DIGEST_ANNOTATION: digest}},
+                "spec": {
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "metadata": {
+                                    "annotations": {DIGEST_ANNOTATION: digest}
+                                },
+                                "spec": {
+                                    "containers": [
+                                        {
+                                            "name": container,
+                                            "image": image,
+                                        }
+                                    ]
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+        )
+
 
 def create_incluster_updater() -> ValidatorImageUpdater:
-    return ValidatorImageUpdater(_InClusterAppsApi(), _InClusterCoreApi())
+    return ValidatorImageUpdater(
+        _InClusterAppsApi(), _InClusterCoreApi(), _InClusterBatchApi()
+    )
 
 
 class _InClusterClient:
@@ -307,6 +435,20 @@ class _InClusterAppsApi:
         )
 
 
+class _InClusterBatchApi:
+    def __init__(self) -> None:
+        self.client = _InClusterClient()
+
+    def read_namespaced_cron_job(self, name: str, namespace: str) -> Any:
+        return self.client.get(f"/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}")
+
+    def patch_namespaced_cron_job(self, name: str, namespace: str, body: dict) -> None:
+        self.client.patch(
+            f"/apis/batch/v1/namespaces/{namespace}/cronjobs/{name}",
+            body,
+        )
+
+
 class _InClusterCoreApi:
     def __init__(self) -> None:
         self.client = _InClusterClient()
@@ -328,6 +470,7 @@ def _objectify(value: Any) -> Any:
         "containerStatuses": "container_statuses",
         "imageID": "image_id",
         "labelSelector": "label_selector",
+        "jobTemplate": "job_template",
     }
     mapping_keys = {"annotations", "labels", "matchLabels"}
     fields = {
@@ -350,6 +493,16 @@ def _selector(deployment: Any) -> str:
 
 def _container_image(deployment: Any, container: str) -> str | None:
     containers = getattr(deployment.spec.template.spec, "containers", []) or []
+    for item in containers:
+        if getattr(item, "name", None) == container:
+            return getattr(item, "image", None)
+    return None
+
+
+def _cronjob_container_image(cronjob: Any, container: str) -> str | None:
+    containers = (
+        getattr(cronjob.spec.job_template.spec.template.spec, "containers", []) or []
+    )
     for item in containers:
         if getattr(item, "name", None) == container:
             return getattr(item, "image", None)

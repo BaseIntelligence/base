@@ -198,7 +198,7 @@ def _deployment_digest_annotation() -> str:
         "get",
         "deployment/platform-validator",
         "-o",
-        r"jsonpath={.metadata.annotations.platform\.network/validator-image-digest}",
+        r"jsonpath={.metadata.annotations.platform\.network/image-digest}",
     ).strip()
 
 
