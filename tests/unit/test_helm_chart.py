@@ -631,7 +631,6 @@ def test_helm_template_renders_target_gpu_and_remote_agent_security_values(
     config = yaml.safe_load(
         _document(documents, "ConfigMap", "platform-config")["data"]["master.yaml"]
     )
-    config["database"]["url"] = "postgresql+asyncpg://db.example.test/platform"
     config["docker"]["broker_allowed_images"] = ["ghcr.io/platformnetwork/"]
     config["database"]["url"] = "postgresql+asyncpg://user:pass@postgres/platform"
     Settings.model_validate(config)
@@ -655,6 +654,108 @@ def test_helm_template_renders_target_gpu_and_remote_agent_security_values(
             "ports": [{"protocol": "TCP", "port": 8443}],
         }
     ]
+
+
+def test_helm_managed_postgres_defaults_render_into_kubernetes_config() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    config = yaml.safe_load(
+        _document(documents, "ConfigMap", "platform-config")["data"]["master.yaml"]
+    )
+    config["database"]["url"] = "postgresql+asyncpg://user:pass@postgres/platform"
+
+    settings = Settings.model_validate(config)
+    managed_postgres = settings.kubernetes.managed_postgres
+
+    assert settings.runtime.backend == "kubernetes"
+    assert managed_postgres.enabled is True
+    assert managed_postgres.image == "postgres:16-alpine"
+    assert managed_postgres.storage_class == ""
+    assert managed_postgres.storage_size == "10Gi"
+    assert managed_postgres.retain_pvc is True
+    assert managed_postgres.retain_secret is True
+    assert managed_postgres.resources.requests == {"cpu": "100m", "memory": "256Mi"}
+    assert managed_postgres.resources.limits == {"cpu": "500m", "memory": "512Mi"}
+    assert set(config["kubernetes"]["managed_postgres"]) == {
+        "enabled",
+        "image",
+        "storage_class",
+        "storage_size",
+        "retain_pvc",
+        "retain_secret",
+        "resources",
+    }
+
+
+def test_helm_managed_postgres_rbac_uses_statefulset_volume_claim_templates() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+
+    assert {"secrets", "services"}.issubset(_role_resources(documents, ""))
+    assert "statefulsets" in _role_resources(documents, "apps")
+    assert "persistentvolumeclaims" not in _role_resources(documents, "")
+
+
+def test_helm_managed_postgres_schema_accepts_operator_overrides(
+    tmp_path: Path,
+) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    values_file = tmp_path / "managed-postgres.yaml"
+    values_file.write_text(
+        textwrap.dedent(
+            """
+            kubernetes:
+              managedPostgres:
+                enabled: true
+                image: postgres:16-alpine
+                storageClass: fast-retain
+                storageSize: 20Gi
+                retainPvc: true
+                retainSecret: true
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    rendered = subprocess.check_output(
+        [helm, "template", "platform", str(CHART), "-f", str(values_file)],
+        text=True,
+    )
+    documents = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+    config = yaml.safe_load(
+        _document(documents, "ConfigMap", "platform-config")["data"]["master.yaml"]
+    )
+
+    assert config["kubernetes"]["managed_postgres"]["storage_class"] == "fast-retain"
+    assert config["kubernetes"]["managed_postgres"]["storage_size"] == "20Gi"
+    assert config["kubernetes"]["managed_postgres"]["resources"] == {
+        "requests": {"cpu": "250m", "memory": "512Mi"},
+        "limits": {"cpu": "1", "memory": "1Gi"},
+    }
 
 
 def test_helm_production_values_render_safe_control_plane() -> None:

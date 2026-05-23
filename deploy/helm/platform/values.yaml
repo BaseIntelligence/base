@@ -74,6 +74,20 @@ kubernetes:
     runtimeClassName: ""
     nodeSelector: {}
     tolerations: []
+  managedPostgres:
+    enabled: true
+    image: postgres:16-alpine
+    storageClass: ""
+    storageSize: 10Gi
+    retainPvc: true
+    retainSecret: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
 kubernetesTargets:
   enabled: false

@@ -74,6 +74,15 @@ data:
           {{- toYaml .Values.kubernetes.targetDefaults.nodeSelector | nindent 10 }}
         tolerations:
           {{- toYaml .Values.kubernetes.targetDefaults.tolerations | nindent 10 }}
+      managed_postgres:
+        enabled: {{ .Values.kubernetes.managedPostgres.enabled }}
+        image: {{ .Values.kubernetes.managedPostgres.image | quote }}
+        storage_class: {{ .Values.kubernetes.managedPostgres.storageClass | quote }}
+        storage_size: {{ .Values.kubernetes.managedPostgres.storageSize | quote }}
+        retain_pvc: {{ .Values.kubernetes.managedPostgres.retainPvc }}
+        retain_secret: {{ .Values.kubernetes.managedPostgres.retainSecret }}
+        resources:
+          {{- toYaml .Values.kubernetes.managedPostgres.resources | nindent 10 }}
       autoscaling:
         enabled: {{ .Values.masterProxy.autoscaling.enabled }}
         keda_enabled: {{ .Values.keda.enabled }}
