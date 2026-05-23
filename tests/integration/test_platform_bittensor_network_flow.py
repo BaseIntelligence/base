@@ -24,6 +24,9 @@ from platform_network.master.service import MasterWeightService
 from platform_network.schemas.challenge import ChallengeStatus, RegistryChallenge
 from platform_network.schemas.docker_broker import BrokerRunRequest
 from platform_network.schemas.kubernetes_target import KubernetesTargetCreate
+from platform_network.schemas.weights import MasterWeightsResponse
+from platform_network.validator.normal_runner import NormalValidatorRunner
+from platform_network.validator.weights_client import WeightsClient
 
 
 @pytest.mark.asyncio
@@ -174,23 +177,67 @@ async def test_platform_agents_broker_and_bittensor_weight_epoch(
             retries=1, kubernetes_target_registry=target_registry
         ),
     )
-    final = await service.run_epoch(
+    latest = await service.compute_latest_response(
         challenges,
         {"agent-challenge": "challenge-token-a", "terminal-heavy": "challenge-token-b"},
+        netuid=42,
+        chain_endpoint="wss://chain.example:9944",
     )
 
-    assert final.uids == [1, 2, 3]
-    assert final.weights == pytest.approx([0.15, 0.65, 0.20])
+    assert latest.uids == [1, 2, 3]
+    assert latest.weights == pytest.approx([0.15, 0.65, 0.20])
+    assert latest.hotkey_weights == {
+        "miner-a": pytest.approx(0.15),
+        "miner-b": pytest.approx(0.65),
+        "miner-c": pytest.approx(0.20),
+    }
+    assert [result.slug for result in latest.source_challenges] == [
+        "agent-challenge",
+        "terminal-heavy",
+    ]
     assert subtensor.metagraph_calls == [42]
+    assert subtensor.set_weight_calls == []
+
+    weights_client = SharedWeightsClient(latest)
+    validator_a = NormalValidatorRunner(
+        registry_client=cast(Any, SimpleNamespace()),
+        orchestrator=SimpleNamespace(),
+        weights_client=cast(WeightsClient, weights_client),
+        weight_setter=WeightSetter(
+            subtensor=subtensor, wallet="validator-a-hotkey", netuid=42
+        ),
+        netuid=42,
+    )
+    validator_b = NormalValidatorRunner(
+        registry_client=cast(Any, SimpleNamespace()),
+        orchestrator=SimpleNamespace(),
+        weights_client=cast(WeightsClient, weights_client),
+        weight_setter=WeightSetter(
+            subtensor=subtensor, wallet="validator-b-hotkey", netuid=42
+        ),
+        netuid=42,
+    )
+
+    assert await validator_a.submit_latest_weights() is True
+    assert await validator_b.submit_latest_weights() is True
+    assert weights_client.fetches == [latest, latest]
     assert subtensor.set_weight_calls == [
         {
-            "wallet": service.weight_setter.wallet,
+            "wallet": "validator-a-hotkey",
             "netuid": 42,
             "uids": [1, 2, 3],
             "weights": pytest.approx([0.15, 0.65, 0.20]),
             "wait_for_inclusion": False,
             "wait_for_finalization": False,
-        }
+        },
+        {
+            "wallet": "validator-b-hotkey",
+            "netuid": 42,
+            "uids": [1, 2, 3],
+            "weights": pytest.approx([0.15, 0.65, 0.20]),
+            "wait_for_inclusion": False,
+            "wait_for_finalization": False,
+        },
     ]
     assert servers["https://agent-a"].forwarded_auth["agent-challenge"] == (
         "Bearer challenge-token-a"
@@ -276,6 +323,16 @@ class ChallengeRegistry:
 
     def get(self, slug: str) -> RegistryChallenge:
         return self._challenges[slug]
+
+
+class SharedWeightsClient:
+    def __init__(self, payload: MasterWeightsResponse) -> None:
+        self.payload = payload
+        self.fetches: list[MasterWeightsResponse] = []
+
+    async def fetch_latest(self) -> MasterWeightsResponse:
+        self.fetches.append(self.payload)
+        return self.payload
 
 
 class FakeSubtensor:
