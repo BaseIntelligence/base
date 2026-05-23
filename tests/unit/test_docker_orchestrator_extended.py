@@ -8,6 +8,7 @@ import pytest
 
 from platform_network.master.docker_orchestrator import (
     DEFAULT_DOCKER_BROKER_URL,
+    DEFAULT_SQLITE_PATH,
     ChallengeResources,
     ChallengeSpec,
     DockerOrchestrationError,
@@ -127,10 +128,32 @@ def test_orchestrator_client_network_volume_pull_and_env(tmp_path: Path) -> None
 
     env = orchestrator._build_environment(spec)  # noqa: SLF001
     assert env["EXISTING"] == "1"
+    assert env["CHALLENGE_DATABASE_URL"] == f"sqlite+aiosqlite:///{DEFAULT_SQLITE_PATH}"
     assert env["CHALLENGE_SHARED_TOKEN_FILE"] == "/run/secrets/platform/challenge_token"
     paths = orchestrator._write_secret_files(spec)  # noqa: SLF001
     assert paths["challenge_token"].read_text(encoding="utf-8") == "tok"
     assert paths["api-key"].read_text(encoding="utf-8") == "secret"
+
+
+def test_docker_orchestrator_database_url_defaults_to_sqlite_data_volume(
+    tmp_path: Path,
+) -> None:
+    orchestrator = DockerOrchestrator(client=FakeClient(), secret_dir=tmp_path)
+    spec = ChallengeSpec(slug="demo", image="ghcr.io/org/demo:1")
+
+    env = orchestrator._build_environment(spec)  # noqa: SLF001
+    mounts = orchestrator._build_mounts(spec)  # noqa: SLF001
+
+    assert (
+        env["CHALLENGE_DATABASE_URL"] == "sqlite+aiosqlite:////data/challenge.sqlite3"
+    )
+    assert env["CHALLENGE_DATABASE_URL"] == f"sqlite+aiosqlite:///{DEFAULT_SQLITE_PATH}"
+    assert {
+        "Target": "/data",
+        "Source": spec.sqlite_volume_name,
+        "Type": "volume",
+        "ReadOnly": False,
+    } in mounts
 
 
 def test_orchestrator_enables_docker_executor_broker(tmp_path: Path) -> None:
