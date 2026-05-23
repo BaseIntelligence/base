@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,10 @@ from platform_network.schemas.challenge import (
     ChallengeStatus,
     RegistryChallenge,
 )
-from platform_network.schemas.weights import ChallengeWeightsResult
+from platform_network.schemas.weights import (
+    ChallengeWeightsResult,
+    MasterWeightsResponse,
+)
 from platform_network.security.admin_auth import constant_time_match, read_secret
 from platform_network.security.challenge_auth import (
     bearer_token,
@@ -44,6 +48,7 @@ from platform_network.security.tokens import (
 )
 from platform_network.validator.normal_runner import NormalValidatorRunner
 from platform_network.validator.registry_client import RegistryClient
+from platform_network.validator.weights_client import WeightsClient
 
 
 @pytest.mark.asyncio
@@ -159,6 +164,69 @@ async def test_challenge_client_routes_weights_through_assigned_agent(
 
 async def async_noop(*args: object, **kwargs: object) -> None:
     return None
+
+
+def test_master_weights_response_public_payload_contract() -> None:
+    computed_at = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+    expires_at = computed_at + timedelta(seconds=720)
+    metagraph_updated_at = computed_at - timedelta(seconds=30)
+
+    response = MasterWeightsResponse(
+        netuid=42,
+        chain_endpoint="wss://chain.example:9944",
+        uids=[3, 7],
+        weights=[0.25, 0.75],
+        hotkey_weights={"hk-a": 0.25, "hk-b": 0.75},
+        computed_at=computed_at,
+        expires_at=expires_at,
+        source_challenges=[
+            ChallengeWeightsResult(
+                slug="demo", emission_percent=100, weights={"hk-b": 1.0}
+            )
+        ],
+        metagraph_updated_at=metagraph_updated_at,
+    )
+
+    payload = response.model_dump(mode="json")
+
+    assert payload == {
+        "netuid": 42,
+        "chain_endpoint": "wss://chain.example:9944",
+        "uids": [3, 7],
+        "weights": [0.25, 0.75],
+        "hotkey_weights": {"hk-a": 0.25, "hk-b": 0.75},
+        "computed_at": "2030-01-01T12:00:00Z",
+        "expires_at": "2030-01-01T12:12:00Z",
+        "source_challenges": [
+            {
+                "slug": "demo",
+                "emission_percent": 100.0,
+                "weights": {"hk-b": 1.0},
+                "ok": True,
+                "error": None,
+            }
+        ],
+        "metagraph_updated_at": "2030-01-01T11:59:30Z",
+    }
+    assert "auth" not in payload
+    assert "signature" not in payload
+
+
+def test_master_weights_response_rejects_expired_payload() -> None:
+    now = datetime.now(UTC)
+
+    with pytest.raises(ValueError, match="expires_at must be in the future"):
+        MasterWeightsResponse(
+            netuid=42,
+            chain_endpoint="wss://chain.example:9944",
+            uids=[3],
+            weights=[1.0],
+            hotkey_weights={"hk-a": 1.0},
+            computed_at=now - timedelta(seconds=721),
+            expires_at=now - timedelta(seconds=1),
+            source_challenges=[],
+            metagraph_updated_at=now - timedelta(seconds=721),
+        )
 
 
 @pytest.mark.asyncio
@@ -483,7 +551,7 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
     assert asyncio.run(controller.status("demo"))["status"] == "unknown"
 
 
-def test_cli_master_weights_once_wires_bittensor_runtime(
+def test_cli_master_weights_once_defaults_to_compute_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry_path = tmp_path / "registry.json"
@@ -550,6 +618,13 @@ def test_cli_master_weights_once_wires_bittensor_runtime(
         return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
 
     monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
+    monkeypatch.setattr(
+        cli_module,
+        "_master_compute_metagraph_cache",
+        lambda _settings: (_ for _ in ()).throw(
+            AssertionError("master weights must reuse create_bittensor_runtime cache")
+        ),
+    )
     monkeypatch.setattr(cli_module, "ChallengeClient", Client)
     monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda _settings: None)
     monkeypatch.setattr(cli_module, "_master_registry", lambda _settings: registry)
@@ -559,7 +634,7 @@ def test_cli_master_weights_once_wires_bittensor_runtime(
     )
 
     assert result.exit_code == 0
-    assert "submit: computed 1 weights" in result.output
+    assert "compute-only: computed 1 weights" in result.output
     assert created_runtime["netuid"] == 12
     assert created_runtime["chain_endpoint"] == "ws://chain"
     assert created_runtime["wallet_name"] == "wallet"
@@ -568,6 +643,82 @@ def test_cli_master_weights_once_wires_bittensor_runtime(
     assert client_kwargs["timeout_seconds"] == 1.5
     assert client_kwargs["retries"] == 2
     assert client_kwargs["kubernetes_target_registry"] is not None
+    assert setter_calls == []
+
+
+def test_cli_master_weights_submit_on_chain_requires_explicit_unsafe_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    secret_dir = tmp_path / "secrets"
+    config = tmp_path / "master.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "network:",
+                "  netuid: 12",
+                "master:",
+                f"  registry_state_file: {registry_path}",
+                "docker:",
+                f"  secret_dir: {secret_dir}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    registry = FileChallengeRegistry(registry_path, secret_dir=secret_dir)
+    registry.create(
+        ChallengeCreate(
+            slug="demo",
+            name="Demo",
+            image="ghcr.io/o/demo:1",
+            version="1",
+            emission_percent=Decimal("10"),
+            status=ChallengeStatus.ACTIVE,
+        )
+    )
+    setter_calls: list[tuple[list[int], list[float]]] = []
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"hk": 7}
+
+    class Setter:
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            setter_calls.append((uids, weights))
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
+            return ChallengeWeightsResult(
+                slug=str(kwargs["slug"]),
+                emission_percent=float(cast(float, kwargs["emission_percent"])),
+                weights={"hk": 2.0},
+            )
+
+    def create_runtime(settings):
+        return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
+
+    monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
+    monkeypatch.setattr(cli_module, "ChallengeClient", Client)
+    monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda _settings: None)
+    monkeypatch.setattr(cli_module, "_master_registry", lambda _settings: registry)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "master",
+            "weights",
+            "--config",
+            str(config),
+            "--once",
+            "--submit-on-chain",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "submit-on-chain: computed 1 weights" in result.output
     assert setter_calls == [([7], [1.0])]
 
 
@@ -635,17 +786,17 @@ def test_cli_master_weights_dry_run_does_not_submit(
     )
 
     assert result.exit_code == 0
-    assert "dry-run: computed 1 weights" in result.output
+    assert "compute-only: computed 1 weights" in result.output
 
 
-def test_cli_master_weights_help_documents_dry_run() -> None:
+def test_cli_master_weights_help_documents_explicit_submit_opt_in() -> None:
     result = CliRunner().invoke(
         app, ["master", "weights", "--help"], env={"TERM": "dumb"}
     )
 
     assert result.exit_code == 0
-    assert "--dry-run" in result.output
-    assert "--submit" in result.output
+    assert "--submit-on-chain" in result.output
+    assert "--dry-run/--submit" not in result.output
 
 
 def test_cli_master_weights_loop_uses_epoch_interval(
@@ -862,6 +1013,319 @@ def test_cli_k8s_server_commands_call_admin(
     result = runner.invoke(app, ["k8s-server", "remove", "k8s-a"])
     assert result.exit_code == 0
     assert calls[6] == ("DELETE", "/v1/admin/kubernetes-targets/k8s-a", None)
+
+
+def test_cli_kubernetes_sync_config_uses_github_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Updater:
+        def __init__(self, source) -> None:
+            self.source = source
+
+        def sync_once(self, **kwargs: object) -> SimpleNamespace:
+            calls.append({"source": self.source, **kwargs})
+            return SimpleNamespace(reason="updated")
+
+    def create_updater(source) -> Updater:
+        return Updater(source)
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_incluster_config_sync_updater",
+        create_updater,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "kubernetes",
+            "sync-config",
+            "--namespace",
+            "platform-master",
+            "--config-map",
+            "platform-master-config",
+            "--repo",
+            "PlatformNetwork/platform",
+            "--ref",
+            "release/test",
+            "--values-path",
+            "deploy/helm/platform/values.yaml",
+            "--rollout-target",
+            "Deployment/platform-master-admin",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "updated"
+    source = calls[0]["source"]
+    assert isinstance(source, cli_module.ConfigSyncSource)
+    assert source.repository == "PlatformNetwork/platform"
+    assert source.branch == "release/test"
+    assert source.paths == ("deploy/helm/platform/values.yaml",)
+    assert calls[0]["namespace"] == "platform-master"
+    assert calls[0]["config_map"] == "platform-master-config"
+    assert calls[0]["rollout_targets"] == (
+        cli_module.RolloutTarget(kind="Deployment", name="platform-master-admin"),
+    )
+
+
+def _master_weights_payload(
+    *,
+    netuid: int = 42,
+    uids: list[int] | None = None,
+    weights: list[float] | None = None,
+    expires_at: datetime | None = None,
+) -> MasterWeightsResponse:
+    now = datetime.now(UTC)
+    return MasterWeightsResponse(
+        netuid=netuid,
+        chain_endpoint="wss://chain.example:9944",
+        uids=[1, 2] if uids is None else uids,
+        weights=[0.4, 0.6] if weights is None else weights,
+        hotkey_weights={"hk-a": 0.4, "hk-b": 0.6},
+        computed_at=now,
+        expires_at=expires_at or now + timedelta(minutes=5),
+        source_challenges=[],
+        metagraph_updated_at=now,
+    )
+
+
+def test_weights_client_fetches_latest_master_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json=_master_weights_payload().model_dump(mode="json"),
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class Client(httpx.AsyncClient):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(transport=transport)
+
+    async def run() -> None:
+        import platform_network.validator.weights_client as module
+
+        monkeypatch.setattr(module.httpx, "AsyncClient", Client)
+        response = await WeightsClient("https://master.example/").fetch_latest()
+        assert response.uids == [1, 2]
+        assert response.weights == [0.4, 0.6]
+
+    asyncio.run(run())
+
+    assert requested_urls == ["https://master.example/v1/weights/latest"]
+
+
+@pytest.mark.asyncio
+async def test_validator_weights_submit_valid_payload_once() -> None:
+    payload = _master_weights_payload()
+
+    class Weights:
+        async def fetch_latest(self) -> MasterWeightsResponse:
+            return payload
+
+    class Setter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[int], list[float]]] = []
+
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            self.calls.append((uids, weights))
+
+    setter = Setter()
+    runner = NormalValidatorRunner(
+        registry_client=cast(RegistryClient, SimpleNamespace()),
+        orchestrator=SimpleNamespace(),
+        weights_client=cast(WeightsClient, Weights()),
+        weight_setter=cast(WeightSetter, setter),
+        netuid=42,
+    )
+
+    assert await runner.submit_latest_weights() is True
+    assert setter.calls == [([1, 2], [0.4, 0.6])]
+
+
+@pytest.mark.asyncio
+async def test_validator_weights_skip_invalid_payloads() -> None:
+    valid = _master_weights_payload()
+    expired_payload = valid.model_dump()
+    expired_payload["expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    expired = MasterWeightsResponse.model_construct(**expired_payload)
+    cases = [
+        _master_weights_payload(netuid=7),
+        expired,
+        _master_weights_payload(uids=[]),
+        _master_weights_payload(weights=[]),
+        _master_weights_payload(uids=[1, 2], weights=[1.0]),
+    ]
+
+    class Setter:
+        def set_weights(self, uids: list[int], weights: list[float]) -> None:
+            raise AssertionError("invalid payload must not submit")
+
+    def weights_client_for(payload: MasterWeightsResponse):
+        class Weights:
+            async def fetch_latest(self) -> MasterWeightsResponse:
+                return payload
+
+        return Weights()
+
+    for payload in cases:
+        runner = NormalValidatorRunner(
+            registry_client=cast(RegistryClient, SimpleNamespace()),
+            orchestrator=SimpleNamespace(),
+            weights_client=cast(WeightsClient, weights_client_for(payload)),
+            weight_setter=cast(WeightSetter, Setter()),
+            netuid=42,
+        )
+
+        assert await runner.submit_latest_weights() is False
+
+
+def test_validator_run_starts_registry_and_weight_submission_loops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "validator.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "network:",
+                "  netuid: 12",
+                "  chain_endpoint: ws://chain",
+                "  wallet_name: validator-wallet",
+                "  wallet_hotkey: validator-hotkey",
+                "validator:",
+                "  registry_url: https://registry.example",
+                "  registry_retry_seconds: 9",
+                "  weights_url: https://weights.example",
+                "  weights_interval_seconds: 17",
+                "  weights_timeout_seconds: 4.5",
+                "  weights_retries: 2",
+                "  weights_freshness_seconds: 111",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    events: list[tuple[str, object]] = []
+
+    class Runtime:
+        weight_setter = object()
+
+    def create_submit_runtime(settings):
+        events.append(("runtime_netuid", settings.network.netuid))
+        events.append(("runtime_hotkey", settings.network.wallet_hotkey))
+        return Runtime()
+
+    class FakeRegistryClient:
+        def __init__(self, base_url: str) -> None:
+            events.append(("registry_url", base_url))
+
+    class FakeWeightsClient:
+        def __init__(
+            self, base_url: str, *, timeout_seconds: float, retries: int
+        ) -> None:
+            events.append(("weights_client", (base_url, timeout_seconds, retries)))
+
+    class FakeRunner:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(("runner", kwargs))
+
+        async def run_forever(self) -> None:
+            events.append(("registry_loop", True))
+
+        async def submit_latest_weights(self) -> bool:
+            events.append(("submit_weights", True))
+            return True
+
+    async def fake_run_epoch_loop(interval_seconds: int, callback):
+        events.append(("weights_interval", interval_seconds))
+        await callback()
+
+    monkeypatch.setattr(
+        cli_module, "create_bittensor_submit_runtime", create_submit_runtime
+    )
+    monkeypatch.setattr(cli_module, "RegistryClient", FakeRegistryClient)
+    monkeypatch.setattr(cli_module, "WeightsClient", FakeWeightsClient)
+    monkeypatch.setattr(cli_module, "NormalValidatorRunner", FakeRunner)
+    monkeypatch.setattr(cli_module, "run_epoch_loop", fake_run_epoch_loop)
+    monkeypatch.setattr(
+        cli_module, "_challenge_orchestrator", lambda settings: object()
+    )
+
+    result = CliRunner().invoke(app, ["validator", "run", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert ("registry_url", "https://registry.example") in events
+    assert ("weights_client", ("https://weights.example", 4.5, 2)) in events
+    assert ("weights_interval", 17) in events
+    assert ("registry_loop", True) in events
+    assert ("submit_weights", True) in events
+    runner_kwargs = next(value for name, value in events if name == "runner")
+    assert isinstance(runner_kwargs, dict)
+    assert runner_kwargs["retry_seconds"] == 9
+    assert runner_kwargs["weight_setter"] is Runtime.weight_setter
+    assert runner_kwargs["netuid"] == 12
+    assert runner_kwargs["weights_freshness_seconds"] == 111
+
+
+def test_validator_run_defaults_weights_url_to_registry_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "validator.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "validator:",
+                "  registry_url: https://registry.example",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    events: list[tuple[str, object]] = []
+
+    class Runtime:
+        weight_setter = object()
+
+    class FakeRunner:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def run_forever(self) -> None:
+            return None
+
+        async def submit_latest_weights(self) -> bool:
+            return True
+
+    class FakeWeightsClient:
+        def __init__(
+            self, base_url: str, *, timeout_seconds: float, retries: int
+        ) -> None:
+            events.append(("weights_url", base_url))
+
+    async def fake_run_epoch_loop(interval_seconds: int, callback):
+        await callback()
+
+    monkeypatch.setattr(
+        cli_module, "create_bittensor_submit_runtime", lambda settings: Runtime()
+    )
+    monkeypatch.setattr(cli_module, "RegistryClient", lambda base_url: object())
+    monkeypatch.setattr(cli_module, "WeightsClient", FakeWeightsClient)
+    monkeypatch.setattr(cli_module, "NormalValidatorRunner", FakeRunner)
+    monkeypatch.setattr(cli_module, "run_epoch_loop", fake_run_epoch_loop)
+    monkeypatch.setattr(
+        cli_module, "_challenge_orchestrator", lambda settings: object()
+    )
+
+    result = CliRunner().invoke(app, ["validator", "run", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert events == [("weights_url", "https://registry.example")]
 
 
 def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import typer
 
-from platform_network.bittensor.factory import create_bittensor_runtime
+from platform_network.bittensor.factory import (
+    create_bittensor_runtime,
+    create_bittensor_submit_runtime,
+)
+from platform_network.bittensor.metagraph_cache import MetagraphCache
 from platform_network.bittensor.validator_loop import run_epoch_loop
 from platform_network.config import load_settings
 from platform_network.config.policy import production_policy_enabled_for_settings
@@ -18,6 +24,11 @@ from platform_network.gpu.client import GpuAgentClient
 from platform_network.gpu.registry import FileGpuServerRegistry
 from platform_network.gpu.router import ChallengeOrchestratorRouter
 from platform_network.kubernetes.agent import create_kubernetes_agent_app
+from platform_network.kubernetes.config_updater import (
+    ConfigSyncSource,
+    RolloutTarget,
+    create_incluster_config_sync_updater,
+)
 from platform_network.kubernetes.registry import FileKubernetesTargetRegistry
 from platform_network.master.app_admin import create_admin_app
 from platform_network.master.app_proxy import create_proxy_app
@@ -38,13 +49,13 @@ from platform_network.master.kubernetes_broker import (
     create_kubernetes_broker_app,
 )
 from platform_network.master.kubernetes_orchestrator import KubernetesTargetRouter
-from platform_network.master.registry import (
-    DatabaseChallengeRegistry,
-    record_to_registry_view,
+from platform_network.master.registry import DatabaseChallengeRegistry
+from platform_network.master.service import (
+    MasterWeightService,
+    active_challenge_inputs,
 )
-from platform_network.master.service import MasterWeightService
 from platform_network.observability.logging import configure_logging
-from platform_network.schemas.weights import FinalWeights
+from platform_network.schemas.weights import FinalWeights, MasterWeightsResponse
 from platform_network.security.admin_auth import read_secret
 from platform_network.security.miner_auth import SqlAlchemyMinerNonceStore
 from platform_network.template_engine import (
@@ -54,6 +65,7 @@ from platform_network.template_engine import (
 from platform_network.validator.image_updater import create_incluster_updater
 from platform_network.validator.normal_runner import NormalValidatorRunner
 from platform_network.validator.registry_client import RegistryClient
+from platform_network.validator.weights_client import WeightsClient
 
 app = typer.Typer(help="Platform Network multi-challenge subnet CLI")
 master_app = typer.Typer(help="Run master components")
@@ -63,6 +75,7 @@ db_app = typer.Typer(help="Database helpers")
 registry_app = typer.Typer(help="Registry helpers")
 gpu_app = typer.Typer(help="Run GPU server agents")
 gpu_server_app = typer.Typer(help="Manage validator GPU servers")
+kubernetes_app = typer.Typer(help="Run Kubernetes maintenance tasks")
 k8s_server_app = typer.Typer(help="Manage Kubernetes targets")
 k8s_agent_app = typer.Typer(help="Run Kubernetes target agents")
 app.add_typer(master_app, name="master")
@@ -72,6 +85,7 @@ app.add_typer(db_app, name="db")
 app.add_typer(registry_app, name="registry")
 app.add_typer(gpu_app, name="gpu-agent")
 app.add_typer(gpu_server_app, name="gpu-server")
+app.add_typer(kubernetes_app, name="kubernetes")
 app.add_typer(k8s_server_app, name="k8s-server")
 app.add_typer(k8s_agent_app, name="k8s-agent")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -118,6 +132,22 @@ def _parse_labels(labels: list[str] | None) -> dict[str, str]:
             raise typer.BadParameter("labels must use key=value format")
         parsed[key] = value
     return parsed
+
+
+def _parse_rollout_targets(targets: list[str] | None) -> tuple[RolloutTarget, ...]:
+    raw_targets = targets or [
+        "Deployment/platform-admin",
+        "Deployment/platform-proxy",
+        "Deployment/platform-broker",
+        "Deployment/platform-validator",
+    ]
+    parsed: list[RolloutTarget] = []
+    for item in raw_targets:
+        kind, separator, name = item.partition("/")
+        if not separator or not kind or not name:
+            raise typer.BadParameter("rollout targets must use Kind/name format")
+        parsed.append(RolloutTarget(kind=kind, name=name))
+    return tuple(parsed)
 
 
 class DockerRuntimeController:
@@ -242,6 +272,35 @@ def _gpu_clients(settings) -> dict[str, GpuAgentClient]:
     return clients
 
 
+def _master_compute_metagraph_cache(settings) -> MetagraphCache:
+    return create_bittensor_runtime(settings).metagraph_cache
+
+
+def _master_weight_service(
+    settings,
+    kubernetes_targets=None,
+    metagraph_cache: MetagraphCache | None = None,
+) -> MasterWeightService:
+    if kubernetes_targets is None:
+        kubernetes_targets = _kubernetes_target_registry(settings)
+    capability_records: dict[str, Any] = (
+        {target.id: target for target in kubernetes_targets.list()}
+        if settings.runtime.backend == "kubernetes"
+        else {server.id: server for server in _gpu_registry(settings).list()}
+    )
+    return MasterWeightService(
+        metagraph_cache=metagraph_cache or _master_compute_metagraph_cache(settings),
+        challenge_client=ChallengeClient(
+            timeout_seconds=settings.master.challenge_timeout_seconds,
+            retries=settings.master.challenge_retries,
+            kubernetes_target_registry=(
+                kubernetes_targets if settings.runtime.backend == "kubernetes" else None
+            ),
+        ),
+        capability_checker=ResourceCapabilityChecker(capability_records),
+    )
+
+
 def _ensure_kubernetes_broker_backend(settings) -> None:
     if (
         settings.runtime.backend == "kubernetes"
@@ -276,12 +335,28 @@ async def _run_master_weight_epoch(
     service: MasterWeightService,
     registry: Any,
     *,
-    submit: bool = True,
+    submit: bool = False,
 ) -> FinalWeights:
-    records = await _resolve(registry.list(active_only=True))
-    challenges = [record_to_registry_view(record) for record in records]
-    tokens = {record.slug: registry.get_token(record.slug) for record in records}
+    challenges, tokens = await active_challenge_inputs(registry)
     return await service.run_epoch(challenges, tokens, submit=submit)
+
+
+async def _run_master_weight_epoch_response(
+    service: MasterWeightService,
+    registry: Any,
+    *,
+    netuid: int,
+    chain_endpoint: str,
+    now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> MasterWeightsResponse:
+    challenges, tokens = await active_challenge_inputs(registry)
+    return await service.compute_latest_response(
+        challenges,
+        tokens,
+        netuid=netuid,
+        chain_endpoint=chain_endpoint,
+        now_fn=now_fn,
+    )
 
 
 @master_app.command("run")
@@ -294,11 +369,15 @@ def master_run(config: Path = typer.Option(Path("config/master.example.yaml"))):
     session_factory = _master_session_factory(settings)
     registry = _master_registry(settings, session_factory)
     orchestrator = _challenge_orchestrator(settings)
+    kubernetes_targets = _kubernetes_target_registry(settings)
     admin = create_admin_app(
         registry=registry,
         runtime_controller=DockerRuntimeController(registry, orchestrator),
         gpu_registry=_gpu_registry(settings),
-        kubernetes_target_registry=_kubernetes_target_registry(settings),
+        kubernetes_target_registry=kubernetes_targets,
+        weight_service=_master_weight_service(settings, kubernetes_targets),
+        netuid=settings.network.netuid,
+        chain_endpoint=settings.network.chain_endpoint or "",
         admin_token_provider=lambda: read_secret(
             settings.security.admin_token,
             settings.security.admin_token_file,
@@ -403,6 +482,52 @@ def k8s_agent_run(
     )
     typer.echo(f"Starting Kubernetes agent API on {host}:{port}")
     uvicorn.run(app_instance, host=host, port=port)
+
+
+@kubernetes_app.command("sync-config")
+def kubernetes_sync_config(
+    namespace: str = typer.Option(..., "--namespace"),
+    config_map: str = typer.Option("platform-config", "--config-map"),
+    github_repository: str = typer.Option(
+        "PlatformNetwork/platform",
+        "--github-repository",
+        "--repo",
+        help="GitHub owner/repository to fetch config from.",
+    ),
+    github_branch: str = typer.Option(
+        "main",
+        "--github-branch",
+        "--ref",
+        help="GitHub branch or ref to fetch config from.",
+    ),
+    values_path: list[str] | None = typer.Option(
+        None,
+        "--values-path",
+        help="Repository path to a YAML values/manifests file. May be repeated.",
+    ),
+    rollout_target: list[str] | None = typer.Option(
+        None,
+        "--rollout-target",
+        help=(
+            "Workload to annotate after config changes, as Kind/name. May be repeated."
+        ),
+    ),
+) -> None:
+    paths = tuple(values_path or ["deploy/helm/platform/values.yaml"])
+    source = ConfigSyncSource(
+        repository=github_repository,
+        branch=github_branch,
+        paths=paths,
+        sync_secrets=False,
+        allowed_kinds=("ConfigMap",),
+    )
+    rollout_targets = _parse_rollout_targets(rollout_target)
+    result = create_incluster_config_sync_updater(source).sync_once(
+        namespace=namespace,
+        config_map=config_map,
+        rollout_targets=rollout_targets,
+    )
+    typer.echo(result.reason)
 
 
 @gpu_app.command("run")
@@ -615,7 +740,12 @@ def k8s_server_remove(
 def master_weights(
     config: Path = typer.Option(Path("config/master.example.yaml")),
     once: bool = typer.Option(False, "--once/--loop"),
-    dry_run: bool = typer.Option(False, "--dry-run/--submit"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    submit_on_chain: bool = typer.Option(
+        False,
+        "--submit-on-chain",
+        help="Unsafe compatibility path: submit computed master weights on-chain.",
+    ),
 ):
     settings = load_settings(config)
     configure_logging(settings.observability.log_json)
@@ -623,27 +753,20 @@ def master_weights(
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
     kubernetes_targets = _kubernetes_target_registry(settings)
-    capability_records: dict[str, Any] = (
-        {target.id: target for target in kubernetes_targets.list()}
-        if settings.runtime.backend == "kubernetes"
-        else {server.id: server for server in _gpu_registry(settings).list()}
-    )
-    service = MasterWeightService(
+    service = _master_weight_service(
+        settings,
+        kubernetes_targets,
         metagraph_cache=runtime.metagraph_cache,
-        weight_setter=runtime.weight_setter,
-        challenge_client=ChallengeClient(
-            timeout_seconds=settings.master.challenge_timeout_seconds,
-            retries=settings.master.challenge_retries,
-            kubernetes_target_registry=(
-                kubernetes_targets if settings.runtime.backend == "kubernetes" else None
-            ),
-        ),
-        capability_checker=ResourceCapabilityChecker(capability_records),
     )
+    if submit_on_chain and not dry_run:
+        if runtime.weight_setter is None:
+            runtime = create_bittensor_submit_runtime(settings)
+        service.weight_setter = runtime.weight_setter
 
     async def epoch() -> None:
-        final = await _run_master_weight_epoch(service, registry, submit=not dry_run)
-        action = "dry-run" if dry_run else "submit"
+        submit = submit_on_chain and not dry_run
+        final = await _run_master_weight_epoch(service, registry, submit=submit)
+        action = "submit-on-chain" if submit else "compute-only"
         typer.echo(f"{action}: computed {len(final.uids)} weights")
 
     if once:
@@ -652,16 +775,40 @@ def master_weights(
     asyncio.run(run_epoch_loop(settings.master.epoch_interval_seconds, epoch))
 
 
+async def _run_validator_runtime(
+    runner: NormalValidatorRunner,
+    weights_interval_seconds: int,
+) -> None:
+    async def submit_weights() -> None:
+        await runner.submit_latest_weights()
+
+    await asyncio.gather(
+        runner.run_forever(),
+        run_epoch_loop(weights_interval_seconds, submit_weights),
+    )
+
+
 @validator_app.command("run")
 def validator_run(config: Path = typer.Option(Path("config/validator.example.yaml"))):
     settings = load_settings(config)
     configure_logging(settings.observability.log_json)
+    runtime = create_bittensor_submit_runtime(settings)
     runner = NormalValidatorRunner(
         registry_client=RegistryClient(settings.validator.registry_url),
         orchestrator=_challenge_orchestrator(settings),
         retry_seconds=settings.validator.registry_retry_seconds,
+        weights_client=WeightsClient(
+            settings.validator.resolved_weights_url,
+            timeout_seconds=settings.validator.weights_timeout_seconds,
+            retries=settings.validator.weights_retries,
+        ),
+        weight_setter=runtime.weight_setter,
+        netuid=settings.network.netuid,
+        weights_freshness_seconds=settings.validator.weights_freshness_seconds,
     )
-    asyncio.run(runner.run_forever())
+    asyncio.run(
+        _run_validator_runtime(runner, settings.validator.weights_interval_seconds)
+    )
 
 
 @validator_app.command("refresh-image")

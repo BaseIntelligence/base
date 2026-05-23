@@ -37,6 +37,15 @@ class MasterSettings(BaseModel):
 class ValidatorSettings(BaseModel):
     registry_url: str = "https://chain.platform.network"
     registry_retry_seconds: int = 15
+    weights_url: str | None = None
+    weights_interval_seconds: int = 360
+    weights_timeout_seconds: float = 15.0
+    weights_retries: int = 3
+    weights_freshness_seconds: int = 720
+
+    @property
+    def resolved_weights_url(self) -> str:
+        return self.weights_url or self.registry_url
 
 
 class DatabaseSettings(BaseModel):
