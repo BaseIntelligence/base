@@ -19,16 +19,18 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     resourceNames:
+      {{- if .Values.master.enabled }}
       - {{ include "platform.fullname" . }}-admin
       - {{ include "platform.fullname" . }}-proxy
       {{- if .Values.broker.enabled }}
       - {{ include "platform.fullname" . }}-broker
       {{- end }}
+      {{- end }}
       {{- if .Values.validator.enabled }}
       - {{ include "platform.fullname" . }}-validator
       {{- end }}
     verbs: ["get", "patch"]
-  {{- if .Values.weights.enabled }}
+  {{- if and .Values.master.enabled .Values.weights.enabled .Values.weights.submitOnChain }}
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     resourceNames:

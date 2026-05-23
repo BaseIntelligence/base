@@ -1,14 +1,15 @@
 {{- if .Values.imageAutoUpdate.enabled }}
 {{- $root := . }}
-{{- $targets := list
-  (dict "name" "admin" "kind" "deployment" "resource" (printf "%s-admin" (include "platform.fullname" .)) "container" "admin" "image" .Values.images.master)
-  (dict "name" "proxy" "kind" "deployment" "resource" (printf "%s-proxy" (include "platform.fullname" .)) "container" "proxy" "image" .Values.images.master)
-}}
+{{- $targets := list }}
+{{- if .Values.master.enabled }}
+{{- $targets = append $targets (dict "name" "admin" "kind" "deployment" "resource" (printf "%s-admin" (include "platform.fullname" .)) "container" "admin" "image" .Values.images.master) }}
+{{- $targets = append $targets (dict "name" "proxy" "kind" "deployment" "resource" (printf "%s-proxy" (include "platform.fullname" .)) "container" "proxy" "image" .Values.images.master) }}
 {{- if .Values.broker.enabled }}
 {{- $targets = append $targets (dict "name" "broker" "kind" "deployment" "resource" (printf "%s-broker" (include "platform.fullname" .)) "container" "broker" "image" .Values.images.master) }}
 {{- end }}
-{{- if .Values.weights.enabled }}
+{{- if and .Values.weights.enabled .Values.weights.submitOnChain }}
 {{- $targets = append $targets (dict "name" "weights" "kind" "cronjob" "resource" (printf "%s-weights" (include "platform.fullname" .)) "container" "weights" "image" .Values.images.master) }}
+{{- end }}
 {{- end }}
 {{- if .Values.validator.enabled }}
 {{- $targets = append $targets (dict "name" "validator" "kind" "deployment" "resource" (printf "%s-validator" (include "platform.fullname" .)) "container" "validator" "image" .Values.images.validator) }}
