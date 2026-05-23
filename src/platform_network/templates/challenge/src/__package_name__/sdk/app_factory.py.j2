@@ -39,7 +39,7 @@ def create_challenge_app(
 
     @app.get("/version", response_model=VersionResponse, include_in_schema=False)
     async def version() -> VersionResponse:
-        capabilities = ["get_weights", "proxy_routes", "sqlite"]
+        capabilities = ["get_weights", "proxy_routes", "async_sqlalchemy"]
         if settings.docker_enabled:
             capabilities.append("docker_executor")
         return VersionResponse(

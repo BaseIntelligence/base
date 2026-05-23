@@ -3,4 +3,6 @@ name: "{{ name }}"
 version: "{{ challenge_version }}"
 api_version: "{{ api_version }}"
 sdk_version: "{{ sdk_version }}"
+# In Kubernetes, Platform-managed PostgreSQL injects CHALLENGE_DATABASE_URL.
+# Local development can use the SQLite fallback below.
 database_url: "sqlite+aiosqlite:////data/challenge.sqlite3"
