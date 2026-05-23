@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from platform_network.config.policy import production_policy_enabled_for_settings
 from platform_network.kubernetes.client import KubernetesClient
-from platform_network.kubernetes.names import challenge_name, challenge_secret_name
+from platform_network.kubernetes.names import (
+    POSTGRES_SECRET_KEY_DATABASE_URL,
+    POSTGRES_SECRET_KEY_PASSWORD,
+    challenge_name,
+    challenge_postgres_names,
+    challenge_secret_name,
+)
 from platform_network.kubernetes.resources import (
     build_challenge_hpa,
+    build_challenge_postgres_secret,
+    build_challenge_postgres_service,
+    build_challenge_postgres_statefulset,
     build_challenge_scaled_object,
     build_challenge_secret,
     build_challenge_service,
@@ -21,6 +35,17 @@ from platform_network.master.docker_orchestrator import (
     ChallengeSpec,
     DockerOrchestrationError,
 )
+
+
+def _managed_postgres_resources_from_settings(settings: Any) -> dict[str, Any] | None:
+    requests = dict(getattr(settings, "requests", {}) or {})
+    limits = dict(getattr(settings, "limits", {}) or {})
+    resources: dict[str, Any] = {}
+    if requests:
+        resources["requests"] = requests
+    if limits:
+        resources["limits"] = limits
+    return resources or None
 
 
 class KubernetesOrchestrator:
@@ -53,6 +78,13 @@ class KubernetesOrchestrator:
         kubeconfig: str | None = None,
         in_cluster: bool = True,
         production_policy: bool = False,
+        managed_postgres_enabled: bool = True,
+        managed_postgres_image: str = "postgres:16-alpine",
+        managed_postgres_storage_class_name: str | None = None,
+        managed_postgres_storage_size: str = "10Gi",
+        managed_postgres_retain_pvc: bool = True,
+        managed_postgres_retain_secret: bool = True,
+        managed_postgres_resources: dict[str, Any] | None = None,
     ) -> None:
         self.client = client or KubernetesClient(
             namespace=namespace, kubeconfig=kubeconfig, in_cluster=in_cluster
@@ -78,6 +110,13 @@ class KubernetesOrchestrator:
         self.docker_broker_url = docker_broker_url
         self.health_check_mode = health_check_mode
         self.production_policy = production_policy
+        self.managed_postgres_enabled = managed_postgres_enabled
+        self.managed_postgres_image = managed_postgres_image
+        self.managed_postgres_storage_class_name = managed_postgres_storage_class_name
+        self.managed_postgres_storage_size = managed_postgres_storage_size
+        self.managed_postgres_retain_pvc = managed_postgres_retain_pvc
+        self.managed_postgres_retain_secret = managed_postgres_retain_secret
+        self.managed_postgres_resources = managed_postgres_resources
         self._runtime: dict[str, ChallengeRuntime] = {}
 
     @property
@@ -107,9 +146,12 @@ class KubernetesOrchestrator:
             image_pull_secrets=self.image_pull_secrets,
             docker_broker_url=self.docker_broker_url,
             production=self.production_policy,
+            managed_postgres=self.managed_postgres_enabled,
         )
         if recreate:
             self.stop_challenge(spec.slug, remove=True)
+        if self.managed_postgres_enabled:
+            self._ensure_managed_postgres(spec.slug)
         secret = build_challenge_secret(spec, namespace=self.namespace)
         if secret is not None:
             self.client.apply(secret)
@@ -157,6 +199,146 @@ class KubernetesOrchestrator:
         self._runtime[spec.slug] = runtime
         return runtime
 
+    def _ensure_managed_postgres(self, slug: str) -> None:
+        names = challenge_postgres_names(slug)
+        try:
+            database_url = self._reusable_managed_postgres_database_url(slug)
+            if database_url is None:
+                password = secrets.token_urlsafe(32)
+                database_url = self._managed_postgres_database_url(slug, password)
+                self.client.apply(
+                    build_challenge_postgres_secret(
+                        slug,
+                        namespace=self.namespace,
+                        retain=self.managed_postgres_retain_secret,
+                        password=password,
+                        database_url=database_url,
+                    )
+                )
+            self.client.apply(
+                build_challenge_postgres_service(slug, namespace=self.namespace)
+            )
+            statefulset = build_challenge_postgres_statefulset(
+                slug,
+                namespace=self.namespace,
+                image=self.managed_postgres_image,
+                storage_class_name=(
+                    self.managed_postgres_storage_class_name or self.storage_class_name
+                ),
+                storage_size=self.managed_postgres_storage_size,
+                retain_pvc=self.managed_postgres_retain_pvc,
+                resources=self.managed_postgres_resources,
+            )
+            self.client.apply(statefulset)
+            self.client.wait_workload_ready(
+                kind=statefulset["kind"],
+                name=names.statefulset_name,
+                replicas=1,
+                timeout_seconds=int(
+                    self.health_retries * self.health_retry_delay_seconds
+                    + self.request_timeout_seconds
+                ),
+            )
+            self._check_managed_postgres_readiness(
+                slug=slug,
+                service_name=names.service_name,
+                database_url=database_url,
+            )
+        except Exception:
+            raise DockerOrchestrationError(
+                f"Managed Postgres for challenge {slug!r} "
+                f"({names.statefulset_name}) failed readiness/authentication"
+            ) from None
+
+    def _reusable_managed_postgres_database_url(self, slug: str) -> str | None:
+        names = challenge_postgres_names(slug)
+        secret = self.client.get("Secret", names.secret_name)
+        if not secret:
+            return None
+        password = self._secret_value(secret, POSTGRES_SECRET_KEY_PASSWORD)
+        database_url = self._secret_value(secret, POSTGRES_SECRET_KEY_DATABASE_URL)
+        if not password or not database_url:
+            return None
+        return database_url
+
+    def _managed_postgres_database_url(self, slug: str, password: str) -> str:
+        names = challenge_postgres_names(slug)
+        encoded_password = quote(password, safe="")
+        return (
+            f"postgresql+asyncpg://{names.database_user}:{encoded_password}"
+            f"@{names.service_name}:5432/{names.database_name}"
+        )
+
+    def _check_managed_postgres_readiness(
+        self, *, slug: str, service_name: str, database_url: str
+    ) -> None:
+        client_hook = getattr(self.client, "check_postgres_ready", None)
+        if callable(client_hook):
+            client_hook(slug=slug, service_name=service_name, database_url=database_url)
+            return
+        try:
+            from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DockerOrchestrationError(
+                f"Managed Postgres for challenge {slug!r} cannot authenticate; "
+                "SQLAlchemy asyncio support is unavailable"
+            ) from exc
+
+        async def probe() -> None:
+            engine = create_async_engine(
+                database_url,
+                connect_args={"timeout": self.request_timeout_seconds},
+            )
+            try:
+                async with engine.connect() as connection:
+                    await connection.execute(text("SELECT 1"))
+            finally:
+                await engine.dispose()
+
+        def run_probe() -> None:
+            asyncio.run(probe())
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            run_probe()
+            return
+        error: list[BaseException] = []
+
+        def threaded_probe() -> None:
+            try:
+                run_probe()
+            except BaseException as exc:  # pragma: no cover - thread handoff
+                error.append(exc)
+
+        thread = threading.Thread(target=threaded_probe, daemon=True)
+        thread.start()
+        thread.join()
+        if error:
+            raise error[0]
+
+    @staticmethod
+    def _secret_value(secret: dict[str, Any], key: str) -> str | None:
+        string_data = secret.get("stringData") or secret.get("string_data") or {}
+        if key in string_data:
+            value = string_data[key]
+            return str(value) if value else None
+        data = secret.get("data") or {}
+        encoded = data.get(key)
+        if not encoded:
+            return None
+        try:
+            return base64.b64decode(str(encoded)).decode("utf-8")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _managed_postgres_resources_from_settings(
+        settings: Any,
+    ) -> dict[str, Any] | None:
+        return _managed_postgres_resources_from_settings(settings)
+
     def restart_challenge(self, spec: ChallengeSpec) -> ChallengeRuntime:
         return self.start_challenge(spec, recreate=True)
 
@@ -169,6 +351,10 @@ class KubernetesOrchestrator:
         if remove:
             self.client.delete("Service", name)
             self.client.delete("Secret", challenge_secret_name(slug))
+            if self.managed_postgres_enabled:
+                names = challenge_postgres_names(slug)
+                self.client.delete("StatefulSet", names.statefulset_name)
+                self.client.delete("Service", names.service_name)
         self._runtime.pop(slug, None)
 
     def pull_challenge(self, spec: ChallengeSpec) -> object:
@@ -277,6 +463,17 @@ class KubernetesOrchestrator:
             kubeconfig=settings.kubernetes.kubeconfig,
             in_cluster=settings.kubernetes.in_cluster,
             production_policy=production_policy,
+            managed_postgres_enabled=settings.kubernetes.managed_postgres.enabled,
+            managed_postgres_image=settings.kubernetes.managed_postgres.image,
+            managed_postgres_storage_class_name=(
+                settings.kubernetes.managed_postgres.storage_class
+            ),
+            managed_postgres_storage_size=settings.kubernetes.managed_postgres.storage_size,
+            managed_postgres_retain_pvc=settings.kubernetes.managed_postgres.retain_pvc,
+            managed_postgres_retain_secret=settings.kubernetes.managed_postgres.retain_secret,
+            managed_postgres_resources=_managed_postgres_resources_from_settings(
+                settings.kubernetes.managed_postgres.resources
+            ),
         )
 
 
@@ -533,6 +730,27 @@ class KubernetesTargetRouter:
             kubeconfig=target.kubeconfig_file,
             in_cluster=False,
             production_policy=production_policy,
+            managed_postgres_enabled=self.settings.kubernetes.managed_postgres.enabled,
+            managed_postgres_image=self.settings.kubernetes.managed_postgres.image,
+            managed_postgres_storage_class_name=(
+                self.settings.kubernetes.managed_postgres.storage_class
+                or target.storage_class
+                or self.settings.kubernetes.storage_class
+            ),
+            managed_postgres_storage_size=(
+                self.settings.kubernetes.managed_postgres.storage_size
+            ),
+            managed_postgres_retain_pvc=(
+                self.settings.kubernetes.managed_postgres.retain_pvc
+            ),
+            managed_postgres_retain_secret=(
+                self.settings.kubernetes.managed_postgres.retain_secret
+            ),
+            managed_postgres_resources=(
+                _managed_postgres_resources_from_settings(
+                    self.settings.kubernetes.managed_postgres.resources
+                )
+            ),
         )
 
     @classmethod

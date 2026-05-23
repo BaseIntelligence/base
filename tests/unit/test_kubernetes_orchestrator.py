@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from platform_network.kubernetes.names import challenge_postgres_names
 from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
@@ -21,10 +22,19 @@ class FakeKubernetesClient:
         self.applied: list[dict[str, Any]] = []
         self.deleted: list[tuple[str, str | None]] = []
         self.waits: list[dict[str, Any]] = []
+        self.gets: list[tuple[str, str]] = []
+        self.objects: dict[tuple[str, str], dict[str, Any]] = {}
+        self.postgres_checks: list[dict[str, str]] = []
+        self.postgres_check_error: Exception | None = None
 
     def apply(self, resource: dict[str, Any]) -> dict[str, Any]:
         self.applied.append(resource)
+        self.objects[(resource["kind"], resource["metadata"]["name"])] = resource
         return resource
+
+    def get(self, kind: str, name: str) -> dict[str, Any] | None:
+        self.gets.append((kind, name))
+        return self.objects.get((kind, name))
 
     def delete(self, resource: dict[str, Any] | str, name: str | None = None) -> None:
         if isinstance(resource, dict):
@@ -44,12 +54,56 @@ class FakeKubernetesClient:
             }
         )
 
+    def check_postgres_ready(
+        self, *, slug: str, service_name: str, database_url: str
+    ) -> None:
+        self.postgres_checks.append(
+            {"slug": slug, "service_name": service_name, "database_url": database_url}
+        )
+        if self.postgres_check_error is not None:
+            raise self.postgres_check_error
+
     def service_json(
         self, service_name: str, path: str, *, port: int | str | None = None
     ) -> dict[str, Any]:
         if path == "health":
             return {"status": "ok", "service": service_name, "port": port}
         return {"api_version": "1.0", "capabilities": ["get_weights", "proxy_routes"]}
+
+
+class NoPostgresHookClient:
+    pass
+
+
+class FakeAsyncConnection:
+    def __init__(self, executed: list[Any]) -> None:
+        self.executed = executed
+
+    async def execute(self, statement: Any) -> None:
+        self.executed.append(statement)
+
+
+class FakeAsyncConnectionContext:
+    def __init__(self, connection: FakeAsyncConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> FakeAsyncConnection:
+        return self.connection
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class FakeAsyncEngine:
+    def __init__(self, executed: list[Any]) -> None:
+        self.executed = executed
+        self.disposed = False
+
+    def connect(self) -> FakeAsyncConnectionContext:
+        return FakeAsyncConnectionContext(FakeAsyncConnection(self.executed))
+
+    async def dispose(self) -> None:
+        self.disposed = True
 
 
 def test_deployment_start_applies_service_workload_hpa_and_runtime(
@@ -81,12 +135,27 @@ def test_deployment_start_applies_service_workload_hpa_and_runtime(
     )
 
     runtime = orchestrator.start_challenge(spec)
-    kinds = [resource["kind"] for resource in client.applied]
+    applied = [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ]
+    names = challenge_postgres_names("demo")
 
-    assert kinds == ["Secret", "Service", "Deployment", "HorizontalPodAutoscaler"]
-    assert client.applied[2]["spec"]["replicas"] == 2
-    assert client.applied[3]["spec"]["maxReplicas"] == 4
-    assert client.waits[0]["replicas"] == 2
+    assert applied == [
+        ("Secret", names.secret_name),
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+        ("Secret", "challenge-demo-secrets"),
+        ("Service", "challenge-demo"),
+        ("Deployment", "challenge-demo"),
+        ("HorizontalPodAutoscaler", "challenge-demo"),
+    ]
+    assert client.applied[5]["spec"]["replicas"] == 2
+    assert client.applied[6]["spec"]["maxReplicas"] == 4
+    assert [wait["name"] for wait in client.waits] == [
+        names.statefulset_name,
+        "challenge-demo",
+    ]
+    assert client.waits[1]["replicas"] == 2
     assert runtime.container_name == "challenge-demo"
     assert orchestrator.runtime["demo"] == runtime
 
@@ -112,12 +181,18 @@ def test_statefulset_start_does_not_apply_hpa(monkeypatch: pytest.MonkeyPatch) -
     )
 
     orchestrator.start_challenge(spec)
+    names = challenge_postgres_names("demo")
 
-    assert [resource["kind"] for resource in client.applied] == [
-        "Service",
-        "StatefulSet",
+    assert [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ] == [
+        ("Secret", names.secret_name),
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+        ("Service", "challenge-demo"),
+        ("StatefulSet", "challenge-demo"),
     ]
-    assert client.waits[0]["replicas"] == 1
+    assert [wait["replicas"] for wait in client.waits] == [1, 1]
 
 
 def test_deployment_start_can_apply_keda_scaled_object(
@@ -151,15 +226,292 @@ def test_deployment_start_can_apply_keda_scaled_object(
     orchestrator.start_challenge(spec)
 
     assert [resource["kind"] for resource in client.applied] == [
+        "Secret",
+        "Service",
+        "StatefulSet",
         "Service",
         "Deployment",
         "ScaledObject",
     ]
 
 
-def test_stop_deletes_workloads_hpa_and_optional_service_secret() -> None:
+def test_managed_postgres_start_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKubernetesClient()
+    orchestrator = KubernetesOrchestrator(
+        client=client,
+        mode="deployment",
+        autoscaling_enabled=False,
+        health_retries=1,
+        health_retry_delay_seconds=0,
+    )
+    spec = ChallengeSpec(slug="agent-challenge", image="ghcr.io/org/agent:1")
+    monkeypatch.setattr(
+        orchestrator,
+        "_get_json",
+        lambda url: (
+            {"status": "ok"}
+            if url.endswith("/health")
+            else {"api_version": "1.0", "capabilities": ["get_weights", "proxy_routes"]}
+        ),
+    )
+
+    orchestrator.start_challenge(spec)
+
+    names = challenge_postgres_names("agent-challenge")
+    applied = [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ]
+    assert applied[:3] == [
+        ("Secret", names.secret_name),
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+    ]
+    assert applied[3:5] == [
+        ("Service", "challenge-agent-challenge"),
+        ("Deployment", "challenge-agent-challenge"),
+    ]
+    assert [wait["name"] for wait in client.waits] == [
+        names.statefulset_name,
+        "challenge-agent-challenge",
+    ]
+    assert client.postgres_checks[0]["service_name"] == names.service_name
+    assert client.postgres_checks[0]["database_url"].startswith(
+        "postgresql+asyncpg://challenge:"
+    )
+    assert (
+        f"@{names.service_name}:5432/challenge"
+        in client.postgres_checks[0]["database_url"]
+    )
+    assert client.applied[0]["stringData"]["POSTGRES_PASSWORD"]
+    assert (
+        client.applied[0]["stringData"]["CHALLENGE_DATABASE_URL"]
+        == client.postgres_checks[0]["database_url"]
+    )
+
+
+def test_managed_postgres_readiness_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKubernetesClient()
+    client.postgres_check_error = RuntimeError(
+        "login failed for sanitized database URL"
+    )
+    orchestrator = KubernetesOrchestrator(
+        client=client,
+        mode="deployment",
+        autoscaling_enabled=False,
+        health_retries=1,
+        health_retry_delay_seconds=0,
+    )
+    monkeypatch.setattr(orchestrator, "_get_json", lambda url: {"status": "ok"})
+
+    with pytest.raises(DockerOrchestrationError) as exc_info:
+        orchestrator.start_challenge(
+            ChallengeSpec(slug="agent-challenge", image="ghcr.io/org/agent:1")
+        )
+
+    message = str(exc_info.value)
+    names = challenge_postgres_names("agent-challenge")
+    assert "agent-challenge" in message
+    assert names.statefulset_name in message
+    assert "postgresql+asyncpg://" not in message
+    assert [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ] == [
+        ("Secret", names.secret_name),
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+    ]
+    assert [wait["name"] for wait in client.waits] == [names.statefulset_name]
+
+
+def test_managed_postgres_readiness_accepts_asyncpg_sqlalchemy_url_without_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[dict[str, Any]] = []
+    executed: list[Any] = []
+
+    def fake_create_async_engine(database_url: str, **kwargs: Any) -> FakeAsyncEngine:
+        engine = FakeAsyncEngine(executed)
+        created.append(
+            {"database_url": database_url, "kwargs": kwargs, "engine": engine}
+        )
+        return engine
+
+    monkeypatch.setattr(
+        "sqlalchemy.ext.asyncio.create_async_engine",
+        fake_create_async_engine,
+    )
+    orchestrator = KubernetesOrchestrator(
+        client=NoPostgresHookClient(),
+        request_timeout_seconds=3.0,
+    )
+    database_url = orchestrator._managed_postgres_database_url(
+        "agent-challenge", "unit-test-generated-credential"
+    )
+
+    orchestrator._check_managed_postgres_readiness(
+        slug="agent-challenge",
+        service_name=challenge_postgres_names("agent-challenge").service_name,
+        database_url=database_url,
+    )
+
+    assert created[0]["database_url"].startswith("postgresql+asyncpg://challenge:")
+    assert created[0]["kwargs"] == {"connect_args": {"timeout": 3.0}}
+    assert str(executed[0]) == "SELECT 1"
+    assert created[0]["engine"].disposed is True
+
+
+def test_managed_postgres_secret_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKubernetesClient()
+    names = challenge_postgres_names("agent-challenge")
+    orchestrator = KubernetesOrchestrator(
+        client=client,
+        mode="deployment",
+        autoscaling_enabled=False,
+        health_retries=1,
+        health_retry_delay_seconds=0,
+    )
+    credential_placeholder = "redacted-credential"
+    database_url = orchestrator._managed_postgres_database_url(
+        "agent-challenge", credential_placeholder
+    )
+    client.objects[("Secret", names.secret_name)] = {
+        "kind": "Secret",
+        "metadata": {"name": names.secret_name},
+        "stringData": {
+            "POSTGRES_PASSWORD": credential_placeholder,
+            "CHALLENGE_DATABASE_URL": database_url,
+        },
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_get_json",
+        lambda url: (
+            {"status": "ok"}
+            if url.endswith("/health")
+            else {"api_version": "1.0", "capabilities": ["get_weights", "proxy_routes"]}
+        ),
+    )
+
+    orchestrator.start_challenge(
+        ChallengeSpec(slug="agent-challenge", image="ghcr.io/org/agent:1")
+    )
+
+    assert client.gets == [("Secret", names.secret_name)]
+    assert client.postgres_checks[0]["database_url"] == database_url
+    assert [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ] == [
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+        ("Service", "challenge-agent-challenge"),
+        ("Deployment", "challenge-agent-challenge"),
+    ]
+    assert all(
+        not (
+            resource["kind"] == "Secret"
+            and resource["metadata"]["name"] == names.secret_name
+        )
+        for resource in client.applied
+    )
+
+
+def test_managed_postgres_retention_on_remove_keeps_secret_and_pvc() -> None:
     client = FakeKubernetesClient()
     orchestrator = KubernetesOrchestrator(client=client)
+
+    orchestrator.stop_challenge("agent-challenge", remove=True)
+
+    names = challenge_postgres_names("agent-challenge")
+    assert client.deleted == [
+        ("Deployment", "challenge-agent-challenge"),
+        ("StatefulSet", "challenge-agent-challenge"),
+        ("HorizontalPodAutoscaler", "challenge-agent-challenge"),
+        ("ScaledObject", "challenge-agent-challenge"),
+        ("Service", "challenge-agent-challenge"),
+        ("Secret", "challenge-agent-challenge-secrets"),
+        ("StatefulSet", names.statefulset_name),
+        ("Service", names.service_name),
+    ]
+    assert ("Secret", names.secret_name) not in client.deleted
+    assert all(kind != "PersistentVolumeClaim" for kind, _name in client.deleted)
+
+
+def test_managed_postgres_secret_reuse_after_recreate_retains_secret_and_pvc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeKubernetesClient()
+    names = challenge_postgres_names("agent-challenge")
+    orchestrator = KubernetesOrchestrator(
+        client=client,
+        mode="deployment",
+        autoscaling_enabled=False,
+        health_retries=1,
+        health_retry_delay_seconds=0,
+    )
+    credential_placeholder = "redacted-credential"
+    database_url = orchestrator._managed_postgres_database_url(
+        "agent-challenge", credential_placeholder
+    )
+    client.objects[("Secret", names.secret_name)] = {
+        "kind": "Secret",
+        "metadata": {"name": names.secret_name},
+        "stringData": {
+            "POSTGRES_PASSWORD": credential_placeholder,
+            "CHALLENGE_DATABASE_URL": database_url,
+        },
+    }
+    monkeypatch.setattr(
+        "platform_network.master.kubernetes_orchestrator.secrets.token_urlsafe",
+        lambda _size: pytest.fail("retained managed Postgres Secret should be reused"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_get_json",
+        lambda url: (
+            {"status": "ok"}
+            if url.endswith("/health")
+            else {"api_version": "1.0", "capabilities": ["get_weights", "proxy_routes"]}
+        ),
+    )
+
+    orchestrator.restart_challenge(
+        ChallengeSpec(slug="agent-challenge", image="ghcr.io/org/agent:1")
+    )
+
+    assert client.deleted == [
+        ("Deployment", "challenge-agent-challenge"),
+        ("StatefulSet", "challenge-agent-challenge"),
+        ("HorizontalPodAutoscaler", "challenge-agent-challenge"),
+        ("ScaledObject", "challenge-agent-challenge"),
+        ("Service", "challenge-agent-challenge"),
+        ("Secret", "challenge-agent-challenge-secrets"),
+        ("StatefulSet", names.statefulset_name),
+        ("Service", names.service_name),
+    ]
+    assert ("Secret", names.secret_name) not in client.deleted
+    assert all(kind != "PersistentVolumeClaim" for kind, _name in client.deleted)
+    assert client.gets == [("Secret", names.secret_name)]
+    assert client.postgres_checks[0]["database_url"] == database_url
+    assert [
+        (resource["kind"], resource["metadata"]["name"]) for resource in client.applied
+    ] == [
+        ("Service", names.service_name),
+        ("StatefulSet", names.statefulset_name),
+        ("Service", "challenge-agent-challenge"),
+        ("Deployment", "challenge-agent-challenge"),
+    ]
+    assert all(
+        not (
+            resource["kind"] == "Secret"
+            and resource["metadata"]["name"] == names.secret_name
+        )
+        for resource in client.applied
+    )
+
+
+def test_stop_deletes_workloads_hpa_and_optional_service_secret() -> None:
+    client = FakeKubernetesClient()
+    orchestrator = KubernetesOrchestrator(client=client, managed_postgres_enabled=False)
 
     orchestrator.stop_challenge("demo", remove=True)
 
@@ -223,7 +575,7 @@ def test_from_settings_production_policy_rejects_secret_spec_before_apply(
         resources=ChallengeResources(cpu=1, memory="512Mi"),
     )
 
-    with pytest.raises(ValueError, match="semver-tagged digest-pinned"):
+    with pytest.raises(ValueError, match="Platform-managed Postgres"):
         orchestrator.start_challenge(spec)
 
     assert client.applied == []
@@ -255,7 +607,10 @@ def test_from_settings_production_policy_accepts_semver_digest_challenge_image(
     )
 
     assert runtime.slug == "demo"
-    assert client.applied[1]["spec"]["template"]["spec"]["containers"][0]["image"] == (
+    deployment = next(
+        resource for resource in client.applied if resource["kind"] == "Deployment"
+    )
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == (
         "ghcr.io/org/demo:1.2.3@sha256:" + "a" * 64
     )
 
@@ -629,7 +984,6 @@ def _production_spec(image: str) -> ChallengeSpec:
     return ChallengeSpec(
         slug="demo",
         image=image,
-        env={"CHALLENGE_DATABASE_URL": "postgresql://platform@db/platform"},
         resources=ChallengeResources(cpu=1, memory="512Mi"),
     )
 
@@ -666,6 +1020,15 @@ def _settings(
                 tolerations=[],
                 runtime_class_name=None,
                 image_pull_secrets=[],
+            ),
+            managed_postgres=SimpleNamespace(
+                enabled=True,
+                image="postgres:16-alpine",
+                storage_class=None,
+                storage_size="10Gi",
+                retain_pvc=True,
+                retain_secret=True,
+                resources=SimpleNamespace(requests={}, limits={}),
             ),
         ),
     )
