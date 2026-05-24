@@ -22,7 +22,7 @@ def _read(path: Path) -> str:
 
 def _validator_config(
     *,
-    database_url: str = "postgresql+asyncpg://platform-validator.invalid/platform",
+    database_url: str = "postgresql+asyncpg://platform:secret@postgres.example/platform",
     broker_allowed_images: list[str] | None = None,
 ) -> str:
     allowed = broker_allowed_images or ["ghcr.io/platformnetwork/"]
@@ -101,6 +101,17 @@ def test_validator_docs_document_kubernetes_policy_and_secret_behavior() -> None
     assert "Secret read RBAC" in docs
     assert "platform-validator-helm-upgrader" in docs
     assert "cronjob/platform-validator-helm-upgrader" in docs
+    assert "full `helm upgrade --install platform-validator`" in docs
+    assert "legacy image-updater CronJob" in docs
+    assert "autoUpgrade.suspend=true" in docs
+    assert "PLATFORM_DATABASE_URL_SECRET_NAME" in docs
+    assert "jsonpath='{.data.url}'" in docs
+    assert "platform-validator-state" in docs
+    assert "removes the configured database URL Secret" in docs
+    assert "./scripts/install-validator.sh --database-url" in docs
+    assert "export PLATFORM_DATABASE_URL=" in docs
+    assert "without deleting healthy existing workloads" in docs
+    assert "Deletes only prior installer-managed validator objects" not in docs
     assert "encryption at rest" in docs
 
 
@@ -120,6 +131,8 @@ def test_installer_prompts_only_for_hotkey_mnemonic() -> None:
     script = _read(SCRIPT)
 
     assert "Validator hotkey mnemonic" in script
+    assert "--auto-upgrade-suspend BOOL" in script
+    assert "Default: true" in script
     assert "read -r -s HOTKEY_MNEMONIC" in script
     assert "regenerate_hotkey" in script
     assert "regen_coldkey" not in script.lower()
@@ -157,6 +170,36 @@ def test_removed_installer_smoke_options_are_rejected() -> None:
         assert f"Unknown option: {option}" in result.stderr
         assert "Validator hotkey mnemonic" not in result.stdout
         assert "kubectl is required" not in result.stderr
+
+
+def test_validator_installer_rejects_unsafe_secret_reference() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--database-url-secret-name", "bad;name"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "database URL Secret name must contain only" in result.stderr
+    assert "Validator hotkey mnemonic" not in result.stdout
+    assert "kubectl is required" not in result.stderr
+
+
+def test_validator_installer_rejects_unsafe_auto_upgrade_repo() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--auto-upgrade-repo", 'PlatformNetwork/platform";touch'],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "auto-upgrade repository must" in result.stderr
+    assert "Validator hotkey mnemonic" not in result.stdout
+    assert "kubectl is required" not in result.stderr
 
 
 def _write_fake_kubectl(tmp_path: Path) -> Path:
@@ -199,7 +242,12 @@ def _write_fake_hotkey_python(tmp_path: Path) -> None:
     python.chmod(0o700)
 
 
-def _run_installer_with_fakes(tmp_path: Path, image: str) -> list[dict]:
+def _run_installer_with_fakes(
+    tmp_path: Path,
+    image: str,
+    *,
+    extra_args: list[str] | None = None,
+) -> list[dict]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     _write_fake_kubectl(tmp_path)
     _write_fake_hotkey_python(tmp_path)
@@ -212,7 +260,17 @@ def _run_installer_with_fakes(tmp_path: Path, image: str) -> list[dict]:
     }
 
     result = subprocess.run(
-        ["bash", str(SCRIPT), "--namespace", "validator-test", "--image", image],
+        [
+            "bash",
+            str(SCRIPT),
+            "--namespace",
+            "validator-test",
+            "--image",
+            image,
+            "--database-url",
+            "postgresql+asyncpg://user:pass@postgres.example/platform",
+            *(extra_args or []),
+        ],
         cwd=ROOT,
         env=env,
         input="disposable test mnemonic\n",
@@ -266,6 +324,7 @@ def test_cleanup_requires_only_kubectl(tmp_path: Path) -> None:
         "-n validator-test delete serviceaccount platform-validator-image-updater",
         "-n validator-test delete deployment platform-validator",
         "-n validator-test delete configmap platform-validator-config",
+        "-n validator-test delete secret platform-validator-database-url",
         "-n validator-test delete role platform-validator-runtime",
         "-n validator-test delete rolebinding platform-validator-runtime",
         "-n validator-test delete serviceaccount platform-validator",
@@ -282,7 +341,14 @@ def test_install_requires_hotkey_python_before_cleanup(tmp_path: Path) -> None:
     }
 
     result = subprocess.run(
-        ["bash", str(SCRIPT), "--namespace", "validator-test"],
+        [
+            "bash",
+            str(SCRIPT),
+            "--namespace",
+            "validator-test",
+            "--database-url",
+            "postgresql+asyncpg://user:pass@postgres.example/platform",
+        ],
         cwd=ROOT,
         env=env,
         input="unused mnemonic\n",
@@ -302,6 +368,7 @@ def test_installer_cleanup_is_scoped_to_kubernetes_validator_objects() -> None:
     assert 'APP="platform-validator"' in script
     assert 'delete deployment "$APP"' in script
     assert 'delete configmap "$APP-config"' in script
+    assert 'delete secret "$DATABASE_URL_SECRET_NAME"' in script
     assert 'delete secret "$APP-wallet"' not in script
     assert 'delete role "$APP-runtime"' in script
     assert 'delete rolebinding "$APP-runtime"' in script
@@ -326,6 +393,51 @@ def test_installer_renders_validator_kubernetes_runtime() -> None:
     assert "secretName: ${APP}-wallet" in script
 
 
+def test_validator_installer_database_url_only_appears_in_secret(
+    tmp_path: Path,
+) -> None:
+    database_url = "postgresql+asyncpg://user:pass@postgres.example/platform"
+    manifests = _run_installer_with_fakes(
+        tmp_path,
+        "ghcr.io/platformnetwork/platform:latest",
+        extra_args=[
+            "--database-url",
+            database_url,
+            "--database-url-secret-name",
+            "custom-validator-database-url",
+            "--database-url-secret-key",
+            "database-url",
+        ],
+    )
+
+    database_secret = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Secret"
+        and doc.get("metadata", {}).get("name") == "custom-validator-database-url"
+    )
+    non_secret_rendered = yaml.safe_dump_all(
+        doc for doc in manifests if doc is not database_secret
+    )
+    config = next(doc for doc in manifests if doc.get("kind") == "ConfigMap")
+    deployment = next(doc for doc in manifests if doc.get("kind") == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert database_secret["stringData"] == {"database-url": database_url}
+    assert database_url not in non_secret_rendered
+    assert "postgresql+asyncpg://" not in non_secret_rendered
+    assert 'url: "${PLATFORM_DATABASE__URL}"' in config["data"]["validator.yaml"]
+    assert {
+        "name": "PLATFORM_DATABASE__URL",
+        "valueFrom": {
+            "secretKeyRef": {
+                "name": "custom-validator-database-url",
+                "key": "database-url",
+            }
+        },
+    } in container["env"]
+
+
 def test_validator_extra_includes_kubernetes_runtime_dependencies() -> None:
     import tomllib
 
@@ -343,7 +455,7 @@ def test_installer_default_config_values_pass_settings_policy(tmp_path: Path) ->
 
     settings = load_settings(config)
 
-    assert 'DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://' in script
+    assert 'DATABASE_URL="${PLATFORM_DATABASE_URL:-}"' in script
     assert (
         'REGISTRY_URL="${PLATFORM_VALIDATOR_REGISTRY_URL:-https://chain.platform.network}"'
         in script
@@ -473,6 +585,13 @@ def test_validator_installer_renders_auto_update_cronjob() -> None:
         in script
     )
     assert (
+        'DATABASE_URL_SECRET_NAME="${PLATFORM_DATABASE_URL_SECRET_NAME:-platform-validator-database-url}"'
+        in script
+    )
+    assert (
+        'DATABASE_URL_SECRET_KEY="${PLATFORM_DATABASE_URL_SECRET_KEY:-url}"' in script
+    )
+    assert (
         'AUTO_UPGRADE_REPO="${PLATFORM_AUTO_UPGRADE_REPO:-PlatformNetwork/platform}"'
         in script
     )
@@ -527,6 +646,7 @@ def test_validator_installer_auto_updater_uses_scoped_service_account(
     container = pod_spec["containers"][0]
 
     assert cronjob["spec"]["schedule"] == "*/5 * * * *"
+    assert cronjob["spec"]["suspend"] is True
     assert pod_spec["serviceAccountName"] == "platform-validator-helm-upgrader"
     assert pod_spec["automountServiceAccountToken"] is True
     assert pod_spec["restartPolicy"] == "OnFailure"
@@ -554,6 +674,25 @@ def test_validator_installer_auto_updater_uses_scoped_service_account(
     assert "--cleanup-on-fail" in command
     assert "--take-ownership" in command
     assert "codeload.github.com/PlatformNetwork/platform/tar.gz/main" in command
+    assert (
+        '--set-string database.urlSecret.name="platform-validator-database-url"'
+        in command
+    )
+    assert '--set-string database.urlSecret.key="url"' in command
+    assert '--set-string kubernetes.namespace="validator-test"' in command
+    assert (
+        '--set-string validator.walletSecretName="platform-validator-wallet"' in command
+    )
+    assert '--set-string network.walletName="platform-validator"' in command
+    assert '--set-string network.walletHotkey="validator"' in command
+    assert (
+        '--set-string persistence.existingClaim="platform-validator-state"' in command
+    )
+    assert (
+        '--set-string validator.deploymentNameOverride="platform-validator"' in command
+    )
+    assert "postgresql+asyncpg://" not in command
+    assert "disposable test mnemonic" not in command
     updater_role = next(
         doc
         for doc in manifests
@@ -563,5 +702,21 @@ def test_validator_installer_auto_updater_uses_scoped_service_account(
     assert not any(
         "secrets" in rule.get("resources", []) for rule in updater_role["rules"]
     )
+    assert any(
+        rule["apiGroups"] == ["rbac.authorization.k8s.io"]
+        and rule["resources"] == ["roles", "rolebindings"]
+        for rule in updater_role["rules"]
+    )
     assert any("deployments" in rule["resources"] for rule in updater_role["rules"])
     assert any(rule["resources"] == ["configmaps"] for rule in updater_role["rules"])
+
+
+def test_validator_installer_can_suspend_helm_upgrader(tmp_path: Path) -> None:
+    manifests = _run_installer_with_fakes(
+        tmp_path,
+        "ghcr.io/platformnetwork/platform:latest",
+        extra_args=["--auto-upgrade-suspend", "true"],
+    )
+    cronjob = next(doc for doc in manifests if doc.get("kind") == "CronJob")
+
+    assert cronjob["spec"]["suspend"] is True

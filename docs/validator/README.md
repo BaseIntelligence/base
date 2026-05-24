@@ -23,25 +23,25 @@ temporary directory is deleted automatically.
 Run from the repository root:
 
 ```bash
-./scripts/install-validator.sh
+./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 ```
 
 The script performs these actions:
 
-1. Deletes only prior installer-managed validator objects in the selected namespace.
-2. Applies Namespace, validator ServiceAccount/RBAC, Helm-upgrader ServiceAccount/RBAC, PVC, ConfigMap, Deployment, and Helm auto-upgrade CronJob.
+1. Applies Namespace, validator ServiceAccount/RBAC, Helm-upgrader ServiceAccount/RBAC, PVC, ConfigMap, Deployment, and Helm auto-upgrade CronJob without deleting healthy existing workloads.
+2. Stores the required database URL in the configured database Secret and references it from the Deployment.
 3. Prompts silently for the validator hotkey mnemonic.
 4. Creates the `platform-validator-wallet` Kubernetes Secret from generated hotkey files.
-5. Starts the validator Deployment in Kubernetes mode and schedules full Helm upgrade checks.
+5. Starts the validator Deployment in Kubernetes mode and schedules suspended full Helm upgrade checks.
 
 Useful options:
 
 ```bash
+export PLATFORM_DATABASE_URL='postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform'
 ./scripts/install-validator.sh --namespace platform-validator
 ./scripts/install-validator.sh --image ghcr.io/platformnetwork/platform:v1.2.3@sha256:<digest>
 ./scripts/install-validator.sh --auto-upgrade-schedule '*/5 * * * *'
 ./scripts/install-validator.sh --auto-upgrade-helm-image alpine/helm:3.15.4
-./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 ./scripts/install-validator.sh --broker-allowed-images ghcr.io/platformnetwork/,registry.example.com/platform/
 ./scripts/install-validator.sh --registry-url https://chain.platform.network
 ./scripts/install-validator.sh --netuid 0
@@ -49,8 +49,19 @@ Useful options:
 ./scripts/install-validator.sh --cleanup
 ```
 
-The installer always performs a real cluster installation and always imports a
-hotkey Secret. It also installs `cronjob/platform-validator-helm-upgrader`, a scoped CronJob that periodically downloads the configured GitHub chart source and runs `helm upgrade --install platform-validator ... --atomic --wait --cleanup-on-fail`. The job sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and references `platform-validator-wallet` by name instead of reading or printing wallet data. Automated validation must use a disposable cluster, disposable namespace, and disposable test mnemonic supplied through a secure channel.
+Normal install performs a real cluster installation and imports a hotkey Secret. It also installs `cronjob/platform-validator-helm-upgrader`, a scoped CronJob that periodically downloads the configured GitHub chart source and runs `helm upgrade --install platform-validator ... --atomic --wait --cleanup-on-fail`. The job sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and pins live-safe non-secret references for future self-upgrades: the database URL Secret name/key, namespace, wallet Secret name, wallet name/hotkey labels, `validator.deploymentNameOverride=platform-validator`, and `persistence.existingClaim=platform-validator-state`. It references `platform-validator-wallet` and `platform-validator-state` by name instead of reading or printing wallet data, database URLs, or PVC contents. Set `PLATFORM_DATABASE_URL_SECRET_NAME` and `PLATFORM_DATABASE_URL_SECRET_KEY` before running the installer if your live database URL Secret is not `platform-validator-database-url` key `url`. Automated validation must use a disposable cluster, disposable namespace, and disposable test mnemonic supplied through a secure channel.
+
+Before relying on self-upgrades, verify the referenced objects and keys exist without printing their values:
+
+```bash
+kubectl -n platform-validator get secret platform-validator-database-url -o jsonpath='{.data.url}' >/dev/null
+kubectl -n platform-validator get secret platform-validator-wallet -o jsonpath='{.data.hotkey}' >/dev/null
+kubectl -n platform-validator get secret platform-validator-wallet -o jsonpath='{.data.hotkeypub\.txt}' >/dev/null
+kubectl -n platform-validator get pvc platform-validator-state
+kubectl -n platform-validator get cronjob platform-validator-helm-upgrader
+```
+
+If any prerequisite is missing, keep the Helm-upgrader CronJob suspended with `autoUpgrade.suspend=true` until the referenced Secret/PVC exists with the intended key or name. If the validator is already healthy, use these checks to confirm the CronJob bootstrap references instead of replacing the deployment just to recreate the CronJob.
 
 `--cleanup` is scoped to objects created by this installer:
 
@@ -59,15 +70,22 @@ cronjob/platform-validator-helm-upgrader
 role/platform-validator-helm-upgrader
 rolebinding/platform-validator-helm-upgrader
 serviceaccount/platform-validator-helm-upgrader
+cronjob/platform-validator-image-updater
+role/platform-validator-image-updater
+rolebinding/platform-validator-image-updater
+serviceaccount/platform-validator-image-updater
 deployment/platform-validator
 configmap/platform-validator-config
 role/platform-validator-runtime
 rolebinding/platform-validator-runtime
 serviceaccount/platform-validator
+secret/platform-validator-database-url
 ```
 
 It does not run broad cluster cleanup commands, does not delete unrelated
-workloads, and intentionally preserves `secret/platform-validator-wallet`.
+workloads, and intentionally preserves `secret/platform-validator-wallet` and
+the validator state PVC. It removes the configured database URL Secret because
+the installer manages that credential reference.
 
 ## Manual Kubernetes Installation
 

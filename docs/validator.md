@@ -9,19 +9,23 @@ runs active challenge workloads through Kubernetes, and keeps them synchronized.
 Run from the repository root:
 
 ```bash
-./scripts/install-validator.sh
+./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 ```
 
 The installer asks only for the validator hotkey mnemonic. Do not enter coldkey
 material. The mnemonic is read silently, converted to hotkey files in a temporary
 local directory, and stored as a Kubernetes Secret.
 
-The installer always performs a real Kubernetes installation and prompts for the
-validator hotkey mnemonic. It also installs a validator image-updater CronJob
-that periodically checks whether the configured mutable GHCR tag resolves to a
-new digest. It patches the Deployment only when the digest changed, so unchanged
-tags do not cause restarts. Use a disposable namespace and test mnemonic when validating the full
-install flow.
+Normal install performs a real Kubernetes installation and prompts for the
+validator hotkey mnemonic. It also installs `cronjob/platform-validator-helm-upgrader`,
+a scoped CronJob that periodically downloads the configured GitHub chart source
+and runs a full `helm upgrade --install platform-validator` with `--atomic`,
+`--wait`, and `--cleanup-on-fail`. It uses `HELM_DRIVER=configmap`,
+`concurrencyPolicy: Forbid`, and pins only non-secret live references for future
+self-upgrades, including `validator.deploymentNameOverride=platform-validator`
+so Helm manages the existing standalone Deployment instead of creating a second
+validator Deployment. Use a disposable namespace and test mnemonic when
+validating the full install flow.
 
 Follow the validator:
 
@@ -34,6 +38,8 @@ Stop only installer-managed validator objects:
 ```bash
 ./scripts/install-validator.sh --cleanup
 ```
+
+Cleanup removes the configured database URL Secret because the installer creates it, but preserves the validator wallet Secret and state PVC.
 
 ## Manual Install
 

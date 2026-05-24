@@ -14,6 +14,9 @@ AUTO_UPGRADE_VALUES_PATH="${PLATFORM_AUTO_UPGRADE_VALUES_PATH:-deploy/helm/platf
 AUTO_UPGRADE_TIMEOUT="${PLATFORM_AUTO_UPGRADE_TIMEOUT:-10m}"
 AUTO_UPGRADE_HISTORY_MAX="${PLATFORM_AUTO_UPGRADE_HISTORY_MAX:-5}"
 AUTO_UPGRADE_TAKE_OWNERSHIP="${PLATFORM_AUTO_UPGRADE_TAKE_OWNERSHIP:-true}"
+AUTO_UPGRADE_SUSPEND="${PLATFORM_AUTO_UPGRADE_SUSPEND:-true}"
+DATABASE_URL_SECRET_NAME="${PLATFORM_DATABASE_URL_SECRET_NAME:-platform-validator-database-url}"
+DATABASE_URL_SECRET_KEY="${PLATFORM_DATABASE_URL_SECRET_KEY:-url}"
 REGISTRY_URL="${PLATFORM_VALIDATOR_REGISTRY_URL:-https://chain.platform.network}"
 NETUID="${PLATFORM_NETUID:-0}"
 CHAIN_ENDPOINT="${PLATFORM_CHAIN_ENDPOINT:-}"
@@ -21,7 +24,7 @@ WALLET_NAME="${PLATFORM_WALLET_NAME:-platform-validator}"
 WALLET_HOTKEY="${PLATFORM_WALLET_HOTKEY:-validator}"
 WALLET_PATH="/var/lib/platform/wallets"
 STORAGE_SIZE="${PLATFORM_VALIDATOR_STORAGE_SIZE:-10Gi}"
-DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://platform-validator.invalid/platform}"
+DATABASE_URL="${PLATFORM_DATABASE_URL:-}"
 BROKER_ALLOWED_IMAGES="${PLATFORM_BROKER_ALLOWED_IMAGES:-ghcr.io/platformnetwork/}"
 CLEANUP_ONLY=0
 TMP_DIR=""
@@ -42,6 +45,9 @@ Options:
   --auto-upgrade-repo REPO   GitHub repo for Helm chart source. Default: PlatformNetwork/platform
   --auto-upgrade-ref REF     Git ref for Helm chart source. Default: main
   --auto-upgrade-chart-path PATH  Chart path inside the repo. Default: deploy/helm/platform
+  --auto-upgrade-suspend BOOL  Suspend the Helm upgrader CronJob. Default: true
+  --database-url-secret-name NAME  Database URL Secret name for Helm upgrades. Default: platform-validator-database-url
+  --database-url-secret-key KEY    Database URL Secret key for Helm upgrades. Default: url
   --registry-url URL         Registry API URL. Default: https://chain.platform.network
   --netuid NETUID            Bittensor subnet UID. Default: 0
   --chain-endpoint ENDPOINT  Optional Bittensor chain endpoint.
@@ -64,6 +70,9 @@ while [ "$#" -gt 0 ]; do
     --auto-upgrade-repo) AUTO_UPGRADE_REPO="${2:?missing REPO}"; shift ;;
     --auto-upgrade-ref) AUTO_UPGRADE_REF="${2:?missing REF}"; shift ;;
     --auto-upgrade-chart-path) AUTO_UPGRADE_CHART_PATH="${2:?missing PATH}"; shift ;;
+    --auto-upgrade-suspend) AUTO_UPGRADE_SUSPEND="${2:?missing BOOL}"; shift ;;
+    --database-url-secret-name) DATABASE_URL_SECRET_NAME="${2:?missing NAME}"; shift ;;
+    --database-url-secret-key) DATABASE_URL_SECRET_KEY="${2:?missing KEY}"; shift ;;
     --registry-url) REGISTRY_URL="${2:?missing URL}"; shift ;;
     --netuid) NETUID="${2:?missing NETUID}"; shift ;;
     --chain-endpoint) CHAIN_ENDPOINT="${2:?missing ENDPOINT}"; shift ;;
@@ -77,6 +86,44 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+validate_identifier() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ""|*[!A-Za-z0-9_.-]*)
+      echo "$name must contain only letters, numbers, dot, underscore, or dash" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_regex() {
+  local name="$1"
+  local value="$2"
+  local pattern="$3"
+  local expectation="$4"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "$name must $expectation" >&2
+    exit 2
+  fi
+}
+
+validate_identifier "namespace" "$NAMESPACE"
+validate_identifier "database URL Secret name" "$DATABASE_URL_SECRET_NAME"
+validate_identifier "database URL Secret key" "$DATABASE_URL_SECRET_KEY"
+validate_identifier "wallet name" "$WALLET_NAME"
+validate_identifier "wallet hotkey" "$WALLET_HOTKEY"
+validate_regex "auto-upgrade schedule" "$AUTO_UPGRADE_SCHEDULE" '^[A-Za-z0-9*?, /@._-]+$' "use cron-safe characters"
+validate_regex "auto-upgrade Helm image" "$AUTO_UPGRADE_HELM_IMAGE" '^[A-Za-z0-9_./:@-]+$' "be an image reference"
+validate_regex "auto-upgrade repository" "$AUTO_UPGRADE_REPO" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "use owner/repo"
+validate_regex "auto-upgrade ref" "$AUTO_UPGRADE_REF" '^[A-Za-z0-9_./-]+$' "use git ref-safe characters"
+validate_regex "auto-upgrade chart path" "$AUTO_UPGRADE_CHART_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
+validate_regex "auto-upgrade values path" "$AUTO_UPGRADE_VALUES_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
+validate_regex "auto-upgrade timeout" "$AUTO_UPGRADE_TIMEOUT" '^[0-9]+[smh]$' "use a Helm duration such as 10m"
+validate_regex "auto-upgrade history max" "$AUTO_UPGRADE_HISTORY_MAX" '^[0-9]+$' "be a positive integer"
+validate_regex "auto-upgrade take ownership" "$AUTO_UPGRADE_TAKE_OWNERSHIP" '^(true|false)$' "be true or false"
+validate_regex "auto-upgrade suspend" "$AUTO_UPGRADE_SUSPEND" '^(true|false)$' "be true or false"
 
 cleanup_tmp() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
@@ -140,6 +187,7 @@ cleanup_validator() {
   kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP-image-updater"
   kubectl_delete -n "$NAMESPACE" delete deployment "$APP"
   kubectl_delete -n "$NAMESPACE" delete configmap "$APP-config"
+  kubectl_delete -n "$NAMESPACE" delete secret "$DATABASE_URL_SECRET_NAME"
   kubectl_delete -n "$NAMESPACE" delete role "$APP-runtime"
   kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-runtime"
   kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP"
@@ -216,9 +264,16 @@ helm "\$@" \
   --set autoUpgrade.mode=validator \
   --set master.enabled=false \
   --set validator.enabled=true \
-  --set validator.walletSecretName=${APP}-wallet \
   --set imageAutoUpdate.enabled=false \
-  --set configSync.enabled=false
+  --set configSync.enabled=false \
+  --set-string database.urlSecret.name="${DATABASE_URL_SECRET_NAME}" \
+  --set-string database.urlSecret.key="${DATABASE_URL_SECRET_KEY}" \
+  --set-string kubernetes.namespace="${NAMESPACE}" \
+  --set-string validator.walletSecretName="${APP}-wallet" \
+  --set-string network.walletName="${WALLET_NAME}" \
+  --set-string network.walletHotkey="${WALLET_HOTKEY}" \
+  --set-string validator.deploymentNameOverride="${APP}" \
+  --set-string persistence.existingClaim="${APP}-state"
 SCRIPT
 }
 
@@ -296,6 +351,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["batch"]
     resources: ["cronjobs", "jobs"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
@@ -356,6 +414,18 @@ spec:
       storage: ${STORAGE_SIZE}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: ${DATABASE_URL_SECRET_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+type: Opaque
+stringData:
+  ${DATABASE_URL_SECRET_KEY}: "${DATABASE_URL}"
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ${APP}-config
@@ -369,7 +439,7 @@ data:
     runtime:
       backend: "kubernetes"
     database:
-      url: "${DATABASE_URL}"
+      url: "\${PLATFORM_DATABASE__URL}"
     network:
       netuid: ${NETUID}
       chain_endpoint: "${CHAIN_ENDPOINT}"
@@ -433,6 +503,12 @@ spec:
         - name: validator
           image: ${IMAGE}
           imagePullPolicy: Always
+          env:
+            - name: PLATFORM_DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${DATABASE_URL_SECRET_NAME}
+                  key: ${DATABASE_URL_SECRET_KEY}
           command:
             - platform
             - validator
@@ -480,6 +556,7 @@ metadata:
     platform.component: helm-upgrader
 spec:
   schedule: "${AUTO_UPGRADE_SCHEDULE}"
+  suspend: ${AUTO_UPGRADE_SUSPEND}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -550,8 +627,12 @@ main() {
     exit 0
   fi
 
+  if [ -z "$DATABASE_URL" ]; then
+    echo "database-url is required; provide --database-url or PLATFORM_DATABASE_URL" >&2
+    exit 2
+  fi
+
   select_hotkey_python
-  cleanup_validator
   render_manifests | kubectl_apply
   import_hotkey_secret
   echo "Validator Kubernetes install complete."
