@@ -44,8 +44,8 @@ spec:
             - name: PLATFORM_DATABASE__URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .root.Values.database.urlSecret.name }}
-                  key: {{ .root.Values.database.urlSecret.key }}
+                  name: {{ .root.Values.database.urlSecret.name | quote }}
+                  key: {{ .root.Values.database.urlSecret.key | quote }}
           volumeMounts:
             - name: config
               mountPath: /app/config/master.kubernetes.yaml
@@ -77,11 +77,11 @@ spec:
         - name: data
           {{- if .root.Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "platform.fullname" .root }}-data
+            claimName: {{ .root.Values.persistence.existingClaim | default (printf "%s-data" (include "platform.fullname" .root)) | quote }}
           {{- else }}
           emptyDir: {}
           {{- end }}
         - name: secrets
           secret:
-            secretName: {{ .root.Values.security.existingSecret }}
+            secretName: {{ .root.Values.security.existingSecret | quote }}
 {{- end -}}

@@ -72,11 +72,11 @@ spec:
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "platform.fullname" . }}-data
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "platform.fullname" .)) | quote }}
           {{- else }}
           emptyDir: {}
           {{- end }}
         - name: secrets
           secret:
-            secretName: {{ .Values.security.existingSecret }}
+            secretName: {{ .Values.security.existingSecret | quote }}
 {{- end }}
