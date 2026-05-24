@@ -17,7 +17,7 @@ validator:
   weights_freshness_seconds: 720
 
 database:
-  url: postgresql+asyncpg://platform:platform@postgres.platform.svc.cluster.local/platform
+  url: postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 
 docker:
   network_name: platform_challenges
