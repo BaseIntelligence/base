@@ -81,7 +81,7 @@ By default, Platform retains the managed Postgres data claim and managed Postgre
 
 ## Operator cleanup and purge
 
-Normal challenge stop or remove flows delete the managed Postgres StatefulSet and Service but keep the per-challenge Postgres Secret and data claim by default. If an operator intentionally wants to purge a challenge database, inspect the objects first, then delete only the matching slug resources.
+Normal challenge stop keeps managed Postgres resources available for reuse. Challenge remove flows delete the managed Postgres StatefulSet and Service but keep the per-challenge Postgres Secret and data claim by default. If an operator intentionally wants to purge a challenge database, inspect the objects first, then delete only the matching slug resources.
 
 ```bash
 kubectl -n <namespace> get secret,pvc --selector app.kubernetes.io/managed-by=platform-network,platform.challenge.slug=<slug>
