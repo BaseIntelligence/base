@@ -148,6 +148,31 @@ def test_helm_validator_deployment_uses_configured_image_pull_policy() -> None:
     assert container["imagePullPolicy"] == "Always"
 
 
+def test_helm_validator_deployment_uses_database_url_secret_env() -> None:
+    documents = _helm_template(
+        "platform",
+        str(CHART),
+        "--set",
+        "master.enabled=false",
+        "--set",
+        "validator.enabled=true",
+        "--set",
+        "database.urlSecret.name=platform-validator-database-url",
+        "--set",
+        "database.urlSecret.key=url",
+    )
+    validator = _document(documents, "Deployment", "platform-validator")
+    container = _named_container(_pod_spec(validator), "validator")
+
+    assert {env["name"] for env in container["env"]} >= {
+        "HOME",
+        "PLATFORM_DATABASE__URL",
+    }
+    assert _database_secret_refs([validator]) == {
+        ("platform-validator-database-url", "url")
+    }
+
+
 def test_helm_mutable_auto_update_renders_master_and_validator_latest_images() -> None:
     helm = shutil.which("helm")
     if helm is None:
