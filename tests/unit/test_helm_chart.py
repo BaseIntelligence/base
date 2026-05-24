@@ -381,6 +381,7 @@ def test_helm_auto_upgrade_renders_full_helm_upgrade_cronjob(
     command = " ".join(upgrader["command"])
 
     assert cronjob["spec"]["schedule"] == "*/5 * * * *"
+    assert cronjob["spec"]["suspend"] is False
     assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
     assert pod_spec["serviceAccountName"] == f"{release}-helm-upgrader"
     assert pod_spec["restartPolicy"] == "OnFailure"
@@ -427,6 +428,11 @@ def test_helm_auto_upgrade_rbac_is_namespace_scoped_without_secret_access() -> N
         assert "secrets" not in rule.get("resources", [])
         assert "*" not in rule.get("resources", [])
         assert "*" not in rule.get("verbs", [])
+    assert any(
+        rule["apiGroups"] == ["rbac.authorization.k8s.io"]
+        and rule["resources"] == ["roles", "rolebindings"]
+        for rule in role["rules"]
+    )
 
 
 def test_helm_auto_upgrade_suppresses_patch_only_updaters() -> None:
@@ -453,6 +459,24 @@ def test_helm_auto_upgrade_suppresses_patch_only_updaters() -> None:
     assert "platform-master-broker-image-updater" not in names
 
 
+def test_helm_auto_upgrade_can_render_suspended_cronjob() -> None:
+    documents = _helm_template(
+        "platform-master",
+        str(CHART),
+        "--namespace",
+        "platform-master",
+        "--set",
+        "validator.enabled=false",
+        "--set",
+        "autoUpgrade.enabled=true",
+        "--set",
+        "autoUpgrade.suspend=true",
+    )
+    cronjob = _document(documents, "CronJob", "platform-master-helm-upgrader")
+
+    assert cronjob["spec"]["suspend"] is True
+
+
 def test_helm_auto_upgrade_renders_extra_non_secret_set_values() -> None:
     documents = _helm_template(
         "platform-master",
@@ -473,10 +497,233 @@ def test_helm_auto_upgrade_renders_extra_non_secret_set_values() -> None:
     assert pod_spec is not None
     command = " ".join(_named_container(pod_spec, "helm-upgrader")["command"])
 
-    assert '--set "database.urlSecret.name=platform-master-database-url"' in command
-    assert '--set "database.urlSecret.key=url"' in command
+    assert (
+        '--set-string "database.urlSecret.name=platform-master-database-url"' in command
+    )
+    assert '--set-string "database.urlSecret.key=url"' in command
     assert "postgresql+asyncpg://" not in command
     assert "mnemonic" not in command.lower()
+
+
+def test_helm_auto_upgrade_preserves_validator_refs_without_secrets() -> None:
+    documents = _helm_template(
+        "platform-validator",
+        str(CHART),
+        "--namespace",
+        "platform-validator",
+        "--set",
+        "master.enabled=false",
+        "--set",
+        "validator.enabled=true",
+        "--set",
+        "autoUpgrade.enabled=true",
+        "--set",
+        "autoUpgrade.extraSet[0]=database.urlSecret.name=platform-validator-database-url",
+        "--set",
+        "autoUpgrade.extraSet[1]=database.urlSecret.key=url",
+        "--set",
+        "autoUpgrade.extraSet[2]=validator.walletSecretName=platform-validator-wallet",
+        "--set",
+        "autoUpgrade.extraSet[3]=network.walletName=platform-validator",
+        "--set",
+        "autoUpgrade.extraSet[4]=network.walletHotkey=validator",
+        "--set",
+        "autoUpgrade.extraSet[5]=persistence.existingClaim=platform-validator-state",
+        "--set",
+        "autoUpgrade.extraSet[6]=validator.deploymentNameOverride=platform-validator",
+    )
+    cronjob = _document(documents, "CronJob", "platform-validator-helm-upgrader")
+    command = " ".join(_named_container(_pod_spec(cronjob), "helm-upgrader")["command"])
+
+    assert (
+        '--set-string "database.urlSecret.name=platform-validator-database-url"'
+        in command
+    )
+    assert '--set-string "database.urlSecret.key=url"' in command
+    assert (
+        '--set-string "validator.walletSecretName=platform-validator-wallet"' in command
+    )
+    assert '--set-string "network.walletName=platform-validator"' in command
+    assert '--set-string "network.walletHotkey=validator"' in command
+    assert (
+        '--set-string "persistence.existingClaim=platform-validator-state"' in command
+    )
+    assert (
+        '--set-string "validator.deploymentNameOverride=platform-validator"' in command
+    )
+    assert "postgresql+asyncpg://" not in command
+    assert "mnemonic" not in command.lower()
+
+
+def test_helm_auto_upgrade_rejects_unsafe_extra_set_value() -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "platform-master",
+            str(CHART),
+            "--namespace",
+            "platform-master",
+            "--set",
+            "validator.enabled=false",
+            "--set",
+            "autoUpgrade.enabled=true",
+            "--set",
+            "autoUpgrade.extraSet[0]=bad value",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "autoUpgrade/extraSet/0" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "set_arg, schema_path",
+    [
+        ('autoUpgrade.githubRef=main";touch', "autoUpgrade/githubRef"),
+        (
+            "autoUpgrade.githubRepository=PlatformNetwork/platform;touch",
+            "autoUpgrade/githubRepository",
+        ),
+        (
+            "autoUpgrade.chartPath=deploy/helm/platform;touch",
+            "autoUpgrade/chartPath",
+        ),
+        (
+            "autoUpgrade.valuesPaths[0]=deploy/helm/platform/values.yaml;touch",
+            "autoUpgrade/valuesPaths/0",
+        ),
+        ("autoUpgrade.timeout=10m;touch", "autoUpgrade/timeout"),
+        ("autoUpgrade.mode=master;touch", "autoUpgrade/mode"),
+    ],
+)
+def test_helm_auto_upgrade_rejects_unsafe_shell_values(
+    set_arg: str,
+    schema_path: str,
+) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("helm is not installed")
+
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "platform-master",
+            str(CHART),
+            "--namespace",
+            "platform-master",
+            "--set",
+            "validator.enabled=false",
+            "--set",
+            "autoUpgrade.enabled=true",
+            "--set",
+            set_arg,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert schema_path in result.stderr
+
+
+def test_helm_persistence_existing_claim_skips_pvc_and_mounts_claim() -> None:
+    documents = _helm_template(
+        "platform-validator",
+        str(CHART),
+        "--namespace",
+        "platform-validator",
+        "--set",
+        "master.enabled=false",
+        "--set",
+        "validator.enabled=true",
+        "--set",
+        "persistence.existingClaim=platform-validator-state",
+    )
+    validator = _document(documents, "Deployment", "platform-validator-validator")
+    pod_spec = _pod_spec(validator)
+    assert pod_spec is not None
+
+    assert not any(doc.get("kind") == "PersistentVolumeClaim" for doc in documents)
+    assert next(volume for volume in pod_spec["volumes"] if volume["name"] == "data")[
+        "persistentVolumeClaim"
+    ] == {"claimName": "platform-validator-state"}
+
+
+def test_helm_validator_deployment_name_can_match_standalone_install() -> None:
+    documents = _helm_template(
+        "platform-validator",
+        str(CHART),
+        "--namespace",
+        "platform-validator",
+        "--set",
+        "master.enabled=false",
+        "--set",
+        "validator.enabled=true",
+        "--set",
+        "validator.deploymentNameOverride=platform-validator",
+    )
+    validator = _document(documents, "Deployment", "platform-validator")
+    config_sync = _document(documents, "CronJob", "platform-validator-config-sync")
+    config_sync_command = _named_container(_pod_spec(config_sync), "config-sync")[
+        "command"
+    ]
+    image_updater = _document(
+        documents, "CronJob", "platform-validator-validator-image-updater"
+    )
+    image_updater_command = _named_container(_pod_spec(image_updater), "image-updater")[
+        "command"
+    ]
+    image_updater_role = _document(
+        documents, "Role", "platform-validator-image-updater"
+    )
+    deployment_rule = next(
+        rule
+        for rule in image_updater_role["rules"]
+        if rule["resources"] == ["deployments"]
+    )
+
+    assert validator["metadata"]["name"] == "platform-validator"
+    assert _arg_values(config_sync_command, "--rollout-target") == [
+        "Deployment/platform-validator"
+    ]
+    assert _arg_values(image_updater_command, "--name") == ["platform-validator"]
+    assert deployment_rule["resourceNames"] == ["platform-validator"]
+
+
+def test_helm_persistence_existing_claim_is_used_by_optional_workloads() -> None:
+    documents = _helm_template(
+        "platform-master",
+        str(CHART),
+        "--namespace",
+        "platform-master",
+        "--set",
+        "validator.enabled=false",
+        "--set",
+        "weights.submitOnChain=true",
+        "--set",
+        "kubernetesAgent.enabled=true",
+        "--set",
+        "persistence.existingClaim=platform-master-state",
+    )
+    weights = _document(documents, "CronJob", "platform-master-weights")
+    agent = _document(documents, "Deployment", "platform-master-k8s-agent")
+
+    assert not any(doc.get("kind") == "PersistentVolumeClaim" for doc in documents)
+    for pod_spec in (_pod_spec(weights), _pod_spec(agent)):
+        assert pod_spec is not None
+        assert next(
+            volume for volume in pod_spec["volumes"] if volume["name"] == "data"
+        )["persistentVolumeClaim"] == {"claimName": "platform-master-state"}
 
 
 @pytest.mark.parametrize(
