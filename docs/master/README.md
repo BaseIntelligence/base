@@ -49,7 +49,7 @@ The installer creates `cronjob/platform-master-helm-upgrader`. The job uses a na
 helm upgrade --install platform-master ... --atomic --wait --cleanup-on-fail
 ```
 
-The upgrader downloads the configured repo/ref, reads the chart under `deploy/helm/platform`, and applies master-only values in the master namespace. It sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and does not read or print Kubernetes Secret values. The master database URL must be supplied by the existing Secret referenced by the chart values.
+The upgrader downloads the configured repo/ref, reads the chart under `deploy/helm/platform`, and applies master-only values in the master namespace. It sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and does not read or print Kubernetes Secret values. The master database URL must be supplied by the existing Secret referenced by the chart values. Use `autoUpgrade.extraSet` only for non-secret references that must survive future self-upgrades, for example `database.urlSecret.name=platform-master-database-url` and `database.urlSecret.key=url`; never place database URLs, tokens, mnemonics, or other secret values there.
 
 ## Explicit Non Goals
 

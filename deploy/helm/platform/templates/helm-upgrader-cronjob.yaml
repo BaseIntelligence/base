@@ -79,7 +79,11 @@ spec:
                     --set validator.enabled=false \
                   {{- end }}
                     --set imageAutoUpdate.enabled=false \
-                    --set configSync.enabled=false
+                    --set configSync.enabled=false{{- if .Values.autoUpgrade.extraSet }} \
+                  {{- range .Values.autoUpgrade.extraSet }}
+                    --set {{ . | quote }}{{- if not (eq . (last $.Values.autoUpgrade.extraSet)) }} \{{- end }}
+                  {{- end }}
+                  {{- end }}
               resources:
                 {{- toYaml .Values.autoUpgrade.resources | nindent 16 }}
               securityContext:

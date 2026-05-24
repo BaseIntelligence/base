@@ -428,6 +428,32 @@ def test_helm_auto_upgrade_suppresses_patch_only_updaters() -> None:
     assert "platform-master-broker-image-updater" not in names
 
 
+def test_helm_auto_upgrade_renders_extra_non_secret_set_values() -> None:
+    documents = _helm_template(
+        "platform-master",
+        str(CHART),
+        "--namespace",
+        "platform-master",
+        "--set",
+        "validator.enabled=false",
+        "--set",
+        "autoUpgrade.enabled=true",
+        "--set",
+        "autoUpgrade.extraSet[0]=database.urlSecret.name=platform-master-database-url",
+        "--set",
+        "autoUpgrade.extraSet[1]=database.urlSecret.key=url",
+    )
+    cronjob = _document(documents, "CronJob", "platform-master-helm-upgrader")
+    pod_spec = _pod_spec(cronjob)
+    assert pod_spec is not None
+    command = " ".join(_named_container(pod_spec, "helm-upgrader")["command"])
+
+    assert '--set "database.urlSecret.name=platform-master-database-url"' in command
+    assert '--set "database.urlSecret.key=url"' in command
+    assert "postgresql+asyncpg://" not in command
+    assert "mnemonic" not in command.lower()
+
+
 @pytest.mark.parametrize(
     "release, namespace, set_args, expected_targets, expected_deployments",
     [
