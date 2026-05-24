@@ -16,6 +16,7 @@ metadata:
     platform.component: "helm-upgrader"
 spec:
   schedule: {{ .Values.autoUpgrade.schedule | quote }}
+  suspend: {{ .Values.autoUpgrade.suspend }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -81,7 +82,7 @@ spec:
                     --set imageAutoUpdate.enabled=false \
                     --set configSync.enabled=false{{- if .Values.autoUpgrade.extraSet }} \
                   {{- range .Values.autoUpgrade.extraSet }}
-                    --set {{ . | quote }}{{- if not (eq . (last $.Values.autoUpgrade.extraSet)) }} \{{- end }}
+                    --set-string {{ . | quote }}{{- if not (eq . (last $.Values.autoUpgrade.extraSet)) }} \{{- end }}
                   {{- end }}
                   {{- end }}
               resources:

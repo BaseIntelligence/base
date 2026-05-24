@@ -36,6 +36,7 @@ imageAutoUpdate:
 autoUpgrade:
   enabled: false
   mode: ""
+  suspend: false
   schedule: "*/5 * * * *"
   githubRepository: PlatformNetwork/platform
   githubRef: main
@@ -69,6 +70,7 @@ database:
 
 persistence:
   enabled: true
+  existingClaim: ""
   storageClass: ""
   size: 10Gi
 
@@ -183,6 +185,7 @@ validator:
   weightsTimeoutSeconds: 15.0
   weightsRetries: 3
   weightsFreshnessSeconds: 720
+  deploymentNameOverride: ""
   walletSecretName: ""
   resources:
     requests:

@@ -100,29 +100,38 @@
           "type": "boolean"
         },
         "mode": {
-          "type": "string"
+          "type": "string",
+          "enum": ["", "master", "validator"]
+        },
+        "suspend": {
+          "type": "boolean"
         },
         "schedule": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9*?, /@._-]+$"
         },
         "githubRepository": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
         },
         "githubRef": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_./-]+$"
         },
         "chartPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_./-]+$"
         },
         "valuesPaths": {
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_./-]+$"
           }
         },
         "extraSet": {
@@ -137,7 +146,8 @@
         },
         "timeout": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[0-9]+[smh]$"
         },
         "historyMax": {
           "type": "integer",
@@ -202,6 +212,9 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "existingClaim": {
+          "type": "string"
         },
         "storageClass": {
           "type": "string"
@@ -463,6 +476,9 @@
         },
         "enabled": {
           "type": "boolean"
+        },
+        "deploymentNameOverride": {
+          "type": "string"
         },
         "replicas": {
           "type": "integer",
