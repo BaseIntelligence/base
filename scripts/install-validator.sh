@@ -186,7 +186,9 @@ wallet.regenerate_hotkey(
   HOTKEY_DIR="$TMP_DIR/wallets/$WALLET_NAME/hotkeys"
   kubectl -n "$NAMESPACE" create secret generic "$APP-wallet" \
     --from-file=hotkey="$HOTKEY_DIR/$WALLET_HOTKEY" \
-    --from-file=hotkeypub.txt="$HOTKEY_DIR/${WALLET_HOTKEY}pub.txt"
+    --from-file=hotkeypub.txt="$HOTKEY_DIR/${WALLET_HOTKEY}pub.txt" \
+    --dry-run=client \
+    -o yaml | kubectl_apply
 }
 
 render_helm_upgrade_command() {

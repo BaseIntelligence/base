@@ -131,7 +131,6 @@ def test_installer_has_no_smoke_modes() -> None:
     script = _read(SCRIPT)
 
     forbidden = [
-        "--dry-run",
         "--skip-hotkey-import",
         "--render-manifests",
         "DRY_RUN",
@@ -139,7 +138,6 @@ def test_installer_has_no_smoke_modes() -> None:
         "RENDER_ONLY",
         "WALLET_SECRET_OPTIONAL",
         "[dry-run]",
-        "dry-run=client",
     ]
     for token in forbidden:
         assert token not in script
@@ -166,7 +164,11 @@ def _write_fake_kubectl(tmp_path: Path) -> Path:
     kubectl.write_text(
         "#!/usr/bin/env bash\n"
         'printf \'%s\\n\' "$*" >> "$KUBECTL_LOG"\n'
-        'if [ "$1" = apply ]; then cat > "$KUBECTL_APPLY_MANIFEST"; fi\n',
+        'if [ "$1" = apply ] && [ ! -s "$KUBECTL_APPLY_MANIFEST" ]; then\n'
+        '  cat > "$KUBECTL_APPLY_MANIFEST"\n'
+        'elif [ "$1" = apply ]; then\n'
+        "  cat >/dev/null\n"
+        "fi\n",
         encoding="utf-8",
     )
     kubectl.chmod(0o700)
@@ -225,6 +227,8 @@ def _run_installer_with_fakes(tmp_path: Path, image: str) -> list[dict]:
     assert any(
         "create secret generic platform-validator-wallet" in call for call in calls
     )
+    assert any("--dry-run=client -o yaml" in call for call in calls)
+    assert calls.count("apply -f -") == 2
     return [
         doc for doc in yaml.safe_load_all(manifest.read_text(encoding="utf-8")) if doc
     ]

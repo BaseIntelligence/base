@@ -36,8 +36,8 @@ The only secret requested during install is the validator hotkey mnemonic. Never
 enter coldkey material. Do not store mnemonics in `.env`, shell history, support
 threads, screenshots, or evidence logs.
 
-The installer creates a Kubernetes Secret named `platform-validator-wallet` from
-generated hotkey files and deletes the temporary local wallet directory when it
+The installer creates or updates a Kubernetes Secret named `platform-validator-wallet`
+from generated hotkey files and deletes the temporary local wallet directory when it
 exits. Kubernetes Secrets are readable to cluster admins and any subject with
 Secret read RBAC; use a dedicated namespace and enable encryption at rest for
 production clusters.
