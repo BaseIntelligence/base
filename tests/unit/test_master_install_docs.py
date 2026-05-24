@@ -40,6 +40,8 @@ def _write_fake_kubectl(tmp_path: Path) -> None:
 
 def _run_master_installer(
     tmp_path: Path,
+    *,
+    extra_args: list[str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     _write_fake_kubectl(tmp_path)
     log = tmp_path / "kubectl.log"
@@ -50,15 +52,20 @@ def _run_master_installer(
         "KUBECTL_APPLY_MANIFEST": str(manifest),
     }
 
+    command = [
+        "bash",
+        str(SCRIPT),
+        "--namespace",
+        "master-test",
+        "--image",
+        "ghcr.io/platformnetwork/platform-master:sha-one",
+        "--database-url",
+        "postgresql+asyncpg://user:pass@postgres.example/platform",
+        *(extra_args or []),
+    ]
+
     result = subprocess.run(
-        [
-            "bash",
-            str(SCRIPT),
-            "--namespace",
-            "master-test",
-            "--image",
-            "ghcr.io/platformnetwork/platform-master:sha-one",
-        ],
+        command,
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -86,6 +93,10 @@ def test_master_installer_script_is_committed_with_foundation_warning() -> None:
     assert "mnemonic" not in script.lower()
     assert "coldkey" not in script.lower()
     assert "hotkey" not in script.lower()
+    assert 'AUTO_UPGRADE_SUSPEND="${PLATFORM_AUTO_UPGRADE_SUSPEND:-true}"' in script
+    assert 'DATABASE_URL="${PLATFORM_DATABASE_URL:-}"' in script
+    assert "database-url is required" in script
+    assert "cleanup_master\n  render_manifests" not in script
 
 
 def test_master_installer_usage_states_foundation_only_boundary() -> None:
@@ -100,6 +111,8 @@ def test_master_installer_usage_states_foundation_only_boundary() -> None:
     assert result.returncode == 0
     assert FOUNDATION_WARNING in result.stdout
     assert "Default: platform-master" in result.stdout
+    assert "--auto-upgrade-suspend BOOL" in result.stdout
+    assert "Default: true" in result.stdout
     assert "validators" in result.stdout
     assert "third-party operators" in result.stdout
 
@@ -132,6 +145,7 @@ def test_master_installer_renders_master_only_resources(tmp_path: Path) -> None:
     assert ("Deployment", "platform-master-broker") in kinds_by_name
     assert ("CronJob", "platform-master-helm-upgrader") in kinds_by_name
     assert ("ConfigMap", "platform-master-config") in kinds_by_name
+    assert ("Secret", "platform-master-database-url") in kinds_by_name
     assert ("Secret", "platform-master-wallet") not in kinds_by_name
     assert ("Deployment", "platform-validator") not in kinds_by_name
     assert ("CronJob", "platform-master-weights") not in kinds_by_name
@@ -183,6 +197,7 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
         )
     )
     assert "HELM_DRIVER" in rendered
+    assert "suspend: true" in rendered
     assert "set -- upgrade --install platform-master" in helm_upgrade_command
     assert 'helm "$@"' in helm_upgrade_command
     assert "--namespace master-test" in helm_upgrade_command
@@ -194,6 +209,140 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
         "codeload.github.com/PlatformNetwork/platform/tar.gz/main"
         in helm_upgrade_command
     )
+    assert (
+        '--set-string database.urlSecret.name="platform-master-database-url"'
+        in helm_upgrade_command
+    )
+    assert '--set-string database.urlSecret.key="url"' in helm_upgrade_command
+    assert (
+        '--set-string security.existingSecret="platform-secrets"'
+        in helm_upgrade_command
+    )
+    assert '--set-string kubernetes.namespace="master-test"' in helm_upgrade_command
+    assert (
+        '--set-string kubernetes.serviceAccount="platform-master"'
+        in helm_upgrade_command
+    )
+    assert "postgresql+asyncpg://" not in helm_upgrade_command
+    assert "mnemonic" not in helm_upgrade_command.lower()
+    assert "token" not in helm_upgrade_command.lower()
+    updater_role = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Role"
+        and doc.get("metadata", {}).get("name") == "platform-master-helm-upgrader"
+    )
+    assert not any(
+        "secrets" in rule.get("resources", []) for rule in updater_role["rules"]
+    )
+    assert any(
+        rule["apiGroups"] == ["rbac.authorization.k8s.io"]
+        and rule["resources"] == ["roles", "rolebindings"]
+        for rule in updater_role["rules"]
+    )
+
+
+def test_master_installer_database_url_only_appears_in_secret(
+    tmp_path: Path,
+) -> None:
+    database_url = "postgresql+asyncpg://user:pass@postgres.example/platform"
+    result, manifests = _run_master_installer(
+        tmp_path,
+        extra_args=["--database-url", database_url],
+    )
+
+    assert result.returncode == 0, result.stderr
+    database_secret = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Secret"
+        and doc.get("metadata", {}).get("name") == "platform-master-database-url"
+    )
+    non_secret_rendered = yaml.safe_dump_all(
+        doc for doc in manifests if doc is not database_secret
+    )
+    config = next(doc for doc in manifests if doc.get("kind") == "ConfigMap")
+    deployments = [doc for doc in manifests if doc.get("kind") == "Deployment"]
+
+    assert database_secret["stringData"] == {"url": database_url}
+    assert database_url not in non_secret_rendered
+    assert "postgresql+asyncpg://" not in non_secret_rendered
+    assert 'url: "${PLATFORM_DATABASE__URL}"' in config["data"]["master.yaml"]
+    for deployment in deployments:
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert {
+            "name": "PLATFORM_DATABASE__URL",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "platform-master-database-url",
+                    "key": "url",
+                }
+            },
+        } in container["env"]
+
+
+def test_master_installer_rejects_unsafe_namespace() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--namespace", "bad;name"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "namespace must contain only" in result.stderr
+    assert "kubectl is required" not in result.stderr
+
+
+def test_master_installer_rejects_unsafe_auto_upgrade_ref() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--auto-upgrade-ref", 'main";touch'],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "auto-upgrade ref must" in result.stderr
+    assert "kubectl is required" not in result.stderr
+
+
+def test_master_installer_can_suspend_helm_upgrader(tmp_path: Path) -> None:
+    result, manifests = _run_master_installer(
+        tmp_path,
+        extra_args=["--auto-upgrade-suspend", "true"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    cronjob = next(doc for doc in manifests if doc.get("kind") == "CronJob")
+    assert cronjob["spec"]["suspend"] is True
+
+
+def test_master_cleanup_removes_installer_managed_database_secret(
+    tmp_path: Path,
+) -> None:
+    _write_fake_kubectl(tmp_path)
+    log = tmp_path / "kubectl.log"
+    env = {
+        "PATH": f"{tmp_path}:/usr/bin:/bin",
+        "KUBECTL_LOG": str(log),
+        "KUBECTL_APPLY_MANIFEST": str(tmp_path / "manifest.yaml"),
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--cleanup", "--namespace", "master-test"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "-n master-test delete secret platform-master-database-url" in calls
 
 
 def test_master_docs_are_foundation_only_and_do_not_reference_paste() -> None:
@@ -201,9 +350,16 @@ def test_master_docs_are_foundation_only_and_do_not_reference_paste() -> None:
     master_guide = _read(ROOT / "docs" / "master" / "README.md")
 
     assert FOUNDATION_WARNING in docs
-    assert "./scripts/install-master.sh" in docs
+    assert "./scripts/install-master.sh --database-url" in docs
+    assert "export PLATFORM_DATABASE_URL=" in docs
     assert "PLATFORM_NAMESPACE=platform-master" in docs
     assert "platform-master-helm-upgrader" in docs
+    assert "autoUpgrade.suspend=true" in docs
+    assert "jsonpath='{.data.url}'" in docs
+    assert "database.urlSecret.name=platform-master-database-url" in docs
+    assert "removes `secret/platform-master-database-url`" in docs
+    assert "without deleting healthy existing workloads" in docs
+    assert "Deletes only prior installer-managed master objects" not in docs
     assert "paste.rs" not in docs
     assert "curl" not in docs
     assert "platform validator run" not in master_guide

@@ -14,7 +14,8 @@ AUTO_UPGRADE_VALUES_PATH="${PLATFORM_AUTO_UPGRADE_VALUES_PATH:-deploy/helm/platf
 AUTO_UPGRADE_TIMEOUT="${PLATFORM_AUTO_UPGRADE_TIMEOUT:-10m}"
 AUTO_UPGRADE_HISTORY_MAX="${PLATFORM_AUTO_UPGRADE_HISTORY_MAX:-5}"
 AUTO_UPGRADE_TAKE_OWNERSHIP="${PLATFORM_AUTO_UPGRADE_TAKE_OWNERSHIP:-true}"
-DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://platform-master.invalid/platform}"
+AUTO_UPGRADE_SUSPEND="${PLATFORM_AUTO_UPGRADE_SUSPEND:-true}"
+DATABASE_URL="${PLATFORM_DATABASE_URL:-}"
 NETUID="${PLATFORM_NETUID:-0}"
 CHAIN_ENDPOINT="${PLATFORM_CHAIN_ENDPOINT:-}"
 BROKER_ALLOWED_IMAGES="${PLATFORM_BROKER_ALLOWED_IMAGES:-ghcr.io/platformnetwork/}"
@@ -40,6 +41,7 @@ Options:
   --auto-upgrade-repo REPO   GitHub repo for Helm chart source. Default: PlatformNetwork/platform
   --auto-upgrade-ref REF     Git ref for Helm chart source. Default: main
   --auto-upgrade-chart-path PATH  Chart path inside the repo. Default: deploy/helm/platform
+  --auto-upgrade-suspend BOOL  Suspend the Helm upgrader CronJob. Default: true
   --database-url URL         Master PostgreSQL URL.
   --netuid NETUID            Bittensor subnet UID. Default: 0
   --chain-endpoint ENDPOINT  Optional Bittensor chain endpoint.
@@ -58,6 +60,7 @@ while [ "$#" -gt 0 ]; do
     --auto-upgrade-repo) AUTO_UPGRADE_REPO="${2:?missing REPO}"; shift ;;
     --auto-upgrade-ref) AUTO_UPGRADE_REF="${2:?missing REF}"; shift ;;
     --auto-upgrade-chart-path) AUTO_UPGRADE_CHART_PATH="${2:?missing PATH}"; shift ;;
+    --auto-upgrade-suspend) AUTO_UPGRADE_SUSPEND="${2:?missing BOOL}"; shift ;;
     --database-url) DATABASE_URL="${2:?missing URL}"; shift ;;
     --netuid) NETUID="${2:?missing NETUID}"; shift ;;
     --chain-endpoint) CHAIN_ENDPOINT="${2:?missing ENDPOINT}"; shift ;;
@@ -72,6 +75,40 @@ if [ "$NAMESPACE" = "platform-validator" ]; then
   echo "platform-validator is reserved for the validator installer" >&2
   exit 2
 fi
+
+validate_identifier() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ""|*[!A-Za-z0-9_.-]*)
+      echo "$name must contain only letters, numbers, dot, underscore, or dash" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_regex() {
+  local name="$1"
+  local value="$2"
+  local pattern="$3"
+  local expectation="$4"
+  if [[ ! "$value" =~ $pattern ]]; then
+    echo "$name must $expectation" >&2
+    exit 2
+  fi
+}
+
+validate_identifier "namespace" "$NAMESPACE"
+validate_regex "auto-upgrade schedule" "$AUTO_UPGRADE_SCHEDULE" '^[A-Za-z0-9*?, /@._-]+$' "use cron-safe characters"
+validate_regex "auto-upgrade Helm image" "$AUTO_UPGRADE_HELM_IMAGE" '^[A-Za-z0-9_./:@-]+$' "be an image reference"
+validate_regex "auto-upgrade repository" "$AUTO_UPGRADE_REPO" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "use owner/repo"
+validate_regex "auto-upgrade ref" "$AUTO_UPGRADE_REF" '^[A-Za-z0-9_./-]+$' "use git ref-safe characters"
+validate_regex "auto-upgrade chart path" "$AUTO_UPGRADE_CHART_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
+validate_regex "auto-upgrade values path" "$AUTO_UPGRADE_VALUES_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
+validate_regex "auto-upgrade timeout" "$AUTO_UPGRADE_TIMEOUT" '^[0-9]+[smh]$' "use a Helm duration such as 10m"
+validate_regex "auto-upgrade history max" "$AUTO_UPGRADE_HISTORY_MAX" '^[0-9]+$' "be a positive integer"
+validate_regex "auto-upgrade take ownership" "$AUTO_UPGRADE_TAKE_OWNERSHIP" '^(true|false)$' "be true or false"
+validate_regex "auto-upgrade suspend" "$AUTO_UPGRADE_SUSPEND" '^(true|false)$' "be true or false"
 
 require_kubectl() {
   if ! command -v kubectl >/dev/null 2>&1; then
@@ -120,6 +157,7 @@ cleanup_master() {
   kubectl_delete -n "$NAMESPACE" delete service "$APP-proxy"
   kubectl_delete -n "$NAMESPACE" delete service "$APP-broker"
   kubectl_delete -n "$NAMESPACE" delete configmap "$APP-config"
+  kubectl_delete -n "$NAMESPACE" delete secret "$APP-database-url"
   kubectl_delete -n "$NAMESPACE" delete role "$APP-runtime"
   kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-runtime"
   kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP"
@@ -183,7 +221,10 @@ spec:
               containerPort: ${port}
           env:
             - name: PLATFORM_DATABASE__URL
-              value: "${DATABASE_URL}"
+              valueFrom:
+                secretKeyRef:
+                  name: platform-master-database-url
+                  key: url
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -327,6 +368,18 @@ roleRef:
   name: ${APP}-config-sync
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-master-database-url
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+type: Opaque
+stringData:
+  url: "${DATABASE_URL}"
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ${APP}-config
@@ -340,7 +393,7 @@ data:
     runtime:
       backend: "kubernetes"
     database:
-      url: "${DATABASE_URL}"
+      url: "\${PLATFORM_DATABASE__URL}"
     network:
       netuid: ${NETUID}
       chain_endpoint: "${CHAIN_ENDPOINT}"
@@ -404,7 +457,12 @@ helm "\$@" \
   --set master.enabled=true \
   --set validator.enabled=false \
   --set imageAutoUpdate.enabled=false \
-  --set configSync.enabled=false
+  --set configSync.enabled=false \
+  --set-string database.urlSecret.name="platform-master-database-url" \
+  --set-string database.urlSecret.key="url" \
+  --set-string security.existingSecret="platform-secrets" \
+  --set-string kubernetes.namespace="${NAMESPACE}" \
+  --set-string kubernetes.serviceAccount="${APP}"
 SCRIPT
 }
 
@@ -441,6 +499,9 @@ rules:
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["batch"]
     resources: ["cronjobs", "jobs"]
@@ -483,6 +544,7 @@ metadata:
     platform.component: helm-upgrader
 spec:
   schedule: "${AUTO_UPGRADE_SCHEDULE}"
+  suspend: ${AUTO_UPGRADE_SUSPEND}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -531,7 +593,11 @@ main() {
     exit 0
   fi
 
-  cleanup_master
+  if [ -z "$DATABASE_URL" ]; then
+    echo "database-url is required; provide --database-url or PLATFORM_DATABASE_URL" >&2
+    exit 2
+  fi
+
   render_manifests | kubectl_apply
   echo "Master Kubernetes install complete."
   echo "Namespace: ${NAMESPACE}"

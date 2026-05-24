@@ -17,29 +17,31 @@ Use a different namespace only for Cortex Foundation managed test clusters. Do n
 Run from the repository root:
 
 ```bash
-./scripts/install-master.sh
+./scripts/install-master.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 ```
 
 The script performs these actions:
 
 1. Prints the foundation-only warning before it changes the cluster.
-2. Deletes only prior installer-managed master objects in the selected namespace.
-3. Applies Namespace, ServiceAccount/RBAC, ConfigMap, admin Deployment and Service, proxy Deployment and Service, broker Deployment and Service, and `platform-master-helm-upgrader`.
+2. Applies Namespace, ServiceAccount/RBAC, ConfigMap, admin Deployment and Service, proxy Deployment and Service, broker Deployment and Service, and `platform-master-helm-upgrader` without deleting healthy existing workloads.
+3. Stores the required database URL in `secret/platform-master-database-url` and references it from Deployments.
 4. Runs the master admin API with `platform master run --config config/master.kubernetes.yaml`.
 5. Runs the proxy and broker with the same master config.
 
 Useful options:
 
 ```bash
+export PLATFORM_DATABASE_URL='postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform'
 ./scripts/install-master.sh --namespace platform-master
 ./scripts/install-master.sh --image ghcr.io/platformnetwork/platform-master:v1.2.3@sha256:<digest>
 ./scripts/install-master.sh --auto-upgrade-schedule '*/5 * * * *'
 ./scripts/install-master.sh --auto-upgrade-helm-image alpine/helm:3.15.4
 ./scripts/install-master.sh --auto-upgrade-repo PlatformNetwork/platform --auto-upgrade-ref main
-./scripts/install-master.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
 ./scripts/install-master.sh --netuid 0
 ./scripts/install-master.sh --cleanup
 ```
+
+Cleanup is scoped to installer-managed master objects and removes `secret/platform-master-database-url`. It does not delete unrelated workloads or namespaces.
 
 ## Full Helm Auto-Upgrade
 
@@ -49,7 +51,17 @@ The installer creates `cronjob/platform-master-helm-upgrader`. The job uses a na
 helm upgrade --install platform-master ... --atomic --wait --cleanup-on-fail
 ```
 
-The upgrader downloads the configured repo/ref, reads the chart under `deploy/helm/platform`, and applies master-only values in the master namespace. It sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and does not read or print Kubernetes Secret values. The master database URL must be supplied by the existing Secret referenced by the chart values. Use `autoUpgrade.extraSet` only for non-secret references that must survive future self-upgrades, for example `database.urlSecret.name=platform-master-database-url` and `database.urlSecret.key=url`; never place database URLs, tokens, mnemonics, or other secret values there.
+The upgrader downloads the configured repo/ref, reads the chart under `deploy/helm/platform`, and applies master-only values in the master namespace. It sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and does not read or print Kubernetes Secret values. The master database URL must be supplied by the existing Secret referenced by the chart values. The installer pins only live-safe non-secret references for future self-upgrades, including `database.urlSecret.name=platform-master-database-url`, `database.urlSecret.key=url`, `security.existingSecret=platform-secrets`, `kubernetes.namespace`, and `kubernetes.serviceAccount`; never place database URLs, tokens, or other secret values in `autoUpgrade.extraSet`.
+
+Before relying on self-upgrades, verify the referenced Secret and keys exist without printing their values:
+
+```bash
+kubectl -n platform-master get secret platform-master-database-url -o jsonpath='{.data.url}' >/dev/null
+kubectl -n platform-master get secret platform-secrets -o jsonpath='{.data.admin_token}' >/dev/null
+kubectl -n platform-master get cronjob platform-master-helm-upgrader
+```
+
+If any prerequisite is missing, keep the Helm-upgrader CronJob suspended with `autoUpgrade.suspend=true` until the referenced Secret exists with the intended key. If the deployment is already healthy, use these checks to confirm the CronJob bootstrap references instead of replacing the deployment just to recreate the CronJob.
 
 ## Explicit Non Goals
 
