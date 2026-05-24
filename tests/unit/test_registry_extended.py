@@ -73,6 +73,60 @@ def test_registry_update_views_and_errors() -> None:
     assert public.public_proxy_base_path == "/challenges/demo-case"
 
 
+def test_registry_view_filters_frontend_metadata() -> None:
+    registry = ChallengeRegistry()
+    record, _token = registry.create(
+        ChallengeCreate(
+            slug="agent-challenge",
+            name="Agent Challenge",
+            image="ghcr.io/platformnetwork/agent-challenge:1.0.0",
+            version="1.0.0",
+            emission_percent=Decimal("20"),
+            status=ChallengeStatus.ACTIVE,
+            description="Build and evaluate coding agents.",
+            metadata={
+                "tagline": "Compete with production-grade agents",
+                "docs_url": "https://docs.example.com/agent-challenge",
+                "miner_docs_url": "https://docs.example.com/agent-challenge/miners",
+                "validator_docs_url": "https://docs.example.com/agent-challenge/validators",
+                "category": "agents",
+                "difficulty": "hard",
+                "benchmark_label": "Terminal-Bench",
+                "evaluation_timeout_seconds": 1800,
+                "rate_limit_label": "10 submissions/hour",
+                "token": "challenge-token",
+                "secret": "shared-secret",
+                "password": "password",
+                "private_key": "private-key",
+                "database_url": "postgres://secret",
+                "internal_base_url": "http://internal:8000",
+                "operator_notes": "internal only",
+                "nested": {"hide": "me"},
+                "summary": ["not", "a", "public", "scalar"],
+            },
+        )
+    )
+
+    public = record_to_registry_view(record)
+
+    assert public.description == "Build and evaluate coding agents."
+    assert public.metadata == {
+        "tagline": "Compete with production-grade agents",
+        "docs_url": "https://docs.example.com/agent-challenge",
+        "miner_docs_url": "https://docs.example.com/agent-challenge/miners",
+        "validator_docs_url": "https://docs.example.com/agent-challenge/validators",
+        "category": "agents",
+        "difficulty": "hard",
+        "benchmark_label": "Terminal-Bench",
+        "evaluation_timeout_seconds": 1800,
+        "rate_limit_label": "10 submissions/hour",
+    }
+    assert public.internal_base_url == "http://challenge-agent-challenge:8000"
+    assert public.public_proxy_base_path == "/challenges/agent-challenge"
+    assert record.metadata["token"] == "challenge-token"
+    assert record.metadata["nested"] == {"hide": "me"}
+
+
 def test_image_digest_round_trip() -> None:
     registry = ChallengeRegistry()
     record, _token = registry.create(

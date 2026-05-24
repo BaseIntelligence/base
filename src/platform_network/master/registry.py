@@ -466,6 +466,34 @@ def record_to_admin_view(record: ChallengeRecord) -> ChallengeAdminView:
     return ChallengeAdminView(**data)
 
 
+PUBLIC_REGISTRY_METADATA_KEYS = {
+    "tagline",
+    "summary",
+    "docs_url",
+    "miner_docs_url",
+    "validator_docs_url",
+    "repository_url",
+    "website_url",
+    "banner_url",
+    "icon_url",
+    "category",
+    "difficulty",
+    "benchmark_label",
+    "submission_format",
+    "evaluation_timeout_seconds",
+    "rate_limit_label",
+}
+
+
+def public_registry_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key in PUBLIC_REGISTRY_METADATA_KEYS
+        and (value is None or isinstance(value, str | int | float | bool))
+    }
+
+
 def record_to_registry_view(record: ChallengeRecord) -> RegistryChallenge:
     """Convert internal metadata to the validator-facing registry model."""
 
@@ -476,6 +504,8 @@ def record_to_registry_view(record: ChallengeRecord) -> RegistryChallenge:
         version=record.version,
         emission_percent=Decimal(record.emission_percent),
         status=record.status,
+        description=record.description,
+        metadata=public_registry_metadata(record.metadata),
         internal_base_url=record.internal_base_url,
         public_proxy_base_path=record.public_proxy_base_path,
         required_capabilities=list(record.required_capabilities),

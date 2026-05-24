@@ -145,6 +145,8 @@ class RegistryChallenge(BaseModel):
     version: str
     emission_percent: Decimal
     status: ChallengeStatus
+    description: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     internal_base_url: str
     public_proxy_base_path: str
     required_capabilities: list[str]
