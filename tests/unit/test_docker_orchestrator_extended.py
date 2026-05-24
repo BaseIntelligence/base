@@ -84,6 +84,7 @@ def test_challenge_spec_and_resource_validation() -> None:
     assert ChallengeResources.from_mapping(
         {"cpu": "2", "memory": "512m"}
     ) == ChallengeResources(cpu=2.0, memory="512m")
+    assert ChallengeResources.from_mapping({"cpu": "500m"}).cpu == 0.5
     gpu_resources = ChallengeResources.from_mapping(
         {
             "gpu_server": "gpu-a",

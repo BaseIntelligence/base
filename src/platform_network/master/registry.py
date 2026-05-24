@@ -378,6 +378,7 @@ class DatabaseChallengeRegistry:
                 return _record_from_model(model)
             _apply_model_updates(model, updates)
             await session.flush()
+            await session.refresh(model)
             await self._load_relationships(session, model)
             return _record_from_model(model)
 

@@ -67,3 +67,36 @@ async def test_database_registry_active_only_list_uses_postgres_asyncpg(
     finally:
         await engine.dispose()
         await cleanup_postgres_database()
+
+
+@pytest.mark.postgres
+async def test_database_registry_set_status_serializes_server_updated_timestamp(
+    tmp_path: Path,
+    migrated_postgres_database: str,
+    cleanup_postgres_database: Callable[[], Awaitable[None]],
+) -> None:
+    engine = create_engine(migrated_postgres_database)
+    registry = DatabaseChallengeRegistry(
+        create_session_factory(engine),
+        secret_dir=tmp_path / "secrets",
+    )
+
+    try:
+        await registry.create(
+            _payload(
+                slug="test-status-challenge-001",
+                name="Status Challenge Regression",
+                status=ChallengeStatus.DRAFT,
+                emission_percent=Decimal("0"),
+            )
+        )
+
+        record = await registry.set_status(
+            "test-status-challenge-001", ChallengeStatus.ACTIVE
+        )
+
+        assert record.status == ChallengeStatus.ACTIVE
+        assert record.updated_at is not None
+    finally:
+        await engine.dispose()
+        await cleanup_postgres_database()

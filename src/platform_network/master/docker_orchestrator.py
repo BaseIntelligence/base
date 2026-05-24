@@ -73,7 +73,7 @@ class ChallengeResources:
         gpu_device_ids = _split_csv(resources.get("gpu_device_ids"))
         gpu_capabilities = _split_csv(resources.get("gpu_capabilities")) or ("gpu",)
         return cls(
-            cpu=float(cpu) if cpu else 2.0,
+            cpu=_parse_cpu(cpu) if cpu else 2.0,
             memory=memory or "4g",
             memory_swap=memory_swap or "4g",
             pids_limit=int(pids_limit) if pids_limit else 512,
@@ -541,6 +541,13 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _parse_cpu(value: str) -> float:
+    value = value.strip()
+    if value.endswith("m"):
+        return float(value[:-1]) / 1000
+    return float(value)
 
 
 def _tmpfs_mapping(values: tuple[str, ...]) -> dict[str, str]:
