@@ -130,7 +130,7 @@ def test_master_installer_renders_master_only_resources(tmp_path: Path) -> None:
     assert ("Deployment", "platform-master-admin") in kinds_by_name
     assert ("Deployment", "platform-master-proxy") in kinds_by_name
     assert ("Deployment", "platform-master-broker") in kinds_by_name
-    assert ("CronJob", "platform-master-config-sync") in kinds_by_name
+    assert ("CronJob", "platform-master-helm-upgrader") in kinds_by_name
     assert ("ConfigMap", "platform-master-config") in kinds_by_name
     assert ("Secret", "platform-master-wallet") not in kinds_by_name
     assert ("Deployment", "platform-validator") not in kinds_by_name
@@ -171,34 +171,29 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
         "--config",
         "config/master.kubernetes.yaml",
     ] in deployment_commands
-    assert any(
+    assert not any(
         command[:3] == ["platform", "kubernetes", "sync-config"]
         for command in cronjob_commands
     )
-    config_sync_command = next(
-        command
-        for command in cronjob_commands
-        if command[:3] == ["platform", "kubernetes", "sync-config"]
+    helm_upgrade_command = " ".join(
+        next(
+            command
+            for command in cronjob_commands
+            if "set -- upgrade --install" in " ".join(command)
+        )
     )
-    assert config_sync_command == [
-        "platform",
-        "kubernetes",
-        "sync-config",
-        "--namespace",
-        "master-test",
-        "--config-map",
-        "platform-master-config",
-        "--repo",
-        "PlatformNetwork/platform",
-        "--ref",
-        "main",
-        "--rollout-target",
-        "Deployment/platform-master-admin",
-        "--rollout-target",
-        "Deployment/platform-master-proxy",
-        "--rollout-target",
-        "Deployment/platform-master-broker",
-    ]
+    assert "HELM_DRIVER" in rendered
+    assert "set -- upgrade --install platform-master" in helm_upgrade_command
+    assert 'helm "$@"' in helm_upgrade_command
+    assert "--namespace master-test" in helm_upgrade_command
+    assert "--atomic" in helm_upgrade_command
+    assert "--wait" in helm_upgrade_command
+    assert "--cleanup-on-fail" in helm_upgrade_command
+    assert "--take-ownership" in helm_upgrade_command
+    assert (
+        "codeload.github.com/PlatformNetwork/platform/tar.gz/main"
+        in helm_upgrade_command
+    )
 
 
 def test_master_docs_are_foundation_only_and_do_not_reference_paste() -> None:
@@ -208,7 +203,7 @@ def test_master_docs_are_foundation_only_and_do_not_reference_paste() -> None:
     assert FOUNDATION_WARNING in docs
     assert "./scripts/install-master.sh" in docs
     assert "PLATFORM_NAMESPACE=platform-master" in docs
-    assert "platform-master-config-sync" in docs
+    assert "platform-master-helm-upgrader" in docs
     assert "paste.rs" not in docs
     assert "curl" not in docs
     assert "platform validator run" not in master_guide

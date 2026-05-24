@@ -5,10 +5,15 @@ umask 077
 APP="platform-master"
 NAMESPACE="${PLATFORM_NAMESPACE:-platform-master}"
 IMAGE="${PLATFORM_MASTER_IMAGE:-ghcr.io/platformnetwork/platform-master:latest}"
-CONFIG_SYNC_IMAGE="${PLATFORM_MASTER_CONFIG_SYNC_IMAGE:-}"
-CONFIG_SYNC_SCHEDULE="${PLATFORM_MASTER_CONFIG_SYNC_SCHEDULE:-*/1 * * * *}"
-CONFIG_SYNC_REPO="${PLATFORM_MASTER_CONFIG_SYNC_REPO:-PlatformNetwork/platform}"
-CONFIG_SYNC_REF="${PLATFORM_MASTER_CONFIG_SYNC_REF:-main}"
+AUTO_UPGRADE_SCHEDULE="${PLATFORM_AUTO_UPGRADE_SCHEDULE:-*/5 * * * *}"
+AUTO_UPGRADE_HELM_IMAGE="${PLATFORM_AUTO_UPGRADE_HELM_IMAGE:-alpine/helm:3.15.4}"
+AUTO_UPGRADE_REPO="${PLATFORM_AUTO_UPGRADE_REPO:-PlatformNetwork/platform}"
+AUTO_UPGRADE_REF="${PLATFORM_AUTO_UPGRADE_REF:-main}"
+AUTO_UPGRADE_CHART_PATH="${PLATFORM_AUTO_UPGRADE_CHART_PATH:-deploy/helm/platform}"
+AUTO_UPGRADE_VALUES_PATH="${PLATFORM_AUTO_UPGRADE_VALUES_PATH:-deploy/helm/platform/values.yaml}"
+AUTO_UPGRADE_TIMEOUT="${PLATFORM_AUTO_UPGRADE_TIMEOUT:-10m}"
+AUTO_UPGRADE_HISTORY_MAX="${PLATFORM_AUTO_UPGRADE_HISTORY_MAX:-5}"
+AUTO_UPGRADE_TAKE_OWNERSHIP="${PLATFORM_AUTO_UPGRADE_TAKE_OWNERSHIP:-true}"
 DATABASE_URL="${PLATFORM_DATABASE_URL:-postgresql+asyncpg://platform-master.invalid/platform}"
 NETUID="${PLATFORM_NETUID:-0}"
 CHAIN_ENDPOINT="${PLATFORM_CHAIN_ENDPOINT:-}"
@@ -30,10 +35,11 @@ Options:
   --cleanup                  Delete this installer-managed master deployment and exit.
   --namespace NAME           Kubernetes namespace. Default: platform-master
   --image IMAGE              Platform master image. Default: ghcr.io/platformnetwork/platform-master:latest
-  --config-sync-image IMAGE  Image used by the config sync CronJob. Default: same as --image
-  --config-sync-schedule S   Cron schedule for config sync. Default: */1 * * * *
-  --config-sync-repo REPO    GitHub repo for config sync. Default: PlatformNetwork/platform
-  --config-sync-ref REF      Git ref for config sync. Default: main
+  --auto-upgrade-schedule S  Cron schedule for full Helm upgrades. Default: */5 * * * *
+  --auto-upgrade-helm-image IMAGE  Helm image used by the upgrader CronJob. Default: alpine/helm:3.15.4
+  --auto-upgrade-repo REPO   GitHub repo for Helm chart source. Default: PlatformNetwork/platform
+  --auto-upgrade-ref REF     Git ref for Helm chart source. Default: main
+  --auto-upgrade-chart-path PATH  Chart path inside the repo. Default: deploy/helm/platform
   --database-url URL         Master PostgreSQL URL.
   --netuid NETUID            Bittensor subnet UID. Default: 0
   --chain-endpoint ENDPOINT  Optional Bittensor chain endpoint.
@@ -47,10 +53,11 @@ while [ "$#" -gt 0 ]; do
     --cleanup) CLEANUP_ONLY=1 ;;
     --namespace) NAMESPACE="${2:?missing NAME}"; shift ;;
     --image) IMAGE="${2:?missing IMAGE}"; shift ;;
-    --config-sync-image) CONFIG_SYNC_IMAGE="${2:?missing IMAGE}"; shift ;;
-    --config-sync-schedule) CONFIG_SYNC_SCHEDULE="${2:?missing SCHEDULE}"; shift ;;
-    --config-sync-repo) CONFIG_SYNC_REPO="${2:?missing REPO}"; shift ;;
-    --config-sync-ref) CONFIG_SYNC_REF="${2:?missing REF}"; shift ;;
+    --auto-upgrade-schedule) AUTO_UPGRADE_SCHEDULE="${2:?missing SCHEDULE}"; shift ;;
+    --auto-upgrade-helm-image) AUTO_UPGRADE_HELM_IMAGE="${2:?missing IMAGE}"; shift ;;
+    --auto-upgrade-repo) AUTO_UPGRADE_REPO="${2:?missing REPO}"; shift ;;
+    --auto-upgrade-ref) AUTO_UPGRADE_REF="${2:?missing REF}"; shift ;;
+    --auto-upgrade-chart-path) AUTO_UPGRADE_CHART_PATH="${2:?missing PATH}"; shift ;;
     --database-url) DATABASE_URL="${2:?missing URL}"; shift ;;
     --netuid) NETUID="${2:?missing NETUID}"; shift ;;
     --chain-endpoint) CHAIN_ENDPOINT="${2:?missing ENDPOINT}"; shift ;;
@@ -64,10 +71,6 @@ done
 if [ "$NAMESPACE" = "platform-validator" ]; then
   echo "platform-validator is reserved for the validator installer" >&2
   exit 2
-fi
-
-if [ -z "$CONFIG_SYNC_IMAGE" ]; then
-  CONFIG_SYNC_IMAGE="$IMAGE"
 fi
 
 require_kubectl() {
@@ -102,6 +105,10 @@ render_broker_allowed_images() {
 }
 
 cleanup_master() {
+  kubectl_delete -n "$NAMESPACE" delete cronjob "$APP-helm-upgrader"
+  kubectl_delete -n "$NAMESPACE" delete role "$APP-helm-upgrader"
+  kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-helm-upgrader"
+  kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP-helm-upgrader"
   kubectl_delete -n "$NAMESPACE" delete cronjob "$APP-config-sync"
   kubectl_delete -n "$NAMESPACE" delete role "$APP-config-sync"
   kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-config-sync"
@@ -367,19 +374,115 @@ YAML
   render_deployment "${APP}-proxy" "master-proxy" "$MASTER_PROXY_PORT" "proxy" "false"
   echo "---"
   render_deployment "${APP}-broker" "master-broker" "$BROKER_PORT" "broker" "true"
+  echo "---"
+  render_helm_upgrader
+}
+
+render_helm_upgrade_command() {
+  cat <<SCRIPT
+set -eu
+WORKDIR="\$(mktemp -d)"
+trap 'rm -rf "\${WORKDIR}"' EXIT
+mkdir -p "\${WORKDIR}/source"
+wget -qO "\${WORKDIR}/source.tar.gz" "https://codeload.github.com/${AUTO_UPGRADE_REPO}/tar.gz/${AUTO_UPGRADE_REF}"
+tar -xzf "\${WORKDIR}/source.tar.gz" -C "\${WORKDIR}/source" --strip-components=1
+set -- upgrade --install ${APP} "\${WORKDIR}/source/${AUTO_UPGRADE_CHART_PATH}" \
+  -f "\${WORKDIR}/source/${AUTO_UPGRADE_VALUES_PATH}" \
+  --namespace ${NAMESPACE} \
+  --create-namespace \
+  --atomic \
+  --wait \
+  --cleanup-on-fail \
+  --history-max ${AUTO_UPGRADE_HISTORY_MAX} \
+  --timeout ${AUTO_UPGRADE_TIMEOUT}
+if [ "${AUTO_UPGRADE_TAKE_OWNERSHIP}" = "true" ]; then
+  set -- "\$@" --take-ownership
+fi
+helm "\$@" \
+  --set autoUpgrade.enabled=true \
+  --set autoUpgrade.mode=master \
+  --set master.enabled=true \
+  --set validator.enabled=false \
+  --set imageAutoUpdate.enabled=false \
+  --set configSync.enabled=false
+SCRIPT
+}
+
+render_helm_upgrader() {
+  local command
+  command="$(render_helm_upgrade_command | sed 's/^/                  /')"
   cat <<YAML
----
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: v1
+kind: ServiceAccount
 metadata:
-  name: ${APP}-config-sync
+  name: ${APP}-helm-upgrader
   namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: platform-network
     app.kubernetes.io/part-of: ${APP}
-    platform.component: master-config-sync
+    platform.component: helm-upgrader
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${APP}-helm-upgrader
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: helm-upgrader
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts", "persistentvolumeclaims", "pods"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${APP}-helm-upgrader
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: helm-upgrader
+subjects:
+  - kind: ServiceAccount
+    name: ${APP}-helm-upgrader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${APP}-helm-upgrader
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ${APP}-helm-upgrader
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: helm-upgrader
 spec:
-  schedule: "${CONFIG_SYNC_SCHEDULE}"
+  schedule: "${AUTO_UPGRADE_SCHEDULE}"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -390,9 +493,9 @@ spec:
           labels:
             app.kubernetes.io/name: platform-network
             app.kubernetes.io/part-of: ${APP}
-            platform.component: master-config-sync
+            platform.component: helm-upgrader
         spec:
-          serviceAccountName: ${APP}-config-sync
+          serviceAccountName: ${APP}-helm-upgrader
           automountServiceAccountToken: true
           restartPolicy: OnFailure
           securityContext:
@@ -402,27 +505,17 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           containers:
-            - name: config-sync
-              image: ${CONFIG_SYNC_IMAGE}
+            - name: helm-upgrader
+              image: ${AUTO_UPGRADE_HELM_IMAGE}
               imagePullPolicy: Always
+              env:
+                - name: HELM_DRIVER
+                  value: configmap
               command:
-                - platform
-                - kubernetes
-                - sync-config
-                - --namespace
-                - ${NAMESPACE}
-                - --config-map
-                - ${APP}-config
-                - --repo
-                - ${CONFIG_SYNC_REPO}
-                - --ref
-                - ${CONFIG_SYNC_REF}
-                - --rollout-target
-                - Deployment/${APP}-admin
-                - --rollout-target
-                - Deployment/${APP}-proxy
-                - --rollout-target
-                - Deployment/${APP}-broker
+                - sh
+                - -ec
+                - |
+${command}
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
