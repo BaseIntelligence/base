@@ -819,6 +819,112 @@ def test_proxy_serves_agent_challenge_frontend_read_contract() -> None:
         assert upstream_headers["x-public-header"] == "forward-me"
 
 
+def test_proxy_serves_agent_challenge_task_event_replay_shape() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("agent-challenge"),
+                "internal_base_url": "http://challenge-agent-challenge:8000",
+            }
+        )
+    )
+    registry.set_status("agent-challenge", ChallengeStatus.ACTIVE)
+    captured: dict[str, Any] = {}
+    safe_replay_payload = {
+        "submission": {
+            "id": "submission-1",
+            "family_id": "fam_public_1",
+            "version_number": 2,
+            "version_label": "v2",
+            "version_count": 3,
+            "is_latest_version": False,
+            "latest_submission_id": "submission-3",
+            "display_name": "Agent Prime",
+        },
+        "events": [
+            {
+                "id": 101,
+                "sequence": 1,
+                "submission_id": "submission-1",
+                "event_type": "task.progress",
+                "task_id": "terminal-bench:hello-world",
+                "benchmark_id": "terminal-bench",
+                "public_state": "running",
+                "message": "started task",
+                "metadata": {"phase": "setup"},
+                "created_at": "2030-01-01T00:00:00Z",
+            },
+            {
+                "id": 102,
+                "sequence": 2,
+                "submission_id": "submission-1",
+                "event_type": "task.completed",
+                "task_id": "terminal-bench:hello-world",
+                "benchmark_id": "terminal-bench",
+                "public_state": "completed",
+                "message": "completed task",
+                "metadata": {"score": 1.0},
+                "created_at": "2030-01-01T00:00:01Z",
+            },
+        ],
+        "next_cursor": 2,
+        "latest_sequence": 2,
+    }
+
+    challenge_app = FastAPI()
+
+    @challenge_app.get("/submissions/{submission_id}/task-events")
+    async def task_events(submission_id: str, request: Request) -> dict[str, Any]:
+        captured["path"] = request.url.path
+        captured["query"] = request.url.query
+        captured["headers"] = dict(request.headers)
+        assert submission_id == "submission-1"
+        return safe_replay_payload
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-agent-challenge:8000"
+        ) as client:
+            yield client
+
+    direct_response = TestClient(challenge_app).get(
+        "/submissions/submission-1/task-events?cursor=0&limit=10"
+    )
+    proxy_client = TestClient(_proxy_app(registry, client_factory=client_factory))
+    proxy_response = proxy_client.get(
+        "/challenges/agent-challenge/submissions/submission-1/task-events?cursor=0&limit=10",
+        headers={"Authorization": "Bearer should-not-forward"},
+    )
+
+    assert direct_response.status_code == 200
+    assert proxy_response.status_code == 200
+    assert proxy_response.json() == direct_response.json()
+    assert captured["path"] == "/submissions/submission-1/task-events"
+    assert captured["query"] == "cursor=0&limit=10"
+    upstream_headers = captured["headers"]
+    assert upstream_headers["x-platform-proxy"] == "true"
+    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert "authorization" not in upstream_headers
+    forbidden_terms = (
+        "private_ref",
+        "signature",
+        "nonce",
+        "canonical_artifact_hash",
+        "normalized_name",
+        "artifact_path",
+        "token",
+        "kubeconfig",
+        "database_url",
+        "docker_auth",
+    )
+    serialized = proxy_response.text.lower()
+    for term in forbidden_terms:
+        assert term not in serialized
+
+
 async def test_proxy_streams_agent_challenge_sse_status_events() -> None:
     registry = ChallengeRegistry()
     registry.create(
@@ -960,6 +1066,156 @@ async def test_proxy_streams_agent_challenge_sse_status_events() -> None:
     assert b"id: 102" in body
 
 
+async def test_proxy_streams_agent_challenge_task_events_incrementally() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("agent-challenge"),
+                "internal_base_url": "http://challenge-agent-challenge:8000",
+            }
+        )
+    )
+    registry.set_status("agent-challenge", ChallengeStatus.ACTIVE)
+    first_event_sent = asyncio.Event()
+    release_stream = asyncio.Event()
+    captured: dict[str, Any] = {}
+
+    class ControlledTaskEventStream(httpx.AsyncByteStream):
+        async def __aiter__(self):  # type: ignore[no-untyped-def]
+            yield (
+                b"id: 1\n"
+                b"event: task.progress\n"
+                b'data: {"id":101,"sequence":1,"submission_id":"submission-1",'
+                b'"event_type":"task.progress","task_id":"terminal-bench:hello-world",'
+                b'"benchmark_id":"terminal-bench","public_state":"running",'
+                b'"message":"started task","metadata":{"phase":"setup"},'
+                b'"version_label":"v2","created_at":"2030-01-01T00:00:00Z"}\n\n'
+            )
+            first_event_sent.set()
+            await release_stream.wait()
+            yield (
+                b"id: 2\n"
+                b"event: task.completed\n"
+                b'data: {"id":102,"sequence":2,"submission_id":"submission-1",'
+                b'"event_type":"task.completed","task_id":"terminal-bench:hello-world",'
+                b'"benchmark_id":"terminal-bench","public_state":"completed",'
+                b'"message":"completed task","metadata":{"score":1.0},'
+                b'"version_label":"v2","created_at":"2030-01-01T00:00:01Z"}\n\n'
+            )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["headers"] = dict(request.headers)
+        captured["query"] = request.url.query.decode()
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream; charset=utf-8",
+                "cache-control": "no-cache",
+                "transfer-encoding": "chunked",
+            },
+            stream=ControlledTaskEventStream(),
+        )
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-agent-challenge:8000"
+        ) as client:
+            yield client
+
+    app = _proxy_app(registry, client_factory=client_factory)
+    response_started = asyncio.Event()
+    first_body_sent = asyncio.Event()
+    messages: list[MutableMapping[str, Any]] = []
+    request_delivered = False
+
+    async def receive() -> MutableMapping[str, Any]:
+        nonlocal request_delivered
+        if not request_delivered:
+            request_delivered = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        messages.append(message)
+        if message["type"] == "http.response.start":
+            response_started.set()
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_body_sent.set()
+
+    task_events_path = (
+        "/challenges/agent-challenge/submissions/submission-1/task-events/stream"
+    )
+    scope: MutableMapping[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": task_events_path,
+        "raw_path": task_events_path.encode(),
+        "query_string": b"cursor=0",
+        "headers": [
+            (b"host", b"platform.test"),
+            (b"last-event-id", b"1"),
+            (b"authorization", b"Bearer should-not-forward"),
+            (b"x-admin-token", b"should-not-forward"),
+            (b"x-public-header", b"forward-me"),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("platform.test", 80),
+    }
+    task = asyncio.create_task(app(scope, receive, send))
+
+    await asyncio.wait_for(response_started.wait(), timeout=1)
+    await asyncio.wait_for(first_body_sent.wait(), timeout=1)
+    assert await asyncio.wait_for(first_event_sent.wait(), timeout=1) is True
+    assert not task.done()
+
+    start = next(
+        message for message in messages if message["type"] == "http.response.start"
+    )
+    response_headers = {
+        key.decode().lower(): value.decode() for key, value in start["headers"]
+    }
+    assert start["status"] == 200
+    assert response_headers["content-type"].startswith("text/event-stream")
+    assert response_headers["cache-control"] == "no-cache"
+    assert "transfer-encoding" not in response_headers
+
+    first_body = next(
+        message["body"]
+        for message in messages
+        if message["type"] == "http.response.body" and message.get("body")
+    )
+    assert first_body.startswith(b"id: 1\nevent: task.progress\n")
+    assert b'"version_label":"v2"' in first_body
+    assert b"private_ref" not in first_body
+    assert b"signature" not in first_body
+    assert captured["path"] == "/submissions/submission-1/task-events/stream"
+    assert captured["query"] == "cursor=0"
+    upstream_headers = captured["headers"]
+    assert upstream_headers["last-event-id"] == "1"
+    assert upstream_headers["x-platform-proxy"] == "true"
+    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert upstream_headers["x-public-header"] == "forward-me"
+    assert "authorization" not in upstream_headers
+    assert "x-admin-token" not in upstream_headers
+
+    release_stream.set()
+    await asyncio.wait_for(task, timeout=1)
+    body = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    assert b"id: 2" in body
+
+
 def test_proxy_preserves_agent_challenge_sse_replay_conflict() -> None:
     registry = ChallengeRegistry()
     registry.create(
@@ -1018,6 +1274,41 @@ def test_proxy_blocks_internal_health_and_version_paths() -> None:
     for path in ("internal/v1/get_weights", "health", "version"):
         response = client.get(f"/challenges/demo/{path}")
         assert response.status_code == 403
+
+
+def test_proxy_blocks_agent_challenge_private_task_event_neighbors() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("agent-challenge"),
+                "internal_base_url": "http://challenge-agent-challenge:8000",
+            }
+        )
+    )
+    registry.set_status("agent-challenge", ChallengeStatus.ACTIVE)
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request.url.path)
+        return httpx.Response(200, json={"would_have_leaked": True})
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-agent-challenge:8000"
+        ) as client:
+            yield client
+
+    client = TestClient(_proxy_app(registry, client_factory=client_factory))
+
+    for path in ("health", "version", "internal/v1/get_weights"):
+        response = client.get(f"/challenges/agent-challenge/{path}")
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Proxy path is not allowed"}
+
+    assert upstream_calls == []
 
 
 def test_proxy_forwards_public_request_without_sensitive_headers() -> None:
