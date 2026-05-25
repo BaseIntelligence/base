@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import cast
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from platform_network.kubernetes.agent import create_kubernetes_agent_app
@@ -12,6 +14,105 @@ from platform_network.schemas.docker_broker import (
     BrokerListResponse,
     BrokerRunResponse,
 )
+
+
+def test_kubernetes_agent_challenge_proxy_preserves_origin_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def request(self, method, url, *, content, headers):
+            assert method == "GET"
+            assert url == "http://challenge-demo:8000/missing?x=1"
+            assert headers["Authorization"] == "Bearer forwarded-user-token"
+            return httpx.Response(
+                404,
+                json={"detail": "not found"},
+                headers={"content-type": "application/json"},
+            )
+
+    import platform_network.kubernetes.agent as agent_module
+
+    monkeypatch.setattr(agent_module.httpx, "AsyncClient", FakeAsyncClient)
+    client = TestClient(
+        create_kubernetes_agent_app(
+            token_provider=lambda: "agent-token",
+            orchestrator=cast(KubernetesOrchestrator, FakeOrchestrator()),
+            broker_service=FakeBrokerService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.get(
+        "/v1/challenges/demo/proxy/missing?x=1",
+        headers={
+            "Authorization": "Bearer agent-token",
+            "X-Platform-Forward-Authorization": "Bearer forwarded-user-token",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not found"}
+    assert response.text != '{"detail":"challenge unavailable"}'
+
+
+def test_kubernetes_agent_challenge_proxy_transport_failure_is_safe_502(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingAsyncClient:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def request(self, method, url, *, content, headers):
+            request = httpx.Request(method, url, headers=headers, content=content)
+            raise httpx.ConnectError(
+                "failed http://challenge-demo:8000/private?token=secret-token",
+                request=request,
+            )
+
+    import platform_network.kubernetes.agent as agent_module
+
+    monkeypatch.setattr(agent_module.httpx, "AsyncClient", FailingAsyncClient)
+    client = TestClient(
+        create_kubernetes_agent_app(
+            token_provider=lambda: "agent-token",
+            orchestrator=cast(KubernetesOrchestrator, FakeOrchestrator()),
+            broker_service=FakeBrokerService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        "/v1/challenges/demo/proxy/private?signature=secret-signature",
+        content=b"safe-test-body",
+        headers={
+            "Authorization": "Bearer agent-token",
+            "X-Platform-Forward-Authorization": "Bearer secret-token",
+            "X-Signature": "secret-signature",
+            "X-Nonce": "secret-nonce",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "challenge unavailable"}
+    body = response.text.lower()
+    assert "challenge-demo" not in body
+    assert "secret-token" not in body
+    assert "secret-signature" not in body
+    assert "secret-nonce" not in body
+    assert "traceback" not in body
 
 
 def test_kubernetes_agent_auth_runtime_and_broker_routes() -> None:

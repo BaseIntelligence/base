@@ -1372,6 +1372,56 @@ def test_proxy_forwards_public_request_without_sensitive_headers() -> None:
     assert "x-timestamp" not in captured
 
 
+def test_proxy_transport_failure_returns_safe_502_without_sensitive_detail() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload(),
+                "internal_base_url": "http://challenge-demo:8000",
+            }
+        )
+    )
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+
+    @asynccontextmanager
+    async def failing_client_factory():
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(
+                "failed http://challenge-demo:8000/submissions?token=secret-token",
+                request=request,
+            )
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-demo:8000"
+        ) as client:
+            yield client
+
+    proxy_client = TestClient(
+        _proxy_app(registry, client_factory=failing_client_factory)
+    )
+
+    response = proxy_client.post(
+        "/challenges/demo/submissions?signature=secret-signature&nonce=secret-nonce",
+        json={"answer": 42},
+        headers={
+            "Authorization": "Bearer secret-token",
+            "X-Signature": "secret-signature",
+            "X-Nonce": "secret-nonce",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Challenge unavailable"}
+    body = response.text.lower()
+    assert "challenge-demo" not in body
+    assert "secret-token" not in body
+    assert "secret-signature" not in body
+    assert "secret-nonce" not in body
+    assert "traceback" not in body
+
+
 def test_proxy_routes_assigned_kubernetes_agent_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

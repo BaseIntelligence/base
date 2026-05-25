@@ -152,6 +152,7 @@ def test_helm_admin_ingress_routes_signed_upload_bridge_to_proxy() -> None:
     paths = ingress["spec"]["rules"][0]["http"]["paths"]
     assert {(path["path"], path["backend"]["service"]["name"]) for path in paths} == {
         ("/", "platform-admin"),
+        ("/challenges", "platform-proxy"),
         ("/v1/challenges", "platform-proxy"),
     }
 

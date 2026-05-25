@@ -163,12 +163,6 @@ class KubernetesAgentClient:
                 content=content,
                 headers={**forwarded_headers, **self._headers()},
             )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise DockerOrchestrationError(
-                f"Kubernetes target {self.target_id!r} proxy failed: {response.text}"
-            ) from exc
         return response
 
     def _post(self, path: str, payload: dict[str, object]) -> dict[str, object]:
