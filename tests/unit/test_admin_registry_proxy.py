@@ -1260,6 +1260,248 @@ def test_signed_upload_bridge_rejects_replay_and_bad_time() -> None:
     assert stale_response.status_code == 401
 
 
+def test_signed_upload_bridge_strict_rejects_unknown_hotkey() -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_payload()))
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"known": 7}
+
+    verifier = MinerUploadVerifier(
+        netuid=42,
+        nonce_store=FakeNonceStore(),
+        metagraph_cache=Cache(),  # type: ignore[arg-type]
+        now_fn=lambda: 1_000,
+        signature_verifier=lambda _hotkey, _message, signature: signature == "valid",
+    )
+
+    @asynccontextmanager
+    async def failing_client_factory():
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("unexpected upstream call", request=request)
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            yield client
+
+    client = TestClient(
+        create_proxy_app(
+            registry=registry,
+            client_factory=failing_client_factory,
+            miner_verifier=verifier,
+            challenge_token_provider=lambda _slug: "challenge-token",
+        )
+    )
+
+    response = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers={
+            "X-Hotkey": "unknown",
+            "X-Signature": "valid",
+            "X-Nonce": "nonce-strict-unknown",
+            "X-Timestamp": "1000",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "unknown hotkey"}
+
+
+def test_signed_upload_bridge_bypass_forwards_unknown_without_uid() -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_payload()))
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+    captured: dict[str, Any] = {}
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"known": 7}
+
+    challenge_app = FastAPI()
+
+    @challenge_app.post("/internal/v1/bridge/submissions")
+    async def bridge(request: Request) -> dict[str, object]:
+        captured["headers"] = dict(request.headers)
+        captured["body"] = await request.body()
+        return {"id": "sub-bypass", "status": "pending"}
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-demo:8000"
+        ) as client:
+            yield client
+
+    verifier = MinerUploadVerifier(
+        netuid=42,
+        nonce_store=FakeNonceStore(),
+        metagraph_cache=Cache(),  # type: ignore[arg-type]
+        now_fn=lambda: 1_000,
+        require_registered_hotkey=False,
+        signature_verifier=lambda _hotkey, _message, signature: signature == "valid",
+    )
+    client = TestClient(
+        create_proxy_app(
+            registry=registry,
+            client_factory=client_factory,
+            miner_verifier=verifier,
+            challenge_token_provider=lambda _slug: "challenge-token",
+        )
+    )
+
+    response = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers={
+            "Content-Type": "application/zip",
+            "X-Hotkey": "unknown",
+            "X-Signature": "valid",
+            "X-Nonce": "nonce-bypass-unknown",
+            "X-Timestamp": "1000",
+            "X-Platform-Verified-Uid": "spoof",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "sub-bypass", "status": "pending"}
+    headers = captured["headers"]
+    assert headers["authorization"] == "Bearer challenge-token"
+    assert headers["x-platform-verified-hotkey"] == "unknown"
+    assert headers["x-platform-verified-nonce"] == "nonce-bypass-unknown"
+    assert "x-platform-verified-uid" not in headers
+    assert captured["body"] == b"zip-bytes"
+
+
+def test_signed_upload_bridge_disabled_registration_rejects_blocked_uid() -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_payload()))
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"known": 0}
+
+    verifier = MinerUploadVerifier(
+        netuid=42,
+        nonce_store=FakeNonceStore(),
+        metagraph_cache=Cache(),  # type: ignore[arg-type]
+        now_fn=lambda: 1_000,
+        require_registered_hotkey=False,
+        signature_verifier=lambda _hotkey, _message, signature: signature == "valid",
+    )
+
+    @asynccontextmanager
+    async def failing_client_factory():
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("unexpected upstream call", request=request)
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            yield client
+
+    client = TestClient(
+        create_proxy_app(
+            registry=registry,
+            client_factory=failing_client_factory,
+            miner_verifier=verifier,
+            challenge_token_provider=lambda _slug: "challenge-token",
+        )
+    )
+
+    response = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers={
+            "X-Hotkey": "known",
+            "X-Signature": "valid",
+            "X-Nonce": "nonce-blocked",
+            "X-Timestamp": "1000",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "blocked uid"}
+
+
+def test_signed_upload_bridge_bypass_keeps_signature_time_replay_guards() -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_payload()))
+    registry.set_status("demo", ChallengeStatus.ACTIVE)
+
+    class Cache:
+        def get(self) -> dict[str, int]:
+            return {"known": 7}
+
+    verifier = MinerUploadVerifier(
+        netuid=42,
+        nonce_store=FakeNonceStore(),
+        metagraph_cache=Cache(),  # type: ignore[arg-type]
+        now_fn=lambda: 1_000,
+        require_registered_hotkey=False,
+        signature_verifier=lambda _hotkey, _message, signature: signature == "valid",
+    )
+
+    @asynccontextmanager
+    async def failing_client_factory():
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom", request=request)
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            yield client
+
+    client = TestClient(
+        create_proxy_app(
+            registry=registry,
+            client_factory=failing_client_factory,
+            miner_verifier=verifier,
+            challenge_token_provider=lambda _slug: "challenge-token",
+        )
+    )
+    headers = {
+        "X-Hotkey": "unknown",
+        "X-Signature": "valid",
+        "X-Nonce": "nonce-bypass-replay",
+        "X-Timestamp": "1000",
+    }
+
+    invalid_signature = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers={**headers, "X-Signature": "invalid", "X-Nonce": "nonce-invalid"},
+    )
+    assert invalid_signature.status_code == 401
+    assert invalid_signature.json() == {"detail": "invalid signature"}
+
+    stale = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers={**headers, "X-Nonce": "nonce-stale", "X-Timestamp": "1"},
+    )
+    assert stale.status_code == 401
+    assert stale.json() == {"detail": "stale signature"}
+
+    first = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers=headers,
+    )
+    assert first.status_code == 502
+    assert first.json() == {"detail": "Challenge unavailable"}
+
+    replay = client.post(
+        "/v1/challenges/demo/submissions",
+        content=b"zip-bytes",
+        headers=headers,
+    )
+    assert replay.status_code == 409
+    assert replay.json() == {"detail": "nonce already used"}
+
+
 def test_production_admin_rejects_unsafe_challenge_image() -> None:
     registry = ChallengeRegistry()
     client = TestClient(

@@ -205,7 +205,9 @@ class MinerUploadVerifier:
             return None
         uid = hotkey_to_uid.get(hotkey)
         if uid is None:
-            raise MinerAuthError("unknown hotkey")
+            if self.require_registered_hotkey:
+                raise MinerAuthError("unknown hotkey")
+            return None
         if uid in self.blocked_uids:
             raise MinerAuthError("blocked uid")
         return uid
