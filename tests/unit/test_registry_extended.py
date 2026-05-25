@@ -206,6 +206,14 @@ def test_database_registry_uses_sqlite_source_of_truth(tmp_path: Path) -> None:
         digest, _ = await registry.create(ChallengeCreate(**digest_payload))
         assert digest.image == "ghcr.io/platformnetwork/demo:1.0@sha256:abc123"
 
+        updated_digest = await registry.update(
+            "digest-demo",
+            ChallengeUpdate(image="ghcr.io/platformnetwork/demo:latest@sha256:abc123"),
+        )
+        assert (
+            updated_digest.image == "ghcr.io/platformnetwork/demo:latest@sha256:abc123"
+        )
+
         await engine.dispose()
 
     asyncio.run(run())

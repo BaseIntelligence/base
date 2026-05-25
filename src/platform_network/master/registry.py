@@ -653,13 +653,12 @@ def _apply_model_updates(model: Challenge, updates: dict[str, Any]) -> None:
         model.metadata_ = metadata
     if "image" in updates:
         registry, repository, tag, digest = _split_image(updates["image"])
-        model.image = ChallengeImage(
-            id=uuid.uuid4(),
-            registry_name=registry,
-            repository=repository,
-            tag=tag,
-            digest=digest,
-        )
+        if model.image is None:
+            model.image = ChallengeImage(id=uuid.uuid4())
+        model.image.registry_name = registry
+        model.image.repository = repository
+        model.image.tag = tag
+        model.image.digest = digest
     if "resources" in updates:
         model.resources = [
             ChallengeResource(id=uuid.uuid4(), key=key, value=value)
