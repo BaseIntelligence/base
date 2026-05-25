@@ -39,6 +39,12 @@ def common_labels(
     return labels
 
 
+def safe_label_value(value: str, *, max_length: int = 63) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value)
+    safe = safe.strip("-_.")[:max_length].strip("-_.")
+    return safe or "x"
+
+
 def challenge_labels(spec: ChallengeSpec) -> dict[str, str]:
     return common_labels("challenge", challenge_slug=spec.slug) | {
         "app.kubernetes.io/instance": challenge_name(spec.slug),
@@ -400,12 +406,12 @@ def build_broker_job(
 ) -> dict[str, Any]:
     name = broker_job_name(challenge_slug, request.job_id, request.task_id, run_id)
     labels = common_labels("broker-job", challenge_slug=challenge_slug) | {
-        "platform.job": request.job_id,
+        "platform.job": safe_label_value(request.job_id),
     }
     if request.task_id:
-        labels["platform.task"] = request.task_id
+        labels["platform.task"] = safe_label_value(request.task_id)
     if run_id:
-        labels["platform.run"] = run_id
+        labels["platform.run"] = safe_label_value(run_id)
     validate_broker_kubernetes_limits(request.limits)
     memory = _memory_quantity(request.limits.memory)
     resources = {
@@ -486,7 +492,7 @@ def build_broker_mount_secret(
             "name": broker_mount_secret_name(name),
             "namespace": namespace,
             "labels": common_labels("broker-job-mount", challenge_slug=challenge_slug)
-            | {"platform.job": request.job_id},
+            | {"platform.job": safe_label_value(request.job_id)},
         },
         "type": "Opaque",
         "stringData": string_data,
@@ -502,12 +508,12 @@ def build_broker_network_policy(
 ) -> dict[str, Any]:
     name = broker_job_name(challenge_slug, request.job_id, request.task_id, run_id)
     labels = common_labels("broker-job-network", challenge_slug=challenge_slug) | {
-        "platform.job": request.job_id,
+        "platform.job": safe_label_value(request.job_id),
     }
     if request.task_id:
-        labels["platform.task"] = request.task_id
+        labels["platform.task"] = safe_label_value(request.task_id)
     if run_id:
-        labels["platform.run"] = run_id
+        labels["platform.run"] = safe_label_value(run_id)
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",

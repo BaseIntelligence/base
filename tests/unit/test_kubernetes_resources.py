@@ -824,6 +824,27 @@ def test_broker_mount_init_extractor_validates_archive_members(tmp_path: Path) -
     assert "unsafe mount archive" in bad.stderr
 
 
+def test_broker_job_sanitizes_slash_containing_task_id_labels() -> None:
+    request = BrokerRunRequest(
+        job_id="job-1",
+        task_id="terminal-bench/terminal-bench-2-1",
+        image="ghcr.io/platformnetwork/worker:1",
+        command=["python", "-V"],
+    )
+
+    job = build_broker_job(
+        "demo",
+        request,
+        namespace="platform",
+        service_account_name="platform-master",
+    )
+
+    labels = job["metadata"]["labels"]
+    pod_labels = job["spec"]["template"]["metadata"]["labels"]
+    assert labels["platform.task"] == "terminal-bench-terminal-bench-2-1"
+    assert pod_labels["platform.task"] == "terminal-bench-terminal-bench-2-1"
+
+
 def test_broker_job_rejects_unsupported_docker_only_limits() -> None:
     base: dict[str, Any] = {
         "job_id": "job-1",
