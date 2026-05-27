@@ -1,6 +1,6 @@
 network:
   name: platform
-  netuid: 0
+  netuid: 100
   chain_endpoint: null
   wallet_name: default
   wallet_hotkey: default

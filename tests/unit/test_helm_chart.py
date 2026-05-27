@@ -119,6 +119,7 @@ def test_helm_template_renders_validator_registry_url_default_and_override(
         )
 
         assert config["validator"]["registry_url"] == expected
+        assert config["network"]["netuid"] == 100
         assert config["network"]["wallet_path"] == expected_wallet_path
         assert config["master"]["registry_url"] == "http://platform-admin:8000"
 

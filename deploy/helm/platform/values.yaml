@@ -82,7 +82,7 @@ security:
   adminTokenKey: admin_token
 
 network:
-  netuid: 0
+  netuid: 100
   chainEndpoint: ""
   walletName: default
   walletHotkey: default
