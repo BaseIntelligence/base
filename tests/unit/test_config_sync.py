@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
+from platform_network.config.loader import load_settings
 from platform_network.kubernetes.config_updater import (
     CONFIG_DIGEST_ANNOTATION,
     ConfigSyncSource,
@@ -16,6 +17,29 @@ from platform_network.kubernetes.config_updater import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_config_defaults_to_platform_subnet_netuid() -> None:
+    assert load_settings(None).network.netuid == 100
+
+
+def test_example_configs_default_to_platform_subnet_netuid() -> None:
+    master_example = yaml.safe_load(
+        (ROOT / "config" / "master.example.yaml").read_text(encoding="utf-8")
+    )
+    validator_example = yaml.safe_load(
+        (ROOT / "config" / "validator.example.yaml").read_text(encoding="utf-8")
+    )
+
+    assert master_example["network"]["netuid"] == 100
+    assert validator_example["network"]["netuid"] == 100
+
+
+def test_config_file_netuid_overrides_default(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("network:\n  netuid: 42\n", encoding="utf-8")
+
+    assert load_settings(config).network.netuid == 42
 
 
 class CoreApi:
@@ -207,6 +231,33 @@ def test_changed_config_patches_configmap_and_shared_rollout_annotation() -> Non
             ]
             == result.new_digest
         )
+
+
+def test_helm_values_runtime_config_defaults_netuid_to_platform_subnet() -> None:
+    source_text = """
+    environment: production
+    masterAdmin:
+      port: 8000
+    validator:
+      registryUrl: https://registry.example.test
+    """
+    core = CoreApi(config_map(digest="sha256:old"))
+    apps = AppsApi()
+    updater = ConfigSyncUpdater(
+        core_api=core,
+        apps_api=apps,
+        source=ConfigSyncSource.default(fetcher=lambda _: source_text),
+    )
+
+    result = updater.sync_once(
+        namespace="platform-test",
+        config_map="platform-config",
+        rollout_targets=[RolloutTarget(kind="Deployment", name="platform-validator")],
+    )
+
+    assert result.changed is True
+    config = yaml.safe_load(core.config_map_patches[0]["data"]["master.yaml"])
+    assert config["network"]["netuid"] == 100
 
 
 def test_same_digest_retries_rollout_after_partial_failure() -> None:

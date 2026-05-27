@@ -9,7 +9,7 @@ from platform_network.config.policy import validate_settings_policy
 
 class NetworkSettings(BaseModel):
     name: str = "platform"
-    netuid: int = 0
+    netuid: int = 100
     chain_endpoint: str | None = None
     wallet_name: str = "default"
     wallet_hotkey: str = "default"

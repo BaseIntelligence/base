@@ -340,7 +340,7 @@ def _helm_values_to_runtime_config(
         "runtime": {"backend": _string_value(runtime, "backend", "kubernetes")},
         "database": {"url": "${PLATFORM_DATABASE__URL}"},
         "network": {
-            "netuid": network.get("netuid", 0),
+            "netuid": network.get("netuid", 100),
             "chain_endpoint": network.get("chainEndpoint", ""),
             "wallet_name": network.get("walletName", "default"),
             "wallet_hotkey": network.get("walletHotkey", "default"),
