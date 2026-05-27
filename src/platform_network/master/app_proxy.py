@@ -249,7 +249,7 @@ def create_proxy_app(
     metagraph_cache: MetagraphCache | None = None,
     challenge_token_provider: ChallengeTokenProvider | None = None,
     kubernetes_target_registry: Any | None = None,
-    netuid: int = 0,
+    netuid: int = 100,
     upload_signature_ttl_seconds: int = 300,
     upload_nonce_ttl_seconds: int = 86_400,
     upload_max_body_bytes: int = 2_000_000,

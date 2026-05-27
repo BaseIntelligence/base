@@ -101,7 +101,7 @@ def create_admin_app(
     kubernetes_target_registry: KubernetesTargetRegistry | None = None,
     metrics_provider: ChallengeMetricsProvider | None = None,
     weight_service: MasterWeightService | None = None,
-    netuid: int = 0,
+    netuid: int = 100,
     chain_endpoint: str = "",
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     admin_token_provider: TokenProvider = load_admin_token_from_environment,
