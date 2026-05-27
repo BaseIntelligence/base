@@ -42,3 +42,25 @@ def test_weight_setter_allows_uid_zero_fallback() -> None:
             "wait_for_finalization": False,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("result", "match"),
+    [
+        (False, "subtensor rejected weight submission"),
+        ((False, "chain rejected"), "chain rejected"),
+        ([False, "chain rejected"], "chain rejected"),
+    ],
+)
+def test_weight_setter_raises_on_rejected_set_weights_result(
+    result: object,
+    match: str,
+) -> None:
+    class Subtensor:
+        def set_weights(self, **kwargs: object) -> object:
+            return result
+
+    with pytest.raises(RuntimeError, match=match):
+        WeightSetter(subtensor=Subtensor(), wallet="wallet", netuid=1).set_weights(
+            [1], [1.0]
+        )
