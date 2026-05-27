@@ -2,7 +2,7 @@
 
 Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators.
 
-This guide covers the committed Kubernetes installer for the master control plane. It installs the Platform master admin API, proxy, broker, shared master ConfigMap, and a full Helm auto-upgrade CronJob in the master namespace. It does not install validator workloads, chain submission jobs, or any key material.
+This guide covers the committed Kubernetes installer for the master control plane. It installs the Platform master admin API, proxy, broker, shared master ConfigMap, active image auto-update CronJobs, and a suspended full Helm auto-upgrade CronJob in the master namespace. It does not install validator workloads, chain submission jobs, or any key material.
 
 ## Default Namespace
 
@@ -23,7 +23,7 @@ Run from the repository root:
 The script performs these actions:
 
 1. Prints the foundation-only warning before it changes the cluster.
-2. Applies Namespace, ServiceAccount/RBAC, ConfigMap, admin Deployment and Service, proxy Deployment and Service, broker Deployment and Service, and `platform-master-helm-upgrader` without deleting healthy existing workloads.
+2. Applies Namespace, ServiceAccount/RBAC, ConfigMap, admin Deployment and Service, proxy Deployment and Service, broker Deployment and Service, image updater CronJobs, and `platform-master-helm-upgrader` without deleting healthy existing workloads.
 3. Stores the required database URL in `secret/platform-master-database-url` and references it from Deployments.
 4. Runs the master admin API with `platform master run --config config/master.kubernetes.yaml`.
 5. Runs the proxy and broker with the same master config.
@@ -34,10 +34,12 @@ Useful options:
 export PLATFORM_DATABASE_URL='postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform'
 ./scripts/install-master.sh --namespace platform-master
 ./scripts/install-master.sh --image ghcr.io/platformnetwork/platform-master:v1.2.3@sha256:<digest>
+./scripts/install-master.sh --image-update-schedule '*/1 * * * *'
+./scripts/install-master.sh --image-updater-image ghcr.io/platformnetwork/platform:latest
 ./scripts/install-master.sh --auto-upgrade-schedule '*/5 * * * *'
 ./scripts/install-master.sh --auto-upgrade-helm-image alpine/helm:3.15.4
 ./scripts/install-master.sh --auto-upgrade-repo PlatformNetwork/platform --auto-upgrade-ref main
-./scripts/install-master.sh --netuid 0
+./scripts/install-master.sh --netuid 100
 ./scripts/install-master.sh --cleanup
 ```
 
@@ -45,7 +47,9 @@ Cleanup is scoped to installer-managed master objects and removes `secret/platfo
 
 ## Full Helm Auto-Upgrade
 
-The installer creates `cronjob/platform-master-helm-upgrader`. The job uses a namespace-local ServiceAccount with ConfigMap-backed Helm release storage and runs a full Helm upgrade from GitHub:
+The installer creates `cronjob/platform-master-admin-image-updater`, `cronjob/platform-master-proxy-image-updater`, and `cronjob/platform-master-broker-image-updater` for the normal mutable image channel. These jobs patch only their named Deployments to the latest digest of the configured master image tag.
+
+The installer also creates `cronjob/platform-master-helm-upgrader`, suspended by default. The job uses a namespace-local ServiceAccount with ConfigMap-backed Helm release storage and runs a full Helm upgrade from GitHub when explicitly unsuspended:
 
 ```text
 helm upgrade --install platform-master ... --atomic --wait --cleanup-on-fail
@@ -58,6 +62,7 @@ Before relying on self-upgrades, verify the referenced Secret and keys exist wit
 ```bash
 kubectl -n platform-master get secret platform-master-database-url -o jsonpath='{.data.url}' >/dev/null
 kubectl -n platform-master get secret platform-secrets -o jsonpath='{.data.admin_token}' >/dev/null
+kubectl -n platform-master get cronjob platform-master-admin-image-updater platform-master-proxy-image-updater platform-master-broker-image-updater
 kubectl -n platform-master get cronjob platform-master-helm-upgrader
 ```
 

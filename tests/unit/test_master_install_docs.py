@@ -94,6 +94,11 @@ def test_master_installer_script_is_committed_with_foundation_warning() -> None:
     assert "coldkey" not in script.lower()
     assert "hotkey" not in script.lower()
     assert 'AUTO_UPGRADE_SUSPEND="${PLATFORM_AUTO_UPGRADE_SUSPEND:-true}"' in script
+    assert (
+        'IMAGE_UPDATER_IMAGE="${PLATFORM_IMAGE_UPDATER_IMAGE:-ghcr.io/platformnetwork/platform:latest}"'
+        in script
+    )
+    assert 'NETUID="${PLATFORM_NETUID:-100}"' in script
     assert 'DATABASE_URL="${PLATFORM_DATABASE_URL:-}"' in script
     assert "database-url is required" in script
     assert "cleanup_master\n  render_manifests" not in script
@@ -111,8 +116,10 @@ def test_master_installer_usage_states_foundation_only_boundary() -> None:
     assert result.returncode == 0
     assert FOUNDATION_WARNING in result.stdout
     assert "Default: platform-master" in result.stdout
+    assert "Default: 100" in result.stdout
     assert "--auto-upgrade-suspend BOOL" in result.stdout
     assert "Default: true" in result.stdout
+    assert "--image-update-schedule S" in result.stdout
     assert "validators" in result.stdout
     assert "third-party operators" in result.stdout
 
@@ -144,6 +151,9 @@ def test_master_installer_renders_master_only_resources(tmp_path: Path) -> None:
     assert ("Deployment", "platform-master-proxy") in kinds_by_name
     assert ("Deployment", "platform-master-broker") in kinds_by_name
     assert ("CronJob", "platform-master-helm-upgrader") in kinds_by_name
+    assert ("CronJob", "platform-master-admin-image-updater") in kinds_by_name
+    assert ("CronJob", "platform-master-proxy-image-updater") in kinds_by_name
+    assert ("CronJob", "platform-master-broker-image-updater") in kinds_by_name
     assert ("CronJob", "platform-master-challenge-image-updater") in kinds_by_name
     assert ("ConfigMap", "platform-master-config") in kinds_by_name
     assert ("Secret", "platform-master-database-url") in kinds_by_name
@@ -178,6 +188,7 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
     assert "wallet" not in rendered.lower()
     assert "platform master weights" not in rendered
     assert "set_weights" not in rendered
+    assert "netuid: 100" in rendered
     assert "--once" not in rendered
     assert [
         "platform",
@@ -199,8 +210,14 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
     )
     assert "HELM_DRIVER" in rendered
     assert "suspend: true" in rendered
+    assert "platform-master-admin-image-updater" in rendered
+    assert "platform-master-proxy-image-updater" in rendered
+    assert "platform-master-broker-image-updater" in rendered
+    assert "platform validator refresh-image" not in rendered
+    assert "refresh-image" in rendered
     assert "set -- upgrade --install platform-master" in helm_upgrade_command
     assert 'helm "$@"' in helm_upgrade_command
+    assert "--set autoUpgrade.suspend=true" in helm_upgrade_command
     assert "--namespace master-test" in helm_upgrade_command
     assert "--atomic" in helm_upgrade_command
     assert "--wait" in helm_upgrade_command
@@ -247,6 +264,21 @@ def test_master_installer_manifest_has_no_validator_or_submit_path(
         rule["apiGroups"] == ["rbac.authorization.k8s.io"]
         and rule["resources"] == ["roles", "rolebindings"]
         for rule in updater_role["rules"]
+    )
+    image_updater_role = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Role"
+        and doc.get("metadata", {}).get("name") == "platform-master-image-updater"
+    )
+    assert not any(
+        "secrets" in rule.get("resources", []) for rule in image_updater_role["rules"]
+    )
+    assert any(
+        rule["apiGroups"] == ["apps"]
+        and rule["resources"] == ["deployments"]
+        and rule["verbs"] == ["get", "patch"]
+        for rule in image_updater_role["rules"]
     )
 
 
@@ -331,6 +363,13 @@ def test_master_installer_can_suspend_helm_upgrader(tmp_path: Path) -> None:
         and doc.get("metadata", {}).get("name") == "platform-master-helm-upgrader"
     )
     assert cronjob["spec"]["suspend"] is True
+
+
+def test_master_docs_use_platform_subnet_default() -> None:
+    docs = "\n".join(_read(path) for path in MASTER_DOCS)
+
+    assert "./scripts/install-master.sh --netuid 100" in docs
+    assert "./scripts/install-master.sh --netuid 0" not in docs
 
 
 def test_master_cleanup_removes_installer_managed_database_secret(

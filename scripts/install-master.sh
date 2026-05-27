@@ -15,8 +15,11 @@ AUTO_UPGRADE_TIMEOUT="${PLATFORM_AUTO_UPGRADE_TIMEOUT:-10m}"
 AUTO_UPGRADE_HISTORY_MAX="${PLATFORM_AUTO_UPGRADE_HISTORY_MAX:-5}"
 AUTO_UPGRADE_TAKE_OWNERSHIP="${PLATFORM_AUTO_UPGRADE_TAKE_OWNERSHIP:-true}"
 AUTO_UPGRADE_SUSPEND="${PLATFORM_AUTO_UPGRADE_SUSPEND:-true}"
+IMAGE_UPDATE_SCHEDULE="${PLATFORM_IMAGE_UPDATE_SCHEDULE:-*/1 * * * *}"
+IMAGE_UPDATER_IMAGE="${PLATFORM_IMAGE_UPDATER_IMAGE:-ghcr.io/platformnetwork/platform:latest}"
+IMAGE_UPDATE_REGISTRY_ENDPOINT="${PLATFORM_IMAGE_UPDATE_REGISTRY_ENDPOINT:-}"
 DATABASE_URL="${PLATFORM_DATABASE_URL:-}"
-NETUID="${PLATFORM_NETUID:-0}"
+NETUID="${PLATFORM_NETUID:-100}"
 CHAIN_ENDPOINT="${PLATFORM_CHAIN_ENDPOINT:-}"
 BROKER_ALLOWED_IMAGES="${PLATFORM_BROKER_ALLOWED_IMAGES:-ghcr.io/platformnetwork/}"
 MASTER_ADMIN_PORT="${PLATFORM_MASTER_ADMIN_PORT:-8000}"
@@ -42,8 +45,10 @@ Options:
   --auto-upgrade-ref REF     Git ref for Helm chart source. Default: main
   --auto-upgrade-chart-path PATH  Chart path inside the repo. Default: deploy/helm/platform
   --auto-upgrade-suspend BOOL  Suspend the Helm upgrader CronJob. Default: true
+  --image-update-schedule S    Cron schedule for image digest refreshes. Default: */1 * * * *
+  --image-updater-image IMAGE  Image used by image updater CronJobs. Default: ghcr.io/platformnetwork/platform:latest
   --database-url URL         Master PostgreSQL URL.
-  --netuid NETUID            Bittensor subnet UID. Default: 0
+  --netuid NETUID            Bittensor subnet UID. Default: 100
   --chain-endpoint ENDPOINT  Optional Bittensor chain endpoint.
   --broker-allowed-images P  Comma-separated image prefixes. Default: ghcr.io/platformnetwork/
   -h, --help                 Show this help.
@@ -61,6 +66,8 @@ while [ "$#" -gt 0 ]; do
     --auto-upgrade-ref) AUTO_UPGRADE_REF="${2:?missing REF}"; shift ;;
     --auto-upgrade-chart-path) AUTO_UPGRADE_CHART_PATH="${2:?missing PATH}"; shift ;;
     --auto-upgrade-suspend) AUTO_UPGRADE_SUSPEND="${2:?missing BOOL}"; shift ;;
+    --image-update-schedule) IMAGE_UPDATE_SCHEDULE="${2:?missing SCHEDULE}"; shift ;;
+    --image-updater-image) IMAGE_UPDATER_IMAGE="${2:?missing IMAGE}"; shift ;;
     --database-url) DATABASE_URL="${2:?missing URL}"; shift ;;
     --netuid) NETUID="${2:?missing NETUID}"; shift ;;
     --chain-endpoint) CHAIN_ENDPOINT="${2:?missing ENDPOINT}"; shift ;;
@@ -101,11 +108,13 @@ validate_regex() {
 validate_identifier "namespace" "$NAMESPACE"
 validate_regex "auto-upgrade schedule" "$AUTO_UPGRADE_SCHEDULE" '^[A-Za-z0-9*?, /@._-]+$' "use cron-safe characters"
 validate_regex "auto-upgrade Helm image" "$AUTO_UPGRADE_HELM_IMAGE" '^[A-Za-z0-9_./:@-]+$' "be an image reference"
+validate_regex "image updater image" "$IMAGE_UPDATER_IMAGE" '^[A-Za-z0-9_./:@-]+$' "be an image reference"
 validate_regex "auto-upgrade repository" "$AUTO_UPGRADE_REPO" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "use owner/repo"
 validate_regex "auto-upgrade ref" "$AUTO_UPGRADE_REF" '^[A-Za-z0-9_./-]+$' "use git ref-safe characters"
 validate_regex "auto-upgrade chart path" "$AUTO_UPGRADE_CHART_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
 validate_regex "auto-upgrade values path" "$AUTO_UPGRADE_VALUES_PATH" '^[A-Za-z0-9_./-]+$' "use relative path-safe characters"
 validate_regex "auto-upgrade timeout" "$AUTO_UPGRADE_TIMEOUT" '^[0-9]+[smh]$' "use a Helm duration such as 10m"
+validate_regex "image update schedule" "$IMAGE_UPDATE_SCHEDULE" '^[A-Za-z0-9*?, /@._-]+$' "use cron-safe characters"
 validate_regex "auto-upgrade history max" "$AUTO_UPGRADE_HISTORY_MAX" '^[0-9]+$' "be a positive integer"
 validate_regex "auto-upgrade take ownership" "$AUTO_UPGRADE_TAKE_OWNERSHIP" '^(true|false)$' "be true or false"
 validate_regex "auto-upgrade suspend" "$AUTO_UPGRADE_SUSPEND" '^(true|false)$' "be true or false"
@@ -150,6 +159,12 @@ cleanup_master() {
   kubectl_delete -n "$NAMESPACE" delete role "$APP-config-sync"
   kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-config-sync"
   kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP-config-sync"
+  kubectl_delete -n "$NAMESPACE" delete cronjob "$APP-admin-image-updater"
+  kubectl_delete -n "$NAMESPACE" delete cronjob "$APP-proxy-image-updater"
+  kubectl_delete -n "$NAMESPACE" delete cronjob "$APP-broker-image-updater"
+  kubectl_delete -n "$NAMESPACE" delete role "$APP-image-updater"
+  kubectl_delete -n "$NAMESPACE" delete rolebinding "$APP-image-updater"
+  kubectl_delete -n "$NAMESPACE" delete serviceaccount "$APP-image-updater"
   kubectl_delete -n "$NAMESPACE" delete deployment "$APP-admin"
   kubectl_delete -n "$NAMESPACE" delete deployment "$APP-proxy"
   kubectl_delete -n "$NAMESPACE" delete deployment "$APP-broker"
@@ -430,6 +445,14 @@ YAML
   echo "---"
   render_challenge_image_updater
   echo "---"
+  render_image_updater_rbac
+  echo "---"
+  render_image_updater "admin" "${APP}-admin" "master-admin"
+  echo "---"
+  render_image_updater "proxy" "${APP}-proxy" "master-proxy"
+  echo "---"
+  render_image_updater "broker" "${APP}-broker" "master-broker"
+  echo "---"
   render_helm_upgrader
 }
 
@@ -507,6 +530,122 @@ spec:
 YAML
 }
 
+render_image_updater_rbac() {
+  cat <<YAML
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${APP}-image-updater
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: image-updater
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${APP}-image-updater
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: image-updater
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["${APP}-admin", "${APP}-proxy", "${APP}-broker"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${APP}-image-updater
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: image-updater
+subjects:
+  - kind: ServiceAccount
+    name: ${APP}-image-updater
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${APP}-image-updater
+YAML
+}
+
+render_image_updater() {
+  local target="$1"
+  local deployment="$2"
+  local container="$3"
+  cat <<YAML
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ${APP}-${target}-image-updater
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: platform-network
+    app.kubernetes.io/part-of: ${APP}
+    platform.component: image-updater
+    platform.update-target: ${target}
+spec:
+  schedule: "${IMAGE_UPDATE_SCHEDULE}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: platform-network
+            app.kubernetes.io/part-of: ${APP}
+            platform.component: image-updater
+            platform.update-target: ${target}
+        spec:
+          serviceAccountName: ${APP}-image-updater
+          automountServiceAccountToken: true
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: image-updater
+              image: ${IMAGE_UPDATER_IMAGE}
+              imagePullPolicy: Always
+              command:
+                - platform
+                - validator
+                - refresh-image
+                - --namespace
+                - ${NAMESPACE}
+                - --resource-kind
+                - deployment
+                - --name
+                - ${deployment}
+                - --container
+                - ${container}
+                - --image
+                - ${IMAGE}
+                - --registry-endpoint
+                - "${IMAGE_UPDATE_REGISTRY_ENDPOINT}"
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+YAML
+}
+
 render_helm_upgrade_command() {
   cat <<SCRIPT
 set -eu
@@ -529,6 +668,7 @@ if [ "${AUTO_UPGRADE_TAKE_OWNERSHIP}" = "true" ]; then
 fi
 helm "\$@" \
   --set autoUpgrade.enabled=true \
+  --set autoUpgrade.suspend=${AUTO_UPGRADE_SUSPEND} \
   --set autoUpgrade.mode=master \
   --set master.enabled=true \
   --set validator.enabled=false \
