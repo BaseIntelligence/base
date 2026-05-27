@@ -36,8 +36,8 @@ class KubernetesClient:
             token = Path(
                 "/var/run/secrets/kubernetes.io/serviceaccount/token"
             ).read_text(encoding="utf-8")
-            configuration.api_key["BearerToken"] = token.strip()
-            configuration.api_key_prefix["BearerToken"] = "Bearer"
+            configuration.api_key["authorization"] = token.strip()
+            configuration.api_key_prefix["authorization"] = "Bearer"
             api_client = client.ApiClient(configuration)
         else:
             config.load_kube_config(config_file=kubeconfig)

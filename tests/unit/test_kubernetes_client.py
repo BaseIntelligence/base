@@ -59,7 +59,7 @@ def test_service_json_rejects_non_object_proxy_response() -> None:
         client.service_json("challenge-demo", "health", port=8000)
 
 
-def test_incluster_client_sets_bearer_token_alias(
+def test_incluster_client_sets_authorization_bearer_token(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     token_path = tmp_path / "token"
@@ -105,8 +105,8 @@ def test_incluster_client_sets_bearer_token_alias(
     KubernetesClient(namespace="platform", in_cluster=True)
 
     configuration = cast(FakeConfiguration, created["configuration"])
-    assert configuration.api_key["BearerToken"] == "token-value"
-    assert configuration.api_key_prefix["BearerToken"] == "Bearer"
+    assert configuration.api_key["authorization"] == "token-value"
+    assert configuration.api_key_prefix["authorization"] == "Bearer"
 
 
 def test_patch_workload_image_uses_strategic_merge_patch() -> None:
