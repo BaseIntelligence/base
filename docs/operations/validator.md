@@ -98,6 +98,25 @@ Kubernetes mode requires PostgreSQL control-plane state. The installer provides 
 registry-scoped `PLATFORM_BROKER_ALLOWED_IMAGES`. SQLite URLs, wildcards, and
 broad prefixes such as `platformnetwork/` fail settings validation.
 
+
+## Agent Challenge Platform SDK Execution Checks
+
+Agent Challenge production Terminal-Bench rollout uses `platform_sdk` through the generic Platform broker. The public proxy must still expose only challenge public routes and must block `/internal/*`, `POST /internal/v1/submissions/{submission_id}/launch`, and generic benchmark execution-shaped routes such as `/benchmark-executions`; the broker is an internal execution substrate, not a public miner API.
+
+Use placeholder commands only and avoid printing token values:
+
+```bash
+kubectl -n <validator-namespace> get pods -l app.kubernetes.io/name=agent-challenge
+kubectl -n <validator-namespace> logs deployment/<agent-challenge-deployment> --since=30m | rg 'terminal_bench|platform_sdk|tb_running'
+kubectl -n <validator-namespace> logs deployment/<platform-broker-deployment> --since=30m | rg 'run request|created job|agent-challenge-terminal-bench-runner'
+kubectl -n <validator-namespace> logs deployment/<agent-challenge-deployment> --since=30m | rg -- '--environment-import-path agent_challenge_runner.platform_environment:PlatformEnvironment'
+! kubectl -n <validator-namespace> logs deployment/<agent-challenge-deployment> --since=30m | rg --fixed-strings -- '--env daytona'
+! kubectl -n <validator-namespace> logs deployment/<agent-challenge-deployment> --since=30m | rg --fixed-strings -- '--env platform'
+curl -sS '<api-base-url>/submissions/<submission-id>/status' | rg '"status":"evaluating"|"phase":"evaluation"|"status":"valid"|"status":"error"'
+```
+
+Safe Agent Challenge knobs are `CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND=platform_sdk`, broker URL plus token file, `CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE=ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest`, `CHALLENGE_PLATFORM_SDK_ENVIRONMENT_IMPORT_PATH=agent_challenge_runner.platform_environment:PlatformEnvironment`, and a scoped allowed-image policy. Platform SDK Harbor commands use `--environment-import-path`, not `--env platform`, and production does not require Daytona credentials. Roll back to `harbor` only for non-production testing or for an explicitly credentialed legacy Harbor environment; production remains `platform_sdk` after rollout.
+
 ## Validation
 
 ```bash

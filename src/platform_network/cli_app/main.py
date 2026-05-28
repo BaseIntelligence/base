@@ -44,6 +44,7 @@ from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
     DockerOrchestrator,
+    worker_command_from_metadata,
 )
 from platform_network.master.kubernetes_broker import (
     KubernetesBrokerRouterService,
@@ -184,6 +185,9 @@ class DockerRuntimeController:
             env=record.env,
             resources=ChallengeResources.from_mapping(record.resources),
             required_capabilities=tuple(record.required_capabilities),
+            worker_command=worker_command_from_metadata(
+                getattr(record, "metadata", {}) or {}
+            ),
         )
 
     async def pull(self, slug: str):
@@ -373,6 +377,12 @@ async def _run_master_weight_epoch_response(
 
 PRISM_SLUG = "prism"
 AGENT_CHALLENGE_SLUG = "agent-challenge"
+AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE = (
+    "ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest"
+)
+AGENT_CHALLENGE_PLATFORM_ENVIRONMENT_IMPORT_PATH = (
+    "agent_challenge_runner.platform_environment:PlatformEnvironment"
+)
 PRISM_IMAGE = "ghcr.io/platformnetwork/prism:latest"
 PRISM_EVALUATOR_IMAGE = "ghcr.io/platformnetwork/prism-evaluator:latest"
 PRISM_VERSION = "0.1.0"
@@ -399,6 +409,28 @@ def _prism_image_for_settings(image: str, settings: Any | None) -> str:
     if reference.immutable:
         return image
     return reference.pinned(resolve_remote_digest(reference))
+
+
+def _agent_challenge_platform_sdk_env(settings: Any | None) -> dict[str, str]:
+    broker_url = _settings_docker_broker_url(settings)
+    docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
+    return {
+        "CHALLENGE_BENCHMARK_BACKEND": "terminal_bench",
+        "CHALLENGE_DOCKER_ENABLED": "true",
+        "CHALLENGE_DOCKER_BACKEND": "broker",
+        "CHALLENGE_DOCKER_BROKER_URL": broker_url,
+        "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
+        "CHALLENGE_DOCKER_NETWORK": "default",
+        "CHALLENGE_HARBOR_ENV": "",
+        "CHALLENGE_HARBOR_INSTALL_MODE": "prebuilt",
+        "CHALLENGE_PLATFORM_SDK_ENVIRONMENT_IMPORT_PATH": (
+            AGENT_CHALLENGE_PLATFORM_ENVIRONMENT_IMPORT_PATH
+        ),
+        "CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE": (
+            AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE
+        ),
+        "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND": "platform_sdk",
+    }
 
 
 def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
@@ -475,10 +507,23 @@ async def seed_prism_challenges(
     except (ChallengeNotFoundError, KeyError):
         result[AGENT_CHALLENGE_SLUG] = "missing"
     else:
+        record = await _resolve(registry.get(AGENT_CHALLENGE_SLUG))
+        metadata = dict(getattr(record, "metadata", {}) or {})
+        metadata["worker_command"] = ["agent-challenge-worker"]
+        env = dict(getattr(record, "env", {}) or {})
+        env.update(_agent_challenge_platform_sdk_env(settings))
+        required_capabilities = set(getattr(record, "required_capabilities", []) or [])
+        required_capabilities.update({"docker_executor", "get_weights", "proxy_routes"})
         await _resolve(
             registry.update(
                 AGENT_CHALLENGE_SLUG,
-                ChallengeUpdate(emission_percent=AGENT_CHALLENGE_EMISSION_PERCENT),
+                ChallengeUpdate(
+                    emission_percent=AGENT_CHALLENGE_EMISSION_PERCENT,
+                    env=env,
+                    metadata=metadata,
+                    required_capabilities=sorted(required_capabilities),
+                    secrets=["challenge_token", "docker_broker_token"],
+                ),
             )
         )
         result[AGENT_CHALLENGE_SLUG] = "updated"
@@ -923,12 +968,18 @@ def master_refresh_challenge_images(
                         if settings.kubernetes.challenge_mode == "statefulset"
                         else "Deployment"
                     )
-                    kube_client.patch_workload_image(
-                        kind=workload_kind,
-                        name=workload_name,
-                        container="challenge",
-                        image=desired,
-                    )
+                    containers = ["challenge"]
+                    if worker_command_from_metadata(
+                        getattr(record, "metadata", {}) or {}
+                    ):
+                        containers.append("worker")
+                    for container in containers:
+                        kube_client.patch_workload_image(
+                            kind=workload_kind,
+                            name=workload_name,
+                            container=container,
+                            image=desired,
+                        )
                     typer.echo(
                         f"{record.slug}: patched {workload_kind}/{workload_name}"
                     )

@@ -14,6 +14,7 @@ import math
 import re
 import stat
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,7 @@ class ChallengeSpec:
     required_capabilities: tuple[str, ...] = ("get_weights", "proxy_routes")
     expected_api_version: str = DEFAULT_API_VERSION
     port: int = DEFAULT_CHALLENGE_PORT
+    worker_command: tuple[str, ...] = ()
 
     @property
     def safe_slug(self) -> str:
@@ -178,6 +180,20 @@ class ChallengeSpec:
         if self.docker_broker_token is not None:
             secrets["docker_broker_token"] = self.docker_broker_token
         return secrets
+
+
+def worker_command_from_metadata(metadata: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = metadata.get("worker_command")
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise DockerOrchestrationError("worker_command metadata must be a string list")
+    command = tuple(raw)
+    if not command or any(not isinstance(item, str) or not item for item in command):
+        raise DockerOrchestrationError(
+            "worker_command metadata must be a non-empty string list"
+        )
+    return command
 
 
 @dataclass(frozen=True)

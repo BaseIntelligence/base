@@ -12,6 +12,7 @@ from platform_network.bittensor.weight_setter import (
 from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
+    worker_command_from_metadata,
 )
 from platform_network.schemas.challenge import ChallengeStatus
 from platform_network.schemas.weights import MasterWeightsResponse
@@ -53,6 +54,9 @@ class NormalValidatorRunner:
                 env=challenge.env,
                 resources=ChallengeResources.from_mapping(challenge.resources),
                 required_capabilities=tuple(challenge.required_capabilities),
+                worker_command=worker_command_from_metadata(
+                    getattr(challenge, "metadata", {}) or {}
+                ),
             )
             self.orchestrator.start_challenge(spec)
 

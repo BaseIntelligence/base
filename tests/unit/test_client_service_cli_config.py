@@ -263,6 +263,7 @@ async def test_master_weight_service_and_validator_runner() -> None:
         volumes={},
         env={},
         secrets=[],
+        metadata={"worker_command": ["agent-challenge-worker"]},
     )
     setter = Setter()
     service = MasterWeightService(
@@ -293,6 +294,7 @@ async def test_master_weight_service_and_validator_runner() -> None:
     assert orchestrator.specs[0].slug == "demo"
     assert orchestrator.specs[0].resources.cpu == 2.0
     assert orchestrator.specs[0].resources.memory == "1g"
+    assert orchestrator.specs[0].worker_command == ("agent-challenge-worker",)
 
 
 @pytest.mark.asyncio
@@ -527,6 +529,7 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
             image="ghcr.io/o/demo:1",
             version="1",
             resources={"cpus": "1.5", "memory": "2g"},
+            metadata={"worker_command": ["agent-challenge-worker"]},
         )
     )
 
@@ -549,6 +552,7 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
     assert asyncio.run(controller.restart("demo"))["detail"] == "challenge-demo"
     assert orchestrator.specs[0].resources.cpu == 1.5
     assert orchestrator.specs[0].resources.memory == "2g"
+    assert orchestrator.specs[0].worker_command == ("agent-challenge-worker",)
     assert asyncio.run(controller.status("demo"))["status"] == "unknown"
 
 
@@ -1441,6 +1445,30 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     assert "token" not in prism.metadata
     assert "database_url" not in prism.metadata
     assert agent.emission_percent == Decimal("15")
+    assert agent.metadata["worker_command"] == ["agent-challenge-worker"]
+    assert agent.required_capabilities == [
+        "docker_executor",
+        "get_weights",
+        "proxy_routes",
+    ]
+    assert agent.secrets == ["challenge_token", "docker_broker_token"]
+    assert agent.env["CHALLENGE_BENCHMARK_BACKEND"] == "terminal_bench"
+    assert agent.env["CHALLENGE_DOCKER_ENABLED"] == "true"
+    assert agent.env["CHALLENGE_DOCKER_BACKEND"] == "broker"
+    assert agent.env["CHALLENGE_DOCKER_BROKER_URL"] == "http://platform-broker:8082"
+    assert agent.env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
+        "/run/secrets/platform/docker_broker_token"
+    )
+    assert agent.env["CHALLENGE_DOCKER_NETWORK"] == "default"
+    assert agent.env["CHALLENGE_HARBOR_ENV"] == ""
+    assert agent.env["CHALLENGE_HARBOR_INSTALL_MODE"] == "prebuilt"
+    assert agent.env["CHALLENGE_PLATFORM_SDK_ENVIRONMENT_IMPORT_PATH"] == (
+        "agent_challenge_runner.platform_environment:PlatformEnvironment"
+    )
+    assert agent.env["CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE"] == (
+        "ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest"
+    )
+    assert agent.env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "platform_sdk"
 
 
 def test_seed_prism_challenges_pins_images_for_production_policy(
@@ -1586,6 +1614,78 @@ def test_master_refresh_challenge_images_patches_already_current_kubernetes_work
     } in patches
     assert "demo: already-current" in result.output
     assert "demo: patched StatefulSet/challenge-demo" in result.output
+
+
+def test_master_refresh_challenge_images_patches_worker_container_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    image = f"ghcr.io/platformnetwork/agent-challenge:latest@{digest}"
+    patches: list[dict[str, object]] = []
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    slug="agent-challenge",
+                    image=image,
+                    status=ChallengeStatus.ACTIVE,
+                    metadata={"worker_command": ["agent-challenge-worker"]},
+                )
+            ]
+
+        async def update(self, slug: str, update: object) -> None:
+            raise AssertionError("already-current image must not update registry")
+
+    class KubeClient:
+        def __init__(self, **kwargs: object) -> None:
+            patches.append({"init": kwargs})
+
+        def patch_workload_image(self, **kwargs: object) -> None:
+            patches.append(kwargs)
+
+    settings = SimpleNamespace(
+        runtime=SimpleNamespace(backend="kubernetes"),
+        kubernetes=SimpleNamespace(
+            namespace="platform-master",
+            in_cluster=True,
+            kubeconfig=None,
+            challenge_mode="statefulset",
+        ),
+    )
+
+    import platform_network.kubernetes.client as kube_module
+    import platform_network.validator.image_updater as image_updater_module
+
+    monkeypatch.setattr(cli_module, "load_settings", lambda config: settings)
+    monkeypatch.setattr(cli_module, "_master_registry", lambda settings: Registry())
+    monkeypatch.setattr(
+        cli_module, "_challenge_orchestrator", lambda settings: object()
+    )
+    monkeypatch.setattr(kube_module, "KubernetesClient", KubeClient)
+    monkeypatch.setattr(
+        image_updater_module,
+        "resolve_remote_digest",
+        lambda image_reference: digest,
+    )
+
+    result = CliRunner().invoke(
+        app, ["master", "refresh-challenge-images", "--config", "unused.yaml"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert {
+        "kind": "StatefulSet",
+        "name": "challenge-agent-challenge",
+        "container": "challenge",
+        "image": image,
+    } in patches
+    assert {
+        "kind": "StatefulSet",
+        "name": "challenge-agent-challenge",
+        "container": "worker",
+        "image": image,
+    } in patches
 
 
 def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) -> None:
