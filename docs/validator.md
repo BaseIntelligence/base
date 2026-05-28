@@ -9,7 +9,7 @@ runs active challenge workloads through Kubernetes, and keeps them synchronized.
 Run from the repository root:
 
 ```bash
-./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+./scripts/install-validator.sh
 ```
 
 The installer asks only for the validator hotkey mnemonic. Do not enter coldkey
@@ -17,7 +17,7 @@ material. The mnemonic is read silently, converted to hotkey files in a temporar
 local directory, and stored as a Kubernetes Secret.
 
 Normal install performs a real Kubernetes installation and prompts for the
-validator hotkey mnemonic. It also installs `cronjob/platform-validator-helm-upgrader`,
+validator hotkey mnemonic. When `--database-url` and `PLATFORM_DATABASE_URL` are unset, it creates namespace-scoped managed validator Postgres resources named `platform-validator-postgres` with image `postgres:16-alpine`, 10Gi storage, optional `PLATFORM_VALIDATOR_POSTGRES_STORAGE_CLASS`, and a retained `platform-validator-postgres-data` claim. The generated URL is stored only in `secret/platform-validator-database-url` and is read by the Deployment through `PLATFORM_DATABASE__URL`; the script does not print database URLs or passwords. Supplying `--database-url` or `PLATFORM_DATABASE_URL` skips the managed validator Postgres Secret, Service, StatefulSet, and data claim and uses the provided external database URL Secret instead. It also installs `cronjob/platform-validator-helm-upgrader`,
 a scoped CronJob that periodically downloads the configured GitHub chart source
 and runs a full `helm upgrade --install platform-validator` with `--atomic`,
 `--wait`, and `--cleanup-on-fail`. It uses `HELM_DRIVER=configmap`,
@@ -39,7 +39,19 @@ Stop only installer-managed validator objects:
 ./scripts/install-validator.sh --cleanup
 ```
 
-Cleanup removes the configured database URL Secret because the installer creates it, but preserves the validator wallet Secret and state PVC.
+Cleanup removes the configured database URL Secret because the installer creates it. It deletes the managed validator Postgres StatefulSet and Service, but preserves the managed Postgres credential Secret, its data claim/PVC, the validator wallet Secret, and the validator state PVC by default.
+
+## Kubernetes Requirement
+
+Kubernetes is mandatory for the first-party validator installer. Run the script
+only after the VM or server already has a working Kubernetes cluster and
+`kubectl` points at the target context. For a single validator VM, prefer `k3s`;
+use `minikube` only for local smoke tests or disposable validation. A validator
+VM used for validation should have at least 2 vCPUs and 8 GB RAM.
+
+The script creates the validator Kubernetes resources and, by default, managed
+validator Postgres. You only need `--database-url` when you intentionally want an
+external PostgreSQL service instead of the installer-managed default.
 
 ## Manual Install
 
@@ -52,9 +64,9 @@ platform validator run --config config/validator.kubernetes.yaml
 ```
 
 The ConfigMap must set `runtime.backend: kubernetes`,
-`validator.registry_url: https://chain.platform.network`, `database.url` or `PLATFORM_DATABASE_URL` to an external PostgreSQL URL such as `postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform`, `docker.broker_allowed_images` or `PLATFORM_BROKER_ALLOWED_IMAGES` to registry-scoped prefixes such as `ghcr.io/platformnetwork/`, and `kubernetes.in_cluster: true`. SQLite URLs, wildcard prefixes, and broad prefixes such as `platformnetwork/` are rejected in Kubernetes mode.
+`validator.registry_url: https://chain.platform.network`, `database.url` or `PLATFORM_DATABASE_URL` to a PostgreSQL URL such as the installer-managed `postgresql+asyncpg://platform:<password>@platform-validator-postgres:5432/platform` or an external URL, `docker.broker_allowed_images` or `PLATFORM_BROKER_ALLOWED_IMAGES` to registry-scoped prefixes such as `ghcr.io/platformnetwork/`, and `kubernetes.in_cluster: true`. SQLite URLs, wildcard prefixes, and broad prefixes such as `platformnetwork/` are rejected in Kubernetes mode.
 
-`PLATFORM_DATABASE_URL` is the validator control-plane database credential. It is not a challenge database credential and must not be copied into challenge specs. In Kubernetes managed challenge mode, Platform creates per-challenge Postgres resources and injects each challenge's own `CHALLENGE_DATABASE_URL` from the matching Secret.
+The installer-managed validator database is only for validator control-plane state. `PLATFORM_DATABASE_URL` is the external override for that validator control-plane database credential. It is not a challenge database credential and must not be copied into challenge specs. In Kubernetes managed challenge mode, Platform creates per-challenge Postgres resources and injects each challenge's own `CHALLENGE_DATABASE_URL` from the matching Secret.
 
 ## Challenge database behavior
 

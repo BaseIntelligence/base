@@ -7,12 +7,17 @@ validator Kubernetes installation and operation.
 
 Automatic Kubernetes install:
 
+Kubernetes is not optional for this installer: it applies resources to the
+current `kubectl` context. For a single validator VM, prefer `k3s`; use
+`minikube` only for local smoke tests. Validation VMs should have at least 2
+vCPUs and 8 GB RAM.
+
 ```bash
-./scripts/install-validator.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+./scripts/install-validator.sh
 ```
 
 Normal install performs real Kubernetes changes and prompts for the validator
-hotkey mnemonic. It creates `platform-validator-helm-upgrader`, a CronJob that periodically downloads the configured GitHub chart source and runs a full `helm upgrade --install platform-validator` with `--atomic`, `--wait`, and `--cleanup-on-fail`. It uses `HELM_DRIVER=configmap`, `concurrencyPolicy: Forbid`, and pins only non-secret live references for the database URL Secret, namespace, wallet Secret, wallet name/hotkey labels, `validator.deploymentNameOverride=platform-validator`, and `persistence.existingClaim=platform-validator-state`. It references the validator wallet Secret by name without printing its contents. Validate the full install flow only against a disposable cluster or
+hotkey mnemonic. Without `--database-url` or `PLATFORM_DATABASE_URL`, it creates namespace-scoped managed validator Postgres resources named `platform-validator-postgres` with `postgres:16-alpine`, 10Gi storage, optional `PLATFORM_VALIDATOR_POSTGRES_STORAGE_CLASS`, and a retained data claim. It stores the generated URL only in the configured URL Secret, never in ConfigMaps, CronJobs, stdout, or stderr. Supplying `--database-url` or `PLATFORM_DATABASE_URL` skips those managed DB resources and uses the provided external URL Secret. It creates `platform-validator-helm-upgrader`, a CronJob that periodically downloads the configured GitHub chart source and runs a full `helm upgrade --install platform-validator` with `--atomic`, `--wait`, and `--cleanup-on-fail`. It uses `HELM_DRIVER=configmap`, `concurrencyPolicy: Forbid`, and pins only non-secret live references for the database URL Secret, namespace, wallet Secret, wallet name/hotkey labels, `validator.deploymentNameOverride=platform-validator`, and `persistence.existingClaim=platform-validator-state`. It references the validator wallet Secret by name without printing its contents. Validate the full install flow only against a disposable cluster or
 namespace with disposable test hotkey material.
 
 Stop only installer-managed validator objects:
@@ -42,14 +47,14 @@ exits. Kubernetes Secrets are readable to cluster admins and any subject with
 Secret read RBAC; use a dedicated namespace and enable encryption at rest for
 production clusters.
 
-## Required Registry, Wallet, And Database Settings
+## Registry, Wallet, And Optional Database Settings
 
 ```text
 PLATFORM_VALIDATOR_REGISTRY_URL=https://chain.platform.network
 PLATFORM_NAMESPACE=platform-validator
 PLATFORM_WALLET_NAME=platform-validator
 PLATFORM_WALLET_HOTKEY=validator
-PLATFORM_DATABASE_URL=postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+PLATFORM_DATABASE_URL=postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform  # optional external override
 PLATFORM_DATABASE_URL_SECRET_NAME=platform-validator-database-url
 PLATFORM_DATABASE_URL_SECRET_KEY=url
 PLATFORM_BROKER_ALLOWED_IMAGES=ghcr.io/platformnetwork/,registry.example.com/platform/
@@ -85,11 +90,11 @@ The installer applies only namespaced resources needed by the validator:
 Namespace, validator ServiceAccount/RBAC, Helm-upgrader ServiceAccount/RBAC, PVC,
 ConfigMap, Secret, Deployment, and Helm-upgrader CronJob. Cleanup removes only the
 installer-managed Helm-upgrader CronJob/RBAC/ServiceAccount plus the validator
-legacy image-updater CronJob/RBAC/ServiceAccount, Deployment, ConfigMap, database URL Secret, Role, RoleBinding, and ServiceAccount. The PVC and wallet Secret are
+legacy image-updater CronJob/RBAC/ServiceAccount, managed Postgres StatefulSet and Service, Deployment, ConfigMap, database URL Secret, Role, RoleBinding, and ServiceAccount. The managed Postgres credential Secret, managed Postgres data claim/PVC, validator state PVC, and wallet Secret are
 preserved intentionally so validator state and key material are not destroyed by an update; delete
 them manually only when you intentionally want to erase local validator state and credentials.
 
-Kubernetes mode requires an external PostgreSQL `PLATFORM_DATABASE_URL` and
+Kubernetes mode requires PostgreSQL control-plane state. The installer provides managed validator Postgres by default; an external PostgreSQL `PLATFORM_DATABASE_URL` or `--database-url` overrides that default. Kubernetes mode also requires
 registry-scoped `PLATFORM_BROKER_ALLOWED_IMAGES`. SQLite URLs, wildcards, and
 broad prefixes such as `platformnetwork/` fail settings validation.
 
