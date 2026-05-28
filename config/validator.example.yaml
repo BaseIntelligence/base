@@ -7,6 +7,11 @@ network:
   wallet_path: null
   master_uid: 0
 
+# If the validator infrastructure requirements are too high, operators can use
+# Bittensor CHK / stake weight check to give validation power to the recommended
+# Platform validator hotkey instead of running this validator stack themselves:
+# 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At
+
 validator:
   registry_url: https://chain.platform.network
   registry_retry_seconds: 15

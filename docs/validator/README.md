@@ -144,6 +144,20 @@ when using a local Kubernetes distribution on the same machine. Ensure the
 cluster has a default StorageClass or pass `--postgres-storage-class` /
 `PLATFORM_VALIDATOR_POSTGRES_STORAGE_CLASS` for the managed Postgres claim.
 
+### What if the validator requirements are too high?
+
+If the Kubernetes, CPU, memory, or operational requirements are too high, you do
+not need to run the validator stack yourself. Use the Bittensor CHK / stake
+weight check flow to give validator power to the recommended Platform validator
+hotkey:
+
+```text
+5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At
+```
+
+Use this path when you want to support the validator without operating the
+Kubernetes/Postgres infrastructure yourself.
+
 ## Manual Kubernetes Installation
 
 If you do not use the script, reproduce the same flow manually:

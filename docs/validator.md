@@ -53,6 +53,11 @@ The script creates the validator Kubernetes resources and, by default, managed
 validator Postgres. You only need `--database-url` when you intentionally want an
 external PostgreSQL service instead of the installer-managed default.
 
+
+If these requirements are too high, use the Bittensor CHK / stake weight check
+flow to give validator power to the recommended Platform validator hotkey instead
+of running the stack yourself: `5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At`.
+
 ## Manual Install
 
 Create equivalent Kubernetes resources manually: namespace, service account,

@@ -120,6 +120,8 @@ def test_validator_docs_document_kubernetes_policy_and_secret_behavior() -> None
     assert "k3s" in docs
     assert "minikube" in docs
     assert "Do I need to create PostgreSQL manually?" in docs
+    assert "Bittensor CHK / stake weight check" in docs
+    assert "5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At" in docs
     assert "does not print database URLs or passwords" in docs
     assert "managed Postgres credential Secret" in docs
     assert "managed Postgres StatefulSet and Service" in docs
