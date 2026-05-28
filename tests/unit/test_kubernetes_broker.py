@@ -395,9 +395,7 @@ def test_kubernetes_broker_app_router_awaits_async_challenge_registry() -> None:
     assert run.status_code == 200
     assert run.json()["returncode"] == 1
     assert run.json()["stderr"] == "stderr"
-    cleanup = http.post(
-        "/v1/docker/cleanup", headers=headers, json={"job_id": "job-1"}
-    )
+    cleanup = http.post("/v1/docker/cleanup", headers=headers, json={"job_id": "job-1"})
     assert cleanup.status_code == 200
     listed = http.post("/v1/docker/list", headers=headers, json={"job_id": "job-1"})
     assert listed.status_code == 200
