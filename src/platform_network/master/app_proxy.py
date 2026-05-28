@@ -63,6 +63,7 @@ HOP_BY_HOP_HEADERS = {
 }
 
 BLOCKED_EXACT_PATHS = {"/health", "/version"}
+BENCHMARK_EXECUTION_ACTIONS = {"run", "execute", "launch"}
 PRISM_EXACT_PUBLIC_PATHS = {
     "/leaderboard",
     "/architectures",
@@ -83,7 +84,19 @@ def is_blocked_proxy_path(path: str) -> bool:
         normalized in BLOCKED_EXACT_PATHS
         or normalized == "/internal"
         or normalized.startswith("/internal/")
+        or _is_benchmark_execution_path(normalized)
     )
+
+
+def _is_benchmark_execution_path(normalized: str) -> bool:
+    if normalized == "/benchmark-executions":
+        return True
+    if normalized.startswith("/benchmark-executions/"):
+        return True
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or parts[-1] not in BENCHMARK_EXECUTION_ACTIONS:
+        return False
+    return parts[0] in {"benchmark", "benchmarks"}
 
 
 def prism_upstream_proxy_path(slug: str, path: str) -> str:

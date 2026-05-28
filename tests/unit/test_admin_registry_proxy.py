@@ -1788,6 +1788,65 @@ def test_proxy_preserves_signed_agent_challenge_env_headers_for_env_routes() -> 
     assert "miner-nonce" not in registry_text
 
 
+def test_agent_challenge_public_proxy_does_not_expose_launch_execution_routes() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("agent-challenge"),
+                "internal_base_url": "http://challenge-agent-challenge:8000",
+            }
+        )
+    )
+    registry.set_status("agent-challenge", ChallengeStatus.ACTIVE)
+    captured_paths: list[str] = []
+    challenge_app = FastAPI()
+
+    @challenge_app.api_route("/{path:path}", methods=["GET", "POST", "PUT"])
+    async def catch_all(path: str, request: Request) -> dict[str, str]:
+        captured_paths.append(request.url.path)
+        return {"path": request.url.path}
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-agent-challenge:8000"
+        ) as client:
+            yield client
+
+    proxy_client = TestClient(_proxy_app(registry, client_factory=client_factory))
+    headers = {
+        "X-Hotkey": "miner-hotkey",
+        "X-Signature": "miner-signature",
+        "X-Nonce": "miner-nonce",
+        "X-Timestamp": "1700000000",
+        "Authorization": "Bearer should-not-forward",
+    }
+
+    blocked_paths = (
+        "/challenges/agent-challenge/internal/v1/submissions/sub-1/launch",
+        "/challenges/agent-challenge/internal/v1/benchmark-executions",
+        "/challenges/agent-challenge/internal/launch",
+        "/challenges/agent-challenge/benchmark-executions",
+        "/challenges/agent-challenge/benchmark-executions/sub-1",
+        "/challenges/agent-challenge/benchmarks/terminal-bench/run",
+        "/challenges/agent-challenge/benchmarks/terminal-bench/execute",
+        "/challenges/agent-challenge/benchmarks/tasks/task-1/launch",
+    )
+    for path in blocked_paths:
+        response = proxy_client.post(path, headers=headers)
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Proxy path is not allowed"
+
+    missing_generic_proxy = proxy_client.post(
+        "/v1/challenges/agent-challenge/benchmark-executions", headers=headers
+    )
+    assert missing_generic_proxy.status_code == 404
+    assert captured_paths == []
+
+
 def test_agent_challenge_env_proxy_transport_failure_redacts_body_and_headers() -> None:
     registry = ChallengeRegistry()
     registry.create(

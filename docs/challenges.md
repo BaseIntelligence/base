@@ -36,7 +36,7 @@ Public routes are exposed through:
 /challenges/{slug}/...
 ```
 
-The master blocks `/internal/*`, `/health`, and `/version` from the public proxy.
+The master blocks `/internal/*`, `/health`, `/version`, Agent Challenge internal launch paths such as `POST /internal/v1/submissions/{submission_id}/launch`, and generic benchmark execution-shaped routes such as `/benchmark-executions` from the public proxy.
 
 ## Proxy failure behavior
 
@@ -50,4 +50,4 @@ Operator checklist for challenge 502s:
 4. In Kubernetes target mode, confirm target assignment, target health, and capacity state.
 5. Check whether the response came from proxy transport handling or from the challenge origin. Only transport failures should be rewritten to 502.
 
-Agent Challenge env and launch routes are public proxy routes, but Platform does not store their request bodies or per-submission env values. The allowed Platform paths are `GET/PUT /challenges/agent-challenge/submissions/{id}/env`, `POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, and `POST /challenges/agent-challenge/submissions/{id}/launch`. The challenge-local paths are `GET/PUT /submissions/{id}/env`, `POST /submissions/{id}/env/confirm-empty`, and `POST /submissions/{id}/launch`. Only signed miner headers `X-Hotkey`, `X-Signature`, `X-Nonce`, and `X-Timestamp` are preserved for those routes.
+Agent Challenge env and public launch routes are public proxy routes, but Platform does not store their request bodies or per-submission env values. The allowed Platform paths are `GET/PUT /challenges/agent-challenge/submissions/{id}/env`, `POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, and `POST /challenges/agent-challenge/submissions/{id}/launch`. The challenge-local paths are `GET/PUT /submissions/{id}/env`, `POST /submissions/{id}/env/confirm-empty`, and `POST /submissions/{id}/launch`. Only signed miner headers `X-Hotkey`, `X-Signature`, `X-Nonce`, and `X-Timestamp` are preserved for those routes. `POST /internal/v1/submissions/{submission_id}/launch` is a bridge/internal API only, not a public miner API, and the Platform proxy must not expose generic benchmark execution routes. The generic Platform broker remains the execution substrate for controlled Platform SDK jobs behind the challenge boundary.
