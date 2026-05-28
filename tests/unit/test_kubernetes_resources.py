@@ -841,6 +841,7 @@ def test_platform_sdk_broker_job_contract_keeps_secrets_out_of_job_spec() -> Non
     mount_secret = build_broker_mount_secret(
         "agent-challenge", request, namespace="platform", run_id="runabcd1"
     )
+    assert mount_secret is not None
     network_policy = build_broker_network_policy(
         "agent-challenge", request, namespace="platform", run_id="runabcd1"
     )

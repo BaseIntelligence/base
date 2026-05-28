@@ -378,7 +378,8 @@ def test_broker_limits_gpu_count_schema_contract() -> None:
     assert BrokerLimits().gpu_count is None
     assert BrokerLimits(gpu_count=1).model_dump(mode="json")["gpu_count"] == 1
 
-    for invalid_gpu_count in [0, -1, True, "1", 1.5]:
+    invalid_gpu_counts: list[Any] = [0, -1, True, "1", 1.5]
+    for invalid_gpu_count in invalid_gpu_counts:
         with pytest.raises(Exception, match="gpu_count"):
             BrokerLimits(gpu_count=invalid_gpu_count)
 
