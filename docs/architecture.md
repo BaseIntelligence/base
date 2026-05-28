@@ -37,13 +37,13 @@ flowchart TB
 
 The master owns registry metadata, admin operations, Kubernetes challenge lifecycle, challenge tokens, emission configuration, and final weight computation. By default it serves the computed vector through the public weights API; normal validators perform Bittensor submission.
 
-The master and validator control plane uses its own PostgreSQL-compatible database URL. That URL is not shared with challenge containers.
+The master and validator control plane uses its own PostgreSQL-compatible database URL. The validator installer creates a namespace-scoped managed validator Postgres by default, while `--database-url` or `PLATFORM_DATABASE_URL` points the validator at an external database instead. That URL is not shared with challenge containers.
 
 ## Normal validator
 
 Normal validators read `/v1/registry`, launch all active challenge images as Kubernetes workloads, fetch `/v1/weights/latest`, submit the fetched vector on-chain, and keep retrying if the master is unavailable.
 
-Validator Kubernetes mode still requires a control-plane PostgreSQL URL for Platform state. This is distinct from the per-challenge managed Postgres credentials injected into challenge workloads.
+Validator Kubernetes mode still requires a control-plane PostgreSQL URL for Platform state. By default the installer provisions `platform-validator-postgres` plus a URL Secret; external overrides skip those managed validator DB resources. This is distinct from the per-challenge managed Postgres credentials injected into challenge workloads.
 
 ## Challenge isolation
 
@@ -59,7 +59,7 @@ By default, the managed Postgres Secret and data claim are retained when the cha
 
 First-party Platform deployments are Kubernetes-only. By default, Helm deploys the master admin, proxy, broker, config sync, and master image updater resources only. Validator workloads require an explicit validator release; those validators fetch master-computed weights and perform the final Bittensor submission.
 
-Pinned production deployments should disable mutable auto-update and use rollout controls, scoped RBAC, external PostgreSQL for control-plane state, managed per-challenge Postgres for Kubernetes challenge state, and semver plus `sha256` digest image pins for control-plane and challenge images.
+Pinned production deployments should disable mutable auto-update and use rollout controls, scoped RBAC, PostgreSQL control-plane state from either the validator managed default or an external database override, managed per-challenge Postgres for Kubernetes challenge state, and semver plus `sha256` digest image pins for control-plane and challenge images.
 
 Kubernetes CPU and memory requests and limits map to PodSpec fields. Docker-only `pids_limit`, `memory_swap`, and custom Docker network modes do not have parity in this path, so non-default requests are rejected or handled by cluster and admission policy outside Platform.
 

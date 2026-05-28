@@ -4,7 +4,7 @@
 
 ## Isolation Rules
 
-* Central PostgreSQL is available only to the master or validator control-plane process that owns that deployment.
+* Central PostgreSQL is available only to the master or validator control-plane process that owns that deployment. The validator installer may create namespace-scoped managed validator Postgres by default, and `--database-url` or `PLATFORM_DATABASE_URL` switches to an external control-plane database.
 * Challenges never receive master, validator, or central control-plane PostgreSQL credentials.
 * Kubernetes managed challenge mode gives each challenge only its own per-challenge `CHALLENGE_DATABASE_URL` Secret for its isolated managed Postgres server.
 * Normal validators never receive master DB credentials.
@@ -17,7 +17,7 @@
 
 The production and Kubernetes boundary is stricter than local development:
 
-* Dev, test, and local runs may use SQLite for master state. Production and Kubernetes must use an external PostgreSQL database loaded from a secret or explicit database URL, and SQLite is rejected.
+* Dev, test, and local runs may use SQLite for master state. Production and Kubernetes control-plane state must use PostgreSQL loaded from Kubernetes Secrets, an explicit database URL, or the validator installer's managed Postgres default; SQLite is rejected.
 * Generated local challenge runs and legacy Docker challenge runtime may use `sqlite+aiosqlite:////data/challenge.sqlite3`. Kubernetes managed challenge mode injects per-challenge Postgres credentials instead.
 * Dev and local challenge images may be local, mutable, or tagged `latest` while iterating. Production images must include a tag and a `sha256` digest; SemVer tags are for pinned releases, while `latest@sha256:<digest>` is reserved for the autonomous update channel, starting with Platform `3.0.0` for release images. Production rejects untagged references and missing digests; `latest` is accepted only when digest-pinned for the autonomous update channel.
 * Production image allowlists must be scoped to a registry and namespace such as `ghcr.io/platformnetwork/`. Broad prefixes such as `platformnetwork/` are development-only.
@@ -28,7 +28,7 @@ The production and Kubernetes boundary is stricter than local development:
 
 First-party deployments use Kubernetes rollout controls and scoped RBAC. Broker-created challenge jobs must not receive the host Docker socket.
 
-Challenge workloads receive only per-challenge runtime Secrets. The managed Postgres Secret and data claim are retained by default when a challenge is removed. Manual deletion is destructive and must be treated as an explicit purge.
+Validator managed Postgres credentials and generated database URLs are written only to Kubernetes Secret `stringData` during create/replace and must not be printed in stdout, stderr, ConfigMaps, Deployments, CronJobs, docs evidence, or support logs. Cleanup deletes the managed validator Postgres StatefulSet and Service but retains the managed DB credential Secret and data claim/PVC by default. Challenge workloads receive only per-challenge runtime Secrets. The managed Postgres Secret and data claim are retained by default when a challenge is removed. Manual deletion is destructive and must be treated as an explicit purge.
 
 ## Kubernetes PID and Swap Boundary
 
