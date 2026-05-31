@@ -928,6 +928,38 @@ def k8s_server_remove(
     _admin_request(config, "DELETE", f"/v1/admin/kubernetes-targets/{target_id}")
 
 
+def _containers_tracking_mutable_image(
+    kube_client: Any,
+    *,
+    kind: str,
+    name: str,
+    base: str,
+    mutable_base: Callable[[str], str | None],
+) -> list[str]:
+    # Discover every live container that tracks the same mutable image so each is
+    # rolled to the new digest. This avoids relying on challenge-record metadata,
+    # which omits worker containers injected directly onto the workload spec.
+    getter = getattr(kube_client, "get", None)
+    if getter is None:
+        return []
+    try:
+        workload = getter(kind, name)
+    except Exception:
+        return []
+    if not workload:
+        return []
+    pod_spec = ((workload.get("spec") or {}).get("template") or {}).get("spec") or {}
+    tracked: list[str] = []
+    for container in pod_spec.get("containers") or []:
+        container_name = container.get("name")
+        container_image = container.get("image")
+        if not container_name or not container_image:
+            continue
+        if mutable_base(container_image) == base:
+            tracked.append(container_name)
+    return tracked
+
+
 @master_app.command("refresh-challenge-images")
 def master_refresh_challenge_images(
     config: Path = typer.Option(Path("config/master.example.yaml")),
@@ -989,11 +1021,19 @@ def master_refresh_challenge_images(
                         if settings.kubernetes.challenge_mode == "statefulset"
                         else "Deployment"
                     )
-                    containers = ["challenge"]
-                    if worker_command_from_metadata(
-                        getattr(record, "metadata", {}) or {}
-                    ):
-                        containers.append("worker")
+                    containers = _containers_tracking_mutable_image(
+                        kube_client,
+                        kind=workload_kind,
+                        name=workload_name,
+                        base=base,
+                        mutable_base=mutable_base,
+                    )
+                    if not containers:
+                        containers = ["challenge"]
+                        if worker_command_from_metadata(
+                            getattr(record, "metadata", {}) or {}
+                        ):
+                            containers.append("worker")
                     for container in containers:
                         kube_client.patch_workload_image(
                             kind=workload_kind,

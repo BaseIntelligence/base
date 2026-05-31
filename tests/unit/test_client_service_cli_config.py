@@ -1695,6 +1695,92 @@ def test_master_refresh_challenge_images_patches_worker_container_when_configure
     } in patches
 
 
+def test_master_refresh_challenge_images_patches_worker_from_live_workload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    image = f"ghcr.io/platformnetwork/agent-challenge:latest@{digest}"
+    patches: list[dict[str, object]] = []
+
+    class Registry:
+        async def list(self):
+            return [
+                SimpleNamespace(
+                    slug="agent-challenge",
+                    image=image,
+                    status=ChallengeStatus.ACTIVE,
+                    metadata={},
+                )
+            ]
+
+        async def update(self, slug: str, update: object) -> None:
+            raise AssertionError("already-current image must not update registry")
+
+    class KubeClient:
+        def __init__(self, **kwargs: object) -> None:
+            patches.append({"init": kwargs})
+
+        def get(self, kind: str, name: str) -> dict[str, object]:
+            return {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {"name": "challenge", "image": image},
+                                {"name": "worker", "image": image},
+                            ]
+                        }
+                    }
+                }
+            }
+
+        def patch_workload_image(self, **kwargs: object) -> None:
+            patches.append(kwargs)
+
+    settings = SimpleNamespace(
+        runtime=SimpleNamespace(backend="kubernetes"),
+        kubernetes=SimpleNamespace(
+            namespace="platform-master",
+            in_cluster=True,
+            kubeconfig=None,
+            challenge_mode="statefulset",
+        ),
+    )
+
+    import platform_network.kubernetes.client as kube_module
+    import platform_network.validator.image_updater as image_updater_module
+
+    monkeypatch.setattr(cli_module, "load_settings", lambda config: settings)
+    monkeypatch.setattr(cli_module, "_master_registry", lambda settings: Registry())
+    monkeypatch.setattr(
+        cli_module, "_challenge_orchestrator", lambda settings: object()
+    )
+    monkeypatch.setattr(kube_module, "KubernetesClient", KubeClient)
+    monkeypatch.setattr(
+        image_updater_module,
+        "resolve_remote_digest",
+        lambda image_reference: digest,
+    )
+
+    result = CliRunner().invoke(
+        app, ["master", "refresh-challenge-images", "--config", "unused.yaml"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert {
+        "kind": "StatefulSet",
+        "name": "challenge-agent-challenge",
+        "container": "challenge",
+        "image": image,
+    } in patches
+    assert {
+        "kind": "StatefulSet",
+        "name": "challenge-agent-challenge",
+        "container": "worker",
+        "image": image,
+    } in patches
+
+
 def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
