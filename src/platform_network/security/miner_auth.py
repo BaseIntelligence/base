@@ -131,6 +131,7 @@ class MinerUploadVerifier:
         ttl_seconds: int = 300,
         require_registered_hotkey: bool = True,
         blocked_uids: set[int] | None = None,
+        extra_registered_hotkeys: set[str] | None = None,
         signature_verifier: SignatureVerifier = verify_substrate_signature,
         now_fn: Callable[[], float] = time.time,
     ) -> None:
@@ -140,6 +141,9 @@ class MinerUploadVerifier:
         self.ttl_seconds = ttl_seconds
         self.require_registered_hotkey = require_registered_hotkey
         self.blocked_uids = blocked_uids if blocked_uids is not None else {0}
+        self.extra_registered_hotkeys = (
+            set(extra_registered_hotkeys) if extra_registered_hotkeys else set()
+        )
         self.signature_verifier = signature_verifier
         self.now_fn = now_fn
 
@@ -194,6 +198,8 @@ class MinerUploadVerifier:
         )
 
     def _uid_for_hotkey(self, hotkey: str) -> int | None:
+        if hotkey in self.extra_registered_hotkeys:
+            return None
         if self.metagraph_cache is None:
             if self.require_registered_hotkey:
                 raise MinerAuthError("metagraph unavailable")

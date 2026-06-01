@@ -267,6 +267,7 @@ def create_proxy_app(
     upload_nonce_ttl_seconds: int = 86_400,
     upload_max_body_bytes: int = 2_000_000,
     upload_require_registered_hotkey: bool = True,
+    extra_registered_hotkeys: list[str] | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -291,6 +292,9 @@ def create_proxy_app(
             metagraph_cache=metagraph_cache,
             ttl_seconds=upload_signature_ttl_seconds,
             require_registered_hotkey=upload_require_registered_hotkey,
+            extra_registered_hotkeys=set(extra_registered_hotkeys)
+            if extra_registered_hotkeys
+            else None,
         )
     else:
         verifier = miner_verifier

@@ -30,8 +30,10 @@ class MasterSettings(BaseModel):
     registry_state_file: str = "/var/lib/platform/registry.json"
     upload_signature_ttl_seconds: int = 300
     upload_nonce_ttl_seconds: int = 86_400
-    upload_max_body_bytes: int = 2_000_000
+    upload_max_body_bytes: int = 7_500_000
     upload_require_registered_hotkey: bool = True
+    # ss58 hotkeys accepted without on-chain registration (QA/allowlist; empty in prod)
+    upload_extra_registered_hotkeys: list[str] = Field(default_factory=list)
 
 
 class ValidatorSettings(BaseModel):

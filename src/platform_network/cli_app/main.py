@@ -608,6 +608,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         upload_nonce_ttl_seconds=settings.master.upload_nonce_ttl_seconds,
         upload_max_body_bytes=settings.master.upload_max_body_bytes,
         upload_require_registered_hotkey=settings.master.upload_require_registered_hotkey,
+        extra_registered_hotkeys=settings.master.upload_extra_registered_hotkeys,
         kubernetes_target_registry=(
             kubernetes_targets if settings.runtime.backend == "kubernetes" else None
         ),
