@@ -728,7 +728,8 @@ def _pod_template(
             "resources": resources,
             "readinessProbe": _http_probe("/health", spec.port),
             "livenessProbe": _http_probe("/health", spec.port),
-            "securityContext": _container_security_context(),
+            "securityContext": _container_security_context()
+            | {"runAsUser": 1000, "runAsGroup": 1000},
         }
     ]
     if spec.worker_command:
@@ -740,7 +741,8 @@ def _pod_template(
                 "env": env,
                 "volumeMounts": volume_mounts,
                 "resources": resources,
-                "securityContext": _container_security_context(),
+                "securityContext": _container_security_context()
+                | {"runAsUser": 1000, "runAsGroup": 1000},
             }
         )
     pod_spec: dict[str, Any] = {

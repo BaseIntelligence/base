@@ -299,6 +299,30 @@ def test_challenge_worker_sidecar_uses_same_image_env_and_storage() -> None:
     assert _env_by_name(worker["env"])["CHALLENGE_DOCKER_BACKEND"]["value"] == "broker"
 
 
+def test_challenge_containers_pin_numeric_run_as_user_for_nonroot_images() -> None:
+    workload = build_challenge_workload(
+        ChallengeSpec(
+            slug="prism",
+            image="ghcr.io/platformnetwork/prism:latest@sha256:dead",
+            worker_command=("prism-worker",),
+        ),
+        namespace="platform",
+        mode="statefulset",
+        managed_postgres=True,
+    )
+
+    pod_spec = workload["spec"]["template"]["spec"]
+    challenge, worker = pod_spec["containers"]
+
+    for container in (challenge, worker):
+        assert container["securityContext"]["runAsUser"] == 1000
+        assert container["securityContext"]["runAsGroup"] == 1000
+        assert container["securityContext"]["allowPrivilegeEscalation"] is False
+
+    assert pod_spec["securityContext"]["runAsNonRoot"] is True
+    assert pod_spec["securityContext"]["fsGroup"] == 1000
+
+
 def test_managed_postgres_database_url_conflict_is_rejected() -> None:
     spec = ChallengeSpec(
         slug="agent-challenge",
