@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from platform_network.master.docker_orchestrator import (
+    DEFAULT_CHALLENGE_PORT,
     DEFAULT_DOCKER_BROKER_URL,
     DEFAULT_SQLITE_PATH,
     ChallengeResources,
@@ -15,7 +16,24 @@ from platform_network.master.docker_orchestrator import (
     DockerOrchestrator,
     _safe_secret_name,
     _safe_slug,
+    port_from_internal_base_url,
 )
+
+
+@pytest.mark.parametrize(
+    "internal_base_url, expected",
+    [
+        ("http://challenge-prism:8080", 8080),
+        ("http://challenge-agent-challenge:8000", 8000),
+        ("http://challenge-prism", DEFAULT_CHALLENGE_PORT),
+        (None, DEFAULT_CHALLENGE_PORT),
+        ("", DEFAULT_CHALLENGE_PORT),
+    ],
+)
+def test_port_from_internal_base_url(
+    internal_base_url: str | None, expected: int
+) -> None:
+    assert port_from_internal_base_url(internal_base_url) == expected
 
 
 class FakeCollection:

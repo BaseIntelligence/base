@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 DEFAULT_API_VERSION = "1.0"
@@ -30,6 +31,25 @@ DEFAULT_SECRET_MOUNT_DIR = "/run/secrets/platform"
 DEFAULT_DOCKER_BROKER_URL = "http://platform-docker-broker:8082"
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+def port_from_internal_base_url(internal_base_url: str | None) -> int:
+    """Derive the challenge container port from its internal base URL.
+
+    Challenges advertise where they listen via ``internal_base_url`` (e.g.
+    ``http://challenge-prism:8080``). The container port, health probes and
+    the challenge Service must all use that port so traffic routes to the
+    process; PRISM serves 8080 while the legacy default is 8000. Falls back to
+    :data:`DEFAULT_CHALLENGE_PORT` when the URL is missing or has no port.
+    """
+
+    if not internal_base_url:
+        return DEFAULT_CHALLENGE_PORT
+    try:
+        port = urlsplit(internal_base_url).port
+    except ValueError:
+        return DEFAULT_CHALLENGE_PORT
+    return port if port is not None else DEFAULT_CHALLENGE_PORT
 
 
 class DockerOrchestrationError(RuntimeError):

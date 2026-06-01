@@ -44,6 +44,7 @@ from platform_network.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
     DockerOrchestrator,
+    port_from_internal_base_url,
     worker_command_from_metadata,
 )
 from platform_network.master.kubernetes_broker import (
@@ -185,6 +186,9 @@ class DockerRuntimeController:
             env=record.env,
             resources=ChallengeResources.from_mapping(record.resources),
             required_capabilities=tuple(record.required_capabilities),
+            port=port_from_internal_base_url(
+                getattr(record, "internal_base_url", None)
+            ),
             worker_command=worker_command_from_metadata(
                 getattr(record, "metadata", {}) or {}
             ),
