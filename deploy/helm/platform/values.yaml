@@ -177,6 +177,8 @@ broker:
 docker:
   brokerAllowedImages:
     - ghcr.io/platformnetwork/
+  allowPrivileged: false
+  brokerPrivilegedSlugs: []
 
 validator:
   namespace: platform-validator

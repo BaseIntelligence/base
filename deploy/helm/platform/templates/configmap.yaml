@@ -47,6 +47,9 @@ data:
       {{- end }}
       broker_allowed_images:
         {{- toYaml .Values.docker.brokerAllowedImages | nindent 8 }}
+      allow_privileged: {{ .Values.docker.allowPrivileged }}
+      broker_privileged_slugs:
+        {{- toYaml .Values.docker.brokerPrivilegedSlugs | nindent 8 }}
     security:
       admin_token_file: "/var/lib/platform/secrets/{{ .Values.security.adminTokenKey }}"
     kubernetes:
