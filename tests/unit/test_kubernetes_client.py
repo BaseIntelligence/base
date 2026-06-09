@@ -362,4 +362,3 @@ def test_pod_logs_for_job_decodes_bytes_response() -> None:
     assert core.list_count == 1
     assert core.read_count == 1
     assert core.preload_flags == [False]
-

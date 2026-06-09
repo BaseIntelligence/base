@@ -181,9 +181,7 @@ class KubernetesClient:
                     p for p in pods if p.status and p.status.phase == "Succeeded"
                 ]
                 pool = succeeded or pods
-                target = max(
-                    pool, key=lambda p: (p.status.start_time or _EPOCH0)
-                )
+                target = max(pool, key=lambda p: p.status.start_time or _EPOCH0)
                 logs = self._read_pod_log(target.metadata.name, tail_lines)
                 if logs and logs.strip():
                     return logs
