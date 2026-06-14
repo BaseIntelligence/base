@@ -326,6 +326,32 @@ def test_build_scheduled_tasks_registers_health_probe_with_shared_gate() -> None
     assert not injected.healthy
 
 
+def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
+    tasks, _gate = build_scheduled_tasks(Settings())
+
+    image_updater = next(t for t in tasks if t.name == "image-updater")
+    updater_services = {
+        target.service for target in image_updater.run.__self__._targets
+    }
+    assert updater_services == {
+        "platform-admin",
+        "platform-proxy",
+        "platform-docker-broker",
+    }
+    assert "platform-broker" not in updater_services
+    assert "platform-config-sync" not in updater_services
+
+    config_sync = next(t for t in tasks if t.name == "config-sync")
+    rollout_services = set(config_sync.run.__self__._rollout_services)
+    assert rollout_services == {
+        "platform-admin",
+        "platform-proxy",
+        "platform-docker-broker",
+    }
+    assert "platform-broker" not in rollout_services
+    assert "platform-config-sync" not in rollout_services
+
+
 def test_systemd_unit_template_is_notify_with_watchdog() -> None:
     unit = (ROOT / "deploy" / "swarm" / "platform-supervisor.service").read_text()
     assert "Type=notify" in unit

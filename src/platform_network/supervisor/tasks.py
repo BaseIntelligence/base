@@ -33,7 +33,11 @@ from platform_network.supervisor.health import (
     BrokerHealthGate,
     http_health_prober,
 )
-from platform_network.supervisor.image_updater import build_image_updater_task
+from platform_network.supervisor.image_updater import (
+    DEFAULT_MASTER_IMAGE,
+    ImageUpdateTarget,
+    build_image_updater_task,
+)
 from platform_network.supervisor.reaper import build_reaper_task
 from platform_network.supervisor.scheduler import ScheduledTask
 from platform_network.supervisor.self_update import (
@@ -87,11 +91,39 @@ def build_scheduled_tasks(
     tasks.append(build_reaper_task(settings, health_gate=gate))
     # ------------------------------------------------------------------
     # Task 18 registration point (image-updater):
-    tasks.append(build_image_updater_task(settings, health_gate=gate))
+    # Task 28 #1: call-site override targets the broker by its CANONICAL name
+    # `platform-docker-broker` (the settings.docker.broker_url host) and drops
+    # the non-service `platform-config-sync`. DEFAULT_FIRST_PARTY_TARGETS stays
+    # as-is for k8s-parity/helm tests; do not "simplify" back to the default.
+    tasks.append(
+        build_image_updater_task(
+            settings,
+            health_gate=gate,
+            targets=(
+                ImageUpdateTarget(service="platform-admin", image=DEFAULT_MASTER_IMAGE),
+                ImageUpdateTarget(service="platform-proxy", image=DEFAULT_MASTER_IMAGE),
+                ImageUpdateTarget(
+                    service="platform-docker-broker", image=DEFAULT_MASTER_IMAGE
+                ),
+            ),
+        )
+    )
     # Task 19 registration point (challenge-image-updater).
     tasks.append(build_challenge_image_updater_task(settings, health_gate=gate))
     # Task 20 registration point (config-sync).
-    tasks.append(build_config_sync_task(settings, health_gate=gate))
+    # Task 28 #1: same canonical-broker call-site override;
+    # DEFAULT_ROLLOUT_SERVICES stays as-is.
+    tasks.append(
+        build_config_sync_task(
+            settings,
+            health_gate=gate,
+            rollout_services=(
+                "platform-admin",
+                "platform-proxy",
+                "platform-docker-broker",
+            ),
+        )
+    )
     # Task 21 registration point (weights, `master weights --once` port).
     tasks.append(build_weights_task(settings, health_gate=gate))
     # Task 22 registration point (self-update, helm-upgrader replacement).
