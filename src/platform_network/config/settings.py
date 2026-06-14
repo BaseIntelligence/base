@@ -68,6 +68,7 @@ class DockerSettings(BaseModel):
     )
     allow_privileged: bool = False
     broker_privileged_slugs: list[str] = Field(default_factory=list)
+    broker_node_role: Literal["manager", "worker"] = "manager"
 
 
 class RuntimeSettings(BaseModel):

@@ -124,8 +124,9 @@ def build_scheduled_tasks(
             ),
         )
     )
-    # Task 21 registration point (weights, `master weights --once` port).
-    tasks.append(build_weights_task(settings, health_gate=gate))
+    # Task 21 weights: DISABLED for docker cutover — orphaned (output discarded;
+    # admin serves /v1/weights/latest on-demand). Re-enable only for on-chain submit.
+    # tasks.append(build_weights_task(settings, health_gate=gate))
     # Task 22 registration point (self-update, helm-upgrader replacement).
     # Startup-side rollback agent (Task 22): MUST run once before workers
     # start — it flips `current` back + exits when a pending update is

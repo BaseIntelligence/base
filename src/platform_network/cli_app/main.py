@@ -664,6 +664,12 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
                 SwarmBrokerConfig(
                     workspace_dir=Path(settings.docker.broker_workspace_dir),
                     allowed_images=tuple(settings.docker.broker_allowed_images),
+                    node_role=settings.docker.broker_node_role,
+                    privileged_escape_slugs=(
+                        frozenset(settings.docker.broker_privileged_slugs)
+                        if settings.docker.allow_privileged
+                        else frozenset()
+                    ),
                 )
             )
         else:
