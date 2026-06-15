@@ -160,6 +160,10 @@ class DockerBrokerConfig:
     #: worker-only; on a manager/validator node even allowlisted slugs get
     #: the frozen 403 refusal.
     node_role: Literal["manager", "worker"] = "manager"
+    #: Opt-in escape-hatch override (option c): when True the privileged DinD
+    #: escape hatch is permitted on a non-worker (manager) node too. Default
+    #: False preserves the strict worker-only gate (frozen 403 on managers).
+    allow_privileged_escape: bool = False
     #: Per-challenge concurrency caps enforced at ``/v1/docker/run`` (Task
     #: 14). Mirrors ``ChallengeResources.docker_max_concurrent`` intent: the
     #: frozen broker request schema carries no quota field, so (like the
@@ -385,7 +389,7 @@ class DockerBrokerService:
         """
 
         return (
-            self.config.node_role == "worker"
+            (self.config.node_role == "worker" or self.config.allow_privileged_escape)
             and challenge_slug in self.config.privileged_escape_slugs
         )
 

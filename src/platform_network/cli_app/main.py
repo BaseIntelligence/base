@@ -670,6 +670,11 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
                         if settings.docker.allow_privileged
                         else frozenset()
                     ),
+                    allow_privileged_escape=(
+                        settings.docker.allow_privileged
+                        and settings.docker.broker_allow_privileged_escape
+                    ),
+                    placement_constraint=settings.docker.broker_placement_constraint,
                 )
             )
         else:
