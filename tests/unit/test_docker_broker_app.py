@@ -7,8 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from fastapi.testclient import TestClient
 
+from platform_network.challenge_sdk.executors.docker import DockerExecutorError
 from platform_network.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
@@ -18,6 +20,7 @@ from platform_network.schemas.docker_broker import (
     BrokerCleanupResponse,
     BrokerLimits,
     BrokerListResponse,
+    BrokerRunRequest,
 )
 
 
@@ -139,6 +142,59 @@ def test_broker_rejects_disallowed_image(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "Docker image is not allowed" in response.text
+
+
+def _escape_request(image: str) -> BrokerRunRequest:
+    return BrokerRunRequest(
+        job_id="job-1",
+        image=image,
+        command=["true"],
+        limits=BrokerLimits(network="none"),
+        timeout_seconds=10,
+    )
+
+
+def test_escape_validation_accepts_canonical_form_of_short_image(
+    tmp_path: Path,
+) -> None:
+    """Short-form Docker Hub ref must match an allowlist naming its docker.io form."""
+
+    service = DockerBrokerService(
+        DockerBrokerConfig(
+            docker_bin="true",
+            workspace_dir=tmp_path / "work",
+            allowed_images=(
+                "ghcr.io/platformnetwork/",
+                "docker.io/platformnetwork/swe-forge:",
+            ),
+        )
+    )
+
+    service._validate_escape_request(
+        _escape_request("platformnetwork/swe-forge:vllm-project-vllm-omni-2567")
+    )
+
+
+def test_escape_validation_rejects_sibling_namespace_via_canonical(
+    tmp_path: Path,
+) -> None:
+    """Trailing-colon entry must reject sibling repos prefixed like swe-forge."""
+
+    service = DockerBrokerService(
+        DockerBrokerConfig(
+            docker_bin="true",
+            workspace_dir=tmp_path / "work",
+            allowed_images=(
+                "ghcr.io/platformnetwork/",
+                "docker.io/platformnetwork/swe-forge:",
+            ),
+        )
+    )
+
+    with pytest.raises(DockerExecutorError, match="Docker image is not allowed"):
+        service._validate_escape_request(
+            _escape_request("platformnetwork/swe-forge-evil:tag")
+        )
 
 
 def test_broker_rejects_unsafe_network(tmp_path: Path) -> None:

@@ -48,6 +48,20 @@ ESCAPE_HATCH_DIND_MOUNT_TARGET = "/var/lib/docker"
 _IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9./_:@+-]{0,254}$")
 
 
+def _canonical_image_ref(image: str) -> str:
+    # Mirror Docker reference normalization: a leading segment that is not a
+    # registry (no dot, no port colon, not "localhost") implies the implicit
+    # "docker.io" registry, and a bare repository additionally implies the
+    # "library" namespace. Tag/digest are preserved so allowlist prefixes that
+    # end in ":" keep their repository-boundary precision.
+    registry, slash, _ = image.partition("/")
+    if not slash:
+        return f"docker.io/library/{image}"
+    if "." not in registry and ":" not in registry and registry != "localhost":
+        return f"docker.io/{image}"
+    return image
+
+
 class BrokerTokenRegistry(Protocol):
     def get_broker_token(self, slug: str) -> str: ...
 
@@ -389,9 +403,8 @@ class DockerBrokerService:
         """
 
         return (
-            (self.config.node_role == "worker" or self.config.allow_privileged_escape)
-            and challenge_slug in self.config.privileged_escape_slugs
-        )
+            self.config.node_role == "worker" or self.config.allow_privileged_escape
+        ) and challenge_slug in self.config.privileged_escape_slugs
 
     def _run_escape_hatch(
         self, challenge_slug: str, request: BrokerRunRequest
@@ -487,10 +500,16 @@ class DockerBrokerService:
         if not _IMAGE_RE.match(image) or image.startswith("-"):
             raise DockerExecutorError(f"unsafe Docker image reference: {image!r}")
         allowed = self.config.allowed_images
-        if allowed and not any(
-            image == item or image.startswith(item.rstrip("*")) for item in allowed
-        ):
-            raise DockerExecutorError(f"Docker image is not allowed: {image}")
+        if allowed:
+            canonical = _canonical_image_ref(image)
+            if not any(
+                image == item
+                or image.startswith(item.rstrip("*"))
+                or canonical == item
+                or canonical.startswith(item.rstrip("*"))
+                for item in allowed
+            ):
+                raise DockerExecutorError(f"Docker image is not allowed: {image}")
         network = request.limits.network
         if network not in {"none", "default"} and not network.startswith("platform_"):
             raise DockerExecutorError(
