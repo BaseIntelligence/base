@@ -6,75 +6,82 @@
 
 ```mermaid
 flowchart TB
-    subgraph M[Master]
+    subgraph MGR[Manager]
       A[Admin API]
       P[Proxy API]
-      O[Kubernetes Orchestrator]
+      B[Broker]
+      S[Supervisor]
       G[Weight Aggregator]
       W[Weights API]
+      C1[Challenge service]
       DB[(Control-plane Postgres)]
+      DATA[(Challenge /data SQLite)]
     end
-    subgraph D[Kubernetes Workloads]
-      C1[Challenge]
-      DATA[(Challenge /data PVC)]
-      PG[(Per-challenge managed Postgres)]
+    subgraph WRK[Workers]
+      J1[CPU job]
+      J2[GPU job]
     end
-    V[Normal Validator] --> A
-    A --> DB
-    A --> O
+    U[Miners] --> P
     P --> C1
-    O --> C1
-    O --> PG
     C1 --> DATA
-    C1 --> PG
+    C1 --> B
+    B --> J1
+    B --> J2
+    S --> B
+    A --> DB
     G --> C1
     G --> W
-    V --> W
-    V --> BT[Bittensor]
+    SUB[Submitter] --> W
+    SUB --> BT[Bittensor]
 ```
 
-## Master validator
+## Manager node
 
-The master owns registry metadata, admin operations, Kubernetes challenge lifecycle, challenge tokens, emission configuration, and final weight computation. By default it serves the computed vector through the public weights API; normal validators perform Bittensor submission.
+Platform runs as a single Docker Swarm. The manager node owns registry metadata, admin operations, the Swarm challenge lifecycle, challenge tokens, emission configuration, and final weight computation. The admin API serves the computed vector through the public weights API at `/v1/weights/latest`; the on-chain submitter performs the Bittensor submission.
 
-The master and validator control plane uses its own PostgreSQL-compatible database URL. The validator installer creates a namespace-scoped managed validator Postgres by default, while `--database-url` or `PLATFORM_DATABASE_URL` points the validator at an external database instead. That URL is not shared with challenge containers.
+The manager hosts the admin API, the proxy API, the broker, the supervisor, and the challenge service containers themselves. Challenge code runs on the host, pinned with the placement constraint `node.role==manager`, so the long-lived challenge APIs share the manager node with the control plane.
 
-## Normal validator
+Master and validator control-plane state uses a single shared PostgreSQL-compatible database URL (`PLATFORM_DATABASE_URL`). That URL is private to the control-plane process and is never shared with challenge containers.
 
-Normal validators read `/v1/registry`, launch all active challenge images as Kubernetes workloads, fetch `/v1/weights/latest`, submit the fetched vector on-chain, and keep retrying if the master is unavailable.
+## Worker nodes
 
-Validator Kubernetes mode still requires a control-plane PostgreSQL URL for Platform state. By default the installer provisions `platform-validator-postgres` plus a URL Secret; external overrides skip those managed validator DB resources. This is distinct from the per-challenge managed Postgres credentials injected into challenge workloads.
+Worker nodes run short-lived evaluation work only. The broker on the manager dispatches CPU and GPU "jobs" as Swarm replicated-jobs (`--restart-condition none`, so an evaluation can never auto-restart) to the workers:
+
+- CPU jobs are constrained to `node.labels.platform.workload==cpu`.
+- GPU jobs (broker `gpu_count > 0`) are constrained to `node.labels.platform.workload==gpu` and request `--generic-resource NVIDIA-GPU=<N>`.
+
+Workers are enrolled manually with a Swarm join token (no SSH). On the manager, `platform master worker token [--cpu|--gpu]` prints a `docker swarm join --token <TOKEN> <MANAGER_IP>:2377` command. The operator installs the matching `daemon.json` on the worker and runs the join, then the manager labels the node with `platform master worker label <node> --workload cpu|gpu`.
+
+## Submitter
+
+The on-chain submitter is a minimal submit-only process on the validator node. It reads `/v1/weights/latest` from the master, submits the fetched vector on-chain, and keeps retrying if the master is unavailable. It runs no challenge orchestration; all challenge services live on the manager.
 
 ## Challenge isolation
 
-Each challenge runs as a Kubernetes workload with its own OCI image, internal shared token, public routes behind the Platform proxy, `/data` PVC, and managed Postgres resources. Public proxy paths block internal challenge routes. Broker archive inputs are untrusted and are validated before extraction or resource creation. Kubernetes broker cleanup attempts to remove the Job, NetworkPolicy, and mount Secret on success and failure paths.
+Each challenge runs as a Swarm replicated service with its own OCI image, internal shared token, public routes behind the Platform proxy, an encrypted overlay network, and a `/data` Swarm volume. Public proxy paths block internal challenge routes. Broker archive inputs are untrusted and are validated before extraction or resource creation.
 
-In Kubernetes managed mode, Platform creates isolated managed Postgres resources per challenge slug. Each slug gets a separate Secret, Service, StatefulSet, and Postgres data claim. The challenge receives `CHALLENGE_DATABASE_URL` automatically from its own Secret. It never receives the master or validator control-plane database credential.
+Challenge state is SQLite on the challenge `/data` Swarm volume at `sqlite+aiosqlite:////data/challenge.sqlite3`. Platform no longer provisions a Postgres server per challenge; each challenge owns its `/data` volume for the SQLite database, artifacts, analyzer output, and local files. A challenge never receives the master or validator control-plane database credential.
 
-The challenge `/data` PVC remains separate from Postgres. It is for artifacts, analyzer output, local files, and the generated SQLite fallback. Managed Postgres stores data on its own StatefulSet claim.
+By default the `/data` Swarm volume is retained when a challenge service is removed. Manual deletion of a retained volume is destructive and should be done only as an explicit operator purge.
 
-By default, the managed Postgres Secret and data claim are retained when the challenge is removed. Manual deletion of those retained objects is destructive and should be done only as an explicit operator purge.
+## Deployment topology
 
-## Deployment Boundaries
+First-party Platform deployments are Docker Swarm only. The manager is brought up with `deploy/swarm/install-swarm.sh`, which provisions the master admin, proxy, broker, and challenge services on encrypted overlay networks, plus the systemd supervisor unit. Worker nodes are enrolled manually with join tokens and workload labels. There is no Helm chart, no Kubernetes manifests, and no `runtime.backend` selector: the only backend is Swarm.
 
-First-party Platform deployments are Kubernetes-only. By default, Helm deploys the master admin, proxy, broker, config sync, and master image updater resources only. Validator workloads require an explicit validator release; those validators fetch master-computed weights and perform the final Bittensor submission.
+Pinned production deployments should disable mutable auto-update and use rolling service updates, PostgreSQL control-plane state, per-challenge SQLite on the `/data` volume, and semver plus `sha256` digest image pins for control-plane and challenge images.
 
-Pinned production deployments should disable mutable auto-update and use rollout controls, scoped RBAC, PostgreSQL control-plane state from either the validator managed default or an external database override, managed per-challenge Postgres for Kubernetes challenge state, and semver plus `sha256` digest image pins for control-plane and challenge images.
+Swarm service resources map CPU and memory to `--limit-cpu` and `--limit-memory`, and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`.
 
-Kubernetes CPU and memory requests and limits map to PodSpec fields. Docker-only `pids_limit`, `memory_swap`, and custom Docker network modes do not have parity in this path, so non-default requests are rejected or handled by cluster and admission policy outside Platform.
+### Swarm Broker GPU Contract
 
-### Kubernetes Broker GPU Contract
+Broker clients request GPUs with `limits.gpu_count`. `gpu_count=None` or an omitted field means CPU-only and emits no GPU resource. A positive integer requests that many GPUs and is expressed as the Swarm generic resource `--generic-resource NVIDIA-GPU=<N>`. The resource name `NVIDIA-GPU` is case-sensitive and must match the `node-generic-resources` advertisement in the worker `daemon.json`.
 
-Broker clients request GPUs with `limits.gpu_count`. `gpu_count=None` or an omitted field means CPU-only and emits no GPU resource key. A positive integer requests that many GPUs. Platform owns `gpu_resource_name`, defaulting to `nvidia.com/gpu`; clients such as PRISM do not pass the resource name.
+GPU placement is node labels plus generic resources only. A GPU job is constrained to `node.labels.platform.workload==gpu` and acquires a capacity lease before the service is created; the lease is released on cleanup or failure. There is no remote GPU HTTP agent and no device-ID scheduling. Device IDs, where present, are metadata for observability, not scheduling semantics, and this contract does not claim a TPU, AMD, or custom accelerator abstraction.
 
-In Kubernetes broker mode, Platform maps a positive count to the main container's `resources.limits['nvidia.com/gpu']` by default, or to the configured Platform resource name. The broker does not translate device IDs into Kubernetes placement rules. Device IDs are metadata for observability, not scheduling semantics, and this contract does not claim a TPU, AMD, or custom accelerator abstraction.
+## Challenge database
 
-Multi-server and Kubernetes target routing trusts only enabled, healthy, non-draining targets with remaining GPU capacity. Production agent targets require HTTPS and `verify_tls=true`; stale or insecure persisted assignments are not trusted under production policy.
-
-## Legacy Docker behavior
-
-The legacy Docker runtime stays SQLite-backed with `CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`. It mounts `/data` for challenge-local state and does not create Postgres.
+The challenge runtime is SQLite-backed with `CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`. The `/data` Swarm volume holds the SQLite file and challenge-local state. The single shared control-plane PostgreSQL is for master and validator state only and is never injected into a challenge.
 
 ## Out of scope
 
-This implementation does not include compose-file Postgres support, automatic backups, restore workflows, high availability, connection pooling, Postgres operator support, storage resize workflows, challenge Alembic migration automation, or automated destructive purge.
+This implementation does not include a Postgres server per challenge, Docker Compose or stack-file deployment, automatic backups, restore workflows, high availability, connection pooling, storage resize workflows, challenge Alembic migration automation, or automated destructive purge.

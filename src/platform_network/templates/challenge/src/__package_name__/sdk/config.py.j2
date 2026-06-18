@@ -16,7 +16,7 @@ class ChallengeSettings(BaseSettings):
     version: str = "{{ challenge_version }}"
     api_version: str = "{{ api_version }}"
     sdk_version: str = "{{ sdk_version }}"
-    # Platform injects CHALLENGE_DATABASE_URL for managed PostgreSQL in Kubernetes.
+    # Platform may inject CHALLENGE_DATABASE_URL (shared PostgreSQL) under Swarm.
     # Local development and generated tests default to SQLite under /data.
     database_url: str = "sqlite+aiosqlite:////data/challenge.sqlite3"
     shared_token: str | None = Field(default=None, repr=False)

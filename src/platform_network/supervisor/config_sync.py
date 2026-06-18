@@ -1,43 +1,36 @@
-"""Supervisor config-sync — Swarm port of the config-sync CronJob.
+"""Supervisor config-sync — Swarm config reconciliation task.
 
-The Kubernetes Helm chart runs a one-minute CronJob (``platform kubernetes
-sync-config``) that fetches YAML config from GitHub, validates it
-(ConfigMap-kind-only; Secret manifests rejected), renders the runtime
-config payload, digests it, and applies it to the ``platform-config``
-ConfigMap + annotates rollout targets ONLY when the digest changed. This
-module is the docker-backend analogue: a :class:`ScheduledTask` that
-REUSES the exact same fetch/validate/render/digest core from
-``platform_network.kubernetes.config_updater`` (``ConfigSyncSource``,
+A :class:`ScheduledTask` that fetches YAML config from GitHub, validates it
+(ConfigMap-kind-only; Secret manifests rejected), renders the runtime config
+payload, digests it, and rolls the Swarm services ONLY when the digest
+changed. The pure fetch/validate/render/digest core lives in
+:mod:`platform_network.supervisor.config_source` (``ConfigSyncSource``,
 ``validate_config_text``, ``_runtime_config_payload``, ``_digest`` — all
-pure, zero k8s API coupling; the k8s callers keep using them unchanged)
-and applies to Swarm instead of a ConfigMap.
+pure, with zero orchestration coupling).
 
 Apply mechanics (file-on-manager + forced rollouts, NOT rotating
 ``docker config`` objects): Docker Swarm configs are immutable, so a
 named-config approach would need an atomic create-new/update-services/
 remove-old dance per change. Instead the rendered payload is written
 atomically (tmp + rename) to a configured manager-host path that the
-first-party services bind-mount (default ``/etc/platform/master.yaml``;
-Task 24/27 pin the real mount), and each configured rollout target is
-restarted via ``docker service update --force`` through the existing
-:class:`SwarmCommandRunner` seam.
+first-party services bind-mount (default ``/etc/platform/master.yaml``),
+and each configured rollout target is restarted via ``docker service
+update --force`` through the :class:`SwarmCommandRunner` seam.
 
 Idempotency is RESTART-SAFE: the "currently applied" digest lives on
 disk, not in process memory — the payload file itself plus a sidecar
 (``<target>.digest``) recording the digest through which rollouts
 completed. A fresh supervisor over an already-current target is a no-op;
 a crash between file write and rollouts leaves the sidecar stale, so the
-next tick retries the rollouts (``rollout_retried`` — same reason the
-k8s updater reports for that state).
+next tick retries the rollouts (``rollout_retried``).
 
-Result-reason vocabulary is preserved verbatim from the k8s
-``ConfigSyncResult`` contract: ``already_current`` / ``updated`` /
-``rollout_retried`` / ``invalid_config`` (covers fetch failures too,
-exactly like the k8s try-block) / ``secret_sync_rejected``.
+Result-reason vocabulary: ``already_current`` / ``updated`` /
+``rollout_retried`` / ``invalid_config`` (covers fetch failures too) /
+``secret_sync_rejected``.
 
 Health-gate note: this job depends on GitHub, the local filesystem, and
-dockerd — never the broker — so the shared gate is accepted for recipe
-parity but deliberately not consulted.
+dockerd — never the broker — so the shared gate is accepted but
+deliberately not consulted.
 
 Rollout targets: the config consumers among Task 18's first-party
 service names — ``platform-admin``/``platform-proxy``/``platform-broker``.
@@ -54,7 +47,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from platform_network.config.settings import Settings
-from platform_network.kubernetes.config_updater import (
+from platform_network.master.swarm_backend import SwarmCliRunner, SwarmCommandRunner
+from platform_network.supervisor.config_source import (
     ConfigSyncResult,
     ConfigSyncSource,
     SecretSyncRejected,
@@ -63,19 +57,18 @@ from platform_network.kubernetes.config_updater import (
     fetch_github_config,
     validate_config_text,
 )
-from platform_network.master.swarm_backend import SwarmCliRunner, SwarmCommandRunner
 from platform_network.supervisor.health import BrokerHealthGate
 from platform_network.supervisor.scheduler import ScheduledTask
 
 logger = logging.getLogger(__name__)
 
-# Parity with the Helm chart's configSync schedule ("*/1 * * * *").
+# One-minute config-sync cadence.
 CONFIG_SYNC_INTERVAL_SECONDS = 60.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
-# Manager-host path first-party services bind-mount; Task 24/27 pin/override.
+# Manager-host path first-party services bind-mount.
 DEFAULT_CONFIG_TARGET_PATH = "/etc/platform/master.yaml"
 DIGEST_SIDECAR_SUFFIX = ".digest"
-# k8s parity inputs for the shared payload renderer (release/name derivation).
+# Inputs for the shared payload renderer (release/name derivation).
 DEFAULT_CONFIG_MAP_NAME = "platform-config"
 DEFAULT_NAMESPACE = "platform-master"
 
@@ -275,9 +268,9 @@ def build_config_sync_task(
     ``settings`` and ``health_gate`` follow the Task-16 builder recipe;
     neither is consulted today (the job depends on GitHub + local file +
     dockerd, not the broker — see module docstring). ``source`` defaults
-    to the same contract as the k8s CronJob (``PlatformNetwork/platform``
-    @ ``main``, ``deploy/helm/platform/values.yaml``, ``sync_secrets=False``,
-    ConfigMap-only); ``runner`` defaults to the existing
+    to the canonical source (``PlatformNetwork/platform`` @ ``main``,
+    ``deploy/swarm/master.yaml``, ``sync_secrets=False``, ConfigMap-only);
+    ``runner`` defaults to the existing
     :class:`SwarmCliRunner` subprocess seam.
     """
     del settings, health_gate  # recipe parity; not broker-dependent.

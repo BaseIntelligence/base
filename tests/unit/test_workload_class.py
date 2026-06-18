@@ -42,19 +42,6 @@ def test_challenge_spec_default_matches_workload_ledger_default() -> None:
     assert spec.workload_class == entry.workload_class == "job"
 
 
-def test_long_lived_api_construction_sites_use_service() -> None:
-    """Every challenge API container spec must be schedulable as a service."""
-
-    from platform_network.gpu.agent import _to_challenge_spec
-    from platform_network.schemas.gpu import GpuChallengeSpecRequest
-
-    request = GpuChallengeSpecRequest(
-        slug="prism",
-        image="ghcr.io/platformnetwork/prism:1",
-    )
-    assert _to_challenge_spec(request).workload_class == "service"
-
-
 @pytest.mark.asyncio
 async def test_cli_runtime_controller_spec_is_service() -> None:
     from platform_network.cli_app.main import DockerRuntimeController

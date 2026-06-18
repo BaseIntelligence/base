@@ -29,8 +29,8 @@ class BrokerLimits(BaseModel):
     cap_drop: tuple[str, ...] = ("ALL",)
     security_opt: tuple[str, ...] = ("no-new-privileges",)
     init: bool = True
-    # Inert unless the slug is allowlisted and the target is Kata-isolated;
-    # gate enforced in KubernetesBrokerService._validate_privileged.
+    # Inert unless the slug is allowlisted; the broker service enforces the
+    # privileged gate when validating each job.
     privileged: bool = False
 
 

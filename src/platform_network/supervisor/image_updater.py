@@ -1,16 +1,13 @@
-"""Supervisor image-updater — Swarm port of the master image-updater CronJobs.
+"""Supervisor image-updater — master Swarm service digest pinning.
 
-The Kubernetes Helm chart runs one-minute CronJobs (``platform validator
-refresh-image``) that resolve the public GHCR tag digest and patch the
-first-party master Deployments (admin/proxy/broker/...) to
-``tag@sha256:<digest>`` only when the digest changes. This module is the
-docker-backend analogue: a :class:`ScheduledTask` that REUSES the exact same
-digest-resolution core (:func:`resolve_remote_digest` /
+A :class:`ScheduledTask` that resolves the public GHCR tag digest and pins
+the first-party master Swarm services (admin/proxy/broker/...) to
+``tag@sha256:<digest>`` only when the digest changes. It reuses the
+registry-only digest-resolution core (:func:`resolve_remote_digest` /
 :func:`parse_image_reference` / :func:`extract_digest` from
-``platform_network.validator.image_updater`` — already registry-only, zero
-Kubernetes coupling; the k8s callers keep using it unchanged) and rolls the
-first-party Swarm services via ``docker service update --image
-tag@sha256:<digest>`` through the existing :class:`SwarmCommandRunner` seam.
+:mod:`platform_network.supervisor.image_ref`) and rolls the first-party
+Swarm services via ``docker service update --image tag@sha256:<digest>``
+through the existing :class:`SwarmCommandRunner` seam.
 
 Idempotency is RESTART-SAFE by design: instead of remembering the
 last-applied digest in process memory, each tick inspects the service's
@@ -47,17 +44,17 @@ from dataclasses import dataclass
 from platform_network.config.settings import Settings
 from platform_network.master.swarm_backend import SwarmCliRunner, SwarmCommandRunner
 from platform_network.supervisor.health import BrokerHealthGate
-from platform_network.supervisor.scheduler import ScheduledTask
-from platform_network.validator.image_updater import (
+from platform_network.supervisor.image_ref import (
     ImageReference,
     extract_digest,
     parse_image_reference,
     resolve_remote_digest,
 )
+from platform_network.supervisor.scheduler import ScheduledTask
 
 logger = logging.getLogger(__name__)
 
-# Parity with the Helm chart's one-minute image-updater CronJob schedule.
+# One-minute image-updater cadence.
 IMAGE_UPDATER_INTERVAL_SECONDS = 60.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
 DEFAULT_MASTER_IMAGE = "ghcr.io/platformnetwork/platform-master:latest"

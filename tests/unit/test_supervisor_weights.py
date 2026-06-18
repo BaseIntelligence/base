@@ -21,7 +21,6 @@ from platform_network.config.settings import Settings
 from platform_network.schemas.weights import FinalWeights
 from platform_network.supervisor import weights as weights_module
 from platform_network.supervisor.scheduler import ScheduledTask, TaskWorker
-from platform_network.supervisor.tasks import build_scheduled_tasks
 
 
 def _wire_fake_cli_compute_path(
@@ -76,12 +75,9 @@ def _wire_fake_cli_compute_path(
         lambda settings: SimpleNamespace(metagraph_cache=object(), weight_setter=None),
     )
     monkeypatch.setattr(
-        cli_main, "_kubernetes_target_registry", lambda settings: object()
-    )
-    monkeypatch.setattr(
         cli_main,
         "_master_weight_service",
-        lambda settings, kubernetes_targets, *, metagraph_cache: recorder["service"],
+        lambda settings, *, metagraph_cache: recorder["service"],
     )
     monkeypatch.setattr(cli_main, "_run_master_weight_epoch", _fake_epoch)
     return recorder
@@ -183,12 +179,3 @@ def test_compute_raise_is_logged_and_schedule_continues(
         scheduler_logger.disabled = was_disabled
     assert counts["n"] >= 3  # schedule kept ticking after each raise
     assert any("raised; continuing schedule" in message for message in handler.messages)
-
-
-def test_build_scheduled_tasks_registers_weights_task() -> None:
-    settings = Settings()
-    tasks, _gate = build_scheduled_tasks(settings)
-    weights_task = next(t for t in tasks if t.name == "weights-compute")
-    assert weights_task.interval_seconds == float(
-        settings.master.epoch_interval_seconds
-    )

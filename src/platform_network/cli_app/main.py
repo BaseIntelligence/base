@@ -19,40 +19,17 @@ from platform_network.bittensor.validator_loop import run_epoch_loop
 from platform_network.config import load_settings
 from platform_network.config.policy import production_policy_enabled_for_settings
 from platform_network.db.session import create_engine, create_session_factory
-from platform_network.gpu.agent import GpuAgentService, create_gpu_agent_app
-from platform_network.gpu.capabilities import ResourceCapabilityChecker
-from platform_network.gpu.client import GpuAgentClient
-from platform_network.gpu.registry import FileGpuServerRegistry
-from platform_network.kubernetes.agent import create_kubernetes_agent_app
-from platform_network.kubernetes.config_updater import (
-    ConfigSyncSource,
-    RolloutTarget,
-    create_incluster_config_sync_updater,
-)
-from platform_network.kubernetes.registry import FileKubernetesTargetRegistry
 from platform_network.master.app_admin import create_admin_app
 from platform_network.master.app_proxy import create_proxy_app
 from platform_network.master.challenge_client import ChallengeClient
-from platform_network.master.docker_broker import (
-    BrokerService,
-    DockerBrokerConfig,
-    DockerBrokerService,
-    create_docker_broker_app,
-)
+from platform_network.master.docker_broker import create_docker_broker_app
 from platform_network.master.docker_orchestrator import (
     DEFAULT_SECRET_MOUNT_DIR,
     ChallengeResources,
     ChallengeSpec,
-    DockerOrchestrator,
     port_from_internal_base_url,
     worker_command_from_metadata,
 )
-from platform_network.master.kubernetes_broker import (
-    KubernetesBrokerRouterService,
-    KubernetesBrokerService,
-    create_kubernetes_broker_app,
-)
-from platform_network.master.kubernetes_orchestrator import KubernetesTargetRouter
 from platform_network.master.registry import (
     ChallengeNotFoundError,
     DatabaseChallengeRegistry,
@@ -62,10 +39,6 @@ from platform_network.master.service import (
     active_challenge_inputs,
 )
 from platform_network.observability.logging import configure_logging
-from platform_network.orchestration.factory import (
-    OrchestrationBackend,
-    create_backend,
-)
 from platform_network.schemas.challenge import (
     ChallengeCreate,
     ChallengeStatus,
@@ -78,7 +51,6 @@ from platform_network.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
 )
-from platform_network.validator.image_updater import create_incluster_updater
 from platform_network.validator.normal_runner import NormalValidatorRunner
 from platform_network.validator.registry_client import RegistryClient
 from platform_network.validator.weights_client import WeightsClient
@@ -90,22 +62,14 @@ validator_app = typer.Typer(help="Run normal validator components")
 challenge_app = typer.Typer(help="Manage and scaffold challenges")
 db_app = typer.Typer(help="Database helpers")
 registry_app = typer.Typer(help="Registry helpers")
-gpu_app = typer.Typer(help="Run GPU server agents")
-gpu_server_app = typer.Typer(help="Manage validator GPU servers")
-kubernetes_app = typer.Typer(help="Run Kubernetes maintenance tasks")
-k8s_server_app = typer.Typer(help="Manage Kubernetes targets")
-k8s_agent_app = typer.Typer(help="Run Kubernetes target agents")
+worker_app = typer.Typer(help="Manage Swarm workers (CPU/GPU job nodes)")
 master_app.add_typer(master_challenges_app, name="challenges")
+master_app.add_typer(worker_app, name="worker")
 app.add_typer(master_app, name="master")
 app.add_typer(validator_app, name="validator")
 app.add_typer(challenge_app, name="challenge")
 app.add_typer(db_app, name="db")
 app.add_typer(registry_app, name="registry")
-app.add_typer(gpu_app, name="gpu-agent")
-app.add_typer(gpu_server_app, name="gpu-server")
-app.add_typer(kubernetes_app, name="kubernetes")
-app.add_typer(k8s_server_app, name="k8s-server")
-app.add_typer(k8s_agent_app, name="k8s-agent")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -140,32 +104,6 @@ def _admin_request(
         response.raise_for_status()
         if response.text:
             typer.echo(response.text)
-
-
-def _parse_labels(labels: list[str] | None) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for item in labels or []:
-        key, separator, value = item.partition("=")
-        if not separator or not key:
-            raise typer.BadParameter("labels must use key=value format")
-        parsed[key] = value
-    return parsed
-
-
-def _parse_rollout_targets(targets: list[str] | None) -> tuple[RolloutTarget, ...]:
-    raw_targets = targets or [
-        "Deployment/platform-admin",
-        "Deployment/platform-proxy",
-        "Deployment/platform-broker",
-        "Deployment/platform-validator",
-    ]
-    parsed: list[RolloutTarget] = []
-    for item in raw_targets:
-        kind, separator, name = item.partition("/")
-        if not separator or not kind or not name:
-            raise typer.BadParameter("rollout targets must use Kind/name format")
-        parsed.append(RolloutTarget(kind=kind, name=name))
-    return tuple(parsed)
 
 
 class DockerRuntimeController:
@@ -271,90 +209,31 @@ def _master_registry(settings, session_factory=None) -> DatabaseChallengeRegistr
     )
 
 
-def _gpu_registry(settings) -> FileGpuServerRegistry:
-    return FileGpuServerRegistry(
-        settings.docker.gpu_server_state_file,
-        secret_dir=settings.docker.secret_dir,
-        configured_servers=settings.gpu_servers,
-        production_policy=production_policy_enabled_for_settings(settings),
-    )
-
-
-def _kubernetes_target_registry(settings) -> FileKubernetesTargetRegistry:
-    return FileKubernetesTargetRegistry(
-        settings.kubernetes.target_state_file,
-        secret_dir=settings.docker.secret_dir,
-        configured_targets=settings.kubernetes_targets,
-        production_policy=production_policy_enabled_for_settings(settings),
-    )
-
-
-def _gpu_clients(settings) -> dict[str, GpuAgentClient]:
-    clients: dict[str, GpuAgentClient] = {}
-    registry = _gpu_registry(settings)
-    for server in registry.list():
-        if not server.enabled:
-            continue
-        token = registry.get_token(server.id)
-        if not token:
-            raise typer.BadParameter(f"GPU server {server.id!r} is missing a token")
-        clients[server.id] = GpuAgentClient(
-            server_id=server.id,
-            base_url=server.base_url,
-            token=token,
-            timeout_seconds=server.timeout_seconds,
-            verify_tls=server.verify_tls,
-        )
-    return clients
-
-
 def _master_compute_metagraph_cache(settings) -> MetagraphCache:
     return create_bittensor_runtime(settings).metagraph_cache
 
 
 def _master_weight_service(
     settings,
-    kubernetes_targets=None,
     metagraph_cache: MetagraphCache | None = None,
 ) -> MasterWeightService:
-    if kubernetes_targets is None:
-        kubernetes_targets = _kubernetes_target_registry(settings)
-    capability_records: dict[str, Any] = (
-        {target.id: target for target in kubernetes_targets.list()}
-        if settings.runtime.backend == "kubernetes"
-        else {server.id: server for server in _gpu_registry(settings).list()}
-    )
     return MasterWeightService(
         metagraph_cache=metagraph_cache or _master_compute_metagraph_cache(settings),
         challenge_client=ChallengeClient(
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
-            kubernetes_target_registry=(
-                kubernetes_targets if settings.runtime.backend == "kubernetes" else None
-            ),
         ),
-        capability_checker=ResourceCapabilityChecker(capability_records),
     )
 
 
-def _ensure_kubernetes_broker_backend(settings) -> None:
-    if (
-        settings.runtime.backend == "kubernetes"
-        and settings.kubernetes.broker_backend != "kubernetes"
-    ):
-        raise typer.BadParameter(
-            "runtime.backend=kubernetes requires kubernetes.broker_backend=kubernetes"
-        )
+def _challenge_orchestrator(settings):
+    from platform_network.master.swarm_backend import SwarmChallengeOrchestrator
 
-
-def _challenge_orchestrator(settings) -> OrchestrationBackend:
-    _ensure_kubernetes_broker_backend(settings)
-    return create_backend(
-        settings,
-        kubernetes_target_registry_factory=lambda: _kubernetes_target_registry(
-            settings
-        ),
-        gpu_clients_factory=lambda: _gpu_clients(settings),
+    return SwarmChallengeOrchestrator(
+        network_name=settings.docker.network_name,
+        internal_network=settings.docker.internal_network,
+        docker_broker_url=settings.docker.broker_url,
+        challenge_placement_constraint=settings.docker.challenge_placement_constraint,
     )
 
 
@@ -415,7 +294,7 @@ def _settings_docker_broker_url(settings: Any | None) -> str:
 def _prism_image_for_settings(image: str, settings: Any | None) -> str:
     if settings is None or not production_policy_enabled_for_settings(settings):
         return image
-    from platform_network.validator.image_updater import (
+    from platform_network.supervisor.image_ref import (
         parse_image_reference,
         resolve_remote_digest,
     )
@@ -579,13 +458,10 @@ def master_run(config: Path = typer.Option(Path("config/master.example.yaml"))):
     session_factory = _master_session_factory(settings)
     registry = _master_registry(settings, session_factory)
     orchestrator = _challenge_orchestrator(settings)
-    kubernetes_targets = _kubernetes_target_registry(settings)
     admin = create_admin_app(
         registry=registry,
         runtime_controller=DockerRuntimeController(registry, orchestrator),
-        gpu_registry=_gpu_registry(settings),
-        kubernetes_target_registry=kubernetes_targets,
-        weight_service=_master_weight_service(settings, kubernetes_targets),
+        weight_service=_master_weight_service(settings),
         netuid=settings.network.netuid,
         chain_endpoint=settings.network.chain_endpoint or "",
         admin_token_provider=lambda: read_secret(
@@ -609,7 +485,6 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     engine = create_engine(settings.database.url)
     session_factory = create_session_factory(engine)
     registry = _master_registry(settings, session_factory)
-    kubernetes_targets = _kubernetes_target_registry(settings)
     runtime = create_bittensor_runtime(settings)
     nonce_store = SqlAlchemyMinerNonceStore(
         session_factory,
@@ -625,9 +500,6 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         upload_max_body_bytes=settings.master.upload_max_body_bytes,
         upload_require_registered_hotkey=settings.master.upload_require_registered_hotkey,
         extra_registered_hotkeys=settings.master.upload_extra_registered_hotkeys,
-        kubernetes_target_registry=(
-            kubernetes_targets if settings.runtime.backend == "kubernetes" else None
-        ),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")
@@ -642,49 +514,30 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
 
     _run_startup_migrations(settings)
     registry = _master_registry(settings)
-    _ensure_kubernetes_broker_backend(settings)
-    if settings.kubernetes.broker_backend == "kubernetes":
-        broker = create_kubernetes_broker_app(
-            registry=registry,
-            service=KubernetesBrokerRouterService.from_settings(
-                settings=settings,
-                challenge_registry=registry,
-                target_registry=_kubernetes_target_registry(settings),
-            ),
-        )
-    else:
-        docker_service: BrokerService
-        if settings.runtime.backend == "docker":
-            from platform_network.master.swarm_backend import (
-                SwarmBrokerConfig,
-                SwarmBrokerService,
-            )
+    from platform_network.master.swarm_backend import (
+        SwarmBrokerConfig,
+        SwarmBrokerService,
+    )
 
-            docker_service = SwarmBrokerService(
-                SwarmBrokerConfig(
-                    workspace_dir=Path(settings.docker.broker_workspace_dir),
-                    allowed_images=tuple(settings.docker.broker_allowed_images),
-                    node_role=settings.docker.broker_node_role,
-                    privileged_escape_slugs=(
-                        frozenset(settings.docker.broker_privileged_slugs)
-                        if settings.docker.allow_privileged
-                        else frozenset()
-                    ),
-                    allow_privileged_escape=(
-                        settings.docker.allow_privileged
-                        and settings.docker.broker_allow_privileged_escape
-                    ),
-                    placement_constraint=settings.docker.broker_placement_constraint,
-                )
-            )
-        else:
-            docker_service = DockerBrokerService(
-                DockerBrokerConfig(
-                    workspace_dir=Path(settings.docker.broker_workspace_dir),
-                    allowed_images=tuple(settings.docker.broker_allowed_images),
-                )
-            )
-        broker = create_docker_broker_app(registry=registry, service=docker_service)
+    docker_service = SwarmBrokerService(
+        SwarmBrokerConfig(
+            workspace_dir=Path(settings.docker.broker_workspace_dir),
+            allowed_images=tuple(settings.docker.broker_allowed_images),
+            node_role=settings.docker.broker_node_role,
+            privileged_escape_slugs=(
+                frozenset(settings.docker.broker_privileged_slugs)
+                if settings.docker.allow_privileged
+                else frozenset()
+            ),
+            allow_privileged_escape=(
+                settings.docker.allow_privileged
+                and settings.docker.broker_allow_privileged_escape
+            ),
+            cpu_job_constraint=settings.docker.cpu_job_constraint,
+            gpu_job_constraint=settings.docker.gpu_job_constraint,
+        )
+    )
+    broker = create_docker_broker_app(registry=registry, service=docker_service)
     endpoint = f"{settings.docker.broker_host}:{settings.docker.broker_port}"
     typer.echo(f"Starting Docker broker API on {endpoint}")
     uvicorn.run(
@@ -694,15 +547,9 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
 
 @master_app.command("supervisor")
 def master_supervisor(config: Path = typer.Option(Path("config/master.example.yaml"))):
-    """Run the Docker-backend control-plane supervisor (systemd Type=notify)."""
+    """Run the Swarm control-plane supervisor (systemd Type=notify)."""
     settings = load_settings(config)
     configure_logging(settings.observability.log_json)
-    if settings.runtime.backend != "docker":
-        raise typer.BadParameter(
-            "the supervisor replaces Kubernetes control-plane CronJobs and only "
-            "runs with runtime.backend=docker; "
-            f"got runtime.backend={settings.runtime.backend!r}"
-        )
     from platform_network.supervisor import build_supervisor
 
     supervisor = build_supervisor(settings)
@@ -712,314 +559,86 @@ def master_supervisor(config: Path = typer.Option(Path("config/master.example.ya
     raise typer.Exit(code=supervisor.run())
 
 
-@k8s_agent_app.command("run")
-def k8s_agent_run(
-    config: Path = typer.Option(Path("config/master.example.yaml")),
-    token: str | None = typer.Option(None, help="Kubernetes agent bearer token."),
-    token_file: Path | None = typer.Option(None, help="Path containing bearer token."),
-    host: str = typer.Option("0.0.0.0"),
-    port: int = typer.Option(8091),
-):
-    settings = load_settings(config)
-    configure_logging(settings.observability.log_json)
-    agent_token = read_secret(token, str(token_file) if token_file else None)
-    if not agent_token:
-        raise typer.BadParameter("Kubernetes agent token or token file is required")
-    import uvicorn
+def _docker_cli(args: list[str]) -> None:
+    import subprocess
 
-    app_instance = create_kubernetes_agent_app(
-        token_provider=lambda: agent_token,
-        orchestrator=KubernetesTargetRouter.from_settings(
-            settings, _kubernetes_target_registry(settings)
-        ).default_orchestrator,
-        broker_service=KubernetesBrokerService.from_settings(settings),
+    completed = subprocess.run(
+        ["docker", *args],
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    typer.echo(f"Starting Kubernetes agent API on {host}:{port}")
-    uvicorn.run(app_instance, host=host, port=port)
+    if completed.stdout:
+        typer.echo(completed.stdout.rstrip())
+    if completed.returncode != 0:
+        if completed.stderr:
+            typer.echo(completed.stderr.rstrip(), err=True)
+        raise typer.Exit(code=completed.returncode)
 
 
-@kubernetes_app.command("sync-config")
-def kubernetes_sync_config(
-    namespace: str = typer.Option(..., "--namespace"),
-    config_map: str = typer.Option("platform-config", "--config-map"),
-    github_repository: str = typer.Option(
-        "PlatformNetwork/platform",
-        "--github-repository",
-        "--repo",
-        help="GitHub owner/repository to fetch config from.",
+@worker_app.command("token")
+def worker_token(
+    role: str = typer.Option("worker", "--role", help="worker or manager"),
+    rotate: bool = typer.Option(False, "--rotate", help="Rotate the join token first."),
+):
+    """Print the ``docker swarm join`` command for a new worker/manager node."""
+    if role not in {"worker", "manager"}:
+        raise typer.BadParameter("role must be 'worker' or 'manager'")
+    args = ["swarm", "join-token"]
+    if rotate:
+        args.append("--rotate")
+    args.append(role)
+    _docker_cli(args)
+
+
+@worker_app.command("list")
+def worker_list():
+    """List Swarm nodes (``docker node ls``)."""
+    _docker_cli(["node", "ls"])
+
+
+@worker_app.command("label")
+def worker_label(
+    node: str,
+    workload: str = typer.Option(..., "--workload", help="cpu or gpu"),
+):
+    """Label a node so the broker schedules cpu/gpu jobs onto it."""
+    if workload not in {"cpu", "gpu"}:
+        raise typer.BadParameter("workload must be 'cpu' or 'gpu'")
+    _docker_cli(
+        ["node", "update", "--label-add", f"platform.workload={workload}", node]
+    )
+
+
+@worker_app.command("drain")
+def worker_drain(
+    node: str,
+    active: bool = typer.Option(
+        False, "--active", help="Restore availability=active instead of draining."
     ),
-    github_branch: str = typer.Option(
-        "main",
-        "--github-branch",
-        "--ref",
-        help="GitHub branch or ref to fetch config from.",
-    ),
-    values_path: list[str] | None = typer.Option(
-        None,
-        "--values-path",
-        help="Repository path to a YAML values/manifests file. May be repeated.",
-    ),
-    rollout_target: list[str] | None = typer.Option(
-        None,
-        "--rollout-target",
-        help=(
-            "Workload to annotate after config changes, as Kind/name. May be repeated."
-        ),
-    ),
-) -> None:
-    paths = tuple(values_path or ["deploy/helm/platform/values.yaml"])
-    source = ConfigSyncSource(
-        repository=github_repository,
-        branch=github_branch,
-        paths=paths,
-        sync_secrets=False,
-        allowed_kinds=("ConfigMap",),
-    )
-    rollout_targets = _parse_rollout_targets(rollout_target)
-    result = create_incluster_config_sync_updater(source).sync_once(
-        namespace=namespace,
-        config_map=config_map,
-        rollout_targets=rollout_targets,
-    )
-    typer.echo(result.reason)
-
-
-@gpu_app.command("run")
-def gpu_agent_run(
-    config: Path = typer.Option(Path("config/validator.example.yaml")),
-    token: str | None = typer.Option(None, help="GPU agent bearer token."),
-    token_file: Path | None = typer.Option(None, help="Path containing bearer token."),
-    host: str = typer.Option("0.0.0.0"),
-    port: int = typer.Option(8090),
 ):
-    settings = load_settings(config)
-    configure_logging(settings.observability.log_json)
-    agent_token = read_secret(token, str(token_file) if token_file else None)
-    if not agent_token:
-        raise typer.BadParameter("GPU agent token or token file is required")
-    import uvicorn
-
-    app_instance = create_gpu_agent_app(
-        token_provider=lambda: agent_token,
-        service=GpuAgentService(
-            DockerOrchestrator(
-                network_name=settings.docker.network_name,
-                secret_dir=settings.docker.secret_dir,
-                internal_network=settings.docker.internal_network,
-                docker_broker_url=settings.docker.broker_url,
-            )
-        ),
-    )
-    typer.echo(f"Starting GPU agent API on {host}:{port}")
-    uvicorn.run(app_instance, host=host, port=port)
+    """Drain (or reactivate) a node's Swarm availability."""
+    availability = "active" if active else "drain"
+    _docker_cli(["node", "update", "--availability", availability, node])
 
 
-@gpu_server_app.command("add")
-def gpu_server_add(
-    server_id: str,
-    url: str = typer.Option(..., "--url"),
-    token: str | None = typer.Option(None, "--token"),
-    token_file: Path | None = typer.Option(None, "--token-file"),
-    enabled: bool = typer.Option(True, "--enabled/--disabled"),
-    verify_tls: bool = typer.Option(True, "--verify-tls/--no-verify-tls"),
-    timeout_seconds: float = typer.Option(30.0),
-    min_gpu_count: int = typer.Option(1),
-    config: Path = typer.Option(Path("config/validator.example.yaml")),
+@worker_app.command("rm")
+def worker_rm(
+    node: str,
+    force: bool = typer.Option(False, "--force"),
 ):
-    _admin_post(
-        config,
-        "/v1/admin/gpu-servers",
-        {
-            "id": server_id,
-            "base_url": url,
-            "token": token,
-            "token_file": str(token_file) if token_file else None,
-            "enabled": enabled,
-            "verify_tls": verify_tls,
-            "timeout_seconds": timeout_seconds,
-            "min_gpu_count": min_gpu_count,
-        },
-    )
+    """Remove a node from the Swarm (``docker node rm``)."""
+    args = ["node", "rm"]
+    if force:
+        args.append("--force")
+    args.append(node)
+    _docker_cli(args)
 
 
-@gpu_server_app.command("list")
-def gpu_server_list(config: Path = typer.Option(Path("config/validator.example.yaml"))):
-    _admin_request(config, "GET", "/v1/admin/gpu-servers")
-
-
-@gpu_server_app.command("show")
-def gpu_server_show(
-    server_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_request(config, "GET", f"/v1/admin/gpu-servers/{server_id}")
-
-
-@gpu_server_app.command("enable")
-def gpu_server_enable(
-    server_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/gpu-servers/{server_id}/enable")
-
-
-@gpu_server_app.command("disable")
-def gpu_server_disable(
-    server_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/gpu-servers/{server_id}/disable")
-
-
-@gpu_server_app.command("remove")
-def gpu_server_remove(
-    server_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_request(config, "DELETE", f"/v1/admin/gpu-servers/{server_id}")
-
-
-@gpu_server_app.command("health")
-def gpu_server_health(
-    server_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/gpu-servers/{server_id}/health")
-
-
-@k8s_server_app.command("add-kubeconfig")
-def k8s_server_add_kubeconfig(
-    target_id: str,
-    kubeconfig_file: Path = typer.Option(..., "--kubeconfig-file"),
-    api_url: str | None = typer.Option(None, "--api-url"),
-    namespace: str = typer.Option("platform", "--namespace"),
-    service_account: str | None = typer.Option("platform-master", "--service-account"),
-    gpu_count: int = typer.Option(0, "--gpu-count"),
-    storage_class: str | None = typer.Option(None, "--storage-class"),
-    runtime_class_name: str | None = typer.Option(None, "--runtime-class-name"),
-    enabled: bool = typer.Option(True, "--enabled/--disabled"),
-    verify_tls: bool = typer.Option(True, "--verify-tls/--no-verify-tls"),
-    label: list[str] | None = typer.Option(None, "--label"),
-    config: Path = typer.Option(Path("config/validator.example.yaml")),
-):
-    _admin_post(
-        config,
-        "/v1/admin/kubernetes-targets",
-        {
-            "id": target_id,
-            "mode": "direct",
-            "api_url": api_url,
-            "namespace": namespace,
-            "service_account": service_account,
-            "kubeconfig_file": str(kubeconfig_file),
-            "enabled": enabled,
-            "verify_tls": verify_tls,
-            "gpu_count": gpu_count,
-            "storage_class": storage_class,
-            "runtime_class_name": runtime_class_name,
-            "labels": _parse_labels(label),
-        },
-    )
-
-
-@k8s_server_app.command("add")
-def k8s_server_add_agent(
-    target_id: str,
-    url: str = typer.Option(..., "--url", help="Kubernetes agent URL."),
-    token: str | None = typer.Option(None, "--token"),
-    token_file: Path | None = typer.Option(None, "--token-file"),
-    gpu_count: int = typer.Option(1, "--gpu-count"),
-    enabled: bool = typer.Option(True, "--enabled/--disabled"),
-    verify_tls: bool = typer.Option(True, "--verify-tls/--no-verify-tls"),
-    timeout_seconds: float = typer.Option(30.0),
-    label: list[str] | None = typer.Option(None, "--label"),
-    config: Path = typer.Option(Path("config/validator.example.yaml")),
-):
-    agent_token = read_secret(token, str(token_file) if token_file else None)
-    if not agent_token:
-        raise typer.BadParameter("Kubernetes agent token or token file is required")
-    _admin_post(
-        config,
-        "/v1/admin/kubernetes-targets",
-        {
-            "id": target_id,
-            "mode": "agent",
-            "agent_url": url,
-            "agent_token": agent_token,
-            "enabled": enabled,
-            "verify_tls": verify_tls,
-            "timeout_seconds": timeout_seconds,
-            "gpu_count": gpu_count,
-            "labels": _parse_labels(label),
-        },
-    )
-
-
-@k8s_server_app.command("list")
-def k8s_server_list(config: Path = typer.Option(Path("config/validator.example.yaml"))):
-    _admin_request(config, "GET", "/v1/admin/kubernetes-targets")
-
-
-@k8s_server_app.command("show")
-def k8s_server_show(
-    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_request(config, "GET", f"/v1/admin/kubernetes-targets/{target_id}")
-
-
-@k8s_server_app.command("health")
-def k8s_server_health(
-    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/health")
-
-
-@k8s_server_app.command("enable")
-def k8s_server_enable(
-    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/enable")
-
-
-@k8s_server_app.command("disable")
-def k8s_server_disable(
-    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_post(config, f"/v1/admin/kubernetes-targets/{target_id}/disable")
-
-
-@k8s_server_app.command("remove")
-def k8s_server_remove(
-    target_id: str, config: Path = typer.Option(Path("config/validator.example.yaml"))
-):
-    _admin_request(config, "DELETE", f"/v1/admin/kubernetes-targets/{target_id}")
-
-
-def _containers_tracking_mutable_image(
-    kube_client: Any,
-    *,
-    kind: str,
-    name: str,
-    base: str,
-    mutable_base: Callable[[str], str | None],
-) -> list[str]:
-    # Discover every live container that tracks the same mutable image so each is
-    # rolled to the new digest. This avoids relying on challenge-record metadata,
-    # which omits worker containers injected directly onto the workload spec.
-    getter = getattr(kube_client, "get", None)
-    if getter is None:
-        return []
-    try:
-        workload = getter(kind, name)
-    except Exception:
-        return []
-    if not workload:
-        return []
-    pod_spec = ((workload.get("spec") or {}).get("template") or {}).get("spec") or {}
-    tracked: list[str] = []
-    for container in pod_spec.get("containers") or []:
-        container_name = container.get("name")
-        container_image = container.get("image")
-        if not container_name or not container_image:
-            continue
-        if mutable_base(container_image) == base:
-            tracked.append(container_name)
-    return tracked
+@worker_app.command("inspect")
+def worker_inspect(node: str):
+    """Inspect a Swarm node (``docker node inspect``)."""
+    _docker_cli(["node", "inspect", node])
 
 
 @master_app.command("refresh-challenge-images")
@@ -1032,7 +651,7 @@ def master_refresh_challenge_images(
     controller = DockerRuntimeController(registry, _challenge_orchestrator(settings))
 
     def mutable_base(image: str) -> str | None:
-        from platform_network.validator.image_updater import parse_image_reference
+        from platform_network.supervisor.image_ref import parse_image_reference
 
         parsed = parse_image_reference(image)
         if parsed.registry != "ghcr.io":
@@ -1042,22 +661,10 @@ def master_refresh_challenge_images(
         return f"{parsed.registry}/{parsed.repository}:{tag}"
 
     async def refresh() -> None:
-        from platform_network.kubernetes.client import KubernetesClient
-        from platform_network.kubernetes.names import challenge_name
         from platform_network.schemas.challenge import ChallengeStatus, ChallengeUpdate
-        from platform_network.validator.image_updater import (
+        from platform_network.supervisor.image_ref import (
             parse_image_reference,
             resolve_remote_digest,
-        )
-
-        kube_client = (
-            KubernetesClient(
-                namespace=settings.kubernetes.namespace,
-                in_cluster=settings.kubernetes.in_cluster,
-                kubeconfig=settings.kubernetes.kubeconfig,
-            )
-            if settings.runtime.backend == "kubernetes"
-            else None
         )
 
         for record in await registry.list():
@@ -1075,40 +682,9 @@ def master_refresh_challenge_images(
                 typer.echo(f"{record.slug}: updated {desired}")
             else:
                 typer.echo(f"{record.slug}: already-current {desired}")
-            if record.status == ChallengeStatus.ACTIVE:
-                if kube_client is not None:
-                    workload_name = challenge_name(record.slug)
-                    workload_kind = (
-                        "StatefulSet"
-                        if settings.kubernetes.challenge_mode == "statefulset"
-                        else "Deployment"
-                    )
-                    containers = _containers_tracking_mutable_image(
-                        kube_client,
-                        kind=workload_kind,
-                        name=workload_name,
-                        base=base,
-                        mutable_base=mutable_base,
-                    )
-                    if not containers:
-                        containers = ["challenge"]
-                        if worker_command_from_metadata(
-                            getattr(record, "metadata", {}) or {}
-                        ):
-                            containers.append("worker")
-                    for container in containers:
-                        kube_client.patch_workload_image(
-                            kind=workload_kind,
-                            name=workload_name,
-                            container=container,
-                            image=desired,
-                        )
-                    typer.echo(
-                        f"{record.slug}: patched {workload_kind}/{workload_name}"
-                    )
-                elif changed:
-                    result = await controller.restart(record.slug)
-                    typer.echo(f"{record.slug}: restarted {result['status']}")
+            if record.status == ChallengeStatus.ACTIVE and changed:
+                result = await controller.restart(record.slug)
+                typer.echo(f"{record.slug}: restarted {result['status']}")
 
     asyncio.run(refresh())
 
@@ -1148,10 +724,8 @@ def master_weights(
     _run_startup_migrations(settings)
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
-    kubernetes_targets = _kubernetes_target_registry(settings)
     service = _master_weight_service(
         settings,
-        kubernetes_targets,
         metagraph_cache=runtime.metagraph_cache,
     )
     if submit_on_chain and not dry_run:
@@ -1205,28 +779,6 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     asyncio.run(
         _run_validator_runtime(runner, settings.validator.weights_interval_seconds)
     )
-
-
-@validator_app.command("refresh-image")
-def validator_refresh_image(
-    namespace: str = typer.Option(..., "--namespace"),
-    deployment: str | None = typer.Option(None, "--deployment"),
-    name: str | None = typer.Option(None, "--name"),
-    resource_kind: str = typer.Option("deployment", "--resource-kind"),
-    container: str = typer.Option("validator", "--container"),
-    image: str = typer.Option(..., "--image"),
-    registry_endpoint: str = typer.Option("", "--registry-endpoint"),
-):
-    updated = create_incluster_updater().refresh(
-        namespace=namespace,
-        deployment=deployment,
-        name=name,
-        resource_kind=resource_kind,
-        container=container,
-        image=image,
-        registry_endpoint=registry_endpoint or None,
-    )
-    typer.echo("updated" if updated else "already-current")
 
 
 @challenge_app.command("create")

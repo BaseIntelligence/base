@@ -21,7 +21,7 @@ submission contract, and use Platform to reach the challenge's public surface.
 
 Each challenge has a slug, such as `agent-challenge`, `data-fabrication`, `bounty-challenge`, or
 `prism`. Platform uses that slug to proxy public challenge requests to the correct isolated
-challenge container.
+challenge service.
 
 Challenge-specific examples:
 
@@ -106,8 +106,8 @@ Checklist:
 
 1. Confirm ingress routes `/challenges` to Platform proxy. A route for `/v1/challenges` alone is not enough.
 2. Confirm Platform proxy slug routing points at the Agent Challenge service and still blocks `/internal/*`, `/health`, and `/version`.
-3. Confirm Agent Challenge health, pod readiness, service DNS, and service port from the Platform namespace.
-4. In Kubernetes target mode, confirm target assignment, target health, and capacity state.
+3. Confirm Agent Challenge health, that the Swarm service has a running task, service DNS on the overlay network, and the service port.
+4. Confirm the challenge service is running on the manager node and is not stuck pending placement.
 5. Separate proxy transport failures from challenge-origin non-2xx responses. Transport failures become safe 502 responses. Challenge-origin non-2xx responses should pass through as safe validation, auth, replay, rate-limit, or challenge error responses.
 6. If the failing request is an env action, confirm the request uses `GET/PUT /challenges/agent-challenge/submissions/{id}/env`, `POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, or `POST /challenges/agent-challenge/submissions/{id}/launch`, and includes only the signed miner header names above.
 

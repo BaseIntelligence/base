@@ -1,6 +1,0 @@
-apiVersion: v2
-name: platform
-description: Platform Network Kubernetes deployment
-type: application
-version: 3.0.4
-appVersion: "3.0.4"

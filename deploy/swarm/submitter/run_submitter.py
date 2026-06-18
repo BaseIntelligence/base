@@ -1,7 +1,7 @@
 """Trimmed, submit-only on-chain weight submitter for the Docker-Swarm cutover.
 
-This process replaces the full ``platform validator run`` pod for Phase 5 of the
-k3s -> Docker-Swarm cutover. It does ONE thing: every
+This process replaces the full ``platform validator run`` deployment for the
+Docker-Swarm cutover. It does ONE thing: every
 ``validator.weights_interval_seconds`` it fetches the master's final weight
 vector over HTTP and submits it on-chain with the validator hotkey.
 
@@ -9,10 +9,11 @@ What it deliberately does NOT do (vs ``platform validator run``):
   * No challenge orchestration / registry reconcile loop. The production CLI
     runs ``NormalValidatorRunner.run_forever()`` (the ``run_once`` registry
     sync that launches challenge containers) concurrently with the submit
-    loop (see ``cli_app/main.py:_run_validator_runtime``). On a Docker host
-    that ``run_once`` path is both wrong (it targets the Kubernetes backend)
-    and dangerous (it could clobber live challenge services), so it is dropped
-    entirely here. We keep ONLY the second coroutine: the submit loop.
+    loop (see ``cli_app/main.py:_run_validator_runtime``). On the submitter
+    host that ``run_once`` path is both unnecessary (challenge orchestration
+    belongs to the manager, not the submitter) and dangerous (it could clobber
+    live challenge services), so it is dropped entirely here. We keep ONLY the
+    second coroutine: the submit loop.
   * No database connection. The submit path never opens the control-plane DB.
 
 The submit wiring mirrors production exactly: same ``load_settings`` ->

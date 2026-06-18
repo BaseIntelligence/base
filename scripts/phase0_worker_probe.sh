@@ -3,7 +3,7 @@
 #
 # Purpose (plan: .omo/plans/platform-docker-migration.md, Task 1):
 #   Verify, on GPU worker (default 31.22.104.113), every downstream assumption
-#   of the Kubernetes -> Docker Swarm migration BEFORE any mutating step:
+#   of the Docker Swarm worker bring-up BEFORE any mutating step:
 #     - dockerd installed + version (expect 29.x)
 #     - nvidia-container-toolkit wired into dockerd
 #     - GPU visible to containers (single APPROVED ephemeral test container)

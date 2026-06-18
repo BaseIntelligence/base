@@ -2,15 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
-from pydantic import ValidationError
 
-from platform_network.config.settings import (
-    KubernetesSettings,
-    RuntimeSettings,
-    Settings,
-)
+from platform_network.config.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +19,10 @@ def test_compose_deployment_files_are_removed_but_image_build_assets_remain() ->
 
     assert (docker_dir / "Dockerfile.master").is_file()
     assert (docker_dir / "Dockerfile.validator").is_file()
-    assert (ROOT / "deploy" / "helm" / "platform" / "Chart.yaml").is_file()
+    # Helm is removed in the Swarm migration; the first-party deployment is the
+    # imperative Docker Swarm installer.
+    assert not (ROOT / "deploy" / "helm").exists()
+    assert (ROOT / "deploy" / "swarm" / "install-swarm.sh").is_file()
 
 
 def test_platform_dockerfiles_run_as_non_root_user() -> None:
@@ -50,44 +47,27 @@ def test_first_party_defaults_are_docker_swarm() -> None:
         (ROOT / "config" / "validator.example.yaml").read_text(encoding="utf-8")
     )
 
-    assert settings.runtime.backend == "docker"
-    assert settings.kubernetes.broker_backend == "docker"
+    # The Kubernetes/runtime backend selector is gone: Swarm is the only backend.
+    assert not hasattr(settings, "runtime")
+    assert not hasattr(settings, "kubernetes")
     assert settings.database.url.startswith("postgresql+asyncpg://")
     assert settings.docker.broker_allowed_images == ["ghcr.io/platformnetwork/"]
+    # Swarm placement defaults: challenge services on the manager, broker jobs on
+    # CPU/GPU-labeled workers.
+    assert settings.docker.challenge_placement_constraint == "node.role==manager"
+    assert settings.docker.cpu_job_constraint == "node.labels.platform.workload==cpu"
+    assert settings.docker.gpu_job_constraint == "node.labels.platform.workload==gpu"
 
     for example in (master_example, validator_example):
-        assert example["runtime"]["backend"] == "docker"
-        assert example["kubernetes"]["broker_backend"] == "docker"
+        assert "runtime" not in example
+        assert "kubernetes" not in example
         assert example["database"]["url"].startswith("postgresql+asyncpg://")
         assert example["docker"]["broker_allowed_images"] == [
             "ghcr.io/platformnetwork/"
         ]
 
 
-def test_backend_accepts_only_kubernetes_or_docker() -> None:
-    assert RuntimeSettings().backend == "docker"
-    assert RuntimeSettings(backend="kubernetes").backend == "kubernetes"
-    assert RuntimeSettings(backend="docker").backend == "docker"
-
-    assert KubernetesSettings().broker_backend == "docker"
-    assert KubernetesSettings(broker_backend="kubernetes").broker_backend == (
-        "kubernetes"
-    )
-    assert KubernetesSettings(broker_backend="docker").broker_backend == "docker"
-
-    with pytest.raises(ValidationError):
-        RuntimeSettings.model_validate({"backend": "foo"})
-    with pytest.raises(ValidationError):
-        KubernetesSettings.model_validate({"broker_backend": "foo"})
-
-
 def test_first_party_docs_and_ci_do_not_advertise_compose_or_watchtower() -> None:
-    checked_paths = [
-        ROOT / "README.md",
-        ROOT / "docs" / "architecture.md",
-        ROOT / "docs" / "security.md",
-        ROOT / ".github" / "workflows" / "ci.yml",
-    ]
     forbidden = [
         "docker compose",
         "compose.yml",
@@ -97,8 +77,25 @@ def test_first_party_docs_and_ci_do_not_advertise_compose_or_watchtower() -> Non
         "watchtower",
         "com.centurylinklabs.watchtower.enable",
     ]
-
-    for path in checked_paths:
+    # README, security docs, and CI carry zero compose/watchtower mentions.
+    strict_paths = [
+        ROOT / "README.md",
+        ROOT / "docs" / "security.md",
+        ROOT / ".github" / "workflows" / "ci.yml",
+    ]
+    for path in strict_paths:
         content = path.read_text(encoding="utf-8").lower()
         for token in forbidden:
             assert token not in content, f"{token!r} found in {path}"
+
+    # architecture.md mentions Docker Compose only to disavow it, so it must not
+    # advertise any compose FILE artifact or watchtower, and must describe the
+    # Swarm-only deployment.
+    architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+    lowered = architecture.lower()
+    for token in forbidden:
+        if token == "docker compose":
+            continue
+        assert token not in lowered, f"{token!r} found in architecture.md"
+    assert "docker swarm" in lowered
+    assert "no kubernetes manifests" in lowered

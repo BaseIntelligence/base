@@ -70,52 +70,6 @@ jobs:
       - name: Coverage
         run: uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
 
-  helm-kubeconform:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: azure/setup-helm@v4
-      - name: Install kubeconform
-        env:
-          KUBECONFORM_VERSION: v0.7.0
-        run: |
-          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" -o /tmp/kubeconform.tar.gz
-          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
-          sudo install /tmp/kubeconform /usr/local/bin/kubeconform
-      - name: Helm lint
-        run: helm lint deploy/helm/platform
-      - name: Helm template default values
-        run: helm template platform deploy/helm/platform > /tmp/platform-default.yaml
-      - name: kubeconform default values
-        run: kubeconform -strict -summary /tmp/platform-default.yaml
-      - name: Helm template production values
-        run: helm template platform deploy/helm/platform -f deploy/helm/platform/values.production.example.yaml > /tmp/platform-production.yaml
-      - name: kubeconform production values
-        run: kubeconform -strict -summary /tmp/platform-production.yaml
-      - name: Helm template master auto-upgrade values
-        run: >-
-          helm template platform-master deploy/helm/platform
-          --namespace platform-master
-          --set validator.enabled=false
-          --set autoUpgrade.enabled=true
-          > /tmp/platform-master-auto-upgrade.yaml
-      - name: kubeconform master auto-upgrade values
-        run: kubeconform -strict -summary /tmp/platform-master-auto-upgrade.yaml
-      - name: Helm template validator auto-upgrade values
-        run: >-
-          helm template platform-validator deploy/helm/platform
-          --namespace platform-validator
-          --set master.enabled=false
-          --set validator.enabled=true
-          --set autoUpgrade.enabled=true
-          --set validator.walletSecretName=platform-validator-wallet
-          > /tmp/platform-validator-auto-upgrade.yaml
-      - name: kubeconform validator auto-upgrade values
-        run: kubeconform -strict -summary /tmp/platform-validator-auto-upgrade.yaml
-
   production-policy:
     runs-on: ubuntu-latest
     steps:
@@ -124,11 +78,8 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
-      - uses: azure/setup-helm@v4
       - name: Install dependencies
         run: uv sync --extra dev --extra master
-      - name: Helm production policy tests
-        run: uv run pytest tests/unit/test_helm_chart.py -q
       - name: Runtime production policy tests
         run: >-
           uv run pytest
@@ -136,7 +87,6 @@ jobs:
           tests/unit/test_db_and_models.py
           tests/unit/test_registry_extended.py
           tests/unit/test_admin_registry_proxy.py
-          tests/unit/test_kubernetes_resources.py
           -q
 
   postgres-orm:
@@ -174,7 +124,6 @@ jobs:
       - format
       - mypy
       - coverage
-      - helm-kubeconform
       - production-policy
       - postgres-orm
     runs-on: ubuntu-latest

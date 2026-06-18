@@ -16,8 +16,9 @@ byte-identical:
 
 Swarm-specific decisions (see ``.omo/plans/platform-docker-migration.md``):
 
-* Placement constraint ``node.role==worker`` on every workload — nothing is
-  ever scheduled on the manager/validator node.
+* Placement is per workload: challenge API services run on the manager/host
+  (``node.role==manager``) while broker eval jobs run on workers, steered to
+  CPU- vs GPU-labeled nodes via ``node.labels.platform.workload`` (cpu/gpu).
 * Swarm cannot attach services to the predefined ``none`` network, so
   ``limits.network == "none"`` maps to a dedicated *internal* encrypted
   overlay (no external routes) instead.
@@ -83,7 +84,9 @@ from platform_network.schemas.docker_broker import (
     BrokerRunResponse,
 )
 
-DEFAULT_PLACEMENT_CONSTRAINT = "node.role==worker"
+DEFAULT_CHALLENGE_CONSTRAINT = "node.role==manager"
+DEFAULT_CPU_JOB_CONSTRAINT = "node.labels.platform.workload==cpu"
+DEFAULT_GPU_JOB_CONSTRAINT = "node.labels.platform.workload==gpu"
 DEFAULT_JOB_NETWORK = "platform_jobs_internal"
 OVERLAY_MTU = "1450"
 #: Swarm generic-resource name advertised by the worker daemon.json
@@ -173,7 +176,7 @@ class SwarmServicePlan:
     command: tuple[str, ...] = ()
     mode: Literal["replicated-job", "replicated"] = "replicated-job"
     replicas: int = 1
-    constraint: str | None = DEFAULT_PLACEMENT_CONSTRAINT
+    constraint: str | None = None
     network: str | None = None
     env: tuple[tuple[str, str], ...] = ()
     labels: tuple[tuple[str, str], ...] = ()
@@ -296,13 +299,15 @@ def build_overlay_network_argv(
 class SwarmBrokerConfig(DockerBrokerConfig):
     """Broker config plus Swarm scheduling knobs.
 
-    ``placement_constraint=None`` disables the constraint flag entirely and
-    exists ONLY for single-node test/QA swarms; production keeps the default
-    so workloads never land on the manager/validator node.
+    Broker eval jobs run on workers steered by node labels: GPU jobs land on
+    ``gpu_job_constraint`` nodes and CPU jobs on ``cpu_job_constraint`` nodes.
+    Either set to ``None`` disables that constraint flag (single-node test/QA
+    swarms only).
     """
 
     job_network: str = DEFAULT_JOB_NETWORK
-    placement_constraint: str | None = DEFAULT_PLACEMENT_CONSTRAINT
+    cpu_job_constraint: str | None = DEFAULT_CPU_JOB_CONSTRAINT
+    gpu_job_constraint: str | None = DEFAULT_GPU_JOB_CONSTRAINT
     poll_interval_seconds: float = 1.0
     command_timeout_seconds: float = 60.0
 
@@ -363,11 +368,9 @@ class SwarmBrokerService(DockerBrokerService):
                 self._materialize_mount(workspace_path, index, mount)
                 for index, mount in enumerate(request.mounts)
             ]
-            # Task 26 parity fix: tmpfs limits were silently dropped on the
-            # Swarm job path while both the Kubernetes broker (Memory
-            # emptyDir volumes) and the legacy ``docker run`` executor
-            # (``--tmpfs``) honor them. With the hardening-mandated
-            # read-only rootfs a job would otherwise have no writable /tmp.
+            # tmpfs limits must be honored on the Swarm job path: with the
+            # hardening-mandated read-only rootfs a job would otherwise have
+            # no writable /tmp.
             try:
                 tmpfs_mounts = tuple(_tmpfs_mount_arg(value) for value in limits.tmpfs)
             except DockerOrchestrationError as exc:
@@ -385,7 +388,11 @@ class SwarmBrokerService(DockerBrokerService):
                 image=request.image,
                 command=tuple(request.command),
                 mode="replicated-job",
-                constraint=self.swarm_config.placement_constraint,
+                constraint=(
+                    self.swarm_config.gpu_job_constraint
+                    if (limits.gpu_count or 0)
+                    else self.swarm_config.cpu_job_constraint
+                ),
                 network=self._job_network(limits.network),
                 env=tuple(request.env.items()),
                 labels=tuple(labels.items()),
@@ -674,13 +681,12 @@ class SwarmBrokerService(DockerBrokerService):
 class SwarmChallengeOrchestrator:
     """Schedule challenge containers as Swarm services (factory docker branch).
 
-    Satisfies the :class:`~platform_network.gpu.router.LocalOrchestrator`
-    protocol used by ``ChallengeOrchestratorRouter``. Long-lived challenge
-    APIs (``spec.workload_class == "service"``) become replicated services
-    with ``--restart-condition any``; evaluation specs (``"job"``) become
-    replicated-jobs with ``--restart-condition none``. Every created service
-    is registered in the shared workload ledger with ``workload_class``
-    copied verbatim from the spec.
+    Long-lived challenge APIs (``spec.workload_class == "service"``) become
+    replicated services with ``--restart-condition any`` pinned to the
+    manager/host; evaluation specs (``"job"``) become replicated-jobs with
+    ``--restart-condition none``. Every created service is registered in the
+    shared workload ledger with ``workload_class`` copied verbatim from the
+    spec.
 
     The synchronous ``wait_until_ready`` HTTP probe mirrors
     ``DockerOrchestrator``; Task 15 replaces it with an async health probe.
@@ -695,7 +701,7 @@ class SwarmChallengeOrchestrator:
         internal_network: bool = True,
         pull_ghcr_only: bool = True,
         docker_broker_url: str = DEFAULT_DOCKER_BROKER_URL,
-        placement_constraint: str | None = DEFAULT_PLACEMENT_CONSTRAINT,
+        challenge_placement_constraint: str | None = DEFAULT_CHALLENGE_CONSTRAINT,
         ledger: WorkloadLedger | None = None,
         gpu_leases: GpuLeaseLedger | None = None,
         request_timeout_seconds: float = 5.0,
@@ -709,7 +715,7 @@ class SwarmChallengeOrchestrator:
         self.internal_network = internal_network
         self.pull_ghcr_only = pull_ghcr_only
         self.docker_broker_url = docker_broker_url
-        self.placement_constraint = placement_constraint
+        self.challenge_placement_constraint = challenge_placement_constraint
         self.ledger = ledger or WorkloadLedger()
         self.gpu_leases = gpu_leases or GpuLeaseLedger()
         self.request_timeout_seconds = request_timeout_seconds
@@ -924,7 +930,7 @@ class SwarmChallengeOrchestrator:
             command=tuple(spec.worker_command),
             mode=mode,
             replicas=1,
-            constraint=self.placement_constraint,
+            constraint=self.challenge_placement_constraint,
             network=self.network_name,
             env=tuple(self._build_environment(spec).items()),
             labels=tuple(labels.items()),

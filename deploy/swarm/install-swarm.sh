@@ -1,0 +1,995 @@
+#!/usr/bin/env bash
+#
+# install-swarm.sh — single-node Docker Swarm bring-up of the Platform master
+# + both challenges (agent-challenge, PRISM) on the validator node.
+#
+# ============================================================================
+# STATUS: DRAFT FOR HUMAN REVIEW. DO NOT EXECUTE BLINDLY.
+# ============================================================================
+#
+# This script brings the Platform master + both challenges up on a single-node
+# Docker Swarm (the manager node). Docker Swarm is the only backend — there is
+# no Kubernetes. It is meant to be reviewed and then executed STEP BY STEP by an
+# operator.
+#
+# Adding workers: this script brings up only the single manager node. To attach
+# CPU/GPU worker nodes, mint a join token on the manager with
+# `platform master worker token --cpu|--gpu`, run `scripts/install-worker.sh` on
+# the worker, then `platform master worker label <node> --workload cpu|gpu`.
+# See deploy/swarm/README.md.
+#
+# Safety model (see EXPECTED OUTCOME in the task brief):
+#   * DEFAULT MODE IS DRY-RUN. With no flags, the script prints every planned
+#     mutating command (via `plan`) and changes NOTHING.
+#   * Nothing mutating happens unless `--apply` is passed.
+#   * Every DESTRUCTIVE step is behind its OWN explicit flag and is NOT part of
+#     the default `--apply` path, so the operator opts in one step at a time:
+#         --restart-dockerd       (writes /etc/docker/daemon.json + restarts dockerd)
+#         --single-node-placement (non-default placement override; see REVIEW block)
+#         --static-challenges     (create challenge services directly here)
+#   * Node teardown is OUT OF SCOPE for this script (see the OUT-OF-SCOPE comment
+#     block near the bottom). Decommissioning a node is performed separately, by
+#     hand, ONLY after human GREEN confirmation.
+#
+# Secret handling:
+#   * NO secret, token, password, GHCR credential, or wallet material is ever
+#     hardcoded. All values come from environment variables or files passed at
+#     runtime. Secret VALUES are never printed (only the env var NAME is shown
+#     in plan output). Values reach `docker secret create` via stdin, never as
+#     argv (so they never appear in `ps`/proc).
+#
+# Deliberately NO docker-compose / stack YAML is produced or consumed
+# (tests/unit/test_docker_compose_deploy.py forbids compose files). This script
+# is imperative `docker swarm` / `docker service create` / `docker secret`
+# / `docker network` only.
+#
+# ----------------------------------------------------------------------------
+# shellcheck disable=SC2310
+#   SC2310: functions invoked in `if ... ; then` conditions lose `set -e`
+#   inside them. That is intentional here — preflight/health probes are meant
+#   to be evaluated as booleans, and each performs its own explicit error
+#   handling/return codes rather than relying on `errexit` propagation.
+# ----------------------------------------------------------------------------
+
+set -euo pipefail
+
+# ============================================================================
+# Configuration (overridable via flags / environment). NO secrets here.
+# ============================================================================
+
+# Validator node Swarm advertise address (default = the live validator IP).
+ADVERTISE_ADDR="${ADVERTISE_ADDR:-51.83.112.164}"
+
+# Postgres dump + baseline directory produced by the cutover backup step.
+BACKUP_DIR="${BACKUP_DIR:-/root/cutover-backups/LATEST}"
+
+# Where the rendered master config is written on the validator host.
+MASTER_CONFIG_PATH="${MASTER_CONFIG_PATH:-/etc/platform/master.yaml}"
+
+# Repo-relative path to the validator daemon.json template (resolved at runtime).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+DAEMON_JSON_SRC="${DAEMON_JSON_SRC:-${SCRIPT_DIR}/daemon.validator.json}"
+DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
+
+# Container images (LIVE INVENTORY — pinned GHCR tags).
+IMAGE_MASTER="ghcr.io/platformnetwork/platform-master:latest"
+IMAGE_AGENT_CHALLENGE="ghcr.io/platformnetwork/agent-challenge:latest"
+IMAGE_PRISM="ghcr.io/platformnetwork/prism:latest"
+IMAGE_POSTGRES="postgres:16-alpine"
+
+# Minimum Docker engine major version required (validator runs 29.x today).
+MIN_DOCKER_MAJOR=29
+
+# Swarm overlay networks (MUST match swarm_backend.py constants):
+#   DEFAULT_NETWORK_NAME = "platform_challenges"     (swarm_backend.py via docker_orchestrator.py:29)
+#   DEFAULT_JOB_NETWORK  = "platform_jobs_internal"  (swarm_backend.py:87)
+#   OVERLAY_MTU          = "1450"                     (swarm_backend.py:88)
+NET_CHALLENGES="platform_challenges"
+NET_JOBS_INTERNAL="platform_jobs_internal"
+OVERLAY_MTU="1450"
+
+# Secret mount layout INSIDE containers is /run/secrets/platform/<name>
+#   (docker_orchestrator.py:32 DEFAULT_SECRET_MOUNT_DIR = "/run/secrets/platform").
+SECRET_MOUNT_DIR="/run/secrets/platform"
+
+# Master service network endpoints (LIVE INVENTORY ports).
+#   admin  : platform master run     -> admin_host:admin_port  (8000)
+#   broker : platform master broker  -> docker.broker_*        (8082)
+#   proxy  : platform master proxy   -> proxy_host:proxy_port  (8080)
+MASTER_ADMIN_PORT=8000
+MASTER_BROKER_PORT=8082
+MASTER_PROXY_PORT=8080
+AGENT_CHALLENGE_PORT=8000
+PRISM_PORT=8080
+
+# Named volumes for stateful postgres data.
+VOL_MASTER_PG="platform_master_pg"
+VOL_AGENT_CHALLENGE_PG="agent_challenge_pg"
+VOL_PRISM_PG="prism_pg"
+
+# ============================================================================
+# Flags (all default to the SAFE / non-mutating / non-destructive value).
+# ============================================================================
+APPLY=false               # false => dry-run (print only). Mutating requires --apply.
+FORCE=false               # allow proceeding even if node already in a swarm.
+RESTART_DOCKERD=false      # opt-in: write daemon.json + restart dockerd (DESTRUCTIVE).
+SINGLE_NODE_PLACEMENT=false # opt-in: non-default placement override (see REVIEW).
+STATIC_CHALLENGES=false    # opt-in: create challenge services directly here.
+
+# ============================================================================
+# Output helpers
+# ============================================================================
+log()  { printf '[install-swarm] %s\n' "$*"; }
+warn() { printf '[install-swarm][WARN] %s\n' "$*" >&2; }
+die()  { printf '[install-swarm][FATAL] %s\n' "$*" >&2; exit 1; }
+
+# `plan CMD...` is the single execution gate.
+#   * dry-run (default): print the command, run nothing.
+#   * --apply: print, then execute exactly that argv.
+# Secret VALUES must never be passed through `plan` as argv — use
+# `plan_secret_stdin` for those.
+plan() {
+  printf '  + %s\n' "$(_quote_argv "$@")"
+  if [[ "${APPLY}" == "true" ]]; then
+    "$@"
+  fi
+}
+
+# Render an argv as a copy-pasteable, shell-quoted string for the plan log.
+_quote_argv() {
+  local out="" arg
+  for arg in "$@"; do
+    out+="$(printf '%q ' "$arg")"
+  done
+  printf '%s' "${out% }"
+}
+
+# `plan_secret_stdin NAME ENVVAR -- CMD...` runs CMD with the value of $ENVVAR
+# fed on stdin. The value is NEVER printed and NEVER placed on argv. In dry-run
+# the command is printed with a `<value from $ENVVAR>` placeholder.
+plan_secret_stdin() {
+  local label="$1" envvar="$2"
+  shift 2
+  [[ "$1" == "--" ]] || die "plan_secret_stdin: expected -- separator"
+  shift
+  printf '  + %s   # stdin: value from $%s (hidden)\n' "$(_quote_argv "$@")" "${envvar}"
+  if [[ "${APPLY}" == "true" ]]; then
+    printf '%s' "${!envvar}" | "$@"
+  fi
+  : "${label}"  # label is documentation only
+}
+
+# ============================================================================
+# Argument parsing
+# ============================================================================
+usage() {
+  cat <<'EOF'
+Usage: install-swarm.sh [OPTIONS]
+
+Single-node Docker Swarm bring-up of the Platform master + challenges.
+DEFAULT MODE IS DRY-RUN (prints planned actions, changes nothing).
+
+Safety flags:
+  --apply                 Execute mutating commands. Without this, dry-run only.
+  --force                 Proceed even if this node is already a Swarm node.
+
+Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
+  --restart-dockerd       Install daemon.validator.json and restart dockerd.
+  --single-node-placement Apply the non-default single-node placement override
+                          (see the REVIEW block in single_node_placement_fix()).
+  --static-challenges     Create challenge services directly instead of letting
+                          the master orchestrator create them dynamically.
+
+Configuration:
+  --advertise-addr IP     Swarm advertise address (default: 51.83.112.164).
+  --backup-dir DIR        pg_dump + baseline dir (default: /root/cutover-backups/LATEST).
+  --master-config PATH    Rendered master config path (default: /etc/platform/master.yaml).
+  -h, --help              Show this help.
+
+Required environment (values NEVER hardcoded; supplied at runtime):
+  GHCR_USER, GHCR_TOKEN                      GHCR login for private images.
+  PLATFORM_ADMIN_TOKEN                       master admin token.
+  AGENT_CHALLENGE_CHALLENGE_TOKEN            agent-challenge challenge token.
+  AGENT_CHALLENGE_DOCKER_BROKER_TOKEN        agent-challenge broker token.
+  AGENT_CHALLENGE_SUBMISSION_ENV_KEY         agent-challenge submission_env_encryption_key.
+  PRISM_CHALLENGE_TOKEN                      prism challenge token.
+  PRISM_DOCKER_BROKER_TOKEN                  prism broker token.
+  OPENROUTER_API_KEY                         openrouter_api_key.
+  MASTER_PG_PASSWORD                         platform postgres password.
+  AGENT_CHALLENGE_PG_PASSWORD                agent-challenge postgres password.
+  PRISM_PG_PASSWORD                          prism postgres password.
+  MASTER_DATABASE_URL                        master control-plane DB URL.
+  AGENT_CHALLENGE_DATABASE_URL               agent-challenge DB URL.
+  PRISM_DATABASE_URL                         prism DB URL.
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --apply) APPLY=true ;;
+      --dry-run) APPLY=false ;;
+      --force) FORCE=true ;;
+      --restart-dockerd) RESTART_DOCKERD=true ;;
+      --single-node-placement) SINGLE_NODE_PLACEMENT=true ;;
+      --static-challenges) STATIC_CHALLENGES=true ;;
+      --advertise-addr) ADVERTISE_ADDR="${2:?--advertise-addr needs a value}"; shift ;;
+      --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a value}"; shift ;;
+      --master-config) MASTER_CONFIG_PATH="${2:?--master-config needs a value}"; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $1 (try --help)" ;;
+    esac
+    shift
+  done
+}
+
+# ============================================================================
+# 1. preflight()
+#    Verify docker >= MIN_DOCKER_MAJOR, NOT already in a swarm (unless --force),
+#    backup dir + dump files exist, GHCR_USER/GHCR_TOKEN present. Read-only.
+# ============================================================================
+preflight() {
+  log "STEP 1/12 preflight: validating host + inputs (read-only)"
+
+  command -v docker >/dev/null 2>&1 || die "docker CLI not found on PATH"
+
+  local docker_version major
+  docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+  [[ -n "${docker_version}" ]] || die "could not query docker server version (is dockerd running?)"
+  major="${docker_version%%.*}"
+  if [[ ! "${major}" =~ ^[0-9]+$ ]] || (( major < MIN_DOCKER_MAJOR )); then
+    die "docker >= ${MIN_DOCKER_MAJOR} required, found ${docker_version}"
+  fi
+  log "  docker server version ${docker_version} (>= ${MIN_DOCKER_MAJOR}) OK"
+
+  # Already-in-swarm check.
+  local swarm_state
+  swarm_state="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo unknown)"
+  if [[ "${swarm_state}" == "active" ]]; then
+    if [[ "${FORCE}" == "true" ]]; then
+      warn "node already in a swarm (state=active) — continuing because --force"
+    else
+      die "node already in a swarm (state=active); re-run with --force to proceed"
+    fi
+  else
+    log "  swarm state '${swarm_state}' OK"
+  fi
+
+  # Backup dir + dump files.
+  [[ -d "${BACKUP_DIR}" ]] || die "backup dir not found: ${BACKUP_DIR}"
+  local dump
+  for dump in platform.sql agent-challenge.sql prism.sql; do
+    [[ -f "${BACKUP_DIR}/${dump}" ]] || die "missing dump file: ${BACKUP_DIR}/${dump}"
+  done
+  log "  backup dumps present in ${BACKUP_DIR} OK (prism.sql may be empty — expected)"
+
+  # GHCR credentials must be present (values never printed).
+  [[ -n "${GHCR_USER:-}" ]] || die "GHCR_USER not set (required for ghcr.io login)"
+  [[ -n "${GHCR_TOKEN:-}" ]] || die "GHCR_TOKEN not set (required for ghcr.io login)"
+  log "  GHCR_USER / GHCR_TOKEN present OK"
+
+  log "preflight complete"
+}
+
+# ============================================================================
+# ghcr_login()
+#   Private images require `docker login ghcr.io` first. Credentials come from
+#   GHCR_USER / GHCR_TOKEN; the token is fed on stdin (never argv, never logged).
+# ============================================================================
+ghcr_login() {
+  log "STEP 1b ghcr_login: authenticating to ghcr.io (token via stdin, hidden)"
+  plan_secret_stdin "ghcr-login" GHCR_TOKEN -- \
+    docker login ghcr.io --username "${GHCR_USER}" --password-stdin
+}
+
+# ============================================================================
+# 2. apply_daemon_json()  [DESTRUCTIVE — behind --restart-dockerd]
+#    Copy daemon.validator.json to /etc/docker/daemon.json and (only if
+#    --restart-dockerd) restart dockerd. Otherwise print the instruction only.
+# ============================================================================
+apply_daemon_json() {
+  log "STEP 2/12 apply_daemon_json"
+  [[ -f "${DAEMON_JSON_SRC}" ]] || die "daemon template not found: ${DAEMON_JSON_SRC}"
+
+  if [[ "${RESTART_DOCKERD}" != "true" ]]; then
+    log "  --restart-dockerd NOT set: skipping daemon.json install + dockerd restart."
+    log "  To apply manually (DESTRUCTIVE — restarts the engine):"
+    log "    1) cp ${DAEMON_JSON_SRC} ${DAEMON_JSON_DST}   # merge, do not clobber existing keys"
+    log "    2) dockerd --validate --config-file ${DAEMON_JSON_DST}   # must print 'configuration OK'"
+    log "    3) systemctl restart docker"
+    return 0
+  fi
+
+  warn "DESTRUCTIVE: --restart-dockerd set — installing daemon.json and restarting dockerd"
+  # Keep a timestamped backup of any existing daemon.json before overwriting.
+  if [[ -f "${DAEMON_JSON_DST}" ]]; then
+    plan cp -a "${DAEMON_JSON_DST}" "${DAEMON_JSON_DST}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  plan install -m 0644 "${DAEMON_JSON_SRC}" "${DAEMON_JSON_DST}"
+  # Validate the candidate config before any restart (Docker >= 23).
+  plan dockerd --validate --config-file "${DAEMON_JSON_DST}"
+  plan systemctl restart docker
+  log "  daemon.json installed and dockerd restarted"
+}
+
+# ============================================================================
+# 3. swarm_init()
+#    `docker swarm init --advertise-addr <ADVERTISE_ADDR>`. Idempotent: skip if
+#    the node is already an active swarm manager.
+# ============================================================================
+swarm_init() {
+  log "STEP 3/12 swarm_init (advertise-addr=${ADVERTISE_ADDR})"
+  local swarm_state
+  swarm_state="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo unknown)"
+  if [[ "${swarm_state}" == "active" ]]; then
+    log "  swarm already active — skipping init (idempotent)"
+    return 0
+  fi
+  plan docker swarm init --advertise-addr "${ADVERTISE_ADDR}"
+}
+
+# ============================================================================
+# 4. single_node_placement_fix()
+#
+#    # REVIEW: single-node placement override — non-default, see Atlas notes
+#
+#    THE PROBLEM
+#    -----------
+#    Every Swarm workload defaults to the placement constraint
+#    `node.role==worker`:
+#        src/platform_network/master/swarm_backend.py:86
+#            DEFAULT_PLACEMENT_CONSTRAINT = "node.role==worker"
+#    and that default is the value used for BOTH workload paths:
+#        * broker jobs   : SwarmBrokerConfig.placement_constraint
+#                          (swarm_backend.py:305, applied at :388)
+#        * challenge svcs: SwarmChallengeOrchestrator(placement_constraint=...)
+#                          (swarm_backend.py:698, applied at :712 and :927)
+#    A single-node Swarm has ONLY a manager node. `node.role==worker` therefore
+#    matches NOTHING, so every challenge/broker task sits Pending forever (this
+#    exact behavior is documented as live QA evidence in the migration
+#    learnings: "Single-manager swarm + node.role==worker constraint -> task
+#    stays Pending ... forever").
+#
+#    THE FIX — TWO OPTIONS (option (a) is PREFERRED)
+#    -----------------------------------------------
+#    (a) PREFERRED: set the placement constraint to empty/None for single-node.
+#        The exact config key is `placement_constraint` on the Swarm classes:
+#            - SwarmBrokerConfig.placement_constraint  (swarm_backend.py:305)
+#            - SwarmChallengeOrchestrator(placement_constraint=...) (swarm_backend.py:698)
+#        Its own docstring (swarm_backend.py:299-302) states:
+#            "placement_constraint=None disables the constraint flag entirely
+#             and exists ONLY for single-node test/QA swarms".
+#        Setting it to None makes build_service_create_argv() emit NO
+#        `--constraint` flag (swarm_backend.py:228-229), so tasks schedule on
+#        the manager.
+#
+#        *** IMPORTANT CAVEAT (verified against this repo) ***
+#        There is currently NO master.yaml / settings.py key that maps to
+#        `placement_constraint`. The factory that builds the orchestrator,
+#            src/platform_network/orchestration/factory.py:109-119
+#        constructs `SwarmChallengeOrchestrator(network_name=..., internal_network=...,
+#        docker_broker_url=...)` and does NOT pass placement_constraint, so it
+#        always falls back to DEFAULT_PLACEMENT_CONSTRAINT. Likewise the broker
+#        (`platform master broker`) builds SwarmBrokerConfig with the default.
+#        => A pure-CONFIG single-node override is NOT possible today; it needs
+#           EITHER a one-line code change in factory.py (pass
+#           placement_constraint=None when single-node) and the broker builder,
+#           OR the --static-challenges path below which issues `docker service
+#           create` directly WITHOUT any `--constraint` flag.
+#        This function therefore only DOCUMENTS the preferred config seam and,
+#        when --static-challenges is used, deploy_challenges() relies on the
+#        no-constraint direct path. The code change itself is intentionally NOT
+#        made here (this script must not modify repo source).
+#
+#    (b) FALLBACK: relabel the manager as role=worker.
+#        NOT POSSIBLE. Swarm `node.role` is intrinsic (manager|worker) and
+#        cannot be set to `worker` on a manager node via `docker node update`
+#        (only `--availability` and `--label-add` custom labels are mutable;
+#        the built-in `role` is promote/demote only and a single-node swarm
+#        cannot demote its sole manager). So there is no way to make
+#        `node.role==worker` match the manager. Documented for completeness.
+# ============================================================================
+single_node_placement_fix() {
+  log "STEP 4/12 single_node_placement_fix"
+  if [[ "${SINGLE_NODE_PLACEMENT}" != "true" ]]; then
+    log "  --single-node-placement NOT set: leaving default placement (node.role==worker)."
+    log "  NOTE: with the default, master-orchestrated challenge tasks will stay Pending"
+    log "        on a single-node swarm. Use --single-node-placement AND/OR"
+    log "        --static-challenges. See the REVIEW block in this function."
+    return 0
+  fi
+
+  # REVIEW: single-node placement override — non-default, see Atlas notes
+  warn "REVIEW: single-node placement override requested (non-default)."
+  log "  Preferred config seam (NO master.yaml key exists today — see comments):"
+  log "    swarm_backend.py:305  SwarmBrokerConfig.placement_constraint = None"
+  log "    swarm_backend.py:698  SwarmChallengeOrchestrator(placement_constraint=None)"
+  log "    factory.py:109-119    does NOT pass placement_constraint -> code change needed,"
+  log "                          or use --static-challenges (no --constraint emitted)."
+  log "  Fallback (relabel manager role=worker): NOT POSSIBLE — node.role is intrinsic."
+  log "  No mutating action taken here; this step is documentation/guard only."
+}
+
+# ============================================================================
+# 5. create_networks()
+#    Encrypted, attachable overlay networks at MTU 1450. Names MUST match the
+#    swarm_backend constants (platform_challenges, platform_jobs_internal).
+#    platform_jobs_internal is created --internal (no external routes), mirroring
+#    swarm_backend's `none`-network substitution.
+# ============================================================================
+create_networks() {
+  log "STEP 5/12 create_networks"
+  _create_overlay "${NET_CHALLENGES}" false
+  _create_overlay "${NET_JOBS_INTERNAL}" true
+}
+
+# _create_overlay NAME INTERNAL(bool) — idempotent overlay create.
+_create_overlay() {
+  local name="$1" internal="$2"
+  if docker network inspect "${name}" >/dev/null 2>&1; then
+    log "  network ${name} already exists — skipping (idempotent)"
+    return 0
+  fi
+  local -a argv=(
+    docker network create
+    --driver overlay
+    --attachable
+    --opt encrypted
+    --opt "com.docker.network.driver.mtu=${OVERLAY_MTU}"
+  )
+  [[ "${internal}" == "true" ]] && argv+=(--internal)
+  argv+=("${name}")
+  plan "${argv[@]}"
+}
+
+# ============================================================================
+# 6. create_secrets()
+#    `docker secret create` for each secret. Values come from env vars and are
+#    fed via stdin only (never argv, never logged). Names match the secret
+#    names the master orchestrator expects.
+#
+#    NAMING NOTE: SwarmChallengeOrchestrator creates/refreshes its OWN per-slug
+#    value-bearing secrets named `platform_<safe_slug>_<name>` at challenge
+#    start (swarm_backend.py:996-1006, _ensure_secrets). The secrets created
+#    here are the ones the master/broker/postgres services consume directly and
+#    any `external_secrets` the orchestrator only REFERENCES. We name them with
+#    the same `platform_<slug>_<name>` convention so a master-orchestrated
+#    start can reference them without recreating. Review against the
+#    orchestrator's expected secret names before apply.
+# ============================================================================
+create_secrets() {
+  log "STEP 6/12 create_secrets (values via stdin, hidden)"
+
+  # name                                env var                              required?
+  _ensure_secret "platform_admin_token"                       PLATFORM_ADMIN_TOKEN
+  _ensure_secret "platform_master_database_url"               MASTER_DATABASE_URL
+  _ensure_secret "platform_master_pg_password"                MASTER_PG_PASSWORD
+
+  _ensure_secret "platform_agent_challenge_challenge_token"   AGENT_CHALLENGE_CHALLENGE_TOKEN
+  _ensure_secret "platform_agent_challenge_docker_broker_token" AGENT_CHALLENGE_DOCKER_BROKER_TOKEN
+  _ensure_secret "platform_agent_challenge_submission_env_encryption_key" AGENT_CHALLENGE_SUBMISSION_ENV_KEY
+  _ensure_secret "platform_agent_challenge_database_url"      AGENT_CHALLENGE_DATABASE_URL
+  _ensure_secret "platform_agent_challenge_pg_password"       AGENT_CHALLENGE_PG_PASSWORD
+
+  _ensure_secret "platform_prism_challenge_token"             PRISM_CHALLENGE_TOKEN
+  _ensure_secret "platform_prism_docker_broker_token"         PRISM_DOCKER_BROKER_TOKEN
+  _ensure_secret "platform_prism_database_url"                PRISM_DATABASE_URL
+  _ensure_secret "platform_prism_pg_password"                 PRISM_PG_PASSWORD
+
+  # openrouter_api_key is shared (used by challenge eval). Named generically.
+  _ensure_secret "platform_openrouter_api_key"                OPENROUTER_API_KEY
+}
+
+# _ensure_secret NAME ENVVAR — idempotent secret create from $ENVVAR (stdin).
+# A missing/empty env var is a hard error (we never invent secret material).
+_ensure_secret() {
+  local name="$1" envvar="$2"
+  if [[ -z "${!envvar:-}" ]]; then
+    die "required secret env var \$${envvar} is empty (for docker secret '${name}')"
+  fi
+  if docker secret inspect "${name}" >/dev/null 2>&1; then
+    log "  secret ${name} already exists — skipping (idempotent; rotate out-of-band)"
+    return 0
+  fi
+  plan_secret_stdin "${name}" "${envvar}" -- docker secret create "${name}" -
+}
+
+# ============================================================================
+# 7. deploy_postgres()
+#    Three postgres:16-alpine services with named volumes. POSTGRES_DB/USER are
+#    literals (db/user from LIVE INVENTORY); POSTGRES_PASSWORD comes from a
+#    docker secret via POSTGRES_PASSWORD_FILE (never an env literal).
+#      platform-master-postgres        : db=platform  user=platform
+#      challenge-agent-challenge-postgres: db=challenge user=challenge
+#      challenge-prism-postgres         : db=challenge user=challenge
+#    All postgres services are internal (no published host port); reached over
+#    the platform_challenges overlay by DNS.
+# ============================================================================
+deploy_postgres() {
+  log "STEP 7/12 deploy_postgres"
+  _deploy_postgres_service "platform-master-postgres" "${VOL_MASTER_PG}" \
+    "platform" "platform" "platform_master_pg_password"
+  _deploy_postgres_service "challenge-agent-challenge-postgres" "${VOL_AGENT_CHALLENGE_PG}" \
+    "challenge" "challenge" "platform_agent_challenge_pg_password"
+  _deploy_postgres_service "challenge-prism-postgres" "${VOL_PRISM_PG}" \
+    "challenge" "challenge" "platform_prism_pg_password"
+}
+
+# _deploy_postgres_service NAME VOLUME DB USER PW_SECRET
+_deploy_postgres_service() {
+  local name="$1" volume="$2" db="$3" user="$4" pw_secret="$5"
+  if docker service inspect "${name}" >/dev/null 2>&1; then
+    log "  service ${name} already exists — skipping (idempotent)"
+    return 0
+  fi
+  plan docker service create \
+    --name "${name}" \
+    --network "${NET_CHALLENGES}" \
+    --replicas 1 \
+    --restart-condition any \
+    --hostname "${name}" \
+    --mount "type=volume,source=${volume},destination=/var/lib/postgresql/data" \
+    --secret "source=${pw_secret},target=postgres_password" \
+    --env "POSTGRES_DB=${db}" \
+    --env "POSTGRES_USER=${user}" \
+    --env "POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password" \
+    --env "PGDATA=/var/lib/postgresql/data/pgdata" \
+    "${IMAGE_POSTGRES}"
+}
+
+# ============================================================================
+# 8. restore_data()
+#    Wait for each postgres to accept connections, restore the matching dump,
+#    then compare pg_stat_user_tables row counts against the saved baseline
+#    (rowcounts-*.txt). FAIL LOUDLY on mismatch. prism.sql is expected empty.
+# ============================================================================
+restore_data() {
+  log "STEP 8/12 restore_data"
+  if [[ "${APPLY}" != "true" ]]; then
+    log "  (dry-run) would: wait-healthy -> psql restore -> verify row counts for:"
+    log "    platform-master-postgres        <- ${BACKUP_DIR}/platform.sql       (db=platform)"
+    log "    challenge-agent-challenge-postgres <- ${BACKUP_DIR}/agent-challenge.sql (db=challenge)"
+    log "    challenge-prism-postgres        <- ${BACKUP_DIR}/prism.sql          (db=challenge, may be empty)"
+    return 0
+  fi
+
+  _restore_one "platform-master-postgres"        "platform"  "platform"  "${BACKUP_DIR}/platform.sql"        "${BACKUP_DIR}/rowcounts-platform.txt"
+  _restore_one "challenge-agent-challenge-postgres" "challenge" "challenge" "${BACKUP_DIR}/agent-challenge.sql" "${BACKUP_DIR}/rowcounts-agent-challenge.txt"
+  _restore_one "challenge-prism-postgres"         "challenge" "challenge" "${BACKUP_DIR}/prism.sql"           "${BACKUP_DIR}/rowcounts-prism.txt"
+}
+
+# _restore_one SERVICE DB USER DUMP BASELINE
+_restore_one() {
+  local service="$1" db="$2" user="$3" dump="$4" baseline="$5"
+  log "  restoring ${service} (db=${db}) from ${dump}"
+
+  local cid
+  cid="$(_pg_wait_ready "${service}" "${user}" "${db}")" \
+    || die "postgres ${service} did not become ready"
+
+  # prism.sql is expected empty — skip the psql load but still verify (=0 rows).
+  if [[ -s "${dump}" ]]; then
+    docker exec -i "${cid}" psql -v ON_ERROR_STOP=1 -U "${user}" -d "${db}" <"${dump}" \
+      || die "restore failed for ${service}"
+  else
+    warn "  ${dump} is empty — skipping load (expected for prism)"
+  fi
+
+  _verify_rowcounts "${cid}" "${user}" "${db}" "${baseline}" "${service}"
+}
+
+# _pg_wait_ready SERVICE USER DB -> echoes the resolved container id on success.
+_pg_wait_ready() {
+  local service="$1" user="$2" db="$3"
+  local cid
+  for _ in $(seq 1 60); do
+    cid="$(docker ps -q -f "name=${service}" | head -n1)"
+    if [[ -n "${cid}" ]] && docker exec "${cid}" pg_isready -U "${user}" -d "${db}" >/dev/null 2>&1; then
+      printf '%s' "${cid}"
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+# _verify_rowcounts CID USER DB BASELINE SERVICE
+# Baseline format expected (one per line): "<schema.table> <count>".
+_verify_rowcounts() {
+  local cid="$1" user="$2" db="$3" baseline="$4" service="$5"
+  if [[ ! -f "${baseline}" ]]; then
+    warn "  no baseline file ${baseline} — skipping row-count verification for ${service}"
+    return 0
+  fi
+  log "  verifying row counts for ${service} against ${baseline}"
+
+  # Live counts from pg_stat_user_tables: "<schema.relname> <n_live_tup>".
+  local live
+  live="$(docker exec -i "${cid}" psql -At -F' ' -U "${user}" -d "${db}" -c \
+    "SELECT schemaname||'.'||relname, n_live_tup FROM pg_stat_user_tables ORDER BY 1;")" \
+    || die "row-count query failed for ${service}"
+
+  local mismatches=0 table want got line
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    table="${line%% *}"
+    want="${line##* }"
+    got="$(printf '%s\n' "${live}" | awk -v t="${table}" '$1==t {print $2; found=1} END{if(!found) print "MISSING"}')"
+    if [[ "${got}" != "${want}" ]]; then
+      warn "  ROW COUNT MISMATCH ${service} ${table}: baseline=${want} live=${got}"
+      mismatches=$((mismatches + 1))
+    fi
+  done <"${baseline}"
+
+  if (( mismatches > 0 )); then
+    die "row-count verification FAILED for ${service}: ${mismatches} mismatch(es)"
+  fi
+  log "  row counts verified OK for ${service}"
+}
+
+# ============================================================================
+# 9. deploy_master()
+#    Render /etc/platform/master.yaml (backend=docker, single-node values) then
+#    deploy admin/broker/proxy services from the platform-master image with the
+#    config + secrets mounted and ports published.
+#
+#    Service name <-> command <-> port:
+#      platform-master-admin  : `platform master run`    : 8000 (admin_host:admin_port)
+#      platform-master-broker : `platform master broker` : 8082 (docker.broker_*)
+#      platform-master-proxy  : `platform master proxy`  : 8080 (proxy_host:proxy_port)
+#    The broker service MUST be named platform-master-broker so the configured
+#    broker_url (http://platform-master-broker:8082) resolves over the overlay.
+# ============================================================================
+deploy_master() {
+  log "STEP 9/12 deploy_master"
+  _render_master_config
+  _ensure_master_config_secret
+
+  # admin (orchestrator + admin API) — this is what dynamically creates challenges.
+  _deploy_master_service "platform-master-admin" "run" "${MASTER_ADMIN_PORT}" "${MASTER_ADMIN_PORT}"
+  # broker — challenge workload broker (frozen contract / Swarm backend).
+  _deploy_master_service "platform-master-broker" "broker" "${MASTER_BROKER_PORT}" "${MASTER_BROKER_PORT}"
+  # proxy — public miner-facing proxy.
+  _deploy_master_service "platform-master-proxy" "proxy" "${MASTER_PROXY_PORT}" "${MASTER_PROXY_PORT}"
+}
+
+# Render the single-node master config to MASTER_CONFIG_PATH. NO secrets inline:
+# the DB URL / admin token are mounted as docker secrets/files at runtime.
+_render_master_config() {
+  log "  rendering master config -> ${MASTER_CONFIG_PATH}"
+  # The config is written to a local staging file; in --apply it is also turned
+  # into a docker config/secret object below. Render is non-secret, so we always
+  # write the staging file (it documents the intended config for the reviewer).
+  local staging="${MASTER_CONFIG_PATH}"
+  local tmp
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
+# Rendered by deploy/swarm/install-swarm.sh (single-node Swarm bring-up).
+# backend=docker; kubernetes.broker_backend=docker (override live k8s values).
+network:
+  name: platform
+  netuid: 100
+  chain_endpoint: ''          # empty in prod (no live chain) — keep empty.
+  wallet_name: default
+  wallet_hotkey: default
+  wallet_path: /var/lib/platform/wallets
+  master_uid: 0
+
+master:
+  admin_host: 0.0.0.0
+  admin_port: ${MASTER_ADMIN_PORT}
+  proxy_host: 0.0.0.0
+  proxy_port: ${MASTER_PROXY_PORT}
+
+database:
+  # Loaded from the platform_master_database_url docker secret at runtime;
+  # this placeholder is overridden by the *_FILE indirection in deployment.
+  url: postgresql+asyncpg://platform@platform-master-postgres:5432/platform
+
+runtime:
+  backend: docker
+
+kubernetes:
+  broker_backend: docker
+
+docker:
+  network_name: ${NET_CHALLENGES}
+  internal_network: true
+  broker_host: 0.0.0.0
+  broker_port: ${MASTER_BROKER_PORT}
+  broker_url: http://platform-master-broker:${MASTER_BROKER_PORT}
+  broker_allowed_images:
+    - ghcr.io/platformnetwork/
+  allow_privileged: true
+  broker_privileged_slugs:
+    - agent-challenge
+
+security:
+  admin_token_file: ${SECRET_MOUNT_DIR}/admin_token
+
+observability:
+  log_json: true
+EOF
+
+  if [[ "${APPLY}" == "true" ]]; then
+    install -D -m 0644 "${tmp}" "${staging}"
+    rm -f "${tmp}"
+    log "  wrote ${staging}"
+  else
+    log "  (dry-run) master config that WOULD be written to ${staging}:"
+    sed 's/^/      /' "${tmp}"
+    rm -f "${tmp}"
+  fi
+}
+
+# Publish the rendered master.yaml as a docker config object so all three master
+# services mount an identical file. Idempotent.
+_ensure_master_config_secret() {
+  local cfg_obj="platform_master_yaml"
+  if docker config inspect "${cfg_obj}" >/dev/null 2>&1; then
+    log "  docker config ${cfg_obj} already exists — skipping (rotate out-of-band)"
+    return 0
+  fi
+  if [[ "${APPLY}" == "true" ]]; then
+    plan docker config create "${cfg_obj}" "${MASTER_CONFIG_PATH}"
+  else
+    log "  (dry-run) would: docker config create ${cfg_obj} ${MASTER_CONFIG_PATH}"
+  fi
+}
+
+# _deploy_master_service NAME SUBCOMMAND HOST_PORT CONTAINER_PORT
+_deploy_master_service() {
+  local name="$1" subcommand="$2" host_port="$3" container_port="$4"
+  if docker service inspect "${name}" >/dev/null 2>&1; then
+    log "  service ${name} already exists — skipping (idempotent)"
+    return 0
+  fi
+
+  # Broker-only extras (regression guards — do NOT strip these flags):
+  #   1. host docker socket: the escape hatch shells out to `docker run` on the
+  #      host daemon.
+  #   2. workspace bind at the SAME host+container path: the agent tar is
+  #      materialized here then mounted via `-v <path>:/workspace/agent` resolved
+  #      on the HOST fs; container-private /tmp -> empty mount -> "No module named
+  #      'agent'".
+  #   3. user=root: DinD writes outputs as root; the broker must rmtree them on
+  #      TemporaryDirectory exit or cleanup raises EPERM -> HTTP 500.
+  local -a extra=()
+  if [[ "${subcommand}" == "broker" ]]; then
+    local broker_ws="${BROKER_WORKSPACE_DIR:-/tmp/platform-docker-broker}"
+    mkdir -p "${broker_ws}"
+    extra+=(
+      --user root
+      --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"
+      --mount "type=bind,source=${broker_ws},target=${broker_ws}"
+    )
+  fi
+
+  plan docker service create \
+    --name "${name}" \
+    --network "${NET_CHALLENGES}" \
+    --replicas 1 \
+    --restart-condition any \
+    --hostname "${name}" \
+    --publish "published=${host_port},target=${container_port},mode=host" \
+    --config "source=platform_master_yaml,target=${MASTER_CONFIG_PATH}" \
+    --secret "source=platform_admin_token,target=admin_token" \
+    --secret "source=platform_master_database_url,target=master_database_url" \
+    --env "PLATFORM_CONFIG=${MASTER_CONFIG_PATH}" \
+    "${extra[@]}" \
+    "${IMAGE_MASTER}" \
+    platform master "${subcommand}" --config "${MASTER_CONFIG_PATH}"
+}
+
+# ============================================================================
+# 10. deploy_challenges()
+#     DEFAULT: do NOTHING here — the running master orchestrator (`platform
+#     master run`, deployed above) creates challenge services dynamically via
+#     SwarmChallengeOrchestrator (this is the real-system behavior). Only when
+#     --static-challenges is set do we create the challenge services directly,
+#     for a static single-node bring-up.
+#
+#     The direct path issues `docker service create` WITHOUT any `--constraint`
+#     flag, which is precisely the single-node placement workaround (option (a)
+#     fallback from single_node_placement_fix): no constraint => schedules on
+#     the manager.
+# ============================================================================
+deploy_challenges() {
+  log "STEP 10/12 deploy_challenges"
+  if [[ "${STATIC_CHALLENGES}" != "true" ]]; then
+    log "  --static-challenges NOT set (DEFAULT): the master orchestrator will create"
+    log "  challenge services dynamically. Nothing to do here."
+    log "  (Reminder: master-orchestrated tasks need the single-node placement"
+    log "   override to schedule on this single manager node — see STEP 4.)"
+    return 0
+  fi
+
+  warn "creating challenge services DIRECTLY (--static-challenges); no --constraint emitted"
+
+  # agent-challenge primary API service (port 8000). Reached over the overlay by
+  # the proxy/master; no host publish (avoids clashing with master-admin:8000).
+  _deploy_challenge_service \
+    "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
+    "platform_agent_challenge_pg" \
+    "platform_agent_challenge_challenge_token:challenge_token" \
+    "platform_agent_challenge_docker_broker_token:docker_broker_token" \
+    "platform_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
+    "platform_openrouter_api_key:openrouter_api_key"
+
+  # TODO(review): the live k8s agent-challenge pod ran TWO containers (a primary
+  # API + a sidecar/worker, command `agent-challenge-worker`; see
+  # cli_app/main.py:549). This static path replicates only the PRIMARY API. If
+  # the worker sidecar is required for evaluations in the static bring-up, add a
+  # second service `challenge-agent-challenge-worker` running the same image with
+  # command `agent-challenge-worker`. Left as a TODO because the master
+  # orchestrator (default path) injects the worker_command itself, so the
+  # sidecar requirement is unclear for the direct path.
+
+  # PRISM service (port 8080). Reached over the overlay; no host publish.
+  _deploy_challenge_service \
+    "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
+    "platform_prism_pg" \
+    "platform_prism_challenge_token:challenge_token" \
+    "platform_prism_docker_broker_token:docker_broker_token" \
+    "platform_openrouter_api_key:openrouter_api_key"
+}
+
+# _deploy_challenge_service NAME IMAGE PORT DATA_VOLUME SECRET_SPEC...
+#   SECRET_SPEC = "<docker-secret-name>:<mount-target-basename>"
+#   Secrets mount at ${SECRET_MOUNT_DIR}/<basename> to match the *_FILE env
+#   paths the challenges expect (docker_orchestrator.py / cli_app/main.py).
+_deploy_challenge_service() {
+  local name="$1" image="$2" port="$3" data_volume="$4"
+  shift 4
+  if docker service inspect "${name}" >/dev/null 2>&1; then
+    log "  service ${name} already exists — skipping (idempotent)"
+    return 0
+  fi
+  local target_dir="${SECRET_MOUNT_DIR#/run/secrets/}"  # "platform"
+  local -a argv=(
+    docker service create
+    --name "${name}"
+    --network "${NET_CHALLENGES}"
+    --replicas 1
+    --restart-condition any
+    --hostname "${name}"
+    --mount "type=volume,source=${data_volume},destination=/data"
+  )
+  local spec secret_name target
+  for spec in "$@"; do
+    secret_name="${spec%%:*}"
+    target="${spec##*:}"
+    argv+=(--secret "source=${secret_name},target=${target_dir}/${target}")
+  done
+  argv+=("${image}")
+  plan "${argv[@]}"
+  : "${port}"  # port documented in inventory; challenges are overlay-internal
+}
+
+# ============================================================================
+# 11. healthcheck()
+#     Curl each master service's published port for HTTP 200 on /health. Master
+#     services publish host ports; challenges are overlay-internal, so they are
+#     checked via service-replica convergence + an on-overlay curl probe.
+# ============================================================================
+healthcheck() {
+  log "STEP 11/12 healthcheck"
+  if [[ "${APPLY}" != "true" ]]; then
+    log "  (dry-run) would HTTP-probe /health on:"
+    log "    http://127.0.0.1:${MASTER_ADMIN_PORT}/health   (platform-master-admin)"
+    log "    http://127.0.0.1:${MASTER_BROKER_PORT}/health  (platform-master-broker)"
+    log "    http://127.0.0.1:${MASTER_PROXY_PORT}/health   (platform-master-proxy)"
+    log "  and would verify challenge services converge to 1/1 replicas + overlay /health."
+    return 0
+  fi
+
+  _http_health "platform-master-admin"  "http://127.0.0.1:${MASTER_ADMIN_PORT}/health"
+  _http_health "platform-master-broker" "http://127.0.0.1:${MASTER_BROKER_PORT}/health"
+  _http_health "platform-master-proxy"  "http://127.0.0.1:${MASTER_PROXY_PORT}/health"
+
+  if [[ "${STATIC_CHALLENGES}" == "true" ]]; then
+    _service_converged "challenge-agent-challenge"
+    _service_converged "challenge-prism"
+    _overlay_health "challenge-agent-challenge" "${AGENT_CHALLENGE_PORT}"
+    _overlay_health "challenge-prism" "${PRISM_PORT}"
+  else
+    log "  challenges are master-orchestrated; verify via 'docker service ls' after the"
+    log "  master has reconciled (out of band for this script's default path)."
+  fi
+  log "healthcheck complete"
+}
+
+# _http_health LABEL URL — fail loudly unless HTTP 200.
+_http_health() {
+  local label="$1" url="$2" code
+  for _ in $(seq 1 30); do
+    code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "${url}" 2>/dev/null || true)"
+    if [[ "${code}" == "200" ]]; then
+      log "  ${label} ${url} -> 200 OK"
+      return 0
+    fi
+    sleep 4
+  done
+  die "healthcheck FAILED: ${label} ${url} (last code=${code:-none})"
+}
+
+# _service_converged NAME — wait until replicas read N/N.
+_service_converged() {
+  local name="$1" reps
+  for _ in $(seq 1 30); do
+    reps="$(docker service ls --filter "name=${name}" --format '{{.Replicas}}' | head -n1)"
+    if [[ -n "${reps}" && "${reps%%/*}" == "${reps##*/}" && "${reps%%/*}" != "0" ]]; then
+      log "  ${name} converged (${reps})"
+      return 0
+    fi
+    sleep 4
+  done
+  die "service ${name} did not converge (last replicas=${reps:-none})"
+}
+
+# _overlay_health NAME PORT — probe /health from a throwaway container on the overlay.
+_overlay_health() {
+  local name="$1" port="$2" code
+  code="$(docker run --rm --network "${NET_CHALLENGES}" curlimages/curl:latest \
+    -fsS -o /dev/null -w '%{http_code}' --max-time 5 "http://${name}:${port}/health" 2>/dev/null || true)"
+  if [[ "${code}" == "200" ]]; then
+    log "  ${name} (overlay) :${port}/health -> 200 OK"
+  else
+    die "overlay healthcheck FAILED: ${name}:${port}/health (last code=${code:-none})"
+  fi
+}
+
+# ============================================================================
+# 12. OUT OF SCOPE — node teardown
+# ============================================================================
+#   This script only brings the single manager node up; it performs NO teardown.
+#   Decommissioning a node is done separately, by hand (e.g. `docker swarm leave`
+#   on the node and `platform master worker rm <node>` on the manager), ONLY
+#   after a human has confirmed GREEN (master + both challenges healthy on Swarm).
+# ============================================================================
+
+# ============================================================================
+# main
+# ============================================================================
+main() {
+  parse_args "$@"
+
+  log "============================================================"
+  log "Platform single-node Swarm bring-up (DRAFT)"
+  if [[ "${APPLY}" == "true" ]]; then
+    warn "RUNNING IN --apply MODE: mutating commands WILL execute."
+  else
+    log "DRY-RUN (default): printing planned actions only. Pass --apply to execute."
+  fi
+  log "  advertise-addr      : ${ADVERTISE_ADDR}"
+  log "  backup-dir          : ${BACKUP_DIR}"
+  log "  master-config       : ${MASTER_CONFIG_PATH}"
+  log "  restart-dockerd     : ${RESTART_DOCKERD}   (destructive; opt-in)"
+  log "  single-node-placement: ${SINGLE_NODE_PLACEMENT}  (non-default; opt-in)"
+  log "  static-challenges   : ${STATIC_CHALLENGES}  (opt-in)"
+  log "============================================================"
+
+  preflight                  # 1
+  ghcr_login                 # 1b (private images)
+  apply_daemon_json          # 2  (DESTRUCTIVE behind --restart-dockerd)
+  swarm_init                 # 3
+  single_node_placement_fix  # 4  (REVIEW; non-default behind --single-node-placement)
+  create_networks            # 5
+  create_secrets             # 6
+  deploy_postgres            # 7
+  restore_data               # 8
+  deploy_master              # 9
+  deploy_challenges          # 10 (master-orchestrated by default; direct via --static-challenges)
+  healthcheck                # 11
+  # 12 node teardown: OUT OF SCOPE (see comment block above).
+
+  log "============================================================"
+  if [[ "${APPLY}" == "true" ]]; then
+    log "Bring-up steps executed. Verify master + both challenges are healthy."
+  else
+    log "Dry-run complete. Review the planned actions above, then re-run with --apply."
+  fi
+  log "============================================================"
+}
+
+main "$@"

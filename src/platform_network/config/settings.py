@@ -62,7 +62,6 @@ class DockerSettings(BaseModel):
     broker_port: int = 8082
     broker_url: str = "http://platform-docker-broker:8082"
     broker_workspace_dir: str = "/tmp/platform-docker-broker"
-    gpu_server_state_file: str = "/var/lib/platform/gpu_servers.json"
     broker_allowed_images: list[str] = Field(
         default_factory=lambda: ["ghcr.io/platformnetwork/"]
     )
@@ -70,115 +69,11 @@ class DockerSettings(BaseModel):
     broker_privileged_slugs: list[str] = Field(default_factory=list)
     broker_node_role: Literal["manager", "worker"] = "manager"
     broker_allow_privileged_escape: bool = False
-    broker_placement_constraint: str | None = "node.role==worker"
-    challenge_placement_constraint: str | None = None
-
-
-class RuntimeSettings(BaseModel):
-    backend: Literal["kubernetes", "docker"] = "docker"
-
-
-class KubernetesAutoscalingSettings(BaseModel):
-    enabled: bool = True
-    keda_enabled: bool = False
-    min_replicas: int = Field(default=1, ge=1)
-    max_replicas: int = Field(default=3, ge=1)
-    target_cpu_utilization: int = Field(default=70, ge=1, le=100)
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> KubernetesAutoscalingSettings:
-        if self.max_replicas < self.min_replicas:
-            raise ValueError(
-                "max_replicas must be greater than or equal to min_replicas"
-            )
-        return self
-
-
-class KubernetesTargetDefaultsSettings(BaseModel):
-    image_pull_secrets: list[str] = Field(default_factory=list)
-    gpu_resource_name: str = "nvidia.com/gpu"
-    runtime_class_name: str | None = None
-    node_selector: dict[str, str] = Field(default_factory=dict)
-    tolerations: list[dict[str, object]] = Field(default_factory=list)
-
-
-class ResourceRequirementsSettings(BaseModel):
-    requests: dict[str, str] = Field(default_factory=dict)
-    limits: dict[str, str] = Field(default_factory=dict)
-
-
-class KubernetesManagedPostgresSettings(BaseModel):
-    enabled: bool = True
-    image: str = "postgres:16-alpine"
-    storage_class: str | None = None
-    storage_size: str = "10Gi"
-    retain_pvc: bool = True
-    retain_secret: bool = True
-    resources: ResourceRequirementsSettings = Field(
-        default_factory=ResourceRequirementsSettings
-    )
-
-
-class KubernetesSettings(BaseModel):
-    namespace: str = "platform"
-    in_cluster: bool = True
-    kubeconfig: str | None = None
-    target_state_file: str = "/var/lib/platform/kubernetes_targets.json"
-    service_account: str = "platform-master"
-    image_pull_secrets: list[str] = Field(default_factory=list)
-    storage_class: str | None = None
-    storage_size: str = "10Gi"
-    challenge_mode: str = Field(
-        default="statefulset", pattern=r"^(statefulset|deployment)$"
-    )
-    broker_backend: Literal["kubernetes", "docker"] = "docker"
-    gpu_resource_name: str = "nvidia.com/gpu"
-    node_selector: dict[str, str] = Field(default_factory=dict)
-    tolerations: list[dict[str, object]] = Field(default_factory=list)
-    runtime_class_name: str | None = None
-    target_defaults: KubernetesTargetDefaultsSettings = Field(
-        default_factory=KubernetesTargetDefaultsSettings
-    )
-    managed_postgres: KubernetesManagedPostgresSettings = Field(
-        default_factory=KubernetesManagedPostgresSettings
-    )
-    autoscaling: KubernetesAutoscalingSettings = Field(
-        default_factory=KubernetesAutoscalingSettings
-    )
-
-
-class GpuServerSettings(BaseModel):
-    id: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
-    base_url: str = Field(..., min_length=1)
-    token: str | None = None
-    token_file: str | None = None
-    enabled: bool = True
-    verify_tls: bool = True
-    timeout_seconds: float = 30.0
-
-
-class KubernetesTargetSettings(BaseModel):
-    id: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
-    mode: Literal["direct", "agent"] = "direct"
-    api_url: str | None = None
-    agent_url: str | None = None
-    namespace: str = Field(default="platform", min_length=1)
-    service_account: str | None = "platform-master"
-    kubeconfig: str | None = None
-    kubeconfig_file: str | None = None
-    agent_token: str | None = None
-    agent_token_file: str | None = None
-    enabled: bool = True
-    draining: bool = False
-    verify_tls: bool = True
-    timeout_seconds: float = 30.0
-    description: str | None = None
-    labels: dict[str, str] = Field(default_factory=dict)
-    gpu_count: int = Field(default=0, ge=0)
-    storage_class: str | None = None
-    node_selector: dict[str, str] = Field(default_factory=dict)
-    tolerations: list[dict[str, object]] = Field(default_factory=list)
-    runtime_class_name: str | None = None
+    # Challenge API services run on the manager/host; broker jobs run on
+    # workers, steered to CPU- vs GPU-labeled nodes (platform.workload).
+    challenge_placement_constraint: str | None = "node.role==manager"
+    cpu_job_constraint: str | None = "node.labels.platform.workload==cpu"
+    gpu_job_constraint: str | None = "node.labels.platform.workload==gpu"
 
 
 class SecuritySettings(BaseModel):
@@ -199,10 +94,6 @@ class Settings(BaseModel):
     validator: ValidatorSettings = Field(default_factory=ValidatorSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     docker: DockerSettings = Field(default_factory=DockerSettings)
-    runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
-    kubernetes: KubernetesSettings = Field(default_factory=KubernetesSettings)
-    gpu_servers: list[GpuServerSettings] = Field(default_factory=list)
-    kubernetes_targets: list[KubernetesTargetSettings] = Field(default_factory=list)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 

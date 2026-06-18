@@ -233,7 +233,7 @@ def test_run_job_emits_replicated_job_with_mandatory_flags(tmp_path: Path) -> No
     pairs = _pairs(argv)
     assert ("--mode", "replicated-job") in pairs
     assert ("--restart-condition", "none") in pairs
-    assert ("--constraint", "node.role==worker") in pairs
+    assert ("--constraint", "node.labels.platform.workload==cpu") in pairs
     assert ("--network", "platform_jobs_internal") in pairs
     assert ("--limit-cpu", "2.0") in pairs
     assert ("--limit-memory", "4g") in pairs
@@ -584,7 +584,7 @@ def test_orchestrator_service_spec_becomes_replicated_service(
     assert ("--mode", "replicated") in pairs
     assert ("--replicas", "1") in pairs
     assert ("--restart-condition", "any") in pairs
-    assert ("--constraint", "node.role==worker") in pairs
+    assert ("--constraint", "node.role==manager") in pairs
     assert ("--network", "platform_challenges") in pairs
     assert (
         "--secret",

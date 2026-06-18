@@ -6,9 +6,9 @@
 
 A challenge is an independent repository and Docker image. It owns its logic, public routes, submissions, scoring data, database schema, and challenge-local files.
 
-In Kubernetes managed mode, Platform creates isolated managed Postgres resources per challenge slug and injects `CHALLENGE_DATABASE_URL` automatically from the per-challenge Secret. Local generated challenge runs and legacy Docker runtime stay SQLite-backed with `sqlite+aiosqlite:////data/challenge.sqlite3`.
+Challenge state is SQLite on the challenge `/data` Swarm volume. Platform injects `CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3` and mounts `/data` for the SQLite file. There is no Postgres server per challenge; the `/data` volume is the single home for the database, artifacts, analyzer output, uploaded files, and local files.
 
-The challenge `/data` PVC is separate from managed Postgres. Use `/data` for artifacts, analyzer output, uploaded files, local files, and the SQLite fallback. Managed Postgres uses its own retained data claim.
+The challenge service runs on the manager node as a Swarm replicated service (placement `node.role==manager`) on an encrypted overlay network. The `/data` Swarm volume is retained by default when the service is removed.
 
 ## Required API
 
@@ -40,14 +40,13 @@ The master blocks `/internal/*`, `/health`, `/version`, Agent Challenge internal
 
 ## Proxy failure behavior
 
-Platform proxy should preserve challenge-origin non-2xx responses when the challenge answered with a safe response. Transport failures, unreachable services, missing Kubernetes targets, DNS failures, and connection timeouts become safe 502 responses at Platform. Frontends should render unavailable copy and retry with backoff instead of showing raw text such as `Platform request failed with status 502`.
+Platform proxy should preserve challenge-origin non-2xx responses when the challenge answered with a safe response. Transport failures, unreachable services, Swarm service DNS failures, and connection timeouts become safe 502 responses at Platform. Frontends should render unavailable copy and retry with backoff instead of showing raw text such as `Platform request failed with status 502`.
 
 Operator checklist for challenge 502s:
 
 1. Confirm ingress includes `/challenges` and routes it to Platform proxy.
 2. Confirm the slug maps to a running challenge service.
-3. Confirm challenge service health, service DNS, service port, and pod readiness.
-4. In Kubernetes target mode, confirm target assignment, target health, and capacity state.
-5. Check whether the response came from proxy transport handling or from the challenge origin. Only transport failures should be rewritten to 502.
+3. Confirm challenge service health, the Swarm service name, service DNS on the overlay network, the service port, and that the service has at least one running task.
+4. Check whether the response came from proxy transport handling or from the challenge origin. Only transport failures should be rewritten to 502.
 
 Agent Challenge env and public launch routes are public proxy routes, but Platform does not store their request bodies or per-submission env values. The allowed Platform paths are `GET/PUT /challenges/agent-challenge/submissions/{id}/env`, `POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, and `POST /challenges/agent-challenge/submissions/{id}/launch`. The challenge-local paths are `GET/PUT /submissions/{id}/env`, `POST /submissions/{id}/env/confirm-empty`, and `POST /submissions/{id}/launch`. Only signed miner headers `X-Hotkey`, `X-Signature`, `X-Nonce`, and `X-Timestamp` are preserved for those routes. `POST /internal/v1/submissions/{submission_id}/launch` is a bridge/internal API only, not a public miner API, and the Platform proxy must not expose generic benchmark execution routes. The generic Platform broker remains the execution substrate for controlled Platform SDK jobs behind the challenge boundary.

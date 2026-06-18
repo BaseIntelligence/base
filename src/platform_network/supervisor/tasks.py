@@ -44,7 +44,6 @@ from platform_network.supervisor.self_update import (
     build_self_update_task,
     run_startup_rollback_check,
 )
-from platform_network.supervisor.weights import build_weights_task
 
 BROKER_HEALTH_PROBE_INTERVAL_SECONDS = 10.0
 
@@ -94,7 +93,7 @@ def build_scheduled_tasks(
     # Task 28 #1: call-site override targets the broker by its CANONICAL name
     # `platform-docker-broker` (the settings.docker.broker_url host) and drops
     # the non-service `platform-config-sync`. DEFAULT_FIRST_PARTY_TARGETS stays
-    # as-is for k8s-parity/helm tests; do not "simplify" back to the default.
+    # as-is for the regression tests; do not "simplify" back to the default.
     tasks.append(
         build_image_updater_task(
             settings,
@@ -127,7 +126,7 @@ def build_scheduled_tasks(
     # Task 21 weights: DISABLED for docker cutover — orphaned (output discarded;
     # admin serves /v1/weights/latest on-demand). Re-enable only for on-chain submit.
     # tasks.append(build_weights_task(settings, health_gate=gate))
-    # Task 22 registration point (self-update, helm-upgrader replacement).
+    # Task 22 registration point (self-update).
     # Startup-side rollback agent (Task 22): MUST run once before workers
     # start — it flips `current` back + exits when a pending update is
     # restart-storming (post-swap health gate). No-op outside a staged

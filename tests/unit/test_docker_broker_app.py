@@ -355,7 +355,7 @@ def test_broker_rejects_privileged_jobs(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 403
-    assert "isolated Kubernetes runtime" in response.text
+    assert "allowlisted escape hatch" in response.text
 
 
 def test_broker_rejects_unsafe_file_mount_source(tmp_path: Path) -> None:

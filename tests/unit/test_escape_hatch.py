@@ -34,9 +34,7 @@ from platform_network.schemas.docker_broker import (
     BrokerRunRequest,
 )
 
-FROZEN_PRIVILEGED_DETAIL = (
-    "privileged broker jobs require an isolated Kubernetes runtime"
-)
+FROZEN_PRIVILEGED_DETAIL = "privileged broker jobs require the allowlisted escape hatch"
 FULL_CONTAINER_ID = "c0ffee" + "0" * 58
 
 AUTH_HEADERS = {

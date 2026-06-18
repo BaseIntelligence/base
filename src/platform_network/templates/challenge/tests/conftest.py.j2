@@ -11,7 +11,7 @@ from sqlalchemy import delete
 _TEST_DIR = Path(tempfile.mkdtemp(prefix="{{ slug }}-tests-"))
 _TEST_DB = _TEST_DIR / "challenge.sqlite3"
 
-# Generated tests use the local SQLite fallback; Kubernetes injects managed PostgreSQL.
+# Generated tests use the local SQLite fallback; Platform may inject PostgreSQL.
 os.environ.setdefault("CHALLENGE_DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB}")
 os.environ.setdefault("CHALLENGE_SHARED_TOKEN", "test-token")
 

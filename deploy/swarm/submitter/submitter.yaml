@@ -14,11 +14,11 @@
 #     PostgreSQL URL, which satisfies the production policy check
 #     (config/policy.py:validate_database_url) without ever being connected to,
 #     so omitting it keeps this file credential-free.
-#   * docker / kubernetes / runtime / gpu_servers / kubernetes_targets: no
-#     orchestration runs here. Their defaults are all production-policy-clean
-#     (e.g. broker_allowed_images defaults to ghcr.io/platformnetwork/).
+#   * docker: no orchestration runs here. Its defaults are all
+#     production-policy-clean (e.g. broker_allowed_images defaults to
+#     ghcr.io/platformnetwork/).
 #
-# Network block replicates the live k3s validator EXACTLY (netuid 100,
+# Network block replicates the live validator EXACTLY (netuid 100,
 # chain_endpoint empty string -> bittensor finney default, wallet
 # platform-validator/validator under /var/lib/platform/wallets, master_uid 0).
 

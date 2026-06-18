@@ -52,7 +52,7 @@
     "workdir": "/workspace"
   },
   "response": {
-    "detail": "privileged broker jobs require an isolated Kubernetes runtime"
+    "detail": "privileged broker jobs require the allowlisted escape hatch"
   },
   "status_code": 403
 }

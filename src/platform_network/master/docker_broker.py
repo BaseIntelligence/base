@@ -378,7 +378,7 @@ class DockerBrokerService:
         if request.limits.privileged:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="privileged broker jobs require an isolated Kubernetes runtime",
+                detail="privileged broker jobs require the allowlisted escape hatch",
             )
         limits = DockerLimits(**request.limits.model_dump(exclude={"privileged"}))
         if not limits.read_only:

@@ -1,10 +1,10 @@
 """Weights schedule port (plan Task 21) — compute-only `master weights --once`.
 
 Each tick performs ONE master weight epoch exactly as the CLI command
-``platform master weights --once`` does (the Kubernetes weights CronJob it
-replaces), by calling the SAME ``cli_app.main`` helpers — no duplicated
+``platform master weights --once`` does (the scheduled weights job it
+replaces), by calling the SAME ``cli_app.main`` helpers, with no duplicated
 logic. The cycle: startup migrations (idempotent alembic upgrade, identical
-to every CronJob invocation), registry/challenge-token reads, metagraph
+to every task invocation), registry/challenge-token reads, metagraph
 fetch (chain READ), per-challenge ``get_weights`` HTTP collection, then
 aggregation into the final UID vector.
 
@@ -57,10 +57,8 @@ def compute_weights_once(settings: Settings) -> FinalWeights:
     cli_main._run_startup_migrations(settings)
     registry = cli_main._master_registry(settings)
     runtime = cli_main.create_bittensor_runtime(settings)
-    kubernetes_targets = cli_main._kubernetes_target_registry(settings)
     service = cli_main._master_weight_service(
         settings,
-        kubernetes_targets,
         metagraph_cache=runtime.metagraph_cache,
     )
     if service.weight_setter is not None:

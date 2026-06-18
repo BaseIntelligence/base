@@ -2,86 +2,100 @@
 
 Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators.
 
-This guide covers the committed Kubernetes installer for the master control plane. It installs the Platform master admin API, proxy, broker, shared master ConfigMap, active image auto-update CronJobs, and a suspended full Helm auto-upgrade CronJob in the master namespace. It does not install validator workloads, chain submission jobs, or any key material.
+This guide covers the committed Docker Swarm bring-up for the master control plane. It installs the Platform master admin API, proxy, broker, the challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
 
-## Default Namespace
+## Manager node
+
+The master runs as a single-node Docker Swarm manager. The manager hosts the admin API, proxy, broker, supervisor, and the challenge service containers themselves. Challenge code runs on the manager with the placement constraint `node.role==manager`; only short-lived broker jobs are dispatched to worker nodes.
+
+Default service ports on the manager:
 
 ```text
-PLATFORM_NAMESPACE=platform-master
+admin  : 8000
+proxy  : 8080
+broker : 8082
 ```
 
-Use a different namespace only for Cortex Foundation managed test clusters. Do not reuse the namespace reserved for normal operator installs.
+The control-plane database URL is supplied through a Docker secret, not on the command line. Use a disposable host when validating the full bring-up.
 
 ## Automatic Install
 
-Run from the repository root:
+Bring up the manager from the repository root with the Swarm installer:
 
 ```bash
-./scripts/install-master.sh --database-url postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+./deploy/swarm/install-swarm.sh
 ```
 
-The script performs these actions:
-
-1. Prints the foundation-only warning before it changes the cluster.
-2. Applies Namespace, ServiceAccount/RBAC, ConfigMap, admin Deployment and Service, proxy Deployment and Service, broker Deployment and Service, image updater CronJobs, and `platform-master-helm-upgrader` without deleting healthy existing workloads.
-3. Stores the required database URL in `secret/platform-master-database-url` and references it from Deployments.
-4. Runs the master admin API with `platform master run --config config/master.kubernetes.yaml`.
-5. Runs the proxy and broker with the same master config.
-
-Useful options:
+`install-swarm.sh` is **dry-run by default**: with no flags it prints every planned mutating command and changes nothing. It performs work only with `--apply`, and every destructive step is behind its own explicit opt-in flag so the operator advances one step at a time:
 
 ```bash
-export PLATFORM_DATABASE_URL='postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform'
-./scripts/install-master.sh --namespace platform-master
-./scripts/install-master.sh --image ghcr.io/platformnetwork/platform-master:v1.2.3@sha256:<digest>
-./scripts/install-master.sh --image-update-schedule '*/1 * * * *'
-./scripts/install-master.sh --image-updater-image ghcr.io/platformnetwork/platform:latest
-./scripts/install-master.sh --auto-upgrade-schedule '*/5 * * * *'
-./scripts/install-master.sh --auto-upgrade-helm-image alpine/helm:3.15.4
-./scripts/install-master.sh --auto-upgrade-repo PlatformNetwork/platform --auto-upgrade-ref main
-./scripts/install-master.sh --netuid 100
-./scripts/install-master.sh --cleanup
+./deploy/swarm/install-swarm.sh --apply
+./deploy/swarm/install-swarm.sh --apply --restart-dockerd        # write /etc/docker/daemon.json + restart dockerd
+./deploy/swarm/install-swarm.sh --apply --single-node-placement  # non-default placement override
+./deploy/swarm/install-swarm.sh --apply --static-challenges      # create challenge services directly
 ```
 
-Cleanup is scoped to installer-managed master objects and removes `secret/platform-master-database-url`. It does not delete unrelated workloads or namespaces.
+The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges` and the internal `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never argv), and creates the master admin, proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. No docker-compose or stack YAML is produced or consumed; the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
 
-## Full Helm Auto-Upgrade
+## Supervisor
 
-The installer creates `cronjob/platform-master-admin-image-updater`, `cronjob/platform-master-proxy-image-updater`, and `cronjob/platform-master-broker-image-updater` for the normal mutable image channel. These jobs patch only their named Deployments to the latest digest of the configured master image tag.
+The control-plane supervisor replaces the old Kubernetes CronJobs with a single watchdog-supervised systemd service. Install the unit from `deploy/swarm/platform-supervisor.service`:
 
-The installer also creates `cronjob/platform-master-helm-upgrader`, suspended by default. The job uses a namespace-local ServiceAccount with ConfigMap-backed Helm release storage and runs a full Helm upgrade from GitHub when explicitly unsuspended:
+```bash
+cp deploy/swarm/platform-supervisor.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now platform-supervisor.service
+systemctl status platform-supervisor.service
+```
+
+The unit is `Type=notify` with a 30s watchdog and runs:
 
 ```text
-helm upgrade --install platform-master ... --atomic --wait --cleanup-on-fail
+platform master supervisor --config /etc/platform/master.yaml
 ```
 
-The upgrader downloads the configured repo/ref, reads the chart under `deploy/helm/platform`, and applies master-only values in the master namespace. It sets `HELM_DRIVER=configmap`, uses `concurrencyPolicy: Forbid`, and does not read or print Kubernetes Secret values. The master database URL must be supplied by the existing Secret referenced by the chart values. The installer pins only live-safe non-secret references for future self-upgrades, including `database.urlSecret.name=platform-master-database-url`, `database.urlSecret.key=url`, `security.existingSecret=platform-secrets`, `kubernetes.namespace`, and `kubernetes.serviceAccount`; never place database URLs, tokens, or other secret values in `autoUpgrade.extraSet`.
+The supervisor loops run on the manager only: broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update. The image updaters resolve the public GHCR tag digest and roll the Swarm services to `tag@sha256:<digest>` only when a mutable tag moves; no GHCR pull secret is required for public packages.
 
-Before relying on self-upgrades, verify the referenced Secret and keys exist without printing their values:
+## Worker enrollment
 
-```bash
-kubectl -n platform-master get secret platform-master-database-url -o jsonpath='{.data.url}' >/dev/null
-kubectl -n platform-master get secret platform-secrets -o jsonpath='{.data.admin_token}' >/dev/null
-kubectl -n platform-master get cronjob platform-master-admin-image-updater platform-master-proxy-image-updater platform-master-broker-image-updater
-kubectl -n platform-master get cronjob platform-master-helm-upgrader
-```
+Workers run short-lived CPU/GPU broker jobs and are added manually with a Swarm join token (no SSH). The `platform master worker` CLI group manages them from the manager:
 
-If any prerequisite is missing, keep the Helm-upgrader CronJob suspended with `autoUpgrade.suspend=true` until the referenced Secret exists with the intended key. If the deployment is already healthy, use these checks to confirm the CronJob bootstrap references instead of replacing the deployment just to recreate the CronJob.
+- `platform master worker token [--cpu|--gpu]` prints the join command for a CPU or GPU worker:
+
+  ```text
+  docker swarm join --token <TOKEN> <MANAGER_IP>:2377
+  ```
+
+- `platform master worker list` lists enrolled nodes and their workload labels.
+- `platform master worker label <node> --workload cpu|gpu` sets the workload label the broker schedules against (`node.labels.platform.workload`).
+- `platform master worker drain <node>` drains a node before maintenance.
+- `platform master worker rm <node>` removes a node from the Swarm.
+- `platform master worker inspect <node>` shows node detail.
+
+Enrollment flow:
+
+1. On the manager, run `platform master worker token --cpu` (or `--gpu`) and copy the printed `docker swarm join` command.
+2. On the worker, install the matching `daemon.json` (`deploy/swarm/daemon.worker.json` for GPU workers, which advertises `node-generic-resources: ["NVIDIA-GPU=GPU-<uuid>"]` and registers the NVIDIA runtime), then run the join command.
+3. On the manager, label the new node: `platform master worker label <node> --workload cpu` or `--workload gpu`.
+
+The broker then schedules CPU jobs onto `node.labels.platform.workload==cpu` and GPU jobs onto `node.labels.platform.workload==gpu` with `--generic-resource NVIDIA-GPU=<N>`.
 
 ## Explicit Non Goals
 
-- It does not create validator resources.
+- It does not create the on-chain submitter.
 - It does not run the master weights CLI command.
-- It does not create a master on-chain submission CronJob.
+- It does not create a master on-chain submission unit.
 - It does not ask for, print, or store key material.
-- It does not use external paste services as the canonical source.
+- It does not produce or consume docker-compose / stack files.
 
 ## Runtime Checks
 
 ```bash
-kubectl -n platform-master get deployment platform-master-admin platform-master-proxy platform-master-broker
-kubectl -n platform-master get cronjob platform-master-helm-upgrader
-kubectl -n platform-master logs -f deployment/platform-master-admin
+docker service ls
+docker service ps platform-master-admin platform-master-proxy platform-master-broker
+docker service logs -f platform-master-admin
+journalctl -u platform-supervisor.service -f
+docker node ls
 ```
 
 ## Validation Commands
@@ -89,8 +103,10 @@ kubectl -n platform-master logs -f deployment/platform-master-admin
 Before changing the installer or docs, run:
 
 ```bash
-bash -n scripts/install-master.sh
-uv run pytest tests/unit/test_master_install_docs.py tests/unit/test_validator_install_docs.py -q
+bash -n deploy/swarm/install-swarm.sh
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
 ```
 
-Run the full installer only when the current Kubernetes context and namespace are owned by Cortex Foundation master infrastructure.
+Run the full installer only when the current host is owned by Cortex Foundation master infrastructure.

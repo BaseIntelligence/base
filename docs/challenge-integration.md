@@ -17,17 +17,15 @@ The master normalizes returned values, so raw scores are acceptable as long as t
 
 Generated challenges use the async SQLAlchemy SDK and read their runtime database URL from `CHALLENGE_DATABASE_URL`.
 
-In Kubernetes managed mode, Platform creates one isolated managed Postgres server per challenge slug. Each slug gets its own Postgres Secret, Service, StatefulSet, and data claim. Platform injects `CHALLENGE_DATABASE_URL` into the challenge workload automatically from that per-challenge Secret. Challenge authors must not set that environment variable in the Kubernetes challenge spec when managed Postgres is enabled.
-
-The per-challenge credential is only for that challenge database. It is separate from the Platform control-plane database URL used by the master or validator process. Challenges must never receive `PLATFORM_DATABASE_URL`, master database URLs, or any central control-plane PostgreSQL credentials.
-
-Generated local development and Docker fallback stay SQLite:
+The challenge runtime is SQLite-backed. Platform injects `CHALLENGE_DATABASE_URL` pointing at the SQLite file on the challenge `/data` Swarm volume:
 
 ```text
 sqlite+aiosqlite:////data/challenge.sqlite3
 ```
 
-That fallback is for local generated challenge runs and the legacy Docker runtime. Legacy Docker challenge runtime does not create Postgres and continues to mount `/data` for the SQLite file and artifacts.
+The same URL is used for local generated challenge runs and for the deployed Swarm service. There is no Postgres server per challenge; each challenge mounts its own `/data` volume for the SQLite file and artifacts.
+
+Challenges must never receive `PLATFORM_DATABASE_URL`, master database URLs, or any central control-plane PostgreSQL credentials. The shared control-plane PostgreSQL is only for master and validator state.
 
 ## Async SQLAlchemy usage
 
@@ -73,29 +71,25 @@ Generated applications call `Base.metadata.create_all` through the async engine 
 
 ## Persistent storage
 
-Kubernetes challenge workloads still get a separate `/data` PVC. Use `/data` for artifacts, analyzer output, uploaded files, temporary local state that should survive restarts, or the local SQLite fallback.
+Challenge services get a `/data` Swarm volume. Use `/data` for the SQLite database, artifacts, analyzer output, uploaded files, and any local state that should survive restarts.
 
-Do not treat the challenge `/data` PVC as Postgres storage. Managed Postgres uses its own StatefulSet volume claim mounted inside the Postgres container at `/var/lib/postgresql/data`.
-
-By default, Platform retains the managed Postgres data claim and managed Postgres Secret when a challenge is removed. That retention protects challenge state and credentials from accidental deletion. Manual deletion of either object is destructive because it can remove the database contents or the credential needed to reconnect to retained data.
+The `/data` Swarm volume is the only persistent store for a challenge. By default Platform retains the `/data` volume when a challenge service is removed. That retention protects challenge state and the SQLite database from accidental deletion.
 
 ## Operator cleanup and purge
 
-Normal challenge stop keeps managed Postgres resources available for reuse. Challenge remove flows delete the managed Postgres StatefulSet and Service but keep the per-challenge Postgres Secret and data claim by default. If an operator intentionally wants to purge a challenge database, inspect the objects first, then delete only the matching slug resources.
+Normal challenge stop removes the Swarm service but keeps the `/data` volume available for reuse. If an operator intentionally wants to purge a challenge database, inspect the volume first, then delete only the matching slug volume.
 
 ```bash
-kubectl -n <namespace> get secret,pvc --selector app.kubernetes.io/managed-by=platform-network,platform.challenge.slug=<slug>
+docker volume ls --filter label=platform.challenge.slug=<slug>
 
-kubectl -n <namespace> delete secret --selector platform.component=challenge-postgres-secret,platform.challenge.slug=<slug>
-
-kubectl -n <namespace> delete pvc --selector platform.component=challenge-postgres-data,platform.challenge.slug=<slug>
+docker volume rm <challenge-data-volume>
 ```
 
-These commands are manual and destructive. Confirm the namespace and slug before running them. Platform does not provide automated destructive purge in this implementation.
+These commands are manual and destructive. Confirm the slug and volume before running them. Platform does not provide automated destructive purge in this implementation.
 
 ## Out of scope
 
-This implementation does not provide Docker Compose Postgres support, automatic backups, restore workflows, high availability, connection pooling, Postgres operator support, storage resize workflows, challenge Alembic migration automation, or automated destructive purge.
+This implementation does not provide a Postgres server per challenge, Docker Compose or stack-file Postgres support, automatic backups, restore workflows, high availability, connection pooling, storage resize workflows, challenge Alembic migration automation, or automated destructive purge.
 
 ## Build and publish
 

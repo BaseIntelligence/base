@@ -1,24 +1,17 @@
-"""Supervisor challenge-image-updater — docker-fallback port of the CronJob.
+"""Supervisor challenge-image-updater — per-challenge GHCR digest roll.
 
-The Kubernetes Helm chart runs a one-minute CronJob (``platform master
-refresh-challenge-images``) that, per registered challenge, resolves the
-public GHCR tag digest and (a) updates the challenge DB record to
+A supervisor :class:`ScheduledTask` that, per registered challenge, resolves
+the public GHCR tag digest and (a) updates the challenge DB record to
 ``tag@sha256:<digest>`` when the digest changed and (b) rolls the running
-workload to the new image. That CLI command already carries a docker
-fallback branch: when ``settings.runtime.backend != "kubernetes"`` no
-Kubernetes client is ever built and the per-challenge roll is
-``await controller.restart(slug)`` through the existing
+Swarm workload to the new image via the existing
 :class:`~platform_network.cli_app.main.DockerRuntimeController`.
 
-This module is that docker branch, verbatim, as a supervisor
-:class:`ScheduledTask`. The supervisor only ever runs in docker mode, so
-NO Kubernetes client is constructed here — ever. Per challenge record the
-tick reuses:
+Per challenge record the tick reuses:
 
 - the CLI's ``mutable_base`` policy verbatim: only ``ghcr.io`` images are
   auto-tracked and ``sha-*`` tags are skipped (immutable CI pins);
 - the registry-only digest core from
-  ``platform_network.validator.image_updater``
+  :mod:`platform_network.supervisor.image_ref`
   (:func:`parse_image_reference` / :func:`resolve_remote_digest`);
 - the same DB write (``registry.update(slug, ChallengeUpdate(image=...))``)
   and the same restart primitive
@@ -40,8 +33,7 @@ challenge DB registry and the public GHCR registry — it has NO broker HTTP
 dependency — so the shared :class:`BrokerHealthGate` is accepted for
 recipe parity but deliberately not consulted (``del``'d in the builder).
 
-Interval: 60s, parity with the Helm chart's ``imageAutoUpdate.schedule``
-of ``*/1 * * * *`` which drives the challenge-image-updater CronJob.
+Interval: 60s — the one-minute challenge-image-updater cadence.
 """
 
 from __future__ import annotations
@@ -54,19 +46,18 @@ from typing import Any
 
 from platform_network.config.settings import Settings
 from platform_network.supervisor.health import BrokerHealthGate
-from platform_network.supervisor.scheduler import ScheduledTask
-from platform_network.validator.image_updater import (
+from platform_network.supervisor.image_ref import (
     ImageReference,
     parse_image_reference,
     resolve_remote_digest,
 )
+from platform_network.supervisor.scheduler import ScheduledTask
 
 logger = logging.getLogger(__name__)
 
-# Parity with the Helm chart's one-minute imageAutoUpdate CronJob schedule.
+# One-minute challenge-image-updater cadence.
 CHALLENGE_IMAGE_UPDATER_INTERVAL_SECONDS = 60.0
-# Parity with the CronJob's `--tag` default
-# (values.yaml imageAutoUpdate.challenges.tag).
+# Default tracking tag for challenge images.
 DEFAULT_MUTABLE_TAG = "latest"
 
 _PINNED_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")

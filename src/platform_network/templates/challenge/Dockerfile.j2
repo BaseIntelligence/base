@@ -1,6 +1,6 @@
 FROM python:{{ python_version }}-slim AS runtime
 
-# Platform overrides CHALLENGE_DATABASE_URL with managed PostgreSQL in Kubernetes.
+# Platform may override CHALLENGE_DATABASE_URL (e.g. shared PostgreSQL) under Swarm.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CHALLENGE_HOST=0.0.0.0 \

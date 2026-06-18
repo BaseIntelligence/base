@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import math
 import re
 import subprocess
@@ -16,8 +17,25 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+_logger = logging.getLogger(__name__)
+
 _IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9./_:@+-]{0,254}$")
 _IMAGE_PULL_POLICIES = {"Always", "IfNotPresent", "Never"}
+
+#: Members the broker's ``_validate_tar_members`` rejects (symlinks, hardlinks,
+#: devices, FIFOs); one present makes the broker refuse the whole mount archive.
+#: We DROP them rather than use ``dereference=True``: dropping never reads a link
+#: target, whereas dereference would resolve an attacker-controlled symlink (e.g.
+#: ``evil -> /run/secrets/...``) on the worker node and bake the secret into a
+#: regular-file member that passes broker validation.
+_DISALLOWED_MEMBER_CHECKS = ("issym", "islnk", "isdev", "ischr", "isblk", "isfifo")
+
+
+def _safe_mount_member(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    if any(getattr(info, check)() for check in _DISALLOWED_MEMBER_CHECKS):
+        _logger.warning("dropping non-regular mount member from archive: %s", info.name)
+        return None
+    return info
 
 
 class DockerExecutorError(RuntimeError):
@@ -464,11 +482,11 @@ def _encode_mount(mount: DockerMount) -> dict[str, object]:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as tar:
         if source.is_dir():
-            tar.add(source, arcname=".")
+            tar.add(source, arcname=".", filter=_safe_mount_member)
             source_type = "directory"
             source_name = "."
         else:
-            tar.add(source, arcname=source.name)
+            tar.add(source, arcname=source.name, filter=_safe_mount_member)
             source_type = "file"
             source_name = source.name
     return {

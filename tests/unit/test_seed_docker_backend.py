@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 import platform_network.cli_app.main as cli_module
-import platform_network.validator.image_updater as image_updater_module
+import platform_network.supervisor.image_ref as image_ref_module
 from platform_network.cli_app.main import DockerRuntimeController
 from platform_network.master.registry import ChallengeRegistry, FileChallengeRegistry
 from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
@@ -29,7 +29,7 @@ PINNED_DIGEST = "sha256:" + "c" * 64
 @pytest.fixture(autouse=True)
 def _offline_digest_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        image_updater_module,
+        image_ref_module,
         "resolve_remote_digest",
         lambda image_reference, **kwargs: PINNED_DIGEST,
     )

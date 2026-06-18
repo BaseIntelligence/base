@@ -11,4 +11,3 @@ def test_cli_facade_is_small_and_domain_package_exists() -> None:
     assert (root / "src/platform_network/cli_app/main.py").is_file()
     assert (root / "src/platform_network/master/admin/auth.py").is_file()
     assert (root / "src/platform_network/master/admin/runtime.py").is_file()
-    assert (root / "src/platform_network/master/admin/gpu_registry.py").is_file()

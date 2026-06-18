@@ -15,7 +15,6 @@ from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 from platform_network.bittensor.metagraph_cache import MetagraphCache
-from platform_network.kubernetes.agent import KubernetesAgentClient
 from platform_network.master.docker_orchestrator import DockerOrchestrationError
 from platform_network.master.registry import ChallengeNotFoundError
 from platform_network.schemas.challenge import ChallengeRecord, ChallengeStatus
@@ -133,6 +132,25 @@ def _is_agent_challenge_env_route(slug: str, method: str, path: str) -> bool:
     return False
 
 
+def _is_agent_challenge_signed_route(slug: str, method: str, path: str) -> bool:
+    """Routes where the miner signs the challenge-local path.
+
+    The miner's signature headers (``X-Hotkey``/``X-Signature``/``X-Nonce``/
+    ``X-Timestamp``) must survive the generic ``/challenges/{slug}`` passthrough
+    so the challenge can verify them. This covers the signed env actions plus the
+    JSON base64 submission upload (``POST /submissions``) per the frontend API
+    contract.
+    """
+
+    if _is_agent_challenge_env_route(slug, method, path):
+        return True
+    if slug != "agent-challenge":
+        return False
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    return len(parts) == 1 and parts[0] == "submissions" and method.upper() == "POST"
+
+
 def _forward_headers(
     request: Request, *, preserve_miner_signature_headers: bool = False
 ) -> dict[str, str]:
@@ -178,29 +196,6 @@ def _target_url(base_url: str, path: str, query: str) -> str:
     if query:
         url = f"{url}?{query}"
     return url
-
-
-def _agent_client_for_challenge(
-    target_registry: Any | None, challenge_slug: str
-) -> KubernetesAgentClient | None:
-    if target_registry is None or not hasattr(target_registry, "get_assignment"):
-        return None
-    target_id = target_registry.get_assignment(challenge_slug)
-    if not target_id:
-        return None
-    target = target_registry.get(target_id)
-    if target.mode != "agent" or not target.agent_url:
-        return None
-    token = target_registry.get_agent_token(target.id)
-    if not token:
-        return None
-    return KubernetesAgentClient(
-        target_id=target.id,
-        base_url=target.agent_url,
-        token=token,
-        timeout_seconds=target.timeout_seconds,
-        verify_tls=target.verify_tls,
-    )
 
 
 def _challenge_token_provider(registry: Any) -> ChallengeTokenProvider:
@@ -261,7 +256,6 @@ def create_proxy_app(
     nonce_store: MinerNonceStore | None = None,
     metagraph_cache: MetagraphCache | None = None,
     challenge_token_provider: ChallengeTokenProvider | None = None,
-    kubernetes_target_registry: Any | None = None,
     netuid: int = 100,
     upload_signature_ttl_seconds: int = 300,
     upload_nonce_ttl_seconds: int = 86_400,
@@ -312,16 +306,6 @@ def create_proxy_app(
         body: bytes,
         headers: dict[str, str],
     ) -> httpx.Response:
-        agent = _agent_client_for_challenge(kubernetes_target_registry, challenge.slug)
-        if agent is not None:
-            return await agent.forward_challenge_request(
-                slug=challenge.slug,
-                method=method,
-                path=path,
-                query=query,
-                content=body,
-                headers=headers,
-            )
         url = _target_url(challenge.internal_base_url, path, query)
         async with client_factory() as client:
             return await client.request(
@@ -340,23 +324,6 @@ def create_proxy_app(
         body: bytes,
         headers: dict[str, str],
     ) -> Response:
-        agent = _agent_client_for_challenge(kubernetes_target_registry, challenge.slug)
-        if agent is not None:
-            upstream = await agent.forward_challenge_request(
-                slug=challenge.slug,
-                method=method,
-                path=path,
-                query=query,
-                content=body,
-                headers=headers,
-            )
-            return Response(
-                content=upstream.content,
-                status_code=upstream.status_code,
-                headers=_response_headers(upstream),
-                media_type=upstream.headers.get("content-type"),
-            )
-
         url = _target_url(challenge.internal_base_url, path, query)
         stack = AsyncExitStack()
         try:
@@ -406,7 +373,9 @@ def create_proxy_app(
         )
         headers = _forward_headers(
             request,
-            preserve_miner_signature_headers=is_agent_challenge_env_route,
+            preserve_miner_signature_headers=_is_agent_challenge_signed_route(
+                slug, request.method, path
+            ),
         )
         headers["X-Platform-Challenge-Slug"] = slug
         try:

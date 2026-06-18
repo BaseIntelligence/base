@@ -105,13 +105,11 @@ def test_challenge_spec_and_resource_validation() -> None:
     assert ChallengeResources.from_mapping({"cpu": "500m"}).cpu == 0.5
     gpu_resources = ChallengeResources.from_mapping(
         {
-            "gpu_server": "gpu-a",
             "gpu_count": "1",
             "gpu_device_ids": "0,1",
             "gpu_capabilities": "gpu,compute",
         }
     )
-    assert gpu_resources.gpu_server == "gpu-a"
     assert gpu_resources.gpu_count == 1
     assert gpu_resources.gpu_device_ids == ("0", "1")
     assert gpu_resources.gpu_capabilities == ("gpu", "compute")
@@ -121,8 +119,6 @@ def test_challenge_spec_and_resource_validation() -> None:
         ChallengeResources(pids_limit=0).as_container_kwargs()
     with pytest.raises(DockerOrchestrationError):
         ChallengeResources(tmpfs=("tmp:rw",)).as_container_kwargs()
-    with pytest.raises(DockerOrchestrationError):
-        ChallengeResources(gpu_server="../bad")
     with pytest.raises(DockerOrchestrationError):
         _ = ChallengeSpec(slug="!!!", image="ghcr.io/x/y:1").safe_slug
 

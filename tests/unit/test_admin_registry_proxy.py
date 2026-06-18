@@ -28,17 +28,6 @@ from platform_network.schemas.challenge import (
     ChallengeUpdate,
     RuntimeOperationResponse,
 )
-from platform_network.schemas.gpu_server import (
-    GpuServerCreate,
-    GpuServerRecord,
-    GpuServerUpdate,
-)
-from platform_network.schemas.kubernetes_target import (
-    KubernetesTargetCreate,
-    KubernetesTargetHealth,
-    KubernetesTargetRecord,
-    KubernetesTargetUpdate,
-)
 from platform_network.schemas.weights import ChallengeWeightsResult
 from platform_network.security.miner_auth import (
     MinerUploadVerifier,
@@ -114,122 +103,6 @@ class FakeRuntimeController:
         return RuntimeOperationResponse(slug=slug, operation="status", status="ok")
 
 
-class FakeGpuServerRegistry:
-    def __init__(self) -> None:
-        self.records: dict[str, GpuServerRecord] = {}
-        self.tokens: dict[str, str] = {}
-
-    def list(self) -> list[GpuServerRecord]:
-        return list(self.records.values())
-
-    def get(self, server_id: str) -> GpuServerRecord:
-        return self.records[server_id]
-
-    def create(self, payload: GpuServerCreate) -> GpuServerRecord:
-        record = GpuServerRecord(
-            id=payload.id,
-            base_url=payload.base_url,
-            enabled=payload.enabled,
-            verify_tls=payload.verify_tls,
-            timeout_seconds=payload.timeout_seconds,
-            description=payload.description,
-            labels=payload.labels,
-            min_gpu_count=payload.min_gpu_count,
-            token_hint="****" if payload.token else None,
-        )
-        self.records[payload.id] = record
-        if payload.token:
-            self.tokens[payload.id] = payload.token
-        return record
-
-    def update(self, server_id: str, payload: GpuServerUpdate) -> GpuServerRecord:
-        data = self.get(server_id).model_dump()
-        updates = payload.model_dump(exclude_unset=True)
-        token = updates.pop("token", None)
-        updates.pop("token_file", None)
-        data.update(updates)
-        if token:
-            self.tokens[server_id] = token
-            data["token_hint"] = "****"
-        self.records[server_id] = GpuServerRecord(**data)
-        return self.records[server_id]
-
-    def delete(self, server_id: str) -> None:
-        self.records.pop(server_id)
-        self.tokens.pop(server_id, None)
-
-    def set_enabled(self, server_id: str, enabled: bool) -> GpuServerRecord:
-        return self.update(server_id, GpuServerUpdate(enabled=enabled))
-
-    def get_token(self, server_id: str) -> str:
-        return self.tokens[server_id]
-
-
-class FakeKubernetesTargetRegistry:
-    def __init__(self) -> None:
-        self.records: dict[str, KubernetesTargetRecord] = {}
-        self.tokens: dict[str, str] = {}
-        self.assignments: dict[str, str] = {}
-
-    def list(self) -> list[KubernetesTargetRecord]:
-        return list(self.records.values())
-
-    def get(self, target_id: str) -> KubernetesTargetRecord:
-        return self.records[target_id]
-
-    def create(self, payload: KubernetesTargetCreate) -> KubernetesTargetRecord:
-        record = KubernetesTargetRecord(
-            id=payload.id,
-            mode=payload.mode,
-            api_url=payload.api_url,
-            agent_url=payload.agent_url,
-            namespace=payload.namespace,
-            service_account=payload.service_account,
-            kubeconfig_file="/var/lib/platform/secrets/test-kubeconfig",
-            enabled=payload.enabled,
-            verify_tls=payload.verify_tls,
-            timeout_seconds=payload.timeout_seconds,
-            description=payload.description,
-            labels=payload.labels,
-            gpu_count=payload.gpu_count,
-            storage_class=payload.storage_class,
-            node_selector=payload.node_selector,
-            tolerations=payload.tolerations,
-            runtime_class_name=payload.runtime_class_name,
-        )
-        self.records[payload.id] = record
-        if payload.agent_token:
-            self.tokens[payload.id] = payload.agent_token
-        return record
-
-    def update(
-        self, target_id: str, payload: KubernetesTargetUpdate
-    ) -> KubernetesTargetRecord:
-        data = self.get(target_id).model_dump()
-        updates = payload.model_dump(exclude_unset=True)
-        updates.pop("kubeconfig", None)
-        updates.pop("agent_token", None)
-        data.update(updates)
-        self.records[target_id] = KubernetesTargetRecord(**data)
-        return self.records[target_id]
-
-    def delete(self, target_id: str) -> None:
-        self.records.pop(target_id)
-
-    def set_enabled(self, target_id: str, enabled: bool) -> KubernetesTargetRecord:
-        return self.update(target_id, KubernetesTargetUpdate(enabled=enabled))
-
-    def health(self, target_id: str) -> KubernetesTargetHealth:
-        self.get(target_id)
-        return KubernetesTargetHealth(id=target_id, status="ok", detail="direct")
-
-    def get_agent_token(self, target_id: str) -> str:
-        return self.tokens.get(target_id, "agent-token")
-
-    def get_assignment(self, slug: str) -> str | None:
-        return self.assignments.get(slug)
-
-
 class FakeNonceStore:
     def __init__(self) -> None:
         self.keys: set[tuple[int, str, str, str]] = set()
@@ -250,7 +123,6 @@ def _admin_app(registry: ChallengeRegistry, **kwargs: Any) -> FastAPI:
     return create_admin_app(
         registry=registry,
         runtime_controller=FakeRuntimeController(),
-        gpu_registry=FakeGpuServerRegistry(),
         **kwargs,
     )
 
@@ -650,99 +522,6 @@ def test_challenges_dashboard_svg_accepts_future_metrics_provider() -> None:
 
     assert response.status_code == 200
     assert ">7</text>" in response.text
-
-
-def test_admin_gpu_servers_pages_and_api_without_secret_leak() -> None:
-    client = TestClient(
-        _admin_app(
-            registry=ChallengeRegistry(),
-            admin_token_provider=lambda: "admin-secret",
-        )
-    )
-    headers = {"X-Admin-Token": "admin-secret"}
-
-    create_response = client.post(
-        "/v1/admin/gpu-servers",
-        headers=headers,
-        json={
-            "id": "gpu-a",
-            "base_url": "https://gpu-a",
-            "token": "secret-token",
-            "min_gpu_count": 1,
-        },
-    )
-
-    assert create_response.status_code == 201
-    body = create_response.json()
-    assert body["id"] == "gpu-a"
-    assert "secret-token" not in create_response.text
-
-    list_response = client.get("/v1/admin/gpu-servers", headers=headers)
-    assert list_response.status_code == 200
-    assert list_response.json()[0]["id"] == "gpu-a"
-
-    page_response = client.get("/admin/gpu-servers", headers=headers)
-    assert page_response.status_code == 200
-    assert "gpu-a" in page_response.text
-
-    disable_response = client.post(
-        "/v1/admin/gpu-servers/gpu-a/disable", headers=headers
-    )
-    assert disable_response.json()["enabled"] is False
-
-    delete_response = client.delete("/v1/admin/gpu-servers/gpu-a", headers=headers)
-    assert delete_response.status_code == 204
-
-
-def test_admin_kubernetes_targets_pages_api_and_health_without_secret_leak() -> None:
-    client = TestClient(
-        _admin_app(
-            registry=ChallengeRegistry(),
-            admin_token_provider=lambda: "admin-secret",
-            kubernetes_target_registry=FakeKubernetesTargetRegistry(),
-        )
-    )
-    headers = {"X-Admin-Token": "admin-secret"}
-
-    create_response = client.post(
-        "/v1/admin/kubernetes-targets",
-        headers=headers,
-        json={
-            "id": "k8s-a",
-            "mode": "direct",
-            "api_url": "https://k8s-a",
-            "kubeconfig": "apiVersion: v1\nsecret-data",
-            "namespace": "platform-gpu",
-            "gpu_count": 2,
-            "labels": {"region": "eu"},
-        },
-    )
-
-    assert create_response.status_code == 201
-    body = create_response.json()
-    assert body["id"] == "k8s-a"
-    assert body["mode"] == "direct"
-    assert body["gpu_count"] == 2
-    assert "secret-data" not in create_response.text
-
-    list_response = client.get("/v1/admin/kubernetes-targets", headers=headers)
-    assert list_response.status_code == 200
-    assert list_response.json()[0]["id"] == "k8s-a"
-
-    page_response = client.get("/admin/kubernetes-targets", headers=headers)
-    assert page_response.status_code == 200
-    assert "k8s-a" in page_response.text
-
-    health_response = client.post(
-        "/v1/admin/kubernetes-targets/k8s-a/health", headers=headers
-    )
-    assert health_response.status_code == 200
-    assert health_response.json()["status"] == "ok"
-
-    delete_response = client.delete(
-        "/v1/admin/kubernetes-targets/k8s-a", headers=headers
-    )
-    assert delete_response.status_code == 204
 
 
 def test_proxy_serves_agent_challenge_frontend_read_contract() -> None:
@@ -1788,6 +1567,75 @@ def test_proxy_preserves_signed_agent_challenge_env_headers_for_env_routes() -> 
     assert "miner-nonce" not in registry_text
 
 
+def test_proxy_preserves_signed_agent_challenge_submission_post_headers() -> None:
+    registry = ChallengeRegistry()
+    registry.create(
+        ChallengeCreate(
+            **{
+                **_payload("agent-challenge"),
+                "internal_base_url": "http://challenge-agent-challenge:8000",
+            }
+        )
+    )
+    registry.set_status("agent-challenge", ChallengeStatus.ACTIVE)
+    captured: list[dict[str, Any]] = []
+
+    challenge_app = FastAPI()
+
+    @challenge_app.post("/submissions")
+    async def create_submission(request: Request) -> dict[str, Any]:
+        captured.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "headers": dict(request.headers),
+                "body": await request.body(),
+            }
+        )
+        return {"submission_id": 1, "zip_sha256": "abc"}
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-agent-challenge:8000"
+        ) as client:
+            yield client
+
+    proxy_client = TestClient(_proxy_app(registry, client_factory=client_factory))
+    body = b'{"name":"a","artifact_zip_base64":"QUJD"}'
+    response = proxy_client.post(
+        "/challenges/agent-challenge/submissions",
+        content=body,
+        headers={
+            "X-Hotkey": "miner-hotkey",
+            "X-Signature": "miner-signature",
+            "X-Nonce": "miner-nonce",
+            "X-Timestamp": "1700000000",
+            "X-Admin-Token": "admin-secret",
+            "Authorization": "Bearer should-not-forward",
+            "X-Public-Header": "forward-me",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    capture = captured[0]
+    assert capture["method"] == "POST"
+    assert capture["path"] == "/submissions"
+    assert capture["body"] == body
+    upstream_headers = capture["headers"]
+    assert upstream_headers["x-hotkey"] == "miner-hotkey"
+    assert upstream_headers["x-signature"] == "miner-signature"
+    assert upstream_headers["x-nonce"] == "miner-nonce"
+    assert upstream_headers["x-timestamp"] == "1700000000"
+    assert upstream_headers["x-public-header"] == "forward-me"
+    assert upstream_headers["x-platform-proxy"] == "true"
+    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert "authorization" not in upstream_headers
+    assert "x-admin-token" not in upstream_headers
+
+
 def test_proxy_passes_through_agent_challenge_env_upstream_503() -> None:
     registry = ChallengeRegistry()
     registry.create(
@@ -2002,48 +1850,6 @@ def test_proxy_transport_failure_returns_safe_502_without_sensitive_detail() -> 
     assert "secret-signature" not in body
     assert "secret-nonce" not in body
     assert "traceback" not in body
-
-
-def test_proxy_routes_assigned_kubernetes_agent_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry = ChallengeRegistry()
-    registry.create(ChallengeCreate(**_payload()))
-    registry.set_status("demo", ChallengeStatus.ACTIVE)
-    target_registry = FakeKubernetesTargetRegistry()
-    target_registry.records["agent-a"] = KubernetesTargetRecord(
-        id="agent-a",
-        mode="agent",
-        agent_url="https://agent-a",
-        enabled=True,
-        verify_tls=False,
-        timeout_seconds=9,
-    )
-    target_registry.assignments["demo"] = "agent-a"
-    calls: list[dict[str, object]] = []
-
-    class AgentClient:
-        def __init__(self, **kwargs: object) -> None:
-            calls.append(kwargs)
-
-        async def forward_challenge_request(self, **kwargs: object) -> httpx.Response:
-            calls.append(kwargs)
-            return httpx.Response(200, json={"ok": True})
-
-    import platform_network.master.app_proxy as proxy_module
-
-    monkeypatch.setattr(proxy_module, "KubernetesAgentClient", AgentClient)
-    proxy_client = TestClient(
-        _proxy_app(registry, kubernetes_target_registry=target_registry)
-    )
-
-    response = proxy_client.get("/challenges/demo/public")
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert calls[0]["base_url"] == "https://agent-a"
-    assert calls[1]["slug"] == "demo"
-    assert calls[1]["path"] == "public"
 
 
 def test_signed_upload_bridge_verifies_and_forwards_internal_request() -> None:
@@ -2484,36 +2290,3 @@ def test_production_admin_accepts_pinned_image_and_latest_digest_update() -> Non
     )
     assert unsafe_patch.status_code == 400
     assert "digest" in unsafe_patch.text
-
-
-def test_production_admin_rejects_verify_tls_false_targets() -> None:
-    client = TestClient(
-        _admin_app(
-            registry=ChallengeRegistry(),
-            admin_token_provider=lambda: "admin-secret",
-            kubernetes_target_registry=FakeKubernetesTargetRegistry(),
-            enforce_production_policy=True,
-        )
-    )
-    headers = {"X-Admin-Token": "admin-secret"}
-
-    gpu = client.post(
-        "/v1/admin/gpu-servers",
-        headers=headers,
-        json={"id": "gpu-a", "base_url": "https://gpu-a", "verify_tls": False},
-    )
-    assert gpu.status_code == 400
-    assert "verify_tls=true" in gpu.text
-
-    target = client.post(
-        "/v1/admin/kubernetes-targets",
-        headers=headers,
-        json={
-            "id": "k8s-a",
-            "mode": "agent",
-            "agent_url": "https://agent-a",
-            "verify_tls": False,
-        },
-    )
-    assert target.status_code == 400
-    assert "verify_tls=true" in target.text

@@ -19,7 +19,6 @@ from platform_network.bittensor.weight_setter import WeightSetter
 from platform_network.cli_app.main import DockerRuntimeController, app
 from platform_network.config.loader import load_settings
 from platform_network.config.settings import ValidatorSettings
-from platform_network.gpu.capabilities import CapabilityDecision
 from platform_network.master.challenge_client import ChallengeClient
 from platform_network.master.docker_orchestrator import ChallengeSpec
 from platform_network.master.registry import ChallengeRegistry, FileChallengeRegistry
@@ -108,59 +107,6 @@ async def test_challenge_client_success_and_failure(
     assert not result.ok
     assert result.weights == {}
     assert result.error
-
-
-@pytest.mark.asyncio
-async def test_challenge_client_routes_weights_through_assigned_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[dict[str, object]] = []
-
-    class AgentClient:
-        def __init__(self, **kwargs: object) -> None:
-            calls.append(kwargs)
-
-        async def forward_challenge_request(self, **kwargs: object) -> httpx.Response:
-            calls.append(kwargs)
-            return httpx.Response(
-                200,
-                json={"challenge_slug": "demo", "weights": {"hk": 1.0}},
-            )
-
-    class TargetRegistry:
-        def get_assignment(self, slug: str) -> str | None:
-            return "agent-a"
-
-        def get(self, target_id: str):
-            return SimpleNamespace(
-                id=target_id,
-                mode="agent",
-                agent_url="https://agent-a",
-                timeout_seconds=12,
-                verify_tls=False,
-            )
-
-        def get_agent_token(self, target_id: str) -> str:
-            return "agent-token"
-
-    import platform_network.master.challenge_client as challenge_client_module
-
-    monkeypatch.setattr(challenge_client_module, "KubernetesAgentClient", AgentClient)
-    result = await ChallengeClient(
-        retries=1,
-        kubernetes_target_registry=TargetRegistry(),
-    ).get_weights(
-        slug="demo",
-        base_url="http://unreachable",
-        token="challenge-token",
-        emission_percent=5,
-    )
-
-    assert result.ok
-    assert calls[0]["base_url"] == "https://agent-a"
-    assert calls[1]["path"] == "/internal/v1/get_weights"
-    forwarded_headers = cast(dict[str, str], calls[1]["headers"])
-    assert forwarded_headers["Authorization"] == "Bearer challenge-token"
 
 
 async def async_noop(*args: object, **kwargs: object) -> None:
@@ -379,50 +325,6 @@ async def test_master_weight_service_uid_zero_fallback_without_challenges() -> N
             "wait_for_finalization": False,
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_master_weight_service_fails_when_capability_blocked() -> None:
-    class Cache:
-        def get(self) -> dict[str, int]:
-            return {"hk": 5}
-
-    class Setter:
-        def __init__(self) -> None:
-            self.calls: list[tuple[list[int], list[float]]] = []
-
-        def set_weights(self, uids: list[int], weights: list[float]) -> None:
-            self.calls.append((uids, weights))
-
-    class Checker:
-        def check(self, resources) -> CapabilityDecision:
-            return CapabilityDecision(False, "gpu_server_unknown")
-
-    challenge = RegistryChallenge(
-        slug="gpu-demo",
-        name="GPU Demo",
-        image="ghcr.io/o/demo:1",
-        version="1",
-        emission_percent=Decimal("10"),
-        status=ChallengeStatus.ACTIVE,
-        internal_base_url="http://challenge-demo:8000",
-        public_proxy_base_path="/challenges/demo",
-        required_capabilities=["get_weights", "proxy_routes"],
-        resources={"gpu_server": "missing", "gpu_count": "1"},
-        volumes={},
-        env={},
-        secrets=[],
-    )
-    setter = Setter()
-    service = MasterWeightService(
-        metagraph_cache=cast(MetagraphCache, Cache()),
-        weight_setter=cast(WeightSetter, setter),
-        capability_checker=Checker(),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(RuntimeError, match="cannot run"):
-        await service.run_epoch([challenge], {})
-    assert setter.calls == []
 
 
 @pytest.mark.asyncio
@@ -647,9 +549,6 @@ def test_cli_master_weights_once_defaults_to_compute_only(
     client_kwargs = cast(dict[str, object], created_runtime["client_kwargs"])
     assert client_kwargs["timeout_seconds"] == 1.5
     assert client_kwargs["retries"] == 2
-    # Default backend is docker (no runtime.backend set in this config), so the
-    # challenge client is wired without a Kubernetes target registry.
-    assert client_kwargs["kubernetes_target_registry"] is None
     assert setter_calls == []
 
 
@@ -861,221 +760,6 @@ def test_cli_master_weights_loop_uses_epoch_interval(
 
     assert result.exit_code == 0
     assert intervals == [11]
-
-
-def test_cli_gpu_clients_loads_enabled_servers(tmp_path: Path) -> None:
-    token_file = tmp_path / "gpu-token"
-    token_file.write_text("file-token", encoding="utf-8")
-    config = tmp_path / "validator.yaml"
-    config.write_text(
-        "\n".join(
-            [
-                "gpu_servers:",
-                "  - id: gpu-a",
-                "    base_url: https://gpu-a",
-                f"    token_file: {token_file}",
-                "    verify_tls: true",
-                "    timeout_seconds: 9",
-                "  - id: gpu-b",
-                "    base_url: https://gpu-b",
-                "    token: disabled",
-                "    enabled: false",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    clients = cli_module._gpu_clients(load_settings(config))  # noqa: SLF001
-
-    assert list(clients) == ["gpu-a"]
-    assert clients["gpu-a"].token == "file-token"
-    assert clients["gpu-a"].verify_tls is True
-    assert clients["gpu-a"].timeout_seconds == 9
-
-
-def test_cli_gpu_server_commands_call_admin(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str, dict[str, object] | None]] = []
-
-    def admin_request(
-        config: Path,
-        method: str,
-        path: str,
-        payload: dict[str, object] | None = None,
-    ) -> None:
-        calls.append((method, path, payload))
-
-    monkeypatch.setattr(cli_module, "_admin_request", admin_request)
-    runner = CliRunner()
-
-    result = runner.invoke(
-        app,
-        [
-            "gpu-server",
-            "add",
-            "gpu-a",
-            "--url",
-            "https://gpu-a",
-            "--token",
-            "tok",
-            "--no-verify-tls",
-        ],
-    )
-    assert result.exit_code == 0
-    assert calls[0][0] == "POST"
-    assert calls[0][1] == "/v1/admin/gpu-servers"
-    assert calls[0][2]["id"] == "gpu-a"  # type: ignore[index]
-    assert calls[0][2]["verify_tls"] is False  # type: ignore[index]
-
-    result = runner.invoke(app, ["gpu-server", "list"])
-    assert result.exit_code == 0
-    assert calls[1] == ("GET", "/v1/admin/gpu-servers", None)
-
-
-def test_cli_k8s_server_commands_call_admin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[tuple[str, str, dict[str, object] | None]] = []
-
-    def admin_request(
-        config: Path,
-        method: str,
-        path: str,
-        payload: dict[str, object] | None = None,
-    ) -> None:
-        calls.append((method, path, payload))
-
-    kubeconfig = tmp_path / "kubeconfig"
-    kubeconfig.write_text("apiVersion: v1\n", encoding="utf-8")
-    monkeypatch.setattr(cli_module, "_admin_request", admin_request)
-    runner = CliRunner()
-
-    result = runner.invoke(
-        app,
-        [
-            "k8s-server",
-            "add-kubeconfig",
-            "k8s-a",
-            "--kubeconfig-file",
-            str(kubeconfig),
-            "--api-url",
-            "https://k8s-a",
-            "--namespace",
-            "platform-gpu",
-            "--gpu-count",
-            "2",
-            "--label",
-            "region=eu",
-            "--no-verify-tls",
-        ],
-    )
-    assert result.exit_code == 0
-    assert calls[0][0] == "POST"
-    assert calls[0][1] == "/v1/admin/kubernetes-targets"
-    assert calls[0][2]["id"] == "k8s-a"  # type: ignore[index]
-    assert calls[0][2]["kubeconfig_file"] == str(kubeconfig)  # type: ignore[index]
-    assert calls[0][2]["labels"] == {"region": "eu"}  # type: ignore[index]
-    assert calls[0][2]["verify_tls"] is False  # type: ignore[index]
-
-    token_file = tmp_path / "agent-token"
-    token_file.write_text("agent-token\n", encoding="utf-8")
-    result = runner.invoke(
-        app,
-        [
-            "k8s-server",
-            "add",
-            "agent-a",
-            "--url",
-            "https://agent-a",
-            "--token-file",
-            str(token_file),
-            "--gpu-count",
-            "4",
-        ],
-    )
-    assert result.exit_code == 0
-    assert calls[1][0] == "POST"
-    assert calls[1][1] == "/v1/admin/kubernetes-targets"
-    assert calls[1][2]["id"] == "agent-a"  # type: ignore[index]
-    assert calls[1][2]["mode"] == "agent"  # type: ignore[index]
-    assert calls[1][2]["agent_url"] == "https://agent-a"  # type: ignore[index]
-    assert calls[1][2]["agent_token"] == "agent-token"  # type: ignore[index]
-    assert calls[1][2]["gpu_count"] == 4  # type: ignore[index]
-
-    result = runner.invoke(app, ["k8s-server", "list"])
-    assert result.exit_code == 0
-    assert calls[2] == ("GET", "/v1/admin/kubernetes-targets", None)
-
-    result = runner.invoke(app, ["k8s-server", "health", "k8s-a"])
-    assert result.exit_code == 0
-    assert calls[3] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/health", None)
-
-    result = runner.invoke(app, ["k8s-server", "disable", "k8s-a"])
-    assert result.exit_code == 0
-    assert calls[4] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/disable", None)
-
-    result = runner.invoke(app, ["k8s-server", "enable", "k8s-a"])
-    assert result.exit_code == 0
-    assert calls[5] == ("POST", "/v1/admin/kubernetes-targets/k8s-a/enable", None)
-
-    result = runner.invoke(app, ["k8s-server", "remove", "k8s-a"])
-    assert result.exit_code == 0
-    assert calls[6] == ("DELETE", "/v1/admin/kubernetes-targets/k8s-a", None)
-
-
-def test_cli_kubernetes_sync_config_uses_github_aliases(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[dict[str, object]] = []
-
-    class Updater:
-        def __init__(self, source) -> None:
-            self.source = source
-
-        def sync_once(self, **kwargs: object) -> SimpleNamespace:
-            calls.append({"source": self.source, **kwargs})
-            return SimpleNamespace(reason="updated")
-
-    def create_updater(source) -> Updater:
-        return Updater(source)
-
-    monkeypatch.setattr(
-        cli_module,
-        "create_incluster_config_sync_updater",
-        create_updater,
-    )
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "kubernetes",
-            "sync-config",
-            "--namespace",
-            "platform-master",
-            "--config-map",
-            "platform-master-config",
-            "--repo",
-            "PlatformNetwork/platform",
-            "--ref",
-            "release/test",
-            "--values-path",
-            "deploy/helm/platform/values.yaml",
-            "--rollout-target",
-            "Deployment/platform-master-admin",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert result.output.strip() == "updated"
-    source = calls[0]["source"]
-    assert isinstance(source, cli_module.ConfigSyncSource)
-    assert source.repository == "PlatformNetwork/platform"
-    assert source.branch == "release/test"
-    assert source.paths == ("deploy/helm/platform/values.yaml",)
-    assert calls[0]["namespace"] == "platform-master"
-    assert calls[0]["config_map"] == "platform-master-config"
-    assert calls[0]["rollout_targets"] == (
-        cli_module.RolloutTarget(kind="Deployment", name="platform-master-admin"),
-    )
 
 
 def _master_weights_payload(
@@ -1491,7 +1175,7 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
 def test_seed_prism_challenges_pins_images_for_production_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import platform_network.validator.image_updater as image_updater_module
+    import platform_network.supervisor.image_ref as image_ref_module
     from platform_network.config.policy import validate_image_reference
 
     prism_digest = "sha256:" + "a" * 64
@@ -1506,11 +1190,10 @@ def test_seed_prism_challenges_pins_images_for_production_policy(
             return evaluator_digest
         raise AssertionError(f"unexpected image {image_reference.tagged}")
 
-    monkeypatch.setattr(image_updater_module, "resolve_remote_digest", resolve_digest)
+    monkeypatch.setattr(image_ref_module, "resolve_remote_digest", resolve_digest)
     registry = ChallengeRegistry(production_policy=True)
     settings = SimpleNamespace(
         environment="production",
-        runtime=SimpleNamespace(backend="kubernetes"),
         docker=SimpleNamespace(broker_url="http://platform-broker:8082"),
     )
 
@@ -1559,236 +1242,6 @@ def test_master_challenges_seed_prism_cli_path(monkeypatch: pytest.MonkeyPatch) 
     assert calls == [(registry, settings)]
     assert "prism: created emission=30" in result.output
     assert "agent-challenge: updated emission=15" in result.output
-
-
-def test_master_refresh_challenge_images_patches_already_current_kubernetes_workload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    digest = "sha256:" + "a" * 64
-    image = f"ghcr.io/platformnetwork/demo:latest@{digest}"
-    updates: list[tuple[str, object]] = []
-    patches: list[dict[str, object]] = []
-
-    class Registry:
-        async def list(self):
-            return [
-                SimpleNamespace(
-                    slug="demo",
-                    image=image,
-                    status=ChallengeStatus.ACTIVE,
-                )
-            ]
-
-        async def update(self, slug: str, update: object) -> None:
-            updates.append((slug, update))
-
-    class KubeClient:
-        def __init__(self, **kwargs: object) -> None:
-            patches.append({"init": kwargs})
-
-        def patch_workload_image(self, **kwargs: object) -> None:
-            patches.append(kwargs)
-
-    settings = SimpleNamespace(
-        runtime=SimpleNamespace(backend="kubernetes"),
-        kubernetes=SimpleNamespace(
-            namespace="platform-master",
-            in_cluster=True,
-            kubeconfig=None,
-            challenge_mode="statefulset",
-        ),
-    )
-
-    import platform_network.kubernetes.client as kube_module
-    import platform_network.validator.image_updater as image_updater_module
-
-    monkeypatch.setattr(cli_module, "load_settings", lambda config: settings)
-    monkeypatch.setattr(cli_module, "_master_registry", lambda settings: Registry())
-    monkeypatch.setattr(
-        cli_module, "_challenge_orchestrator", lambda settings: object()
-    )
-    monkeypatch.setattr(kube_module, "KubernetesClient", KubeClient)
-    monkeypatch.setattr(
-        image_updater_module,
-        "resolve_remote_digest",
-        lambda image_reference: digest,
-    )
-
-    result = CliRunner().invoke(
-        app, ["master", "refresh-challenge-images", "--config", "unused.yaml"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert updates == []
-    assert {
-        "init": {"namespace": "platform-master", "in_cluster": True, "kubeconfig": None}
-    } in patches
-    assert {
-        "kind": "StatefulSet",
-        "name": "challenge-demo",
-        "container": "challenge",
-        "image": image,
-    } in patches
-    assert "demo: already-current" in result.output
-    assert "demo: patched StatefulSet/challenge-demo" in result.output
-
-
-def test_master_refresh_challenge_images_patches_worker_container_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    digest = "sha256:" + "a" * 64
-    image = f"ghcr.io/platformnetwork/agent-challenge:latest@{digest}"
-    patches: list[dict[str, object]] = []
-
-    class Registry:
-        async def list(self):
-            return [
-                SimpleNamespace(
-                    slug="agent-challenge",
-                    image=image,
-                    status=ChallengeStatus.ACTIVE,
-                    metadata={"worker_command": ["agent-challenge-worker"]},
-                )
-            ]
-
-        async def update(self, slug: str, update: object) -> None:
-            raise AssertionError("already-current image must not update registry")
-
-    class KubeClient:
-        def __init__(self, **kwargs: object) -> None:
-            patches.append({"init": kwargs})
-
-        def patch_workload_image(self, **kwargs: object) -> None:
-            patches.append(kwargs)
-
-    settings = SimpleNamespace(
-        runtime=SimpleNamespace(backend="kubernetes"),
-        kubernetes=SimpleNamespace(
-            namespace="platform-master",
-            in_cluster=True,
-            kubeconfig=None,
-            challenge_mode="statefulset",
-        ),
-    )
-
-    import platform_network.kubernetes.client as kube_module
-    import platform_network.validator.image_updater as image_updater_module
-
-    monkeypatch.setattr(cli_module, "load_settings", lambda config: settings)
-    monkeypatch.setattr(cli_module, "_master_registry", lambda settings: Registry())
-    monkeypatch.setattr(
-        cli_module, "_challenge_orchestrator", lambda settings: object()
-    )
-    monkeypatch.setattr(kube_module, "KubernetesClient", KubeClient)
-    monkeypatch.setattr(
-        image_updater_module,
-        "resolve_remote_digest",
-        lambda image_reference: digest,
-    )
-
-    result = CliRunner().invoke(
-        app, ["master", "refresh-challenge-images", "--config", "unused.yaml"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert {
-        "kind": "StatefulSet",
-        "name": "challenge-agent-challenge",
-        "container": "challenge",
-        "image": image,
-    } in patches
-    assert {
-        "kind": "StatefulSet",
-        "name": "challenge-agent-challenge",
-        "container": "worker",
-        "image": image,
-    } in patches
-
-
-def test_master_refresh_challenge_images_patches_worker_from_live_workload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    digest = "sha256:" + "a" * 64
-    image = f"ghcr.io/platformnetwork/agent-challenge:latest@{digest}"
-    patches: list[dict[str, object]] = []
-
-    class Registry:
-        async def list(self):
-            return [
-                SimpleNamespace(
-                    slug="agent-challenge",
-                    image=image,
-                    status=ChallengeStatus.ACTIVE,
-                    metadata={},
-                )
-            ]
-
-        async def update(self, slug: str, update: object) -> None:
-            raise AssertionError("already-current image must not update registry")
-
-    class KubeClient:
-        def __init__(self, **kwargs: object) -> None:
-            patches.append({"init": kwargs})
-
-        def get(self, kind: str, name: str) -> dict[str, object]:
-            return {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [
-                                {"name": "challenge", "image": image},
-                                {"name": "worker", "image": image},
-                            ]
-                        }
-                    }
-                }
-            }
-
-        def patch_workload_image(self, **kwargs: object) -> None:
-            patches.append(kwargs)
-
-    settings = SimpleNamespace(
-        runtime=SimpleNamespace(backend="kubernetes"),
-        kubernetes=SimpleNamespace(
-            namespace="platform-master",
-            in_cluster=True,
-            kubeconfig=None,
-            challenge_mode="statefulset",
-        ),
-    )
-
-    import platform_network.kubernetes.client as kube_module
-    import platform_network.validator.image_updater as image_updater_module
-
-    monkeypatch.setattr(cli_module, "load_settings", lambda config: settings)
-    monkeypatch.setattr(cli_module, "_master_registry", lambda settings: Registry())
-    monkeypatch.setattr(
-        cli_module, "_challenge_orchestrator", lambda settings: object()
-    )
-    monkeypatch.setattr(kube_module, "KubernetesClient", KubeClient)
-    monkeypatch.setattr(
-        image_updater_module,
-        "resolve_remote_digest",
-        lambda image_reference: digest,
-    )
-
-    result = CliRunner().invoke(
-        app, ["master", "refresh-challenge-images", "--config", "unused.yaml"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert {
-        "kind": "StatefulSet",
-        "name": "challenge-agent-challenge",
-        "container": "challenge",
-        "image": image,
-    } in patches
-    assert {
-        "kind": "StatefulSet",
-        "name": "challenge-agent-challenge",
-        "container": "worker",
-        "image": image,
-    } in patches
 
 
 def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) -> None:

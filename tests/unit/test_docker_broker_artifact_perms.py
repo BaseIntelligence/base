@@ -21,9 +21,7 @@ def _archive_dir(path: Path) -> str:
 
 
 def _service(tmp_path: Path) -> DockerBrokerService:
-    return DockerBrokerService(
-        DockerBrokerConfig(workspace_dir=tmp_path / "work")
-    )
+    return DockerBrokerService(DockerBrokerConfig(workspace_dir=tmp_path / "work"))
 
 
 def test_writable_directory_mount_is_world_writable_with_sticky(

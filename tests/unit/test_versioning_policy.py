@@ -3,12 +3,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "3.0.4"
 GIT_RELEASE_TAG = "v3.0.4"
-PRODUCTION_DIGEST = "sha256:" + "1" * 64
 
 
 def _pyproject() -> dict:
@@ -17,30 +14,10 @@ def _pyproject() -> dict:
 
 def test_platform_release_version_sources_are_3_0_0() -> None:
     pyproject = _pyproject()
-    chart = yaml.safe_load(
-        (ROOT / "deploy" / "helm" / "platform" / "Chart.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
     lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
 
     assert pyproject["project"]["version"] == VERSION
-    assert chart["version"] == VERSION
-    assert chart["appVersion"] == VERSION
     assert f'name = "platform-network"\nversion = "{VERSION}"' in lock
-
-
-def test_production_values_start_at_platform_3_0_0() -> None:
-    values = yaml.safe_load(
-        (
-            ROOT / "deploy" / "helm" / "platform" / "values.production.example.yaml"
-        ).read_text(encoding="utf-8")
-    )
-
-    assert values["image"]["repository"] == "ghcr.io/platformnetwork/platform"
-    assert values["image"]["tag"] == VERSION
-    assert values["image"]["digest"] == PRODUCTION_DIGEST
-    assert values["image"]["production"] is True
 
 
 def test_versioning_policy_documents_release_contract() -> None:
@@ -51,15 +28,11 @@ def test_versioning_policy_documents_release_contract() -> None:
         GIT_RELEASE_TAG,
         "Semantic Versioning",
         "pyproject.toml",
-        "Chart.yaml",
-        "appVersion",
         "GHCR",
         "GitHub Release",
         "generate",
         "platform-master",
-        "imageAutoUpdate",
         "main",
-        "image-updater resources",
         "type=semver,pattern={{version}}",
         "sha256",
         "latest",

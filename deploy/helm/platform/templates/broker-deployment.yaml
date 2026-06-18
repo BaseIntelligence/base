@@ -1,3 +1,0 @@
-{{- if and .Values.master.enabled .Values.broker.enabled }}
-{{- include "platform.deployment" (dict "root" . "name" "broker" "replicas" .Values.broker.replicas "port" .Values.broker.port "resources" .Values.broker.resources "automountToken" true "image" .Values.images.master "command" (list "platform" "master" "broker" "--config" "config/master.kubernetes.yaml")) }}
-{{- end }}

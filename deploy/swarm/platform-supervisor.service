@@ -1,8 +1,8 @@
 # Platform Network control-plane supervisor (Docker-Swarm backend).
 #
 # TEMPLATE ONLY — installed during the GO-gated cutover (plan Task 28).
-# Replaces the Kubernetes control-plane CronJobs (reaper, image updaters,
-# config sync, weights, self-update) with one watchdog-supervised process.
+# Runs the control-plane scheduled tasks (reaper, image updaters,
+# config sync, weights, self-update) as one watchdog-supervised process.
 #
 # Adjust before install:
 #   - ExecStart/WorkingDirectory: the supervisor self-update (plan Task 22)

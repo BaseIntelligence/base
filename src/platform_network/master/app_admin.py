@@ -22,29 +22,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from platform_network.config.policy import (
     ProductionPolicyError,
     validate_image_reference,
-    validate_tls_enabled,
-)
-from platform_network.gpu.client import GpuAgentClient
-from platform_network.gpu.registry import (
-    GpuServerAlreadyExistsError,
-    GpuServerNotFoundError,
-)
-from platform_network.kubernetes.registry import (
-    KubernetesTargetAlreadyExistsError,
-    KubernetesTargetNotFoundError,
-    KubernetesTargetSecretError,
 )
 from platform_network.master.admin.auth import (
     TokenProvider,
     constant_time_match,
     load_admin_token_from_environment,
     resolve_token,
-)
-from platform_network.master.admin.gpu_registry import (
-    GpuServerRegistry,
-)
-from platform_network.master.admin.kubernetes_targets import (
-    KubernetesTargetRegistry,
 )
 from platform_network.master.admin.runtime import (
     RuntimeController,
@@ -68,20 +51,6 @@ from platform_network.schemas.challenge import (
     RegistryResponse,
     RuntimeOperationResponse,
 )
-from platform_network.schemas.gpu_server import (
-    GpuServerCreate,
-    GpuServerHealth,
-    GpuServerRecord,
-    GpuServerUpdate,
-    GpuServerView,
-)
-from platform_network.schemas.kubernetes_target import (
-    KubernetesTargetCreate,
-    KubernetesTargetHealth,
-    KubernetesTargetRecord,
-    KubernetesTargetUpdate,
-    KubernetesTargetView,
-)
 from platform_network.schemas.weights import MasterWeightsResponse
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -97,8 +66,6 @@ def create_admin_app(
     *,
     registry: Any,
     runtime_controller: RuntimeController,
-    gpu_registry: GpuServerRegistry,
-    kubernetes_target_registry: KubernetesTargetRegistry | None = None,
     metrics_provider: ChallengeMetricsProvider | None = None,
     weight_service: MasterWeightService | None = None,
     netuid: int = 100,
@@ -112,8 +79,6 @@ def create_admin_app(
     app = FastAPI(title="Platform Network Admin API", version="1.0")
     challenge_registry = registry
     controller = runtime_controller
-    gpu_servers = gpu_registry
-    kubernetes_targets = kubernetes_target_registry
 
     async def resolve(value):  # type: ignore[no-untyped-def]
         if inspect.isawaitable(value):
@@ -202,8 +167,6 @@ def create_admin_app(
             "<h1>Platform Admin</h1>"
             "<ul>"
             "<li><a href='/admin/challenges'>Challenges</a></li>"
-            "<li><a href='/admin/gpu-servers'>GPU servers</a></li>"
-            "<li><a href='/admin/kubernetes-targets'>Kubernetes targets</a></li>"
             "</ul>"
         )
         return Response(content=content, media_type="text/html")
@@ -221,60 +184,6 @@ def create_admin_app(
         )
         return Response(
             content=f"<h1>Challenges</h1><table>{rows}</table>",
-            media_type="text/html",
-        )
-
-    @app.get("/admin/gpu-servers", dependencies=[Depends(require_admin)])
-    async def admin_gpu_servers() -> Response:
-        rows = "".join(
-            "<tr>"
-            f"<td>{html.escape(record.id)}</td>"
-            f"<td>{html.escape(record.base_url)}</td>"
-            f"<td>{record.enabled}</td>"
-            f"<td>{record.min_gpu_count}</td>"
-            "</tr>"
-            for record in gpu_servers.list()
-        )
-        form = (
-            "<form method='post' action='/v1/admin/gpu-servers'>"
-            "<input name='id' placeholder='id'/>"
-            "<input name='base_url' placeholder='base_url'/>"
-            "</form>"
-        )
-        return Response(
-            content=f"<h1>GPU servers</h1>{form}<table>{rows}</table>",
-            media_type="text/html",
-        )
-
-    def _kubernetes_target_registry() -> KubernetesTargetRegistry:
-        if kubernetes_targets is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Kubernetes target registry unavailable",
-            )
-        return kubernetes_targets
-
-    @app.get("/admin/kubernetes-targets", dependencies=[Depends(require_admin)])
-    async def admin_kubernetes_targets() -> Response:
-        target_registry = _kubernetes_target_registry()
-        rows = "".join(
-            "<tr>"
-            f"<td>{html.escape(record.id)}</td>"
-            f"<td>{html.escape(record.mode)}</td>"
-            f"<td>{html.escape(record.namespace)}</td>"
-            f"<td>{record.enabled}</td>"
-            f"<td>{record.gpu_count}</td>"
-            "</tr>"
-            for record in target_registry.list()
-        )
-        form = (
-            "<form method='post' action='/v1/admin/kubernetes-targets'>"
-            "<input name='id' placeholder='id'/>"
-            "<input name='namespace' placeholder='namespace'/>"
-            "</form>"
-        )
-        return Response(
-            content=f"<h1>Kubernetes targets</h1>{form}<table>{rows}</table>",
             media_type="text/html",
         )
 
@@ -368,276 +277,6 @@ def create_admin_app(
         except ChallengeNotFoundError as exc:
             raise _not_found(slug) from exc
 
-    def _gpu_not_found(server_id: str) -> HTTPException:
-        return HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"GPU server '{server_id}' not found",
-        )
-
-    def _gpu_view(record: GpuServerRecord) -> GpuServerView:
-        return GpuServerView(**record.model_dump())
-
-    @app.get(
-        "/v1/admin/gpu-servers",
-        response_model=list[GpuServerView],
-        dependencies=[Depends(require_admin)],
-    )
-    async def list_gpu_servers() -> list[GpuServerView]:
-        return [_gpu_view(record) for record in gpu_servers.list()]
-
-    @app.post(
-        "/v1/admin/gpu-servers",
-        response_model=GpuServerView,
-        status_code=status.HTTP_201_CREATED,
-        dependencies=[Depends(require_admin)],
-    )
-    async def create_gpu_server(payload: GpuServerCreate) -> GpuServerView:
-        try:
-            validate_tls_enabled(
-                verify_tls=payload.verify_tls,
-                production=enforce_production_policy,
-                subject=f"GPU server {payload.id!r}",
-            )
-            return _gpu_view(gpu_servers.create(payload))
-        except GpuServerAlreadyExistsError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"GPU server '{payload.id}' already exists",
-            ) from exc
-        except ProductionPolicyError as exc:
-            _raise_policy_error(exc)
-
-    @app.get(
-        "/v1/admin/gpu-servers/{server_id}",
-        response_model=GpuServerView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def get_gpu_server(server_id: str) -> GpuServerView:
-        try:
-            return _gpu_view(gpu_servers.get(server_id))
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-
-    @app.patch(
-        "/v1/admin/gpu-servers/{server_id}",
-        response_model=GpuServerView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def update_gpu_server(
-        server_id: str, payload: GpuServerUpdate
-    ) -> GpuServerView:
-        try:
-            if payload.verify_tls is not None:
-                validate_tls_enabled(
-                    verify_tls=payload.verify_tls,
-                    production=enforce_production_policy,
-                    subject=f"GPU server {server_id!r}",
-                )
-            return _gpu_view(gpu_servers.update(server_id, payload))
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-        except ProductionPolicyError as exc:
-            _raise_policy_error(exc)
-
-    @app.delete(
-        "/v1/admin/gpu-servers/{server_id}",
-        status_code=status.HTTP_204_NO_CONTENT,
-        dependencies=[Depends(require_admin)],
-    )
-    async def delete_gpu_server(server_id: str) -> Response:
-        try:
-            gpu_servers.delete(server_id)
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    @app.post(
-        "/v1/admin/gpu-servers/{server_id}/enable",
-        response_model=GpuServerView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def enable_gpu_server(server_id: str) -> GpuServerView:
-        try:
-            return _gpu_view(gpu_servers.set_enabled(server_id, True))
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-
-    @app.post(
-        "/v1/admin/gpu-servers/{server_id}/disable",
-        response_model=GpuServerView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def disable_gpu_server(server_id: str) -> GpuServerView:
-        try:
-            return _gpu_view(gpu_servers.set_enabled(server_id, False))
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-
-    @app.post(
-        "/v1/admin/gpu-servers/{server_id}/health",
-        response_model=GpuServerHealth,
-        dependencies=[Depends(require_admin)],
-    )
-    async def gpu_server_health(server_id: str) -> GpuServerHealth:
-        try:
-            record = gpu_servers.get(server_id)
-        except GpuServerNotFoundError as exc:
-            raise _gpu_not_found(server_id) from exc
-        token = gpu_servers.get_token(server_id)
-        if not token:
-            return GpuServerHealth(id=server_id, status="error", detail="missing token")
-        try:
-            client = GpuAgentClient(
-                server_id=record.id,
-                base_url=record.base_url,
-                token=token,
-                timeout_seconds=record.timeout_seconds,
-                verify_tls=record.verify_tls,
-            )
-            client.health()
-        except Exception as exc:
-            return GpuServerHealth(id=server_id, status="error", detail=str(exc))
-        return GpuServerHealth(id=server_id, status="ok")
-
-    def _kubernetes_target_not_found(target_id: str) -> HTTPException:
-        return HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Kubernetes target '{target_id}' not found",
-        )
-
-    def _kubernetes_target_view(
-        record: KubernetesTargetRecord,
-    ) -> KubernetesTargetView:
-        return KubernetesTargetView(**record.model_dump())
-
-    @app.get(
-        "/v1/admin/kubernetes-targets",
-        response_model=list[KubernetesTargetView],
-        dependencies=[Depends(require_admin)],
-    )
-    async def list_kubernetes_targets() -> list[KubernetesTargetView]:
-        return [
-            _kubernetes_target_view(record)
-            for record in _kubernetes_target_registry().list()
-        ]
-
-    @app.post(
-        "/v1/admin/kubernetes-targets",
-        response_model=KubernetesTargetView,
-        status_code=status.HTTP_201_CREATED,
-        dependencies=[Depends(require_admin)],
-    )
-    async def create_kubernetes_target(
-        payload: KubernetesTargetCreate,
-    ) -> KubernetesTargetView:
-        target_registry = _kubernetes_target_registry()
-        try:
-            validate_tls_enabled(
-                verify_tls=payload.verify_tls,
-                production=enforce_production_policy,
-                subject=f"Kubernetes target {payload.id!r}",
-            )
-            return _kubernetes_target_view(target_registry.create(payload))
-        except KubernetesTargetAlreadyExistsError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Kubernetes target '{payload.id}' already exists",
-            ) from exc
-        except KubernetesTargetSecretError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        except ProductionPolicyError as exc:
-            _raise_policy_error(exc)
-
-    @app.get(
-        "/v1/admin/kubernetes-targets/{target_id}",
-        response_model=KubernetesTargetView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def get_kubernetes_target(target_id: str) -> KubernetesTargetView:
-        try:
-            return _kubernetes_target_view(_kubernetes_target_registry().get(target_id))
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-
-    @app.patch(
-        "/v1/admin/kubernetes-targets/{target_id}",
-        response_model=KubernetesTargetView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def update_kubernetes_target(
-        target_id: str, payload: KubernetesTargetUpdate
-    ) -> KubernetesTargetView:
-        target_registry = _kubernetes_target_registry()
-        try:
-            if payload.verify_tls is not None:
-                validate_tls_enabled(
-                    verify_tls=payload.verify_tls,
-                    production=enforce_production_policy,
-                    subject=f"Kubernetes target {target_id!r}",
-                )
-            return _kubernetes_target_view(target_registry.update(target_id, payload))
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-        except KubernetesTargetSecretError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        except ProductionPolicyError as exc:
-            _raise_policy_error(exc)
-
-    @app.delete(
-        "/v1/admin/kubernetes-targets/{target_id}",
-        status_code=status.HTTP_204_NO_CONTENT,
-        dependencies=[Depends(require_admin)],
-    )
-    async def delete_kubernetes_target(target_id: str) -> Response:
-        try:
-            _kubernetes_target_registry().delete(target_id)
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    @app.post(
-        "/v1/admin/kubernetes-targets/{target_id}/enable",
-        response_model=KubernetesTargetView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def enable_kubernetes_target(target_id: str) -> KubernetesTargetView:
-        try:
-            return _kubernetes_target_view(
-                _kubernetes_target_registry().set_enabled(target_id, True)
-            )
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-
-    @app.post(
-        "/v1/admin/kubernetes-targets/{target_id}/disable",
-        response_model=KubernetesTargetView,
-        dependencies=[Depends(require_admin)],
-    )
-    async def disable_kubernetes_target(target_id: str) -> KubernetesTargetView:
-        try:
-            return _kubernetes_target_view(
-                _kubernetes_target_registry().set_enabled(target_id, False)
-            )
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-
-    @app.post(
-        "/v1/admin/kubernetes-targets/{target_id}/health",
-        response_model=KubernetesTargetHealth,
-        dependencies=[Depends(require_admin)],
-    )
-    async def kubernetes_target_health(target_id: str) -> KubernetesTargetHealth:
-        try:
-            return _kubernetes_target_registry().health(target_id)
-        except KubernetesTargetNotFoundError as exc:
-            raise _kubernetes_target_not_found(target_id) from exc
-
     async def _runtime_operation(slug: str, operation: str) -> RuntimeOperationResponse:
         try:
             await registry_get(slug)
@@ -681,6 +320,4 @@ def create_admin_app(
 
     app.state.challenge_registry = challenge_registry
     app.state.runtime_controller = controller
-    app.state.gpu_registry = gpu_servers
-    app.state.kubernetes_target_registry = kubernetes_targets
     return app

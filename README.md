@@ -29,16 +29,21 @@ Each challenge lives in its own repository and owns its submissions, scoring log
 public miner experience. Platform provides the orchestration layer that makes those challenges run
 together as one subnet.
 
+Platform runs as a single Docker Swarm: a master (manager) node hosts the admin API, proxy, broker,
+supervisor, and the challenge services, while manually enrolled worker nodes run short-lived
+CPU/GPU evaluation jobs. There is no Kubernetes and no `runtime.backend` selector; the only backend
+is Swarm.
+
 ## Core Principles
 
-- One **Platform master validator** controls the central registry and orchestration.
+- One **Platform master** (Swarm manager) controls the central registry and orchestration.
 - One repository and image per **challenge**, isolated from other challenges.
 - Challenges expose a standard internal weight contract to Platform.
 - Public challenge APIs are proxied through Platform without exposing internal control routes.
-- Master PostgreSQL is private to the master process.
-- Kubernetes managed challenge mode gives each challenge only its own isolated Postgres credentials.
+- The shared control-plane PostgreSQL is private to the master process.
+- Each challenge keeps its own SQLite database on its `/data` Swarm volume.
 - Challenge state remains owned by each challenge.
-- Validators can run all active challenge containers from the master registry.
+- The master node runs all active challenge services; the on-chain submitter only submits weights.
 
 ---
 
@@ -61,21 +66,19 @@ together as one subnet.
 flowchart LR
     BT[Bittensor] --> M[Master]
     M --> PG[(Control-plane Postgres)]
-    M --> K8S[Kubernetes]
-    K8S --> C1[Challenge A]
-    K8S --> C2[Challenge B]
-    C1 --> P1[(Managed Postgres A)]
-    C2 --> P2[(Managed Postgres B)]
-    C1 --> D1[(Challenge A /data)]
-    C2 --> D2[(Challenge B /data)]
-    V[Validator] --> R[Registry]
-    R --> M
+    M --> C1[Challenge A]
+    M --> C2[Challenge B]
+    C1 --> D1[(Challenge A /data SQLite)]
+    C2 --> D2[(Challenge B /data SQLite)]
+    M --> B[Broker]
+    B --> J1[CPU job]
+    B --> J2[GPU job]
     U[Miners] --> P[Proxy]
     P --> C1
     P --> C2
     M --> W[Weights API]
-    V --> W
-    V --> BT
+    SUB[Submitter] --> W
+    SUB --> BT
 ```
 
 ---
@@ -109,12 +112,12 @@ sequenceDiagram
 Platform coordinates the full lifecycle of a multi-challenge subnet:
 
 1. The master tracks active challenges and their emission shares.
-2. Validators synchronize the challenge registry.
-3. Challenge containers run isolated from the master and from each other.
+2. The master (manager) node runs the active challenge services from the registry.
+3. Challenge services run isolated from the control plane and from each other, each on its own `/data` Swarm volume.
 4. Miners interact with the relevant challenge through Platform's public proxy.
 5. Each challenge calculates raw hotkey weights from its own scoring rules.
 6. Platform normalizes challenge outputs, applies configured emissions, and maps hotkeys to UIDs.
-7. Validators fetch the master's final vector and submit weights to Bittensor at epoch boundaries.
+7. The on-chain submitter fetches the master's final vector and submits weights to Bittensor at epoch boundaries.
 
 If a challenge fails, Platform can isolate that challenge's contribution without taking down the
 entire subnet.
@@ -133,8 +136,9 @@ weight contracts.
 
 ### Validators
 
-Validators run Platform, synchronize the registry, launch challenge containers, collect raw weights,
-and submit final normalized weights to Bittensor.
+Validators run the on-chain submitter: they fetch the master's final normalized vector from the
+weights API and submit it to Bittensor. Challenge services are run by the master (manager) node, not
+by the submitter.
 
 ---
 
@@ -154,27 +158,25 @@ platform/
 
 ## Deployment Policy
 
-Platform uses Kubernetes-only first-party deployment paths and keeps Dockerfiles for OCI images consumed by Kubernetes:
+Platform uses a Docker Swarm only first-party deployment path and keeps Dockerfiles for the OCI images Swarm runs:
 
-- `scripts/install-master.sh` is a Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators. Its default namespace is `PLATFORM_NAMESPACE=platform-master`, and it installs master admin, proxy, broker, and `platform-master-helm-upgrader` only.
-- Normal validators must use `scripts/install-validator.sh` and the validator guide, not the foundation master installer.
-- The master and validator installers now bootstrap full namespace-scoped Helm auto-upgrade CronJobs. They run `helm upgrade --install` from the configured GitHub repo/ref with `--atomic`, `--wait`, and `--cleanup-on-fail`; they do not print or read Kubernetes Secret contents, database URLs, or managed Postgres passwords.
-- First-party Platform defaults use Kubernetes runtime, the Kubernetes broker backend, and PostgreSQL-compatible control-plane state. The validator installer creates namespace-scoped managed Postgres by default.
-- `scripts/install-validator.sh` works without `--database-url` by creating `secret/service/statefulset/platform-validator-postgres`, a retained `platform-validator-postgres-data` claim, and `secret/platform-validator-database-url`; supplying `--database-url` or `PLATFORM_DATABASE_URL` skips those managed validator Postgres resources and stores only the provided URL Secret. SQLite is rejected for Kubernetes control-plane state.
-- Kubernetes managed challenge mode creates isolated managed Postgres resources per challenge slug and injects `CHALLENGE_DATABASE_URL` automatically from the per-challenge Secret. The challenge `/data` PVC remains separate and is for artifacts, analyzer output, local files, and the SQLite fallback.
-- The default Helm chart runs first-party master admin, proxy, broker, and config sync workloads from `ghcr.io/platformnetwork/platform-master:latest`, plus one-minute image updater CronJobs for those Deployments. The updaters resolve the public GHCR tag digest and patch Deployments to `tag@sha256:<digest>` only when the digest changes; no GHCR pull secret is required for public packages.
-- Run an explicit validator release to deploy normal validator pods using `ghcr.io/platformnetwork/platform:latest`; validators fetch master-computed weights and perform final Bittensor submission.
-- Pinned production mode still uses a tag plus a `sha256` digest, for example `ghcr.io/platformnetwork/demo:1.2.3@sha256:<64-hex-digest>` for releases or `ghcr.io/platformnetwork/demo:latest@sha256:<64-hex-digest>` for the autonomous update channel, and disables mutable auto-update. Production rejects untagged images, missing digests, non-SemVer non-`latest` tags, and `imageAutoUpdate.enabled=true`. Platform release versioning starts at `3.0.0`; see `docs/versioning.md` for the SemVer, Git tag, mutable `latest`/`main`, and GHCR tag policy.
-- Production remote GPU servers and Kubernetes targets must keep `verify_tls=true`; `verify_tls=false` is only acceptable for clearly local or test-only endpoints.
-- Multi-server and Kubernetes target routing trusts only enabled, healthy, non-draining targets with remaining GPU capacity. Production agent targets must use HTTPS and `verify_tls=true`; persisted insecure targets are rejected when production policy is active.
-- Kubernetes broker jobs and challenge workloads map CPU and memory to PodSpec requests and limits. Docker-only `pids_limit`, `memory_swap`, and custom Docker network modes are rejected for Kubernetes because PID and swap enforcement belongs at the cluster or admission-policy boundary.
+- `deploy/swarm/install-swarm.sh` brings up the single-node Swarm manager (master admin, proxy, broker, and challenge services on encrypted overlay networks). It is **dry-run by default**, mutates only with `--apply`, and keeps every destructive step behind its own explicit flag (`--restart-dockerd`, `--single-node-placement`, `--static-challenges`).
+- `deploy/swarm/platform-supervisor.service` installs the manager-only systemd supervisor: broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update loops.
+- The master (manager) node runs the challenge services with the placement constraint `node.role==manager`. The broker dispatches CPU jobs to `node.labels.platform.workload==cpu` workers and GPU jobs (`gpu_count>0`) to `node.labels.platform.workload==gpu` workers with `--generic-resource NVIDIA-GPU=<N>`.
+- Worker nodes are enrolled manually with Swarm join tokens (no SSH) via the `platform master worker` CLI group: `worker token [--cpu|--gpu]` prints `docker swarm join --token <TOKEN> <MANAGER_IP>:2377`; after the operator installs the matching `daemon.json` and joins, `worker label <node> --workload cpu|gpu` sets the scheduling label. The group also has `worker list`, `worker drain`, `worker rm`, and `worker inspect`.
+- Control-plane state is a single shared PostgreSQL supplied via `PLATFORM_DATABASE_URL` or a Docker secret; SQLite is rejected for control-plane state. Each challenge keeps its own SQLite database on its `/data` Swarm volume; there is no Postgres server per challenge.
+- The on-chain submitter (`deploy/swarm/submitter/`) is a systemd service that reads `/v1/weights/latest` and submits on-chain; it runs no challenge orchestration.
+- The supervisor image-updater and challenge-image-updater resolve the public GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/platformnetwork/platform-master:latest`; no GHCR pull secret is required for public packages.
+- Pinned production mode uses a tag plus a `sha256` digest, for example `ghcr.io/platformnetwork/demo:1.2.3@sha256:<64-hex-digest>` for releases or `ghcr.io/platformnetwork/demo:latest@sha256:<64-hex-digest>` for the autonomous update channel, and disables mutable auto-update. Production rejects untagged images, missing digests, and non-SemVer non-`latest` tags. Platform release versioning starts at `3.0.0`; see `docs/versioning.md` for the SemVer, Git tag, mutable `latest`/`main`, and GHCR tag policy.
+- Swarm networking uses encrypted overlay networks at MTU 1450. Required inter-node ports: `2377/tcp` (management), `7946/tcp+udp` (gossip), `4789/udp` (VXLAN data plane), and IP protocol 50 (ESP) for the encrypted overlay.
+- Swarm services map CPU and memory to `--limit-cpu` and `--limit-memory` and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`.
 - Broker image allowlists should stay scoped to `ghcr.io/platformnetwork/` unless a deployment explicitly adds another trusted registry namespace.
 
-Use `deploy/helm/platform/values.production.example.yaml` as the production policy fixture and keep examples aligned with Kubernetes deployment.
+See `deploy/swarm/` for the installer, supervisor unit, submitter, and `daemon.json` templates that define the production deployment.
 
 ## Validation Quick Reference
 
-Run these commands from the repository root when validating the platform locally. Some commands require Helm, kubeconform, kind, and kubectl. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
+Run these commands from the repository root when validating the platform locally. The live Swarm checks require Docker. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
 
 ```bash
 uv sync --extra dev --extra master
@@ -183,23 +185,21 @@ uv run ruff format --check .
 uv run mypy src tests
 uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
 
-helm lint deploy/helm/platform
-helm template platform deploy/helm/platform > /tmp/platform-default.yaml
-kubeconform -strict -summary /tmp/platform-default.yaml
-helm template platform deploy/helm/platform -f deploy/helm/platform/values.production.example.yaml > /tmp/platform-production.yaml
-kubeconform -strict -summary /tmp/platform-production.yaml
-
-kind delete cluster --name platform-validation
-kind create cluster --name platform-validation
-kind get kubeconfig --name platform-validation > /tmp/platform-validation-kubeconfig
-KUBECONFIG=/tmp/platform-validation-kubeconfig kubectl apply --dry-run=server -f /tmp/platform-default.yaml
-KUBECONFIG=/tmp/platform-validation-kubeconfig kubectl apply --dry-run=server -f /tmp/platform-production.yaml
-kind delete cluster --name platform-validation
+bash -n deploy/swarm/install-swarm.sh
+./deploy/swarm/install-swarm.sh            # dry-run: prints the planned docker swarm commands, changes nothing
 ```
 
-Evidence for local validation should live in a local, gitignored evidence directory and must not contain kubeconfigs, tokens, credentialed database URLs, private registry credentials, bearer secrets, private keys, or Docker registry auth.
+For a live single-node check (mutating; run only on a disposable host):
 
-Current Task 12 evidence records the Python quality gates as passing without lowering the documented gates: `uv run ruff format --check .`, `uv run mypy src tests`, `uv run ruff check .`, and the full coverage command all pass. Historical Task 11 evidence recorded Ruff format and mypy blockers, but those blockers are resolved in the current validation state.
+```bash
+docker swarm init
+docker network create --driver overlay --opt encrypted \
+  --opt com.docker.network.driver.mtu=1450 platform_challenges
+docker service ls
+docker swarm leave --force
+```
+
+Evidence for local validation should live in a local, gitignored evidence directory and must not contain tokens, credentialed database URLs, private registry credentials, bearer secrets, or private keys.
 
 ---
 

@@ -18,7 +18,7 @@ from platform_network.supervisor.challenge_image_updater import (
     ChallengeImageUpdater,
     build_challenge_image_updater_task,
 )
-from platform_network.validator.image_updater import ImageReference
+from platform_network.supervisor.image_ref import ImageReference
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64

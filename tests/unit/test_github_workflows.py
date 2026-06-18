@@ -68,7 +68,6 @@ def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
         "format",
         "mypy",
         "coverage",
-        "helm-kubeconform",
         "production-policy",
         "postgres-orm",
     ]

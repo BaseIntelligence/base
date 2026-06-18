@@ -7,10 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 from platform_network.bittensor.metagraph_cache import MetagraphCache
 from platform_network.bittensor.weight_setter import WeightSetter
-from platform_network.gpu.capabilities import ResourceCapabilityChecker
 from platform_network.master.aggregator import aggregate_challenge_weights
 from platform_network.master.challenge_client import ChallengeClient
-from platform_network.master.docker_orchestrator import ChallengeResources
 from platform_network.master.registry import record_to_registry_view
 from platform_network.schemas.challenge import RegistryChallenge
 from platform_network.schemas.weights import (
@@ -57,29 +55,16 @@ class MasterWeightService:
         metagraph_cache: MetagraphCache,
         weight_setter: WeightSetter | None = None,
         challenge_client: ChallengeClient | None = None,
-        capability_checker: ResourceCapabilityChecker | None = None,
     ) -> None:
         self.metagraph_cache = metagraph_cache
         self.weight_setter = weight_setter
         self.challenge_client = challenge_client or ChallengeClient()
-        self.capability_checker = capability_checker
 
     async def collect_weights(
         self, challenges: list[RegistryChallenge], tokens: dict[str, str]
     ) -> list[ChallengeWeightsResult]:
         results: list[ChallengeWeightsResult] = []
         for challenge in challenges:
-            decision = (
-                self.capability_checker.check(
-                    ChallengeResources.from_mapping(challenge.resources)
-                )
-                if self.capability_checker is not None
-                else None
-            )
-            if decision is not None and not decision.can_run:
-                raise RuntimeError(
-                    f"challenge {challenge.slug!r} cannot run: {decision.reason}"
-                )
             token = tokens.get(challenge.slug)
             if not token:
                 raise RuntimeError(f"challenge {challenge.slug!r} is missing a token")

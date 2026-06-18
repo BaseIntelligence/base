@@ -1,7 +1,7 @@
 """Control-plane supervisor for the Docker-Swarm backend (plan Task 16).
 
-Replaces the Kubernetes control-plane CronJobs with one systemd-managed
-(``Type=notify`` + ``WatchdogSec=``) long-running process. Module layout:
+A single systemd-managed (``Type=notify`` + ``WatchdogSec=``) long-running
+process that runs the control-plane scheduled tasks. Module layout:
 
 - ``loop.py``      — :class:`Supervisor` core (lifecycle, heartbeat). FROZEN.
 - ``scheduler.py`` — :class:`ScheduledTask` + per-task worker threads. FROZEN.

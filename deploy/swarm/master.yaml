@@ -1,3 +1,7 @@
+# Canonical master config synced by the supervisor (`platform master supervisor`).
+# Secrets (database password, admin token) are injected via environment
+# (PLATFORM_DATABASE__URL, PLATFORM_SECURITY__ADMIN_TOKEN_FILE) or secret files
+# and are never committed here.
 network:
   name: platform
   netuid: 100
@@ -27,7 +31,8 @@ validator:
   weights_freshness_seconds: 720
 
 database:
-  url: postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+  # Override the password via PLATFORM_DATABASE__URL in production.
+  url: postgresql+asyncpg://platform:platform@platform-postgres:5432/platform
 
 docker:
   network_name: platform_challenges

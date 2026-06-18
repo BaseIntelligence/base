@@ -12,6 +12,7 @@ import pytest
 
 from platform_network.config.settings import Settings
 from platform_network.master.swarm_backend import SwarmCommandResult
+from platform_network.supervisor.image_ref import ImageReference
 from platform_network.supervisor.image_updater import (
     DEFAULT_FIRST_PARTY_TARGETS,
     IMAGE_UPDATER_INTERVAL_SECONDS,
@@ -19,7 +20,6 @@ from platform_network.supervisor.image_updater import (
     SwarmImageUpdater,
     build_image_updater_task,
 )
-from platform_network.validator.image_updater import ImageReference
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64

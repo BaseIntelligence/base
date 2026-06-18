@@ -7,179 +7,60 @@ from typing import Any, cast
 import httpx
 import pytest
 
+import platform_network.master.challenge_client as challenge_client_module
 from platform_network.bittensor.metagraph_cache import MetagraphCache
 from platform_network.bittensor.weight_setter import WeightSetter
-from platform_network.kubernetes.registry import FileKubernetesTargetRegistry
 from platform_network.master.challenge_client import ChallengeClient
-from platform_network.master.docker_orchestrator import (
-    ChallengeResources,
-    ChallengeSpec,
-)
-from platform_network.master.kubernetes_broker import KubernetesBrokerRouterService
-from platform_network.master.kubernetes_orchestrator import (
-    KubernetesOrchestrator,
-    KubernetesTargetRouter,
-)
 from platform_network.master.service import MasterWeightService
 from platform_network.schemas.challenge import ChallengeStatus, RegistryChallenge
-from platform_network.schemas.docker_broker import BrokerRunRequest
-from platform_network.schemas.kubernetes_target import KubernetesTargetCreate
-from platform_network.schemas.weights import MasterWeightsResponse
 from platform_network.validator.normal_runner import NormalValidatorRunner
 from platform_network.validator.weights_client import WeightsClient
 
 
 @pytest.mark.asyncio
-async def test_platform_agents_broker_and_bittensor_weight_epoch(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+async def test_platform_challenge_weights_and_bittensor_weight_epoch(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     servers = {
-        "https://agent-a": InMemoryAgentServer(
-            token="agent-token-a",
-            weights_by_slug={
-                "agent-challenge": {"miner-a": 0.25, "miner-b": 0.75},
-            },
+        "http://challenge-agent-challenge:8000": InMemoryChallengeServer(
+            slug="agent-challenge",
+            token="challenge-token-a",
+            weights={"miner-a": 0.25, "miner-b": 0.75},
         ),
-        "https://agent-b": InMemoryAgentServer(
-            token="agent-token-b",
-            weights_by_slug={
-                "terminal-heavy": {"miner-b": 1.0, "miner-c": 1.0},
-            },
+        "http://challenge-terminal-heavy:8000": InMemoryChallengeServer(
+            slug="terminal-heavy",
+            token="challenge-token-b",
+            weights={"miner-b": 1.0, "miner-c": 1.0},
         ),
     }
     _install_in_memory_httpx(monkeypatch, servers)
-
-    target_registry = FileKubernetesTargetRegistry(
-        tmp_path / "targets.json", secret_dir=tmp_path / "secrets"
-    )
-    target_registry.create(
-        KubernetesTargetCreate(
-            id="agent-a",
-            mode="agent",
-            agent_url="https://agent-a",
-            agent_token="agent-token-a",
-            verify_tls=False,
-            timeout_seconds=3,
-            gpu_count=2,
-        )
-    )
-    target_registry.create(
-        KubernetesTargetCreate(
-            id="agent-b",
-            mode="agent",
-            agent_url="https://agent-b",
-            agent_token="agent-token-b",
-            verify_tls=False,
-            timeout_seconds=3,
-            gpu_count=4,
-        )
-    )
-    settings = SimpleNamespace(
-        docker=SimpleNamespace(
-            broker_url="http://platform-broker:8082",
-            broker_allowed_images=("ghcr.io/platformnetwork/",),
-        )
-    )
-    router = KubernetesTargetRouter(
-        default_orchestrator=cast(KubernetesOrchestrator, UnusedOrchestrator()),
-        settings=settings,
-        target_registry=target_registry,
-    )
-
-    agent_runtime = router.start_challenge(
-        ChallengeSpec(
-            slug="agent-challenge",
-            image="ghcr.io/platformnetwork/agent-challenge:latest",
-            challenge_token="challenge-token-a",
-            docker_broker_token="broker-token-a",
-            resources=ChallengeResources(gpu_count=1),
-            required_capabilities=(
-                "get_weights",
-                "proxy_routes",
-                "docker_executor",
-            ),
-        )
-    )
-    heavy_runtime = router.start_challenge(
-        ChallengeSpec(
-            slug="terminal-heavy",
-            image="ghcr.io/platformnetwork/terminal-heavy:latest",
-            challenge_token="challenge-token-b",
-            docker_broker_token="broker-token-b",
-            resources=ChallengeResources(gpu_server="agent-b", gpu_count=2),
-            required_capabilities=(
-                "get_weights",
-                "proxy_routes",
-                "docker_executor",
-            ),
-        )
-    )
-
-    assert agent_runtime.container_name == "challenge-agent-challenge"
-    assert heavy_runtime.container_name == "challenge-terminal-heavy"
-    assert target_registry.get_assignment("agent-challenge") == "agent-a"
-    assert target_registry.get_assignment("terminal-heavy") == "agent-b"
-    assert (
-        servers["https://agent-a"].starts[0]["env"]["CHALLENGE_DOCKER_BROKER_URL"]
-        == "http://platform-broker:8082"
-    )
 
     challenges = [
         _registry_challenge(
             "agent-challenge",
             Decimal("60"),
-            {"gpu_count": "1"},
-            agent_runtime.internal_base_url,
+            "http://challenge-agent-challenge:8000",
         ),
         _registry_challenge(
             "terminal-heavy",
             Decimal("40"),
-            {"gpu_server": "agent-b", "gpu_count": "2"},
-            heavy_runtime.internal_base_url,
+            "http://challenge-terminal-heavy:8000",
         ),
     ]
-    broker_router = KubernetesBrokerRouterService(
-        default_service=UnusedBrokerService(),
-        challenge_registry=ChallengeRegistry(challenges),
-        settings=settings,
-        target_registry=target_registry,
-    )
-    broker_response = broker_router.run(
-        "agent-challenge",
-        BrokerRunRequest(
-            job_id="terminal-bench-job",
-            task_id="terminal-bench@2.1",
-            image="ghcr.io/platformnetwork/terminal-bench-runner:2.1",
-            command=[
-                "bash",
-                "-lc",
-                "harbor run --dataset terminal-bench@2.1 --include-task-name hello",
-            ],
-            env={"PLATFORM_BENCHMARK_DATASET": "terminal-bench@2.1"},
-            labels={"platform.benchmark": "terminal_bench"},
-            timeout_seconds=120,
-        ),
-    )
-
-    assert broker_response.returncode == 0
-    assert "PLATFORM_BENCHMARK_RESULT=" in broker_response.stdout
-    assert servers["https://agent-a"].broker_runs[0]["job_id"] == "terminal-bench-job"
-    assert (
-        servers["https://agent-a"].broker_runs[0]["env"]["PLATFORM_BENCHMARK_DATASET"]
-        == "terminal-bench@2.1"
-    )
+    tokens = {
+        "agent-challenge": "challenge-token-a",
+        "terminal-heavy": "challenge-token-b",
+    }
 
     subtensor = FakeSubtensor(["validator", "miner-a", "miner-b", "miner-c"])
     service = MasterWeightService(
         metagraph_cache=MetagraphCache(netuid=42, ttl_seconds=0, subtensor=subtensor),
         weight_setter=WeightSetter(subtensor=subtensor, wallet=object(), netuid=42),
-        challenge_client=ChallengeClient(
-            retries=1, kubernetes_target_registry=target_registry
-        ),
+        challenge_client=ChallengeClient(retries=1),
     )
     latest = await service.compute_latest_response(
         challenges,
-        {"agent-challenge": "challenge-token-a", "terminal-heavy": "challenge-token-b"},
+        tokens,
         netuid=42,
         chain_endpoint="wss://chain.example:9944",
     )
@@ -197,6 +78,16 @@ async def test_platform_agents_broker_and_bittensor_weight_epoch(
     ]
     assert subtensor.metagraph_calls == [42]
     assert subtensor.set_weight_calls == []
+
+    # The per-challenge shared token is forwarded to each challenge's internal
+    # weights endpoint, scoped by the challenge slug header.
+    agent_server = servers["http://challenge-agent-challenge:8000"]
+    heavy_server = servers["http://challenge-terminal-heavy:8000"]
+    assert agent_server.authorization == "Bearer challenge-token-a"
+    assert heavy_server.authorization == "Bearer challenge-token-b"
+    assert agent_server.forwarded_slug == "agent-challenge"
+    assert heavy_server.forwarded_slug == "terminal-heavy"
+    assert agent_server.path == "/internal/v1/get_weights"
 
     weights_client = SharedWeightsClient(latest)
     validator_a = NormalValidatorRunner(
@@ -239,98 +130,37 @@ async def test_platform_agents_broker_and_bittensor_weight_epoch(
             "wait_for_finalization": False,
         },
     ]
-    assert servers["https://agent-a"].forwarded_auth["agent-challenge"] == (
-        "Bearer challenge-token-a"
-    )
-    assert servers["https://agent-b"].forwarded_auth["terminal-heavy"] == (
-        "Bearer challenge-token-b"
-    )
 
 
-class InMemoryAgentServer:
-    def __init__(
-        self, *, token: str, weights_by_slug: dict[str, dict[str, float]]
-    ) -> None:
+class InMemoryChallengeServer:
+    """Captures the authenticated GET to a challenge's internal weights route."""
+
+    def __init__(self, *, slug: str, token: str, weights: dict[str, float]) -> None:
+        self.slug = slug
         self.token = token
-        self.weights_by_slug = weights_by_slug
-        self.starts: list[dict[str, Any]] = []
-        self.broker_runs: list[dict[str, Any]] = []
-        self.forwarded_auth: dict[str, str] = {}
-        self._runtime: dict[str, dict[str, Any]] = {}
+        self.weights = weights
+        self.authorization: str | None = None
+        self.forwarded_slug: str | None = None
+        self.path: str | None = None
 
-    def handle(
-        self,
-        method: str,
-        path: str,
-        *,
-        headers: dict[str, str] | None = None,
-        json_payload: dict[str, Any] | None = None,
-    ) -> httpx.Response:
-        self._authenticate(headers or {})
-        path_only = path.split("?", 1)[0]
-        if method == "GET" and path_only == "/health":
-            return _json_response(method, path, {"status": "ok"})
-        if method == "POST" and path_only == "/v1/challenges/start":
-            payload = dict(json_payload or {})
-            self.starts.append(payload)
-            runtime = _runtime_payload(str(payload["slug"]), str(payload["image"]))
-            self._runtime[str(payload["slug"])] = runtime
-            return _json_response(method, path, runtime)
-        if method == "POST" and path_only.startswith("/v1/broker/"):
-            slug = path_only.split("/")[3]
-            payload = dict(json_payload or {})
-            self.broker_runs.append(payload | {"challenge_slug": slug})
-            return _json_response(
-                method,
-                path,
-                {
-                    "container_name": f"broker-{slug}",
-                    "stdout": (
-                        'PLATFORM_BENCHMARK_RESULT={"score": 1.0, '
-                        '"status": "completed"}'
-                    ),
-                    "stderr": "",
-                    "returncode": 0,
-                    "timed_out": False,
-                },
-            )
-        if method == "GET" and path_only.startswith("/v1/challenges/"):
-            parts = path_only.split("/")
-            slug = parts[3]
-            if len(parts) == 5 and parts[4] == "status":
-                return _json_response(method, path, self._runtime[slug])
-            if len(parts) >= 6 and parts[4] == "proxy":
-                self.forwarded_auth[slug] = _header(
-                    headers or {}, "x-platform-forward-authorization"
-                )
-                return _json_response(
-                    method,
-                    path,
-                    {
-                        "challenge_slug": slug,
-                        "weights": self.weights_by_slug[slug],
-                    },
-                )
-        return _json_response(method, path, {"detail": "not found"}, status_code=404)
-
-    def _authenticate(self, headers: dict[str, str]) -> None:
-        assert _header(headers, "authorization") == f"Bearer {self.token}"
-
-
-class ChallengeRegistry:
-    def __init__(self, challenges: list[RegistryChallenge]) -> None:
-        self._challenges = {challenge.slug: challenge for challenge in challenges}
-
-    def get(self, slug: str) -> RegistryChallenge:
-        return self._challenges[slug]
+    def handle(self, url: str, headers: dict[str, str]) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        self.authorization = _header(headers, "authorization")
+        self.forwarded_slug = _header(headers, "x-platform-challenge-slug")
+        self.path = request.url.path
+        return httpx.Response(
+            200,
+            json={"challenge_slug": self.slug, "weights": self.weights},
+            request=request,
+        )
 
 
 class SharedWeightsClient:
-    def __init__(self, payload: MasterWeightsResponse) -> None:
+    def __init__(self, payload: Any) -> None:
         self.payload = payload
-        self.fetches: list[MasterWeightsResponse] = []
+        self.fetches: list[Any] = []
 
-    async def fetch_latest(self) -> MasterWeightsResponse:
+    async def fetch_latest(self) -> Any:
         self.fetches.append(self.payload)
         return self.payload
 
@@ -350,53 +180,12 @@ class FakeSubtensor:
         return {"success": True}
 
 
-class UnusedOrchestrator:
-    @property
-    def runtime(self) -> dict[str, Any]:
-        return {}
-
-    def start_challenge(self, *_: Any, **__: Any) -> None:
-        raise AssertionError("default orchestrator should not be used")
-
-    def stop_challenge(self, *_: Any, **__: Any) -> None:
-        raise AssertionError("default orchestrator should not be used")
-
-
-class UnusedBrokerService:
-    def run(self, *_: Any, **__: Any) -> None:
-        raise AssertionError("default broker service should not be used")
-
-    def cleanup(self, *_: Any, **__: Any) -> None:
-        raise AssertionError("default broker service should not be used")
-
-    def list_containers(self, *_: Any, **__: Any) -> None:
-        raise AssertionError("default broker service should not be used")
-
-
 def _install_in_memory_httpx(
-    monkeypatch: pytest.MonkeyPatch, servers: dict[str, InMemoryAgentServer]
+    monkeypatch: pytest.MonkeyPatch, servers: dict[str, InMemoryChallengeServer]
 ) -> None:
-    class SyncClient:
-        def __init__(self, *, base_url: str, **_: Any) -> None:
-            self.server = servers[base_url.rstrip("/")]
-
-        def __enter__(self) -> SyncClient:
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def post(
-            self, path: str, *, json: dict[str, Any], headers: dict[str, str]
-        ) -> httpx.Response:
-            return self.server.handle("POST", path, headers=headers, json_payload=json)
-
-        def get(self, path: str, *, headers: dict[str, str]) -> httpx.Response:
-            return self.server.handle("GET", path, headers=headers)
-
     class AsyncClient:
-        def __init__(self, *, base_url: str, **_: Any) -> None:
-            self.server = servers[base_url.rstrip("/")]
+        def __init__(self, *_: Any, **__: Any) -> None:
+            return None
 
         async def __aenter__(self) -> AsyncClient:
             return self
@@ -404,27 +193,17 @@ def _install_in_memory_httpx(
         async def __aexit__(self, *_: object) -> None:
             return None
 
-        async def request(
-            self,
-            method: str,
-            url: str,
-            *,
-            headers: dict[str, str],
-            **_: Any,
+        async def get(
+            self, url: str, *, headers: dict[str, str] | None = None
         ) -> httpx.Response:
-            return self.server.handle(method, url, headers=headers)
+            base = url.split("/internal/v1/get_weights", 1)[0]
+            return servers[base].handle(url, headers or {})
 
-    import platform_network.kubernetes.agent as agent_module
-
-    monkeypatch.setattr(agent_module.httpx, "Client", SyncClient)
-    monkeypatch.setattr(agent_module.httpx, "AsyncClient", AsyncClient)
+    monkeypatch.setattr(challenge_client_module.httpx, "AsyncClient", AsyncClient)
 
 
 def _registry_challenge(
-    slug: str,
-    emission_percent: Decimal,
-    resources: dict[str, str],
-    internal_base_url: str,
+    slug: str, emission_percent: Decimal, internal_base_url: str
 ) -> RegistryChallenge:
     return RegistryChallenge(
         slug=slug,
@@ -435,34 +214,11 @@ def _registry_challenge(
         status=ChallengeStatus.ACTIVE,
         internal_base_url=internal_base_url,
         public_proxy_base_path=f"/challenges/{slug}",
-        required_capabilities=["get_weights", "proxy_routes", "docker_executor"],
-        resources=resources,
+        required_capabilities=["get_weights", "proxy_routes"],
+        resources={},
         volumes={},
         env={},
         secrets=[],
-    )
-
-
-def _runtime_payload(slug: str, image: str) -> dict[str, Any]:
-    return {
-        "slug": slug,
-        "image": image,
-        "container_id": f"cid-{slug}",
-        "container_name": f"challenge-{slug}",
-        "internal_base_url": f"http://challenge-{slug}:8000",
-        "sqlite_volume_name": f"platform_{slug.replace('-', '_')}_sqlite",
-        "health": {"status": "ok"},
-        "version": {"api_version": "1.0"},
-    }
-
-
-def _json_response(
-    method: str, url: str, payload: dict[str, Any], *, status_code: int = 200
-) -> httpx.Response:
-    return httpx.Response(
-        status_code,
-        json=payload,
-        request=httpx.Request(method, f"https://in-memory{url}"),
     )
 
 

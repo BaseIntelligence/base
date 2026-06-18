@@ -36,8 +36,8 @@ dev = [
   "types-docker>=7.1",
   "types-PyYAML>=6.0"
 ]
-master = ["bittensor>=9", "kubernetes>=30"]
-validator = ["bittensor>=9", "kubernetes>=30"]
+master = ["bittensor>=9"]
+validator = ["bittensor>=9"]
 
 [project.scripts]
 platform = "platform_network.cli:app"

@@ -4,10 +4,9 @@ This is the assignment/capacity bookkeeping side of GPU scheduling on the
 Docker/Swarm backend. It reuses the established platform patterns instead of
 inventing a new scheduler:
 
-* Capacity semantics mirror
-  :class:`platform_network.gpu.capabilities.ResourceCapabilityChecker`
-  (refusal reason ``gpu_capacity_insufficient`` when the request exceeds the
-  remaining capacity).
+* Capacity semantics surface the refusal reason
+  ``gpu_capacity_insufficient`` when the request exceeds the remaining
+  capacity.
 * Concurrency model mirrors
   :class:`platform_network.master.workload_ledger.WorkloadLedger`: broker
   handlers are synchronous ``def`` FastAPI endpoints executed on the anyio

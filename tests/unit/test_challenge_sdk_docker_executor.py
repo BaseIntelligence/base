@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
+import os
 import subprocess
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,9 +19,8 @@ from platform_network.challenge_sdk.executors.docker import (
     DockerLimits,
     DockerMount,
     DockerRunSpec,
+    _encode_mount,
 )
-from platform_network.kubernetes.resources import build_broker_job
-from platform_network.schemas.docker_broker import BrokerRunRequest
 
 
 def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
@@ -383,127 +386,6 @@ def test_platform_sdk_broker_backend_posts_run_request(
     assert "Bearer tok" not in json.dumps(payload)
 
 
-def test_broker_backend_gpu_payload_round_trips_to_kubernetes_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
-
-    captured: dict[str, Any] = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(
-                {
-                    "container_name": "agent-gpu-job",
-                    "stdout": "",
-                    "stderr": "",
-                    "returncode": 0,
-                    "timed_out": False,
-                }
-            ).encode()
-
-    def fake_urlopen(request: object, timeout: int) -> Response:
-        captured["payload_json"] = request.data.decode()  # type: ignore[attr-defined]
-        captured["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
-    result = DockerExecutor(
-        challenge="agent",
-        backend="broker",
-        broker_url="http://broker",
-        broker_token="tok",
-        allowed_images=("python:",),
-    ).run(
-        DockerRunSpec(
-            image="python:3.12-slim",
-            command=("python", "-V"),
-            labels={"platform.job": "gpu-job", "platform.task": "architecture"},
-            limits=DockerLimits(gpu_count=1),
-        ),
-        timeout_seconds=20,
-    )
-
-    assert result.returncode == 0
-    broker_request = BrokerRunRequest.model_validate_json(captured["payload_json"])
-    job = build_broker_job(
-        "agent",
-        broker_request,
-        namespace="platform",
-        service_account_name="platform-master",
-    )
-    resources = job["spec"]["template"]["spec"]["containers"][0]["resources"]
-    assert broker_request.limits.gpu_count == 1
-    assert resources["limits"]["nvidia.com/gpu"] == "1"
-    assert "nvidia.com/gpu" not in resources["requests"]
-
-
-def test_broker_backend_cpu_payload_round_trips_without_gpu_resource(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
-
-    captured: dict[str, Any] = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(
-                {
-                    "container_name": "agent-cpu-job",
-                    "stdout": "",
-                    "stderr": "",
-                    "returncode": 0,
-                    "timed_out": False,
-                }
-            ).encode()
-
-    def fake_urlopen(request: object, timeout: int) -> Response:
-        captured["payload_json"] = request.data.decode()  # type: ignore[attr-defined]
-        captured["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
-    result = DockerExecutor(
-        challenge="agent",
-        backend="broker",
-        broker_url="http://broker",
-        broker_token="tok",
-        allowed_images=("python:",),
-    ).run(
-        DockerRunSpec(
-            image="python:3.12-slim",
-            command=("python", "-V"),
-            labels={"platform.job": "cpu-job"},
-        ),
-        timeout_seconds=20,
-    )
-
-    assert result.returncode == 0
-    broker_request = BrokerRunRequest.model_validate_json(captured["payload_json"])
-    job = build_broker_job(
-        "agent",
-        broker_request,
-        namespace="platform",
-        service_account_name="platform-master",
-    )
-    resources = job["spec"]["template"]["spec"]["containers"][0]["resources"]
-    assert broker_request.limits.gpu_count is None
-    assert "nvidia.com/gpu" not in resources["limits"]
-    assert "nvidia.com/gpu" not in resources["requests"]
-
-
 def test_broker_backend_lists_containers(monkeypatch: pytest.MonkeyPatch) -> None:
     import platform_network.challenge_sdk.executors.docker as module
 
@@ -597,3 +479,82 @@ def test_template_executor_matches_shared_sdk() -> None:
         / "__package_name__/sdk/executors/docker.py.j2"
     )
     assert template.read_text(encoding="utf-8") == shared.read_text(encoding="utf-8")
+
+
+def _decode_members(payload: dict[str, Any]) -> tarfile.TarFile:
+    raw = base64.b64decode(cast(str, payload["mounts"][0]["archive_b64"]))
+    return tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz")
+
+
+def test_encode_mount_drops_internal_symlink(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text("x = 1\n", encoding="utf-8")
+    os.symlink("agent.py", tmp_path / "link.py")
+
+    encoded = _encode_mount(DockerMount(tmp_path, "/workspace/agent"))
+
+    with _decode_members({"mounts": [encoded]}) as tar:
+        names = {member.name for member in tar.getmembers()}
+        assert not any(member.issym() or member.islnk() for member in tar.getmembers())
+    assert "./agent.py" in names
+    assert "./link.py" not in names
+
+
+def test_encode_mount_external_symlink_leaks_no_target_bytes(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("BROKER_TOKEN_SUPERSECRET", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "agent.py").write_text("x = 1\n", encoding="utf-8")
+    os.symlink(secret, workspace / "evil")
+
+    encoded = _encode_mount(DockerMount(workspace, "/workspace/agent"))
+
+    raw = base64.b64decode(cast(str, encoded["archive_b64"]))
+    assert b"BROKER_TOKEN_SUPERSECRET" not in raw
+    with _decode_members({"mounts": [encoded]}) as tar:
+        names = {member.name for member in tar.getmembers()}
+    assert "./evil" not in names
+
+
+def test_encode_mount_drops_broken_symlink_and_symlinked_dir(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text("x = 1\n", encoding="utf-8")
+    os.symlink("does-not-exist", tmp_path / "broken")
+    os.symlink("/", tmp_path / "rootdir")
+
+    encoded = _encode_mount(DockerMount(tmp_path, "/workspace/agent"))
+
+    with _decode_members({"mounts": [encoded]}) as tar:
+        members = tar.getmembers()
+        assert not any(member.issym() or member.islnk() for member in members)
+        assert not any(
+            member.name.startswith("/") or ".." in Path(member.name).parts
+            for member in members
+        )
+
+
+def test_encode_mount_output_passes_broker_validation(tmp_path: Path) -> None:
+    from platform_network.master.docker_broker import _validate_tar_members
+
+    (tmp_path / "agent.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+    os.symlink("agent.py", tmp_path / "alias.py")
+
+    encoded = _encode_mount(DockerMount(tmp_path, "/workspace/agent"))
+
+    with _decode_members({"mounts": [encoded]}) as tar:
+        _validate_tar_members(tar)
+
+
+def test_encode_mount_keeps_regular_files_unchanged(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text("x = 1\n", encoding="utf-8")
+    nested = tmp_path / "pkg"
+    nested.mkdir()
+    (nested / "mod.py").write_text("y = 2\n", encoding="utf-8")
+
+    encoded = _encode_mount(DockerMount(tmp_path, "/workspace/agent"))
+
+    with _decode_members({"mounts": [encoded]}) as tar:
+        names = {member.name for member in tar.getmembers()}
+    assert "./agent.py" in names
+    assert "./pkg/mod.py" in names

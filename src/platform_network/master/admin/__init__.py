@@ -4,19 +4,11 @@ from platform_network.master.admin.auth import (
     load_admin_token_from_environment,
     resolve_token,
 )
-from platform_network.master.admin.gpu_registry import (
-    GpuServerRegistry,
-)
-from platform_network.master.admin.kubernetes_targets import (
-    KubernetesTargetRegistry,
-)
 from platform_network.master.admin.runtime import (
     RuntimeController,
 )
 
 __all__ = [
-    "GpuServerRegistry",
-    "KubernetesTargetRegistry",
     "RuntimeController",
     "TokenProvider",
     "constant_time_match",

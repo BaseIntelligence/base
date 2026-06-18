@@ -4,10 +4,10 @@
 
 ## Isolation Rules
 
-* Central PostgreSQL is available only to the master or validator control-plane process that owns that deployment. The validator installer may create namespace-scoped managed validator Postgres by default, and `--database-url` or `PLATFORM_DATABASE_URL` switches to an external control-plane database.
+* The shared control-plane PostgreSQL is available only to the master or validator control-plane process that owns that deployment. Its URL comes from `PLATFORM_DATABASE_URL` or a Docker secret.
 * Challenges never receive master, validator, or central control-plane PostgreSQL credentials.
-* Kubernetes managed challenge mode gives each challenge only its own per-challenge `CHALLENGE_DATABASE_URL` Secret for its isolated managed Postgres server.
-* Normal validators never receive master DB credentials.
+* Each challenge gets only its own SQLite database on its `/data` Swarm volume (`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`).
+* The submitter never receives master DB credentials.
 * Internal challenge calls require per-challenge shared tokens.
 * Public proxy strips sensitive headers.
 * Public proxy blocks internal challenge paths.
@@ -15,36 +15,38 @@
 
 ## Production Policy Boundaries
 
-The production and Kubernetes boundary is stricter than local development:
+The production boundary is stricter than local development:
 
-* Dev, test, and local runs may use SQLite for master state. Production and Kubernetes control-plane state must use PostgreSQL loaded from Kubernetes Secrets, an explicit database URL, or the validator installer's managed Postgres default; SQLite is rejected.
-* Generated local challenge runs and legacy Docker challenge runtime may use `sqlite+aiosqlite:////data/challenge.sqlite3`. Kubernetes managed challenge mode injects per-challenge Postgres credentials instead.
+* Dev, test, and local runs may use SQLite for master state. Production control-plane state must use PostgreSQL loaded from a Docker secret or an explicit `PLATFORM_DATABASE_URL`; SQLite is rejected for control-plane state.
+* Challenge runtime state is always SQLite on the challenge `/data` Swarm volume. Challenges never receive control-plane Postgres credentials.
 * Dev and local challenge images may be local, mutable, or tagged `latest` while iterating. Production images must include a tag and a `sha256` digest; SemVer tags are for pinned releases, while `latest@sha256:<digest>` is reserved for the autonomous update channel, starting with Platform `3.0.0` for release images. Production rejects untagged references and missing digests; `latest` is accepted only when digest-pinned for the autonomous update channel.
 * Production image allowlists must be scoped to a registry and namespace such as `ghcr.io/platformnetwork/`. Broad prefixes such as `platformnetwork/` are development-only.
-* Production remote GPU servers and Kubernetes targets must use TLS verification with `verify_tls=true`. `verify_tls=false` is reserved for local or test-only endpoints.
-* Production Kubernetes agent targets must use HTTPS plus `verify_tls=true`. Multi-server routing may reuse a persisted target assignment only when the target still exists, is enabled, is healthy, is not draining, and has remaining GPU capacity.
 
-## Kubernetes Runtime Boundary
+## Swarm Runtime Boundary
 
-First-party deployments use Kubernetes rollout controls and scoped RBAC. Broker-created challenge jobs must not receive the host Docker socket.
+First-party deployments use Docker Swarm rolling service updates. Challenge services run on the manager node (`node.role==manager`); broker-dispatched evaluation jobs run on worker nodes constrained by `node.labels.platform.workload==cpu` or `==gpu`. Broker-created challenge jobs must not receive the host Docker socket.
 
-Kubernetes broker GPU placement is expressed only through resource limits. A positive broker `gpu_count` becomes `resources.limits['nvidia.com/gpu']` by default, using Platform-owned `gpu_resource_name`; omitted or `None` stays CPU-only. Challenge metadata, labels, environment values, and device IDs are not Kubernetes placement semantics. Network isolation depends on CNI support and the NetworkPolicy objects enforced by the cluster.
+Broker GPU placement is expressed only through Swarm node labels and generic resources. A positive broker `gpu_count` becomes `--generic-resource NVIDIA-GPU=<N>` on a job constrained to `node.labels.platform.workload==gpu`; the name `NVIDIA-GPU` is case-sensitive and must match the worker `daemon.json` advertisement. Omitted or `None` stays CPU-only. Challenge metadata, labels, environment values, and device IDs are not placement semantics. Network isolation uses encrypted overlay networks created with MTU 1450; a job requesting `network: none` is attached to a dedicated internal (no external routes) encrypted overlay because Swarm services cannot attach to the predefined `none` network.
 
-Validator managed Postgres credentials and generated database URLs are written only to Kubernetes Secret `stringData` during create/replace and must not be printed in stdout, stderr, ConfigMaps, Deployments, CronJobs, docs evidence, or support logs. Cleanup deletes the managed validator Postgres StatefulSet and Service but retains the managed DB credential Secret and data claim/PVC by default. Challenge workloads receive only per-challenge runtime Secrets. The managed Postgres Secret and data claim are retained by default when a challenge is removed. Manual deletion is destructive and must be treated as an explicit purge.
+The control-plane database credential is written only into a Docker secret and must not be printed in stdout, stderr, service definitions, docs evidence, or support logs. Challenge services receive only per-challenge runtime secrets. The challenge `/data` Swarm volume is retained by default when a challenge is removed. Manual deletion is destructive and must be treated as an explicit purge.
 
-## Kubernetes PID and Swap Boundary
+### Privileged escape hatch
 
-Kubernetes PodSpec in this code path maps CPU and memory requests and limits. It doesn't provide direct parity for Docker-only `pids_limit`, `memory_swap`, or custom Docker network modes. Kubernetes broker jobs and challenge workloads reject non-default PID and swap requests instead of silently accepting fields that Kubernetes won't enforce. If production needs PID or swap ceilings, enforce them with cluster configuration or admission policy and document that policy with the cluster runbook.
+A Swarm service cannot run `--privileged` or `--gpus`, so `docker service create` never emits them. Challenges that legitimately need a privileged Docker-in-Docker job use the capability-gated escape hatch: instead of a Swarm service, the broker runs the job as a direct local `docker run` on a worker node. The escape hatch is the only path that grants privilege, it is gated per challenge, and the DinD container owns its own `/var/lib/docker` volume rather than the host Docker socket.
+
+## PID and Swap Boundary
+
+Swarm service resources map CPU and memory to `--limit-cpu` and `--limit-memory`, and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide through `daemon.json` rather than per service. If production needs swap ceilings, enforce them with daemon or cgroup configuration and document that policy with the node runbook.
 
 ## Broker Archive and Cleanup Security
 
-Broker archive uploads are treated as untrusted input. Docker and Kubernetes broker paths reject absolute paths, parent traversal, links, and device members before extraction. Kubernetes broker init containers use a defensive extractor with data-filtered tar extraction, and malformed broker images are rejected before resources are created.
+Broker archive uploads are treated as untrusted input. The Swarm broker path rejects absolute paths, parent traversal, links, and device members before extraction, and malformed broker images are rejected before any service is created.
 
-Kubernetes broker runs attempt to delete the Job, NetworkPolicy, and mount Secret in cleanup paths for success, failure, timeout, apply errors, wait errors, and log errors. Evidence should prove cleanup behavior without storing archive payloads, bearer credentials, kubeconfigs, private keys, or credentialed database URLs.
+Broker job cleanup is two-layered. The broker `/v1/docker/cleanup` path removes the Swarm service (`docker service rm`) and releases the workload and GPU ledger entries on success and failure. The manager-only supervisor timeout-reaper independently reaps jobs that exceed their timeout, so a crashed or unreachable challenge cannot leak long-running services. Evidence should prove cleanup behavior without storing archive payloads, bearer credentials, private keys, or credentialed database URLs.
 
 ## Secrets
 
-Admin tokens, challenge tokens, kubeconfigs, production database URLs, per-challenge database URLs, registry credentials, and wallet material must come from files, environment variables, or Kubernetes Secrets. Don't store clear text secrets in registry metadata responses, docs, or evidence files.
+Admin tokens, challenge tokens, the control-plane database URL, registry credentials, and wallet material must come from files, environment variables, or Docker secrets. Swarm secrets are mounted inside containers at `/run/secrets/platform/<name>`, and value-bearing secrets reach `docker secret create` via stdin, never as argv. Don't store clear text secrets in registry metadata responses, docs, or evidence files.
 
 Agent Challenge miner env values are per-submission secrets owned by the challenge, not by Platform registry. They are master-validator scoped, encrypted at rest by Agent Challenge, injected into Harbor/Terminal-Bench runtime, and cannot be retrieved after submission. Platform proxy forwards the request body to the challenge but must not parse, persist, log, registry-serialize, or evidence-capture submitted env values. Public responses can expose metadata only: env keys, count, empty confirmation, lock state, and timestamps.
 
@@ -52,4 +54,4 @@ Agent Challenge miner env values are per-submission secrets owned by the challen
 
 If a challenge fails health checks or `get_weights`, its contribution is zero for that epoch. The master doesn't auto-disable it.
 
-For public challenge requests, transport failures at ingress, Platform proxy, challenge service discovery, or Kubernetes target routing become safe 502 responses. Challenge-origin non-2xx responses should pass through when they are safe. User interfaces should render unavailable copy and must not display raw text such as `Platform request failed with status 502`.
+For public challenge requests, transport failures at ingress, Platform proxy, or challenge service discovery become safe 502 responses. Challenge-origin non-2xx responses should pass through when they are safe. User interfaces should render unavailable copy and must not display raw text such as `Platform request failed with status 502`.

@@ -83,7 +83,6 @@ class ChallengeResources:
     tmpfs: tuple[str, ...] = ("/tmp:rw,noexec,nosuid,size=512m",)
     cap_drop: tuple[str, ...] = ("ALL",)
     security_opt: tuple[str, ...] = ("no-new-privileges",)
-    gpu_server: str | None = None
     gpu_count: int | None = None
     gpu_device_ids: tuple[str, ...] = ()
     gpu_capabilities: tuple[str, ...] = ("gpu",)
@@ -91,8 +90,6 @@ class ChallengeResources:
     docker_timeout_seconds: int | None = None
 
     def __post_init__(self) -> None:
-        if self.gpu_server is not None and _SAFE_NAME_RE.search(self.gpu_server):
-            raise DockerOrchestrationError("GPU server id contains unsafe characters")
         if self.docker_max_concurrent is not None:
             _parse_positive_int(self.docker_max_concurrent, "docker_max_concurrent")
         if self.docker_timeout_seconds is not None:
@@ -119,7 +116,6 @@ class ChallengeResources:
         memory = resources.get("memory")
         memory_swap = resources.get("memory_swap") or resources.get("memswap_limit")
         pids_limit = resources.get("pids_limit") or resources.get("pids")
-        gpu_server = resources.get("gpu_server")
         gpu_count = resources.get("gpu_count") or resources.get("gpus")
         gpu_device_ids = _split_csv(resources.get("gpu_device_ids"))
         gpu_capabilities = _split_csv(resources.get("gpu_capabilities")) or ("gpu",)
@@ -134,7 +130,6 @@ class ChallengeResources:
             memory=memory or "4g",
             memory_swap=memory_swap or "4g",
             pids_limit=int(pids_limit) if pids_limit else 512,
-            gpu_server=gpu_server,
             gpu_count=int(gpu_count) if gpu_count else None,
             gpu_device_ids=gpu_device_ids,
             gpu_capabilities=gpu_capabilities,

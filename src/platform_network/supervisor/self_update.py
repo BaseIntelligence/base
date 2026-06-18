@@ -1,9 +1,8 @@
-"""Supervisor self-update — staged, health-gated replacement for helm ``--atomic``.
+"""Supervisor self-update — staged, health-gated in-place upgrade.
 
-The Kubernetes helm-upgrader CronJob re-ran ``helm upgrade --install
---atomic --wait --cleanup-on-fail`` from a GitHub tarball every five
-minutes; ``--atomic`` gave it transactional rollback. On the Docker backend
-the supervisor must upgrade ITSELF with the same guarantees. Design:
+The supervisor must upgrade ITSELF transactionally: it stages a new release
+from a GitHub tarball, swaps it in, health-gates the swap, and rolls back
+atomically on failure. Design:
 
 Release layout (all paths under one root, default
 ``/var/lib/platform/supervisor``)::
@@ -289,8 +288,8 @@ def tarball_stager(
     """Default stager: GitHub-style tarball download + ``uv sync``.
 
     Downloads ``release.source_url`` (a codeload-style ``.tar.gz`` whose
-    single top-level directory is stripped — same shape the helm-upgrader
-    consumed), extracts with the safe ``data`` tar filter, then pre-warms
+    single top-level directory is stripped), extracts with the safe ``data``
+    tar filter, then pre-warms
     the per-release virtualenv with ``uv sync`` so the post-swap boot does
     not pay resolution latency. Raises on any failure; the caller treats a
     raising stager as "release not staged".
