@@ -402,6 +402,162 @@ def test_run_job_omits_eval_readonly_by_default(tmp_path: Path) -> None:
     assert not any("/opt/agent-challenge" in m for m in mounts)
 
 
+_PRISM_EVAL_READONLY_BY_SLUG = {
+    "prism": (
+        ("prism_fineweb_edu_train", "/data/fineweb-edu/train"),
+        ("prism_reference_tokenizers", "/opt/prism/reference-tokenizers"),
+    )
+}
+
+
+def _prism_gpu_request(**overrides: Any) -> BrokerRunRequest:
+    payload: dict[str, Any] = {
+        "command": ["torchrun", "/workspace/runner.py"],
+        "workdir": "/workspace",
+        "labels": {"platform.challenge": "prism"},
+        "limits": {"gpu_count": 1, "network": "none"},
+        "mounts": _gpu_mounts(),
+    }
+    payload.update(overrides)
+    return _run_request(**payload)
+
+
+def test_run_job_prism_mounts_eval_readonly_by_slug_without_socket(
+    tmp_path: Path,
+) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    # prism is NOT in docker_socket_slugs: it must receive the locked-data RO
+    # mounts WITHOUT the (root-equivalent) host Docker socket.
+    service = _broker(
+        tmp_path,
+        runner,
+        eval_readonly_mounts_by_slug=_PRISM_EVAL_READONLY_BY_SLUG,
+    )
+
+    service.run("prism", _prism_gpu_request())
+
+    argv = runner.create_argv()
+    mounts = [value for flag, value in _pairs(argv) if flag == "--mount"]
+    # The train split + reference tokenizers bind-mount READ-ONLY (a named
+    # volume source -> type=volume; every entry ends with ,readonly).
+    assert (
+        "type=volume,source=prism_fineweb_edu_train,"
+        "destination=/data/fineweb-edu/train,readonly" in mounts
+    )
+    assert (
+        "type=volume,source=prism_reference_tokenizers,"
+        "destination=/opt/prism/reference-tokenizers,readonly" in mounts
+    )
+    # No Docker-out-of-Docker socket for prism.
+    assert not any("docker.sock" in m for m in mounts)
+
+
+def test_run_job_prism_eval_readonly_exposes_only_train_split(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(
+        tmp_path,
+        runner,
+        eval_readonly_mounts_by_slug=_PRISM_EVAL_READONLY_BY_SLUG,
+    )
+
+    service.run("prism", _prism_gpu_request())
+
+    mounts = [
+        value for flag, value in _pairs(runner.create_argv()) if flag == "--mount"
+    ]
+    data_mounts = [m for m in mounts if "/data/fineweb-edu" in m]
+    assert data_mounts == [
+        "type=volume,source=prism_fineweb_edu_train,"
+        "destination=/data/fineweb-edu/train,readonly"
+    ]
+    # The secret held-out splits are NEVER mounted into the miner container.
+    assert not any("destination=/data/fineweb-edu/val" in m for m in mounts)
+    assert not any("destination=/data/fineweb-edu/test" in m for m in mounts)
+
+
+def test_run_job_eval_readonly_by_slug_scoped_to_matching_slug(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(
+        tmp_path,
+        runner,
+        eval_readonly_mounts_by_slug=_PRISM_EVAL_READONLY_BY_SLUG,
+    )
+
+    # A different slug must not inherit prism's locked-data mounts.
+    service.run("agent", _run_request())
+
+    mounts = [
+        value for flag, value in _pairs(runner.create_argv()) if flag == "--mount"
+    ]
+    assert not any("prism_fineweb_edu_train" in m for m in mounts)
+    assert not any("/data/fineweb-edu" in m for m in mounts)
+
+
+def test_run_job_prism_eval_has_no_review_secret(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(
+        tmp_path,
+        runner,
+        eval_readonly_mounts_by_slug=_PRISM_EVAL_READONLY_BY_SLUG,
+    )
+
+    service.run("prism", _prism_gpu_request())
+
+    argv = runner.create_argv()
+    # The scored eval job carries NO Swarm secret: the OpenRouter review key
+    # (and every other secret) is absent from the eval container.
+    assert "--secret" not in argv
+    assert not any("openrouter" in token.lower() for token in argv)
+
+
+def test_run_job_prism_eval_network_none_is_isolated(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(
+        tmp_path,
+        runner,
+        eval_readonly_mounts_by_slug=_PRISM_EVAL_READONLY_BY_SLUG,
+    )
+
+    service.run("prism", _prism_gpu_request())
+
+    pairs = _pairs(runner.create_argv())
+    # network=none maps to the dedicated *internal* (no external route) overlay;
+    # it must never fall back to the default (egress-capable) network.
+    assert ("--network", "platform_jobs_internal") in pairs
+    assert ("--network", "default") not in pairs
+
+
+def test_run_job_eval_readonly_by_slug_merges_with_socket_allowlist(
+    tmp_path: Path,
+) -> None:
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(
+        tmp_path,
+        runner,
+        docker_socket_slugs=frozenset({"prism"}),
+        eval_readonly_mounts=(("legacy_cache", "/opt/legacy/cache"),),
+        eval_readonly_mounts_by_slug={
+            "prism": (("prism_fineweb_edu_train", "/data/fineweb-edu/train"),)
+        },
+    )
+
+    service.run("prism", _prism_gpu_request())
+
+    mounts = [
+        value for flag, value in _pairs(runner.create_argv()) if flag == "--mount"
+    ]
+    # A slug present in BOTH the legacy global allowlist and the per-slug map
+    # receives the union of both read-only mount sets.
+    assert (
+        "type=volume,source=legacy_cache,destination=/opt/legacy/cache,readonly"
+        in mounts
+    )
+    assert (
+        "type=volume,source=prism_fineweb_edu_train,"
+        "destination=/data/fineweb-edu/train,readonly" in mounts
+    )
+
+
 def test_run_failed_create_releases_ledger_and_raises(tmp_path: Path) -> None:
     runner = FakeSwarmRunner(create_rc=1)
     service = _broker(tmp_path, runner)

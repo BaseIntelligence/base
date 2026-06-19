@@ -46,7 +46,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -340,6 +340,17 @@ class SwarmBrokerConfig(DockerBrokerConfig):
     #: terminal-bench task cache + frozen digest manifest to own_runner jobs
     #: without baking them into the runner image. Empty default mounts nothing.
     eval_readonly_mounts: tuple[tuple[str, str], ...] = ()
+    #: Per-slug read-only mounts injected into the Swarm eval job, decoupled
+    #: from the Docker-out-of-Docker socket allowlist. Used to bind-mount the
+    #: locked prism FineWeb-Edu train split (+ reference tokenizers) READ-ONLY
+    #: into the prism eval container, which must NOT receive the host Docker
+    #: socket (prism is not a DooD slug). Each value mirrors
+    #: ``eval_readonly_mounts``: a tuple of ``(source, target)`` where
+    #: ``source`` is an absolute host path or a Docker named volume. Empty
+    #: default mounts nothing for any slug.
+    eval_readonly_mounts_by_slug: Mapping[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -631,21 +642,37 @@ class SwarmBrokerService(DockerBrokerService):
         return ()
 
     def _eval_readonly_mounts(self, challenge_slug: str) -> tuple[str, ...]:
-        """Return read-only cache/manifest mounts for DooD-allowlisted slugs.
+        """Return the read-only out-of-band mounts injected for ``challenge_slug``.
 
-        Gated on the same ``docker_socket_slugs`` allowlist as the host Docker
-        socket: only an own_runner eval job (which already gets the socket) is
-        handed the out-of-band task cache + frozen digest manifest. Empty for
-        every other slug. Each mount is read-only so the job can never mutate
-        the shared cache volume.
+        Two independent sources are merged (deduplicated, order-preserving):
+
+        * the legacy GLOBAL ``eval_readonly_mounts``, gated on the
+          ``docker_socket_slugs`` allowlist — only an own_runner DooD eval job
+          (which already gets the host Docker socket) is handed the shared
+          terminal-bench task cache + frozen digest manifest; and
+        * the PER-SLUG ``eval_readonly_mounts_by_slug``, decoupled from the
+          socket allowlist — this delivers the locked prism FineWeb-Edu train
+          split (+ reference tokenizers) READ-ONLY into the prism eval
+          container WITHOUT granting it the (root-equivalent) Docker socket.
+
+        Every mount is read-only so the job can never mutate the shared
+        cache/locked-data volume. Empty for a slug present in neither source.
         """
 
-        if challenge_slug not in self.swarm_config.docker_socket_slugs:
-            return ()
-        return tuple(
-            _readonly_mount_arg(source, target)
-            for source, target in self.swarm_config.eval_readonly_mounts
+        specs: list[tuple[str, str]] = []
+        if challenge_slug in self.swarm_config.docker_socket_slugs:
+            specs.extend(self.swarm_config.eval_readonly_mounts)
+        specs.extend(
+            self.swarm_config.eval_readonly_mounts_by_slug.get(challenge_slug, ())
         )
+        seen: set[tuple[str, str]] = set()
+        mounts: list[str] = []
+        for source, target in specs:
+            if (source, target) in seen:
+                continue
+            seen.add((source, target))
+            mounts.append(_readonly_mount_arg(source, target))
+        return tuple(mounts)
 
     def _job_network(self, requested: str) -> str | None:
         if requested == "default":

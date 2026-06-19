@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -317,6 +317,47 @@ def _parse_eval_readonly_mounts(values: list[str]) -> tuple[tuple[str, str], ...
     return tuple(parsed)
 
 
+#: Miner-visible mount target for the locked FineWeb-Edu TRAIN split; the
+#: secret val/test splits are NEVER mounted into the eval container. The prism
+#: evaluator's ``ctx.data_dir`` resolves to this read-only path.
+PRISM_FINEWEB_EDU_TRAIN_DIR = "/data/fineweb-edu/train"
+#: Mount target for the offline reference tokenizers (gpt2 tiktoken cache +
+#: non-gated llama sentencepiece ``.model``).
+PRISM_REFERENCE_TOKENIZER_DIR = "/opt/prism/reference-tokenizers"
+#: Docker named volumes staged READ-ONLY on the GPU node (out-of-band, NOT
+#: in-band tar) by the data-staging deploy feature. Only the train volume is
+#: bound into the miner container; the held-out splits live in separate volumes
+#: the eval container never mounts.
+PRISM_FINEWEB_EDU_TRAIN_VOLUME = "prism_fineweb_edu_train"
+PRISM_REFERENCE_TOKENIZER_VOLUME = "prism_reference_tokenizers"
+#: Built-in prism locked-data read-only mounts: train split + reference
+#: tokenizers, applied unless ``broker_eval_readonly_mounts_by_slug`` overrides
+#: the prism slug. Keeps the broker wiring live before deploy config exists.
+DEFAULT_PRISM_EVAL_READONLY_MOUNTS: tuple[tuple[str, str], ...] = (
+    (PRISM_FINEWEB_EDU_TRAIN_VOLUME, PRISM_FINEWEB_EDU_TRAIN_DIR),
+    (PRISM_REFERENCE_TOKENIZER_VOLUME, PRISM_REFERENCE_TOKENIZER_DIR),
+)
+
+
+def _eval_readonly_mounts_by_slug(
+    configured: Mapping[str, list[str]] | None,
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Resolve the per-slug read-only eval mounts for the broker.
+
+    The prism slug receives :data:`DEFAULT_PRISM_EVAL_READONLY_MOUNTS` so the
+    locked train split + reference tokenizers bind-mount READ-ONLY into the
+    eval container out of the box. Any slug present in ``configured`` (from
+    ``docker.broker_eval_readonly_mounts_by_slug``) overrides that default with
+    its parsed ``source:target`` specs.
+    """
+    resolved: dict[str, tuple[tuple[str, str], ...]] = {
+        PRISM_SLUG: DEFAULT_PRISM_EVAL_READONLY_MOUNTS,
+    }
+    for slug, specs in (configured or {}).items():
+        resolved[slug] = _parse_eval_readonly_mounts(specs)
+    return resolved
+
+
 def _prism_image_for_settings(image: str, settings: Any | None) -> str:
     if settings is None or not production_policy_enabled_for_settings(settings):
         return image
@@ -573,6 +614,9 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
             docker_socket_path=settings.docker.broker_docker_socket_path,
             eval_readonly_mounts=_parse_eval_readonly_mounts(
                 settings.docker.broker_eval_readonly_mounts
+            ),
+            eval_readonly_mounts_by_slug=_eval_readonly_mounts_by_slug(
+                settings.docker.broker_eval_readonly_mounts_by_slug
             ),
         )
     )

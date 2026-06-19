@@ -85,6 +85,16 @@ class DockerSettings(BaseModel):
     #: host path or a Docker named volume and ``target`` is the absolute mount
     #: path inside the job. Empty default mounts nothing.
     broker_eval_readonly_mounts: list[str] = Field(default_factory=list)
+    #: Per-slug read-only mounts injected into the Swarm eval job, decoupled
+    #: from ``broker_docker_socket_slugs``. Maps a challenge slug to a list of
+    #: ``source:target`` specs (same format as ``broker_eval_readonly_mounts``).
+    #: Used to bind-mount the locked prism FineWeb-Edu train split + reference
+    #: tokenizers READ-ONLY into the prism eval container (which must NOT get the
+    #: host Docker socket). The prism slug receives a built-in default when
+    #: unset; see ``cli_app.main._eval_readonly_mounts_by_slug``.
+    broker_eval_readonly_mounts_by_slug: dict[str, list[str]] = Field(
+        default_factory=dict
+    )
     # Challenge API services run on the manager/host; broker jobs run on
     # workers, steered to CPU- vs GPU-labeled nodes (platform.workload).
     challenge_placement_constraint: str | None = "node.role==manager"

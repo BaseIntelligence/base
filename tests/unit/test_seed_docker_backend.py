@@ -160,3 +160,29 @@ def test_parse_eval_readonly_mounts_filters_malformed() -> None:
         ("agent_challenge_task_cache", "/opt/agent-challenge/task-cache"),
         ("/var/lib/x/golden", "/opt/agent-challenge/golden"),
     )
+
+
+def test_eval_readonly_mounts_by_slug_includes_prism_train_default() -> None:
+    # The prism slug receives its locked-data RO mounts out of the box (the
+    # train split + reference tokenizers), so the broker wiring is not inert
+    # before the deploy feature populates master.yaml.
+    parsed = cli_module._eval_readonly_mounts_by_slug({})
+    assert parsed["prism"] == (
+        ("prism_fineweb_edu_train", "/data/fineweb-edu/train"),
+        ("prism_reference_tokenizers", "/opt/prism/reference-tokenizers"),
+    )
+    # ONLY the train split is exposed; the held-out splits are never mounted.
+    targets = [target for _source, target in parsed["prism"]]
+    assert "/data/fineweb-edu/val" not in targets
+    assert "/data/fineweb-edu/test" not in targets
+
+
+def test_eval_readonly_mounts_by_slug_config_overrides_default() -> None:
+    parsed = cli_module._eval_readonly_mounts_by_slug(
+        {
+            "prism": ["prism_fineweb_edu_train:/data/fineweb-edu/train"],
+            "other": ["vol:/x", "bad-no-colon"],
+        }
+    )
+    assert parsed["prism"] == (("prism_fineweb_edu_train", "/data/fineweb-edu/train"),)
+    assert parsed["other"] == (("vol", "/x"),)
