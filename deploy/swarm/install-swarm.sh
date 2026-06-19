@@ -107,6 +107,42 @@ VOL_MASTER_PG="platform_master_pg"
 VOL_AGENT_CHALLENGE_PG="agent_challenge_pg"
 VOL_PRISM_PG="prism_pg"
 
+# Shared platform secrets volume, mounted by admin/broker/proxy at the master's
+# DockerSettings.secret_dir. The master reads each challenge's bearer token and
+# the per-challenge docker-broker token from <secret_dir>/<slug>_challenge_token
+# (registry.py:_token_path). The PROXY in particular needs this mount or miner
+# uploads 500 "Challenge token file is missing" (see "Proxy submission-path
+# requirements" in AGENTS.md). Keep SECRET_VOLUME_DIR == DockerSettings.secret_dir.
+VOL_PLATFORM_SECRETS="vol_platform_secrets"
+SECRET_VOLUME_DIR="/var/lib/platform/secrets"
+
+# ---- Proxy submission-path config (canonicalizes the M1 live `docker service
+# update` fixes; see AGENTS.md "Proxy submission-path requirements"). All values
+# below are public (ss58 addresses / image refs), never secrets. ----
+#
+# Upload allowlist: ss58 hotkeys the proxy MinerUploadVerifier accepts WITHOUT
+# on-chain registration (settings.master.upload_extra_registered_hotkeys, env
+# PLATFORM_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS). A non-allowlisted hotkey ->
+# 401 "unknown hotkey". Parameterizable. Default = the live miner (//AcE2EMiner)
+# + owner (//Owner) PLUS two SPARE validator hotkeys (//AcValidator1/2) kept free
+# of the agent-challenge 1-submission-per-hotkey-per-3h rate limit for the M1
+# user-testing validator (derived ss58 recorded in library/user-testing.md).
+UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnbVvLKWjHeVqm2BMqMzmckKMiufR11qFXahaUfenR\",\"5FTyuyEQQZs8tCcPTUFqotkm2SYfDnpefn9FitRgmTHnFDBD\",\"5GGboHkKougeE8PqGRbNM32AEwRU7Dsv4MXATm2zukQJ8wrU\",\"5FJAjL6d31QDSfvcZPKkde9ftTLAPu7J5Mo86je5XbziRXSB\"]}"
+
+# agent-challenge own_runner eval allowlist: the worker+api gate the broker DooD
+# job image against CHALLENGE_DOCKER_ALLOWED_IMAGES (the default permits only the
+# :latest runner). Cover the DEPLOYED runner tag via a ``:*`` glob so a non-:latest
+# runner (e.g. the live :own-runner-fixed tag) is allowed; else the eval job fails
+# "Docker image is not allowed". AGENT_CHALLENGE_RUNNER_IMAGE is the own_runner job
+# image (CHALLENGE_HARBOR_RUNNER_IMAGE) — pin the operator's tag at deploy time.
+AGENT_CHALLENGE_RUNNER_IMAGE="${AGENT_CHALLENGE_RUNNER_IMAGE:-ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest}"
+CHALLENGE_DOCKER_ALLOWED_IMAGES="${CHALLENGE_DOCKER_ALLOWED_IMAGES:-[\"platformnetwork/swe-forge:*\",\"ghcr.io/platformnetwork/agent-challenge-analyzer:*\",\"ghcr.io/platformnetwork/terminal-bench-harbor-runner:*\",\"ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:*\"]}"
+
+# Per-call extra env / command override consumed by _deploy_challenge_service
+# (reset after each deploy). Declared here so `set -u` never trips on `${#..[@]}`.
+CHALLENGE_ENV=()
+CHALLENGE_CMD=()
+
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
 # ============================================================================
@@ -644,6 +680,7 @@ deploy_master() {
   log "STEP 9/12 deploy_master"
   _render_master_config
   _ensure_master_config_secret
+  _seed_proxy_challenge_tokens  # proxy bearer-token files in the shared secrets volume
 
   # admin (orchestrator + admin API) — this is what dynamically creates challenges.
   _deploy_master_service "platform-master-admin" "run" "${MASTER_ADMIN_PORT}" "${MASTER_ADMIN_PORT}"
@@ -694,6 +731,7 @@ kubernetes:
 
 docker:
   network_name: ${NET_CHALLENGES}
+  secret_dir: ${SECRET_VOLUME_DIR}
   internal_network: true
   broker_host: 0.0.0.0
   broker_port: ${MASTER_BROKER_PORT}
@@ -748,6 +786,35 @@ _ensure_master_config_secret() {
   fi
 }
 
+# Seed the proxy's per-challenge bearer-token files into the shared secrets
+# volume. The proxy verifies a miner upload for slug <s> against the bearer token
+# it reads from ${SECRET_VOLUME_DIR}/<s>_challenge_token (registry.get_token);
+# that file MUST equal the challenge's platform_<s>_challenge_token secret value
+# or uploads 401 "invalid bearer token". Seed it for BOTH agent-challenge and
+# prism from the same env vars used to create the docker secrets. Values flow on
+# stdin only (never argv, never logged). The throwaway writer mounts the named
+# volume directly so the file exists before the proxy task starts.
+_seed_proxy_challenge_tokens() {
+  log "  seeding proxy per-challenge bearer-token files into ${VOL_PLATFORM_SECRETS}"
+  _seed_challenge_token "agent-challenge" AGENT_CHALLENGE_CHALLENGE_TOKEN
+  _seed_challenge_token "prism"           PRISM_CHALLENGE_TOKEN
+}
+
+# _seed_challenge_token SLUG ENVVAR — write $ENVVAR into the secrets volume at
+# <slug>_challenge_token (mode 600, owner-only). Idempotent (overwrites in place).
+_seed_challenge_token() {
+  local slug="$1" envvar="$2"
+  if [[ -z "${!envvar:-}" ]]; then
+    die "required token env var \$${envvar} is empty (proxy seed for slug '${slug}')"
+  fi
+  local target="${slug}_challenge_token"
+  plan_secret_stdin "proxy-token-${slug}" "${envvar}" -- \
+    docker run --rm -i \
+      --mount "type=volume,source=${VOL_PLATFORM_SECRETS},destination=/secrets" \
+      "${IMAGE_POSTGRES}" \
+      sh -c "umask 077 && cat > /secrets/${target} && chmod 600 /secrets/${target}"
+}
+
 # _deploy_master_service NAME SUBCOMMAND HOST_PORT CONTAINER_PORT
 _deploy_master_service() {
   local name="$1" subcommand="$2" host_port="$3" container_port="$4"
@@ -755,6 +822,19 @@ _deploy_master_service() {
     log "  service ${name} already exists — skipping (idempotent)"
     return 0
   fi
+
+  # Common extras for ALL master services:
+  #   * shared secrets volume at the master secret_dir (/var/lib/platform/secrets):
+  #     admin/broker/proxy all read per-challenge tokens from here. The PROXY needs
+  #     it to load each challenge's bearer token when verifying miner uploads (else
+  #     500 "Challenge token file is missing"). Seeded by _seed_proxy_challenge_tokens.
+  #   * --update-order stop-first: these are FIXED host-port services (8000/8082/8080,
+  #     mode=host); the default start-first ordering causes a transient port collision
+  #     (EADDRINUSE) on update. stop-first releases the port before the new task binds.
+  local -a extra=(
+    --mount "type=volume,source=${VOL_PLATFORM_SECRETS},destination=${SECRET_VOLUME_DIR}"
+    --update-order stop-first
+  )
 
   # Broker-only extras (regression guards — do NOT strip these flags):
   #   1. host docker socket: the escape hatch shells out to `docker run` on the
@@ -765,7 +845,6 @@ _deploy_master_service() {
   #      'agent'".
   #   3. user=root: DinD writes outputs as root; the broker must rmtree them on
   #      TemporaryDirectory exit or cleanup raises EPERM -> HTTP 500.
-  local -a extra=()
   if [[ "${subcommand}" == "broker" ]]; then
     local broker_ws="${BROKER_WORKSPACE_DIR:-/tmp/platform-docker-broker}"
     mkdir -p "${broker_ws}"
@@ -773,6 +852,14 @@ _deploy_master_service() {
       --user root
       --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"
       --mount "type=bind,source=${broker_ws},target=${broker_ws}"
+    )
+  fi
+
+  # Proxy-only: upload allowlist so the MinerUploadVerifier accepts the miner +
+  # owner (+ spare validator) hotkeys without on-chain registration.
+  if [[ "${subcommand}" == "proxy" ]]; then
+    extra+=(
+      --env "PLATFORM_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
     )
   fi
 
@@ -817,8 +904,19 @@ deploy_challenges() {
 
   warn "creating challenge services DIRECTLY (--static-challenges); no --constraint emitted"
 
+  # own_runner eval image allowlist + runner image, applied to BOTH the
+  # agent-challenge api and the worker so the broker DooD job is permitted to run
+  # the deployed (non-:latest) runner tag. Without it the eval job fails
+  # "Docker image is not allowed: ...". See "Proxy submission-path requirements".
+  local -a ac_eval_env=(
+    "CHALLENGE_SLUG=agent-challenge"
+    "CHALLENGE_HARBOR_RUNNER_IMAGE=${AGENT_CHALLENGE_RUNNER_IMAGE}"
+    "CHALLENGE_DOCKER_ALLOWED_IMAGES=${CHALLENGE_DOCKER_ALLOWED_IMAGES}"
+  )
+
   # agent-challenge primary API service (port 8000). Reached over the overlay by
   # the proxy/master; no host publish (avoids clashing with master-admin:8000).
+  CHALLENGE_ENV=("${ac_eval_env[@]}")
   _deploy_challenge_service \
     "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
     "platform_agent_challenge_pg" \
@@ -827,14 +925,28 @@ deploy_challenges() {
     "platform_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
     "platform_openrouter_api_key:openrouter_api_key"
 
-  # TODO(review): the live k8s agent-challenge pod ran TWO containers (a primary
-  # API + a sidecar/worker, command `agent-challenge-worker`; see
-  # cli_app/main.py:549). This static path replicates only the PRIMARY API. If
-  # the worker sidecar is required for evaluations in the static bring-up, add a
-  # second service `challenge-agent-challenge-worker` running the same image with
-  # command `agent-challenge-worker`. Left as a TODO because the master
-  # orchestrator (default path) injects the worker_command itself, so the
-  # sidecar requirement is unclear for the direct path.
+  # agent-challenge worker sidecar (command `agent-challenge-worker`; see
+  # cli_app/main.py worker_command metadata). It runs the own_runner eval loop and
+  # dispatches the broker DooD job, so it needs the SAME eval-image allowlist as
+  # the api plus the broker backend wiring. (Resolves the prior worker TODO.)
+  CHALLENGE_ENV=(
+    "${ac_eval_env[@]}"
+    "CHALLENGE_BENCHMARK_BACKEND=terminal_bench"
+    "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND=own_runner"
+    "CHALLENGE_DOCKER_ENABLED=true"
+    "CHALLENGE_DOCKER_BACKEND=broker"
+    "CHALLENGE_DOCKER_BROKER_URL=http://platform-master-broker:${MASTER_BROKER_PORT}"
+    "CHALLENGE_DOCKER_BROKER_TOKEN_FILE=${SECRET_MOUNT_DIR}/docker_broker_token"
+    "CHALLENGE_ARTIFACT_ROOT=/data"
+  )
+  CHALLENGE_CMD=("agent-challenge-worker")
+  _deploy_challenge_service \
+    "challenge-agent-challenge-worker" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
+    "platform_agent_challenge_pg" \
+    "platform_agent_challenge_challenge_token:challenge_token" \
+    "platform_agent_challenge_docker_broker_token:docker_broker_token" \
+    "platform_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
+    "platform_openrouter_api_key:openrouter_api_key"
 
   # PRISM service (port 8080). Reached over the overlay; no host publish.
   _deploy_challenge_service \
@@ -863,9 +975,18 @@ _deploy_challenge_service() {
     --network "${NET_CHALLENGES}"
     --replicas 1
     --restart-condition any
+    --update-order stop-first
     --hostname "${name}"
     --mount "type=volume,source=${data_volume},destination=/data"
   )
+  # Caller-supplied extra env (e.g. the own_runner eval image allowlist applied to
+  # BOTH the agent-challenge api and worker). Reset after the deploy below.
+  local env_kv
+  if [[ "${#CHALLENGE_ENV[@]}" -gt 0 ]]; then
+    for env_kv in "${CHALLENGE_ENV[@]}"; do
+      argv+=(--env "${env_kv}")
+    done
+  fi
   local spec secret_name target
   for spec in "$@"; do
     secret_name="${spec%%:*}"
@@ -873,7 +994,13 @@ _deploy_challenge_service() {
     argv+=(--secret "source=${secret_name},target=${target_dir}/${target}")
   done
   argv+=("${image}")
+  # Optional command override (e.g. the agent-challenge-worker sidecar command).
+  if [[ "${#CHALLENGE_CMD[@]}" -gt 0 ]]; then
+    argv+=("${CHALLENGE_CMD[@]}")
+  fi
   plan "${argv[@]}"
+  CHALLENGE_ENV=()
+  CHALLENGE_CMD=()
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 
@@ -900,6 +1027,7 @@ healthcheck() {
 
   if [[ "${STATIC_CHALLENGES}" == "true" ]]; then
     _service_converged "challenge-agent-challenge"
+    _service_converged "challenge-agent-challenge-worker"  # sidecar: no /health port
     _service_converged "challenge-prism"
     _overlay_health "challenge-agent-challenge" "${AGENT_CHALLENGE_PORT}"
     _overlay_health "challenge-prism" "${PRISM_PORT}"
