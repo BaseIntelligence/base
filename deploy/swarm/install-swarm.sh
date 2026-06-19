@@ -802,6 +802,15 @@ _seed_proxy_challenge_tokens() {
 
 # _seed_challenge_token SLUG ENVVAR — write $ENVVAR into the secrets volume at
 # <slug>_challenge_token (mode 600, owner-only). Idempotent (overwrites in place).
+#
+# Ownership: the master image runs as uid 1000 (proxy/admin are uid 1000; only the
+# broker is --user root), so the proxy/admin read these files AS uid 1000. The
+# writer container runs as root (the default — required because a FRESH
+# vol_platform_secrets volume root is owned root:root 0755, so a --user 1000:1000
+# writer could not create the file), then chowns the file to 1000:1000 keeping
+# mode 600. A root-owned 600 file would be UNREADABLE by the proxy/admin on a
+# fresh volume (-> 500 "Challenge token file is missing" / 401 "invalid bearer
+# token").
 _seed_challenge_token() {
   local slug="$1" envvar="$2"
   if [[ -z "${!envvar:-}" ]]; then
@@ -812,7 +821,7 @@ _seed_challenge_token() {
     docker run --rm -i \
       --mount "type=volume,source=${VOL_PLATFORM_SECRETS},destination=/secrets" \
       "${IMAGE_POSTGRES}" \
-      sh -c "umask 077 && cat > /secrets/${target} && chmod 600 /secrets/${target}"
+      sh -c "umask 077 && cat > /secrets/${target} && chmod 600 /secrets/${target} && chown 1000:1000 /secrets/${target}"
 }
 
 # _deploy_master_service NAME SUBCOMMAND HOST_PORT CONTAINER_PORT
@@ -939,7 +948,7 @@ deploy_challenges() {
     "CHALLENGE_DOCKER_BROKER_TOKEN_FILE=${SECRET_MOUNT_DIR}/docker_broker_token"
     "CHALLENGE_ARTIFACT_ROOT=/data"
   )
-  CHALLENGE_CMD=("agent-challenge-worker")
+  CHALLENGE_CMD=("agent-challenge-worker" "--poll-interval" "5")
   _deploy_challenge_service \
     "challenge-agent-challenge-worker" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
     "platform_agent_challenge_pg" \
