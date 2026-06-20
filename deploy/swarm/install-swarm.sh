@@ -191,6 +191,13 @@ CHALLENGE_CMD=()
 # read-only SECRET held-out val volume). Reset after each deploy. Declared here so `set -u`
 # never trips on `${#..[@]}`.
 CHALLENGE_EXTRA_MOUNTS=()
+# Per-call extra `--secret` specs (verbatim `source=...,target=...`) consumed by
+# _deploy_challenge_service. Unlike the positional SECRET_SPEC args (which mount under the
+# ${SECRET_MOUNT_DIR}/ "platform/" subdir), these are passed through UNMODIFIED so a secret can
+# be mounted at an exact target the consumer reads from. Used for the prism OpenRouter key, which
+# prism reads from /run/secrets/openrouter_api_key (config.py openrouter_api_key_file default),
+# i.e. target basename `openrouter_api_key` with NO `platform/` prefix. Reset after each deploy.
+CHALLENGE_EXTRA_SECRETS=()
 
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
@@ -1027,8 +1034,14 @@ deploy_challenges() {
   # on random tokens — no download), and the OpenRouter LLM HARD GATE ENABLED
   # (PRISM_LLM_REVIEW_ENABLED=true; model openai/gpt-4o by config default; key from the mounted
   # openrouter_api_key secret on the challenge service ONLY — never the eval container. This
-  # script's create_secrets makes platform_openrouter_api_key from $OPENROUTER_API_KEY; the LIVE
-  # stack mounts the equivalent pre-existing platform_or_key_real secret at the same target).
+  # script's create_secrets makes platform_openrouter_api_key from $OPENROUTER_API_KEY and (via
+  # CHALLENGE_EXTRA_SECRETS below) mounts it at /run/secrets/openrouter_api_key — the EXACT path
+  # prism reads (config.py openrouter_api_key_file default), NOT the ${SECRET_MOUNT_DIR}/"platform/"
+  # subdir the other secrets use. This is the SAME mount target the LIVE stack uses for the
+  # equivalent pre-existing platform_or_key_real secret, so a FRESH install-swarm.sh bring-up wires
+  # the LLM-review gate's key to the name/path prism actually consumes — no platform_openrouter_api_key
+  # vs platform_or_key_real mismatch at the consuming path (the docker secret NAME differs only by
+  # which key material the operator pre-provisioned; both resolve at /run/secrets/openrouter_api_key).
   # docker_backend already defaults to broker but is set
   # explicitly. The broker token file is the mounted platform_prism_docker_broker_token
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
@@ -1099,12 +1112,20 @@ deploy_challenges() {
     "type=volume,source=prism_fineweb_edu_val,destination=/secret/val,readonly=true"
     "type=volume,source=prism_fineweb_edu_train,destination=/secret/train,readonly=true"
   )
+  # OpenRouter LLM hard-gate key: mounted at the EXACT target prism reads
+  # (/run/secrets/openrouter_api_key — config.py openrouter_api_key_file default), NOT the
+  # ${SECRET_MOUNT_DIR}/"platform/" subdir the positional SECRET_SPECs use. Passed verbatim via
+  # CHALLENGE_EXTRA_SECRETS so the `platform/` prefix is NOT applied. This matches the LIVE stack
+  # (which mounts the pre-existing platform_or_key_real at the same target) so the gate resolves
+  # its key on a clean install-swarm.sh deploy.
+  CHALLENGE_EXTRA_SECRETS=(
+    "source=platform_openrouter_api_key,target=openrouter_api_key"
+  )
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
     "platform_prism_pg" \
     "platform_prism_challenge_token:challenge_token" \
-    "platform_prism_docker_broker_token:docker_broker_token" \
-    "platform_openrouter_api_key:openrouter_api_key"
+    "platform_prism_docker_broker_token:docker_broker_token"
 }
 
 # _deploy_challenge_service NAME IMAGE PORT DATA_VOLUME SECRET_SPEC...
@@ -1151,6 +1172,15 @@ _deploy_challenge_service() {
     target="${spec##*:}"
     argv+=(--secret "source=${secret_name},target=${target_dir}/${target}")
   done
+  # Caller-supplied extra secrets passed VERBATIM (full `source=...,target=...`), so a secret can
+  # be mounted at an exact target OUTSIDE the ${target_dir}/ "platform/" subdir (e.g. the prism
+  # OpenRouter key at /run/secrets/openrouter_api_key — see CHALLENGE_EXTRA_SECRETS).
+  local secret_spec
+  if [[ "${#CHALLENGE_EXTRA_SECRETS[@]}" -gt 0 ]]; then
+    for secret_spec in "${CHALLENGE_EXTRA_SECRETS[@]}"; do
+      argv+=(--secret "${secret_spec}")
+    done
+  fi
   argv+=("${image}")
   # Optional command override (e.g. the agent-challenge-worker sidecar command).
   if [[ "${#CHALLENGE_CMD[@]}" -gt 0 ]]; then
@@ -1160,6 +1190,7 @@ _deploy_challenge_service() {
   CHALLENGE_ENV=()
   CHALLENGE_CMD=()
   CHALLENGE_EXTRA_MOUNTS=()
+  CHALLENGE_EXTRA_SECRETS=()
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 
