@@ -77,14 +77,20 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # The working live E2E stack does NOT run these :latest tags for the broker and
 # prism; it runs two LOCAL-ONLY images that are NOT on any registry:
 #   * platform-master-broker -> ghcr.io/platformnetwork/platform-master:readonly-data-mount
-#   * challenge-prism        -> ghcr.io/platformnetwork/prism:m3-reexec
-# (M3) challenge-prism is rebuilt from prism HEAD (PRISM v2 forced-init runner + instrumented
-# loss + scoring + harness robustness + multi-GPU) as the LOCAL-ONLY tag :m3-reexec and
-# redeployed manager-pinned, `--update-order stop-first --no-resolve-image`. Its evaluator is
-# pointed at the LOCAL-ONLY ghcr.io/platformnetwork/prism-evaluator:augmented (see below).
-# The host-side held-out delta also needs the SECRET val split present as a manager-local
-# volume `prism_fineweb_edu_val` (populated from the kept val staging) so the RO mount above
-# resolves; if absent the held-out is gracefully skipped.
+#   * challenge-prism        -> ghcr.io/platformnetwork/prism:m5
+# (M5) challenge-prism is rebuilt from prism HEAD (PRISM v2 forced-init runner + instrumented
+# loss + scoring + harness robustness + multi-GPU + M4 anti-cheat/held-out/compute-block + the
+# M5 OpenRouter LLM hard gate) as the LOCAL-ONLY tag :m5 and redeployed manager-pinned,
+# `--update-order stop-first --no-resolve-image`. Its evaluator stays the LOCAL-ONLY
+# ghcr.io/platformnetwork/prism-evaluator:augmented (see below) — UNCHANGED from M2/M3: the
+# anti-cheat sandbox/static phase + scoring/manifest authoring run HOST-SIDE in the challenge
+# service and the in-container runner.py is injected at run time, so M4/M5 needs no eval-image
+# rebuild (the only baked module the runner imports, reference_tokenizers, is unchanged).
+# The host-side held-out delta needs BOTH the SECRET val split (manager-local volume
+# `prism_fineweb_edu_val`, RO at /secret/val) AND the non-secret TRAIN split (manager-local
+# volume `prism_fineweb_edu_train`, RO at /secret/train) present + populated; with the train
+# mount the converged-memorization-gap path activates (gap_basis='converged'), else it falls
+# back to the prequential reference (no regression). If val is absent the held-out is skipped.
 # The broker LOCAL-ONLY image is built from platform HEAD and carries the UNPUSHED
 # platform commits 1142bc53 (cross-node mount materialization for GPU eval jobs) +
 # 48ec8c5a (non-root mount extraction + uncapped drain round-trip) + e02ffbab
@@ -1018,9 +1024,12 @@ deploy_challenges() {
   # §5,§7,§10): broker dispatch (docker_backend=broker), an ACTIVE GPU lease
   # (platform_eval_gpu_count=1), the cu128 evaluator image (allowlisted by both prism
   # and the broker), SQLite on /data, synthetic dataset (the in-container runner trains
-  # on random tokens — no download), and LLM policy review disabled (set
-  # PRISM_LLM_REVIEW_ENABLED=true + PRISM_CHUTES_BASE_URL/MODEL/API_KEY_FILE to route it
-  # at OpenRouter instead). docker_backend already defaults to broker but is set
+  # on random tokens — no download), and the OpenRouter LLM HARD GATE ENABLED
+  # (PRISM_LLM_REVIEW_ENABLED=true; model openai/gpt-4o by config default; key from the mounted
+  # openrouter_api_key secret on the challenge service ONLY — never the eval container. This
+  # script's create_secrets makes platform_openrouter_api_key from $OPENROUTER_API_KEY; the LIVE
+  # stack mounts the equivalent pre-existing platform_or_key_real secret at the same target).
+  # docker_backend already defaults to broker but is set
   # explicitly. The broker token file is the mounted platform_prism_docker_broker_token
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
   # broker reads (registration writes it). prism's docker_allowed_images already permits
@@ -1042,14 +1051,29 @@ deploy_challenges() {
     "PRISM_PLATFORM_EVAL_IMAGE=${IMAGE_PRISM_EVALUATOR}"
     "PRISM_PLATFORM_EVAL_GPU_COUNT=1"
     "PRISM_DATABASE_URL=sqlite+aiosqlite:////data/prism.sqlite3"
-    "PRISM_LLM_REVIEW_ENABLED=false"
-    # Host-side held-out delta (m3-heldout-delta): the SECRET val split must be readable by the
-    # manager-pinned prism SCORER process (NOT the network=none eval container). Mount the val
-    # volume read-only (see CHALLENGE_EXTRA_MOUNTS below) and point the scorer at it. The host
-    # reloads the cross-node-returned trained_state.pt and runs the random-twin vs trained val
-    # bpb delta. If the volume is absent or the eval exceeds its CPU budget, the held-out is
-    # gracefully SKIPPED (the scored run never fails on held-out).
+    # OpenRouter LLM HARD GATE — ENABLED (architecture.md section 7; M5). The strong-model
+    # review of both miner scripts is a hard gate that can REJECT before any GPU work. The key
+    # is the mounted openrouter_api_key secret (challenge service ONLY, never the eval
+    # container); model openai/gpt-4o + base https://openrouter.ai/api/v1 are config defaults.
+    "PRISM_LLM_REVIEW_ENABLED=true"
+    # Host-side held-out delta + converged anti-memorization gap (m3-heldout-delta /
+    # m4-heldout-live-budget-tuning / m4-anticheat-memorization-heldout): the SECRET val split
+    # and the non-secret TRAIN split must both be readable by the manager-pinned prism SCORER
+    # process (NOT the network=none eval container). Mount each read-only (see
+    # CHALLENGE_EXTRA_MOUNTS below) and point the scorer at them. The host reloads the
+    # cross-node-returned trained_state.pt, runs the random-twin vs trained val bpb delta, and
+    # (when TRAIN_DATA_DIR resolves) re-evaluates the converged train bpb so the memorization
+    # gap uses the converged reference (gap_basis='converged') rather than the prequential
+    # fallback. If val is absent or the eval exceeds its budget the held-out is gracefully
+    # SKIPPED (the scored run never fails on held-out).
     "PRISM_PLATFORM_EVAL_VAL_DATA_DIR=/secret/val"
+    "PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR=/secret/train"
+    # Bounded, deterministic held-out compute budget so the live delta COMPLETES rather than
+    # skipping: a fixed 64 KiB val prefix (identical for twin + trained => comparable, byte-
+    # denominator => tokenizer-agnostic) with a raised 600s timeout. These match the m5 image
+    # config defaults; set explicitly so the live budget is auditable/self-documenting.
+    "PRISM_PLATFORM_EVAL_HELDOUT_VAL_BYTE_BUDGET=65536"
+    "PRISM_PLATFORM_EVAL_HELDOUT_TIMEOUT_SECONDS=600"
     # LOCAL/DEV ONLY — do NOT enable in production. The prism service image does
     # NOT bundle bittensor, so real sr25519 signature verification is impossible
     # in-image (verify_hotkey_signature import-fails -> False). This documented
@@ -1065,11 +1089,15 @@ deploy_challenges() {
     # Value = the dev self-submit sentinel used by the prism negative-case proof.
     "PRISM_VALIDATOR_HOTKEYS=[\"5PrismValidatorSelfSubmitDENY\"]"
   )
-  # SECRET held-out val split, mounted RO on the manager so the host-side scorer can read it
-  # (matches PRISM_PLATFORM_EVAL_VAL_DATA_DIR above). The val/test splits NEVER enter the
-  # network=none eval container — only the locked TRAIN split is broker-mounted there.
+  # Host-side SCORER read-only mounts on the manager (NOT the eval container): the SECRET
+  # held-out val split (matches PRISM_PLATFORM_EVAL_VAL_DATA_DIR) and the non-secret TRAIN split
+  # used ONLY for the converged-memorization-gap reference (matches PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR).
+  # The val/test splits NEVER enter the network=none eval container; the eval container gets its
+  # own copy of the locked TRAIN split via the broker's per-slug RO mount at /data/fineweb-edu/train.
+  # Both are manager-local volumes, RO, and must be POPULATED + readable by the scorer uid 1000.
   CHALLENGE_EXTRA_MOUNTS=(
     "type=volume,source=prism_fineweb_edu_val,destination=/secret/val,readonly=true"
+    "type=volume,source=prism_fineweb_edu_train,destination=/secret/train,readonly=true"
   )
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
