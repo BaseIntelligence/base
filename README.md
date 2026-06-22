@@ -431,6 +431,25 @@ curl -sf http://127.0.0.1:18080/challenges/agent-challenge/leaderboard  # agent-
 A GPU eval job lands on a GPU worker via `node.labels.platform.workload==gpu` plus
 `--generic-resource NVIDIA-GPU=<N>`; the long-lived challenge services stay on the manager.
 
+### Step 8 — Public edge (Cloudflare)
+
+The single platform API listens on `127.0.0.1:18080`. To expose it publicly as
+`https://chain.platform.network`, front it with a Cloudflare tunnel using **one catch-all ingress
+rule** — `chain.platform.network -> http://127.0.0.1:18080` — with **no `/v1` path-split**, because
+the one port already serves `/health`, `/v1/registry`, `/v1/weights/latest`, `/challenges/*`, and the
+token-gated admin/control-plane routes (which stay private on the same app). No edge-level path
+filtering is required.
+
+> **Public-edge cutover is DEFERRED.** On the current deployment the hostname
+> `https://chain.platform.network` is still routed by Cloudflare to a **different origin**, not to
+> this box, so the public edge is **not yet live for all routes**: publicly only `/health` and the
+> PRISM leaderboard (`/challenges/prism/leaderboard`) return `200`, while `/v1/registry`,
+> `/v1/weights/latest`, and the agent-challenge leaderboard return `502`. Cutting over to this box is
+> **pending a Cloudflare route repoint** (point `chain.platform.network` at this box's tunnel with the
+> single catch-all rule above). This is a Cloudflare-dashboard action, not a code/deploy change.
+> **Local parity already holds:** `http://127.0.0.1:18080` serves every route `200` (see Step 7), so
+> the backend is ready for the cutover.
+
 ---
 
 ## License
