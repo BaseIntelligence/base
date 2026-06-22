@@ -75,13 +75,19 @@ def _prism_payload() -> dict[str, Any]:
         ("leaderboard", "/v1/leaderboard"),
         ("architectures", "/v1/architectures"),
         ("training-variants", "/v1/training-variants"),
+        ("epochs", "/v1/epochs"),
         ("epochs/current", "/v1/epochs/current"),
+        ("gpu/status", "/v1/gpu/status"),
+        ("health/eval-jobs", "/v1/health/eval-jobs"),
         ("submissions/sub-1", "/v1/submissions/sub-1"),
         ("/v1/leaderboard", "/v1/leaderboard"),
         ("leaderboard-extra", "leaderboard-extra"),
         ("architectures-extra", "architectures-extra"),
         ("training-variants-extra", "training-variants-extra"),
+        ("epochs-extra", "epochs-extra"),
         ("epochs/current-extra", "epochs/current-extra"),
+        ("gpu/status-extra", "gpu/status-extra"),
+        ("health/eval-jobs-extra", "health/eval-jobs-extra"),
         ("submissions/sub-1/events", "submissions/sub-1/events"),
     ],
 )
@@ -754,6 +760,24 @@ def test_prism_public_proxy_routes_forward_to_public_surface() -> None:
             "current_epoch", request, {"epoch_id": 7, "epoch_seconds": 3600}
         )
 
+    @challenge_app.get("/v1/epochs")
+    async def list_epochs(request: Request) -> dict[str, Any]:
+        return await record_prism_route(
+            "list_epochs", request, {"items": [{"epoch_id": 7}]}
+        )
+
+    @challenge_app.get("/v1/gpu/status")
+    async def gpu_status(request: Request) -> dict[str, Any]:
+        return await record_prism_route(
+            "gpu_status", request, {"summary": {"online": 1}}
+        )
+
+    @challenge_app.get("/v1/health/eval-jobs")
+    async def eval_job_health(request: Request) -> dict[str, Any]:
+        return await record_prism_route(
+            "eval_job_health", request, {"items": [{"id": "job-1"}]}
+        )
+
     @challenge_app.get("/v1/submissions/{submission_id}")
     async def submission_status(submission_id: str, request: Request) -> dict[str, Any]:
         return await record_prism_route(
@@ -774,6 +798,9 @@ def test_prism_public_proxy_routes_forward_to_public_surface() -> None:
         ("/challenges/prism/architectures", "architectures"),
         ("/challenges/prism/training-variants?limit=5", "training_variants"),
         ("/challenges/prism/epochs/current", "current_epoch"),
+        ("/challenges/prism/epochs", "list_epochs"),
+        ("/challenges/prism/gpu/status", "gpu_status"),
+        ("/challenges/prism/health/eval-jobs", "eval_job_health"),
         ("/challenges/prism/submissions/sub-1", "submission_status"),
     ]
 
@@ -795,6 +822,9 @@ def test_prism_public_proxy_routes_forward_to_public_surface() -> None:
         "/v1/architectures",
         "/v1/training-variants",
         "/v1/epochs/current",
+        "/v1/epochs",
+        "/v1/gpu/status",
+        "/v1/health/eval-jobs",
         "/v1/submissions/sub-1",
     ]
     assert captured["training_variants"]["query"] == "limit=5"

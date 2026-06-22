@@ -67,7 +67,10 @@ PRISM_EXACT_PUBLIC_PATHS = {
     "/leaderboard",
     "/architectures",
     "/training-variants",
+    "/epochs",
     "/epochs/current",
+    "/gpu/status",
+    "/health/eval-jobs",
 }
 
 
