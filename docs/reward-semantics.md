@@ -1,24 +1,22 @@
-# Harbor 0.13.1 Reward Semantics — Reverse-Engineering SPEC (GATE G2)
+# Harbor 0.13.1 Reward Semantics Reference
 
 Authoritative specification of **exactly** how stock `harbor==0.13.1` turns the
 float in `/logs/verifier/reward.txt` into a reward, aggregates it across
 metrics and trials (pass@k), and how agent-challenge maps that into
 `{status, reason_code, resolved}`.
 
-This is a **reverse-engineering spec only**. It documents existing harbor +
-agent-challenge behavior so the A3 independent runner (Task 9) can reproduce it
-**byte-for-byte**. It does **not** propose changes and must not be used to alter
-thresholds or harbor behavior.
+This is a **reference spec**. It documents existing harbor + agent-challenge
+behavior so an independent runner can reproduce it **byte-for-byte**. It does
+**not** propose changes and must not be used to alter thresholds or harbor
+behavior.
 
-- Ground truth = the `harbor==0.13.1` PyPI wheel (the runner image is literally
-  `FROM python:3.12-slim` + `pip install harbor==0.13.1`, see
-  `/droid/agent-challenge/Dockerfile:57`). The auth-gated GHCR runner image
-  `ghcr.io/platformnetwork/terminal-bench-harbor-runner:2.1` is unavailable, so
-  the wheel is the authority; every claim below was executed against the real
-  installed harbor code (evidence: `.omo/evidence/task-2-reward-semantics.txt`,
-  `.omo/evidence/task-2-reward-edgecases.txt`).
-- Consumer = `/droid/agent-challenge/src/agent_challenge/evaluation/runner.py`
-  and `.../terminal_bench.py`.
+- Ground truth = the `harbor==0.13.1` PyPI wheel. The runner image
+  `ghcr.io/platformnetwork/terminal-bench-harbor-runner:2.1` ships prebuilt
+  Harbor tooling (a `python:3.12-slim` base with `harbor==0.13.1`), so the wheel
+  is the authority; every claim below was executed against the real installed
+  harbor code.
+- Consumer = agent-challenge `src/agent_challenge/evaluation/runner.py` and
+  `terminal_bench.py`.
 
 ---
 
@@ -139,7 +137,7 @@ if "reward" in lowered and ("parse" in lowered or "malformed"):        → "harb
 
 Valid reason-code set: terminal_bench.py:55-68 (incl. `harbor_reward_empty`,
 `harbor_reward_missing`, `harbor_reward_parse_error`, `harbor_result_missing`,
-`harbor_result_malformed`, ...). Task 9 runner MUST emit codes from this set.
+`harbor_result_malformed`, ...). An independent runner MUST emit codes from this set.
 
 ---
 
@@ -318,7 +316,7 @@ With the default `--n-attempts 1`, `min_trials_per_task == 1` ⇒ `k_values == [
 ⇒ `pass_at_k == {}`. **pass@k only appears when the operator passes
 `-k ≥ 2`.** agent-challenge's runner.py score path does NOT read `pass_at_k` at
 all (it reads `metrics`), so pass@k is observability-only for the current
-consumer; Task 9 must still reproduce it for result-JSON fidelity.
+consumer; an independent runner must still reproduce it for result-JSON fidelity.
 
 ### 4.5 Multi-step single-trial reward (separate from pass@k)
 
@@ -370,7 +368,7 @@ if result_path.exists():
         summary["reason_code"] = "harbor_result_malformed"
 ```
 
-Exact rules Task 9's result JSON + any wrapper MUST satisfy:
+Exact rules an independent runner's result JSON + any wrapper MUST satisfy:
 
 1. **score** = arithmetic mean of a flat `metric_values` list gathered across
    ALL evals groups and ALL metric entries:
@@ -417,24 +415,24 @@ line and `normalize_terminal_bench_reason_code` canonicalizes any reason string.
   reorders trials, uses `math.fsum`, NumPy pairwise summation, or `Decimal` will
   diverge in the last ULP → an ε=0 comparator would FAIL.
 - **Trial order**: `combined_trial_results` order determines both `sum` operand
-  order and (via `task_successes` insertion) pass@k task iteration. Task 9 MUST
-  preserve harbor's trial ordering to be bit-identical.
+  order and (via `task_successes` insertion) pass@k task iteration. An
+  independent runner MUST preserve harbor's trial ordering to be bit-identical.
 - **Max/Min/Sum**: exact (no division).
 - **pass@k**: `product *= (n-c-i)/(n-i)` sequential float mult/div, then
   `sum(...)/len(tasks)`. Deterministic but ULP-sensitive to operand order.
 - **`nan`/`inf`**: a `nan` reward propagates through `sum`/`/` to a `nan` metric;
   `float("nan")` comparisons are always false, so an ε comparator must treat
   `nan==nan` specially. `inf` propagates to `inf`/`nan`.
-- **Recommended precision spec for Task 9 parity:** reproduce harbor's exact
+- **Recommended precision spec for parity:** reproduce harbor's exact
   algorithm (CPython `float()`, list `sum`, `/`, same trial order) and assert
   **exact equality** on `0/1`-derived rewards and Mean results; for the general
   float case, since the algorithm is identical, exact (ε=0) equality is
   achievable and is the correct target. Only introduce a tiny ε (e.g. 1e-12) if
-  Task 9 deliberately diverges from CPython's summation, which it should not.
+  the runner deliberately diverges from CPython's summation, which it should not.
 
 ---
 
-## 7. Reproduction checklist for Task 9 (independent runner)
+## 7. Reproduction checklist for an independent runner
 
 To be byte-compatible with stock harbor 0.13.1 + agent-challenge:
 
