@@ -49,14 +49,28 @@ is Swarm.
 
 ## Documentation Index
 
-- [Architecture](docs/architecture.md)
-- [Miner guide](docs/miner/README.md)
-- [Validator guide](docs/validator/README.md)
-- [Foundation master guide](docs/master/README.md)
-- [Challenges](docs/challenges.md)
-- [Challenge Integration Guide](docs/challenge-integration.md)
-- [Security Model](docs/security.md)
-- [Validator Operations](docs/operations/validator.md)
+Docs are grouped by audience.
+
+**Miners**
+
+- [Miner guide](docs/miner/README.md) — choose a challenge, submit through the proxy, and track leaderboards.
+
+**Validators / operators**
+
+- [Validator guide](docs/validator/README.md) — install the submit-only on-chain weight submitter.
+- [Validator operations](docs/operations/validator.md) — submitter plus manager-service runbook.
+- [Swarm deployment](deploy/swarm/README.md) — node `daemon.json` variants, worker enrollment, networking, prune policy, and the supervisor unit.
+- [Foundation master guide](docs/master/README.md) — Cortex Foundation master bring-up (foundation-only).
+- [Reward semantics](docs/reward-semantics.md) — reference spec for how the Terminal-Bench (harbor) scorer maps verifier output to a reward and submission status.
+- [Deploy from scratch](#deploy-from-scratch-quickstart) — the end-to-end bring-up quickstart below.
+
+**Developers / challenge integrators**
+
+- [Architecture](docs/architecture.md) — control-plane versus worker topology and the Swarm broker contract.
+- [Challenges](docs/challenges.md) — the challenge model.
+- [Challenge integration guide](docs/challenge-integration.md) — the API contract a challenge must expose.
+- [Security model](docs/security.md) — trust boundaries and secret handling.
+- [Versioning](docs/versioning.md) — SemVer, Git tag, and GHCR tag policy.
 
 ---
 
@@ -218,102 +232,178 @@ Evidence for local validation should live in a local, gitignored evidence direct
 
 ---
 
-## Local E2E Multi-Challenge Integration (agent-challenge + Prism)
+## Deploy from Scratch (Quickstart)
 
-This section documents a local end-to-end (E2E) integration that runs two challenges together on a
-single Docker Swarm: `agent-challenge` (terminal-bench code challenge, own_runner eval) and `prism`
-(neural-architecture-search challenge, GPU eval). It proves the full pipeline end to end (real
-submission, real eval, leaderboard, normalized `get_weights`) with weights computed in **dry-run
-only**, never on-chain. Final scores may be low or zero; the goal is to prove the plumbing executes
-submitted code, not that the agent or model is good.
+This is the end-to-end path to stand up the full subnet on a fresh Docker Swarm: a manager node
+(control plane plus the long-lived challenge services) and one or more CPU/GPU workers (short-lived
+broker eval jobs). It ties together image builds, image publishing/staging, volume provisioning,
+`install-swarm.sh --apply`, worker enrollment, and the on-chain submitter. Weights are always
+computed **dry-run**; the on-chain submitter is a separate, optional step. Run `install-swarm.sh`
+**dry-run first** (no flags) and only `--apply` on a host you own.
 
-The three repositories are sibling checkouts under a common parent (`platform/`, `agent-challenge/`,
-`prism/`). The fixes that make them run together E2E live in those local checkouts (see the
-reproducibility caveats below).
+The three backend repositories are sibling checkouts under a common parent
+(`platform/`, `agent-challenge/`, `prism/`); the frontend deploys separately to Vercel.
 
-### Topology
+### Topology and ports
 
-A two-node Swarm named `next-terrier`:
+| Node | Swarm role | Runs |
+|------|------------|------|
+| Manager (also the validator / hotkey node) | `node.role==manager` | Control plane (admin / proxy / broker / supervisor) **and** the challenge services (agent-challenge, PRISM) |
+| CPU worker | `node.labels.platform.workload==cpu` | Short-lived CPU broker jobs |
+| GPU worker | `node.labels.platform.workload==gpu` | Short-lived GPU broker jobs; advertises `NVIDIA-GPU` as a Swarm generic resource |
 
-- Manager node (CPU, label `platform.workload=cpu`) runs the control plane and the challenge APIs
-  (each pinned with `node.role==manager`).
-- A GPU worker node (RTX PRO 6000, label `platform.workload=gpu`) runs GPU eval jobs. It advertises
-  the generic resource `NVIDIA-GPU` and sets `"default-runtime": "nvidia"` in its `daemon.json`. The
-  GPU node joins the manager's swarm with a worker join token (leaving any prior standalone swarm
-  first).
+Canonical host ports published by the manager services:
 
-The live stack runs on the Swarm `host` network: services talk over `127.0.0.1` and bind fixed host
-ports.
+| Service | Host port |
+|---------|-----------|
+| platform-master-proxy | 18080 |
+| platform-master-broker | 18082 |
+| platform-master-admin | 18900 |
+| control-plane Postgres | 15432 |
+| challenge-agent-challenge (plus worker sidecar) | 18001 |
+| agent-challenge Postgres | 15433 |
+| challenge-prism (SQLite-backed) | 18002 |
 
-| Service | Port | Placement |
-|---------|------|-----------|
-| platform-master-proxy | 18080 | manager |
-| platform-master-broker | 18082 | manager |
-| platform-master-admin | 18900 | manager |
-| platform-master-postgres | 15432 | manager (control-plane DB) |
-| challenge-agent-challenge (plus worker sidecar) | 18001 | manager |
-| agent-challenge postgres | 15433 | manager |
-| challenge-prism | 18002 | manager (host-networked, SQLite-backed) |
-
-GPU eval jobs are dispatched by the broker to the GPU worker via the constraint
+GPU eval jobs are dispatched by the broker to a GPU worker via the constraint
 `node.labels.platform.workload==gpu` plus `--generic-resource NVIDIA-GPU=<N>`.
 
-### Prerequisites and environment
+### Step 1 — Build the images
 
-- A real OpenRouter API key supplied as the Docker secret `platform_or_key_real`, mounted into the
-  prism challenge container at `/run/secrets/openrouter_api_key` (used by LLM review where enabled).
-- GPU node: NVIDIA container toolkit, the `NVIDIA-GPU` generic resource advertised in `daemon.json`
-  (`node-generic-resources`), and `"default-runtime": "nvidia"`. Without the default runtime, swarm
-  GPU tasks land on the GPU node but the driver and `nvidia-smi` are not injected, because swarm
-  services cannot set a per-service runtime.
-- No-NAT bridge caveat: on this host the default docker0 bridge has no outbound NAT. agent-challenge
-  own_runner bakes `tmux` into the task image at build time and falls back to `--network host` for
-  build steps that need the network. Eval task containers run `--network none`. Tasks that require
-  internet fail their verifier cleanly (terminal state, score 0) and are slow.
-
-### Bring-up
-
-`deploy/swarm/install-swarm.sh` is the canonical entry point. It is dry-run by default and mutates
-only with `--apply`. It deploys the control plane (proxy 18080, broker 18082, admin 18900, master
-Postgres 15432) and both challenges (challenge-agent-challenge on 18001 with its worker sidecar and
-Postgres on 15433, challenge-prism on 18002). The script folds in the live deploy fixes: the proxy
-submission-path config (secret-volume mount, upload allowlist, per-challenge token seeding written
-as root then chowned to uid 1000), the agent-challenge worker sidecar and allowed-images, the broker
-`node.role==manager` pin, and the prism `CHALLENGE_ENV` block (broker wiring,
-`PRISM_PLATFORM_EVAL_IMAGE`, `PRISM_PLATFORM_EVAL_GPU_COUNT=1`, SQLite database URL, and the
-dev-only `PRISM_ALLOW_INSECURE_SIGNATURES` and `PRISM_VALIDATOR_HOTKEYS`).
+Build from each repo's Dockerfile. `<tag>` is your release tag (a SemVer such as `3.0.0`, or
+`latest` for the mutable channel).
 
 ```bash
-./deploy/swarm/install-swarm.sh            # dry-run: prints the planned docker swarm commands
-./deploy/swarm/install-swarm.sh --apply    # apply on a disposable host
+# platform-master (this repo): admin + proxy + broker + supervisor
+docker build -f docker/Dockerfile.master -t ghcr.io/platformnetwork/platform-master:<tag> .
+
+# prism API + GPU evaluator (from ../prism)
+docker build --target service   -t ghcr.io/platformnetwork/prism:<tag> ../prism
+docker build --target evaluator -t ghcr.io/platformnetwork/prism-evaluator:augmented ../prism
+
+# agent-challenge API + own_runner eval-job image (from ../agent-challenge)
+docker build --target runtime               -t ghcr.io/platformnetwork/agent-challenge:<tag> ../agent-challenge
+docker build --target terminal-bench-runner -t ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:<tag> ../agent-challenge
 ```
 
-### Run and test
+The prism evaluator must be the `:augmented` image: it bundles `sentencepiece` and the offline
+tiktoken cache the locked FineWeb-Edu pipeline needs. The registry `:latest` evaluator is stale; do
+not use it.
 
-Each repo has its own `.venv`; the `--extra dev` is required or pytest, ruff, and mypy are stripped.
+> **Build-order coupling:** prism pins its `platform-network` dependency by git
+> (`platform-network @ git+https://github.com/PlatformNetwork/platform.git`, public HEAD), so a fresh
+> `prism` build bundles whatever is on the **pushed** platform HEAD. Push the platform commits the
+> prism/broker images depend on **before** building `prism` / `prism-evaluator`.
+
+### Step 2 — Publish or stage the images
+
+- **GHCR publish (preferred):** `docker push` each tag to `ghcr.io/platformnetwork/*`. Public
+  packages need no pull secret; the supervisor image-updaters then track digests automatically.
+- **Local-only staging (no `write:packages`):** build each image on the node that runs it (manager
+  for the services, GPU/CPU workers for the eval images), and deploy with
+  `docker service update --no-resolve-image` so a non-registry tag resolves to the node-local image.
+  Pre-pull/stage the prism evaluator and the agent-challenge runner on the worker nodes so the broker
+  resolves them locally.
+
+### Step 3 — Provision named volumes and secrets
+
+On the **GPU worker**, stage the locked PRISM data and reference tokenizers as read-only volumes
+(produced by prism's FineWeb-Edu prep job; see the prism repo):
+
+- `prism_fineweb_edu_train` → `/data/fineweb-edu/train` (miner-visible, read-only)
+- `prism_fineweb_edu_val`, `prism_fineweb_edu_test` → secret held-out, scorer-only (never mounted in
+  the `network=none` eval container)
+- `prism_reference_tokenizers` → `/opt/prism/reference-tokenizers`
+
+On the **manager**, provision the agent-challenge read-only task cache and golden volumes:
 
 ```bash
-# install (all three sibling repos)
-cd agent-challenge && uv sync --frozen --extra dev
-cd ../prism        && uv sync --frozen --extra dev
-cd ../platform     && uv sync --frozen --extra dev
-
-# platform scoped tests, lint, and typecheck (from platform/)
-.venv/bin/python -m pytest tests/unit -q -k "broker or swarm"
-.venv/bin/ruff check src
-.venv/bin/mypy src/platform_network/master
+deploy/swarm/acquire-agent-challenge-cache.sh   # populates agent_challenge_task_cache + agent_challenge_golden
 ```
 
-### Reproducibility caveats
+Verify each volume is both present **and populated** (a Docker named volume is auto-created empty on
+first mount, so an empty mount succeeds silently). Provide the OpenRouter key for the PRISM/agent
+LLM gate as the Docker secret consumed at `/run/secrets/openrouter_api_key` (the installer creates
+`platform_openrouter_api_key` from `$OPENROUTER_API_KEY`); the eval containers never carry it.
 
-- The code fixes for this integration were committed to the local checkouts of all three repos but
-  NOT pushed to their remotes.
-- The rebuilt agent-challenge images (`agent-challenge:own-runner-fixed` and
-  `agent-challenge-terminal-bench-runner:own-runner-fixed`) and the broker/prism overlay images
-  (`platform-master:cross-node-mount-fixed`, `prism:mount-fixed`) are local to the swarm nodes and
-  not in any public registry. The prism evaluator image is pre-staged on the GPU node.
-- A clean-room reproduce requires pushing those commits and rebuilding/publishing the images. The
-  canonicalized deploy config in `install-swarm.sh` is image-independent and reproduces as-is.
+### Step 4 — Bring up the manager with `install-swarm.sh`
+
+`deploy/swarm/install-swarm.sh` is the canonical entry point. It is **dry-run by default** and
+mutates only with `--apply`; every destructive step is behind its own flag. Point the image tags at
+what you built/published via the `IMAGE_*` environment overrides:
+
+```bash
+export IMAGE_MASTER=ghcr.io/platformnetwork/platform-master:<tag>
+export IMAGE_PRISM=ghcr.io/platformnetwork/prism:<tag>
+export IMAGE_PRISM_EVALUATOR=ghcr.io/platformnetwork/prism-evaluator:augmented
+export IMAGE_AGENT_CHALLENGE=ghcr.io/platformnetwork/agent-challenge:<tag>
+export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:<tag>
+
+./deploy/swarm/install-swarm.sh                         # dry-run: prints the planned docker commands
+./deploy/swarm/install-swarm.sh --apply                 # apply on a disposable / owned host
+./deploy/swarm/install-swarm.sh --apply --restart-dockerd   # also write /etc/docker/daemon.json + restart dockerd (fresh nodes)
+```
+
+The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges`
+and `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never
+argv), and creates the master admin/proxy/broker plus both challenge services (the broker pinned to
+`node.role==manager`). The PRISM eval read-only data mounts are supplied by the broker's built-in
+`DEFAULT_PRISM_EVAL_READONLY_MOUNTS`, so no `master.yaml` entry is required.
+
+### Step 5 — Enroll worker nodes
+
+Workers are added manually with a Swarm join token (no SSH). From the manager:
+
+```bash
+platform master worker token --cpu      # or --gpu — prints the docker swarm join command
+```
+
+On the worker, install the matching `daemon.json` and join (the GPU `daemon.worker.json` advertises
+`NVIDIA-GPU` and registers the NVIDIA runtime):
+
+```bash
+JOIN_TOKEN=<TOKEN> scripts/install-worker.sh --manager-addr <MANAGER_IP>:2377 --workload cpu             # dry-run
+JOIN_TOKEN=<TOKEN> scripts/install-worker.sh --manager-addr <MANAGER_IP>:2377 --workload cpu --restart-dockerd --apply
+```
+
+Back on the manager, label the node so jobs schedule onto it:
+
+```bash
+docker node ls
+platform master worker label <node> --workload cpu      # or gpu
+```
+
+See [`deploy/swarm/README.md`](deploy/swarm/README.md) for `daemon.json` details, networking ports,
+and the prune policy.
+
+### Step 6 — Install the on-chain submitter (validator node)
+
+The submitter is a single systemd-managed process that reads `/v1/weights/latest` from the master
+and submits on-chain. It runs no challenge orchestration and needs only the validator hotkey.
+
+```bash
+cp deploy/swarm/submitter/run_submitter.py            /var/lib/platform/submitter/
+cp deploy/swarm/submitter/submitter.yaml              /etc/platform/submitter.yaml
+cp deploy/swarm/submitter/platform-submitter.service  /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now platform-submitter.service
+```
+
+Full submitter configuration and the operator FAQ are in the
+[Validator guide](docs/validator/README.md); manager-service runbooks are in
+[Validator operations](docs/operations/validator.md).
+
+### Step 7 — Verify
+
+```bash
+docker service ls
+curl -sf http://127.0.0.1:18080/health    # proxy
+curl -sf http://127.0.0.1:18082/health    # broker
+curl -sf http://127.0.0.1:18900/health    # admin / registry / weights
+curl -sf http://127.0.0.1:18002/health    # prism challenge
+```
+
+A GPU eval job lands on a GPU worker via `node.labels.platform.workload==gpu` plus
+`--generic-resource NVIDIA-GPU=<N>`; the long-lived challenge services stay on the manager.
 
 ---
 

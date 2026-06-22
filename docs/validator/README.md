@@ -2,9 +2,9 @@
 
 This guide is only for normal validators. It installs the submit-only on-chain
 weight submitter as a systemd service. The submitter fetches the master weight
-vector from the public Platform endpoint and submits it on-chain. It runs no
-challenge orchestration: all challenge services run on the Platform master
-(manager) node.
+vector from the public Platform endpoint and submits it on-chain. It runs
+no challenge orchestration: all challenge services run on the Platform
+master (manager) node.
 
 The default weights endpoint is:
 

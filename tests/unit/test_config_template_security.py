@@ -60,7 +60,6 @@ def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() ->
         root / "src" / "platform_network" / "config" / "settings.py",
         root / "config" / "master.example.yaml",
         root / "config" / "validator.example.yaml",
-        root / "docs" / "validator.md",
         root / "docs" / "validator" / "README.md",
         root / "deploy" / "swarm" / "master.yaml",
     ]

@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR_DOCS = [
-    ROOT / "docs" / "validator.md",
     ROOT / "docs" / "validator" / "README.md",
     ROOT / "docs" / "operations" / "validator.md",
 ]

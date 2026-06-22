@@ -96,28 +96,32 @@ The broker schedules CPU jobs onto `node.labels.platform.workload==cpu` and GPU
 jobs onto `node.labels.platform.workload==gpu` with `--generic-resource
 NVIDIA-GPU=<N>`.
 
-## Agent Challenge Platform SDK Execution Checks
+## Agent Challenge Execution Backend Checks
 
-Agent Challenge production Terminal-Bench rollout uses `platform_sdk` through the
-generic Platform broker. The public proxy must still expose only challenge public
-routes and must block `/internal/*`, `POST
-/internal/v1/submissions/{submission_id}/launch`, and generic benchmark
-execution-shaped routes such as `/benchmark-executions`; the broker is an internal
-execution substrate, not a public miner API.
+Agent Challenge Terminal-Bench evaluation runs through the `own_runner` backend: the
+agent-challenge worker sidecar dispatches a non-privileged Docker-out-of-Docker job to the Platform
+broker, which runs the eval inside the
+`ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner` image. `own_runner` is the only
+supported execution backend; there is no Daytona or `platform_sdk` path in production. The public
+proxy still exposes only challenge public routes and must block `/internal/*`, `POST
+/internal/v1/submissions/{submission_id}/launch`, and generic benchmark execution-shaped routes such
+as `/benchmark-executions`; the broker is an internal execution substrate, not a public miner API.
 
 Use placeholder service names only and avoid printing token values:
 
 ```bash
 docker service ps <agent-challenge-service>
-docker service logs <agent-challenge-service> --since=30m | rg 'terminal_bench|platform_sdk|tb_running'
+docker service logs <agent-challenge-service> --since=30m | rg 'terminal_bench|own_runner|tb_running'
 docker service logs platform-master-broker --since=30m | rg 'run request|created job|agent-challenge-terminal-bench-runner'
-docker service logs <agent-challenge-service> --since=30m | rg -- '--environment-import-path agent_challenge_runner.platform_environment:PlatformEnvironment'
-! docker service logs <agent-challenge-service> --since=30m | rg --fixed-strings -- '--env daytona'
-! docker service logs <agent-challenge-service> --since=30m | rg --fixed-strings -- '--env platform'
 curl -sS '<api-base-url>/submissions/<submission-id>/status' | rg '"status":"evaluating"|"phase":"evaluation"|"status":"valid"|"status":"error"'
 ```
 
-Safe Agent Challenge knobs are `CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND=platform_sdk`, broker URL plus token file, `CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE=ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest`, `CHALLENGE_PLATFORM_SDK_ENVIRONMENT_IMPORT_PATH=agent_challenge_runner.platform_environment:PlatformEnvironment`, and a scoped allowed-image policy. Platform SDK Harbor commands use `--environment-import-path`, not `--env platform`, and production does not require Daytona credentials. Roll back to `harbor` only for non-production testing or for an explicitly credentialed legacy Harbor environment; production remains `platform_sdk` after rollout.
+The relevant Agent Challenge knobs are
+`CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND=own_runner`, `CHALLENGE_DOCKER_BACKEND=broker`, the
+broker URL plus token file, `CHALLENGE_HARBOR_RUNNER_IMAGE` pointing at the deployed
+`agent-challenge-terminal-bench-runner` tag, and a scoped allowed-image policy
+(`CHALLENGE_DOCKER_ALLOWED_IMAGES`) covering that runner. These are set on both the agent-challenge
+API and the worker sidecar; see the agent-challenge repository docs for the full backend reference.
 
 ## Validation
 
