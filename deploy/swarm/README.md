@@ -18,7 +18,7 @@ A cluster is one **manager** plus one or more **workers**:
 
 | Node | Swarm role | Runs |
 |------|------------|------|
-| Manager (also the validator / hotkey node) | `node.role==manager` | The master control plane (admin / broker / proxy) **and** the challenge **services** (agent-challenge, PRISM). |
+| Manager (also the validator / hotkey node) | `node.role==manager` | The master control plane (proxy / broker) **and** the challenge **services** (agent-challenge, PRISM). |
 | CPU worker | `node.role==worker`, label `platform.workload=cpu` | Short-lived **CPU broker jobs** dispatched by the manager. |
 | GPU worker | `node.role==worker`, label `platform.workload=gpu` | Short-lived **GPU broker jobs**; advertises the GPU as a Swarm generic resource. |
 

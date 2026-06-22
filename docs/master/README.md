@@ -2,16 +2,15 @@
 
 Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators.
 
-This guide covers the committed Docker Swarm bring-up for the master control plane. It installs the Platform master admin API, proxy, broker, the challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
+This guide covers the committed Docker Swarm bring-up for the master control plane. It installs the Platform master proxy, broker, the challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
 
 ## Manager node
 
-The master runs as a single-node Docker Swarm manager. The manager hosts the admin API, proxy, broker, supervisor, and the challenge service containers themselves. Challenge code runs on the manager with the placement constraint `node.role==manager`; only short-lived broker jobs are dispatched to worker nodes.
+The master runs as a single-node Docker Swarm manager. The manager hosts the platform API (a single proxy that also serves the `/v1/registry` and `/v1/weights/latest` reads plus the token-gated admin routes), the broker, the supervisor, and the challenge service containers themselves. Challenge code runs on the manager with the placement constraint `node.role==manager`; only short-lived broker jobs are dispatched to worker nodes.
 
 Default service ports on the manager:
 
 ```text
-admin  : 8000
 proxy  : 8080
 broker : 8082
 ```
@@ -35,7 +34,7 @@ Bring up the manager from the repository root with the Swarm installer:
 ./deploy/swarm/install-swarm.sh --apply --static-challenges      # create challenge services directly
 ```
 
-The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges` and the internal `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never argv), and creates the master admin, proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. No docker-compose or stack YAML is produced or consumed; the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
+The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges` and the internal `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never argv), and creates the master proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. No docker-compose or stack YAML is produced or consumed; the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
 
 ## Supervisor
 
@@ -92,8 +91,8 @@ The broker then schedules CPU jobs onto `node.labels.platform.workload==cpu` and
 
 ```bash
 docker service ls
-docker service ps platform-master-admin platform-master-proxy platform-master-broker
-docker service logs -f platform-master-admin
+docker service ps platform-master-proxy platform-master-broker
+docker service logs -f platform-master-proxy
 journalctl -u platform-supervisor.service -f
 docker node ls
 ```

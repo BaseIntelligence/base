@@ -44,8 +44,8 @@ manager node. Inspect them with the Swarm CLI:
 
 ```bash
 docker service ls
-docker service ps platform-master-admin platform-master-proxy platform-master-broker
-docker service logs -f platform-master-admin
+docker service ps platform-master-proxy platform-master-broker
+docker service logs -f platform-master-proxy
 docker service logs --tail 200 platform-master-broker
 docker node ls
 ```

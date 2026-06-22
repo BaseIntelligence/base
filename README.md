@@ -29,10 +29,11 @@ Each challenge lives in its own repository and owns its submissions, scoring log
 public miner experience. Platform provides the orchestration layer that makes those challenges run
 together as one subnet.
 
-Platform runs as a single Docker Swarm: a master (manager) node hosts the admin API, proxy, broker,
-supervisor, and the challenge services, while manually enrolled worker nodes run short-lived
-CPU/GPU evaluation jobs. There is no Kubernetes and no `runtime.backend` selector; the only backend
-is Swarm.
+Platform runs as a single Docker Swarm: a master (manager) node hosts the platform API (a single
+proxy that also serves the `/v1/registry` and `/v1/weights/latest` reads plus the token-gated admin
+routes), broker, supervisor, and the challenge services, while manually enrolled worker nodes run
+short-lived CPU/GPU evaluation jobs. There is no Kubernetes and no `runtime.backend` selector; the
+only backend is Swarm.
 
 ## Core Principles
 
@@ -174,7 +175,7 @@ platform/
 
 Platform uses a Docker Swarm only first-party deployment path and keeps Dockerfiles for the OCI images Swarm runs:
 
-- `deploy/swarm/install-swarm.sh` brings up the single-node Swarm manager (master admin, proxy, broker, and challenge services on encrypted overlay networks). It is **dry-run by default**, mutates only with `--apply`, and keeps every destructive step behind its own explicit flag (`--restart-dockerd`, `--single-node-placement`, `--static-challenges`).
+- `deploy/swarm/install-swarm.sh` brings up the single-node Swarm manager (master proxy, broker, and challenge services on encrypted overlay networks). It is **dry-run by default**, mutates only with `--apply`, and keeps every destructive step behind its own explicit flag (`--restart-dockerd`, `--single-node-placement`, `--static-challenges`).
 - `deploy/swarm/platform-supervisor.service` installs the manager-only systemd supervisor: broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update loops.
 - The master (manager) node runs the challenge services with the placement constraint `node.role==manager`. The broker dispatches CPU jobs to `node.labels.platform.workload==cpu` workers and GPU jobs (`gpu_count>0`) to `node.labels.platform.workload==gpu` workers with `--generic-resource NVIDIA-GPU=<N>`.
 - Worker nodes are enrolled manually with Swarm join tokens (no SSH) via the `platform master worker` CLI group: `worker token [--cpu|--gpu]` prints `docker swarm join --token <TOKEN> <MANAGER_IP>:2377`; after the operator installs the matching `daemon.json` and joins, `worker label <node> --workload cpu|gpu` sets the scheduling label. The group also has `worker list`, `worker drain`, `worker rm`, and `worker inspect`.
@@ -248,20 +249,21 @@ The three backend repositories are sibling checkouts under a common parent
 
 | Node | Swarm role | Runs |
 |------|------------|------|
-| Manager (also the validator / hotkey node) | `node.role==manager` | Control plane (admin / proxy / broker / supervisor) **and** the challenge services (agent-challenge, PRISM) |
+| Manager (also the validator / hotkey node) | `node.role==manager` | Control plane (proxy / broker / supervisor) **and** the challenge services (agent-challenge, PRISM) |
 | CPU worker | `node.labels.platform.workload==cpu` | Short-lived CPU broker jobs |
 | GPU worker | `node.labels.platform.workload==gpu` | Short-lived GPU broker jobs; advertises `NVIDIA-GPU` as a Swarm generic resource |
 
 The manager control-plane services are published on fixed host ports by
 `install-swarm.sh --apply` (overridable via the `MASTER_PROXY_PORT` /
-`MASTER_BROKER_PORT` / `MASTER_ADMIN_PORT` env vars; the defaults below match the
-live box):
+`MASTER_BROKER_PORT` env vars; the defaults below match the live box):
 
 | Manager service (host-published) | Host port |
 |---------|-----------|
-| platform-master-proxy (public entry; routes `/challenges/*`) | 18080 |
+| platform-master-proxy (single public API; serves `/v1/registry`, `/v1/weights/latest`, `/health`, and routes `/challenges/*`) | 18080 |
 | platform-master-broker | 18082 |
-| platform-master-admin (registry / weights) | 18900 |
+
+`/v1/registry` and `/v1/weights/latest` are served by the proxy on `18080`; there
+is no separate admin service or port.
 
 The challenge services and the Postgres backing stores are **overlay-internal**
 (no host publish): clients reach the challenges **through the proxy** over the
@@ -291,7 +293,7 @@ Build from each repo's Dockerfile. `<tag>` is your release tag (a SemVer such as
 `latest` for the mutable channel).
 
 ```bash
-# platform-master (this repo): admin + proxy + broker + supervisor
+# platform-master (this repo): proxy (single public API) + broker + supervisor
 docker build -f docker/Dockerfile.master -t ghcr.io/platformnetwork/platform-master:<tag> .
 
 # prism API + GPU evaluator (from ../prism)
@@ -363,7 +365,7 @@ export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/platformnetwork/agent-challenge-term
 
 The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges`
 and `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never
-argv), and creates the master admin/proxy/broker plus both challenge services (the broker pinned to
+argv), and creates the master proxy/broker plus both challenge services (the broker pinned to
 `node.role==manager`). The PRISM eval read-only data mounts are supplied by the broker's built-in
 `DEFAULT_PRISM_EVAL_READONLY_MOUNTS`, so no `master.yaml` entry is required.
 
@@ -412,7 +414,7 @@ Full submitter configuration and the operator FAQ are in the
 
 ### Step 7 — Verify
 
-The three manager services answer `/health` on their published host ports. The
+The two manager services answer `/health` on their published host ports. The
 challenges are overlay-internal, so verify them **through the proxy** (the
 canonical client path) rather than on a host port:
 
@@ -420,7 +422,8 @@ canonical client path) rather than on a host port:
 docker service ls
 curl -sf http://127.0.0.1:18080/health                                 # proxy
 curl -sf http://127.0.0.1:18082/health                                 # broker
-curl -sf http://127.0.0.1:18900/health                                 # admin / registry / weights
+curl -sf http://127.0.0.1:18080/v1/registry                            # registry (served by the proxy)
+curl -sf http://127.0.0.1:18080/v1/weights/latest                      # weights (served by the proxy)
 curl -sf http://127.0.0.1:18080/challenges/prism/leaderboard           # prism, via the proxy
 curl -sf http://127.0.0.1:18080/challenges/agent-challenge/leaderboard  # agent-challenge, via the proxy
 ```

@@ -7,12 +7,10 @@
 ```mermaid
 flowchart TB
     subgraph MGR[Manager]
-      A[Admin API]
-      P[Proxy API]
+      P["Platform API (single proxy :18080)"]
       B[Broker]
       S[Supervisor]
       G[Weight Aggregator]
-      W[Weights API]
       C1[Challenge service]
       DB[(Control-plane Postgres)]
       DATA[(Challenge /data SQLite)]
@@ -28,18 +26,18 @@ flowchart TB
     B --> J1
     B --> J2
     S --> B
-    A --> DB
+    P --> DB
     G --> C1
-    G --> W
-    SUB[Submitter] --> W
+    G --> P
+    SUB[Submitter] --> P
     SUB --> BT[Bittensor]
 ```
 
 ## Manager node
 
-Platform runs as a single Docker Swarm. The manager node owns registry metadata, admin operations, the Swarm challenge lifecycle, challenge tokens, emission configuration, and final weight computation. The admin API serves the computed vector through the public weights API at `/v1/weights/latest`; the on-chain submitter performs the Bittensor submission.
+Platform runs as a single Docker Swarm. The manager node owns registry metadata, admin operations, the Swarm challenge lifecycle, challenge tokens, emission configuration, and final weight computation. The platform API (the single proxy on `:18080`) serves the computed vector through the public weights API at `/v1/weights/latest`; the on-chain submitter performs the Bittensor submission.
 
-The manager hosts the admin API, the proxy API, the broker, the supervisor, and the challenge service containers themselves. Challenge code runs on the host, pinned with the placement constraint `node.role==manager`, so the long-lived challenge APIs share the manager node with the control plane.
+The manager hosts the platform API (a single proxy on `:18080` that serves the `/v1/registry` and `/v1/weights/latest` reads, the `/health` check, the `/challenges/*` passthrough, and the token-gated admin routes), the broker, the supervisor, and the challenge service containers themselves. Challenge code runs on the host, pinned with the placement constraint `node.role==manager`, so the long-lived challenge APIs share the manager node with the control plane.
 
 Master and validator control-plane state uses a single shared PostgreSQL-compatible database URL (`PLATFORM_DATABASE_URL`). That URL is private to the control-plane process and is never shared with challenge containers.
 
@@ -66,7 +64,7 @@ By default the `/data` Swarm volume is retained when a challenge service is remo
 
 ## Deployment topology
 
-First-party Platform deployments are Docker Swarm only. The manager is brought up with `deploy/swarm/install-swarm.sh`, which provisions the master admin, proxy, broker, and challenge services on encrypted overlay networks, plus the systemd supervisor unit. Worker nodes are enrolled manually with join tokens and workload labels. There is no Helm chart, no Kubernetes manifests, and no `runtime.backend` selector: the only backend is Swarm.
+First-party Platform deployments are Docker Swarm only. The manager is brought up with `deploy/swarm/install-swarm.sh`, which provisions the master proxy, broker, and challenge services on encrypted overlay networks, plus the systemd supervisor unit. Worker nodes are enrolled manually with join tokens and workload labels. There is no Helm chart, no Kubernetes manifests, and no `runtime.backend` selector: the only backend is Swarm.
 
 Pinned production deployments should disable mutable auto-update and use rolling service updates, PostgreSQL control-plane state, per-challenge SQLite on the `/data` volume, and semver plus `sha256` digest image pins for control-plane and challenge images.
 
