@@ -440,15 +440,14 @@ the one port already serves `/health`, `/v1/registry`, `/v1/weights/latest`, `/c
 token-gated admin/control-plane routes (which stay private on the same app). No edge-level path
 filtering is required.
 
-> **Public-edge cutover is DEFERRED.** On the current deployment the hostname
-> `https://chain.platform.network` is still routed by Cloudflare to a **different origin**, not to
-> this box, so the public edge is **not yet live for all routes**: publicly only `/health` and the
-> PRISM leaderboard (`/challenges/prism/leaderboard`) return `200`, while `/v1/registry`,
-> `/v1/weights/latest`, and the agent-challenge leaderboard return `502`. Cutting over to this box is
-> **pending a Cloudflare route repoint** (point `chain.platform.network` at this box's tunnel with the
-> single catch-all rule above). This is a Cloudflare-dashboard action, not a code/deploy change.
-> **Local parity already holds:** `http://127.0.0.1:18080` serves every route `200` (see Step 7), so
-> the backend is ready for the cutover.
+> **Public edge is LIVE.** `https://chain.platform.network` is served entirely from this box via its
+> cloudflared tunnel, using the single catch-all ingress rule above
+> (`chain.platform.network -> http://127.0.0.1:18080`). All public read routes return `200`:
+> `/health`, `/v1/registry`, `/v1/weights/latest`, `/challenges/prism/leaderboard`, and
+> `/challenges/agent-challenge/leaderboard`. Admin-write/control-plane and management routes stay
+> private (they return `401`/`405`), and `/internal/*` (plus `/version`) return `404` at the edge.
+> Public responses are field-identical to the local proxy `http://127.0.0.1:18080` (see Step 7); the
+> PRISM CURRENT epoch may legitimately be empty, which is real data, not an unavailable state.
 
 ---
 
