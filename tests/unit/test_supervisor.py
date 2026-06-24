@@ -11,18 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from platform_network.config.settings import Settings
-from platform_network.supervisor.health import BrokerHealthGate, http_health_prober
-from platform_network.supervisor.loop import Supervisor
-from platform_network.supervisor.scheduler import ScheduledTask
-from platform_network.supervisor.sd_notify import (
+from base.config.settings import Settings
+from base.supervisor.health import BrokerHealthGate, http_health_prober
+from base.supervisor.loop import Supervisor
+from base.supervisor.scheduler import ScheduledTask
+from base.supervisor.sd_notify import (
     READY,
     STOPPING,
     WATCHDOG,
     SystemdNotifier,
     watchdog_interval_seconds,
 )
-from platform_network.supervisor.tasks import build_scheduled_tasks
+from base.supervisor.tasks import build_scheduled_tasks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -335,26 +335,26 @@ def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
         for target in image_updater.run.__self__._targets  # type: ignore[attr-defined]
     }
     assert updater_services == {
-        "platform-proxy",
-        "platform-docker-broker",
+        "base-proxy",
+        "base-docker-broker",
     }
-    assert "platform-admin" not in updater_services
-    assert "platform-broker" not in updater_services
-    assert "platform-config-sync" not in updater_services
+    assert "base-admin" not in updater_services
+    assert "base-broker" not in updater_services
+    assert "base-config-sync" not in updater_services
 
     config_sync = next(t for t in tasks if t.name == "config-sync")
     rollout_services = set(config_sync.run.__self__._rollout_services)  # type: ignore[attr-defined]
     assert rollout_services == {
-        "platform-proxy",
-        "platform-docker-broker",
+        "base-proxy",
+        "base-docker-broker",
     }
-    assert "platform-admin" not in rollout_services
-    assert "platform-broker" not in rollout_services
-    assert "platform-config-sync" not in rollout_services
+    assert "base-admin" not in rollout_services
+    assert "base-broker" not in rollout_services
+    assert "base-config-sync" not in rollout_services
 
 
 def test_systemd_unit_template_is_notify_with_watchdog() -> None:
-    unit = (ROOT / "deploy" / "swarm" / "platform-supervisor.service").read_text()
+    unit = (ROOT / "deploy" / "swarm" / "base-supervisor.service").read_text()
     assert "Type=notify" in unit
     assert "WatchdogSec=" in unit
     assert "Restart=always" in unit

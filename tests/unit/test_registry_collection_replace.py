@@ -18,17 +18,17 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from platform_network.db.migrations import upgrade
-from platform_network.db.session import create_engine, create_session_factory
-from platform_network.master.registry import DatabaseChallengeRegistry
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeUpdate
+from base.db.migrations import upgrade
+from base.db.session import create_engine, create_session_factory
+from base.master.registry import DatabaseChallengeRegistry
+from base.schemas.challenge import ChallengeCreate, ChallengeUpdate
 
 
 def _payload(slug: str) -> ChallengeCreate:
     return ChallengeCreate(
         slug=slug,
         name="Reseed Demo",
-        image="ghcr.io/platformnetwork/demo:1.0.0",
+        image="ghcr.io/baseintelligence/demo:1.0.0",
         version="1.0.0",
         emission_percent=Decimal("10"),
         env={"A": "1", "B": "old"},

@@ -1,7 +1,7 @@
 """Tests for the supervisor compute-only weights task (plan Task 21).
 
 The weights schedule port must invoke the SAME compute path as
-``platform master weights --once`` (one epoch per tick) with ZERO on-chain
+``base master weights --once`` (one epoch per tick) with ZERO on-chain
 effects: ``submit=False`` is hardcoded and no ``WeightSetter`` is ever
 attached (a mock standing in for chain submission asserts zero invocations).
 """
@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from platform_network.cli_app import main as cli_main
-from platform_network.config.settings import Settings
-from platform_network.schemas.weights import FinalWeights
-from platform_network.supervisor import weights as weights_module
-from platform_network.supervisor.scheduler import ScheduledTask, TaskWorker
+from base.cli_app import main as cli_main
+from base.config.settings import Settings
+from base.schemas.weights import FinalWeights
+from base.supervisor import weights as weights_module
+from base.supervisor.scheduler import ScheduledTask, TaskWorker
 
 
 def _wire_fake_cli_compute_path(
@@ -46,7 +46,7 @@ def _wire_fake_cli_compute_path(
     # supervisor weights path reached WeightSetter.set_weights, it would
     # land here.
     monkeypatch.setattr(
-        "platform_network.bittensor.weight_setter.WeightSetter.set_weights",
+        "base.bittensor.weight_setter.WeightSetter.set_weights",
         lambda self, uids, weights: recorder["set_weights_calls"].append(
             (uids, weights)
         ),
@@ -159,7 +159,7 @@ def test_compute_raise_is_logged_and_schedule_continues(
     # reconfiguring root logging (which breaks caplog in the full run).
     # Re-enable it too: alembic's env.py fileConfig (run by any migration
     # test) disables all previously-imported loggers suite-wide.
-    scheduler_logger = logging.getLogger("platform_network.supervisor.scheduler")
+    scheduler_logger = logging.getLogger("base.supervisor.scheduler")
     handler = _RecordingHandler()
     was_disabled = scheduler_logger.disabled
     scheduler_logger.disabled = False

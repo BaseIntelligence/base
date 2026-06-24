@@ -2,7 +2,7 @@
 
 import pytest
 
-from platform_network.master.docker_orchestrator import (
+from base.master.docker_orchestrator import (
     ChallengeResources,
     DockerOrchestrationError,
 )

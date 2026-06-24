@@ -1,6 +1,6 @@
 # Challenge Integration Guide
 
-![Platform Banner](../assets/banner.jpg)
+![BASE Banner](../assets/banner.jpg)
 
 ## Implement weights
 
@@ -17,7 +17,7 @@ The master normalizes returned values, so raw scores are acceptable as long as t
 
 Generated challenges use the async SQLAlchemy SDK and read their runtime database URL from `CHALLENGE_DATABASE_URL`.
 
-The challenge runtime is SQLite-backed. Platform injects `CHALLENGE_DATABASE_URL` pointing at the SQLite file on the challenge `/data` Swarm volume:
+The challenge runtime is SQLite-backed. BASE injects `CHALLENGE_DATABASE_URL` pointing at the SQLite file on the challenge `/data` Swarm volume:
 
 ```text
 sqlite+aiosqlite:////data/challenge.sqlite3
@@ -25,7 +25,7 @@ sqlite+aiosqlite:////data/challenge.sqlite3
 
 The same URL is used for local generated challenge runs and for the deployed Swarm service. There is no Postgres server per challenge; each challenge mounts its own `/data` volume for the SQLite file and artifacts.
 
-Challenges must never receive `PLATFORM_DATABASE_URL`, master database URLs, or any central control-plane PostgreSQL credentials. The shared control-plane PostgreSQL is only for master and validator state.
+Challenges must never receive `BASE_DATABASE_URL`, master database URLs, or any central control-plane PostgreSQL credentials. The shared control-plane PostgreSQL is only for master and validator state.
 
 ## Async SQLAlchemy usage
 
@@ -73,19 +73,19 @@ Generated applications call `Base.metadata.create_all` through the async engine 
 
 Challenge services get a `/data` Swarm volume. Use `/data` for the SQLite database, artifacts, analyzer output, uploaded files, and any local state that should survive restarts.
 
-The `/data` Swarm volume is the only persistent store for a challenge. By default Platform retains the `/data` volume when a challenge service is removed. That retention protects challenge state and the SQLite database from accidental deletion.
+The `/data` Swarm volume is the only persistent store for a challenge. By default BASE retains the `/data` volume when a challenge service is removed. That retention protects challenge state and the SQLite database from accidental deletion.
 
 ## Operator cleanup and purge
 
 Normal challenge stop removes the Swarm service but keeps the `/data` volume available for reuse. If an operator intentionally wants to purge a challenge database, inspect the volume first, then delete only the matching slug volume.
 
 ```bash
-docker volume ls --filter label=platform.challenge.slug=<slug>
+docker volume ls --filter label=base.challenge.slug=<slug>
 
 docker volume rm <challenge-data-volume>
 ```
 
-These commands are manual and destructive. Confirm the slug and volume before running them. Platform does not provide automated destructive purge in this implementation.
+These commands are manual and destructive. Confirm the slug and volume before running them. BASE does not provide automated destructive purge in this implementation.
 
 ## Out of scope
 

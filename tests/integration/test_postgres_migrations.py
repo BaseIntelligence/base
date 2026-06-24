@@ -8,7 +8,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
-from platform_network.db import ChallengeStatus, create_engine
+from base.db import ChallengeStatus, create_engine
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CHALLENGE_REGISTRY_MIGRATION = (

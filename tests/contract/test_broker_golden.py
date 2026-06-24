@@ -17,7 +17,7 @@ Normalization rules:
 To regenerate fixtures after an INTENTIONAL contract change (this should not
 happen during the migration), run:
 
-    PLATFORM_UPDATE_GOLDEN=1 uv run pytest tests/contract/test_broker_golden.py
+    BASE_UPDATE_GOLDEN=1 uv run pytest tests/contract/test_broker_golden.py
 """
 
 from __future__ import annotations
@@ -34,13 +34,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import platform_network.master.docker_broker as broker_module
-from platform_network.master.docker_broker import (
+import base.master.docker_broker as broker_module
+from base.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
     create_docker_broker_app,
 )
-from platform_network.schemas.docker_broker import (
+from base.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerCleanupResponse,
     BrokerContainerInfo,
@@ -56,7 +56,7 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 
 AUTH_HEADERS = {
     "authorization": "Bearer contract-token",
-    "x-platform-challenge-slug": "agent",
+    "x-base-challenge-slug": "agent",
 }
 
 # Volatile value placeholders. Only the VALUES of these keys are replaced;
@@ -88,7 +88,7 @@ class _FakeExecutor:
         self.kwargs = kwargs
 
     def container_name(self, job_id: str, task_id: str | None = None) -> str:
-        return f"platform-agent-{job_id}-{task_id or 'job'}-a1b2c3d4"
+        return f"base-agent-{job_id}-{task_id or 'job'}-a1b2c3d4"
 
     def run(self, spec: Any, timeout_seconds: int) -> SimpleNamespace:
         return SimpleNamespace(
@@ -106,15 +106,15 @@ class _FakeExecutor:
         return [
             SimpleNamespace(
                 container_id="f1e2d3c4b5a697887766554433221100",
-                container_name="platform-agent-job-1-task-1-a1b2c3d4",
-                image="ghcr.io/platformnetwork/challenge:1.2.3",
+                container_name="base-agent-job-1-task-1-a1b2c3d4",
+                image="ghcr.io/baseintelligence/challenge:1.2.3",
                 status="Exited (0) 2 minutes ago",
                 job_id=job_id or "job-1",
                 task_id="task-1",
                 created="2026-06-12 10:00:00 +0000 UTC",
                 labels={
-                    "platform.job": job_id or "job-1",
-                    "platform.task": "task-1",
+                    "base.job": job_id or "job-1",
+                    "base.task": "task-1",
                     "com.docker.internal": "must-be-filtered-out",
                 },
             )
@@ -130,7 +130,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
             DockerBrokerConfig(
                 docker_bin="docker-contract-test",
                 workspace_dir=tmp_path / "work",
-                allowed_images=("ghcr.io/platformnetwork/",),
+                allowed_images=("ghcr.io/baseintelligence/",),
             )
         ),
     )
@@ -169,13 +169,13 @@ def _canonical_bytes(record: dict[str, Any]) -> bytes:
 def _assert_matches_golden(name: str, record: dict[str, Any]) -> None:
     actual = _canonical_bytes(record)
     golden_path = GOLDEN_DIR / f"{name}.json"
-    if os.environ.get("PLATFORM_UPDATE_GOLDEN") == "1":
+    if os.environ.get("BASE_UPDATE_GOLDEN") == "1":
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         golden_path.write_bytes(actual)
     if not golden_path.exists():
         pytest.fail(
             f"missing golden fixture {golden_path}; regenerate with "
-            "PLATFORM_UPDATE_GOLDEN=1 only for intentional contract changes"
+            "BASE_UPDATE_GOLDEN=1 only for intentional contract changes"
         )
     expected = golden_path.read_bytes()
     assert actual == expected, (
@@ -201,12 +201,12 @@ def _run_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "job_id": "job-1",
         "task_id": "task-1",
-        "image": "ghcr.io/platformnetwork/challenge:1.2.3",
+        "image": "ghcr.io/baseintelligence/challenge:1.2.3",
         "image_pull_policy": "IfNotPresent",
         "command": ["python", "-V"],
         "workdir": "/workspace",
-        "env": {"PLATFORM_ENV": "contract"},
-        "labels": {"platform.challenge": "agent"},
+        "env": {"BASE_ENV": "contract"},
+        "labels": {"base.challenge": "agent"},
         "limits": {
             "cpus": 2.0,
             "memory": "4g",
@@ -309,7 +309,7 @@ def test_golden_model_schemas() -> None:
 def test_request_schemas_accept_minimal_payloads() -> None:
     """Request-side acceptance: minimal valid payloads must keep validating."""
     run = BrokerRunRequest.model_validate(
-        {"job_id": "j", "image": "ghcr.io/platformnetwork/x", "command": ["true"]}
+        {"job_id": "j", "image": "ghcr.io/baseintelligence/x", "command": ["true"]}
     )
     assert run.timeout_seconds == 900
     assert run.limits == BrokerLimits()

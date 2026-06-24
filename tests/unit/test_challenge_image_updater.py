@@ -11,18 +11,18 @@ from typing import Any
 
 import pytest
 
-from platform_network.config.settings import Settings
-from platform_network.schemas.challenge import ChallengeStatus, ChallengeUpdate
-from platform_network.supervisor.challenge_image_updater import (
+from base.config.settings import Settings
+from base.schemas.challenge import ChallengeStatus, ChallengeUpdate
+from base.supervisor.challenge_image_updater import (
     CHALLENGE_IMAGE_UPDATER_INTERVAL_SECONDS,
     ChallengeImageUpdater,
     build_challenge_image_updater_task,
 )
-from platform_network.supervisor.image_ref import ImageReference
+from base.supervisor.image_ref import ImageReference
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
-BASE = "ghcr.io/platformnetwork/demo:latest"
+BASE = "ghcr.io/baseintelligence/demo:latest"
 
 
 def record(
@@ -127,7 +127,7 @@ def test_inactive_is_updated_but_never_restarted() -> None:
     "image",
     [
         "docker.io/library/redis:7",
-        "ghcr.io/platformnetwork/demo:sha-abc1234",
+        "ghcr.io/baseintelligence/demo:sha-abc1234",
     ],
 )
 def test_non_ghcr_or_sha_tagged_images_are_skipped(image: str) -> None:
@@ -148,12 +148,12 @@ def test_resolver_failure_skips_challenge_but_siblings_proceed(
 
     registry = FakeRegistry(
         [
-            record("broken", f"ghcr.io/platformnetwork/broken:latest@{DIGEST_A}"),
+            record("broken", f"ghcr.io/baseintelligence/broken:latest@{DIGEST_A}"),
             record("demo", f"{BASE}@{DIGEST_A}"),
         ]
     )
     controller = FakeController()
-    logger_name = "platform_network.supervisor.challenge_image_updater"
+    logger_name = "base.supervisor.challenge_image_updater"
     with caplog.at_level("WARNING", logger=logger_name):
         make_updater(registry, controller, resolver).run_once()
     assert [slug for slug, _ in registry.updates] == ["demo"]
@@ -178,7 +178,7 @@ def test_restart_failure_does_not_block_sibling_challenges() -> None:
 
     registry = FakeRegistry(
         [
-            record("broken", f"ghcr.io/platformnetwork/broken:latest@{DIGEST_A}"),
+            record("broken", f"ghcr.io/baseintelligence/broken:latest@{DIGEST_A}"),
             record("demo", f"{BASE}@{DIGEST_A}"),
         ]
     )
@@ -218,7 +218,7 @@ def test_builder_wires_task_name_interval_and_seams() -> None:
 
 def test_builder_tag_override_retargets_mutable_base() -> None:
     registry = FakeRegistry(
-        [record("demo", f"ghcr.io/platformnetwork/demo:main@{DIGEST_A}")]
+        [record("demo", f"ghcr.io/baseintelligence/demo:main@{DIGEST_A}")]
     )
     controller = FakeController()
     task = build_challenge_image_updater_task(
@@ -229,5 +229,5 @@ def test_builder_tag_override_retargets_mutable_base() -> None:
         tag="main",
     )
     task.run()
-    expected = f"ghcr.io/platformnetwork/demo:main@{DIGEST_B}"
+    expected = f"ghcr.io/baseintelligence/demo:main@{DIGEST_B}"
     assert registry.updates == [("demo", ChallengeUpdate(image=expected))]

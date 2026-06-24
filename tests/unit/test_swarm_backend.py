@@ -19,25 +19,25 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from platform_network.challenge_sdk.executors.docker import DockerExecutorError
-from platform_network.challenge_sdk.mount_transport import (
+from base.challenge_sdk.executors.docker import DockerExecutorError
+from base.challenge_sdk.mount_transport import (
     encode_dir_archive,
     extract_archive_to_dir,
     parse_drained_archives,
     strip_drain_sections,
 )
-from platform_network.gpu.leases import (
+from base.gpu.leases import (
     GpuCapacityError,
     GpuLeaseError,
     GpuLeaseLedger,
 )
-from platform_network.master.docker_broker import create_docker_broker_app
-from platform_network.master.docker_orchestrator import (
+from base.master.docker_broker import create_docker_broker_app
+from base.master.docker_orchestrator import (
     ChallengeResources,
     ChallengeSpec,
     DockerOrchestrationError,
 )
-from platform_network.master.swarm_backend import (
+from base.master.swarm_backend import (
     SwarmBrokerConfig,
     SwarmBrokerService,
     SwarmChallengeOrchestrator,
@@ -46,8 +46,8 @@ from platform_network.master.swarm_backend import (
     build_overlay_network_argv,
     build_service_create_argv,
 )
-from platform_network.master.workload_ledger import WorkloadEntry, WorkloadLedger
-from platform_network.schemas.docker_broker import (
+from base.master.workload_ledger import WorkloadEntry, WorkloadLedger
+from base.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerListRequest,
     BrokerRunRequest,
@@ -57,7 +57,7 @@ GOLDEN_DIR = Path(__file__).resolve().parents[1] / "contract" / "golden"
 
 AUTH_HEADERS = {
     "authorization": "Bearer tok",
-    "x-platform-challenge-slug": "agent",
+    "x-base-challenge-slug": "agent",
 }
 
 _VOLATILE_KEYS = {
@@ -198,7 +198,7 @@ def _broker(
     config = SwarmBrokerConfig(
         docker_bin="docker",
         workspace_dir=tmp_path / "work",
-        allowed_images=("ghcr.io/platformnetwork/",),
+        allowed_images=("ghcr.io/baseintelligence/",),
         **config_overrides,
     )
     ledger = WorkloadLedger()
@@ -210,11 +210,11 @@ def _run_request(**overrides: Any) -> BrokerRunRequest:
     payload: dict[str, Any] = {
         "job_id": "job-1",
         "task_id": "task-1",
-        "image": "ghcr.io/platformnetwork/challenge:1.2.3",
+        "image": "ghcr.io/baseintelligence/challenge:1.2.3",
         "command": ["python", "-V"],
         "workdir": "/workspace",
-        "env": {"PLATFORM_ENV": "unit"},
-        "labels": {"platform.challenge": "agent"},
+        "env": {"BASE_ENV": "unit"},
+        "labels": {"base.challenge": "agent"},
         "mounts": [
             {
                 "target": "/workspace/forge",
@@ -240,17 +240,17 @@ def test_run_job_emits_replicated_job_with_mandatory_flags(tmp_path: Path) -> No
     pairs = _pairs(argv)
     assert ("--mode", "replicated-job") in pairs
     assert ("--restart-condition", "none") in pairs
-    assert ("--constraint", "node.labels.platform.workload==cpu") in pairs
-    assert ("--network", "platform_jobs_internal") in pairs
+    assert ("--constraint", "node.labels.base.workload==cpu") in pairs
+    assert ("--network", "base_jobs_internal") in pairs
     assert ("--limit-cpu", "2.0") in pairs
     assert ("--limit-memory", "4g") in pairs
     assert ("--limit-pids", "512") in pairs
     assert ("--cap-drop", "ALL") in pairs
     assert ("--ulimit", "nofile=1024:1024") in pairs
     assert ("--workdir", "/workspace") in pairs
-    assert ("--env", "PLATFORM_ENV=unit") in pairs
-    assert ("--label", "platform.job=job-1") in pairs
-    assert ("--container-label", "platform.task=task-1") in pairs
+    assert ("--env", "BASE_ENV=unit") in pairs
+    assert ("--label", "base.job=job-1") in pairs
+    assert ("--container-label", "base.task=task-1") in pairs
     assert "--read-only" in argv
     assert "--init" in argv
     assert "--privileged" not in argv
@@ -264,7 +264,7 @@ def test_run_job_emits_replicated_job_with_mandatory_flags(tmp_path: Path) -> No
         and m.endswith(",readonly")
         for m in mounts
     )
-    assert argv[-3:] == ("ghcr.io/platformnetwork/challenge:1.2.3", "python", "-V")
+    assert argv[-3:] == ("ghcr.io/baseintelligence/challenge:1.2.3", "python", "-V")
     assert response.returncode == 0
     assert response.stdout == "Python 3.12.4\n"
     assert response.timed_out is False
@@ -414,7 +414,7 @@ def _prism_gpu_request(**overrides: Any) -> BrokerRunRequest:
     payload: dict[str, Any] = {
         "command": ["torchrun", "/workspace/runner.py"],
         "workdir": "/workspace",
-        "labels": {"platform.challenge": "prism"},
+        "labels": {"base.challenge": "prism"},
         "limits": {"gpu_count": 1, "network": "none"},
         "mounts": _gpu_mounts(),
     }
@@ -523,7 +523,7 @@ def test_run_job_prism_eval_network_none_is_isolated(tmp_path: Path) -> None:
     pairs = _pairs(runner.create_argv())
     # network=none maps to the dedicated *internal* (no external route) overlay;
     # it must never fall back to the default (egress-capable) network.
-    assert ("--network", "platform_jobs_internal") in pairs
+    assert ("--network", "base_jobs_internal") in pairs
     assert ("--network", "default") not in pairs
 
 
@@ -576,7 +576,7 @@ def test_run_timeout_returns_124_and_removes_service(tmp_path: Path) -> None:
     service = SwarmBrokerService(
         SwarmBrokerConfig(
             workspace_dir=tmp_path / "work",
-            allowed_images=("ghcr.io/platformnetwork/",),
+            allowed_images=("ghcr.io/baseintelligence/",),
         ),
         runner=runner,
         ledger=WorkloadLedger(),
@@ -630,8 +630,8 @@ def test_cleanup_removes_services_and_releases_ledger(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert ("docker", "service", "rm", "svc-a") in runner.calls
     ls_call = next(call for call in runner.calls if call[1:3] == ("service", "ls"))
-    assert "label=platform.challenge=agent" in ls_call
-    assert "label=platform.job=job-1" in ls_call
+    assert "label=base.challenge=agent" in ls_call
+    assert "label=base.job=job-1" in ls_call
     assert service.ledger.count("agent") == 0
 
 
@@ -641,7 +641,7 @@ def test_list_maps_services_to_frozen_container_shape(tmp_path: Path) -> None:
             {
                 "ID": "svc-a",
                 "Name": "agent-job-1-x",
-                "Image": "ghcr.io/platformnetwork/challenge:1.2.3",
+                "Image": "ghcr.io/baseintelligence/challenge:1.2.3",
                 "Replicas": "0/1 (1/1 completed)",
             }
         ],
@@ -651,9 +651,9 @@ def test_list_maps_services_to_frozen_container_shape(tmp_path: Path) -> None:
                 "Spec": {
                     "Name": "agent-job-1-x",
                     "Labels": {
-                        "platform.challenge": "agent",
-                        "platform.job": "job-1",
-                        "platform.task": "task-1",
+                        "base.challenge": "agent",
+                        "base.job": "job-1",
+                        "base.task": "task-1",
                         "com.docker.stack.namespace": "filtered-out",
                     },
                 },
@@ -668,15 +668,15 @@ def test_list_maps_services_to_frozen_container_shape(tmp_path: Path) -> None:
     container = listing.containers[0]
     assert container.container_id == "svc-a"
     assert container.container_name == "agent-job-1-x"
-    assert container.image == "ghcr.io/platformnetwork/challenge:1.2.3"
+    assert container.image == "ghcr.io/baseintelligence/challenge:1.2.3"
     assert container.status == "0/1 (1/1 completed)"
     assert container.job_id == "job-1"
     assert container.task_id == "task-1"
     assert container.created == "2026-06-12T10:00:00.000000000Z"
     assert container.labels == {
-        "platform.challenge": "agent",
-        "platform.job": "job-1",
-        "platform.task": "task-1",
+        "base.challenge": "agent",
+        "base.job": "job-1",
+        "base.task": "task-1",
     }
 
 
@@ -726,7 +726,7 @@ def _swarm_client(tmp_path: Path, runner: FakeSwarmRunner) -> TestClient:
                     {
                         "ID": "svc-a",
                         "Name": "agent-job-1-x",
-                        "Image": "ghcr.io/platformnetwork/challenge:1.2.3",
+                        "Image": "ghcr.io/baseintelligence/challenge:1.2.3",
                         "Replicas": "Exited (0) 2 minutes ago",
                     }
                 ],
@@ -736,8 +736,8 @@ def _swarm_client(tmp_path: Path, runner: FakeSwarmRunner) -> TestClient:
                         "Spec": {
                             "Name": "agent-job-1-x",
                             "Labels": {
-                                "platform.job": "job-1",
-                                "platform.task": "task-1",
+                                "base.job": "job-1",
+                                "base.task": "task-1",
                                 "com.docker.internal": "must-be-filtered-out",
                             },
                         },
@@ -837,14 +837,14 @@ def test_run_job_gpu_materializes_mounts_cross_node(tmp_path: Path) -> None:
     )
     # Each mount's content rides in env-carried (chunked) archive vars.
     envs = [value for flag, value in _pairs(argv) if flag == "--env"]
-    assert any(e.startswith("PLATFORM_BROKER_MOUNT_IN_0_0=") for e in envs)
-    assert any(e.startswith("PLATFORM_BROKER_MOUNT_IN_1_0=") for e in envs)
+    assert any(e.startswith("BASE_BROKER_MOUNT_IN_0_0=") for e in envs)
+    assert any(e.startswith("BASE_BROKER_MOUNT_IN_1_0=") for e in envs)
     # Command is wrapped; only the writable mount (index 1) is drained out.
-    image_index = argv.index("ghcr.io/platformnetwork/challenge:1.2.3")
+    image_index = argv.index("ghcr.io/baseintelligence/challenge:1.2.3")
     assert argv[image_index + 1 : image_index + 3] == ("sh", "-c")
     script = argv[image_index + 3]
-    assert "@@PLATFORM_BROKER_MOUNT_OUT[1]:BEGIN@@" in script
-    assert "@@PLATFORM_BROKER_MOUNT_OUT[0]:BEGIN@@" not in script
+    assert "@@BASE_BROKER_MOUNT_OUT[1]:BEGIN@@" in script
+    assert "@@BASE_BROKER_MOUNT_OUT[0]:BEGIN@@" not in script
     assert argv[-2:] == ("torchrun", "/workspace/runner.py")
 
 
@@ -855,9 +855,9 @@ def test_run_job_gpu_drains_writable_mount_to_manager_disk(tmp_path: Path) -> No
         "artifact-here", encoding="utf-8"
     )
     drain = (
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
         f"{encode_dir_archive(produced)}\n"
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:END@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:END@@\n"
     )
     runner = FakeSwarmRunner(log_stdout="job-log\n" + drain)
     service = _broker(tmp_path, runner)
@@ -881,9 +881,9 @@ def test_run_job_gpu_drain_survives_log_cap_for_large_archive(tmp_path: Path) ->
     checkpoint = os.urandom(128 * 1024)  # incompressible -> base64 well over cap
     (produced / "checkpoint.bin").write_bytes(checkpoint)
     drain = (
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
         f"{encode_dir_archive(produced)}\n"
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:END@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:END@@\n"
     )
     noisy = "training-log-line\n" * 8000  # human log also exceeds the cap
     runner = FakeSwarmRunner(log_stdout=noisy + drain)
@@ -917,7 +917,7 @@ def test_run_job_cpu_keeps_bind_mounts(tmp_path: Path) -> None:
     )
     assert "type=tmpfs,destination=/artifacts,tmpfs-mode=1777" not in mounts
     envs = [value for flag, value in _pairs(argv) if flag == "--env"]
-    assert not any(e.startswith("PLATFORM_BROKER_MOUNT_IN_") for e in envs)
+    assert not any(e.startswith("BASE_BROKER_MOUNT_IN_") for e in envs)
     assert "sh" not in argv
 
 
@@ -984,7 +984,7 @@ def test_orchestrator_service_spec_becomes_replicated_service(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         challenge_token="tok-secret",
         workload_class="service",
         resources=ChallengeResources(docker_timeout_seconds=600),
@@ -998,10 +998,10 @@ def test_orchestrator_service_spec_becomes_replicated_service(
     assert ("--replicas", "1") in pairs
     assert ("--restart-condition", "any") in pairs
     assert ("--constraint", "node.role==manager") in pairs
-    assert ("--network", "platform_challenges") in pairs
+    assert ("--network", "base_challenges") in pairs
     assert (
         "--secret",
-        "source=platform_agent_challenge_token,target=platform/challenge_token",
+        "source=base_agent_challenge_token,target=base/challenge_token",
     ) in pairs
     assert "--privileged" not in argv
     assert "--generic-resource" not in argv
@@ -1009,10 +1009,10 @@ def test_orchestrator_service_spec_becomes_replicated_service(
         call for call in runner.calls if call[1:3] == ("network", "create")
     )
     assert network_create == tuple(
-        build_overlay_network_argv("docker", "platform_challenges", internal=True)
+        build_overlay_network_argv("docker", "base_challenges", internal=True)
     )
     secret_index = runner.calls.index(
-        ("docker", "secret", "create", "platform_agent_challenge_token", "-")
+        ("docker", "secret", "create", "base_agent_challenge_token", "-")
     )
     assert runner.inputs[secret_index] == "tok-secret"
     entry = ledger.get(runner.service_id)
@@ -1037,7 +1037,7 @@ def test_orchestrator_job_spec_becomes_replicated_job(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         workload_class="job",
     )
 
@@ -1057,7 +1057,7 @@ def test_orchestrator_failed_create_releases_ledger() -> None:
     orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=ledger)
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         workload_class="service",
     )
 
@@ -1089,7 +1089,7 @@ def test_orchestrator_stop_challenge_removes_service_and_releases() -> None:
 def test_build_service_create_argv_orders_image_and_command_last() -> None:
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/platformnetwork/x:1",
+        image="ghcr.io/baseintelligence/x:1",
         command=("run", "--flag"),
         mode="replicated-job",
     )
@@ -1097,13 +1097,13 @@ def test_build_service_create_argv_orders_image_and_command_last() -> None:
     argv = build_service_create_argv("docker", plan)
 
     assert argv[:6] == ["docker", "service", "create", "--detach", "--name", "x"]
-    assert argv[-3:] == ["ghcr.io/platformnetwork/x:1", "run", "--flag"]
+    assert argv[-3:] == ["ghcr.io/baseintelligence/x:1", "run", "--flag"]
 
 
 def test_build_service_create_argv_emits_generic_resources_before_image() -> None:
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/platformnetwork/x:1",
+        image="ghcr.io/baseintelligence/x:1",
         command=("run",),
         generic_resources=("NVIDIA-GPU=2",),
     )
@@ -1113,7 +1113,7 @@ def test_build_service_create_argv_emits_generic_resources_before_image() -> Non
     pairs = _pairs(tuple(argv))
     assert ("--generic-resource", "NVIDIA-GPU=2") in pairs
     assert "--gpus" not in argv
-    assert argv[-2:] == ["ghcr.io/platformnetwork/x:1", "run"]
+    assert argv[-2:] == ["ghcr.io/baseintelligence/x:1", "run"]
 
 
 def test_orchestrator_gpu_service_emits_generic_resource_and_holds_lease(
@@ -1128,7 +1128,7 @@ def test_orchestrator_gpu_service_emits_generic_resource_and_holds_lease(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         workload_class="service",
         resources=ChallengeResources(gpu_count=1),
     )
@@ -1153,7 +1153,7 @@ def test_orchestrator_gpu_capacity_refusal_and_failed_create_release_lease() -> 
     orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=WorkloadLedger())
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         workload_class="service",
         resources=ChallengeResources(gpu_count=1),
     )
@@ -1180,7 +1180,7 @@ def test_orchestrator_external_secret_emits_reference_without_create(
     )
     spec = ChallengeSpec(
         slug="agent-challenge",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         challenge_token="fake-token-for-test",
         external_secrets=("submission_env_encryption_key",),
         workload_class="service",
@@ -1191,24 +1191,24 @@ def test_orchestrator_external_secret_emits_reference_without_create(
     pairs = _pairs(runner.create_argv())
     assert (
         "--secret",
-        "source=platform_agent_challenge_challenge_token,target=platform/"
+        "source=base_agent_challenge_challenge_token,target=base/"
         "challenge_token",
     ) in pairs
     assert (
         "--secret",
-        "source=platform_agent_challenge_submission_env_encryption_key,"
-        "target=platform/submission_env_encryption_key",
+        "source=base_agent_challenge_submission_env_encryption_key,"
+        "target=base/submission_env_encryption_key",
     ) in pairs
     assert (
         "--env",
-        "SUBMISSION_ENV_ENCRYPTION_KEY_FILE=/run/secrets/platform/"
+        "SUBMISSION_ENV_ENCRYPTION_KEY_FILE=/run/secrets/base/"
         "submission_env_encryption_key",
     ) in pairs
     secret_creates = [
         call for call in runner.calls if call[1:3] == ("secret", "create")
     ]
     assert [call[3] for call in secret_creates] == [
-        "platform_agent_challenge_challenge_token"
+        "base_agent_challenge_challenge_token"
     ]
 
 
@@ -1226,7 +1226,7 @@ def test_orchestrator_secret_value_never_appears_in_argv_or_env(
     broker_value = "fake-broker-token-value"
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/platformnetwork/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
         challenge_token=challenge_value,
         docker_broker_token=broker_value,
         workload_class="service",

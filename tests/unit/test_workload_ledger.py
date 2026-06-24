@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from platform_network.master.workload_ledger import (
+from base.master.workload_ledger import (
     WorkloadCapacityError,
     WorkloadEntry,
     WorkloadLedger,

@@ -13,23 +13,23 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from platform_network.master.app_admin import create_admin_app
-from platform_network.master.app_proxy import (
+from base.master.app_admin import create_admin_app
+from base.master.app_proxy import (
     create_proxy_app,
     is_blocked_proxy_path,
     prism_upstream_proxy_path,
 )
-from platform_network.master.challenge_dashboard import ChallengeMetrics
-from platform_network.master.registry import ChallengeRegistry
-from platform_network.schemas.challenge import (
+from base.master.challenge_dashboard import ChallengeMetrics
+from base.master.registry import ChallengeRegistry
+from base.schemas.challenge import (
     ChallengeCreate,
     ChallengeRecord,
     ChallengeStatus,
     ChallengeUpdate,
     RuntimeOperationResponse,
 )
-from platform_network.schemas.weights import ChallengeWeightsResult
-from platform_network.security.miner_auth import (
+from base.schemas.weights import ChallengeWeightsResult
+from base.security.miner_auth import (
     MinerUploadVerifier,
     NonceReplayError,
 )
@@ -39,7 +39,7 @@ def _payload(slug: str = "demo") -> dict[str, Any]:
     return {
         "slug": slug,
         "name": "Demo",
-        "image": "ghcr.io/platformnetwork/demo:1.0.0",
+        "image": "ghcr.io/baseintelligence/demo:1.0.0",
         "version": "1.0.0",
         "emission_percent": "40.0",
     }
@@ -49,7 +49,7 @@ def _prism_payload() -> dict[str, Any]:
     return {
         "slug": "prism",
         "name": "PRISM",
-        "image": "ghcr.io/platformnetwork/prism:latest",
+        "image": "ghcr.io/baseintelligence/prism:latest",
         "version": "0.1.0",
         "status": "active",
         "emission_percent": "30",
@@ -163,7 +163,7 @@ class FakeWeightService:
     ) -> Any:
         from datetime import timedelta
 
-        from platform_network.schemas.weights import MasterWeightsResponse
+        from base.schemas.weights import MasterWeightsResponse
 
         self.calls.append(([challenge.slug for challenge in challenges], tokens))
         if self.fail:
@@ -334,13 +334,13 @@ def test_admin_challenge_crud_and_registry_active_only() -> None:
     assert challenge["description"] == "Build and evaluate coding agents."
     assert challenge["public_proxy_base_path"] == "/challenges/agent-challenge"
     assert challenge["internal_base_url"] == "http://challenge-agent-challenge:8000"
-    assert challenge["image"] == "ghcr.io/platformnetwork/demo:1.0.0"
+    assert challenge["image"] == "ghcr.io/baseintelligence/demo:1.0.0"
     assert challenge["version"] == "1.0.0"
     assert challenge["emission_percent"] == "40.0"
     assert challenge["status"] == "active"
     assert challenge["required_capabilities"] == ["get_weights", "proxy_routes"]
     assert challenge["resources"] == {}
-    assert challenge["volumes"] == {"sqlite": "platform_agent_challenge_sqlite"}
+    assert challenge["volumes"] == {"sqlite": "base_agent_challenge_sqlite"}
     assert challenge["env"] == {}
     assert challenge["secrets"] == []
     assert challenge["metadata"] == {
@@ -406,7 +406,7 @@ def test_prism_registry_contract_and_agent_challenge_emission_update() -> None:
 
     prism = challenges["prism"]
     assert prism["name"] == "PRISM"
-    assert prism["image"] == "ghcr.io/platformnetwork/prism:latest"
+    assert prism["image"] == "ghcr.io/baseintelligence/prism:latest"
     assert prism["version"] == "0.1.0"
     assert prism["status"] == "active"
     assert prism["emission_percent"] == "30"
@@ -440,11 +440,11 @@ def test_registry_sets_defaults_without_exposing_clear_token() -> None:
     assert record.token_hash != token
     assert record.internal_base_url == "http://challenge-code-arena:8000"
     assert record.public_proxy_base_path == "/challenges/code-arena"
-    assert record.volumes["sqlite"] == "platform_code_arena_sqlite"
+    assert record.volumes["sqlite"] == "base_code_arena_sqlite"
 
     registry.set_status("code-arena", ChallengeStatus.ACTIVE)
     response = registry.registry_response()
-    assert response.network == "platform"
+    assert response.network == "base"
     assert response.master_uid == 0
     assert response.challenges[0].emission_percent == Decimal("40.0")
 
@@ -713,8 +713,8 @@ def test_proxy_serves_agent_challenge_frontend_read_contract() -> None:
         upstream_headers = request_capture["headers"]
         for header in sensitive_headers:
             assert header not in upstream_headers
-        assert upstream_headers["x-platform-proxy"] == "true"
-        assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+        assert upstream_headers["x-base-proxy"] == "true"
+        assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
         assert upstream_headers["x-public-header"] == "forward-me"
 
 
@@ -830,8 +830,8 @@ def test_prism_public_proxy_routes_forward_to_public_surface() -> None:
     assert captured["training_variants"]["query"] == "limit=5"
     for request_capture in captured.values():
         upstream_headers = request_capture["headers"]
-        assert upstream_headers["x-platform-proxy"] == "true"
-        assert upstream_headers["x-platform-challenge-slug"] == "prism"
+        assert upstream_headers["x-base-proxy"] == "true"
+        assert upstream_headers["x-base-challenge-slug"] == "prism"
         assert upstream_headers["x-public-header"] == "forward-me"
         assert "authorization" not in upstream_headers
         assert "x-admin-token" not in upstream_headers
@@ -1012,8 +1012,8 @@ def test_proxy_serves_agent_challenge_task_event_replay_shape() -> None:
     assert captured["path"] == "/submissions/submission-1/task-events"
     assert captured["query"] == "cursor=0&limit=10"
     upstream_headers = captured["headers"]
-    assert upstream_headers["x-platform-proxy"] == "true"
-    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert upstream_headers["x-base-proxy"] == "true"
+    assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
     assert "authorization" not in upstream_headers
     forbidden_terms = (
         "private_ref",
@@ -1119,14 +1119,14 @@ async def test_proxy_streams_agent_challenge_sse_status_events() -> None:
         "raw_path": b"/challenges/agent-challenge/submissions/42/events",
         "query_string": b"tail=1",
         "headers": [
-            (b"host", b"platform.test"),
+            (b"host", b"base.test"),
             (b"last-event-id", b"100"),
             (b"authorization", b"Bearer should-not-forward"),
             (b"x-admin-token", b"should-not-forward"),
             (b"x-public-header", b"forward-me"),
         ],
         "client": ("testclient", 50000),
-        "server": ("platform.test", 80),
+        "server": ("base.test", 80),
     }
     task = asyncio.create_task(app(scope, receive, send))
 
@@ -1157,8 +1157,8 @@ async def test_proxy_streams_agent_challenge_sse_status_events() -> None:
     assert captured["query"] == "tail=1"
     upstream_headers = captured["headers"]
     assert upstream_headers["last-event-id"] == "100"
-    assert upstream_headers["x-platform-proxy"] == "true"
-    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert upstream_headers["x-base-proxy"] == "true"
+    assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
     assert upstream_headers["x-public-header"] == "forward-me"
     assert "authorization" not in upstream_headers
     assert "x-admin-token" not in upstream_headers
@@ -1267,14 +1267,14 @@ async def test_proxy_streams_agent_challenge_task_events_incrementally() -> None
         "raw_path": task_events_path.encode(),
         "query_string": b"cursor=0",
         "headers": [
-            (b"host", b"platform.test"),
+            (b"host", b"base.test"),
             (b"last-event-id", b"1"),
             (b"authorization", b"Bearer should-not-forward"),
             (b"x-admin-token", b"should-not-forward"),
             (b"x-public-header", b"forward-me"),
         ],
         "client": ("testclient", 50000),
-        "server": ("platform.test", 80),
+        "server": ("base.test", 80),
     }
     task = asyncio.create_task(app(scope, receive, send))
 
@@ -1307,8 +1307,8 @@ async def test_proxy_streams_agent_challenge_task_events_incrementally() -> None
     assert captured["query"] == "cursor=0"
     upstream_headers = captured["headers"]
     assert upstream_headers["last-event-id"] == "1"
-    assert upstream_headers["x-platform-proxy"] == "true"
-    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert upstream_headers["x-base-proxy"] == "true"
+    assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
     assert upstream_headers["x-public-header"] == "forward-me"
     assert "authorization" not in upstream_headers
     assert "x-admin-token" not in upstream_headers
@@ -1463,12 +1463,12 @@ def test_proxy_forwards_public_request_without_sensitive_headers() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "body": {"answer": 42}}
-    assert captured["x-platform-proxy"] == "true"
-    assert captured["x-platform-challenge-slug"] == "demo"
+    assert captured["x-base-proxy"] == "true"
+    assert captured["x-base-challenge-slug"] == "demo"
     assert captured["x-public-header"] == "forward-me"
     assert "authorization" not in captured
     assert "x-admin-token" not in captured
-    assert "x-platform-verified-hotkey" not in captured
+    assert "x-base-verified-hotkey" not in captured
     assert "x-hotkey" not in captured
     assert "x-signature" not in captured
     assert "x-nonce" not in captured
@@ -1535,9 +1535,9 @@ def test_proxy_preserves_signed_agent_challenge_env_headers_for_env_routes() -> 
         "X-Nonce": "miner-nonce",
         "X-Timestamp": "1700000000",
         "X-Admin-Token": "admin-secret",
-        "X-Platform-Internal-Token": "internal-secret",
-        "X-Platform-Verified-Hotkey": "spoofed-hotkey",
-        "X-Platform-Request-Hash": "spoofed-hash",
+        "X-Base-Internal-Token": "internal-secret",
+        "X-Base-Verified-Hotkey": "spoofed-hotkey",
+        "X-Base-Request-Hash": "spoofed-hash",
         "Authorization": "Bearer should-not-forward",
         "X-Public-Header": "forward-me",
     }
@@ -1581,13 +1581,13 @@ def test_proxy_preserves_signed_agent_challenge_env_headers_for_env_routes() -> 
         assert upstream_headers["x-nonce"] == "miner-nonce"
         assert upstream_headers["x-timestamp"] == "1700000000"
         assert upstream_headers["x-public-header"] == "forward-me"
-        assert upstream_headers["x-platform-proxy"] == "true"
-        assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+        assert upstream_headers["x-base-proxy"] == "true"
+        assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
         assert "authorization" not in upstream_headers
         assert "x-admin-token" not in upstream_headers
-        assert "x-platform-internal-token" not in upstream_headers
-        assert "x-platform-verified-hotkey" not in upstream_headers
-        assert "x-platform-request-hash" not in upstream_headers
+        assert "x-base-internal-token" not in upstream_headers
+        assert "x-base-verified-hotkey" not in upstream_headers
+        assert "x-base-request-hash" not in upstream_headers
 
     registry_response = TestClient(_admin_app(registry)).get("/v1/registry")
     assert registry_response.status_code == 200
@@ -1660,8 +1660,8 @@ def test_proxy_preserves_signed_agent_challenge_submission_post_headers() -> Non
     assert upstream_headers["x-nonce"] == "miner-nonce"
     assert upstream_headers["x-timestamp"] == "1700000000"
     assert upstream_headers["x-public-header"] == "forward-me"
-    assert upstream_headers["x-platform-proxy"] == "true"
-    assert upstream_headers["x-platform-challenge-slug"] == "agent-challenge"
+    assert upstream_headers["x-base-proxy"] == "true"
+    assert upstream_headers["x-base-challenge-slug"] == "agent-challenge"
     assert "authorization" not in upstream_headers
     assert "x-admin-token" not in upstream_headers
 
@@ -1945,7 +1945,7 @@ def test_signed_upload_bridge_verifies_and_forwards_internal_request() -> None:
             "X-Nonce": "nonce-1",
             "X-Timestamp": "1000",
             "X-Submission-Filename": "project.zip",
-            "X-Platform-Verified-Hotkey": "spoof",
+            "X-Base-Verified-Hotkey": "spoof",
         },
     )
 
@@ -1953,9 +1953,9 @@ def test_signed_upload_bridge_verifies_and_forwards_internal_request() -> None:
     assert response.json()["id"] == "sub-1"
     headers = captured["headers"]
     assert headers["authorization"] == "Bearer challenge-token"  # type: ignore[index]
-    assert headers["x-platform-verified-hotkey"] == "hk"  # type: ignore[index]
-    assert headers["x-platform-verified-uid"] == "7"  # type: ignore[index]
-    assert headers["x-platform-verified-nonce"] == "nonce-1"  # type: ignore[index]
+    assert headers["x-base-verified-hotkey"] == "hk"  # type: ignore[index]
+    assert headers["x-base-verified-uid"] == "7"  # type: ignore[index]
+    assert headers["x-base-verified-nonce"] == "nonce-1"  # type: ignore[index]
     assert headers["x-submission-filename"] == "project.zip"  # type: ignore[index]
     assert captured["body"] == b"zip-bytes"
 
@@ -2127,7 +2127,7 @@ def test_signed_upload_bridge_bypass_forwards_unknown_without_uid() -> None:
             "X-Signature": "valid",
             "X-Nonce": "nonce-bypass-unknown",
             "X-Timestamp": "1000",
-            "X-Platform-Verified-Uid": "spoof",
+            "X-Base-Verified-Uid": "spoof",
         },
     )
 
@@ -2135,9 +2135,9 @@ def test_signed_upload_bridge_bypass_forwards_unknown_without_uid() -> None:
     assert response.json() == {"id": "sub-bypass", "status": "pending"}
     headers = captured["headers"]
     assert headers["authorization"] == "Bearer challenge-token"
-    assert headers["x-platform-verified-hotkey"] == "unknown"
-    assert headers["x-platform-verified-nonce"] == "nonce-bypass-unknown"
-    assert "x-platform-verified-uid" not in headers
+    assert headers["x-base-verified-hotkey"] == "unknown"
+    assert headers["x-base-verified-nonce"] == "nonce-bypass-unknown"
+    assert "x-base-verified-uid" not in headers
     assert captured["body"] == b"zip-bytes"
 
 
@@ -2300,22 +2300,22 @@ def test_production_admin_accepts_pinned_image_and_latest_digest_update() -> Non
 
     response = client.post(
         "/v1/admin/challenges",
-        json={**_payload(), "image": f"ghcr.io/platformnetwork/demo:1.2.3@{digest}"},
+        json={**_payload(), "image": f"ghcr.io/baseintelligence/demo:1.2.3@{digest}"},
         headers={"X-Admin-Token": "admin-secret"},
     )
     assert response.status_code == 201
 
     patch = client.patch(
         "/v1/admin/challenges/demo",
-        json={"image": f"ghcr.io/platformnetwork/demo:latest@{digest}"},
+        json={"image": f"ghcr.io/baseintelligence/demo:latest@{digest}"},
         headers={"X-Admin-Token": "admin-secret"},
     )
     assert patch.status_code == 200
-    assert patch.json()["image"] == f"ghcr.io/platformnetwork/demo:latest@{digest}"
+    assert patch.json()["image"] == f"ghcr.io/baseintelligence/demo:latest@{digest}"
 
     unsafe_patch = client.patch(
         "/v1/admin/challenges/demo",
-        json={"image": "ghcr.io/platformnetwork/demo:latest"},
+        json={"image": "ghcr.io/baseintelligence/demo:latest"},
         headers={"X-Admin-Token": "admin-secret"},
     )
     assert unsafe_patch.status_code == 400

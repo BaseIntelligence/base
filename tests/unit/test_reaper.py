@@ -12,16 +12,16 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
-from platform_network.config.settings import Settings
-from platform_network.master.docker_broker import EscapeHatchCommandResult
-from platform_network.master.swarm_backend import SwarmCommandResult
-from platform_network.master.workload_ledger import (
+from base.config.settings import Settings
+from base.master.docker_broker import EscapeHatchCommandResult
+from base.master.swarm_backend import SwarmCommandResult
+from base.master.workload_ledger import (
     WorkloadEntry,
     WorkloadKind,
     WorkloadLedger,
 )
-from platform_network.supervisor.health import BrokerHealthGate
-from platform_network.supervisor.reaper import (
+from base.supervisor.health import BrokerHealthGate
+from base.supervisor.reaper import (
     REAPER_TASK_NAME,
     EscapeHatchContainerSource,
     ReaperSourceError,
@@ -29,7 +29,7 @@ from platform_network.supervisor.reaper import (
     TimeoutReaper,
     build_reaper_task,
 )
-from platform_network.supervisor.tasks import build_scheduled_tasks
+from base.supervisor.tasks import build_scheduled_tasks
 
 UTC = UTC
 T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -420,13 +420,13 @@ def test_unhealthy_gate_does_not_disable_reaping() -> None:
 
 _SERVICE_INSPECT_JOB = (
     '{"ID": "fullid0123456789abcdef00x", "Spec": {"Labels": '
-    '{"platform.challenge": "demo", "platform.job": "j1"}, '
+    '{"base.challenge": "demo", "base.job": "j1"}, '
     '"Mode": {"ReplicatedJob": {"MaxConcurrent": 1}}}}'
 )
 _SERVICE_INSPECT_SERVICE = (
     '{"ID": "svcfullid0123456789abcdef", "Spec": {"Labels": '
-    '{"platform.component": "challenge", '
-    '"platform.challenge.slug": "prism"}, '
+    '{"base.component": "challenge", '
+    '"base.challenge.slug": "prism"}, '
     '"Mode": {"Replicated": {"Replicas": 1}}}}'
 )
 _TASK_STATUS_RUNNING = (
@@ -481,16 +481,16 @@ def test_swarm_source_raises_when_listing_fails() -> None:
 
 
 _CONTAINER_INSPECT = (
-    '{"Config": {"Labels": {"platform.challenge": "demo", '
-    '"platform.job": "j1"}}, '
+    '{"Config": {"Labels": {"base.challenge": "demo", '
+    '"base.job": "j1"}}, '
     '"State": {"StartedAt": "2026-01-01T00:00:00.5Z"}}'
 )
 _CONTAINER_INSPECT_NO_SLUG = (
-    '{"Config": {"Labels": {"platform.challenge.slug": "prism"}}, '
+    '{"Config": {"Labels": {"base.challenge.slug": "prism"}}, '
     '"State": {"StartedAt": "2026-01-01T00:00:00Z"}}'
 )
 _CONTAINER_INSPECT_NOT_STARTED = (
-    '{"Config": {"Labels": {"platform.challenge": "demo"}}, '
+    '{"Config": {"Labels": {"base.challenge": "demo"}}, '
     '"State": {"StartedAt": "0001-01-01T00:00:00Z"}}'
 )
 
@@ -510,7 +510,7 @@ def test_escape_hatch_source_lists_started_containers() -> None:
 
     source = EscapeHatchContainerSource(runner=FakeEscapeRunner(handler))
     entries = {entry.key: entry for entry in source.list_workloads()}
-    # full2 has no platform.challenge label (long-lived challenge API
+    # full2 has no base.challenge label (long-lived challenge API
     # container) and is excluded.
     assert set(entries) == {"full1", "full3"}
     assert entries["full1"].kind == "escape_hatch_container"

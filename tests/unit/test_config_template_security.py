@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from platform_network.config.loader import load_settings
-from platform_network.config.settings import MasterSettings, ValidatorSettings
-from platform_network.security.tokens import generate_token, hash_token, verify_token
-from platform_network.template_engine import (
+from base.config.loader import load_settings
+from base.config.settings import MasterSettings, ValidatorSettings
+from base.security.tokens import generate_token, hash_token, verify_token
+from base.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
 )
@@ -16,7 +16,7 @@ from platform_network.template_engine import (
 
 def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
     root = Path(__file__).resolve().parents[2]
-    expected = "https://chain.platform.network"
+    expected = "https://chain.joinbase.ai"
 
     assert MasterSettings().registry_url == expected
     assert ValidatorSettings().registry_url == expected
@@ -57,7 +57,7 @@ def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
 def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() -> None:
     root = Path(__file__).resolve().parents[2]
     registry_facing_files = [
-        root / "src" / "platform_network" / "config" / "settings.py",
+        root / "src" / "base" / "config" / "settings.py",
         root / "config" / "master.example.yaml",
         root / "config" / "validator.example.yaml",
         root / "docs" / "validator" / "README.md",
@@ -88,11 +88,11 @@ def test_load_settings_yaml(tmp_path: Path) -> None:
 
 def test_load_settings_parses_complex_env(monkeypatch) -> None:
     monkeypatch.setenv(
-        "PLATFORM_DOCKER__BROKER_ALLOWED_IMAGES",
-        '["ghcr.io/platformnetwork/"]',
+        "BASE_DOCKER__BROKER_ALLOWED_IMAGES",
+        '["ghcr.io/baseintelligence/"]',
     )
 
-    assert load_settings().docker.broker_allowed_images == ["ghcr.io/platformnetwork/"]
+    assert load_settings().docker.broker_allowed_images == ["ghcr.io/baseintelligence/"]
 
 
 def test_render_challenge_template(tmp_path: Path) -> None:
@@ -120,7 +120,7 @@ def test_production_settings_require_postgres_safe_prefixes_and_tls(
                 "  url: postgresql+asyncpg://user:pass@postgres.platform/platform",
                 "docker:",
                 "  broker_allowed_images:",
-                "    - ghcr.io/platformnetwork/",
+                "    - ghcr.io/baseintelligence/",
             ]
         ),
         encoding="utf-8",
@@ -141,10 +141,10 @@ def test_production_settings_reject_sqlite_broad_prefixes_and_insecure_tls(
             [
                 "environment: production",
                 "database:",
-                "  url: sqlite+aiosqlite:////tmp/platform.sqlite3",
+                "  url: sqlite+aiosqlite:////tmp/base.sqlite3",
                 "docker:",
                 "  broker_allowed_images:",
-                "    - platformnetwork/",
+                "    - baseintelligence/",
             ]
         ),
         encoding="utf-8",
@@ -161,7 +161,7 @@ def test_production_settings_reject_sqlite_broad_prefixes_and_insecure_tls(
                 "  url: postgresql+asyncpg://user:pass@postgres.platform/platform",
                 "docker:",
                 "  broker_allowed_images:",
-                "    - platformnetwork/",
+                "    - baseintelligence/",
             ]
         ),
         encoding="utf-8",

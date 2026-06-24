@@ -8,8 +8,8 @@ from typing import cast
 import pytest
 from sqlalchemy import Enum as SQLAlchemyEnum
 
-from platform_network.config.policy import validate_database_url
-from platform_network.db import (
+from base.config.policy import validate_database_url
+from base.db import (
     Base,
     Challenge,
     ChallengeAuth,
@@ -28,7 +28,7 @@ from platform_network.db import (
     migrations,
     session_scope,
 )
-from platform_network.schemas.health import HealthResponse, VersionResponse
+from base.schemas.health import HealthResponse, VersionResponse
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 

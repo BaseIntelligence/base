@@ -10,13 +10,13 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from platform_network.challenge_sdk.executors.docker import DockerExecutorError
-from platform_network.master.docker_broker import (
+from base.challenge_sdk.executors.docker import DockerExecutorError
+from base.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
     create_docker_broker_app,
 )
-from platform_network.schemas.docker_broker import (
+from base.schemas.docker_broker import (
     BrokerCleanupResponse,
     BrokerLimits,
     BrokerListResponse,
@@ -76,7 +76,7 @@ def test_broker_auth_and_run_materializes_mount(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer wrong",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -91,7 +91,7 @@ def test_broker_auth_and_run_materializes_mount(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -122,7 +122,7 @@ def test_broker_rejects_disallowed_image(tmp_path: Path) -> None:
             DockerBrokerConfig(
                 docker_bin="true",
                 workspace_dir=tmp_path / "work",
-                allowed_images=("platformnetwork/",),
+                allowed_images=("baseintelligence/",),
             )
         ),
     )
@@ -130,7 +130,7 @@ def test_broker_rejects_disallowed_image(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -164,14 +164,14 @@ def test_escape_validation_accepts_canonical_form_of_short_image(
             docker_bin="true",
             workspace_dir=tmp_path / "work",
             allowed_images=(
-                "ghcr.io/platformnetwork/",
-                "docker.io/platformnetwork/swe-forge:",
+                "ghcr.io/baseintelligence/",
+                "docker.io/baseintelligence/swe-forge:",
             ),
         )
     )
 
     service._validate_escape_request(
-        _escape_request("platformnetwork/swe-forge:vllm-project-vllm-omni-2567")
+        _escape_request("baseintelligence/swe-forge:vllm-project-vllm-omni-2567")
     )
 
 
@@ -185,15 +185,15 @@ def test_escape_validation_rejects_sibling_namespace_via_canonical(
             docker_bin="true",
             workspace_dir=tmp_path / "work",
             allowed_images=(
-                "ghcr.io/platformnetwork/",
-                "docker.io/platformnetwork/swe-forge:",
+                "ghcr.io/baseintelligence/",
+                "docker.io/baseintelligence/swe-forge:",
             ),
         )
     )
 
     with pytest.raises(DockerExecutorError, match="Docker image is not allowed"):
         service._validate_escape_request(
-            _escape_request("platformnetwork/swe-forge-evil:tag")
+            _escape_request("baseintelligence/swe-forge-evil:tag")
         )
 
 
@@ -212,7 +212,7 @@ def test_broker_rejects_unsafe_network(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -228,7 +228,7 @@ def test_broker_rejects_unsafe_network(tmp_path: Path) -> None:
 
 
 def test_broker_forwards_hardened_limits(monkeypatch, tmp_path: Path) -> None:
-    import platform_network.master.docker_broker as broker_module
+    import base.master.docker_broker as broker_module
 
     captured: dict[str, Any] = {}
 
@@ -266,7 +266,7 @@ def test_broker_forwards_hardened_limits(monkeypatch, tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -313,7 +313,7 @@ def test_broker_rejects_weakened_hardening(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -343,7 +343,7 @@ def test_broker_rejects_privileged_jobs(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -376,7 +376,7 @@ def test_broker_rejects_unsafe_file_mount_source(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -413,7 +413,7 @@ def test_broker_rejects_unsafe_archive_member(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -450,7 +450,7 @@ def test_broker_rejects_invalid_archive_payload(tmp_path: Path) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-1",
@@ -490,7 +490,7 @@ def test_broker_cleanup_requires_auth_and_delegates(tmp_path: Path) -> None:
         "/v1/docker/cleanup",
         headers={
             "authorization": "Bearer wrong",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={"job_id": "job-1"},
     )
@@ -500,7 +500,7 @@ def test_broker_cleanup_requires_auth_and_delegates(tmp_path: Path) -> None:
         "/v1/docker/cleanup",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={"job_id": "job-1"},
     )
@@ -525,7 +525,7 @@ def test_broker_list_is_scoped_to_authenticated_challenge(tmp_path: Path) -> Non
                         "image": "python",
                         "status": "running",
                         "job_id": "job-1",
-                        "labels": {"platform.challenge": "agent"},
+                        "labels": {"base.challenge": "agent"},
                     }
                 ]
             )
@@ -537,7 +537,7 @@ def test_broker_list_is_scoped_to_authenticated_challenge(tmp_path: Path) -> Non
         "/v1/docker/list",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "other",
+            "x-base-challenge-slug": "other",
         },
         json={"job_id": "job-1"},
     )
@@ -547,7 +547,7 @@ def test_broker_list_is_scoped_to_authenticated_challenge(tmp_path: Path) -> Non
         "/v1/docker/list",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={"job_id": "job-1"},
     )

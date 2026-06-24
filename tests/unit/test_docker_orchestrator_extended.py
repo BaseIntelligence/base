@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from platform_network.master.docker_orchestrator import (
+from base.master.docker_orchestrator import (
     DEFAULT_CHALLENGE_PORT,
     DEFAULT_DOCKER_BROKER_URL,
     DEFAULT_SQLITE_PATH,
@@ -87,7 +87,7 @@ def test_challenge_spec_and_resource_validation() -> None:
     spec = ChallengeSpec(slug=" Demo One ", image="ghcr.io/org/demo:1", port=9000)
     assert spec.safe_slug == "demo-one"
     assert spec.container_name == "challenge-demo-one"
-    assert spec.sqlite_volume_name == "platform_demo_one_sqlite"
+    assert spec.sqlite_volume_name == "base_demo_one_sqlite"
     assert spec.internal_base_url == "http://challenge-demo-one:9000"
     kwargs = ChallengeResources(cpu=1.5, memory="1g").as_container_kwargs()
     assert kwargs["nano_cpus"] == 1_500_000_000
@@ -144,7 +144,7 @@ def test_orchestrator_client_network_volume_pull_and_env(tmp_path: Path) -> None
     env = orchestrator._build_environment(spec)  # noqa: SLF001
     assert env["EXISTING"] == "1"
     assert env["CHALLENGE_DATABASE_URL"] == f"sqlite+aiosqlite:///{DEFAULT_SQLITE_PATH}"
-    assert env["CHALLENGE_SHARED_TOKEN_FILE"] == "/run/secrets/platform/challenge_token"
+    assert env["CHALLENGE_SHARED_TOKEN_FILE"] == "/run/secrets/base/challenge_token"
     paths = orchestrator._write_secret_files(spec)  # noqa: SLF001
     assert paths["challenge_token"].read_text(encoding="utf-8") == "tok"
     assert paths["api-key"].read_text(encoding="utf-8") == "secret"
@@ -221,9 +221,9 @@ def test_orchestrator_enables_docker_executor_broker(tmp_path: Path) -> None:
     assert env["CHALLENGE_DOCKER_BACKEND"] == "broker"
     assert env["CHALLENGE_DOCKER_BROKER_URL"] == "http://broker:8082"
     assert env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
-        "/run/secrets/platform/docker_broker_token"
+        "/run/secrets/base/docker_broker_token"
     )
-    assert DEFAULT_DOCKER_BROKER_URL == "http://platform-docker-broker:8082"
+    assert DEFAULT_DOCKER_BROKER_URL == "http://base-docker-broker:8082"
     assert "/var/run/docker.sock" not in repr(mounts)
 
 
@@ -302,12 +302,12 @@ def test_get_json_errors(monkeypatch: pytest.MonkeyPatch) -> None:
             return json.dumps({"ok": True}).encode()
 
     monkeypatch.setattr(
-        "platform_network.master.docker_orchestrator.urlopen",
+        "base.master.docker_orchestrator.urlopen",
         lambda *a, **k: Response(),
     )
     assert orchestrator._get_json("http://x") == {"ok": True}  # noqa: SLF001
     monkeypatch.setattr(
-        "platform_network.master.docker_orchestrator.urlopen",
+        "base.master.docker_orchestrator.urlopen",
         lambda *a, **k: ResponseWithBytes(b"[]"),
     )
     with pytest.raises(DockerOrchestrationError):

@@ -19,14 +19,14 @@ from typing import Any
 
 import pytest
 
-import platform_network.challenge_sdk.executors.docker as executor_module
-from platform_network.challenge_sdk.executors.docker import (
+import base.challenge_sdk.executors.docker as executor_module
+from base.challenge_sdk.executors.docker import (
     DockerExecutor,
     DockerLimits,
     DockerMount,
     DockerRunSpec,
 )
-from platform_network.challenge_sdk.mount_transport import (
+from base.challenge_sdk.mount_transport import (
     MAX_ENV_CHUNK_BYTES,
     TransportMount,
     build_bootstrap_command,
@@ -44,9 +44,9 @@ def _drain_section(index: int, source: Path) -> str:
 
     blob = encode_dir_archive(source)
     return (
-        f"@@PLATFORM_BROKER_MOUNT_OUT[{index}]:BEGIN@@\n"
+        f"@@BASE_BROKER_MOUNT_OUT[{index}]:BEGIN@@\n"
         f"{blob}\n"
-        f"@@PLATFORM_BROKER_MOUNT_OUT[{index}]:END@@\n"
+        f"@@BASE_BROKER_MOUNT_OUT[{index}]:END@@\n"
     )
 
 
@@ -77,7 +77,7 @@ def test_broker_bootstrap_wraps_command_and_drains_only_writable() -> None:
     assert "base64 -d | tar -xzf - -C '/artifacts'" in script
     assert "tar -czf - -C '/artifacts' . | base64" in script
     assert "tar -czf - -C '/workspace' . | base64" not in script
-    assert "exit $__platform_rc" in script
+    assert "exit $__base_rc" in script
 
 
 def test_broker_drain_parse_strip_and_extract_roundtrip(tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ def test_broker_drain_parse_strip_and_extract_roundtrip(tmp_path: Path) -> None:
     ) == json.dumps({"schema_version": "prism_run_manifest.v1"})
 
     cleaned = strip_drain_sections(stdout)
-    assert "PLATFORM_BROKER_MOUNT_OUT" not in cleaned
+    assert "BASE_BROKER_MOUNT_OUT" not in cleaned
     assert "PRISM_METRICS_JSON=" in cleaned
 
 
@@ -129,9 +129,9 @@ def test_broker_encode_mount_in_env_chunks_large_archive(tmp_path: Path) -> None
 
 def test_broker_drain_parse_skips_garbled_section() -> None:
     stdout = (
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:BEGIN@@\n"
         "not~valid~base64~\n"
-        "@@PLATFORM_BROKER_MOUNT_OUT[1]:END@@\n"
+        "@@BASE_BROKER_MOUNT_OUT[1]:END@@\n"
     )
     assert parse_drained_archives(stdout) == {}
 
@@ -273,20 +273,20 @@ def _broker_executor() -> DockerExecutor:
         backend="broker",
         broker_url="http://broker",
         broker_token="tok",
-        allowed_images=("ghcr.io/platformnetwork/",),
+        allowed_images=("ghcr.io/baseintelligence/",),
     )
 
 
 def _gpu_spec(workspace: Path, artifacts: Path) -> DockerRunSpec:
     return DockerRunSpec(
-        image="ghcr.io/platformnetwork/prism-evaluator:latest",
+        image="ghcr.io/baseintelligence/prism-evaluator:latest",
         command=("torchrun", "/workspace/runner.py", "/workspace/payload.json"),
         mounts=(
             DockerMount(workspace, "/workspace"),
             DockerMount(artifacts, "/artifacts", read_only=False),
         ),
         workdir="/workspace",
-        labels={"platform.job": "sub-1"},
+        labels={"base.job": "sub-1"},
         limits=DockerLimits(network="none", gpu_count=1),
     )
 
@@ -331,7 +331,7 @@ def test_broker_backend_restores_drained_writable_mount(
     # The read-only workspace source is untouched.
     assert not (workspace / "prism_run_manifest.v1.json").exists()
     # Drain sections are stripped from the returned logs; real output kept.
-    assert "PLATFORM_BROKER_MOUNT_OUT" not in result.stdout
+    assert "BASE_BROKER_MOUNT_OUT" not in result.stdout
     assert "PRISM_METRICS_JSON=" in result.stdout
     assert result.returncode == 0
 

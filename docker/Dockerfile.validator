@@ -3,9 +3,9 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_SYSTEM_PYTHON=1 \
-    HOME=/var/lib/platform \
-    PLATFORM_DOCKER__NETWORK_NAME=platform_challenges \
-    PLATFORM_DOCKER__SECRET_DIR=/var/lib/platform/secrets
+    HOME=/var/lib/base \
+    BASE_DOCKER__NETWORK_NAME=base_challenges \
+    BASE_DOCKER__SECRET_DIR=/var/lib/base/secrets
 
 WORKDIR /app
 
@@ -16,13 +16,13 @@ RUN apt-get update \
 
 COPY . .
 RUN if [ -f pyproject.toml ]; then uv pip install --system -e ".[validator]"; fi
-RUN groupadd --system --gid 1000 platform \
-    && useradd --system --uid 1000 --gid platform --home-dir /var/lib/platform --shell /usr/sbin/nologin platform \
-    && mkdir -p /var/lib/platform /var/lib/platform/secrets /var/lib/platform-db \
-    && chown -R 1000:1000 /var/lib/platform /var/lib/platform-db
+RUN groupadd --system --gid 1000 base \
+    && useradd --system --uid 1000 --gid base --home-dir /var/lib/base --shell /usr/sbin/nologin base \
+    && mkdir -p /var/lib/base /var/lib/base/secrets /var/lib/base-db \
+    && chown -R 1000:1000 /var/lib/base /var/lib/base-db
 
-VOLUME ["/var/lib/platform"]
+VOLUME ["/var/lib/base"]
 
 USER 1000:1000
 
-CMD ["platform", "validator", "run", "--config", "config/validator.example.yaml"]
+CMD ["base", "validator", "run", "--config", "config/validator.example.yaml"]

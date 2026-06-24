@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from platform_network.challenge_sdk.executors.docker import (
+from base.challenge_sdk.executors.docker import (
     DockerContainerInfo,
     DockerExecutor,
     DockerExecutorError,
@@ -25,15 +25,15 @@ from platform_network.challenge_sdk.executors.docker import (
 
 def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="platformnetwork/swe-forge:task",
+        image="baseintelligence/swe-forge:task",
         command=("bash", "/workspace/forge/evaluate.sh"),
         mounts=(DockerMount(tmp_path, "/workspace/forge"),),
         workdir="/workspace/repo",
-        labels={"platform.job": "job-1", "platform.task": "task-1"},
+        labels={"base.job": "job-1", "base.task": "task-1"},
         limits=DockerLimits(cpus=1.5, memory="512m", pids_limit=64),
     )
     executor = DockerExecutor(
-        challenge="agent", allowed_images=("platformnetwork/swe-forge:",)
+        challenge="agent", allowed_images=("baseintelligence/swe-forge:",)
     )
 
     cmd = executor.build_run_command(spec, "agent-job-task")
@@ -49,11 +49,11 @@ def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
     assert "--init" in cmd
     assert "--memory-swap" in cmd and "512m" in cmd
     assert "--ulimit" in cmd and "nofile=1024:1024" in cmd
-    assert "--label" in cmd and "platform.challenge=agent" in cmd
-    assert "platform.challenge=evil" not in cmd
+    assert "--label" in cmd and "base.challenge=agent" in cmd
+    assert "base.challenge=evil" not in cmd
     assert f"{tmp_path.resolve()}:/workspace/forge:ro" in cmd
     assert cmd[-3:] == [
-        "platformnetwork/swe-forge:task",
+        "baseintelligence/swe-forge:task",
         "bash",
         "/workspace/forge/evaluate.sh",
     ]
@@ -61,13 +61,13 @@ def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
 
 def test_build_run_command_emits_gpus_when_gpu_requested(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="platformnetwork/swe-forge:task",
+        image="baseintelligence/swe-forge:task",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/workspace/forge"),),
         limits=DockerLimits(gpu_count=2),
     )
     cmd = DockerExecutor(
-        challenge="agent", allowed_images=("platformnetwork/",)
+        challenge="agent", allowed_images=("baseintelligence/",)
     ).build_run_command(spec, "name")
 
     assert "--gpus" in cmd
@@ -76,12 +76,12 @@ def test_build_run_command_emits_gpus_when_gpu_requested(tmp_path: Path) -> None
 
 def test_build_run_command_omits_gpus_without_gpu_request(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="platformnetwork/swe-forge:task",
+        image="baseintelligence/swe-forge:task",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/workspace/forge"),),
     )
     cmd = DockerExecutor(
-        challenge="agent", allowed_images=("platformnetwork/",)
+        challenge="agent", allowed_images=("baseintelligence/",)
     ).build_run_command(spec, "name")
 
     assert "--gpus" not in cmd
@@ -125,17 +125,17 @@ def test_docker_limits_reject_unsafe_values(kwargs: dict[str, Any]) -> None:
 
 def test_reserved_labels_cannot_be_overridden(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="platformnetwork/swe-forge:task",
+        image="baseintelligence/swe-forge:task",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/workspace/forge"),),
-        labels={"platform.challenge": "evil", "platform.job": "job-1"},
+        labels={"base.challenge": "evil", "base.job": "job-1"},
     )
     cmd = DockerExecutor(
-        challenge="agent", allowed_images=("platformnetwork/",)
+        challenge="agent", allowed_images=("baseintelligence/",)
     ).build_run_command(spec, "name")
 
-    assert "platform.challenge=agent" in cmd
-    assert "platform.challenge=evil" not in cmd
+    assert "base.challenge=agent" in cmd
+    assert "base.challenge=evil" not in cmd
 
 
 @pytest.mark.parametrize(
@@ -159,7 +159,7 @@ def test_rejects_images_outside_allowlist(tmp_path: Path) -> None:
         mounts=(DockerMount(tmp_path, "/x"),),
     )
     with pytest.raises(DockerExecutorError):
-        DockerExecutor(challenge="agent", allowed_images=("platformnetwork/",)).run(
+        DockerExecutor(challenge="agent", allowed_images=("baseintelligence/",)).run(
             spec, timeout_seconds=1
         )
 
@@ -167,7 +167,7 @@ def test_rejects_images_outside_allowlist(tmp_path: Path) -> None:
 def test_rejects_invalid_image_pull_policy_before_broker_post(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
+    import base.challenge_sdk.executors.docker as module
 
     called = False
 
@@ -196,14 +196,14 @@ def test_rejects_invalid_image_pull_policy_before_broker_post(
 
 def test_allows_default_network_for_broker_compatible_jobs(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="platformnetwork/swe-forge:task",
+        image="baseintelligence/swe-forge:task",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/x"),),
         limits=DockerLimits(network="default"),
     )
 
     cmd = DockerExecutor(
-        challenge="agent", allowed_images=("platformnetwork/",)
+        challenge="agent", allowed_images=("baseintelligence/",)
     ).build_run_command(spec, "name")
 
     assert "--network" in cmd and "default" in cmd
@@ -226,9 +226,9 @@ def test_cleanup_job_uses_labels(monkeypatch: pytest.MonkeyPatch) -> None:
         "ps",
         "-aq",
         "--filter",
-        "label=platform.challenge=agent",
+        "label=base.challenge=agent",
         "--filter",
-        "label=platform.job=job-1",
+        "label=base.job=job-1",
     ]
     assert calls[1] == ["docker", "rm", "-f", "abc", "def"]
 
@@ -248,7 +248,7 @@ def test_list_containers_uses_challenge_and_job_filters(
                     "Image": "python:3.12",
                     "Status": "Up",
                     "CreatedAt": "now",
-                    "Labels": "platform.challenge=agent,platform.job=job-1",
+                    "Labels": "base.challenge=agent,base.job=job-1",
                 }
             )
             + "\n",
@@ -264,9 +264,9 @@ def test_list_containers_uses_challenge_and_job_filters(
         "ps",
         "-a",
         "--filter",
-        "label=platform.challenge=agent",
+        "label=base.challenge=agent",
         "--filter",
-        "label=platform.job=job-1",
+        "label=base.job=job-1",
         "--format",
         "{{json .}}",
     ]
@@ -278,15 +278,15 @@ def test_list_containers_uses_challenge_and_job_filters(
             status="Up",
             job_id="job-1",
             created="now",
-            labels={"platform.challenge": "agent", "platform.job": "job-1"},
+            labels={"base.challenge": "agent", "base.job": "job-1"},
         )
     ]
 
 
-def test_platform_sdk_broker_backend_posts_run_request(
+def test_base_sdk_broker_backend_posts_run_request(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
+    import base.challenge_sdk.executors.docker as module
 
     (tmp_path / "input.txt").write_text("ok", encoding="utf-8")
     captured: dict[str, Any] = {}
@@ -329,13 +329,13 @@ def test_platform_sdk_broker_backend_posts_run_request(
             command=("python", "-V"),
             workdir="/workspace/task",
             env={
-                "PLATFORM_RUNNER_MODE": "controlled",
-                "PLATFORM_TOKEN_FILE": "/var/run/secrets/platform/token",
+                "BASE_RUNNER_MODE": "controlled",
+                "BASE_TOKEN_FILE": "/var/run/secrets/base/token",
             },
             mounts=(DockerMount(tmp_path, "/mnt"),),
             labels={
-                "platform.job": "job-1",
-                "platform.task": "terminal-bench-1",
+                "base.job": "job-1",
+                "base.task": "terminal-bench-1",
                 "custom.label": "survives",
             },
             limits=DockerLimits(
@@ -359,8 +359,8 @@ def test_platform_sdk_broker_backend_posts_run_request(
     assert payload["workdir"] == "/workspace/task"
     assert payload["image_pull_policy"] == "IfNotPresent"
     assert payload["env"] == {
-        "PLATFORM_RUNNER_MODE": "controlled",
-        "PLATFORM_TOKEN_FILE": "/var/run/secrets/platform/token",
+        "BASE_RUNNER_MODE": "controlled",
+        "BASE_TOKEN_FILE": "/var/run/secrets/base/token",
     }
     assert payload["mounts"] == [
         {
@@ -372,8 +372,8 @@ def test_platform_sdk_broker_backend_posts_run_request(
         }
     ]
     assert payload["labels"] == {
-        "platform.job": "job-1",
-        "platform.task": "terminal-bench-1",
+        "base.job": "job-1",
+        "base.task": "terminal-bench-1",
         "custom.label": "survives",
     }
     assert payload["limits"]["cpus"] == 1.5
@@ -387,7 +387,7 @@ def test_platform_sdk_broker_backend_posts_run_request(
 
 
 def test_broker_backend_lists_containers(monkeypatch: pytest.MonkeyPatch) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
+    import base.challenge_sdk.executors.docker as module
 
     captured: dict[str, Any] = {}
 
@@ -408,7 +408,7 @@ def test_broker_backend_lists_containers(monkeypatch: pytest.MonkeyPatch) -> Non
                             "image": "python",
                             "status": "running",
                             "job_id": "job-1",
-                            "labels": {"platform.challenge": "agent"},
+                            "labels": {"base.challenge": "agent"},
                         }
                     ]
                 }
@@ -435,7 +435,7 @@ def test_broker_backend_lists_containers(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_broker_backend_cleanup_posts_job_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import platform_network.challenge_sdk.executors.docker as module
+    import base.challenge_sdk.executors.docker as module
 
     captured: dict[str, Any] = {}
 
@@ -472,10 +472,10 @@ def test_broker_backend_cleanup_posts_job_request(
 
 def test_template_executor_matches_shared_sdk() -> None:
     root = Path(__file__).resolve().parents[2]
-    shared = root / "src/platform_network/challenge_sdk/executors/docker.py"
+    shared = root / "src/base/challenge_sdk/executors/docker.py"
     template = (
         root
-        / "src/platform_network/templates/challenge/src"
+        / "src/base/templates/challenge/src"
         / "__package_name__/sdk/executors/docker.py.j2"
     )
     assert template.read_text(encoding="utf-8") == shared.read_text(encoding="utf-8")
@@ -533,7 +533,7 @@ def test_encode_mount_drops_broken_symlink_and_symlinked_dir(tmp_path: Path) -> 
 
 
 def test_encode_mount_output_passes_broker_validation(tmp_path: Path) -> None:
-    from platform_network.master.docker_broker import _validate_tar_members
+    from base.master.docker_broker import _validate_tar_members
 
     (tmp_path / "agent.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "pkg").mkdir()

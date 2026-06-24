@@ -9,11 +9,11 @@
         "container_id": "<ID>",
         "container_name": "<ID>",
         "created": "<TS>",
-        "image": "ghcr.io/platformnetwork/challenge:1.2.3",
+        "image": "ghcr.io/baseintelligence/challenge:1.2.3",
         "job_id": "job-1",
         "labels": {
-          "platform.job": "job-1",
-          "platform.task": "task-1"
+          "base.job": "job-1",
+          "base.task": "task-1"
         },
         "status": "Exited (0) 2 minutes ago",
         "task_id": "task-1"

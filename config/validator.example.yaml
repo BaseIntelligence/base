@@ -1,5 +1,5 @@
 network:
-  name: platform
+  name: base
   netuid: 100
   chain_endpoint: null
   wallet_name: default
@@ -9,11 +9,11 @@ network:
 
 # If the validator infrastructure requirements are too high, operators can use
 # Bittensor CHK / stake weight check to give validation power to the recommended
-# Platform validator hotkey instead of running this validator stack themselves:
+# BASE validator hotkey instead of running this validator stack themselves:
 # 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At
 
 validator:
-  registry_url: https://chain.platform.network
+  registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null
   weights_interval_seconds: 360
@@ -22,17 +22,17 @@ validator:
   weights_freshness_seconds: 720
 
 database:
-  url: postgresql+asyncpg://platform:<password>@postgres.platform.svc.cluster.local/platform
+  url: postgresql+asyncpg://base:<password>@postgres.base.svc.cluster.local/base
 
 docker:
-  network_name: platform_challenges
-  secret_dir: /var/lib/platform/secrets
+  network_name: base_challenges
+  secret_dir: /var/lib/base/secrets
   internal_network: true
-  broker_url: http://platform-docker-broker:8082
+  broker_url: http://base-docker-broker:8082
   broker_allowed_images:
-    - ghcr.io/platformnetwork/
+    - ghcr.io/baseintelligence/
 
 observability:
   log_json: true
   sentry_dsn: null
-  otel_service_name: platform-validator
+  otel_service_name: base-validator

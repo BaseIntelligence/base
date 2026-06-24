@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from platform_network.config.loader import load_settings
-from platform_network.config.settings import Settings
-from platform_network.master.swarm_backend import SwarmCommandResult
-from platform_network.supervisor.config_source import ConfigSyncSource, _digest
-from platform_network.supervisor.config_sync import (
+from base.config.loader import load_settings
+from base.config.settings import Settings
+from base.master.swarm_backend import SwarmCommandResult
+from base.supervisor.config_source import ConfigSyncSource, _digest
+from base.supervisor.config_sync import (
     CONFIG_SYNC_INTERVAL_SECONDS,
     DEFAULT_CONFIG_TARGET_PATH,
     DEFAULT_ROLLOUT_SERVICES,
@@ -22,11 +22,11 @@ from platform_network.supervisor.config_sync import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_config_defaults_to_platform_subnet_netuid() -> None:
+def test_config_defaults_to_base_subnet_netuid() -> None:
     assert load_settings(None).network.netuid == 100
 
 
-def test_example_configs_default_to_platform_subnet_netuid() -> None:
+def test_example_configs_default_to_base_subnet_netuid() -> None:
     master_example = yaml.safe_load(
         (ROOT / "config" / "master.example.yaml").read_text(encoding="utf-8")
     )
@@ -45,10 +45,10 @@ def test_config_file_netuid_overrides_default(tmp_path: Path) -> None:
     assert load_settings(config).network.netuid == 42
 
 
-def test_default_github_source_contract_uses_platform_main_without_secrets() -> None:
+def test_default_github_source_contract_uses_base_main_without_secrets() -> None:
     source = ConfigSyncSource.default()
 
-    assert source.repository == "PlatformNetwork/platform"
+    assert source.repository == "BaseIntelligence/base"
     assert source.branch == "main"
     assert source.sync_secrets is False
     assert "deploy/swarm/master.yaml" in source.paths
@@ -61,7 +61,7 @@ def test_default_github_source_contract_uses_platform_main_without_secrets() -> 
 
 CONFIG_TEXT = "environment: production\n"
 CONFIG_DIGEST = _digest(CONFIG_TEXT)
-SWARM_SERVICES = ("platform-admin", "platform-broker")
+SWARM_SERVICES = ("base-admin", "base-broker")
 
 
 class FakeSwarmRunner:
@@ -203,12 +203,12 @@ def test_swarm_fetch_failure_logged_skip_tick_never_raises(
 ) -> None:
     runner = FakeSwarmRunner()
     sync = make_swarm_sync(tmp_path, runner, fetched=RuntimeError("github down"))
-    sync_logger = logging.getLogger("platform_network.supervisor.config_sync")
+    sync_logger = logging.getLogger("base.supervisor.config_sync")
     previously_disabled = sync_logger.disabled
     sync_logger.disabled = False
     try:
         with caplog.at_level(
-            logging.WARNING, logger="platform_network.supervisor.config_sync"
+            logging.WARNING, logger="base.supervisor.config_sync"
         ):
             sync.run_once()
     finally:
@@ -220,7 +220,7 @@ def test_swarm_fetch_failure_logged_skip_tick_never_raises(
 
 
 def test_swarm_rollout_failure_withholds_digest_and_retries(tmp_path: Path) -> None:
-    runner = FakeSwarmRunner(failing_services={"platform-broker"})
+    runner = FakeSwarmRunner(failing_services={"base-broker"})
     sync = make_swarm_sync(tmp_path, runner)
 
     first = sync.sync_once()
@@ -244,7 +244,7 @@ def test_swarm_rollout_failure_withholds_digest_and_retries(tmp_path: Path) -> N
 def test_swarm_missing_rollout_service_is_logged_skip_not_retry(
     tmp_path: Path,
 ) -> None:
-    runner = FakeSwarmRunner(missing_services={"platform-broker"})
+    runner = FakeSwarmRunner(missing_services={"base-broker"})
     sync = make_swarm_sync(tmp_path, runner)
 
     first = sync.sync_once()
@@ -261,7 +261,7 @@ def test_swarm_builder_returns_wired_scheduled_task(tmp_path: Path) -> None:
         Settings(),
         source=ConfigSyncSource.default(fetcher=lambda _: CONFIG_TEXT),
         target_path=tmp_path / "master.yaml",
-        rollout_services=("platform-admin",),
+        rollout_services=("base-admin",),
         runner=runner,
     )
 
@@ -270,21 +270,21 @@ def test_swarm_builder_returns_wired_scheduled_task(tmp_path: Path) -> None:
     task.run()
     assert (tmp_path / "master.yaml").read_text(encoding="utf-8") == CONFIG_TEXT
     assert runner.update_calls == [
-        ("docker", "service", "update", "--detach", "--force", "platform-admin")
+        ("docker", "service", "update", "--detach", "--force", "base-admin")
     ]
 
 
 def test_swarm_defaults_preserve_contract_and_exclude_self() -> None:
     assert CONFIG_SYNC_INTERVAL_SECONDS == 60.0
-    assert DEFAULT_CONFIG_TARGET_PATH == "/etc/platform/master.yaml"
+    assert DEFAULT_CONFIG_TARGET_PATH == "/etc/base/master.yaml"
     assert DEFAULT_ROLLOUT_SERVICES == (
-        "platform-proxy",
-        "platform-broker",
+        "base-proxy",
+        "base-broker",
     )
-    assert "platform-admin" not in DEFAULT_ROLLOUT_SERVICES
-    assert "platform-config-sync" not in DEFAULT_ROLLOUT_SERVICES
+    assert "base-admin" not in DEFAULT_ROLLOUT_SERVICES
+    assert "base-config-sync" not in DEFAULT_ROLLOUT_SERVICES
     source = ConfigSyncSource.default()
-    assert source.repository == "PlatformNetwork/platform"
+    assert source.repository == "BaseIntelligence/base"
     assert source.branch == "main"
     assert source.paths == ("deploy/swarm/master.yaml",)
     assert source.sync_secrets is False

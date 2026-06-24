@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-worker.sh — enroll THIS host as a CPU or GPU worker into the Platform
+# install-worker.sh — enroll THIS host as a CPU or GPU worker into the BASE
 # Docker Swarm, using the MANUAL join-token model (NO SSH).
 #
 # ============================================================================
@@ -12,13 +12,13 @@
 # manager first:
 #
 #     # on the MANAGER:
-#     platform master worker token --cpu      # or --gpu
+#     base master worker token --cpu      # or --gpu
 #       -> prints: docker swarm join --token <TOKEN> <MANAGER_IP>:2377
 #
 # then runs THIS script on the worker with that token + manager address, and
 # finally labels the node back ON THE MANAGER (printed at the end here):
 #
-#     platform master worker label <node> --workload cpu|gpu
+#     base master worker label <node> --workload cpu|gpu
 #
 # What this script does (in order):
 #   1. preflight       — docker present, required inputs supplied (read-only).
@@ -29,7 +29,7 @@
 #                                 `nvidia-smi`. Installed + dockerd restarted
 #                                 ONLY behind --restart-dockerd.
 #   3. swarm join      — docker swarm join --token <token> <manager-addr>.
-#   4. follow-up       — print the manager-side `platform master worker label`.
+#   4. follow-up       — print the manager-side `base master worker label`.
 #
 # Safety model (mirrors deploy/swarm/install-swarm.sh):
 #   * DEFAULT MODE IS DRY-RUN. With no flags the script prints every planned
@@ -125,7 +125,7 @@ usage() {
   cat <<'EOF'
 Usage: install-worker.sh --manager-addr <ip:2377> --workload cpu|gpu [OPTIONS]
 
-Enroll THIS host as a CPU or GPU worker into the Platform Docker Swarm using the
+Enroll THIS host as a CPU or GPU worker into the BASE Docker Swarm using the
 manual join-token model (no SSH). DEFAULT MODE IS DRY-RUN (prints planned
 actions, changes nothing).
 
@@ -148,9 +148,9 @@ Other:
   -h, --help                 Show this help.
 
 Get the token first ON THE MANAGER:
-  platform master worker token --cpu   # or --gpu
+  base master worker token --cpu   # or --gpu
 After this script joins, label the node ON THE MANAGER:
-  platform master worker label <node> --workload cpu|gpu
+  base master worker label <node> --workload cpu|gpu
 EOF
 }
 
@@ -326,7 +326,7 @@ print_followup() {
   log "============================================================"
   log "NEXT — run ON THE MANAGER node (NOT on this worker):"
   log "  1) Confirm the new node name:   docker node ls"
-  log "  2) Label this worker:           platform master worker label ${node} --workload ${WORKLOAD}"
+  log "  2) Label this worker:           base master worker label ${node} --workload ${WORKLOAD}"
   log "     (verify '${node}' against 'docker node ls'; it defaults to this host's hostname)"
   log "============================================================"
 }
@@ -338,7 +338,7 @@ main() {
   parse_args "$@"
 
   log "============================================================"
-  log "Platform Swarm worker enrollment (DRAFT)"
+  log "BASE Swarm worker enrollment (DRAFT)"
   if [[ "${APPLY}" == "true" ]]; then
     warn "RUNNING IN --apply MODE: mutating commands WILL execute."
   else

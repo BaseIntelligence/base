@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from platform_network.config.settings import Settings
-from platform_network.supervisor.health import BrokerHealthGate
-from platform_network.supervisor.self_update import (
+from base.config.settings import Settings
+from base.supervisor.health import BrokerHealthGate
+from base.supervisor.self_update import (
     STATE_ABORTED,
     STATE_COMMITTED,
     STATE_PENDING,
@@ -331,7 +331,7 @@ def test_builder_returns_named_task_and_inert_default_detector(
 
 
 def test_systemd_unit_launches_via_current_with_restart_always() -> None:
-    unit = (ROOT / "deploy" / "swarm" / "platform-supervisor.service").read_text()
+    unit = (ROOT / "deploy" / "swarm" / "base-supervisor.service").read_text()
     assert "Restart=always" in unit
-    assert "/var/lib/platform/supervisor/current" in unit
+    assert "/var/lib/base/supervisor/current" in unit
     assert "master supervisor" in unit

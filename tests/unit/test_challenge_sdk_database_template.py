@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from platform_network.template_engine import (
+from base.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
 )

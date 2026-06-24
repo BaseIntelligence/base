@@ -2,8 +2,8 @@
 
 Wave 0 probe #1 found the live prism challenge record carrying
 ``CHALLENGE_DOCKER_BROKER_URL`` / ``PRISM_DOCKER_BROKER_URL`` pointing at the
-non-resolving ``platform-master-broker`` host (NXDOMAIN). The correct broker
-service is ``platform-docker-broker``.
+non-resolving ``base-master-broker`` host (NXDOMAIN). The correct broker
+service is ``base-docker-broker``.
 
 Re-seeding takes the else-branch of ``seed_prism_challenges`` ->
 ``registry.update`` <- ``_prism_challenge_update`` (which recomputes the full
@@ -21,14 +21,14 @@ from types import SimpleNamespace
 
 import pytest
 
-import platform_network.cli_app.main as cli_module
-import platform_network.supervisor.image_ref as image_ref_module
-from platform_network.master.registry import FileChallengeRegistry
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
+import base.cli_app.main as cli_module
+import base.supervisor.image_ref as image_ref_module
+from base.master.registry import FileChallengeRegistry
+from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
 PINNED_DIGEST = "sha256:" + "c" * 64
-STALE_BROKER_URL = "http://platform-master-broker:8082"
-CORRECT_BROKER_URL = "http://platform-docker-broker:8082"
+STALE_BROKER_URL = "http://base-master-broker:8082"
+CORRECT_BROKER_URL = "http://base-docker-broker:8082"
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def _stale_prism_create() -> ChallengeCreate:
     return ChallengeCreate(
         slug="prism",
         name="PRISM",
-        image="ghcr.io/platformnetwork/prism:latest",
+        image="ghcr.io/baseintelligence/prism:latest",
         version="0.1.0",
         status=ChallengeStatus.ACTIVE,
         required_capabilities=["get_weights", "proxy_routes"],
@@ -83,7 +83,7 @@ def test_reseed_overwrites_stale_broker_url(tmp_path: Path) -> None:
     assert post.env["PRISM_DOCKER_BROKER_URL"] == CORRECT_BROKER_URL
     # REPLACE (not merge): no trace of the stale host survives anywhere in env.
     assert all(STALE_BROKER_URL not in value for value in post.env.values())
-    assert "platform-master-broker" not in repr(post.env)
+    assert "base-master-broker" not in repr(post.env)
 
 
 def test_reseed_preserves_required_capabilities(tmp_path: Path) -> None:

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from platform_network.db.session import create_engine, create_session_factory
-from platform_network.master.registry import DatabaseChallengeRegistry
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
+from base.db.session import create_engine, create_session_factory
+from base.master.registry import DatabaseChallengeRegistry
+from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
 
 def _payload(
@@ -17,7 +17,7 @@ def _payload(
     return ChallengeCreate(
         slug=slug,
         name=name,
-        image="ghcr.io/platformnetwork/demo:1.0.0",
+        image="ghcr.io/baseintelligence/demo:1.0.0",
         version="1.0.0",
         emission_percent=emission_percent,
         status=status,

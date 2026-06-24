@@ -23,21 +23,21 @@ def test_ci_workflow_runs_postgres_orm_integration_gate() -> None:
     assert postgres_orm["runs-on"] == "ubuntu-latest"
     assert "continue-on-error" not in postgres_orm
     assert postgres_orm["env"] == {
-        "PLATFORM_TEST_DATABASE_URL": (
-            "postgresql+asyncpg://platform:platform@localhost:5432/"
-            "platform_network_test"
+        "BASE_TEST_DATABASE_URL": (
+            "postgresql+asyncpg://base:base@localhost:5432/"
+            "base_test"
         ),
     }
 
     service = postgres_orm["services"]["postgres"]
     assert service["image"] == "postgres:16-alpine"
     assert service["env"] == {
-        "POSTGRES_USER": "platform",
-        "POSTGRES_PASSWORD": "platform",
-        "POSTGRES_DB": "platform_network_test",
+        "POSTGRES_USER": "base",
+        "POSTGRES_PASSWORD": "base",
+        "POSTGRES_DB": "base_test",
     }
     assert service["ports"] == ["5432:5432"]
-    assert "pg_isready -U platform -d platform_network_test" in service["options"]
+    assert "pg_isready -U base -d base_test" in service["options"]
 
     assert _step_uses(postgres_orm) >= {
         "actions/checkout@v4",
@@ -54,7 +54,7 @@ def test_ci_workflow_runs_postgres_orm_integration_gate() -> None:
     )
 
 
-def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
+def test_ci_workflow_builds_base_images_without_publishing_on_prs() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
     docker_build = jobs["docker-build"]
@@ -74,8 +74,8 @@ def test_ci_workflow_builds_platform_images_without_publishing_on_prs() -> None:
     assert {
         item["image"] for item in docker_build["strategy"]["matrix"]["include"]
     } == {
-        "platform",
-        "platform-master",
+        "base",
+        "base-master",
     }
     assert _step_uses(docker_build) >= {
         "actions/checkout@v4",
@@ -102,7 +102,7 @@ def test_ci_workflow_has_no_compose_or_watchtower_validation() -> None:
     assert "watchtower" not in workflow_text
 
 
-def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> None:
+def test_ci_workflow_publishes_base_images_to_ghcr_on_trusted_events() -> None:
     workflow_text = CI_WORKFLOW.read_text(encoding="utf-8")
     workflow = _workflow()
     docker_publish = workflow["jobs"]["docker-publish"]
@@ -130,7 +130,7 @@ def test_ci_workflow_publishes_platform_images_to_ghcr_on_trusted_events() -> No
         for step in docker_publish["steps"]
         if step.get("uses") == "docker/metadata-action@v5"
     )
-    assert metadata["with"]["images"] == "ghcr.io/platformnetwork/${{ matrix.image }}"
+    assert metadata["with"]["images"] == "ghcr.io/baseintelligence/${{ matrix.image }}"
     assert "type=ref,event=branch" in metadata["with"]["tags"]
     assert "type=sha,prefix=sha-" in metadata["with"]["tags"]
     assert "type=semver,pattern={{version}}" in metadata["with"]["tags"]
@@ -169,7 +169,7 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     release_body = release_config["body"]
 
     assert release_config["tag_name"] == "${{ github.ref_name }}"
-    assert release_config["name"] == "Platform ${{ steps.release.outputs.version }}"
+    assert release_config["name"] == "BASE ${{ steps.release.outputs.version }}"
     assert release_config["generate_release_notes"] is True
     assert release_config["append_body"] is True
     assert release_config["draft"] is False
@@ -177,20 +177,20 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     assert release_config["make_latest"] == "${{ !contains(github.ref_name, '-') }}"
     assert "## Container Images" in release_body
     assert (
-        "ghcr.io/platformnetwork/platform:${{ steps.release.outputs.version }}"
+        "ghcr.io/baseintelligence/base:${{ steps.release.outputs.version }}"
         in release_body
     )
-    assert "ghcr.io/platformnetwork/platform:${{ github.ref_name }}" in release_body
-    assert "ghcr.io/platformnetwork/platform:sha-${{ github.sha }}" in release_body
+    assert "ghcr.io/baseintelligence/base:${{ github.ref_name }}" in release_body
+    assert "ghcr.io/baseintelligence/base:sha-${{ github.sha }}" in release_body
     assert (
-        "ghcr.io/platformnetwork/platform-master:${{ steps.release.outputs.version }}"
+        "ghcr.io/baseintelligence/base-master:${{ steps.release.outputs.version }}"
         in release_body
     )
     assert (
-        "ghcr.io/platformnetwork/platform-master:${{ github.ref_name }}" in release_body
+        "ghcr.io/baseintelligence/base-master:${{ github.ref_name }}" in release_body
     )
     assert (
-        "ghcr.io/platformnetwork/platform-master:sha-${{ github.sha }}" in release_body
+        "ghcr.io/baseintelligence/base-master:sha-${{ github.sha }}" in release_body
     )
     assert "Production deployments should pin" in release_body
     assert "docs/versioning.md" in release_body

@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from fastapi.routing import APIRoute
+
+from {{ package_name }}.app import app
+
+
+async def test_public_submission_route(client):
+    response = await client.post(
+        "/submissions",
+        json={"miner_hotkey": "hotkey-a", "payload": "submission-payload"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["miner_hotkey"] == "hotkey-a"
+
+    count_response = await client.get("/submissions/count")
+    assert count_response.status_code == 200
+    assert count_response.json() == {"count": 1}
+
+
+def test_public_routes_are_decorated_for_proxy_discovery():
+    public_paths = {
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and getattr(route.endpoint, "__base_public_route__", False)
+    }
+
+    assert "/submissions" in public_paths
+    assert "/submissions/count" in public_paths
+    assert "/internal/v1/get_weights" not in public_paths

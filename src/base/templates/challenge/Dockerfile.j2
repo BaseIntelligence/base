@@ -1,0 +1,33 @@
+FROM python:{{ python_version }}-slim AS runtime
+
+# BASE may override CHALLENGE_DATABASE_URL (e.g. shared PostgreSQL) under Swarm.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    CHALLENGE_HOST=0.0.0.0 \
+    CHALLENGE_PORT=8000 \
+    CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-cli git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /data \
+    && chown -R appuser:appuser /app /data
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir .
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); raise SystemExit(0 if data.get('status') == 'ok' else 1)"
+
+CMD ["uvicorn", "{{ package_name }}.app:app", "--host", "0.0.0.0", "--port", "8000"]

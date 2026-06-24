@@ -6,11 +6,11 @@ import stat
 import tarfile
 from pathlib import Path
 
-from platform_network.master.docker_broker import (
+from base.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
 )
-from platform_network.schemas.docker_broker import BrokerMount
+from base.schemas.docker_broker import BrokerMount
 
 
 def _archive_dir(path: Path) -> str:

@@ -17,11 +17,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import platform_network.cli_app.main as cli_module
-import platform_network.supervisor.image_ref as image_ref_module
-from platform_network.cli_app.main import DockerRuntimeController
-from platform_network.master.registry import ChallengeRegistry, FileChallengeRegistry
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
+import base.cli_app.main as cli_module
+import base.supervisor.image_ref as image_ref_module
+from base.cli_app.main import DockerRuntimeController
+from base.master.registry import ChallengeRegistry, FileChallengeRegistry
+from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
 PINNED_DIGEST = "sha256:" + "c" * 64
 
@@ -38,7 +38,7 @@ def _offline_digest_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
 def _docker_settings() -> SimpleNamespace:
     return SimpleNamespace(
         runtime=SimpleNamespace(backend="docker"),
-        docker=SimpleNamespace(broker_url="http://platform-docker-broker:8082"),
+        docker=SimpleNamespace(broker_url="http://base-docker-broker:8082"),
     )
 
 
@@ -46,7 +46,7 @@ def _agent_challenge_create() -> ChallengeCreate:
     return ChallengeCreate(
         slug="agent-challenge",
         name="Agent Challenge",
-        image="ghcr.io/platformnetwork/agent-challenge:latest",
+        image="ghcr.io/baseintelligence/agent-challenge:latest",
         version="0.1.0",
         status=ChallengeStatus.ACTIVE,
         emission_percent=Decimal("40"),
@@ -75,7 +75,7 @@ def test_seed_on_docker_backend_preserves_per_slug_tokens(tmp_path: Path) -> Non
     prism = registry.get("prism")
     assert prism.secrets == ["challenge_token", "docker_broker_token"]
     assert prism.env["CHALLENGE_DOCKER_BROKER_URL"] == (
-        "http://platform-docker-broker:8082"
+        "http://base-docker-broker:8082"
     )
     assert prism.metadata["runtime_database"] == "challenge-local-sqlite"
     assert prism.metadata["workload_class"] == "service"
@@ -125,9 +125,9 @@ def test_seed_agent_challenge_uses_own_runner_execution_plane() -> None:
     asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
     env = registry.get("agent-challenge").env
 
-    # B1: own_runner backend only (the challenge config rejects platform_sdk).
+    # B1: own_runner backend only (the challenge config rejects base_sdk).
     assert env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "own_runner"
-    assert "CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE" not in env
+    assert "CHALLENGE_BASE_SDK_RUNNER_IMAGE" not in env
     # B4: own_runner reads the runner job image from CHALLENGE_HARBOR_RUNNER_IMAGE.
     assert env["CHALLENGE_HARBOR_RUNNER_IMAGE"] == (
         cli_module.AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE
@@ -142,7 +142,7 @@ def test_seed_agent_challenge_uses_own_runner_execution_plane() -> None:
     assert env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"] == (
         "http://challenge-agent-challenge:8000"
     )
-    assert env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "platform_challenges"
+    assert env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_challenges"
     assert env["CHALLENGE_DOCKER_BACKEND"] == "broker"
 
 

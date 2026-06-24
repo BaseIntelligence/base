@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from platform_network.db.migrations import upgrade
-from platform_network.db.session import create_engine, create_session_factory
-from platform_network.master.registry import (
+from base.db.migrations import upgrade
+from base.db.session import create_engine, create_session_factory
+from base.master.registry import (
     ChallengeAlreadyExistsError,
     ChallengeNotFoundError,
     ChallengeRegistry,
@@ -21,7 +21,7 @@ from platform_network.master.registry import (
     record_to_admin_view,
     record_to_registry_view,
 )
-from platform_network.schemas.challenge import (
+from base.schemas.challenge import (
     ChallengeCreate,
     ChallengeStatus,
     ChallengeUpdate,
@@ -32,7 +32,7 @@ def payload(slug: str = "demo") -> ChallengeCreate:
     return ChallengeCreate(
         slug=slug,
         name="Demo",
-        image="ghcr.io/platformnetwork/demo:1.0.0",
+        image="ghcr.io/baseintelligence/demo:1.0.0",
         version="1.0.0",
         emission_percent=Decimal("10"),
     )
@@ -45,7 +45,7 @@ def test_registry_update_views_and_errors() -> None:
     assert token
     assert default_internal_base_url("x") == "http://challenge-x:8000"
     assert default_public_proxy_base_path("x") == "/challenges/x"
-    assert default_sqlite_volume_name("a-b") == "platform_a_b_sqlite"
+    assert default_sqlite_volume_name("a-b") == "base_a_b_sqlite"
 
     with pytest.raises(ChallengeAlreadyExistsError):
         registry.create(payload("demo-case"))
@@ -79,7 +79,7 @@ def test_registry_view_filters_frontend_metadata() -> None:
         ChallengeCreate(
             slug="agent-challenge",
             name="Agent Challenge",
-            image="ghcr.io/platformnetwork/agent-challenge:1.0.0",
+            image="ghcr.io/baseintelligence/agent-challenge:1.0.0",
             version="1.0.0",
             emission_percent=Decimal("20"),
             status=ChallengeStatus.ACTIVE,
@@ -133,12 +133,12 @@ def test_image_digest_round_trip() -> None:
         ChallengeCreate(
             slug="digest-demo",
             name="Digest",
-            image="ghcr.io/platformnetwork/demo@sha256:abc123",
+            image="ghcr.io/baseintelligence/demo@sha256:abc123",
             version="1.0.0",
         )
     )
 
-    assert record.image == "ghcr.io/platformnetwork/demo@sha256:abc123"
+    assert record.image == "ghcr.io/baseintelligence/demo@sha256:abc123"
 
 
 def test_file_registry_handles_missing_and_invalid_state(tmp_path: Path) -> None:
@@ -202,16 +202,16 @@ def test_database_registry_uses_sqlite_source_of_truth(tmp_path: Path) -> None:
         assert inactive.status == ChallengeStatus.INACTIVE
 
         digest_payload = payload("digest-demo").model_dump()
-        digest_payload["image"] = "ghcr.io/platformnetwork/demo:1.0@sha256:abc123"
+        digest_payload["image"] = "ghcr.io/baseintelligence/demo:1.0@sha256:abc123"
         digest, _ = await registry.create(ChallengeCreate(**digest_payload))
-        assert digest.image == "ghcr.io/platformnetwork/demo:1.0@sha256:abc123"
+        assert digest.image == "ghcr.io/baseintelligence/demo:1.0@sha256:abc123"
 
         updated_digest = await registry.update(
             "digest-demo",
-            ChallengeUpdate(image="ghcr.io/platformnetwork/demo:latest@sha256:abc123"),
+            ChallengeUpdate(image="ghcr.io/baseintelligence/demo:latest@sha256:abc123"),
         )
         assert (
-            updated_digest.image == "ghcr.io/platformnetwork/demo:latest@sha256:abc123"
+            updated_digest.image == "ghcr.io/baseintelligence/demo:latest@sha256:abc123"
         )
 
         await engine.dispose()
@@ -227,7 +227,7 @@ def test_production_registry_rejects_mutable_and_untagged_images() -> None:
         ChallengeCreate(
             slug="prod-demo",
             name="Prod",
-            image=f"ghcr.io/platformnetwork/demo:1.2.3@{digest}",
+            image=f"ghcr.io/baseintelligence/demo:1.2.3@{digest}",
             version="1.2.3",
         )
     )
@@ -237,16 +237,16 @@ def test_production_registry_rejects_mutable_and_untagged_images() -> None:
         ChallengeCreate(
             slug="prod-latest-demo",
             name="Prod Latest",
-            image=f"ghcr.io/platformnetwork/demo:latest@{digest}",
+            image=f"ghcr.io/baseintelligence/demo:latest@{digest}",
             version="1.2.3",
         )
     )
-    assert latest.image == f"ghcr.io/platformnetwork/demo:latest@{digest}"
+    assert latest.image == f"ghcr.io/baseintelligence/demo:latest@{digest}"
 
     for image, message in (
-        ("ghcr.io/platformnetwork/demo:latest", "digest"),
-        ("ghcr.io/platformnetwork/demo", "tag"),
-        ("ghcr.io/platformnetwork/demo:1.2.3", "digest"),
+        ("ghcr.io/baseintelligence/demo:latest", "digest"),
+        ("ghcr.io/baseintelligence/demo", "tag"),
+        ("ghcr.io/baseintelligence/demo:1.2.3", "digest"),
     ):
         with pytest.raises(ValueError, match=message):
             registry.create(

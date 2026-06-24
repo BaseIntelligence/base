@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from platform_network.security.miner_auth import (
+from base.security.miner_auth import (
     MinerAuthError,
     MinerUploadVerifier,
 )

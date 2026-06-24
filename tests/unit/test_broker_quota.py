@@ -21,31 +21,31 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import platform_network.master.docker_broker as broker_module
-from platform_network.master.docker_broker import (
+import base.master.docker_broker as broker_module
+from base.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
     EscapeHatchCommandResult,
     create_docker_broker_app,
 )
-from platform_network.master.swarm_backend import (
+from base.master.swarm_backend import (
     SwarmBrokerConfig,
     SwarmBrokerService,
     SwarmCommandResult,
 )
-from platform_network.master.workload_ledger import (
+from base.master.workload_ledger import (
     WorkloadCapacityError,
     WorkloadEntry,
     WorkloadLedger,
 )
-from platform_network.schemas.docker_broker import BrokerRunRequest
+from base.schemas.docker_broker import BrokerRunRequest
 
 QUOTA_PREFIX = "docker_quota_exceeded: "
 FULL_CONTAINER_ID = "c0ffee" + "0" * 58
 
 AUTH_HEADERS = {
     "authorization": "Bearer tok",
-    "x-platform-challenge-slug": "agent",
+    "x-base-challenge-slug": "agent",
 }
 
 
@@ -140,7 +140,7 @@ def _swarm_result(
 def _run_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "job_id": "job-1",
-        "image": "ghcr.io/platformnetwork/challenge:1.2.3",
+        "image": "ghcr.io/baseintelligence/challenge:1.2.3",
         "command": ["python", "-V"],
         "timeout_seconds": 900,
     }
@@ -153,7 +153,7 @@ def _swarm_broker(
 ) -> SwarmBrokerService:
     config = SwarmBrokerConfig(
         workspace_dir=tmp_path / "work",
-        allowed_images=("ghcr.io/platformnetwork/",),
+        allowed_images=("ghcr.io/baseintelligence/",),
         **config_overrides,
     )
     return SwarmBrokerService(config, runner=runner, ledger=WorkloadLedger())
@@ -257,7 +257,7 @@ def test_escape_hatch_over_cap_removes_container_and_releases(
     escape_runner = FakeEscapeRunner()
     config = SwarmBrokerConfig(
         workspace_dir=tmp_path / "work",
-        allowed_images=("ghcr.io/platformnetwork/",),
+        allowed_images=("ghcr.io/baseintelligence/",),
         privileged_escape_slugs=frozenset({"agent"}),
         node_role="worker",
         max_concurrent_by_slug={"agent": 1},
@@ -299,7 +299,7 @@ class _FakeExecutor:
         self.kwargs = kwargs
 
     def container_name(self, job_id: str, task_id: str | None = None) -> str:
-        return f"platform-agent-{job_id}-{task_id or 'job'}-a1b2c3d4"
+        return f"base-agent-{job_id}-{task_id or 'job'}-a1b2c3d4"
 
     def run(self, spec: Any, timeout_seconds: int) -> SimpleNamespace:
         return SimpleNamespace(
@@ -318,7 +318,7 @@ def test_legacy_run_enforces_quota_and_releases(
     service = DockerBrokerService(
         DockerBrokerConfig(
             workspace_dir=tmp_path / "work",
-            allowed_images=("ghcr.io/platformnetwork/",),
+            allowed_images=("ghcr.io/baseintelligence/",),
             max_concurrent_by_slug={"agent": 1},
         )
     )
@@ -343,7 +343,7 @@ def test_legacy_run_default_unlimited(
     service = DockerBrokerService(
         DockerBrokerConfig(
             workspace_dir=tmp_path / "work",
-            allowed_images=("ghcr.io/platformnetwork/",),
+            allowed_images=("ghcr.io/baseintelligence/",),
         )
     )
     _fill_ledger(service.ledger, "agent", 50)

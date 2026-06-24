@@ -8,15 +8,15 @@ from typing import cast
 
 import pytest
 
-import platform_network.cli_app.main as cli_module
-from platform_network.bittensor.metagraph_cache import MetagraphCache
-from platform_network.bittensor.weight_setter import WeightSetter
-from platform_network.db.session import create_engine, create_session_factory
-from platform_network.master.challenge_client import ChallengeClient
-from platform_network.master.registry import DatabaseChallengeRegistry
-from platform_network.master.service import MasterWeightService
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
-from platform_network.schemas.weights import ChallengeWeightsResult
+import base.cli_app.main as cli_module
+from base.bittensor.metagraph_cache import MetagraphCache
+from base.bittensor.weight_setter import WeightSetter
+from base.db.session import create_engine, create_session_factory
+from base.master.challenge_client import ChallengeClient
+from base.master.registry import DatabaseChallengeRegistry
+from base.master.service import MasterWeightService
+from base.schemas.challenge import ChallengeCreate, ChallengeStatus
+from base.schemas.weights import ChallengeWeightsResult
 
 
 @pytest.mark.postgres
@@ -47,7 +47,7 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
             ChallengeCreate(
                 slug="weights-smoke-active",
                 name="Weights Smoke Active",
-                image="ghcr.io/platformnetwork/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
                 version="1.0.0",
                 emission_percent=Decimal("100"),
                 status=ChallengeStatus.ACTIVE,
@@ -58,7 +58,7 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
             ChallengeCreate(
                 slug="weights-smoke-inactive",
                 name="Weights Smoke Inactive",
-                image="ghcr.io/platformnetwork/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
                 version="1.0.0",
                 emission_percent=Decimal("0"),
                 status=ChallengeStatus.INACTIVE,
@@ -114,7 +114,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="prism",
                 name="PRISM",
-                image="ghcr.io/platformnetwork/prism:latest",
+                image="ghcr.io/baseintelligence/prism:latest",
                 version="0.1.0",
                 emission_percent=Decimal("30"),
                 status=ChallengeStatus.ACTIVE,
@@ -125,7 +125,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="agent-challenge",
                 name="Agent Challenge",
-                image="ghcr.io/platformnetwork/agent-challenge:1.0.0",
+                image="ghcr.io/baseintelligence/agent-challenge:1.0.0",
                 version="1.0.0",
                 emission_percent=Decimal("15"),
                 status=ChallengeStatus.ACTIVE,
@@ -136,7 +136,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="weights-api-active",
                 name="Weights API Active",
-                image="ghcr.io/platformnetwork/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
                 version="1.0.0",
                 emission_percent=Decimal("5"),
                 status=ChallengeStatus.ACTIVE,
@@ -147,7 +147,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="weights-api-inactive",
                 name="Weights API Inactive",
-                image="ghcr.io/platformnetwork/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
                 version="1.0.0",
                 emission_percent=Decimal("50"),
                 status=ChallengeStatus.INACTIVE,

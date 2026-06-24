@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from platform_network.master.docker_orchestrator import (
+from base.master.docker_orchestrator import (
     ChallengeSpec,
     DockerOrchestrator,
 )
-from platform_network.master.registry import FileChallengeRegistry
-from platform_network.schemas.challenge import ChallengeCreate, ChallengeStatus
-from platform_network.security.admin_auth import read_secret
+from base.master.registry import FileChallengeRegistry
+from base.schemas.challenge import ChallengeCreate, ChallengeStatus
+from base.security.admin_auth import read_secret
 
 
 def test_file_registry_reloads_between_instances(tmp_path: Path) -> None:
@@ -20,7 +20,7 @@ def test_file_registry_reloads_between_instances(tmp_path: Path) -> None:
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/platformnetwork/demo:1.0.0",
+            image="ghcr.io/baseintelligence/demo:1.0.0",
             version="1.0.0",
         )
     )
@@ -41,7 +41,7 @@ def test_file_registry_persists_challenge_token_file(tmp_path: Path) -> None:
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/platformnetwork/demo:1.0.0",
+            image="ghcr.io/baseintelligence/demo:1.0.0",
             version="1.0.0",
         )
     )
@@ -58,12 +58,12 @@ def test_orchestrator_sets_challenge_shared_token_file(tmp_path: Path) -> None:
     env = orchestrator._build_environment(  # noqa: SLF001
         ChallengeSpec(
             slug="demo",
-            image="ghcr.io/platformnetwork/demo:1.0.0",
+            image="ghcr.io/baseintelligence/demo:1.0.0",
             challenge_token="secret",
         )
     )
-    assert env["CHALLENGE_TOKEN_FILE"] == "/run/secrets/platform/challenge_token"
-    assert env["CHALLENGE_SHARED_TOKEN_FILE"] == "/run/secrets/platform/challenge_token"
+    assert env["CHALLENGE_TOKEN_FILE"] == "/run/secrets/base/challenge_token"
+    assert env["CHALLENGE_SHARED_TOKEN_FILE"] == "/run/secrets/base/challenge_token"
 
 
 def test_read_secret_missing_file_returns_empty(tmp_path: Path) -> None:

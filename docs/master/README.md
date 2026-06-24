@@ -2,7 +2,7 @@
 
 Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators.
 
-This guide covers the committed Docker Swarm bring-up for the master control plane. It installs the Platform master proxy, broker, the challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
+This guide covers the committed Docker Swarm bring-up for the master control plane. It installs the BASE master proxy, broker, the challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
 
 ## Manager node
 
@@ -34,50 +34,50 @@ Bring up the manager from the repository root with the Swarm installer:
 ./deploy/swarm/install-swarm.sh --apply --static-challenges      # create challenge services directly
 ```
 
-The installer initializes the Swarm, creates the encrypted overlay networks (`platform_challenges` and the internal `platform_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never argv), and creates the master proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. No docker-compose or stack YAML is produced or consumed; the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
+The installer initializes the Swarm, creates the encrypted overlay networks (`base_challenges` and the internal `base_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never argv), and creates the master proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. No docker-compose or stack YAML is produced or consumed; the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
 
 ## Supervisor
 
-The control-plane supervisor replaces the old Kubernetes CronJobs with a single watchdog-supervised systemd service. Install the unit from `deploy/swarm/platform-supervisor.service`:
+The control-plane supervisor replaces the old Kubernetes CronJobs with a single watchdog-supervised systemd service. Install the unit from `deploy/swarm/base-supervisor.service`:
 
 ```bash
-cp deploy/swarm/platform-supervisor.service /etc/systemd/system/
+cp deploy/swarm/base-supervisor.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now platform-supervisor.service
-systemctl status platform-supervisor.service
+systemctl enable --now base-supervisor.service
+systemctl status base-supervisor.service
 ```
 
 The unit is `Type=notify` with a 30s watchdog and runs:
 
 ```text
-platform master supervisor --config /etc/platform/master.yaml
+base master supervisor --config /etc/base/master.yaml
 ```
 
 The supervisor loops run on the manager only: broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update. The image updaters resolve the public GHCR tag digest and roll the Swarm services to `tag@sha256:<digest>` only when a mutable tag moves; no GHCR pull secret is required for public packages.
 
 ## Worker enrollment
 
-Workers run short-lived CPU/GPU broker jobs and are added manually with a Swarm join token (no SSH). The `platform master worker` CLI group manages them from the manager:
+Workers run short-lived CPU/GPU broker jobs and are added manually with a Swarm join token (no SSH). The `base master worker` CLI group manages them from the manager:
 
-- `platform master worker token [--cpu|--gpu]` prints the join command for a CPU or GPU worker:
+- `base master worker token [--cpu|--gpu]` prints the join command for a CPU or GPU worker:
 
   ```text
   docker swarm join --token <TOKEN> <MANAGER_IP>:2377
   ```
 
-- `platform master worker list` lists enrolled nodes and their workload labels.
-- `platform master worker label <node> --workload cpu|gpu` sets the workload label the broker schedules against (`node.labels.platform.workload`).
-- `platform master worker drain <node>` drains a node before maintenance.
-- `platform master worker rm <node>` removes a node from the Swarm.
-- `platform master worker inspect <node>` shows node detail.
+- `base master worker list` lists enrolled nodes and their workload labels.
+- `base master worker label <node> --workload cpu|gpu` sets the workload label the broker schedules against (`node.labels.base.workload`).
+- `base master worker drain <node>` drains a node before maintenance.
+- `base master worker rm <node>` removes a node from the Swarm.
+- `base master worker inspect <node>` shows node detail.
 
 Enrollment flow:
 
-1. On the manager, run `platform master worker token --cpu` (or `--gpu`) and copy the printed `docker swarm join` command.
+1. On the manager, run `base master worker token --cpu` (or `--gpu`) and copy the printed `docker swarm join` command.
 2. On the worker, install the matching `daemon.json` (`deploy/swarm/daemon.worker.json` for GPU workers, which advertises `node-generic-resources: ["NVIDIA-GPU=GPU-<uuid>"]` and registers the NVIDIA runtime), then run the join command.
-3. On the manager, label the new node: `platform master worker label <node> --workload cpu` or `--workload gpu`.
+3. On the manager, label the new node: `base master worker label <node> --workload cpu` or `--workload gpu`.
 
-The broker then schedules CPU jobs onto `node.labels.platform.workload==cpu` and GPU jobs onto `node.labels.platform.workload==gpu` with `--generic-resource NVIDIA-GPU=<N>`.
+The broker then schedules CPU jobs onto `node.labels.base.workload==cpu` and GPU jobs onto `node.labels.base.workload==gpu` with `--generic-resource NVIDIA-GPU=<N>`.
 
 ## Explicit Non Goals
 
@@ -91,9 +91,9 @@ The broker then schedules CPU jobs onto `node.labels.platform.workload==cpu` and
 
 ```bash
 docker service ls
-docker service ps platform-master-proxy platform-master-broker
-docker service logs -f platform-master-proxy
-journalctl -u platform-supervisor.service -f
+docker service ps base-master-proxy base-master-broker
+docker service logs -f base-master-proxy
+journalctl -u base-supervisor.service -f
 docker node ls
 ```
 

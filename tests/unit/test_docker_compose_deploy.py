@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from platform_network.config.settings import Settings
+from base.config.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +25,7 @@ def test_compose_deployment_files_are_removed_but_image_build_assets_remain() ->
     assert (ROOT / "deploy" / "swarm" / "install-swarm.sh").is_file()
 
 
-def test_platform_dockerfiles_run_as_non_root_user() -> None:
+def test_base_dockerfiles_run_as_non_root_user() -> None:
     for dockerfile in (
         ROOT / "docker" / "Dockerfile.master",
         ROOT / "docker" / "Dockerfile.validator",
@@ -51,19 +51,19 @@ def test_first_party_defaults_are_docker_swarm() -> None:
     assert not hasattr(settings, "runtime")
     assert not hasattr(settings, "kubernetes")
     assert settings.database.url.startswith("postgresql+asyncpg://")
-    assert settings.docker.broker_allowed_images == ["ghcr.io/platformnetwork/"]
+    assert settings.docker.broker_allowed_images == ["ghcr.io/baseintelligence/"]
     # Swarm placement defaults: challenge services on the manager, broker jobs on
     # CPU/GPU-labeled workers.
     assert settings.docker.challenge_placement_constraint == "node.role==manager"
-    assert settings.docker.cpu_job_constraint == "node.labels.platform.workload==cpu"
-    assert settings.docker.gpu_job_constraint == "node.labels.platform.workload==gpu"
+    assert settings.docker.cpu_job_constraint == "node.labels.base.workload==cpu"
+    assert settings.docker.gpu_job_constraint == "node.labels.base.workload==gpu"
 
     for example in (master_example, validator_example):
         assert "runtime" not in example
         assert "kubernetes" not in example
         assert example["database"]["url"].startswith("postgresql+asyncpg://")
         assert example["docker"]["broker_allowed_images"] == [
-            "ghcr.io/platformnetwork/"
+            "ghcr.io/baseintelligence/"
         ]
 
 

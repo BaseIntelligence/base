@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from platform_network.master.aggregator import (
+from base.master.aggregator import (
     aggregate_challenge_weights,
     normalize_weights,
 )
-from platform_network.schemas.weights import ChallengeWeightsResult
+from base.schemas.weights import ChallengeWeightsResult
 
 
 def test_normalize_weights_clamps_invalid_values() -> None:

@@ -12,43 +12,43 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-import platform_network.cli_app.main as cli_module
-from platform_network.bittensor.metagraph_cache import MetagraphCache
-from platform_network.bittensor.validator_loop import run_epoch_loop
-from platform_network.bittensor.weight_setter import WeightSetter
-from platform_network.cli_app.main import DockerRuntimeController, app
-from platform_network.config.loader import load_settings
-from platform_network.config.settings import ValidatorSettings
-from platform_network.master.challenge_client import ChallengeClient
-from platform_network.master.docker_orchestrator import ChallengeSpec
-from platform_network.master.registry import ChallengeRegistry, FileChallengeRegistry
-from platform_network.master.service import MasterWeightService
-from platform_network.observability.logging import JsonFormatter, configure_logging
-from platform_network.observability.otel import init_otel
-from platform_network.observability.sentry import init_sentry
-from platform_network.schemas.challenge import (
+import base.cli_app.main as cli_module
+from base.bittensor.metagraph_cache import MetagraphCache
+from base.bittensor.validator_loop import run_epoch_loop
+from base.bittensor.weight_setter import WeightSetter
+from base.cli_app.main import DockerRuntimeController, app
+from base.config.loader import load_settings
+from base.config.settings import ValidatorSettings
+from base.master.challenge_client import ChallengeClient
+from base.master.docker_orchestrator import ChallengeSpec
+from base.master.registry import ChallengeRegistry, FileChallengeRegistry
+from base.master.service import MasterWeightService
+from base.observability.logging import JsonFormatter, configure_logging
+from base.observability.otel import init_otel
+from base.observability.sentry import init_sentry
+from base.schemas.challenge import (
     ChallengeCreate,
     ChallengeStatus,
     RegistryChallenge,
 )
-from platform_network.schemas.weights import (
+from base.schemas.weights import (
     ChallengeWeightsResult,
     MasterWeightsResponse,
 )
-from platform_network.security.admin_auth import constant_time_match, read_secret
-from platform_network.security.challenge_auth import (
+from base.security.admin_auth import constant_time_match, read_secret
+from base.security.challenge_auth import (
     bearer_token,
     require_challenge_token,
 )
-from platform_network.security.tokens import (
+from base.security.tokens import (
     generate_token,
     hash_token,
     token_hint,
     verify_token,
 )
-from platform_network.validator.normal_runner import NormalValidatorRunner
-from platform_network.validator.registry_client import RegistryClient
-from platform_network.validator.weights_client import WeightsClient
+from base.validator.normal_runner import NormalValidatorRunner
+from base.validator.registry_client import RegistryClient
+from base.validator.weights_client import WeightsClient
 
 
 @pytest.mark.asyncio
@@ -351,9 +351,9 @@ def test_config_env_security_and_observability(
 ) -> None:
     config = tmp_path / "config.yaml"
     config.write_text("network:\n  netuid: 1\n", encoding="utf-8")
-    monkeypatch.setenv("PLATFORM_NETWORK__NETUID", "9")
-    monkeypatch.setenv("PLATFORM_MASTER__ADMIN_PORT", "9999")
-    monkeypatch.setenv("PLATFORM_DOCKER__BROKER_URL", "http://broker:9999")
+    monkeypatch.setenv("BASE_NETWORK__NETUID", "9")
+    monkeypatch.setenv("BASE_MASTER__ADMIN_PORT", "9999")
+    monkeypatch.setenv("BASE_DOCKER__BROKER_URL", "http://broker:9999")
     settings = load_settings(config)
     assert settings.network.netuid == 9
     assert settings.master.admin_port == 9999
@@ -889,7 +889,7 @@ def test_weights_client_fetches_latest_master_weights(
             super().__init__(transport=transport)
 
     async def run() -> None:
-        import platform_network.validator.weights_client as module
+        import base.validator.weights_client as module
 
         monkeypatch.setattr(module.httpx, "AsyncClient", Client)
         response = await WeightsClient("https://master.example/").fetch_latest()
@@ -951,7 +951,7 @@ async def test_validator_weights_submit_returns_false_when_setter_raises(
         netuid=42,
     )
 
-    caplog.set_level(logging.ERROR, logger="platform_network.validator.normal_runner")
+    caplog.set_level(logging.ERROR, logger="base.validator.normal_runner")
     assert await runner.submit_latest_weights() is False
     assert "validator weights submission failed" in caplog.text
 
@@ -982,7 +982,7 @@ async def test_validator_weights_submit_returns_false_when_setter_rejects(
         netuid=42,
     )
 
-    caplog.set_level(logging.WARNING, logger="platform_network.validator.normal_runner")
+    caplog.set_level(logging.WARNING, logger="base.validator.normal_runner")
     assert await runner.submit_latest_weights() is False
     assert "validator weights submission rejected" in caplog.text
 
@@ -1170,14 +1170,14 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
         ChallengeCreate(
             slug="agent-challenge",
             name="Agent Challenge",
-            image="ghcr.io/platformnetwork/agent-challenge:latest",
+            image="ghcr.io/baseintelligence/agent-challenge:latest",
             version="0.1.0",
             status=ChallengeStatus.ACTIVE,
             emission_percent=Decimal("40"),
         )
     )
     settings = SimpleNamespace(
-        docker=SimpleNamespace(broker_url="http://platform-broker:8082")
+        docker=SimpleNamespace(broker_url="http://base-broker:8082")
     )
 
     first = asyncio.run(cli_module.seed_prism_challenges(registry, settings))
@@ -1194,28 +1194,28 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     prism = registry.get("prism")
     agent = registry.get("agent-challenge")
     assert prism.name == "PRISM"
-    assert prism.image == "ghcr.io/platformnetwork/prism:latest"
+    assert prism.image == "ghcr.io/baseintelligence/prism:latest"
     assert prism.version == "0.1.0"
     assert prism.status == ChallengeStatus.ACTIVE
     assert prism.emission_percent == Decimal("30")
     assert prism.internal_base_url == "http://challenge-prism:8080"
     assert prism.public_proxy_base_path == "/challenges/prism"
     assert prism.required_capabilities == ["get_weights", "proxy_routes"]
-    challenge_token_file = "/run/secrets/platform/challenge_token"
+    challenge_token_file = "/run/secrets/base/challenge_token"
     assert prism.env["PRISM_SHARED_TOKEN_FILE"] == challenge_token_file
     assert prism.env["CHALLENGE_SHARED_TOKEN_FILE"] == challenge_token_file
     assert prism.env["PRISM_DOCKER_BACKEND"] == "broker"
-    assert prism.env["PRISM_DOCKER_BROKER_URL"] == "http://platform-broker:8082"
+    assert prism.env["PRISM_DOCKER_BROKER_URL"] == "http://base-broker:8082"
     assert prism.env["PRISM_DOCKER_BROKER_TOKEN_FILE"] == (
-        "/run/secrets/platform/docker_broker_token"
+        "/run/secrets/base/docker_broker_token"
     )
-    assert prism.env["PRISM_PLATFORM_EVAL_IMAGE"] == (
-        "ghcr.io/platformnetwork/prism-evaluator:latest"
+    assert prism.env["PRISM_BASE_EVAL_IMAGE"] == (
+        "ghcr.io/baseintelligence/prism-evaluator:latest"
     )
     assert prism.secrets == ["challenge_token", "docker_broker_token"]
     assert "gpu_count" not in prism.resources
     assert "gpu_capabilities" not in prism.resources
-    assert prism.metadata["platform_eval_gpu_count"] == "1"
+    assert prism.metadata["base_eval_gpu_count"] == "1"
     assert prism.metadata["runtime_database"] == "challenge-local-sqlite"
     assert prism.metadata["runtime_database_url"] == (
         "sqlite+aiosqlite:////data/challenge.sqlite3"
@@ -1240,14 +1240,14 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     assert agent.env["CHALLENGE_BENCHMARK_BACKEND"] == "terminal_bench"
     assert agent.env["CHALLENGE_DOCKER_ENABLED"] == "true"
     assert agent.env["CHALLENGE_DOCKER_BACKEND"] == "broker"
-    assert agent.env["CHALLENGE_DOCKER_BROKER_URL"] == "http://platform-broker:8082"
+    assert agent.env["CHALLENGE_DOCKER_BROKER_URL"] == "http://base-broker:8082"
     assert agent.env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
-        "/run/secrets/platform/docker_broker_token"
+        "/run/secrets/base/docker_broker_token"
     )
-    assert agent.env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "platform_challenges"
+    assert agent.env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_challenges"
     assert agent.env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "own_runner"
     assert agent.env["CHALLENGE_HARBOR_RUNNER_IMAGE"] == (
-        "ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest"
+        "ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:latest"
     )
     assert agent.env["CHALLENGE_OWN_RUNNER_CACHE_ROOT"] == (
         "/opt/agent-challenge/task-cache"
@@ -1259,18 +1259,18 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
         "http://challenge-agent-challenge:8000"
     )
     assert agent.env["CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE"] == (
-        "/run/secrets/platform/submission_env_encryption_key"
+        "/run/secrets/base/submission_env_encryption_key"
     )
-    # platform_sdk knobs are retired by the own_runner cutover.
-    assert "CHALLENGE_PLATFORM_SDK_RUNNER_IMAGE" not in agent.env
-    assert "CHALLENGE_PLATFORM_SDK_ENVIRONMENT_IMPORT_PATH" not in agent.env
+    # base_sdk knobs are retired by the own_runner cutover.
+    assert "CHALLENGE_BASE_SDK_RUNNER_IMAGE" not in agent.env
+    assert "CHALLENGE_BASE_SDK_ENVIRONMENT_IMPORT_PATH" not in agent.env
 
 
 def test_seed_prism_challenges_pins_images_for_production_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import platform_network.supervisor.image_ref as image_ref_module
-    from platform_network.config.policy import validate_image_reference
+    import base.supervisor.image_ref as image_ref_module
+    from base.config.policy import validate_image_reference
 
     prism_digest = "sha256:" + "a" * 64
     evaluator_digest = "sha256:" + "b" * 64
@@ -1278,9 +1278,9 @@ def test_seed_prism_challenges_pins_images_for_production_policy(
 
     def resolve_digest(image_reference, **kwargs: object) -> str:
         resolved_images.append(image_reference.tagged)
-        if image_reference.repository == "platformnetwork/prism":
+        if image_reference.repository == "baseintelligence/prism":
             return prism_digest
-        if image_reference.repository == "platformnetwork/prism-evaluator":
+        if image_reference.repository == "baseintelligence/prism-evaluator":
             return evaluator_digest
         raise AssertionError(f"unexpected image {image_reference.tagged}")
 
@@ -1288,7 +1288,7 @@ def test_seed_prism_challenges_pins_images_for_production_policy(
     registry = ChallengeRegistry(production_policy=True)
     settings = SimpleNamespace(
         environment="production",
-        docker=SimpleNamespace(broker_url="http://platform-broker:8082"),
+        docker=SimpleNamespace(broker_url="http://base-broker:8082"),
     )
 
     first = asyncio.run(cli_module.seed_prism_challenges(registry, settings))
@@ -1296,22 +1296,22 @@ def test_seed_prism_challenges_pins_images_for_production_policy(
     second = asyncio.run(cli_module.seed_prism_challenges(registry, settings))
 
     prism = registry.get("prism")
-    expected_prism_image = f"ghcr.io/platformnetwork/prism:latest@{prism_digest}"
+    expected_prism_image = f"ghcr.io/baseintelligence/prism:latest@{prism_digest}"
     expected_evaluator_image = (
-        f"ghcr.io/platformnetwork/prism-evaluator:latest@{evaluator_digest}"
+        f"ghcr.io/baseintelligence/prism-evaluator:latest@{evaluator_digest}"
     )
     assert first == {"prism": "created", "agent-challenge": "missing"}
     assert second == {"prism": "updated", "agent-challenge": "missing"}
     assert registry.get_token("prism") == prism_token
     assert prism.image == expected_prism_image
-    assert prism.env["PRISM_PLATFORM_EVAL_IMAGE"] == expected_evaluator_image
-    assert prism.metadata["platform_eval_image"] == expected_evaluator_image
+    assert prism.env["PRISM_BASE_EVAL_IMAGE"] == expected_evaluator_image
+    assert prism.metadata["base_eval_image"] == expected_evaluator_image
     validate_image_reference(prism.image, production=True)
     assert resolved_images == [
-        "ghcr.io/platformnetwork/prism:latest",
-        "ghcr.io/platformnetwork/prism-evaluator:latest",
-        "ghcr.io/platformnetwork/prism:latest",
-        "ghcr.io/platformnetwork/prism-evaluator:latest",
+        "ghcr.io/baseintelligence/prism:latest",
+        "ghcr.io/baseintelligence/prism-evaluator:latest",
+        "ghcr.io/baseintelligence/prism:latest",
+        "ghcr.io/baseintelligence/prism-evaluator:latest",
     ]
 
 
@@ -1357,7 +1357,7 @@ def test_registry_client_with_asgi_transport(monkeypatch: pytest.MonkeyPatch) ->
             super().__init__(transport=transport)
 
     async def run() -> None:
-        import platform_network.validator.registry_client as module
+        import base.validator.registry_client as module
 
         monkeypatch.setattr(module.httpx, "AsyncClient", Client)
         response = await RegistryClient("http://registry").fetch_registry()
@@ -1390,7 +1390,7 @@ def test_registry_client_default_validator_url_requests_public_registry(
             super().__init__(transport=transport)
 
     async def run() -> None:
-        import platform_network.validator.registry_client as module
+        import base.validator.registry_client as module
 
         monkeypatch.setattr(module.httpx, "AsyncClient", Client)
         response = await RegistryClient(
@@ -1400,7 +1400,7 @@ def test_registry_client_default_validator_url_requests_public_registry(
 
     asyncio.run(run())
 
-    assert requested_urls == ["https://chain.platform.network/v1/registry"]
+    assert requested_urls == ["https://chain.joinbase.ai/v1/registry"]
 
 
 def test_registry_client_trailing_slash_requests_single_registry_path(
@@ -1427,14 +1427,14 @@ def test_registry_client_trailing_slash_requests_single_registry_path(
             super().__init__(transport=transport)
 
     async def run() -> None:
-        import platform_network.validator.registry_client as module
+        import base.validator.registry_client as module
 
         monkeypatch.setattr(module.httpx, "AsyncClient", Client)
         response = await RegistryClient(
-            "https://chain.platform.network/"
+            "https://chain.joinbase.ai/"
         ).fetch_registry()
         assert response.challenges == []
 
     asyncio.run(run())
 
-    assert requested_urls == ["https://chain.platform.network/v1/registry"]
+    assert requested_urls == ["https://chain.joinbase.ai/v1/registry"]

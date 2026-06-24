@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from platform_network.bittensor.metagraph_cache import MetagraphCache
-from platform_network.bittensor.weight_setter import WeightSetter
+from base.bittensor.metagraph_cache import MetagraphCache
+from base.bittensor.weight_setter import WeightSetter
 
 
 def test_metagraph_cache_from_hotkeys() -> None:

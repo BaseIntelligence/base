@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from platform_network.db.session import create_engine
+from base.db.session import create_engine
 
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 

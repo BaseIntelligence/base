@@ -1,0 +1,43 @@
+# BASE submit-only on-chain weight submitter (Docker-Swarm cutover).
+#
+# TEMPLATE ONLY — installed on the VALIDATOR node during the GO-gated Phase 5
+# handoff. This unit replaces the k3s `base validator run` pod with a
+# minimal process that ONLY fetches the master weight vector and submits it
+# on-chain (no challenge orchestration).
+#
+# Exact host install paths:
+#   * script:  /var/lib/base/submitter/run_submitter.py
+#   * config:  /etc/base/submitter.yaml
+#   * python:  /var/lib/base/supervisor/current/.venv/bin/python
+#              (release 3.0.4 venv; base + bittensor installed)
+#   * wallet:  /var/lib/base/wallets/base-validator/hotkeys/validator
+#   * HOME=/var/lib/base so bittensor resolves ~/.bittensor consistently.
+#
+# Install (cutover):
+#   cp deploy/swarm/submitter/run_submitter.py /var/lib/base/submitter/
+#   cp deploy/swarm/submitter/submitter.yaml   /etc/base/submitter.yaml
+#   cp deploy/swarm/submitter/base-submitter.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now base-submitter.service
+#
+# Mutual exclusion with k3s is operational (NO code guard): scale the k3s
+# `base-validator` deployment to 0 and wait one weights_interval BEFORE
+# `systemctl start`. Rollback order is mandatory: stop this unit FIRST, then
+# scale k3s back to 1.
+
+[Unit]
+Description=BASE submit-only on-chain weight submitter
+Documentation=https://github.com/BaseIntelligence/base
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/var/lib/base
+ExecStart=/var/lib/base/supervisor/current/.venv/bin/python /var/lib/base/submitter/run_submitter.py --config /etc/base/submitter.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

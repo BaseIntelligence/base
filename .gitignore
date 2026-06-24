@@ -9,7 +9,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
-docker/.platform/
+docker/.base/
 *.log
 dist/
 build/

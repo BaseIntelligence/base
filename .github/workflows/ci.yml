@@ -68,7 +68,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra master
       - name: Coverage
-        run: uv run pytest --cov=platform_network --cov-report=term-missing --cov-fail-under=80
+        run: uv run pytest --cov=base --cov-report=term-missing --cov-fail-under=80
 
   production-policy:
     runs-on: ubuntu-latest
@@ -95,18 +95,18 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: platform
-          POSTGRES_PASSWORD: platform
-          POSTGRES_DB: platform_network_test
+          POSTGRES_USER: base
+          POSTGRES_PASSWORD: base
+          POSTGRES_DB: base_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U platform -d platform_network_test"
+          --health-cmd "pg_isready -U base -d base_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
-      PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://platform:platform@localhost:5432/platform_network_test
+      BASE_TEST_DATABASE_URL: postgresql+asyncpg://base:base@localhost:5432/base_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -130,9 +130,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: platform
+          - image: base
             dockerfile: docker/Dockerfile.validator
-          - image: platform-master
+          - image: base-master
             dockerfile: docker/Dockerfile.master
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +143,7 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: false
-          tags: ghcr.io/platformnetwork/${{ matrix.image }}:ci-${{ github.sha }}
+          tags: ghcr.io/baseintelligence/${{ matrix.image }}:ci-${{ github.sha }}
 
   docker-publish:
     if: >-
@@ -161,9 +161,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: platform
+          - image: base
             dockerfile: docker/Dockerfile.validator
-          - image: platform-master
+          - image: base-master
             dockerfile: docker/Dockerfile.master
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +178,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/platformnetwork/${{ matrix.image }}
+          images: ghcr.io/baseintelligence/${{ matrix.image }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -211,7 +211,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Platform ${{ steps.release.outputs.version }}
+          name: BASE ${{ steps.release.outputs.version }}
           generate_release_notes: true
           append_body: true
           draft: false
@@ -220,12 +220,12 @@ jobs:
           body: |
             ## Container Images
 
-            - `ghcr.io/platformnetwork/platform:${{ steps.release.outputs.version }}`
-            - `ghcr.io/platformnetwork/platform:${{ github.ref_name }}`
-            - `ghcr.io/platformnetwork/platform:sha-${{ github.sha }}`
-            - `ghcr.io/platformnetwork/platform-master:${{ steps.release.outputs.version }}`
-            - `ghcr.io/platformnetwork/platform-master:${{ github.ref_name }}`
-            - `ghcr.io/platformnetwork/platform-master:sha-${{ github.sha }}`
+            - `ghcr.io/baseintelligence/base:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/base:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/base:sha-${{ github.sha }}`
+            - `ghcr.io/baseintelligence/base-master:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/base-master:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/base-master:sha-${{ github.sha }}`
 
             ## Deployment Notes
 

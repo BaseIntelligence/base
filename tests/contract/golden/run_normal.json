@@ -6,13 +6,13 @@
       "-V"
     ],
     "env": {
-      "PLATFORM_ENV": "contract"
+      "BASE_ENV": "contract"
     },
-    "image": "ghcr.io/platformnetwork/challenge:1.2.3",
+    "image": "ghcr.io/baseintelligence/challenge:1.2.3",
     "image_pull_policy": "IfNotPresent",
     "job_id": "job-1",
     "labels": {
-      "platform.challenge": "agent"
+      "base.challenge": "agent"
     },
     "limits": {
       "cap_drop": [

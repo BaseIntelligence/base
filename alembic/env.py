@@ -1,4 +1,4 @@
-"""Alembic environment for the platform master database."""
+"""Alembic environment for the base master database."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from platform_network.db import models as _models  # noqa: F401, E402
-from platform_network.db.base import Base  # noqa: E402
+from base.db import models as _models  # noqa: F401, E402
+from base.db.base import Base  # noqa: E402
 
 config = context.config
 
@@ -31,7 +31,7 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    url = os.getenv("PLATFORM_DATABASE_URL") or os.getenv("DATABASE_URL")
+    url = os.getenv("BASE_DATABASE_URL") or os.getenv("DATABASE_URL")
     if url:
         return url
 
@@ -40,7 +40,7 @@ def _database_url() -> str:
         return configured_url
 
     raise RuntimeError(
-        "Database URL must be set via PLATFORM_DATABASE_URL, "
+        "Database URL must be set via BASE_DATABASE_URL, "
         "DATABASE_URL, or alembic.ini"
     )
 

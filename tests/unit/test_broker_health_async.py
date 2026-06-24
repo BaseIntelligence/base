@@ -11,8 +11,8 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from platform_network.master.docker_broker import create_docker_broker_app
-from platform_network.schemas.docker_broker import (
+from base.master.docker_broker import create_docker_broker_app
+from base.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerCleanupResponse,
     BrokerListRequest,
@@ -70,11 +70,11 @@ def _post_run(client: TestClient, results: list[int]) -> None:
         "/v1/docker/run",
         headers={
             "authorization": "Bearer tok",
-            "x-platform-challenge-slug": "agent",
+            "x-base-challenge-slug": "agent",
         },
         json={
             "job_id": "job-slow",
-            "image": "ghcr.io/platformnetwork/agent:latest",
+            "image": "ghcr.io/baseintelligence/agent:latest",
             "command": ["sleep", "infinity"],
             "timeout_seconds": 60,
         },

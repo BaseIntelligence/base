@@ -12,12 +12,12 @@ def _pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def test_platform_release_version_sources_are_3_0_0() -> None:
+def test_base_release_version_sources_are_3_0_0() -> None:
     pyproject = _pyproject()
     lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
 
     assert pyproject["project"]["version"] == VERSION
-    assert f'name = "platform-network"\nversion = "{VERSION}"' in lock
+    assert f'name = "base"\nversion = "{VERSION}"' in lock
 
 
 def test_versioning_policy_documents_release_contract() -> None:
@@ -31,7 +31,7 @@ def test_versioning_policy_documents_release_contract() -> None:
         "GHCR",
         "GitHub Release",
         "generate",
-        "platform-master",
+        "base-master",
         "main",
         "type=semver,pattern={{version}}",
         "sha256",

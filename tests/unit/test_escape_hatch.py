@@ -17,19 +17,19 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from platform_network.challenge_sdk.executors.docker import DockerExecutorError
-from platform_network.master.docker_broker import (
+from base.challenge_sdk.executors.docker import DockerExecutorError
+from base.master.docker_broker import (
     DockerBrokerConfig,
     DockerBrokerService,
     EscapeHatchCommandResult,
     create_docker_broker_app,
 )
-from platform_network.master.swarm_backend import (
+from base.master.swarm_backend import (
     SwarmBrokerConfig,
     SwarmBrokerService,
 )
-from platform_network.master.workload_ledger import WorkloadEntry, WorkloadLedger
-from platform_network.schemas.docker_broker import (
+from base.master.workload_ledger import WorkloadEntry, WorkloadLedger
+from base.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerRunRequest,
 )
@@ -39,7 +39,7 @@ FULL_CONTAINER_ID = "c0ffee" + "0" * 58
 
 AUTH_HEADERS = {
     "authorization": "Bearer tok",
-    "x-platform-challenge-slug": "agent",
+    "x-base-challenge-slug": "agent",
 }
 
 
@@ -128,11 +128,11 @@ def _run_request(**overrides: Any) -> BrokerRunRequest:
     payload: dict[str, Any] = {
         "job_id": "job-priv",
         "task_id": "task-1",
-        "image": "ghcr.io/platformnetwork/dind-challenge:1.0.0",
+        "image": "ghcr.io/baseintelligence/dind-challenge:1.0.0",
         "command": ["dockerd-entrypoint.sh"],
         "workdir": "/workspace",
-        "env": {"PLATFORM_ENV": "unit"},
-        "labels": {"platform.challenge": "agent"},
+        "env": {"BASE_ENV": "unit"},
+        "labels": {"base.challenge": "agent"},
         "limits": {"privileged": True},
         "mounts": [
             {
@@ -157,7 +157,7 @@ def _service(
 ) -> DockerBrokerService:
     config = DockerBrokerConfig(
         workspace_dir=tmp_path / "work",
-        allowed_images=("ghcr.io/platformnetwork/",),
+        allowed_images=("ghcr.io/baseintelligence/",),
         **config_overrides,
     )
     ledger = WorkloadLedger()
@@ -246,9 +246,9 @@ def test_gated_run_launches_privileged_docker_run_and_tracks_ledger(
     volumes = [value for flag, value in pairs if flag == "-v"]
     assert any(v.endswith(":/var/lib/docker") for v in volumes)
     assert any("destination" not in v and "/workspace/forge" in v for v in volumes)
-    assert ("--label", "platform.job=job-priv") in pairs
+    assert ("--label", "base.job=job-priv") in pairs
     assert argv[-2:] == (
-        "ghcr.io/platformnetwork/dind-challenge:1.0.0",
+        "ghcr.io/baseintelligence/dind-challenge:1.0.0",
         "dockerd-entrypoint.sh",
     )
 
@@ -330,8 +330,8 @@ def test_cleanup_removes_escape_hatch_container_and_releases(tmp_path: Path) -> 
     assert result.status == "ok"
     ps_call = next(call for call in runner.calls if call[1] == "ps")
     assert "--no-trunc" in ps_call
-    assert "label=platform.challenge=agent" in ps_call
-    assert "label=platform.job=job-priv" in ps_call
+    assert "label=base.challenge=agent" in ps_call
+    assert "label=base.job=job-priv" in ps_call
     assert ("docker", "rm", "-f", FULL_CONTAINER_ID) in runner.calls
     assert service.ledger.count("agent") == 0
 
@@ -359,7 +359,7 @@ def test_swarm_backend_gated_run_uses_docker_run_not_service_create(
     service = SwarmBrokerService(
         SwarmBrokerConfig(
             workspace_dir=tmp_path / "work",
-            allowed_images=("ghcr.io/platformnetwork/",),
+            allowed_images=("ghcr.io/baseintelligence/",),
             privileged_escape_slugs=frozenset({"agent"}),
             node_role="worker",
         ),

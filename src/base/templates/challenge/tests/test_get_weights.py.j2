@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+
+async def test_get_weights_requires_internal_token(client):
+    response = await client.get(
+        "/internal/v1/get_weights",
+        headers={"X-Base-Challenge-Slug": "{{ slug }}"},
+    )
+
+    assert response.status_code == 401
+
+
+async def test_get_weights_requires_matching_slug(client, internal_headers):
+    headers = {**internal_headers, "X-Base-Challenge-Slug": "other-challenge"}
+    response = await client.get("/internal/v1/get_weights", headers=headers)
+
+    assert response.status_code == 400
+
+
+async def test_get_weights_returns_hotkey_scores(client, internal_headers):
+    await client.post("/submissions", json={"miner_hotkey": "hotkey-a", "payload": "one"})
+    await client.post("/submissions", json={"miner_hotkey": "hotkey-a", "payload": "two"})
+    await client.post("/submissions", json={"miner_hotkey": "hotkey-b", "payload": "one"})
+
+    response = await client.get("/internal/v1/get_weights", headers=internal_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["challenge_slug"] == "{{ slug }}"
+    assert payload["weights"] == {"hotkey-a": 2.0, "hotkey-b": 1.0}
+    assert "computed_at" in payload["metadata"]

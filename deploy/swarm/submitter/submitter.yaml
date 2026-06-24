@@ -1,7 +1,7 @@
 # Submit-only validator config for the Docker-Swarm cutover (Phase 5).
 #
 # Consumed by deploy/swarm/submitter/run_submitter.py via:
-#   --config /etc/platform/submitter.yaml
+#   --config /etc/base/submitter.yaml
 #
 # This is the MINIMAL config that load_settings() + the production policy
 # validator accept for the submit-only path. It contains NO credentials and is
@@ -16,31 +16,31 @@
 #     so omitting it keeps this file credential-free.
 #   * docker: no orchestration runs here. Its defaults are all
 #     production-policy-clean (e.g. broker_allowed_images defaults to
-#     ghcr.io/platformnetwork/).
+#     ghcr.io/baseintelligence/).
 #
 # Network block replicates the live validator EXACTLY (netuid 100,
 # chain_endpoint empty string -> bittensor finney default, wallet
-# platform-validator/validator under /var/lib/platform/wallets, master_uid 0).
+# base-validator/validator under /var/lib/base/wallets, master_uid 0).
 
 environment: development
 
 network:
-  name: platform
+  name: base
   netuid: 100
   # Empty string (verbatim, as in k3s): falsy -> bittensor connects to the
   # default network (finney mainnet). Do NOT set to a custom endpoint.
   chain_endpoint: ''
-  wallet_name: platform-validator
+  wallet_name: base-validator
   wallet_hotkey: validator
-  wallet_path: /var/lib/platform/wallets
+  wallet_path: /var/lib/base/wallets
   master_uid: 0
 
 validator:
-  # EXPLICIT: fetch the live vector from chain.platform.network (the Cloudflare-
+  # EXPLICIT: fetch the live vector from chain.joinbase.ai (the Cloudflare-
   # fronted live k3s master that receives miner traffic), NOT the docker admin,
   # so the docker submitter submits the same live vector during the soak.
   # resolved_weights_url returns weights_url when set, so this is authoritative.
-  weights_url: https://chain.platform.network
+  weights_url: https://chain.joinbase.ai
   weights_interval_seconds: 360
   weights_timeout_seconds: 15.0
   weights_retries: 3
@@ -48,4 +48,4 @@ validator:
 
 observability:
   log_json: true
-  otel_service_name: platform-submitter
+  otel_service_name: base-submitter

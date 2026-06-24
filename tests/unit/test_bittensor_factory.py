@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from platform_network.bittensor.factory import (
+from base.bittensor.factory import (
     BittensorDependencyError,
     create_bittensor_runtime,
     create_bittensor_submit_runtime,
 )
-from platform_network.config.loader import load_settings
+from base.config.loader import load_settings
 
 
 def _settings(tmp_path: Path):

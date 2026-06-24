@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# install-swarm.sh — single-node Docker Swarm bring-up of the Platform master
+# install-swarm.sh — single-node Docker Swarm bring-up of the BASE master
 # + both challenges (agent-challenge, PRISM) on the validator node.
 #
 # ============================================================================
 # STATUS: DRAFT FOR HUMAN REVIEW. DO NOT EXECUTE BLINDLY.
 # ============================================================================
 #
-# This script brings the Platform master + both challenges up on a single-node
+# This script brings the BASE master + both challenges up on a single-node
 # Docker Swarm (the manager node). Docker Swarm is the only backend — there is
 # no Kubernetes. It is meant to be reviewed and then executed STEP BY STEP by an
 # operator.
 #
 # Adding workers: this script brings up only the single manager node. To attach
 # CPU/GPU worker nodes, mint a join token on the manager with
-# `platform master worker token --cpu|--gpu`, run `scripts/install-worker.sh` on
-# the worker, then `platform master worker label <node> --workload cpu|gpu`.
+# `base master worker token --cpu|--gpu`, run `scripts/install-worker.sh` on
+# the worker, then `base master worker label <node> --workload cpu|gpu`.
 # See deploy/swarm/README.md.
 #
 # Safety model (see EXPECTED OUTCOME in the task brief):
@@ -64,7 +64,7 @@ ADVERTISE_ADDR="${ADVERTISE_ADDR:-51.83.112.164}"
 BACKUP_DIR="${BACKUP_DIR:-/root/cutover-backups/LATEST}"
 
 # Where the rendered master config is written on the validator host.
-MASTER_CONFIG_PATH="${MASTER_CONFIG_PATH:-/etc/platform/master.yaml}"
+MASTER_CONFIG_PATH="${MASTER_CONFIG_PATH:-/etc/base/master.yaml}"
 
 # Repo-relative path to the validator daemon.json template (resolved at runtime).
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
@@ -76,13 +76,13 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # REPRODUCIBILITY CAVEAT — the live broker/prism run LOCAL-ONLY images (M2/M3).
 # The working live E2E stack does NOT run these :latest tags for the broker and
 # prism; it runs two LOCAL-ONLY images that are NOT on any registry:
-#   * platform-master-broker -> ghcr.io/platformnetwork/platform-master:readonly-data-mount
-#   * challenge-prism        -> ghcr.io/platformnetwork/prism:m5
+#   * base-master-broker -> ghcr.io/baseintelligence/base-master:readonly-data-mount
+#   * challenge-prism        -> ghcr.io/baseintelligence/prism:m5
 # (M5) challenge-prism is rebuilt from prism HEAD (PRISM v2 forced-init runner + instrumented
 # loss + scoring + harness robustness + multi-GPU + M4 anti-cheat/held-out/compute-block + the
 # M5 OpenRouter LLM hard gate) as the LOCAL-ONLY tag :m5 and redeployed manager-pinned,
 # `--update-order stop-first --no-resolve-image`. Its evaluator stays the LOCAL-ONLY
-# ghcr.io/platformnetwork/prism-evaluator:augmented (see below) — UNCHANGED from M2/M3: the
+# ghcr.io/baseintelligence/prism-evaluator:augmented (see below) — UNCHANGED from M2/M3: the
 # anti-cheat sandbox/static phase + scoring/manifest authoring run HOST-SIDE in the challenge
 # service and the in-container runner.py is injected at run time, so M4/M5 needs no eval-image
 # rebuild (the only baked module the runner imports, reference_tokenizers, is unchanged).
@@ -91,51 +91,51 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # volume `prism_fineweb_edu_train`, RO at /secret/train) present + populated; with the train
 # mount the converged-memorization-gap path activates (gap_basis='converged'), else it falls
 # back to the prequential reference (no regression). If val is absent the held-out is skipped.
-# The broker LOCAL-ONLY image is built from platform HEAD and carries the UNPUSHED
-# platform commits 1142bc53 (cross-node mount materialization for GPU eval jobs) +
+# The broker LOCAL-ONLY image is built from base HEAD and carries the UNPUSHED
+# base commits 1142bc53 (cross-node mount materialization for GPU eval jobs) +
 # 48ec8c5a (non-root mount extraction + uncapped drain round-trip) + e02ffbab
 # (per-slug read-only locked-data mount for the prism slug); challenge-prism overlays
 # the same base. The prism eval RO mounts (FineWeb-Edu train split + reference
 # tokenizers) are supplied by the broker built-in DEFAULT_PRISM_EVAL_READONLY_MOUNTS,
 # so no master.yaml broker_eval_readonly_mounts_by_slug entry is required for them to
-# be live. prism pins its platform-network
-# dependency by git (pyproject `platform-network @ git+https://github.com/BaseIntelligence/platform.git`,
+# be live. prism pins its base
+# dependency by git (pyproject `base @ git+https://github.com/BaseIntelligence/base.git`,
 # public HEAD), so until those commits are PUSHED a fresh `docker build` of
-# IMAGE_PRISM bundles the OLD published platform_network (lacking mount_transport /
+# IMAGE_PRISM bundles the OLD published base (lacking mount_transport /
 # the drain-restore path / the per-slug prism RO data mount) and the GPU eval
 # workspace+artifacts restore and locked-data auto-mount are broken.
-# CLEAN CANONICAL BRING-UP: first PUSH platform commits 1142bc53 + 48ec8c5a + e02ffbab
+# CLEAN CANONICAL BRING-UP: first PUSH base commits 1142bc53 + 48ec8c5a + e02ffbab
 # so the prism git-pinned dependency picks them up, then rebuild IMAGE_MASTER + IMAGE_PRISM
 # from HEAD normally — the overlay tags above then become unnecessary. The deploy
 # CONFIG this script sets (broker node.role==manager pin; prism
 # PRISM_ALLOW_INSECURE_SIGNATURES / PRISM_VALIDATOR_HOTKEYS) is independent of the
 # image build and reproduces as-is.
-IMAGE_MASTER="ghcr.io/platformnetwork/platform-master:latest"
-IMAGE_AGENT_CHALLENGE="ghcr.io/platformnetwork/agent-challenge:latest"
-IMAGE_PRISM="ghcr.io/platformnetwork/prism:latest"
+IMAGE_MASTER="ghcr.io/baseintelligence/base-master:latest"
+IMAGE_AGENT_CHALLENGE="ghcr.io/baseintelligence/agent-challenge:latest"
+IMAGE_PRISM="ghcr.io/baseintelligence/prism:latest"
 # Prism GPU evaluator (CUDA cu128 torchrun runner). Must satisfy BOTH prism
-# docker_allowed_images AND the broker broker_allowed_images (ghcr.io/platformnetwork/);
+# docker_allowed_images AND the broker broker_allowed_images (ghcr.io/baseintelligence/);
 # pre-pulled on the GPU worker so the broker eval job resolves it locally.
 # NB: PRISM v2 forced-init re-execution requires the :augmented tag (bundles sentencepiece +
 # offline tiktoken/HF assets for the locked FineWeb-Edu pipeline). The registry :latest is STALE
 # and lacks those — it is a LOCAL-ONLY image pre-pulled/built on the GPU node. Do NOT use :latest.
-IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/platformnetwork/prism-evaluator:augmented}"
+IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/baseintelligence/prism-evaluator:augmented}"
 IMAGE_POSTGRES="postgres:16-alpine"
 
 # Minimum Docker engine major version required (validator runs 29.x today).
 MIN_DOCKER_MAJOR=29
 
 # Swarm overlay networks (MUST match swarm_backend.py constants):
-#   DEFAULT_NETWORK_NAME = "platform_challenges"     (swarm_backend.py via docker_orchestrator.py:29)
-#   DEFAULT_JOB_NETWORK  = "platform_jobs_internal"  (swarm_backend.py:87)
+#   DEFAULT_NETWORK_NAME = "base_challenges"     (swarm_backend.py via docker_orchestrator.py:29)
+#   DEFAULT_JOB_NETWORK  = "base_jobs_internal"  (swarm_backend.py:87)
 #   OVERLAY_MTU          = "1450"                     (swarm_backend.py:88)
-NET_CHALLENGES="platform_challenges"
-NET_JOBS_INTERNAL="platform_jobs_internal"
+NET_CHALLENGES="base_challenges"
+NET_JOBS_INTERNAL="base_jobs_internal"
 OVERLAY_MTU="1450"
 
-# Secret mount layout INSIDE containers is /run/secrets/platform/<name>
-#   (docker_orchestrator.py:32 DEFAULT_SECRET_MOUNT_DIR = "/run/secrets/platform").
-SECRET_MOUNT_DIR="/run/secrets/platform"
+# Secret mount layout INSIDE containers is /run/secrets/base/<name>
+#   (docker_orchestrator.py:32 DEFAULT_SECRET_MOUNT_DIR = "/run/secrets/base").
+SECRET_MOUNT_DIR="/run/secrets/base"
 
 # Master service network endpoints (LIVE host ports — the live 18xxx stack).
 # Overridable via env so a fresh bring-up reproduces the live box exactly; each
@@ -143,11 +143,11 @@ SECRET_MOUNT_DIR="/run/secrets/platform"
 # master config (proxy_port/broker_port/broker_url), so the published
 # host port, the in-container listen port, and the overlay broker_url stay
 # mutually consistent.
-#   broker : platform master broker  -> docker.broker_*        (18082)
-#   proxy  : platform master proxy   -> proxy_host:proxy_port  (18080)
+#   broker : base master broker  -> docker.broker_*        (18082)
+#   proxy  : base master proxy   -> proxy_host:proxy_port  (18080)
 # SINGLE PUBLIC API: the proxy also serves the admin/registry surface
 # (/v1/registry, /v1/weights/latest, /health) on :18080, so there is no separate
-# admin service/port (the former platform-master-admin on 18900 is removed).
+# admin service/port (the former base-master-admin on 18900 is removed).
 MASTER_BROKER_PORT="${MASTER_BROKER_PORT:-18082}"
 MASTER_PROXY_PORT="${MASTER_PROXY_PORT:-18080}"
 # Challenge container-internal listen ports (overlay-internal; NO host publish —
@@ -157,18 +157,18 @@ AGENT_CHALLENGE_PORT=8000
 PRISM_PORT=8080
 
 # Named volumes for stateful postgres data.
-VOL_MASTER_PG="platform_master_pg"
+VOL_MASTER_PG="base_master_pg"
 VOL_AGENT_CHALLENGE_PG="agent_challenge_pg"
 VOL_PRISM_PG="prism_pg"
 
-# Shared platform secrets volume, mounted by broker/proxy at the master's
+# Shared base secrets volume, mounted by broker/proxy at the master's
 # DockerSettings.secret_dir. The master reads each challenge's bearer token and
 # the per-challenge docker-broker token from <secret_dir>/<slug>_challenge_token
 # (registry.py:_token_path). The PROXY in particular needs this mount or miner
 # uploads 500 "Challenge token file is missing" (see "Proxy submission-path
 # requirements" in AGENTS.md). Keep SECRET_VOLUME_DIR == DockerSettings.secret_dir.
-VOL_PLATFORM_SECRETS="vol_platform_secrets"
-SECRET_VOLUME_DIR="/var/lib/platform/secrets"
+VOL_BASE_SECRETS="vol_base_secrets"
+SECRET_VOLUME_DIR="/var/lib/base/secrets"
 
 # ---- Proxy submission-path config (canonicalizes the M1 live `docker service
 # update` fixes; see AGENTS.md "Proxy submission-path requirements"). All values
@@ -176,7 +176,7 @@ SECRET_VOLUME_DIR="/var/lib/platform/secrets"
 #
 # Upload allowlist: ss58 hotkeys the proxy MinerUploadVerifier accepts WITHOUT
 # on-chain registration (settings.master.upload_extra_registered_hotkeys, env
-# PLATFORM_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS). A non-allowlisted hotkey ->
+# BASE_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS). A non-allowlisted hotkey ->
 # 401 "unknown hotkey". Parameterizable. Default = the live miner (//AcE2EMiner)
 # + owner (//Owner) PLUS two SPARE validator hotkeys (//AcValidator1/2) kept free
 # of the agent-challenge 1-submission-per-hotkey-per-3h rate limit for the M1
@@ -189,8 +189,8 @@ UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnb
 # runner (e.g. the live :own-runner-fixed tag) is allowed; else the eval job fails
 # "Docker image is not allowed". AGENT_CHALLENGE_RUNNER_IMAGE is the own_runner job
 # image (CHALLENGE_HARBOR_RUNNER_IMAGE) — pin the operator's tag at deploy time.
-AGENT_CHALLENGE_RUNNER_IMAGE="${AGENT_CHALLENGE_RUNNER_IMAGE:-ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest}"
-CHALLENGE_DOCKER_ALLOWED_IMAGES="${CHALLENGE_DOCKER_ALLOWED_IMAGES:-[\"platformnetwork/swe-forge:*\",\"ghcr.io/platformnetwork/agent-challenge-analyzer:*\",\"ghcr.io/platformnetwork/terminal-bench-harbor-runner:*\",\"ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:*\"]}"
+AGENT_CHALLENGE_RUNNER_IMAGE="${AGENT_CHALLENGE_RUNNER_IMAGE:-ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:latest}"
+CHALLENGE_DOCKER_ALLOWED_IMAGES="${CHALLENGE_DOCKER_ALLOWED_IMAGES:-[\"baseintelligence/swe-forge:*\",\"ghcr.io/baseintelligence/agent-challenge-analyzer:*\",\"ghcr.io/baseintelligence/terminal-bench-harbor-runner:*\",\"ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:*\"]}"
 
 # Per-call extra env / command override consumed by _deploy_challenge_service
 # (reset after each deploy). Declared here so `set -u` never trips on `${#..[@]}`.
@@ -202,10 +202,10 @@ CHALLENGE_CMD=()
 CHALLENGE_EXTRA_MOUNTS=()
 # Per-call extra `--secret` specs (verbatim `source=...,target=...`) consumed by
 # _deploy_challenge_service. Unlike the positional SECRET_SPEC args (which mount under the
-# ${SECRET_MOUNT_DIR}/ "platform/" subdir), these are passed through UNMODIFIED so a secret can
+# ${SECRET_MOUNT_DIR}/ "base/" subdir), these are passed through UNMODIFIED so a secret can
 # be mounted at an exact target the consumer reads from. Used for the prism OpenRouter key, which
 # prism reads from /run/secrets/openrouter_api_key (config.py openrouter_api_key_file default),
-# i.e. target basename `openrouter_api_key` with NO `platform/` prefix. Reset after each deploy.
+# i.e. target basename `openrouter_api_key` with NO `base/` prefix. Reset after each deploy.
 CHALLENGE_EXTRA_SECRETS=()
 
 # ============================================================================
@@ -267,7 +267,7 @@ usage() {
   cat <<'EOF'
 Usage: install-swarm.sh [OPTIONS]
 
-Single-node Docker Swarm bring-up of the Platform master + challenges.
+Single-node Docker Swarm bring-up of the BASE master + challenges.
 DEFAULT MODE IS DRY-RUN (prints planned actions, changes nothing).
 
 Safety flags:
@@ -284,19 +284,19 @@ Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
 Configuration:
   --advertise-addr IP     Swarm advertise address (default: 51.83.112.164).
   --backup-dir DIR        pg_dump + baseline dir (default: /root/cutover-backups/LATEST).
-  --master-config PATH    Rendered master config path (default: /etc/platform/master.yaml).
+  --master-config PATH    Rendered master config path (default: /etc/base/master.yaml).
   -h, --help              Show this help.
 
 Required environment (values NEVER hardcoded; supplied at runtime):
   GHCR_USER, GHCR_TOKEN                      GHCR login for private images.
-  PLATFORM_ADMIN_TOKEN                       master admin token.
+  BASE_ADMIN_TOKEN                       master admin token.
   AGENT_CHALLENGE_CHALLENGE_TOKEN            agent-challenge challenge token.
   AGENT_CHALLENGE_DOCKER_BROKER_TOKEN        agent-challenge broker token.
   AGENT_CHALLENGE_SUBMISSION_ENV_KEY         agent-challenge submission_env_encryption_key.
   PRISM_CHALLENGE_TOKEN                      prism challenge token.
   PRISM_DOCKER_BROKER_TOKEN                  prism broker token.
   OPENROUTER_API_KEY                         openrouter_api_key.
-  MASTER_PG_PASSWORD                         platform postgres password.
+  MASTER_PG_PASSWORD                         base postgres password.
   AGENT_CHALLENGE_PG_PASSWORD                agent-challenge postgres password.
   PRISM_PG_PASSWORD                          prism postgres password.
   MASTER_DATABASE_URL                        master control-plane DB URL.
@@ -359,7 +359,7 @@ preflight() {
   # Backup dir + dump files.
   [[ -d "${BACKUP_DIR}" ]] || die "backup dir not found: ${BACKUP_DIR}"
   local dump
-  for dump in platform.sql agent-challenge.sql prism.sql; do
+  for dump in base.sql agent-challenge.sql prism.sql; do
     [[ -f "${BACKUP_DIR}/${dump}" ]] || die "missing dump file: ${BACKUP_DIR}/${dump}"
   done
   log "  backup dumps present in ${BACKUP_DIR} OK (prism.sql may be empty — expected)"
@@ -438,7 +438,7 @@ swarm_init() {
 #    -----------
 #    Every Swarm workload defaults to the placement constraint
 #    `node.role==worker`:
-#        src/platform_network/master/swarm_backend.py:86
+#        src/base/master/swarm_backend.py:86
 #            DEFAULT_PLACEMENT_CONSTRAINT = "node.role==worker"
 #    and that default is the value used for BOTH workload paths:
 #        * broker jobs   : SwarmBrokerConfig.placement_constraint
@@ -467,11 +467,11 @@ swarm_init() {
 #        *** IMPORTANT CAVEAT (verified against this repo) ***
 #        There is currently NO master.yaml / settings.py key that maps to
 #        `placement_constraint`. The factory that builds the orchestrator,
-#            src/platform_network/orchestration/factory.py:109-119
+#            src/base/orchestration/factory.py:109-119
 #        constructs `SwarmChallengeOrchestrator(network_name=..., internal_network=...,
 #        docker_broker_url=...)` and does NOT pass placement_constraint, so it
 #        always falls back to DEFAULT_PLACEMENT_CONSTRAINT. Likewise the broker
-#        (`platform master broker`) builds SwarmBrokerConfig with the default.
+#        (`base master broker`) builds SwarmBrokerConfig with the default.
 #        => A pure-CONFIG single-node override is NOT possible today; it needs
 #           EITHER a one-line code change in factory.py (pass
 #           placement_constraint=None when single-node) and the broker builder,
@@ -514,8 +514,8 @@ single_node_placement_fix() {
 # ============================================================================
 # 5. create_networks()
 #    Encrypted, attachable overlay networks at MTU 1450. Names MUST match the
-#    swarm_backend constants (platform_challenges, platform_jobs_internal).
-#    platform_jobs_internal is created --internal (no external routes), mirroring
+#    swarm_backend constants (base_challenges, base_jobs_internal).
+#    base_jobs_internal is created --internal (no external routes), mirroring
 #    swarm_backend's `none`-network substitution.
 # ============================================================================
 create_networks() {
@@ -550,11 +550,11 @@ _create_overlay() {
 #    names the master orchestrator expects.
 #
 #    NAMING NOTE: SwarmChallengeOrchestrator creates/refreshes its OWN per-slug
-#    value-bearing secrets named `platform_<safe_slug>_<name>` at challenge
+#    value-bearing secrets named `base_<safe_slug>_<name>` at challenge
 #    start (swarm_backend.py:996-1006, _ensure_secrets). The secrets created
 #    here are the ones the master/broker/postgres services consume directly and
 #    any `external_secrets` the orchestrator only REFERENCES. We name them with
-#    the same `platform_<slug>_<name>` convention so a master-orchestrated
+#    the same `base_<slug>_<name>` convention so a master-orchestrated
 #    start can reference them without recreating. Review against the
 #    orchestrator's expected secret names before apply.
 # ============================================================================
@@ -562,23 +562,23 @@ create_secrets() {
   log "STEP 6/12 create_secrets (values via stdin, hidden)"
 
   # name                                env var                              required?
-  _ensure_secret "platform_admin_token"                       PLATFORM_ADMIN_TOKEN
-  _ensure_secret "platform_master_database_url"               MASTER_DATABASE_URL
-  _ensure_secret "platform_master_pg_password"                MASTER_PG_PASSWORD
+  _ensure_secret "base_admin_token"                       BASE_ADMIN_TOKEN
+  _ensure_secret "base_master_database_url"               MASTER_DATABASE_URL
+  _ensure_secret "base_master_pg_password"                MASTER_PG_PASSWORD
 
-  _ensure_secret "platform_agent_challenge_challenge_token"   AGENT_CHALLENGE_CHALLENGE_TOKEN
-  _ensure_secret "platform_agent_challenge_docker_broker_token" AGENT_CHALLENGE_DOCKER_BROKER_TOKEN
-  _ensure_secret "platform_agent_challenge_submission_env_encryption_key" AGENT_CHALLENGE_SUBMISSION_ENV_KEY
-  _ensure_secret "platform_agent_challenge_database_url"      AGENT_CHALLENGE_DATABASE_URL
-  _ensure_secret "platform_agent_challenge_pg_password"       AGENT_CHALLENGE_PG_PASSWORD
+  _ensure_secret "base_agent_challenge_challenge_token"   AGENT_CHALLENGE_CHALLENGE_TOKEN
+  _ensure_secret "base_agent_challenge_docker_broker_token" AGENT_CHALLENGE_DOCKER_BROKER_TOKEN
+  _ensure_secret "base_agent_challenge_submission_env_encryption_key" AGENT_CHALLENGE_SUBMISSION_ENV_KEY
+  _ensure_secret "base_agent_challenge_database_url"      AGENT_CHALLENGE_DATABASE_URL
+  _ensure_secret "base_agent_challenge_pg_password"       AGENT_CHALLENGE_PG_PASSWORD
 
-  _ensure_secret "platform_prism_challenge_token"             PRISM_CHALLENGE_TOKEN
-  _ensure_secret "platform_prism_docker_broker_token"         PRISM_DOCKER_BROKER_TOKEN
-  _ensure_secret "platform_prism_database_url"                PRISM_DATABASE_URL
-  _ensure_secret "platform_prism_pg_password"                 PRISM_PG_PASSWORD
+  _ensure_secret "base_prism_challenge_token"             PRISM_CHALLENGE_TOKEN
+  _ensure_secret "base_prism_docker_broker_token"         PRISM_DOCKER_BROKER_TOKEN
+  _ensure_secret "base_prism_database_url"                PRISM_DATABASE_URL
+  _ensure_secret "base_prism_pg_password"                 PRISM_PG_PASSWORD
 
   # openrouter_api_key is shared (used by challenge eval). Named generically.
-  _ensure_secret "platform_openrouter_api_key"                OPENROUTER_API_KEY
+  _ensure_secret "base_openrouter_api_key"                OPENROUTER_API_KEY
 }
 
 # _ensure_secret NAME ENVVAR — idempotent secret create from $ENVVAR (stdin).
@@ -600,20 +600,20 @@ _ensure_secret() {
 #    Three postgres:16-alpine services with named volumes. POSTGRES_DB/USER are
 #    literals (db/user from LIVE INVENTORY); POSTGRES_PASSWORD comes from a
 #    docker secret via POSTGRES_PASSWORD_FILE (never an env literal).
-#      platform-master-postgres        : db=platform  user=platform
+#      base-master-postgres        : db=base  user=base
 #      challenge-agent-challenge-postgres: db=challenge user=challenge
 #      challenge-prism-postgres         : db=challenge user=challenge
 #    All postgres services are internal (no published host port); reached over
-#    the platform_challenges overlay by DNS.
+#    the base_challenges overlay by DNS.
 # ============================================================================
 deploy_postgres() {
   log "STEP 7/12 deploy_postgres"
-  _deploy_postgres_service "platform-master-postgres" "${VOL_MASTER_PG}" \
-    "platform" "platform" "platform_master_pg_password"
+  _deploy_postgres_service "base-master-postgres" "${VOL_MASTER_PG}" \
+    "base" "base" "base_master_pg_password"
   _deploy_postgres_service "challenge-agent-challenge-postgres" "${VOL_AGENT_CHALLENGE_PG}" \
-    "challenge" "challenge" "platform_agent_challenge_pg_password"
+    "challenge" "challenge" "base_agent_challenge_pg_password"
   _deploy_postgres_service "challenge-prism-postgres" "${VOL_PRISM_PG}" \
-    "challenge" "challenge" "platform_prism_pg_password"
+    "challenge" "challenge" "base_prism_pg_password"
 }
 
 # _deploy_postgres_service NAME VOLUME DB USER PW_SECRET
@@ -648,13 +648,13 @@ restore_data() {
   log "STEP 8/12 restore_data"
   if [[ "${APPLY}" != "true" ]]; then
     log "  (dry-run) would: wait-healthy -> psql restore -> verify row counts for:"
-    log "    platform-master-postgres        <- ${BACKUP_DIR}/platform.sql       (db=platform)"
+    log "    base-master-postgres        <- ${BACKUP_DIR}/base.sql       (db=base)"
     log "    challenge-agent-challenge-postgres <- ${BACKUP_DIR}/agent-challenge.sql (db=challenge)"
     log "    challenge-prism-postgres        <- ${BACKUP_DIR}/prism.sql          (db=challenge, may be empty)"
     return 0
   fi
 
-  _restore_one "platform-master-postgres"        "platform"  "platform"  "${BACKUP_DIR}/platform.sql"        "${BACKUP_DIR}/rowcounts-platform.txt"
+  _restore_one "base-master-postgres"        "base"  "base"  "${BACKUP_DIR}/base.sql"        "${BACKUP_DIR}/rowcounts-base.txt"
   _restore_one "challenge-agent-challenge-postgres" "challenge" "challenge" "${BACKUP_DIR}/agent-challenge.sql" "${BACKUP_DIR}/rowcounts-agent-challenge.txt"
   _restore_one "challenge-prism-postgres"         "challenge" "challenge" "${BACKUP_DIR}/prism.sql"           "${BACKUP_DIR}/rowcounts-prism.txt"
 }
@@ -730,20 +730,20 @@ _verify_rowcounts() {
 
 # ============================================================================
 # 9. deploy_master()
-#    Render /etc/platform/master.yaml (backend=docker, single-node values) then
-#    deploy broker/proxy services from the platform-master image with the
+#    Render /etc/base/master.yaml (backend=docker, single-node values) then
+#    deploy broker/proxy services from the base-master image with the
 #    config + secrets mounted and ports published.
 #
 #    Service name <-> command <-> port:
-#      platform-master-broker : `platform master broker` : 18082 (docker.broker_*)
-#      platform-master-proxy  : `platform master proxy`  : 18080 (proxy_host:proxy_port)
+#      base-master-broker : `base master broker` : 18082 (docker.broker_*)
+#      base-master-proxy  : `base master proxy`  : 18080 (proxy_host:proxy_port)
 #    The proxy is the SINGLE public API: it serves /v1/registry, /v1/weights/latest,
 #    /health, the admin/management routes (token-gated), the signed upload bridge,
 #    and the /challenges/* passthrough, AND it runs the orchestrator that creates
-#    challenges dynamically (the separate `platform master run` admin service on
+#    challenges dynamically (the separate `base master run` admin service on
 #    18900 is removed).
-#    The broker service MUST be named platform-master-broker so the configured
-#    broker_url (http://platform-master-broker:18082) resolves over the overlay.
+#    The broker service MUST be named base-master-broker so the configured
+#    broker_url (http://base-master-broker:18082) resolves over the overlay.
 # ============================================================================
 deploy_master() {
   log "STEP 9/12 deploy_master"
@@ -752,10 +752,10 @@ deploy_master() {
   _seed_proxy_challenge_tokens  # proxy bearer-token files in the shared secrets volume
 
   # broker — challenge workload broker (frozen contract / Swarm backend).
-  _deploy_master_service "platform-master-broker" "broker" "${MASTER_BROKER_PORT}" "${MASTER_BROKER_PORT}"
+  _deploy_master_service "base-master-broker" "broker" "${MASTER_BROKER_PORT}" "${MASTER_BROKER_PORT}"
   # proxy — public single API (registry/weights/health + admin + upload bridge +
   # /challenges/* passthrough) and the orchestrator that creates challenges.
-  _deploy_master_service "platform-master-proxy" "proxy" "${MASTER_PROXY_PORT}" "${MASTER_PROXY_PORT}"
+  _deploy_master_service "base-master-proxy" "proxy" "${MASTER_PROXY_PORT}" "${MASTER_PROXY_PORT}"
 }
 
 # Render the single-node master config to MASTER_CONFIG_PATH. NO secrets inline:
@@ -772,12 +772,12 @@ _render_master_config() {
 # Rendered by deploy/swarm/install-swarm.sh (single-node Swarm bring-up).
 # backend=docker; kubernetes.broker_backend=docker (override live k8s values).
 network:
-  name: platform
+  name: base
   netuid: 100
   chain_endpoint: ''          # empty in prod (no live chain) — keep empty.
   wallet_name: default
   wallet_hotkey: default
-  wallet_path: /var/lib/platform/wallets
+  wallet_path: /var/lib/base/wallets
   master_uid: 0
 
 master:
@@ -785,9 +785,9 @@ master:
   proxy_port: ${MASTER_PROXY_PORT}
 
 database:
-  # Loaded from the platform_master_database_url docker secret at runtime;
+  # Loaded from the base_master_database_url docker secret at runtime;
   # this placeholder is overridden by the *_FILE indirection in deployment.
-  url: postgresql+asyncpg://platform@platform-master-postgres:5432/platform
+  url: postgresql+asyncpg://base@base-master-postgres:5432/base
 
 runtime:
   backend: docker
@@ -801,9 +801,9 @@ docker:
   internal_network: true
   broker_host: 0.0.0.0
   broker_port: ${MASTER_BROKER_PORT}
-  broker_url: http://platform-master-broker:${MASTER_BROKER_PORT}
+  broker_url: http://base-master-broker:${MASTER_BROKER_PORT}
   broker_allowed_images:
-    - ghcr.io/platformnetwork/
+    - ghcr.io/baseintelligence/
   allow_privileged: true
   broker_privileged_slugs:
     - agent-challenge
@@ -840,7 +840,7 @@ EOF
 # Publish the rendered master.yaml as a docker config object so all three master
 # services mount an identical file. Idempotent.
 _ensure_master_config_secret() {
-  local cfg_obj="platform_master_yaml"
+  local cfg_obj="base_master_yaml"
   if docker config inspect "${cfg_obj}" >/dev/null 2>&1; then
     log "  docker config ${cfg_obj} already exists — skipping (rotate out-of-band)"
     return 0
@@ -855,13 +855,13 @@ _ensure_master_config_secret() {
 # Seed the proxy's per-challenge bearer-token files into the shared secrets
 # volume. The proxy verifies a miner upload for slug <s> against the bearer token
 # it reads from ${SECRET_VOLUME_DIR}/<s>_challenge_token (registry.get_token);
-# that file MUST equal the challenge's platform_<s>_challenge_token secret value
+# that file MUST equal the challenge's base_<s>_challenge_token secret value
 # or uploads 401 "invalid bearer token". Seed it for BOTH agent-challenge and
 # prism from the same env vars used to create the docker secrets. Values flow on
 # stdin only (never argv, never logged). The throwaway writer mounts the named
 # volume directly so the file exists before the proxy task starts.
 _seed_proxy_challenge_tokens() {
-  log "  seeding proxy per-challenge bearer-token files into ${VOL_PLATFORM_SECRETS}"
+  log "  seeding proxy per-challenge bearer-token files into ${VOL_BASE_SECRETS}"
   _seed_challenge_token "agent-challenge" AGENT_CHALLENGE_CHALLENGE_TOKEN
   _seed_challenge_token "prism"           PRISM_CHALLENGE_TOKEN
 }
@@ -872,7 +872,7 @@ _seed_proxy_challenge_tokens() {
 # Ownership: the master image runs as uid 1000 (the proxy is uid 1000; only the
 # broker is --user root), so the proxy reads these files AS uid 1000. The
 # writer container runs as root (the default — required because a FRESH
-# vol_platform_secrets volume root is owned root:root 0755, so a --user 1000:1000
+# vol_base_secrets volume root is owned root:root 0755, so a --user 1000:1000
 # writer could not create the file), then chowns the file to 1000:1000 keeping
 # mode 600. A root-owned 600 file would be UNREADABLE by the proxy on a
 # fresh volume (-> 500 "Challenge token file is missing" / 401 "invalid bearer
@@ -885,7 +885,7 @@ _seed_challenge_token() {
   local target="${slug}_challenge_token"
   plan_secret_stdin "proxy-token-${slug}" "${envvar}" -- \
     docker run --rm -i \
-      --mount "type=volume,source=${VOL_PLATFORM_SECRETS},destination=/secrets" \
+      --mount "type=volume,source=${VOL_BASE_SECRETS},destination=/secrets" \
       "${IMAGE_POSTGRES}" \
       sh -c "umask 077 && cat > /secrets/${target} && chmod 600 /secrets/${target} && chown 1000:1000 /secrets/${target}"
 }
@@ -899,7 +899,7 @@ _deploy_master_service() {
   fi
 
   # Common extras for ALL master services:
-  #   * shared secrets volume at the master secret_dir (/var/lib/platform/secrets):
+  #   * shared secrets volume at the master secret_dir (/var/lib/base/secrets):
   #     broker/proxy read per-challenge tokens from here. The PROXY needs
   #     it to load each challenge's bearer token when verifying miner uploads (else
   #     500 "Challenge token file is missing"). Seeded by _seed_proxy_challenge_tokens.
@@ -907,7 +907,7 @@ _deploy_master_service() {
   #     mode=host); the default start-first ordering causes a transient port collision
   #     (EADDRINUSE) on update. stop-first releases the port before the new task binds.
   local -a extra=(
-    --mount "type=volume,source=${VOL_PLATFORM_SECRETS},destination=${SECRET_VOLUME_DIR}"
+    --mount "type=volume,source=${VOL_BASE_SECRETS},destination=${SECRET_VOLUME_DIR}"
     --update-order stop-first
   )
 
@@ -921,7 +921,7 @@ _deploy_master_service() {
   #   3. user=root: DinD writes outputs as root; the broker must rmtree them on
   #      TemporaryDirectory exit or cleanup raises EPERM -> HTTP 500.
   if [[ "${subcommand}" == "broker" ]]; then
-    local broker_ws="${BROKER_WORKSPACE_DIR:-/tmp/platform-docker-broker}"
+    local broker_ws="${BROKER_WORKSPACE_DIR:-/tmp/base-docker-broker}"
     mkdir -p "${broker_ws}"
     extra+=(
       --user root
@@ -936,7 +936,7 @@ _deploy_master_service() {
       # local-only image is "No such image", and the workspace bind source does
       # not exist. node.role is intrinsic, so this also matches the sole manager on
       # a single-node swarm (no-op there). Canonicalizes the live M2/M3 pin
-      # (verified on platform-master-broker; see library/environment.md). Do NOT
+      # (verified on base-master-broker; see library/environment.md). Do NOT
       # use --constraint-add on an already-pinned live service (not idempotent —
       # see AGENTS.md "CONSTRAINT-ADD DEDUP GOTCHA").
       --constraint "node.role==manager"
@@ -947,7 +947,7 @@ _deploy_master_service() {
   # owner (+ spare validator) hotkeys without on-chain registration.
   if [[ "${subcommand}" == "proxy" ]]; then
     extra+=(
-      --env "PLATFORM_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
+      --env "BASE_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
     )
   fi
 
@@ -958,18 +958,18 @@ _deploy_master_service() {
     --restart-condition any \
     --hostname "${name}" \
     --publish "published=${host_port},target=${container_port},mode=host" \
-    --config "source=platform_master_yaml,target=${MASTER_CONFIG_PATH}" \
-    --secret "source=platform_admin_token,target=admin_token" \
-    --secret "source=platform_master_database_url,target=master_database_url" \
-    --env "PLATFORM_CONFIG=${MASTER_CONFIG_PATH}" \
+    --config "source=base_master_yaml,target=${MASTER_CONFIG_PATH}" \
+    --secret "source=base_admin_token,target=admin_token" \
+    --secret "source=base_master_database_url,target=master_database_url" \
+    --env "BASE_CONFIG=${MASTER_CONFIG_PATH}" \
     "${extra[@]}" \
     "${IMAGE_MASTER}" \
-    platform master "${subcommand}" --config "${MASTER_CONFIG_PATH}"
+    base master "${subcommand}" --config "${MASTER_CONFIG_PATH}"
 }
 
 # ============================================================================
 # 10. deploy_challenges()
-#     DEFAULT: do NOTHING here — the running master orchestrator (`platform
+#     DEFAULT: do NOTHING here — the running master orchestrator (`base
 #     master proxy`, deployed above) creates challenge services dynamically via
 #     SwarmChallengeOrchestrator (this is the real-system behavior). Only when
 #     --static-challenges is set do we create the challenge services directly,
@@ -1007,11 +1007,11 @@ deploy_challenges() {
   CHALLENGE_ENV=("${ac_eval_env[@]}")
   _deploy_challenge_service \
     "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
-    "platform_agent_challenge_pg" \
-    "platform_agent_challenge_challenge_token:challenge_token" \
-    "platform_agent_challenge_docker_broker_token:docker_broker_token" \
-    "platform_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
-    "platform_openrouter_api_key:openrouter_api_key"
+    "base_agent_challenge_pg" \
+    "base_agent_challenge_challenge_token:challenge_token" \
+    "base_agent_challenge_docker_broker_token:docker_broker_token" \
+    "base_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
+    "base_openrouter_api_key:openrouter_api_key"
 
   # agent-challenge worker sidecar (command `agent-challenge-worker`; see
   # cli_app/main.py worker_command metadata). It runs the own_runner eval loop and
@@ -1023,40 +1023,40 @@ deploy_challenges() {
     "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND=own_runner"
     "CHALLENGE_DOCKER_ENABLED=true"
     "CHALLENGE_DOCKER_BACKEND=broker"
-    "CHALLENGE_DOCKER_BROKER_URL=http://platform-master-broker:${MASTER_BROKER_PORT}"
+    "CHALLENGE_DOCKER_BROKER_URL=http://base-master-broker:${MASTER_BROKER_PORT}"
     "CHALLENGE_DOCKER_BROKER_TOKEN_FILE=${SECRET_MOUNT_DIR}/docker_broker_token"
     "CHALLENGE_ARTIFACT_ROOT=/data"
   )
   CHALLENGE_CMD=("agent-challenge-worker" "--poll-interval" "5")
   _deploy_challenge_service \
     "challenge-agent-challenge-worker" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
-    "platform_agent_challenge_pg" \
-    "platform_agent_challenge_challenge_token:challenge_token" \
-    "platform_agent_challenge_docker_broker_token:docker_broker_token" \
-    "platform_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
-    "platform_openrouter_api_key:openrouter_api_key"
+    "base_agent_challenge_pg" \
+    "base_agent_challenge_challenge_token:challenge_token" \
+    "base_agent_challenge_docker_broker_token:docker_broker_token" \
+    "base_agent_challenge_submission_env_encryption_key:submission_env_encryption_key" \
+    "base_openrouter_api_key:openrouter_api_key"
 
   # PRISM service (container port 8080). Overlay-internal — reached over the overlay; no host publish.
   # Prism runtime config for the local E2E + weights dry-run slice (research prism
   # §5,§7,§10): broker dispatch (docker_backend=broker), an ACTIVE GPU lease
-  # (platform_eval_gpu_count=1), the cu128 evaluator image (allowlisted by both prism
+  # (base_eval_gpu_count=1), the cu128 evaluator image (allowlisted by both prism
   # and the broker), SQLite on /data, synthetic dataset (the in-container runner trains
   # on random tokens — no download), and the OpenRouter LLM HARD GATE ENABLED
   # (PRISM_LLM_REVIEW_ENABLED=true; model openai/gpt-4o by config default; key from the mounted
   # openrouter_api_key secret on the challenge service ONLY — never the eval container. This
-  # script's create_secrets makes platform_openrouter_api_key from $OPENROUTER_API_KEY and (via
+  # script's create_secrets makes base_openrouter_api_key from $OPENROUTER_API_KEY and (via
   # CHALLENGE_EXTRA_SECRETS below) mounts it at /run/secrets/openrouter_api_key — the EXACT path
-  # prism reads (config.py openrouter_api_key_file default), NOT the ${SECRET_MOUNT_DIR}/"platform/"
+  # prism reads (config.py openrouter_api_key_file default), NOT the ${SECRET_MOUNT_DIR}/"base/"
   # subdir the other secrets use. This is the SAME mount target the LIVE stack uses for the
-  # equivalent pre-existing platform_or_key_real secret, so a FRESH install-swarm.sh bring-up wires
-  # the LLM-review gate's key to the name/path prism actually consumes — no platform_openrouter_api_key
-  # vs platform_or_key_real mismatch at the consuming path (the docker secret NAME differs only by
+  # equivalent pre-existing base_or_key_real secret, so a FRESH install-swarm.sh bring-up wires
+  # the LLM-review gate's key to the name/path prism actually consumes — no base_openrouter_api_key
+  # vs base_or_key_real mismatch at the consuming path (the docker secret NAME differs only by
   # which key material the operator pre-provisioned; both resolve at /run/secrets/openrouter_api_key).
   # docker_backend already defaults to broker but is set
-  # explicitly. The broker token file is the mounted platform_prism_docker_broker_token
+  # explicitly. The broker token file is the mounted base_prism_docker_broker_token
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
   # broker reads (registration writes it). prism's docker_allowed_images already permits
-  # ghcr.io/platformnetwork/, so the eval image needs no override.
+  # ghcr.io/baseintelligence/, so the eval image needs no override.
   #
   # Two LOCAL/DEV-ONLY allowances complete the E2E submission path (canonicalized
   # from the live M3 service — see library/environment.md + library/user-testing.md):
@@ -1069,10 +1069,10 @@ deploy_challenges() {
     "CHALLENGE_SLUG=prism"
     "CHALLENGE_DOCKER_ENABLED=true"
     "CHALLENGE_DOCKER_BACKEND=broker"
-    "CHALLENGE_DOCKER_BROKER_URL=http://platform-master-broker:${MASTER_BROKER_PORT}"
+    "CHALLENGE_DOCKER_BROKER_URL=http://base-master-broker:${MASTER_BROKER_PORT}"
     "CHALLENGE_DOCKER_BROKER_TOKEN_FILE=${SECRET_MOUNT_DIR}/docker_broker_token"
-    "PRISM_PLATFORM_EVAL_IMAGE=${IMAGE_PRISM_EVALUATOR}"
-    "PRISM_PLATFORM_EVAL_GPU_COUNT=1"
+    "PRISM_BASE_EVAL_IMAGE=${IMAGE_PRISM_EVALUATOR}"
+    "PRISM_BASE_EVAL_GPU_COUNT=1"
     "PRISM_DATABASE_URL=sqlite+aiosqlite:////data/prism.sqlite3"
     # OpenRouter LLM HARD GATE — ENABLED (architecture.md section 7; M5). The strong-model
     # review of both miner scripts is a hard gate that can REJECT before any GPU work. The key
@@ -1089,14 +1089,14 @@ deploy_challenges() {
     # gap uses the converged reference (gap_basis='converged') rather than the prequential
     # fallback. If val is absent or the eval exceeds its budget the held-out is gracefully
     # SKIPPED (the scored run never fails on held-out).
-    "PRISM_PLATFORM_EVAL_VAL_DATA_DIR=/secret/val"
-    "PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR=/secret/train"
+    "PRISM_BASE_EVAL_VAL_DATA_DIR=/secret/val"
+    "PRISM_BASE_EVAL_TRAIN_DATA_DIR=/secret/train"
     # Bounded, deterministic held-out compute budget so the live delta COMPLETES rather than
     # skipping: a fixed 64 KiB val prefix (identical for twin + trained => comparable, byte-
     # denominator => tokenizer-agnostic) with a raised 600s timeout. These match the m5 image
     # config defaults; set explicitly so the live budget is auditable/self-documenting.
-    "PRISM_PLATFORM_EVAL_HELDOUT_VAL_BYTE_BUDGET=65536"
-    "PRISM_PLATFORM_EVAL_HELDOUT_TIMEOUT_SECONDS=600"
+    "PRISM_BASE_EVAL_HELDOUT_VAL_BYTE_BUDGET=65536"
+    "PRISM_BASE_EVAL_HELDOUT_TIMEOUT_SECONDS=600"
     # LOCAL/DEV ONLY — do NOT enable in production. The prism service image does
     # NOT bundle bittensor, so real sr25519 signature verification is impossible
     # in-image (verify_hotkey_signature import-fails -> False). This documented
@@ -1113,8 +1113,8 @@ deploy_challenges() {
     "PRISM_VALIDATOR_HOTKEYS=[\"5PrismValidatorSelfSubmitDENY\"]"
   )
   # Host-side SCORER read-only mounts on the manager (NOT the eval container): the SECRET
-  # held-out val split (matches PRISM_PLATFORM_EVAL_VAL_DATA_DIR) and the non-secret TRAIN split
-  # used ONLY for the converged-memorization-gap reference (matches PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR).
+  # held-out val split (matches PRISM_BASE_EVAL_VAL_DATA_DIR) and the non-secret TRAIN split
+  # used ONLY for the converged-memorization-gap reference (matches PRISM_BASE_EVAL_TRAIN_DATA_DIR).
   # The val/test splits NEVER enter the network=none eval container; the eval container gets its
   # own copy of the locked TRAIN split via the broker's per-slug RO mount at /data/fineweb-edu/train.
   # Both are manager-local volumes, RO, and must be POPULATED + readable by the scorer uid 1000.
@@ -1124,18 +1124,18 @@ deploy_challenges() {
   )
   # OpenRouter LLM hard-gate key: mounted at the EXACT target prism reads
   # (/run/secrets/openrouter_api_key — config.py openrouter_api_key_file default), NOT the
-  # ${SECRET_MOUNT_DIR}/"platform/" subdir the positional SECRET_SPECs use. Passed verbatim via
-  # CHALLENGE_EXTRA_SECRETS so the `platform/` prefix is NOT applied. This matches the LIVE stack
-  # (which mounts the pre-existing platform_or_key_real at the same target) so the gate resolves
+  # ${SECRET_MOUNT_DIR}/"base/" subdir the positional SECRET_SPECs use. Passed verbatim via
+  # CHALLENGE_EXTRA_SECRETS so the `base/` prefix is NOT applied. This matches the LIVE stack
+  # (which mounts the pre-existing base_or_key_real at the same target) so the gate resolves
   # its key on a clean install-swarm.sh deploy.
   CHALLENGE_EXTRA_SECRETS=(
-    "source=platform_openrouter_api_key,target=openrouter_api_key"
+    "source=base_openrouter_api_key,target=openrouter_api_key"
   )
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
-    "platform_prism_pg" \
-    "platform_prism_challenge_token:challenge_token" \
-    "platform_prism_docker_broker_token:docker_broker_token"
+    "base_prism_pg" \
+    "base_prism_challenge_token:challenge_token" \
+    "base_prism_docker_broker_token:docker_broker_token"
 }
 
 # _deploy_challenge_service NAME IMAGE PORT DATA_VOLUME SECRET_SPEC...
@@ -1149,7 +1149,7 @@ _deploy_challenge_service() {
     log "  service ${name} already exists — skipping (idempotent)"
     return 0
   fi
-  local target_dir="${SECRET_MOUNT_DIR#/run/secrets/}"  # "platform"
+  local target_dir="${SECRET_MOUNT_DIR#/run/secrets/}"  # "base"
   local -a argv=(
     docker service create
     --name "${name}"
@@ -1183,7 +1183,7 @@ _deploy_challenge_service() {
     argv+=(--secret "source=${secret_name},target=${target_dir}/${target}")
   done
   # Caller-supplied extra secrets passed VERBATIM (full `source=...,target=...`), so a secret can
-  # be mounted at an exact target OUTSIDE the ${target_dir}/ "platform/" subdir (e.g. the prism
+  # be mounted at an exact target OUTSIDE the ${target_dir}/ "base/" subdir (e.g. the prism
   # OpenRouter key at /run/secrets/openrouter_api_key — see CHALLENGE_EXTRA_SECRETS).
   local secret_spec
   if [[ "${#CHALLENGE_EXTRA_SECRETS[@]}" -gt 0 ]]; then
@@ -1214,14 +1214,14 @@ healthcheck() {
   log "STEP 11/12 healthcheck"
   if [[ "${APPLY}" != "true" ]]; then
     log "  (dry-run) would HTTP-probe /health on:"
-    log "    http://127.0.0.1:${MASTER_BROKER_PORT}/health  (platform-master-broker)"
-    log "    http://127.0.0.1:${MASTER_PROXY_PORT}/health   (platform-master-proxy)"
+    log "    http://127.0.0.1:${MASTER_BROKER_PORT}/health  (base-master-broker)"
+    log "    http://127.0.0.1:${MASTER_PROXY_PORT}/health   (base-master-proxy)"
     log "  and would verify challenge services converge to 1/1 replicas + overlay /health."
     return 0
   fi
 
-  _http_health "platform-master-broker" "http://127.0.0.1:${MASTER_BROKER_PORT}/health"
-  _http_health "platform-master-proxy"  "http://127.0.0.1:${MASTER_PROXY_PORT}/health"
+  _http_health "base-master-broker" "http://127.0.0.1:${MASTER_BROKER_PORT}/health"
+  _http_health "base-master-proxy"  "http://127.0.0.1:${MASTER_PROXY_PORT}/health"
 
   if [[ "${STATIC_CHALLENGES}" == "true" ]]; then
     _service_converged "challenge-agent-challenge"
@@ -1281,7 +1281,7 @@ _overlay_health() {
 # ============================================================================
 #   This script only brings the single manager node up; it performs NO teardown.
 #   Decommissioning a node is done separately, by hand (e.g. `docker swarm leave`
-#   on the node and `platform master worker rm <node>` on the manager), ONLY
+#   on the node and `base master worker rm <node>` on the manager), ONLY
 #   after a human has confirmed GREEN (master + both challenges healthy on Swarm).
 # ============================================================================
 
@@ -1292,7 +1292,7 @@ main() {
   parse_args "$@"
 
   log "============================================================"
-  log "Platform single-node Swarm bring-up (DRAFT)"
+  log "BASE single-node Swarm bring-up (DRAFT)"
   if [[ "${APPLY}" == "true" ]]; then
     warn "RUNNING IN --apply MODE: mutating commands WILL execute."
   else

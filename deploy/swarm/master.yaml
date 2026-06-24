@@ -1,9 +1,9 @@
-# Canonical master config synced by the supervisor (`platform master supervisor`).
+# Canonical master config synced by the supervisor (`base master supervisor`).
 # Secrets (database password, admin token) are injected via environment
-# (PLATFORM_DATABASE__URL, PLATFORM_SECURITY__ADMIN_TOKEN_FILE) or secret files
+# (BASE_DATABASE__URL, BASE_SECURITY__ADMIN_TOKEN_FILE) or secret files
 # and are never committed here.
 network:
-  name: platform
+  name: base
   netuid: 100
   chain_endpoint: null
   wallet_name: default
@@ -12,15 +12,15 @@ network:
   master_uid: 0
 
 master:
-  registry_url: https://chain.platform.network
+  registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081
   epoch_interval_seconds: 360
   metagraph_cache_ttl_seconds: 300
-  registry_state_file: /var/lib/platform/registry.json
+  registry_state_file: /var/lib/base/registry.json
 
 validator:
-  registry_url: https://chain.platform.network
+  registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null
   weights_interval_seconds: 360
@@ -29,28 +29,28 @@ validator:
   weights_freshness_seconds: 720
 
 database:
-  # Override the password via PLATFORM_DATABASE__URL in production.
-  url: postgresql+asyncpg://platform:platform@platform-postgres:5432/platform
+  # Override the password via BASE_DATABASE__URL in production.
+  url: postgresql+asyncpg://base:base@base-postgres:5432/base
 
 docker:
-  network_name: platform_challenges
-  secret_dir: /var/lib/platform/secrets
+  network_name: base_challenges
+  secret_dir: /var/lib/base/secrets
   internal_network: true
   broker_host: 0.0.0.0
   broker_port: 8082
-  broker_url: http://platform-docker-broker:8082
-  broker_workspace_dir: /tmp/platform-docker-broker
+  broker_url: http://base-docker-broker:8082
+  broker_workspace_dir: /tmp/base-docker-broker
   broker_allowed_images:
-    - ghcr.io/platformnetwork/
+    - ghcr.io/baseintelligence/
   # Challenge API services run on the manager; broker jobs run on labeled workers.
   challenge_placement_constraint: node.role==manager
-  cpu_job_constraint: node.labels.platform.workload==cpu
-  gpu_job_constraint: node.labels.platform.workload==gpu
+  cpu_job_constraint: node.labels.base.workload==cpu
+  gpu_job_constraint: node.labels.base.workload==gpu
 
 security:
-  admin_token_file: /var/lib/platform/secrets/admin_token
+  admin_token_file: /var/lib/base/secrets/admin_token
 
 observability:
   log_json: true
   sentry_dsn: null
-  otel_service_name: platform-master
+  otel_service_name: base-master

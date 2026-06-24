@@ -1,11 +1,11 @@
 """Trimmed, submit-only on-chain weight submitter for the Docker-Swarm cutover.
 
-This process replaces the full ``platform validator run`` deployment for the
+This process replaces the full ``base validator run`` deployment for the
 Docker-Swarm cutover. It does ONE thing: every
 ``validator.weights_interval_seconds`` it fetches the master's final weight
 vector over HTTP and submits it on-chain with the validator hotkey.
 
-What it deliberately does NOT do (vs ``platform validator run``):
+What it deliberately does NOT do (vs ``base validator run``):
   * No challenge orchestration / registry reconcile loop. The production CLI
     runs ``NormalValidatorRunner.run_forever()`` (the ``run_once`` registry
     sync that launches challenge containers) concurrently with the submit
@@ -22,10 +22,10 @@ The submit wiring mirrors production exactly: same ``load_settings`` ->
 ``WeightsClient`` / ``WeightSetter`` objects and the same interval source.
 
 Host install (validator node only, holds the hotkey):
-  * script:  /var/lib/platform/submitter/run_submitter.py
-  * config:  /etc/platform/submitter.yaml
-  * python:  /var/lib/platform/supervisor/current/.venv/bin/python
-  * wallet:  /var/lib/platform/wallets/<wallet_name>/hotkeys/<wallet_hotkey>
+  * script:  /var/lib/base/submitter/run_submitter.py
+  * config:  /etc/base/submitter.yaml
+  * python:  /var/lib/base/supervisor/current/.venv/bin/python
+  * wallet:  /var/lib/base/wallets/<wallet_name>/hotkeys/<wallet_hotkey>
 
 Security: never logs the private key or any secret. The only key material it
 touches is the PUBLIC hotkey SS58 address, logged once at startup so the
@@ -39,15 +39,15 @@ import asyncio
 import logging
 import signal
 
-from platform_network.bittensor.factory import create_bittensor_submit_runtime
-from platform_network.bittensor.validator_loop import run_epoch_loop
-from platform_network.bittensor.weight_setter import is_rejected_set_weights_result
-from platform_network.config import Settings, load_settings
-from platform_network.observability.logging import configure_logging
-from platform_network.validator.normal_runner import NormalValidatorRunner
-from platform_network.validator.weights_client import WeightsClient
+from base.bittensor.factory import create_bittensor_submit_runtime
+from base.bittensor.validator_loop import run_epoch_loop
+from base.bittensor.weight_setter import is_rejected_set_weights_result
+from base.config import Settings, load_settings
+from base.observability.logging import configure_logging
+from base.validator.normal_runner import NormalValidatorRunner
+from base.validator.weights_client import WeightsClient
 
-logger = logging.getLogger("platform.submitter")
+logger = logging.getLogger("base.submitter")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -57,7 +57,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to the submitter YAML config (e.g. /etc/platform/submitter.yaml).",
+        help="Path to the submitter YAML config (e.g. /etc/base/submitter.yaml).",
     )
     return parser.parse_args()
 

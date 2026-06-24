@@ -10,10 +10,10 @@ from collections.abc import Sequence
 
 import pytest
 
-from platform_network.config.settings import Settings
-from platform_network.master.swarm_backend import SwarmCommandResult
-from platform_network.supervisor.image_ref import ImageReference
-from platform_network.supervisor.image_updater import (
+from base.config.settings import Settings
+from base.master.swarm_backend import SwarmCommandResult
+from base.supervisor.image_ref import ImageReference
+from base.supervisor.image_updater import (
     DEFAULT_FIRST_PARTY_TARGETS,
     IMAGE_UPDATER_INTERVAL_SECONDS,
     ImageUpdateTarget,
@@ -23,7 +23,7 @@ from platform_network.supervisor.image_updater import (
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
-IMAGE = "ghcr.io/platformnetwork/platform-master:latest"
+IMAGE = "ghcr.io/baseintelligence/base-master:latest"
 
 
 class FakeRunner:
@@ -71,20 +71,20 @@ def make_updater(
     runner: FakeRunner,
     resolver,
     targets: tuple[ImageUpdateTarget, ...] = (
-        ImageUpdateTarget(service="platform-admin", image=IMAGE),
+        ImageUpdateTarget(service="base-admin", image=IMAGE),
     ),
 ) -> SwarmImageUpdater:
     return SwarmImageUpdater(targets, runner=runner, resolver=resolver)
 
 
 def test_same_digest_is_a_noop() -> None:
-    runner = FakeRunner({"platform-admin": f"{IMAGE}@{DIGEST_A}"})
+    runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
     make_updater(runner, make_resolver(DIGEST_A)).run_once()
     assert runner.update_calls == []
 
 
 def test_new_digest_issues_exactly_one_update_per_service() -> None:
-    services = ("platform-admin", "platform-proxy")
+    services = ("base-admin", "base-proxy")
     runner = FakeRunner({name: f"{IMAGE}@{DIGEST_A}" for name in services})
     targets = tuple(ImageUpdateTarget(service=name, image=IMAGE) for name in services)
     make_updater(runner, make_resolver(DIGEST_B), targets).run_once()
@@ -104,7 +104,7 @@ def test_new_digest_issues_exactly_one_update_per_service() -> None:
 def test_resolver_failure_logs_and_skips_update(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    runner = FakeRunner({"platform-admin": f"{IMAGE}@{DIGEST_A}"})
+    runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
 
     def resolver(reference: ImageReference) -> str:
         raise RuntimeError("registry unreachable")
@@ -117,26 +117,26 @@ def test_resolver_failure_logs_and_skips_update(
 
 
 def test_resolver_failure_does_not_block_other_targets() -> None:
-    other_image = "ghcr.io/platformnetwork/other:latest"
+    other_image = "ghcr.io/baseintelligence/other:latest"
     runner = FakeRunner(
         {
-            "platform-admin": f"{IMAGE}@{DIGEST_A}",
-            "platform-other": f"{other_image}@{DIGEST_A}",
+            "base-admin": f"{IMAGE}@{DIGEST_A}",
+            "base-other": f"{other_image}@{DIGEST_A}",
         }
     )
 
     def resolver(reference: ImageReference) -> str:
-        if reference.repository.endswith("platform-master"):
+        if reference.repository.endswith("base-master"):
             raise RuntimeError("registry unreachable")
         return DIGEST_B
 
     targets = (
-        ImageUpdateTarget(service="platform-admin", image=IMAGE),
-        ImageUpdateTarget(service="platform-other", image=other_image),
+        ImageUpdateTarget(service="base-admin", image=IMAGE),
+        ImageUpdateTarget(service="base-other", image=other_image),
     )
     make_updater(runner, resolver, targets).run_once()
     assert len(runner.update_calls) == 1
-    assert runner.update_calls[0][-1] == "platform-other"
+    assert runner.update_calls[0][-1] == "base-other"
 
 
 def test_untagged_image_rejected_without_any_docker_calls(
@@ -145,8 +145,8 @@ def test_untagged_image_rejected_without_any_docker_calls(
     runner = FakeRunner()
     targets = (
         ImageUpdateTarget(
-            service="platform-admin",
-            image="ghcr.io/platformnetwork/platform-master",
+            service="base-admin",
+            image="ghcr.io/baseintelligence/base-master",
         ),
     )
     with caplog.at_level(logging.ERROR):
@@ -158,7 +158,7 @@ def test_untagged_image_rejected_without_any_docker_calls(
 def test_non_sha256_resolver_result_rejected(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    runner = FakeRunner({"platform-admin": f"{IMAGE}@{DIGEST_A}"})
+    runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
     with caplog.at_level(logging.ERROR):
         make_updater(runner, make_resolver("md5:deadbeef")).run_once()
     assert runner.update_calls == []
@@ -178,7 +178,7 @@ def test_missing_service_skipped_without_update(
 def test_failed_service_update_logged_not_raised(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    runner = FakeRunner({"platform-admin": f"{IMAGE}@{DIGEST_A}"}, update_returncode=1)
+    runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"}, update_returncode=1)
     with caplog.at_level(logging.ERROR):
         make_updater(runner, make_resolver(DIGEST_B)).run_once()
     assert len(runner.update_calls) == 1
@@ -186,15 +186,15 @@ def test_failed_service_update_logged_not_raised(
 
 
 def test_unpinned_current_image_is_updated() -> None:
-    runner = FakeRunner({"platform-admin": IMAGE})
+    runner = FakeRunner({"base-admin": IMAGE})
     make_updater(runner, make_resolver(DIGEST_B)).run_once()
     assert len(runner.update_calls) == 1
     assert runner.update_calls[0][-2] == f"{IMAGE}@{DIGEST_B}"
 
 
 def test_builder_returns_wired_scheduled_task() -> None:
-    runner = FakeRunner({"platform-admin": f"{IMAGE}@{DIGEST_A}"})
-    targets = (ImageUpdateTarget(service="platform-admin", image=IMAGE),)
+    runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
+    targets = (ImageUpdateTarget(service="base-admin", image=IMAGE),)
     task = build_image_updater_task(
         Settings(),
         targets=targets,
@@ -210,11 +210,11 @@ def test_builder_returns_wired_scheduled_task() -> None:
 def test_default_targets_cover_first_party_services() -> None:
     names = {target.service for target in DEFAULT_FIRST_PARTY_TARGETS}
     assert names == {
-        "platform-proxy",
-        "platform-broker",
-        "platform-config-sync",
+        "base-proxy",
+        "base-broker",
+        "base-config-sync",
     }
-    assert "platform-admin" not in names
+    assert "base-admin" not in names
     assert all(
         target.image == IMAGE and "@" not in target.image
         for target in DEFAULT_FIRST_PARTY_TARGETS

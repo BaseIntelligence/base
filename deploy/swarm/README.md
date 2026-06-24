@@ -1,14 +1,14 @@
-# Platform Docker Swarm deployment (`deploy/swarm`)
+# BASE Docker Swarm deployment (`deploy/swarm`)
 
 The single supported backend is **Docker Swarm**. There is no Kubernetes.
 
 This directory holds the node `daemon.json` variants, the control-plane
 supervisor systemd unit, and the single-node bring-up script. Worker enrollment
-itself is driven by the `platform master worker` CLI plus
+itself is driven by the `base master worker` CLI plus
 `scripts/install-worker.sh` (see **Adding a worker** below).
 
 > **Status: REVIEW BEFORE APPLYING.** The `daemon.json` files and
-> `platform-supervisor.service` are installed on real hosts by an operator.
+> `base-supervisor.service` are installed on real hosts by an operator.
 > `install-worker.sh` and `install-swarm.sh` both **default to dry-run** and
 > change nothing until `--apply` is passed.
 
@@ -19,8 +19,8 @@ A cluster is one **manager** plus one or more **workers**:
 | Node | Swarm role | Runs |
 |------|------------|------|
 | Manager (also the validator / hotkey node) | `node.role==manager` | The master control plane (proxy / broker) **and** the challenge **services** (agent-challenge, PRISM). |
-| CPU worker | `node.role==worker`, label `platform.workload=cpu` | Short-lived **CPU broker jobs** dispatched by the manager. |
-| GPU worker | `node.role==worker`, label `platform.workload=gpu` | Short-lived **GPU broker jobs**; advertises the GPU as a Swarm generic resource. |
+| CPU worker | `node.role==worker`, label `base.workload=cpu` | Short-lived **CPU broker jobs** dispatched by the manager. |
+| GPU worker | `node.role==worker`, label `base.workload=gpu` | Short-lived **GPU broker jobs**; advertises the GPU as a Swarm generic resource. |
 
 The broker runs on the manager and dispatches each evaluation as a short-lived
 Swarm **replicated job** to a worker; the long-lived challenge services stay on
@@ -31,8 +31,8 @@ the manager.
 | Workload | Placement constraint | Extra |
 |----------|----------------------|-------|
 | Challenge services | `node.role==manager` | — |
-| CPU job | `node.labels.platform.workload==cpu` | — |
-| GPU job (`gpu_count > 0`) | `node.labels.platform.workload==gpu` | `--generic-resource NVIDIA-GPU=<N>` |
+| CPU job | `node.labels.base.workload==cpu` | — |
+| GPU job (`gpu_count > 0`) | `node.labels.base.workload==gpu` | `--generic-resource NVIDIA-GPU=<N>` |
 
 GPU scheduling matches the requested `NVIDIA-GPU=N` **case-sensitively** against
 the `node-generic-resources` advertised in the GPU worker's `daemon.json` (see
@@ -59,7 +59,7 @@ the Docker-socket allowlist, so the prism eval job gets the data without the
   both **read-only**.
 - Only the `train` split is exposed. The secret `val`/`test` held-out splits are
   never mounted into the eval container, which runs `network=none` on the internal
-  `platform_jobs_internal` overlay and carries no OpenRouter secret.
+  `base_jobs_internal` overlay and carries no OpenRouter secret.
 - To override the volumes/paths, set `docker.broker_eval_readonly_mounts_by_slug`
   in `master.yaml`:
 
@@ -80,20 +80,20 @@ the Docker-socket allowlist, so the prism eval job gets the data without the
 challenge service (the broker supplies the eval-container data mounts above):
 
 - **Augmented evaluator image** — `IMAGE_PRISM_EVALUATOR` defaults to
-  `ghcr.io/platformnetwork/prism-evaluator:augmented` (bundles `sentencepiece` +
+  `ghcr.io/baseintelligence/prism-evaluator:augmented` (bundles `sentencepiece` +
   the offline tiktoken cache for the locked pipeline) and is passed as
-  `PRISM_PLATFORM_EVAL_IMAGE`. The registry `:latest` evaluator is stale; do not
+  `PRISM_BASE_EVAL_IMAGE`. The registry `:latest` evaluator is stale; do not
   use it.
 - **Host-side held-out** — the manager-pinned prism scorer (NOT the
   `network=none` eval container) mounts the SECRET val split read-only
   (`prism_fineweb_edu_val` → `/secret/val`) and reads it via
-  `PRISM_PLATFORM_EVAL_VAL_DATA_DIR=/secret/val` for the held-out delta. The
+  `PRISM_BASE_EVAL_VAL_DATA_DIR=/secret/val` for the held-out delta. The
   non-secret train split is also mounted at `/secret/train`
-  (`PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR`) for the converged memorization-gap
+  (`PRISM_BASE_EVAL_TRAIN_DATA_DIR`) for the converged memorization-gap
   reference. If val is absent the held-out is gracefully skipped.
 - **OpenRouter LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the key is
   mounted on the challenge service ONLY at `/run/secrets/openrouter_api_key` (from
-  the `platform_openrouter_api_key` Docker secret, created from
+  the `base_openrouter_api_key` Docker secret, created from
   `$OPENROUTER_API_KEY`). The eval container never carries the key.
 
 ## Files
@@ -103,7 +103,7 @@ challenge service (the broker supplies the eval-container data mounts above):
 | `daemon.validator.json` | Manager (validator / hotkey, **no GPU**) | `live-restore` + log rotation only. Deliberately **no** `node-generic-resources` and **no** `runtimes.nvidia` — the manager runs the control plane + challenge services, not GPU jobs. |
 | `daemon.cpu-worker.json` | CPU worker | `live-restore` + log rotation only. Same shape as the validator file: **no** GPU generic resource, **no** nvidia runtime. |
 | `daemon.worker.json` | GPU worker | Advertise the GPU as a Swarm generic resource, register the NVIDIA runtime, `live-restore`, log rotation. |
-| `platform-supervisor.service` | Manager | systemd unit for the control-plane supervisor (broker health-gating + scheduled jobs). |
+| `base-supervisor.service` | Manager | systemd unit for the control-plane supervisor (broker health-gating + scheduled jobs). |
 | `install-swarm.sh` | Manager | Single-node bring-up of the master + both challenges (dry-run by default). |
 | `../../scripts/install-worker.sh` | Worker | Enroll a CPU/GPU worker via the join-token model (dry-run by default). |
 
@@ -119,7 +119,7 @@ one back on the manager.
 1. **On the MANAGER — mint a join token** for the worker class:
 
    ```
-   platform master worker token --cpu      # or --gpu
+   base master worker token --cpu      # or --gpu
    ```
 
    This prints the ready-to-paste command, e.g.:
@@ -151,16 +151,16 @@ one back on the manager.
 
    ```
    docker node ls                                          # find the node name
-   platform master worker label <node> --workload cpu      # or gpu
+   base master worker label <node> --workload cpu      # or gpu
    ```
 
 Other worker management lives under the same CLI group:
 
 ```
-platform master worker list        # show nodes + workload labels
-platform master worker inspect <node>
-platform master worker drain <node>   # cordon + reschedule its jobs
-platform master worker rm <node>      # remove a (drained) node
+base master worker list        # show nodes + workload labels
+base master worker inspect <node>
+base master worker drain <node>   # cordon + reschedule its jobs
+base master worker rm <node>      # remove a (drained) node
 ```
 
 ## Worker / manager `daemon.json` — key-by-key notes
@@ -283,9 +283,9 @@ docker system prune --force
 - **Never** add `--volumes` (would destroy challenge/DinD state) or `--all`
   (would evict digest-pinned service images and force re-pulls mid-epoch).
 
-## Control-plane supervisor unit (`platform-supervisor.service`)
+## Control-plane supervisor unit (`base-supervisor.service`)
 
-`platform-supervisor.service` is the systemd unit template for the control-plane
+`base-supervisor.service` is the systemd unit template for the control-plane
 supervisor that runs on the manager: it health-gates the broker and runs the
 scheduled control-plane jobs (reaper, image updaters, config sync, weights,
 self-update).
@@ -298,7 +298,7 @@ self-update).
   `/health` endpoint with a short (3 s) timeout and a 3-consecutive-failure
   threshold. Slow `/v1/docker/*` operations are load, not death — they never
   affect the watchdog.
-- **Scheduled jobs** plug in via `src/platform_network/supervisor/tasks.py`.
+- **Scheduled jobs** plug in via `src/base/supervisor/tasks.py`.
 - **Install**: copy to `/etc/systemd/system/`, adjust the `ExecStart` path +
   `User=`, then `systemctl daemon-reload && systemctl enable --now
-  platform-supervisor.service`. Verify with `systemctl status`.
+  base-supervisor.service`. Verify with `systemctl status`.

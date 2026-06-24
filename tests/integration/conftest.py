@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from platform_network.db.migrations import upgrade
-from platform_network.db.session import create_engine
+from base.db.migrations import upgrade
+from base.db.session import create_engine
 
 ROOT = Path(__file__).resolve().parents[2]
 POSTGRES_SCHEMES = ("postgres://", "postgresql://", "postgresql+asyncpg://")
@@ -25,7 +25,7 @@ APPLICATION_TABLES = (
     "miner_request_nonces",
     "challenges",
 )
-ENV_VAR_MESSAGE = "PLATFORM_TEST_DATABASE_URL or PLATFORM_DATABASE__URL"
+ENV_VAR_MESSAGE = "BASE_TEST_DATABASE_URL or BASE_DATABASE__URL"
 
 
 def _async_postgres_url(database_url: str) -> str:
@@ -40,8 +40,8 @@ def _async_postgres_url(database_url: str) -> str:
 
 @pytest.fixture(scope="session")
 def postgres_database_url() -> str:
-    database_url = os.getenv("PLATFORM_TEST_DATABASE_URL") or os.getenv(
-        "PLATFORM_DATABASE__URL"
+    database_url = os.getenv("BASE_TEST_DATABASE_URL") or os.getenv(
+        "BASE_DATABASE__URL"
     )
     if not database_url:
         pytest.skip(f"set {ENV_VAR_MESSAGE} to run tests marked postgres")

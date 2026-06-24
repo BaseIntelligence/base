@@ -35,16 +35,16 @@ def test_master_installer_is_swarm_only_and_dry_run_by_default() -> None:
     # Dry-run by default; mutations require an explicit --apply opt-in.
     assert "APPLY=false" in script
     assert "--apply" in script
-    assert "platform master worker" in script
+    assert "base master worker" in script
 
 
 def test_master_installer_worker_enrollment_uses_swarm_join_tokens() -> None:
     guide = _read(MASTER_GUIDE)
 
-    assert "platform master worker token" in guide
-    assert "platform master worker label" in guide
+    assert "base master worker token" in guide
+    assert "base master worker label" in guide
     assert "docker swarm join --token" in guide
-    assert "node.labels.platform.workload" in guide
+    assert "node.labels.base.workload" in guide
 
 
 def test_master_guide_is_foundation_only_and_swarm() -> None:
@@ -54,7 +54,7 @@ def test_master_guide_is_foundation_only_and_swarm() -> None:
     assert "Docker Swarm" in guide
     assert "install-swarm.sh" in guide
     assert "node.role==manager" in guide
-    assert "platform master worker" in guide
+    assert "base master worker" in guide
     # Kubernetes/Helm tooling is gone from the foundation guide.
     assert "kubectl" not in guide
     assert "helm" not in guide
@@ -76,9 +76,9 @@ def test_readme_documents_swarm_master_deployment() -> None:
     readme = _read(README)
 
     assert "deploy/swarm/install-swarm.sh" in readme
-    assert "platform master worker" in readme
+    assert "base master worker" in readme
     assert "node.role==manager" in readme
-    assert "node.labels.platform.workload==cpu" in readme
-    assert "node.labels.platform.workload==gpu" in readme
+    assert "node.labels.base.workload==cpu" in readme
+    assert "node.labels.base.workload==gpu" in readme
     # Swarm is the only backend; there is no Kubernetes/Helm install path.
     assert "There is no Kubernetes" in readme

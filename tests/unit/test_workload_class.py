@@ -6,22 +6,22 @@ from typing import Any
 
 import pytest
 
-from platform_network.master.docker_orchestrator import (
+from base.master.docker_orchestrator import (
     ChallengeSpec,
     DockerOrchestrationError,
 )
-from platform_network.master.workload_ledger import WorkloadEntry
+from base.master.workload_ledger import WorkloadEntry
 
 
 def test_challenge_spec_defaults_to_job() -> None:
-    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/platformnetwork/eval:1")
+    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/baseintelligence/eval:1")
     assert spec.workload_class == "job"
 
 
 def test_challenge_spec_accepts_explicit_service() -> None:
     spec = ChallengeSpec(
         slug="prism",
-        image="ghcr.io/platformnetwork/prism:1",
+        image="ghcr.io/baseintelligence/prism:1",
         workload_class="service",
     )
     assert spec.workload_class == "service"
@@ -31,24 +31,24 @@ def test_challenge_spec_rejects_invalid_workload_class() -> None:
     with pytest.raises(DockerOrchestrationError, match="workload_class"):
         ChallengeSpec(
             slug="prism",
-            image="ghcr.io/platformnetwork/prism:1",
+            image="ghcr.io/baseintelligence/prism:1",
             workload_class="daemon",  # type: ignore[arg-type]
         )
 
 
 def test_challenge_spec_default_matches_workload_ledger_default() -> None:
     entry = WorkloadEntry(key="svc-1", kind="swarm_service", challenge_slug="prism")
-    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/platformnetwork/eval:1")
+    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/baseintelligence/eval:1")
     assert spec.workload_class == entry.workload_class == "job"
 
 
 @pytest.mark.asyncio
 async def test_cli_runtime_controller_spec_is_service() -> None:
-    from platform_network.cli_app.main import DockerRuntimeController
+    from base.cli_app.main import DockerRuntimeController
 
     class _Record:
         slug = "prism"
-        image = "ghcr.io/platformnetwork/prism:1"
+        image = "ghcr.io/baseintelligence/prism:1"
         version = "1.0.0"
         env: dict[str, str] = {}
         resources: dict[str, str] = {}

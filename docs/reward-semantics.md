@@ -11,7 +11,7 @@ behavior so an independent runner can reproduce it **byte-for-byte**. It does
 behavior.
 
 - Ground truth = the `harbor==0.13.1` PyPI wheel. The runner image
-  `ghcr.io/platformnetwork/terminal-bench-harbor-runner:2.1` ships prebuilt
+  `ghcr.io/baseintelligence/terminal-bench-harbor-runner:2.1` ships prebuilt
   Harbor tooling (a `python:3.12-slim` base with `harbor==0.13.1`), so the wheel
   is the authority; every claim below was executed against the real installed
   harbor code.
@@ -33,7 +33,7 @@ JobStats.evals[evals_key].metrics : list[dict]      ← metric aggregation
 JobStats.evals[evals_key].pass_at_k : dict[int,float]  ← pass@k (optional)
         │   serialized to job result JSON (model_dump_json)
         ▼
-agent-challenge runner.py inline python  → PLATFORM_BENCHMARK_RESULT={...}
+agent-challenge runner.py inline python  → BASE_BENCHMARK_RESULT={...}
         ▼
 {status, score, resolved, total, reason_code}
 ```
@@ -335,7 +335,7 @@ unchanged. Single-step tbench tasks never hit this.
 ## 5. agent-challenge outcome mapping — `runner.py:1399-1438`
 
 The runner injects an inline python block that reads the harbor job-result JSON
-(`plan.result_path`) and prints `PLATFORM_BENCHMARK_RESULT={json}`:
+(`plan.result_path`) and prints `BASE_BENCHMARK_RESULT={json}`:
 
 ```python
 summary = {"status":"failed","score":0.0,"resolved":0,"total":0,
@@ -391,7 +391,7 @@ Exact rules an independent runner's result JSON + any wrapper MUST satisfy:
 5. **reason_code**: `None` on a clean parse; `"harbor_result_missing"` if the
    result JSON file is absent; `"harbor_result_malformed"` if any exception is
    raised while parsing/aggregating.
-6. Output line is literally `PLATFORM_BENCHMARK_RESULT=` + `json.dumps(summary,
+6. Output line is literally `BASE_BENCHMARK_RESULT=` + `json.dumps(summary,
    sort_keys=True)`, emitted to stdout; `exit $status` preserves the harbor
    command's exit code.
 

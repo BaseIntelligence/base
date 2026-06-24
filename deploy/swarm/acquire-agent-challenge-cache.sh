@@ -36,7 +36,7 @@ set -euo pipefail
 
 CACHE_VOLUME="${CACHE_VOLUME:-agent_challenge_task_cache}"
 GOLDEN_VOLUME="${GOLDEN_VOLUME:-agent_challenge_golden}"
-RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/platformnetwork/agent-challenge-terminal-bench-runner:latest}"
+RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:latest}"
 
 # In-job mount targets. MUST match cli_app/main.py
 # (CHALLENGE_OWN_RUNNER_CACHE_ROOT / CHALLENGE_OWN_RUNNER_DIGEST_MANIFEST) and
