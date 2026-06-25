@@ -90,9 +90,9 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # is pinned to the manager node (docker.sock + workspace bind) — see the manager-pin
 # rationale at the broker service-create below. The deploy CONFIG this script sets is
 # independent of the image build and reproduces as-is.
-IMAGE_MASTER="ghcr.io/baseintelligence/base-master:latest"
-IMAGE_AGENT_CHALLENGE="ghcr.io/baseintelligence/agent-challenge:latest"
-IMAGE_PRISM="ghcr.io/baseintelligence/prism:latest"
+IMAGE_MASTER="${IMAGE_MASTER:-ghcr.io/baseintelligence/base-master@sha256:838ed7ca090f276a014a9c04820b84cc48ac3833af9b37c4047dfa8677156cb7}"
+IMAGE_AGENT_CHALLENGE="${IMAGE_AGENT_CHALLENGE:-ghcr.io/baseintelligence/agent-challenge@sha256:75b6d3fe467cddde4241b4bf0b5611ffc3f648f24e3211cb718841d39a498929}"
+IMAGE_PRISM="${IMAGE_PRISM:-ghcr.io/baseintelligence/prism@sha256:e052a3eced0b76424c858fcea5c04e948a6764b051a862a9b99d011a44f9ffd9}"
 # Prism GPU evaluator (CUDA cu128 torchrun runner). Must satisfy BOTH prism
 # docker_allowed_images AND the broker broker_allowed_images (ghcr.io/baseintelligence/);
 # pre-pulled on the GPU worker so the broker eval job resolves it locally.
@@ -100,8 +100,8 @@ IMAGE_PRISM="ghcr.io/baseintelligence/prism:latest"
 # runtime assets PRISM v2 forced-init re-execution needs (sentencepiece + offline
 # tiktoken/HF for the locked FineWeb-Edu pipeline) ship in that published image, so
 # no separate locally built evaluator tag is required.
-IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/baseintelligence/prism-evaluator:latest}"
-IMAGE_POSTGRES="postgres:16-alpine"
+IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/baseintelligence/prism-evaluator@sha256:713b39f13af69dbaf229e67fb682df8a2b7ac93dd02d9e60867ff021d4edb3c9}"
+IMAGE_POSTGRES="${IMAGE_POSTGRES:-postgres@sha256:0fc5c901ec0a3c55ce70b99b040daeb89d5b35b61febbced1b4b24dbc3153ec8}"
 
 # Minimum Docker engine major version required (validator runs 29.x today).
 MIN_DOCKER_MAJOR=29
@@ -653,6 +653,7 @@ _deploy_postgres_service() {
     --replicas 1 \
     --restart-condition any \
     --hostname "${name}" \
+    --with-registry-auth \
     --mount "type=volume,source=${volume},destination=/var/lib/postgresql/data" \
     --secret "source=${pw_secret},target=postgres_password" \
     --env "POSTGRES_DB=${db}" \
@@ -982,6 +983,7 @@ _deploy_master_service() {
     --replicas 1 \
     --restart-condition any \
     --hostname "${name}" \
+    --with-registry-auth \
     --publish "published=${host_port},target=${container_port},mode=host" \
     --config "source=base_master_yaml,target=${MASTER_CONFIG_PATH}" \
     --secret "source=base_admin_token,target=admin_token" \
@@ -1161,6 +1163,7 @@ _deploy_challenge_service() {
     --restart-condition any
     --update-order stop-first
     --hostname "${name}"
+    --with-registry-auth
     --mount "type=volume,source=${data_volume},destination=/data"
   )
   # Caller-supplied extra env (e.g. the own_runner eval image allowlist applied to
