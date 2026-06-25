@@ -810,8 +810,13 @@ master:
   proxy_port: ${MASTER_PROXY_PORT}
 
 database:
-  # Loaded from the base_master_database_url docker secret at runtime;
-  # this placeholder is overridden by the *_FILE indirection in deployment.
+  # Password-less FALLBACK only. The pinned master image's config loader
+  # (base.config.loader) has NO *_FILE indirection for database.url and its
+  # entrypoint is a direct "base master proxy" (no FILE->env expansion), so the
+  # mounted base_master_database_url secret is NOT self-read. The real URL (with
+  # password) is injected at deploy time via the name-only BASE_DATABASE__URL env
+  # in _deploy_master_service, which the loader maps to database.url. Name-only
+  # env keeps the secret value out of the planned/logged argv.
   url: postgresql+asyncpg://base@base-master-postgres:5432/base
 
 runtime:
@@ -977,6 +982,15 @@ _deploy_master_service() {
     )
   fi
 
+  # Inject the control-plane DB URL (with password) via a NAME-ONLY --env so the
+  # value is taken from this process's environment at `docker service create` exec
+  # time and never appears in the planned/logged argv (plan() echoes argv). The
+  # pinned master image cannot self-read the mounted master_database_url secret
+  # (loader has no *_FILE indirection), so this env is what actually authenticates
+  # broker+proxy to base-master-postgres. The secret mount below is retained for
+  # parity with the live M2/M3 spec but is not self-read by the app.
+  export BASE_DATABASE__URL="${MASTER_DATABASE_URL}"
+
   plan docker service create \
     --name "${name}" \
     --network "${NET_CHALLENGES}" \
@@ -989,6 +1003,7 @@ _deploy_master_service() {
     --secret "source=base_admin_token,target=admin_token" \
     --secret "source=base_master_database_url,target=master_database_url" \
     --env "BASE_CONFIG=${MASTER_CONFIG_PATH}" \
+    --env BASE_DATABASE__URL \
     "${extra[@]}" \
     "${IMAGE_MASTER}" \
     base master "${subcommand}" --config "${MASTER_CONFIG_PATH}"
