@@ -107,8 +107,7 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # CLEAN CANONICAL BRING-UP: first PUSH base commits 1142bc53 + 48ec8c5a + e02ffbab
 # so the prism git-pinned dependency picks them up, then rebuild IMAGE_MASTER + IMAGE_PRISM
 # from HEAD normally — the overlay tags above then become unnecessary. The deploy
-# CONFIG this script sets (broker node.role==manager pin; prism
-# PRISM_ALLOW_INSECURE_SIGNATURES / PRISM_VALIDATOR_HOTKEYS) is independent of the
+# CONFIG this script sets (broker node.role==manager pin) is independent of the
 # image build and reproduces as-is.
 IMAGE_MASTER="ghcr.io/baseintelligence/base-master:latest"
 IMAGE_AGENT_CHALLENGE="ghcr.io/baseintelligence/agent-challenge:latest"
@@ -1077,14 +1076,6 @@ deploy_challenges() {
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
   # broker reads (registration writes it). prism's docker_allowed_images already permits
   # ghcr.io/baseintelligence/, so the eval image needs no override.
-  #
-  # Two LOCAL/DEV-ONLY allowances complete the E2E submission path (canonicalized
-  # from the live M3 service — see library/environment.md + library/user-testing.md):
-  #   * PRISM_ALLOW_INSECURE_SIGNATURES=true — the prism image lacks bittensor, so
-  #     real sr25519 verification is impossible in-image; this enables the dev-HMAC
-  #     fallback used by the E2E proof + negative cases (do NOT use in production).
-  #   * PRISM_VALIDATOR_HOTKEYS — a non-empty JSON array so the validator
-  #     self-submission 403 guard is reachable.
   CHALLENGE_ENV=(
     "CHALLENGE_SLUG=prism"
     "CHALLENGE_DOCKER_ENABLED=true"
@@ -1117,20 +1108,6 @@ deploy_challenges() {
     # config defaults; set explicitly so the live budget is auditable/self-documenting.
     "PRISM_BASE_EVAL_HELDOUT_VAL_BYTE_BUDGET=65536"
     "PRISM_BASE_EVAL_HELDOUT_TIMEOUT_SECONDS=600"
-    # LOCAL/DEV ONLY — do NOT enable in production. The prism service image does
-    # NOT bundle bittensor, so real sr25519 signature verification is impossible
-    # in-image (verify_hotkey_signature import-fails -> False). This documented
-    # allowance lets authenticate_miner fall back to the dev-HMAC path (canonical
-    # msg `prism:{hotkey}:{nonce}:{ts}:{sha256hex(body)}` keyed by the 32-byte
-    # challenge token) so the local E2E proof + negative cases can drive
-    # POST /v1/submissions. Without it EVERY signed submission 401s.
-    "PRISM_ALLOW_INSECURE_SIGNATURES=true"
-    # Non-empty validator-hotkey list so the self-submission guard can fire: a
-    # hotkey in this list submitting -> HTTP 403 "validator hotkey is not allowed
-    # to submit". An empty default leaves the guard unreachable. MUST be a JSON
-    # array (PrismSettings parses tuple fields as JSON via pydantic-settings).
-    # Value = the dev self-submit sentinel used by the prism negative-case proof.
-    "PRISM_VALIDATOR_HOTKEYS=[\"5PrismValidatorSelfSubmitDENY\"]"
   )
   # Host-side SCORER read-only mounts on the manager (NOT the eval container): the SECRET
   # held-out val split (matches PRISM_BASE_EVAL_VAL_DATA_DIR) and the non-secret TRAIN split
