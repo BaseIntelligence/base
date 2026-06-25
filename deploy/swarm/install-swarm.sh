@@ -188,6 +188,16 @@ CHALLENGE_EXTRA_MOUNTS=()
 # prism reads from /run/secrets/openrouter_api_key (config.py openrouter_api_key_file default),
 # i.e. target basename `openrouter_api_key` with NO `base/` prefix. Reset after each deploy.
 CHALLENGE_EXTRA_SECRETS=()
+# Per-call placement `--constraint` exprs consumed by _deploy_challenge_service. CRITICAL for
+# multi-node swarms: an agent-challenge api + its worker sidecar both mount the SAME per-node
+# `type=volume` at /data (the uploaded-agent artifact dir, base_agent_challenge_pg). Swarm volumes
+# are per-NODE, so if api and worker land on DIFFERENT nodes they get DISJOINT /data volumes and the
+# worker fails `FileNotFoundError: /data/agents/<sha>` reading a zip the api wrote on its own node.
+# Emitting NO constraint only co-locates them by luck on a single-manager node; on multi-node they
+# float independently. Setting an IDENTICAL constraint on BOTH guarantees co-location so they share
+# the same local /data volume. Default expr matches the dynamic orchestrator's challenge placement
+# default (swarm_backend.py DEFAULT_CHALLENGE_CONSTRAINT = node.role==manager). Reset after each deploy.
+CHALLENGE_EXTRA_CONSTRAINTS=()
 
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
@@ -1042,7 +1052,7 @@ deploy_challenges() {
     return 0
   fi
 
-  warn "creating challenge services DIRECTLY (--static-challenges); no --constraint emitted"
+  warn "creating challenge services DIRECTLY (--static-challenges); agent-challenge api+worker pinned to node.role==manager for /data co-location"
 
   # own_runner eval image allowlist + runner image, applied to BOTH the
   # agent-challenge api and the worker so the broker DooD job is permitted to run
@@ -1059,6 +1069,9 @@ deploy_challenges() {
 
   # agent-challenge primary API service (container port 8000). Overlay-internal —
   # reached over the overlay by the proxy/master; no host publish.
+  # Co-locate api + worker (next block) on ONE node via an identical constraint so they share the
+  # per-node base_agent_challenge_pg /data volume (see CHALLENGE_EXTRA_CONSTRAINTS declaration).
+  CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
   CHALLENGE_ENV=("${ac_eval_env[@]}")
   _deploy_challenge_service \
     "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
@@ -1073,6 +1086,8 @@ deploy_challenges() {
   # cli_app/main.py worker_command metadata). It runs the own_runner eval loop and
   # dispatches the broker DooD job, so it needs the SAME eval-image allowlist as
   # the api plus the broker backend wiring. (Resolves the prior worker TODO.)
+  # MUST carry the SAME constraint as the api above so both land on one node and share /data.
+  CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
   CHALLENGE_ENV=(
     "${ac_eval_env[@]}"
     "CHALLENGE_BENCHMARK_BACKEND=terminal_bench"
@@ -1227,6 +1242,12 @@ _deploy_challenge_service() {
       argv+=(--secret "${secret_spec}")
     done
   fi
+  local constraint_expr
+  if [[ "${#CHALLENGE_EXTRA_CONSTRAINTS[@]}" -gt 0 ]]; then
+    for constraint_expr in "${CHALLENGE_EXTRA_CONSTRAINTS[@]}"; do
+      argv+=(--constraint "${constraint_expr}")
+    done
+  fi
   argv+=("${image}")
   # Optional command override (e.g. the agent-challenge-worker sidecar command).
   if [[ "${#CHALLENGE_CMD[@]}" -gt 0 ]]; then
@@ -1237,6 +1258,7 @@ _deploy_challenge_service() {
   CHALLENGE_CMD=()
   CHALLENGE_EXTRA_MOUNTS=()
   CHALLENGE_EXTRA_SECRETS=()
+  CHALLENGE_EXTRA_CONSTRAINTS=()
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 
