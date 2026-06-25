@@ -272,6 +272,17 @@ def test_run_job_emits_replicated_job_with_mandatory_flags(tmp_path: Path) -> No
     assert service.ledger.count("agent") == 0
 
 
+def test_run_job_emits_with_registry_auth(tmp_path: Path) -> None:
+    # Without this flag a private-GHCR eval job creates fine but hangs pending
+    # on an unauthorized pull on the worker node (Defect E2).
+    runner = FakeSwarmRunner(log_stdout="ok\n")
+    service = _broker(tmp_path, runner)
+
+    service.run("agent", _run_request())
+
+    assert "--with-registry-auth" in runner.create_argv()
+
+
 def test_run_job_emits_tmpfs_mounts(tmp_path: Path) -> None:
     runner = FakeSwarmRunner(log_stdout="Python 3.12.4\n")
     service = _broker(tmp_path, runner)
@@ -1218,6 +1229,35 @@ def test_build_service_create_argv_orders_image_and_command_last() -> None:
 
     assert argv[:6] == ["docker", "service", "create", "--detach", "--name", "x"]
     assert argv[-3:] == ["ghcr.io/baseintelligence/x:1", "run", "--flag"]
+
+
+def test_build_service_create_argv_emits_with_registry_auth_when_set() -> None:
+    plan = SwarmServicePlan(
+        name="x",
+        image="ghcr.io/baseintelligence/x:1",
+        command=("run",),
+        with_registry_auth=True,
+    )
+
+    argv = build_service_create_argv("docker", plan)
+
+    assert "--with-registry-auth" in argv
+    # Image/command MUST stay last regardless of the flag.
+    assert argv[-2:] == ["ghcr.io/baseintelligence/x:1", "run"]
+
+
+def test_build_service_create_argv_omits_with_registry_auth_by_default() -> None:
+    # Default plans (long-lived challenge services created on the manager,
+    # which is already logged in) stay byte-identical to the pre-flag builder.
+    plan = SwarmServicePlan(
+        name="x",
+        image="ghcr.io/baseintelligence/x:1",
+        command=("run",),
+    )
+
+    argv = build_service_create_argv("docker", plan)
+
+    assert "--with-registry-auth" not in argv
 
 
 def test_build_service_create_argv_emits_generic_resources_before_image() -> None:

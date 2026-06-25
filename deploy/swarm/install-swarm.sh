@@ -162,7 +162,12 @@ SECRET_VOLUME_DIR="/var/lib/base/secrets"
 # + owner (//Owner) PLUS two SPARE validator hotkeys (//AcValidator1/2) kept free
 # of the agent-challenge 1-submission-per-hotkey-per-3h rate limit for the M1
 # user-testing validator (derived ss58 recorded in library/user-testing.md).
-UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnbVvLKWjHeVqm2BMqMzmckKMiufR11qFXahaUfenR\",\"5FTyuyEQQZs8tCcPTUFqotkm2SYfDnpefn9FitRgmTHnFDBD\",\"5GGboHkKougeE8PqGRbNM32AEwRU7Dsv4MXATm2zukQJ8wrU\",\"5FJAjL6d31QDSfvcZPKkde9ftTLAPu7J5Mo86je5XbziRXSB\"]}"
+#
+# LAST ENTRY (5Grwva...HGKutQY) = the well-known //Alice dev keypair, added ONLY
+# to exercise the end-to-end prism submission path before launch. MUST-REVIEW-
+# BEFORE-T27: remove //Alice from this allowlist before mainnet launch — it is a
+# publicly-known test key and must never be miner-registrable in production.
+UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnbVvLKWjHeVqm2BMqMzmckKMiufR11qFXahaUfenR\",\"5FTyuyEQQZs8tCcPTUFqotkm2SYfDnpefn9FitRgmTHnFDBD\",\"5GGboHkKougeE8PqGRbNM32AEwRU7Dsv4MXATm2zukQJ8wrU\",\"5FJAjL6d31QDSfvcZPKkde9ftTLAPu7J5Mo86je5XbziRXSB\",\"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY\"]}"
 
 # agent-challenge own_runner eval allowlist: the worker+api gate the broker DooD
 # job image against CHALLENGE_DOCKER_ALLOWED_IMAGES (the default permits only the
@@ -963,10 +968,21 @@ _deploy_master_service() {
   if [[ "${subcommand}" == "broker" ]]; then
     local broker_ws="${BROKER_WORKSPACE_DIR:-/tmp/base-docker-broker}"
     mkdir -p "${broker_ws}"
+    # REGISTRY AUTH FOR EVAL JOBS (Defect E2): the broker shells out to `docker
+    # service create --with-registry-auth` to dispatch eval jobs that pull the
+    # private ghcr.io/baseintelligence evaluator. `--with-registry-auth` takes the
+    # auth from the CLIENT (this broker container's) docker config, so the broker
+    # must read the manager's config.json written by ghcr_login (STEP 1b). Bind the
+    # manager-host docker config dir read-only at /root/.docker (broker runs
+    # --user root) and pin DOCKER_CONFIG to it. Without this the create succeeds but
+    # the worker-node pull is unauthorized and the eval task hangs pending forever.
+    local docker_cfg_dir="${DOCKER_CONFIG:-${HOME}/.docker}"
     extra+=(
       --user root
       --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"
       --mount "type=bind,source=${broker_ws},target=${broker_ws}"
+      --mount "type=bind,source=${docker_cfg_dir},target=/root/.docker,readonly"
+      --env "DOCKER_CONFIG=/root/.docker"
       # MANAGER PIN (required on any multi-node swarm): the broker shells out to
       # `docker service create` to dispatch eval jobs, which REQUIRES a manager's
       # docker.sock; it also binds the manager-local docker.sock + ${broker_ws}
@@ -1129,7 +1145,7 @@ deploy_challenges() {
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
   # broker reads (registration writes it). prism's docker_allowed_images already permits
   # ghcr.io/baseintelligence/, so the eval image needs no override.
-  CHALLENGE_ENV=(
+  local -a prism_env=(
     "CHALLENGE_SLUG=prism"
     "CHALLENGE_DOCKER_ENABLED=true"
     "CHALLENGE_DOCKER_BACKEND=broker"
@@ -1168,7 +1184,7 @@ deploy_challenges() {
   # The val/test splits NEVER enter the network=none eval container; the eval container gets its
   # own copy of the locked TRAIN split via the broker's per-slug RO mount at /data/fineweb-edu/train.
   # Both are manager-local volumes, RO, and must be POPULATED + readable by the scorer uid 1000.
-  CHALLENGE_EXTRA_MOUNTS=(
+  local -a prism_scorer_mounts=(
     "type=volume,source=prism_fineweb_edu_val,destination=/secret/val,readonly=true"
     "type=volume,source=prism_fineweb_edu_train,destination=/secret/train,readonly=true"
   )
@@ -1178,11 +1194,38 @@ deploy_challenges() {
   # CHALLENGE_EXTRA_SECRETS so the `base/` prefix is NOT applied. This matches the LIVE stack
   # (which mounts the pre-existing base_or_key_real at the same target) so the gate resolves
   # its key on a clean install-swarm.sh deploy.
-  CHALLENGE_EXTRA_SECRETS=(
+  local -a prism_extra_secrets=(
     "source=base_openrouter_api_key,target=openrouter_api_key"
   )
+  # prism API service: manager-pinned (Defect E1) so it shares the per-node
+  # base_prism_pg /data volume (SQLite at /data/prism.sqlite3) with the worker
+  # below — Swarm volumes are per-node, so an unpinned api could land on a
+  # different node from the worker and read a disjoint, empty database.
+  CHALLENGE_ENV=("${prism_env[@]}")
+  CHALLENGE_EXTRA_MOUNTS=("${prism_scorer_mounts[@]}")
+  CHALLENGE_EXTRA_SECRETS=("${prism_extra_secrets[@]}")
+  CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
+    "base_prism_pg" \
+    "base_prism_challenge_token:challenge_token" \
+    "base_prism_docker_broker_token:docker_broker_token"
+
+  # prism WORKER sidecar (Defect E1): the prism API ships with NO submission
+  # processor (its lifespan only inits the DB), so a claimed-nothing submission
+  # sits `pending` forever. This standing service runs `prism-worker` — the
+  # claim/evaluate loop (worker.py:main, --interval-seconds poll) that dispatches
+  # the broker GPU eval job and runs the host-side held-out scorer. It carries the
+  # SAME env, scorer held-out mounts, OpenRouter review-gate secret, and the SAME
+  # node.role==manager pin as the api so both co-locate on the base_prism_pg /data
+  # volume (mirrors the agent-challenge api+worker pattern above).
+  CHALLENGE_ENV=("${prism_env[@]}")
+  CHALLENGE_EXTRA_MOUNTS=("${prism_scorer_mounts[@]}")
+  CHALLENGE_EXTRA_SECRETS=("${prism_extra_secrets[@]}")
+  CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
+  CHALLENGE_CMD=("prism-worker" "--interval-seconds" "5")
+  _deploy_challenge_service \
+    "challenge-prism-worker" "${IMAGE_PRISM}" "${PRISM_PORT}" \
     "base_prism_pg" \
     "base_prism_challenge_token:challenge_token" \
     "base_prism_docker_broker_token:docker_broker_token"
@@ -1285,6 +1328,7 @@ healthcheck() {
     _service_converged "challenge-agent-challenge"
     _service_converged "challenge-agent-challenge-worker"  # sidecar: no /health port
     _service_converged "challenge-prism"
+    _service_converged "challenge-prism-worker"  # sidecar: no /health port
     _overlay_health "challenge-agent-challenge" "${AGENT_CHALLENGE_PORT}"
     _overlay_health "challenge-prism" "${PRISM_PORT}"
   else

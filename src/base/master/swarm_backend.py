@@ -207,6 +207,7 @@ class SwarmServicePlan:
     workdir: str | None = None
     hostname: str | None = None
     generic_resources: tuple[str, ...] = ()
+    with_registry_auth: bool = False
 
 
 def gpu_generic_resources(gpu_count: int | None) -> tuple[str, ...]:
@@ -241,6 +242,8 @@ def build_service_create_argv(docker_bin: str, plan: SwarmServicePlan) -> list[s
             "--restart-condition",
             "any",
         ]
+    if plan.with_registry_auth:
+        argv.append("--with-registry-auth")
     if plan.constraint:
         argv += ["--constraint", plan.constraint]
     if plan.network:
@@ -492,6 +495,7 @@ class SwarmBrokerService(DockerBrokerService):
                 user=limits.user,
                 workdir=request.workdir,
                 generic_resources=gpu_generic_resources(limits.gpu_count),
+                with_registry_auth=True,
             )
             # GPU lease (capacity bookkeeping) is acquired BEFORE any ledger
             # registration or service create and released on every exit path;
