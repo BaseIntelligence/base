@@ -25,6 +25,10 @@ from base.master.admin.runtime import RuntimeController
 from base.master.app_admin import build_admin_router
 from base.master.challenge_dashboard import ChallengeMetricsProvider
 from base.master.docker_orchestrator import DockerOrchestrationError
+from base.master.llm_gateway import (
+    LLMGatewayService,
+    build_llm_gateway_router,
+)
 from base.master.registry import ChallengeNotFoundError
 from base.master.service import MasterWeightService
 from base.master.validator_coordination import (
@@ -294,6 +298,7 @@ def create_proxy_app(
     validator_service: ValidatorCoordinationService | None = None,
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
     validator_health_interval_seconds: float | None = None,
+    llm_gateway_service: LLMGatewayService | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -576,6 +581,10 @@ def create_proxy_app(
             )
         )
         app.state.validator_coordination_service = validator_service
+
+    if llm_gateway_service is not None:
+        app.include_router(build_llm_gateway_router(service=llm_gateway_service))
+        app.state.llm_gateway_service = llm_gateway_service
 
     app.state.challenge_registry = challenge_registry
     app.state.miner_upload_verifier = verifier

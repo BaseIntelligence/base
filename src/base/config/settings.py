@@ -118,6 +118,28 @@ class SecuritySettings(BaseModel):
     admin_token_file: str | None = None
 
 
+class GatewaySettings(BaseModel):
+    """Master LLM gateway config (architecture.md sec 5).
+
+    The provider is config-selected: ``mock`` (deterministic, no egress; used by
+    tests) or ``real`` (HTTP clients pinned to the upstream bases). Provider keys
+    are injected server-side; validators/eval runtimes hold only a scoped gateway
+    token and point their client base URL at the master gateway.
+    """
+
+    provider_mode: Literal["mock", "real"] = "mock"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    deepseek_api_key: str | None = None
+    deepseek_api_key_file: str | None = "/run/secrets/deepseek_api_key"
+    openrouter_api_key: str | None = None
+    openrouter_api_key_file: str | None = "/run/secrets/openrouter_api_key"
+    token_secret: str | None = None
+    token_secret_file: str | None = "/run/secrets/gateway_token_secret"
+    token_ttl_seconds: int = 3_600
+    request_timeout_seconds: float = 30.0
+
+
 class ObservabilitySettings(BaseModel):
     log_json: bool = True
     sentry_dsn: str | None = None
@@ -149,6 +171,7 @@ class Settings(BaseModel):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     docker: DockerSettings = Field(default_factory=DockerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
     @model_validator(mode="after")
