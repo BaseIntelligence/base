@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -39,6 +40,24 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_CAPABILITY_CONCURRENCY: dict[str, int] = {CAPABILITY_GPU: 1}
 
 _ACTIVE_STATUSES = (WorkAssignmentStatus.ASSIGNED, WorkAssignmentStatus.RUNNING)
+
+#: Payload key carrying the resume checkpoint ref to a reassigned prism unit so
+#: the new validator resumes from the last public HF checkpoint (architecture
+#: sec 3.3 / 4) rather than restarting from scratch.
+RESUME_CHECKPOINT_PAYLOAD_KEY = "resume_checkpoint_ref"
+
+
+@dataclass(frozen=True)
+class ReclaimOutcome:
+    """Result of a reclaim pass over stale/offline in-flight work units.
+
+    ``reverted`` holds the work-unit ids returned to the pending pool for
+    reassignment; ``failed`` holds the ids terminally failed because their
+    retries were exhausted (``attempt_count`` reached ``max_attempts``).
+    """
+
+    reverted: list[str]
+    failed: list[str]
 
 
 def capability_matches(
@@ -285,6 +304,77 @@ class AssignmentService:
                 assigned[unit.work_unit_id] = chosen
 
         return assigned
+
+    async def reclaim_stale_assignments(self) -> ReclaimOutcome:
+        """Revert in-flight work whose validator is offline or lease expired.
+
+        A unit is reassignable when its assigned validator is offline/unknown OR
+        its ``deadline_at`` is in the past. Reassignable units are returned to
+        the pending pool (``assigned_validator_hotkey`` cleared, lease cleared)
+        UNLESS their retries are exhausted (``attempt_count >= max_attempts``),
+        in which case they are terminally marked ``failed`` so retries are
+        bounded and never loop forever. The reverted unit keeps its
+        ``checkpoint_ref`` and surfaces it under
+        :data:`RESUME_CHECKPOINT_PAYLOAD_KEY` so a reassigned prism validator can
+        resume from the last public HF checkpoint. ``attempt_count`` is not
+        touched here; the subsequent :meth:`assign_pending` increments it as part
+        of the reassignment.
+        """
+
+        now = self._now_fn()
+        reverted: list[str] = []
+        failed: list[str] = []
+        async with session_scope(self._session_factory) as session:
+            online = set(
+                (
+                    await session.execute(
+                        select(Validator.hotkey).where(
+                            Validator.status == ValidatorStatus.ONLINE
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            inflight = (
+                (
+                    await session.execute(
+                        select(WorkAssignment).where(
+                            WorkAssignment.status.in_(_ACTIVE_STATUSES)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for unit in inflight:
+                hotkey = unit.assigned_validator_hotkey
+                validator_offline = hotkey is None or hotkey not in online
+                deadline = unit.deadline_at
+                if deadline is not None and deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=UTC)
+                deadline_passed = deadline is not None and deadline < now
+                if not (validator_offline or deadline_passed):
+                    continue
+
+                if (unit.attempt_count or 0) >= unit.max_attempts:
+                    unit.status = WorkAssignmentStatus.FAILED
+                    unit.last_progress_at = now
+                    failed.append(unit.work_unit_id)
+                    continue
+
+                unit.status = WorkAssignmentStatus.PENDING
+                unit.assigned_validator_hotkey = None
+                unit.deadline_at = None
+                if unit.checkpoint_ref is not None:
+                    payload = dict(unit.payload or {})
+                    payload[RESUME_CHECKPOINT_PAYLOAD_KEY] = unit.checkpoint_ref
+                    unit.payload = payload
+                reverted.append(unit.work_unit_id)
+
+        return ReclaimOutcome(reverted=reverted, failed=failed)
 
     def _capability_matches(self, required: str, capabilities: set[str]) -> bool:
         return capability_matches(
