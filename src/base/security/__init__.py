@@ -8,14 +8,38 @@ from base.security.miner_auth import (
     verify_substrate_signature,
 )
 from base.security.tokens import generate_token, hash_token, verify_token
+from base.security.validator_auth import (
+    MetagraphValidatorEligibility,
+    SqlAlchemyValidatorNonceStore,
+    ValidatorAuthError,
+    ValidatorEligibility,
+    ValidatorEligibilityError,
+    ValidatorIdentity,
+    ValidatorNonceStore,
+    ValidatorReplayError,
+    ValidatorSignedRequestVerifier,
+    build_validator_auth_dependency,
+    canonical_validator_request,
+)
 
 __all__ = [
+    "MetagraphValidatorEligibility",
     "MinerAuthError",
     "MinerIdentity",
     "MinerUploadVerifier",
     "NonceReplayError",
     "SqlAlchemyMinerNonceStore",
+    "SqlAlchemyValidatorNonceStore",
+    "ValidatorAuthError",
+    "ValidatorEligibility",
+    "ValidatorEligibilityError",
+    "ValidatorIdentity",
+    "ValidatorNonceStore",
+    "ValidatorReplayError",
+    "ValidatorSignedRequestVerifier",
+    "build_validator_auth_dependency",
     "canonical_upload_message",
+    "canonical_validator_request",
     "generate_token",
     "hash_token",
     "verify_substrate_signature",

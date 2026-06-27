@@ -13,6 +13,12 @@ from base.db.models import (
     ChallengeSecret,
     ChallengeStatus,
     ChallengeVolume,
+    MinerRequestNonce,
+    Validator,
+    ValidatorHealthEvent,
+    ValidatorHealthEventType,
+    ValidatorRequestNonce,
+    ValidatorStatus,
 )
 from base.db.repositories import ChallengeRepository
 from base.db.session import (
@@ -35,6 +41,12 @@ __all__ = [
     "ChallengeSecret",
     "ChallengeStatus",
     "ChallengeVolume",
+    "MinerRequestNonce",
+    "Validator",
+    "ValidatorHealthEvent",
+    "ValidatorHealthEventType",
+    "ValidatorRequestNonce",
+    "ValidatorStatus",
     "create_engine",
     "create_session_factory",
     "session_scope",

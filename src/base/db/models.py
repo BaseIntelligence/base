@@ -36,6 +36,23 @@ class ChallengeStatus(StrEnum):
     DRAFT = "draft"
 
 
+class ValidatorStatus(StrEnum):
+    """Liveness states for a registered validator in the coordination plane."""
+
+    ONLINE = "online"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
+
+
+class ValidatorHealthEventType(StrEnum):
+    """Audit events recorded for a validator's lifecycle transitions."""
+
+    REGISTERED = "registered"
+    ONLINE = "online"
+    OFFLINE = "offline"
+    CRASH_DETECTED = "crash_detected"
+
+
 class TimestampMixin:
     """Created/updated timestamp columns shared by mutable tables."""
 
@@ -379,6 +396,109 @@ class ChallengeHealthEvent(Base):
     )
 
     challenge: Mapped[Challenge] = relationship(back_populates="health_events")
+
+
+class Validator(Base, TimestampMixin):
+    """A validator registered with the master coordination plane."""
+
+    __tablename__ = "validators"
+    __table_args__ = (
+        Index("ix_validators_status", "status"),
+        Index("ix_validators_last_heartbeat_at", "last_heartbeat_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    hotkey: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    uid: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[ValidatorStatus] = mapped_column(
+        Enum(
+            ValidatorStatus,
+            name="validator_status",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+        default=ValidatorStatus.UNKNOWN,
+        server_default=ValidatorStatus.UNKNOWN.value,
+    )
+    capabilities: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    version: Mapped[str | None] = mapped_column(Text)
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_meta: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+
+class ValidatorHealthEvent(Base):
+    """Append-only audit log of validator liveness transitions."""
+
+    __tablename__ = "validator_health_events"
+    __table_args__ = (
+        Index(
+            "ix_validator_health_events_hotkey_created",
+            "validator_hotkey",
+            "created_at",
+        ),
+        Index("ix_validator_health_events_event", "event"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    validator_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    event: Mapped[ValidatorHealthEventType] = mapped_column(
+        Enum(
+            ValidatorHealthEventType,
+            name="validator_health_event_type",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class ValidatorRequestNonce(Base):
+    """Replay protection for signed validator coordination requests."""
+
+    __tablename__ = "validator_request_nonces"
+    __table_args__ = (
+        UniqueConstraint(
+            "hotkey", "nonce", name="uq_validator_request_nonces_hotkey_nonce"
+        ),
+        Index("ix_validator_request_nonces_created_at", "created_at"),
+        Index("ix_validator_request_nonces_hotkey", "hotkey"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    body_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class MinerRequestNonce(Base):
