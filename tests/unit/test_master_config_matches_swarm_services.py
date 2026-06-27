@@ -28,6 +28,9 @@ from pathlib import Path
 
 import yaml
 
+from base.config.settings import Settings
+from base.supervisor.tasks import build_scheduled_tasks
+
 ROOT = Path(__file__).resolve().parents[2]
 MASTER_YAML = ROOT / "deploy" / "swarm" / "master.yaml"
 INSTALL_SWARM = ROOT / "deploy" / "swarm" / "install-swarm.sh"
@@ -86,6 +89,38 @@ def _installer_broker_service_and_port() -> tuple[str, int]:
     return name, int(default.group(1))
 
 
+def _installer_master_proxy_service() -> str:
+    """Name passed to ``_deploy_master_service`` for the public proxy."""
+
+    match = re.search(
+        r'_deploy_master_service\s+"([^"]+)"\s+"proxy"\s',
+        _installer_text(),
+    )
+    assert match is not None, "could not find the master proxy service create call"
+    return match.group(1)
+
+
+def _supervisor_autoupdate_services() -> dict[str, set[str]]:
+    """Service names the supervisor's PRODUCTION auto-update jobs actually target.
+
+    Reads the live call-site wiring in ``build_scheduled_tasks`` (the override
+    that ships in deploys), not the placeholder module defaults, so the guard
+    tracks what the supervisor really pins/rolls.
+    """
+
+    tasks, _gate = build_scheduled_tasks(Settings())
+    image_updater = next(t for t in tasks if t.name == "image-updater")
+    config_sync = next(t for t in tasks if t.name == "config-sync")
+    updater_services = {
+        target.service
+        for target in image_updater.run.__self__._targets  # type: ignore[attr-defined]
+    }
+    rollout_services = set(
+        config_sync.run.__self__._rollout_services  # type: ignore[attr-defined]
+    )
+    return {"image_updater": updater_services, "config_sync": rollout_services}
+
+
 def _installer_rendered_config_hosts() -> dict[str, str]:
     """Hosts the installer RENDERS into the in-place master config heredoc."""
 
@@ -136,3 +171,47 @@ def test_checked_in_master_config_agrees_with_installer_rendered_config() -> Non
 
     assert db_host == rendered["postgres"]
     assert broker_host == rendered["broker"]
+
+
+def test_supervisor_autoupdate_proxy_target_matches_installer_service() -> None:
+    """image-updater + config-sync MUST pin/roll the installer's proxy service.
+
+    The installer creates ``base-master-proxy`` but the supervisor previously
+    targeted ``base-proxy``, a name no Swarm service answers to, so the
+    digest-pin auto-update and config rollout silently skipped the public API.
+    """
+
+    proxy_service = _installer_master_proxy_service()
+    targets = _supervisor_autoupdate_services()
+
+    assert proxy_service in targets["image_updater"]
+    assert proxy_service in targets["config_sync"]
+    # The stale, never-created name must never come back.
+    assert "base-proxy" not in targets["image_updater"]
+    assert "base-proxy" not in targets["config_sync"]
+
+
+def test_supervisor_autoupdate_broker_target_matches_installer_service() -> None:
+    """image-updater + config-sync MUST pin/roll the installer's broker service."""
+
+    broker_service, _port = _installer_broker_service_and_port()
+    targets = _supervisor_autoupdate_services()
+
+    assert broker_service in targets["image_updater"]
+    assert broker_service in targets["config_sync"]
+
+
+def test_supervisor_autoupdate_targets_are_all_installer_created_services() -> None:
+    """Every supervisor auto-update target must be a service the installer creates.
+
+    Guards against the auto-update path pointing at phantom service names again.
+    """
+
+    installer_services = {
+        _installer_master_proxy_service(),
+        _installer_broker_service_and_port()[0],
+    }
+    targets = _supervisor_autoupdate_services()
+
+    assert targets["image_updater"] <= installer_services
+    assert targets["config_sync"] <= installer_services

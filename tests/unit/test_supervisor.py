@@ -335,20 +335,22 @@ def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
         for target in image_updater.run.__self__._targets  # type: ignore[attr-defined]
     }
     assert updater_services == {
-        "base-proxy",
+        "base-master-proxy",
         "base-docker-broker",
     }
     assert "base-admin" not in updater_services
+    assert "base-proxy" not in updater_services
     assert "base-broker" not in updater_services
     assert "base-config-sync" not in updater_services
 
     config_sync = next(t for t in tasks if t.name == "config-sync")
     rollout_services = set(config_sync.run.__self__._rollout_services)  # type: ignore[attr-defined]
     assert rollout_services == {
-        "base-proxy",
+        "base-master-proxy",
         "base-docker-broker",
     }
     assert "base-admin" not in rollout_services
+    assert "base-proxy" not in rollout_services
     assert "base-broker" not in rollout_services
     assert "base-config-sync" not in rollout_services
 

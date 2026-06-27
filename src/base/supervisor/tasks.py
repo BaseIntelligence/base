@@ -103,6 +103,9 @@ def build_scheduled_tasks(
     # `base-docker-broker` (the settings.docker.broker_url host) and drops
     # the non-service `base-config-sync`. The single-port consolidation also
     # dropped the separate `base-admin` service (proxy serves admin/registry).
+    # The proxy target MUST match the installer-created service name
+    # `base-master-proxy` (deploy/swarm/install-swarm.sh); the stale `base-proxy`
+    # answered to no Swarm service so the digest pin silently skipped it.
     # DEFAULT_FIRST_PARTY_TARGETS stays as-is for the regression tests; do not
     # "simplify" back to the default.
     tasks.append(
@@ -110,7 +113,9 @@ def build_scheduled_tasks(
             settings,
             health_gate=gate,
             targets=(
-                ImageUpdateTarget(service="base-proxy", image=DEFAULT_MASTER_IMAGE),
+                ImageUpdateTarget(
+                    service="base-master-proxy", image=DEFAULT_MASTER_IMAGE
+                ),
                 ImageUpdateTarget(
                     service="base-docker-broker", image=DEFAULT_MASTER_IMAGE
                 ),
@@ -121,14 +126,15 @@ def build_scheduled_tasks(
     tasks.append(build_challenge_image_updater_task(settings, health_gate=gate))
     # Task 20 registration point (config-sync).
     # Task 28 #1: same canonical-broker call-site override; single-port
-    # consolidation drops the removed `base-admin` rollout target.
+    # consolidation drops the removed `base-admin` rollout target. The proxy
+    # rollout target MUST match the installer-created `base-master-proxy`.
     # DEFAULT_ROLLOUT_SERVICES stays as-is.
     tasks.append(
         build_config_sync_task(
             settings,
             health_gate=gate,
             rollout_services=(
-                "base-proxy",
+                "base-master-proxy",
                 "base-docker-broker",
             ),
         )
