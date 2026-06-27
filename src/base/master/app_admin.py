@@ -34,6 +34,10 @@ from base.master.admin.auth import (
 from base.master.admin.runtime import (
     RuntimeController,
 )
+from base.master.assignment_coordination import (
+    AssignmentCoordinationService,
+    build_assignment_coordination_router,
+)
 from base.master.challenge_dashboard import (
     ChallengeMetricsProvider,
     render_challenges_dashboard_svg,
@@ -356,6 +360,7 @@ def create_admin_app(
     validator_service: ValidatorCoordinationService | None = None,
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
     validator_health_interval_seconds: float | None = None,
+    assignment_coordination_service: AssignmentCoordinationService | None = None,
     llm_gateway_service: LLMGatewayService | None = None,
 ) -> FastAPI:
     """Create the private admin/registry FastAPI app.
@@ -394,6 +399,15 @@ def create_admin_app(
             )
         )
         app.state.validator_coordination_service = validator_service
+
+    if assignment_coordination_service is not None and validator_verifier is not None:
+        app.include_router(
+            build_assignment_coordination_router(
+                service=assignment_coordination_service,
+                auth_dependency=build_validator_auth_dependency(validator_verifier),
+            )
+        )
+        app.state.assignment_coordination_service = assignment_coordination_service
 
     if llm_gateway_service is not None:
         app.include_router(build_llm_gateway_router(service=llm_gateway_service))

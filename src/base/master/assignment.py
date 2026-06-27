@@ -41,6 +41,25 @@ DEFAULT_CAPABILITY_CONCURRENCY: dict[str, int] = {CAPABILITY_GPU: 1}
 _ACTIVE_STATUSES = (WorkAssignmentStatus.ASSIGNED, WorkAssignmentStatus.RUNNING)
 
 
+def capability_matches(
+    required: str, capabilities: set[str], *, gpu_serves_cpu: bool = True
+) -> bool:
+    """Whether a validator advertising ``capabilities`` can run ``required``.
+
+    ``gpu`` work only matches gpu validators; ``cpu`` work matches cpu
+    validators and (when ``gpu_serves_cpu``) gpu validators too. Any other
+    capability matches an exactly-advertised capability.
+    """
+
+    if required == CAPABILITY_GPU:
+        return CAPABILITY_GPU in capabilities
+    if required == CAPABILITY_CPU:
+        if CAPABILITY_CPU in capabilities:
+            return True
+        return gpu_serves_cpu and CAPABILITY_GPU in capabilities
+    return required in capabilities
+
+
 class AssignmentService:
     """Create work units and assign pending ones across online validators."""
 
@@ -268,10 +287,6 @@ class AssignmentService:
         return assigned
 
     def _capability_matches(self, required: str, capabilities: set[str]) -> bool:
-        if required == CAPABILITY_GPU:
-            return CAPABILITY_GPU in capabilities
-        if required == CAPABILITY_CPU:
-            if CAPABILITY_CPU in capabilities:
-                return True
-            return self._gpu_serves_cpu and CAPABILITY_GPU in capabilities
-        return required in capabilities
+        return capability_matches(
+            required, capabilities, gpu_serves_cpu=self._gpu_serves_cpu
+        )

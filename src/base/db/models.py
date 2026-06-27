@@ -557,6 +557,44 @@ class WorkAssignment(Base, TimestampMixin):
     result_ref: Mapped[str | None] = mapped_column(Text)
 
 
+class WorkResult(Base):
+    """A validator-reported result for a coordinated work unit.
+
+    The master persists each reported result so weight computation can consume
+    validator-reported evaluation outcomes. The owning ``work_assignments`` row
+    points back at the persisted result via ``result_ref``. Stores no secret
+    material; ``payload`` carries the challenge-specific result descriptor.
+    """
+
+    __tablename__ = "work_results"
+    __table_args__ = (
+        Index("ix_work_results_assignment_id", "assignment_id"),
+        Index("ix_work_results_challenge_slug", "challenge_slug"),
+        Index("ix_work_results_validator_hotkey", "validator_hotkey"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    assignment_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    challenge_slug: Mapped[str] = mapped_column(Text, nullable=False)
+    work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    submission_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    validator_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class ValidatorRequestNonce(Base):
     """Replay protection for signed validator coordination requests."""
 

@@ -1,10 +1,9 @@
-"""Alembic migration tests for the control-plane tables on SQLite.
+"""Migration + model tests for the ``work_results`` table on SQLite.
 
-Covers VAL-ASSIGN-030/031 on SQLite: ``alembic upgrade head`` from an empty DB
-creates ``validators``, ``validator_health_events``, and ``work_assignments``
-with their key columns/indices/constraints; the history has a single head; the
-migration matches the ORM models (empty ``compare_metadata`` diff); and a
-downgrade/re-upgrade round-trips cleanly.
+``alembic upgrade head`` from an empty DB creates ``work_results`` with its key
+columns/indices; the history has a single head; the migration matches the ORM
+models (empty ``compare_metadata`` diff); and a downgrade/re-upgrade round-trips
+cleanly while leaving the earlier control-plane tables intact.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import inspect
 
-from base.db import Base, migrations
+from base.db import Base, WorkResult, migrations
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = ROOT_DIR / "alembic.ini"
@@ -47,61 +46,50 @@ def test_single_head() -> None:
     assert len(heads) == 1
 
 
-def test_upgrade_from_empty_creates_control_plane_tables(tmp_path: Path) -> None:
+def test_work_results_model_has_documented_columns() -> None:
+    columns = set(Base.metadata.tables["work_results"].c.keys())
+    assert {
+        "id",
+        "assignment_id",
+        "challenge_slug",
+        "work_unit_id",
+        "submission_ref",
+        "validator_hotkey",
+        "success",
+        "payload",
+        "created_at",
+    } <= columns
+    assert WorkResult.__tablename__ == "work_results"
+
+
+def test_upgrade_from_empty_creates_work_results(tmp_path: Path) -> None:
     db_path = tmp_path / "fresh.sqlite3"
     migrations.upgrade(ALEMBIC_INI, database_url=_async_url(db_path), revision="head")
 
-    tables = _table_names(db_path)
-    assert {
-        "validators",
-        "validator_health_events",
-        "work_assignments",
-    } <= tables
+    assert "work_results" in _table_names(db_path)
 
     engine = create_sync_engine(_sync_url(db_path))
     try:
         inspector = inspect(engine)
-        columns = {c["name"] for c in inspector.get_columns("work_assignments")}
+        columns = {c["name"] for c in inspector.get_columns("work_results")}
         assert {
             "id",
+            "assignment_id",
             "challenge_slug",
             "work_unit_id",
             "submission_ref",
+            "validator_hotkey",
+            "success",
             "payload",
-            "required_capability",
-            "assigned_validator_hotkey",
-            "status",
-            "attempt_count",
-            "max_attempts",
-            "deadline_at",
-            "last_progress_at",
-            "checkpoint_ref",
-            "result_ref",
             "created_at",
-            "updated_at",
         } <= columns
 
-        index_names = {idx["name"] for idx in inspector.get_indexes("work_assignments")}
+        index_names = {idx["name"] for idx in inspector.get_indexes("work_results")}
         assert {
-            "ix_work_assignments_challenge_slug",
-            "ix_work_assignments_status",
-            "ix_work_assignments_assigned_validator_hotkey",
-            "ix_work_assignments_status_validator",
-            "ix_work_assignments_status_deadline",
+            "ix_work_results_assignment_id",
+            "ix_work_results_challenge_slug",
+            "ix_work_results_validator_hotkey",
         } <= index_names
-
-        unique_constraints = inspector.get_unique_constraints("work_assignments")
-        unique_column_sets = {
-            tuple(sorted(uc["column_names"])) for uc in unique_constraints
-        }
-        assert ("challenge_slug", "work_unit_id") in unique_column_sets
-
-        # validators.hotkey unique constraint exists.
-        validator_unique = {
-            tuple(sorted(uc["column_names"]))
-            for uc in inspector.get_unique_constraints("validators")
-        }
-        assert ("hotkey",) in validator_unique
     finally:
         engine.dispose()
 
@@ -129,25 +117,20 @@ def test_migration_matches_models_no_drift(tmp_path: Path) -> None:
     assert diff == []
 
 
-def test_downgrade_removes_work_assignments_and_reupgrade_recreates(
+def test_downgrade_removes_work_results_and_reupgrade_recreates(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "roundtrip.sqlite3"
     async_url = _async_url(db_path)
 
     migrations.upgrade(ALEMBIC_INI, database_url=async_url, revision="head")
-    assert "work_assignments" in _table_names(db_path)
+    assert "work_results" in _table_names(db_path)
 
-    # Downgrade past work_assignments (to the prior llm-usage revision): the
-    # work_assignments table is dropped while earlier control-plane tables remain.
-    migrations.downgrade(
-        ALEMBIC_INI,
-        database_url=async_url,
-        revision="0004_create_llm_usage_records",
-    )
+    migrations.downgrade(ALEMBIC_INI, database_url=async_url, revision="-1")
     tables_after_downgrade = _table_names(db_path)
-    assert "work_assignments" not in tables_after_downgrade
+    assert "work_results" not in tables_after_downgrade
+    assert "work_assignments" in tables_after_downgrade
     assert "validators" in tables_after_downgrade
 
     migrations.upgrade(ALEMBIC_INI, database_url=async_url, revision="head")
-    assert "work_assignments" in _table_names(db_path)
+    assert "work_results" in _table_names(db_path)

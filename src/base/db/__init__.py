@@ -22,6 +22,7 @@ from base.db.models import (
     ValidatorStatus,
     WorkAssignment,
     WorkAssignmentStatus,
+    WorkResult,
 )
 from base.db.repositories import ChallengeRepository
 from base.db.session import (
@@ -53,6 +54,7 @@ __all__ = [
     "ValidatorStatus",
     "WorkAssignment",
     "WorkAssignmentStatus",
+    "WorkResult",
     "create_engine",
     "create_session_factory",
     "session_scope",
