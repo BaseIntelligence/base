@@ -131,6 +131,19 @@ SECRET_MOUNT_DIR="/run/secrets/base"
 # admin service/port (the former base-master-admin on 18900 is removed).
 MASTER_BROKER_PORT="${MASTER_BROKER_PORT:-8082}"
 MASTER_PROXY_PORT="${MASTER_PROXY_PORT:-18080}"
+
+# ---- Master LLM gateway (architecture.md §5). `base master proxy` now ALWAYS
+# builds the LLM gateway and GatewayTokenAuthority refuses an empty token secret,
+# so the proxy FAILS FAST at startup unless the gateway token secret is wired
+# (MANDATORY). provider_mode selects the deterministic mock provider (no egress)
+# vs the real DeepSeek/OpenRouter clients whose keys the gateway injects
+# server-side (validators/eval runtimes hold NO provider key). ----
+GATEWAY_PROVIDER_MODE="${GATEWAY_PROVIDER_MODE:-real}"
+# Externally-reachable master gateway/proxy ROOT advertised to validators in the
+# pull payload, so eval runtimes target the master gateway for
+# DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL instead of the WRONG master.registry_url
+# (chain registry) fallback. Defaults to the published proxy host:port.
+GATEWAY_PUBLIC_BASE_URL="${GATEWAY_PUBLIC_BASE_URL:-http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT}}"
 # Challenge container-internal listen ports (overlay-internal; NO host publish —
 # clients reach them THROUGH the proxy). Separate network namespaces, so these do
 # NOT collide with the master host ports above.
@@ -305,13 +318,28 @@ Required environment (values NEVER hardcoded; supplied at runtime):
   AGENT_CHALLENGE_SUBMISSION_ENV_KEY         agent-challenge submission_env_encryption_key.
   PRISM_CHALLENGE_TOKEN                      prism challenge token.
   PRISM_DOCKER_BROKER_TOKEN                  prism broker token.
-  OPENROUTER_API_KEY                         openrouter_api_key.
+  OPENROUTER_API_KEY                         openrouter_api_key (gateway + prism gate).
+  GATEWAY_TOKEN                              MANDATORY master LLM-gateway token secret
+                                             (gateway_token_secret). The proxy fails
+                                             fast at startup without it.
+  DEEPSEEK_API_KEY                           DeepSeek provider key the gateway injects
+                                             (required when GATEWAY_PROVIDER_MODE=real).
   MASTER_PG_PASSWORD                         base postgres password.
   AGENT_CHALLENGE_PG_PASSWORD                agent-challenge postgres password.
   PRISM_PG_PASSWORD                          prism postgres password.
   MASTER_DATABASE_URL                        master control-plane DB URL.
   AGENT_CHALLENGE_DATABASE_URL               agent-challenge DB URL.
   PRISM_DATABASE_URL                         prism DB URL.
+
+Optional environment:
+  HF_TOKEN                                   HuggingFace token for the prism HF
+                                             checkpoint publisher (base_hf_token,
+                                             mounted via HF_TOKEN_FILE). Absent => skipped.
+  GATEWAY_PROVIDER_MODE                      LLM-gateway provider mode: real (default,
+                                             inject DeepSeek/OpenRouter keys) or mock.
+  GATEWAY_PUBLIC_BASE_URL                    External master gateway/proxy root URL
+                                             advertised to validators (default:
+                                             http://<advertise-addr>:<proxy-port>).
 EOF
 }
 
@@ -596,6 +624,20 @@ create_secrets() {
   # openrouter_api_key is shared (used by challenge eval). Named generically.
   _ensure_secret "base_openrouter_api_key"                OPENROUTER_API_KEY
 
+  # ---- Master LLM gateway secrets (architecture.md §5; M7 wiring). ----
+  # MANDATORY token-signing secret: `base master proxy` ALWAYS builds the LLM
+  # gateway and GatewayTokenAuthority rejects an empty secret, so the proxy fails
+  # fast at startup without it. Mounted into base-master-proxy at
+  # /run/secrets/gateway_token_secret (GatewaySettings.token_secret_file).
+  _ensure_secret "base_gateway_token_secret"              GATEWAY_TOKEN
+  # Provider keys the gateway injects server-side (validators/eval hold none).
+  # Only needed when the gateway runs in provider_mode=real; mock uses canned
+  # responses and needs no provider key. DeepSeek -> /run/secrets/deepseek_api_key;
+  # OpenRouter reuses base_openrouter_api_key -> /run/secrets/openrouter_api_key.
+  if [[ "${GATEWAY_PROVIDER_MODE}" == "real" ]]; then
+    _ensure_secret "base_gateway_deepseek_api_key"        DEEPSEEK_API_KEY
+  fi
+
   # hf_token is OPTIONAL: FineWeb-Edu is a public dataset, so the one-time prep
   # download usually needs no credential. When a token IS supplied (private
   # mirror / rate-limit relief) it MUST travel as a docker secret consumed via
@@ -823,6 +865,17 @@ network:
 master:
   proxy_host: 0.0.0.0
   proxy_port: ${MASTER_PROXY_PORT}
+  # Validator coordination plane (architecture.md §4): heartbeat cadence + offline
+  # timeout, the in-app crash-detection loop interval, and the assignment lease.
+  # The plane persists into the same base-master Postgres wired via
+  # BASE_DATABASE__URL below (no separate datastore). The live orchestration
+  # driver bridges challenge pending work into work_assignments, runs the balanced
+  # assignment engine + the full reassignment pass, and folds retry-exhausted units.
+  validator_heartbeat_interval_seconds: 60
+  validator_heartbeat_timeout_seconds: 180
+  validator_health_interval_seconds: 60
+  assignment_lease_seconds: 900
+  orchestration_interval_seconds: 30
 
 database:
   # Password-less FALLBACK only. The pinned master image's config loader
@@ -866,6 +919,21 @@ docker:
 
 security:
   admin_token_file: ${SECRET_MOUNT_DIR}/admin_token
+
+# Master LLM gateway (architecture.md §5). The proxy ALWAYS builds the gateway;
+# provider_mode selects the deterministic mock provider (no egress) vs the real
+# DeepSeek/OpenRouter clients whose keys are injected server-side from the secret
+# files below (validators/eval runtimes hold NO provider key). public_base_url is
+# the external master gateway root advertised to validators in the pull payload so
+# eval runtimes set DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL to the gateway, NOT the
+# WRONG master.registry_url (chain registry) fallback. The token_secret_file is the
+# MANDATORY HMAC secret for scoped gateway tokens (proxy fails fast if absent).
+gateway:
+  provider_mode: ${GATEWAY_PROVIDER_MODE}
+  public_base_url: ${GATEWAY_PUBLIC_BASE_URL}
+  token_secret_file: /run/secrets/gateway_token_secret
+  deepseek_api_key_file: /run/secrets/deepseek_api_key
+  openrouter_api_key_file: /run/secrets/openrouter_api_key
 
 observability:
   log_json: true
@@ -1016,6 +1084,21 @@ _deploy_master_service() {
       # service (not idempotent — see AGENTS.md "CONSTRAINT-ADD DEDUP GOTCHA").
       --constraint "node.role==worker"
     )
+    # LLM gateway secrets consumed by the proxy-built gateway (NOT the broker):
+    #   * MANDATORY token-signing secret at /run/secrets/gateway_token_secret;
+    #     the proxy fails fast at startup without it (GatewayTokenAuthority).
+    #   * In provider_mode=real, the DeepSeek + OpenRouter provider keys the
+    #     gateway injects server-side, mounted at the exact paths the gateway
+    #     reads (/run/secrets/{deepseek_api_key,openrouter_api_key}).
+    extra+=(
+      --secret "source=base_gateway_token_secret,target=gateway_token_secret"
+    )
+    if [[ "${GATEWAY_PROVIDER_MODE}" == "real" ]]; then
+      extra+=(
+        --secret "source=base_gateway_deepseek_api_key,target=deepseek_api_key"
+        --secret "source=base_openrouter_api_key,target=openrouter_api_key"
+      )
+    fi
   fi
 
   # Inject the control-plane DB URL (with password) via a NAME-ONLY --env so the
@@ -1197,6 +1280,14 @@ deploy_challenges() {
   local -a prism_extra_secrets=(
     "source=base_openrouter_api_key,target=openrouter_api_key"
   )
+  # HuggingFace checkpoint-publisher token (architecture.md §7): the prism HF
+  # publisher reads it from /run/secrets/hf_token (PrismSettings.hf_token_file
+  # default; HF_TOKEN_FILE). OPTIONAL — base_hf_token is only created when
+  # $HF_TOKEN is set, so mount it only then (absent => publisher runs token-less,
+  # fine for the public FineWeb-Edu repo). Mounted verbatim (no `base/` prefix).
+  if [[ -n "${HF_TOKEN:-}" ]]; then
+    prism_extra_secrets+=("source=base_hf_token,target=hf_token")
+  fi
   # prism API service: manager-pinned (Defect E1) so it shares the per-node
   # base_prism_pg /data volume (SQLite at /data/prism.sqlite3) with the worker
   # below — Swarm volumes are per-node, so an unpinned api could land on a

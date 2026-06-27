@@ -47,6 +47,8 @@ REQUIRED_SECRET_ENV = {
     "PRISM_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
     "PRISM_PG_PASSWORD": "x",
     "OPENROUTER_API_KEY": "x",
+    "GATEWAY_TOKEN": "x",
+    "DEEPSEEK_API_KEY": "x",
 }
 
 

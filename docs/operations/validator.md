@@ -135,6 +135,26 @@ validator:
 Leave `heartbeat_interval_seconds` unset to use the interval the master returns
 from registration. A GPU validator advertises `capabilities: ["cpu", "gpu"]`.
 
+### Validator Agent Image (GHCR digest-pin)
+
+The validator agent ships in the dedicated `ghcr.io/baseintelligence/base` image,
+built and pushed by the platform CI `docker-build`/`docker-publish` matrix from
+`docker/Dockerfile.validator` (its `CMD` is `base validator run`). It carries the
+SAME GHCR tag policy as the master/broker images (`latest` only from `main`, plus
+semver and `sha-<sha>` tags). Pin it by immutable digest on the validator node,
+exactly like the manager services pin `ghcr.io/baseintelligence/base-master`:
+
+```bash
+docker pull ghcr.io/baseintelligence/base:latest
+# resolve the digest, then run/auto-update the agent against the pinned ref:
+#   ghcr.io/baseintelligence/base@sha256:<64-hex>
+```
+
+The manager-side proxy/broker services are kept current by the supervisor's
+GHCR digest-pin auto-update loop (`SwarmImageUpdater`, which refuses any
+non-`@sha256:` ref); the validator agent follows the same digest-pin policy via
+this published image on the worker node.
+
 Runtime checks:
 
 ```bash

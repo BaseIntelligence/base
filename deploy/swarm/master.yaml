@@ -18,6 +18,15 @@ master:
   epoch_interval_seconds: 360
   metagraph_cache_ttl_seconds: 300
   registry_state_file: /var/lib/base/registry.json
+  # Validator coordination plane (architecture.md sec 4): heartbeat cadence +
+  # offline timeout, the in-app crash-detection loop interval, the assignment
+  # lease, and the live orchestration driver interval. Persisted into the same
+  # control-plane Postgres wired in `database` below.
+  validator_heartbeat_interval_seconds: 60
+  validator_heartbeat_timeout_seconds: 180
+  validator_health_interval_seconds: 60
+  assignment_lease_seconds: 900
+  orchestration_interval_seconds: 30
 
 validator:
   registry_url: https://chain.joinbase.ai
@@ -49,6 +58,22 @@ docker:
 
 security:
   admin_token_file: /var/lib/base/secrets/admin_token
+
+# Master LLM gateway (architecture.md sec 5). `base master proxy` ALWAYS builds
+# the gateway; provider_mode selects the deterministic mock provider (no egress)
+# vs the real DeepSeek/OpenRouter clients whose keys are injected server-side from
+# the secret files below (validators/eval runtimes hold NO provider key).
+# public_base_url is the external master gateway root advertised to validators in
+# the pull payload so eval runtimes target the gateway for
+# DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL, NOT the master.registry_url (chain
+# registry) fallback. token_secret_file is the MANDATORY HMAC secret for scoped
+# gateway tokens; the proxy fails fast at startup if it is absent.
+gateway:
+  provider_mode: real
+  public_base_url: http://51.83.112.164:18080
+  token_secret_file: /run/secrets/gateway_token_secret
+  deepseek_api_key_file: /run/secrets/deepseek_api_key
+  openrouter_api_key_file: /run/secrets/openrouter_api_key
 
 observability:
   log_json: true
