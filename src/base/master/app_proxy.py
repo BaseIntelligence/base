@@ -18,6 +18,7 @@ from starlette.responses import StreamingResponse
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.master.admin.auth import (
     TokenProvider,
+    build_admin_token_dependency,
     load_admin_token_from_environment,
 )
 from base.master.admin.runtime import RuntimeController
@@ -29,6 +30,7 @@ from base.master.service import MasterWeightService
 from base.master.validator_coordination import (
     ValidatorCoordinationService,
     build_validator_coordination_router,
+    build_validator_health_lifespan,
 )
 from base.schemas.challenge import ChallengeRecord, ChallengeStatus
 from base.security.miner_auth import (
@@ -291,6 +293,7 @@ def create_proxy_app(
     enforce_production_policy: bool = False,
     validator_service: ValidatorCoordinationService | None = None,
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
+    validator_health_interval_seconds: float | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -302,7 +305,13 @@ def create_proxy_app(
     ``GET /health`` is deduped (the proxy's own ``/health`` is kept).
     """
 
-    app = FastAPI(title="BASE Challenge Proxy", version="1.0")
+    app = FastAPI(
+        title="BASE Challenge Proxy",
+        version="1.0",
+        lifespan=build_validator_health_lifespan(
+            validator_service, validator_health_interval_seconds
+        ),
+    )
     challenge_registry = registry
     token_provider = challenge_token_provider or _challenge_token_provider(
         challenge_registry
@@ -563,6 +572,7 @@ def create_proxy_app(
             build_validator_coordination_router(
                 service=validator_service,
                 auth_dependency=build_validator_auth_dependency(validator_verifier),
+                admin_dependency=build_admin_token_dependency(admin_token_provider),
             )
         )
         app.state.validator_coordination_service = validator_service

@@ -129,6 +129,77 @@ async def test_register_and_heartbeat_flow_on_postgres(
         await engine.dispose()
 
 
+async def test_crash_detection_and_recovery_flow_on_postgres(
+    migrated_postgres_database: str,
+    cleanup_postgres_database: Callable[[], Awaitable[None]],
+) -> None:
+    """VAL-VREG-023: register -> detect-crash -> recover parity on Postgres."""
+
+    engine = create_engine(migrated_postgres_database)
+    session_factory = create_session_factory(engine)
+    clock = _Clock(BASE_TS)
+    service = ValidatorCoordinationService(
+        session_factory,
+        heartbeat_interval_seconds=30,
+        heartbeat_timeout_seconds=100,
+        now_fn=clock.now,
+    )
+    hotkey = "****************"
+
+    try:
+        await service.register(
+            hotkey=hotkey,
+            uid=3,
+            capabilities=["cpu", "gpu"],
+            version="1.0.0",
+            last_seen_meta={"broker": "ok"},
+        )
+        assert await _status(session_factory, hotkey) == ValidatorStatus.ONLINE
+
+        # Recent validator within the window is NOT marked offline.
+        clock.value = BASE_TS + timedelta(seconds=100)
+        assert await service.detect_offline_validators() == []
+        assert await _status(session_factory, hotkey) == ValidatorStatus.ONLINE
+
+        # Stale heartbeat past the timeout flips to offline with a crash event.
+        clock.value = BASE_TS + timedelta(seconds=200)
+        assert await service.detect_offline_validators() == [hotkey]
+        assert await _status(session_factory, hotkey) == ValidatorStatus.OFFLINE
+
+        # Edge-triggered: a second pass records no duplicate crash event.
+        clock.value = BASE_TS + timedelta(seconds=400)
+        assert await service.detect_offline_validators() == []
+
+        # Recovery via heartbeat flips back to online.
+        clock.value = BASE_TS + timedelta(seconds=450)
+        validator, _ = await service.heartbeat(hotkey=hotkey)
+        assert validator.status == ValidatorStatus.ONLINE
+
+        events = await _events(session_factory, hotkey)
+        assert events == [
+            ValidatorHealthEventType.REGISTERED,
+            ValidatorHealthEventType.ONLINE,
+            ValidatorHealthEventType.CRASH_DETECTED,
+            ValidatorHealthEventType.ONLINE,
+        ]
+        listed = await service.list_validators()
+        assert [v.hotkey for v in listed] == [hotkey]
+        assert listed[0].status == ValidatorStatus.ONLINE
+        assert listed[0].capabilities == ["cpu", "gpu"]
+    finally:
+        await engine.dispose()
+
+
+async def _status(
+    session_factory: async_sessionmaker[AsyncSession], hotkey: str
+) -> ValidatorStatus:
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Validator).where(Validator.hotkey == hotkey))
+        ).scalar_one()
+        return ValidatorStatus(row.status)
+
+
 async def test_heartbeat_unknown_hotkey_raises_and_creates_no_row_on_postgres(
     migrated_postgres_database: str,
     cleanup_postgres_database: Callable[[], Awaitable[None]],

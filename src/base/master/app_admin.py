@@ -26,6 +26,7 @@ from base.config.policy import (
 )
 from base.master.admin.auth import (
     TokenProvider,
+    build_admin_token_dependency,
     constant_time_match,
     load_admin_token_from_environment,
     resolve_token,
@@ -46,6 +47,7 @@ from base.master.service import MasterWeightService, active_challenge_inputs
 from base.master.validator_coordination import (
     ValidatorCoordinationService,
     build_validator_coordination_router,
+    build_validator_health_lifespan,
 )
 from base.schemas.challenge import (
     ChallengeAdminView,
@@ -349,6 +351,7 @@ def create_admin_app(
     enforce_production_policy: bool = False,
     validator_service: ValidatorCoordinationService | None = None,
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
+    validator_health_interval_seconds: float | None = None,
 ) -> FastAPI:
     """Create the private admin/registry FastAPI app.
 
@@ -356,7 +359,13 @@ def create_admin_app(
     includes the same router so the admin/registry surface is served on one port.
     """
 
-    app = FastAPI(title="BASE Admin API", version="1.0")
+    app = FastAPI(
+        title="BASE Admin API",
+        version="1.0",
+        lifespan=build_validator_health_lifespan(
+            validator_service, validator_health_interval_seconds
+        ),
+    )
     app.include_router(
         build_admin_router(
             registry=registry,
@@ -376,6 +385,7 @@ def create_admin_app(
             build_validator_coordination_router(
                 service=validator_service,
                 auth_dependency=build_validator_auth_dependency(validator_verifier),
+                admin_dependency=build_admin_token_dependency(admin_token_provider),
             )
         )
         app.state.validator_coordination_service = validator_service

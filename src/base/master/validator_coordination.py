@@ -7,11 +7,15 @@ master only records validator liveness here; it never executes work.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,13 +29,17 @@ from base.db.session import session_scope
 from base.schemas.validator import (
     ValidatorHeartbeatRequest,
     ValidatorHeartbeatResponse,
+    ValidatorListResponse,
     ValidatorRegisterRequest,
     ValidatorRegisterResponse,
     ValidatorView,
 )
 from base.security.validator_auth import ValidatorIdentity
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 180
 
 
 class ValidatorNotRegisteredError(LookupError):
@@ -46,10 +54,12 @@ class ValidatorCoordinationService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         heartbeat_interval_seconds: int = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_timeout_seconds: int = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
+        self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self._now_fn = now_fn
 
     async def register(
@@ -153,6 +163,66 @@ class ValidatorCoordinationService:
                 )
             return validator, now
 
+    async def detect_offline_validators(self) -> list[str]:
+        """Mark validators offline whose last heartbeat exceeded the timeout.
+
+        Edge-triggered: only validators currently ``online`` are considered, so
+        repeated passes over an already-offline validator record nothing. Each
+        ``online``->``offline`` transition appends a single ``crash_detected``
+        event. Returns the hotkeys that transitioned this pass so callers (e.g.
+        assignment reassignment) can react to crashes.
+        """
+
+        now = self._now_fn()
+        timeout = timedelta(seconds=self.heartbeat_timeout_seconds)
+        transitioned: list[str] = []
+        async with session_scope(self._session_factory) as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(Validator).where(
+                            Validator.status == ValidatorStatus.ONLINE
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for validator in rows:
+                last_heartbeat = validator.last_heartbeat_at
+                if last_heartbeat is None:
+                    continue
+                if last_heartbeat.tzinfo is None:
+                    last_heartbeat = last_heartbeat.replace(tzinfo=UTC)
+                if now - last_heartbeat > timeout:
+                    validator.status = ValidatorStatus.OFFLINE
+                    self._add_event(
+                        session,
+                        validator.hotkey,
+                        ValidatorHealthEventType.CRASH_DETECTED,
+                        now,
+                        message="heartbeat timeout",
+                    )
+                    transitioned.append(validator.hotkey)
+        return transitioned
+
+    async def list_validators(self) -> list[Validator]:
+        """Return all registered validators ordered for stable observability."""
+
+        async with self._session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(Validator).order_by(
+                            Validator.registered_at, Validator.hotkey
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return list(rows)
+
     @staticmethod
     def _add_event(
         session: AsyncSession,
@@ -191,12 +261,15 @@ def build_validator_coordination_router(
     *,
     service: ValidatorCoordinationService,
     auth_dependency: Callable[..., Any],
+    admin_dependency: Callable[..., Any] | None = None,
 ) -> APIRouter:
-    """Build the validator coordination router (register + heartbeat).
+    """Build the validator coordination router (register + heartbeat + read view).
 
     ``auth_dependency`` is the FastAPI dependency from
     :func:`base.security.validator_auth.build_validator_auth_dependency`; it
     yields a :class:`ValidatorIdentity` for an authenticated, eligible validator.
+    ``admin_dependency`` (when provided) gates the token-protected admin read
+    view ``GET /v1/validators``.
     """
 
     router = APIRouter()
@@ -238,4 +311,74 @@ def build_validator_coordination_router(
             now=now,
         )
 
+    if admin_dependency is not None:
+
+        @router.get(
+            "/v1/validators",
+            response_model=ValidatorListResponse,
+            dependencies=[Depends(admin_dependency)],
+        )
+        async def list_validators() -> ValidatorListResponse:
+            validators = await service.list_validators()
+            return ValidatorListResponse(
+                validators=[validator_to_view(row) for row in validators]
+            )
+
     return router
+
+
+async def run_validator_health_loop(
+    service: ValidatorCoordinationService,
+    *,
+    interval_seconds: float,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Run the crash-detection pass every ``interval_seconds`` until shutdown.
+
+    A failing pass is logged and the loop continues, so one transient error
+    never stops crash detection.
+    """
+
+    while not shutdown_event.is_set():
+        try:
+            await service.detect_offline_validators()
+        except Exception:
+            logger.exception("validator health detection pass failed")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            continue
+
+
+def build_validator_health_lifespan(
+    service: ValidatorCoordinationService | None,
+    interval_seconds: float | None,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]] | None:
+    """Build a FastAPI lifespan that runs the crash-detection loop.
+
+    Returns ``None`` (no lifespan) when detection is not configured, i.e. no
+    validator service or a non-positive interval.
+    """
+
+    if service is None or interval_seconds is None or interval_seconds <= 0:
+        return None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Any:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            run_validator_health_loop(
+                service,
+                interval_seconds=interval_seconds,
+                shutdown_event=shutdown,
+            )
+        )
+        try:
+            yield
+        finally:
+            shutdown.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    return lifespan

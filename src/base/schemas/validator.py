@@ -21,6 +21,12 @@ class ValidatorView(BaseModel):
     last_seen_meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class ValidatorListResponse(BaseModel):
+    """Response for the token-gated admin validator read view."""
+
+    validators: list[ValidatorView] = Field(default_factory=list)
+
+
 class ValidatorRegisterRequest(BaseModel):
     """Body for ``POST /v1/validators/register``."""
 
