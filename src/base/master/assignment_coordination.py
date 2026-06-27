@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -32,6 +32,10 @@ from base.db.models import (
 )
 from base.db.session import session_scope
 from base.master.assignment import capability_matches
+from base.master.llm_gateway import (
+    DEEPSEEK_BASE_URL_ENV,
+    OPENROUTER_BASE_URL_ENV,
+)
 from base.schemas.assignment import (
     AssignmentProgressRequest,
     AssignmentProgressResponse,
@@ -46,6 +50,61 @@ DEFAULT_LEASE_SECONDS = 900
 
 _PULLABLE_STATUSES = (WorkAssignmentStatus.ASSIGNED, WorkAssignmentStatus.RUNNING)
 _TERMINAL_STATUSES = (WorkAssignmentStatus.COMPLETED, WorkAssignmentStatus.FAILED)
+
+#: Assignment-payload key carrying the scoped gateway token issued at pull time.
+GATEWAY_TOKEN_PAYLOAD_KEY = "gateway_token"
+#: Assignment-payload key carrying the master gateway root base URL.
+GATEWAY_BASE_URL_PAYLOAD_KEY = "gateway_url"
+_DEEPSEEK_GATEWAY_PATH = "/llm/deepseek"
+_OPENROUTER_GATEWAY_PATH = "/llm/openrouter"
+
+
+@runtime_checkable
+class GatewayTokenIssuer(Protocol):
+    """Mints a scoped gateway token (satisfied by ``LLMGatewayService``)."""
+
+    def issue_token(
+        self,
+        *,
+        validator_hotkey: str,
+        assignment_id: str,
+        ttl_seconds: int | None = None,
+    ) -> str: ...
+
+
+@dataclass(frozen=True)
+class GatewayPayloadIssuer:
+    """Builds the per-assignment gateway fields stamped into a pull payload.
+
+    Issues a fresh scoped token for ``(validator_hotkey, assignment_id)`` via the
+    master gateway token authority and advertises the master gateway base URLs so
+    the eval runtime points ``DEEPSEEK_BASE_URL``/``OPENROUTER_BASE_URL`` at the
+    master gateway. A raw provider key is NEVER part of this payload
+    (architecture.md sec 5).
+    """
+
+    issuer: GatewayTokenIssuer
+    gateway_base_url: str
+
+    def build(
+        self,
+        *,
+        validator_hotkey: str,
+        assignment_id: str,
+        ttl_seconds: int | None,
+    ) -> dict[str, str]:
+        base = self.gateway_base_url.rstrip("/")
+        token = self.issuer.issue_token(
+            validator_hotkey=validator_hotkey,
+            assignment_id=assignment_id,
+            ttl_seconds=ttl_seconds,
+        )
+        return {
+            GATEWAY_TOKEN_PAYLOAD_KEY: token,
+            GATEWAY_BASE_URL_PAYLOAD_KEY: base,
+            DEEPSEEK_BASE_URL_ENV: f"{base}{_DEEPSEEK_GATEWAY_PATH}",
+            OPENROUTER_BASE_URL_ENV: f"{base}{_OPENROUTER_GATEWAY_PATH}",
+        }
 
 
 class AssignmentNotFoundError(LookupError):
@@ -76,15 +135,27 @@ def _parse_uuid(value: str) -> uuid.UUID | None:
         return None
 
 
-def assignment_to_view(assignment: WorkAssignment) -> AssignmentView:
-    """Convert a persisted assignment row to its public view."""
+def assignment_to_view(
+    assignment: WorkAssignment,
+    *,
+    gateway_payload: Mapping[str, str] | None = None,
+) -> AssignmentView:
+    """Convert a persisted assignment row to its public view.
 
+    ``gateway_payload`` (when provided) is merged into the view payload only; it
+    is the ephemeral per-pull scoped gateway token + base URLs and is never
+    persisted to the ``work_assignments`` row.
+    """
+
+    payload = dict(assignment.payload or {})
+    if gateway_payload:
+        payload.update(gateway_payload)
     return AssignmentView(
         id=str(assignment.id),
         challenge_slug=assignment.challenge_slug,
         work_unit_id=assignment.work_unit_id,
         submission_ref=assignment.submission_ref,
-        payload=dict(assignment.payload or {}),
+        payload=payload,
         required_capability=assignment.required_capability,
         status=WorkAssignmentStatus(assignment.status).value,
         attempt_count=assignment.attempt_count,
@@ -104,12 +175,43 @@ class AssignmentCoordinationService:
         *,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         gpu_serves_cpu: bool = True,
+        gateway_payload_issuer: GatewayPayloadIssuer | None = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._lease_seconds = lease_seconds
         self._gpu_serves_cpu = gpu_serves_cpu
+        self._gateway_payload_issuer = gateway_payload_issuer
         self._now_fn = now_fn
+
+    def gateway_payload(
+        self, unit: WorkAssignment, *, hotkey: str
+    ) -> dict[str, str] | None:
+        """Issue an ephemeral scoped gateway token + base URLs for a pulled unit.
+
+        Returns ``None`` when no gateway issuer is configured. The token is
+        minted fresh at pull time and never persisted, so its lifecycle binding
+        (VAL-LLM-023) follows the live assignment state and its expiry is bounded
+        by the unit's lease deadline.
+        """
+
+        if self._gateway_payload_issuer is None:
+            return None
+        return self._gateway_payload_issuer.build(
+            validator_hotkey=hotkey,
+            assignment_id=str(unit.id),
+            ttl_seconds=self._token_ttl_seconds(unit),
+        )
+
+    def _token_ttl_seconds(self, unit: WorkAssignment) -> int:
+        deadline = unit.deadline_at
+        if deadline is not None:
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
+            remaining = int((deadline - self._now_fn()).total_seconds())
+            if remaining > 0:
+                return remaining
+        return self._lease_seconds
 
     async def pull(self, *, hotkey: str) -> list[WorkAssignment]:
         """Return the caller's assigned/running, capability-matched work units.
@@ -320,7 +422,15 @@ def build_assignment_coordination_router(
     ) -> AssignmentPullResponse:
         units = await service.pull(hotkey=identity.hotkey)
         return AssignmentPullResponse(
-            assignments=[assignment_to_view(unit) for unit in units]
+            assignments=[
+                assignment_to_view(
+                    unit,
+                    gateway_payload=service.gateway_payload(
+                        unit, hotkey=identity.hotkey
+                    ),
+                )
+                for unit in units
+            ]
         )
 
     @router.post(

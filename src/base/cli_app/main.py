@@ -24,6 +24,7 @@ from base.master.app_proxy import create_proxy_app
 from base.master.assignment import AssignmentService
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
+    GatewayPayloadIssuer,
     WorkAssignmentLifecycleResolver,
 )
 from base.master.challenge_client import ChallengeClient
@@ -281,11 +282,33 @@ def _validator_signed_request_verifier(
 
 
 def _assignment_coordination_service(
-    settings: Any, session_factory: Any
+    settings: Any,
+    session_factory: Any,
+    *,
+    gateway_service: LLMGatewayService | None = None,
 ) -> AssignmentCoordinationService:
+    """Build the pull/progress/result coordination service.
+
+    When the LLM gateway is wired, the pull route stamps a fresh per-assignment
+    scoped gateway token + the master gateway base URLs into each returned
+    payload (architecture.md sec 5; VAL-LLM-024). The token authority is the
+    same one the gateway verifies against, so the issued token actually
+    authorizes that assignment's gateway calls. No raw provider key is ever
+    placed in the payload.
+    """
+
+    gateway_payload_issuer: GatewayPayloadIssuer | None = None
+    if gateway_service is not None:
+        gateway_payload_issuer = GatewayPayloadIssuer(
+            issuer=gateway_service,
+            gateway_base_url=(
+                settings.gateway.public_base_url or settings.master.registry_url
+            ),
+        )
     return AssignmentCoordinationService(
         session_factory,
         lease_seconds=settings.master.assignment_lease_seconds,
+        gateway_payload_issuer=gateway_payload_issuer,
     )
 
 
@@ -690,8 +713,10 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     validator_verifier = _validator_signed_request_verifier(
         settings, session_factory, runtime.metagraph_cache
     )
-    assignment_service = _assignment_coordination_service(settings, session_factory)
     llm_gateway_service = _llm_gateway_service(settings, session_factory)
+    assignment_service = _assignment_coordination_service(
+        settings, session_factory, gateway_service=llm_gateway_service
+    )
     # Live autonomy: the orchestration driver bridges challenge pending work into
     # work_assignments, runs balanced assignment + the full reassignment pass,
     # and folds retry-exhausted units, all on a Settings-driven interval.

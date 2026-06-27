@@ -178,6 +178,11 @@ class GatewaySettings(BaseModel):
     provider_mode: Literal["mock", "real"] = "mock"
     deepseek_base_url: str = "https://api.deepseek.com"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    #: Externally-reachable master gateway root URL advertised to validators in
+    #: the pull payload (the LLM routes are mounted under ``/llm/...`` on the
+    #: proxy). The master stamps ``DEEPSEEK_BASE_URL``/``OPENROUTER_BASE_URL`` +
+    #: the scoped token from this base; falls back to ``master.registry_url``.
+    public_base_url: str | None = None
     deepseek_api_key: str | None = None
     deepseek_api_key_file: str | None = "/run/secrets/deepseek_api_key"
     openrouter_api_key: str | None = None
