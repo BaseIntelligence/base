@@ -198,7 +198,7 @@ PRISM GPU evals re-execute the miner's training loop on locked FineWeb-Edu data 
 
 `deploy/swarm/install-swarm.sh` canonicalizes the PRISM v2 eval-plane deploy wiring on the challenge service:
 
-- **Augmented evaluator image** — `IMAGE_PRISM_EVALUATOR` defaults to `ghcr.io/baseintelligence/prism-evaluator:augmented` (bundles `sentencepiece` + the offline tiktoken cache for the locked pipeline) and is passed as `PRISM_BASE_EVAL_IMAGE`; the registry `:latest` evaluator is stale and must not be used.
+- **Evaluator image** — `IMAGE_PRISM_EVALUATOR` defaults to the CI-published `ghcr.io/baseintelligence/prism-evaluator` image pinned by digest (`@sha256:<digest>`) and is passed as `PRISM_BASE_EVAL_IMAGE`. The published evaluator image already bundles `sentencepiece` + the offline tiktoken cache the locked pipeline needs, so no separately built tag is required.
 - **Host-side held-out** — the manager-pinned prism scorer (not the `network=none` eval container) mounts the SECRET val split read-only (`prism_fineweb_edu_val` → `/secret/val`) and reads it via `PRISM_BASE_EVAL_VAL_DATA_DIR=/secret/val` for the held-out delta; the held-out is gracefully skipped if val is absent.
 - **OpenRouter LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the key is mounted on the challenge service ONLY at `/run/secrets/openrouter_api_key` (from the `base_openrouter_api_key` Docker secret), never on the eval container.
 
@@ -298,16 +298,16 @@ docker build -f docker/Dockerfile.master -t ghcr.io/baseintelligence/base-master
 
 # prism API + GPU evaluator (from ../prism)
 docker build --target service   -t ghcr.io/baseintelligence/prism:<tag> ../prism
-docker build --target evaluator -t ghcr.io/baseintelligence/prism-evaluator:augmented ../prism
+docker build --target evaluator -t ghcr.io/baseintelligence/prism-evaluator:<tag> ../prism
 
 # agent-challenge API + own_runner eval-job image (from ../agent-challenge)
 docker build --target runtime               -t ghcr.io/baseintelligence/agent-challenge:<tag> ../agent-challenge
 docker build --target terminal-bench-runner -t ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag> ../agent-challenge
 ```
 
-The prism evaluator must be the `:augmented` image: it bundles `sentencepiece` and the offline
-tiktoken cache the locked FineWeb-Edu pipeline needs. The registry `:latest` evaluator is stale; do
-not use it.
+The prism evaluator image bundles `sentencepiece` and the offline tiktoken cache the locked
+FineWeb-Edu pipeline needs; the CI-published `prism-evaluator` image bakes these in, so deployments
+pin it by digest (Step 4) rather than building a separate tag.
 
 > **Build-order coupling:** prism pins its `base` dependency by git
 > (`base @ git+https://github.com/BaseIntelligence/base.git`, public HEAD), so a fresh
@@ -354,7 +354,7 @@ what you built/published via the `IMAGE_*` environment overrides:
 ```bash
 export IMAGE_MASTER=ghcr.io/baseintelligence/base-master:<tag>
 export IMAGE_PRISM=ghcr.io/baseintelligence/prism:<tag>
-export IMAGE_PRISM_EVALUATOR=ghcr.io/baseintelligence/prism-evaluator:augmented
+export IMAGE_PRISM_EVALUATOR=ghcr.io/baseintelligence/prism-evaluator:<tag>
 export IMAGE_AGENT_CHALLENGE=ghcr.io/baseintelligence/agent-challenge:<tag>
 export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag>
 
