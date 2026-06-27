@@ -43,6 +43,10 @@ from base.master.registry import (
     record_to_admin_view,
 )
 from base.master.service import MasterWeightService, active_challenge_inputs
+from base.master.validator_coordination import (
+    ValidatorCoordinationService,
+    build_validator_coordination_router,
+)
 from base.schemas.challenge import (
     ChallengeAdminView,
     ChallengeCreate,
@@ -53,6 +57,10 @@ from base.schemas.challenge import (
     RuntimeOperationResponse,
 )
 from base.schemas.weights import MasterWeightsResponse
+from base.security.validator_auth import (
+    ValidatorSignedRequestVerifier,
+    build_validator_auth_dependency,
+)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -339,6 +347,8 @@ def create_admin_app(
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     admin_token_provider: TokenProvider = load_admin_token_from_environment,
     enforce_production_policy: bool = False,
+    validator_service: ValidatorCoordinationService | None = None,
+    validator_verifier: ValidatorSignedRequestVerifier | None = None,
 ) -> FastAPI:
     """Create the private admin/registry FastAPI app.
 
@@ -361,6 +371,14 @@ def create_admin_app(
             include_health=True,
         )
     )
+    if validator_service is not None and validator_verifier is not None:
+        app.include_router(
+            build_validator_coordination_router(
+                service=validator_service,
+                auth_dependency=build_validator_auth_dependency(validator_verifier),
+            )
+        )
+        app.state.validator_coordination_service = validator_service
 
     @app.middleware("http")
     async def no_secret_request_state(request: Request, call_next):  # type: ignore[no-untyped-def]

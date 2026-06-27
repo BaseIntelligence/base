@@ -26,12 +26,20 @@ from base.master.challenge_dashboard import ChallengeMetricsProvider
 from base.master.docker_orchestrator import DockerOrchestrationError
 from base.master.registry import ChallengeNotFoundError
 from base.master.service import MasterWeightService
+from base.master.validator_coordination import (
+    ValidatorCoordinationService,
+    build_validator_coordination_router,
+)
 from base.schemas.challenge import ChallengeRecord, ChallengeStatus
 from base.security.miner_auth import (
     MinerAuthError,
     MinerNonceStore,
     MinerUploadVerifier,
     NonceReplayError,
+)
+from base.security.validator_auth import (
+    ValidatorSignedRequestVerifier,
+    build_validator_auth_dependency,
 )
 
 SENSITIVE_REQUEST_HEADERS = {
@@ -281,6 +289,8 @@ def create_proxy_app(
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     admin_token_provider: TokenProvider = load_admin_token_from_environment,
     enforce_production_policy: bool = False,
+    validator_service: ValidatorCoordinationService | None = None,
+    validator_verifier: ValidatorSignedRequestVerifier | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -547,6 +557,15 @@ def create_proxy_app(
             )
         )
         app.state.runtime_controller = runtime_controller
+
+    if validator_service is not None and validator_verifier is not None:
+        app.include_router(
+            build_validator_coordination_router(
+                service=validator_service,
+                auth_dependency=build_validator_auth_dependency(validator_verifier),
+            )
+        )
+        app.state.validator_coordination_service = validator_service
 
     app.state.challenge_registry = challenge_registry
     app.state.miner_upload_verifier = verifier
