@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -25,6 +26,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
 from base.db.base import Base
+
+DEFAULT_VALIDATOR_VERSION = "unknown"
+"""Fallback ``validators.version`` when a registration omits one.
+
+The column is non-null with a matching server default so a direct/raw insert and
+the coordination route converge on the same value.
+"""
 
 
 class ChallengeStatus(StrEnum):
@@ -415,6 +423,7 @@ class Validator(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_validators_status", "status"),
         Index("ix_validators_last_heartbeat_at", "last_heartbeat_at"),
+        Index("ix_validators_registered_at", "registered_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -439,7 +448,12 @@ class Validator(Base, TimestampMixin):
         default=list,
         server_default="[]",
     )
-    version: Mapped[str | None] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default=DEFAULT_VALIDATOR_VERSION,
+        server_default=DEFAULT_VALIDATOR_VERSION,
+    )
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -463,6 +477,7 @@ class ValidatorHealthEvent(Base):
             "ix_validator_health_events_hotkey_created",
             "validator_hotkey",
             "created_at",
+            "seq",
         ),
         Index("ix_validator_health_events_event", "event"),
     )
@@ -485,6 +500,11 @@ class ValidatorHealthEvent(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+    seq: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default="0",
     )
 
 

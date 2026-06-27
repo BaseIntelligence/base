@@ -16,10 +16,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from base.db.models import (
+    DEFAULT_VALIDATOR_VERSION,
     Validator,
     ValidatorHealthEvent,
     ValidatorHealthEventType,
@@ -77,54 +79,94 @@ class ValidatorCoordinationService:
         idempotent re-register updates the same row (capabilities, version,
         ``last_heartbeat_at``) and preserves ``registered_at``. Re-registering a
         previously-offline validator records the ``online`` recovery.
+
+        First-registration is atomic: the ``validators.hotkey`` unique constraint
+        makes the row insert authoritative, so a concurrent first-register of the
+        same new hotkey that loses the race raises ``IntegrityError`` on insert
+        and is transparently retried as an idempotent update (no 500, single
+        row).
         """
 
         now = self._now_fn()
-        async with session_scope(self._session_factory) as session:
-            existing = (
-                await session.execute(
-                    select(Validator).where(Validator.hotkey == hotkey)
-                )
-            ).scalar_one_or_none()
-
-            if existing is None:
-                validator = Validator(
+        resolved_version = version if version is not None else DEFAULT_VALIDATOR_VERSION
+        try:
+            async with session_scope(self._session_factory) as session:
+                return await self._register_in_session(
+                    session,
+                    now=now,
                     hotkey=hotkey,
                     uid=uid,
-                    status=ValidatorStatus.ONLINE,
-                    capabilities=list(capabilities),
-                    version=version,
-                    registered_at=now,
-                    last_heartbeat_at=now,
-                    last_seen_meta=dict(last_seen_meta or {}),
+                    capabilities=capabilities,
+                    version=resolved_version,
+                    last_seen_meta=last_seen_meta,
                 )
-                session.add(validator)
-                self._add_event(
+        except IntegrityError:
+            # Lost the first-register race on validators.hotkey: the winning
+            # insert is now committed, so re-run deterministically as an update.
+            async with session_scope(self._session_factory) as session:
+                return await self._register_in_session(
                     session,
-                    hotkey,
-                    ValidatorHealthEventType.REGISTERED,
-                    now,
+                    now=now,
+                    hotkey=hotkey,
+                    uid=uid,
+                    capabilities=capabilities,
+                    version=resolved_version,
+                    last_seen_meta=last_seen_meta,
                 )
-                self._add_event(session, hotkey, ValidatorHealthEventType.ONLINE, now)
-                return validator
 
-            was_offline = existing.status == ValidatorStatus.OFFLINE
-            existing.uid = uid
-            existing.status = ValidatorStatus.ONLINE
-            existing.capabilities = list(capabilities)
-            existing.version = version
-            existing.last_heartbeat_at = now
-            if last_seen_meta is not None:
-                existing.last_seen_meta = dict(last_seen_meta)
-            if was_offline:
-                self._add_event(
-                    session,
-                    hotkey,
-                    ValidatorHealthEventType.ONLINE,
-                    now,
-                    message="re-registered after offline",
-                )
-            return existing
+    async def _register_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        now: datetime,
+        hotkey: str,
+        uid: int | None,
+        capabilities: list[str],
+        version: str,
+        last_seen_meta: Mapping[str, Any] | None,
+    ) -> Validator:
+        existing = (
+            await session.execute(select(Validator).where(Validator.hotkey == hotkey))
+        ).scalar_one_or_none()
+
+        if existing is None:
+            validator = Validator(
+                hotkey=hotkey,
+                uid=uid,
+                status=ValidatorStatus.ONLINE,
+                capabilities=list(capabilities),
+                version=version,
+                registered_at=now,
+                last_heartbeat_at=now,
+                last_seen_meta=dict(last_seen_meta or {}),
+            )
+            session.add(validator)
+            await self._add_event(
+                session,
+                hotkey,
+                ValidatorHealthEventType.REGISTERED,
+                now,
+            )
+            await self._add_event(session, hotkey, ValidatorHealthEventType.ONLINE, now)
+            return validator
+
+        was_offline = existing.status == ValidatorStatus.OFFLINE
+        existing.uid = uid
+        existing.status = ValidatorStatus.ONLINE
+        existing.capabilities = list(capabilities)
+        existing.version = version
+        existing.last_heartbeat_at = now
+        if last_seen_meta is not None:
+            existing.last_seen_meta = dict(last_seen_meta)
+        if was_offline:
+            await self._add_event(
+                session,
+                hotkey,
+                ValidatorHealthEventType.ONLINE,
+                now,
+                message="re-registered after offline",
+            )
+        return existing
 
     async def heartbeat(
         self,
@@ -154,7 +196,7 @@ class ValidatorCoordinationService:
             if last_seen_meta is not None:
                 validator.last_seen_meta = dict(last_seen_meta)
             if was_offline:
-                self._add_event(
+                await self._add_event(
                     session,
                     hotkey,
                     ValidatorHealthEventType.ONLINE,
@@ -196,7 +238,7 @@ class ValidatorCoordinationService:
                     last_heartbeat = last_heartbeat.replace(tzinfo=UTC)
                 if now - last_heartbeat > timeout:
                     validator.status = ValidatorStatus.OFFLINE
-                    self._add_event(
+                    await self._add_event(
                         session,
                         validator.hotkey,
                         ValidatorHealthEventType.CRASH_DETECTED,
@@ -223,8 +265,33 @@ class ValidatorCoordinationService:
             )
         return list(rows)
 
+    async def list_health_events(self, hotkey: str) -> list[ValidatorHealthEvent]:
+        """Return a validator's append-only audit trail in deterministic order.
+
+        Ordered by ``(created_at, seq)`` so events that share an instant (the
+        ``registered``/``online`` pair, same-tick recoveries) always read back in
+        their monotonic append order.
+        """
+
+        async with self._session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ValidatorHealthEvent)
+                        .where(ValidatorHealthEvent.validator_hotkey == hotkey)
+                        .order_by(
+                            ValidatorHealthEvent.created_at,
+                            ValidatorHealthEvent.seq,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return list(rows)
+
     @staticmethod
-    def _add_event(
+    async def _add_event(
         session: AsyncSession,
         hotkey: str,
         event: ValidatorHealthEventType,
@@ -232,14 +299,22 @@ class ValidatorCoordinationService:
         *,
         message: str | None = None,
     ) -> None:
+        max_seq = await session.scalar(
+            select(func.coalesce(func.max(ValidatorHealthEvent.seq), 0))
+        )
+        next_seq = (max_seq or 0) + 1
         session.add(
             ValidatorHealthEvent(
                 validator_hotkey=hotkey,
                 event=event,
                 message=message,
                 created_at=created_at,
+                seq=next_seq,
             )
         )
+        # Flush so a later event in the same transaction observes this seq and
+        # the monotonic ordering holds for same-instant appends.
+        await session.flush()
 
 
 def validator_to_view(validator: Validator) -> ValidatorView:

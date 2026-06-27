@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
@@ -213,6 +214,92 @@ async def test_heartbeat_unknown_hotkey_raises_and_creates_no_row_on_postgres(
         async with session_factory() as session:
             count = await session.scalar(select(func.count(Validator.id)))
         assert count == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_concurrent_first_register_single_row_on_postgres(
+    migrated_postgres_database: str,
+    cleanup_postgres_database: Callable[[], Awaitable[None]],
+) -> None:
+    """Concurrent first-register of one new hotkey yields a single row, no error."""
+
+    engine = create_engine(migrated_postgres_database)
+    session_factory = create_session_factory(engine)
+    clock = _Clock(BASE_TS)
+    service = ValidatorCoordinationService(
+        session_factory, heartbeat_interval_seconds=30, now_fn=clock.now
+    )
+    hotkey = "****************"
+    try:
+        results = await asyncio.gather(
+            *(
+                service.register(
+                    hotkey=hotkey,
+                    uid=1,
+                    capabilities=["cpu"],
+                    version="1.0.0",
+                )
+                for _ in range(6)
+            ),
+            return_exceptions=True,
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert errors == [], f"concurrent register raised: {errors!r}"
+
+        async with session_factory() as session:
+            count = await session.scalar(
+                select(func.count(Validator.id)).where(Validator.hotkey == hotkey)
+            )
+        assert count == 1
+
+        events = await _events(session_factory, hotkey)
+        assert events.count(ValidatorHealthEventType.REGISTERED) == 1
+        assert events.count(ValidatorHealthEventType.ONLINE) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_same_instant_events_have_monotonic_seq_on_postgres(
+    migrated_postgres_database: str,
+    cleanup_postgres_database: Callable[[], Awaitable[None]],
+) -> None:
+    """Same-created_at events read back in deterministic, append-only order."""
+
+    engine = create_engine(migrated_postgres_database)
+    session_factory = create_session_factory(engine)
+    clock = _Clock(BASE_TS)
+    service = ValidatorCoordinationService(
+        session_factory, heartbeat_interval_seconds=30, now_fn=clock.now
+    )
+    hotkey = "****************"
+    try:
+        # register emits registered + online at the SAME stubbed instant.
+        await service.register(
+            hotkey=hotkey, uid=1, capabilities=["cpu"], version="1.0.0"
+        )
+        async with session_scope(session_factory) as session:
+            row = (
+                await session.execute(
+                    select(Validator).where(Validator.hotkey == hotkey)
+                )
+            ).scalar_one()
+            row.status = ValidatorStatus.OFFLINE
+        # heartbeat recovery at the SAME instant -> a third online event.
+        await service.heartbeat(hotkey=hotkey)
+
+        events = await service.list_health_events(hotkey)
+        created = [event.created_at for event in events]
+        seqs = [event.seq for event in events]
+
+        assert len(set(created)) == 1, created
+        assert seqs == sorted(seqs)
+        assert len(set(seqs)) == len(seqs)
+        assert [event.event for event in events] == [
+            ValidatorHealthEventType.REGISTERED,
+            ValidatorHealthEventType.ONLINE,
+            ValidatorHealthEventType.ONLINE,
+        ]
     finally:
         await engine.dispose()
 

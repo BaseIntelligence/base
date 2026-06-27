@@ -126,7 +126,11 @@ def test_downgrade_removes_work_results_and_reupgrade_recreates(
     migrations.upgrade(ALEMBIC_INI, database_url=async_url, revision="head")
     assert "work_results" in _table_names(db_path)
 
-    migrations.downgrade(ALEMBIC_INI, database_url=async_url, revision="-1")
+    migrations.downgrade(
+        ALEMBIC_INI,
+        database_url=async_url,
+        revision="0005_create_work_assignments",
+    )
     tables_after_downgrade = _table_names(db_path)
     assert "work_results" not in tables_after_downgrade
     assert "work_assignments" in tables_after_downgrade
