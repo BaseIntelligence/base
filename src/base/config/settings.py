@@ -49,6 +49,34 @@ class MasterSettings(BaseModel):
     assignment_lease_seconds: int = 900
 
 
+class ValidatorAgentSettings(BaseModel):
+    """Decentralized validator executor agent (architecture.md sec 2.2).
+
+    The agent hotkey-registers + heartbeats with the master coordination plane,
+    pulls its assignments, executes them on its OWN broker + Docker, posts
+    results, and routes LLM calls through the master gateway (it never holds a
+    provider key). ``heartbeat_interval_seconds`` left unset (``None``) means the
+    agent uses the interval the master returns from ``register``.
+    """
+
+    #: Master coordination-plane base URL. Falls back to ``registry_url``.
+    master_url: str | None = None
+    #: Master LLM gateway base URL. Falls back to ``master_url``.
+    gateway_url: str | None = None
+    capabilities: list[str] = Field(default_factory=lambda: ["cpu"])
+    version: str | None = None
+    heartbeat_interval_seconds: int | None = None
+    poll_interval_seconds: float = 5.0
+    request_timeout_seconds: float = 15.0
+    #: Validator's OWN Docker broker. Falls back to ``docker.broker_url``.
+    broker_url: str | None = None
+    broker_token: str | None = None
+    broker_token_file: str | None = "/run/secrets/base_broker_token"
+    #: Extra allowed eval-image prefixes (added to ``docker.broker_allowed_images``).
+    allowed_images: list[str] = Field(default_factory=list)
+    run_timeout_seconds: int = 3_600
+
+
 class ValidatorSettings(BaseModel):
     registry_url: str = "https://chain.joinbase.ai"
     registry_retry_seconds: int = 15
@@ -61,6 +89,7 @@ class ValidatorSettings(BaseModel):
     # Defaults False so a deploy NEVER auto-commits weights on-chain; the first
     # on-chain commit is human-gated (plan Task 27) by flipping this flag.
     submit_on_chain_enabled: bool = False
+    agent: ValidatorAgentSettings = Field(default_factory=ValidatorAgentSettings)
 
     @property
     def resolved_weights_url(self) -> str:

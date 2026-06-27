@@ -13,6 +13,7 @@ import typer
 from base.bittensor.factory import (
     create_bittensor_runtime,
     create_bittensor_submit_runtime,
+    create_validator_keypair,
 )
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
@@ -65,6 +66,13 @@ from base.security.validator_auth import (
 from base.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
+)
+from base.validator.agent import (
+    BrokerAssignmentExecutor,
+    BrokerConfig,
+    CoordinationClient,
+    KeypairRequestSigner,
+    ValidatorAgent,
 )
 from base.validator.normal_runner import NormalValidatorRunner
 from base.validator.registry_client import RegistryClient
@@ -959,6 +967,59 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     asyncio.run(
         _run_validator_runtime(runner, settings.validator.weights_interval_seconds)
     )
+
+
+def _build_validator_agent(settings: Any) -> ValidatorAgent:
+    """Wire the decentralized validator agent from settings (testable)."""
+
+    agent_cfg = settings.validator.agent
+    master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
+    gateway_url = agent_cfg.gateway_url or master_url
+    signer = KeypairRequestSigner(create_validator_keypair(settings))
+    client = CoordinationClient(
+        master_url,
+        signer,
+        timeout_seconds=agent_cfg.request_timeout_seconds,
+    )
+    broker = BrokerConfig(
+        broker_url=agent_cfg.broker_url or settings.docker.broker_url,
+        broker_token=agent_cfg.broker_token,
+        broker_token_file=agent_cfg.broker_token_file,
+        allowed_images=tuple(
+            [*settings.docker.broker_allowed_images, *agent_cfg.allowed_images]
+        ),
+    )
+    executor = BrokerAssignmentExecutor(
+        run_timeout_seconds=agent_cfg.run_timeout_seconds
+    )
+    return ValidatorAgent(
+        client=client,
+        executor=executor,
+        broker=broker,
+        capabilities=list(agent_cfg.capabilities),
+        version=agent_cfg.version,
+        gateway_url=gateway_url,
+        heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
+        poll_interval_seconds=agent_cfg.poll_interval_seconds,
+    )
+
+
+@validator_app.command("agent")
+def validator_agent(
+    config: Path = typer.Option(Path("config/validator.example.yaml")),
+):
+    """Run the decentralized validator agent (own-broker executor).
+
+    Hotkey-registers + heartbeats with the master, pulls assignments, executes
+    them on the validator's OWN broker + Docker, posts results, and routes all
+    LLM calls through the master gateway (no provider key on the validator).
+    """
+
+    settings = load_settings(config)
+    configure_logging(settings.observability.log_json)
+    agent = _build_validator_agent(settings)
+    typer.echo(f"Starting validator agent for hotkey {agent.hotkey}")
+    asyncio.run(agent.run_forever())
 
 
 @challenge_app.command("create")

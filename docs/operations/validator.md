@@ -96,6 +96,52 @@ The broker schedules CPU jobs onto `node.labels.base.workload==cpu` and GPU
 jobs onto `node.labels.base.workload==gpu` with `--generic-resource
 NVIDIA-GPU=<N>`.
 
+## Validator Agent (Decentralized Executor)
+
+The validator agent is the decentralized executor that performs evaluation work.
+It extends the `base validator` CLI and runs as a long-running loop:
+
+```bash
+base validator agent --config /etc/base/validator.yaml
+```
+
+The agent:
+
+- hotkey-registers and heartbeats with the master coordination plane on a
+  configurable interval (it recovers across restarts because registration is an
+  idempotent server-side upsert and all assignment state lives on the master);
+- pulls its assigned work units, executes each on its OWN Docker broker, and
+  posts results back to the master;
+- obtains a scoped gateway token per assignment and routes every LLM call through
+  the master gateway (`DEEPSEEK_BASE_URL`/`OPENROUTER_BASE_URL` point at the
+  gateway). The validator holds no provider key.
+
+The agent talks to its own broker (run `base master broker` on the validator
+node) and never executes work on the master. Relevant `validator.yaml` keys:
+
+```yaml
+validator:
+  agent:
+    master_url: https://chain.joinbase.ai
+    gateway_url: https://chain.joinbase.ai
+    capabilities: ["cpu"]
+    version: "0.1.0"
+    heartbeat_interval_seconds: 60
+    poll_interval_seconds: 5.0
+    broker_url: http://127.0.0.1:8082
+    broker_token_file: /run/secrets/base_broker_token
+```
+
+Leave `heartbeat_interval_seconds` unset to use the interval the master returns
+from registration. A GPU validator advertises `capabilities: ["cpu", "gpu"]`.
+
+Runtime checks:
+
+```bash
+journalctl -u base-validator-agent.service -f
+docker service ls
+```
+
 ## Agent Challenge Execution Backend Checks
 
 Agent Challenge Terminal-Bench evaluation runs through the `own_runner` backend: the

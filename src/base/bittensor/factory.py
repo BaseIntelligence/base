@@ -48,6 +48,12 @@ def _create_wallet(settings: Settings) -> Any:
     return bittensor.Wallet(**wallet_kwargs)
 
 
+def create_validator_keypair(settings: Settings) -> Any:
+    """Return the validator hotkey keypair used to sign coordination requests."""
+
+    return _create_wallet(settings).hotkey
+
+
 def create_bittensor_runtime(settings: Settings) -> BittensorRuntime:
     subtensor = _create_subtensor(settings)
     return BittensorRuntime(
