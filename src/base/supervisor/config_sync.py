@@ -33,15 +33,16 @@ dockerd — never the broker — so the shared gate is accepted but
 deliberately not consulted.
 
 Rollout targets: the config consumers among Task 18's first-party
-service names — ``base-master-proxy``/``base-broker`` (the single-port
-consolidation removed the separate ``base-admin`` service; the
-admin/registry surface is now served by the proxy). The proxy default
-names the installer-created ``base-master-proxy``; production overrides
-this list via ``build_scheduled_tasks``, so the default is effectively a
-test/fallback. ``base-config-sync`` is deliberately absent: under the
-supervisor, config-sync is this very task, not a Swarm service, and it
-must not force-restart itself. A target that does not exist on the daemon
-is a logged skip (treated as rolled out), so partial deployments are safe.
+service names — ``base-master-proxy``/``base-docker-broker`` (the
+single-port consolidation removed the separate ``base-admin`` service; the
+admin/registry surface is now served by the proxy). The defaults name the
+installer-created services (deploy/swarm/install-swarm.sh); production
+overrides this list via ``build_scheduled_tasks`` (same names), so the
+default is effectively a test/fallback that still targets only
+installer-created services. ``base-config-sync`` is deliberately absent:
+under the supervisor, config-sync is this very task, not a Swarm service,
+and it must not force-restart itself. A target that does not exist on the
+daemon is a logged skip (treated as rolled out), so partial deployments are safe.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ DEFAULT_NAMESPACE = "base-master"
 
 DEFAULT_ROLLOUT_SERVICES: tuple[str, ...] = (
     "base-master-proxy",
-    "base-broker",
+    "base-docker-broker",
 )
 
 _MISSING_SERVICE_MARKERS = ("no such service", "not found")

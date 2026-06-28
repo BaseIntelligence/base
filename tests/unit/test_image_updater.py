@@ -211,11 +211,14 @@ def test_default_targets_cover_first_party_services() -> None:
     names = {target.service for target in DEFAULT_FIRST_PARTY_TARGETS}
     assert names == {
         "base-master-proxy",
-        "base-broker",
-        "base-config-sync",
+        "base-docker-broker",
     }
     assert "base-proxy" not in names
     assert "base-admin" not in names
+    # Realigned to the installer-created service names: the stale placeholders must
+    # never come back (base-broker is not a service; config-sync is a task).
+    assert "base-broker" not in names
+    assert "base-config-sync" not in names
     assert all(
         target.image == IMAGE and "@" not in target.image
         for target in DEFAULT_FIRST_PARTY_TARGETS

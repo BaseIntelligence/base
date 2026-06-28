@@ -33,6 +33,12 @@ SWARM_INSTALLER = ROOT / "deploy" / "swarm" / "install-swarm.sh"
 GATEWAY_TOKEN_SENTINEL = "gtok-SENTINEL-must-not-leak"
 DEEPSEEK_SENTINEL = "dsk-SENTINEL-must-not-leak"
 HF_SENTINEL = "hf-SENTINEL-must-not-leak"
+CENTRAL_GATEWAY_TOKEN_SENTINEL = "central-gtok-SENTINEL-must-not-leak"
+
+# Deterministic gateway root for the consumer-URL assertions (avoids depending on
+# the live default advertise address).
+GATEWAY_PUBLIC_BASE_URL = "http://master.example:18080"
+GATEWAY_OPENROUTER_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/openrouter"
 
 REQUIRED_SECRET_ENV = {
     "GHCR_USER": "ci-user",
@@ -80,6 +86,7 @@ def _run(
     *,
     provider_mode: str | None = None,
     hf_token: str | None = HF_SENTINEL,
+    central_gateway_token: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _docker_stub(bin_dir)
@@ -88,12 +95,17 @@ def _run(
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["BROKER_WORKSPACE_DIR"] = str(tmp_path / "broker-ws")
     env["MASTER_CONFIG_PATH"] = str(tmp_path / "master.yaml")
+    env["GATEWAY_PUBLIC_BASE_URL"] = GATEWAY_PUBLIC_BASE_URL
     if provider_mode is not None:
         env["GATEWAY_PROVIDER_MODE"] = provider_mode
     if hf_token is not None:
         env["HF_TOKEN"] = hf_token
     else:
         env.pop("HF_TOKEN", None)
+    if central_gateway_token is not None:
+        env["CENTRAL_GATEWAY_TOKEN"] = central_gateway_token
+    else:
+        env.pop("CENTRAL_GATEWAY_TOKEN", None)
     return subprocess.run(
         [
             "bash",
@@ -215,9 +227,95 @@ def test_hf_publisher_token_skipped_when_absent(tmp_path: Path) -> None:
     assert "base_hf_token" not in prism
 
 
+def test_central_gateway_token_secret_created_when_provided(tmp_path: Path) -> None:
+    result = _run(tmp_path, central_gateway_token=CENTRAL_GATEWAY_TOKEN_SENTINEL)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    # Scoped token secret provisioned (value via stdin, never argv). The trailing
+    # ``-`` disambiguates from the ``base_gateway_token_secret`` HMAC secret.
+    assert "docker secret create base_gateway_token -" in result.stdout
+
+
+def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None:
+    """agent-challenge api+worker get the gateway ROOT URL + scoped token mount.
+
+    The analyzer appends ``/llm/openrouter`` to the base URL itself, so the
+    installer renders the gateway ROOT. The scoped token mounts at
+    ``/run/secrets/base_gateway_token`` and the direct OpenRouter key is dropped.
+    """
+    result = _run(tmp_path, central_gateway_token=CENTRAL_GATEWAY_TOKEN_SENTINEL)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert f"CHALLENGE_LLM_GATEWAY_BASE_URL={GATEWAY_PUBLIC_BASE_URL}" in block
+        token_file = "CHALLENGE_LLM_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
+        assert token_file in block
+        assert "source=base_gateway_token,target=base_gateway_token" in block
+        # No direct provider key on the challenge service in gateway mode.
+        assert "target=openrouter_api_key" not in block
+        assert "CHALLENGE_OPENROUTER_API_KEY_FILE" not in block
+
+
+def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
+    """prism api+worker get the full ``/llm/openrouter`` route + scoped token mount.
+
+    prism uses ``PRISM_LLM_GATEWAY_URL`` directly as the chat base_url, so the
+    installer renders the FULL gateway route. The scoped token mounts at
+    ``/run/secrets/base_gateway_token`` and the direct OpenRouter key is dropped.
+    """
+    result = _run(tmp_path, central_gateway_token=CENTRAL_GATEWAY_TOKEN_SENTINEL)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-prism", "challenge-prism-worker"):
+        block = _service_block(lines, service)
+        assert f"PRISM_LLM_GATEWAY_URL={GATEWAY_OPENROUTER_ROUTE}" in block
+        assert "source=base_gateway_token,target=base_gateway_token" in block
+        # No direct provider key on the challenge service in gateway mode.
+        assert "target=openrouter_api_key" not in block
+
+
+def test_direct_key_is_only_the_no_gateway_fallback(tmp_path: Path) -> None:
+    """Without a scoped token the challenge services use the direct OpenRouter key.
+
+    No gateway URL is rendered and no base_gateway_token secret is created/mounted,
+    so the direct-key path remains the no-gateway fallback (and is never used while
+    the gateway is wired).
+    """
+    result = _run(tmp_path, central_gateway_token=None)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    lines = out.splitlines()
+
+    # Optional secret skipped -> never created. The trailing ``-`` disambiguates
+    # from the always-created ``base_gateway_token_secret`` HMAC secret.
+    assert "optional secret base_gateway_token skipped" in out
+    assert "docker secret create base_gateway_token -" not in out
+
+    # agent-challenge falls back to the direct OpenRouter key; no gateway wiring.
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert "source=base_openrouter_api_key,target=base/openrouter_api_key" in block
+        key_file = (
+            "CHALLENGE_OPENROUTER_API_KEY_FILE=/run/secrets/base/openrouter_api_key"
+        )
+        assert key_file in block
+        assert "CHALLENGE_LLM_GATEWAY_BASE_URL" not in block
+        assert "base_gateway_token" not in block
+
+    # prism falls back to the direct OpenRouter key at its read path; no gateway URL.
+    for service in ("challenge-prism", "challenge-prism-worker"):
+        block = _service_block(lines, service)
+        assert "source=base_openrouter_api_key,target=openrouter_api_key" in block
+        assert "PRISM_LLM_GATEWAY_URL" not in block
+        assert "base_gateway_token" not in block
+
+
 def test_secret_values_never_leak_in_plan_output(tmp_path: Path) -> None:
-    result = _run(tmp_path)
+    result = _run(tmp_path, central_gateway_token=CENTRAL_GATEWAY_TOKEN_SENTINEL)
     combined = result.stdout + result.stderr
     assert GATEWAY_TOKEN_SENTINEL not in combined
     assert DEEPSEEK_SENTINEL not in combined
     assert HF_SENTINEL not in combined
+    assert CENTRAL_GATEWAY_TOKEN_SENTINEL not in combined

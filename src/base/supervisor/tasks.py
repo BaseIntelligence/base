@@ -105,9 +105,9 @@ def build_scheduled_tasks(
     # dropped the separate `base-admin` service (proxy serves admin/registry).
     # The proxy target MUST match the installer-created service name
     # `base-master-proxy` (deploy/swarm/install-swarm.sh). The module-default
-    # DEFAULT_FIRST_PARTY_TARGETS now also names `base-master-proxy`, but this
-    # override is still required (canonical broker name + no config-sync), so do
-    # not "simplify" back to the default.
+    # DEFAULT_FIRST_PARTY_TARGETS is now realigned to the SAME installer-created
+    # names (base-master-proxy + base-docker-broker), so this explicit override is
+    # belt-and-suspenders; keep it so the production targets never silently drift.
     tasks.append(
         build_image_updater_task(
             settings,
@@ -128,8 +128,9 @@ def build_scheduled_tasks(
     # Task 28 #1: same canonical-broker call-site override; single-port
     # consolidation drops the removed `base-admin` rollout target. The proxy
     # rollout target MUST match the installer-created `base-master-proxy`. The
-    # module-default DEFAULT_ROLLOUT_SERVICES now also names it, but this
-    # override (canonical broker name) is still required.
+    # module-default DEFAULT_ROLLOUT_SERVICES is now realigned to the SAME
+    # installer-created names (base-master-proxy + base-docker-broker); this
+    # explicit override is retained so the production targets never silently drift.
     tasks.append(
         build_config_sync_task(
             settings,
