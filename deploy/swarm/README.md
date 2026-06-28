@@ -163,6 +163,65 @@ base master worker drain <node>   # cordon + reschedule its jobs
 base master worker rm <node>      # remove a (drained) node
 ```
 
+## Running N decentralized validator agents
+
+A decentralized validator is a long-running `base validator agent` process — it
+registers with the master coordination plane, heartbeats, pulls work assignments,
+executes them on its **OWN** Docker broker, and posts results. It is **not** the
+legacy on-chain weights submitter (that lives under `submitter/`), and it is
+**not** a Swarm node (Swarm nodes are the broker's CPU/GPU job executors).
+
+The per-validator config template is [`validator.yaml`](./validator.yaml). Each
+validator needs:
+
+- a **distinct** `network.wallet_name` (one bittensor hotkey == one validator ==
+  one config == one process), with the wallet staged under `network.wallet_path`;
+- that hotkey's **ss58 listed in the master's `network.mock_metagraph` with
+  `validator_permit=true`** so the no-chain eligibility auth accepts it. The
+  master installer renders that set from its `MOCK_METAGRAPH` env (see
+  `install-swarm.sh`);
+- `validator.agent.master_url` / `gateway_url` pointing at the manager's published
+  proxy (e.g. `http://<manager-ip>:18080`);
+- `validator.agent.capabilities`: `["cpu"]` for agent-challenge Terminal-Bench 2.1
+  only, or `["gpu","cpu"]` (equivalently `["gpu"]`) for the one validator that also
+  runs prism GPU re-execution (concurrency 1). On a single-GPU cluster exactly one
+  validator advertises `gpu`;
+- `validator.agent.broker_url`: the validator's **own** Docker broker endpoint (it
+  never dispatches to the master's broker).
+
+No provider keys live on a validator: the master stamps a scoped per-assignment
+gateway token + the `DEEPSEEK_BASE_URL`/`OPENROUTER_BASE_URL` gateway routes into
+each pulled assignment, and the agent strips any `*_API_KEY` from the eval env.
+
+### Example: 1 GPU + 2 CPU validators
+
+Copy the template once per validator, giving each a distinct wallet + capabilities:
+
+```
+# /etc/base/validator-gpu.yaml   network.wallet_name: gpu    capabilities: ["gpu","cpu"]
+# /etc/base/validator-cpu1.yaml  network.wallet_name: cpu1   capabilities: ["cpu"]
+# /etc/base/validator-cpu2.yaml  network.wallet_name: cpu2   capabilities: ["cpu"]
+
+base validator agent --config /etc/base/validator-gpu.yaml
+base validator agent --config /etc/base/validator-cpu1.yaml
+base validator agent --config /etc/base/validator-cpu2.yaml
+```
+
+Then seed the master's mock metagraph with all three validator hotkeys (the
+installer reads this from `MOCK_METAGRAPH`):
+
+```
+MOCK_METAGRAPH='[
+  {"hotkey":"<gpu-ss58>","validator_permit":true,"stake":1000},
+  {"hotkey":"<cpu1-ss58>","validator_permit":true,"stake":1000},
+  {"hotkey":"<cpu2-ss58>","validator_permit":true,"stake":1000}
+]'
+```
+
+Adding a 4th validator later needs no master reconfiguration beyond appending its
+hotkey to `MOCK_METAGRAPH`: it registers, heartbeats, and the orchestration driver
+picks it up on the next interval (capability-aware balanced assignment).
+
 ## Worker / manager `daemon.json` — key-by-key notes
 
 JSON does not allow comments, so all explanation lives here.

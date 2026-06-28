@@ -1,0 +1,62 @@
+# Decentralized BASE validator agent config (deploy/swarm).
+#
+# This is the config for ONE decentralized validator agent — the long-running
+# `base validator agent` loop that registers with the master coordination plane,
+# heartbeats, pulls work assignments, executes them on its OWN Docker broker, and
+# posts results. It is NOT the legacy on-chain weights submitter (that lives under
+# deploy/swarm/submitter/).
+#
+# Run it with:
+#
+#   base validator agent --config /etc/base/validator.yaml
+#
+# ONE wallet hotkey == ONE validator == ONE config == ONE process. To run N
+# validators, copy this file to validator-1.yaml / validator-2.yaml / ... giving
+# each a DISTINCT network.wallet_name (hotkey) and the right capabilities, and run
+# one `base validator agent --config <file>` per validator. Each validator hotkey
+# (ss58) MUST be listed in the master's network.mock_metagraph with
+# validator_permit=true (the installer's MOCK_METAGRAPH env) so the no-chain
+# eligibility auth accepts it. See deploy/swarm/README.md "Running N decentralized
+# validator agents".
+
+network:
+  name: base
+  netuid: 100
+  # No live chain on the no-chain deploy: eligibility is served by the master's
+  # mock metagraph. The agent only needs this wallet on disk to SIGN its
+  # coordination requests (sr25519); it does NOT talk to a chain itself.
+  chain_endpoint: ''
+  wallet_name: validator-1        # DISTINCT per validator (one hotkey each).
+  wallet_hotkey: default
+  wallet_path: /var/lib/base/wallets
+
+validator:
+  registry_url: https://chain.joinbase.ai
+  agent:
+    # Master coordination plane (register/heartbeat/pull/progress/result). On the
+    # live cluster this is the manager's published proxy host:port.
+    master_url: http://51.83.112.164:18080
+    # Master LLM gateway root advertised in the pull payload. Same proxy host:port;
+    # the scoped per-assignment gateway token + base URLs are injected by the
+    # master at pull time, so this validator holds NO provider key.
+    gateway_url: http://51.83.112.164:18080
+    # cpu => agent-challenge Terminal-Bench 2.1 CPU tasks only.
+    # ["gpu","cpu"] (or ["gpu"]) => also receives prism GPU re-exec (concurrency 1).
+    # Exactly one validator should advertise gpu on the 1-GPU cluster.
+    capabilities: ["cpu"]
+    # This validator's OWN Docker broker (its private executor backend) — never
+    # the master's broker. Falls back to docker.broker_url below if unset.
+    broker_url: http://127.0.0.1:8082
+    broker_token_file: /run/secrets/base_broker_token
+    poll_interval_seconds: 5.0
+
+docker:
+  # The validator's own broker endpoint + the eval-image allowlist its broker
+  # enforces. Keep broker_url consistent with validator.agent.broker_url above.
+  broker_url: http://127.0.0.1:8082
+  broker_allowed_images:
+    - ghcr.io/baseintelligence/
+
+observability:
+  log_json: true
+  otel_service_name: base-validator

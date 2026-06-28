@@ -132,6 +132,20 @@ SECRET_MOUNT_DIR="/run/secrets/base"
 MASTER_BROKER_PORT="${MASTER_BROKER_PORT:-8082}"
 MASTER_PROXY_PORT="${MASTER_PROXY_PORT:-18080}"
 
+# Placement constraint for the proxy (the single public API also serving the
+# admin/registry surface). For the NO-CHAIN decentralized deploy the proxy seeds
+# the mock metagraph (MOCK_METAGRAPH below) and never reaches a live chain, so it
+# is MANAGER-pinned by default — matching the broker's intrinsic node.role==manager
+# pin and co-locating the control plane on the manager (hotkey) node. This REPLACES
+# the old hard node.role==worker pin, which existed ONLY because the live chain was
+# reachable from a worker; with the mock metagraph there is no chain to reach.
+# Set empty to drop the pin entirely (e.g. a chain-reachable single-node swarm).
+# The no-colon ${VAR-default} form preserves an explicitly-empty value (drop the
+# pin) while still defaulting when the var is UNSET. Do NOT --constraint-add on an
+# already-pinned live service (not idempotent — see AGENTS.md "CONSTRAINT-ADD DEDUP
+# GOTCHA").
+MASTER_PROXY_CONSTRAINT="${MASTER_PROXY_CONSTRAINT-node.role==manager}"
+
 # ---- Master LLM gateway (architecture.md §5). `base master proxy` now ALWAYS
 # builds the LLM gateway and GatewayTokenAuthority refuses an empty token secret,
 # so the proxy FAILS FAST at startup unless the gateway token secret is wired
@@ -181,6 +195,24 @@ SECRET_VOLUME_DIR="/var/lib/base/secrets"
 # BEFORE-T27: remove //Alice from this allowlist before mainnet launch — it is a
 # publicly-known test key and must never be miner-registrable in production.
 UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnbVvLKWjHeVqm2BMqMzmckKMiufR11qFXahaUfenR\",\"5FTyuyEQQZs8tCcPTUFqotkm2SYfDnpefn9FitRgmTHnFDBD\",\"5GGboHkKougeE8PqGRbNM32AEwRU7Dsv4MXATm2zukQJ8wrU\",\"5FJAjL6d31QDSfvcZPKkde9ftTLAPu7J5Mo86je5XbziRXSB\",\"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY\"]}"
+
+# ---- Mock/static metagraph (architecture.md G1; NO-CHAIN decentralized deploy).
+# `base master proxy` UNCONDITIONALLY builds the bittensor runtime; on a no-chain
+# deploy the runtime factory seeds MetagraphCache from network.mock_metagraph
+# (settings.network.mock_metagraph) instead of constructing a live Subtensor, so
+# the listed validator hotkeys become permit-eligible with NO chain. Miners stay
+# submit-eligible via UPLOAD_EXTRA_REGISTERED_HOTKEYS above, independent of this set.
+#
+# MOCK_METAGRAPH is a JSON array of {hotkey, validator_permit, stake} objects
+# rendered VERBATIM into network.mock_metagraph in the master config (it is NOT a
+# secret — ss58 hotkeys are public). EMPTY default ([]) keeps the seam OFF
+# (production-safe, inert): the live-metagraph path is unchanged. For the live
+# 1 master + 3 validators bring-up, set it to the 3 validator hotkeys with
+# validator_permit=true (+ any miner hotkeys with validator_permit=false), e.g.:
+#   MOCK_METAGRAPH='[{"hotkey":"5Val1...","validator_permit":true,"stake":1000},
+#                    {"hotkey":"5Val2...","validator_permit":true,"stake":1000},
+#                    {"hotkey":"5Val3...","validator_permit":true,"stake":1000}]'
+MOCK_METAGRAPH="${MOCK_METAGRAPH:-[]}"
 
 # agent-challenge own_runner eval allowlist: the worker+api gate the broker DooD
 # job image against CHALLENGE_DOCKER_ALLOWED_IMAGES (the default permits only the
@@ -347,6 +379,17 @@ Optional environment:
   GATEWAY_PUBLIC_BASE_URL                    External master gateway/proxy root URL
                                              advertised to validators (default:
                                              http://<advertise-addr>:<proxy-port>).
+  MOCK_METAGRAPH                             JSON array of {hotkey,validator_permit,stake}
+                                             entries seeding network.mock_metagraph for
+                                             the NO-CHAIN deploy (listed validator hotkeys
+                                             become permit-eligible with no live chain).
+                                             Empty default ([]) = OFF (live-metagraph path).
+  MASTER_PROXY_CONSTRAINT                    Placement constraint for the proxy (default:
+                                             node.role==manager for the no-chain deploy;
+                                             set empty to drop the pin).
+  MASTER_PROXY_PORT / MASTER_BROKER_PORT     Published host ports for the proxy (18080) and
+                                             broker (8082); flow into both the --publish and
+                                             the rendered master config (proxy_port/broker_*).
 EOF
 }
 
@@ -879,6 +922,14 @@ network:
   wallet_hotkey: default
   wallet_path: /var/lib/base/wallets
   master_uid: 0
+  # Config-driven static/mock metagraph (architecture.md G1). Non-empty => the
+  # proxy seeds MetagraphCache from this set and builds NO live Subtensor, so the
+  # listed validator hotkeys (validator_permit=true) are eligible with no chain;
+  # this is what makes the NO-CHAIN 1-master + N-validator deploy work. Empty ([])
+  # keeps the seam OFF (live-metagraph path unchanged). Rendered verbatim from the
+  # public MOCK_METAGRAPH env (ss58 hotkeys are NOT secrets). Miners stay
+  # submit-eligible via master.upload_extra_registered_hotkeys, independent of this.
+  mock_metagraph: ${MOCK_METAGRAPH}
 
 master:
   proxy_host: 0.0.0.0
@@ -1091,17 +1142,19 @@ _deploy_master_service() {
   if [[ "${subcommand}" == "proxy" ]]; then
     extra+=(
       --env "BASE_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
-      # WORKER PIN (multi-node swarms where the chain is reachable only from a
-      # worker): `base master proxy` UNCONDITIONALLY builds the Bittensor runtime
-      # (master_proxy -> MetagraphCache/create_bittensor_runtime; cli_app/main.py),
-      # so on a chain-isolated manager startup raises a connection TimeoutError and
-      # the task dies. Unconstrained, Swarm flaps it onto the manager (observed: 4x
-      # Failed on next-terrier before landing on the worker). This mirrors the
-      # broker's intrinsic node.role==manager pin above and fixes the mode=host
-      # port (18080) location. Do NOT --constraint-add on an already-pinned live
-      # service (not idempotent — see AGENTS.md "CONSTRAINT-ADD DEDUP GOTCHA").
-      --constraint "node.role==worker"
     )
+    # PLACEMENT (no-chain decentralized deploy): the proxy seeds the mock
+    # metagraph (network.mock_metagraph rendered above) and builds NO live
+    # Subtensor, so it runs on the MANAGER (the control-plane / hotkey node),
+    # matching the broker's intrinsic node.role==manager pin and the fixed
+    # mode=host port (18080). This REPLACES the old hard node.role==worker pin,
+    # which existed only because the live chain was reachable from a worker; with
+    # the mock metagraph there is no chain. Configurable via MASTER_PROXY_CONSTRAINT
+    # (set empty to drop the pin). Do NOT --constraint-add on an already-pinned live
+    # service (not idempotent — see AGENTS.md "CONSTRAINT-ADD DEDUP GOTCHA").
+    if [[ -n "${MASTER_PROXY_CONSTRAINT}" ]]; then
+      extra+=(--constraint "${MASTER_PROXY_CONSTRAINT}")
+    fi
     # LLM gateway secrets consumed by the proxy-built gateway (NOT the broker):
     #   * MANDATORY token-signing secret at /run/secrets/gateway_token_secret;
     #     the proxy fails fast at startup without it (GatewayTokenAuthority).
