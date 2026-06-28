@@ -15,6 +15,7 @@ class ValidatorView(BaseModel):
     uid: int | None = None
     status: str
     capabilities: list[str] = Field(default_factory=list)
+    subscriptions: list[str] = Field(default_factory=list)
     version: str | None = None
     registered_at: datetime
     last_heartbeat_at: datetime | None = None
@@ -53,3 +54,20 @@ class ValidatorHeartbeatResponse(BaseModel):
 
     status: str
     now: datetime
+
+
+class ValidatorSubscriptionRequest(BaseModel):
+    """Body for ``POST /v1/validators/subscriptions``.
+
+    ``slugs`` is the set of challenge slugs the validator opts in to. An empty
+    list clears the subscription (the validator validates ALL challenges).
+    """
+
+    slugs: list[str] = Field(default_factory=list)
+
+
+class ValidatorSubscriptionResponse(BaseModel):
+    """Response for a successful subscription update."""
+
+    validator: ValidatorView
+    subscriptions: list[str] = Field(default_factory=list)

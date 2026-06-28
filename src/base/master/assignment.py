@@ -287,6 +287,7 @@ class AssignmentService:
             return {}
 
         caps_by_hotkey = {v.hotkey: set(v.capabilities) for v in online}
+        subs_by_hotkey = {v.hotkey: set(v.subscriptions) for v in online}
         hotkeys = [v.hotkey for v in online]
         load = {hotkey: 0 for hotkey in hotkeys}
         cap_load: dict[tuple[str, str], int] = {}
@@ -336,6 +337,10 @@ class AssignmentService:
                 for hotkey in hotkeys
                 if self._capability_matches(capability, caps_by_hotkey[hotkey])
                 and (limit is None or cap_load.get((hotkey, capability), 0) < limit)
+                and (
+                    not subs_by_hotkey[hotkey]
+                    or unit.challenge_slug in subs_by_hotkey[hotkey]
+                )
             ]
             if not eligible:
                 continue

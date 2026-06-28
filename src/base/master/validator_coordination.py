@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -34,6 +35,8 @@ from base.schemas.validator import (
     ValidatorListResponse,
     ValidatorRegisterRequest,
     ValidatorRegisterResponse,
+    ValidatorSubscriptionRequest,
+    ValidatorSubscriptionResponse,
     ValidatorView,
 )
 from base.security.validator_auth import ValidatorIdentity
@@ -205,6 +208,37 @@ class ValidatorCoordinationService:
                 )
             return validator, now
 
+    async def set_subscriptions(
+        self,
+        *,
+        hotkey: str,
+        slugs: Sequence[str],
+    ) -> Validator:
+        """Persist a validator's challenge subscription set.
+
+        Replaces the validator's ``subscriptions`` with the (de-duplicated,
+        order-preserving) ``slugs``. An empty list clears the subscription so the
+        validator validates ALL challenges (back-compat). Mirrors the
+        ``heartbeat`` transaction shape and raises
+        :class:`ValidatorNotRegisteredError` (-> HTTP 404) for a hotkey without a
+        registered row.
+
+        Slug validity (against the active registry) is enforced at the route
+        layer before this is called.
+        """
+
+        deduped = list(dict.fromkeys(slugs))
+        async with session_scope(self._session_factory) as session:
+            validator = (
+                await session.execute(
+                    select(Validator).where(Validator.hotkey == hotkey)
+                )
+            ).scalar_one_or_none()
+            if validator is None:
+                raise ValidatorNotRegisteredError(hotkey)
+            validator.subscriptions = deduped
+            return validator
+
     async def detect_offline_validators(
         self, *, session: AsyncSession | None = None
     ) -> list[str]:
@@ -336,6 +370,7 @@ def validator_to_view(validator: Validator) -> ValidatorView:
         uid=validator.uid,
         status=ValidatorStatus(validator.status).value,
         capabilities=list(validator.capabilities),
+        subscriptions=list(validator.subscriptions),
         version=validator.version,
         registered_at=validator.registered_at,
         last_heartbeat_at=validator.last_heartbeat_at,
@@ -343,11 +378,28 @@ def validator_to_view(validator: Validator) -> ValidatorView:
     )
 
 
+async def _active_challenge_slugs(registry: Any) -> set[str]:
+    """Return the set of active challenge slugs from the registry.
+
+    Tolerates a registry whose ``list`` is sync or async (or absent), so the
+    subscription route can validate slugs against the live active set.
+    """
+
+    lister = getattr(registry, "list", None)
+    if lister is None:
+        return set()
+    result = lister(active_only=True)
+    if inspect.isawaitable(result):
+        result = await result
+    return {record.slug for record in result}
+
+
 def build_validator_coordination_router(
     *,
     service: ValidatorCoordinationService,
     auth_dependency: Callable[..., Any],
     admin_dependency: Callable[..., Any] | None = None,
+    registry: Any = None,
 ) -> APIRouter:
     """Build the validator coordination router (register + heartbeat + read view).
 
@@ -355,7 +407,8 @@ def build_validator_coordination_router(
     :func:`base.security.validator_auth.build_validator_auth_dependency`; it
     yields a :class:`ValidatorIdentity` for an authenticated, eligible validator.
     ``admin_dependency`` (when provided) gates the token-protected admin read
-    view ``GET /v1/validators``.
+    view ``GET /v1/validators``. ``registry`` (when provided) is the challenge
+    registry used to validate subscription slugs against the active set.
     """
 
     router = APIRouter()
@@ -395,6 +448,36 @@ def build_validator_coordination_router(
         return ValidatorHeartbeatResponse(
             status=ValidatorStatus(validator.status).value,
             now=now,
+        )
+
+    @router.post(
+        "/v1/validators/subscriptions",
+        response_model=ValidatorSubscriptionResponse,
+    )
+    async def set_subscriptions(
+        payload: ValidatorSubscriptionRequest,
+        identity: ValidatorIdentity = Depends(auth_dependency),
+    ) -> ValidatorSubscriptionResponse:
+        active = await _active_challenge_slugs(registry)
+        unknown = [slug for slug in payload.slugs if slug not in active]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"unknown or inactive challenge slug(s): {sorted(set(unknown))}",
+            )
+        try:
+            validator = await service.set_subscriptions(
+                hotkey=identity.hotkey,
+                slugs=payload.slugs,
+            )
+        except ValidatorNotRegisteredError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="validator not registered",
+            ) from exc
+        return ValidatorSubscriptionResponse(
+            validator=validator_to_view(validator),
+            subscriptions=list(validator.subscriptions),
         )
 
     if admin_dependency is not None:

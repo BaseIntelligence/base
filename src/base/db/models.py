@@ -466,6 +466,12 @@ class Validator(Base, TimestampMixin):
         default=dict,
         server_default="{}",
     )
+    subscriptions: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
 
 
 class ValidatorHealthEvent(Base):

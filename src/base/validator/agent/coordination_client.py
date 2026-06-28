@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -24,6 +24,7 @@ from base.schemas.assignment import (
 from base.schemas.validator import (
     ValidatorHeartbeatResponse,
     ValidatorRegisterResponse,
+    ValidatorSubscriptionResponse,
 )
 from base.validator.agent.signing import RequestSigner, build_signed_headers
 
@@ -84,6 +85,10 @@ class CoordinationClient:
             payload["last_seen_meta"] = dict(last_seen_meta)
         data = await self._post("/v1/validators/heartbeat", payload)
         return ValidatorHeartbeatResponse.model_validate(data)
+
+    async def subscribe(self, slugs: Sequence[str]) -> ValidatorSubscriptionResponse:
+        data = await self._post("/v1/validators/subscriptions", {"slugs": list(slugs)})
+        return ValidatorSubscriptionResponse.model_validate(data)
 
     async def pull(self) -> list[AssignmentView]:
         data = await self._post("/v1/assignments/pull", {})

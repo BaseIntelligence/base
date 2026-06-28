@@ -1041,18 +1041,26 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     )
 
 
+def _build_coordination_client(settings: Any) -> CoordinationClient:
+    """Build a signed coordination client from validator settings (testable)."""
+
+    agent_cfg = settings.validator.agent
+    master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
+    signer = KeypairRequestSigner(create_validator_keypair(settings))
+    return CoordinationClient(
+        master_url,
+        signer,
+        timeout_seconds=agent_cfg.request_timeout_seconds,
+    )
+
+
 def _build_validator_agent(settings: Any) -> ValidatorAgent:
     """Wire the decentralized validator agent from settings (testable)."""
 
     agent_cfg = settings.validator.agent
     master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
     gateway_url = agent_cfg.gateway_url or master_url
-    signer = KeypairRequestSigner(create_validator_keypair(settings))
-    client = CoordinationClient(
-        master_url,
-        signer,
-        timeout_seconds=agent_cfg.request_timeout_seconds,
-    )
+    client = _build_coordination_client(settings)
     broker = BrokerConfig(
         broker_url=agent_cfg.broker_url or settings.docker.broker_url,
         broker_token=agent_cfg.broker_token,
@@ -1094,6 +1102,42 @@ def validator_agent(
     agent = _build_validator_agent(settings)
     typer.echo(f"Starting validator agent for hotkey {agent.hotkey}")
     asyncio.run(agent.run_forever())
+
+
+@validator_app.command("subscribe")
+def validator_subscribe(
+    config: Path = typer.Option(Path("config/validator.example.yaml")),
+    challenges: str = typer.Option(
+        "",
+        "--challenges",
+        help=(
+            "Comma-separated challenge slugs to validate (e.g. "
+            "'prism,agent-challenge'). Pass an empty value to clear the "
+            "subscription (validate ALL challenges)."
+        ),
+    ),
+):
+    """Set this validator's challenge subscriptions (sr25519-signed).
+
+    The master only assigns subscribed challenges to a validator with a
+    non-empty subscription; an empty subscription validates ALL challenges.
+    """
+
+    settings = load_settings(config)
+    configure_logging(settings.observability.log_json)
+    slugs = [slug.strip() for slug in challenges.split(",") if slug.strip()]
+    client = _build_coordination_client(settings)
+    response = asyncio.run(client.subscribe(slugs))
+    if response.subscriptions:
+        typer.echo(
+            "Subscribed validator "
+            f"{client.hotkey} to: {', '.join(response.subscriptions)}"
+        )
+    else:
+        typer.echo(
+            f"Cleared subscriptions for validator {client.hotkey} "
+            "(validating ALL challenges)"
+        )
 
 
 @challenge_app.command("create")

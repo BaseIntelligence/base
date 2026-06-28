@@ -620,6 +620,7 @@ def create_proxy_app(
                 service=validator_service,
                 auth_dependency=build_validator_auth_dependency(validator_verifier),
                 admin_dependency=build_admin_token_dependency(admin_token_provider),
+                registry=challenge_registry,
             )
         )
         app.state.validator_coordination_service = validator_service
