@@ -166,6 +166,26 @@ coordination client, and an executor seam). New CLI entrypoints:
 Control-plane migrations advance through alembic head `0007` (validator registry, LLM usage
 records, work assignments and results, and registry hardening).
 
+### No-chain (mock-metagraph) decentralized deploy
+
+BASE can run the full decentralized coordination plane and validators **without a live Subtensor**,
+for staging or a no-chain production bring-up. A config-driven static metagraph
+(`network.mock_metagraph` in `master.yaml`, or the installer's `MOCK_METAGRAPH` env) lists the
+eligible validator hotkeys; when set, the bittensor runtime factory seeds the metagraph cache from
+that static set and never constructs a live Subtensor, so the listed validator hotkeys pass the
+hotkey-signed eligibility auth with no chain. It is **DEFAULT OFF** (inert/behaviour-preserving when
+unset) and miners stay submit-eligible via the `upload_extra_registered_hotkeys` allowlist,
+independent of the metagraph.
+
+Run N decentralized validator agents against such a master with the
+[`deploy/swarm/validator.yaml`](deploy/swarm/validator.yaml) template: copy it to
+`validator-1.yaml` / `validator-2.yaml` / … (one DISTINCT `network.wallet_name` hotkey and the right
+`capabilities` per validator, each listed in the master's `mock_metagraph` with
+`validator_permit=true`) and run one `base validator agent --config <file>` per validator. Exactly
+one validator should advertise `gpu` on a single-GPU cluster (it receives the prism GPU re-exec,
+concurrency 1); the others advertise `cpu` (agent-challenge Terminal-Bench tasks). See
+`deploy/swarm/README.md` "Running N decentralized validator agents".
+
 ---
 
 ## What BASE Does
@@ -234,7 +254,7 @@ BASE uses a Docker Swarm only first-party deployment path and keeps Dockerfiles 
 - The validator coordination plane (validator registry, hotkey-signed register/heartbeat/pull/progress/result, crash detection, and the orchestration driver) and the LLM gateway ship inside the `base-master` image and are wired by `install-swarm.sh`. The gateway requires a mandatory token-signing secret at `/run/secrets/gateway_token_secret` (`GATEWAY_TOKEN`), real-mode provider keys, and an advertised gateway base URL (`gateway.public_base_url`, set via `GATEWAY_PUBLIC_BASE_URL`); the proxy fails closed without the token secret.
 - Decentralized validator nodes run the validator agent (`base validator agent`) with their own broker and Docker. They authenticate with a hotkey signature plus a metagraph validator permit and reach providers only through the master gateway using a per-assignment scoped gateway token; no provider key is distributed to validators.
 - The prism HuggingFace checkpoint publisher reads an optional `HF_TOKEN` (the `base_hf_token` secret mounted at `/run/secrets/hf_token`); when it is absent, publishing is skipped.
-- The supervisor image-updater and challenge-image-updater resolve the public GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/baseintelligence/base-master:latest`; no GHCR pull secret is required for public packages. The master digest-pin rollout targets the installer-created service names `base-master-proxy` and `base-docker-broker`.
+- The supervisor image-updater and challenge-image-updater are the **canonical GHCR auto-update path** (they replace Watchtower). They resolve the GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/baseintelligence/base-master:latest`, and are a no-op when current. The resolver authenticates to GHCR (HTTP Basic against the token realm, from explicit credentials or the `auth` field of a docker `config.json`) so it can resolve **private** `ghcr.io/baseintelligence/*` digests; with no credentials it falls back to the anonymous public-package path, behaviour-preserving when unset. The master digest-pin rollout targets the installer-created service names `base-master-proxy` and `base-docker-broker`. Master/supervisor self-update is explicit: wired via `SUPERVISOR_SELF_UPDATE_MANIFEST_URL`, otherwise safely disabled (`supervisor.self_update_enabled=false`) with no inert half-state.
 - Pinned production mode uses a tag plus a `sha256` digest, for example `ghcr.io/baseintelligence/demo:1.2.3@sha256:<64-hex-digest>` for releases or `ghcr.io/baseintelligence/demo:latest@sha256:<64-hex-digest>` for the autonomous update channel, and disables mutable auto-update. Production rejects untagged images, missing digests, and non-SemVer non-`latest` tags. BASE release versioning starts at `3.0.0`; see `docs/versioning.md` for the SemVer, Git tag, mutable `latest`/`main`, and GHCR tag policy.
 - Swarm networking uses encrypted overlay networks at MTU 1450. Required inter-node ports: `2377/tcp` (management), `7946/tcp+udp` (gossip), `4789/udp` (VXLAN data plane), and IP protocol 50 (ESP) for the encrypted overlay.
 - Swarm services map CPU and memory to `--limit-cpu` and `--limit-memory` and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`.
