@@ -49,6 +49,48 @@ def test_build_validator_agent_wires_settings(
     assert agent.heartbeat_interval == 30
 
 
+def test_build_validator_agent_threads_self_declared_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "base.cli_app.main.create_validator_keypair",
+        lambda settings: _FakeKeypair(),
+    )
+    settings = Settings()
+    settings.validator.agent = ValidatorAgentSettings(
+        master_url="http://master:8081",
+        broker_url="http://127.0.0.1:8082",
+        display_name="Acme Validator",
+        logo_url="https://acme/logo.png",
+    )
+
+    agent = _build_validator_agent(settings)
+    meta = agent._meta()
+
+    assert meta["display_name"] == "Acme Validator"
+    assert meta["logo_url"] == "https://acme/logo.png"
+
+
+def test_build_validator_agent_omits_identity_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "base.cli_app.main.create_validator_keypair",
+        lambda settings: _FakeKeypair(),
+    )
+    settings = Settings()
+    settings.validator.agent = ValidatorAgentSettings(
+        master_url="http://master:8081",
+        broker_url="http://127.0.0.1:8082",
+    )
+
+    agent = _build_validator_agent(settings)
+    meta = agent._meta()
+
+    assert "display_name" not in meta
+    assert "logo_url" not in meta
+
+
 def test_operations_doc_documents_validator_agent() -> None:
     content = OPERATIONS_DOC.read_text(encoding="utf-8")
     lowered = content.lower()

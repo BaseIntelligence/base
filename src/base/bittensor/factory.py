@@ -4,6 +4,7 @@ import importlib
 from dataclasses import dataclass
 from typing import Any
 
+from base.bittensor.identity_cache import IdentityCache, self_declared_identity
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.weight_setter import WeightSetter
 from base.config.settings import Settings
@@ -17,6 +18,7 @@ class BittensorDependencyError(RuntimeError):
 class BittensorRuntime:
     metagraph_cache: MetagraphCache
     weight_setter: WeightSetter | None = None
+    identity_cache: IdentityCache | None = None
 
 
 def _load_bittensor() -> Any:
@@ -84,13 +86,46 @@ def _seed_mock_metagraph_cache(settings: Settings) -> MetagraphCache | None:
     return cache
 
 
+def _seed_mock_identity_cache(settings: Settings) -> IdentityCache:
+    """Seed a static identity cache from ``mock_metagraph`` self-declared identity.
+
+    Used by the no-chain mock deploy (architecture.md sec 7.2): each configured
+    node's optional ``display_name``/``logo_url`` becomes an UNTRUSTED
+    self-declared identity. The cache carries no subtensor, so resolution never
+    reaches a chain. Nodes without a self-declared identity are simply absent
+    (None-safe on lookup).
+    """
+
+    cache = IdentityCache(
+        netuid=settings.network.netuid,
+        ttl_seconds=settings.master.metagraph_cache_ttl_seconds,
+        subtensor=None,
+        static=True,
+    )
+    identities = {}
+    for node in settings.network.mock_metagraph:
+        identity = self_declared_identity(node.display_name, node.logo_url)
+        if identity is not None:
+            identities[node.hotkey] = identity
+    cache.seed_static(identities)
+    return cache
+
+
 def create_bittensor_runtime(settings: Settings) -> BittensorRuntime:
     mock_cache = _seed_mock_metagraph_cache(settings)
     if mock_cache is not None:
-        return BittensorRuntime(metagraph_cache=mock_cache)
+        return BittensorRuntime(
+            metagraph_cache=mock_cache,
+            identity_cache=_seed_mock_identity_cache(settings),
+        )
     subtensor = _create_subtensor(settings)
     return BittensorRuntime(
         metagraph_cache=MetagraphCache(
+            netuid=settings.network.netuid,
+            ttl_seconds=settings.master.metagraph_cache_ttl_seconds,
+            subtensor=subtensor,
+        ),
+        identity_cache=IdentityCache(
             netuid=settings.network.netuid,
             ttl_seconds=settings.master.metagraph_cache_ttl_seconds,
             subtensor=subtensor,
@@ -103,6 +138,11 @@ def create_bittensor_submit_runtime(settings: Settings) -> BittensorRuntime:
     wallet = _create_wallet(settings)
     return BittensorRuntime(
         metagraph_cache=MetagraphCache(
+            netuid=settings.network.netuid,
+            ttl_seconds=settings.master.metagraph_cache_ttl_seconds,
+            subtensor=subtensor,
+        ),
+        identity_cache=IdentityCache(
             netuid=settings.network.netuid,
             ttl_seconds=settings.master.metagraph_cache_ttl_seconds,
             subtensor=subtensor,

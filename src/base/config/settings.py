@@ -18,6 +18,11 @@ class MockMetagraphNode(BaseModel):
     uid: int | None = None
     validator_permit: bool = False
     stake: float = 0.0
+    # Optional self-declared subnet identity for the no-chain mock deploy
+    # (architecture.md sec 7.2). Seeded UNTRUSTED into the identity cache as the
+    # fallback when no on-chain identity is available. Empty => no identity.
+    display_name: str | None = None
+    logo_url: str | None = None
 
 
 class NetworkSettings(BaseModel):
@@ -103,6 +108,11 @@ class ValidatorAgentSettings(BaseModel):
     #: Extra allowed eval-image prefixes (added to ``docker.broker_allowed_images``).
     allowed_images: list[str] = Field(default_factory=list)
     run_timeout_seconds: int = 3_600
+    # Optional self-declared subnet identity (architecture.md sec 7.2). When set,
+    # threaded UNTRUSTED into the agent's ``last_seen_meta`` so the master reads
+    # it back as the identity fallback (zero new server schema). Empty => omitted.
+    display_name: str | None = None
+    logo_url: str | None = None
 
 
 class ValidatorSettings(BaseModel):

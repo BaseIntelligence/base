@@ -15,6 +15,10 @@ from base.bittensor.factory import (
     create_bittensor_submit_runtime,
     create_validator_keypair,
 )
+from base.bittensor.identity_cache import (
+    IDENTITY_DISPLAY_NAME_KEY,
+    IDENTITY_LOGO_URL_KEY,
+)
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
 from base.config import load_settings
@@ -1074,6 +1078,14 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
             run_timeout_seconds=agent_cfg.run_timeout_seconds
         )
     )
+    identity_meta: dict[str, Any] = {}
+    if agent_cfg.display_name is not None:
+        identity_meta[IDENTITY_DISPLAY_NAME_KEY] = agent_cfg.display_name
+    if agent_cfg.logo_url is not None:
+        identity_meta[IDENTITY_LOGO_URL_KEY] = agent_cfg.logo_url
+    last_seen_meta_factory: Callable[[], Mapping[str, Any]] | None = (
+        (lambda: dict(identity_meta)) if identity_meta else None
+    )
     return ValidatorAgent(
         client=client,
         executor=executor,
@@ -1083,6 +1095,7 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
         gateway_url=gateway_url,
         heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
         poll_interval_seconds=agent_cfg.poll_interval_seconds,
+        last_seen_meta_factory=last_seen_meta_factory,
     )
 
 
