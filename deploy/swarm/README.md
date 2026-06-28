@@ -361,3 +361,39 @@ self-update).
 - **Install**: copy to `/etc/systemd/system/`, adjust the `ExecStart` path +
   `User=`, then `systemctl daemon-reload && systemctl enable --now
   base-supervisor.service`. Verify with `systemctl status`.
+- **Installer path**: `install-swarm.sh` renders the `supervisor:` block into the
+  master config and (behind `--install-supervisor`) plans the unit install +
+  `systemctl enable --now`. The image-updater + challenge-image-updater resolve
+  PRIVATE `ghcr.io/baseintelligence/*` digests using the manager's GHCR
+  credentials decoded from the docker `config.json` written by `ghcr_login`
+  (`supervisor.registry_docker_config_path`); no extra secret is needed. Master
+  self-update is wired only when `SUPERVISOR_SELF_UPDATE_MANIFEST_URL` is set —
+  otherwise it is explicitly disabled (the task is not registered, never inert).
+
+### Auto-update ownership: base-supervisor REPLACES Watchtower
+
+`base-supervisor.service` is the canonical GHCR auto-update path for
+`ghcr.io/baseintelligence`. Its image-updater digest-pins `base-master-proxy` +
+`base-docker-broker` (and the challenge-image-updater rolls the challenge
+services) to `tag@sha256:<digest>`, **rolling a service only when the resolved
+digest differs and a no-op when already current** (immutable pin policy). The old
+Watchtower deployment performs the same mutation (`docker service update`), so the
+two MUST NOT run at the same time or they race each other.
+
+**Watchtower decommission ordering (MANDATORY — do BEFORE enabling the supervisor):**
+
+1. Stop + remove Watchtower so nothing else mutates the services:
+   ```
+   docker service rm platform-watchtower    # swarm service install
+   # or, for a compose/standalone container:
+   docker rm -f watchtower
+   ```
+2. Confirm nothing remains (no racing updater):
+   ```
+   docker ps -a | grep -i watchtower    # must print NOTHING
+   ```
+3. Only THEN install + enable `base-supervisor.service` (or run
+   `install-swarm.sh ... --install-supervisor`).
+
+**Rollback ordering (reverse):** `systemctl disable --now base-supervisor.service`
+FIRST (stop the new updater), then re-add Watchtower. Never have both active.

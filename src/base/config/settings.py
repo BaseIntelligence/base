@@ -236,6 +236,38 @@ class ObservabilitySettings(BaseModel):
     health_probe_interval_seconds: float = 60.0
 
 
+class SupervisorSettings(BaseModel):
+    """Control-plane supervisor wiring (image-updater auth + self-update).
+
+    Both seams default OFF/behaviour-preserving: with no registry credentials the
+    digest resolver stays anonymous (PUBLIC-package path), and with self-update
+    disabled the self-update task is NOT registered (rather than registered-but-
+    inert), so there is no silent half-state.
+    """
+
+    #: Registry the image-updaters authenticate against for PRIVATE digests.
+    registry: str = "ghcr.io"
+    #: Explicit registry username (e.g. a GitHub user/org for GHCR). When set
+    #: together with a password/password_file it takes precedence over the docker
+    #: config.json fallback.
+    registry_username: str | None = None
+    registry_password: str | None = None
+    registry_password_file: str | None = None
+    #: Docker ``config.json`` whose ``auths[<registry>].auth`` (base64
+    #: ``user:password``) the resolver decodes when no explicit credentials are
+    #: given. On the manager this is the file ``docker login ghcr.io`` writes, so
+    #: the supervisor resolves PRIVATE ``ghcr.io/baseintelligence/*`` digests with
+    #: the same credentials the deploy already provisions. None disables the
+    #: fallback (anonymous resolver).
+    registry_docker_config_path: str | None = "/root/.docker/config.json"
+    #: Master self-update (Task 22). Enable ONLY with a manifest_url wired — the
+    #: builder refuses ``self_update_enabled=true`` without one so the task is
+    #: never registered-but-inert. Default OFF: the self-update task is not
+    #: registered at all (explicit-disable, no silent no-op).
+    self_update_enabled: bool = False
+    self_update_manifest_url: str | None = None
+
+
 class Settings(BaseModel):
     environment: str = "development"
     network: NetworkSettings = Field(default_factory=NetworkSettings)
@@ -246,6 +278,7 @@ class Settings(BaseModel):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
 
     @model_validator(mode="after")
     def validate_production_policy(self) -> Settings:

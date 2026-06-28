@@ -22,6 +22,8 @@ built here so the gate instance can be shared with future job builders.
 
 from __future__ import annotations
 
+import logging
+
 from base.config.settings import Settings
 from base.supervisor.alerts import build_alert_hook, build_health_probe_task
 from base.supervisor.challenge_image_updater import (
@@ -34,8 +36,13 @@ from base.supervisor.health import (
     BrokerHealthGate,
     http_health_prober,
 )
+from base.supervisor.image_ref import (
+    build_registry_digest_resolver,
+    load_registry_credentials,
+)
 from base.supervisor.image_updater import (
     DEFAULT_MASTER_IMAGE,
+    DigestResolver,
     ImageUpdateTarget,
     build_image_updater_task,
 )
@@ -47,7 +54,34 @@ from base.supervisor.self_update import (
 )
 from base.supervisor.weight_submit import build_weight_submit_task
 
+logger = logging.getLogger(__name__)
+
 BROKER_HEALTH_PROBE_INTERVAL_SECONDS = 10.0
+
+
+def _build_digest_resolver(settings: Settings) -> DigestResolver | None:
+    """Authenticated GHCR digest resolver wired from supervisor settings.
+
+    Returns None (so the image-updaters fall back to the anonymous
+    :func:`resolve_remote_digest`) unless registry credentials are resolvable —
+    keeping the PUBLIC-package path behaviour-preserving when nothing is wired.
+    """
+    sup = settings.supervisor
+    credentials = load_registry_credentials(
+        sup.registry,
+        username=sup.registry_username,
+        password=sup.registry_password,
+        password_file=sup.registry_password_file,
+        docker_config_path=sup.registry_docker_config_path,
+    )
+    if credentials is None:
+        return None
+    logger.info(
+        "image-updater: resolving %s digests with authenticated registry "
+        "credentials (private packages supported)",
+        sup.registry,
+    )
+    return build_registry_digest_resolver(credentials, registry=sup.registry)
 
 
 def build_broker_health_task(
@@ -85,6 +119,11 @@ def build_scheduled_tasks(
     health_task, gate = build_broker_health_task(settings, gate=health_gate)
     tasks: list[ScheduledTask] = [health_task]
 
+    # Authenticated GHCR digest resolver (G4): private ghcr.io/baseintelligence/*
+    # packages need a credentialed token to resolve their tag digest; None falls
+    # back to the anonymous resolver (public-package path, unchanged).
+    digest_resolver = _build_digest_resolver(settings)
+
     # Task 16 alert hook: a single config-driven webhook hook (no-op until
     # settings.observability.alert_webhook_url is set) shared by every failure
     # surface below. It IS the Task-8 AlertEmitter seam, so wiring it here makes
@@ -112,6 +151,7 @@ def build_scheduled_tasks(
         build_image_updater_task(
             settings,
             health_gate=gate,
+            resolver=digest_resolver,
             targets=(
                 ImageUpdateTarget(
                     service="base-master-proxy", image=DEFAULT_MASTER_IMAGE
@@ -123,7 +163,11 @@ def build_scheduled_tasks(
         )
     )
     # Task 19 registration point (challenge-image-updater).
-    tasks.append(build_challenge_image_updater_task(settings, health_gate=gate))
+    tasks.append(
+        build_challenge_image_updater_task(
+            settings, health_gate=gate, resolver=digest_resolver
+        )
+    )
     # Task 20 registration point (config-sync).
     # Task 28 #1: same canonical-broker call-site override; single-port
     # consolidation drops the removed `base-admin` rollout target. The proxy
@@ -154,9 +198,32 @@ def build_scheduled_tasks(
     # Startup-side rollback agent (Task 22): MUST run once before workers
     # start — it flips `current` back + exits when a pending update is
     # restart-storming (post-swap health gate). No-op outside a staged
-    # release / without a pending update.
+    # release / without a pending update. Runs UNCONDITIONALLY so a swap left
+    # pending by a previously-enabled self-update can still be rolled back even
+    # if self-update was since disabled.
     run_startup_rollback_check()
-    tasks.append(build_self_update_task(settings, health_gate=gate))
+    # Self-update is registered ONLY when explicitly enabled AND wired to a
+    # manifest URL — never registered-but-inert (no silent half-state). When
+    # disabled the task is simply absent; the supervisor performs no self-update.
+    if settings.supervisor.self_update_enabled:
+        manifest_url = settings.supervisor.self_update_manifest_url
+        if not manifest_url:
+            raise ValueError(
+                "supervisor.self_update_enabled=true requires "
+                "supervisor.self_update_manifest_url (refusing to register an "
+                "inert self-update task)"
+            )
+        tasks.append(
+            build_self_update_task(
+                settings, health_gate=gate, manifest_url=manifest_url
+            )
+        )
+        logger.info("self-update: enabled (manifest_url wired)")
+    else:
+        logger.info(
+            "self-update: disabled (supervisor.self_update_enabled=false); "
+            "task not registered"
+        )
     # Task 16 reachability probe: fires gpu_down / drand_unreachable alerts when
     # the configured GPU/drand health URLs fail. Skips each probe whose URL is
     # unset, so it is a no-op in a default deploy.

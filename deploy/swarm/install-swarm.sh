@@ -214,6 +214,26 @@ UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnb
 #                    {"hotkey":"5Val3...","validator_permit":true,"stake":1000}]'
 MOCK_METAGRAPH="${MOCK_METAGRAPH:-[]}"
 
+# ---- Control-plane supervisor auto-update (architecture.md G4; replaces
+# Watchtower). The base-supervisor.service runs the image-updater /
+# challenge-image-updater / config-sync / self-update loops on the MANAGER. The
+# image-updaters resolve PRIVATE ghcr.io/baseintelligence/* digests using the
+# manager's GHCR credentials — by default the docker config.json written by
+# ghcr_login (STEP 1b); the supervisor decodes auths["ghcr.io"].auth from it. ----
+SUPERVISOR_REGISTRY="${SUPERVISOR_REGISTRY:-ghcr.io}"
+SUPERVISOR_DOCKER_CONFIG_PATH="${SUPERVISOR_DOCKER_CONFIG_PATH:-/root/.docker/config.json}"
+# Master self-update manifest URL (Task 22). When set, base-supervisor self-update
+# is ENABLED + wired to this JSON manifest ({"version":...,"source_url":...}). When
+# EMPTY (default) self-update is EXPLICITLY DISABLED — the supervisor does not
+# register the self-update task at all (no silent inert half-state). The
+# image-updater (service digest-pin roll) is always on regardless of this.
+SUPERVISOR_SELF_UPDATE_MANIFEST_URL="${SUPERVISOR_SELF_UPDATE_MANIFEST_URL:-}"
+# base-supervisor.service install destinations + release root the unit launches
+# through (current -> releases/<version>, a uv-managed checkout; see the unit).
+SUPERVISOR_RELEASE_ROOT="${SUPERVISOR_RELEASE_ROOT:-/var/lib/base/supervisor}"
+SUPERVISOR_UNIT_SRC="${SUPERVISOR_UNIT_SRC:-${SCRIPT_DIR}/base-supervisor.service}"
+SUPERVISOR_UNIT_DST="${SUPERVISOR_UNIT_DST:-/etc/systemd/system/base-supervisor.service}"
+
 # agent-challenge own_runner eval allowlist: the worker+api gate the broker DooD
 # job image against CHALLENGE_DOCKER_ALLOWED_IMAGES (the default permits only the
 # :latest runner). Cover the DEPLOYED runner tag via a ``:*`` glob so a non-:latest
@@ -257,6 +277,7 @@ FORCE=false               # allow proceeding even if node already in a swarm.
 RESTART_DOCKERD=false      # opt-in: write daemon.json + restart dockerd (DESTRUCTIVE).
 SINGLE_NODE_PLACEMENT=false # opt-in: non-default placement override (see REVIEW).
 STATIC_CHALLENGES=false    # opt-in: create challenge services directly here.
+INSTALL_SUPERVISOR=false   # opt-in: install + enable base-supervisor.service (systemd).
 # Greenfield (no-restore) bring-up. When false (DEFAULT) the behavior is exactly
 # as before: preflight HARD-requires the k3s cutover dumps and restore_data loads
 # them. When true the script is a fresh-install path — it SKIPS the backup-dump
@@ -328,6 +349,11 @@ Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
                           (see the REVIEW block in single_node_placement_fix()).
   --static-challenges     Create challenge services directly instead of letting
                           the master orchestrator create them dynamically.
+  --install-supervisor    Install + enable base-supervisor.service (the systemd
+                          control-plane auto-update unit that REPLACES Watchtower).
+                          Decommission Watchtower FIRST (see deploy/swarm/README.md
+                          "Watchtower decommission ordering"). Without this flag the
+                          install/enable commands are printed as instructions only.
 
 Bring-up mode:
   --greenfield            Fresh install with NO k3s restore: skip the backup-dump
@@ -390,6 +416,14 @@ Optional environment:
   MASTER_PROXY_PORT / MASTER_BROKER_PORT     Published host ports for the proxy (18080) and
                                              broker (8082); flow into both the --publish and
                                              the rendered master config (proxy_port/broker_*).
+  SUPERVISOR_REGISTRY                        Registry the supervisor image-updaters
+                                             authenticate against (default: ghcr.io).
+  SUPERVISOR_DOCKER_CONFIG_PATH              docker config.json the supervisor decodes GHCR
+                                             credentials from to resolve PRIVATE digests
+                                             (default: /root/.docker/config.json).
+  SUPERVISOR_SELF_UPDATE_MANIFEST_URL        Master self-update manifest URL. Set => self-update
+                                             ENABLED + wired; empty (default) => self-update
+                                             EXPLICITLY DISABLED (no inert half-state).
 EOF
 }
 
@@ -402,6 +436,7 @@ parse_args() {
       --restart-dockerd) RESTART_DOCKERD=true ;;
       --single-node-placement) SINGLE_NODE_PLACEMENT=true ;;
       --static-challenges) STATIC_CHALLENGES=true ;;
+      --install-supervisor) INSTALL_SUPERVISOR=true ;;
       --greenfield) GREENFIELD=true ;;
       --advertise-addr) ADVERTISE_ADDR="${2:?--advertise-addr needs a value}"; shift ;;
       --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a value}"; shift ;;
@@ -905,6 +940,11 @@ deploy_master() {
 # the DB URL / admin token are mounted as docker secrets/files at runtime.
 _render_master_config() {
   log "  rendering master config -> ${MASTER_CONFIG_PATH}"
+  # Derive supervisor self-update enablement from the manifest URL: a URL means
+  # ENABLED+wired; empty means EXPLICITLY DISABLED (the supervisor never registers
+  # an inert self-update task). This avoids a silent "configured but no-op" state.
+  local supervisor_self_update_enabled="false"
+  [[ -n "${SUPERVISOR_SELF_UPDATE_MANIFEST_URL}" ]] && supervisor_self_update_enabled="true"
   # The config is written to a local staging file; in --apply it is also turned
   # into a docker config/secret object below. Render is non-secret, so we always
   # write the staging file (it documents the intended config for the reviewer).
@@ -1006,6 +1046,22 @@ gateway:
 
 observability:
   log_json: true
+
+# Control-plane supervisor (deploy/swarm/base-supervisor.service; architecture.md
+# G4). The image-updater digest-pins base-master-proxy + base-docker-broker, and
+# the challenge-image-updater rolls the challenge services, by resolving their
+# GHCR tag digests. PRIVATE ghcr.io/baseintelligence/* packages need credentials:
+# the supervisor decodes auths["${SUPERVISOR_REGISTRY}"].auth from the docker
+# config.json below (written on the manager by ghcr_login / STEP 1b), so no
+# extra secret is required. self_update_enabled is derived from
+# SUPERVISOR_SELF_UPDATE_MANIFEST_URL: set => self-update wired to that manifest;
+# empty => self-update EXPLICITLY DISABLED (the task is not registered — no inert
+# no-op). The image-updater (service digest-pin roll) is always on.
+supervisor:
+  registry: ${SUPERVISOR_REGISTRY}
+  registry_docker_config_path: ${SUPERVISOR_DOCKER_CONFIG_PATH}
+  self_update_enabled: ${supervisor_self_update_enabled}
+  self_update_manifest_url: ${SUPERVISOR_SELF_UPDATE_MANIFEST_URL:-}
 EOF
 
   if [[ "${APPLY}" == "true" ]]; then
@@ -1591,7 +1647,68 @@ _overlay_health() {
 }
 
 # ============================================================================
-# 12. OUT OF SCOPE — node teardown
+# 12. deploy_supervisor()
+#     Install + enable base-supervisor.service — the systemd control-plane
+#     auto-update unit that REPLACES Watchtower (architecture.md G4). It runs the
+#     image-updater (digest-pin roll of base-master-proxy + base-docker-broker),
+#     challenge-image-updater, config-sync, and (optionally) self-update loops.
+#
+#     The image-updaters resolve PRIVATE ghcr.io/baseintelligence/* digests using
+#     the manager's GHCR credentials (the docker config.json from ghcr_login); the
+#     supervisor: block in the rendered master config points at it. The watched
+#     images + intervals are enforced by build_scheduled_tasks (image-updater 60s,
+#     challenge-image-updater 60s, config-sync 60s, self-update 300s).
+#
+#     SAFETY: this is a host-level systemd change behind its OWN flag
+#     (--install-supervisor), NOT part of the default --apply path. Without the
+#     flag it prints the install/enable commands + the MANDATORY Watchtower
+#     decommission ordering as instructions only.
+# ============================================================================
+deploy_supervisor() {
+  log "STEP 12/12 deploy_supervisor (control-plane auto-update; REPLACES Watchtower)"
+  [[ -f "${SUPERVISOR_UNIT_SRC}" ]] || die "supervisor unit not found: ${SUPERVISOR_UNIT_SRC}"
+
+  # Watched images + intervals the supervisor's scheduled jobs enforce (config
+  # rendered into the supervisor: block of ${MASTER_CONFIG_PATH} by deploy_master).
+  log "  watched images (image-updater, 60s): base-master-proxy + base-docker-broker -> ${IMAGE_MASTER%@*}@sha256:<digest>"
+  log "  watched images (challenge-image-updater, 60s): challenge-* on their GHCR :latest tags -> :latest@sha256:<digest>"
+  log "  config-sync interval: 60s; self-update interval: 300s"
+  log "  registry digest auth: ${SUPERVISOR_REGISTRY} via ${SUPERVISOR_DOCKER_CONFIG_PATH} (decodes private baseintelligence digests)"
+  if [[ -n "${SUPERVISOR_SELF_UPDATE_MANIFEST_URL}" ]]; then
+    log "  self-update: ENABLED + wired (manifest_url=${SUPERVISOR_SELF_UPDATE_MANIFEST_URL})"
+  else
+    log "  self-update: EXPLICITLY DISABLED (no SUPERVISOR_SELF_UPDATE_MANIFEST_URL; task not registered — not inert)"
+  fi
+
+  # Watchtower decommission ordering (MANDATORY): the supervisor image-updater and
+  # Watchtower must never both manage the same services, or they race
+  # `docker service update` on base-master-proxy/base-docker-broker. Stop+remove
+  # Watchtower FIRST, then enable the supervisor.
+  log "  Watchtower decommission ordering (do BEFORE enabling the supervisor):"
+  log "    1) docker service rm platform-watchtower   # or: docker rm -f watchtower (compose/standalone)"
+  log "    2) docker ps -a | grep -i watchtower       # confirm NOTHING remains (no racing updater)"
+  log "    3) THEN install + enable base-supervisor.service (below)"
+  log "  Rollback ordering (reverse): systemctl disable --now base-supervisor.service FIRST, then re-add Watchtower."
+
+  if [[ "${INSTALL_SUPERVISOR}" == "true" ]]; then
+    warn "installing + enabling base-supervisor.service (--install-supervisor)"
+    plan install -d -m 0755 "${SUPERVISOR_RELEASE_ROOT}"
+    plan install -m 0644 "${SUPERVISOR_UNIT_SRC}" "${SUPERVISOR_UNIT_DST}"
+    plan systemctl daemon-reload
+    plan systemctl enable --now base-supervisor.service
+    log "  base-supervisor.service installed + enabled"
+  else
+    log "  --install-supervisor NOT set: skipping systemd install. To install (AFTER Watchtower is gone):"
+    log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}"
+    log "    # stage the release checkout at ${SUPERVISOR_RELEASE_ROOT}/current (uv-managed; see base-supervisor.service)"
+    log "    install -m 0644 ${SUPERVISOR_UNIT_SRC} ${SUPERVISOR_UNIT_DST}"
+    log "    systemctl daemon-reload"
+    log "    systemctl enable --now base-supervisor.service"
+  fi
+}
+
+# ============================================================================
+# 13. OUT OF SCOPE — node teardown
 # ============================================================================
 #   This script only brings the single manager node up; it performs NO teardown.
 #   Decommissioning a node is done separately, by hand (e.g. `docker swarm leave`
@@ -1618,6 +1735,7 @@ main() {
   log "  restart-dockerd     : ${RESTART_DOCKERD}   (destructive; opt-in)"
   log "  single-node-placement: ${SINGLE_NODE_PLACEMENT}  (non-default; opt-in)"
   log "  static-challenges   : ${STATIC_CHALLENGES}  (opt-in)"
+  log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
   log "  greenfield          : ${GREENFIELD}  (skip backup-dump preflight + restore_data; opt-in)"
   log "============================================================"
 
@@ -1637,7 +1755,8 @@ main() {
   deploy_master              # 9
   deploy_challenges          # 10 (master-orchestrated by default; direct via --static-challenges)
   healthcheck                # 11
-  # 12 node teardown: OUT OF SCOPE (see comment block above).
+  deploy_supervisor          # 12 (control-plane auto-update; install/enable behind --install-supervisor)
+  # 13 node teardown: OUT OF SCOPE (see comment block above).
 
   log "============================================================"
   if [[ "${APPLY}" == "true" ]]; then
