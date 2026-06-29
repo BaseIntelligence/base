@@ -90,17 +90,22 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # is pinned to the manager node (docker.sock + workspace bind) — see the manager-pin
 # rationale at the broker service-create below. The deploy CONFIG this script sets is
 # independent of the image build and reproduces as-is.
-IMAGE_MASTER="${IMAGE_MASTER:-ghcr.io/baseintelligence/base-master@sha256:838ed7ca090f276a014a9c04820b84cc48ac3833af9b37c4047dfa8677156cb7}"
-IMAGE_AGENT_CHALLENGE="${IMAGE_AGENT_CHALLENGE:-ghcr.io/baseintelligence/agent-challenge@sha256:d12690a39b0a1311ffe237001f9c2fef364303c6162111d37d3b305a8d3159c5}"
-IMAGE_PRISM="${IMAGE_PRISM:-ghcr.io/baseintelligence/prism@sha256:e052a3eced0b76424c858fcea5c04e948a6764b051a862a9b99d011a44f9ffd9}"
+# Image refs carry BOTH the mutable :latest tag AND the immutable @sha256: digest
+# (production image-reference policy form: a tag the supervisor image-updater
+# watches plus the digest the deploy pins). Override with your own
+# tag@sha256:<digest> at deploy time.
+IMAGE_MASTER="${IMAGE_MASTER:-ghcr.io/baseintelligence/base-master:latest@sha256:838ed7ca090f276a014a9c04820b84cc48ac3833af9b37c4047dfa8677156cb7}"
+IMAGE_AGENT_CHALLENGE="${IMAGE_AGENT_CHALLENGE:-ghcr.io/baseintelligence/agent-challenge:latest@sha256:d12690a39b0a1311ffe237001f9c2fef364303c6162111d37d3b305a8d3159c5}"
+IMAGE_PRISM="${IMAGE_PRISM:-ghcr.io/baseintelligence/prism:latest@sha256:e052a3eced0b76424c858fcea5c04e948a6764b051a862a9b99d011a44f9ffd9}"
 # Prism GPU evaluator (CUDA cu128 torchrun runner). Must satisfy BOTH prism
-# docker_allowed_images AND the broker broker_allowed_images (ghcr.io/baseintelligence/);
-# pre-pulled on the GPU worker so the broker eval job resolves it locally.
+# docker_allowed_images AND the broker broker_allowed_images
+# (ghcr.io/baseintelligence/prism prefix); pre-pulled on the GPU worker so the
+# broker eval job resolves it locally.
 # Uses the CI-published :latest evaluator image (digest-pinned by the deploy). The
 # runtime assets PRISM v2 forced-init re-execution needs (sentencepiece + offline
 # tiktoken/HF for the locked FineWeb-Edu pipeline) ship in that published image, so
 # no separate locally built evaluator tag is required.
-IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/baseintelligence/prism-evaluator@sha256:713b39f13af69dbaf229e67fb682df8a2b7ac93dd02d9e60867ff021d4edb3c9}"
+IMAGE_PRISM_EVALUATOR="${IMAGE_PRISM_EVALUATOR:-ghcr.io/baseintelligence/prism-evaluator:latest@sha256:713b39f13af69dbaf229e67fb682df8a2b7ac93dd02d9e60867ff021d4edb3c9}"
 IMAGE_POSTGRES="${IMAGE_POSTGRES:-postgres@sha256:0fc5c901ec0a3c55ce70b99b040daeb89d5b35b61febbced1b4b24dbc3153ec8}"
 
 # Minimum Docker engine major version required (validator runs 29.x today).
@@ -1007,6 +1012,14 @@ _render_master_config() {
   cat >"${tmp}" <<EOF
 # Rendered by deploy/swarm/install-swarm.sh (single-node Swarm bring-up).
 # backend=docker; kubernetes.broker_backend=docker (override live k8s values).
+# Force production so the image-pin / TLS / external-Postgres / broker-allowlist
+# policy guards (src/base/config/policy.py) FIRE at config load via
+# validate_settings_policy (a development default leaves them inert on the live
+# box — architecture.md sec 8, H3). This COUPLES with the narrowed
+# docker.broker_allowed_images below (a namespaced+repo allowlist the production
+# validate_allowed_image_prefixes accepts) and the tag + @sha256: digest-pinned
+# IMAGE_* refs the deploy uses.
+environment: production
 network:
   name: base
   netuid: 100
@@ -1065,8 +1078,15 @@ docker:
   broker_host: 0.0.0.0
   broker_port: ${MASTER_BROKER_PORT}
   broker_url: http://base-docker-broker:${MASTER_BROKER_PORT}
+  # Namespaced+repo allowlist (NOT the whole 'ghcr.io/baseintelligence/'
+  # namespace, which production validate_allowed_image_prefixes rejects as too
+  # broad). These two repo prefixes cover every first-party image the broker
+  # actually runs: agent-challenge* (own_runner terminal-bench runner/analyzer)
+  # and prism* (the prism-evaluator GPU re-exec job). base-master is deployed as
+  # a service, never broker-run, so it is intentionally excluded.
   broker_allowed_images:
-    - ghcr.io/baseintelligence/
+    - ghcr.io/baseintelligence/agent-challenge
+    - ghcr.io/baseintelligence/prism
   allow_privileged: true
   broker_privileged_slugs:
     - agent-challenge

@@ -1,17 +1,48 @@
 from __future__ import annotations
 
+import os
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
 from base.config.loader import load_settings
-from base.config.settings import MasterSettings, ValidatorSettings
+from base.config.policy import is_production_environment, validate_settings_policy
+from base.config.settings import MasterSettings, Settings, ValidatorSettings
 from base.security.tokens import generate_token, hash_token, verify_token
 from base.template_engine import (
     ChallengeTemplateContext,
     render_challenge_template,
 )
+
+SWARM_INSTALLER = (
+    Path(__file__).resolve().parents[2] / "deploy" / "swarm" / "install-swarm.sh"
+)
+
+# Minimal required env for the installer to reach _render_master_config in the
+# DEFAULT dry-run (mirrors the harness in test_install_swarm_master_subsystems.py).
+# Values are placeholders; the dry-run mutates nothing and prints the plan only.
+_INSTALLER_REQUIRED_ENV = {
+    "GHCR_USER": "ci-user",
+    "GHCR_TOKEN": "ci-token",
+    "BASE_ADMIN_TOKEN": "x",
+    "MASTER_DATABASE_URL": "postgresql+asyncpg://base@base-master-postgres:5432/base",
+    "MASTER_PG_PASSWORD": "x",
+    "AGENT_CHALLENGE_CHALLENGE_TOKEN": "x",
+    "AGENT_CHALLENGE_DOCKER_BROKER_TOKEN": "x",
+    "AGENT_CHALLENGE_SUBMISSION_ENV_KEY": "x",
+    "AGENT_CHALLENGE_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
+    "AGENT_CHALLENGE_PG_PASSWORD": "x",
+    "PRISM_CHALLENGE_TOKEN": "x",
+    "PRISM_DOCKER_BROKER_TOKEN": "x",
+    "PRISM_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
+    "PRISM_PG_PASSWORD": "x",
+    "OPENROUTER_API_KEY": "x",
+    "GATEWAY_TOKEN": "x",
+    "DEEPSEEK_API_KEY": "x",
+}
 
 
 def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
@@ -168,3 +199,138 @@ def test_production_settings_reject_sqlite_broad_prefixes_and_insecure_tls(
     )
     with pytest.raises(ValueError, match="too broad"):
         load_settings(config)
+
+
+def _docker_stub(bin_dir: Path) -> None:
+    """`docker` stub: recent engine, INACTIVE swarm, every `inspect` MISSES.
+
+    A missed inspect makes the installer *plan* (print) every create, so the full
+    plan (including the rendered master config) is exercised in dry-run.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "docker"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        "  version) echo '29.1.3' ;;\n"
+        "  info) echo 'inactive' ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _run_installer_dry_run(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    bin_dir = tmp_path / "bin"
+    _docker_stub(bin_dir)
+    env = dict(os.environ)
+    env.update(_INSTALLER_REQUIRED_ENV)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["BROKER_WORKSPACE_DIR"] = str(tmp_path / "broker-ws")
+    env["MASTER_CONFIG_PATH"] = str(tmp_path / "master.yaml")
+    env["GATEWAY_PUBLIC_BASE_URL"] = "http://master.example:18080"
+    return subprocess.run(
+        [
+            "bash",
+            str(SWARM_INSTALLER),
+            "--backup-dir",
+            str(tmp_path / "missing"),
+            "--greenfield",
+            "--static-challenges",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _extract_rendered_master_config(stdout: str) -> str:
+    """Reconstruct the dry-run-rendered master config YAML from installer stdout.
+
+    The dry-run prints the staged config via ``sed 's/^/      /'`` (a 6-space
+    indent, NOT through ``log()``), right after the marker line. Collect the
+    contiguous 6-space-prefixed block and strip that prefix back off.
+    """
+    lines = stdout.splitlines()
+    start = next(
+        i
+        for i, line in enumerate(lines)
+        if "master config that WOULD be written to" in line
+    )
+    body: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("      "):
+            body.append(line[6:])
+        elif line.strip() == "":
+            body.append("")
+        else:
+            break
+    return "\n".join(body)
+
+
+def test_rendered_master_config_is_production_and_passes_policy(
+    tmp_path: Path,
+) -> None:
+    """H3 guard (VAL-HARD-ENV-001): the installer-rendered master config forces
+    ``environment: production`` (so the image-pin/TLS/Postgres/broker-allowlist
+    policy guards activate) AND that config passes ``validate_settings_policy``.
+
+    Proves the narrowed ``broker_allowed_images`` is accepted by the production
+    ``validate_allowed_image_prefixes`` and the external-Postgres DB URL passes.
+    """
+    result = _run_installer_dry_run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    rendered = _extract_rendered_master_config(result.stdout)
+    data = yaml.safe_load(rendered)
+
+    # The rendered config forces production (a development default would leave the
+    # policy guards inert on the live box).
+    assert data["environment"] == "production"
+    assert is_production_environment(data["environment"])
+
+    # The narrowed broker allowlist is namespaced+repo (NOT the too-broad whole
+    # 'ghcr.io/baseintelligence/' namespace the prod policy rejects).
+    allowed = data["docker"]["broker_allowed_images"]
+    assert allowed == [
+        "ghcr.io/baseintelligence/agent-challenge",
+        "ghcr.io/baseintelligence/prism",
+    ]
+    assert "ghcr.io/baseintelligence/" not in allowed
+
+    # The full rendered config loads into Settings (which runs the policy model
+    # validator) AND passes validate_settings_policy explicitly — under production.
+    # Build directly from the parsed mapping so ambient BASE_* env cannot perturb
+    # the assertion (the model validator fires inside model_validate).
+    settings = Settings.model_validate(data)
+    assert settings.environment == "production"
+    validate_settings_policy(settings)
+
+
+def test_installer_default_image_refs_are_tag_and_digest_pinned() -> None:
+    """Production image-reference policy form: each rendered IMAGE_* default
+    carries BOTH a tag and an ``@sha256:`` digest (validate_image_reference)."""
+    from base.config.policy import validate_image_reference
+
+    text = SWARM_INSTALLER.read_text(encoding="utf-8")
+    image_defaults: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        for var in ("IMAGE_MASTER", "IMAGE_AGENT_CHALLENGE", "IMAGE_PRISM"):
+            prefix = f'{var}="${{{var}:-'
+            if stripped.startswith(prefix):
+                image_defaults[var] = stripped[len(prefix) :].rstrip('}"')
+
+    assert set(image_defaults) == {
+        "IMAGE_MASTER",
+        "IMAGE_AGENT_CHALLENGE",
+        "IMAGE_PRISM",
+    }
+    for var, ref in image_defaults.items():
+        assert ":" in ref.split("@")[0].rsplit("/", 1)[-1], f"{var} missing tag: {ref}"
+        assert "@sha256:" in ref, f"{var} missing digest: {ref}"
+        # Production policy accepts the rendered ref (tag is latest/semver; sha256).
+        validate_image_reference(ref, production=True)
