@@ -1,0 +1,64 @@
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_SYSTEM_PYTHON=1 \
+    HOME=/var/lib/base \
+    BASE_DOCKER__NETWORK_NAME=base_challenges \
+    BASE_DOCKER__SECRET_DIR=/var/lib/base/secrets \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# git: required for the challenge packages' `base @ git+...` direct-URL deps and
+# their own git+https installs. docker CLI: the validator dispatches eval
+# containers to its OWN broker, so it needs the client binary.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir uv docker
+
+RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.5.3.tgz -o /tmp/docker.tgz \
+    && tar -xzf /tmp/docker.tgz -C /tmp \
+    && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+    && rm -rf /tmp/docker /tmp/docker.tgz \
+    && docker --version
+
+# 1) The locally-built `base` package (this image's authoritative version).
+COPY . .
+RUN uv pip install --system -e ".[validator]"
+
+# 2) Both challenge dispatch packages, installed WITHOUT their deps so the
+#    git-pinned `base @ git+...` they declare does NOT clobber the local base
+#    installed above. agent_challenge (dist agent-challenge) +
+#    prism_challenge (dist prism-challenge) make both validator_dispatch modules
+#    importable for ChallengeDispatchExecutor's per-slug adapters.
+ARG AGENT_CHALLENGE_REF=main
+ARG PRISM_REF=main
+RUN uv pip install --system --no-deps \
+      "agent-challenge @ git+https://github.com/BaseIntelligence/agent-challenge.git@${AGENT_CHALLENGE_REF}" \
+      "prism-challenge @ git+https://github.com/BaseIntelligence/prism.git@${PRISM_REF}"
+
+# 3) The challenges' leaf runtime deps (everything except `base`, which base
+#    already provides). torch comes from the CPU wheel index: the validator host
+#    only needs torch IMPORTABLE; the real GPU re-execution runs in the separate
+#    broker-launched prism-evaluator container.
+RUN uv pip install --system "torch>=2.3" --index-url https://download.pytorch.org/whl/cpu \
+    && uv pip install --system \
+        cryptography substrate-interface \
+        numpy langchain-openai tiktoken sentencepiece huggingface_hub
+
+# Build-time smoke check: prove a validator built from this image can dispatch
+# BOTH challenges (base + both per-slug dispatch modules importable).
+RUN python -c "import base, agent_challenge.validator_dispatch, prism_challenge.validator_dispatch"
+
+RUN groupadd --system --gid 1000 base \
+    && useradd --system --uid 1000 --gid base --home-dir /var/lib/base --shell /usr/sbin/nologin base \
+    && mkdir -p /var/lib/base /var/lib/base/secrets /var/lib/base-db \
+    && chown -R 1000:1000 /var/lib/base /var/lib/base-db
+
+VOLUME ["/var/lib/base"]
+
+USER 1000:1000
+
+CMD ["base", "validator", "agent", "--config", "config/validator.example.yaml"]

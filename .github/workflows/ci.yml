@@ -134,6 +134,8 @@ jobs:
             dockerfile: docker/Dockerfile.validator
           - image: base-master
             dockerfile: docker/Dockerfile.master
+          - image: base-validator-runtime
+            dockerfile: docker/Dockerfile.validator-runtime
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -165,6 +167,8 @@ jobs:
             dockerfile: docker/Dockerfile.validator
           - image: base-master
             dockerfile: docker/Dockerfile.master
+          - image: base-validator-runtime
+            dockerfile: docker/Dockerfile.validator-runtime
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

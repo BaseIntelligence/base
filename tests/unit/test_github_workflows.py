@@ -75,6 +75,7 @@ def test_ci_workflow_builds_base_images_without_publishing_on_prs() -> None:
     } == {
         "base",
         "base-master",
+        "base-validator-runtime",
     }
     assert _step_uses(docker_build) >= {
         "actions/checkout@v4",
