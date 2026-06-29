@@ -225,6 +225,17 @@ UPLOAD_EXTRA_REGISTERED_HOTKEYS="${UPLOAD_EXTRA_REGISTERED_HOTKEYS:-[\"5EWKzomnb
 #   MOCK_METAGRAPH='[{"hotkey":"5Val1...","validator_permit":true,"stake":1000},
 #                    {"hotkey":"5Val2...","validator_permit":true,"stake":1000},
 #                    {"hotkey":"5Val3...","validator_permit":true,"stake":1000}]'
+#
+# SELF-DECLARED SUBNET IDENTITY (architecture.md sec 7.2/7.5): each entry may ALSO
+# carry optional "display_name" / "logo_url" keys. On the no-chain deploy there is
+# no on-chain identity, so the proxy seeds these UNTRUSTED into the identity cache
+# as the fallback the public validator directory renders (display name + logo).
+# They flow through the SAME verbatim render below (MockMetagraphNode accepts the
+# optional fields), so the 3 live test validators show a real subnet identity:
+#   MOCK_METAGRAPH='[{"hotkey":"5Val1...","validator_permit":true,"stake":1000,
+#                     "display_name":"Acme Subnet Validator",
+#                     "logo_url":"https://acme.example/logo.png"}]'
+# Omit the keys for an identicon fallback. These are NOT secrets (public metadata).
 MOCK_METAGRAPH="${MOCK_METAGRAPH:-[]}"
 
 # ---- Control-plane supervisor auto-update (architecture.md G4; replaces
@@ -445,6 +456,9 @@ Optional environment:
                                              entries seeding network.mock_metagraph for
                                              the NO-CHAIN deploy (listed validator hotkeys
                                              become permit-eligible with no live chain).
+                                             Each entry may also carry optional
+                                             display_name/logo_url (self-declared subnet
+                                             identity for the public validator directory).
                                              Empty default ([]) = OFF (live-metagraph path).
   MASTER_PROXY_CONSTRAINT                    Placement constraint for the proxy (default:
                                              node.role==manager for the no-chain deploy;
@@ -1006,6 +1020,9 @@ network:
   # keeps the seam OFF (live-metagraph path unchanged). Rendered verbatim from the
   # public MOCK_METAGRAPH env (ss58 hotkeys are NOT secrets). Miners stay
   # submit-eligible via master.upload_extra_registered_hotkeys, independent of this.
+  # Optional per-entry display_name/logo_url (architecture.md sec 7.2/7.5) ride
+  # through this same verbatim render and are seeded UNTRUSTED into the identity
+  # cache as the no-chain self-declared fallback the public directory renders.
   mock_metagraph: ${MOCK_METAGRAPH}
 
 master:

@@ -49,6 +49,14 @@ validator:
     broker_url: http://127.0.0.1:8082
     broker_token_file: /run/secrets/base_broker_token
     poll_interval_seconds: 5.0
+    # Optional self-declared subnet identity (architecture.md sec 7.2/7.5). On the
+    # no-chain deploy there is no on-chain identity, so the agent threads these
+    # UNTRUSTED into its last_seen_meta; the master reads them back as the identity
+    # fallback the PUBLIC validator directory renders (display name + logo). Give
+    # each validator a DISTINCT identity (one per hotkey); omit both for an
+    # identicon fallback. Sanitized on render — never executed/trusted.
+    display_name: "BASE Validator 1"
+    logo_url: "https://joinbase.ai/logo.svg"
 
 docker:
   # The validator's own broker endpoint + the eval-image allowlist its broker

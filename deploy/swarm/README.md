@@ -188,6 +188,13 @@ validator needs:
   validator advertises `gpu`;
 - `validator.agent.broker_url`: the validator's **own** Docker broker endpoint (it
   never dispatches to the master's broker).
+- *(optional)* `validator.agent.display_name` / `validator.agent.logo_url`: the
+  validator's **self-declared subnet identity** (display name + logo). On the
+  no-chain deploy there is no on-chain identity, so these are threaded UNTRUSTED
+  into the agent's `last_seen_meta`; the master reads them back and the public
+  validator directory renders them. Equivalently, the operator can seed the same
+  identity per entry in the master's `MOCK_METAGRAPH` (`display_name`/`logo_url`
+  keys). Omit both for an identicon fallback.
 
 No provider keys live on a validator: the master stamps a scoped per-assignment
 gateway token + the `DEEPSEEK_BASE_URL`/`OPENROUTER_BASE_URL` gateway routes into
@@ -212,11 +219,16 @@ installer reads this from `MOCK_METAGRAPH`):
 
 ```
 MOCK_METAGRAPH='[
-  {"hotkey":"<gpu-ss58>","validator_permit":true,"stake":1000},
-  {"hotkey":"<cpu1-ss58>","validator_permit":true,"stake":1000},
+  {"hotkey":"<gpu-ss58>","validator_permit":true,"stake":1000,"display_name":"BASE GPU Validator","logo_url":"https://joinbase.ai/logo.svg"},
+  {"hotkey":"<cpu1-ss58>","validator_permit":true,"stake":1000,"display_name":"BASE CPU Validator 1"},
   {"hotkey":"<cpu2-ss58>","validator_permit":true,"stake":1000}
 ]'
 ```
+
+The optional per-entry `display_name`/`logo_url` are the validators' self-declared
+subnet identity (seeded UNTRUSTED into the master identity cache as the no-chain
+fallback the public directory renders); entries without them fall back to an
+identicon.
 
 Adding a 4th validator later needs no master reconfiguration beyond appending its
 hotkey to `MOCK_METAGRAPH`: it registers, heartbeats, and the orchestration driver

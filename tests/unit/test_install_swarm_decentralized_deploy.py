@@ -305,6 +305,77 @@ def test_readme_documents_n_validator_run_path() -> None:
 
 
 # ---------------------------------------------------------------------------
+# VAL-VDIR-DEPLOY-001: self-declared validator identity (display_name/logo_url)
+# rendered per MOCK_METAGRAPH entry + carried by the validator.yaml template, so
+# the live test validators show a real subnet identity + logo on the no-chain
+# deploy. Dry-run only; existing guard tests stay green; bash -n clean.
+# ---------------------------------------------------------------------------
+
+# Distinctive per-validator self-declared identities (not collidable with any
+# other token in the plan output).
+MMG_DISPLAY_NAME_1 = "Acme Subnet Validator"
+MMG_LOGO_URL_1 = "https://logos.example/acme-validator.png"
+MMG_DISPLAY_NAME_2 = "Beta Subnet Validator"
+MMG_LOGO_URL_2 = "https://logos.example/beta-validator.png"
+MOCK_METAGRAPH_IDENTITY_JSON = (
+    f'[{{"hotkey":"{MMG_VAL_HOTKEY_1}","validator_permit":true,"stake":1000,'
+    f'"display_name":"{MMG_DISPLAY_NAME_1}","logo_url":"{MMG_LOGO_URL_1}"}},'
+    f'{{"hotkey":"{MMG_VAL_HOTKEY_2}","validator_permit":true,"stake":1000,'
+    f'"display_name":"{MMG_DISPLAY_NAME_2}","logo_url":"{MMG_LOGO_URL_2}"}}]'
+)
+
+
+def test_mock_metagraph_identity_fields_rendered_into_master_config(
+    tmp_path: Path,
+) -> None:
+    # Each MOCK_METAGRAPH entry's optional self-declared identity rides through
+    # the verbatim render into network.mock_metagraph, so the dry-run plan carries
+    # per-validator display_name + logo_url (the no-chain identity fallback).
+    result = _run(tmp_path, extra_env={"MOCK_METAGRAPH": MOCK_METAGRAPH_IDENTITY_JSON})
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+
+    assert "mock_metagraph:" in out
+    assert "display_name" in out
+    assert "logo_url" in out
+    # Both per-validator identities are present, tied to their hotkeys.
+    assert MMG_VAL_HOTKEY_1 in out
+    assert MMG_DISPLAY_NAME_1 in out
+    assert MMG_LOGO_URL_1 in out
+    assert MMG_VAL_HOTKEY_2 in out
+    assert MMG_DISPLAY_NAME_2 in out
+    assert MMG_LOGO_URL_2 in out
+
+
+def test_mock_metagraph_without_identity_omits_fields(tmp_path: Path) -> None:
+    # Identity is OPTIONAL: a MOCK_METAGRAPH with no display_name/logo_url renders
+    # neither key (identicon fallback), so the seam stays minimal when unset.
+    result = _run(tmp_path, extra_env={"MOCK_METAGRAPH": MOCK_METAGRAPH_JSON})
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    config_lines = [
+        line for line in result.stdout.splitlines() if "mock_metagraph:" in line
+    ]
+    assert config_lines, "mock_metagraph not rendered"
+    rendered = config_lines[0]
+    assert "display_name" not in rendered
+    assert "logo_url" not in rendered
+
+
+def test_validator_template_carries_self_declared_identity() -> None:
+    # The validator.yaml template documents + sets the validator.agent
+    # self-declared identity so a copied-per-validator config surfaces a real
+    # name + logo on the no-chain deploy.
+    text = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")
+    assert "display_name:" in text
+    assert "logo_url:" in text
+
+    settings = load_settings(VALIDATOR_TEMPLATE)
+    agent = settings.validator.agent
+    assert agent.display_name
+    assert agent.logo_url
+
+
+# ---------------------------------------------------------------------------
 # VAL-CODE-DEPLOY-005: dry-run default, deterministic/idempotent, bash -n clean
 # ---------------------------------------------------------------------------
 
