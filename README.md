@@ -186,6 +186,24 @@ one validator should advertise `gpu` on a single-GPU cluster (it receives the pr
 concurrency 1); the others advertise `cpu` (agent-challenge Terminal-Bench tasks). See
 `deploy/swarm/README.md` "Running N decentralized validator agents".
 
+### Validator directory
+
+Validators opt in to which challenges they validate. A validator declares its set with the
+sr25519-signed `base validator subscribe --challenges prism,agent-challenge` CLI command (POST
+`/v1/validators/subscriptions`, `set_subscriptions` in `validator_coordination.py`); the master then
+assigns only subscribed challenges to that validator. An **empty** subscription means "validate ALL
+challenges" (the `assignment.py` filter and `validator_validates_challenge` treat empty/absent as
+unrestricted, preserving back-compat), and passing an empty value clears the subscription.
+
+Each validator's display identity (name + logo) is resolved on-chain from Bittensor by hotkey
+(`query_identity`) plus the top-level subnet identity (`get_subnet_identity`) via
+`bittensor/identity_cache.py`, with a self-declared fallback (the no-chain `mock_metagraph` seed or
+the validator-config values surfaced through `last_seen_meta`); self-declared identity is UNTRUSTED.
+The open (no-token) `GET /v1/validators/public` (and `?challenge=<slug>` to narrow to validators that
+validate that slug) serves the directory with **safe fields only** (hotkey, uid, status/online,
+capabilities, subscriptions, last heartbeat, resolved identity); it NEVER exposes raw
+`last_seen_meta`, tokens, or secrets.
+
 ---
 
 ## What BASE Does
@@ -261,6 +279,22 @@ BASE uses a Docker Swarm only first-party deployment path and keeps Dockerfiles 
 - Broker image allowlists should stay scoped to `ghcr.io/baseintelligence/` unless a deployment explicitly adds another trusted registry namespace.
 
 See `deploy/swarm/` for the installer, supervisor unit, submitter, and `daemon.json` templates that define the production deployment.
+
+### Production hardening
+
+The bring-up is pre-mainnet hardened. `install-swarm.sh` renders the master config with
+`environment: production`, so the policy guards in `src/base/config/policy.py` (image-pin, TLS,
+external-Postgres, and broker-allowlist) FIRE at config load via `validate_settings_policy` instead
+of staying inert on a development default. That couples with a **narrowed**
+`docker.broker_allowed_images` (the `ghcr.io/baseintelligence/agent-challenge` and
+`ghcr.io/baseintelligence/prism` repo prefixes only, not the whole namespace) and tag + `@sha256:`
+digest-pinned `IMAGE_*` refs. The well-known `//Alice` dev keypair is DELIBERATELY ABSENT from the
+default `master.upload_extra_registered_hotkeys` allowlist, so a test key is submit-eligible only via
+an explicit operator opt-in. Observability is wired uniformly: every CLI entrypoint calls
+`_configure_observability`, which initializes Sentry (`init_sentry`) and OTEL (`init_otel`, with the
+OTLP exporter when an endpoint is set) and stays no-op safe when unconfigured. See
+`deploy/swarm/README.md` "Mainnet deploy prerequisites" for the required secrets, GHCR credentials,
+and placement runbook.
 
 ## PRISM Evaluation Data Plane
 
