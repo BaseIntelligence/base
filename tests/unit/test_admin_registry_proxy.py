@@ -74,6 +74,10 @@ def _prism_payload() -> dict[str, Any]:
     [
         ("leaderboard", "/v1/leaderboard"),
         ("architectures", "/v1/architectures"),
+        ("architectures/arch-1", "/v1/architectures/arch-1"),
+        ("architectures/arch-1/variants", "/v1/architectures/arch-1/variants"),
+        ("architectures/arch-1/report", "/v1/architectures/arch-1/report"),
+        ("submissions/sub-1/curve", "/v1/submissions/sub-1/curve"),
         ("training-variants", "/v1/training-variants"),
         ("epochs", "/v1/epochs"),
         ("epochs/current", "/v1/epochs/current"),
@@ -89,6 +93,9 @@ def _prism_payload() -> dict[str, Any]:
         ("gpu/status-extra", "gpu/status-extra"),
         ("health/eval-jobs-extra", "health/eval-jobs-extra"),
         ("submissions/sub-1/events", "submissions/sub-1/events"),
+        ("internal/v1/get_weights", "internal/v1/get_weights"),
+        ("health", "health"),
+        ("version", "version"),
     ],
 )
 def test_prism_upstream_proxy_path_maps_only_public_routes(
@@ -835,6 +842,119 @@ def test_prism_public_proxy_routes_forward_to_public_surface() -> None:
         assert upstream_headers["x-public-header"] == "forward-me"
         assert "authorization" not in upstream_headers
         assert "x-admin-token" not in upstream_headers
+
+
+def test_prism_architecture_lab_routes_forward_to_public_surface() -> None:
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_prism_payload()))
+    captured: dict[str, dict[str, Any]] = {}
+    challenge_app = FastAPI()
+
+    async def record(route_name: str, request: Request) -> dict[str, Any]:
+        captured[route_name] = {
+            "path": request.url.path,
+            "query": request.url.query,
+        }
+        return {"route": route_name}
+
+    @challenge_app.get("/v1/architectures")
+    async def architectures(request: Request) -> dict[str, Any]:
+        return await record("architectures", request)
+
+    @challenge_app.get("/v1/architectures/{architecture_id}")
+    async def architecture(architecture_id: str, request: Request) -> dict[str, Any]:
+        return await record("architecture", request)
+
+    @challenge_app.get("/v1/architectures/{architecture_id}/variants")
+    async def architecture_variants(
+        architecture_id: str, request: Request
+    ) -> dict[str, Any]:
+        return await record("architecture_variants", request)
+
+    @challenge_app.get("/v1/architectures/{architecture_id}/report")
+    async def architecture_report(
+        architecture_id: str, request: Request
+    ) -> dict[str, Any]:
+        return await record("architecture_report", request)
+
+    @challenge_app.get("/v1/submissions/{submission_id}/curve")
+    async def submission_curve(submission_id: str, request: Request) -> dict[str, Any]:
+        return await record("submission_curve", request)
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-prism:8000"
+        ) as client:
+            yield client
+
+    proxy_client = TestClient(_proxy_app(registry, client_factory=client_factory))
+    requests = [
+        ("/challenges/prism/architectures?epoch_id=42", "architectures"),
+        ("/challenges/prism/architectures/arch-1", "architecture"),
+        ("/challenges/prism/architectures/arch-1/variants", "architecture_variants"),
+        ("/challenges/prism/architectures/arch-1/report", "architecture_report"),
+        ("/challenges/prism/submissions/sub-1/curve", "submission_curve"),
+    ]
+
+    for path, route_name in requests:
+        response = proxy_client.get(path)
+
+        assert response.status_code == 200
+        assert response.json()["route"] == route_name
+
+    assert captured["architectures"]["path"] == "/v1/architectures"
+    assert captured["architectures"]["query"] == "epoch_id=42"
+    assert captured["architecture"]["path"] == "/v1/architectures/arch-1"
+    assert captured["architecture_variants"]["path"] == (
+        "/v1/architectures/arch-1/variants"
+    )
+    assert captured["architecture_report"]["path"] == (
+        "/v1/architectures/arch-1/report"
+    )
+    assert captured["submission_curve"]["path"] == "/v1/submissions/sub-1/curve"
+
+
+def test_prism_lab_proxy_keeps_internal_and_private_paths_blocked() -> None:
+    for path in (
+        "internal/v1/get_weights",
+        "internal/v1/worker/process-next",
+        "health",
+        "version",
+    ):
+        assert is_blocked_proxy_path(path)
+        assert prism_upstream_proxy_path("prism", path) == path
+
+    registry = ChallengeRegistry()
+    registry.create(ChallengeCreate(**_prism_payload()))
+    challenge_app = FastAPI()
+    captured_paths: list[str] = []
+
+    @challenge_app.api_route("/{path:path}", methods=["GET"])
+    async def catch_all(path: str, request: Request) -> dict[str, str]:
+        captured_paths.append(request.url.path)
+        return {"path": request.url.path}
+
+    @asynccontextmanager
+    async def client_factory():
+        transport = httpx.ASGITransport(app=challenge_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://challenge-prism:8000"
+        ) as client:
+            yield client
+
+    proxy_client = TestClient(_proxy_app(registry, client_factory=client_factory))
+    for path in (
+        "/challenges/prism/internal/v1/get_weights",
+        "/challenges/prism/health",
+        "/challenges/prism/version",
+    ):
+        response = proxy_client.get(path)
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Proxy path is not allowed"
+    assert captured_paths == []
 
 
 def test_prism_proxy_does_not_remap_public_route_suffix_neighbors() -> None:

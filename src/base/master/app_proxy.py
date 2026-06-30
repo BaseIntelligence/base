@@ -139,10 +139,16 @@ def prism_upstream_proxy_path(slug: str, path: str) -> str:
         return path
     if normalized.startswith("/v1/"):
         return normalized
+    if is_blocked_proxy_path(normalized):
+        return path
     if normalized in PRISM_EXACT_PUBLIC_PATHS:
         return f"/v1{normalized}"
     parts = [part for part in normalized.split("/") if part]
+    if parts and parts[0] == "architectures":
+        return f"/v1{normalized}"
     if len(parts) == 2 and parts[0] == "submissions":
+        return f"/v1{normalized}"
+    if len(parts) == 3 and parts[0] == "submissions" and parts[2] == "curve":
         return f"/v1{normalized}"
     return path
 
