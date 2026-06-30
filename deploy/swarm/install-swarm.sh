@@ -264,6 +264,46 @@ SUPERVISOR_SELF_UPDATE_MANIFEST_URL="${SUPERVISOR_SELF_UPDATE_MANIFEST_URL:-}"
 SUPERVISOR_RELEASE_ROOT="${SUPERVISOR_RELEASE_ROOT:-/var/lib/base/supervisor}"
 SUPERVISOR_UNIT_SRC="${SUPERVISOR_UNIT_SRC:-${SCRIPT_DIR}/base-supervisor.service}"
 SUPERVISOR_UNIT_DST="${SUPERVISOR_UNIT_DST:-/etc/systemd/system/base-supervisor.service}"
+# Release-staging source + version (G-B1). deploy_supervisor STAGES the unit's
+# `current -> releases/<version>` checkout (cp + `uv sync`) and atomically points
+# `current` at it BEFORE `systemctl enable --now`, so the unit ExecStart
+# (`uv run --project ${SUPERVISOR_RELEASE_ROOT}/current base master supervisor`)
+# actually boots. The source is THIS repo checkout (the deploy/swarm dir is two
+# levels under the repo root). The version is filesystem-safe per
+# AvailableRelease.__post_init__ — a 12-char git sha when available, else a UTC
+# timestamp; override with SUPERVISOR_RELEASE_VERSION for a reproducible name.
+SUPERVISOR_RELEASE_SOURCE="${SUPERVISOR_RELEASE_SOURCE:-${SCRIPT_DIR}/../..}"
+SUPERVISOR_RELEASE_VERSION="${SUPERVISOR_RELEASE_VERSION:-}"
+
+# ---- Validator-NODE bring-up (--validator-node; architecture.md sec 9 G-B3).
+# Runs `base validator agent` as an AUTO-UPDATABLE Docker-Swarm service on the
+# validator node's OWN swarm, plus a node-local base-supervisor whose image-updater
+# digest-pins that service on every new base-validator-runtime:latest digest (so the
+# validator's `base` code auto-rolls with NO manual update). The service name +
+# watched image MUST match the m6 validator-agent updater target
+# (SupervisorSettings.validator_agent_service / validator_agent_image). ----
+IMAGE_VALIDATOR_RUNTIME="${IMAGE_VALIDATOR_RUNTIME:-ghcr.io/baseintelligence/base-validator-runtime:latest}"
+# Mutable tag form (strip any @sha256: digest) the supervisor image-updater watches;
+# the updater REJECTS an already-digest-pinned target image (it pins the digest
+# itself). NOT a separate deploy image — a derived view of IMAGE_VALIDATOR_RUNTIME.
+VALIDATOR_AGENT_IMAGE_TAG="${IMAGE_VALIDATOR_RUNTIME%@*}"
+VALIDATOR_AGENT_SERVICE="${VALIDATOR_AGENT_SERVICE:-base-validator-agent}"
+VALIDATOR_CONFIG_PATH="${VALIDATOR_CONFIG_PATH:-/etc/base/validator.yaml}"
+VALIDATOR_WALLET_PATH="${VALIDATOR_WALLET_PATH:-/var/lib/base/wallets}"
+VALIDATOR_WALLET_NAME="${VALIDATOR_WALLET_NAME:-validator-1}"
+# ["cpu"] => agent-challenge Terminal-Bench 2.1 only; ["gpu","cpu"] => also prism
+# GPU re-exec (concurrency 1). JSON array, rendered verbatim into validator.yaml.
+VALIDATOR_CAPABILITIES="${VALIDATOR_CAPABILITIES:-[\"cpu\"]}"
+# Master coordination plane + LLM gateway root advertised to the agent (the
+# manager's published proxy host:port). Defaults to the advertise-addr proxy port.
+VALIDATOR_MASTER_URL="${VALIDATOR_MASTER_URL:-http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT}}"
+# This validator's OWN Docker broker endpoint (its private executor backend) —
+# never the master's broker. Defaults to the node-local broker port.
+VALIDATOR_BROKER_URL="${VALIDATOR_BROKER_URL:-http://127.0.0.1:${MASTER_BROKER_PORT}}"
+# Optional self-declared subnet identity threaded into the agent's last_seen_meta
+# (architecture.md sec 7.2/7.5); omit both for an identicon fallback.
+VALIDATOR_DISPLAY_NAME="${VALIDATOR_DISPLAY_NAME:-}"
+VALIDATOR_LOGO_URL="${VALIDATOR_LOGO_URL:-}"
 
 # agent-challenge own_runner eval allowlist: the worker+api gate the broker DooD
 # job image against CHALLENGE_DOCKER_ALLOWED_IMAGES (the default permits only the
@@ -318,6 +358,8 @@ RESTART_DOCKERD=false      # opt-in: write daemon.json + restart dockerd (DESTRU
 SINGLE_NODE_PLACEMENT=false # opt-in: non-default placement override (see REVIEW).
 STATIC_CHALLENGES=false    # opt-in: create challenge services directly here.
 INSTALL_SUPERVISOR=false   # opt-in: install + enable base-supervisor.service (systemd).
+VALIDATOR_NODE=false       # opt-in: bring up a VALIDATOR node (auto-updatable agent
+                           # + node-local supervisor) instead of the master+challenges.
 # Greenfield (no-restore) bring-up. When false (DEFAULT) the behavior is exactly
 # as before: preflight HARD-requires the k3s cutover dumps and restore_data loads
 # them. When true the script is a fresh-install path — it SKIPS the backup-dump
@@ -414,9 +456,22 @@ Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
                           the master orchestrator create them dynamically.
   --install-supervisor    Install + enable base-supervisor.service (the systemd
                           control-plane auto-update unit that REPLACES Watchtower).
-                          Decommission Watchtower FIRST (see deploy/swarm/README.md
-                          "Watchtower decommission ordering"). Without this flag the
-                          install/enable commands are printed as instructions only.
+                          MANDATORY CUTOVER STEP: decommission Watchtower FIRST (see
+                          deploy/swarm/README.md "Watchtower decommission ordering").
+                          The install path STAGES the unit's release checkout
+                          (releases/<version> + `uv sync`) and atomically points
+                          `current` at it BEFORE enabling, so the unit boots. Without
+                          this flag the staging/install/enable commands are printed as
+                          instructions only.
+
+Validator-node bring-up:
+  --validator-node        Bring up a VALIDATOR NODE instead of the master+challenges:
+                          a `base validator agent` AUTO-UPDATABLE Swarm service
+                          (base-validator-agent) on this node's OWN swarm plus a
+                          node-local base-supervisor whose image-updater digest-pins
+                          that service on every new base-validator-runtime:latest
+                          digest. Combine with --install-supervisor to enable the
+                          node's supervisor unit (dry-run prints the plan otherwise).
 
 Bring-up mode:
   --greenfield            Fresh install with NO k3s restore: skip the backup-dump
@@ -492,6 +547,28 @@ Optional environment:
   SUPERVISOR_SELF_UPDATE_MANIFEST_URL        Master self-update manifest URL. Set => self-update
                                              ENABLED + wired; empty (default) => self-update
                                              EXPLICITLY DISABLED (no inert half-state).
+  SUPERVISOR_RELEASE_SOURCE                  Repo checkout the supervisor release is staged from
+                                             (default: this repo, two levels above deploy/swarm).
+  SUPERVISOR_RELEASE_VERSION                 Staged release name under releases/<version>
+                                             (default: 12-char git sha, else a UTC timestamp).
+
+Validator-node environment (with --validator-node):
+  IMAGE_VALIDATOR_RUNTIME                    base validator agent image (default:
+                                             ghcr.io/baseintelligence/base-validator-runtime:latest).
+  VALIDATOR_AGENT_SERVICE                    Swarm service name for the agent (default:
+                                             base-validator-agent; MUST match the supervisor
+                                             validator_agent_service updater target).
+  VALIDATOR_BROKER_TOKEN                     REQUIRED: the validator's own broker token
+                                             (mounted at /run/secrets/base_broker_token).
+  VALIDATOR_CONFIG_PATH                      Rendered validator.yaml path (default:
+                                             /etc/base/validator.yaml).
+  VALIDATOR_CAPABILITIES                     JSON capabilities array (default: ["cpu"]).
+  VALIDATOR_MASTER_URL                       Master coordination/gateway root (default:
+                                             http://<advertise-addr>:<proxy-port>).
+  VALIDATOR_BROKER_URL                       The validator's OWN broker endpoint (default:
+                                             http://127.0.0.1:<broker-port>).
+  VALIDATOR_WALLET_NAME / VALIDATOR_WALLET_PATH  Validator hotkey wallet name + host path.
+  VALIDATOR_DISPLAY_NAME / VALIDATOR_LOGO_URL    Optional self-declared subnet identity.
 EOF
 }
 
@@ -505,6 +582,7 @@ parse_args() {
       --single-node-placement) SINGLE_NODE_PLACEMENT=true ;;
       --static-challenges) STATIC_CHALLENGES=true ;;
       --install-supervisor) INSTALL_SUPERVISOR=true ;;
+      --validator-node) VALIDATOR_NODE=true ;;
       --greenfield) GREENFIELD=true ;;
       --advertise-addr) ADVERTISE_ADDR="${2:?--advertise-addr needs a value}"; shift ;;
       --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a value}"; shift ;;
@@ -549,9 +627,12 @@ preflight() {
   fi
 
   # Backup dir + dump files. In --greenfield this requirement is SKIPPED: there
-  # are no k3s dumps to restore, so the empty DBs bootstrap via migrations.
+  # are no k3s dumps to restore, so the empty DBs bootstrap via migrations. A
+  # --validator-node bring-up never restores the master DBs either, so it skips too.
   if [[ "${GREENFIELD}" == "true" ]]; then
     log "  --greenfield set: SKIPPING backup-dump preflight (fresh DBs via migrations/bootstrap)"
+  elif [[ "${VALIDATOR_NODE}" == "true" ]]; then
+    log "  --validator-node set: SKIPPING backup-dump preflight (validator nodes restore no master DBs)"
   else
     [[ -d "${BACKUP_DIR}" ]] || die "backup dir not found: ${BACKUP_DIR}"
     local dump
@@ -1781,6 +1862,48 @@ _overlay_health() {
   fi
 }
 
+# _supervisor_release_version — resolve the staged release name (filesystem-safe
+# per AvailableRelease.__post_init__). Explicit SUPERVISOR_RELEASE_VERSION wins;
+# else a 12-char git sha of the source checkout; else a UTC timestamp. Read-only.
+_supervisor_release_version() {
+  if [[ -n "${SUPERVISOR_RELEASE_VERSION}" ]]; then
+    printf '%s' "${SUPERVISOR_RELEASE_VERSION}"
+    return 0
+  fi
+  local v
+  v="$(git -C "${SCRIPT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  [[ -n "${v}" ]] || v="$(date -u +%Y%m%d%H%M%S)"
+  printf '%s' "${v}"
+}
+
+# _stage_supervisor_release ROOT — materialize the unit's release checkout under
+# ROOT/releases/<version> (a uv-managed checkout) and atomically point ROOT/current
+# at it (G-B1). MUST run BEFORE `systemctl enable --now`: the unit ExecStart is
+# `uv run --project ROOT/current base master supervisor`, so without a staged
+# `current` the unit cannot boot. Mirrors self_update's releases/<version> layout
+# and atomic_symlink_swap (temp symlink + `mv -T`), so `current` always points at a
+# COMPLETE release dir.
+_stage_supervisor_release() {
+  local release_root="$1" version releases_dir release_dir current_link
+  version="$(_supervisor_release_version)"
+  releases_dir="${release_root}/releases"
+  release_dir="${releases_dir}/${version}"
+  current_link="${release_root}/current"
+
+  log "  staging release ${release_dir} (checkout + uv sync), then atomically point"
+  log "    current -> releases/${version} BEFORE enable (the unit runs"
+  log "    'uv run --project ${current_link} base master supervisor', so current MUST exist first)"
+  plan install -d -m 0755 "${releases_dir}"
+  # Materialize the immutable release checkout from this repo (the source the unit runs).
+  plan cp -a "${SUPERVISOR_RELEASE_SOURCE}/." "${release_dir}/"
+  # Provision the per-release uv venv so `uv run --project current` resolves offline.
+  plan env "UV_CACHE_DIR=${release_root}/uv-cache" uv sync --project "${release_dir}"
+  # Atomically flip current -> releases/<version> (relative temp symlink + `mv -T`),
+  # mirroring self_update.atomic_symlink_swap.
+  plan ln -sfn "releases/${version}" "${current_link}.staging"
+  plan mv -T "${current_link}.staging" "${current_link}"
+}
+
 # ============================================================================
 # 12. deploy_supervisor()
 #     Install + enable base-supervisor.service — the systemd control-plane
@@ -1804,9 +1927,16 @@ deploy_supervisor() {
   [[ -f "${SUPERVISOR_UNIT_SRC}" ]] || die "supervisor unit not found: ${SUPERVISOR_UNIT_SRC}"
 
   # Watched images + intervals the supervisor's scheduled jobs enforce (config
-  # rendered into the supervisor: block of ${MASTER_CONFIG_PATH} by deploy_master).
-  log "  watched images (image-updater, 60s): base-master-proxy + base-docker-broker -> ${IMAGE_MASTER%@*}@sha256:<digest>"
-  log "  watched images (challenge-image-updater, 60s): challenge-* on their GHCR :latest tags -> :latest@sha256:<digest>"
+  # rendered into the supervisor: block of ${MASTER_CONFIG_PATH}).
+  if [[ "${VALIDATOR_NODE}" == "true" ]]; then
+    # Node-local validator supervisor: image-updater watches ONLY this node's agent
+    # service (validator_agent_target_enabled; image_updater_targets: [] drops the
+    # master proxy/broker targets, which do not run on a validator node).
+    log "  watched image (image-updater, 60s): ${VALIDATOR_AGENT_SERVICE} -> ${VALIDATOR_AGENT_IMAGE_TAG}@sha256:<digest>"
+  else
+    log "  watched images (image-updater, 60s): base-master-proxy + base-docker-broker -> ${IMAGE_MASTER%@*}@sha256:<digest>"
+    log "  watched images (challenge-image-updater, 60s): challenge-* on their GHCR :latest tags -> :latest@sha256:<digest>"
+  fi
   log "  config-sync interval: 60s; self-update interval: 300s"
   log "  registry digest auth: ${SUPERVISOR_REGISTRY} via ${SUPERVISOR_DOCKER_CONFIG_PATH} (decodes private baseintelligence digests)"
   if [[ -n "${SUPERVISOR_SELF_UPDATE_MANIFEST_URL}" ]]; then
@@ -1828,18 +1958,220 @@ deploy_supervisor() {
   if [[ "${INSTALL_SUPERVISOR}" == "true" ]]; then
     warn "installing + enabling base-supervisor.service (--install-supervisor)"
     plan install -d -m 0755 "${SUPERVISOR_RELEASE_ROOT}"
+    # STAGE current -> releases/<version> (checkout + uv sync) BEFORE enable so the
+    # unit's ExecStart (--project ${SUPERVISOR_RELEASE_ROOT}/current) actually boots.
+    _stage_supervisor_release "${SUPERVISOR_RELEASE_ROOT}"
     plan install -m 0644 "${SUPERVISOR_UNIT_SRC}" "${SUPERVISOR_UNIT_DST}"
     plan systemctl daemon-reload
     plan systemctl enable --now base-supervisor.service
-    log "  base-supervisor.service installed + enabled"
+    log "  base-supervisor.service installed + enabled (current staged before enable)"
   else
-    log "  --install-supervisor NOT set: skipping systemd install. To install (AFTER Watchtower is gone):"
+    log "  --install-supervisor NOT set: skipping systemd install. MANDATORY CUTOVER STEP"
+    log "  (run AFTER Watchtower is gone — stage current BEFORE enable or the unit cannot boot):"
     log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}"
-    log "    # stage the release checkout at ${SUPERVISOR_RELEASE_ROOT}/current (uv-managed; see base-supervisor.service)"
+    log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}/releases"
+    log "    cp -a ${SUPERVISOR_RELEASE_SOURCE}/. ${SUPERVISOR_RELEASE_ROOT}/releases/<version>/   # checkout"
+    log "    env UV_CACHE_DIR=${SUPERVISOR_RELEASE_ROOT}/uv-cache uv sync --project ${SUPERVISOR_RELEASE_ROOT}/releases/<version>"
+    log "    ln -sfn releases/<version> ${SUPERVISOR_RELEASE_ROOT}/current.staging && mv -T ${SUPERVISOR_RELEASE_ROOT}/current.staging ${SUPERVISOR_RELEASE_ROOT}/current"
     log "    install -m 0644 ${SUPERVISOR_UNIT_SRC} ${SUPERVISOR_UNIT_DST}"
     log "    systemctl daemon-reload"
     log "    systemctl enable --now base-supervisor.service"
   fi
+}
+
+# ============================================================================
+# V. Validator-NODE bring-up (--validator-node; architecture.md sec 9 G-B3)
+#    Runs `base validator agent` as an AUTO-UPDATABLE Swarm service on this node's
+#    OWN swarm, plus a node-local base-supervisor whose image-updater digest-pins
+#    that service on every new base-validator-runtime:latest digest. The validator's
+#    `base` code therefore auto-updates with NO manual roll.
+# ============================================================================
+
+# Render the node-local SUPERVISOR config (the host file the base-supervisor.service
+# unit reads at ${MASTER_CONFIG_PATH}). It watches ONLY this node's validator-agent
+# service: image_updater_targets: [] drops the master proxy/broker targets (absent on
+# a validator node) and validator_agent_target_enabled appends the agent target
+# tracking the mutable base-validator-runtime:latest tag (resolve_image_update_targets).
+_render_validator_supervisor_config() {
+  log "  rendering validator-node supervisor config -> ${MASTER_CONFIG_PATH}"
+  local supervisor_self_update_enabled="false"
+  [[ -n "${SUPERVISOR_SELF_UPDATE_MANIFEST_URL}" ]] && supervisor_self_update_enabled="true"
+  local tmp
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
+# Rendered by deploy/swarm/install-swarm.sh (--validator-node bring-up). This is the
+# node-local base-supervisor config — it runs the image-updater that auto-rolls the
+# ${VALIDATOR_AGENT_SERVICE} swarm service on a new base-validator-runtime:latest
+# digest (and optionally the base self-update). It does NOT run the master proxy/broker.
+network:
+  name: base
+  netuid: 100
+  chain_endpoint: ''
+  wallet_name: ${VALIDATOR_WALLET_NAME}
+  wallet_hotkey: default
+  wallet_path: ${VALIDATOR_WALLET_PATH}
+
+runtime:
+  backend: docker
+
+observability:
+  log_json: true
+  otel_service_name: base-validator-supervisor
+
+# Node-local supervisor (architecture.md sec 9 G-A5/G-B3). image_updater_targets: []
+# drops the master proxy/broker targets (they do NOT run on a validator node);
+# validator_agent_target_enabled appends the validator-agent target tracking the
+# mutable ${VALIDATOR_AGENT_IMAGE_TAG} tag so this node's agent service auto-rolls.
+# Registry digest auth via the node's docker config.json. self_update_enabled is
+# derived from SUPERVISOR_SELF_UPDATE_MANIFEST_URL (set => base code self-updates;
+# empty => EXPLICITLY DISABLED, no inert half-state).
+supervisor:
+  registry: ${SUPERVISOR_REGISTRY}
+  registry_docker_config_path: ${SUPERVISOR_DOCKER_CONFIG_PATH}
+  image_updater_targets: []
+  validator_agent_target_enabled: true
+  validator_agent_service: ${VALIDATOR_AGENT_SERVICE}
+  validator_agent_image: ${VALIDATOR_AGENT_IMAGE_TAG}
+  self_update_enabled: ${supervisor_self_update_enabled}
+  self_update_manifest_url: ${SUPERVISOR_SELF_UPDATE_MANIFEST_URL:-}
+EOF
+  if [[ "${APPLY}" == "true" ]]; then
+    install -D -m 0644 "${tmp}" "${MASTER_CONFIG_PATH}"
+    rm -f "${tmp}"
+    log "  wrote ${MASTER_CONFIG_PATH}"
+  else
+    log "  (dry-run) validator-node supervisor config that WOULD be written to ${MASTER_CONFIG_PATH}:"
+    sed 's/^/      /' "${tmp}"
+    rm -f "${tmp}"
+  fi
+}
+
+# Render the per-validator AGENT config (validator.yaml) the swarm service mounts.
+_render_validator_agent_config() {
+  log "  rendering validator agent config -> ${VALIDATOR_CONFIG_PATH}"
+  local identity=""
+  [[ -n "${VALIDATOR_DISPLAY_NAME}" ]] && identity+=$'\n'"    display_name: \"${VALIDATOR_DISPLAY_NAME}\""
+  [[ -n "${VALIDATOR_LOGO_URL}" ]] && identity+=$'\n'"    logo_url: \"${VALIDATOR_LOGO_URL}\""
+  local tmp
+  tmp="$(mktemp)"
+  cat >"${tmp}" <<EOF
+# Rendered by deploy/swarm/install-swarm.sh (--validator-node bring-up).
+# ONE wallet hotkey == ONE validator == ONE ${VALIDATOR_AGENT_SERVICE} service. The
+# hotkey ss58 MUST be listed in the master's network.mock_metagraph (validator_permit
+# =true) so the no-chain eligibility auth accepts it. No provider key lives here: the
+# master stamps a scoped per-assignment gateway token into each pulled assignment.
+network:
+  name: base
+  netuid: 100
+  chain_endpoint: ''
+  wallet_name: ${VALIDATOR_WALLET_NAME}
+  wallet_hotkey: default
+  wallet_path: ${VALIDATOR_WALLET_PATH}
+
+validator:
+  registry_url: ${VALIDATOR_MASTER_URL}
+  agent:
+    master_url: ${VALIDATOR_MASTER_URL}
+    gateway_url: ${VALIDATOR_MASTER_URL}
+    capabilities: ${VALIDATOR_CAPABILITIES}
+    broker_url: ${VALIDATOR_BROKER_URL}
+    broker_token_file: /run/secrets/base_broker_token
+    poll_interval_seconds: 5.0${identity}
+
+docker:
+  broker_url: ${VALIDATOR_BROKER_URL}
+  broker_allowed_images:
+    - ghcr.io/baseintelligence/
+
+observability:
+  log_json: true
+  otel_service_name: base-validator
+EOF
+  if [[ "${APPLY}" == "true" ]]; then
+    install -D -m 0644 "${tmp}" "${VALIDATOR_CONFIG_PATH}"
+    rm -f "${tmp}"
+    log "  wrote ${VALIDATOR_CONFIG_PATH}"
+  else
+    log "  (dry-run) validator agent config that WOULD be written to ${VALIDATOR_CONFIG_PATH}:"
+    sed 's/^/      /' "${tmp}"
+    rm -f "${tmp}"
+  fi
+}
+
+# Publish the rendered validator.yaml as a docker config object the agent service mounts.
+_ensure_validator_config_object() {
+  local cfg_obj="base_validator_yaml"
+  if docker config inspect "${cfg_obj}" >/dev/null 2>&1; then
+    log "  docker config ${cfg_obj} already exists — skipping (rotate out-of-band)"
+    return 0
+  fi
+  if [[ "${APPLY}" == "true" ]]; then
+    plan docker config create "${cfg_obj}" "${VALIDATOR_CONFIG_PATH}"
+  else
+    log "  (dry-run) would: docker config create ${cfg_obj} ${VALIDATOR_CONFIG_PATH}"
+  fi
+}
+
+deploy_validator() {
+  log "STEP V deploy_validator (auto-updatable ${VALIDATOR_AGENT_SERVICE} swarm service)"
+  _render_validator_agent_config
+  _ensure_validator_config_object
+  # The validator's OWN broker token (its private executor backend auth), mounted at
+  # /run/secrets/base_broker_token (validator.agent.broker_token_file above).
+  _ensure_secret "base_broker_token" VALIDATOR_BROKER_TOKEN
+
+  if docker service inspect "${VALIDATOR_AGENT_SERVICE}" >/dev/null 2>&1; then
+    log "  service ${VALIDATOR_AGENT_SERVICE} already exists — skipping (idempotent)"
+    return 0
+  fi
+  log "  AUTO-UPDATABLE: the node-local base-supervisor image-updater"
+  log "  (validator_agent_target_enabled) digest-pins ${VALIDATOR_AGENT_SERVICE} to"
+  log "  ${VALIDATOR_AGENT_IMAGE_TAG}@sha256:<digest> on every new digest, so the"
+  log "  validator's base code AUTO-UPDATES with NO manual roll."
+  plan docker service create \
+    --name "${VALIDATOR_AGENT_SERVICE}" \
+    --replicas 1 \
+    --restart-condition any \
+    --hostname "${VALIDATOR_AGENT_SERVICE}" \
+    --with-registry-auth \
+    --config "source=base_validator_yaml,target=${VALIDATOR_CONFIG_PATH}" \
+    --secret "source=base_broker_token,target=base_broker_token" \
+    --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH},readonly" \
+    --env "BASE_CONFIG=${VALIDATOR_CONFIG_PATH}" \
+    "${IMAGE_VALIDATOR_RUNTIME}" \
+    base validator agent --config "${VALIDATOR_CONFIG_PATH}"
+}
+
+# Validator-NODE bring-up sequence (invoked from main when --validator-node is set).
+main_validator_node() {
+  log "============================================================"
+  log "BASE validator-NODE bring-up (auto-updatable agent + supervisor)"
+  if [[ "${APPLY}" == "true" ]]; then
+    warn "RUNNING IN --apply MODE: mutating commands WILL execute."
+  else
+    log "DRY-RUN (default): printing planned actions only. Pass --apply to execute."
+  fi
+  log "  advertise-addr      : ${ADVERTISE_ADDR}"
+  log "  master-config       : ${MASTER_CONFIG_PATH}  (node-local supervisor config)"
+  log "  validator agent svc : ${VALIDATOR_AGENT_SERVICE}  (image ${IMAGE_VALIDATOR_RUNTIME})"
+  log "  master/gateway url  : ${VALIDATOR_MASTER_URL}"
+  log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
+  log "============================================================"
+
+  preflight                       # docker version + swarm + GHCR creds (no DB dumps)
+  ghcr_login                      # private images
+  swarm_init                      # the node's OWN swarm (the agent runs as a service on it)
+  _render_validator_supervisor_config  # node-local supervisor config (validator-agent target)
+  deploy_validator                # the auto-updatable base-validator-agent swarm service
+  deploy_supervisor               # node-local supervisor: stages current + installs/enables
+
+  log "============================================================"
+  if [[ "${APPLY}" == "true" ]]; then
+    log "Validator node up. Verify ${VALIDATOR_AGENT_SERVICE} registers + the supervisor is active."
+  else
+    log "Dry-run complete. Review the planned actions above, then re-run with --apply."
+  fi
+  log "============================================================"
 }
 
 # ============================================================================
@@ -1856,6 +2188,13 @@ deploy_supervisor() {
 # ============================================================================
 main() {
   parse_args "$@"
+
+  # Validator-NODE bring-up is a DISTINCT flow (auto-updatable agent + node-local
+  # supervisor), NOT the master+challenges stack — branch before any master step.
+  if [[ "${VALIDATOR_NODE}" == "true" ]]; then
+    main_validator_node
+    return
+  fi
 
   log "============================================================"
   log "BASE single-node Swarm bring-up (DRAFT)"

@@ -111,12 +111,15 @@ def test_installer_adds_no_separate_image_for_master_subsystems() -> None:
         for line in text.splitlines()
         if line.startswith("IMAGE_")
     }
-    # The only deploy images are master/challenge/evaluator/postgres — no
-    # gateway/coordination/HF-publisher-specific image.
+    # The only deploy images are master/challenge/evaluator/postgres plus the
+    # validator-runtime image a validator NODE runs the agent from (--validator-node;
+    # CI-built from Dockerfile.validator) — no gateway/coordination/HF-publisher-
+    # specific MASTER-SUBSYSTEM image.
     assert image_vars == {
         "IMAGE_MASTER",
         "IMAGE_AGENT_CHALLENGE",
         "IMAGE_PRISM",
         "IMAGE_PRISM_EVALUATOR",
         "IMAGE_POSTGRES",
+        "IMAGE_VALIDATOR_RUNTIME",
     }
