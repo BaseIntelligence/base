@@ -413,6 +413,18 @@ not GPU jobs.
 Challenge and job overlays are **encrypted** and created with **MTU 1450** to
 leave VXLAN encapsulation headroom on a standard 1500-byte path.
 
+> **Eval job network isolation (`base_jobs_internal`).** The agent-challenge eval
+> JOB runs on the dedicated `--internal` (no egress) `base_jobs_internal` overlay,
+> and the agent-challenge api+worker **and** the master proxy are multi-homed onto
+> it so the untrusted miner code can resolve ONLY the API (logs) + gateway by
+> name — never `base-master-postgres`, and with no internet egress. This is baked
+> into `install-swarm.sh` (proxy + agent-challenge `--network base_jobs_internal`)
+> and the dynamic `SwarmChallengeOrchestrator`, so a fresh deploy needs no manual
+> `docker service update`. terminal-bench TASK containers keep unrestricted public
+> egress (do not change them). Full rationale + the exact code/test map:
+> [`../../AGENTS.md`](../../AGENTS.md) → "Eval job network isolation
+> (base_jobs_internal)".
+
 Open these between every pair of nodes (manager ⇄ workers):
 
 | Port / protocol | Purpose |

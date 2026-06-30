@@ -62,6 +62,7 @@ from base.master.service import (
     MasterWeightService,
     active_challenge_inputs,
 )
+from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
@@ -406,6 +407,11 @@ def _challenge_orchestrator(settings):
         internal_network=settings.docker.internal_network,
         docker_broker_url=settings.docker.broker_url,
         challenge_placement_constraint=settings.docker.challenge_placement_constraint,
+        # Multi-home the agent-challenge service onto the isolated eval overlay
+        # (base_jobs_internal) so its DooD eval job can reach the API for log
+        # streaming by name; the job network is base_jobs_internal (see
+        # AGENT_CHALLENGE_JOB_NETWORK).
+        job_network_slugs=frozenset({AGENT_CHALLENGE_SLUG}),
     )
 
 
@@ -456,9 +462,14 @@ AGENT_CHALLENGE_GOLDEN_DIR = "/opt/agent-challenge/golden"
 #: ``default_internal_base_url("agent-challenge")``); own_runner jobs POST
 #: real-time trial logs here.
 AGENT_CHALLENGE_INTERNAL_BASE_URL = "http://challenge-agent-challenge:8000"
-#: Overlay the DooD eval job attaches to so it can reach the challenge API for
-#: log streaming (matches the install-swarm.sh challenges network).
-AGENT_CHALLENGE_JOB_NETWORK = "base_challenges"
+#: Overlay the DooD eval JOB attaches to (``CHALLENGE_DOCKER_BROKER_NETWORK``).
+#: This is the dedicated ISOLATED eval overlay (``base_jobs_internal``: created
+#: ``--internal`` so no internet egress, and NOT hosting postgres), reused from
+#: ``swarm_backend.DEFAULT_JOB_NETWORK`` as the single source of truth. The
+#: agent-challenge API + proxy are multi-homed onto it so the job can resolve
+#: ONLY those two by name (log streaming + LLM gateway), never postgres. See
+#: AGENTS.md "Eval job network isolation (base_jobs_internal)".
+AGENT_CHALLENGE_JOB_NETWORK = DEFAULT_JOB_NETWORK
 PRISM_IMAGE = "ghcr.io/baseintelligence/prism:latest"
 PRISM_EVALUATOR_IMAGE = "ghcr.io/baseintelligence/prism-evaluator:latest"
 PRISM_VERSION = "0.1.0"

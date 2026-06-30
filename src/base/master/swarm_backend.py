@@ -191,6 +191,12 @@ class SwarmServicePlan:
     replicas: int = 1
     constraint: str | None = None
     network: str | None = None
+    #: Additional overlay networks the service is attached to, each emitted as
+    #: its own ``--network`` flag AFTER ``network``. Used to multi-home a
+    #: long-lived challenge service on the isolated ``base_jobs_internal`` eval
+    #: overlay (so an eval JOB can resolve it by name) in addition to the
+    #: ``base_challenges`` control overlay; empty keeps single-network argv.
+    extra_networks: tuple[str, ...] = ()
     env: tuple[tuple[str, str], ...] = ()
     labels: tuple[tuple[str, str], ...] = ()
     container_labels: tuple[tuple[str, str], ...] = ()
@@ -248,6 +254,8 @@ def build_service_create_argv(docker_bin: str, plan: SwarmServicePlan) -> list[s
         argv += ["--constraint", plan.constraint]
     if plan.network:
         argv += ["--network", plan.network]
+    for extra_network in plan.extra_networks:
+        argv += ["--network", extra_network]
     if plan.hostname:
         argv += ["--hostname", plan.hostname]
     if plan.limit_cpus is not None:
@@ -893,6 +901,8 @@ class SwarmChallengeOrchestrator:
         pull_ghcr_only: bool = True,
         docker_broker_url: str = DEFAULT_DOCKER_BROKER_URL,
         challenge_placement_constraint: str | None = DEFAULT_CHALLENGE_CONSTRAINT,
+        job_network: str = DEFAULT_JOB_NETWORK,
+        job_network_slugs: frozenset[str] = frozenset(),
         ledger: WorkloadLedger | None = None,
         gpu_leases: GpuLeaseLedger | None = None,
         request_timeout_seconds: float = 5.0,
@@ -907,6 +917,15 @@ class SwarmChallengeOrchestrator:
         self.pull_ghcr_only = pull_ghcr_only
         self.docker_broker_url = docker_broker_url
         self.challenge_placement_constraint = challenge_placement_constraint
+        #: The isolated eval overlay (``--internal``, no egress) that the eval
+        #: JOB runs on; long-lived services for ``job_network_slugs`` are ALSO
+        #: attached to it so the job can resolve/reach ONLY them by name.
+        self.job_network = job_network
+        #: Challenge slugs whose long-lived service is multi-homed onto
+        #: ``job_network`` in addition to ``network_name`` (e.g. agent-challenge,
+        #: whose eval job must reach the challenge API for log streaming). Empty
+        #: keeps every service on the single control overlay.
+        self.job_network_slugs = job_network_slugs
         self.ledger = ledger or WorkloadLedger()
         self.gpu_leases = gpu_leases or GpuLeaseLedger()
         self.request_timeout_seconds = request_timeout_seconds
@@ -942,6 +961,11 @@ class SwarmChallengeOrchestrator:
         """Create (or reuse) the Swarm service for a challenge and verify it."""
 
         self.ensure_network()
+        for name in self._extra_networks(spec):
+            # The eval overlay is internal (no egress); ensure it exists so a
+            # fresh deploy can multi-home the service even before install-swarm
+            # create_networks ran on this node.
+            self._ensure_overlay_network(name, internal=True)
         existing = self._service_id(spec.container_name)
         if existing and recreate:
             self._remove_named_service(spec.container_name, existing)
@@ -1011,27 +1035,38 @@ class SwarmChallengeOrchestrator:
     def ensure_network(self) -> None:
         """Create the encrypted overlay challenge network if missing."""
 
+        self._ensure_overlay_network(
+            self.network_name, internal=self.internal_network
+        )
+
+    def _ensure_overlay_network(self, name: str, *, internal: bool) -> None:
+        """Create an encrypted overlay network by name if it does not exist."""
+
         inspected = self._command(
-            [
-                self.docker_bin,
-                "network",
-                "inspect",
-                "--format",
-                "{{.Id}}",
-                self.network_name,
-            ]
+            [self.docker_bin, "network", "inspect", "--format", "{{.Id}}", name]
         )
         if inspected.returncode == 0:
             return
         created = self._command(
-            build_overlay_network_argv(
-                self.docker_bin, self.network_name, internal=self.internal_network
-            )
+            build_overlay_network_argv(self.docker_bin, name, internal=internal)
         )
         if created.returncode != 0 and "already exists" not in created.stderr:
             raise DockerOrchestrationError(
                 f"Swarm overlay network create failed: {created.stderr.strip()}"
             )
+
+    def _extra_networks(self, spec: ChallengeSpec) -> tuple[str, ...]:
+        """Return the additional overlay(s) ``spec``'s service multi-homes onto.
+
+        A challenge in ``job_network_slugs`` (e.g. agent-challenge) is attached
+        to the isolated ``job_network`` in ADDITION to the control overlay so
+        its eval job — which runs on ``job_network`` — can resolve the service
+        by name (log streaming / gateway) without exposing the broader network.
+        """
+
+        if spec.slug in self.job_network_slugs:
+            return (self.job_network,)
+        return ()
 
     def wait_until_ready(
         self, spec: ChallengeSpec
@@ -1127,6 +1162,7 @@ class SwarmChallengeOrchestrator:
                 else self.challenge_placement_constraint
             ),
             network=self.network_name,
+            extra_networks=self._extra_networks(spec),
             env=tuple(self._build_environment(spec).items()),
             labels=tuple(labels.items()),
             container_labels=tuple(labels.items()),

@@ -267,6 +267,48 @@ def test_published_ports_are_configurable(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Eval job network isolation (base_jobs_internal): the proxy + agent-challenge
+# api/worker are multi-homed onto the isolated internal eval overlay so the eval
+# JOB reaches ONLY the gateway + API by name, never postgres; the broker + prism
+# services stay off it.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_is_attached_to_internal_eval_overlay(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    proxy = _service_block(lines, "base-master-proxy")
+    assert "--network base_jobs_internal" in proxy
+    assert "--network base_challenges" in proxy
+
+    # The broker dispatches eval jobs but does NOT serve the gateway, so it is
+    # deliberately kept OFF the eval overlay.
+    broker = _service_block(lines, "base-docker-broker")
+    assert "--network base_jobs_internal" not in broker
+
+
+def test_agent_challenge_services_attached_to_internal_eval_overlay(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert "--network base_jobs_internal" in block
+        assert "--network base_challenges" in block
+
+    # prism services are not multi-homed: the prism eval JOB is egress-locked by
+    # the broker (pinned to the internal overlay), not via service multi-homing.
+    for service in ("challenge-prism", "challenge-prism-worker"):
+        block = _service_block(lines, service)
+        assert "--network base_jobs_internal" not in block
+
+
+# ---------------------------------------------------------------------------
 # VAL-CODE-DEPLOY-004: validator.yaml template + N-validator run path
 # ---------------------------------------------------------------------------
 

@@ -1409,3 +1409,100 @@ def test_orchestrator_secret_value_never_appears_in_argv_or_env(
     for index, payload in enumerate(runner.inputs):
         if index not in create_indexes:
             assert payload is None
+
+
+def test_build_service_create_argv_emits_extra_networks_after_network() -> None:
+    plan = SwarmServicePlan(
+        name="svc",
+        image="ghcr.io/baseintelligence/x:1",
+        network="base_challenges",
+        extra_networks=("base_jobs_internal",),
+    )
+
+    argv = build_service_create_argv("docker", plan)
+
+    pairs = _pairs(tuple(argv))
+    networks = [value for flag, value in pairs if flag == "--network"]
+    # base network first, each extra network as its own --network after it.
+    assert networks == ["base_challenges", "base_jobs_internal"]
+
+
+def test_build_service_create_argv_single_network_by_default() -> None:
+    plan = SwarmServicePlan(name="svc", image="img", network="base_challenges")
+
+    argv = build_service_create_argv("docker", plan)
+
+    networks = [value for flag, value in _pairs(tuple(argv)) if flag == "--network"]
+    assert networks == ["base_challenges"]
+
+
+def test_orchestrator_multihomes_job_network_slug_onto_internal_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent-challenge's long-lived service is attached to BOTH the control
+    overlay and the isolated internal eval overlay so its eval JOB (which runs on
+    base_jobs_internal) can resolve it by name for log streaming."""
+    runner = FakeSwarmRunner(network_exists=False)
+    orchestrator = SwarmChallengeOrchestrator(
+        runner=runner,
+        ledger=WorkloadLedger(),
+        job_network_slugs=frozenset({"agent-challenge"}),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_until_ready",
+        lambda spec: ({"status": "ok"}, {"api_version": "1.0"}),
+    )
+    spec = ChallengeSpec(
+        slug="agent-challenge",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
+        challenge_token="fake-token-for-test",
+        workload_class="service",
+    )
+
+    orchestrator.start_challenge(spec)
+
+    networks = [
+        value for flag, value in _pairs(runner.create_argv()) if flag == "--network"
+    ]
+    assert networks == ["base_challenges", "base_jobs_internal"]
+    # The internal (no-egress) eval overlay is ensured/created too.
+    network_creates = [
+        tuple(call) for call in runner.calls if call[1:3] == ("network", "create")
+    ]
+    assert (
+        tuple(build_overlay_network_argv("docker", "base_jobs_internal", internal=True))
+        in network_creates
+    )
+
+
+def test_orchestrator_single_network_for_non_job_network_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A challenge NOT in job_network_slugs (e.g. prism) stays on the single
+    control overlay; its eval isolation is handled by the broker pinning the JOB,
+    not by multi-homing the long-lived service."""
+    runner = FakeSwarmRunner(network_exists=False)
+    orchestrator = SwarmChallengeOrchestrator(
+        runner=runner,
+        ledger=WorkloadLedger(),
+        job_network_slugs=frozenset({"agent-challenge"}),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_until_ready",
+        lambda spec: ({"status": "ok"}, {"api_version": "1.0"}),
+    )
+    spec = ChallengeSpec(
+        slug="prism",
+        image="ghcr.io/baseintelligence/prism:1.0.0",
+        challenge_token="fake-token-for-test",
+        workload_class="service",
+    )
+
+    orchestrator.start_challenge(spec)
+
+    networks = [
+        value for flag, value in _pairs(runner.create_argv()) if flag == "--network"
+    ]
+    assert networks == ["base_challenges"]

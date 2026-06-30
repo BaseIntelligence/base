@@ -142,7 +142,9 @@ def test_seed_agent_challenge_uses_own_runner_execution_plane() -> None:
     assert env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"] == (
         "http://challenge-agent-challenge:8000"
     )
-    assert env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_challenges"
+    # The eval JOB runs on the ISOLATED internal overlay (no postgres, no egress),
+    # not the broad base_challenges overlay; the api+proxy are multi-homed onto it.
+    assert env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_jobs_internal"
     assert env["CHALLENGE_DOCKER_BACKEND"] == "broker"
 
 
@@ -186,3 +188,41 @@ def test_eval_readonly_mounts_by_slug_config_overrides_default() -> None:
     )
     assert parsed["prism"] == (("prism_fineweb_edu_train", "/data/fineweb-edu/train"),)
     assert parsed["other"] == (("vol", "/x"),)
+
+
+def test_agent_challenge_job_network_is_isolated_internal_overlay() -> None:
+    """The eval JOB network is the isolated internal overlay (base_jobs_internal:
+    no postgres, no egress), reused from swarm_backend.DEFAULT_JOB_NETWORK as the
+    single source of truth rather than a duplicated 'base_challenges' string."""
+    from base.master.swarm_backend import DEFAULT_JOB_NETWORK
+
+    assert cli_module.AGENT_CHALLENGE_JOB_NETWORK == "base_jobs_internal"
+    assert cli_module.AGENT_CHALLENGE_JOB_NETWORK == DEFAULT_JOB_NETWORK
+
+
+def test_log_stream_host_matches_agent_challenge_service_name() -> None:
+    """CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL host MUST equal the agent-challenge
+    service name reachable on base_jobs_internal, else log streaming fails DNS."""
+    from urllib.parse import urlsplit
+
+    from base.master.docker_orchestrator import ChallengeSpec
+    from base.master.registry import default_internal_base_url
+
+    service_name = ChallengeSpec(
+        slug="agent-challenge", image="ghcr.io/baseintelligence/agent:1"
+    ).container_name
+    assert service_name == "challenge-agent-challenge"
+
+    constant_host = urlsplit(cli_module.AGENT_CHALLENGE_INTERNAL_BASE_URL).hostname
+    assert constant_host == service_name
+    assert constant_host == urlsplit(
+        default_internal_base_url("agent-challenge")
+    ).hostname
+
+    registry = ChallengeRegistry()
+    registry.create(_agent_challenge_create())
+    asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
+    env = registry.get("agent-challenge").env
+    assert urlsplit(env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"]).hostname == (
+        service_name
+    )

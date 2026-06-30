@@ -1444,7 +1444,9 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     assert agent.env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
         "/run/secrets/base/docker_broker_token"
     )
-    assert agent.env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_challenges"
+    # The eval JOB joins the ISOLATED internal eval overlay (base_jobs_internal:
+    # no postgres, no internet egress), NOT the broad base_challenges overlay.
+    assert agent.env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_jobs_internal"
     assert agent.env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "own_runner"
     assert agent.env["CHALLENGE_HARBOR_RUNNER_IMAGE"] == (
         "ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:latest"

@@ -299,6 +299,15 @@ CHALLENGE_EXTRA_SECRETS=()
 # the same local /data volume. Default expr matches the dynamic orchestrator's challenge placement
 # default (swarm_backend.py DEFAULT_CHALLENGE_CONSTRAINT = node.role==manager). Reset after each deploy.
 CHALLENGE_EXTRA_CONSTRAINTS=()
+# Per-call ADDITIONAL `--network` attachments consumed by _deploy_challenge_service, each emitted
+# as its own `--network` AFTER the default NET_CHALLENGES. EVAL JOB NETWORK ISOLATION (see AGENTS.md
+# "Eval job network isolation (base_jobs_internal)"): the agent-challenge api + worker are multi-homed
+# onto the isolated internal eval overlay (NET_JOBS_INTERNAL) so the eval JOB — which runs on
+# base_jobs_internal (no egress, no postgres) — can resolve the API by name (challenge-agent-challenge)
+# for real-time log streaming. base_jobs_internal is --internal, so this adds NO egress to the service.
+# Mirrors the dynamic orchestrator's job_network_slugs multi-homing (swarm_backend.py). Reset after
+# each deploy. Declared here so `set -u` never trips on `${#..[@]}`.
+CHALLENGE_EXTRA_NETWORKS=()
 
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
@@ -1318,6 +1327,16 @@ _deploy_master_service() {
     extra+=(
       --env "BASE_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
     )
+    # EVAL JOB NETWORK ISOLATION (see AGENTS.md "Eval job network isolation
+    # (base_jobs_internal)"). Multi-home the PROXY onto the isolated, internal
+    # eval overlay (in ADDITION to NET_CHALLENGES) so the agent-challenge eval
+    # JOB — which runs on base_jobs_internal (no egress, no postgres) — can reach
+    # the master LLM gateway by service name (base-master-proxy). The broker is
+    # deliberately NOT attached: only the proxy serves the gateway. base_jobs_internal
+    # is --internal, so this adds NO egress to the proxy; it keeps egress + its
+    # published host port via NET_CHALLENGES. Idempotent: the whole create is
+    # skipped when the service already exists (guard at the top of this function).
+    extra+=(--network "${NET_JOBS_INTERNAL}")
     # PLACEMENT (no-chain decentralized deploy): the proxy seeds the mock
     # metagraph (network.mock_metagraph rendered above) and builds NO live
     # Subtensor, so it runs on the MANAGER (the control-plane / hotkey node),
@@ -1436,6 +1455,9 @@ deploy_challenges() {
   # Co-locate api + worker (next block) on ONE node via an identical constraint so they share the
   # per-node base_agent_challenge_pg /data volume (see CHALLENGE_EXTRA_CONSTRAINTS declaration).
   CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
+  # Multi-home the api onto the isolated eval overlay so the eval JOB (on
+  # base_jobs_internal) resolves challenge-agent-challenge by name for log streaming.
+  CHALLENGE_EXTRA_NETWORKS=("${NET_JOBS_INTERNAL}")
   CHALLENGE_ENV=("${ac_eval_env[@]}")
   CHALLENGE_EXTRA_SECRETS=("source=base_gateway_token,target=base_gateway_token")
   _deploy_challenge_service \
@@ -1453,6 +1475,9 @@ deploy_challenges() {
   # the api plus the broker backend wiring. (Resolves the prior worker TODO.)
   # MUST carry the SAME constraint as the api above so both land on one node and share /data.
   CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
+  # Same eval-overlay multi-homing as the api: the worker dispatches the DooD job and
+  # also serves on base_jobs_internal so the job can reach it by name.
+  CHALLENGE_EXTRA_NETWORKS=("${NET_JOBS_INTERNAL}")
   CHALLENGE_ENV=(
     "${ac_eval_env[@]}"
     "CHALLENGE_BENCHMARK_BACKEND=terminal_bench"
@@ -1622,6 +1647,15 @@ _deploy_challenge_service() {
     --with-registry-auth
     --mount "type=volume,source=${data_volume},destination=/data"
   )
+  # Caller-supplied ADDITIONAL networks (e.g. the isolated base_jobs_internal eval
+  # overlay for the agent-challenge api+worker), each emitted as its own --network
+  # after the default NET_CHALLENGES above. See CHALLENGE_EXTRA_NETWORKS declaration.
+  local net_name
+  if [[ "${#CHALLENGE_EXTRA_NETWORKS[@]}" -gt 0 ]]; then
+    for net_name in "${CHALLENGE_EXTRA_NETWORKS[@]}"; do
+      argv+=(--network "${net_name}")
+    done
+  fi
   # Caller-supplied extra env (e.g. the own_runner eval image allowlist applied to
   # BOTH the agent-challenge api and worker). Reset after the deploy below.
   local env_kv
@@ -1670,6 +1704,7 @@ _deploy_challenge_service() {
   CHALLENGE_EXTRA_MOUNTS=()
   CHALLENGE_EXTRA_SECRETS=()
   CHALLENGE_EXTRA_CONSTRAINTS=()
+  CHALLENGE_EXTRA_NETWORKS=()
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 
