@@ -181,6 +181,29 @@ challenge service (the broker supplies the eval-container data mounts above):
   the `base_openrouter_api_key` Docker secret, created from
   `$OPENROUTER_API_KEY`). The eval container never carries the key.
 
+## Production gotchas (verified live, M5)
+
+Lessons confirmed end-to-end on the production cutover; the installer already
+encodes these, but they are easy to regress on a manual deploy:
+
+- **`PRISM_LLM_REVIEW_MAX_TOKENS` must be ≥ 4096.** The old default of 512
+  truncates claude's forced `SubmitMermaid` tool call on real (~14KB) review
+  prompts (`finish_reason=length`, empty tool_calls), so the prism LLM gate fails
+  closed for EVERY real submission. `install-swarm.sh` pins 4096 and the prism
+  code default was raised to 4096; do not lower it.
+- **Central gates are gateway-only — challenge services must NOT mount a raw
+  provider key.** The agent-challenge analyzer and prism `llm_review` route LLM
+  calls through the master gateway using the scoped `base_gateway_token` only; the
+  gateway injects the provider key server-side and records every call in
+  `llm_usage_records`. Mounting a raw `openrouter_api_key` on a challenge/eval
+  service is a leak and is unnecessary (the gateway is the sole path). The
+  master’s central-gate token is exempt from the assignment-lifecycle resolver in
+  code, so it works without a live work assignment.
+- **`base-validator-runtime` image: avoid the legacy `substrate-interface` /
+  `scalecodec` stack.** It conflicts with bittensor 10’s bundled
+  `async-substrate-interface`; the working runtime image uses bittensor only.
+  Prefer `bittensor.Keypair` over `from substrateinterface import Keypair`.
+
 ## Files
 
 | File | Target node | Purpose |
