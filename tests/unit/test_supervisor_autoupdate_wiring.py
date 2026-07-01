@@ -1,9 +1,10 @@
 """Supervisor auto-update wiring in ``build_scheduled_tasks`` (G4).
 
 Covers:
-- VAL-CODE-UPD-001 (wiring side): the image-updater + challenge-image-updater use
-  the AUTHENTICATED resolver when registry credentials are configured, and the
-  anonymous resolver otherwise.
+- VAL-CODE-UPD-001 (wiring side): the image-updater uses the AUTHENTICATED
+  resolver when registry credentials are configured, and the anonymous resolver
+  otherwise. (The challenge-image-updater moved into the master proxy — see
+  architecture.md sec 9.1 — so it is no longer registered on the host supervisor.)
 - VAL-CODE-UPD-003: master self-update is wired when enabled+manifest_url, and
   EXPLICITLY DISABLED (task absent — not registered-but-inert) by default; an
   enabled-without-manifest config is rejected (no silent half-state).
@@ -60,11 +61,9 @@ def test_updaters_use_authenticated_resolver_when_credentials_present(
     tasks, _gate = build_scheduled_tasks(settings)
 
     image_updater = _task(tasks, "image-updater")
-    challenge_updater = _task(tasks, "challenge-image-updater")
 
     # A wrapped (authenticated) resolver, NOT the bare anonymous function.
     assert image_updater.run.__self__._resolver is not resolve_remote_digest  # type: ignore[attr-defined]
-    assert challenge_updater.run.__self__._resolver is not resolve_remote_digest  # type: ignore[attr-defined]
 
 
 def test_updaters_fall_back_to_anonymous_resolver_without_credentials(
@@ -76,10 +75,21 @@ def test_updaters_fall_back_to_anonymous_resolver_without_credentials(
     tasks, _gate = build_scheduled_tasks(settings)
 
     image_updater = _task(tasks, "image-updater")
-    challenge_updater = _task(tasks, "challenge-image-updater")
 
     assert image_updater.run.__self__._resolver is resolve_remote_digest  # type: ignore[attr-defined]
-    assert challenge_updater.run.__self__._resolver is resolve_remote_digest  # type: ignore[attr-defined]
+
+
+def test_challenge_image_updater_not_registered_on_host_supervisor(
+    tmp_path: Path,
+) -> None:
+    # The challenge-image-updater moved into the master proxy (architecture.md
+    # sec 9.1): the host supervisor default task set must NOT register it (it
+    # cannot resolve the overlay registry DB DNS from the host).
+    settings = _settings(registry_docker_config_path=str(tmp_path / "absent.json"))
+    tasks, _gate = build_scheduled_tasks(settings)
+
+    names = [t.name for t in tasks]  # type: ignore[attr-defined]
+    assert "challenge-image-updater" not in names
 
 
 # ---------------------------------------------------------------------------

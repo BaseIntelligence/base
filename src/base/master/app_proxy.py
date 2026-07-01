@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
 
 from base.bittensor.identity_cache import ValidatorIdentityResolver
 from base.bittensor.metagraph_cache import MetagraphCache
+from base.config.settings import Settings
 from base.master.admin.auth import (
     TokenProvider,
     build_admin_token_dependency,
@@ -57,6 +58,9 @@ from base.security.miner_auth import (
 from base.security.validator_auth import (
     ValidatorSignedRequestVerifier,
     build_validator_auth_dependency,
+)
+from base.supervisor.challenge_image_updater import (
+    build_challenge_image_update_lifespan,
 )
 
 SENSITIVE_REQUEST_HEADERS = {
@@ -347,6 +351,8 @@ def create_proxy_app(
     orchestration_interval_seconds: float | None = None,
     registry_reconciler: MasterChallengeReconciler | None = None,
     registry_reconcile_interval_seconds: float | None = None,
+    challenge_image_updater_settings: Settings | None = None,
+    challenge_image_update_interval_seconds: float | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
@@ -371,6 +377,10 @@ def create_proxy_app(
             ),
             build_master_registry_reconcile_lifespan(
                 registry_reconciler, registry_reconcile_interval_seconds
+            ),
+            build_challenge_image_update_lifespan(
+                challenge_image_updater_settings,
+                challenge_image_update_interval_seconds,
             ),
         ),
     )

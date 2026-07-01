@@ -87,6 +87,14 @@ class MasterSettings(BaseModel):
     # and a newly-registered challenge propagates automatically. Runs every
     # ``registry_reconcile_interval_seconds`` (<=0 disables it; default-on).
     registry_reconcile_interval_seconds: float = 60.0
+    # Challenge-image auto-roll (architecture.md sec 9.1): the proxy-hosted
+    # challenge-image-update loop that per ACTIVE challenge digest-compares the
+    # mutable GHCR tag, updates the registry DB record to ``tag@sha256:<digest>``
+    # on a change, and rolls the running service. It runs INSIDE the master proxy
+    # (which can reach the overlay registry DB + docker socket) rather than the
+    # host supervisor. Runs every ``challenge_image_update_interval_seconds``
+    # (<=0 disables it; default-on).
+    challenge_image_update_interval_seconds: float = 60.0
 
 
 class ValidatorAgentSettings(BaseModel):

@@ -39,10 +39,12 @@ Interval: 60s — the one-minute challenge-image-updater cadence.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
-from collections.abc import Callable
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Any
 
 from base.config.settings import Settings
 from base.supervisor.health import BrokerHealthGate
@@ -52,6 +54,9 @@ from base.supervisor.image_ref import (
     resolve_remote_digest,
 )
 from base.supervisor.scheduler import ScheduledTask
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +203,38 @@ def build_challenge_image_updater_task(
     the REUSED :func:`resolve_remote_digest`.
     """
     del health_gate  # recipe parity; not broker-dependent (see docstring).
+    updater = _build_challenge_image_updater(
+        settings,
+        registry_factory=registry_factory,
+        controller_factory=controller_factory,
+        resolver=resolver,
+        tag=tag,
+    )
+    return ScheduledTask(
+        name="challenge-image-updater",
+        interval_seconds=interval_seconds,
+        run=updater.run_once,
+    )
+
+
+def _build_challenge_image_updater(
+    settings: Settings,
+    *,
+    registry_factory: RegistryFactory | None = None,
+    controller_factory: ControllerFactory | None = None,
+    resolver: DigestResolver | None = None,
+    tag: str = DEFAULT_MUTABLE_TAG,
+) -> ChallengeImageUpdater:
+    """Build a :class:`ChallengeImageUpdater` with the production defaults.
+
+    ``registry_factory``/``controller_factory``/``resolver`` are test seams; the
+    defaults construct, per tick, exactly what the CLI command constructs per
+    invocation: ``_master_registry(settings)`` and
+    ``DockerRuntimeController(registry, _challenge_orchestrator(settings))``
+    (imported lazily so importing the supervisor package stays light — Task 21
+    precedent). The default ``resolver`` is the REUSED
+    :func:`resolve_remote_digest`.
+    """
 
     def default_registry_factory() -> Any:
         from base.cli_app.main import _master_registry
@@ -212,7 +249,7 @@ def build_challenge_image_updater_task(
 
         return DockerRuntimeController(registry, _challenge_orchestrator(settings))
 
-    updater = ChallengeImageUpdater(
+    return ChallengeImageUpdater(
         registry_factory=(
             registry_factory
             if registry_factory is not None
@@ -226,8 +263,86 @@ def build_challenge_image_updater_task(
         resolver=resolver if resolver is not None else resolve_remote_digest,
         tag=tag,
     )
-    return ScheduledTask(
-        name="challenge-image-updater",
-        interval_seconds=interval_seconds,
-        run=updater.run_once,
+
+
+async def run_challenge_image_update_loop(
+    updater: ChallengeImageUpdater,
+    *,
+    interval_seconds: float,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Await :meth:`ChallengeImageUpdater._refresh` on ``interval_seconds`` until
+    shutdown.
+
+    A failing tick is logged and the loop continues, so one transient error
+    (e.g. a challenge DB blip or a registry timeout) never stops the autonomous
+    challenge-image auto-roll. Cancellation (lifespan shutdown) propagates the
+    :class:`asyncio.CancelledError` cleanly out of the loop.
+    """
+
+    while not shutdown_event.is_set():
+        try:
+            await updater._refresh()
+        except Exception:
+            logger.exception(
+                "challenge-image-update: tick failed; will retry next interval"
+            )
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            continue
+
+
+def build_challenge_image_update_lifespan(
+    settings: Settings | None,
+    interval_seconds: float | None,
+    *,
+    registry_factory: RegistryFactory | None = None,
+    controller_factory: ControllerFactory | None = None,
+    resolver: DigestResolver | None = None,
+    tag: str = DEFAULT_MUTABLE_TAG,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]] | None:
+    """Build a FastAPI lifespan that runs the challenge-image-update loop.
+
+    Mirrors ``build_master_registry_reconcile_lifespan``: it starts the loop as a
+    background task on app startup and cancels + awaits it before shutdown.
+    Returns ``None`` (no lifespan) when ``settings`` is not configured or the
+    interval is non-positive (opt-out seam; parity with the reconcile-interval
+    gate — default-on for the master proxy).
+
+    The updater is built from ``settings`` with the same default
+    registry/controller/resolver factories as ``build_challenge_image_updater_task``;
+    the factory arguments are test seams.
+    """
+
+    if settings is None or interval_seconds is None or interval_seconds <= 0:
+        return None
+
+    updater = _build_challenge_image_updater(
+        settings,
+        registry_factory=registry_factory,
+        controller_factory=controller_factory,
+        resolver=resolver,
+        tag=tag,
     )
+    loop_interval = interval_seconds
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            run_challenge_image_update_loop(
+                updater,
+                interval_seconds=loop_interval,
+                shutdown_event=shutdown,
+            )
+        )
+        try:
+            yield
+        finally:
+            shutdown.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    return lifespan

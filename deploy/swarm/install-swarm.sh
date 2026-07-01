@@ -1409,6 +1409,23 @@ _deploy_master_service() {
     extra+=(
       --env "BASE_MASTER__UPLOAD_EXTRA_REGISTERED_HOTKEYS=${UPLOAD_EXTRA_REGISTERED_HOTKEYS}"
     )
+    # DOCKER SOCKET + GHCR READ CREDS (challenge-image-updater + registry
+    # reconciler run IN the proxy now — architecture.md sec 9.1/9.2): the proxy's
+    # in-process reconcile loop AND challenge-image-update loop shell out to
+    # `docker service create`/`docker service update` to deploy and roll challenge
+    # services, so they need the manager docker.sock and the manager's GHCR read
+    # credentials (to resolve/pull private ghcr.io/baseintelligence digests).
+    # Mirror the base-docker-broker branch exactly: run --user root (the socket is
+    # root-owned), bind the manager docker.sock, and bind the manager docker
+    # config dir read-only at /root/.docker with DOCKER_CONFIG pinned to it. The
+    # base-master image already ships the docker CLI (docker/Dockerfile.master).
+    local proxy_docker_cfg_dir="${DOCKER_CONFIG:-${HOME}/.docker}"
+    extra+=(
+      --user root
+      --mount "type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock"
+      --mount "type=bind,source=${proxy_docker_cfg_dir},target=/root/.docker,readonly"
+      --env "DOCKER_CONFIG=/root/.docker"
+    )
     # EVAL JOB NETWORK ISOLATION (see AGENTS.md "Eval job network isolation
     # (base_jobs_internal)"). Multi-home the PROXY onto the isolated, internal
     # eval overlay (in ADDITION to NET_CHALLENGES) so the agent-challenge eval

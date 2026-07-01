@@ -309,6 +309,45 @@ def test_agent_challenge_services_attached_to_internal_eval_overlay(
 
 
 # ---------------------------------------------------------------------------
+# VAL-CODE-AUTO-007: the master proxy now hosts the challenge-image-updater +
+# registry reconciler, so the base-master-proxy service must mount the manager
+# docker socket (+ GHCR read creds RO) so those in-process loops can roll
+# challenge services via `docker service create/update`.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_mounts_docker_socket_and_ghcr_creds(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    proxy = _service_block(lines, "base-master-proxy")
+    # The docker socket is bind-mounted so the in-proxy reconciler + challenge
+    # image updater can `docker service create/update`.
+    assert (
+        "type=bind,source=/var/run/docker.sock,destination=/var/run/docker.sock"
+        in proxy
+    )
+    # GHCR read creds mounted read-only (+ DOCKER_CONFIG) so private
+    # ghcr.io/baseintelligence digests resolve/pull — mirrors the broker branch.
+    assert "target=/root/.docker,readonly" in proxy
+    assert "DOCKER_CONFIG=/root/.docker" in proxy
+    # Runs as root: the host docker.sock is root-owned (mirrors the broker).
+    assert "--user root" in proxy
+
+
+def test_broker_still_mounts_docker_socket(tmp_path: Path) -> None:
+    # Regression guard: the broker keeps its own docker.sock mount (both the
+    # broker and the proxy roll services).
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    broker = _service_block(lines, "base-docker-broker")
+    assert "source=/var/run/docker.sock" in broker
+
+
+# ---------------------------------------------------------------------------
 # VAL-CODE-DEPLOY-004: validator.yaml template + N-validator run path
 # ---------------------------------------------------------------------------
 

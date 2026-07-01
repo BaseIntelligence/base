@@ -815,6 +815,14 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         registry_reconcile_interval_seconds=(
             settings.master.registry_reconcile_interval_seconds
         ),
+        # Challenge-image auto-roll (architecture.md sec 9.1) runs INSIDE the
+        # proxy (which reaches the overlay registry DB + docker socket), not the
+        # host supervisor. The default factories build the same registry +
+        # DockerRuntimeController the CLI uses; <=0 disables the loop.
+        challenge_image_updater_settings=settings,
+        challenge_image_update_interval_seconds=(
+            settings.master.challenge_image_update_interval_seconds
+        ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"

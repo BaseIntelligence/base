@@ -6,17 +6,21 @@ dockerd, no real database.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 
 from base.config.settings import Settings
 from base.schemas.challenge import ChallengeStatus, ChallengeUpdate
 from base.supervisor.challenge_image_updater import (
     CHALLENGE_IMAGE_UPDATER_INTERVAL_SECONDS,
     ChallengeImageUpdater,
+    build_challenge_image_update_lifespan,
     build_challenge_image_updater_task,
+    run_challenge_image_update_loop,
 )
 from base.supervisor.image_ref import ImageReference
 
@@ -231,3 +235,172 @@ def test_builder_tag_override_retargets_mutable_base() -> None:
     task.run()
     expected = f"ghcr.io/baseintelligence/demo:main@{DIGEST_B}"
     assert registry.updates == [("demo", ChallengeUpdate(image=expected))]
+
+
+# ---------------------------------------------------------------------------
+# Proxy-hosted async loop + FastAPI lifespan (VAL-CODE-AUTO-007).
+#
+# The challenge-image-updater moved into the master proxy (architecture.md
+# sec 9.1): a resilient, cancellable async loop that reuses
+# ``ChallengeImageUpdater._refresh`` on a settings-driven interval, wired as a
+# FastAPI lifespan gated so ``interval<=0`` disables it.
+# ---------------------------------------------------------------------------
+
+
+async def test_loop_rolls_on_digest_change_then_stops() -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_A}")])
+    controller = FakeController()
+    updater = make_updater(registry, controller, make_resolver(DIGEST_B))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        run_challenge_image_update_loop(
+            updater, interval_seconds=0.01, shutdown_event=shutdown
+        )
+    )
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if registry.updates:
+            break
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert registry.updates == [("demo", ChallengeUpdate(image=f"{BASE}@{DIGEST_B}"))]
+    assert controller.restarts == ["demo"]
+
+
+async def test_loop_is_noop_when_already_current() -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_A}")])
+    controller = FakeController()
+    updater = make_updater(registry, controller, make_resolver(DIGEST_A))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        run_challenge_image_update_loop(
+            updater, interval_seconds=0.01, shutdown_event=shutdown
+        )
+    )
+    # Let several ticks run: the digest is unchanged, so no update/restart fires.
+    await asyncio.sleep(0.05)
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert registry.updates == []
+    assert controller.restarts == []
+
+
+async def test_loop_continues_after_a_failing_tick() -> None:
+    class OnceExplodingRegistry(FakeRegistry):
+        def __init__(self, records: list[SimpleNamespace]) -> None:
+            super().__init__(records)
+            self.list_calls = 0
+
+        async def list(self) -> list[SimpleNamespace]:
+            self.list_calls += 1
+            if self.list_calls == 1:
+                raise RuntimeError("registry blip")
+            return await super().list()
+
+    registry = OnceExplodingRegistry([record("demo", f"{BASE}@{DIGEST_A}")])
+    controller = FakeController()
+    updater = make_updater(registry, controller, make_resolver(DIGEST_B))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        run_challenge_image_update_loop(
+            updater, interval_seconds=0.01, shutdown_event=shutdown
+        )
+    )
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if registry.updates:
+            break
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=2.0)
+    # The first tick raised but the loop kept going and rolled on a later tick.
+    assert registry.list_calls >= 2
+    assert registry.updates == [("demo", ChallengeUpdate(image=f"{BASE}@{DIGEST_B}"))]
+    assert controller.restarts == ["demo"]
+
+
+def test_lifespan_is_none_when_disabled() -> None:
+    # No settings, or a non-positive interval, disables the loop (parity with the
+    # registry-reconcile-interval gate; disabled -> lifespan returns None).
+    assert build_challenge_image_update_lifespan(None, 60.0) is None
+    assert build_challenge_image_update_lifespan(Settings(), 0) is None
+    assert build_challenge_image_update_lifespan(Settings(), None) is None
+    assert build_challenge_image_update_lifespan(Settings(), -1.0) is None
+
+
+async def test_lifespan_starts_and_cancels_challenge_image_update_loop() -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_A}")])
+    controller = FakeController()
+    lifespan = build_challenge_image_update_lifespan(
+        Settings(),
+        0.01,
+        registry_factory=lambda: registry,
+        controller_factory=lambda _registry: controller,
+        resolver=make_resolver(DIGEST_B),
+    )
+    assert lifespan is not None
+
+    async with lifespan(FastAPI()):
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if registry.updates:
+                break
+    # After the lifespan exits the loop task is cancelled+awaited cleanly, and the
+    # digest change rolled the challenge while it ran.
+    assert registry.updates == [("demo", ChallengeUpdate(image=f"{BASE}@{DIGEST_B}"))]
+    assert controller.restarts == ["demo"]
+
+
+async def test_lifespan_noop_when_already_current() -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_A}")])
+    controller = FakeController()
+    lifespan = build_challenge_image_update_lifespan(
+        Settings(),
+        0.01,
+        registry_factory=lambda: registry,
+        controller_factory=lambda _registry: controller,
+        resolver=make_resolver(DIGEST_A),
+    )
+    assert lifespan is not None
+
+    async with lifespan(FastAPI()):
+        await asyncio.sleep(0.05)
+    assert registry.updates == []
+    assert controller.restarts == []
+
+
+class _FakeCache:
+    def get(self) -> dict[str, int]:
+        return {}
+
+
+class _FakeNonceStore:
+    async def reserve(self, **_kwargs: Any) -> None:
+        return None
+
+
+def test_create_proxy_app_wires_challenge_image_update_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The proxy factory composes the challenge-image-update lifespan, forwarding
+    the settings + interval so the loop runs INSIDE the proxy."""
+
+    from base.master import app_proxy
+    from base.master.registry import ChallengeRegistry
+
+    calls: list[tuple[Any, Any]] = []
+
+    def spy(settings: Any, interval: Any) -> None:
+        calls.append((settings, interval))
+        return None
+
+    monkeypatch.setattr(app_proxy, "build_challenge_image_update_lifespan", spy)
+
+    settings = Settings()
+    app_proxy.create_proxy_app(
+        registry=ChallengeRegistry(),
+        nonce_store=_FakeNonceStore(),  # type: ignore[arg-type]
+        metagraph_cache=_FakeCache(),  # type: ignore[arg-type]
+        challenge_image_updater_settings=settings,
+        challenge_image_update_interval_seconds=42.0,
+    )
+    assert calls == [(settings, 42.0)]

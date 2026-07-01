@@ -26,9 +26,6 @@ import logging
 
 from base.config.settings import Settings
 from base.supervisor.alerts import build_alert_hook, build_health_probe_task
-from base.supervisor.challenge_image_updater import (
-    build_challenge_image_updater_task,
-)
 from base.supervisor.config_sync import build_config_sync_task
 from base.supervisor.health import (
     DEFAULT_FAILURE_THRESHOLD,
@@ -151,12 +148,14 @@ def build_scheduled_tasks(
             targets=resolve_image_update_targets(settings),
         )
     )
-    # Task 19 registration point (challenge-image-updater).
-    tasks.append(
-        build_challenge_image_updater_task(
-            settings, health_gate=gate, resolver=digest_resolver
-        )
-    )
+    # Task 19 (challenge-image-updater) is NO LONGER registered on the HOST
+    # supervisor: it moved INTO the master proxy (architecture.md sec 9.1) where
+    # it can reach the overlay registry DB + docker socket. The host supervisor
+    # cannot resolve the overlay postgres DNS, so a host-registered
+    # challenge-image-updater could never auto-roll challenges. The
+    # ChallengeImageUpdater class + build_challenge_image_updater_task remain
+    # importable from base.supervisor.challenge_image_updater; the proxy wires
+    # build_challenge_image_update_lifespan instead.
     # Task 20 registration point (config-sync).
     # Task 28 #1: same canonical-broker call-site override; single-port
     # consolidation drops the removed `base-admin` rollout target. The proxy
