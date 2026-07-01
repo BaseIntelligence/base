@@ -451,3 +451,45 @@ def test_dry_run_plan_is_deterministic(tmp_path: Path) -> None:
     second = _run(tmp_path, extra_env=env)
     assert first.returncode == 0 and second.returncode == 0
     assert first.stdout == second.stdout
+
+
+# ---------------------------------------------------------------------------
+# VAL-CODE-REG-003 (m9 rollout-prep): challenge services are named
+# `challenge-<slug>` so the default-on m7 registry reconciler ADOPTS the live
+# services instead of creating `base-challenge-<slug>` duplicates. Only CHALLENGE
+# services drop the `base-` prefix; master/broker keep their `base-` names.
+# ---------------------------------------------------------------------------
+
+
+def test_challenge_services_named_challenge_slug_not_base_prefixed(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    # Every challenge swarm service renders as `challenge-<slug>` (the exact name
+    # the master orchestrator/reconciler expects), with a matching --hostname so
+    # its Docker-network DNS matches the registry internal_base_url.
+    for service in (
+        "challenge-agent-challenge",
+        "challenge-agent-challenge-worker",
+        "challenge-prism",
+        "challenge-prism-worker",
+    ):
+        block = _service_block(lines, service)
+        assert f"--name {service} " in block
+        assert f"--hostname {service}" in block
+
+    # NO challenge service/volume/secret/URL uses the legacy `base-challenge-*`
+    # name anywhere in the rendered plan; a regression would make the default-on
+    # m7 reconciler create live duplicates alongside base-challenge-agent-challenge
+    # / base-challenge-prism.
+    plan = result.stdout.replace("\\", "")
+    assert "--name base-challenge-" not in plan
+    assert "--hostname base-challenge-" not in plan
+    assert "http://base-challenge-" not in plan
+
+    # Standardization is SCOPED to challenge services: master/broker keep `base-`.
+    assert _service_block(lines, "base-master-proxy")
+    assert _service_block(lines, "base-docker-broker")

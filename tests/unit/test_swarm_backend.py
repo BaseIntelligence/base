@@ -8,11 +8,13 @@ bytes against the FROZEN fixtures in ``tests/contract/golden/``.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
 import os
 import tarfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,7 @@ from base.master.docker_orchestrator import (
     ChallengeSpec,
     DockerOrchestrationError,
 )
+from base.master.orchestration import MasterChallengeReconciler
 from base.master.swarm_backend import (
     SwarmBrokerConfig,
     SwarmBrokerService,
@@ -47,6 +50,7 @@ from base.master.swarm_backend import (
     build_service_create_argv,
 )
 from base.master.workload_ledger import WorkloadEntry, WorkloadLedger
+from base.schemas.challenge import ChallengeRecord, ChallengeStatus
 from base.schemas.docker_broker import (
     BrokerCleanupRequest,
     BrokerListRequest,
@@ -1215,6 +1219,108 @@ def test_orchestrator_stop_challenge_removes_service_and_releases() -> None:
 
     assert ("docker", "service", "rm", "challenge-agent") in runner.calls
     assert ledger.count("agent") == 0
+
+
+def test_orchestrator_adopts_existing_challenge_service_without_duplicate_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # VAL-CODE-REG-003 (m9 rollout-prep): when a `challenge-<slug>` service
+    # ALREADY exists (the live-prod state the operator migrates onto),
+    # start_challenge ADOPTS it — it looks the service up by its
+    # `challenge-<slug>` name and never issues a second `docker service create`,
+    # so the default-on m7 reconciler cannot create a duplicate.
+    runner = FakeSwarmRunner(service_exists=True)
+    ledger = WorkloadLedger()
+    orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=ledger)
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_until_ready",
+        lambda spec: ({"status": "ok"}, {"api_version": "1.0"}),
+    )
+    spec = ChallengeSpec(
+        slug="agent",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
+        challenge_token="tok-secret",
+        workload_class="service",
+    )
+
+    runtime = orchestrator.start_challenge(spec)
+
+    # Looked the service up by its `challenge-<slug>` name and reused it.
+    assert (
+        "docker",
+        "service",
+        "inspect",
+        "--format",
+        "{{.ID}}",
+        "challenge-agent",
+    ) in runner.calls
+    # No create (no duplicate) and no secret churn on the adopt path.
+    assert [c for c in runner.calls if c[1:3] == ("service", "create")] == []
+    assert [c for c in runner.calls if c[1:3] == ("secret", "create")] == []
+    assert runtime.container_id == runner.service_id
+    assert runtime.container_name == "challenge-agent"
+    assert runtime.internal_base_url == "http://challenge-agent:8000"
+    # Adopting an existing service does not register a new ledger workload.
+    assert ledger.count("agent") == 0
+
+
+def test_reconciler_adopts_existing_challenge_service_no_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # VAL-CODE-REG-003 (m9 rollout-prep): the m7 MasterChallengeReconciler driven
+    # by the REAL SwarmChallengeOrchestrator adopts a pre-existing
+    # `challenge-<slug>` service (idempotent) rather than creating a
+    # `base-challenge-<slug>` duplicate — the end-to-end guard that going live
+    # with the default-on reconciler is safe against the migrated services.
+    runner = FakeSwarmRunner(service_exists=True)
+    orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=WorkloadLedger())
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_until_ready",
+        lambda spec: ({"status": "ok"}, {"api_version": "1.0"}),
+    )
+
+    record = ChallengeRecord(
+        slug="prism",
+        name="Prism",
+        image="ghcr.io/baseintelligence/prism:1",
+        version="1",
+        emission_percent=Decimal("0"),
+        status=ChallengeStatus.ACTIVE,
+        token_hash="h",
+        token_hint="hint",
+        internal_base_url="http://challenge-prism:8000",
+        public_proxy_base_path="/challenges/prism",
+        required_capabilities=["get_weights", "proxy_routes"],
+        resources={},
+        env={},
+        metadata={},
+    )
+
+    class _Registry:
+        def list(self, *, active_only: bool = False) -> list[ChallengeRecord]:
+            return [record]
+
+    reconciler = MasterChallengeReconciler(
+        registry=_Registry(), orchestrator=orchestrator
+    )
+
+    result = asyncio.run(reconciler.reconcile_once())
+
+    # The ACTIVE challenge is reconciled (adopted) but its existing service is
+    # reused — no `docker service create` (duplicate) is issued.
+    assert result.started == ["prism"]
+    assert result.stopped == []
+    assert [c for c in runner.calls if c[1:3] == ("service", "create")] == []
+    assert (
+        "docker",
+        "service",
+        "inspect",
+        "--format",
+        "{{.ID}}",
+        "challenge-prism",
+    ) in runner.calls
 
 
 def test_build_service_create_argv_orders_image_and_command_last() -> None:
