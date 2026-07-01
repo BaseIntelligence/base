@@ -25,7 +25,7 @@ from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
 from base.config import load_settings
 from base.config.policy import production_policy_enabled_for_settings
-from base.config.settings import Settings
+from base.config.settings import MasterSettings, Settings
 from base.db.session import create_engine, create_session_factory
 from base.master.app_proxy import create_proxy_app
 from base.master.assignment import AssignmentService
@@ -494,6 +494,25 @@ def _settings_docker_broker_url(settings: Any | None) -> str:
     return str(broker_url or DEFAULT_BASE_BROKER_URL)
 
 
+def _settings_gateway_public_base_url(settings: Any | None) -> str:
+    """Return the master LLM gateway public base URL for challenge routing.
+
+    Mirrors the value install-swarm.sh renders (``GATEWAY_PUBLIC_BASE_URL`` ==
+    ``settings.gateway.public_base_url``), so a challenge the reconciler creates
+    PURELY from the registry routes its LLM through the master gateway. Falls
+    back to ``master.registry_url`` (the same fallback the assignment-pull
+    gateway issuer uses), then the ``MasterSettings`` default.
+    """
+
+    gateway_settings = getattr(settings, "gateway", None)
+    public_base_url = getattr(gateway_settings, "public_base_url", None)
+    if public_base_url:
+        return str(public_base_url)
+    master_settings = getattr(settings, "master", None)
+    registry_url = getattr(master_settings, "registry_url", None)
+    return str(registry_url or MasterSettings().registry_url)
+
+
 def _parse_eval_readonly_mounts(values: list[str]) -> tuple[tuple[str, str], ...]:
     """Parse ``source:target`` mount specs into ``(source, target)`` tuples.
 
@@ -588,6 +607,7 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
     """
     broker_url = _settings_docker_broker_url(settings)
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
+    gateway_base_url = _settings_gateway_public_base_url(settings)
     return {
         "CHALLENGE_BENCHMARK_BACKEND": "terminal_bench",
         "CHALLENGE_DOCKER_ENABLED": "true",
@@ -595,6 +615,11 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_DOCKER_BROKER_URL": broker_url,
         "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
         "CHALLENGE_DOCKER_BROKER_NETWORK": AGENT_CHALLENGE_JOB_NETWORK,
+        # Central AST+LLM gate routing (byte-matches install-swarm.sh:1536): the
+        # analyzer LLM review routes through the master gateway ROOT (it appends
+        # /llm/openrouter itself). The scoped central-gate token file is mounted
+        # from the shared base_gateway_token secret; NO raw provider key here.
+        "CHALLENGE_LLM_GATEWAY_BASE_URL": gateway_base_url,
         "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND": "own_runner",
         "CHALLENGE_HARBOR_RUNNER_IMAGE": AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE,
         "CHALLENGE_OWN_RUNNER_CACHE_ROOT": AGENT_CHALLENGE_TASK_CACHE_DIR,
@@ -624,6 +649,7 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
     challenge_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/challenge_token"
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
     broker_url = _settings_docker_broker_url(settings)
+    gateway_base_url = _settings_gateway_public_base_url(settings)
     prism_image = _prism_image_for_settings(PRISM_IMAGE, settings)
     evaluator_image = _prism_image_for_settings(PRISM_EVALUATOR_IMAGE, settings)
     return ChallengeCreate(
@@ -652,6 +678,11 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
             "PRISM_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "PRISM_BASE_EVAL_IMAGE": evaluator_image,
+            # Central llm_review gate routing (byte-matches install-swarm.sh:1653):
+            # PRISM_LLM_GATEWAY_URL is the FULL gateway route prism uses directly
+            # as the chat base_url. The scoped central-gate token is read from
+            # /run/secrets/base_gateway_token by config default; NO raw key here.
+            "PRISM_LLM_GATEWAY_URL": f"{gateway_base_url}/llm/openrouter",
         },
         secrets=["challenge_token", "docker_broker_token"],
         metadata={
