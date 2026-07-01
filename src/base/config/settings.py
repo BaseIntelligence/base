@@ -80,6 +80,13 @@ class MasterSettings(BaseModel):
     # makes the balanced tie-breaking reproducible when set.
     orchestration_interval_seconds: float = 30.0
     orchestration_seed: int | None = None
+    # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
+    # master reconcile loop that turns every ACTIVE registry challenge into a
+    # running service (idempotent) and tears down services for challenges no
+    # longer ACTIVE, so installing ``base`` auto-deploys all ACTIVE challenges
+    # and a newly-registered challenge propagates automatically. Runs every
+    # ``registry_reconcile_interval_seconds`` (<=0 disables it; default-on).
+    registry_reconcile_interval_seconds: float = 60.0
 
 
 class ValidatorAgentSettings(BaseModel):

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -38,8 +39,13 @@ from base.master.assignment import (
     AGENT_CHALLENGE_SLUG,
     AssignmentService,
 )
+from base.master.docker_orchestrator import (
+    ChallengeSpec,
+    challenge_spec_from_registry,
+)
 from base.master.reassignment import ReassignmentPassResult, run_reassignment_pass
 from base.master.validator_coordination import ValidatorCoordinationService
+from base.schemas.challenge import ChallengeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -296,13 +302,184 @@ def build_master_orchestration_lifespan(
     return lifespan
 
 
+class ChallengeRegistrySource(Protocol):
+    """Registry surface the reconciler reads to discover ACTIVE challenges.
+
+    Both the in-memory :class:`base.master.registry.ChallengeRegistry` (sync)
+    and the master :class:`base.master.registry.DatabaseChallengeRegistry`
+    (async) satisfy this: ``list`` may return a list or an awaitable of one.
+    """
+
+    def list(self, *, active_only: bool = ...) -> Any: ...
+
+
+class ChallengeServiceOrchestrator(Protocol):
+    """Per-spec challenge service control the reconciler drives.
+
+    Matches :class:`base.master.swarm_backend.SwarmChallengeOrchestrator` and
+    :class:`base.master.docker_orchestrator.DockerOrchestrator`.
+    """
+
+    def start_challenge(self, spec: ChallengeSpec, *, recreate: bool = ...) -> Any: ...
+
+    def stop_challenge(self, slug: str, *, remove: bool = ...) -> None: ...
+
+
+@dataclass(frozen=True)
+class RegistryReconcilePassResult:
+    """Observable outcome of one registry reconcile pass."""
+
+    #: slugs whose challenge service was started this pass (newly ACTIVE).
+    started: list[str]
+    #: slugs whose challenge service was torn down this pass (no longer ACTIVE).
+    stopped: list[str]
+
+
+class MasterChallengeReconciler:
+    """Reconcile the challenge registry to running challenge services.
+
+    On each pass the master ensures a running service exists for every ACTIVE
+    registry challenge and tears down services for challenges that are no longer
+    ACTIVE (deactivated, disabled, drafted, or removed). This is what makes
+    installing ``base`` (master) auto-deploy every ACTIVE challenge and makes a
+    newly-registered ACTIVE challenge propagate automatically on the next pass,
+    with no static per-challenge ``docker service create`` step.
+
+    Idempotency: a challenge already deployed by this process is left untouched
+    on subsequent passes (start is called exactly once per challenge), and the
+    underlying :meth:`start_challenge` itself reuses an existing service, so a
+    fresh master that inherits already-running services converges harmlessly.
+    A start/stop that raises is logged and retried on the next pass rather than
+    aborting the whole pass.
+    """
+
+    def __init__(
+        self,
+        *,
+        registry: ChallengeRegistrySource,
+        orchestrator: ChallengeServiceOrchestrator,
+    ) -> None:
+        self._registry = registry
+        self._orchestrator = orchestrator
+        self._deployed: dict[str, ChallengeSpec] = {}
+
+    async def reconcile_once(self) -> RegistryReconcilePassResult:
+        """Start newly-ACTIVE challenges and stop no-longer-ACTIVE ones."""
+
+        active = await self._active_challenges()
+        active_slugs = {challenge.slug for challenge in active}
+
+        started: list[str] = []
+        for challenge in active:
+            slug = challenge.slug
+            if slug in self._deployed:
+                continue
+            spec = challenge_spec_from_registry(challenge)
+            try:
+                self._orchestrator.start_challenge(spec)
+            except Exception:
+                logger.exception("failed to start challenge service %s", slug)
+                continue
+            self._deployed[slug] = spec
+            started.append(slug)
+
+        stopped: list[str] = []
+        for slug in list(self._deployed):
+            if slug in active_slugs:
+                continue
+            try:
+                self._orchestrator.stop_challenge(slug)
+            except Exception:
+                logger.exception("failed to stop challenge service %s", slug)
+                continue
+            del self._deployed[slug]
+            stopped.append(slug)
+
+        return RegistryReconcilePassResult(started=started, stopped=stopped)
+
+    async def _active_challenges(self) -> list[Any]:
+        listed = self._registry.list(active_only=True)
+        if inspect.isawaitable(listed):
+            listed = await listed
+        # Defensive second filter: never deploy a non-ACTIVE challenge even if a
+        # registry ignores ``active_only`` (DRAFT/INACTIVE/DISABLED stay off).
+        return [
+            challenge
+            for challenge in listed
+            if challenge.status == ChallengeStatus.ACTIVE
+        ]
+
+
+async def run_registry_reconcile_loop(
+    reconciler: MasterChallengeReconciler,
+    *,
+    interval_seconds: float,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Run :meth:`MasterChallengeReconciler.reconcile_once` until shutdown.
+
+    A failing pass is logged and the loop continues, so one transient error
+    never stops autonomous registry-driven challenge deployment.
+    """
+
+    while not shutdown_event.is_set():
+        try:
+            await reconciler.reconcile_once()
+        except Exception:
+            logger.exception("master registry reconcile pass failed")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            continue
+
+
+def build_master_registry_reconcile_lifespan(
+    reconciler: MasterChallengeReconciler | None,
+    interval_seconds: float | None,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]] | None:
+    """Build a FastAPI lifespan that runs the registry reconcile loop.
+
+    Returns ``None`` (no lifespan) when the reconciler is not configured or the
+    interval is non-positive (opt-out seam; default-on for the master).
+    """
+
+    if reconciler is None or interval_seconds is None or interval_seconds <= 0:
+        return None
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Any:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            run_registry_reconcile_loop(
+                reconciler,
+                interval_seconds=interval_seconds,
+                shutdown_event=shutdown,
+            )
+        )
+        try:
+            yield
+        finally:
+            shutdown.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    return lifespan
+
+
 __all__ = [
     "ChallengeFoldTrigger",
     "ChallengePendingWork",
+    "ChallengeRegistrySource",
+    "ChallengeServiceOrchestrator",
     "ChallengeWorkSource",
+    "MasterChallengeReconciler",
     "MasterOrchestrationDriver",
     "OrchestrationPassResult",
+    "RegistryReconcilePassResult",
     "WORK_UNIT_MAX_ATTEMPTS_REASON",
     "build_master_orchestration_lifespan",
+    "build_master_registry_reconcile_lifespan",
     "run_orchestration_loop",
+    "run_registry_reconcile_loop",
 ]

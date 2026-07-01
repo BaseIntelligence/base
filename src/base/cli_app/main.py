@@ -53,7 +53,10 @@ from base.master.llm_gateway import (
     SqlAlchemyUsageRecorder,
     build_llm_gateway_service,
 )
-from base.master.orchestration import MasterOrchestrationDriver
+from base.master.orchestration import (
+    MasterChallengeReconciler,
+    MasterOrchestrationDriver,
+)
 from base.master.registry import (
     ChallengeNotFoundError,
     DatabaseChallengeRegistry,
@@ -759,6 +762,14 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     orchestration_driver = _master_orchestration_driver(
         settings, session_factory, registry, validator_service
     )
+    # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
+    # master reconcile loop turns every ACTIVE registry challenge into a running
+    # service (idempotent, reusing the orchestrator's existing service) and tears
+    # down services for challenges no longer ACTIVE, so a newly-registered
+    # challenge auto-deploys with no static per-challenge step.
+    registry_reconciler = MasterChallengeReconciler(
+        registry=registry, orchestrator=orchestrator
+    )
     proxy = create_proxy_app(
         registry=registry,
         metagraph_cache=runtime.metagraph_cache,
@@ -786,6 +797,10 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         llm_gateway_service=llm_gateway_service,
         orchestration_driver=orchestration_driver,
         orchestration_interval_seconds=(settings.master.orchestration_interval_seconds),
+        registry_reconciler=registry_reconciler,
+        registry_reconcile_interval_seconds=(
+            settings.master.registry_reconcile_interval_seconds
+        ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"

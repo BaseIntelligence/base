@@ -10,9 +10,7 @@ from base.bittensor.weight_setter import (
     is_rejected_set_weights_result,
 )
 from base.master.docker_orchestrator import (
-    ChallengeResources,
-    ChallengeSpec,
-    worker_command_from_metadata,
+    challenge_spec_from_registry,
 )
 from base.schemas.challenge import ChallengeStatus
 from base.schemas.weights import MasterWeightsResponse
@@ -47,19 +45,7 @@ class NormalValidatorRunner:
         for challenge in registry.challenges:
             if challenge.status != ChallengeStatus.ACTIVE:
                 continue
-            spec = ChallengeSpec(
-                slug=challenge.slug,
-                image=challenge.image,
-                version=challenge.version,
-                env=challenge.env,
-                resources=ChallengeResources.from_mapping(challenge.resources),
-                required_capabilities=tuple(challenge.required_capabilities),
-                worker_command=worker_command_from_metadata(
-                    getattr(challenge, "metadata", {}) or {}
-                ),
-                workload_class="service",
-            )
-            self.orchestrator.start_challenge(spec)
+            self.orchestrator.start_challenge(challenge_spec_from_registry(challenge))
 
     async def submit_latest_weights(self) -> bool:
         if (

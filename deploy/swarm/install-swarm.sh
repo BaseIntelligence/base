@@ -1476,11 +1476,16 @@ _deploy_master_service() {
 
 # ============================================================================
 # 10. deploy_challenges()
-#     DEFAULT: do NOTHING here — the running master orchestrator (`base
-#     master proxy`, deployed above) creates challenge services dynamically via
-#     SwarmChallengeOrchestrator (this is the real-system behavior). Only when
-#     --static-challenges is set do we create the challenge services directly,
-#     for a static single-node bring-up.
+#     DEFAULT: do NOTHING here — the running `base master proxy` (deployed above)
+#     runs a background REGISTRY RECONCILE LOOP that turns every ACTIVE registry
+#     challenge into a running Swarm service and tears down services for
+#     challenges no longer ACTIVE. It reconciles on a cadence
+#     (MasterSettings.registry_reconcile_interval_seconds, default 60s) via
+#     src/base/master/orchestration.py::MasterChallengeReconciler ->
+#     SwarmChallengeOrchestrator.start_challenge/stop_challenge, so a
+#     newly-registered ACTIVE challenge auto-deploys with no manual step here.
+#     Only when --static-challenges is set do we create the challenge services
+#     directly, for a deterministic static single-node bring-up.
 #
 #     The direct path issues `docker service create` WITHOUT any `--constraint`
 #     flag, which is precisely the single-node placement workaround (option (a)
@@ -1490,9 +1495,9 @@ _deploy_master_service() {
 deploy_challenges() {
   log "STEP 10/12 deploy_challenges"
   if [[ "${STATIC_CHALLENGES}" != "true" ]]; then
-    log "  --static-challenges NOT set (DEFAULT): the master orchestrator will create"
-    log "  challenge services dynamically. Nothing to do here."
-    log "  (Reminder: master-orchestrated tasks need the single-node placement"
+    log "  --static-challenges NOT set (DEFAULT): the master proxy's registry"
+    log "  reconcile loop deploys every ACTIVE challenge dynamically. Nothing to do here."
+    log "  (Reminder: master-reconciled tasks need the single-node placement"
     log "   override to schedule on this single manager node — see STEP 4.)"
     return 0
   fi

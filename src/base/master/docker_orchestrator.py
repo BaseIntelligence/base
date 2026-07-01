@@ -291,6 +291,32 @@ def worker_command_from_metadata(metadata: Mapping[str, Any]) -> tuple[str, ...]
     return command
 
 
+def challenge_spec_from_registry(challenge: Any) -> ChallengeSpec:
+    """Build a long-lived challenge service spec from a registry entry.
+
+    Shared by the legacy :class:`NormalValidatorRunner` and the master registry
+    reconciler so both deploy ACTIVE challenges with byte-identical specs. The
+    ``challenge`` is duck-typed: any registry entry exposing ``slug``, ``image``,
+    ``version``, ``env``, ``resources``, ``required_capabilities`` and
+    ``metadata`` (a :class:`ChallengeRecord` or a registry ``RegistryChallenge``)
+    works. Emits a ``"service"`` workload (a long-lived challenge API), never a
+    reapable eval job.
+    """
+
+    return ChallengeSpec(
+        slug=challenge.slug,
+        image=challenge.image,
+        version=challenge.version,
+        env=dict(challenge.env),
+        resources=ChallengeResources.from_mapping(dict(challenge.resources)),
+        required_capabilities=tuple(challenge.required_capabilities),
+        worker_command=worker_command_from_metadata(
+            getattr(challenge, "metadata", {}) or {}
+        ),
+        workload_class="service",
+    )
+
+
 @dataclass(frozen=True)
 class ChallengeRuntime:
     """In-memory runtime state for a started challenge."""

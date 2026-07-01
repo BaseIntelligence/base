@@ -70,3 +70,45 @@ multi-homing), `tests/unit/test_seed_docker_backend.py` (job network constant +
 LOG_STREAM host == service name), `tests/unit/test_client_service_cli_config.py`,
 `tests/unit/test_install_swarm_decentralized_deploy.py` (proxy + api/worker
 attach).
+
+## Master registry-driven challenge deploy (reconciler)
+
+The master (`base master proxy`) runs a background **registry reconcile loop**
+that turns the challenge registry into running challenge services. This is what
+makes installing `base` (master) auto-deploy every ACTIVE challenge, and makes a
+newly-registered ACTIVE challenge propagate automatically with NO static
+per-challenge `docker service create` step. (Historically the master had no such
+loop: `SwarmChallengeOrchestrator` only did per-spec start/stop/restart, admin
+create just wrote a DB row, and the only reconcile was the legacy validator-side
+`NormalValidatorRunner.run_once`. The `install-swarm.sh` `deploy_challenges`
+default-path comment now reflects this real behavior.)
+
+### Behavior (idempotent, reconcile-to-registry)
+
+- Each pass reads `registry.list(active_only=True)` and calls
+  `orchestrator.start_challenge(spec)` for every ACTIVE challenge. Start is
+  invoked **exactly once per challenge** (the reconciler tracks what it has
+  deployed), and `start_challenge` is itself idempotent (it reuses an existing
+  service), so a fresh master that inherits already-running services converges
+  harmlessly.
+- A challenge whose status is no longer ACTIVE (DRAFT / INACTIVE / DISABLED, or
+  removed from the registry) has its service **stopped** via
+  `orchestrator.stop_challenge(slug)` on the next pass.
+- DRAFT / INACTIVE / DISABLED challenges are **never** started (belt-and-suspenders:
+  the reconciler also re-filters to ACTIVE even if a registry ignores
+  `active_only`).
+- A start/stop that raises is logged and retried next pass; one failure never
+  aborts the whole pass or stops the loop.
+
+### Where it is wired
+
+| Concern | Code |
+|---------|------|
+| Reconciler + loop + lifespan | `src/base/master/orchestration.py::MasterChallengeReconciler` / `run_registry_reconcile_loop` / `build_master_registry_reconcile_lifespan` |
+| Shared spec builder (same shape as the legacy runner) | `src/base/master/docker_orchestrator.py::challenge_spec_from_registry` (also used by `validator/normal_runner.py`); emits `workload_class="service"` |
+| Cadence / opt-out | `MasterSettings.registry_reconcile_interval_seconds` (default `60.0`; `<=0` disables — default-on for the master) |
+| Wire-up | `master/app_proxy.py::create_proxy_app` (`registry_reconciler` + `registry_reconcile_interval_seconds`, composed via `_combine_lifespans`); constructed in `cli_app/main.py::master_proxy` from the same `orchestrator` the runtime controller uses |
+
+Tests: `tests/unit/test_master_registry_reconciler.py` (faked registry +
+orchestrator: start/idempotent/add/deactivate/remove/reactivate, non-ACTIVE never
+started, spec parity, start-failure retry, async registry, loop + lifespan).

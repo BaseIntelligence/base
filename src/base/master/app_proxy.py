@@ -35,8 +35,10 @@ from base.master.llm_gateway import (
     build_llm_gateway_router,
 )
 from base.master.orchestration import (
+    MasterChallengeReconciler,
     MasterOrchestrationDriver,
     build_master_orchestration_lifespan,
+    build_master_registry_reconcile_lifespan,
 )
 from base.master.registry import ChallengeNotFoundError
 from base.master.service import MasterWeightService
@@ -343,6 +345,8 @@ def create_proxy_app(
     llm_gateway_service: LLMGatewayService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
     orchestration_interval_seconds: float | None = None,
+    registry_reconciler: MasterChallengeReconciler | None = None,
+    registry_reconcile_interval_seconds: float | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
@@ -364,6 +368,9 @@ def create_proxy_app(
             ),
             build_master_orchestration_lifespan(
                 orchestration_driver, orchestration_interval_seconds
+            ),
+            build_master_registry_reconcile_lifespan(
+                registry_reconciler, registry_reconcile_interval_seconds
             ),
         ),
     )
@@ -650,6 +657,9 @@ def create_proxy_app(
 
     if orchestration_driver is not None:
         app.state.orchestration_driver = orchestration_driver
+
+    if registry_reconciler is not None:
+        app.state.registry_reconciler = registry_reconciler
 
     app.state.challenge_registry = challenge_registry
     app.state.miner_upload_verifier = verifier
