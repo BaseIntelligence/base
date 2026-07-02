@@ -8,9 +8,9 @@ gateway-routing URL into the record env, sourced from the master
 ``gateway.public_base_url`` and BYTE-MATCHING install-swarm.sh:
 
 - agent-challenge -> ``CHALLENGE_LLM_GATEWAY_BASE_URL=<gateway.public_base_url>``
-  (install-swarm.sh:1536)
-- prism -> ``PRISM_LLM_GATEWAY_URL=<gateway.public_base_url>/llm/openrouter``
-  (install-swarm.sh:1653)
+  (the analyzer appends ``/llm/v1`` itself)
+- prism -> ``PRISM_LLM_GATEWAY_URL=<gateway.public_base_url>/llm/v1`` (the single
+  source-driven gateway route; the gateway injects the provider + model)
 
 and that a spec built by ``challenge_spec_from_registry`` from the seeded record
 carries the same routing env onto the reconciler-built service. No raw provider
@@ -28,7 +28,7 @@ from base.master.registry import ChallengeRegistry
 from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
 GATEWAY_PUBLIC_BASE_URL = "http://88.216.198.199:19080"
-GATEWAY_OPENROUTER_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/openrouter"
+GATEWAY_V1_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/v1"
 
 
 def _settings() -> SimpleNamespace:
@@ -58,7 +58,7 @@ def _seed(registry: ChallengeRegistry) -> None:
 
 def test_prism_challenge_create_env_carries_gateway_routing_url() -> None:
     payload = cli_module.prism_challenge_create(_settings())
-    assert payload.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_OPENROUTER_ROUTE
+    assert payload.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_V1_ROUTE
     # No raw provider key smuggled into the record env.
     assert "PRISM_OPENROUTER_API_KEY" not in payload.env
     assert not any(key.endswith("_API_KEY") for key in payload.env)
@@ -75,10 +75,10 @@ def test_seeded_prism_record_env_and_reconciler_spec_carry_routing() -> None:
     _seed(registry)
 
     prism = registry.get("prism")
-    assert prism.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_OPENROUTER_ROUTE
+    assert prism.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_V1_ROUTE
 
     spec = challenge_spec_from_registry(prism)
-    assert spec.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_OPENROUTER_ROUTE
+    assert spec.env["PRISM_LLM_GATEWAY_URL"] == GATEWAY_V1_ROUTE
 
 
 def test_seeded_agent_challenge_record_env_and_reconciler_spec_carry_routing() -> None:
@@ -101,6 +101,6 @@ def test_routing_url_derived_from_gateway_public_base_url() -> None:
         master=SimpleNamespace(registry_url="https://chain.joinbase.ai"),
     )
     prism = cli_module.prism_challenge_create(other)
-    assert prism.env["PRISM_LLM_GATEWAY_URL"] == "http://10.0.0.5:28080/llm/openrouter"
+    assert prism.env["PRISM_LLM_GATEWAY_URL"] == "http://10.0.0.5:28080/llm/v1"
     agent_env = cli_module._agent_challenge_own_runner_env(other)
     assert agent_env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == "http://10.0.0.5:28080"

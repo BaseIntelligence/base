@@ -17,10 +17,11 @@ from typing import Literal, Protocol
 
 import httpx
 
-#: Canonical upstream bases. DeepSeek enforces ``api.deepseek.com`` semantics
-#: (architecture.md sec 5); the gateway ``{path}`` suffix is appended to these.
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+#: Default provider name + upstream base for local/dev + tests. Production values
+#: come from master config (``GatewaySettings.providers``); there is NO hardcoded
+#: provider-enforcement constant. yunwu is OpenAI-compatible.
+DEFAULT_PROVIDER_NAME = "yunwu"
+DEFAULT_PROVIDER_BASE_URL = "https://yunwu.ai/v1"
 
 ProviderMode = Literal["mock", "real"]
 
@@ -232,41 +233,41 @@ class HttpLLMProvider:
         )
 
 
+def _default_provider_registry() -> dict[str, str]:
+    return {DEFAULT_PROVIDER_NAME: DEFAULT_PROVIDER_BASE_URL}
+
+
 @dataclass(frozen=True)
 class ProviderConfig:
-    """Config that selects the provider implementation and upstream bases."""
+    """Config that selects the provider implementation + the provider registry.
+
+    ``providers`` maps a provider name to its upstream base URL. It is fully
+    config-driven (no hardcoded provider list): the master builds it from
+    ``GatewaySettings.providers``; the default is yunwu-only for local/dev + tests.
+    """
 
     mode: ProviderMode = "mock"
-    deepseek_base_url: str = DEEPSEEK_BASE_URL
-    openrouter_base_url: str = OPENROUTER_BASE_URL
+    providers: Mapping[str, str] = field(default_factory=_default_provider_registry)
     timeout_seconds: float = 30.0
 
 
 def build_providers(config: ProviderConfig) -> dict[str, LLMProvider]:
-    """Build the deepseek/openrouter providers selected by ``config.mode``.
+    """Build the configured providers, keyed by name, selected by ``config.mode``.
 
     ``mock`` returns deterministic in-process providers (no egress); ``real``
-    constructs HTTP clients pinned to the configured upstream bases.
+    constructs HTTP clients pinned to each configured upstream base.
     """
 
     if config.mode == "mock":
         return {
-            "deepseek": MockLLMProvider(
-                name="deepseek", base_url=config.deepseek_base_url
-            ),
-            "openrouter": MockLLMProvider(
-                name="openrouter", base_url=config.openrouter_base_url
-            ),
+            name: MockLLMProvider(name=name, base_url=base_url)
+            for name, base_url in config.providers.items()
         }
     return {
-        "deepseek": HttpLLMProvider(
-            name="deepseek",
-            base_url=config.deepseek_base_url,
+        name: HttpLLMProvider(
+            name=name,
+            base_url=base_url,
             timeout_seconds=config.timeout_seconds,
-        ),
-        "openrouter": HttpLLMProvider(
-            name="openrouter",
-            base_url=config.openrouter_base_url,
-            timeout_seconds=config.timeout_seconds,
-        ),
+        )
+        for name, base_url in config.providers.items()
     }

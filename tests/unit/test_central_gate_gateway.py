@@ -1,12 +1,12 @@
-"""Central-gate (non-assignment-scoped) gateway token behavior (GW-001).
+"""Central-gate (non-assignment-scoped) gateway token behavior.
 
 A ``central-gate`` token authorizes the central safety gates (agent-challenge
 analyzer LLM review + prism ``llm_review`` gate) to call the master LLM gateway
 WITHOUT a live work assignment. The gateway treats it as active by valid
 signature + unexpired ``exp`` alone, bypassing the assignment-lifecycle resolver,
-and records usage keyed by the token's principal/label. The standard
-assignment-scoped path is left UNCHANGED (an inactive/unowned assignment still
-yields 403).
+resolves the provider from the token ``source``, and records usage keyed by the
+token's principal/label. The standard assignment-scoped path is left UNCHANGED
+(an inactive/unowned assignment still yields 403).
 """
 
 from __future__ import annotations
@@ -24,18 +24,18 @@ from base.cli_app.main import app
 from base.master.app_proxy import create_proxy_app
 from base.master.llm_gateway import (
     CENTRAL_GATE_KIND,
-    OPENROUTER_BASE_URL,
+    DEFAULT_PROVIDER_BASE_URL,
     GatewayAssignmentInactiveError,
     GatewayTokenAuthority,
     InMemoryUsageRecorder,
     LLMGatewayService,
     MockLLMProvider,
+    SourceRoute,
 )
-from base.master.llm_gateway.providers import DEEPSEEK_BASE_URL
 
 TOKEN_SECRET = "central-gate-hmac-secret"
-OPENROUTER_KEY = "sk-or-server-secret-key"
-DEEPSEEK_KEY = "sk-deepseek-server-secret-key"
+YUNWU_KEY = "sk-yunwu-server-secret-key"
+MODEL = "claude-opus-4-8"
 
 
 class FakeNonceStore:
@@ -69,13 +69,11 @@ def _service(resolver: object) -> tuple[LLMGatewayService, InMemoryUsageRecorder
     recorder = InMemoryUsageRecorder()
     service = LLMGatewayService(
         providers={
-            "deepseek": MockLLMProvider(name="deepseek", base_url=DEEPSEEK_BASE_URL),
-            "openrouter": MockLLMProvider(
-                name="openrouter", base_url=OPENROUTER_BASE_URL
-            ),
+            "yunwu": MockLLMProvider(name="yunwu", base_url=DEFAULT_PROVIDER_BASE_URL),
         },
-        api_keys={"deepseek": DEEPSEEK_KEY, "openrouter": OPENROUTER_KEY},
+        api_keys={"yunwu": YUNWU_KEY},
         token_authority=GatewayTokenAuthority(TOKEN_SECRET, now_fn=lambda: 1_000.0),
+        sources={"llm_review": SourceRoute(provider="yunwu", model=MODEL)},
         usage_recorder=recorder,
         assignment_resolver=resolver,  # type: ignore[arg-type]
     )
@@ -106,26 +104,31 @@ async def test_central_gate_token_bypasses_resolver_and_meters_principal_label(
 ) -> None:
     client, service, recorder = client_and_recorder
     token = service.issue_central_gate_token(
-        principal="central-gate", label="agent-challenge"
+        principal="central-gate", label="agent-challenge", source="llm_review"
     )
     response = await client.post(
-        "/llm/openrouter/chat/completions",
+        "/llm/v1/chat/completions",
         content=json.dumps(
-            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            {"model": "whatever", "messages": [{"role": "user", "content": "hi"}]}
         ).encode(),
         headers={"X-Gateway-Token": token},
     )
-    # The ExplodingResolver would have raised (-> 500/403) had it been consulted;
-    # a 200 proves the central-gate path bypassed assignment resolution.
+    # The ExplodingResolver would have raised had it been consulted; a 200 proves
+    # the central-gate path bypassed assignment resolution.
     assert response.status_code == 200, response.text
     assert len(recorder.records) == 1
     record = recorder.records[0]
     assert record.validator_hotkey == "central-gate"
     assert record.assignment_id == "agent-challenge"
-    assert record.provider == "openrouter"
+    assert record.provider == "yunwu"
+    assert record.model == MODEL
     # No secret material is recorded.
-    assert OPENROUTER_KEY not in json.dumps(record.__dict__)
+    assert YUNWU_KEY not in json.dumps(record.__dict__)
     assert token not in json.dumps(record.__dict__)
+    # The gateway injected the yunwu key + resolved model server-side.
+    forwarded = service.provider("yunwu").requests[-1]  # type: ignore[attr-defined]
+    assert forwarded.header("authorization") == f"Bearer {YUNWU_KEY}"
+    assert forwarded.json_body()["model"] == MODEL
 
 
 async def test_central_gate_ensure_active_is_a_noop_without_consulting_resolver() -> (
@@ -133,7 +136,9 @@ async def test_central_gate_ensure_active_is_a_noop_without_consulting_resolver(
 ):
     service, _recorder = _service(ExplodingResolver())
     claims = service.token_authority.verify(
-        service.issue_central_gate_token(principal="central-gate", label="prism")
+        service.issue_central_gate_token(
+            principal="central-gate", label="prism", source="llm_review"
+        )
     )
     assert claims.kind == CENTRAL_GATE_KIND
     # Must NOT raise (and must NOT consult the ExplodingResolver).
@@ -143,7 +148,7 @@ async def test_central_gate_ensure_active_is_a_noop_without_consulting_resolver(
 async def test_assignment_kind_still_rejects_inactive_assignment() -> None:
     service, _recorder = _service(InactiveResolver())
     claims = service.token_authority.verify(
-        service.issue_token(validator_hotkey="v1", assignment_id="a1")
+        service.issue_token(validator_hotkey="v1", assignment_id="a1", source="agent")
     )
     with pytest.raises(GatewayAssignmentInactiveError):
         await service.ensure_assignment_active(claims)
@@ -181,3 +186,35 @@ def test_cli_mint_central_gate_token_prints_verifiable_token(
     assert claims.kind == CENTRAL_GATE_KIND
     assert claims.validator_hotkey == "central-gate"
     assert claims.assignment_id == "agent-challenge"
+    # The CLI stamps the default llm_review source into the token.
+    assert claims.source == "llm_review"
+
+
+def test_cli_mint_central_gate_token_accepts_source_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "cli-gateway-secret"
+    monkeypatch.setattr(
+        cli_main,
+        "load_settings",
+        lambda config: SimpleNamespace(
+            gateway=SimpleNamespace(token_secret=secret, token_secret_file=None)
+        ),
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "master",
+            "mint-central-gate-token",
+            "--label",
+            "prism",
+            "--source",
+            "llm_review",
+            "--model",
+            "claude-opus-4-8",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    claims = GatewayTokenAuthority(secret).verify(result.output.strip())
+    assert claims.source == "llm_review"
+    assert claims.model == "claude-opus-4-8"

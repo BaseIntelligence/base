@@ -2,11 +2,12 @@
 
 When a validator pulls an active assignment from the real pull route, the master
 server-side issues a fresh scoped gateway token (scope = validator hotkey +
-assignment id, expiry bounded by the lease deadline) via the gateway token
-authority and includes it, plus the master gateway base URLs, in the returned
-assignment payload. The delivered token authorizes a gateway call for that
-assignment and is rejected for a different scope or once the assignment is
-terminal (VAL-LLM-023). No raw provider key is ever placed in the payload.
+assignment id, source=agent, expiry bounded by the lease deadline) via the
+gateway token authority and includes it, plus the master gateway base URL
+(``BASE_LLM_GATEWAY_URL={root}/llm/v1``), in the returned assignment payload. The
+delivered token authorizes a gateway call for that assignment and is rejected for
+a different scope or once the assignment is terminal. No raw provider key is ever
+placed in the payload.
 """
 
 from __future__ import annotations
@@ -40,10 +41,12 @@ from base.master.assignment_coordination import (
     WorkAssignmentLifecycleResolver,
 )
 from base.master.llm_gateway import (
+    BASE_LLM_GATEWAY_URL_ENV,
     GATEWAY_ASSIGNMENT_HEADER,
     GATEWAY_TOKEN_HEADER,
     GATEWAY_VALIDATOR_HEADER,
     ProviderConfig,
+    SourceRoute,
     build_llm_gateway_service,
 )
 from base.security.validator_auth import (
@@ -56,9 +59,9 @@ from base.security.validator_auth import (
 NOW_EPOCH = 1_750_000_000.0
 LEASE_SECONDS = 900
 GATEWAY_BASE_URL = "http://testserver"
-DEEPSEEK_KEY = "ds-provider-secret-key"
-OPENROUTER_KEY = "or-provider-secret-key"
+YUNWU_KEY = "yunwu-provider-secret-key"
 GATEWAY_TOKEN_SECRET = "gateway-hmac-secret"
+MODEL = "claude-opus-4-8"
 
 
 class FakeNonceStore:
@@ -144,8 +147,7 @@ class Harness:
         self,
         *,
         token: str | None,
-        provider: str = "deepseek",
-        model: str = "deepseek-v4-pro",
+        model: str = "agent-sent-placeholder",
         validator: str | None = None,
         assignment: str | None = None,
     ):
@@ -158,7 +160,7 @@ class Harness:
             headers[GATEWAY_ASSIGNMENT_HEADER] = assignment
         body = json.dumps({"model": model, "messages": []}).encode()
         return await self.client.post(
-            f"/llm/{provider}/chat/completions", content=body, headers=headers
+            "/llm/v1/chat/completions", content=body, headers=headers
         )
 
     async def add_validator(self, hotkey: str, capabilities: list[str]) -> None:
@@ -227,10 +229,10 @@ async def harness() -> AsyncIterator[Harness]:
         now_fn=lambda: clock.epoch,
     )
     gateway_service = build_llm_gateway_service(
-        deepseek_api_key=DEEPSEEK_KEY,
-        openrouter_api_key=OPENROUTER_KEY,
+        api_keys={"yunwu": YUNWU_KEY},
         token_secret=GATEWAY_TOKEN_SECRET,
         provider_config=ProviderConfig(mode="mock"),
+        sources={"agent": SourceRoute(provider="yunwu", model=MODEL)},
         assignment_resolver=WorkAssignmentLifecycleResolver(session_factory),
     )
     service = AssignmentCoordinationService(
@@ -272,13 +274,18 @@ async def test_pull_stamps_scoped_token_and_gateway_base_urls(
 
     token = payload[GATEWAY_TOKEN_PAYLOAD_KEY]
     assert isinstance(token, str) and token
-    assert payload["DEEPSEEK_BASE_URL"] == f"{GATEWAY_BASE_URL}/llm/deepseek"
-    assert payload["OPENROUTER_BASE_URL"] == f"{GATEWAY_BASE_URL}/llm/openrouter"
+    assert payload[BASE_LLM_GATEWAY_URL_ENV] == f"{GATEWAY_BASE_URL}/llm/v1"
     assert payload[GATEWAY_BASE_URL_PAYLOAD_KEY] == GATEWAY_BASE_URL
+    # The old provider-path base-url env keys are no longer stamped.
+    assert "DEEPSEEK_BASE_URL" not in payload
+    assert "OPENROUTER_BASE_URL" not in payload
+
+    # The token carries source=agent so the gateway resolves yunwu + the model.
+    claims = harness.gateway_service.token_authority.verify(token)
+    assert claims.source == "agent"
 
     # The payload never carries a raw provider key.
-    assert DEEPSEEK_KEY not in json.dumps(payload)
-    assert OPENROUTER_KEY not in json.dumps(payload)
+    assert YUNWU_KEY not in json.dumps(payload)
 
     # The token is ephemeral: it is NOT persisted into the work_assignments row.
     stored = await harness.assignment_payload(assignment_id)
@@ -298,25 +305,26 @@ async def test_delivered_token_authorizes_in_scope_and_rejects_out_of_scope(
     # In-scope: the delivered token authorizes a gateway call -> 200, provider hit.
     ok = await harness.gateway_call(token=token)
     assert ok.status_code == 200
-    deepseek = harness.gateway_service.provider("deepseek")
-    assert deepseek.call_count == 1
+    yunwu = harness.gateway_service.provider("yunwu")
+    assert yunwu.call_count == 1
     # The master injected the real provider key server-side (never the caller).
-    assert deepseek.requests[-1].header("authorization") == f"Bearer {DEEPSEEK_KEY}"
+    assert yunwu.requests[-1].header("authorization") == f"Bearer {YUNWU_KEY}"
+    # The gateway overwrote the body model with the resolved model.
+    assert yunwu.requests[-1].json_body()["model"] == MODEL
 
-    # Out-of-scope: the same token attributed to a different assignment -> 403,
-    # and the provider is NOT invoked again.
+    # Out-of-scope: the same token attributed to a different assignment -> 403.
     other = await harness.gateway_call(token=token, assignment=str(uuid.uuid4()))
     assert other.status_code == 403
-    assert deepseek.call_count == 1
+    assert yunwu.call_count == 1
 
     # Out-of-scope: the same token attributed to a different validator -> 403.
     cross = await harness.gateway_call(token=token, validator="someone-else")
     assert cross.status_code == 403
-    assert deepseek.call_count == 1
+    assert yunwu.call_count == 1
 
     # The raw provider key never appears in any response surface.
-    assert DEEPSEEK_KEY not in ok.text
-    assert DEEPSEEK_KEY not in other.text
+    assert YUNWU_KEY not in ok.text
+    assert YUNWU_KEY not in other.text
 
 
 # VAL-LLM-023 (lifecycle binding preserved end-to-end via the issued token)
@@ -329,18 +337,17 @@ async def test_token_rejected_once_assignment_terminal(harness: Harness) -> None
     ]
     # While the assignment is running the token is accepted.
     assert (await harness.gateway_call(token=token)).status_code == 200
-    deepseek = harness.gateway_service.provider("deepseek")
-    assert deepseek.call_count == 1
+    yunwu = harness.gateway_service.provider("yunwu")
+    assert yunwu.call_count == 1
 
-    # Complete the assignment; the same token is now rejected (inactive) and the
-    # provider is not invoked again.
+    # Complete the assignment; the same token is now rejected (inactive).
     completed = await harness.result(assignment_id, success=True)
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
 
     rejected = await harness.gateway_call(token=token)
     assert rejected.status_code == 403
-    assert deepseek.call_count == 1
+    assert yunwu.call_count == 1
 
 
 async def test_pull_without_gateway_issuer_stamps_no_token() -> None:
@@ -376,7 +383,7 @@ async def test_pull_without_gateway_issuer_stamps_no_token() -> None:
         await harness.add_assignment(work_unit_id="u-1", hotkey="permitted")
         payload = (await harness.pull()).json()["assignments"][0]["payload"]
         assert GATEWAY_TOKEN_PAYLOAD_KEY not in payload
-        assert "DEEPSEEK_BASE_URL" not in payload
+        assert BASE_LLM_GATEWAY_URL_ENV not in payload
     finally:
         await client.aclose()
         await engine.dispose()
@@ -384,7 +391,7 @@ async def test_pull_without_gateway_issuer_stamps_no_token() -> None:
 
 class _RecordingIssuer:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, int | None]] = []
+        self.calls: list[tuple[str, str, int | None, str | None]] = []
 
     def issue_token(
         self,
@@ -392,8 +399,10 @@ class _RecordingIssuer:
         validator_hotkey: str,
         assignment_id: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str:
-        self.calls.append((validator_hotkey, assignment_id, ttl_seconds))
+        self.calls.append((validator_hotkey, assignment_id, ttl_seconds, source))
         return f"token-{assignment_id}-{ttl_seconds}"
 
 
@@ -424,9 +433,9 @@ def test_token_ttl_is_bounded_by_future_deadline() -> None:
     payload = service.gateway_payload(unit, hotkey="permitted")
 
     assert payload is not None
-    assert payload["DEEPSEEK_BASE_URL"] == f"{GATEWAY_BASE_URL}/llm/deepseek"
-    assert payload["OPENROUTER_BASE_URL"] == f"{GATEWAY_BASE_URL}/llm/openrouter"
-    assert issuer.calls == [("permitted", str(unit.id), 120)]
+    assert payload[BASE_LLM_GATEWAY_URL_ENV] == f"{GATEWAY_BASE_URL}/llm/v1"
+    # The assignment token is stamped with source=agent + bounded ttl.
+    assert issuer.calls == [("permitted", str(unit.id), 120, "agent")]
 
 
 def test_token_ttl_handles_naive_deadline_from_db() -> None:

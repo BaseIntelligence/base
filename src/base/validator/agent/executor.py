@@ -25,9 +25,8 @@ from base.challenge_sdk.executors.docker import (
     DockerRunSpec,
 )
 from base.master.llm_gateway import (
-    DEEPSEEK_BASE_URL_ENV,
+    BASE_LLM_GATEWAY_URL_ENV,
     GATEWAY_TOKEN_ENV,
-    OPENROUTER_BASE_URL_ENV,
 )
 from base.schemas.assignment import AssignmentView
 
@@ -112,15 +111,14 @@ def gateway_env_for_assignment(
 ) -> dict[str, str]:
     """Build the LLM-gateway env for an eval runtime (no provider key).
 
-    Points ``DEEPSEEK_BASE_URL``/``OPENROUTER_BASE_URL`` at the master gateway and
+    Points ``BASE_LLM_GATEWAY_URL`` at the master gateway (``{root}/llm/v1``) and
     carries the per-assignment scoped gateway token from the assignment payload.
+    The gateway resolves the provider + model from the token; the agent sends no
+    provider key and no real model.
     """
 
     base = gateway_url.rstrip("/")
-    env = {
-        DEEPSEEK_BASE_URL_ENV: f"{base}/llm/deepseek",
-        OPENROUTER_BASE_URL_ENV: f"{base}/llm/openrouter",
-    }
+    env = {BASE_LLM_GATEWAY_URL_ENV: f"{base}/llm/v1"}
     token = (assignment.payload or {}).get(GATEWAY_TOKEN_PAYLOAD_KEY)
     if token:
         env[GATEWAY_TOKEN_ENV] = str(token)

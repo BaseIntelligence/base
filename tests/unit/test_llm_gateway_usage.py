@@ -36,8 +36,8 @@ async def test_in_memory_recorder_collects_records() -> None:
     record = UsageRecord(
         validator_hotkey="v1",
         assignment_id="a1",
-        provider="deepseek",
-        model="deepseek-v4-pro",
+        provider="yunwu",
+        model="claude-opus-4-8",
         status_code=200,
         prompt_tokens=1,
         completion_tokens=1,
@@ -52,8 +52,8 @@ async def test_null_recorder_is_noop() -> None:
         UsageRecord(
             validator_hotkey="v1",
             assignment_id="a1",
-            provider="deepseek",
-            model="deepseek-v4-pro",
+            provider="yunwu",
+            model="claude-opus-4-8",
             status_code=200,
             prompt_tokens=0,
             completion_tokens=0,
@@ -94,8 +94,8 @@ async def test_sqlalchemy_recorder_persists_row_keyed_by_scope() -> None:
             UsageRecord(
                 validator_hotkey="validator-hotkey-1",
                 assignment_id="assignment-1",
-                provider="deepseek",
-                model="deepseek-v4-pro",
+                provider="yunwu",
+                model="claude-opus-4-8",
                 status_code=200,
                 prompt_tokens=3,
                 completion_tokens=4,
@@ -108,8 +108,8 @@ async def test_sqlalchemy_recorder_persists_row_keyed_by_scope() -> None:
         row = rows[0]
         assert row.validator_hotkey == "validator-hotkey-1"
         assert row.assignment_id == "assignment-1"
-        assert row.provider == "deepseek"
-        assert row.model == "deepseek-v4-pro"
+        assert row.provider == "yunwu"
+        assert row.model == "claude-opus-4-8"
         assert row.total_tokens == 7
         assert row.created_at is not None
     finally:

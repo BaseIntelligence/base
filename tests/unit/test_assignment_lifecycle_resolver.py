@@ -28,16 +28,16 @@ from base.db.models import WorkAssignment, WorkAssignmentStatus
 from base.master.app_proxy import create_proxy_app
 from base.master.assignment_coordination import WorkAssignmentLifecycleResolver
 from base.master.llm_gateway import (
-    DEEPSEEK_BASE_URL,
-    OPENROUTER_BASE_URL,
+    DEFAULT_PROVIDER_BASE_URL,
     GatewayTokenAuthority,
     LLMGatewayService,
     MockLLMProvider,
+    SourceRoute,
 )
 
 NOW = datetime(2026, 6, 27, 12, 0, 0, tzinfo=UTC)
-DEEPSEEK_KEY = "sk-deepseek-server-secret"
-OPENROUTER_KEY = "sk-or-server-secret"
+YUNWU_KEY = "sk-yunwu-server-secret"
+MODEL = "claude-opus-4-8"
 TOKEN_SECRET = "gateway-secret"
 
 
@@ -167,13 +167,13 @@ class Clock:
 @pytest.fixture
 async def gateway() -> AsyncIterator[tuple[AsyncClient, Any, MockLLMProvider, str]]:
     engine, factory = await _setup()
-    deepseek = MockLLMProvider(name="deepseek", base_url=DEEPSEEK_BASE_URL)
-    openrouter = MockLLMProvider(name="openrouter", base_url=OPENROUTER_BASE_URL)
+    yunwu = MockLLMProvider(name="yunwu", base_url=DEFAULT_PROVIDER_BASE_URL)
     authority = GatewayTokenAuthority(TOKEN_SECRET, now_fn=Clock(NOW.timestamp()).time)
     service = LLMGatewayService(
-        providers={"deepseek": deepseek, "openrouter": openrouter},
-        api_keys={"deepseek": DEEPSEEK_KEY, "openrouter": OPENROUTER_KEY},
+        providers={"yunwu": yunwu},
+        api_keys={"yunwu": YUNWU_KEY},
         token_authority=authority,
+        sources={"agent": SourceRoute(provider="yunwu", model=MODEL)},
         assignment_resolver=WorkAssignmentLifecycleResolver(factory),
     )
     app = create_proxy_app(
@@ -184,9 +184,11 @@ async def gateway() -> AsyncIterator[tuple[AsyncClient, Any, MockLLMProvider, st
     )
     transport = ASGITransport(app=app)
     client = AsyncClient(transport=transport, base_url="http://testserver")
-    token = authority.issue(validator_hotkey="val-1", assignment_id="placeholder")
+    token = authority.issue(
+        validator_hotkey="val-1", assignment_id="placeholder", source="agent"
+    )
     try:
-        yield client, factory, deepseek, token
+        yield client, factory, yunwu, token
     finally:
         await client.aclose()
         await engine.dispose()
@@ -209,34 +211,39 @@ async def _set_status(
 async def test_gateway_rejects_token_after_assignment_completed(
     gateway: tuple[AsyncClient, Any, MockLLMProvider, str],
 ) -> None:
-    client, factory, deepseek, _placeholder = gateway
+    client, factory, yunwu, _placeholder = gateway
     unit_id = await _add_assignment(
         factory, hotkey="val-1", status=WorkAssignmentStatus.RUNNING
     )
     authority = GatewayTokenAuthority(TOKEN_SECRET, now_fn=Clock(NOW.timestamp()).time)
-    token = authority.issue(validator_hotkey="val-1", assignment_id=str(unit_id))
+    token = authority.issue(
+        validator_hotkey="val-1", assignment_id=str(unit_id), source="agent"
+    )
 
     body = json.dumps(
-        {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}]}
+        {
+            "model": "agent-sent-placeholder",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
     ).encode()
 
     active = await client.post(
-        "/llm/deepseek/chat/completions",
+        "/llm/v1/chat/completions",
         content=body,
         headers={"X-Gateway-Token": token},
     )
     assert active.status_code == 200
-    assert deepseek.call_count == 1
+    assert yunwu.call_count == 1
 
     await _set_status(factory, unit_id, WorkAssignmentStatus.COMPLETED)
 
     rejected = await client.post(
-        "/llm/deepseek/chat/completions",
+        "/llm/v1/chat/completions",
         content=body,
         headers={"X-Gateway-Token": token},
     )
     assert rejected.status_code == 403
     # The provider was NOT invoked for the rejected call.
-    assert deepseek.call_count == 1
-    assert DEEPSEEK_KEY not in rejected.text
+    assert yunwu.call_count == 1
+    assert YUNWU_KEY not in rejected.text
     assert token not in rejected.text

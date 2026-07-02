@@ -211,27 +211,73 @@ class SecuritySettings(BaseModel):
     admin_token_file: str | None = None
 
 
-class GatewaySettings(BaseModel):
-    """Master LLM gateway config (architecture.md sec 5).
+class ProviderEntry(BaseModel):
+    """One configured LLM provider: its OpenAI-compatible base URL + key.
 
-    The provider is config-selected: ``mock`` (deterministic, no egress; used by
-    tests) or ``real`` (HTTP clients pinned to the upstream bases). Provider keys
-    are injected server-side; validators/eval runtimes hold only a scoped gateway
-    token and point their client base URL at the master gateway.
+    The key is injected server-side by the gateway (validators/agents never hold
+    it). ``api_key`` is an inline value (dev/tests); ``api_key_file`` points at a
+    mounted secret (production, e.g. ``/run/secrets/yunwu_api_key``).
+    """
+
+    base_url: str
+    api_key: str | None = None
+    api_key_file: str | None = None
+
+
+class SourceRoute(BaseModel):
+    """A request ``source`` claim's routing: provider + optional model override."""
+
+    provider: str
+    model: str | None = None
+
+
+def _default_gateway_providers() -> dict[str, ProviderEntry]:
+    return {
+        "yunwu": ProviderEntry(
+            base_url="https://yunwu.ai/v1",
+            api_key_file="/run/secrets/yunwu_api_key",
+        )
+    }
+
+
+def _default_gateway_sources() -> dict[str, SourceRoute]:
+    return {
+        "agent": SourceRoute(provider="yunwu", model="claude-opus-4-8"),
+        "llm_review": SourceRoute(provider="yunwu", model="claude-opus-4-8"),
+    }
+
+
+class GatewaySettings(BaseModel):
+    """Master LLM gateway config (architecture.md sec 5; llm-yunwu-contract).
+
+    Provider-agnostic + config-driven: a provider registry (name -> base URL +
+    key) plus a per-``source`` route map selects the provider + model the gateway
+    injects. The provider is config-selected: ``mock`` (deterministic, no egress;
+    used by tests) or ``real`` (HTTP clients pinned to the configured bases).
+    Provider keys are injected server-side; validators/eval runtimes hold only a
+    scoped gateway token and point their client base URL at the master gateway.
+    The defaults exist only so local/dev + tests work; production values come from
+    ``deploy/swarm/master.yaml``. There is NO model-enforcement constant and no
+    hardcoded provider base URL used at runtime.
     """
 
     provider_mode: Literal["mock", "real"] = "mock"
-    deepseek_base_url: str = "https://api.deepseek.com"
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     #: Externally-reachable master gateway root URL advertised to validators in
-    #: the pull payload (the LLM routes are mounted under ``/llm/...`` on the
-    #: proxy). The master stamps ``DEEPSEEK_BASE_URL``/``OPENROUTER_BASE_URL`` +
-    #: the scoped token from this base; falls back to ``master.registry_url``.
+    #: the pull payload (the LLM route is mounted under ``/llm/v1`` on the proxy).
+    #: The master stamps ``BASE_LLM_GATEWAY_URL`` + the scoped token from this
+    #: base; falls back to ``master.registry_url``.
     public_base_url: str | None = None
-    deepseek_api_key: str | None = None
-    deepseek_api_key_file: str | None = "/run/secrets/deepseek_api_key"
-    openrouter_api_key: str | None = None
-    openrouter_api_key_file: str | None = "/run/secrets/openrouter_api_key"
+    #: Configured provider registry (name -> base URL + server-side key).
+    providers: dict[str, ProviderEntry] = Field(
+        default_factory=_default_gateway_providers
+    )
+    #: Provider used when a token's ``source`` has no configured route.
+    default_provider: str = "yunwu"
+    #: Model injected when neither the token nor the source route pins one.
+    default_model: str = "claude-opus-4-8"
+    #: Per-``source`` routing (``agent`` for coded agents, ``llm_review`` for the
+    #: central safety gates); both map to yunwu / ``claude-opus-4-8`` by default.
+    sources: dict[str, SourceRoute] = Field(default_factory=_default_gateway_sources)
     token_secret: str | None = None
     token_secret_file: str | None = "/run/secrets/gateway_token_secret"
     token_ttl_seconds: int = 3_600

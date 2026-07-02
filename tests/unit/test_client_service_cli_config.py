@@ -713,8 +713,9 @@ def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
     assert "/v1/assignments/pull" in paths
     assert "/v1/assignments/{assignment_id}/progress" in paths
     assert "/v1/assignments/{assignment_id}/result" in paths
-    assert "/llm/deepseek/{path:path}" in paths
-    assert "/llm/openrouter/{path:path}" in paths
+    assert "/llm/v1/{path:path}" in paths
+    assert "/llm/deepseek/{path:path}" not in paths
+    assert "/llm/openrouter/{path:path}" not in paths
 
     service = built.state.validator_coordination_service
     assert isinstance(service, ValidatorCoordinationService)

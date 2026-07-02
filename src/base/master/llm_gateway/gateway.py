@@ -1,11 +1,13 @@
-"""The master LLM gateway: provider routing + server-side key injection.
+"""The master LLM gateway: config-driven provider routing + key injection.
 
-The gateway exposes ``POST /llm/deepseek/{path}`` and
-``POST /llm/openrouter/{path}`` (architecture.md sec 5). It authenticates the
-caller with a scoped gateway token, injects the provider private key
-server-side, enforces the DeepSeek model policy, and forwards to the
-config-selected provider. Validators/eval runtimes hold NO provider key; they
-point their client base URL at the gateway and pass a scoped token.
+The gateway exposes a SINGLE source-driven route ``POST /llm/v1/{path}``
+(architecture.md sec 5; ``library/llm-yunwu-contract.md``). It authenticates the
+caller with a scoped gateway token, resolves the provider + model from the
+token's ``source`` claim via master config (NOT the URL and NOT a hardcoded
+constant), OVERWRITES the request-body ``model`` with the resolved model, injects
+the provider private key server-side, and forwards to the resolved provider.
+Validators/eval runtimes hold NO provider key and send no real model; they point
+their client base URL at the gateway and pass a scoped token.
 """
 
 from __future__ import annotations
@@ -19,8 +21,6 @@ from fastapi import APIRouter, Request, Response
 
 from base.master.llm_gateway.lifecycle import AssignmentLifecycleResolver
 from base.master.llm_gateway.providers import (
-    DEEPSEEK_BASE_URL,
-    OPENROUTER_BASE_URL,
     LLMProvider,
     ProviderConfig,
     ProviderRequest,
@@ -50,11 +50,12 @@ from base.master.llm_gateway.usage import (
 
 logger = logging.getLogger(__name__)
 
-#: DeepSeek agent execution is locked to this model (architecture.md sec 5).
-DEEPSEEK_REQUIRED_MODEL = "deepseek-v4-pro"
-
-DEEPSEEK_PROVIDER = "deepseek"
-OPENROUTER_PROVIDER = "openrouter"
+#: Default routing when a token carries no ``source`` claim (backward compatible:
+#: an old assignment token resolves the same provider+model as ``source=agent``).
+DEFAULT_SOURCE = "agent"
+#: Config defaults; production values come from ``GatewaySettings``.
+DEFAULT_PROVIDER = "yunwu"
+DEFAULT_MODEL = "claude-opus-4-8"
 
 #: Header carrying the scoped gateway token (preferred over ``Authorization``).
 GATEWAY_TOKEN_HEADER = "X-Gateway-Token"
@@ -70,11 +71,11 @@ UPSTREAM_ERROR_DETAIL = "upstream provider error"
 UPSTREAM_RATE_LIMITED_DETAIL = "upstream rate limited"
 UPSTREAM_REJECTED_DETAIL = "upstream rejected request"
 
-#: Consumption contract: eval runtimes point these env vars at the gateway and
-#: pass a scoped token; the master injects the real provider credential. The raw
-#: provider key is never delivered to the caller.
-DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
-OPENROUTER_BASE_URL_ENV = "OPENROUTER_BASE_URL"
+#: Consumption contract: eval runtimes point ``BASE_LLM_GATEWAY_URL`` at the
+#: gateway (``{root}/llm/v1``) and pass a scoped token; the master resolves the
+#: provider+model and injects the real provider credential. The raw provider key
+#: is never delivered to the caller.
+BASE_LLM_GATEWAY_URL_ENV = "BASE_LLM_GATEWAY_URL"
 GATEWAY_TOKEN_ENV = "BASE_GATEWAY_TOKEN"
 
 _HOP_BY_HOP_HEADERS = {
@@ -95,6 +96,14 @@ _STRIPPED_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | {
 }
 
 
+@dataclass(frozen=True)
+class SourceRoute:
+    """A ``source`` claim's resolved provider + optional model override."""
+
+    provider: str
+    model: str | None = None
+
+
 class GatewayError(Exception):
     """A controlled gateway failure that maps to a safe HTTP status."""
 
@@ -106,13 +115,8 @@ class GatewayError(Exception):
 
 class UnknownProviderError(GatewayError):
     def __init__(self, provider: str) -> None:
-        super().__init__(404, "unknown gateway provider")
+        super().__init__(502, "gateway provider not configured")
         self.provider = provider
-
-
-class ModelNotAllowedError(GatewayError):
-    def __init__(self) -> None:
-        super().__init__(400, "model not allowed for this provider")
 
 
 class GatewayAssignmentInactiveError(GatewayTokenError):
@@ -121,14 +125,25 @@ class GatewayAssignmentInactiveError(GatewayTokenError):
 
 @dataclass(frozen=True)
 class AuthenticatedCall:
-    """A token-verified gateway call ready to forward."""
+    """A token-verified gateway call ready to forward.
+
+    ``provider`` + ``model`` are resolved from the token's ``source`` claim via
+    config, so the forward path can inject the key + overwrite the body model.
+    """
 
     provider: str
+    model: str
     claims: GatewayTokenClaims
 
 
 class LLMGatewayService:
-    """Routes authenticated gateway calls to providers with key injection."""
+    """Routes authenticated gateway calls to providers with key injection.
+
+    The provider + model are resolved from the token's ``source`` claim against
+    the configured ``sources`` map (falling back to ``default_provider`` /
+    ``default_model``); the request-body ``model`` is overwritten with the
+    resolved model before forwarding.
+    """
 
     def __init__(
         self,
@@ -136,16 +151,20 @@ class LLMGatewayService:
         providers: Mapping[str, LLMProvider],
         api_keys: Mapping[str, str],
         token_authority: GatewayTokenAuthority,
-        enforced_models: Mapping[str, str] | None = None,
+        sources: Mapping[str, SourceRoute] | None = None,
+        default_provider: str = DEFAULT_PROVIDER,
+        default_model: str = DEFAULT_MODEL,
+        default_source: str = DEFAULT_SOURCE,
         usage_recorder: UsageRecorder | None = None,
         assignment_resolver: AssignmentLifecycleResolver | None = None,
     ) -> None:
         self._providers = dict(providers)
         self._api_keys = dict(api_keys)
         self._token_authority = token_authority
-        self._enforced_models = dict(
-            enforced_models or {DEEPSEEK_PROVIDER: DEEPSEEK_REQUIRED_MODEL}
-        )
+        self._sources = dict(sources or {})
+        self._default_provider = default_provider
+        self._default_model = default_model
+        self._default_source = default_source
         self._usage_recorder: UsageRecorder = usage_recorder or NullUsageRecorder()
         self._assignment_resolver = assignment_resolver
         # Guarantee the injected provider keys are scrubbed from any gateway log.
@@ -164,31 +183,49 @@ class LLMGatewayService:
         except KeyError as exc:
             raise UnknownProviderError(name) from exc
 
-    def enforced_model(self, name: str) -> str | None:
-        return self._enforced_models.get(name)
+    def resolve_route(self, claims: GatewayTokenClaims) -> tuple[str, str]:
+        """Resolve ``(provider, model)`` from a verified token's ``source`` claim.
+
+        A missing ``source`` resolves ``default_source`` (``"agent"``); a source
+        with no config entry falls back to ``default_provider``; the model is the
+        token's own ``model`` claim, else the source route's model, else
+        ``default_model``.
+        """
+
+        source = claims.source or self._default_source
+        route = self._sources.get(source)
+        provider_name = route.provider if route is not None else self._default_provider
+        model = (
+            claims.model
+            or (route.model if route is not None else None)
+            or self._default_model
+        )
+        return provider_name, model
 
     def authenticate(
         self,
         *,
-        provider: str,
         token: str | None,
         expected_validator: str | None,
         expected_assignment: str | None,
     ) -> AuthenticatedCall:
-        """Verify the gateway token and bind the call to its scope.
+        """Verify the gateway token and resolve its provider + model.
 
-        Authentication happens BEFORE any provider call so a rejected token
-        never reaches an upstream provider.
+        Authentication + resolution happen BEFORE any provider call so a rejected
+        token never reaches an upstream provider. Raises
+        :class:`UnknownProviderError` when the resolved provider is not
+        configured (a server-side misconfiguration).
         """
 
-        if provider not in self._providers:
-            raise UnknownProviderError(provider)
         claims = self._token_authority.verify(
             token,
             expected_validator=expected_validator,
             expected_assignment=expected_assignment,
         )
-        return AuthenticatedCall(provider=provider, claims=claims)
+        provider_name, model = self.resolve_route(claims)
+        if provider_name not in self._providers:
+            raise UnknownProviderError(provider_name)
+        return AuthenticatedCall(provider=provider_name, model=model, claims=claims)
 
     async def ensure_assignment_active(self, claims: GatewayTokenClaims) -> None:
         """Reject a token whose assignment is no longer active (VAL-LLM-023).
@@ -218,13 +255,14 @@ class LLMGatewayService:
         *,
         claims: GatewayTokenClaims,
         provider: str,
-        request_body: bytes,
+        model: str,
         response: ProviderResponse,
     ) -> None:
         """Meter a successful call, keyed by ``(validator, assignment)``.
 
         Best-effort: a metering failure is logged (redacted) and never breaks
-        the proxied response. No secret material is recorded.
+        the proxied response. No secret material is recorded. ``model`` is the
+        resolved model the gateway actually forwarded.
         """
 
         prompt_tokens, completion_tokens, total_tokens = parse_usage(response.body)
@@ -232,7 +270,7 @@ class LLMGatewayService:
             validator_hotkey=claims.validator_hotkey,
             assignment_id=claims.assignment_id,
             provider=provider,
-            model=_extract_model(request_body),
+            model=model,
             status_code=response.status_code,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -245,13 +283,24 @@ class LLMGatewayService:
                 "llm gateway usage metering failed: %s", self._redact(str(exc))
             )
 
-    def _enforce_model(self, provider: str, body: bytes) -> None:
-        required = self._enforced_models.get(provider)
-        if required is None:
-            return
-        model = _extract_model(body)
-        if model != required:
-            raise ModelNotAllowedError()
+    def _inject_model(self, body: bytes, model: str) -> bytes:
+        """Overwrite (or add) the request-body ``model`` with the resolved model.
+
+        A body that is not a JSON object is forwarded unchanged (the gateway
+        cannot safely rewrite a non-JSON payload); OpenAI-compatible chat calls
+        always send a JSON object, so the model is overwritten in practice.
+        """
+
+        if not body:
+            return json.dumps({"model": model}).encode("utf-8")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return body
+        if not isinstance(payload, dict):
+            return body
+        payload["model"] = model
+        return json.dumps(payload).encode("utf-8")
 
     def _inject_headers(
         self, provider: str, caller_headers: Mapping[str, str]
@@ -267,25 +316,26 @@ class LLMGatewayService:
         self,
         *,
         provider: str,
+        model: str,
         path: str,
         body: bytes,
         caller_headers: Mapping[str, str],
     ) -> ProviderResponse:
-        """Enforce policy, inject the key, and forward to the provider.
+        """Overwrite the model, inject the key, and forward to the provider.
 
         The caller's ``Authorization``/api-key headers are NOT forwarded; only
         the server-injected provider key reaches the upstream.
         """
 
         impl = self.provider(provider)
-        self._enforce_model(provider, body)
+        upstream_body = self._inject_model(body, model)
         upstream_headers = self._inject_headers(provider, caller_headers)
         return await impl.forward(
             ProviderRequest(
                 method="POST",
                 path=path,
                 headers=upstream_headers,
-                body=body,
+                body=upstream_body,
             )
         )
 
@@ -295,11 +345,15 @@ class LLMGatewayService:
         validator_hotkey: str,
         assignment_id: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str:
         return self._token_authority.issue(
             validator_hotkey=validator_hotkey,
             assignment_id=assignment_id,
             ttl_seconds=ttl_seconds,
+            source=source,
+            model=model,
         )
 
     def issue_central_gate_token(
@@ -308,71 +362,58 @@ class LLMGatewayService:
         principal: str,
         label: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str:
         return self._token_authority.issue_central_gate(
             principal=principal,
             label=label,
             ttl_seconds=ttl_seconds,
+            source=source,
+            model=model,
         )
 
 
 def build_llm_gateway_service(
     *,
-    deepseek_api_key: str,
-    openrouter_api_key: str,
+    api_keys: Mapping[str, str],
     token_secret: str,
     provider_config: ProviderConfig | None = None,
+    sources: Mapping[str, SourceRoute] | None = None,
+    default_provider: str = DEFAULT_PROVIDER,
+    default_model: str = DEFAULT_MODEL,
     token_ttl_seconds: int = 3_600,
     usage_recorder: UsageRecorder | None = None,
     assignment_resolver: AssignmentLifecycleResolver | None = None,
 ) -> LLMGatewayService:
-    """Construct the gateway service from config (provider mode + secrets).
+    """Construct the gateway service from config (provider mode + provider keys).
 
-    Fails fast when a non-``mock`` provider is selected but its API key is
-    missing, so the gateway never forwards a real provider call with an empty
-    ``Authorization`` header (architecture.md sec 5/11).
+    Provider-agnostic: ``api_keys`` maps each configured provider name to its
+    server-side key. Fails fast when a non-``mock`` provider is selected but a
+    configured provider has no API key, so the gateway never forwards a real
+    provider call with an empty ``Authorization`` header.
     """
 
     config = provider_config or ProviderConfig()
     if config.mode != "mock":
-        missing = [
-            name
-            for name, key in (
-                (DEEPSEEK_PROVIDER, deepseek_api_key),
-                (OPENROUTER_PROVIDER, openrouter_api_key),
-            )
-            if not key
-        ]
+        missing = [name for name in config.providers if not api_keys.get(name)]
         if missing:
             raise ValueError(
                 f"llm gateway provider_mode={config.mode!r} requires a configured "
-                f"API key for: {', '.join(missing)}"
+                f"API key for: {', '.join(sorted(missing))}"
             )
     return LLMGatewayService(
         providers=build_providers(config),
-        api_keys={
-            DEEPSEEK_PROVIDER: deepseek_api_key,
-            OPENROUTER_PROVIDER: openrouter_api_key,
-        },
+        api_keys=dict(api_keys),
         token_authority=GatewayTokenAuthority(
             token_secret, default_ttl_seconds=token_ttl_seconds
         ),
+        sources=sources,
+        default_provider=default_provider,
+        default_model=default_model,
         usage_recorder=usage_recorder,
         assignment_resolver=assignment_resolver,
     )
-
-
-def _extract_model(body: bytes) -> str:
-    if not body:
-        return ""
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    model = payload.get("model")
-    return model if isinstance(model, str) else ""
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -405,24 +446,21 @@ def _response_headers(response: ProviderResponse) -> dict[str, str]:
 
 
 def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
-    """Build the LLM gateway router (deepseek + openrouter forward routes)."""
+    """Build the LLM gateway router (single source-driven ``/llm/v1`` route)."""
 
     router = APIRouter()
 
-    async def handle(provider: str, path: str, request: Request) -> Response:
+    async def handle(path: str, request: Request) -> Response:
         token = _extract_token(request.headers)
         # Defensively register the per-request bearer token for redaction across
         # the whole forward/log path: today headers are never logged, but if such
         # logging is ever introduced the scoped token still cannot leak.
         with redact_in_context(token):
-            return await _handle_call(provider, path, request, token)
+            return await _handle_call(path, request, token)
 
-    async def _handle_call(
-        provider: str, path: str, request: Request, token: str | None
-    ) -> Response:
+    async def _handle_call(path: str, request: Request, token: str | None) -> Response:
         try:
             call = service.authenticate(
-                provider=provider,
                 token=token,
                 expected_validator=_header(request.headers, GATEWAY_VALIDATOR_HEADER),
                 expected_assignment=_header(request.headers, GATEWAY_ASSIGNMENT_HEADER),
@@ -436,13 +474,14 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
             return _error_response(401, "invalid gateway token")
         except GatewayTokenError:
             return _error_response(401, "invalid gateway token")
-        except UnknownProviderError:
-            return _error_response(404, "unknown gateway provider")
+        except UnknownProviderError as exc:
+            return _error_response(exc.status_code, exc.detail)
 
         body = await request.body()
         try:
             upstream = await service.forward(
-                provider=provider,
+                provider=call.provider,
+                model=call.model,
                 path=path,
                 body=body,
                 caller_headers=request.headers,
@@ -460,8 +499,8 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
 
         await service.record_usage(
             claims=call.claims,
-            provider=provider,
-            request_body=body,
+            provider=call.provider,
+            model=call.model,
             response=upstream,
         )
         return Response(
@@ -471,13 +510,9 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
             media_type=upstream.media_type,
         )
 
-    @router.post("/llm/deepseek/{path:path}")
-    async def deepseek(path: str, request: Request) -> Response:
-        return await handle(DEEPSEEK_PROVIDER, path, request)
-
-    @router.post("/llm/openrouter/{path:path}")
-    async def openrouter(path: str, request: Request) -> Response:
-        return await handle(OPENROUTER_PROVIDER, path, request)
+    @router.post("/llm/v1/{path:path}")
+    async def llm_v1(path: str, request: Request) -> Response:
+        return await handle(path, request)
 
     return router
 
@@ -511,17 +546,14 @@ def _surface_upstream_error(status_code: int) -> Response:
 
 
 __all__ = [
-    "DEEPSEEK_BASE_URL",
-    "DEEPSEEK_BASE_URL_ENV",
-    "DEEPSEEK_PROVIDER",
-    "DEEPSEEK_REQUIRED_MODEL",
+    "BASE_LLM_GATEWAY_URL_ENV",
+    "DEFAULT_MODEL",
+    "DEFAULT_PROVIDER",
+    "DEFAULT_SOURCE",
     "GATEWAY_ASSIGNMENT_HEADER",
     "GATEWAY_TOKEN_ENV",
     "GATEWAY_TOKEN_HEADER",
     "GATEWAY_VALIDATOR_HEADER",
-    "OPENROUTER_BASE_URL",
-    "OPENROUTER_BASE_URL_ENV",
-    "OPENROUTER_PROVIDER",
     "UPSTREAM_ERROR_DETAIL",
     "UPSTREAM_RATE_LIMITED_DETAIL",
     "UPSTREAM_REJECTED_DETAIL",
@@ -529,7 +561,7 @@ __all__ = [
     "GatewayAssignmentInactiveError",
     "GatewayError",
     "LLMGatewayService",
-    "ModelNotAllowedError",
+    "SourceRoute",
     "UnknownProviderError",
     "build_llm_gateway_router",
     "build_llm_gateway_service",

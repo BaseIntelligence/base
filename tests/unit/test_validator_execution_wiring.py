@@ -128,8 +128,7 @@ def _gateway_env_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     token = payload["gateway_token"]
     base = str(payload["gateway_url"]).rstrip("/")
     return {
-        "DEEPSEEK_BASE_URL": f"{base}/llm/deepseek",
-        "OPENROUTER_BASE_URL": f"{base}/llm/openrouter",
+        "BASE_LLM_GATEWAY_URL": f"{base}/llm/v1",
         "BASE_GATEWAY_TOKEN": token,
     }
 
@@ -311,8 +310,7 @@ async def test_pulled_assignments_dispatch_real_runs_per_challenge(
     # Gateway env injected for BOTH dispatches (never gateway=None); no provider key.
     for _challenge, spec in FakeDockerExecutor.captured:
         assert spec.env["BASE_GATEWAY_TOKEN"] == "scoped-token"
-        assert spec.env["DEEPSEEK_BASE_URL"] == f"{GATEWAY_URL}/llm/deepseek"
-        assert spec.env["OPENROUTER_BASE_URL"] == f"{GATEWAY_URL}/llm/openrouter"
+        assert spec.env["BASE_LLM_GATEWAY_URL"] == f"{GATEWAY_URL}/llm/v1"
         assert not any(key.upper().endswith("_API_KEY") for key in spec.env)
 
     # Both results were posted to the master.

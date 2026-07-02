@@ -52,8 +52,8 @@ async def test_usage_recorder_persists_on_postgres(
             UsageRecord(
                 validator_hotkey="5FpgUsage",
                 assignment_id="assignment-pg-1",
-                provider="openrouter",
-                model="anthropic/claude-opus-4.8",
+                provider="yunwu",
+                model="claude-opus-4-8",
                 status_code=200,
                 prompt_tokens=10,
                 completion_tokens=20,

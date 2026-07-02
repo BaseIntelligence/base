@@ -68,7 +68,11 @@ from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     WorkAssignmentLifecycleResolver,
 )
-from base.master.llm_gateway import ProviderConfig, build_llm_gateway_service
+from base.master.llm_gateway import (
+    ProviderConfig,
+    SourceRoute,
+    build_llm_gateway_service,
+)
 from base.master.orchestration import (
     ChallengePendingWork,
     MasterOrchestrationDriver,
@@ -112,8 +116,8 @@ HEARTBEAT_TIMEOUT = 180
 LEASE_SECONDS = 900
 NETUID = 100
 ADMIN_TOKEN = "admin-secret-token"
-DEEPSEEK_KEY = "ds-provider-secret-key"
-OPENROUTER_KEY = "or-provider-secret-key"
+YUNWU_KEY = "yunwu-provider-secret-key"
+MODEL = "claude-opus-4-8"
 GATEWAY_TOKEN_SECRET = "gateway-hmac-secret"
 
 # The secret val/test held-out split must NEVER leave the master; it is only
@@ -466,11 +470,12 @@ class ValidatorWorkExecutor:
     """Challenge-aware validator executor (runs on the validator's OWN broker).
 
     Dispatches by ``challenge_slug`` so a single validator handles whatever it is
-    assigned: agent-challenge tasks (DeepSeek via gateway, per-task score) and
-    prism runs (mock CPU re-exec, anthropic/claude-opus-4.8 review via gateway,
-    mock HF checkpoint, online-loss stream + trained_state). Every LLM call routes
-    through the master gateway with the per-assignment scoped token; the runtime
-    holds no provider key.
+    assigned: agent-challenge tasks (LLM via gateway, per-task score) and prism
+    runs (mock CPU re-exec, llm_review via gateway, mock HF checkpoint,
+    online-loss stream + trained_state). Every LLM call routes through the master
+    gateway (single ``/llm/v1`` route; the gateway resolves the provider + model
+    from the token) with the per-assignment scoped token; the runtime holds no
+    provider key.
     """
 
     def __init__(
@@ -505,8 +510,8 @@ class ValidatorWorkExecutor:
         held_provider_key = _holds_provider_key(env)
         gateway_status = await _call_gateway(
             self._transport,
-            "/llm/deepseek/chat/completions",
-            "deepseek-v4-pro",
+            "/llm/v1/chat/completions",
+            "agent-sent-placeholder",
             env.get("BASE_GATEWAY_TOKEN"),
         )
         payload = context.assignment.payload or {}
@@ -520,7 +525,7 @@ class ValidatorWorkExecutor:
                 "task_id": task_id,
                 "gateway_status": gateway_status,
                 "held_provider_key": held_provider_key,
-                "deepseek_base_url": env.get("DEEPSEEK_BASE_URL"),
+                "gateway_url": env.get("BASE_LLM_GATEWAY_URL"),
             },
         )
 
@@ -531,8 +536,8 @@ class ValidatorWorkExecutor:
         held_provider_key = _holds_provider_key(env)
         gateway_status = await _call_gateway(
             self._transport,
-            "/llm/openrouter/chat/completions",
-            "anthropic/claude-opus-4.8",
+            "/llm/v1/chat/completions",
+            "review-sent-placeholder",
             env.get("BASE_GATEWAY_TOKEN"),
         )
         payload = context.assignment.payload or {}
@@ -624,10 +629,10 @@ class Harness:
         )
         assignment_service = AssignmentService(session_factory, now_fn=clock.now)
         gateway_service = build_llm_gateway_service(
-            deepseek_api_key=DEEPSEEK_KEY,
-            openrouter_api_key=OPENROUTER_KEY,
+            api_keys={"yunwu": YUNWU_KEY},
             token_secret=GATEWAY_TOKEN_SECRET,
             provider_config=ProviderConfig(mode="mock"),
+            sources={"agent": SourceRoute(provider="yunwu", model=MODEL)},
             assignment_resolver=WorkAssignmentLifecycleResolver(session_factory),
         )
         fabric = ChallengeFabric(session_factory)
@@ -757,7 +762,7 @@ class Harness:
                 ):
                     continue
                 token = self.gateway_service.issue_token(
-                    validator_hotkey=hotkey, assignment_id=str(row.id)
+                    validator_hotkey=hotkey, assignment_id=str(row.id), source="agent"
                 )
                 payload[GATEWAY_TOKEN_KEY] = token
                 payload["validator"] = hotkey
@@ -946,7 +951,7 @@ async def test_agent_challenge_full_lifecycle_to_dry_run_submit(
     _no_secret_leak(await h.work_results())
     for result in await h.work_results():
         assert result.payload.get("held_provider_key") is False
-        assert DEEPSEEK_KEY not in str(result.payload)
+        assert YUNWU_KEY not in str(result.payload)
 
 
 async def test_prism_full_lifecycle_to_dry_run_submit(
@@ -1021,36 +1026,37 @@ async def test_gateway_is_sole_llm_path(
     for result in results:
         assert result.payload["gateway_status"] == 200
         assert result.payload["held_provider_key"] is False
-        assert str(result.payload["deepseek_base_url"]).endswith("/llm/deepseek")
+        assert str(result.payload["gateway_url"]).endswith("/llm/v1")
 
     # The gateway injected the real provider key server-side (validator never saw it).
-    deepseek = h.gateway_service.provider("deepseek")
-    assert deepseek.requests, "the mock provider recorded gateway-forwarded calls"
-    assert deepseek.requests[-1].header("authorization") == f"Bearer {DEEPSEEK_KEY}"
+    yunwu = h.gateway_service.provider("yunwu")
+    assert yunwu.requests, "the mock provider recorded gateway-forwarded calls"
+    assert yunwu.requests[-1].header("authorization") == f"Bearer {YUNWU_KEY}"
+    # The gateway resolved + overwrote the model server-side.
+    assert yunwu.requests[-1].json_body()["model"] == MODEL
 
     # The assignment payload carries a token handle, not a provider key.
     for row in await h.assignments():
         assert GATEWAY_TOKEN_KEY in (row.payload or {})
-        assert DEEPSEEK_KEY not in str(row.payload)
-        assert OPENROUTER_KEY not in str(row.payload)
+        assert YUNWU_KEY not in str(row.payload)
 
     # An unauthorized gateway request (no / bogus token) is rejected.
     async with AsyncClient(
         transport=h.transport, base_url="http://testserver"
     ) as client:
         missing = await client.post(
-            "/llm/deepseek/chat/completions",
-            json={"model": "deepseek-v4-pro", "messages": []},
+            "/llm/v1/chat/completions",
+            json={"model": "agent-sent-placeholder", "messages": []},
         )
         bogus = await client.post(
-            "/llm/deepseek/chat/completions",
-            json={"model": "deepseek-v4-pro", "messages": []},
+            "/llm/v1/chat/completions",
+            json={"model": "agent-sent-placeholder", "messages": []},
             headers={"X-Gateway-Token": "not-a-real-token"},
         )
     assert missing.status_code in (401, 403)
     assert bogus.status_code in (401, 403)
-    assert DEEPSEEK_KEY not in missing.text
-    assert DEEPSEEK_KEY not in bogus.text
+    assert YUNWU_KEY not in missing.text
+    assert YUNWU_KEY not in bogus.text
 
 
 # --------------------------------------------------------------------------- #

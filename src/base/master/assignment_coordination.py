@@ -32,10 +32,7 @@ from base.db.models import (
 )
 from base.db.session import session_scope
 from base.master.assignment import capability_matches
-from base.master.llm_gateway import (
-    DEEPSEEK_BASE_URL_ENV,
-    OPENROUTER_BASE_URL_ENV,
-)
+from base.master.llm_gateway import BASE_LLM_GATEWAY_URL_ENV
 from base.schemas.assignment import (
     AssignmentProgressRequest,
     AssignmentProgressResponse,
@@ -55,8 +52,9 @@ _TERMINAL_STATUSES = (WorkAssignmentStatus.COMPLETED, WorkAssignmentStatus.FAILE
 GATEWAY_TOKEN_PAYLOAD_KEY = "gateway_token"
 #: Assignment-payload key carrying the master gateway root base URL.
 GATEWAY_BASE_URL_PAYLOAD_KEY = "gateway_url"
-_DEEPSEEK_GATEWAY_PATH = "/llm/deepseek"
-_OPENROUTER_GATEWAY_PATH = "/llm/openrouter"
+#: The ``source`` claim stamped onto assignment tokens (coded challenge agents).
+ASSIGNMENT_TOKEN_SOURCE = "agent"
+_LLM_GATEWAY_PATH = "/llm/v1"
 
 
 @runtime_checkable
@@ -69,6 +67,8 @@ class GatewayTokenIssuer(Protocol):
         validator_hotkey: str,
         assignment_id: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str: ...
 
 
@@ -76,11 +76,11 @@ class GatewayTokenIssuer(Protocol):
 class GatewayPayloadIssuer:
     """Builds the per-assignment gateway fields stamped into a pull payload.
 
-    Issues a fresh scoped token for ``(validator_hotkey, assignment_id)`` via the
-    master gateway token authority and advertises the master gateway base URLs so
-    the eval runtime points ``DEEPSEEK_BASE_URL``/``OPENROUTER_BASE_URL`` at the
-    master gateway. A raw provider key is NEVER part of this payload
-    (architecture.md sec 5).
+    Issues a fresh scoped token for ``(validator_hotkey, assignment_id)`` stamped
+    with ``source=agent`` (the gateway resolves provider + model from it) and
+    advertises the master gateway base URL so the eval runtime points
+    ``BASE_LLM_GATEWAY_URL`` at ``{root}/llm/v1``. A raw provider key is NEVER
+    part of this payload (architecture.md sec 5).
     """
 
     issuer: GatewayTokenIssuer
@@ -98,12 +98,12 @@ class GatewayPayloadIssuer:
             validator_hotkey=validator_hotkey,
             assignment_id=assignment_id,
             ttl_seconds=ttl_seconds,
+            source=ASSIGNMENT_TOKEN_SOURCE,
         )
         return {
             GATEWAY_TOKEN_PAYLOAD_KEY: token,
             GATEWAY_BASE_URL_PAYLOAD_KEY: base,
-            DEEPSEEK_BASE_URL_ENV: f"{base}{_DEEPSEEK_GATEWAY_PATH}",
-            OPENROUTER_BASE_URL_ENV: f"{base}{_OPENROUTER_GATEWAY_PATH}",
+            BASE_LLM_GATEWAY_URL_ENV: f"{base}{_LLM_GATEWAY_PATH}",
         }
 
 

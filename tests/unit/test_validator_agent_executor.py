@@ -36,9 +36,11 @@ def test_gateway_env_points_at_gateway_and_carries_token_no_provider_key() -> No
     assignment = _assignment({"gateway_token": "scoped-token"})
     env = gateway_env_for_assignment(assignment, gateway_url="https://master/")
 
-    assert env["DEEPSEEK_BASE_URL"] == "https://master/llm/deepseek"
-    assert env["OPENROUTER_BASE_URL"] == "https://master/llm/openrouter"
+    assert env["BASE_LLM_GATEWAY_URL"] == "https://master/llm/v1"
     assert env["BASE_GATEWAY_TOKEN"] == "scoped-token"
+    # No provider-path base URLs and no raw provider key ever reach the runtime.
+    assert "DEEPSEEK_BASE_URL" not in env
+    assert "OPENROUTER_BASE_URL" not in env
     assert "DEEPSEEK_API_KEY" not in env
     assert "OPENROUTER_API_KEY" not in env
 
@@ -80,7 +82,10 @@ async def test_broker_executor_dispatches_run_spec_with_gateway_env(
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={"BASE_GATEWAY_TOKEN": "scoped", "DEEPSEEK_BASE_URL": "g/d"},
+        gateway_env={
+            "BASE_GATEWAY_TOKEN": "scoped",
+            "BASE_LLM_GATEWAY_URL": "g/llm/v1",
+        },
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082", broker_token="t"),
     )
 
@@ -136,7 +141,7 @@ async def test_broker_executor_redacts_gateway_token_from_captured_output(
         assignment=assignment,
         gateway_env={
             "BASE_GATEWAY_TOKEN": secret_token,
-            "DEEPSEEK_BASE_URL": "http://master/llm/deepseek",
+            "BASE_LLM_GATEWAY_URL": "http://master/llm/v1",
         },
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082"),
     )

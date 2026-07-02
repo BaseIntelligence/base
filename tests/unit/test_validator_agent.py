@@ -38,7 +38,11 @@ from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     WorkAssignmentLifecycleResolver,
 )
-from base.master.llm_gateway import ProviderConfig, build_llm_gateway_service
+from base.master.llm_gateway import (
+    ProviderConfig,
+    SourceRoute,
+    build_llm_gateway_service,
+)
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.security.validator_auth import (
     MetagraphValidatorEligibility,
@@ -58,8 +62,8 @@ NOW_EPOCH = 1_750_000_000.0
 HEARTBEAT_INTERVAL = 45
 HEARTBEAT_TIMEOUT = 100
 ADMIN_TOKEN = "admin-secret-token"
-DEEPSEEK_KEY = "ds-secret-key"
-OPENROUTER_KEY = "or-secret-key"
+YUNWU_KEY = "yunwu-secret-key"
+MODEL = "claude-opus-4-8"
 
 
 class FakeClock:
@@ -138,8 +142,8 @@ class GatewayCallingExecutor:
             transport=self._transport, base_url="http://testserver"
         ) as client:
             response = await client.post(
-                "/llm/deepseek/chat/completions",
-                json={"model": "deepseek-v4-pro", "messages": []},
+                "/llm/v1/chat/completions",
+                json={"model": "agent-sent-placeholder", "messages": []},
                 headers={
                     "X-Gateway-Token": token,
                     "X-Gateway-Validator": context.assignment.payload["validator"],
@@ -284,10 +288,10 @@ async def _build_harness() -> Harness:
         session_factory, now_fn=clock.now
     )
     gateway_service = build_llm_gateway_service(
-        deepseek_api_key=DEEPSEEK_KEY,
-        openrouter_api_key=OPENROUTER_KEY,
+        api_keys={"yunwu": YUNWU_KEY},
         token_secret="tok-secret",
         provider_config=ProviderConfig(mode="mock"),
+        sources={"agent": SourceRoute(provider="yunwu", model=MODEL)},
         assignment_resolver=WorkAssignmentLifecycleResolver(session_factory),
     )
     app = create_proxy_app(
@@ -382,7 +386,7 @@ async def test_agent_routes_llm_through_gateway_with_scoped_token(
 ) -> None:
     assignment_id = await harness.seed_assignment(payload={})
     token = harness.gateway_service.issue_token(
-        validator_hotkey="permitted", assignment_id=str(assignment_id)
+        validator_hotkey="permitted", assignment_id=str(assignment_id), source="agent"
     )
     async with session_scope(harness.session_factory) as session:
         row = (
@@ -402,11 +406,8 @@ async def test_agent_routes_llm_through_gateway_with_scoped_token(
     assert executor.gateway_status == 200
     assert executor.held_provider_key is False
     # the gateway injected the real provider key server-side (validator never saw it).
-    deepseek_provider = harness.gateway_service.provider("deepseek")
-    assert (
-        deepseek_provider.requests[-1].header("authorization")
-        == f"Bearer {DEEPSEEK_KEY}"
-    )
+    yunwu_provider = harness.gateway_service.provider("yunwu")
+    assert yunwu_provider.requests[-1].header("authorization") == f"Bearer {YUNWU_KEY}"
 
 
 async def test_agent_recovers_in_flight_work_across_restart(harness: Harness) -> None:

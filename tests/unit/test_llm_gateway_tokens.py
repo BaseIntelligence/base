@@ -1,4 +1,10 @@
-"""Unit tests for gateway token issuance/verification and provider seams."""
+"""Gateway token issuance/verification and provider seams (VAL-LLM-CODE-001/004).
+
+Tokens carry optional ``source``/``model`` claims; the gateway resolves the
+provider + model from the token's ``source`` against config (yunwu-only) and
+injects the provider key + overwrites the request-body model. Providers are the
+deterministic mock (no egress).
+"""
 
 from __future__ import annotations
 
@@ -10,7 +16,7 @@ import pytest
 from base.master.llm_gateway import (
     ASSIGNMENT_KIND,
     CENTRAL_GATE_KIND,
-    DEEPSEEK_BASE_URL,
+    DEFAULT_PROVIDER_BASE_URL,
     GatewayTokenAuthority,
     GatewayTokenExpired,
     GatewayTokenInvalid,
@@ -20,12 +26,14 @@ from base.master.llm_gateway import (
     MockLLMProvider,
     ProviderConfig,
     ProviderRequest,
+    SourceRoute,
     UnknownProviderError,
     build_llm_gateway_service,
     compose_provider_url,
 )
 
 SECRET = "unit-secret"
+YUNWU_KEY = "sk-yunwu-server-secret-key"
 
 
 def test_issue_then_verify_defaults_to_assignment_kind() -> None:
@@ -53,6 +61,48 @@ def test_central_gate_default_ttl_used_when_unset() -> None:
     )
     token = authority.issue_central_gate(principal="central-gate", label="prism")
     assert authority.verify(token).expires_at == 1042
+
+
+# VAL-LLM-CODE-001: source/model claims round-trip; absence yields None.
+def test_source_and_model_claims_round_trip() -> None:
+    authority = GatewayTokenAuthority(SECRET, now_fn=lambda: 1000.0)
+    token = authority.issue(
+        validator_hotkey="v1",
+        assignment_id="a1",
+        ttl_seconds=60,
+        source="agent",
+        model="claude-opus-4-8",
+    )
+    claims = authority.verify(token)
+    assert claims.source == "agent"
+    assert claims.model == "claude-opus-4-8"
+
+
+def test_missing_source_and_model_verify_as_none() -> None:
+    authority = GatewayTokenAuthority(SECRET, now_fn=lambda: 1000.0)
+    # An "old" token minted without the new claims still verifies with None.
+    token = authority.issue(validator_hotkey="v1", assignment_id="a1", ttl_seconds=60)
+    claims = authority.verify(token)
+    assert claims.source is None
+    assert claims.model is None
+    # A token carrying only source (no model) leaves model None.
+    only_source = authority.issue(
+        validator_hotkey="v1", assignment_id="a1", ttl_seconds=60, source="llm_review"
+    )
+    only_claims = authority.verify(only_source)
+    assert only_claims.source == "llm_review"
+    assert only_claims.model is None
+
+
+def test_central_gate_carries_source_claim() -> None:
+    authority = GatewayTokenAuthority(SECRET, now_fn=lambda: 1000.0)
+    token = authority.issue_central_gate(
+        principal="central-gate", label="prism", source="llm_review"
+    )
+    claims = authority.verify(token)
+    assert claims.kind == CENTRAL_GATE_KIND
+    assert claims.source == "llm_review"
+    assert claims.model is None
 
 
 def test_unknown_kind_is_rejected_as_invalid() -> None:
@@ -144,18 +194,18 @@ def test_scope_mismatch_raises_scope_error() -> None:
 
 def test_compose_provider_url_strips_slashes() -> None:
     assert (
-        compose_provider_url("https://api.deepseek.com/", "/chat/completions")
-        == "https://api.deepseek.com/chat/completions"
+        compose_provider_url("https://yunwu.ai/v1/", "/chat/completions")
+        == "https://yunwu.ai/v1/chat/completions"
     )
 
 
 def test_mock_provider_is_deterministic_and_records_request() -> None:
-    provider = MockLLMProvider(name="deepseek", base_url=DEEPSEEK_BASE_URL)
+    provider = MockLLMProvider(name="yunwu", base_url=DEFAULT_PROVIDER_BASE_URL)
     request = ProviderRequest(
         method="POST",
         path="chat/completions",
         headers={"Authorization": "Bearer server-key"},
-        body=json.dumps({"model": "deepseek-v4-pro"}).encode(),
+        body=json.dumps({"model": "claude-opus-4-8"}).encode(),
     )
 
     first = asyncio.run(provider.forward(request))
@@ -165,22 +215,14 @@ def test_mock_provider_is_deterministic_and_records_request() -> None:
     assert provider.call_count == 2
     recorded = provider.requests[0]
     assert recorded.header("authorization") == "Bearer server-key"
-    assert recorded.url == "https://api.deepseek.com/chat/completions"
-    assert recorded.json_body()["model"] == "deepseek-v4-pro"
+    assert recorded.url == "https://yunwu.ai/v1/chat/completions"
+    assert recorded.json_body()["model"] == "claude-opus-4-8"
 
 
 def test_build_service_real_mode_requires_provider_keys() -> None:
-    with pytest.raises(ValueError, match="deepseek, openrouter"):
+    with pytest.raises(ValueError, match="yunwu"):
         build_llm_gateway_service(
-            deepseek_api_key="",
-            openrouter_api_key="",
-            token_secret=SECRET,
-            provider_config=ProviderConfig(mode="real"),
-        )
-    with pytest.raises(ValueError, match="openrouter"):
-        build_llm_gateway_service(
-            deepseek_api_key="ds-key",
-            openrouter_api_key="",
+            api_keys={"yunwu": ""},
             token_secret=SECRET,
             provider_config=ProviderConfig(mode="real"),
         )
@@ -188,19 +230,17 @@ def test_build_service_real_mode_requires_provider_keys() -> None:
 
 def test_build_service_real_mode_succeeds_with_keys() -> None:
     service = build_llm_gateway_service(
-        deepseek_api_key="ds-key",
-        openrouter_api_key="or-key",
+        api_keys={"yunwu": YUNWU_KEY},
         token_secret=SECRET,
         provider_config=ProviderConfig(mode="real"),
     )
     assert isinstance(service, LLMGatewayService)
-    assert isinstance(service.provider("deepseek"), HttpLLMProvider)
+    assert isinstance(service.provider("yunwu"), HttpLLMProvider)
 
 
 def test_build_service_mock_mode_allows_empty_keys() -> None:
     service = build_llm_gateway_service(
-        deepseek_api_key="",
-        openrouter_api_key="",
+        api_keys={"yunwu": ""},
         token_secret=SECRET,
         provider_config=ProviderConfig(mode="mock"),
     )
@@ -208,62 +248,103 @@ def test_build_service_mock_mode_allows_empty_keys() -> None:
     assert service.token_authority.verify(token).validator_hotkey == "v1"
 
 
-def test_build_service_injects_key_and_enforces_model() -> None:
+# VAL-LLM-CODE-002: source=agent resolves yunwu + claude-opus-4-8 from config,
+# overwrites the request-body model, and injects the provider key.
+def test_build_service_injects_key_and_resolves_model_from_source() -> None:
     service = build_llm_gateway_service(
-        deepseek_api_key="ds-key",
-        openrouter_api_key="or-key",
+        api_keys={"yunwu": YUNWU_KEY},
         token_secret=SECRET,
         provider_config=ProviderConfig(mode="mock"),
+        sources={"agent": SourceRoute(provider="yunwu", model="claude-opus-4-8")},
     )
-    token = service.issue_token(validator_hotkey="v1", assignment_id="a1")
-    assert service.token_authority.verify(token).validator_hotkey == "v1"
+    token = service.issue_token(
+        validator_hotkey="v1", assignment_id="a1", source="agent"
+    )
+    call = service.authenticate(
+        token=token, expected_validator=None, expected_assignment=None
+    )
+    assert call.provider == "yunwu"
+    assert call.model == "claude-opus-4-8"
 
     response = asyncio.run(
         service.forward(
-            provider="openrouter",
+            provider=call.provider,
+            model=call.model,
+            # The caller sent a bogus model; the gateway overwrites it.
+            body=json.dumps({"model": "whatever-the-agent-sent"}).encode(),
             path="chat/completions",
-            body=json.dumps({"model": "anthropic/claude-opus-4.8"}).encode(),
             caller_headers={},
         )
     )
     assert response.status_code == 200
-    provider = service.provider("openrouter")
+    provider = service.provider("yunwu")
     assert isinstance(provider, MockLLMProvider)
-    assert provider.requests[-1].header("Authorization") == "Bearer or-key"
+    forwarded = provider.requests[-1]
+    assert forwarded.header("Authorization") == f"Bearer {YUNWU_KEY}"
+    # The forwarded body model was overwritten with the resolved model.
+    assert forwarded.json_body()["model"] == "claude-opus-4-8"
+
+
+def test_token_model_claim_overrides_source_route_model() -> None:
+    service = build_llm_gateway_service(
+        api_keys={"yunwu": YUNWU_KEY},
+        token_secret=SECRET,
+        provider_config=ProviderConfig(mode="mock"),
+        sources={"agent": SourceRoute(provider="yunwu", model="claude-opus-4-8")},
+    )
+    token = service.issue_token(
+        validator_hotkey="v1", assignment_id="a1", source="agent", model="pinned-model"
+    )
+    call = service.authenticate(
+        token=token, expected_validator=None, expected_assignment=None
+    )
+    assert call.model == "pinned-model"
+
+
+def test_missing_source_falls_back_to_default_route() -> None:
+    service = build_llm_gateway_service(
+        api_keys={"yunwu": YUNWU_KEY},
+        token_secret=SECRET,
+        provider_config=ProviderConfig(mode="mock"),
+        sources={"agent": SourceRoute(provider="yunwu", model="claude-opus-4-8")},
+    )
+    # A token with no source claim -> default source "agent" -> yunwu route.
+    token = service.issue_token(validator_hotkey="v1", assignment_id="a1")
+    call = service.authenticate(
+        token=token, expected_validator=None, expected_assignment=None
+    )
+    assert call.provider == "yunwu"
+    assert call.model == "claude-opus-4-8"
 
 
 def test_service_unknown_provider_raises() -> None:
     service = build_llm_gateway_service(
-        deepseek_api_key="ds-key",
-        openrouter_api_key="or-key",
+        api_keys={"yunwu": YUNWU_KEY},
         token_secret=SECRET,
     )
     with pytest.raises(UnknownProviderError):
         service.provider("bogus")
-    token = service.issue_token(validator_hotkey="v1", assignment_id="a1")
-    with pytest.raises(UnknownProviderError):
-        service.authenticate(
-            provider="bogus",
-            token=token,
-            expected_validator=None,
-            expected_assignment=None,
-        )
-
-
-def test_service_forward_rejects_disallowed_deepseek_model() -> None:
-    from base.master.llm_gateway import ModelNotAllowedError
-
-    service = build_llm_gateway_service(
-        deepseek_api_key="ds-key",
-        openrouter_api_key="or-key",
-        token_secret=SECRET,
+    # A token whose source maps to a provider that is not configured is rejected
+    # at authenticate time (server-side misconfiguration).
+    token = service.issue_token(
+        validator_hotkey="v1", assignment_id="a1", source="ghost"
     )
-    with pytest.raises(ModelNotAllowedError):
-        asyncio.run(
-            service.forward(
-                provider="deepseek",
-                path="chat/completions",
-                body=json.dumps({"model": "deepseek-chat"}).encode(),
-                caller_headers={},
-            )
+    service_with_ghost = build_llm_gateway_service(
+        api_keys={"yunwu": YUNWU_KEY},
+        token_secret=SECRET,
+        sources={"ghost": SourceRoute(provider="not-configured")},
+    )
+    ghost_token = service_with_ghost.issue_token(
+        validator_hotkey="v1", assignment_id="a1", source="ghost"
+    )
+    with pytest.raises(UnknownProviderError):
+        service_with_ghost.authenticate(
+            token=ghost_token, expected_validator=None, expected_assignment=None
         )
+    # A source with no route + default_provider present still resolves fine.
+    assert (
+        service.authenticate(
+            token=token, expected_validator=None, expected_assignment=None
+        ).provider
+        == "yunwu"
+    )

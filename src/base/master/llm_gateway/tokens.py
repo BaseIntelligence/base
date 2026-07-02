@@ -49,12 +49,21 @@ class GatewayTokenScopeError(GatewayTokenError):
 
 @dataclass(frozen=True)
 class GatewayTokenClaims:
-    """Verified scope of a gateway token."""
+    """Verified scope of a gateway token.
+
+    ``source`` (wire key ``s``) selects the master gateway's provider+model route
+    (e.g. ``"agent"`` for coded challenge agents, ``"llm_review"`` for the central
+    safety gates); ``model`` (wire key ``m``) optionally pins a model. Both are
+    optional and default to ``None`` so tokens minted before this claim existed
+    still verify (the gateway then falls back to its configured defaults).
+    """
 
     validator_hotkey: str
     assignment_id: str
     expires_at: int
     kind: str = ASSIGNMENT_KIND
+    source: str | None = None
+    model: str | None = None
 
 
 def _b64encode(raw: bytes) -> str:
@@ -92,16 +101,26 @@ class GatewayTokenAuthority:
         validator_hotkey: str,
         assignment_id: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str:
-        """Mint a token scoped to ``(validator_hotkey, assignment_id)``."""
+        """Mint a token scoped to ``(validator_hotkey, assignment_id)``.
+
+        ``source``/``model`` are written as the optional ``s``/``m`` claims when
+        provided; omitted otherwise (backward compatible).
+        """
 
         ttl = self.default_ttl_seconds if ttl_seconds is None else ttl_seconds
         expires_at = int(self._now_fn()) + int(ttl)
-        payload = {
+        payload: dict[str, object] = {
             "v": validator_hotkey,
             "a": assignment_id,
             "exp": expires_at,
         }
+        if source is not None:
+            payload["s"] = source
+        if model is not None:
+            payload["m"] = model
         payload_b64 = _b64encode(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         )
@@ -113,6 +132,8 @@ class GatewayTokenAuthority:
         principal: str,
         label: str,
         ttl_seconds: int | None = None,
+        source: str | None = None,
+        model: str | None = None,
     ) -> str:
         """Mint a non-assignment-scoped ``central-gate`` token.
 
@@ -121,16 +142,22 @@ class GatewayTokenAuthority:
         and label (e.g. the challenge slug), so no new claim columns are needed.
         Unlike :meth:`issue`, it is NOT bound to a live work assignment: the
         gateway treats it as active by valid signature + unexpired ``exp`` alone.
+        ``source``/``model`` are written as the optional ``s``/``m`` claims when
+        provided (e.g. ``source="llm_review"`` for the central safety gates).
         """
 
         ttl = self.default_ttl_seconds if ttl_seconds is None else ttl_seconds
         expires_at = int(self._now_fn()) + int(ttl)
-        payload = {
+        payload: dict[str, object] = {
             "k": CENTRAL_GATE_KIND,
             "v": principal,
             "a": label,
             "exp": expires_at,
         }
+        if source is not None:
+            payload["s"] = source
+        if model is not None:
+            payload["m"] = model
         payload_b64 = _b64encode(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         )
@@ -180,6 +207,13 @@ class GatewayTokenAuthority:
         if kind not in _KNOWN_KINDS:
             raise GatewayTokenInvalid("unknown gateway token kind")
 
+        source = payload.get("s")
+        model = payload.get("m")
+        if source is not None and not isinstance(source, str):
+            raise GatewayTokenInvalid("malformed gateway token source claim")
+        if model is not None and not isinstance(model, str):
+            raise GatewayTokenInvalid("malformed gateway token model claim")
+
         if int(self._now_fn()) >= expires_at:
             raise GatewayTokenExpired("gateway token expired")
 
@@ -193,4 +227,6 @@ class GatewayTokenAuthority:
             assignment_id=assignment_id,
             expires_at=expires_at,
             kind=kind,
+            source=source,
+            model=model,
         )

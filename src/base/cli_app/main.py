@@ -51,6 +51,7 @@ from base.master.llm_gateway import (
     GatewayTokenAuthority,
     LLMGatewayService,
     ProviderConfig,
+    SourceRoute,
     SqlAlchemyUsageRecorder,
     build_llm_gateway_service,
 )
@@ -406,20 +407,26 @@ def _llm_gateway_service(settings: Any, session_factory: Any) -> LLMGatewayServi
     """
 
     gateway = settings.gateway
+    api_keys = {
+        name: read_secret(entry.api_key, entry.api_key_file)
+        for name, entry in gateway.providers.items()
+    }
     return build_llm_gateway_service(
-        deepseek_api_key=read_secret(
-            gateway.deepseek_api_key, gateway.deepseek_api_key_file
-        ),
-        openrouter_api_key=read_secret(
-            gateway.openrouter_api_key, gateway.openrouter_api_key_file
-        ),
+        api_keys=api_keys,
         token_secret=read_secret(gateway.token_secret, gateway.token_secret_file),
         provider_config=ProviderConfig(
             mode=gateway.provider_mode,
-            deepseek_base_url=gateway.deepseek_base_url,
-            openrouter_base_url=gateway.openrouter_base_url,
+            providers={
+                name: entry.base_url for name, entry in gateway.providers.items()
+            },
             timeout_seconds=gateway.request_timeout_seconds,
         ),
+        sources={
+            name: SourceRoute(provider=route.provider, model=route.model)
+            for name, route in gateway.sources.items()
+        },
+        default_provider=gateway.default_provider,
+        default_model=gateway.default_model,
         token_ttl_seconds=gateway.token_ttl_seconds,
         usage_recorder=SqlAlchemyUsageRecorder(session_factory),
         assignment_resolver=WorkAssignmentLifecycleResolver(session_factory),
@@ -630,10 +637,10 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_DOCKER_BROKER_URL": broker_url,
         "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
         "CHALLENGE_DOCKER_BROKER_NETWORK": AGENT_CHALLENGE_JOB_NETWORK,
-        # Central AST+LLM gate routing (byte-matches install-swarm.sh:1536): the
+        # Central AST+LLM gate routing (byte-matches install-swarm.sh): the
         # analyzer LLM review routes through the master gateway ROOT (it appends
-        # /llm/openrouter itself). The scoped central-gate token file is mounted
-        # from the shared base_gateway_token secret; NO raw provider key here.
+        # /llm/v1 itself). The scoped central-gate token file is mounted from the
+        # shared base_gateway_token secret; NO raw provider key here.
         "CHALLENGE_LLM_GATEWAY_BASE_URL": gateway_base_url,
         "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND": "own_runner",
         "CHALLENGE_HARBOR_RUNNER_IMAGE": AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE,
@@ -693,11 +700,13 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
             "PRISM_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "PRISM_BASE_EVAL_IMAGE": evaluator_image,
-            # Central llm_review gate routing (byte-matches install-swarm.sh:1653):
+            # Central llm_review gate routing (byte-matches install-swarm.sh):
             # PRISM_LLM_GATEWAY_URL is the FULL gateway route prism uses directly
-            # as the chat base_url. The scoped central-gate token is read from
-            # /run/secrets/base_gateway_token by config default; NO raw key here.
-            "PRISM_LLM_GATEWAY_URL": f"{gateway_base_url}/llm/openrouter",
+            # as the chat base_url (single source-driven /llm/v1 route; the
+            # gateway injects the provider + model). The scoped central-gate token
+            # is read from /run/secrets/base_gateway_token by config default; NO
+            # raw provider key here.
+            "PRISM_LLM_GATEWAY_URL": f"{gateway_base_url}/llm/v1",
         },
         secrets=["challenge_token", "docker_broker_token"],
         metadata={
@@ -1026,17 +1035,21 @@ def master_mint_central_gate_token(
     principal: str = typer.Option("central-gate", "--principal"),
     label: str = typer.Option(..., "--label"),
     ttl_seconds: int = typer.Option(31_536_000, "--ttl-seconds"),
+    source: str = typer.Option("llm_review", "--source"),
+    model: str | None = typer.Option(None, "--model"),
 ) -> None:
     """Mint a non-assignment-scoped ``central-gate`` gateway token.
 
     The token authorizes the central safety gates (agent-challenge analyzer LLM
     review + prism ``llm_review`` gate) to call the master LLM gateway WITHOUT a
     live work assignment; the gateway records usage under
-    ``(validator_hotkey=principal, assignment_id=label)``. It is signed with the
-    configured gateway token secret (``gateway.token_secret`` /
-    ``token_secret_file``, e.g. ``/run/secrets/gateway_token_secret``). ONLY the
-    token string is printed to stdout (no logging) so it can be piped straight
-    into the ``base_gateway_token`` docker secret.
+    ``(validator_hotkey=principal, assignment_id=label)`` and resolves the
+    provider + model from the ``--source`` claim (default ``llm_review``). An
+    optional ``--model`` pins a specific model. It is signed with the configured
+    gateway token secret (``gateway.token_secret`` / ``token_secret_file``, e.g.
+    ``/run/secrets/gateway_token_secret``). ONLY the token string is printed to
+    stdout (no logging) so it can be piped straight into the ``base_gateway_token``
+    docker secret.
     """
     settings = load_settings(config)
     secret = read_secret(
@@ -1045,7 +1058,11 @@ def master_mint_central_gate_token(
     authority = GatewayTokenAuthority(secret)
     typer.echo(
         authority.issue_central_gate(
-            principal=principal, label=label, ttl_seconds=ttl_seconds
+            principal=principal,
+            label=label,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            model=model,
         )
     )
 
