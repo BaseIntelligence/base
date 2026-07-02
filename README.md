@@ -151,8 +151,9 @@ are the decentralized executors. These master subsystems (under `src/base/master
   the challenge's evaluation queue in-process).
 - **LLM gateway** (`llm_gateway/`): injects provider keys server-side and meters usage; validators
   and eval runtimes hold no provider keys and authenticate with a per-assignment scoped gateway
-  token issued at pull time. It routes DeepSeek (agent execution) and OpenRouter (review gates) and
-  redacts secrets in logs.
+  token issued at pull time. It resolves the provider and model server-side from the token `source`
+  claim (`agent` for coded-challenge agents, `llm_review` for review gates) per the `master.yaml`
+  gateway config, injects the provider key, and redacts secrets in logs.
 - **Weights aggregation (master) and per-validator submission**: `/v1/weights/latest` is recomputed
   on read from the validator-reported `get_weights` of each active challenge (a multi-challenge
   emission-share blend with a zero-miner burn fallback). The master aggregates only and has no
@@ -309,13 +310,13 @@ and placement runbook.
 PRISM GPU evals re-execute the miner's training loop on locked FineWeb-Edu data under a forced random init. The broker delivers that locked data to the eval container through a **per-slug read-only mount** mechanism (`SwarmBrokerConfig.eval_readonly_mounts_by_slug` in `master/swarm_backend.py`, settings `docker.broker_eval_readonly_mounts_by_slug`, wired in `cli_app/main.py`) that is decoupled from the Docker-socket allowlist, so the prism eval job receives the data without the (root-equivalent) host Docker socket.
 
 - Every prism GPU eval job bind-mounts the locked FineWeb-Edu **train** volume (`prism_fineweb_edu_train` → `/data/fineweb-edu/train`) and the offline reference tokenizers (`prism_reference_tokenizers` → `/opt/prism/reference-tokenizers`) **read-only**, via the built-in `DEFAULT_PRISM_EVAL_READONLY_MOUNTS` (no `master.yaml` entry required).
-- Only the `train` split is exposed; the secret `val`/`test` held-out splits are never mounted into the eval container, which runs `network=none` on an internal overlay and carries no OpenRouter secret.
+- Only the `train` split is exposed; the secret `val`/`test` held-out splits are never mounted into the eval container, which runs `network=none` on an internal overlay and carries no provider secret.
 
 `deploy/swarm/install-swarm.sh` canonicalizes the PRISM v2 eval-plane deploy wiring on the challenge service:
 
 - **Evaluator image** — `IMAGE_PRISM_EVALUATOR` defaults to the CI-published `ghcr.io/baseintelligence/prism-evaluator` image pinned by digest (`@sha256:<digest>`) and is passed as `PRISM_BASE_EVAL_IMAGE`. The published evaluator image already bundles `sentencepiece` + the offline tiktoken cache the locked pipeline needs, so no separately built tag is required.
 - **Host-side held-out** — the manager-pinned prism scorer (not the `network=none` eval container) mounts the SECRET val split read-only (`prism_fineweb_edu_val` → `/secret/val`) and reads it via `PRISM_BASE_EVAL_VAL_DATA_DIR=/secret/val` for the held-out delta; the held-out is gracefully skipped if val is absent.
-- **OpenRouter LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the key is mounted on the challenge service ONLY at `/run/secrets/openrouter_api_key` (from the `base_openrouter_api_key` Docker secret), never on the eval container.
+- **LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the prism gate calls the master gateway (`PRISM_LLM_GATEWAY_URL=<gateway root>/llm/v1`) with the scoped central-gate token (`base_gateway_token` → `/run/secrets/base_gateway_token`, `source=llm_review`); the gateway injects the provider key and model server-side. NO raw provider key is mounted on the challenge service or the eval container.
 
 See `deploy/swarm/README.md` for the full broker mount mechanism and deploy details.
 
@@ -461,9 +462,11 @@ deploy/swarm/acquire-agent-challenge-cache.sh   # populates agent_challenge_task
 ```
 
 Verify each volume is both present **and populated** (a Docker named volume is auto-created empty on
-first mount, so an empty mount succeeds silently). Provide the OpenRouter key for the PRISM/agent
-LLM gate as the Docker secret consumed at `/run/secrets/openrouter_api_key` (the installer creates
-`base_openrouter_api_key` from `$OPENROUTER_API_KEY`); the eval containers never carry it.
+first mount, so an empty mount succeeds silently). The central LLM gates (PRISM `llm_review` + the
+agent-challenge analyzer) reach the provider only through the master gateway using the scoped
+central-gate token (`base_gateway_token`, `source=llm_review`); no raw provider key is mounted on any
+challenge/eval container. The single provider key is held only by the master gateway at
+`/run/secrets/yunwu_api_key` (the name reflects the provider selected in `master.yaml`).
 
 ### Step 4 — Bring up the manager with `install-swarm.sh`
 

@@ -113,8 +113,8 @@ The agent:
 - pulls its assigned work units, executes each on its OWN Docker broker, and
   posts results back to the master;
 - obtains a scoped gateway token per assignment and routes every LLM call through
-  the master gateway (`DEEPSEEK_BASE_URL`/`OPENROUTER_BASE_URL` point at the
-  gateway). The validator holds no provider key.
+  the master gateway (agents receive `BASE_LLM_GATEWAY_URL` → the gateway `/llm/v1`
+  route + a scoped `BASE_GATEWAY_TOKEN`). The validator holds no provider key.
 
 The agent talks to its own broker (run `base master broker` on the validator
 node) and never executes work on the master. Relevant `validator.yaml` keys:
