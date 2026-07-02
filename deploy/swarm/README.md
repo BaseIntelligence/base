@@ -52,7 +52,7 @@ Each is created as the named Docker secret from the listed env var
 
 | Docker secret | Env var | When required |
 |---------------|---------|---------------|
-| `base_gateway_yunwu_api_key` | `YUNWU_API_KEY` | The single yunwu provider key the gateway injects (mounted at `/run/secrets/yunwu_api_key`). Required **only** when `GATEWAY_PROVIDER_MODE=real` (the default). The gateway injects this server-side so validators/eval runtimes hold no provider key. With `GATEWAY_PROVIDER_MODE=mock` the deterministic mock provider is used and this secret is not required. The gateway is yunwu-only + provider-agnostic (deepseek/openrouter removed). |
+| `base_gateway_yunwu_api_key` | `YUNWU_API_KEY` | The configured provider's API key the gateway injects (mounted at `/run/secrets/yunwu_api_key`; the secret/env/path names reflect the provider selected in `master.yaml`). Required **only** when `GATEWAY_PROVIDER_MODE=real` (the default). The gateway injects this server-side so validators/eval runtimes hold no provider key. With `GATEWAY_PROVIDER_MODE=mock` the deterministic mock provider is used and this secret is not required. The gateway is provider-agnostic; the active provider + model are chosen in `master.yaml` and injected server-side from the token `source` claim. |
 
 ### Optional secrets (1) — never hard-fail
 
@@ -176,7 +176,8 @@ challenge service (the broker supplies the eval-container data mounts above):
   (`PRISM_BASE_EVAL_TRAIN_DATA_DIR`) for the converged memorization-gap
   reference. If val is absent the held-out is gracefully skipped.
 - **LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the gate routes ONLY
-  through the master LLM gateway (yunwu-only, provider-agnostic) at
+  through the master LLM gateway (provider-agnostic; the active provider + model
+  are chosen in `master.yaml`) at
   `PRISM_LLM_GATEWAY_URL=<gateway root>/llm/v1` with the scoped central-gate token
   (`base_gateway_token` → `/run/secrets/base_gateway_token`, `source=llm_review`).
   The gateway injects the provider key + model server-side, so NO direct provider
@@ -196,9 +197,10 @@ encodes these, but they are easy to regress on a manual deploy:
   provider key.** The agent-challenge analyzer and prism `llm_review` route LLM
   calls through the master gateway using the scoped `base_gateway_token` only; the
   gateway injects the provider key server-side and records every call in
-  `llm_usage_records`. Mounting a raw provider key (e.g. `yunwu_api_key`) on a
-  challenge/eval service is a leak and is unnecessary (the gateway is the sole
-  path — it holds the only provider key at `/run/secrets/yunwu_api_key`). The
+  `llm_usage_records`. Mounting a raw provider key on a challenge/eval service is
+  a leak and is unnecessary (the gateway is the sole path — it holds the only
+  provider key at `/run/secrets/yunwu_api_key`, whose name reflects the provider
+  selected in `master.yaml`). The
   master’s central-gate token is exempt from the assignment-lifecycle resolver in
   code, so it works without a live work assignment.
 - **`base-validator-runtime` image: avoid the legacy `substrate-interface` /
