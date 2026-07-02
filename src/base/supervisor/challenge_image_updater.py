@@ -200,21 +200,37 @@ class ChallengeImageUpdater:
         """Roll the ACTIVE challenge's service to ``desired`` iff it is behind.
 
         Returns the per-tick action for the observability summary: ``rolled``,
-        ``already-current`` or ``skipped-inactive``.
+        ``already-current``, ``skipped-inactive`` or ``skipped-inspect-error``.
 
         The roll decision is made against the service's ACTUALLY-running image
         digest via ``controller.running_image`` — idempotent, so no
         ``--force`` redeploy fires once the service already runs ``desired``. A
         controller without that introspection seam degrades to the legacy
         record-change gate (behaviour-preserving for such controllers).
+
+        A transient (non-not-found) ``docker service inspect`` failure surfaces
+        as a :class:`DockerOrchestrationError`; it is an EXPECTED, self-correcting
+        dockerd hiccup, so the roll is skipped this tick and logged concisely at
+        WARNING (no stack trace) to avoid flooding the logs every tick. Genuinely
+        unexpected errors are NOT caught here and stay at exception level.
         """
+        from base.master.docker_orchestrator import DockerOrchestrationError
         from base.schemas.challenge import ChallengeStatus
 
         if record.status != ChallengeStatus.ACTIVE:
             return "skipped-inactive"
         accessor = getattr(controller, "running_image", None)
         if callable(accessor):
-            running = await accessor(record.slug)
+            try:
+                running = await accessor(record.slug)
+            except DockerOrchestrationError as exc:
+                logger.warning(
+                    "challenge-image-updater: %s: transient service-inspect "
+                    "failure (%s); skipping roll this tick, retry next interval",
+                    record.slug,
+                    exc,
+                )
+                return "skipped-inspect-error"
             if running is not None and extract_digest(running) == digest:
                 return "already-current"
         elif desired == record.image:

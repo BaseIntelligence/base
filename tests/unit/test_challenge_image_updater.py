@@ -7,6 +7,7 @@ dockerd, no real database.
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -306,11 +307,14 @@ def test_service_image_unknown_triggers_roll() -> None:
     assert controller.restarts == ["demo"]
 
 
-def test_transient_inspect_failure_does_not_redeploy() -> None:
-    # A transient inspect failure (running_image RAISES, not "absent") must NOT
-    # be treated as absence: the challenge is skipped this tick (logged, retried
-    # next tick), so an already-current service is never spuriously --force
-    # redeployed on a momentary dockerd error.
+def test_transient_inspect_failure_is_skipped_roll_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A transient inspect failure (running_image RAISES DockerOrchestrationError,
+    # not "absent") must NOT be treated as absence: the challenge is skipped this
+    # tick (logged CONCISELY at WARNING with NO stack trace, retried next tick),
+    # so an already-current service is never spuriously --force redeployed on a
+    # momentary dockerd error and the logs are not flooded every tick.
     class _RaisingController(ServiceAwareController):
         async def running_image(self, slug: str) -> str | None:
             self.running_image_calls.append(slug)
@@ -318,9 +322,70 @@ def test_transient_inspect_failure_does_not_redeploy() -> None:
 
     registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
     controller = _RaisingController()
-    make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    logger_name = "base.supervisor.challenge_image_updater"
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    assert controller.running_image_calls == ["demo"]
+    assert controller.restarts == []  # no redeploy on a transient inspect failure
+    inspect_warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == logger_name
+        and rec.levelno == logging.WARNING
+        and "transient service-inspect failure" in rec.getMessage()
+    ]
+    assert len(inspect_warnings) == 1
+    # Concise warning: no stack trace attached.
+    assert inspect_warnings[0].exc_info is None
+    # The transient path is NOT logged at exception/stack-trace (ERROR+) level.
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+
+
+def test_transient_inspect_failure_reports_skipped_action_in_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _RaisingController(ServiceAwareController):
+        async def running_image(self, slug: str) -> str | None:
+            self.running_image_calls.append(slug)
+            raise DockerOrchestrationError("transient dockerd inspect error")
+
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = _RaisingController()
+    logger_name = "base.supervisor.challenge_image_updater"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    assert any(
+        f"demo: desired={BASE}@{DIGEST_B} action=skipped-inspect-error" in message
+        for message in caplog.messages
+    )
+
+
+def test_unexpected_inspect_error_is_logged_at_exception_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A genuinely unexpected error (NOT a DockerOrchestrationError) is not the
+    # expected self-correcting transient case: it still surfaces at exception /
+    # stack-trace (ERROR) level, and the roll is skipped for that challenge.
+    class _RaisingController(ServiceAwareController):
+        async def running_image(self, slug: str) -> str | None:
+            self.running_image_calls.append(slug)
+            raise RuntimeError("unexpected dockerd crash")
+
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = _RaisingController()
+    logger_name = "base.supervisor.challenge_image_updater"
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
     assert controller.running_image_calls == ["demo"]
     assert controller.restarts == []
+    exception_records = [
+        rec
+        for rec in caplog.records
+        if rec.name == logger_name and rec.levelno >= logging.ERROR
+    ]
+    assert len(exception_records) == 1
+    # logger.exception attaches the stack trace.
+    assert exception_records[0].exc_info is not None
 
 
 def test_inactive_challenge_is_never_rolled_even_if_service_behind() -> None:
