@@ -1931,9 +1931,12 @@ _stage_supervisor_release() {
   # tree must equal HEAD exactly. `git archive HEAD` exports ONLY tracked, committed
   # files (no .git dir, no uncommitted/untracked working-tree changes), unlike a
   # `cp -a` of the whole working tree. `plan` cannot express a pipe, so stage via a
-  # temp tarball (git archive --output -> tar -x -> rm). Fall back to cp -a only if
-  # the source is not a git work tree (e.g. an unpacked tarball release source).
-  if git -C "${SUPERVISOR_RELEASE_SOURCE}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # temp tarball (git archive --output -> tar -x -> rm). Fall back to cp -a when the
+  # source is not a git work tree (e.g. an unpacked tarball release source) OR when
+  # HEAD is unborn (a repo with no commits: rev-parse --verify HEAD fails and
+  # git archive HEAD would hard-fail), so staging never hard-fails.
+  if git -C "${SUPERVISOR_RELEASE_SOURCE}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && git -C "${SUPERVISOR_RELEASE_SOURCE}" rev-parse --verify HEAD >/dev/null 2>&1; then
     local snapshot_tar="${releases_dir}/.${version}.snapshot.tar"
     plan git -C "${SUPERVISOR_RELEASE_SOURCE}" archive --format=tar --output "${snapshot_tar}" HEAD
     plan tar -x -f "${snapshot_tar}" -C "${release_dir}"
