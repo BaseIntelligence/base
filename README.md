@@ -50,7 +50,7 @@ assignments, and runs evaluation on its own broker and Docker. There is no Kuber
 - The shared control-plane PostgreSQL is private to the master process.
 - Each challenge keeps its own SQLite database on its `/data` Swarm volume.
 - Challenge state remains owned by each challenge.
-- The master node runs all active challenge services; the on-chain submitter only submits weights.
+- The master (manager) node runs all active challenge services, reconciled automatically from the registry; it aggregates the final weight vector but never submits on-chain. Each validator submits its own weights (a dedicated submit-only host can run the same submitter).
 
 ---
 
@@ -100,8 +100,8 @@ flowchart LR
     P --> C1
     P --> C2
     M --> W[Weights API]
-    SUB[Submitter] --> W
-    SUB --> BT
+    V -- fetch /v1/weights/latest --> W
+    V -- set_weights (own hotkey) --> BT
 ```
 
 ---
@@ -115,15 +115,14 @@ sequenceDiagram
     participant A as Challenge get_weights
     participant G as Aggregator
     participant W as Weights API
-    participant SUB as Submitter
     participant BT as Bittensor
 
     V->>CP: pull assignment, execute, post result
     CP->>A: validator-reported results
     A-->>G: hotkey -> weight (per challenge)
     G-->>W: normalized uid weights (recompute on read)
-    SUB->>W: GET /v1/weights/latest
-    SUB->>BT: set_weights
+    V->>W: GET /v1/weights/latest (per validator)
+    V->>BT: set_weights (own hotkey)
 ```
 
 ---
@@ -144,15 +143,22 @@ are the decentralized executors. These master subsystems (under `src/base/master
 - **Orchestration driver** (`orchestration.py`): a live loop that bridges challenge pending work
   into assignments, runs the assignment and reassignment passes, and durably folds retry-exhausted
   units so the system runs autonomously.
+- **Registry-driven challenge deploy** (`orchestration.py`): a master reconcile loop reads the
+  challenge registry and idempotently deploys a service for every ACTIVE challenge (and tears down
+  services for challenges no longer ACTIVE), so installing the master auto-deploys all ACTIVE
+  challenges and a newly-registered challenge propagates with no manual step. It self-heals across
+  master restarts and deploys one combined-mode service per challenge (the API process also drains
+  the challenge's evaluation queue in-process).
 - **LLM gateway** (`llm_gateway/`): injects provider keys server-side and meters usage; validators
   and eval runtimes hold no provider keys and authenticate with a per-assignment scoped gateway
   token issued at pull time. It routes DeepSeek (agent execution) and OpenRouter (review gates) and
   redacts secrets in logs.
-- **Weights aggregation and single submitter**: `/v1/weights/latest` is recomputed on read from the
-  validator-reported `get_weights` of each active challenge (a multi-challenge emission-share blend
-  with a zero-miner burn fallback); the single submitter validates freshness and netuid and submits
-  once (dry-run and mock supported). There is no path that produces weights without validator
-  evaluation.
+- **Weights aggregation (master) and per-validator submission**: `/v1/weights/latest` is recomputed
+  on read from the validator-reported `get_weights` of each active challenge (a multi-challenge
+  emission-share blend with a zero-miner burn fallback). The master aggregates only and has no
+  on-chain submit path; each validator fetches that same vector and commits it on-chain under its
+  own hotkey (commit-reveal), gated by `validator.submit_on_chain_enabled` (default off; dry-run and
+  mock supported). There is no path that produces weights without validator evaluation.
 
 Validators run the validator agent runtime (`base.validator.agent`, with hotkey signing, a
 coordination client, and an executor seam). New CLI entrypoints:
@@ -161,10 +167,11 @@ coordination client, and an executor seam). New CLI entrypoints:
   orchestration driver.
 - `base validator agent` runs the decentralized own-broker executor: it registers and heartbeats,
   pulls assignments, executes them locally, routes provider calls through the master gateway, and
-  posts results.
+  posts results. It also runs this node's own weight-submit loop, committing the master-aggregated
+  vector on-chain under its own hotkey when `validator.submit_on_chain_enabled` is set (default off).
 
-Control-plane migrations advance through alembic head `0007` (validator registry, LLM usage
-records, work assignments and results, and registry hardening).
+Control-plane migrations advance through alembic head `0008` (validator registry, LLM usage
+records, work assignments and results, registry hardening, and validator challenge subscriptions).
 
 ### No-chain (mock-metagraph) decentralized deploy
 
@@ -211,13 +218,13 @@ capabilities, subscriptions, last heartbeat, resolved identity); it NEVER expose
 BASE coordinates the full lifecycle of a multi-challenge subnet:
 
 1. The master tracks active challenges and their emission shares.
-2. The master (manager) node runs the active challenge services from the registry.
+2. The master (manager) node auto-deploys the active challenge services from the registry via a reconcile loop, so a newly-registered ACTIVE challenge propagates with no manual step.
 3. Challenge services run isolated from the control plane and from each other, each on its own `/data` Swarm volume.
 4. Miners interact with the relevant challenge through BASE's public proxy.
 5. Online validators register with the master, pull assignments from the coordination plane, execute evaluation on their own broker and Docker, and post results.
 6. Each challenge computes raw hotkey weights from those validator-reported results using its own scoring rules.
 7. BASE normalizes challenge outputs, applies configured emissions, and maps hotkeys to UIDs.
-8. The on-chain submitter fetches the master's final vector and submits weights to Bittensor at epoch boundaries.
+8. Each validator fetches the master's final vector from the weights API and submits it on-chain under its own hotkey at epoch boundaries; the master aggregates but never submits on-chain.
 
 If a challenge fails, BASE can isolate that challenge's contribution without taking down the
 entire subnet.
@@ -239,9 +246,10 @@ weight contracts.
 Validators are the decentralized executors. Each runs the validator agent (`base validator agent`):
 it hotkey-registers and heartbeats with the master, pulls assignments from the coordination plane,
 executes evaluation on its own broker and Docker, routes all provider calls through the master LLM
-gateway, and posts results. A single on-chain submitter, separate from the executors, fetches the
-master's final normalized vector from the weights API and submits it to Bittensor. Challenge API
-services are run by the master (manager) node.
+gateway, and posts results. Each validator also submits its own on-chain weights: it fetches the
+master's final normalized vector from the weights API and commits it under its own hotkey (a
+dedicated submit-only host can run the same submitter). The master aggregates but never submits
+on-chain. Challenge API services are run by the master (manager) node.
 
 ---
 
@@ -264,15 +272,15 @@ platform/
 BASE uses a Docker Swarm only first-party deployment path and keeps Dockerfiles for the OCI images Swarm runs:
 
 - `deploy/swarm/install-swarm.sh` brings up the single-node Swarm manager (master proxy, broker, and challenge services on encrypted overlay networks). It is **dry-run by default**, mutates only with `--apply`, and keeps every destructive step behind its own explicit flag (`--restart-dockerd`, `--single-node-placement`, `--static-challenges`).
-- `deploy/swarm/base-supervisor.service` installs the manager-only systemd supervisor: broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update loops.
+- `deploy/swarm/base-supervisor.service` installs the manager-only systemd supervisor: broker-health, timeout-reaper, image-updater (rolls the master services, and the validator agent on a validator node), config-sync, and self-update loops. The challenge-image-updater runs inside the master proxy (co-hosted in its lifespan), not on the host supervisor, so it can reach the overlay registry database and Docker socket.
 - The master (manager) node runs the challenge services with the placement constraint `node.role==manager`. The broker dispatches CPU jobs to `node.labels.base.workload==cpu` workers and GPU jobs (`gpu_count>0`) to `node.labels.base.workload==gpu` workers with `--generic-resource NVIDIA-GPU=<N>`.
 - Worker nodes are enrolled manually with Swarm join tokens (no SSH) via the `base master worker` CLI group: `worker token [--cpu|--gpu]` prints `docker swarm join --token <TOKEN> <MANAGER_IP>:2377`; after the operator installs the matching `daemon.json` and joins, `worker label <node> --workload cpu|gpu` sets the scheduling label. The group also has `worker list`, `worker drain`, `worker rm`, and `worker inspect`.
 - Control-plane state is a single shared PostgreSQL supplied via `BASE_DATABASE_URL` or a Docker secret; SQLite is rejected for control-plane state. Each challenge keeps its own SQLite database on its `/data` Swarm volume; there is no Postgres server per challenge.
-- The on-chain submitter (`deploy/swarm/submitter/`) is a systemd service that reads `/v1/weights/latest` and submits on-chain; it runs no challenge orchestration.
+- On-chain weight submission is per-validator: the validator agent submits its own weights (gated by `validator.submit_on_chain_enabled`, default off), and the standalone submit-only submitter (`deploy/swarm/submitter/`) is a systemd service for a dedicated submit-only host that reads `/v1/weights/latest` and submits on-chain. The master aggregates only and has no on-chain submit path; neither runs challenge orchestration.
 - The validator coordination plane (validator registry, hotkey-signed register/heartbeat/pull/progress/result, crash detection, and the orchestration driver) and the LLM gateway ship inside the `base-master` image and are wired by `install-swarm.sh`. The gateway requires a mandatory token-signing secret at `/run/secrets/gateway_token_secret` (`GATEWAY_TOKEN`), real-mode provider keys, and an advertised gateway base URL (`gateway.public_base_url`, set via `GATEWAY_PUBLIC_BASE_URL`); the proxy fails closed without the token secret.
 - Decentralized validator nodes run the validator agent (`base validator agent`) with their own broker and Docker. They authenticate with a hotkey signature plus a metagraph validator permit and reach providers only through the master gateway using a per-assignment scoped gateway token; no provider key is distributed to validators.
 - The prism HuggingFace checkpoint publisher reads an optional `HF_TOKEN` (the `base_hf_token` secret mounted at `/run/secrets/hf_token`); when it is absent, publishing is skipped.
-- The supervisor image-updater and challenge-image-updater are the **canonical first-party GHCR auto-update path**. They resolve the GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/baseintelligence/base-master:latest`, and are a no-op when current. The resolver authenticates to GHCR (HTTP Basic against the token realm, from explicit credentials or the `auth` field of a docker `config.json`) so it can resolve **private** `ghcr.io/baseintelligence/*` digests; with no credentials it falls back to the anonymous public-package path, behaviour-preserving when unset. The master digest-pin rollout targets the installer-created service names `base-master-proxy` and `base-docker-broker`. Master/supervisor self-update is explicit: wired via `SUPERVISOR_SELF_UPDATE_MANIFEST_URL`, otherwise safely disabled (`supervisor.self_update_enabled=false`) with no inert half-state.
+- The supervisor image-updater (host) and the challenge-image-updater (co-hosted in the master proxy) are the **canonical first-party GHCR auto-update path**, so the whole stack rolls on the mutable `:latest` tags published on every merge to `main` with no manual `docker service update`. They resolve the GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/baseintelligence/base-master:latest`, and are a no-op when current. The resolver authenticates to GHCR (HTTP Basic against the token realm, from explicit credentials or the `auth` field of a docker `config.json`) so it can resolve **private** `ghcr.io/baseintelligence/*` digests; with no credentials it falls back to the anonymous public-package path, behaviour-preserving when unset. The image-updater targets are settings-driven: by default the installer-created service names `base-master-proxy` and `base-docker-broker`, plus the `base-validator-agent` runtime on a validator node so validator code auto-rolls too. Master/supervisor self-update is explicit: wired via `SUPERVISOR_SELF_UPDATE_MANIFEST_URL`, otherwise safely disabled (`supervisor.self_update_enabled=false`) with no inert half-state.
 - Pinned production mode uses a tag plus a `sha256` digest, for example `ghcr.io/baseintelligence/demo:1.2.3@sha256:<64-hex-digest>` for releases or `ghcr.io/baseintelligence/demo:latest@sha256:<64-hex-digest>` for the autonomous update channel, and disables mutable auto-update. Production rejects untagged images, missing digests, and non-SemVer non-`latest` tags. BASE release versioning starts at `3.0.0`; see `docs/versioning.md` for the SemVer, Git tag, mutable `latest`/`main`, and GHCR tag policy.
 - Swarm networking uses encrypted overlay networks at MTU 1450. Required inter-node ports: `2377/tcp` (management), `7946/tcp+udp` (gossip), `4789/udp` (VXLAN data plane), and IP protocol 50 (ESP) for the encrypted overlay.
 - Swarm services map CPU and memory to `--limit-cpu` and `--limit-memory` and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`.
@@ -348,9 +356,11 @@ Evidence for local validation should live in a local, gitignored evidence direct
 This is the end-to-end path to stand up the full subnet on a fresh Docker Swarm: a manager node
 (control plane plus the long-lived challenge services) and one or more CPU/GPU workers (short-lived
 broker eval jobs). It ties together image builds, image publishing/staging, volume provisioning,
-`install-swarm.sh --apply`, worker enrollment, and the on-chain submitter. Weights are always
-computed **dry-run**; the on-chain submitter is a separate, optional step. Run `install-swarm.sh`
-**dry-run first** (no flags) and only `--apply` on a host you own.
+`install-swarm.sh --apply`, worker enrollment, and on-chain weight submission. Weights are always
+computed **dry-run** by default; on-chain submission is per-validator (the validator agent, or a
+standalone submit-only host), gated by `validator.submit_on_chain_enabled` and enabled as a
+separate, optional step. Run `install-swarm.sh` **dry-run first** (no flags) and only `--apply` on a
+host you own.
 
 The three backend repositories are sibling checkouts under a common parent
 (`platform/`, `agent-challenge/`, `prism/`); the frontend deploys separately to Vercel.
@@ -475,8 +485,10 @@ export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/baseintelligence/agent-challenge-ter
 
 The installer initializes the Swarm, creates the encrypted overlay networks (`base_challenges`
 and `base_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never
-argv), and creates the master proxy/broker plus both challenge services (the broker pinned to
-`node.role==manager`). It also wires the coordination plane and the LLM gateway: the mandatory
+argv), and creates the master proxy/broker (the broker pinned to `node.role==manager`). By default
+the challenge services are then deployed automatically by the master proxy's registry reconcile loop
+(one combined-mode service per ACTIVE challenge); `--static-challenges` instead creates them
+directly here (an API service plus a worker sidecar). It also wires the coordination plane and the LLM gateway: the mandatory
 `GATEWAY_TOKEN` becomes the `base_gateway_token_secret` mounted at
 `/run/secrets/gateway_token_secret`, the proxy advertises `GATEWAY_PUBLIC_BASE_URL`
 (`gateway.public_base_url`) so challenge gates and validators reach the gateway, real-mode provider
@@ -510,10 +522,13 @@ base master worker label <node> --workload cpu      # or gpu
 See [`deploy/swarm/README.md`](deploy/swarm/README.md) for `daemon.json` details, networking ports,
 and the prune policy.
 
-### Step 6 — Install the on-chain submitter (validator node)
+### Step 6 — On-chain weight submission
 
-The submitter is a single systemd-managed process that reads `/v1/weights/latest` from the master
-and submits on-chain. It runs no challenge orchestration and needs only the validator hotkey.
+On-chain submission is per-validator: every validator agent submits its own weights when
+`validator.submit_on_chain_enabled` is enabled (see the validator command below). A dedicated
+submit-only host is also supported: a single systemd-managed process that reads `/v1/weights/latest`
+from the master and submits on-chain under its hotkey. It runs no challenge orchestration and needs
+only the validator hotkey.
 
 ```bash
 cp deploy/swarm/submitter/run_submitter.py            /var/lib/base/submitter/
@@ -527,10 +542,10 @@ Full submitter configuration and the operator FAQ are in the
 [Validator guide](docs/validator/README.md); manager-service runbooks are in
 [Validator operations](docs/operations/validator.md).
 
-Decentralized evaluation is performed by validator nodes, separate from the single on-chain
-submitter. Each validator runs the agent executor against the master coordination plane (its hotkey
-must hold a metagraph validator permit); it pulls assignments, executes them on its own broker and
-Docker, and routes provider calls through the master gateway:
+Decentralized evaluation is performed by validator nodes. Each validator runs the agent executor
+against the master coordination plane (its hotkey must hold a metagraph validator permit); it pulls
+assignments, executes them on its own broker and Docker, routes provider calls through the master
+gateway, and submits its own weights on-chain when enabled:
 
 ```bash
 base validator agent --config config/validator.example.yaml
