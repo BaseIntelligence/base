@@ -242,7 +242,11 @@ class DockerRuntimeController:
         Delegates to the orchestrator's ``service_image`` accessor when
         available so the challenge-image-updater can gate a roll on the running
         service digest (not the DB record). A backend without that seam returns
-        None, and the updater then degrades to record-change gating.
+        None, and the updater then degrades to record-change gating. None means
+        the service is absent (→ converge/create); a transient inspect failure
+        propagates as an exception so the updater skips the roll this tick
+        (retried next tick) instead of spuriously redeploying an already-current
+        service.
         """
         accessor = getattr(self.orchestrator, "service_image", None)
         if not callable(accessor):

@@ -13,6 +13,7 @@ import pytest
 
 from base.config.settings import Settings
 from base.supervisor.health import BrokerHealthGate, http_health_prober
+from base.supervisor.image_updater import image_updater_from_task
 from base.supervisor.loop import Supervisor
 from base.supervisor.scheduler import ScheduledTask
 from base.supervisor.sd_notify import (
@@ -331,8 +332,7 @@ def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
 
     image_updater = next(t for t in tasks if t.name == "image-updater")
     updater_services = {
-        target.service
-        for target in image_updater.run.__self__._targets  # type: ignore[attr-defined]
+        target.service for target in image_updater_from_task(image_updater).targets
     }
     assert updater_services == {
         "base-master-proxy",

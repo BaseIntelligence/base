@@ -16,9 +16,15 @@ ZERO on-chain effects — the master can never submit weights:
    computes/aggregates the vector — there is no ``set_weights`` call anywhere
    in the master weight path (master/service.py).
 
-On-chain submission lives entirely in the per-validator submitter
-(``base.validator.weight_submitter``), each validator committing the
-master-aggregated vector under its OWN hotkey.
+On-chain submission of the master-aggregated vector happens per-node under
+each node's OWN hotkey, never here. The primary path is the per-validator
+submitter (``base.validator.weight_submitter``), which every validator runs in
+its agent runtime, committing the master-aggregated vector under its own
+hotkey. A second per-node submit path also exists,
+``base.supervisor.weight_submit.OnChainWeightSubmitter`` (supervisor Task 21),
+but it is submit-CAPABLE yet default-OFF (``validator.submit_on_chain_enabled``
+defaults False) and is never enabled for the master role, so the master still
+submits nothing regardless.
 
 The broker health gate is accepted per the Task-16 builder recipe but NOT
 consulted: the weights compute path touches the control-plane DB, the chain

@@ -1429,6 +1429,32 @@ def test_service_image_returns_none_when_service_absent() -> None:
     assert orchestrator.service_image("agent") is None
 
 
+def test_service_image_raises_on_transient_inspect_failure() -> None:
+    # A non-not-found inspect failure (e.g. a momentary dockerd error) is NOT
+    # "absent": it must RAISE rather than return None, so a caller never mistakes
+    # it for an absent service and issues a spurious --force redeploy of an
+    # already-current service.
+    class _FlakyRunner:
+        def run(
+            self,
+            argv: Any,
+            *,
+            input_text: str | None = None,
+            timeout_seconds: float | None = None,
+        ) -> SwarmCommandResult:
+            return _result(
+                tuple(argv),
+                rc=1,
+                err="Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+            )
+
+    orchestrator = SwarmChallengeOrchestrator(
+        runner=_FlakyRunner(), ledger=WorkloadLedger()
+    )
+    with pytest.raises(DockerOrchestrationError):
+        orchestrator.service_image("agent")
+
+
 def test_list_running_challenge_slugs_discovers_by_label() -> None:
     # VAL-CODE-REG-006: the reconciler's cross-restart self-heal reads the
     # ACTUALLY-running challenge services from the backend. The orchestrator

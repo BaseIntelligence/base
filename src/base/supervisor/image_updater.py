@@ -146,6 +146,15 @@ class SwarmImageUpdater:
         self._docker_bin = docker_bin
         self._command_timeout_seconds = command_timeout_seconds
 
+    @property
+    def targets(self) -> tuple[ImageUpdateTarget, ...]:
+        """The Swarm service targets this updater manages (stable public seam).
+
+        Exposed so callers/tests can assert the wired targets without reaching
+        into the private ``_targets`` field (see :func:`image_updater_from_task`).
+        """
+        return self._targets
+
     def run_once(self) -> None:
         """One tick: refresh every target; per-target failures are isolated."""
         for target in self._targets:
@@ -275,3 +284,18 @@ def build_image_updater_task(
         interval_seconds=interval_seconds,
         run=updater.run_once,
     )
+
+
+def image_updater_from_task(task: ScheduledTask) -> SwarmImageUpdater:
+    """Return the :class:`SwarmImageUpdater` backing an image-updater task.
+
+    A stable, typed public seam so callers can inspect the updater's public
+    surface (e.g. :attr:`SwarmImageUpdater.targets`) after it has been wired
+    into a :class:`ScheduledTask` by :func:`build_image_updater_task` /
+    :func:`base.supervisor.tasks.build_scheduled_tasks`, instead of reaching
+    into the bound ``run`` method's ``__self__`` and its private fields.
+    """
+    updater = getattr(task.run, "__self__", None)
+    if not isinstance(updater, SwarmImageUpdater):
+        raise TypeError(f"task {task.name!r} is not backed by a SwarmImageUpdater")
+    return updater

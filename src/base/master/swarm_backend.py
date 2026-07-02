@@ -1064,8 +1064,16 @@ class SwarmChallengeOrchestrator:
         ``docker service inspect`` for the ``challenge-<slug>`` service, so a
         caller can compare the running digest against the desired digest and
         converge only a service that is actually behind (idempotent — no roll
-        when the running image already equals the desired one). Returns None
-        when the service does not exist or cannot be inspected.
+        when the running image already equals the desired one).
+
+        Returns None ONLY when the service genuinely does not exist (the
+        ``inspect`` reports "no such service"), which callers treat as
+        "not deployed → create/converge". A transient inspect failure (e.g. a
+        momentary dockerd error on an already-running service) is NOT absence:
+        it re-raises :class:`DockerOrchestrationError` so a caller can never
+        mistake it for an absent service and issue a spurious ``--force``
+        redeploy of an already-current service (the failure self-corrects on
+        the next tick).
         """
 
         container_name = f"challenge-{_safe_fragment(slug, 48)}"
@@ -1080,7 +1088,12 @@ class SwarmChallengeOrchestrator:
             ]
         )
         if inspected.returncode != 0:
-            return None
+            if _stderr_indicates_missing_service(inspected.stderr):
+                return None
+            raise DockerOrchestrationError(
+                f"docker service inspect failed for {container_name!r} "
+                f"(rc={inspected.returncode}): {inspected.stderr.strip()}"
+            )
         image = inspected.stdout.strip()
         return image or None
 
@@ -1490,6 +1503,17 @@ def _service_name(challenge: str, job_id: str, task_id: str | None) -> str:
 def _safe_fragment(value: str, limit: int) -> str:
     safe = _SAFE_RE.sub("-", value.lower()).strip("-")
     return (safe or "x")[:limit]
+
+
+#: stderr markers meaning the inspected Swarm service does not exist (as opposed
+#: to a transient inspect failure). Mirrors the config_sync/reaper "gone"
+#: detection so an absent service and a momentary dockerd error are told apart.
+_MISSING_SERVICE_MARKERS = ("no such service", "not found")
+
+
+def _stderr_indicates_missing_service(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _MISSING_SERVICE_MARKERS)
 
 
 def _load_json_object(raw: str) -> dict[str, Any] | None:

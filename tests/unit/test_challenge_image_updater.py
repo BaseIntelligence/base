@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 
 from base.config.settings import Settings
+from base.master.docker_orchestrator import DockerOrchestrationError
 from base.schemas.challenge import ChallengeStatus, ChallengeUpdate
 from base.supervisor.challenge_image_updater import (
     CHALLENGE_IMAGE_UPDATER_INTERVAL_SECONDS,
@@ -296,13 +297,30 @@ def test_record_behind_updates_record_and_rolls_service() -> None:
 
 
 def test_service_image_unknown_triggers_roll() -> None:
-    # running_image returns None (service absent / not inspectable) -> roll to
-    # converge (restart_challenge starts the service when it does not exist).
+    # running_image returns None (service absent) -> roll to converge
+    # (restart_challenge starts the service when it does not exist).
     registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
     controller = ServiceAwareController(running=None)
     make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
     assert registry.updates == []
     assert controller.restarts == ["demo"]
+
+
+def test_transient_inspect_failure_does_not_redeploy() -> None:
+    # A transient inspect failure (running_image RAISES, not "absent") must NOT
+    # be treated as absence: the challenge is skipped this tick (logged, retried
+    # next tick), so an already-current service is never spuriously --force
+    # redeployed on a momentary dockerd error.
+    class _RaisingController(ServiceAwareController):
+        async def running_image(self, slug: str) -> str | None:
+            self.running_image_calls.append(slug)
+            raise DockerOrchestrationError("transient dockerd inspect error")
+
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = _RaisingController()
+    make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    assert controller.running_image_calls == ["demo"]
+    assert controller.restarts == []
 
 
 def test_inactive_challenge_is_never_rolled_even_if_service_behind() -> None:

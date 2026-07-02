@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import pytest
+
 from base.config.settings import (
     DEFAULT_VALIDATOR_AGENT_SERVICE,
     DEFAULT_VALIDATOR_RUNTIME_IMAGE,
@@ -23,8 +25,10 @@ from base.supervisor.image_updater import (
     DEFAULT_FIRST_PARTY_TARGETS,
     ImageUpdateTarget,
     SwarmImageUpdater,
+    image_updater_from_task,
     resolve_image_update_targets,
 )
+from base.supervisor.scheduler import ScheduledTask
 from base.supervisor.tasks import build_scheduled_tasks
 
 DIGEST_OLD = "sha256:" + "a" * 64
@@ -39,7 +43,7 @@ def _settings(**supervisor: object) -> Settings:
 def _image_updater_targets(settings: Settings) -> tuple[ImageUpdateTarget, ...]:
     tasks, _gate = build_scheduled_tasks(settings)
     image_updater = next(t for t in tasks if t.name == "image-updater")
-    return tuple(image_updater.run.__self__._targets)  # type: ignore[attr-defined]
+    return image_updater_from_task(image_updater).targets
 
 
 class _FakeRunner:
@@ -144,6 +148,16 @@ def test_validator_only_targets_on_a_validator_node() -> None:
     )
 
 
+def test_empty_targets_with_validator_toggle_off_is_empty_tuple() -> None:
+    # A node that watches NOTHING: empty explicit list AND validator toggle off
+    # resolves to NO targets (it must NOT fall back to the master defaults, which
+    # only happens when image_updater_targets is unset/None).
+    targets = resolve_image_update_targets(
+        _settings(image_updater_targets=[], validator_agent_target_enabled=False)
+    )
+    assert targets == ()
+
+
 def test_validator_target_not_duplicated_when_already_listed() -> None:
     explicit = [
         ImageUpdateTargetSetting(
@@ -225,3 +239,79 @@ def test_validator_agent_service_noop_when_digest_matches() -> None:
     )
     SwarmImageUpdater(targets, runner=runner, resolver=resolver).run_once()
     assert runner.update_calls == []
+
+
+# ---------------------------------------------------------------------------
+# No targets: run_once is a clean no-op (no docker command, no digest resolve).
+# ---------------------------------------------------------------------------
+
+
+class _RecordingRunner:
+    """Records every docker command so we can assert ZERO were issued."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        input_text: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> SwarmCommandResult:
+        call = tuple(argv)
+        self.calls.append(call)
+        raise AssertionError(f"no docker command expected for empty targets: {call}")
+
+
+def test_image_updater_no_targets_is_a_clean_noop() -> None:
+    # A validator-off node with an empty target list resolves to () (above); the
+    # updater built from those targets must issue ZERO docker commands and NEVER
+    # call the resolver - a clean no-op, not an error or a stray inspect/update.
+    settings = _settings(image_updater_targets=[], validator_agent_target_enabled=False)
+    targets = resolve_image_update_targets(settings)
+    assert targets == ()
+
+    runner = _RecordingRunner()
+    resolver_calls: list[ImageReference] = []
+
+    def resolver(reference: ImageReference) -> str:
+        resolver_calls.append(reference)
+        return DIGEST_NEW
+
+    SwarmImageUpdater(targets, runner=runner, resolver=resolver).run_once()
+    assert runner.calls == []
+    assert resolver_calls == []
+
+
+def test_build_scheduled_tasks_empty_validator_off_updater_is_noop() -> None:
+    # End-to-end wiring: build_scheduled_tasks with an empty target list and the
+    # validator toggle off produces an image-updater with no targets, so its
+    # run() iterates nothing and spawns no docker subprocess (clean no-op).
+    settings = _settings(image_updater_targets=[], validator_agent_target_enabled=False)
+    tasks, _gate = build_scheduled_tasks(settings)
+    image_updater = next(t for t in tasks if t.name == "image-updater")
+    assert image_updater_from_task(image_updater).targets == ()
+    image_updater.run()  # empty targets -> no docker subprocess, must not raise
+
+
+# ---------------------------------------------------------------------------
+# Stable public seam: image_updater_from_task exposes the wired updater/targets.
+# ---------------------------------------------------------------------------
+
+
+def test_image_updater_from_task_exposes_wired_targets() -> None:
+    settings = _settings(validator_agent_target_enabled=True)
+    tasks, _gate = build_scheduled_tasks(settings)
+    image_updater = next(t for t in tasks if t.name == "image-updater")
+    updater = image_updater_from_task(image_updater)
+    assert isinstance(updater, SwarmImageUpdater)
+    assert updater.targets == resolve_image_update_targets(settings)
+
+
+def test_image_updater_from_task_rejects_a_foreign_task() -> None:
+    foreign = ScheduledTask(
+        name="not-an-updater", interval_seconds=1.0, run=lambda: None
+    )
+    with pytest.raises(TypeError):
+        image_updater_from_task(foreign)

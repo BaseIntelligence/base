@@ -29,6 +29,7 @@ from pathlib import Path
 import yaml
 
 from base.config.settings import Settings, SupervisorSettings
+from base.supervisor.image_updater import image_updater_from_task
 from base.supervisor.tasks import build_scheduled_tasks
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -144,8 +145,7 @@ def _supervisor_autoupdate_services() -> dict[str, set[str]]:
     image_updater = next(t for t in tasks if t.name == "image-updater")
     config_sync = next(t for t in tasks if t.name == "config-sync")
     updater_services = {
-        target.service
-        for target in image_updater.run.__self__._targets  # type: ignore[attr-defined]
+        target.service for target in image_updater_from_task(image_updater).targets
     }
     rollout_services = set(
         config_sync.run.__self__._rollout_services  # type: ignore[attr-defined]
