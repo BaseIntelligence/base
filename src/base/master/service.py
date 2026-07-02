@@ -6,7 +6,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from base.bittensor.metagraph_cache import MetagraphCache
-from base.bittensor.weight_setter import WeightSetter
 from base.master.aggregator import aggregate_challenge_weights
 from base.master.challenge_client import ChallengeClient
 from base.master.registry import record_to_registry_view
@@ -53,11 +52,9 @@ class MasterWeightService:
         self,
         *,
         metagraph_cache: MetagraphCache,
-        weight_setter: WeightSetter | None = None,
         challenge_client: ChallengeClient | None = None,
     ) -> None:
         self.metagraph_cache = metagraph_cache
-        self.weight_setter = weight_setter
         self.challenge_client = challenge_client or ChallengeClient()
 
     async def collect_weights(
@@ -119,21 +116,10 @@ class MasterWeightService:
         self,
         challenges: list[RegistryChallenge],
         tokens: dict[str, str],
-        *,
-        submit: bool = True,
     ) -> FinalWeights:
         final, _results = await self.compute_weights(challenges, tokens)
-        if not submit:
-            logger.info(
-                "computed weights without submitting",
-                extra={"uids": len(final.uids), "challenges": len(challenges)},
-            )
-            return final
-        if self.weight_setter is None:
-            raise RuntimeError("WeightSetter is required when submit=True")
-        self.weight_setter.set_weights(final.uids, final.weights)
         logger.info(
-            "set weights",
+            "computed weights",
             extra={"uids": len(final.uids), "challenges": len(challenges)},
         )
         return final

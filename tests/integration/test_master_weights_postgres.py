@@ -68,14 +68,12 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
 
         service = MasterWeightService(
             metagraph_cache=cast(MetagraphCache, Cache()),
-            weight_setter=WeightSetter(subtensor=None, wallet=None, netuid=0),
             challenge_client=cast(ChallengeClient, Client()),
         )
 
         final = await cli_module._run_master_weight_epoch(  # noqa: SLF001
             service,
             registry,
-            submit=False,
         )
 
         assert final.uids == [9]
@@ -157,7 +155,6 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
 
         service = MasterWeightService(
             metagraph_cache=cast(MetagraphCache, Cache()),
-            weight_setter=WeightSetter(subtensor=None, wallet=None, netuid=0),
             challenge_client=cast(ChallengeClient, Client()),
         )
 

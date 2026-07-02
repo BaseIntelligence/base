@@ -193,13 +193,6 @@ async def test_master_weight_service_and_validator_runner() -> None:
         def get(self) -> dict[str, int]:
             return {"hk": 3}
 
-    class Setter:
-        def __init__(self) -> None:
-            self.calls: list[tuple[list[int], list[float]]] = []
-
-        def set_weights(self, uids: list[int], weights: list[float]) -> None:
-            self.calls.append((uids, weights))
-
     class Client:
         async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
             return ChallengeWeightsResult(
@@ -222,15 +215,13 @@ async def test_master_weight_service_and_validator_runner() -> None:
         secrets=[],
         metadata={"combined_mode_env": "CHALLENGE_COMBINED_WORKER"},
     )
-    setter = Setter()
     service = MasterWeightService(
         metagraph_cache=cast(MetagraphCache, Cache()),
-        weight_setter=cast(WeightSetter, setter),
         challenge_client=cast(ChallengeClient, Client()),
     )
     final = await service.run_epoch([challenge], {"demo": "tok"})
     assert final.uids == [3]
-    assert setter.calls == [([3], [1.0])]
+    assert final.weights == [1.0]
 
     class Registry:
         async def fetch_registry(self):
@@ -257,14 +248,12 @@ async def test_master_weight_service_and_validator_runner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_master_weight_service_dry_run_skips_weight_setter() -> None:
+async def test_master_weight_service_computes_without_weight_setter() -> None:
+    """VAL-CODE-VWGT-004: the master service only computes (no submit path)."""
+
     class Cache:
         def get(self) -> dict[str, int]:
             return {"hk": 3}
-
-    class Setter:
-        def set_weights(self, uids: list[int], weights: list[float]) -> None:
-            raise AssertionError("dry-run must not submit weights")
 
     class Client:
         async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
@@ -289,11 +278,11 @@ async def test_master_weight_service_dry_run_skips_weight_setter() -> None:
     )
     service = MasterWeightService(
         metagraph_cache=cast(MetagraphCache, Cache()),
-        weight_setter=cast(WeightSetter, Setter()),
         challenge_client=cast(ChallengeClient, Client()),
     )
+    assert not hasattr(service, "weight_setter")
 
-    final = await service.run_epoch([challenge], {"demo": "tok"}, submit=False)
+    final = await service.run_epoch([challenge], {"demo": "tok"})
 
     assert final.uids == [3]
     assert final.weights == [1.0]
@@ -302,25 +291,16 @@ async def test_master_weight_service_dry_run_skips_weight_setter() -> None:
 @pytest.mark.asyncio
 async def test_master_weight_service_uid_zero_fallback_without_challenges() -> None:
     class Subtensor:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
         def metagraph(self, netuid: int) -> SimpleNamespace:
             return SimpleNamespace(hotkeys=["validator"] if netuid == 42 else [])
-
-        def set_weights(self, **kwargs: object) -> dict[str, object]:
-            self.calls.append(kwargs)
-            return {"ok": True, **kwargs}
 
     class Client:
         async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
             raise AssertionError("get_weights should not be called without challenges")
 
     subtensor = Subtensor()
-    wallet = object()
     service = MasterWeightService(
         metagraph_cache=MetagraphCache(netuid=42, ttl_seconds=0, subtensor=subtensor),
-        weight_setter=WeightSetter(subtensor=subtensor, wallet=wallet, netuid=42),
         challenge_client=cast(ChallengeClient, Client()),
     )
 
@@ -328,17 +308,6 @@ async def test_master_weight_service_uid_zero_fallback_without_challenges() -> N
 
     assert final.uids == [0]
     assert final.weights == [1.0]
-    assert subtensor.calls == [
-        {
-            "wallet": wallet,
-            "netuid": 42,
-            "uids": [0],
-            "weights": [1.0],
-            "version_key": 0,
-            "wait_for_inclusion": False,
-            "wait_for_finalization": False,
-        }
-    ]
 
 
 @pytest.mark.asyncio
@@ -856,7 +825,7 @@ def test_cli_master_weights_once_defaults_to_compute_only(
     )
 
     assert result.exit_code == 0
-    assert "compute-only: computed 1 weights" in result.output
+    assert "computed 1 weights" in result.output
     assert created_runtime["netuid"] == 12
     assert created_runtime["chain_endpoint"] == "ws://chain"
     assert created_runtime["wallet_name"] == "wallet"
@@ -867,157 +836,25 @@ def test_cli_master_weights_once_defaults_to_compute_only(
     assert setter_calls == []
 
 
-def test_cli_master_weights_submit_on_chain_requires_explicit_unsafe_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry_path = tmp_path / "registry.json"
-    secret_dir = tmp_path / "secrets"
-    config = tmp_path / "master.yaml"
-    config.write_text(
-        "\n".join(
-            [
-                "network:",
-                "  netuid: 12",
-                "master:",
-                f"  registry_state_file: {registry_path}",
-                "docker:",
-                f"  secret_dir: {secret_dir}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    registry = FileChallengeRegistry(registry_path, secret_dir=secret_dir)
-    registry.create(
-        ChallengeCreate(
-            slug="demo",
-            name="Demo",
-            image="ghcr.io/o/demo:1",
-            version="1",
-            emission_percent=Decimal("10"),
-            status=ChallengeStatus.ACTIVE,
-        )
-    )
-    setter_calls: list[tuple[list[int], list[float]]] = []
+def test_cli_master_weights_has_no_onchain_submit_options() -> None:
+    """VAL-CODE-VWGT-004: ``base master weights`` is compute/serve-only.
 
-    class Cache:
-        def get(self) -> dict[str, int]:
-            return {"hk": 7}
+    The removed ``--submit-on-chain`` / ``--dry-run`` options must no longer
+    exist: they are absent from ``--help`` and passing them is a hard error.
+    """
+    runner = CliRunner()
 
-    class Setter:
-        def set_weights(self, uids: list[int], weights: list[float]) -> None:
-            setter_calls.append((uids, weights))
-
-    class Client:
-        def __init__(self, **kwargs: object) -> None:
-            pass
-
-        async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
-            return ChallengeWeightsResult(
-                slug=str(kwargs["slug"]),
-                emission_percent=float(cast(float, kwargs["emission_percent"])),
-                weights={"hk": 2.0},
-            )
-
-    def create_runtime(settings):
-        return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
-
-    monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
-    monkeypatch.setattr(cli_module, "ChallengeClient", Client)
-    monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda _settings: None)
-    monkeypatch.setattr(cli_module, "_master_registry", lambda _settings: registry)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "master",
-            "weights",
-            "--config",
-            str(config),
-            "--once",
-            "--submit-on-chain",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert "submit-on-chain: computed 1 weights" in result.output
-    assert setter_calls == [([7], [1.0])]
-
-
-def test_cli_master_weights_dry_run_does_not_submit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry_path = tmp_path / "registry.json"
-    secret_dir = tmp_path / "secrets"
-    config = tmp_path / "master.yaml"
-    config.write_text(
-        "\n".join(
-            [
-                "network:",
-                "  netuid: 12",
-                "master:",
-                f"  registry_state_file: {registry_path}",
-                "docker:",
-                f"  secret_dir: {secret_dir}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    registry = FileChallengeRegistry(registry_path, secret_dir=secret_dir)
-    registry.create(
-        ChallengeCreate(
-            slug="demo",
-            name="Demo",
-            image="ghcr.io/o/demo:1",
-            version="1",
-            emission_percent=Decimal("10"),
-            status=ChallengeStatus.ACTIVE,
-        )
-    )
-
-    class Cache:
-        def get(self) -> dict[str, int]:
-            return {"hk": 7}
-
-    class Setter:
-        def set_weights(self, uids: list[int], weights: list[float]) -> None:
-            raise AssertionError("dry-run must not submit weights")
-
-    class Client:
-        def __init__(self, **kwargs: object) -> None:
-            pass
-
-        async def get_weights(self, **kwargs: object) -> ChallengeWeightsResult:
-            return ChallengeWeightsResult(
-                slug=str(kwargs["slug"]),
-                emission_percent=float(cast(float, kwargs["emission_percent"])),
-                weights={"hk": 2.0},
-            )
-
-    def create_runtime(settings):
-        return SimpleNamespace(metagraph_cache=Cache(), weight_setter=Setter())
-
-    monkeypatch.setattr(cli_module, "create_bittensor_runtime", create_runtime)
-    monkeypatch.setattr(cli_module, "ChallengeClient", Client)
-    monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda _settings: None)
-    monkeypatch.setattr(cli_module, "_master_registry", lambda _settings: registry)
-
-    result = CliRunner().invoke(
-        app,
-        ["master", "weights", "--config", str(config), "--once", "--dry-run"],
-    )
-
-    assert result.exit_code == 0
-    assert "compute-only: computed 1 weights" in result.output
-
-
-def test_cli_master_weights_help_documents_explicit_submit_opt_in() -> None:
-    result = CliRunner().invoke(
+    help_result = runner.invoke(
         app, ["master", "weights", "--help"], env={"TERM": "dumb"}
     )
+    assert help_result.exit_code == 0
+    assert "--submit-on-chain" not in help_result.output
+    assert "--dry-run" not in help_result.output
 
-    assert result.exit_code == 0
-    assert "--submit-on-chain" in result.output
-    assert "--dry-run/--submit" not in result.output
+    for removed in ("--submit-on-chain", "--dry-run"):
+        result = runner.invoke(app, ["master", "weights", "--once", removed])
+        assert result.exit_code != 0
+        assert "No such option" in result.output
 
 
 def test_cli_master_weights_loop_uses_epoch_interval(

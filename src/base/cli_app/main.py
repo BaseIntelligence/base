@@ -441,11 +441,9 @@ def _challenge_orchestrator(settings):
 async def _run_master_weight_epoch(
     service: MasterWeightService,
     registry: Any,
-    *,
-    submit: bool = False,
 ) -> FinalWeights:
     challenges, tokens = await active_challenge_inputs(registry)
-    return await service.run_epoch(challenges, tokens, submit=submit)
+    return await service.run_epoch(challenges, tokens)
 
 
 async def _run_master_weight_epoch_response(
@@ -1119,12 +1117,6 @@ def master_challenges_seed_prism(
 def master_weights(
     config: Path = typer.Option(Path("config/master.example.yaml")),
     once: bool = typer.Option(False, "--once/--loop"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-    submit_on_chain: bool = typer.Option(
-        False,
-        "--submit-on-chain",
-        help="Unsafe compatibility path: submit computed master weights on-chain.",
-    ),
 ):
     settings = load_settings(config)
     _configure_observability(settings)
@@ -1135,16 +1127,10 @@ def master_weights(
         settings,
         metagraph_cache=runtime.metagraph_cache,
     )
-    if submit_on_chain and not dry_run:
-        if runtime.weight_setter is None:
-            runtime = create_bittensor_submit_runtime(settings)
-        service.weight_setter = runtime.weight_setter
 
     async def epoch() -> None:
-        submit = submit_on_chain and not dry_run
-        final = await _run_master_weight_epoch(service, registry, submit=submit)
-        action = "submit-on-chain" if submit else "compute-only"
-        typer.echo(f"{action}: computed {len(final.uids)} weights")
+        final = await _run_master_weight_epoch(service, registry)
+        typer.echo(f"computed {len(final.uids)} weights")
 
     if once:
         asyncio.run(epoch())

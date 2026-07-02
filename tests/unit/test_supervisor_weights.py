@@ -2,8 +2,9 @@
 
 The weights schedule port must invoke the SAME compute path as
 ``base master weights --once`` (one epoch per tick) with ZERO on-chain
-effects: ``submit=False`` is hardcoded and no ``WeightSetter`` is ever
-attached (a mock standing in for chain submission asserts zero invocations).
+effects: ``MasterWeightService`` has no ``weight_setter`` and no submit path,
+so the tick can only compute/aggregate (a mock standing in for chain
+submission asserts zero invocations).
 """
 
 from __future__ import annotations
@@ -25,8 +26,6 @@ from base.supervisor.scheduler import ScheduledTask, TaskWorker
 
 def _wire_fake_cli_compute_path(
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    weight_setter: Any = None,
 ) -> dict[str, Any]:
     """Replace every cli_app.main helper the weights tick calls with fakes.
 
@@ -39,7 +38,7 @@ def _wire_fake_cli_compute_path(
         "epoch_calls": [],
         "migrations": 0,
         "registry": object(),
-        "service": SimpleNamespace(weight_setter=weight_setter),
+        "service": object(),
     }
 
     # Mock standing in for ANY chain submission: if anything on the
@@ -55,14 +54,8 @@ def _wire_fake_cli_compute_path(
     def _migrate(settings: Any) -> None:
         recorder["migrations"] += 1
 
-    async def _fake_epoch(
-        service: Any, registry: Any, *, submit: bool = False
-    ) -> FinalWeights:
-        recorder["epoch_calls"].append(
-            {"service": service, "registry": registry, "submit": submit}
-        )
-        if submit:  # mirror the real run_epoch's chain branch
-            service.weight_setter.set_weights([1], [1.0])
+    async def _fake_epoch(service: Any, registry: Any) -> FinalWeights:
+        recorder["epoch_calls"].append({"service": service, "registry": registry})
         return FinalWeights(uids=[1, 2], weights=[0.5, 0.5])
 
     monkeypatch.setattr(cli_main, "_run_startup_migrations", _migrate)
@@ -110,21 +103,9 @@ def test_compute_uses_cli_path_with_zero_chain_calls(
     assert recorder["migrations"] == 1  # same startup behavior as the CronJob
     assert len(recorder["epoch_calls"]) == 1
     epoch_call = recorder["epoch_calls"][0]
-    assert epoch_call["submit"] is False  # compute-only, hardcoded
     assert epoch_call["registry"] is recorder["registry"]
     assert epoch_call["service"] is recorder["service"]
-    # ZERO on-chain invocations — the hard Task 21 constraint.
-    assert recorder["set_weights_calls"] == []
-
-
-def test_compute_refuses_attached_weight_setter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Even a wrongly-wired service with a WeightSetter cannot submit."""
-    recorder = _wire_fake_cli_compute_path(monkeypatch, weight_setter=object())
-    with pytest.raises(RuntimeError, match="never hold a WeightSetter"):
-        weights_module.compute_weights_once(Settings())
-    assert recorder["epoch_calls"] == []  # refused BEFORE any compute
+    # ZERO on-chain invocations — the master weight path cannot submit.
     assert recorder["set_weights_calls"] == []
 
 

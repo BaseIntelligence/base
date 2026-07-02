@@ -214,12 +214,10 @@ def _service(
     *,
     mapping: dict[str, int],
     weights_by_slug: dict[str, dict[str, float]],
-    weight_setter: Any = None,
 ) -> tuple[MasterWeightService, RecordingChallengeClient]:
     recorder = RecordingChallengeClient(weights_by_slug)
     service = MasterWeightService(
         metagraph_cache=cast(MetagraphCache, StubMetagraphCache(mapping)),
-        weight_setter=weight_setter,
         challenge_client=cast(ChallengeClient, recorder),
     )
     return service, recorder
@@ -709,17 +707,54 @@ def test_only_active_challenges_queried_and_aggregated() -> None:
 
 
 def test_weights_latest_read_never_triggers_onchain_submit() -> None:
-    """VAL-WEIGHTS-031."""
+    """VAL-WEIGHTS-031 + VAL-CODE-VWGT-004.
+
+    The master has NO on-chain submit path: ``MasterWeightService`` exposes no
+    ``weight_setter`` attribute, so a read can never construct a submit runtime
+    or call ``set_weights``.
+    """
     registry = _active_registry([("agent-challenge", "40"), ("prism", "60")])
-    setter = _RecordingSetter()
     service, _ = _service(
         mapping={"hkA": 1, "hkB": 2},
         weights_by_slug={"agent-challenge": {"hkA": 1.0}, "prism": {"hkB": 1.0}},
-        weight_setter=cast(Any, setter),
     )
+    assert not hasattr(service, "weight_setter")
     client = _client(registry, service)
 
     for _ in range(3):
         assert client.get("/v1/weights/latest").status_code == 200
 
-    assert setter.calls == []
+
+# --- G. Master has NO on-chain submission code path (VAL-CODE-VWGT-004) --------
+
+
+def test_master_weight_service_has_no_weight_setter_or_submit_branch() -> None:
+    """VAL-CODE-VWGT-004: the master service cannot submit weights on-chain."""
+    import inspect
+
+    from base.master import service as service_module
+
+    init_params = inspect.signature(MasterWeightService.__init__).parameters
+    assert "weight_setter" not in init_params
+
+    run_epoch_params = inspect.signature(MasterWeightService.run_epoch).parameters
+    assert "submit" not in run_epoch_params
+
+    service, _ = _service(mapping={"hkA": 1}, weights_by_slug={"c": {"hkA": 1.0}})
+    assert not hasattr(service, "weight_setter")
+
+    module_src = inspect.getsource(service_module)
+    assert "set_weights" not in module_src
+    assert "WeightSetter" not in module_src
+
+
+def test_run_epoch_is_compute_only() -> None:
+    """VAL-CODE-VWGT-004: run_epoch computes/aggregates only, never submits."""
+    registry = _active_registry([("agent-challenge", "40"), ("prism", "60")])
+    service, _ = _service(
+        mapping={"hkA": 1, "hkB": 2},
+        weights_by_slug={"agent-challenge": {"hkA": 1.0}, "prism": {"hkB": 1.0}},
+    )
+    challenges, tokens = asyncio.run(active_challenge_inputs(registry))
+    final = asyncio.run(service.run_epoch(challenges, tokens))
+    assert final.uids == [1, 2]

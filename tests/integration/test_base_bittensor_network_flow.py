@@ -55,7 +55,6 @@ async def test_base_challenge_weights_and_bittensor_weight_epoch(
     subtensor = FakeSubtensor(["validator", "miner-a", "miner-b", "miner-c"])
     service = MasterWeightService(
         metagraph_cache=MetagraphCache(netuid=42, ttl_seconds=0, subtensor=subtensor),
-        weight_setter=WeightSetter(subtensor=subtensor, wallet=object(), netuid=42),
         challenge_client=ChallengeClient(retries=1),
     )
     latest = await service.compute_latest_response(

@@ -8,19 +8,17 @@ to every task invocation), registry/challenge-token reads, metagraph
 fetch (chain READ), per-challenge ``get_weights`` HTTP collection, then
 aggregation into the final UID vector.
 
-ZERO on-chain effects — proven by the call graph, double-gated here:
+ZERO on-chain effects — the master can never submit weights:
 
 1. ``create_bittensor_runtime`` (bittensor/factory.py) never constructs a
-   ``WeightSetter`` (only ``create_bittensor_submit_runtime`` does), and the
-   CLI only attaches one under ``--submit-on-chain`` — which this port never
-   passes. :func:`compute_weights_once` additionally REFUSES to run if a
-   ``WeightSetter`` is somehow attached.
-2. ``MasterWeightService.run_epoch(..., submit=False)`` returns the computed
-   vector BEFORE the ``weight_setter.set_weights`` line (master/service.py)
-   — this port hardcodes ``submit=False``.
+   ``WeightSetter`` (only ``create_bittensor_submit_runtime`` does).
+2. ``MasterWeightService`` has NO ``weight_setter`` and ``run_epoch`` only
+   computes/aggregates the vector — there is no ``set_weights`` call anywhere
+   in the master weight path (master/service.py).
 
-On-chain submission stays exactly where it is today (validator runtime /
-explicit ``--submit-on-chain``); wiring live runs is GO-gated plan Task 28.
+On-chain submission lives entirely in the per-validator submitter
+(``base.validator.weight_submitter``), each validator committing the
+master-aggregated vector under its OWN hotkey.
 
 The broker health gate is accepted per the Task-16 builder recipe but NOT
 consulted: the weights compute path touches the control-plane DB, the chain
@@ -46,8 +44,8 @@ def compute_weights_once(settings: Settings) -> FinalWeights:
     """Run one compute-only master weight epoch (no chain submission).
 
     Mirrors ``cli_app.main.master_weights(once=True)`` minus the CLI-only
-    pieces (``configure_logging``, typer echo) and minus any possibility of
-    submission (``submit=False`` hardcoded; no ``WeightSetter`` tolerated).
+    pieces (``configure_logging``, typer echo). ``MasterWeightService`` has no
+    ``weight_setter`` and no submit path, so this can only compute/aggregate.
     """
     # Lazy import: keeps the supervisor package import light and immune to
     # any future cli_app <-> supervisor import cycle (cli_app.main already
@@ -61,16 +59,7 @@ def compute_weights_once(settings: Settings) -> FinalWeights:
         settings,
         metagraph_cache=runtime.metagraph_cache,
     )
-    if service.weight_setter is not None:
-        # Structural guard: only the CLI's --submit-on-chain branch ever
-        # attaches a WeightSetter; the supervisor path must never hold one.
-        raise RuntimeError(
-            "supervisor weights task must never hold a WeightSetter; "
-            "on-chain submission is GO-gated (plan Task 28)"
-        )
-    final = asyncio.run(
-        cli_main._run_master_weight_epoch(service, registry, submit=False)
-    )
+    final = asyncio.run(cli_main._run_master_weight_epoch(service, registry))
     logger.info(
         "supervisor weights tick: compute-only, %d uids",
         len(final.uids),

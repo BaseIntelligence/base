@@ -142,9 +142,11 @@ def compute_weights_response(settings: Settings) -> MasterWeightsResponse:
     """Run one compute-only master weight epoch and return the full response.
 
     Mirrors ``base.supervisor.weights.compute_weights_once`` (same cli_app
-    helpers, idempotent startup migrations, no ``WeightSetter`` on the compute
-    service) but returns the :class:`MasterWeightsResponse` so the caller can
-    health-gate on per-challenge ``source_challenges`` before submitting.
+    helpers, idempotent startup migrations). ``MasterWeightService`` has no
+    ``weight_setter`` and no submit path, so this can only compute/aggregate;
+    it returns the :class:`MasterWeightsResponse` so the caller can health-gate
+    on per-challenge ``source_challenges`` before submitting from the dedicated
+    submit runtime.
     """
     from base.cli_app import main as cli_main
 
@@ -155,11 +157,6 @@ def compute_weights_response(settings: Settings) -> MasterWeightsResponse:
         settings,
         metagraph_cache=runtime.metagraph_cache,
     )
-    if service.weight_setter is not None:
-        raise RuntimeError(
-            "compute service must never hold a WeightSetter; on-chain submission "
-            "goes through the dedicated submit runtime"
-        )
     return asyncio.run(
         cli_main._run_master_weight_epoch_response(
             service,
