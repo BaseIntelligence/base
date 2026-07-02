@@ -332,12 +332,23 @@ def test_master_yaml_equals_live_production_config() -> None:
     assert cfg["network"]["chain_endpoint"] is not None
     assert cfg["network"]["mock_metagraph"] == []
 
-    # gateway: real providers, keys injected server-side from secret files.
+    # gateway: real provider(s), keys injected server-side from secret files. The
+    # gateway is config-driven + provider-agnostic (yunwu-only; deepseek/openrouter
+    # removed): a provider registry + default_model + per-source route map (keyed by
+    # the token `source` claim). See library/llm-yunwu-contract.md.
     gateway = cfg["gateway"]
     assert gateway["provider_mode"] == "real"
     assert gateway["token_secret_file"] == "/run/secrets/gateway_token_secret"
-    assert gateway["deepseek_api_key_file"] == "/run/secrets/deepseek_api_key"
-    assert gateway["openrouter_api_key_file"] == "/run/secrets/openrouter_api_key"
+    assert gateway["default_provider"] == "yunwu"
+    assert gateway["default_model"] == "claude-opus-4-8"
+    assert gateway["providers"]["yunwu"]["base_url"] == "https://yunwu.ai/v1"
+    assert gateway["providers"]["yunwu"]["api_key_file"] == "/run/secrets/yunwu_api_key"
+    assert gateway["sources"]["agent"]["provider"] == "yunwu"
+    assert gateway["sources"]["agent"]["model"] == "claude-opus-4-8"
+    assert gateway["sources"]["llm_review"]["provider"] == "yunwu"
+    assert gateway["sources"]["llm_review"]["model"] == "claude-opus-4-8"
+    assert "deepseek_api_key_file" not in gateway
+    assert "openrouter_api_key_file" not in gateway
 
     # broker allowlist matches the live (broad, namespaced) allowlist.
     assert cfg["docker"]["broker_allowed_images"] == ["ghcr.io/baseintelligence/"]

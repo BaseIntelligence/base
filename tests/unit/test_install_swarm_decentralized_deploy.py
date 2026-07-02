@@ -59,10 +59,9 @@ REQUIRED_SECRET_ENV = {
     "PRISM_DOCKER_BROKER_TOKEN": "x",
     "PRISM_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
     "PRISM_PG_PASSWORD": "x",
-    "OPENROUTER_API_KEY": "x",
     "GATEWAY_TOKEN": "x",
     "CENTRAL_GATEWAY_TOKEN": "x",
-    "DEEPSEEK_API_KEY": "x",
+    "YUNWU_API_KEY": "x",
 }
 
 
@@ -200,12 +199,16 @@ def test_coordination_intervals_and_gateway_config_rendered(tmp_path: Path) -> N
     assert "assignment_lease_seconds:" in out
     assert "orchestration_interval_seconds:" in out
 
-    # LLM gateway provider config (architecture sec 5).
+    # LLM gateway provider config (architecture sec 5/sec 10; yunwu-only,
+    # config-driven provider registry + source map; deepseek/openrouter removed).
     assert "provider_mode: real" in out
     assert "public_base_url:" in out
     assert "token_secret_file: /run/secrets/gateway_token_secret" in out
-    assert "deepseek_api_key_file: /run/secrets/deepseek_api_key" in out
-    assert "openrouter_api_key_file: /run/secrets/openrouter_api_key" in out
+    assert "api_key_file: /run/secrets/yunwu_api_key" in out
+    assert "default_provider: yunwu" in out
+    assert "default_model: claude-opus-4-8" in out
+    assert "deepseek_api_key_file" not in out
+    assert "openrouter_api_key_file" not in out
 
 
 # ---------------------------------------------------------------------------

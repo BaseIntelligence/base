@@ -152,17 +152,18 @@ MASTER_PROXY_PORT="${MASTER_PROXY_PORT:-19080}"
 # GOTCHA").
 MASTER_PROXY_CONSTRAINT="${MASTER_PROXY_CONSTRAINT-node.role==manager}"
 
-# ---- Master LLM gateway (architecture.md §5). `base master proxy` now ALWAYS
-# builds the LLM gateway and GatewayTokenAuthority refuses an empty token secret,
-# so the proxy FAILS FAST at startup unless the gateway token secret is wired
-# (MANDATORY). provider_mode selects the deterministic mock provider (no egress)
-# vs the real DeepSeek/OpenRouter clients whose keys the gateway injects
-# server-side (validators/eval runtimes hold NO provider key). ----
+# ---- Master LLM gateway (architecture.md §5/§10; llm-yunwu-contract).
+# `base master proxy` now ALWAYS builds the LLM gateway and GatewayTokenAuthority
+# refuses an empty token secret, so the proxy FAILS FAST at startup unless the
+# gateway token secret is wired (MANDATORY). provider_mode selects the
+# deterministic mock provider (no egress) vs the real yunwu client whose key the
+# gateway injects server-side (validators/eval runtimes hold NO provider key). The
+# gateway is yunwu-only + provider-agnostic (deepseek/openrouter removed). ----
 GATEWAY_PROVIDER_MODE="${GATEWAY_PROVIDER_MODE:-real}"
 # Externally-reachable master gateway/proxy ROOT advertised to validators in the
-# pull payload, so eval runtimes target the master gateway for
-# DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL instead of the WRONG master.registry_url
-# (chain registry) fallback. Defaults to the published proxy host:port.
+# pull payload, so eval runtimes target the master gateway's /llm/v1 route instead
+# of the WRONG master.registry_url (chain registry) fallback. Defaults to the
+# published proxy host:port.
 GATEWAY_PUBLIC_BASE_URL="${GATEWAY_PUBLIC_BASE_URL:-http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT}}"
 # Challenge container-internal listen ports (overlay-internal; NO host publish —
 # clients reach them THROUGH the proxy). Separate network namespaces, so these do
@@ -330,9 +331,9 @@ CHALLENGE_EXTRA_MOUNTS=()
 # Per-call extra `--secret` specs (verbatim `source=...,target=...`) consumed by
 # _deploy_challenge_service. Unlike the positional SECRET_SPEC args (which mount under the
 # ${SECRET_MOUNT_DIR}/ "base/" subdir), these are passed through UNMODIFIED so a secret can
-# be mounted at an exact target the consumer reads from. Used for the prism OpenRouter key, which
-# prism reads from /run/secrets/openrouter_api_key (config.py openrouter_api_key_file default),
-# i.e. target basename `openrouter_api_key` with NO `base/` prefix. Reset after each deploy.
+# be mounted at an exact target the consumer reads from. Used for the shared central-gate
+# token (base_gateway_token -> /run/secrets/base_gateway_token, NO `base/` prefix) that both
+# challenge LLM-review gates read to reach the master gateway. Reset after each deploy.
 CHALLENGE_EXTRA_SECRETS=()
 # Per-call placement `--constraint` exprs consumed by _deploy_challenge_service. CRITICAL for
 # multi-node swarms: an agent-challenge api + its worker sidecar both mount the SAME per-node
@@ -499,12 +500,13 @@ Required environment (values NEVER hardcoded; supplied at runtime):
   AGENT_CHALLENGE_SUBMISSION_ENV_KEY         agent-challenge submission_env_encryption_key.
   PRISM_CHALLENGE_TOKEN                      prism challenge token.
   PRISM_DOCKER_BROKER_TOKEN                  prism broker token.
-  OPENROUTER_API_KEY                         openrouter_api_key (gateway + prism gate).
   GATEWAY_TOKEN                              MANDATORY master LLM-gateway token secret
                                              (gateway_token_secret). The proxy fails
                                              fast at startup without it.
-  DEEPSEEK_API_KEY                           DeepSeek provider key the gateway injects
-                                             (required when GATEWAY_PROVIDER_MODE=real).
+  YUNWU_API_KEY                              yunwu provider key the gateway injects
+                                             (base_gateway_yunwu_api_key -> mounted at
+                                             /run/secrets/yunwu_api_key). Required when
+                                             GATEWAY_PROVIDER_MODE=real (the default).
   MASTER_PG_PASSWORD                         base postgres password.
   AGENT_CHALLENGE_PG_PASSWORD                agent-challenge postgres password.
   PRISM_PG_PASSWORD                          prism postgres password.
@@ -519,14 +521,14 @@ Required environment (values NEVER hardcoded; supplied at runtime):
                                              both central gates through the master gateway (the
                                              sole LLM path; no direct provider key on the
                                              challenge services). Mint via
-                                             `base master mint-central-gate-token`.
+                                             `base master mint-central-gate-token --source llm_review`.
 
 Optional environment:
   HF_TOKEN                                   HuggingFace token for the prism HF
                                              checkpoint publisher (base_hf_token,
                                              mounted via HF_TOKEN_FILE). Absent => skipped.
   GATEWAY_PROVIDER_MODE                      LLM-gateway provider mode: real (default,
-                                             inject DeepSeek/OpenRouter keys) or mock.
+                                             inject the yunwu provider key) or mock.
   GATEWAY_PUBLIC_BASE_URL                    External master gateway/proxy root URL
                                              advertised to validators (default:
                                              http://<advertise-addr>:<proxy-port>).
@@ -862,34 +864,33 @@ create_secrets() {
   _ensure_secret "base_prism_database_url"                PRISM_DATABASE_URL
   _ensure_secret "base_prism_pg_password"                 PRISM_PG_PASSWORD
 
-  # openrouter_api_key is shared (used by challenge eval). Named generically.
-  _ensure_secret "base_openrouter_api_key"                OPENROUTER_API_KEY
-
-  # ---- Master LLM gateway secrets (architecture.md §5; M7 wiring). ----
+  # ---- Master LLM gateway secrets (architecture.md §5/§10; llm-yunwu-contract). ----
   # MANDATORY token-signing secret: `base master proxy` ALWAYS builds the LLM
   # gateway and GatewayTokenAuthority rejects an empty secret, so the proxy fails
   # fast at startup without it. Mounted into base-master-proxy at
   # /run/secrets/gateway_token_secret (GatewaySettings.token_secret_file).
   _ensure_secret "base_gateway_token_secret"              GATEWAY_TOKEN
-  # Provider keys the gateway injects server-side (validators/eval hold none).
-  # Only needed when the gateway runs in provider_mode=real; mock uses canned
-  # responses and needs no provider key. DeepSeek -> /run/secrets/deepseek_api_key;
-  # OpenRouter reuses base_openrouter_api_key -> /run/secrets/openrouter_api_key.
+  # The single provider key the gateway injects server-side (validators/eval hold
+  # none). The gateway is yunwu-only + provider-agnostic (deepseek/openrouter
+  # removed from code AND config). Only needed when the gateway runs in
+  # provider_mode=real; mock uses canned responses and needs no provider key.
+  # yunwu -> /run/secrets/yunwu_api_key (GatewaySettings.providers.yunwu.api_key_file).
   if [[ "${GATEWAY_PROVIDER_MODE}" == "real" ]]; then
-    _ensure_secret "base_gateway_deepseek_api_key"        DEEPSEEK_API_KEY
+    _ensure_secret "base_gateway_yunwu_api_key"           YUNWU_API_KEY
   fi
 
   # Scoped central-gate token for the CENTRAL review gates (agent-challenge
-  # analyzer LLM review + prism llm_review gpt-4o). The challenge services
-  # authenticate to the master LLM gateway with THIS scoped token instead of a
-  # direct provider key, so NO OpenRouter key reaches the challenge services
-  # (architecture.md §5/§11). REQUIRED: the master gateway is now the sole LLM
-  # path for these gates (no direct-key fallback), so an unset $CENTRAL_GATEWAY_TOKEN
-  # hard-fails like the other required secrets. Mounted at
-  # /run/secrets/base_gateway_token on the prism + agent-challenge challenge
-  # services (the path both consumers read by default). The operator mints the
-  # scoped token out-of-band with `base master mint-central-gate-token` (signed by
-  # the gateway HMAC secret base_gateway_token_secret).
+  # analyzer LLM review + prism llm_review). The challenge services authenticate to
+  # the master LLM gateway with THIS scoped token instead of a direct provider key,
+  # so NO provider key reaches the challenge services (architecture.md §5/§10). The
+  # token carries source=llm_review so the gateway injects the review provider +
+  # model. REQUIRED: the master gateway is now the sole LLM path for these gates (no
+  # direct-key fallback), so an unset $CENTRAL_GATEWAY_TOKEN hard-fails like the
+  # other required secrets. Mounted at /run/secrets/base_gateway_token on the prism
+  # + agent-challenge challenge services (the path both consumers read by default).
+  # The operator mints the scoped token out-of-band with
+  # `base master mint-central-gate-token --source llm_review` (signed by the gateway
+  # HMAC secret base_gateway_token_secret).
   _ensure_secret "base_gateway_token"                     CENTRAL_GATEWAY_TOKEN
 
   # hf_token is OPTIONAL: FineWeb-Edu is a public dataset, so the one-time prep
@@ -1211,20 +1212,35 @@ security:
   # (GET /v1/validators -> 401), mirroring the working gateway token_secret_file.
   admin_token_file: /run/secrets/admin_token
 
-# Master LLM gateway (architecture.md §5). The proxy ALWAYS builds the gateway;
-# provider_mode selects the deterministic mock provider (no egress) vs the real
-# DeepSeek/OpenRouter clients whose keys are injected server-side from the secret
-# files below (validators/eval runtimes hold NO provider key). public_base_url is
-# the external master gateway root advertised to validators in the pull payload so
-# eval runtimes set DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL to the gateway, NOT the
-# WRONG master.registry_url (chain registry) fallback. The token_secret_file is the
-# MANDATORY HMAC secret for scoped gateway tokens (proxy fails fast if absent).
+# Master LLM gateway (architecture.md §5/§10; llm-yunwu-contract). The proxy
+# ALWAYS builds the gateway; provider_mode selects the deterministic mock provider
+# (no egress) vs the real yunwu client whose key is injected server-side from the
+# secret file below (validators/eval runtimes hold NO provider key). The gateway is
+# config-driven + provider-agnostic (yunwu-only; deepseek/openrouter removed from
+# code AND config): a provider registry + per-source route map selects the provider
+# + model the gateway injects, keyed by the token `source` claim (agent /
+# llm_review). public_base_url is the external master gateway root advertised to
+# validators in the pull payload so eval runtimes target the gateway's /llm/v1
+# route, NOT the WRONG master.registry_url (chain registry) fallback. The
+# token_secret_file is the MANDATORY HMAC secret for scoped gateway tokens (proxy
+# fails fast if absent).
 gateway:
   provider_mode: ${GATEWAY_PROVIDER_MODE}
   public_base_url: ${GATEWAY_PUBLIC_BASE_URL}
   token_secret_file: /run/secrets/gateway_token_secret
-  deepseek_api_key_file: /run/secrets/deepseek_api_key
-  openrouter_api_key_file: /run/secrets/openrouter_api_key
+  providers:
+    yunwu:
+      base_url: https://yunwu.ai/v1
+      api_key_file: /run/secrets/yunwu_api_key
+  default_provider: yunwu
+  default_model: claude-opus-4-8
+  sources:
+    agent:
+      provider: yunwu
+      model: claude-opus-4-8
+    llm_review:
+      provider: yunwu
+      model: claude-opus-4-8
 
 observability:
   log_json: true
@@ -1459,16 +1475,15 @@ _deploy_master_service() {
     # LLM gateway secrets consumed by the proxy-built gateway (NOT the broker):
     #   * MANDATORY token-signing secret at /run/secrets/gateway_token_secret;
     #     the proxy fails fast at startup without it (GatewayTokenAuthority).
-    #   * In provider_mode=real, the DeepSeek + OpenRouter provider keys the
-    #     gateway injects server-side, mounted at the exact paths the gateway
-    #     reads (/run/secrets/{deepseek_api_key,openrouter_api_key}).
+    #   * In provider_mode=real, the single yunwu provider key the gateway injects
+    #     server-side, mounted at the exact path the gateway reads
+    #     (/run/secrets/yunwu_api_key; GatewaySettings.providers.yunwu.api_key_file).
     extra+=(
       --secret "source=base_gateway_token_secret,target=gateway_token_secret"
     )
     if [[ "${GATEWAY_PROVIDER_MODE}" == "real" ]]; then
       extra+=(
-        --secret "source=base_gateway_deepseek_api_key,target=deepseek_api_key"
-        --secret "source=base_openrouter_api_key,target=openrouter_api_key"
+        --secret "source=base_gateway_yunwu_api_key,target=yunwu_api_key"
       )
     fi
   fi
@@ -1530,16 +1545,16 @@ deploy_challenges() {
 
   warn "creating challenge services DIRECTLY (--static-challenges); agent-challenge api+worker pinned to node.role==manager for /data co-location"
 
-  # CENTRAL LLM review-gate routing (architecture.md §5/§7/§11). The master LLM
-  # gateway is the SOLE LLM path for the central safety gates: the agent-challenge
-  # analyzer LLM review and the prism llm_review gpt-4o gate ALWAYS route through
-  # the MASTER LLM gateway with the scoped central-gate token (the REQUIRED
-  # base_gateway_token secret, minted via `base master mint-central-gate-token`).
-  # The gateway injects the provider key server-side, so NO direct OpenRouter key
-  # is mounted on the challenge services. The consumer base URL is derived from
-  # the same GATEWAY_PUBLIC_BASE_URL the proxy advertises (agent-challenge reads
-  # the gateway ROOT and appends /llm/openrouter itself; prism reads the full
-  # /llm/openrouter route).
+  # CENTRAL LLM review-gate routing (architecture.md §5/§7/§10; llm-yunwu-contract).
+  # The master LLM gateway is the SOLE LLM path for the central safety gates: the
+  # agent-challenge analyzer LLM review and the prism llm_review gate ALWAYS route
+  # through the MASTER LLM gateway with the scoped central-gate token (the REQUIRED
+  # base_gateway_token secret, minted via
+  # `base master mint-central-gate-token --source llm_review`). The gateway injects
+  # the provider key + model server-side, so NO direct provider key is mounted on
+  # the challenge services. The consumer base URL is derived from the same
+  # GATEWAY_PUBLIC_BASE_URL the proxy advertises (agent-challenge reads the gateway
+  # ROOT and appends /llm/v1 itself; prism reads the full /llm/v1 route).
   log "  central gates -> master LLM gateway (${GATEWAY_PUBLIC_BASE_URL}); base_gateway_token mounted, no direct provider key on challenge services"
 
   # own_runner eval image allowlist + runner image, applied to BOTH the
@@ -1554,8 +1569,8 @@ deploy_challenges() {
     "CHALLENGE_DATABASE_URL_FILE=${SECRET_MOUNT_DIR}/database_url"
   )
   # Central AST+LLM gate review routing. Point the analyzer at the master gateway
-  # ROOT (it appends /llm/openrouter) + read the scoped central-gate token from
-  # /run/secrets/base_gateway_token. NO direct OpenRouter key on the service.
+  # ROOT (it appends /llm/v1) + read the scoped central-gate token from
+  # /run/secrets/base_gateway_token. NO direct provider key on the service.
   local -a ac_gate_secret_specs=()
   ac_eval_env+=(
     "CHALLENGE_LLM_GATEWAY_BASE_URL=${GATEWAY_PUBLIC_BASE_URL}"
@@ -1616,17 +1631,12 @@ deploy_challenges() {
   # §5,§7,§10): broker dispatch (docker_backend=broker), an ACTIVE GPU lease
   # (base_eval_gpu_count=1), the cu128 evaluator image (allowlisted by both prism
   # and the broker), SQLite on /data, synthetic dataset (the in-container runner trains
-  # on random tokens — no download), and the OpenRouter LLM HARD GATE ENABLED
-  # (PRISM_LLM_REVIEW_ENABLED=true; model openai/gpt-4o by config default; key from the mounted
-  # openrouter_api_key secret on the challenge service ONLY — never the eval container. This
-  # script's create_secrets makes base_openrouter_api_key from $OPENROUTER_API_KEY and (via
-  # CHALLENGE_EXTRA_SECRETS below) mounts it at /run/secrets/openrouter_api_key — the EXACT path
-  # prism reads (config.py openrouter_api_key_file default), NOT the ${SECRET_MOUNT_DIR}/"base/"
-  # subdir the other secrets use. This is the SAME mount target the LIVE stack uses for the
-  # equivalent pre-existing base_or_key_real secret, so a FRESH install-swarm.sh bring-up wires
-  # the LLM-review gate's key to the name/path prism actually consumes — no base_openrouter_api_key
-  # vs base_or_key_real mismatch at the consuming path (the docker secret NAME differs only by
-  # which key material the operator pre-provisioned; both resolve at /run/secrets/openrouter_api_key).
+  # on random tokens — no download), and the LLM HARD GATE ENABLED
+  # (PRISM_LLM_REVIEW_ENABLED=true). The gate routes ONLY through the master LLM
+  # gateway (yunwu-only, provider-agnostic; llm-yunwu-contract) with the scoped
+  # central-gate token — the gateway injects the provider + model server-side, so
+  # NO direct provider key is mounted on the challenge service or the eval container
+  # (the pre-existing base_openrouter_api_key mount is removed with the yunwu switch).
   # docker_backend already defaults to broker but is set
   # explicitly. The broker token file is the mounted base_prism_docker_broker_token
   # secret; it MUST equal the registry-written <secret_dir>/prism_docker_broker_token the
@@ -1641,11 +1651,11 @@ deploy_challenges() {
     "PRISM_BASE_EVAL_IMAGE=${IMAGE_PRISM_EVALUATOR}"
     "PRISM_BASE_EVAL_GPU_COUNT=1"
     "PRISM_DATABASE_URL=sqlite+aiosqlite:////data/prism.sqlite3"
-    # OpenRouter LLM HARD GATE — ENABLED (architecture.md section 7; M5). The strong-model
+    # LLM HARD GATE — ENABLED (architecture.md §7/§10; llm-yunwu-contract). The strong-model
     # review of both miner scripts is a hard gate that can REJECT before any GPU work. The
-    # provider key is injected server-side by the master LLM gateway (the gate routes through
-    # PRISM_LLM_GATEWAY_URL below with the scoped central-gate token); model openai/gpt-4o is a
-    # config default.
+    # provider key AND the model are injected server-side by the master LLM gateway (the gate
+    # routes through PRISM_LLM_GATEWAY_URL below with the scoped central-gate token carrying
+    # source=llm_review); prism no longer pins a model.
     "PRISM_LLM_REVIEW_ENABLED=true"
     # Raise the review completion budget above the 512 default: the gate forces a structured
     # tool call whose arguments the 512 default truncates (production fix). 4096 fits the full
@@ -1670,12 +1680,15 @@ deploy_challenges() {
     "PRISM_BASE_EVAL_HELDOUT_VAL_BYTE_BUDGET=65536"
     "PRISM_BASE_EVAL_HELDOUT_TIMEOUT_SECONDS=600"
   )
-  # Route the prism llm_review gpt-4o gate through the master OpenRouter gateway.
-  # PRISM_LLM_GATEWAY_URL is the FULL gateway route (prism uses it directly as the
-  # chat base_url); BASE_GATEWAY_TOKEN_FILE points at the scoped central-gate token
-  # mounted from the base_gateway_token secret below. NO direct OpenRouter key.
+  # Route the prism llm_review gate through the master LLM gateway (yunwu-only,
+  # provider-agnostic; llm-yunwu-contract). PRISM_LLM_GATEWAY_URL is the FULL
+  # single source-driven gateway route (prism uses it directly as the chat
+  # base_url; the gateway injects the provider + model); BASE_GATEWAY_TOKEN_FILE
+  # points at the scoped central-gate token (source=llm_review) mounted from the
+  # base_gateway_token secret below. NO direct provider key. This value
+  # BYTE-MATCHES the registry seed (cli_app/main.py prism_challenge_create).
   prism_env+=(
-    "PRISM_LLM_GATEWAY_URL=${GATEWAY_PUBLIC_BASE_URL}/llm/openrouter"
+    "PRISM_LLM_GATEWAY_URL=${GATEWAY_PUBLIC_BASE_URL}/llm/v1"
     "BASE_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
   )
   # Host-side SCORER read-only mounts on the manager (NOT the eval container): the SECRET
@@ -1688,10 +1701,10 @@ deploy_challenges() {
     "type=volume,source=prism_fineweb_edu_val,destination=/secret/val,readonly=true"
     "type=volume,source=prism_fineweb_edu_train,destination=/secret/train,readonly=true"
   )
-  # CENTRAL llm_review (gpt-4o) routing. Mount the scoped central-gate token at
+  # CENTRAL llm_review routing. Mount the scoped central-gate token at
   # /run/secrets/base_gateway_token (the BASE_GATEWAY_TOKEN_FILE set on prism_env
   # above) — paired with PRISM_LLM_GATEWAY_URL — so the gate routes through the
-  # master OpenRouter gateway. NO direct provider key on the challenge services.
+  # master LLM gateway (yunwu-only). NO direct provider key on the challenge services.
   local -a prism_extra_secrets=()
   prism_extra_secrets+=("source=base_gateway_token,target=base_gateway_token")
   # HuggingFace checkpoint-publisher token (architecture.md §7): the prism HF
@@ -1721,7 +1734,7 @@ deploy_challenges() {
   # sits `pending` forever. This standing service runs `prism-worker` — the
   # claim/evaluate loop (worker.py:main, --interval-seconds poll) that dispatches
   # the broker GPU eval job and runs the host-side held-out scorer. It carries the
-  # SAME env, scorer held-out mounts, OpenRouter review-gate secret, and the SAME
+  # SAME env, scorer held-out mounts, central-gate review-gate token, and the SAME
   # node.role==manager pin as the api so both co-locate on the base_prism_pg /data
   # volume (mirrors the agent-challenge api+worker pattern above).
   CHALLENGE_ENV=("${prism_env[@]}")
@@ -1791,8 +1804,8 @@ _deploy_challenge_service() {
     argv+=(--secret "source=${secret_name},target=${target_dir}/${target}")
   done
   # Caller-supplied extra secrets passed VERBATIM (full `source=...,target=...`), so a secret can
-  # be mounted at an exact target OUTSIDE the ${target_dir}/ "base/" subdir (e.g. the prism
-  # OpenRouter key at /run/secrets/openrouter_api_key — see CHALLENGE_EXTRA_SECRETS).
+  # be mounted at an exact target OUTSIDE the ${target_dir}/ "base/" subdir (e.g. the shared
+  # central-gate token at /run/secrets/base_gateway_token — see CHALLENGE_EXTRA_SECRETS).
   local secret_spec
   if [[ "${#CHALLENGE_EXTRA_SECRETS[@]}" -gt 0 ]]; then
     for secret_spec in "${CHALLENGE_EXTRA_SECRETS[@]}"; do

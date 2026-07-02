@@ -2,12 +2,13 @@
 
 Encodes the pre-mainnet hardening contract for ``install-swarm.sh``:
 
-1. Every one of the 15 REQUIRED secret env vars HARD-FAILS the installer
+1. Every one of the 14 REQUIRED secret env vars HARD-FAILS the installer
    (``_ensure_secret`` → ``die``) when unset, so a missing secret is caught at
    ``create_secrets`` (STEP 6) and never silently tolerated.
-2. The 1 CONDITIONAL secret (``DEEPSEEK_API_KEY``) hard-fails only when
-   ``GATEWAY_PROVIDER_MODE=real`` (the default) and is tolerated/skipped under
-   ``mock``.
+2. The 1 CONDITIONAL secret (``YUNWU_API_KEY``, the single yunwu provider key the
+   gateway injects) hard-fails only when ``GATEWAY_PROVIDER_MODE=real`` (the
+   default) and is tolerated/skipped under ``mock``. The gateway is yunwu-only +
+   provider-agnostic (deepseek/openrouter removed from code AND config).
 3. The 1 OPTIONAL secret (``HF_TOKEN``) never hard-fails — an unset value is
    logged-and-skipped (``_ensure_optional_secret``). ``CENTRAL_GATEWAY_TOKEN`` is
    now REQUIRED: the master gateway is the sole LLM path for the central gates
@@ -42,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SWARM_INSTALLER = ROOT / "deploy" / "swarm" / "install-swarm.sh"
 SWARM_README = ROOT / "deploy" / "swarm" / "README.md"
 
-# The 15 REQUIRED secrets: env var -> the docker secret name _ensure_secret makes.
+# The 14 REQUIRED secrets: env var -> the docker secret name _ensure_secret makes.
 # A missing/empty env var is a HARD error (die) — we never invent secret material.
 REQUIRED_SECRETS: dict[str, str] = {
     "BASE_ADMIN_TOKEN": "base_admin_token",
@@ -59,13 +60,13 @@ REQUIRED_SECRETS: dict[str, str] = {
     "PRISM_DOCKER_BROKER_TOKEN": "base_prism_docker_broker_token",
     "PRISM_DATABASE_URL": "base_prism_database_url",
     "PRISM_PG_PASSWORD": "base_prism_pg_password",
-    "OPENROUTER_API_KEY": "base_openrouter_api_key",
     "GATEWAY_TOKEN": "base_gateway_token_secret",
     "CENTRAL_GATEWAY_TOKEN": "base_gateway_token",
 }
 
-# The 1 CONDITIONAL secret (required only when GATEWAY_PROVIDER_MODE=real).
-CONDITIONAL_SECRET = ("DEEPSEEK_API_KEY", "base_gateway_deepseek_api_key")
+# The 1 CONDITIONAL secret (the single yunwu provider key; required only when
+# GATEWAY_PROVIDER_MODE=real). deepseek/openrouter are removed (yunwu-only gateway).
+CONDITIONAL_SECRET = ("YUNWU_API_KEY", "base_gateway_yunwu_api_key")
 
 # The 1 OPTIONAL secret (never hard-fails; logged-and-skipped when unset).
 OPTIONAL_SECRETS: dict[str, str] = {
@@ -90,10 +91,9 @@ REQUIRED_SECRET_ENV: dict[str, str] = {
     "PRISM_DOCKER_BROKER_TOKEN": "x",
     "PRISM_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
     "PRISM_PG_PASSWORD": "x",
-    "OPENROUTER_API_KEY": "x",
     "GATEWAY_TOKEN": "x",
     "CENTRAL_GATEWAY_TOKEN": "x",
-    "DEEPSEEK_API_KEY": "x",
+    "YUNWU_API_KEY": "x",
 }
 
 
@@ -211,11 +211,11 @@ def test_all_required_secrets_present_reaches_full_plan(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Conditional secret: DEEPSEEK_API_KEY required only under provider_mode=real
+# Conditional secret: YUNWU_API_KEY required only under provider_mode=real
 # ---------------------------------------------------------------------------
 
 
-def test_deepseek_hard_fails_when_provider_mode_real_and_unset(tmp_path: Path) -> None:
+def test_yunwu_hard_fails_when_provider_mode_real_and_unset(tmp_path: Path) -> None:
     envvar, secret_name = CONDITIONAL_SECRET
     # real is the default; assert explicitly to document the coupling.
     result = _run(
@@ -229,7 +229,7 @@ def test_deepseek_hard_fails_when_provider_mode_real_and_unset(tmp_path: Path) -
     assert f"docker secret create {secret_name}" not in result.stdout
 
 
-def test_deepseek_not_required_when_provider_mode_mock(tmp_path: Path) -> None:
+def test_yunwu_not_required_when_provider_mode_mock(tmp_path: Path) -> None:
     envvar, secret_name = CONDITIONAL_SECRET
     result = _run(
         tmp_path,
@@ -238,8 +238,7 @@ def test_deepseek_not_required_when_provider_mode_mock(tmp_path: Path) -> None:
         extra_env={"GATEWAY_PROVIDER_MODE": "mock"},
     )
     assert result.returncode == 0, (
-        "mock provider mode must not require DEEPSEEK_API_KEY; "
-        f"stderr={result.stderr!r}"
+        f"mock provider mode must not require YUNWU_API_KEY; stderr={result.stderr!r}"
     )
     assert f"${envvar} is empty" not in result.stderr
     # The conditional secret is not even created under mock mode.

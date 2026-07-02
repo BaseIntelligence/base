@@ -69,21 +69,35 @@ docker:
 security:
   admin_token_file: /var/lib/base/secrets/admin_token
 
-# Master LLM gateway (architecture.md sec 5). `base master proxy` ALWAYS builds
-# the gateway; provider_mode selects the deterministic mock provider (no egress)
-# vs the real DeepSeek/OpenRouter clients whose keys are injected server-side from
-# the secret files below (validators/eval runtimes hold NO provider key).
-# public_base_url is the external master gateway root advertised to validators in
-# the pull payload so eval runtimes target the gateway for
-# DEEPSEEK_BASE_URL/OPENROUTER_BASE_URL, NOT the master.registry_url (chain
-# registry) fallback. token_secret_file is the MANDATORY HMAC secret for scoped
-# gateway tokens; the proxy fails fast at startup if it is absent.
+# Master LLM gateway (architecture.md sec 5/sec 10; library/llm-yunwu-contract.md).
+# `base master proxy` ALWAYS builds the gateway; provider_mode selects the
+# deterministic mock provider (no egress) vs the real yunwu client whose key is
+# injected server-side from the secret file below (validators/eval runtimes hold NO
+# provider key). The gateway is config-driven + provider-agnostic (yunwu-only;
+# deepseek/openrouter removed from code AND config): a provider registry + per-source
+# route map selects the provider + model the gateway injects, keyed by the token
+# `source` claim (agent / llm_review). public_base_url is the external master gateway
+# root advertised to validators in the pull payload so eval runtimes target the
+# gateway's /llm/v1 route, NOT the master.registry_url (chain registry) fallback.
+# token_secret_file is the MANDATORY HMAC secret for scoped gateway tokens; the proxy
+# fails fast at startup if it is absent.
 gateway:
   provider_mode: real
   public_base_url: http://88.216.198.199:19080
   token_secret_file: /run/secrets/gateway_token_secret
-  deepseek_api_key_file: /run/secrets/deepseek_api_key
-  openrouter_api_key_file: /run/secrets/openrouter_api_key
+  providers:
+    yunwu:
+      base_url: https://yunwu.ai/v1
+      api_key_file: /run/secrets/yunwu_api_key
+  default_provider: yunwu
+  default_model: claude-opus-4-8
+  sources:
+    agent:
+      provider: yunwu
+      model: claude-opus-4-8
+    llm_review:
+      provider: yunwu
+      model: claude-opus-4-8
 
 observability:
   log_json: true

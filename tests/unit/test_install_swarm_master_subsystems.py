@@ -6,8 +6,9 @@ by the decentralization mission. Covers VAL-CICD-021 and supports VAL-CICD-022.
 if the gateway token secret is missing, so the installer MUST provision a
 MANDATORY ``gateway_token_secret`` docker secret (mounted at
 ``/run/secrets/gateway_token_secret``). In ``provider_mode=real`` it must also
-provision the DeepSeek + OpenRouter provider keys the gateway injects
-server-side. It must render ``gateway.public_base_url`` (the external master
+provision the single yunwu provider key the gateway injects server-side (the
+gateway is yunwu-only + provider-agnostic; deepseek/openrouter removed from code
+AND config). It must render ``gateway.public_base_url`` (the external master
 gateway root advertised to validators) so eval runtimes target the gateway and
 NOT the ``master.registry_url`` (chain registry) fallback, and carry the
 coordination-plane config into the base-master config.
@@ -31,14 +32,15 @@ SWARM_INSTALLER = ROOT / "deploy" / "swarm" / "install-swarm.sh"
 # Sentinel secret VALUES that must NEVER appear in plan/log output (dry-run only
 # prints the env var NAME via plan_secret_stdin; values would reach stdin only).
 GATEWAY_TOKEN_SENTINEL = "gtok-SENTINEL-must-not-leak"
-DEEPSEEK_SENTINEL = "dsk-SENTINEL-must-not-leak"
+YUNWU_SENTINEL = "yunwu-SENTINEL-must-not-leak"
 HF_SENTINEL = "hf-SENTINEL-must-not-leak"
 CENTRAL_GATEWAY_TOKEN_SENTINEL = "central-gtok-SENTINEL-must-not-leak"
 
 # Deterministic gateway root for the consumer-URL assertions (avoids depending on
-# the live default advertise address).
+# the live default advertise address). The single source-driven gateway route is
+# ``/llm/v1`` (yunwu-only; the old provider-path routes are removed).
 GATEWAY_PUBLIC_BASE_URL = "http://master.example:19080"
-GATEWAY_OPENROUTER_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/openrouter"
+GATEWAY_V1_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/v1"
 
 REQUIRED_SECRET_ENV = {
     "GHCR_USER": "ci-user",
@@ -55,10 +57,9 @@ REQUIRED_SECRET_ENV = {
     "PRISM_DOCKER_BROKER_TOKEN": "x",
     "PRISM_DATABASE_URL": "postgresql+asyncpg://challenge@h:5432/challenge",
     "PRISM_PG_PASSWORD": "x",
-    "OPENROUTER_API_KEY": "x",
     "GATEWAY_TOKEN": GATEWAY_TOKEN_SENTINEL,
     "CENTRAL_GATEWAY_TOKEN": CENTRAL_GATEWAY_TOKEN_SENTINEL,
-    "DEEPSEEK_API_KEY": DEEPSEEK_SENTINEL,
+    "YUNWU_API_KEY": YUNWU_SENTINEL,
 }
 
 
@@ -156,12 +157,17 @@ def test_real_mode_provisions_provider_keys_on_the_gateway(tmp_path: Path) -> No
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     out = result.stdout
 
-    # DeepSeek key created; OpenRouter reuses base_openrouter_api_key.
-    assert "docker secret create base_gateway_deepseek_api_key" in out
+    # The single yunwu provider key is created and mounted on the proxy at the
+    # exact path the gateway reads (GatewaySettings.providers.yunwu.api_key_file);
+    # deepseek/openrouter are gone (yunwu-only gateway).
+    assert "docker secret create base_gateway_yunwu_api_key" in out
+    assert "docker secret create base_gateway_deepseek_api_key" not in out
+    assert "docker secret create base_openrouter_api_key" not in out
 
     proxy = _service_block(out.splitlines(), "base-master-proxy")
-    assert "source=base_gateway_deepseek_api_key,target=deepseek_api_key" in proxy
-    assert "source=base_openrouter_api_key,target=openrouter_api_key" in proxy
+    assert "source=base_gateway_yunwu_api_key,target=yunwu_api_key" in proxy
+    assert "target=deepseek_api_key" not in proxy
+    assert "target=openrouter_api_key" not in proxy
 
 
 def test_mock_mode_keeps_token_secret_but_omits_provider_keys(tmp_path: Path) -> None:
@@ -175,8 +181,8 @@ def test_mock_mode_keeps_token_secret_but_omits_provider_keys(tmp_path: Path) ->
     assert "source=base_gateway_token_secret,target=gateway_token_secret" in proxy
 
     # Mock provider needs no provider key: none created/mounted.
-    assert "docker secret create base_gateway_deepseek_api_key" not in out
-    assert "target=deepseek_api_key" not in proxy
+    assert "docker secret create base_gateway_yunwu_api_key" not in out
+    assert "target=yunwu_api_key" not in proxy
     assert "provider_mode: mock" in out
 
 
@@ -187,12 +193,18 @@ def test_rendered_master_config_wires_gateway_and_coordination(
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     out = result.stdout
 
-    # LLM gateway block (architecture sec 5).
+    # LLM gateway block (architecture sec 5/sec 10; yunwu-only, config-driven).
     assert "provider_mode: real" in out
     assert "public_base_url:" in out
     assert "token_secret_file: /run/secrets/gateway_token_secret" in out
-    assert "deepseek_api_key_file: /run/secrets/deepseek_api_key" in out
-    assert "openrouter_api_key_file: /run/secrets/openrouter_api_key" in out
+    # Provider registry + source map: the single yunwu provider (key injected from
+    # the mounted secret) + default_model + per-source routes. No deepseek/openrouter.
+    assert "api_key_file: /run/secrets/yunwu_api_key" in out
+    assert "default_provider: yunwu" in out
+    assert "default_model: claude-opus-4-8" in out
+    assert "base_url: https://yunwu.ai/v1" in out
+    assert "deepseek_api_key_file" not in out
+    assert "openrouter_api_key_file" not in out
 
     # public_base_url must NOT be the chain registry fallback.
     assert "public_base_url: https://chain.joinbase.ai" not in out
@@ -250,9 +262,9 @@ def test_central_gate_token_required_hard_fails_when_unset(tmp_path: Path) -> No
 def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None:
     """agent-challenge api+worker get the gateway ROOT URL + scoped token mount.
 
-    The analyzer appends ``/llm/openrouter`` to the base URL itself, so the
-    installer renders the gateway ROOT. The scoped token mounts at
-    ``/run/secrets/base_gateway_token`` and NO direct OpenRouter key is rendered.
+    The analyzer appends ``/llm/v1`` to the base URL itself, so the installer
+    renders the gateway ROOT. The scoped token mounts at
+    ``/run/secrets/base_gateway_token`` and NO direct provider key is rendered.
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -271,12 +283,13 @@ def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None
 
 
 def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
-    """prism api+worker get the full ``/llm/openrouter`` route + scoped token mount.
+    """prism api+worker get the full ``/llm/v1`` route + scoped token mount.
 
     prism uses ``PRISM_LLM_GATEWAY_URL`` directly as the chat base_url, so the
-    installer renders the FULL gateway route + ``BASE_GATEWAY_TOKEN_FILE``. The
-    scoped token mounts at ``/run/secrets/base_gateway_token``, the LLM-review max
-    tokens are raised to 4096, and NO direct OpenRouter key is rendered.
+    installer renders the FULL single source-driven gateway route +
+    ``BASE_GATEWAY_TOKEN_FILE``. The scoped token mounts at
+    ``/run/secrets/base_gateway_token``, the LLM-review max tokens are raised to
+    4096, and NO direct provider key is rendered (the gateway injects it).
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -284,7 +297,7 @@ def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
 
     for service in ("challenge-prism", "challenge-prism-worker"):
         block = _service_block(lines, service)
-        assert f"PRISM_LLM_GATEWAY_URL={GATEWAY_OPENROUTER_ROUTE}" in block
+        assert f"PRISM_LLM_GATEWAY_URL={GATEWAY_V1_ROUTE}" in block
         assert "BASE_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token" in block
         assert "PRISM_LLM_REVIEW_ENABLED=true" in block
         assert "PRISM_LLM_REVIEW_MAX_TOKENS=4096" in block
@@ -292,12 +305,13 @@ def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
         # No direct provider key on the challenge service: the gateway is the sole
         # LLM path.
         assert "target=openrouter_api_key" not in block
+        assert "target=yunwu_api_key" not in block
 
 
 def test_secret_values_never_leak_in_plan_output(tmp_path: Path) -> None:
     result = _run(tmp_path)
     combined = result.stdout + result.stderr
     assert GATEWAY_TOKEN_SENTINEL not in combined
-    assert DEEPSEEK_SENTINEL not in combined
+    assert YUNWU_SENTINEL not in combined
     assert HF_SENTINEL not in combined
     assert CENTRAL_GATEWAY_TOKEN_SENTINEL not in combined

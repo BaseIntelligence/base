@@ -45,15 +45,14 @@ Each is created as the named Docker secret from the listed env var
 | `base_prism_docker_broker_token` | `PRISM_DOCKER_BROKER_TOKEN` | prism ↔ broker token. |
 | `base_prism_database_url` | `PRISM_DATABASE_URL` | prism Postgres URL. |
 | `base_prism_pg_password` | `PRISM_PG_PASSWORD` | `challenge-prism-postgres` password. |
-| `base_openrouter_api_key` | `OPENROUTER_API_KEY` | OpenRouter key (master gateway + prism LLM-review gate). |
 | `base_gateway_token_secret` | `GATEWAY_TOKEN` | **MANDATORY** gateway HMAC token-signing secret. `base master proxy` always builds the LLM gateway and `GatewayTokenAuthority` rejects an empty secret, so the proxy **fails fast at startup** without it. |
-| `base_gateway_token` | `CENTRAL_GATEWAY_TOKEN` | Scoped **central-gate** token for the central review gates (agent-challenge analyzer + prism `llm_review`). The master LLM gateway is the **sole LLM path** for these gates (no direct-key fallback), so it mounts at `/run/secrets/base_gateway_token` and an unset value hard-fails. Mint with `base master mint-central-gate-token --label <slug>`. |
+| `base_gateway_token` | `CENTRAL_GATEWAY_TOKEN` | Scoped **central-gate** token for the central review gates (agent-challenge analyzer + prism `llm_review`). The master LLM gateway is the **sole LLM path** for these gates (no direct-key fallback), so it mounts at `/run/secrets/base_gateway_token` and an unset value hard-fails. The token carries `source=llm_review` so the gateway injects the review provider + model. Mint with `base master mint-central-gate-token --source llm_review --label <slug>`. |
 
 ### Conditional secret (1)
 
 | Docker secret | Env var | When required |
 |---------------|---------|---------------|
-| `base_gateway_deepseek_api_key` | `DEEPSEEK_API_KEY` | Required **only** when `GATEWAY_PROVIDER_MODE=real` (the default). The gateway injects this server-side so validators/eval runtimes hold no provider key. With `GATEWAY_PROVIDER_MODE=mock` the deterministic mock provider is used and this secret is not required. |
+| `base_gateway_yunwu_api_key` | `YUNWU_API_KEY` | The single yunwu provider key the gateway injects (mounted at `/run/secrets/yunwu_api_key`). Required **only** when `GATEWAY_PROVIDER_MODE=real` (the default). The gateway injects this server-side so validators/eval runtimes hold no provider key. With `GATEWAY_PROVIDER_MODE=mock` the deterministic mock provider is used and this secret is not required. The gateway is yunwu-only + provider-agnostic (deepseek/openrouter removed). |
 
 ### Optional secrets (1) — never hard-fail
 
@@ -144,7 +143,7 @@ the Docker-socket allowlist, so the prism eval job gets the data without the
   both **read-only**.
 - Only the `train` split is exposed. The secret `val`/`test` held-out splits are
   never mounted into the eval container, which runs `network=none` on the internal
-  `base_jobs_internal` overlay and carries no OpenRouter secret.
+  `base_jobs_internal` overlay and carries no provider secret.
 - To override the volumes/paths, set `docker.broker_eval_readonly_mounts_by_slug`
   in `master.yaml`:
 
@@ -176,10 +175,12 @@ challenge service (the broker supplies the eval-container data mounts above):
   non-secret train split is also mounted at `/secret/train`
   (`PRISM_BASE_EVAL_TRAIN_DATA_DIR`) for the converged memorization-gap
   reference. If val is absent the held-out is gracefully skipped.
-- **OpenRouter LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the key is
-  mounted on the challenge service ONLY at `/run/secrets/openrouter_api_key` (from
-  the `base_openrouter_api_key` Docker secret, created from
-  `$OPENROUTER_API_KEY`). The eval container never carries the key.
+- **LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the gate routes ONLY
+  through the master LLM gateway (yunwu-only, provider-agnostic) at
+  `PRISM_LLM_GATEWAY_URL=<gateway root>/llm/v1` with the scoped central-gate token
+  (`base_gateway_token` → `/run/secrets/base_gateway_token`, `source=llm_review`).
+  The gateway injects the provider key + model server-side, so NO direct provider
+  key is mounted on the challenge service or the eval container.
 
 ## Production gotchas (verified live, M5)
 
@@ -195,8 +196,9 @@ encodes these, but they are easy to regress on a manual deploy:
   provider key.** The agent-challenge analyzer and prism `llm_review` route LLM
   calls through the master gateway using the scoped `base_gateway_token` only; the
   gateway injects the provider key server-side and records every call in
-  `llm_usage_records`. Mounting a raw `openrouter_api_key` on a challenge/eval
-  service is a leak and is unnecessary (the gateway is the sole path). The
+  `llm_usage_records`. Mounting a raw provider key (e.g. `yunwu_api_key`) on a
+  challenge/eval service is a leak and is unnecessary (the gateway is the sole
+  path — it holds the only provider key at `/run/secrets/yunwu_api_key`). The
   master’s central-gate token is exempt from the assignment-lifecycle resolver in
   code, so it works without a live work assignment.
 - **`base-validator-runtime` image: avoid the legacy `substrate-interface` /
@@ -305,7 +307,7 @@ validator needs:
   keys). Omit both for an identicon fallback.
 
 No provider keys live on a validator: the master stamps a scoped per-assignment
-gateway token + the `DEEPSEEK_BASE_URL`/`OPENROUTER_BASE_URL` gateway routes into
+gateway token + the `BASE_LLM_GATEWAY_URL` (`<gateway root>/llm/v1`) route into
 each pulled assignment, and the agent strips any `*_API_KEY` from the eval env.
 
 ### Example: 1 GPU + 2 CPU validators
