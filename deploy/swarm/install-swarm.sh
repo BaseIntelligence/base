@@ -266,7 +266,8 @@ SUPERVISOR_RELEASE_ROOT="${SUPERVISOR_RELEASE_ROOT:-/var/lib/base/supervisor}"
 SUPERVISOR_UNIT_SRC="${SUPERVISOR_UNIT_SRC:-${SCRIPT_DIR}/base-supervisor.service}"
 SUPERVISOR_UNIT_DST="${SUPERVISOR_UNIT_DST:-/etc/systemd/system/base-supervisor.service}"
 # Release-staging source + version (G-B1). deploy_supervisor STAGES the unit's
-# `current -> releases/<version>` checkout (cp + `uv sync`) and atomically points
+# `current -> releases/<version>` from a committed-tree snapshot (git archive HEAD
+# + `uv sync`) and atomically points
 # `current` at it BEFORE `systemctl enable --now`, so the unit ExecStart
 # (`uv run --project ${SUPERVISOR_RELEASE_ROOT}/current base master supervisor`)
 # actually boots. The source is THIS repo checkout (the deploy/swarm dir is two
@@ -295,9 +296,12 @@ VALIDATOR_WALLET_NAME="${VALIDATOR_WALLET_NAME:-validator-1}"
 # ["cpu"] => agent-challenge Terminal-Bench 2.1 only; ["gpu","cpu"] => also prism
 # GPU re-exec (concurrency 1). JSON array, rendered verbatim into validator.yaml.
 VALIDATOR_CAPABILITIES="${VALIDATOR_CAPABILITIES:-[\"cpu\"]}"
-# Master coordination plane + LLM gateway root advertised to the agent (the
-# manager's published proxy host:port). Defaults to the advertise-addr proxy port.
-VALIDATOR_MASTER_URL="${VALIDATOR_MASTER_URL:-http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT}}"
+# Master coordination plane + LLM gateway root advertised to the agent (the MASTER
+# node's published proxy host:port). REQUIRED for --validator-node: there is NO safe
+# default — a validator must point at the MASTER, never its own advertise address (a
+# self-referential default is always wrong here — a footgun). main_validator_node
+# dies if this is unset. Left empty here so the check fires (set -u safe).
+VALIDATOR_MASTER_URL="${VALIDATOR_MASTER_URL:-}"
 # This validator's OWN Docker broker endpoint (its private executor backend) —
 # never the master's broker. Defaults to the node-local broker port.
 VALIDATOR_BROKER_URL="${VALIDATOR_BROKER_URL:-http://127.0.0.1:${MASTER_BROKER_PORT}}"
@@ -564,8 +568,10 @@ Validator-node environment (with --validator-node):
   VALIDATOR_CONFIG_PATH                      Rendered validator.yaml path (default:
                                              /etc/base/validator.yaml).
   VALIDATOR_CAPABILITIES                     JSON capabilities array (default: ["cpu"]).
-  VALIDATOR_MASTER_URL                       Master coordination/gateway root (default:
-                                             http://<advertise-addr>:<proxy-port>).
+  VALIDATOR_MASTER_URL                       REQUIRED: MASTER coordination/gateway root
+                                             (e.g. http://<master-host>:<proxy-port>). No
+                                             default — a validator must never point at its
+                                             own advertise address (a footgun); unset => fail.
   VALIDATOR_BROKER_URL                       The validator's OWN broker endpoint (default:
                                              http://127.0.0.1:<broker-port>).
   VALIDATOR_WALLET_NAME / VALIDATOR_WALLET_PATH  Validator hotkey wallet name + host path.
@@ -1315,14 +1321,16 @@ _seed_proxy_challenge_tokens() {
 # _seed_challenge_token SLUG ENVVAR — write $ENVVAR into the secrets volume at
 # <slug>_challenge_token (mode 600, owner-only). Idempotent (overwrites in place).
 #
-# Ownership: the master image runs as the runtime uid (_master_runtime_uid; the
-# proxy is non-root, only the broker is --user root), so the proxy reads these files
-# AS that uid. The writer container runs as root (the default — required because a
-# FRESH vol_base_secrets volume root is owned root:root 0755, so a --user <uid>
-# writer could not create the file), then chowns the file to that uid keeping
-# mode 600. A root-owned 600 file would be UNREADABLE by the proxy on a
-# fresh volume (-> 500 "Challenge token file is missing" / 401 "invalid bearer
-# token"). The uid matches _ensure_secret_volume_writable's chown of the volume root.
+# Ownership: both the broker AND the proxy now run --user root (the proxy gained
+# --user root + the docker.sock in _deploy_master_service so its in-process registry
+# reconciler + challenge-image-updater can drive `docker service` — see that branch),
+# so the master container reads these files as root regardless of file owner. The
+# writer container still runs as root (the default — required because a FRESH
+# vol_base_secrets volume root is owned root:root 0755, so a --user <uid> writer
+# could not create the file), then chowns the file to the master runtime uid
+# (_master_runtime_uid) keeping mode 600, so ownership tracks the image's declared
+# uid (matching _ensure_secret_volume_writable's chown of the volume root) and the
+# file stays readable even if the --user root override is ever dropped.
 _seed_challenge_token() {
   local slug="$1" envvar="$2"
   if [[ -z "${!envvar:-}" ]]; then
@@ -1899,8 +1907,9 @@ _supervisor_release_version() {
   printf '%s' "${v}"
 }
 
-# _stage_supervisor_release ROOT — materialize the unit's release checkout under
-# ROOT/releases/<version> (a uv-managed checkout) and atomically point ROOT/current
+# _stage_supervisor_release ROOT — materialize the unit's release under
+# ROOT/releases/<version> from a committed-tree snapshot (git archive HEAD, a
+# uv-managed checkout) and atomically point ROOT/current
 # at it (G-B1). MUST run BEFORE `systemctl enable --now`: the unit ExecStart is
 # `uv run --project ROOT/current base master supervisor`, so without a staged
 # `current` the unit cannot boot. Mirrors self_update's releases/<version> layout
@@ -1913,12 +1922,25 @@ _stage_supervisor_release() {
   release_dir="${releases_dir}/${version}"
   current_link="${release_root}/current"
 
-  log "  staging release ${release_dir} (checkout + uv sync), then atomically point"
+  log "  staging release ${release_dir} (committed-tree snapshot + uv sync), then atomically point"
   log "    current -> releases/${version} BEFORE enable (the unit runs"
   log "    'uv run --project ${current_link} base master supervisor', so current MUST exist first)"
-  plan install -d -m 0755 "${releases_dir}"
-  # Materialize the immutable release checkout from this repo (the source the unit runs).
-  plan cp -a "${SUPERVISOR_RELEASE_SOURCE}/." "${release_dir}/"
+  plan install -d -m 0755 "${release_dir}"
+  # Materialize the immutable release from the COMMITTED HEAD tree — the version
+  # label derives from committed HEAD (_supervisor_release_version), so the staged
+  # tree must equal HEAD exactly. `git archive HEAD` exports ONLY tracked, committed
+  # files (no .git dir, no uncommitted/untracked working-tree changes), unlike a
+  # `cp -a` of the whole working tree. `plan` cannot express a pipe, so stage via a
+  # temp tarball (git archive --output -> tar -x -> rm). Fall back to cp -a only if
+  # the source is not a git work tree (e.g. an unpacked tarball release source).
+  if git -C "${SUPERVISOR_RELEASE_SOURCE}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local snapshot_tar="${releases_dir}/.${version}.snapshot.tar"
+    plan git -C "${SUPERVISOR_RELEASE_SOURCE}" archive --format=tar --output "${snapshot_tar}" HEAD
+    plan tar -x -f "${snapshot_tar}" -C "${release_dir}"
+    plan rm -f "${snapshot_tar}"
+  else
+    plan cp -a "${SUPERVISOR_RELEASE_SOURCE}/." "${release_dir}/"
+  fi
   # Provision the per-release uv venv so `uv run --project current` resolves offline.
   plan env "UV_CACHE_DIR=${release_root}/uv-cache" uv sync --project "${release_dir}"
   # Atomically flip current -> releases/<version> (relative temp symlink + `mv -T`),
@@ -1981,7 +2003,7 @@ deploy_supervisor() {
   if [[ "${INSTALL_SUPERVISOR}" == "true" ]]; then
     warn "installing + enabling base-supervisor.service (--install-supervisor)"
     plan install -d -m 0755 "${SUPERVISOR_RELEASE_ROOT}"
-    # STAGE current -> releases/<version> (checkout + uv sync) BEFORE enable so the
+    # STAGE current -> releases/<version> (committed-tree snapshot + uv sync) BEFORE enable so the
     # unit's ExecStart (--project ${SUPERVISOR_RELEASE_ROOT}/current) actually boots.
     _stage_supervisor_release "${SUPERVISOR_RELEASE_ROOT}"
     plan install -m 0644 "${SUPERVISOR_UNIT_SRC}" "${SUPERVISOR_UNIT_DST}"
@@ -1991,9 +2013,9 @@ deploy_supervisor() {
   else
     log "  --install-supervisor NOT set: skipping systemd install. MANDATORY CUTOVER STEP"
     log "  (run AFTER Watchtower is gone — stage current BEFORE enable or the unit cannot boot):"
-    log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}"
-    log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}/releases"
-    log "    cp -a ${SUPERVISOR_RELEASE_SOURCE}/. ${SUPERVISOR_RELEASE_ROOT}/releases/<version>/   # checkout"
+    log "    install -d -m 0755 ${SUPERVISOR_RELEASE_ROOT}/releases/<version>"
+    log "    git -C ${SUPERVISOR_RELEASE_SOURCE} archive --format=tar --output ${SUPERVISOR_RELEASE_ROOT}/releases/.<version>.snapshot.tar HEAD   # committed-tree snapshot"
+    log "    tar -x -f ${SUPERVISOR_RELEASE_ROOT}/releases/.<version>.snapshot.tar -C ${SUPERVISOR_RELEASE_ROOT}/releases/<version> && rm -f ${SUPERVISOR_RELEASE_ROOT}/releases/.<version>.snapshot.tar"
     log "    env UV_CACHE_DIR=${SUPERVISOR_RELEASE_ROOT}/uv-cache uv sync --project ${SUPERVISOR_RELEASE_ROOT}/releases/<version>"
     log "    ln -sfn releases/<version> ${SUPERVISOR_RELEASE_ROOT}/current.staging && mv -T ${SUPERVISOR_RELEASE_ROOT}/current.staging ${SUPERVISOR_RELEASE_ROOT}/current"
     log "    install -m 0644 ${SUPERVISOR_UNIT_SRC} ${SUPERVISOR_UNIT_DST}"
@@ -2167,6 +2189,10 @@ deploy_validator() {
 
 # Validator-NODE bring-up sequence (invoked from main when --validator-node is set).
 main_validator_node() {
+  # A validator node MUST target the MASTER's proxy/gateway root; there is no safe
+  # default (its own advertise address is always wrong). Fail fast if unset — even in
+  # dry-run — so the footgun is caught before anything is planned.
+  [[ -n "${VALIDATOR_MASTER_URL}" ]] || die "VALIDATOR_MASTER_URL is required for --validator-node (the MASTER coordination/gateway root, e.g. http://<master-host>:${MASTER_PROXY_PORT}); a validator must never point at its own advertise address."
   log "============================================================"
   log "BASE validator-NODE bring-up (auto-updatable agent + supervisor)"
   if [[ "${APPLY}" == "true" ]]; then

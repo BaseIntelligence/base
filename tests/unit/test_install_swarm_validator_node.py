@@ -53,11 +53,14 @@ MASTER_SECRET_ENV = {
 }
 
 # The validator-NODE flow brings up only the agent + node-local supervisor, so it
-# hard-requires just the GHCR login + the validator's own broker token.
+# hard-requires the GHCR login, the validator's own broker token, AND the master
+# coordination/gateway URL (VALIDATOR_MASTER_URL is required — no self-referential
+# default; see test_validator_node_requires_master_url).
 VALIDATOR_SECRET_ENV = {
     "GHCR_USER": "ci-user",
     "GHCR_TOKEN": "ci-token",
     "VALIDATOR_BROKER_TOKEN": "btok",
+    "VALIDATOR_MASTER_URL": "http://master-host:19080",
 }
 
 
@@ -128,16 +131,23 @@ def test_install_supervisor_stages_current_before_enable(tmp_path: Path) -> None
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     lines = _plan_lines(result.stdout)
 
-    # The release checkout is materialized (cp) + a per-release venv provisioned
-    # (uv sync), then current is atomically flipped (mv -T ... /current) — all
-    # BEFORE the unit is enabled, so ExecStart --project .../current can boot.
-    cp_idx = _index_of(lines, "cp -a")
+    # The release is exported from the COMMITTED HEAD tree (git archive -> tar), NOT
+    # cp -a of the working tree (no .git, no uncommitted/untracked files), + a
+    # per-release venv provisioned (uv sync), then current is atomically flipped
+    # (mv -T ... /current) — all BEFORE the unit is enabled, so ExecStart
+    # --project .../current can boot.
+    archive_idx = _index_of(lines, "archive --format=tar")
     uv_sync_idx = _index_of(lines, "uv sync --project")
     symlink_idx = _index_of(lines, "ln -sfn releases/")
     swap_idx = _index_of(lines, "mv -T")
     enable_idx = _index_of(lines, "systemctl enable --now base-supervisor.service")
 
-    assert cp_idx < enable_idx, "release checkout must be staged before enable"
+    assert not any("cp -a" in ln for ln in lines), (
+        "must export the committed HEAD tree (git archive), not cp -a the working tree"
+    )
+    assert archive_idx < enable_idx, (
+        "committed-tree snapshot must be staged before enable"
+    )
     assert uv_sync_idx < enable_idx, "uv sync must run before enable"
     assert symlink_idx < swap_idx < enable_idx, (
         "current must be atomically swapped to releases/<version> before enable"
@@ -283,6 +293,33 @@ def test_validator_node_dry_run_is_non_mutating(tmp_path: Path) -> None:
     assert "(dry-run)" in result.stdout
     # Imperative Swarm only (mirrors the test_docker_compose_deploy.py contract).
     assert "docker compose" not in result.stdout.lower()
+
+
+def test_validator_node_requires_master_url(tmp_path: Path) -> None:
+    # VALIDATOR_MASTER_URL has NO default (a validator must never point at its own
+    # advertise address — a footgun), so --validator-node fails fast when it is unset,
+    # even in dry-run, before anything is planned.
+    env = {k: v for k, v in VALIDATOR_SECRET_ENV.items() if k != "VALIDATOR_MASTER_URL"}
+    result = _run(tmp_path, "--validator-node", env_overrides=env)
+    assert result.returncode != 0, f"expected failure; stdout={result.stdout!r}"
+    assert "VALIDATOR_MASTER_URL is required" in result.stderr
+    # Fails before planning any mutating command.
+    assert not _plan_lines(result.stdout)
+
+
+def test_validator_node_master_url_is_not_self_referential(tmp_path: Path) -> None:
+    # The rendered validator.yaml points registry/master/gateway at the explicit
+    # VALIDATOR_MASTER_URL (the MASTER), never the node's own advertise address.
+    result = _run(
+        tmp_path,
+        "--validator-node",
+        env_overrides=VALIDATOR_SECRET_ENV,
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    assert "master_url: http://master-host:19080" in out
+    assert "gateway_url: http://master-host:19080" in out
+    assert "registry_url: http://master-host:19080" in out
 
 
 def test_installer_is_bash_n_clean() -> None:
