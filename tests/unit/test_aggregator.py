@@ -28,7 +28,7 @@ def test_normalize_weights_clamps_invalid_values() -> None:
     }
 
 
-def test_aggregate_normalizes_emissions_and_ignores_unknown_hotkeys() -> None:
+def test_aggregate_absolute_emissions_burns_unknown_hotkey_share() -> None:
     results = [
         ChallengeWeightsResult(
             slug="a", emission_percent=40, weights={"hk1": 1, "missing": 3}
@@ -36,13 +36,18 @@ def test_aggregate_normalizes_emissions_and_ignores_unknown_hotkeys() -> None:
         ChallengeWeightsResult(slug="b", emission_percent=60, weights={"hk2": 2}),
     ]
     final = aggregate_challenge_weights(results, {"hk1": 1, "hk2": 2})
-    assert final.uids == [1, 2]
+    # a owns 0.40 (hk1 gets 1/4 of it, "missing" -> unknown uid burns 3/4 of it),
+    # b owns 0.60 (all to hk2). Unknown-uid share burns to uid 0.
+    assert final.uids == [0, 1, 2]
     assert round(sum(final.weights), 8) == 1.0
-    assert round(final.weights[0], 8) == round(1 / 7, 8)
-    assert round(final.weights[1], 8) == round(6 / 7, 8)
+    weights = dict(zip(final.uids, final.weights, strict=True))
+    assert round(weights[0], 8) == 0.3
+    assert round(weights[1], 8) == 0.1
+    assert round(weights[2], 8) == 0.6
+    assert "missing" not in final.hotkey_weights
 
 
-def test_prism_and_agent_challenge_emissions_normalize_by_successful_total() -> None:
+def test_prism_and_agent_challenge_absolute_shares_burn_the_remainder() -> None:
     results = [
         ChallengeWeightsResult(
             slug="prism", emission_percent=30, weights={"prism-hotkey": 1}
@@ -75,20 +80,18 @@ def test_prism_and_agent_challenge_emissions_normalize_by_successful_total() -> 
         },
     )
 
-    assert final.uids == [5, 15, 30]
-    assert [round(weight, 8) for weight in final.weights] == [
-        round(5 / 50, 8),
-        round(15 / 50, 8),
-        round(30 / 50, 8),
-    ]
-    assert final.hotkey_weights == {
-        "prism-hotkey": 30 / 50,
-        "agent-hotkey": 15 / 50,
-        "other-hotkey": 5 / 50,
+    # Absolute shares: prism 0.30, agent 0.15, other 0.05 (failed excluded).
+    # The unallocated 0.50 remainder burns to uid 0.
+    assert final.uids == [0, 5, 15, 30]
+    assert [round(weight, 8) for weight in final.weights] == [0.5, 0.05, 0.15, 0.3]
+    assert {k: round(v, 8) for k, v in final.hotkey_weights.items()} == {
+        "prism-hotkey": 0.3,
+        "agent-hotkey": 0.15,
+        "other-hotkey": 0.05,
     }
 
 
-def test_failed_challenge_contributes_zero() -> None:
+def test_failed_challenge_contributes_zero_and_its_share_burns() -> None:
     results = [
         ChallengeWeightsResult(slug="a", emission_percent=50, weights={"hk1": 1}),
         ChallengeWeightsResult(
@@ -96,8 +99,11 @@ def test_failed_challenge_contributes_zero() -> None:
         ),
     ]
     final = aggregate_challenge_weights(results, {"hk1": 1, "hk2": 2})
-    assert final.uids == [1]
-    assert final.weights == [1.0]
+    # Only "a" (0.50) is allocated; the failed challenge's share is never
+    # allocated, so the remaining 0.50 burns to uid 0.
+    assert final.uids == [0, 1]
+    assert [round(w, 8) for w in final.weights] == [0.5, 0.5]
+    assert final.hotkey_weights == {"hk1": 0.5}
 
 
 def test_aggregate_falls_back_to_uid_zero_without_active_challenges() -> None:
@@ -237,4 +243,69 @@ def test_aggregate_with_miners_present_ignores_chain_guard_params() -> None:
         max_weight_limit=1,
     )
     assert final.uids == [1, 2]
+    assert round(sum(final.weights), 8) == 1.0
+
+
+def test_absolute_emission_partial_challenge_burns_rest_to_uid_zero() -> None:
+    """agent-challenge=10 with a miner, prism=0 empty -> 10% miner, 90% burn."""
+    results = [
+        ChallengeWeightsResult(
+            slug="agent-challenge", emission_percent=10, weights={"hk1": 1}
+        ),
+        ChallengeWeightsResult(slug="prism", emission_percent=0, weights={}),
+    ]
+    final = aggregate_challenge_weights(results, {"hk1": 1})
+    weights = dict(zip(final.uids, final.weights, strict=True))
+    assert set(final.uids) == {0, 1}
+    assert round(weights[1], 8) == 0.1
+    assert round(weights[0], 8) == 0.9
+    assert round(sum(final.weights), 8) == 1.0
+    assert final.hotkey_weights == {"hk1": 0.1}
+
+
+def test_absolute_emission_two_challenges_fully_allocated_no_burn() -> None:
+    """agent=10 + prism=90, both with miners -> {1: 0.10, 2: 0.90}, no uid-0 burn."""
+    results = [
+        ChallengeWeightsResult(
+            slug="agent-challenge", emission_percent=10, weights={"hk1": 1}
+        ),
+        ChallengeWeightsResult(slug="prism", emission_percent=90, weights={"hk2": 1}),
+    ]
+    final = aggregate_challenge_weights(results, {"hk1": 1, "hk2": 2})
+    assert final.uids == [1, 2]
+    assert [round(w, 8) for w in final.weights] == [0.1, 0.9]
+    assert 0 not in final.uids
+    assert {k: round(v, 8) for k, v in final.hotkey_weights.items()} == {
+        "hk1": 0.1,
+        "hk2": 0.9,
+    }
+
+
+def test_absolute_emission_empty_challenge_share_burns_others_kept() -> None:
+    """A challenge with emission but no miners burns its share; others keep theirs."""
+    results = [
+        ChallengeWeightsResult(
+            slug="agent-challenge", emission_percent=40, weights={"hk1": 1}
+        ),
+        ChallengeWeightsResult(slug="prism", emission_percent=30, weights={}),
+    ]
+    final = aggregate_challenge_weights(results, {"hk1": 1})
+    weights = dict(zip(final.uids, final.weights, strict=True))
+    assert set(final.uids) == {0, 1}
+    # agent keeps its absolute 0.40; prism's 0.30 + the 0.30 gap burn to uid 0.
+    assert round(weights[1], 8) == 0.4
+    assert round(weights[0], 8) == 0.6
+    assert final.hotkey_weights == {"hk1": 0.4}
+
+
+def test_absolute_emission_over_allocation_scaled_to_one_no_burn() -> None:
+    """Operators over-allocating (a=70,b=70) scale to sum 1.0 with no burn."""
+    results = [
+        ChallengeWeightsResult(slug="a", emission_percent=70, weights={"hk1": 1}),
+        ChallengeWeightsResult(slug="b", emission_percent=70, weights={"hk2": 1}),
+    ]
+    final = aggregate_challenge_weights(results, {"hk1": 1, "hk2": 2})
+    assert final.uids == [1, 2]
+    assert [round(w, 8) for w in final.weights] == [0.5, 0.5]
+    assert 0 not in final.uids
     assert round(sum(final.weights), 8) == 1.0

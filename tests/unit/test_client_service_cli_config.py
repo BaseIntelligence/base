@@ -220,8 +220,9 @@ async def test_master_weight_service_and_validator_runner() -> None:
         challenge_client=cast(ChallengeClient, Client()),
     )
     final = await service.run_epoch([challenge], {"demo": "tok"})
-    assert final.uids == [3]
-    assert final.weights == [1.0]
+    # Absolute emission 10 -> uid 3 gets 0.10; the unallocated 0.90 burns to uid 0.
+    assert final.uids == [0, 3]
+    assert [round(w, 8) for w in final.weights] == [0.9, 0.1]
 
     class Registry:
         async def fetch_registry(self):
@@ -284,8 +285,9 @@ async def test_master_weight_service_computes_without_weight_setter() -> None:
 
     final = await service.run_epoch([challenge], {"demo": "tok"})
 
-    assert final.uids == [3]
-    assert final.weights == [1.0]
+    # Absolute emission 10 -> uid 3 gets 0.10; the unallocated 0.90 burns to uid 0.
+    assert final.uids == [0, 3]
+    assert [round(w, 8) for w in final.weights] == [0.9, 0.1]
 
 
 @pytest.mark.asyncio
@@ -826,7 +828,8 @@ def test_cli_master_weights_once_defaults_to_compute_only(
     )
 
     assert result.exit_code == 0
-    assert "computed 1 weights" in result.output
+    # Absolute emission 10 -> uid 7 (0.10) + uid 0 burn (0.90) = 2 entries.
+    assert "computed 2 weights" in result.output
     assert created_runtime["netuid"] == 12
     assert created_runtime["chain_endpoint"] == "ws://chain"
     assert created_runtime["wallet_name"] == "wallet"

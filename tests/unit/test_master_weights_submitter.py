@@ -639,13 +639,15 @@ def test_multichallenge_emission_share_combination() -> None:
     assert response.status_code == 200
     body = response.json()
 
-    assert body["uids"] == [5, 15, 30]
-    assert [round(w, 8) for w in body["weights"]] == [0.1, 0.3, 0.6]
+    # Absolute shares: prism 0.30, agent 0.15, other 0.05; the 0.50 remainder
+    # burns to uid 0.
+    assert body["uids"] == [0, 5, 15, 30]
+    assert [round(w, 8) for w in body["weights"]] == [0.5, 0.05, 0.15, 0.3]
     hotkey_weights = {k: round(v, 8) for k, v in body["hotkey_weights"].items()}
     assert hotkey_weights == {
-        "prism-hotkey": 0.6,
-        "agent-hotkey": 0.3,
-        "other-hotkey": 0.1,
+        "prism-hotkey": 0.3,
+        "agent-hotkey": 0.15,
+        "other-hotkey": 0.05,
     }
     emissions = {
         item["slug"]: item["emission_percent"] for item in body["source_challenges"]
@@ -677,8 +679,10 @@ def test_multichallenge_failed_challenge_excluded_from_denominator() -> None:
     }
     final = aggregate_challenge_weights(results, mapping)
 
-    assert final.uids == [5, 15, 30]
-    assert [round(w, 8) for w in final.weights] == [0.1, 0.3, 0.6]
+    # Absolute shares (down excluded): prism 0.30, agent 0.15, other 0.05; the
+    # unallocated 0.50 remainder burns to uid 0.
+    assert final.uids == [0, 5, 15, 30]
+    assert [round(w, 8) for w in final.weights] == [0.5, 0.05, 0.15, 0.3]
     assert "down-hotkey" not in final.hotkey_weights
 
 

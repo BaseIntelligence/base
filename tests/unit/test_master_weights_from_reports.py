@@ -301,12 +301,16 @@ def test_unknown_hotkeys_dropped() -> None:
         )
     ]
     final = aggregate_challenge_weights(results, {"hk1": 1})
-    assert final.uids == [1]
+    # "missing" maps to no uid, so its share of the absolute emission burns.
+    assert final.uids == [0, 1]
+    weights = dict(zip(final.uids, final.weights, strict=True))
+    assert round(weights[1], 8) == 0.25
+    assert round(weights[0], 8) == 0.75
     assert "missing" not in final.hotkey_weights
 
 
 def test_uid_zero_dropped_from_miner_vector() -> None:
-    """VAL-WEIGHTS-010."""
+    """VAL-WEIGHTS-010 (uid-0 hotkey is never a miner; its share burns to uid 0)."""
     results = [
         ChallengeWeightsResult(
             slug="a",
@@ -317,9 +321,15 @@ def test_uid_zero_dropped_from_miner_vector() -> None:
     final = aggregate_challenge_weights(
         results, {"validator": 0, "miner1": 1, "miner2": 2}
     )
-    assert 0 not in final.uids
-    assert final.uids == [1, 2]
+    # miner1/miner2 keep their absolute 1/3 shares; the uid-0 hotkey is not a
+    # miner so its 1/3 share burns to uid 0 (which therefore appears in uids).
+    assert final.uids == [0, 1, 2]
+    weights = dict(zip(final.uids, final.weights, strict=True))
+    assert round(weights[0], 8) == round(1 / 3, 8)
+    assert round(weights[1], 8) == round(1 / 3, 8)
+    assert round(weights[2], 8) == round(1 / 3, 8)
     assert "validator" not in final.hotkey_weights
+    assert set(final.hotkey_weights) == {"miner1", "miner2"}
 
 
 def test_final_vector_sums_to_one_and_is_uid_sorted() -> None:

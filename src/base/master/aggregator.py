@@ -21,6 +21,9 @@ A single-entry ``{0: 1.0}`` vector is therefore a self/owner burn that is
 on-chain acceptable while no miners have scored.
 """
 
+EPS = 1e-12
+"""Float tolerance: residual miner mass / burn at or below this is treated as 0."""
+
 
 class ZeroMinerWeightError(RuntimeError):
     """No chain-valid weight vector can be built for the zero-miner case.
@@ -113,37 +116,64 @@ def aggregate_challenge_weights(
     min_allowed_weights: int = 1,
     max_weight_limit: int = CHAIN_U16_MAX,
 ) -> FinalWeights:
-    emissions = normalize_emissions(challenge_results)
-    hotkey_scores: defaultdict[str, float] = defaultdict(float)
+    """Aggregate per-challenge weights with ABSOLUTE emission shares + burn.
 
-    for result in challenge_results:
-        if not result.ok:
+    ``emission_percent`` is an absolute share of 100 (not a relative share
+    normalized across challenges): an OK challenge with ``emission_percent=e``
+    owns ``e/100`` of the whole vector and distributes it across its own miners.
+    Any share NOT landing on a real miner burns to :data:`ZERO_MINER_BURN_UID`
+    (the subnet owner): the unallocated remainder ``1 - sum(shares)``, challenges
+    with no valid miners, and weights mapping to uid 0 / unknown uids. Operators
+    who over-allocate (``sum(shares) > 1``) are scaled back to sum exactly 1.0 so
+    there is no burn in that case.
+
+    The zero-miner path (no real miner scored at all) is UNCHANGED: it defers to
+    :func:`build_zero_miner_weights` for a chain-valid full-burn vector.
+    """
+    ok_results = [result for result in challenge_results if result.ok]
+
+    frac = {
+        result.slug: max(float(result.emission_percent), 0.0) / 100.0
+        for result in ok_results
+    }
+    alloc_total = sum(frac.values())
+    if alloc_total > 1.0:
+        frac = {slug: value / alloc_total for slug, value in frac.items()}
+
+    hotkey_scores: defaultdict[str, float] = defaultdict(float)
+    for result in ok_results:
+        share = frac.get(result.slug, 0.0)
+        if share <= 0.0:
             continue
-        emission = emissions.get(result.slug, 0.0)
         for hotkey, weight in normalize_weights(result.weights).items():
-            hotkey_scores[hotkey] += emission * weight
+            hotkey_scores[hotkey] += share * weight
 
     uid_scores: defaultdict[int, float] = defaultdict(float)
     kept_hotkeys: dict[str, float] = {}
-    for hotkey, weight in hotkey_scores.items():
+    for hotkey, score in hotkey_scores.items():
         uid = hotkey_to_uid.get(hotkey)
-        if uid is None:
+        if uid is None or uid == ZERO_MINER_BURN_UID:
             continue
-        if uid == 0:
-            continue
-        uid_scores[uid] += weight
-        kept_hotkeys[hotkey] = weight
+        uid_scores[uid] += score
+        kept_hotkeys[hotkey] = score
 
-    total = sum(uid_scores.values())
-    if total > 0:
-        normalized = {uid: value / total for uid, value in uid_scores.items()}
-    else:
+    miner_total = sum(uid_scores.values())
+    if miner_total <= EPS:
         normalized = build_zero_miner_weights(
             min_allowed_weights=min_allowed_weights,
             max_weight_limit=max_weight_limit,
             available_uids=hotkey_to_uid.values(),
         )
         kept_hotkeys = {}
+    else:
+        final_scores: dict[int, float] = dict(uid_scores)
+        burn = 1.0 - miner_total
+        if burn > EPS:
+            final_scores[ZERO_MINER_BURN_UID] = (
+                final_scores.get(ZERO_MINER_BURN_UID, 0.0) + burn
+            )
+        total = sum(final_scores.values())
+        normalized = {uid: value / total for uid, value in final_scores.items()}
 
     ordered = sorted(normalized.items())
     return FinalWeights(
