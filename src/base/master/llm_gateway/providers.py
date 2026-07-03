@@ -9,7 +9,9 @@ returns a canned response); deploys use :class:`HttpLLMProvider` (a real
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -24,6 +26,32 @@ DEFAULT_PROVIDER_NAME = "yunwu"
 DEFAULT_PROVIDER_BASE_URL = "https://yunwu.ai/v1"
 
 ProviderMode = Literal["mock", "real"]
+
+logger = logging.getLogger(__name__)
+
+#: Default bounded-retry policy for :class:`HttpLLMProvider`. yunwu intermittently
+#: drops a connection mid-response (``httpx.RemoteProtocolError``) or returns a
+#: transient upstream 5xx; because the gateway is fully buffered (no bytes reach
+#: the caller until an attempt fully succeeds) retrying a fresh request is safe.
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_BACKOFF_SECONDS = 0.25
+
+#: Upstream status codes treated as transient and retried. A 429 (rate limited)
+#: and any other 4xx are NOT retried: the gateway surfaces them as-is.
+RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
+
+#: Transient httpx transport failures that warrant a retry on a fresh client.
+#: Deliberately enumerated (rather than the broad ``httpx.TransportError``) so a
+#: client-side ``LocalProtocolError`` / ``UnsupportedProtocol`` is NOT retried.
+RETRYABLE_TRANSPORT_EXCEPTIONS: tuple[type[httpx.HTTPError], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.PoolTimeout,
+)
 
 
 def compose_provider_url(base_url: str, path: str) -> str:
@@ -203,10 +231,16 @@ class HttpLLMProvider:
         base_url: str,
         timeout_seconds: float = 30.0,
         client_factory: ClientFactory | None = None,
+        max_attempts: int = DEFAULT_RETRY_ATTEMPTS,
+        retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
     ) -> None:
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        #: Total attempts (>= 1); ``1`` disables retry.
+        self.max_attempts = max(1, max_attempts)
+        #: Base backoff; the wait after attempt ``i`` is ``base * 2**i`` seconds.
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._client_factory = client_factory
 
     def compose_url(self, path: str) -> str:
@@ -218,19 +252,80 @@ class HttpLLMProvider:
         return _default_http_client_factory(self.timeout_seconds)
 
     async def forward(self, request: ProviderRequest) -> ProviderResponse:
-        async with self._client() as client:
-            response = await client.request(
-                request.method,
-                self.compose_url(request.path),
-                content=request.body,
-                headers=dict(request.headers),
+        """Forward the request, retrying transient upstream failures.
+
+        Each attempt uses a FRESH client (no pool reuse). A transient transport
+        failure (:data:`RETRYABLE_TRANSPORT_EXCEPTIONS`) or a transient upstream
+        status (:data:`RETRYABLE_STATUS_CODES`) is retried up to ``max_attempts``
+        with exponential backoff; a persistent transport failure re-raises the
+        last exception and a persistent transient status returns the last
+        response (both surface as a controlled 502 at the gateway). A 429 / other
+        4xx (and any 2xx/3xx) returns immediately and is never retried.
+
+        Retrying is safe: the gateway is fully buffered, so no partial bytes are
+        ever delivered to the caller before an attempt fully succeeds.
+        """
+
+        url = self.compose_url(request.path)
+        headers = dict(request.headers)
+        last_index = self.max_attempts - 1
+        for attempt in range(self.max_attempts):
+            try:
+                async with self._client() as client:
+                    response = await client.request(
+                        request.method,
+                        url,
+                        content=request.body,
+                        headers=headers,
+                    )
+            except RETRYABLE_TRANSPORT_EXCEPTIONS as exc:
+                if attempt == last_index:
+                    raise
+                # Log only the exception class + attempt counters: the message,
+                # request body, URL, and headers are never logged, so no injected
+                # provider key can leak from this module's logger.
+                logger.warning(
+                    "gateway upstream transient error (%s); retrying attempt %d/%d",
+                    type(exc).__name__,
+                    attempt + 2,
+                    self.max_attempts,
+                )
+                await self._backoff(attempt)
+                continue
+
+            if response.status_code in RETRYABLE_STATUS_CODES and attempt != last_index:
+                logger.warning(
+                    "gateway upstream transient status %d; retrying attempt %d/%d",
+                    response.status_code,
+                    attempt + 2,
+                    self.max_attempts,
+                )
+                await self._backoff(attempt)
+                continue
+
+            return ProviderResponse(
+                status_code=response.status_code,
+                body=response.content,
+                headers=dict(response.headers),
+                media_type=response.headers.get("content-type"),
             )
-        return ProviderResponse(
-            status_code=response.status_code,
-            body=response.content,
-            headers=dict(response.headers),
-            media_type=response.headers.get("content-type"),
+
+        raise RuntimeError(  # pragma: no cover - loop always returns or raises
+            "retry loop exited without returning a response"
         )
+
+    def _backoff_delay(self, attempt: int) -> float:
+        """Exponential wait (seconds) after a failed 0-based ``attempt``.
+
+        With the default base (0.25s) this yields 0.25s then 0.5s.
+        """
+
+        return self.retry_backoff_seconds * (2**attempt)
+
+    async def _backoff(self, attempt: int) -> None:
+        delay = self._backoff_delay(attempt)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
 
 def _default_provider_registry() -> dict[str, str]:
@@ -249,6 +344,10 @@ class ProviderConfig:
     mode: ProviderMode = "mock"
     providers: Mapping[str, str] = field(default_factory=_default_provider_registry)
     timeout_seconds: float = 30.0
+    #: Bounded upstream-retry policy for the real HTTP provider (transient drops /
+    #: 5xx). Ignored by the mock provider.
+    retry_attempts: int = DEFAULT_RETRY_ATTEMPTS
+    retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS
 
 
 def build_providers(config: ProviderConfig) -> dict[str, LLMProvider]:
@@ -268,6 +367,8 @@ def build_providers(config: ProviderConfig) -> dict[str, LLMProvider]:
             name=name,
             base_url=base_url,
             timeout_seconds=config.timeout_seconds,
+            max_attempts=config.retry_attempts,
+            retry_backoff_seconds=config.retry_backoff_seconds,
         )
         for name, base_url in config.providers.items()
     }
