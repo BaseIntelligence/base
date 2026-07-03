@@ -1345,23 +1345,26 @@ async def test_multichallenge_emission_combination(
     assert h.fabric.last_get_weights_payload[AGENT_CHALLENGE_SLUG]["weights"]
     assert h.fabric.last_get_weights_payload[PRISM_SLUG]["weights"]
 
-    assert sorted(body["uids"]) == sorted(MINER_UIDS.values())
+    assert sorted(body["uids"]) == sorted([0, *MINER_UIDS.values()])
     weight_by_uid = dict(zip(body["uids"], body["weights"], strict=True))
-    # Each challenge has a single miner, so per-challenge normalization gives 1.0;
-    # the blended UID vector follows the emission split 30:10 == 0.75:0.25.
-    assert round(weight_by_uid[MINER_UIDS[MINER_AGENT]], 6) == 0.75
-    assert round(weight_by_uid[MINER_UIDS[MINER_PRISM]], 6) == 0.25
+    # emission_percent is an ABSOLUTE share of 100: agent 30% and prism 10% go to
+    # their single miners; the unallocated 60% burns to uid 0.
+    assert round(weight_by_uid[MINER_UIDS[MINER_AGENT]], 6) == 0.30
+    assert round(weight_by_uid[MINER_UIDS[MINER_PRISM]], 6) == 0.10
+    assert round(weight_by_uid[0], 6) == 0.60
     assert round(sum(body["weights"]), 6) == 1.0
 
-    # Perturbing the emission split shifts the blend predictably (25:25 -> 50:50).
+    # Perturbing the emission split (25:25, sum 50): each miner now gets 0.25 and
+    # the unallocated 0.50 burns to uid 0.
     h2: Harness = await harness_factory(
         active=[("agent-challenge", "25"), ("prism", "25")]
     )
     await _run_both_challenges(h2)
     body2 = await h2.weights_latest()
     weight_by_uid2 = dict(zip(body2["uids"], body2["weights"], strict=True))
-    assert round(weight_by_uid2[MINER_UIDS[MINER_AGENT]], 6) == 0.5
-    assert round(weight_by_uid2[MINER_UIDS[MINER_PRISM]], 6) == 0.5
+    assert round(weight_by_uid2[MINER_UIDS[MINER_AGENT]], 6) == 0.25
+    assert round(weight_by_uid2[MINER_UIDS[MINER_PRISM]], 6) == 0.25
+    assert round(weight_by_uid2[0], 6) == 0.50
 
 
 async def test_capability_routing_across_challenges(

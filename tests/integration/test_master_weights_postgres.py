@@ -166,16 +166,17 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             now_fn=lambda: datetime(2030, 1, 1, 12, 0, tzinfo=UTC),
         )
 
-        assert response.uids == [5, 15, 30]
+        assert response.uids == [0, 5, 15, 30]
         assert [round(weight, 8) for weight in response.weights] == [
-            round(5 / 50, 8),
-            round(15 / 50, 8),
-            round(30 / 50, 8),
+            round(0.5, 8),
+            round(5 / 100, 8),
+            round(15 / 100, 8),
+            round(30 / 100, 8),
         ]
         assert response.hotkey_weights == {
-            "prism-hotkey": 30 / 50,
-            "agent-hotkey": 15 / 50,
-            "other-hotkey": 5 / 50,
+            "prism-hotkey": 30 / 100,
+            "agent-hotkey": 15 / 100,
+            "other-hotkey": 5 / 100,
         }
         source_emissions = {
             result.slug: result.emission_percent
