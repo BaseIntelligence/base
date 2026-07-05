@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
@@ -62,6 +63,16 @@ from base.security.validator_auth import (
 from base.supervisor.challenge_image_updater import (
     build_challenge_image_update_lifespan,
 )
+
+DEFAULT_CORS_ALLOWED_ORIGINS = [
+    "https://joinbase.ai",
+    "https://www.joinbase.ai",
+    "http://localhost:3000",
+    "http://localhost:3100",
+]
+# Vercel preview deployments of the ``platform`` frontend project, e.g.
+# ``platform-lz6erslee-mathismassimino-6459s-projects.vercel.app``.
+CORS_ALLOWED_ORIGIN_REGEX = r"^https://platform-[a-z0-9-]+\.vercel\.app$"
 
 SENSITIVE_REQUEST_HEADERS = {
     "authorization",
@@ -354,6 +365,7 @@ def create_proxy_app(
     challenge_image_updater_settings: Settings | None = None,
     challenge_image_update_interval_seconds: float | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
+    allowed_cors_origins: list[str] | None = None,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -383,6 +395,19 @@ def create_proxy_app(
                 challenge_image_update_interval_seconds,
             ),
         ),
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=(
+            allowed_cors_origins
+            if allowed_cors_origins is not None
+            else DEFAULT_CORS_ALLOWED_ORIGINS
+        ),
+        allow_origin_regex=CORS_ALLOWED_ORIGIN_REGEX,
+        allow_methods=["GET", "HEAD", "OPTIONS"],
+        allow_headers=["*"],
+        allow_credentials=False,
+        max_age=600,
     )
     challenge_registry = registry
     token_provider = challenge_token_provider or _challenge_token_provider(
