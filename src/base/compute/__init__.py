@@ -16,15 +16,27 @@ from base.compute.provider import (
     ProviderClient,
     ProviderError,
 )
+from base.compute.targon import (
+    TARGON_API_BASE_URL,
+    BalanceUnavailableError,
+    InsufficientCreditsError,
+    TargonClient,
+    TargonError,
+)
 
 __all__ = [
     "LIUM_API_BASE_URL",
+    "TARGON_API_BASE_URL",
+    "BalanceUnavailableError",
     "CostGuardrailError",
     "Instance",
     "InstanceSpec",
+    "InsufficientCreditsError",
     "LiumClient",
     "LiumError",
     "Offer",
     "ProviderClient",
     "ProviderError",
+    "TargonClient",
+    "TargonError",
 ]
