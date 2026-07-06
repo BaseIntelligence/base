@@ -69,6 +69,7 @@ from base.master.service import (
 )
 from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
+from base.master.worker_coordination import WorkerCoordinationService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
 from base.observability.sentry import init_sentry
@@ -84,6 +85,12 @@ from base.security.validator_auth import (
     MetagraphValidatorEligibility,
     SqlAlchemyValidatorNonceStore,
     ValidatorSignedRequestVerifier,
+)
+from base.security.worker_auth import (
+    CoordinationReadEligibility,
+    MetagraphMinerMembership,
+    SqlAlchemyWorkerNonceStore,
+    WorkerSignedRequestVerifier,
 )
 from base.template_engine import (
     ChallengeTemplateContext,
@@ -332,6 +339,35 @@ def _validator_signed_request_verifier(
         ),
         eligibility=MetagraphValidatorEligibility(metagraph_cache),
         ttl_seconds=settings.master.validator_signature_ttl_seconds,
+    )
+
+
+def _worker_coordination_service(
+    settings: Any, session_factory: Any, metagraph_cache: MetagraphCache
+) -> WorkerCoordinationService:
+    return WorkerCoordinationService(
+        session_factory,
+        miner_membership=MetagraphMinerMembership(metagraph_cache),
+        binding_nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        heartbeat_ttl_seconds=settings.compute.worker_heartbeat_ttl_seconds,
+    )
+
+
+def _worker_signed_request_verifier(
+    settings: Any,
+    session_factory: Any,
+    metagraph_cache: MetagraphCache,
+) -> WorkerSignedRequestVerifier:
+    return WorkerSignedRequestVerifier(
+        nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        eligibility=CoordinationReadEligibility(session_factory, metagraph_cache),
+        ttl_seconds=settings.compute.worker_signature_ttl_seconds,
     )
 
 
@@ -821,6 +857,18 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     validator_verifier = _validator_signed_request_verifier(
         settings, session_factory, runtime.metagraph_cache
     )
+    # Miner-funded GPU worker plane (architecture.md sec 3.3), gated behind
+    # compute.worker_plane_enabled: OFF (default) leaves these None so the worker
+    # coordination surface is never mounted and legacy behavior is unchanged.
+    worker_service: WorkerCoordinationService | None = None
+    worker_verifier: WorkerSignedRequestVerifier | None = None
+    if settings.compute.worker_plane_enabled:
+        worker_service = _worker_coordination_service(
+            settings, session_factory, runtime.metagraph_cache
+        )
+        worker_verifier = _worker_signed_request_verifier(
+            settings, session_factory, runtime.metagraph_cache
+        )
     llm_gateway_service = _llm_gateway_service(settings, session_factory)
     assignment_service = _assignment_coordination_service(
         settings, session_factory, gateway_service=llm_gateway_service
@@ -861,6 +909,11 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         validator_verifier=validator_verifier,
         validator_health_interval_seconds=(
             settings.master.validator_health_interval_seconds
+        ),
+        worker_service=worker_service,
+        worker_verifier=worker_verifier,
+        worker_health_interval_seconds=(
+            settings.compute.worker_health_interval_seconds
         ),
         assignment_coordination_service=assignment_service,
         llm_gateway_service=llm_gateway_service,

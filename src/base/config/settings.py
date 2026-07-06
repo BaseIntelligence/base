@@ -211,6 +211,24 @@ class SecuritySettings(BaseModel):
     admin_token_file: str | None = None
 
 
+class ComputeSettings(BaseModel):
+    """Miner-funded GPU worker plane (architecture.md sec 3.3).
+
+    ALL worker-plane behavior is gated behind ``worker_plane_enabled`` (env
+    ``BASE_COMPUTE__WORKER_PLANE_ENABLED``); OFF (the default) preserves legacy
+    behavior byte-for-byte: the worker coordination surface is not mounted and
+    gpu units route to validators exactly as today. ``worker_heartbeat_ttl_seconds``
+    is the freshness window: an ``active`` worker whose last heartbeat is older
+    than the TTL is reported ``stale`` and is not assignable.
+    """
+
+    worker_plane_enabled: bool = False
+    worker_heartbeat_ttl_seconds: int = 120
+    worker_signature_ttl_seconds: int = 300
+    worker_nonce_ttl_seconds: int = 86_400
+    worker_health_interval_seconds: float = 60.0
+
+
 class ProviderEntry(BaseModel):
     """One configured LLM provider: its OpenAI-compatible base URL + key.
 
@@ -386,6 +404,7 @@ class Settings(BaseModel):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     docker: DockerSettings = Field(default_factory=DockerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    compute: ComputeSettings = Field(default_factory=ComputeSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
