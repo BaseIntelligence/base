@@ -129,6 +129,57 @@ async def test_list_offers_accepts_wrapped_payload() -> None:
     assert {o.id for o in offers} == {"h100", "h200"}
 
 
+@respx.mock
+async def test_list_offers_normalizes_price_to_per_gpu() -> None:
+    inventory = [
+        {
+            "name": "h100x4",
+            "display_name": "H100 x4",
+            "type": "rental",
+            "gpu": True,
+            "spec": {"gpu_type": "H100", "gpu_count": 4},
+            "cost_per_hour": 10.0,
+            "available": 2,
+        }
+    ]
+    respx.get(f"{BASE}/inventory").mock(
+        return_value=httpx.Response(200, json=inventory)
+    )
+    offers = await TargonClient("k").list_offers()
+    assert len(offers) == 1
+    offer = offers[0]
+    # Whole-shape cost is 10.0 for 4 GPUs -> per-GPU price is 2.5.
+    assert offer.price_per_hour == pytest.approx(2.5)
+    assert offer.gpu_count == 4
+    assert offer.raw["cost_per_hour"] == pytest.approx(10.0)
+
+
+@respx.mock
+async def test_multi_gpu_offer_filtered_by_per_gpu_max_price() -> None:
+    inventory = [
+        {
+            "name": "h100x4",
+            "spec": {"gpu_type": "H100", "gpu_count": 4},
+            "cost_per_hour": 10.0,
+            "available": 2,
+        },
+        {
+            "name": "h200x8",
+            "spec": {"gpu_type": "H200", "gpu_count": 8},
+            "cost_per_hour": 40.0,
+            "available": 2,
+        },
+    ]
+    respx.get(f"{BASE}/inventory").mock(
+        return_value=httpx.Response(200, json=inventory)
+    )
+    # Per-GPU: h100x4 -> 2.5/gpu (kept), h200x8 -> 5.0/gpu (dropped by 3.0 cap).
+    # A whole-shape comparison (10 and 40) would have wrongly dropped BOTH.
+    offers = await TargonClient("k").list_offers(max_price_per_hour=3.0)
+    assert {o.id for o in offers} == {"h100x4"}
+    assert offers[0].price_per_hour == pytest.approx(2.5)
+
+
 # -- VAL-PROV-003 (provision guardrails, no network) --------------------------
 
 
@@ -457,6 +508,27 @@ def test_parse_inventory_offer_skips_zero_and_missing() -> None:
     )
     assert offer is not None
     assert offer.price_per_hour == pytest.approx(1.5)
+
+
+def test_parse_inventory_offer_normalizes_price_per_gpu() -> None:
+    multi = _parse_inventory_offer(
+        {
+            "name": "h100x8",
+            "spec": {"gpu_count": 8},
+            "cost_per_hour": 20.0,
+            "available": 3,
+        }
+    )
+    assert multi is not None
+    assert multi.price_per_hour == pytest.approx(2.5)
+    assert multi.gpu_count == 8
+    # Missing gpu_count falls back to the whole-shape cost (no ZeroDivisionError).
+    no_count = _parse_inventory_offer(
+        {"name": "x", "cost_per_hour": 1.5, "available": 1}
+    )
+    assert no_count is not None
+    assert no_count.price_per_hour == pytest.approx(1.5)
+    assert no_count.gpu_count == 0
 
 
 def test_parse_workload_instance_rejects_non_mapping() -> None:

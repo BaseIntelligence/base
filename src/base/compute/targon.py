@@ -299,16 +299,21 @@ def _parse_inventory_offer(item: Mapping[str, Any]) -> Offer | None:
     if not name or cost is None:
         return None
     try:
-        price = float(cost)
+        cost_per_hour = float(cost)
     except (TypeError, ValueError):
         return None
     if _coerce_int(item.get("available")) <= 0:
         return None
+    gpu_count = _extract_gpu_count(item)
+    # Targon inventory quotes cost_per_hour for the WHOLE shape; Offer.price_per_hour
+    # is per-GPU (what the per-GPU max_price cap filters on). Fall back to the
+    # whole-shape cost when the count is unknown (avoids ZeroDivisionError).
+    price_per_gpu = cost_per_hour / gpu_count if gpu_count >= 1 else cost_per_hour
     return Offer(
         id=str(name),
         gpu_type=_extract_gpu_type(item),
-        gpu_count=_extract_gpu_count(item),
-        price_per_hour=price,
+        gpu_count=gpu_count,
+        price_per_hour=price_per_gpu,
         provider="targon",
         raw=item,
     )

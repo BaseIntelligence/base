@@ -159,6 +159,15 @@ def test_targon_app_declares_gpu_resource_shape() -> None:
     assert app["gpu_count"] >= 1
 
 
+def test_targon_app_default_gpu_shape_is_live_valid_suffixed_id() -> None:
+    # Real Targon inventory ids carry a size suffix (h100-small, b200-large per
+    # library/targon-api.md); a bare 'h100' would be rejected by a live deploy.
+    from base.compute.worker_deployment import WORKER_GPU_SHAPE
+
+    assert WORKER_GPU_SHAPE == "h100-small"
+    assert build_targon_worker_app()["resource"] == "h100-small"
+
+
 def test_targon_app_plumbs_environment_as_name_value_pairs() -> None:
     app = build_targon_worker_app(environment={"BASE_MASTER_URL": "http://master:8000"})
     assert {"name": "BASE_MASTER_URL", "value": "http://master:8000"} in app["envs"]

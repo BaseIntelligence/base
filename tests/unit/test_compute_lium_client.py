@@ -122,6 +122,29 @@ async def test_provision_refuses_unbounded_spec_without_network(
     assert respx.calls.call_count == 0
 
 
+@respx.mock
+@pytest.mark.parametrize("lifetime", [0.5, 0.99, 0.1])
+async def test_provision_rejects_sub_hour_lifetime_without_network(
+    lifetime: float,
+) -> None:
+    # A sub-1-hour bound would truncate to termination_hours=0 (auto-termination
+    # disabled -> real-money guardrail bypass); refuse it before any network call.
+    client = LiumClient("k")
+    with pytest.raises(CostGuardrailError):
+        await client.provision(_spec(max_lifetime_hours=lifetime))
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+async def test_provision_never_sends_zero_termination_hours() -> None:
+    routes = _mock_happy_path()
+    # A fractional lifetime >= 1 truncates DOWN (never below 1, never 0).
+    await LiumClient("k").provision(_spec(max_lifetime_hours=1.9), offer=_offer())
+    body = json.loads(routes["rent"].calls.last.request.content)
+    assert body["termination_hours"] == 1
+    assert body["termination_hours"] >= 1
+
+
 # -- VAL-PROV-004 -------------------------------------------------------------
 
 
@@ -503,6 +526,62 @@ async def test_provision_cleanup_swallows_cleanup_errors_and_reraises() -> None:
     respx.get(f"{BASE}/pods").mock(return_value=httpx.Response(500))
     with pytest.raises(LiumError):
         await LiumClient("k").provision(_spec(), offer=_offer())
+    assert delete.call_count == 1
+
+
+@respx.mock
+async def test_provision_cleanup_uses_rent_pod_id_when_status_fails() -> None:
+    respx.get(f"{BASE}/ssh-keys").mock(
+        return_value=httpx.Response(200, json=[{"public_key": "ssh-ed25519 AAAA"}])
+    )
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json=[{"id": "tpl-1", "name": "prism-worker"}])
+    )
+    # Live rent shape {"success": true, "pod_id": "..."}; the status poll then
+    # fails and cleanup must terminate using the id from the rent response.
+    respx.post(f"{BASE}/executors/exec-1/rent").mock(
+        return_value=httpx.Response(200, json={"success": True, "pod_id": "pod-1"})
+    )
+    respx.get(f"{BASE}/pods/pod-1").mock(return_value=httpx.Response(500))
+    delete = respx.delete(f"{BASE}/pods/pod-1").mock(return_value=httpx.Response(200))
+    pods = respx.get(f"{BASE}/pods").mock(return_value=httpx.Response(200, json=[]))
+
+    with pytest.raises(LiumError):
+        await LiumClient("k").provision(_spec(), offer=_offer())
+
+    assert delete.call_count == 1
+    assert pods.called
+
+
+@respx.mock
+async def test_provision_cleanup_survives_transient_pods_failure_in_resolution() -> (
+    None
+):
+    respx.get(f"{BASE}/ssh-keys").mock(
+        return_value=httpx.Response(200, json=[{"public_key": "ssh-ed25519 AAAA"}])
+    )
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json=[{"id": "tpl-1", "name": "prism-worker"}])
+    )
+    # Rent SUCCEEDS but returns no id, so pod-id resolution falls back to
+    # GET /pods, which fails transiently on the first call. Because cleanup keys
+    # off "rent succeeded" (not "pod id resolved"), the just-rented pod is still
+    # found by name on the cleanup retry and deleted.
+    respx.post(f"{BASE}/executors/exec-1/rent").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    respx.get(f"{BASE}/pods").mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(200, json=[{"id": "pod-9", "pod_name": "mission-pod"}]),
+            httpx.Response(200, json=[]),
+        ]
+    )
+    delete = respx.delete(f"{BASE}/pods/pod-9").mock(return_value=httpx.Response(200))
+
+    with pytest.raises(LiumError):
+        await LiumClient("k").provision(_spec(), offer=_offer())
+
     assert delete.call_count == 1
 
 

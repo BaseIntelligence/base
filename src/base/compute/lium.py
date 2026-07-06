@@ -93,6 +93,12 @@ class LiumClient:
             raise CostGuardrailError(
                 "InstanceSpec.max_lifetime_hours must be a positive bound (hours)"
             )
+        if lifetime < 1:
+            raise CostGuardrailError(
+                "InstanceSpec.max_lifetime_hours must be at least 1 hour: Lium "
+                "termination_hours has 1-hour granularity, so a sub-hour bound "
+                "would truncate to termination_hours=0 and disable auto-termination"
+            )
         if spec.max_price_per_hour is None or spec.max_price_per_hour <= 0:
             raise CostGuardrailError(
                 "InstanceSpec.max_price_per_hour must be a positive bound"
@@ -123,14 +129,22 @@ class LiumClient:
         rent = await self._request(
             "POST", f"/executors/{selected.id}/rent", json_body=rent_body
         )
-        pod_id = self._extract_pod_id(rent) or await self._find_pod_id(spec.name)
-        if pod_id is None:
-            raise LiumError("could not determine provisioned pod id from rent response")
-
+        # The rent succeeded: a billable pod may now exist. Every subsequent
+        # failure (pod-id resolution AND the status poll) must best-effort
+        # terminate + verify before re-raising, so cleanup keys off "rent
+        # succeeded" rather than "pod id resolved" -- a transient GET /pods
+        # failure during resolution must not leak a just-rented pod.
+        pod_id = self._extract_pod_id(rent)
         try:
+            if pod_id is None:
+                pod_id = await self._find_pod_id(spec.name)
+            if pod_id is None:
+                raise LiumError(
+                    "could not determine provisioned pod id from rent response"
+                )
             return await self.status(pod_id)
         except BaseException:
-            await self._terminate_and_verify_quietly(pod_id)
+            await self._cleanup_after_rent(pod_id, spec.name)
             raise
 
     async def status(self, instance_id: str) -> Instance:
@@ -278,6 +292,25 @@ class LiumClient:
             if str(pod.get("pod_name")) == pod_name and pod.get("id"):
                 return str(pod["id"])
         return None
+
+    async def _cleanup_after_rent(self, pod_id: str | None, pod_name: str) -> None:
+        if pod_id is None:
+            pod_id = await self._resolve_pod_id_quietly(pod_name)
+        if pod_id is None:
+            logger.warning(
+                "post-rent cleanup could not resolve a pod id for %r; the rented "
+                "pod (if any) will auto-terminate via termination_hours",
+                pod_name,
+            )
+            return
+        await self._terminate_and_verify_quietly(pod_id)
+
+    async def _resolve_pod_id_quietly(self, pod_name: str) -> str | None:
+        try:
+            return await self._find_pod_id(pod_name)
+        except Exception:  # noqa: BLE001 - cleanup must not mask the original error
+            logger.warning("post-rent cleanup pod lookup failed for %r", pod_name)
+            return None
 
     async def _terminate_and_verify_quietly(self, instance_id: str) -> None:
         try:

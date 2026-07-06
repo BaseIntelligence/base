@@ -41,8 +41,10 @@ WORKER_APP_NAME = "prism-worker"
 # is bound to loopback inside the instance and needs no external mapping.
 WORKER_INTERNAL_PORTS: tuple[int, ...] = (22,)
 
-# Default Targon GPU resource shape (inventory shape name + human GPU type).
-WORKER_GPU_SHAPE = "h100"
+# Default Targon GPU resource shape (inventory shape id + human GPU type). Real
+# Targon inventory ids carry a size suffix (h100-small, b200-large per
+# library/targon-api.md); a bare 'h100' would be rejected by a live deploy.
+WORKER_GPU_SHAPE = "h100-small"
 WORKER_GPU_TYPE = "H100"
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
