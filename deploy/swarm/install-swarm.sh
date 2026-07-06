@@ -1533,6 +1533,27 @@ _deploy_master_service() {
 #     fallback from single_node_placement_fix): no constraint => schedules on
 #     the manager.
 # ============================================================================
+# 9b. Provision the agent-challenge terminal-bench-2.1 task cache (own_runner).
+#     own_runner reads task defs ONLY from node-local named volumes and fails
+#     closed on any digest mismatch; the runner image does NOT bake the ~89 task
+#     trees. This DOWNLOADS the byte-exact pinned dataset (download-...sh) and
+#     COPIES + DIGEST-VERIFIES it onto the volumes (acquire-...sh). Without it,
+#     every terminal-bench eval fails with `terminal_bench_failed` (empty cache).
+#     Node-local volumes: on a multi-node Swarm, provision on EVERY eval node.
+# ============================================================================
+provision_agent_challenge_cache() {
+  log "STEP 9b/12 provision_agent_challenge_cache: terminal-bench-2.1 task cache + digest"
+  local script_dir staging
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  staging="${AGENT_CHALLENGE_CACHE_STAGING:-/var/lib/base/agent-challenge-cache}"
+  # download-...sh and acquire-...sh each have their OWN dry-run/--apply gate, so
+  # `plan` prints the invocations in dry-run and executes them (with --apply) only
+  # in this script's --apply mode — matching the STEP's mutation policy exactly.
+  plan bash "${script_dir}/download-terminal-bench-cache.sh" --dest "${staging}" --apply
+  plan bash "${script_dir}/acquire-agent-challenge-cache.sh" --source "${staging}" --apply
+}
+
+# ============================================================================
 deploy_challenges() {
   log "STEP 10/12 deploy_challenges"
   if [[ "${STATIC_CHALLENGES}" != "true" ]]; then
@@ -2292,6 +2313,7 @@ main() {
     restore_data             # 8
   fi
   deploy_master              # 9
+  provision_agent_challenge_cache  # 9b (own_runner terminal-bench-2.1 task cache + digest)
   deploy_challenges          # 10 (master-orchestrated by default; direct via --static-challenges)
   healthcheck                # 11
   deploy_supervisor          # 12 (control-plane auto-update; install/enable behind --install-supervisor)
