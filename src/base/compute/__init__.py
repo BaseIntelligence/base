@@ -23,10 +23,22 @@ from base.compute.targon import (
     TargonClient,
     TargonError,
 )
+from base.compute.worker_deployment import (
+    WORKER_IMAGE,
+    WORKER_IMAGE_DIGEST,
+    WORKER_IMAGE_TAG,
+    build_lium_worker_template,
+    build_targon_worker_app,
+    is_pinned_digest,
+    pinned_image_reference,
+)
 
 __all__ = [
     "LIUM_API_BASE_URL",
     "TARGON_API_BASE_URL",
+    "WORKER_IMAGE",
+    "WORKER_IMAGE_DIGEST",
+    "WORKER_IMAGE_TAG",
     "BalanceUnavailableError",
     "CostGuardrailError",
     "Instance",
@@ -39,4 +51,8 @@ __all__ = [
     "ProviderError",
     "TargonClient",
     "TargonError",
+    "build_lium_worker_template",
+    "build_targon_worker_app",
+    "is_pinned_digest",
+    "pinned_image_reference",
 ]
