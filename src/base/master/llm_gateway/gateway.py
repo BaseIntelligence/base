@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Request, Response
+from starlette.background import BackgroundTask
+from starlette.responses import StreamingResponse
 
 from base.master.llm_gateway.lifecycle import AssignmentLifecycleResolver
 from base.master.llm_gateway.providers import (
@@ -25,6 +28,7 @@ from base.master.llm_gateway.providers import (
     ProviderConfig,
     ProviderRequest,
     ProviderResponse,
+    StreamingProviderResponse,
     build_providers,
 )
 from base.master.llm_gateway.redaction import (
@@ -339,6 +343,42 @@ class LLMGatewayService:
             )
         )
 
+    @asynccontextmanager
+    async def forward_stream(
+        self,
+        *,
+        provider: str,
+        model: str,
+        path: str,
+        body: bytes,
+        caller_headers: Mapping[str, str],
+    ) -> AsyncIterator[StreamingProviderResponse]:
+        """Streaming twin of :meth:`forward` for ``stream=true`` callers.
+
+        Performs the same server-side key injection + model overwrite, then
+        opens the provider's streaming forward as a context manager. ``model``
+        is overwritten as usual; every other field of the caller's JSON body
+        (including its ``stream`` flag) is preserved, so the upstream keeps
+        ``stream: true``. The manager yields the upstream
+        :class:`StreamingProviderResponse` while the underlying stream is held
+        open; the caller consumes ``aiter_bytes`` before the manager exits.
+        Usage metering is skipped for streamed calls (best-effort metering
+        cannot read a token count without buffering the body).
+        """
+
+        impl = self.provider(provider)
+        upstream_body = self._inject_model(body, model)
+        upstream_headers = self._inject_headers(provider, caller_headers)
+        async with impl.stream(
+            ProviderRequest(
+                method="POST",
+                path=path,
+                headers=upstream_headers,
+                body=upstream_body,
+            )
+        ) as response:
+            yield response
+
     def issue_token(
         self,
         *,
@@ -437,12 +477,41 @@ def _extract_token(headers: Mapping[str, str]) -> str | None:
     return None
 
 
-def _response_headers(response: ProviderResponse) -> dict[str, str]:
+def _stream_response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Strip secret/framing headers before relaying an upstream response.
+
+    Filters the SAME ``_STRIPPED_RESPONSE_HEADERS`` set as the buffered path
+    (authorization, content-length, content-encoding, hop-by-hop), so the
+    streaming passthrough never relays the injected key nor a length/encoding
+    that would conflict with a chunked body.
+    """
+
     return {
         key: value
-        for key, value in response.headers.items()
+        for key, value in headers.items()
         if key.lower() not in _STRIPPED_RESPONSE_HEADERS
     }
+
+
+def _response_headers(response: ProviderResponse) -> dict[str, str]:
+    return _stream_response_headers(response.headers)
+
+
+def _stream_requested(body: bytes) -> bool:
+    """Whether the caller's JSON request body asks for a streamed response.
+
+    Robust to a missing/non-JSON/non-object body (all resolve to ``False``), so
+    only an explicit truthy ``stream`` on a JSON object routes to the streaming
+    passthrough; every other caller stays on the buffered path.
+    """
+
+    if not body:
+        return False
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    return bool(payload.get("stream")) if isinstance(payload, dict) else False
 
 
 def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
@@ -478,6 +547,12 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
             return _error_response(exc.status_code, exc.detail)
 
         body = await request.body()
+        # ``source`` is logged (never a secret) so a surfaced upstream error is
+        # attributable; a token with no source claim logs the default ("agent").
+        source = call.claims.source or DEFAULT_SOURCE
+        if _stream_requested(body):
+            return await _forward_streamed(call, path, body, request, source)
+
         try:
             upstream = await service.forward(
                 provider=call.provider,
@@ -493,8 +568,16 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
             return _error_response(502, UPSTREAM_ERROR_DETAIL)
 
         # An upstream error is surfaced as a controlled, non-leaking status; the
-        # raw upstream body/headers are never relayed back to the caller.
+        # raw upstream body/headers are never relayed back to the caller. The
+        # REAL upstream status is logged first (status + source only) so the
+        # failure is no longer collapsed into an opaque 502 with no trace.
         if upstream.status_code >= 400:
+            logger.warning(
+                "llm gateway upstream error status=%d source=%s stream=%s",
+                upstream.status_code,
+                source,
+                False,
+            )
             return _surface_upstream_error(upstream.status_code)
 
         await service.record_usage(
@@ -508,6 +591,58 @@ def build_llm_gateway_router(*, service: LLMGatewayService) -> APIRouter:
             status_code=upstream.status_code,
             headers=_response_headers(upstream),
             media_type=upstream.media_type,
+        )
+
+    async def _forward_streamed(
+        call: AuthenticatedCall,
+        path: str,
+        body: bytes,
+        request: Request,
+        source: str,
+    ) -> Response:
+        """Stream an upstream response back to a ``stream=true`` caller.
+
+        The provider's streaming context manager is entered onto an
+        :class:`AsyncExitStack` that is closed by a ``BackgroundTask`` AFTER the
+        :class:`StreamingResponse` finishes, so the upstream stream stays open
+        while the caller drains it (returning inside the ``async with`` would
+        close it before a single byte is relayed). On an upstream error the real
+        status is logged (status + source only) and the stack is closed
+        immediately, and NO body byte is ever relayed to the caller.
+        """
+
+        stack = AsyncExitStack()
+        try:
+            upstream = await stack.enter_async_context(
+                service.forward_stream(
+                    provider=call.provider,
+                    model=call.model,
+                    path=path,
+                    body=body,
+                    caller_headers=request.headers,
+                )
+            )
+        except Exception:
+            await stack.aclose()
+            logger.exception("llm gateway upstream forward failed (streamed)")
+            return _error_response(502, UPSTREAM_ERROR_DETAIL)
+
+        if upstream.status_code >= 400:
+            await stack.aclose()
+            logger.warning(
+                "llm gateway upstream error status=%d source=%s stream=%s",
+                upstream.status_code,
+                source,
+                True,
+            )
+            return _surface_upstream_error(upstream.status_code)
+
+        return StreamingResponse(
+            upstream.aiter_bytes,
+            status_code=upstream.status_code,
+            headers=_stream_response_headers(upstream.headers),
+            media_type=upstream.headers.get("content-type") or "text/event-stream",
+            background=BackgroundTask(stack.aclose),
         )
 
     @router.post("/llm/v1/{path:path}")
