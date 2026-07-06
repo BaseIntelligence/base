@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -120,6 +121,15 @@ app.add_typer(registry_app, name="registry")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _resolved_log_level(settings: Settings) -> int:
+    """Resolve ``observability.log_level`` to a ``logging`` level int.
+
+    Case-insensitive; an unrecognized name falls back to ``INFO`` so a
+    misconfigured level never crashes an entrypoint.
+    """
+    return getattr(logging, settings.observability.log_level.upper(), logging.INFO)
+
+
 def _configure_observability(settings: Settings) -> None:
     """Configure logging then wire Sentry + OTEL from settings-derived args.
 
@@ -127,7 +137,9 @@ def _configure_observability(settings: Settings) -> None:
     initialized uniformly. ``init_sentry``/``init_otel`` are no-op safe when
     unconfigured (no DSN / no OTLP endpoint), so a default deploy stays inert.
     """
-    configure_logging(settings.observability.log_json)
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     init_sentry(settings.observability.sentry_dsn, environment=settings.environment)
     init_otel(
         settings.observability.otel_service_name,
@@ -652,6 +664,10 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE": (
             AGENT_CHALLENGE_SUBMISSION_ENV_KEY_FILE
         ),
+        # Durable eval-loop concurrency for the dynamic/registry-seeded path so
+        # the agent-challenge worker drains up to this many attempts in parallel
+        # (matches the static install-swarm.sh ac_eval_env value).
+        "CHALLENGE_EVALUATION_CONCURRENCY": "15",
     }
 
 
@@ -799,6 +815,14 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     session_factory = create_session_factory(engine)
     registry = _master_registry(settings, session_factory)
     runtime = create_bittensor_runtime(settings)
+    # bittensor init resets the root logger to WARNING ("Enabling default logging
+    # (Warning level)"), swallowing this app's INFO records for the rest of the
+    # process. Re-assert our logging config AFTER the runtime is built (mirrors
+    # deploy/swarm/submitter/run_submitter.py); basicConfig(force=True) clears
+    # bittensor's handler and restores our handler with no duplicates.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     nonce_store = SqlAlchemyMinerNonceStore(
         session_factory,
         ttl_seconds=settings.master.upload_nonce_ttl_seconds,
@@ -902,6 +926,8 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
         SwarmBrokerConfig(
             workspace_dir=Path(settings.docker.broker_workspace_dir),
             allowed_images=tuple(settings.docker.broker_allowed_images),
+            log_limit_bytes=settings.docker.broker_log_limit_bytes,
+            max_concurrent_global=settings.docker.broker_max_concurrent_global,
             node_role=settings.docker.broker_node_role,
             privileged_escape_slugs=(
                 frozenset(settings.docker.broker_privileged_slugs)
@@ -1144,6 +1170,11 @@ def master_weights(
     _run_startup_migrations(settings)
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
+    # Re-assert logging AFTER bittensor init (which resets root logging to
+    # WARNING) so this loop's INFO records are not swallowed; see master_proxy.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     service = _master_weight_service(
         settings,
         metagraph_cache=runtime.metagraph_cache,
@@ -1177,6 +1208,11 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     settings = load_settings(config)
     _configure_observability(settings)
     runtime = create_bittensor_submit_runtime(settings)
+    # Re-assert logging AFTER bittensor init (which resets root logging to
+    # WARNING) so this runtime's INFO records are not swallowed; see master_proxy.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     runner = NormalValidatorRunner(
         registry_client=RegistryClient(settings.validator.registry_url),
         orchestrator=_challenge_orchestrator(settings),

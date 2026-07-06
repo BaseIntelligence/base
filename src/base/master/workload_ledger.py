@@ -126,14 +126,26 @@ class WorkloadLedger:
         self._entries: dict[str, WorkloadEntry] = {}
 
     def register(
-        self, entry: WorkloadEntry, *, max_concurrent: int | None = None
+        self,
+        entry: WorkloadEntry,
+        *,
+        max_concurrent: int | None = None,
+        max_concurrent_global: int | None = None,
     ) -> WorkloadEntry:
-        """Register a workload, atomically enforcing the optional cap.
+        """Register a workload, atomically enforcing the optional cap(s).
+
+        Both the per-slug ``max_concurrent`` cap and the server-wide
+        ``max_concurrent_global`` cap are checked under the SAME lock as the
+        insertion, so the check-and-register is atomic (no over-admission under
+        concurrent registers). The per-slug cap counts entries for
+        ``entry.challenge_slug``; the global cap counts TOTAL active entries
+        across every slug. ``None`` disables the corresponding cap.
 
         Raises:
             WorkloadLedgerError: if ``entry.key`` is already registered.
             WorkloadCapacityError: if registering would exceed ``max_concurrent``
-                active workloads for ``entry.challenge_slug``.
+                active workloads for ``entry.challenge_slug`` OR the total active
+                workloads would exceed ``max_concurrent_global``.
         """
 
         with self._lock:
@@ -148,6 +160,14 @@ class WorkloadLedger:
                         entry.challenge_slug,
                         active=active,
                         max_concurrent=max_concurrent,
+                    )
+            if max_concurrent_global is not None:
+                total = len(self._entries)
+                if total >= max_concurrent_global:
+                    raise WorkloadCapacityError(
+                        entry.challenge_slug,
+                        active=total,
+                        max_concurrent=max_concurrent_global,
                     )
             self._entries[entry.key] = entry
             return entry

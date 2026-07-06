@@ -651,10 +651,16 @@ preflight() {
     log "  backup dumps present in ${BACKUP_DIR} OK (prism.sql may be empty — expected)"
   fi
 
-  # GHCR credentials must be present (values never printed).
-  [[ -n "${GHCR_USER:-}" ]] || die "GHCR_USER not set (required for ghcr.io login)"
-  [[ -n "${GHCR_TOKEN:-}" ]] || die "GHCR_TOKEN not set (required for ghcr.io login)"
-  log "  GHCR_USER / GHCR_TOKEN present OK"
+  # GHCR credentials must be present (values never printed). SKIP_GHCR_LOGIN=true
+  # opts out for a PUBLIC-image deploy (no `docker login` needed): the required
+  # first-party images are pullable anonymously, so no credential is required.
+  if [[ "${SKIP_GHCR_LOGIN:-false}" != "true" ]]; then
+    [[ -n "${GHCR_USER:-}" ]] || die "GHCR_USER not set (required for ghcr.io login)"
+    [[ -n "${GHCR_TOKEN:-}" ]] || die "GHCR_TOKEN not set (required for ghcr.io login)"
+    log "  GHCR_USER / GHCR_TOKEN present OK"
+  else
+    log "  SKIP_GHCR_LOGIN=true: skipping GHCR credential requirement (public images)"
+  fi
 
   log "preflight complete"
 }
@@ -665,6 +671,10 @@ preflight() {
 #   GHCR_USER / GHCR_TOKEN; the token is fed on stdin (never argv, never logged).
 # ============================================================================
 ghcr_login() {
+  if [[ "${SKIP_GHCR_LOGIN:-false}" == "true" ]]; then
+    log "STEP 1b ghcr_login: SKIP_GHCR_LOGIN=true — skipping ghcr login (public images)"
+    return 0
+  fi
   log "STEP 1b ghcr_login: authenticating to ghcr.io (token via stdin, hidden)"
   plan_secret_stdin "ghcr-login" GHCR_TOKEN -- \
     docker login ghcr.io --username "${GHCR_USER}" --password-stdin
@@ -1180,6 +1190,15 @@ docker:
   broker_host: 0.0.0.0
   broker_port: ${MASTER_BROKER_PORT}
   broker_url: http://base-docker-broker:${MASTER_BROKER_PORT}
+  # Server-wide cap on TOTAL concurrent broker eval jobs across ALL challenge
+  # slugs, enforced atomically with the per-slug cap under the ledger lock
+  # (surfaces as HTTP 429 docker_quota_exceeded). Bounds total eval load on the
+  # single manager node; unset/None would be unlimited.
+  broker_max_concurrent_global: 30
+  # Max bytes of job stdout/stderr the broker returns before last-resort
+  # tail-capping, so challenges receive effectively-full eval logs while staying
+  # bounded against OOM (the 64KB code default was too small for full output).
+  broker_log_limit_bytes: 5000000
   # Namespaced+repo allowlist (NOT the whole 'ghcr.io/baseintelligence/'
   # namespace, which production validate_allowed_image_prefixes rejects as too
   # broad). These two repo prefixes cover every first-party image the broker
@@ -1588,6 +1607,10 @@ deploy_challenges() {
     "CHALLENGE_DOCKER_ALLOWED_IMAGES=${CHALLENGE_DOCKER_ALLOWED_IMAGES}"
     "CHALLENGE_VALIDATOR_ROLE=master"
     "CHALLENGE_DATABASE_URL_FILE=${SECRET_MOUNT_DIR}/database_url"
+    # Durable eval-loop concurrency: the worker drains up to this many attempts
+    # in parallel (mirrors cli_app _agent_challenge_own_runner_env for the
+    # dynamic path). Applied to BOTH the api and worker via ac_eval_env.
+    "CHALLENGE_EVALUATION_CONCURRENCY=15"
   )
   # Central AST+LLM gate review routing. Point the analyzer at the master gateway
   # ROOT (it appends /llm/v1) + read the scoped central-gate token from

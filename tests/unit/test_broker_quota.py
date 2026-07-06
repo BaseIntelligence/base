@@ -354,6 +354,111 @@ def test_legacy_run_default_unlimited(
     assert response.status_code == 200
 
 
+def test_swarm_run_over_global_cap_refused_with_429(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner()
+    service = _swarm_broker(tmp_path, runner, max_concurrent_global=3)
+    _fill_ledger(service.ledger, "agent", 3)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    response = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+
+    assert response.status_code == 429
+    body = response.json()
+    assert set(body) == {"detail"}
+    assert body["detail"].startswith(QUOTA_PREFIX)
+    assert "3/3" in body["detail"]
+    assert runner.create_calls() == []
+
+
+def test_global_cap_counts_across_all_slugs(tmp_path: Path) -> None:
+    """The global cap (unlike the per-slug cap) counts OTHER slugs' entries."""
+
+    runner = FakeSwarmRunner()
+    service = _swarm_broker(tmp_path, runner, max_concurrent_global=3)
+    # No entries for "agent" itself: three distinct OTHER challenges fill the cap.
+    _fill_ledger(service.ledger, "other-a", 1)
+    _fill_ledger(service.ledger, "other-b", 1)
+    _fill_ledger(service.ledger, "other-c", 1)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    response = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+
+    assert response.status_code == 429
+    assert response.json()["detail"].startswith(QUOTA_PREFIX)
+    assert service.ledger.count("agent") == 0
+
+
+def test_global_cap_release_frees_slot_and_next_accepted(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner()
+    service = _swarm_broker(tmp_path, runner, max_concurrent_global=2)
+    _fill_ledger(service.ledger, "other-a", 1)
+    _fill_ledger(service.ledger, "other-b", 1)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    refused = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+    assert refused.status_code == 429
+
+    assert service.ledger.release("held-other-a-0") is True
+    accepted = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+
+    assert accepted.status_code == 200
+    assert accepted.json()["returncode"] == 0
+    assert len(runner.create_calls()) == 1
+
+
+def test_per_slug_and_global_caps_enforced_together(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner()
+    service = _swarm_broker(
+        tmp_path, runner, max_concurrent_by_slug={"agent": 5}, max_concurrent_global=2
+    )
+    # Under the agent per-slug cap (5) but at the global cap (2) via other slugs.
+    _fill_ledger(service.ledger, "other-a", 1)
+    _fill_ledger(service.ledger, "other-b", 1)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    response = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+
+    assert response.status_code == 429
+    assert response.json()["detail"].startswith(QUOTA_PREFIX)
+
+
+def test_global_cap_default_none_unlimited(tmp_path: Path) -> None:
+    runner = FakeSwarmRunner()
+    service = _swarm_broker(tmp_path, runner)
+    assert service.config.max_concurrent_global is None
+    _fill_ledger(service.ledger, "other-a", 40)
+    _fill_ledger(service.ledger, "other-b", 40)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    response = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+
+    assert response.status_code == 200
+
+
+def test_legacy_run_over_global_cap_and_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(broker_module, "DockerExecutor", _FakeExecutor)
+    service = DockerBrokerService(
+        DockerBrokerConfig(
+            workspace_dir=tmp_path / "work",
+            allowed_images=("ghcr.io/baseintelligence/",),
+            max_concurrent_global=2,
+        )
+    )
+    _fill_ledger(service.ledger, "other-a", 1)
+    _fill_ledger(service.ledger, "other-b", 1)
+    client = TestClient(create_docker_broker_app(registry=Registry(), service=service))
+
+    refused = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+    assert refused.status_code == 429
+    assert refused.json()["detail"].startswith(QUOTA_PREFIX)
+
+    service.ledger.release("held-other-a-0")
+    accepted = client.post("/v1/docker/run", headers=AUTH_HEADERS, json=_run_payload())
+    assert accepted.status_code == 200
+
+
 def test_two_threads_racing_at_cap_one_exactly_one_wins(tmp_path: Path) -> None:
     runner = BlockingSwarmRunner()
     service = _swarm_broker(tmp_path, runner, max_concurrent_by_slug={"agent": 1})

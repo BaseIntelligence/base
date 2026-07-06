@@ -217,6 +217,40 @@ def test_rendered_master_config_wires_gateway_and_coordination(
     assert "orchestration_interval_seconds:" in out
 
 
+def test_rendered_master_config_carries_global_broker_cap(tmp_path: Path) -> None:
+    """The rendered master.yaml docker block sets the server-wide broker cap.
+
+    ``docker.broker_max_concurrent_global`` bounds TOTAL concurrent broker eval
+    jobs across ALL challenge slugs on the single manager node, and
+    ``broker_log_limit_bytes`` raises the returned-log bound so challenges get
+    effectively-full eval output.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+
+    assert "broker_max_concurrent_global: 30" in out
+    assert "broker_log_limit_bytes: 5000000" in out
+
+
+def test_agent_challenge_services_carry_evaluation_concurrency(
+    tmp_path: Path,
+) -> None:
+    """agent-challenge api + worker carry CHALLENGE_EVALUATION_CONCURRENCY=15.
+
+    The durable eval-loop concurrency is applied to BOTH the api and the worker
+    (via the static ``ac_eval_env`` array), mirroring the dynamic path's
+    ``cli_app._agent_challenge_own_runner_env``.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=15" in block
+
+
 def test_hf_publisher_token_mounted_on_prism_when_present(tmp_path: Path) -> None:
     result = _run(tmp_path, hf_token=HF_SENTINEL)
     assert result.returncode == 0, f"stderr={result.stderr!r}"

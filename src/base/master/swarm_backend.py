@@ -41,6 +41,7 @@ Swarm-specific decisions (see ``.omo/plans/platform-docker-migration.md``):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import time
@@ -96,6 +97,8 @@ from base.schemas.docker_broker import (
     BrokerRunRequest,
     BrokerRunResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CHALLENGE_CONSTRAINT = "node.role==manager"
 DEFAULT_CPU_JOB_CONSTRAINT = "node.labels.base.workload==cpu"
@@ -426,6 +429,12 @@ class SwarmBrokerService(DockerBrokerService):
             # capability-gated escape hatch runs them as a direct local
             # ``docker run`` on this worker node instead.
             return self._run_escape_hatch(challenge_slug, request)
+        logger.info(
+            "broker swarm job accepted: slug=%s image=%s job_id=%s",
+            challenge_slug,
+            request.image,
+            request.job_id,
+        )
         limits = self._hardened_limits(request)
         self._validate_request(request)
         with TemporaryDirectory(
@@ -539,12 +548,17 @@ class SwarmBrokerService(DockerBrokerService):
             )
             service_id = ""
             try:
-                self.ledger.register(
-                    entry, max_concurrent=self._max_concurrent(challenge_slug)
-                )
+                self._register_job(entry)
                 service_id = self._create_job_service(plan)
                 self.ledger.register(replace(entry, key=service_id))
                 self.ledger.release(name)
+                logger.info(
+                    "broker swarm job service created: slug=%s job_id=%s service=%s; "
+                    "waiting for completion",
+                    challenge_slug,
+                    request.job_id,
+                    service_id,
+                )
                 outcome = self._wait_for_job(service_id, request.timeout_seconds)
                 raw_stdout, raw_stderr = self._service_logs_raw(service_id)
                 if cross_node:
@@ -569,6 +583,35 @@ class SwarmBrokerService(DockerBrokerService):
                 stderr = self._cap_log(raw_stderr)
                 if outcome.error and not stderr:
                     stderr = self._cap_log(outcome.error)
+                if outcome.timed_out:
+                    logger.error(
+                        "broker swarm job timed out: slug=%s job_id=%s service=%s "
+                        "timeout_seconds=%s",
+                        challenge_slug,
+                        request.job_id,
+                        service_id,
+                        request.timeout_seconds,
+                    )
+                elif outcome.error:
+                    logger.error(
+                        "broker swarm job failed: slug=%s job_id=%s service=%s "
+                        "returncode=%s",
+                        challenge_slug,
+                        request.job_id,
+                        service_id,
+                        outcome.returncode,
+                    )
+                logger.info(
+                    "broker swarm job finished: slug=%s job_id=%s service=%s "
+                    "returncode=%s timed_out=%s stdout_bytes=%d stderr_bytes=%d",
+                    challenge_slug,
+                    request.job_id,
+                    service_id,
+                    outcome.returncode,
+                    outcome.timed_out,
+                    len(stdout.encode(errors="replace")),
+                    len(stderr.encode(errors="replace")),
+                )
                 return BrokerRunResponse(
                     container_name=name,
                     stdout=stdout,
@@ -739,6 +782,11 @@ class SwarmBrokerService(DockerBrokerService):
     def _create_job_service(self, plan: SwarmServicePlan) -> str:
         created = self._command(build_service_create_argv(self.config.docker_bin, plan))
         if created.returncode != 0:
+            logger.error(
+                "broker swarm service create failed: service=%s rc=%s",
+                plan.name,
+                created.returncode,
+            )
             raise DockerExecutorError(
                 f"Swarm service create failed: {self._cap_log(created.stderr)}"
             )

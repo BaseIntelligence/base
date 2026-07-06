@@ -99,7 +99,7 @@ def test_main_initializes_sentry_and_otel(monkeypatch: pytest.MonkeyPatch) -> No
         module, "_parse_args", lambda: SimpleNamespace(config="submitter.yaml")
     )
     monkeypatch.setattr(module, "load_settings", lambda config: settings)
-    monkeypatch.setattr(module, "configure_logging", lambda json_logs: None)
+    monkeypatch.setattr(module, "configure_logging", lambda json_logs, level=None: None)
     monkeypatch.setattr(
         module,
         "init_sentry",
