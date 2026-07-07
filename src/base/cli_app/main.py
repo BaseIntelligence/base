@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -164,6 +166,15 @@ app.add_typer(worker_plane_app, name="worker")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _resolved_log_level(settings: Settings) -> int:
+    """Resolve ``observability.log_level`` to a ``logging`` level int.
+
+    Case-insensitive; an unrecognized name falls back to ``INFO`` so a
+    misconfigured level never crashes an entrypoint.
+    """
+    return getattr(logging, settings.observability.log_level.upper(), logging.INFO)
+
+
 def _configure_observability(settings: Settings) -> None:
     """Configure logging then wire Sentry + OTEL from settings-derived args.
 
@@ -171,7 +182,9 @@ def _configure_observability(settings: Settings) -> None:
     initialized uniformly. ``init_sentry``/``init_otel`` are no-op safe when
     unconfigured (no DSN / no OTLP endpoint), so a default deploy stays inert.
     """
-    configure_logging(settings.observability.log_json)
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     init_sentry(settings.observability.sentry_dsn, environment=settings.environment)
     init_otel(
         settings.observability.otel_service_name,
@@ -277,6 +290,23 @@ class DockerRuntimeController:
         return {
             "slug": slug,
             "operation": "restart",
+            "status": "ok",
+            "detail": runtime.container_name,
+        }
+
+    async def rollback(self, slug: str, image: str):
+        """Roll the challenge service BACK to a specific (previous) image.
+
+        Used by the challenge-image-updater when a roll to the desired digest
+        comes up UNHEALTHY: the service is reverted to the digest it was running
+        before the roll. Reuses ``restart_challenge`` with the record's image
+        overridden so the same update + readiness path applies to the revert.
+        """
+        spec = replace(await self._spec(slug), image=image)
+        runtime = self.orchestrator.restart_challenge(spec)
+        return {
+            "slug": slug,
+            "operation": "rollback",
             "status": "ok",
             "detail": runtime.container_name,
         }
@@ -655,6 +685,13 @@ PRISM_VERSION = "0.1.0"
 PRISM_EMISSION_PERCENT = Decimal("30")
 AGENT_CHALLENGE_EMISSION_PERCENT = Decimal("15")
 DEFAULT_BASE_BROKER_URL = "http://base-docker-broker:8082"
+#: Master LLM gateway overlay service name + default published port (byte-matches
+#: install-swarm.sh ``base-master-proxy`` / ``MASTER_PROXY_PORT``). The master's
+#: OWN agent-challenge eval JOB + analyzer run on the ``--internal``
+#: ``base_jobs_internal`` overlay (NO egress), so they reach the gateway by this
+#: INTERNAL service name, NOT the gateway PUBLIC IP (which is unreachable there).
+MASTER_PROXY_SERVICE_NAME = "base-master-proxy"
+MASTER_PROXY_SERVICE_PORT = 19080
 
 
 def _settings_docker_broker_url(settings: Any | None) -> str:
@@ -680,6 +717,25 @@ def _settings_gateway_public_base_url(settings: Any | None) -> str:
     master_settings = getattr(settings, "master", None)
     registry_url = getattr(master_settings, "registry_url", None)
     return str(registry_url or MasterSettings().registry_url)
+
+
+def _settings_gateway_internal_base_url(settings: Any | None) -> str:
+    """Return the master LLM gateway INTERNAL overlay base URL for challenge routing.
+
+    The master's OWN agent-challenge eval JOB + analyzer run on the ``--internal``
+    ``base_jobs_internal`` overlay (NO egress), so they CANNOT reach the gateway
+    PUBLIC IP; they reach it by the overlay service name ``base-master-proxy``
+    (the proxy is multi-homed onto that overlay). Byte-matches install-swarm.sh
+    (``http://base-master-proxy:${MASTER_PROXY_PORT}``). The port comes from the
+    master ``proxy_port`` (the installer renders ``proxy_port: ${MASTER_PROXY_PORT}``
+    == 19080 into the master config), defaulting to
+    :data:`MASTER_PROXY_SERVICE_PORT` (19080) when absent.
+    """
+
+    master_settings = getattr(settings, "master", None)
+    proxy_port = getattr(master_settings, "proxy_port", None)
+    port = proxy_port or MASTER_PROXY_SERVICE_PORT
+    return f"http://{MASTER_PROXY_SERVICE_NAME}:{port}"
 
 
 def _parse_eval_readonly_mounts(values: list[str]) -> tuple[tuple[str, str], ...]:
@@ -776,7 +832,7 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
     """
     broker_url = _settings_docker_broker_url(settings)
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
-    gateway_base_url = _settings_gateway_public_base_url(settings)
+    gateway_base_url = _settings_gateway_internal_base_url(settings)
     return {
         "CHALLENGE_BENCHMARK_BACKEND": "terminal_bench",
         "CHALLENGE_DOCKER_ENABLED": "true",
@@ -786,8 +842,11 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_DOCKER_BROKER_NETWORK": AGENT_CHALLENGE_JOB_NETWORK,
         # Central AST+LLM gate routing (byte-matches install-swarm.sh): the
         # analyzer LLM review routes through the master gateway ROOT (it appends
-        # /llm/v1 itself). The scoped central-gate token file is mounted from the
-        # shared base_gateway_token secret; NO raw provider key here.
+        # /llm/v1 itself) via the INTERNAL overlay service name base-master-proxy,
+        # NOT the gateway public IP — the eval JOB + analyzer run on
+        # base_jobs_internal (--internal, no egress), so the public IP is
+        # unreachable from there. The scoped central-gate token file is mounted
+        # from the shared base_gateway_token secret; NO raw provider key here.
         "CHALLENGE_LLM_GATEWAY_BASE_URL": gateway_base_url,
         "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND": "own_runner",
         "CHALLENGE_HARBOR_RUNNER_IMAGE": AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE,
@@ -799,6 +858,12 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE": (
             AGENT_CHALLENGE_SUBMISSION_ENV_KEY_FILE
         ),
+        # Durable eval-loop concurrency for the dynamic/registry-seeded path so
+        # the agent-challenge worker drains up to this many attempts in parallel
+        # (matches the static install-swarm.sh RAM-derived default for the 62 GiB
+        # manager at a 4 GB/task budget; the challenge config validator caps it at
+        # <=30 downstream).
+        "CHALLENGE_EVALUATION_CONCURRENCY": "13",
     }
 
 
@@ -946,6 +1011,14 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     session_factory = create_session_factory(engine)
     registry = _master_registry(settings, session_factory)
     runtime = create_bittensor_runtime(settings)
+    # bittensor init resets the root logger to WARNING ("Enabling default logging
+    # (Warning level)"), swallowing this app's INFO records for the rest of the
+    # process. Re-assert our logging config AFTER the runtime is built (mirrors
+    # deploy/swarm/submitter/run_submitter.py); basicConfig(force=True) clears
+    # bittensor's handler and restores our handler with no duplicates.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     nonce_store = SqlAlchemyMinerNonceStore(
         session_factory,
         ttl_seconds=settings.master.upload_nonce_ttl_seconds,
@@ -1084,6 +1157,8 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
         SwarmBrokerConfig(
             workspace_dir=Path(settings.docker.broker_workspace_dir),
             allowed_images=tuple(settings.docker.broker_allowed_images),
+            log_limit_bytes=settings.docker.broker_log_limit_bytes,
+            max_concurrent_global=settings.docker.broker_max_concurrent_global,
             node_role=settings.docker.broker_node_role,
             privileged_escape_slugs=(
                 frozenset(settings.docker.broker_privileged_slugs)
@@ -1326,6 +1401,11 @@ def master_weights(
     _run_startup_migrations(settings)
     registry = _master_registry(settings)
     runtime = create_bittensor_runtime(settings)
+    # Re-assert logging AFTER bittensor init (which resets root logging to
+    # WARNING) so this loop's INFO records are not swallowed; see master_proxy.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     service = _master_weight_service(
         settings,
         metagraph_cache=runtime.metagraph_cache,
@@ -1359,6 +1439,11 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     settings = load_settings(config)
     _configure_observability(settings)
     runtime = create_bittensor_submit_runtime(settings)
+    # Re-assert logging AFTER bittensor init (which resets root logging to
+    # WARNING) so this runtime's INFO records are not swallowed; see master_proxy.
+    configure_logging(
+        settings.observability.log_json, level=_resolved_log_level(settings)
+    )
     runner = NormalValidatorRunner(
         registry_client=RegistryClient(settings.validator.registry_url),
         orchestrator=_challenge_orchestrator(settings),

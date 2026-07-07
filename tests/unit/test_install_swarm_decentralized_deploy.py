@@ -21,6 +21,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from base.config.loader import load_settings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +87,7 @@ def _run(
     tmp_path: Path,
     *,
     extra_env: dict[str, str] | None = None,
+    extra_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _docker_stub(bin_dir)
@@ -104,6 +107,7 @@ def _run(
             str(tmp_path / "missing"),
             "--greenfield",
             "--static-challenges",
+            *extra_args,
         ],
         env=env,
         capture_output=True,
@@ -270,6 +274,61 @@ def test_published_ports_are_configurable(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# swarm_init advertise-addr: the operational default auto-detects THIS host's
+# primary IPv4 (source IP of the default route) so a blank non-master box
+# advertises its OWN address, while an explicit override is honored verbatim and
+# the old hardcoded master IP is never advertised on a non-master box.
+# ---------------------------------------------------------------------------
+
+# The exact detection the installer runs at ADVERTISE_ADDR default resolution.
+_DETECT_ADVERTISE_ADDR_CMD = (
+    "ip -4 route get 1.1.1.1 2>/dev/null | "
+    "awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1); exit}}'"
+)
+
+
+def _detect_primary_ipv4() -> str:
+    """Detect this host's primary IPv4 exactly like the installer's default."""
+    proc = subprocess.run(
+        ["bash", "-c", _DETECT_ADVERTISE_ADDR_CMD],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip()
+
+
+def test_advertise_addr_unset_auto_detects_host_primary_ip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With ADVERTISE_ADDR unset the installer auto-detects the source IP of the
+    # default route; the swarm_init plan + STEP log must carry that same IP.
+    monkeypatch.delenv("ADVERTISE_ADDR", raising=False)
+    detected = _detect_primary_ipv4()
+    if not detected:
+        pytest.skip("no default-route source IPv4 detectable on this host")
+
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert f"docker swarm init --advertise-addr {detected}" in result.stdout
+    assert f"swarm_init (advertise-addr={detected})" in result.stdout
+
+
+def test_advertise_addr_override_is_honored_and_hardcoded_master_ip_gone(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, extra_env={"ADVERTISE_ADDR": "203.0.113.7"})
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+
+    # The explicit override flows straight into `docker swarm init`.
+    assert "docker swarm init --advertise-addr 203.0.113.7" in out
+    # The old hardcoded master IP must never be the advertise addr on a
+    # non-master box (regression on the 86.38.238.235 default).
+    assert "86.38.238.235" not in out
+
+
+# ---------------------------------------------------------------------------
 # Eval job network isolation (base_jobs_internal): the proxy + agent-challenge
 # api/worker are multi-homed onto the isolated internal eval overlay so the eval
 # JOB reaches ONLY the gateway + API by name, never postgres; the broker + prism
@@ -348,6 +407,73 @@ def test_broker_still_mounts_docker_socket(tmp_path: Path) -> None:
 
     broker = _service_block(lines, "base-docker-broker")
     assert "source=/var/run/docker.sock" in broker
+
+
+# ---------------------------------------------------------------------------
+# Swarm self-healing update/rollback policy on every long-lived service
+# (crash-detection + auto-rollback), plus an HTTP /health container healthcheck
+# on the services that serve one. Kept in sync with swarm_backend.py
+# SERVICE_UPDATE_ROLLBACK_POLICY (the dynamic orchestrator path).
+# ---------------------------------------------------------------------------
+
+_SWARM_UPDATE_POLICY_FLAGS = (
+    "--update-failure-action rollback",
+    "--update-monitor 45s",
+    "--update-max-failure-ratio 0",
+    "--update-order stop-first",
+    "--rollback-failure-action pause",
+    "--rollback-monitor 45s",
+    "--rollback-max-failure-ratio 1",
+)
+
+
+def test_all_long_lived_services_carry_update_rollback_policy(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+    for service in (
+        "base-master-postgres",
+        "base-docker-broker",
+        "base-master-proxy",
+        "challenge-agent-challenge",
+        "challenge-agent-challenge-worker",
+        "challenge-prism",
+        "challenge-prism-worker",
+    ):
+        block = _service_block(lines, service)
+        for flag in _SWARM_UPDATE_POLICY_FLAGS:
+            assert flag in block, f"{service} missing {flag!r}"
+        # stop-first must appear exactly once (no leftover duplicate flag).
+        assert block.count("--update-order stop-first") == 1, service
+
+
+def test_http_services_get_health_probe_and_others_do_not(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+    # Services with a real HTTP /health endpoint get a container healthcheck on
+    # their own listen port with conservative timings.
+    for service, port in (
+        ("base-docker-broker", "8082"),
+        ("base-master-proxy", "19080"),
+        ("challenge-agent-challenge", "8000"),
+        ("challenge-prism", "8080"),
+    ):
+        block = _service_block(lines, service)
+        assert "--health-cmd" in block, service
+        assert f"localhost:{port}/health" in block, service
+        assert "--health-interval 10s" in block, service
+        assert "--health-timeout 5s" in block, service
+        assert "--health-retries 3" in block, service
+        assert "--health-start-period 40s" in block, service
+    # postgres (not HTTP) and the worker sidecars (no /health server) rely on
+    # crash-detection only — NO container healthcheck.
+    for service in (
+        "base-master-postgres",
+        "challenge-agent-challenge-worker",
+        "challenge-prism-worker",
+    ):
+        assert "--health-cmd" not in _service_block(lines, service), service
 
 
 # ---------------------------------------------------------------------------
@@ -535,3 +661,51 @@ def test_challenge_services_named_challenge_slug_not_base_prefixed(
     # Standardization is SCOPED to challenge services: master/broker keep `base-`.
     assert _service_block(lines, "base-master-proxy")
     assert _service_block(lines, "base-docker-broker")
+
+
+# ---------------------------------------------------------------------------
+# Phase H (turnkey installer): --skip-ghcr-login makes ghcr_login a no-op AND
+# ensures ${DOCKER_CONFIG:-~/.docker} exists with a `{}` config so the broker /
+# proxy /root/.docker read-only binds resolve (the public-image footgun fix).
+# ---------------------------------------------------------------------------
+
+
+def test_skip_ghcr_login_is_noop_and_ensures_docker_config_dir(
+    tmp_path: Path,
+) -> None:
+    docker_cfg = tmp_path / "docker-config"  # non-existent => `{}` config planned
+    result = _run(
+        tmp_path,
+        extra_args=("--skip-ghcr-login",),
+        extra_env={"DOCKER_CONFIG": str(docker_cfg)},
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    # ghcr login is skipped (no `docker login ghcr.io` planned).
+    assert "skipping ghcr login" in out
+    assert "docker login ghcr.io" not in out
+    # The docker config dir + an empty `{}` config are planned so the RO binds
+    # resolve. Plan lines are printf '%q'-escaped, so strip backslashes to compare.
+    plan = out.replace("\\", "")
+    assert f"install -d -m 0700 {docker_cfg}" in plan
+    assert "printf '{}'" in plan
+    assert f"{docker_cfg}/config.json" in plan
+
+
+# ---------------------------------------------------------------------------
+# Phase H: the --validator-node bring-up also runs ensure_docker (STEP 0) BEFORE
+# preflight (STEP 1), so a blank validator host gets an engine first.
+# ---------------------------------------------------------------------------
+
+
+def test_validator_node_ensure_docker_before_preflight(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        extra_args=("--validator-node",),
+        extra_env={"VALIDATOR_MASTER_URL": "http://master.example:19080"},
+    )
+    step0 = "STEP 0 ensure_docker"
+    step1 = "STEP 1/12 preflight"
+    assert step0 in result.stdout
+    assert step1 in result.stdout
+    assert result.stdout.index(step0) < result.stdout.index(step1)

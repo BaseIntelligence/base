@@ -189,7 +189,9 @@ async def _run(settings: Settings) -> None:
     # process. ``configure_logging`` uses ``basicConfig(..., force=True)``, so
     # this re-call clears bittensor's handler and restores our INFO handler
     # with no duplicates.
-    configure_logging(settings.observability.log_json)
+    configure_logging(
+        settings.observability.log_json, level=settings.observability.log_level
+    )
     _log_startup_identity(runner, settings)
 
     async def submit_weights() -> None:
@@ -217,7 +219,9 @@ async def _run(settings: Settings) -> None:
 def main() -> None:
     args = _parse_args()
     settings = load_settings(args.config)
-    configure_logging(settings.observability.log_json)
+    configure_logging(
+        settings.observability.log_json, level=settings.observability.log_level
+    )
     init_sentry(settings.observability.sentry_dsn, environment=settings.environment)
     init_otel(
         settings.observability.otel_service_name,

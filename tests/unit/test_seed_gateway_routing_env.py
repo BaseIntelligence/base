@@ -4,13 +4,17 @@ The registry SEED sets the challenge combined-mode env but historically NOT the
 LLM gateway-ROUTING env, so a challenge the master reconciler creates PURELY from
 the registry (no static install-swarm env then adopted) would not route its LLM
 calls through the master gateway. These guards lock that the seed renders the
-gateway-routing URL into the record env, sourced from the master
-``gateway.public_base_url`` and BYTE-MATCHING install-swarm.sh:
+gateway-routing URL into the record env, BYTE-MATCHING install-swarm.sh:
 
-- agent-challenge -> ``CHALLENGE_LLM_GATEWAY_BASE_URL=<gateway.public_base_url>``
-  (the analyzer appends ``/llm/v1`` itself)
+- agent-challenge -> ``CHALLENGE_LLM_GATEWAY_BASE_URL=http://base-master-proxy:<proxy_port>``
+  (the analyzer appends ``/llm/v1`` itself). The master routes to the INTERNAL
+  overlay service name, NOT the gateway public IP, because the eval JOB + analyzer
+  run on the ``--internal`` base_jobs_internal overlay (NO egress) where the public
+  IP is unreachable; the port comes from the master ``proxy_port`` (default 19080).
 - prism -> ``PRISM_LLM_GATEWAY_URL=<gateway.public_base_url>/llm/v1`` (the single
-  source-driven gateway route; the gateway injects the provider + model)
+  source-driven gateway route; the gateway injects the provider + model). prism's
+  long-lived service DOES advertise the public base (it is not on the internal
+  eval overlay).
 
 and that a spec built by ``challenge_spec_from_registry`` from the seeded record
 carries the same routing env onto the reconciler-built service. No raw provider
@@ -29,6 +33,11 @@ from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
 GATEWAY_PUBLIC_BASE_URL = "http://88.216.198.199:19080"
 GATEWAY_V1_ROUTE = f"{GATEWAY_PUBLIC_BASE_URL}/llm/v1"
+# agent-challenge routes its LLM through the master gateway by the INTERNAL overlay
+# service name (base-master-proxy), NOT the public IP: the eval JOB + analyzer run
+# on the --internal base_jobs_internal overlay (no egress). The _settings() below
+# carries no master.proxy_port, so the helper falls back to the 19080 default.
+GATEWAY_INTERNAL_BASE_URL = "http://base-master-proxy:19080"
 
 
 def _settings() -> SimpleNamespace:
@@ -66,7 +75,7 @@ def test_prism_challenge_create_env_carries_gateway_routing_url() -> None:
 
 def test_agent_challenge_own_runner_env_carries_gateway_routing_url() -> None:
     env = cli_module._agent_challenge_own_runner_env(_settings())
-    assert env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_PUBLIC_BASE_URL
+    assert env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_INTERNAL_BASE_URL
     assert not any(key.endswith("_API_KEY") for key in env)
 
 
@@ -86,21 +95,32 @@ def test_seeded_agent_challenge_record_env_and_reconciler_spec_carry_routing() -
     _seed(registry)
 
     agent = registry.get("agent-challenge")
-    assert agent.env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_PUBLIC_BASE_URL
+    assert agent.env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_INTERNAL_BASE_URL
 
     spec = challenge_spec_from_registry(agent)
-    assert spec.env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_PUBLIC_BASE_URL
+    assert spec.env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == GATEWAY_INTERNAL_BASE_URL
 
 
-def test_routing_url_derived_from_gateway_public_base_url() -> None:
-    """The routing URL tracks the configured gateway base (not a hardcoded host)."""
+def test_routing_url_derived_from_config_not_hardcoded_host() -> None:
+    """Routing URLs are config-driven, not hardcoded hosts.
+
+    prism tracks the configured gateway PUBLIC base. agent-challenge instead routes
+    via the fixed INTERNAL overlay service name (base-master-proxy) on the master
+    ``proxy_port`` (here 8081), independent of the public base — the eval JOB +
+    analyzer are on the ``--internal`` base_jobs_internal overlay where the public
+    IP is unreachable.
+    """
 
     other = SimpleNamespace(
         docker=SimpleNamespace(broker_url="http://base-docker-broker:8082"),
         gateway=SimpleNamespace(public_base_url="http://10.0.0.5:28080"),
-        master=SimpleNamespace(registry_url="https://chain.joinbase.ai"),
+        master=SimpleNamespace(
+            registry_url="https://chain.joinbase.ai", proxy_port=8081
+        ),
     )
     prism = cli_module.prism_challenge_create(other)
     assert prism.env["PRISM_LLM_GATEWAY_URL"] == "http://10.0.0.5:28080/llm/v1"
     agent_env = cli_module._agent_challenge_own_runner_env(other)
-    assert agent_env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == "http://10.0.0.5:28080"
+    assert (
+        agent_env["CHALLENGE_LLM_GATEWAY_BASE_URL"] == "http://base-master-proxy:8081"
+    )

@@ -32,6 +32,7 @@ from base.master.llm_gateway.providers import (
     ProviderRequest,
     ProviderResponse,
     RecordedProviderRequest,
+    StreamingProviderResponse,
     build_providers,
     compose_provider_url,
 )
@@ -99,6 +100,7 @@ __all__ = [
     "SecretRedactingFilter",
     "SourceRoute",
     "SqlAlchemyUsageRecorder",
+    "StreamingProviderResponse",
     "UnknownProviderError",
     "UsageRecord",
     "UsageRecorder",

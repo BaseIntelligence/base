@@ -23,7 +23,7 @@ from base.supervisor.sd_notify import (
     SystemdNotifier,
     watchdog_interval_seconds,
 )
-from base.supervisor.tasks import build_scheduled_tasks
+from base.supervisor.tasks import build_broker_health_task, build_scheduled_tasks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -327,6 +327,46 @@ def test_build_scheduled_tasks_registers_health_probe_with_shared_gate() -> None
     assert not injected.healthy
 
 
+def test_broker_health_probe_prefers_supervisor_override_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The host supervisor cannot resolve the overlay name in docker.broker_url;
+    # a set supervisor.broker_health_url must win so the probe hits the
+    # host-published broker port instead of failing forever.
+    captured: dict[str, str] = {}
+
+    def fake_prober(url: str, timeout_seconds: float) -> Callable[[], bool]:
+        captured["url"] = url
+        return lambda: True
+
+    monkeypatch.setattr("base.supervisor.tasks.http_health_prober", fake_prober)
+    settings = Settings.model_validate(
+        {
+            "docker": {"broker_url": "http://base-docker-broker:8082"},
+            "supervisor": {"broker_health_url": "http://127.0.0.1:8082"},
+        }
+    )
+    build_broker_health_task(settings)
+    assert captured["url"] == "http://127.0.0.1:8082/health"
+
+
+def test_broker_health_probe_falls_back_to_docker_broker_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_prober(url: str, timeout_seconds: float) -> Callable[[], bool]:
+        captured["url"] = url
+        return lambda: True
+
+    monkeypatch.setattr("base.supervisor.tasks.http_health_prober", fake_prober)
+    settings = Settings.model_validate(
+        {"docker": {"broker_url": "http://base-docker-broker:8082"}}
+    )
+    build_broker_health_task(settings)
+    assert captured["url"] == "http://base-docker-broker:8082/health"
+
+
 def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
     tasks, _gate = build_scheduled_tasks(Settings())
 
@@ -355,9 +395,32 @@ def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
     assert "base-config-sync" not in rollout_services
 
 
+def test_config_sync_and_image_updater_share_service_lock_registry() -> None:
+    # Recommendation H: a SHARED per-service update lock registry is threaded
+    # into BOTH the image-updater and config-sync so the two 60s loops never
+    # issue overlapping `docker service update` on the same shared service.
+    tasks, _gate = build_scheduled_tasks(Settings())
+    image_updater = image_updater_from_task(
+        next(t for t in tasks if t.name == "image-updater")
+    )
+    config_sync = next(t for t in tasks if t.name == "config-sync").run.__self__  # type: ignore[attr-defined]
+
+    assert image_updater._service_locks is not None
+    assert image_updater._service_locks is config_sync._service_locks
+    # The same service name resolves to the SAME lock object across both loops.
+    lock = image_updater._service_locks.get("base-master-proxy")
+    assert config_sync._service_locks.get("base-master-proxy") is lock
+
+
 def test_systemd_unit_template_is_notify_with_watchdog() -> None:
     unit = (ROOT / "deploy" / "swarm" / "base-supervisor.service").read_text()
     assert "Type=notify" in unit
+    # `uv run` forks the supervisor as a child, so systemd must accept sd_notify
+    # from any cgroup process, not just the main (uv) PID.
+    assert "NotifyAccess=all" in unit
     assert "WatchdogSec=" in unit
     assert "Restart=always" in unit
     assert "master supervisor" in unit
+    # ProtectSystem=full makes /etc read-only; config-sync must still be able to
+    # write the node-local master.yaml (+ sidecar) under /etc/base.
+    assert "ReadWritePaths=/etc/base" in unit

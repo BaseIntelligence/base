@@ -42,13 +42,14 @@ POSTGRES_DEFAULT_PORT = 5432
 # config-sync overwrites /etc/base/master.yaml from the canonical file, so a
 # stale value here would roll the live proxy onto the wrong port on the next sync.
 PROXY_PORT_PRODUCTION = 19080
-# Live production host advertised in gateway.public_base_url (88.216.198.199; the
-# old 51.83.112.164 host is decommissioned) and the live chain network.
-ADVERTISE_ADDR_PRODUCTION = "88.216.198.199"
-CHAIN_ENDPOINT_PRODUCTION = "finney"
+# Live production host advertised in gateway.public_base_url (86.38.238.235; the
+# old 51.83.112.164 and 88.216.198.199 hosts are decommissioned). The live master
+# runs NO-CHAIN (chain_endpoint empty), not finney.
+ADVERTISE_ADDR_PRODUCTION = "86.38.238.235"
+CHAIN_ENDPOINT_PRODUCTION = ""
 # Values that MUST NOT reappear in the canonical config: they would break the
-# live master on a config-sync (old port / decommissioned host).
-STALE_TOKENS = ("18080", "51.83.112.164")
+# live master on a config-sync (old port / decommissioned hosts).
+STALE_TOKENS = ("18080", "51.83.112.164", "88.216.198.199")
 
 
 def _installer_text() -> str:
@@ -123,13 +124,17 @@ def _installer_master_proxy_port_default() -> int:
     return int(match.group(1))
 
 
-def _installer_advertise_addr_default() -> str:
-    """Default advertise host the installer renders into gateway.public_base_url."""
+def _installer_production_advertise_addr() -> str:
+    """PRODUCTION advertise host the installer keeps in lock-step with the
+    canonical master.yaml gateway.public_base_url.
 
-    match = re.search(
-        r'ADVERTISE_ADDR="\$\{ADVERTISE_ADDR:-([^}"]+)\}"', _installer_text()
-    )
-    assert match is not None, "could not resolve ADVERTISE_ADDR default"
+    The operational ``ADVERTISE_ADDR`` default is now an ``$(ip ...)`` auto-detect
+    of THIS host's primary IP, so the canonical-config consistency check reads the
+    documented ``PRODUCTION_ADVERTISE_ADDR`` constant instead of the default.
+    """
+
+    match = re.search(r'PRODUCTION_ADVERTISE_ADDR="([^"]+)"', _installer_text())
+    assert match is not None, "could not resolve PRODUCTION_ADVERTISE_ADDR"
     return match.group(1)
 
 
@@ -271,10 +276,10 @@ def test_master_yaml_gateway_public_base_url_matches_installer_render() -> None:
     cfg = _master_yaml()
     host, port = _host_port_from_url(cfg["gateway"]["public_base_url"])
 
-    # Installer renders public_base_url as http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT};
-    # the canonical file must agree so config-sync does not clobber it, and the
-    # advertised port must equal the port the proxy actually binds to.
-    assert host == _installer_advertise_addr_default()
+    # Installer renders public_base_url from its PRODUCTION advertise IP + the
+    # ${MASTER_PROXY_PORT}; the canonical file must agree so config-sync does not
+    # clobber it, and the advertised port must equal the port the proxy binds to.
+    assert host == _installer_production_advertise_addr()
     assert port == _installer_master_proxy_port_default()
     assert port == int(cfg["master"]["proxy_port"])
 
@@ -306,6 +311,13 @@ def test_master_yaml_supervisor_block_loads_into_supervisor_settings() -> None:
         == cfg["supervisor"]["self_update_manifest_url"]
     )
     assert supervisor.registry == cfg["supervisor"]["registry"]
+    # The host supervisor probes the broker at its host-published port (loopback),
+    # NOT the overlay service DNS in docker.broker_url it cannot resolve off-mesh.
+    assert supervisor.broker_health_url is not None
+    assert "base-docker-broker" not in supervisor.broker_health_url
+    health_host, health_port = _host_port_from_url(supervisor.broker_health_url)
+    assert health_host in {"127.0.0.1", "localhost"}
+    assert health_port == _host_port_from_url(cfg["docker"]["broker_url"])[1]
 
 
 # ---------------------------------------------------------------------------
@@ -320,14 +332,15 @@ def test_master_yaml_supervisor_block_loads_into_supervisor_settings() -> None:
 def test_master_yaml_equals_live_production_config() -> None:
     cfg = _master_yaml()
 
-    # master + gateway published proxy endpoint (live 88.216.198.199:19080).
+    # master + gateway published proxy endpoint (live 86.38.238.235:19080).
     assert int(cfg["master"]["proxy_port"]) == PROXY_PORT_PRODUCTION
     assert (
         cfg["gateway"]["public_base_url"]
         == f"http://{ADVERTISE_ADDR_PRODUCTION}:{PROXY_PORT_PRODUCTION}"
     )
 
-    # network: live master runs on finney with the mock-metagraph seam OFF.
+    # network: live master runs NO-CHAIN (chain_endpoint empty, NOT finney) with
+    # the mock-metagraph seam OFF.
     assert cfg["network"]["chain_endpoint"] == CHAIN_ENDPOINT_PRODUCTION
     assert cfg["network"]["chain_endpoint"] is not None
     assert cfg["network"]["mock_metagraph"] == []
@@ -350,8 +363,12 @@ def test_master_yaml_equals_live_production_config() -> None:
     assert "deepseek_api_key_file" not in gateway
     assert "openrouter_api_key_file" not in gateway
 
-    # broker allowlist matches the live (broad, namespaced) allowlist.
-    assert cfg["docker"]["broker_allowed_images"] == ["ghcr.io/baseintelligence/"]
+    # broker allowlist matches the live NARROW namespaced+repo allowlist (the two
+    # first-party repos the broker actually runs).
+    assert cfg["docker"]["broker_allowed_images"] == [
+        "ghcr.io/baseintelligence/agent-challenge",
+        "ghcr.io/baseintelligence/prism",
+    ]
 
     # database.url stays the env-overridden placeholder (live overrides via
     # BASE_DATABASE__URL); host must be the master postgres service.
@@ -368,9 +385,10 @@ def test_master_yaml_equals_live_production_config() -> None:
     assert supervisor["registry"] == "ghcr.io"
     assert supervisor["registry_docker_config_path"] == "/root/.docker/config.json"
 
-    # Live runs WITHOUT environment=production; flipping it via config-sync would
-    # activate policy guards that reject the broad broker allowlist (out of scope).
-    assert "environment" not in cfg
+    # Live 86.38 master RUNS environment=production paired with the NARROW broker
+    # allowlist, which passes the production policy guards (image-pin / TLS /
+    # external-postgres / broker-allowlist) instead of tripping them.
+    assert cfg["environment"] == "production"
 
 
 def test_master_yaml_has_no_stale_decommissioned_host_or_port() -> None:

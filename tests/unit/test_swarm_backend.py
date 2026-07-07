@@ -1106,6 +1106,51 @@ def test_orchestrator_service_spec_becomes_replicated_service(
     assert runtime.container_name == "challenge-agent"
 
 
+def test_orchestrator_service_spec_has_update_rollback_and_health_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long-lived challenge service is created with the Swarm self-healing
+    update/rollback policy AND an HTTP ``/health`` container healthcheck on the
+    challenge port, so a broken image roll auto-rolls-back instead of pausing."""
+
+    runner = FakeSwarmRunner(network_exists=False)
+    orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=WorkloadLedger())
+    monkeypatch.setattr(
+        orchestrator,
+        "wait_until_ready",
+        lambda spec: ({"status": "ok"}, {"api_version": "1.0"}),
+    )
+    spec = ChallengeSpec(
+        slug="agent",
+        image="ghcr.io/baseintelligence/agent:1.0.0",
+        workload_class="service",
+        port=8000,
+    )
+
+    orchestrator.start_challenge(spec)
+
+    argv = runner.create_argv()
+    pairs = _pairs(argv)
+    # Self-healing update/rollback policy.
+    assert ("--update-failure-action", "rollback") in pairs
+    assert ("--update-monitor", "45s") in pairs
+    assert ("--update-max-failure-ratio", "0") in pairs
+    assert ("--update-order", "stop-first") in pairs
+    assert ("--rollback-failure-action", "pause") in pairs
+    assert ("--rollback-monitor", "45s") in pairs
+    assert ("--rollback-max-failure-ratio", "1") in pairs
+    # HTTP /health container healthcheck on the challenge port (conservative timings).
+    assert ("--health-interval", "10s") in pairs
+    assert ("--health-timeout", "5s") in pairs
+    assert ("--health-retries", "3") in pairs
+    assert ("--health-start-period", "40s") in pairs
+    health_cmds = [value for flag, value in pairs if flag == "--health-cmd"]
+    assert len(health_cmds) == 1
+    assert "http://localhost:8000/health" in health_cmds[0]
+    # Image stays last (policy + health flags are inserted before it).
+    assert argv[-1] == "ghcr.io/baseintelligence/agent:1.0.0"
+
+
 def test_combined_mode_service_renders_env_and_no_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1236,9 +1281,14 @@ def test_orchestrator_job_spec_becomes_replicated_job(
 
     orchestrator.start_challenge(spec)
 
-    pairs = _pairs(runner.create_argv())
+    argv = runner.create_argv()
+    pairs = _pairs(argv)
     assert ("--mode", "replicated-job") in pairs
     assert ("--restart-condition", "none") in pairs
+    # A run-once job never gets the long-lived update/rollback policy or healthcheck.
+    assert "--update-failure-action" not in argv
+    assert "--update-order" not in argv
+    assert "--health-cmd" not in argv
     entry = ledger.get(runner.service_id)
     assert entry is not None
     assert entry.workload_class == "job"
@@ -1582,6 +1632,53 @@ def test_build_service_create_argv_omits_with_registry_auth_by_default() -> None
     argv = build_service_create_argv("docker", plan)
 
     assert "--with-registry-auth" not in argv
+
+
+def test_build_service_create_argv_replicated_gets_policy_job_omits() -> None:
+    common: dict[str, Any] = {
+        "name": "svc",
+        "image": "ghcr.io/baseintelligence/x:1",
+        "command": ("run",),
+    }
+    service = build_service_create_argv(
+        "docker",
+        SwarmServicePlan(
+            **common,
+            mode="replicated",
+            health_cmd=(
+                'python -c "import urllib.request; '
+                "urllib.request.urlopen('http://localhost:8080/health', timeout=4)\""
+            ),
+        ),
+    )
+    pairs = _pairs(tuple(service))
+    for flag, value in (
+        ("--update-failure-action", "rollback"),
+        ("--update-monitor", "45s"),
+        ("--update-max-failure-ratio", "0"),
+        ("--update-order", "stop-first"),
+        ("--rollback-failure-action", "pause"),
+        ("--rollback-monitor", "45s"),
+        ("--rollback-max-failure-ratio", "1"),
+        ("--health-interval", "10s"),
+        ("--health-timeout", "5s"),
+        ("--health-retries", "3"),
+        ("--health-start-period", "40s"),
+    ):
+        assert (flag, value) in pairs
+    assert "--health-cmd" in service
+    # Image/command stay last regardless of the added policy/health flags.
+    assert service[-2:] == ["ghcr.io/baseintelligence/x:1", "run"]
+
+    # A run-once job gets NEITHER the update/rollback policy NOR a healthcheck,
+    # so the pre-policy job argv is byte-identical to before.
+    job = build_service_create_argv(
+        "docker",
+        SwarmServicePlan(**common, mode="replicated-job"),
+    )
+    assert "--update-failure-action" not in job
+    assert "--update-order" not in job
+    assert "--health-cmd" not in job
 
 
 def test_build_service_create_argv_emits_generic_resources_before_image() -> None:

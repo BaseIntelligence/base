@@ -113,6 +113,113 @@ class TestRegisterRelease:
         assert ledger.count("challenge-y") == 1
 
 
+class TestGlobalCap:
+    def test_global_cap_rejects_n_plus_one_across_slugs(self) -> None:
+        """(a) The N+1th register across DIFFERENT slugs hits the global cap."""
+
+        ledger = WorkloadLedger()
+        ledger.register(_entry("svc-1", challenge_slug="a"), max_concurrent_global=3)
+        ledger.register(_entry("svc-2", challenge_slug="b"), max_concurrent_global=3)
+        ledger.register(_entry("svc-3", challenge_slug="c"), max_concurrent_global=3)
+        with pytest.raises(WorkloadCapacityError):
+            ledger.register(
+                _entry("svc-4", challenge_slug="d"), max_concurrent_global=3
+            )
+        # Total is bounded by the global cap regardless of slug spread.
+        assert len(ledger.entries()) == 3
+
+    def test_unset_global_cap_is_unlimited(self) -> None:
+        """(b) No global cap => unlimited (behaviour-preserving default)."""
+
+        ledger = WorkloadLedger()
+        for index in range(50):
+            ledger.register(_entry(f"svc-{index}", challenge_slug=f"slug-{index}"))
+        assert len(ledger.entries()) == 50
+
+    def test_per_slug_cap_still_enforced_with_global(self) -> None:
+        """(c) The per-slug cap applies independently of the global cap."""
+
+        ledger = WorkloadLedger()
+        ledger.register(
+            _entry("svc-1", challenge_slug="a"),
+            max_concurrent=1,
+            max_concurrent_global=10,
+        )
+        # Same slug hits the per-slug cap even though the global cap has room.
+        with pytest.raises(WorkloadCapacityError):
+            ledger.register(
+                _entry("svc-2", challenge_slug="a"),
+                max_concurrent=1,
+                max_concurrent_global=10,
+            )
+        # A different slug is still admitted (global room remains).
+        ledger.register(
+            _entry("svc-3", challenge_slug="b"),
+            max_concurrent=1,
+            max_concurrent_global=10,
+        )
+        assert len(ledger.entries()) == 2
+
+    def test_release_frees_global_capacity(self) -> None:
+        """(d) Releasing any entry frees a slot under the global cap."""
+
+        ledger = WorkloadLedger()
+        ledger.register(_entry("svc-1", challenge_slug="a"), max_concurrent_global=2)
+        ledger.register(_entry("svc-2", challenge_slug="b"), max_concurrent_global=2)
+        with pytest.raises(WorkloadCapacityError):
+            ledger.register(
+                _entry("svc-3", challenge_slug="c"), max_concurrent_global=2
+            )
+        assert ledger.release("svc-1") is True
+        ledger.register(_entry("svc-3", challenge_slug="c"), max_concurrent_global=2)
+        assert len(ledger.entries()) == 2
+
+    def test_global_cap_error_reports_total_and_cap(self) -> None:
+        ledger = WorkloadLedger()
+        ledger.register(_entry("svc-1", challenge_slug="a"), max_concurrent_global=1)
+        with pytest.raises(WorkloadCapacityError) as excinfo:
+            ledger.register(
+                _entry("svc-2", challenge_slug="b"), max_concurrent_global=1
+            )
+        assert excinfo.value.active == 1
+        assert excinfo.value.max_concurrent == 1
+
+    def test_concurrent_global_register_up_to_cap_across_slugs(self) -> None:
+        """Atomicity: 32 threads race across distinct slugs; exactly cap=5 win."""
+
+        ledger = WorkloadLedger()
+        cap = 5
+        attempts = 32
+        barrier = threading.Barrier(attempts)
+        successes: list[str] = []
+        refusals: list[str] = []
+        results_lock = threading.Lock()
+
+        def worker(index: int) -> None:
+            entry = _entry(f"svc-{index}", challenge_slug=f"slug-{index}")
+            barrier.wait()
+            try:
+                ledger.register(entry, max_concurrent_global=cap)
+            except WorkloadCapacityError:
+                with results_lock:
+                    refusals.append(entry.key)
+            else:
+                with results_lock:
+                    successes.append(entry.key)
+
+        threads = [
+            threading.Thread(target=worker, args=(index,)) for index in range(attempts)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(successes) == cap
+        assert len(refusals) == attempts - cap
+        assert len(ledger.entries()) == cap
+
+
 class TestConcurrency:
     def test_concurrent_register_up_to_cap(self) -> None:
         """32 real threads race to register; exactly cap=5 win."""

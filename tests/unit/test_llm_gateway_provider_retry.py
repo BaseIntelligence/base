@@ -201,6 +201,9 @@ async def test_backoff_between_attempts_follows_exponential_schedule(
         client_factory=upstream,
         max_attempts=3,
         retry_backoff_seconds=0.25,
+        # Deterministic (identity) jitter so the wait equals the pure exponential
+        # delay; production defaults to full jitter (uniform in [0, delay]).
+        jitter=lambda delay: delay,
     )
     response = await provider.forward(_request())
     assert response.status_code == 200
@@ -225,7 +228,7 @@ async def test_retry_logs_are_redacted_free_of_body_and_key(
 def test_default_retry_policy_on_real_provider() -> None:
     provider = build_providers(ProviderConfig(mode="real"))["yunwu"]
     assert isinstance(provider, HttpLLMProvider)
-    assert provider.max_attempts == 3
+    assert provider.max_attempts == 4
     assert provider.retry_backoff_seconds == 0.25
 
 
@@ -244,3 +247,120 @@ def test_backoff_delay_schedule() -> None:
     assert provider._backoff_delay(0) == 0.25
     assert provider._backoff_delay(1) == 0.5
     assert provider._backoff_delay(2) == 1.0
+
+
+async def test_full_jitter_default_bounds_wait_within_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The default (full) jitter draws uniformly in [0, delay]; assert every
+    # sampled wait stays within the exponential ceiling so backoff is bounded.
+    from base.master.llm_gateway import providers as providers_module
+
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(providers_module.asyncio, "sleep", fake_sleep)
+    upstream = ScriptedUpstream(
+        [
+            httpx.RemoteProtocolError("d1"),
+            httpx.RemoteProtocolError("d2"),
+            _ok(),
+        ]
+    )
+    provider = HttpLLMProvider(
+        name="yunwu",
+        base_url=BASE_URL,
+        client_factory=upstream,
+        max_attempts=3,
+        retry_backoff_seconds=0.25,
+    )
+    response = await provider.forward(_request())
+    assert response.status_code == 200
+    assert len(delays) == 2
+    assert 0.0 <= delays[0] <= 0.25
+    assert 0.0 <= delays[1] <= 0.5
+
+
+async def test_buffered_retries_529_then_succeeds() -> None:
+    # The newly-broadened set: Anthropic 529 "overloaded" is now retried.
+    upstream = ScriptedUpstream([_status(529), _ok()])
+    response = await _provider(upstream, max_attempts=4).forward(_request())
+    assert response.status_code == 200
+    assert upstream.attempts == 2
+
+
+@pytest.mark.parametrize("code", [500, 520, 522, 524, 529])
+async def test_new_transient_5xx_codes_are_retried(code: int) -> None:
+    upstream = ScriptedUpstream([_status(code), _ok()])
+    response = await _provider(upstream, max_attempts=4).forward(_request())
+    assert response.status_code == 200
+    assert upstream.attempts == 2
+
+
+# --- Streaming forward (HttpLLMProvider.stream) --------------------------------
+
+SSE_CHUNKS = (
+    b'data: {"choices": [{"delta": {"content": "hel"}}]}\n\n',
+    b'data: {"choices": [{"delta": {"content": "lo"}}]}\n\n',
+    b"data: [DONE]\n\n",
+)
+
+
+def _sse(status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status,
+        content=b"".join(SSE_CHUNKS),
+        headers={"content-type": "text/event-stream"},
+    )
+
+
+async def _collect(aiter: AsyncIterator[bytes]) -> bytes:
+    out = b""
+    async for chunk in aiter:
+        out += chunk
+    return out
+
+
+async def test_stream_passthrough_yields_upstream_chunks() -> None:
+    upstream = ScriptedUpstream([_sse()])
+    async with _provider(upstream, max_attempts=4).stream(_request()) as sp:
+        assert sp.status_code == 200
+        assert sp.headers.get("content-type") == "text/event-stream"
+        body = await _collect(sp.aiter_bytes)
+    assert body == b"".join(SSE_CHUNKS)
+    assert upstream.attempts == 1
+
+
+async def test_stream_retries_pre_first_byte_5xx_then_streams() -> None:
+    upstream = ScriptedUpstream([_status(529), _sse()])
+    async with _provider(upstream, max_attempts=4).stream(_request()) as sp:
+        assert sp.status_code == 200
+        body = await _collect(sp.aiter_bytes)
+    assert body == b"".join(SSE_CHUNKS)
+    assert upstream.attempts == 2  # retried once pre-first-byte, then streamed
+
+
+async def test_stream_retries_transient_transport_error_then_streams() -> None:
+    upstream = ScriptedUpstream([httpx.ConnectError("boom"), _sse()])
+    async with _provider(upstream, max_attempts=4).stream(_request()) as sp:
+        assert sp.status_code == 200
+        body = await _collect(sp.aiter_bytes)
+    assert body == b"".join(SSE_CHUNKS)
+    assert upstream.attempts == 2
+
+
+async def test_stream_persistent_5xx_yields_last_status_bounded() -> None:
+    upstream = ScriptedUpstream([_status(500)])
+    async with _provider(upstream, max_attempts=4).stream(_request()) as sp:
+        assert sp.status_code == 500
+    assert upstream.attempts == 4  # bounded to max_attempts, then surfaced
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 409, 422, 429])
+async def test_stream_non_transient_status_is_not_retried(code: int) -> None:
+    upstream = ScriptedUpstream([_status(code), _sse()])
+    async with _provider(upstream, max_attempts=4).stream(_request()) as sp:
+        assert sp.status_code == code
+    assert upstream.attempts == 1  # returned on first open, never retried

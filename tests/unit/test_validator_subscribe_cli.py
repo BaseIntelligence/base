@@ -203,6 +203,7 @@ def _patch_cli(monkeypatch: pytest.MonkeyPatch) -> RecordingClient:
             environment="development",
             observability=SimpleNamespace(
                 log_json=False,
+                log_level="INFO",
                 sentry_dsn=None,
                 otel_service_name="base",
                 otel_endpoint=None,

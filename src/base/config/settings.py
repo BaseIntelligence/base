@@ -164,6 +164,19 @@ class DockerSettings(BaseModel):
     broker_allowed_images: list[str] = Field(
         default_factory=lambda: ["ghcr.io/baseintelligence/"]
     )
+    #: Server-wide cap on TOTAL concurrent broker jobs across ALL challenge
+    #: slugs, enforced atomically alongside the per-slug cap at
+    #: ``/v1/docker/run`` (surfaces as HTTP 429 ``docker_quota_exceeded``).
+    #: Defaults to ``13`` — the RAM-derived value for the 62 GiB manager at a
+    #: 4 GB/task budget — so the non-install code path is bounded consistently
+    #: with ``install-swarm.sh`` (which renders the RAM-derived value from
+    #: ``_compute_eval_task_concurrency`` at deploy). ``None`` means UNLIMITED.
+    broker_max_concurrent_global: int | None = 13
+    #: Max bytes of stdout/stderr the broker returns per job before tail-capping
+    #: (the last-resort bound; ``DockerExecutor``/``_cap_log`` keep only the
+    #: tail beyond it). A generous default so challenges receive effectively the
+    #: full job output while staying bounded against OOM.
+    broker_log_limit_bytes: int = 5_000_000
     allow_privileged: bool = False
     broker_privileged_slugs: list[str] = Field(default_factory=list)
     broker_node_role: Literal["manager", "worker"] = "manager"
@@ -404,6 +417,10 @@ class GatewaySettings(BaseModel):
 
 class ObservabilitySettings(BaseModel):
     log_json: bool = True
+    #: Application log level applied by ``configure_logging`` (case-insensitive,
+    #: e.g. ``DEBUG``/``INFO``/``WARNING``). An unrecognized value falls back to
+    #: ``INFO`` rather than raising.
+    log_level: str = "INFO"
     sentry_dsn: str | None = None
     otel_service_name: str = "base"
     #: OTLP span exporter target (e.g. an OpenTelemetry collector gRPC endpoint
@@ -449,6 +466,11 @@ class ImageUpdateTargetSetting(BaseModel):
 
     service: str
     image: str
+    #: Per-target freeze: when True this service is skipped (never rolled or
+    #: rolled back) even while the global hold is off. An opt-in operator
+    #: pin/freeze to stop a bad rollout on a single service; default OFF so
+    #: auto-update happens by default.
+    hold: bool = False
 
 
 class SupervisorSettings(BaseModel):
@@ -475,12 +497,33 @@ class SupervisorSettings(BaseModel):
     #: the same credentials the deploy already provisions. None disables the
     #: fallback (anonymous resolver).
     registry_docker_config_path: str | None = "/root/.docker/config.json"
+    #: Host-reachable broker ``/health`` URL for the supervisor's broker-health
+    #: probe. The host systemd supervisor runs OUTSIDE the swarm overlay, so it
+    #: cannot resolve the overlay service DNS in ``docker.broker_url``
+    #: (``http://base-docker-broker:8082``) — the probe would fail forever and
+    #: permanently trip the gate (blocking self-update's pre-swap gate). The
+    #: broker publishes 8082 in host mode on the manager, so point the probe at
+    #: the host-published port instead. ``None`` falls back to
+    #: ``docker.broker_url`` (in-overlay callers like the proxy keep the service
+    #: name).
+    broker_health_url: str | None = None
     #: Master self-update (Task 22). Enable ONLY with a manifest_url wired — the
     #: builder refuses ``self_update_enabled=true`` without one so the task is
     #: never registered-but-inert. Default OFF: the self-update task is not
     #: registered at all (explicit-disable, no silent no-op).
     self_update_enabled: bool = False
     self_update_manifest_url: str | None = None
+    #: Self-update timing/retry knobs (Task 22 hardening). Defaults equal the
+    #: historical module constants so behaviour is unchanged unless configured.
+    #: ``interval``/``min_uptime`` drive the tick cadence and the commit dwell;
+    #: ``max_boot_attempts`` bounds the post-swap boot-storm rollback budget;
+    #: ``max_swap_attempts`` is how many DISTINCT swap attempts a rolled-back
+    #: version gets before it is blacklisted (so a transient boot failure is
+    #: retried rather than permanently blacklisting a possibly-good version).
+    self_update_interval_seconds: float = 300.0
+    self_update_min_uptime_seconds: float = 30.0
+    self_update_max_boot_attempts: int = 3
+    self_update_max_swap_attempts: int = 3
     #: Image-updater targets (each a Swarm service tracking a mutable tagged
     #: image). ``None`` (the default) means "use the built-in master defaults"
     #: (``base-master-proxy`` + ``base-docker-broker``), preserving prior
@@ -494,6 +537,30 @@ class SupervisorSettings(BaseModel):
     validator_agent_target_enabled: bool = False
     validator_agent_service: str = DEFAULT_VALIDATOR_AGENT_SERVICE
     validator_agent_image: str = DEFAULT_VALIDATOR_RUNTIME_IMAGE
+    #: Durable-retry policy for the master image-updater's convergence-verified
+    #: rollout. ``image_update_max_attempts`` bounds how many times a failing
+    #: target is retried (with rollback) before the updater stops hammering it
+    #: and emits an ``image_update_failed`` alert; a NEW desired digest resets
+    #: the budget. The backoff doubles from ``base`` each attempt, capped at
+    #: ``max`` — see :class:`base.supervisor.retry.RetryPolicy`.
+    image_update_max_attempts: int = 5
+    image_update_backoff_base_seconds: float = 60.0
+    image_update_backoff_max_seconds: float = 1800.0
+    #: Global freeze: when True the image-updater skips EVERY target (logging
+    #: ``skipped-held``) and never rolls or rolls back. An opt-in operator freeze
+    #: to stop a bad rollout fleet-wide; default OFF so auto-update happens by
+    #: default (a held target is also settable per-target via
+    #: :attr:`ImageUpdateTargetSetting.hold`).
+    image_update_hold: bool = False
+    #: Orphan own-runner sandbox sweep (host-level backstop for DooD sandbox
+    #: containers leaked when a job is killed externally). Enabled by default.
+    orphan_sweep_enabled: bool = True
+    #: Age (seconds) beyond which an own-runner sandbox is considered orphaned
+    #: and force-removed. MUST exceed the max legit job lease
+    #: (evaluation_timeout_seconds + lease ~= 4500s); default 2h.
+    orphan_sweep_ttl_seconds: int = 7200
+    #: How often the orphan sweep runs.
+    orphan_sweep_interval_seconds: float = 300.0
 
 
 class Settings(BaseModel):

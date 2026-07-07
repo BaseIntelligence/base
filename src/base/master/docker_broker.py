@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import os
 import re
 import secrets
@@ -40,6 +41,8 @@ from base.schemas.docker_broker import (
     BrokerRunRequest,
     BrokerRunResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Mount target for the dedicated DinD storage volume: the inner Docker
 #: daemon gets its own named volume so image layers/containers never land on
@@ -187,6 +190,12 @@ class DockerBrokerConfig:
     #: the empty default keeps behavior unchanged; wiring real challenge
     #: metadata in ``cli_app/main.py`` is deployment territory (Tasks 24/28).
     max_concurrent_by_slug: Mapping[str, int] = field(default_factory=dict)
+    #: Server-wide cap on TOTAL concurrent broker jobs across ALL slugs,
+    #: enforced atomically under the ledger lock alongside the per-slug cap.
+    #: ``None`` (the default) means UNLIMITED — behaviour-preserving; a set cap
+    #: rejects the over-limit job with the same ``WorkloadCapacityError`` the
+    #: per-slug path raises (HTTP 429 ``docker_quota_exceeded``).
+    max_concurrent_global: int | None = None
 
 
 class DockerBrokerService:
@@ -207,6 +216,12 @@ class DockerBrokerService:
     def run(self, challenge_slug: str, request: BrokerRunRequest) -> BrokerRunResponse:
         if request.limits.privileged and self._escape_hatch_allowed(challenge_slug):
             return self._run_escape_hatch(challenge_slug, request)
+        logger.info(
+            "broker job accepted: slug=%s image=%s job_id=%s",
+            challenge_slug,
+            request.image,
+            request.job_id,
+        )
         with TemporaryDirectory(
             prefix=f"{_safe_fragment(challenge_slug)}-{_safe_fragment(request.job_id)}-",
             dir=self.config.workspace_dir,
@@ -235,15 +250,14 @@ class DockerBrokerService:
             # ``started_at`` is never observed on this request-scoped path,
             # so the deadline stays ``None`` and the reaper can never act on
             # these entries.
-            self.ledger.register(
+            self._register_job(
                 WorkloadEntry(
                     key=name,
                     kind="escape_hatch_container",
                     challenge_slug=challenge_slug,
                     workload_class="job",
                     timeout_seconds=request.timeout_seconds,
-                ),
-                max_concurrent=self._max_concurrent(challenge_slug),
+                )
             )
             try:
                 result = executor.run(
@@ -261,6 +275,23 @@ class DockerBrokerService:
                 )
             finally:
                 self.ledger.release(name)
+            if result.timed_out:
+                logger.error(
+                    "broker job timed out: slug=%s job_id=%s timeout_seconds=%s",
+                    challenge_slug,
+                    request.job_id,
+                    request.timeout_seconds,
+                )
+            logger.info(
+                "broker job finished: slug=%s job_id=%s returncode=%s "
+                "timed_out=%s stdout_bytes=%d stderr_bytes=%d",
+                challenge_slug,
+                request.job_id,
+                result.returncode,
+                result.timed_out,
+                len(result.stdout.encode(errors="replace")),
+                len(result.stderr.encode(errors="replace")),
+            )
             return BrokerRunResponse(
                 container_name=result.container_name,
                 stdout=result.stdout,
@@ -407,6 +438,35 @@ class DockerBrokerService:
     def _max_concurrent(self, challenge_slug: str) -> int | None:
         return self.config.max_concurrent_by_slug.get(challenge_slug)
 
+    def _max_concurrent_global(self) -> int | None:
+        return self.config.max_concurrent_global
+
+    def _register_job(self, entry: WorkloadEntry) -> WorkloadEntry:
+        """Register a broker-job workload with the per-slug + global caps.
+
+        Single choke point for the capacity-checked registration so both the
+        per-slug and server-wide global caps are enforced identically on every
+        broker run path. Logs a WARNING (never a secret) when a cap rejects the
+        job, then re-raises so the HTTP layer maps it to 429.
+        """
+
+        try:
+            return self.ledger.register(
+                entry,
+                max_concurrent=self._max_concurrent(entry.challenge_slug),
+                max_concurrent_global=self._max_concurrent_global(),
+            )
+        except WorkloadCapacityError as exc:
+            logger.warning(
+                "broker job rejected at concurrency cap: slug=%s key=%s "
+                "active=%s max=%s",
+                entry.challenge_slug,
+                entry.key,
+                exc.active,
+                exc.max_concurrent,
+            )
+            raise
+
     def _escape_hatch_allowed(self, challenge_slug: str) -> bool:
         """Capability gate for the privileged DinD escape hatch (Task 13).
 
@@ -436,6 +496,12 @@ class DockerBrokerService:
         """
 
         self._validate_escape_request(request)
+        logger.info(
+            "broker privileged escape-hatch job accepted: slug=%s image=%s job_id=%s",
+            challenge_slug,
+            request.image,
+            request.job_id,
+        )
         with TemporaryDirectory(
             prefix=f"{_safe_fragment(challenge_slug)}-{_safe_fragment(request.job_id)}-",
             dir=self.config.workspace_dir,
@@ -466,6 +532,12 @@ class DockerBrokerService:
             )
             created = self.escape_runner.run(argv)
             if created.returncode != 0:
+                logger.error(
+                    "broker escape-hatch docker run failed: slug=%s job_id=%s rc=%s",
+                    challenge_slug,
+                    request.job_id,
+                    created.returncode,
+                )
                 raise DockerExecutorError(
                     f"escape hatch docker run failed: {self._cap_log(created.stderr)}"
                 )
@@ -479,15 +551,14 @@ class DockerBrokerService:
                 # Single quota/registration point (Task 14): the atomic
                 # capacity check happens here; a refusal lands in the finally
                 # below (container removed, release is an idempotent no-op).
-                self.ledger.register(
+                self._register_job(
                     WorkloadEntry(
                         key=container_id,
                         kind="escape_hatch_container",
                         challenge_slug=challenge_slug,
                         workload_class="job",
                         timeout_seconds=request.timeout_seconds,
-                    ),
-                    max_concurrent=self._max_concurrent(challenge_slug),
+                    )
                 )
                 waited = self.escape_runner.run(
                     [docker_bin, "wait", container_id],
@@ -496,6 +567,22 @@ class DockerBrokerService:
                 timed_out = waited.timed_out
                 returncode = 124 if timed_out else _parse_wait_exit_code(waited.stdout)
                 logs = self.escape_runner.run([docker_bin, "logs", container_id])
+                if timed_out:
+                    logger.error(
+                        "broker escape-hatch job timed out: slug=%s job_id=%s "
+                        "timeout_seconds=%s",
+                        challenge_slug,
+                        request.job_id,
+                        request.timeout_seconds,
+                    )
+                logger.info(
+                    "broker escape-hatch job finished: slug=%s job_id=%s "
+                    "returncode=%s timed_out=%s",
+                    challenge_slug,
+                    request.job_id,
+                    returncode,
+                    timed_out,
+                )
                 return BrokerRunResponse(
                     container_name=name,
                     stdout=self._cap_log(logs.stdout),

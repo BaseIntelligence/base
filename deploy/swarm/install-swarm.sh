@@ -57,9 +57,15 @@ set -euo pipefail
 # Configuration (overridable via flags / environment). NO secrets here.
 # ============================================================================
 
-# Swarm advertise address (default = the live production host 88.216.198.199;
-# the old 51.83.112.164 host is decommissioned).
-ADVERTISE_ADDR="${ADVERTISE_ADDR:-88.216.198.199}"
+# Canonical PRODUCTION master advertise IP. Kept in lock-step with
+# deploy/swarm/master.yaml's gateway.public_base_url (config-sync's canonical
+# file); see tests/unit/test_master_config_matches_swarm_services.py. This is a
+# documentation/consistency constant, NOT the operational default.
+PRODUCTION_ADVERTISE_ADDR="86.38.238.235"
+# Swarm advertise address. Operational default = auto-detect THIS host's primary
+# IPv4 (the source IP of the default route), so a blank box advertises its own
+# address. Override with --advertise-addr <ip> or ADVERTISE_ADDR=<ip>.
+ADVERTISE_ADDR="${ADVERTISE_ADDR:-$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')}"
 
 # Postgres dump + baseline directory produced by the cutover backup step.
 BACKUP_DIR="${BACKUP_DIR:-/root/cutover-backups/LATEST}"
@@ -354,6 +360,63 @@ CHALLENGE_EXTRA_CONSTRAINTS=()
 # Mirrors the dynamic orchestrator's job_network_slugs multi-homing (swarm_backend.py). Reset after
 # each deploy. Declared here so `set -u` never trips on `${#..[@]}`.
 CHALLENGE_EXTRA_NETWORKS=()
+# Per-call HTTP /health probe port consumed by _deploy_challenge_service. Set (to
+# the API's listen port) ONLY for a challenge API service that serves HTTP /health;
+# the worker sidecars leave it empty (crash-detection only). Reset after each deploy.
+CHALLENGE_HEALTH_PORT=""
+
+# ============================================================================
+# Swarm self-healing update/rollback policy (control-plane auto-update, G4)
+# ============================================================================
+# Applied to EVERY long-lived first-party service create (postgres, master
+# proxy/broker, challenge api + worker sidecars) so a broken image roll
+# auto-rolls-back instead of pausing degraded. Kept in sync with
+# swarm_backend.py SERVICE_UPDATE_ROLLBACK_POLICY (the dynamic orchestrator path).
+#   * --update-monitor 45s + --update-max-failure-ratio 0: any task that crashes on
+#     start (a broken image) within the window fails the update -> rollback, with NO
+#     container healthcheck required (the primary durability win).
+#   * --update-order stop-first: required for these singleton services bound to
+#     exclusive host ports/volumes on the manager (proxy/broker publish FIXED
+#     mode=host ports 19080/8082; postgres/challenge bind a per-node /data volume);
+#     the default start-first ordering causes a transient port/volume collision
+#     (EADDRINUSE) on update. stop-first releases the port/volume before the new task.
+#   * rollback is best-effort (--rollback-max-failure-ratio 1) so a node never gets
+#     stuck failing to roll back; --rollback-failure-action pause leaves a failed
+#     rollback for an operator instead of looping.
+SWARM_UPDATE_POLICY=(
+  --update-failure-action rollback
+  --update-monitor 45s
+  --update-max-failure-ratio 0
+  --update-order stop-first
+  --rollback-failure-action pause
+  --rollback-monitor 45s
+  --rollback-max-failure-ratio 1
+)
+
+# Container HTTP /health probe flags populated by _http_healthcheck_flags below;
+# consumed only after that call. Declared here so `set -u` never trips.
+SWARM_HEALTHCHECK=()
+
+# _http_healthcheck_flags PORT — populate SWARM_HEALTHCHECK with a container HTTP
+# /health probe for a service that serves HTTP on PORT (the master proxy + broker on
+# their published ports; the challenge api on its overlay port). A pure-python
+# one-liner is used instead of curl because the python:3.12-slim service images
+# (agent-challenge/prism service, base-master) are not guaranteed to ship curl in
+# every stage; urllib.urlopen raises (non-zero) on any non-2xx/connection error, so
+# Swarm reads it as unhealthy. CONSERVATIVE timings so a slow-but-healthy boot never
+# trips a false rollback: --health-start-period 40s suppresses failures during a slow
+# cold boot (must exceed the real cold-start) and, since --update-monitor is 45s, a
+# task still unhealthy AFTER the start-period within that window is still caught.
+_http_healthcheck_flags() {
+  local port="$1"
+  SWARM_HEALTHCHECK=(
+    --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${port}/health', timeout=4)\""
+    --health-interval 10s
+    --health-timeout 5s
+    --health-retries 3
+    --health-start-period 40s
+  )
+}
 
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
@@ -373,6 +436,10 @@ VALIDATOR_NODE=false       # opt-in: bring up a VALIDATOR node (auto-updatable a
 # initialize via the services' own normal migrations/bootstrap. Required because
 # the operator moved off k3s to Swarm, so the k3s dumps will NOT exist at deploy.
 GREENFIELD=false           # opt-in: skip backup-dump preflight + restore_data (fresh DBs).
+# Auto-secrets: generate/derive/mint every secret except the external
+# YUNWU_API_KEY (persisted to SECRETS_ENV_FILE, mode 600). Env-overridable so a
+# turnkey run can enable it; --auto-secrets / --turnkey also set it.
+AUTO_SECRETS="${AUTO_SECRETS:-false}"
 
 # ============================================================================
 # Output helpers
@@ -440,6 +507,108 @@ _master_runtime_uid() {
   fi
 }
 
+# `_compute_eval_task_concurrency` derives the agent-challenge eval task
+# concurrency from system RAM at a fixed 4 GB/task budget, so the number of tasks
+# run in parallel tracks the node's real memory instead of a hardcoded constant.
+# It sets three globals consumed by the master.yaml render + the ac_eval_env block:
+#   TOTAL_RAM_GB          total GiB (free -m total / 1024), or the EVAL_RAM_TOTAL_GB
+#                         override (tests/operators pin it deterministically).
+#   EVAL_RAM_RESERVE_GB   GiB withheld for the OS + master control-plane services
+#                         (default 10).
+#   EVAL_TASK_CONCURRENCY max(4, floor((TOTAL_RAM_GB - EVAL_RAM_RESERVE_GB) / 4)),
+#                         or the EVAL_TASK_CONCURRENCY override (used verbatim).
+# The 4 GB/task divisor ONLY sizes how many tasks may run at once; it deliberately
+# does NOT clamp the inner terminal-bench task container (kept at its higher 8 GiB
+# ceiling), relying on low actual per-task usage.
+_compute_eval_task_concurrency() {
+  if [[ -n "${EVAL_RAM_TOTAL_GB:-}" && "${EVAL_RAM_TOTAL_GB}" =~ ^[0-9]+$ ]]; then
+    TOTAL_RAM_GB="${EVAL_RAM_TOTAL_GB}"
+  else
+    TOTAL_RAM_GB=$(( $(free -m | awk '/^Mem:/{print $2}') / 1024 ))
+  fi
+  EVAL_RAM_RESERVE_GB="${EVAL_RAM_RESERVE_GB:-10}"
+  if [[ -n "${EVAL_TASK_CONCURRENCY:-}" && "${EVAL_TASK_CONCURRENCY}" =~ ^[0-9]+$ ]]; then
+    : # explicit operator/test override — used verbatim.
+  else
+    EVAL_TASK_CONCURRENCY=$(( (TOTAL_RAM_GB - EVAL_RAM_RESERVE_GB) / 4 ))
+    if (( EVAL_TASK_CONCURRENCY < 4 )); then
+      EVAL_TASK_CONCURRENCY=4
+    fi
+  fi
+  log "  eval task concurrency: RAM=${TOTAL_RAM_GB}GiB reserve=${EVAL_RAM_RESERVE_GB}GiB @4GB/task -> EVAL_TASK_CONCURRENCY=${EVAL_TASK_CONCURRENCY}"
+}
+
+# ============================================================================
+# 0. ensure_docker() — install Docker Engine on a blank host if absent/too old.
+#    Idempotent (skip when docker >= MIN_DOCKER_MAJOR is already present) and
+#    dry-run-safe (mutations go through `plan`). Turnkey brings up a blank box.
+# ============================================================================
+ensure_docker() {
+  log "STEP 0 ensure_docker: ensuring Docker Engine >= ${MIN_DOCKER_MAJOR}"
+  if command -v docker >/dev/null 2>&1; then
+    local v major
+    v="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    major="${v%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]] && (( major >= MIN_DOCKER_MAJOR )); then
+      log "  docker ${v} present (>= ${MIN_DOCKER_MAJOR}) — skipping install (idempotent)"
+      return 0
+    fi
+    warn "  docker present but version '${v:-unknown}' < ${MIN_DOCKER_MAJOR} — will (re)install engine"
+  else
+    log "  docker not found — will install Docker Engine"
+  fi
+
+  if [[ "${SKIP_DOCKER_INSTALL:-false}" == "true" ]]; then
+    die "docker missing/too old and SKIP_DOCKER_INSTALL=true — install Docker >= ${MIN_DOCKER_MAJOR} manually and re-run"
+  fi
+
+  case "${DOCKER_INSTALL_METHOD:-get-docker}" in
+    get-docker)
+      warn "DESTRUCTIVE: installing Docker Engine via get.docker.com"
+      local getdocker="/tmp/get-docker.$$.sh"
+      plan curl -fsSL -o "${getdocker}" https://get.docker.com
+      plan sh "${getdocker}"
+      plan rm -f "${getdocker}"
+      ;;
+    apt)
+      warn "DESTRUCTIVE: installing Docker Engine via apt (docker.io)"
+      plan apt-get update
+      plan env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+      ;;
+    *)
+      die "unknown DOCKER_INSTALL_METHOD='${DOCKER_INSTALL_METHOD}' (want get-docker|apt)"
+      ;;
+  esac
+  plan systemctl enable --now docker
+  log "  Docker Engine install requested (verify 'docker version' >= ${MIN_DOCKER_MAJOR})"
+}
+
+# ============================================================================
+# 0b. ensure_uv() — install the `uv` runtime the base-supervisor.service unit
+#     launches through (ExecStart=/usr/local/bin/uv run --project current ...).
+#     Only needed when we install the supervisor. Idempotent + dry-run-safe.
+#     NOTE: the unit hard-codes /usr/local/bin/uv, so UV_INSTALL_DIR must stay
+#     /usr/local/bin for the supervisor to boot (overridable only for tests).
+# ============================================================================
+ensure_uv() {
+  [[ "${INSTALL_SUPERVISOR:-false}" == "true" ]] || { log "STEP 0b ensure_uv: supervisor not being installed — skipping"; return 0; }
+  local uv_dir="${UV_INSTALL_DIR:-/usr/local/bin}"
+  log "STEP 0b ensure_uv: ensuring uv at ${uv_dir}/uv (base-supervisor.service ExecStart)"
+  if [[ -x "${uv_dir}/uv" ]]; then
+    log "  uv present at ${uv_dir}/uv — skipping install (idempotent)"
+    return 0
+  fi
+  if [[ "${SKIP_UV_INSTALL:-false}" == "true" ]]; then
+    die "uv missing at ${uv_dir}/uv and SKIP_UV_INSTALL=true — install uv there and re-run"
+  fi
+  warn "DESTRUCTIVE: installing uv via astral.sh to ${uv_dir} (base-supervisor runtime)"
+  local getuv="/tmp/uv-install.$$.sh"
+  plan curl -fsSL -o "${getuv}" https://astral.sh/uv/install.sh
+  plan env "UV_INSTALL_DIR=${uv_dir}" INSTALLER_NO_MODIFY_PATH=1 sh "${getuv}"
+  plan rm -f "${getuv}"
+  log "  uv install requested (verify ${uv_dir}/uv)"
+}
+
 # ============================================================================
 # Argument parsing
 # ============================================================================
@@ -453,6 +622,23 @@ DEFAULT MODE IS DRY-RUN (prints planned actions, changes nothing).
 Safety flags:
   --apply                 Execute mutating commands. Without this, dry-run only.
   --force                 Proceed even if this node is already a Swarm node.
+
+Turnkey (one-command blank-box bring-up):
+  --turnkey               Umbrella flag for a blank host: enables --apply,
+                          --restart-dockerd, --static-challenges,
+                          --single-node-placement, --install-supervisor,
+                          --greenfield and --auto-secrets, and defaults
+                          SKIP_GHCR_LOGIN=true. Brings up a full BASE validator
+                          with the ONLY external input being YUNWU_API_KEY.
+                          DESTRUCTIVE (restarts dockerd; see --restart-dockerd).
+  --auto-secrets          Auto-generate/derive/mint every secret except the
+                          external YUNWU_API_KEY, persisting them to
+                          SECRETS_ENV_FILE (mode 600) for coherent re-runs.
+                          Without it, all secret env vars below are REQUIRED.
+  --skip-ghcr-login       Skip `docker login ghcr.io` (first-party images are
+                          public) and ensure ${DOCKER_CONFIG:-~/.docker} exists
+                          with a `{}` config so the broker/proxy /root/.docker
+                          binds resolve (SKIP_GHCR_LOGIN=true env does the same).
 
 Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
   --restart-dockerd       Install daemon.validator.json and restart dockerd.
@@ -487,7 +673,7 @@ Bring-up mode:
                           in --backup-dir are REQUIRED and restored (default).
 
 Configuration:
-  --advertise-addr IP     Swarm advertise address (default: 88.216.198.199).
+  --advertise-addr IP     Swarm advertise address (default: auto-detected primary IP of this host).
   --backup-dir DIR        pg_dump + baseline dir (default: /root/cutover-backups/LATEST).
   --master-config PATH    Rendered master config path (default: /etc/base/master.yaml).
   -h, --help              Show this help.
@@ -524,6 +710,23 @@ Required environment (values NEVER hardcoded; supplied at runtime):
                                              `base master mint-central-gate-token --source llm_review`.
 
 Optional environment:
+  SKIP_DOCKER_INSTALL                        Set true to NOT auto-install Docker Engine
+                                             when it is missing/too old (default false);
+                                             ensure_docker then hard-fails instead.
+  SKIP_UV_INSTALL                            Set true to NOT auto-install uv when it is
+                                             missing (default false); ensure_uv then
+                                             hard-fails instead. Installed only when
+                                             --install-supervisor is set.
+  DOCKER_INSTALL_METHOD                      Docker auto-install method when absent:
+                                             get-docker (default, get.docker.com) | apt.
+  UV_INSTALL_DIR                             Dir ensure_uv installs uv into (default
+                                             /usr/local/bin). MUST remain /usr/local/bin
+                                             for base-supervisor.service to boot (the unit
+                                             hard-codes /usr/local/bin/uv); override only
+                                             for tests.
+  SECRETS_ENV_FILE                           Path --auto-secrets persists/reloads the
+                                             generated secret values from (mode 600,
+                                             root-only; default /etc/base/secrets.env).
   HF_TOKEN                                   HuggingFace token for the prism HF
                                              checkpoint publisher (base_hf_token,
                                              mounted via HF_TOKEN_FILE). Absent => skipped.
@@ -593,6 +796,11 @@ parse_args() {
       --install-supervisor) INSTALL_SUPERVISOR=true ;;
       --validator-node) VALIDATOR_NODE=true ;;
       --greenfield) GREENFIELD=true ;;
+      --turnkey) APPLY=true; RESTART_DOCKERD=true; STATIC_CHALLENGES=true;
+                 SINGLE_NODE_PLACEMENT=true; INSTALL_SUPERVISOR=true; GREENFIELD=true;
+                 AUTO_SECRETS=true; SKIP_GHCR_LOGIN="${SKIP_GHCR_LOGIN:-true}" ;;
+      --auto-secrets) AUTO_SECRETS=true ;;
+      --skip-ghcr-login) SKIP_GHCR_LOGIN=true ;;
       --advertise-addr) ADVERTISE_ADDR="${2:?--advertise-addr needs a value}"; shift ;;
       --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a value}"; shift ;;
       --master-config) MASTER_CONFIG_PATH="${2:?--master-config needs a value}"; shift ;;
@@ -651,10 +859,16 @@ preflight() {
     log "  backup dumps present in ${BACKUP_DIR} OK (prism.sql may be empty — expected)"
   fi
 
-  # GHCR credentials must be present (values never printed).
-  [[ -n "${GHCR_USER:-}" ]] || die "GHCR_USER not set (required for ghcr.io login)"
-  [[ -n "${GHCR_TOKEN:-}" ]] || die "GHCR_TOKEN not set (required for ghcr.io login)"
-  log "  GHCR_USER / GHCR_TOKEN present OK"
+  # GHCR credentials must be present (values never printed). SKIP_GHCR_LOGIN=true
+  # opts out for a PUBLIC-image deploy (no `docker login` needed): the required
+  # first-party images are pullable anonymously, so no credential is required.
+  if [[ "${SKIP_GHCR_LOGIN:-false}" != "true" ]]; then
+    [[ -n "${GHCR_USER:-}" ]] || die "GHCR_USER not set (required for ghcr.io login)"
+    [[ -n "${GHCR_TOKEN:-}" ]] || die "GHCR_TOKEN not set (required for ghcr.io login)"
+    log "  GHCR_USER / GHCR_TOKEN present OK"
+  else
+    log "  SKIP_GHCR_LOGIN=true: skipping GHCR credential requirement (public images)"
+  fi
 
   log "preflight complete"
 }
@@ -665,6 +879,18 @@ preflight() {
 #   GHCR_USER / GHCR_TOKEN; the token is fed on stdin (never argv, never logged).
 # ============================================================================
 ghcr_login() {
+  if [[ "${SKIP_GHCR_LOGIN:-false}" == "true" ]]; then
+    log "STEP 1b ghcr_login: SKIP_GHCR_LOGIN=true — skipping ghcr login (public images)"
+    # Footgun fix: the broker + proxy bind ${DOCKER_CONFIG:-${HOME}/.docker}
+    # read-only at /root/.docker. With no `docker login` that dir may not exist,
+    # so the bind source is missing and `docker service create` fails at runtime.
+    # Ensure it exists with an empty `{}` config so the mount resolves (public
+    # images need no auth; the supervisor image-updater resolves public digests
+    # anonymously via the same config dir).
+    plan install -d -m 0700 "${DOCKER_CONFIG:-${HOME}/.docker}"
+    [[ -f "${DOCKER_CONFIG:-${HOME}/.docker}/config.json" ]] || plan sh -c "printf '{}' > \"${DOCKER_CONFIG:-${HOME}/.docker}/config.json\""
+    return 0
+  fi
   log "STEP 1b ghcr_login: authenticating to ghcr.io (token via stdin, hidden)"
   plan_secret_stdin "ghcr-login" GHCR_TOKEN -- \
     docker login ghcr.io --username "${GHCR_USER}" --password-stdin
@@ -713,6 +939,7 @@ swarm_init() {
     log "  swarm already active — skipping init (idempotent)"
     return 0
   fi
+  [[ -n "${ADVERTISE_ADDR}" ]] || die "could not auto-detect advertise-addr (no default route / no 'ip' tool); pass --advertise-addr <ip>"
   plan docker swarm init --advertise-addr "${ADVERTISE_ADDR}"
 }
 
@@ -828,6 +1055,157 @@ _create_overlay() {
   [[ "${internal}" == "true" ]] && argv+=(--internal)
   argv+=("${name}")
   plan "${argv[@]}"
+}
+
+# ============================================================================
+# 5b. auto_provision_secrets() + helpers  [--auto-secrets / --turnkey]
+#     Generate (AUTOGEN), derive (DB URLs), and mint (central gate token) every
+#     secret except the single external YUNWU_API_KEY, so a blank box needs only
+#     that one key. Values are persisted to SECRETS_ENV_FILE (mode 600) under
+#     --apply so re-runs/rotations stay coherent, and are NEVER printed to
+#     plan/log output. When --auto-secrets is not set this is a no-op and the
+#     operator-supplied env vars flow through create_secrets unchanged.
+# ============================================================================
+
+# _auto_mint_central_gate_token — set CENTRAL_GATEWAY_TOKEN by minting it from
+# $GATEWAY_TOKEN via the base CLI inside the (public) master image. Pure local
+# HMAC signing (no DB/network); runs before any service is up. Root-only temp
+# dir; the gateway secret is written at mode 600 (umask 077) and never logged.
+_auto_mint_central_gate_token() {
+  local tmp old_umask
+  old_umask="$(umask)"
+  umask 077
+  tmp="$(mktemp -d /run/base-install.XXXXXX)"; chmod 700 "${tmp}"
+  printf '%s' "${GATEWAY_TOKEN}" > "${tmp}/gateway_token_secret"   # mode 600 via umask 077
+  cat > "${tmp}/mint.yaml" <<'YAML'
+environment: development
+gateway:
+  token_secret_file: /run/secrets/gateway_token_secret
+YAML
+  CENTRAL_GATEWAY_TOKEN="$(docker run --rm \
+    --mount "type=bind,source=${tmp}/gateway_token_secret,target=/run/secrets/gateway_token_secret,readonly" \
+    --mount "type=bind,source=${tmp}/mint.yaml,target=/mint.yaml,readonly" \
+    "${IMAGE_MASTER}" \
+    base master mint-central-gate-token --config /mint.yaml \
+      --label turnkey-central-gate --source llm_review)"
+  rm -rf "${tmp}"
+  umask "${old_umask}"
+}
+
+# _persist_secrets_env FILE — write every AUTOGEN/DERIVED/MINTED value as an
+# `export NAME='VALUE'` line (single-quote-escaped) to FILE at mode 600 via
+# mktemp + install -D, so re-runs/rotations reuse the SAME values that back the
+# existing docker secrets. Secret values reach ONLY this file (never plan/log).
+# YUNWU_API_KEY/HF_TOKEN are the operator's to manage: persisted only if already
+# set in the environment.
+_persist_secrets_env() {
+  local file="$1" tmp name val
+  tmp="$(mktemp)"
+  chmod 600 "${tmp}"
+  printf '# BASE turnkey auto-provisioned secrets (mode 600, root-only). DO NOT COMMIT.\n' > "${tmp}"
+  for name in BASE_ADMIN_TOKEN MASTER_PG_PASSWORD AGENT_CHALLENGE_PG_PASSWORD PRISM_PG_PASSWORD \
+              AGENT_CHALLENGE_CHALLENGE_TOKEN AGENT_CHALLENGE_DOCKER_BROKER_TOKEN PRISM_CHALLENGE_TOKEN \
+              PRISM_DOCKER_BROKER_TOKEN GATEWAY_TOKEN AGENT_CHALLENGE_SUBMISSION_ENV_KEY \
+              MASTER_DATABASE_URL AGENT_CHALLENGE_DATABASE_URL PRISM_DATABASE_URL CENTRAL_GATEWAY_TOKEN \
+              YUNWU_API_KEY HF_TOKEN; do
+    val="${!name:-}"
+    [[ -z "${val}" ]] && continue
+    printf "export %s='%s'\n" "${name}" "${val//\'/\'\\\'\'}" >> "${tmp}"
+  done
+  install -D -m 600 "${tmp}" "${file}"
+  rm -f "${tmp}"
+}
+
+auto_provision_secrets() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || { log "STEP 5b auto_provision_secrets: --auto-secrets NOT set — using operator env"; return 0; }
+  log "STEP 5b auto_provision_secrets (values hidden; persisted to ${SECRETS_ENV_FILE:-/etc/base/secrets.env})"
+  local env_file="${SECRETS_ENV_FILE:-/etc/base/secrets.env}"
+  # shellcheck disable=SC1090
+  [[ -f "${env_file}" ]] && source "${env_file}"
+
+  local rnd; rnd() { openssl rand -hex 32; }
+  : "${BASE_ADMIN_TOKEN:=$(rnd)}"
+  : "${MASTER_PG_PASSWORD:=$(rnd)}"
+  : "${AGENT_CHALLENGE_PG_PASSWORD:=$(rnd)}"
+  : "${PRISM_PG_PASSWORD:=$(rnd)}"
+  : "${AGENT_CHALLENGE_CHALLENGE_TOKEN:=$(rnd)}"
+  : "${AGENT_CHALLENGE_DOCKER_BROKER_TOKEN:=$(rnd)}"
+  : "${PRISM_CHALLENGE_TOKEN:=$(rnd)}"
+  : "${PRISM_DOCKER_BROKER_TOKEN:=$(rnd)}"
+  : "${GATEWAY_TOKEN:=$(rnd)}"
+  : "${AGENT_CHALLENGE_SUBMISSION_ENV_KEY:=$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n')}"
+  : "${MASTER_DATABASE_URL:=postgresql+asyncpg://base:${MASTER_PG_PASSWORD}@base-master-postgres:5432/base}"
+  : "${AGENT_CHALLENGE_DATABASE_URL:=postgresql+asyncpg://challenge:${AGENT_CHALLENGE_PG_PASSWORD}@challenge-agent-challenge-postgres:5432/challenge}"
+  : "${PRISM_DATABASE_URL:=postgresql+asyncpg://challenge:${PRISM_PG_PASSWORD}@challenge-prism-postgres:5432/challenge}"
+
+  if [[ -z "${CENTRAL_GATEWAY_TOKEN:-}" ]]; then
+    if [[ "${APPLY}" == "true" ]]; then _auto_mint_central_gate_token
+    else
+      log "  (dry-run) would mint CENTRAL_GATEWAY_TOKEN from \$GATEWAY_TOKEN via:"
+      log "    docker run --rm --mount <gateway_token_secret> --mount <mint.yaml> ${IMAGE_MASTER} base master mint-central-gate-token --config /mint.yaml --label turnkey-central-gate --source llm_review"
+      CENTRAL_GATEWAY_TOKEN="<minted-at-apply>"
+    fi
+  fi
+  if [[ "${GATEWAY_PROVIDER_MODE}" == "real" && -z "${YUNWU_API_KEY:-}" ]]; then
+    die "YUNWU_API_KEY is the only required external secret for a turnkey deploy — set it and re-run (or GATEWAY_PROVIDER_MODE=mock)"
+  fi
+  export BASE_ADMIN_TOKEN MASTER_PG_PASSWORD AGENT_CHALLENGE_PG_PASSWORD PRISM_PG_PASSWORD \
+         AGENT_CHALLENGE_CHALLENGE_TOKEN AGENT_CHALLENGE_DOCKER_BROKER_TOKEN PRISM_CHALLENGE_TOKEN \
+         PRISM_DOCKER_BROKER_TOKEN GATEWAY_TOKEN AGENT_CHALLENGE_SUBMISSION_ENV_KEY \
+         MASTER_DATABASE_URL AGENT_CHALLENGE_DATABASE_URL PRISM_DATABASE_URL CENTRAL_GATEWAY_TOKEN
+  # NB: an `[[ ... ]] && _persist_secrets_env` tail would return 1 under `set -e`
+  # in dry-run (APPLY=false) and abort the run — keep this as an if-block so the
+  # function always returns 0 when not applying.
+  if [[ "${APPLY}" == "true" ]]; then
+    _persist_secrets_env "${env_file}"
+  fi
+}
+
+# ============================================================================
+# 5c. ensure_validator_wallet() + 5d. _auto_seed_mock_metagraph()
+#     [--auto-secrets / --turnkey]  Generate (idempotently) the validator
+#     wallet+hotkey inside the (public) master image, capture the ss58 hotkey,
+#     and seed it into MOCK_METAGRAPH (validator_permit=true) when the operator
+#     left MOCK_METAGRAPH at its default. Must run before deploy_master so the
+#     rendered master.yaml carries the permit-eligible hotkey.
+# ============================================================================
+
+# Generate (idempotently) the validator wallet+hotkey and echo the ss58 hotkey.
+_wallet_gen_py='
+import sys
+from bittensor_wallet import Wallet
+w = Wallet(name=sys.argv[1], hotkey="default", path=sys.argv[2])
+w.create_if_non_existent(coldkey_use_password=False, hotkey_use_password=False, suppress=True)
+print(w.hotkey.ss58_address)
+'
+ensure_validator_wallet() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || return 0
+  log "STEP 5c ensure_validator_wallet: wallet=${VALIDATOR_WALLET_NAME} path=${VALIDATOR_WALLET_PATH}"
+  if [[ "${APPLY}" != "true" ]]; then
+    log "  (dry-run) would: install -d ${VALIDATOR_WALLET_PATH}; docker run --entrypoint python3 ${IMAGE_MASTER} -c '<wallet-gen>' ${VALIDATOR_WALLET_NAME} ${VALIDATOR_WALLET_PATH}"
+    log "  (dry-run) would then chown the wallet tree to the master runtime uid: docker run ${IMAGE_POSTGRES} chown -R <uid>:<uid> ${VALIDATOR_WALLET_PATH}"
+    VALIDATOR_HOTKEY_SS58="<derived-at-apply>"
+    return 0
+  fi
+  install -d -m 0755 "${VALIDATOR_WALLET_PATH}"
+  # Run as root in the container so it can write the bind-mounted host dir; chown
+  # afterwards to the runtime uid so the read-only agent mount is readable.
+  VALIDATOR_HOTKEY_SS58="$(docker run --rm --user 0:0 --entrypoint python3 \
+    --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \
+    "${IMAGE_MASTER}" -c "${_wallet_gen_py}" "${VALIDATOR_WALLET_NAME}" "${VALIDATOR_WALLET_PATH}")"
+  local uid; uid="$(_master_runtime_uid)"
+  docker run --rm --user 0:0 \
+    --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \
+    "${IMAGE_POSTGRES}" chown -R "${uid}:${uid}" "${VALIDATOR_WALLET_PATH}"
+  log "  wallet ready; hotkey ss58=${VALIDATOR_HOTKEY_SS58}"
+}
+
+_auto_seed_mock_metagraph() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || return 0
+  if [[ "${MOCK_METAGRAPH}" == "[]" && -n "${VALIDATOR_HOTKEY_SS58:-}" ]]; then
+    MOCK_METAGRAPH="[{\"hotkey\":\"${VALIDATOR_HOTKEY_SS58}\",\"validator_permit\":true,\"stake\":${MOCK_METAGRAPH_STAKE:-1000}}]"
+    log "  auto-seeded MOCK_METAGRAPH with validator hotkey ${VALIDATOR_HOTKEY_SS58} (validator_permit=true)"
+  fi
 }
 
 # ============================================================================
@@ -959,11 +1337,15 @@ _deploy_postgres_service() {
     log "  service ${name} already exists — skipping (idempotent)"
     return 0
   fi
+  # Self-healing update/rollback policy (crash-detection only; postgres serves no
+  # HTTP /health, so no --health-cmd). stop-first is REQUIRED here: postgres binds a
+  # per-node named volume, and start-first would race two tasks on the same volume.
   plan docker service create \
     --name "${name}" \
     --network "${NET_CHALLENGES}" \
     --replicas 1 \
     --restart-condition any \
+    "${SWARM_UPDATE_POLICY[@]}" \
     --hostname "${name}" \
     --with-registry-auth \
     --mount "type=volume,source=${volume},destination=/var/lib/postgresql/data" \
@@ -1180,6 +1562,16 @@ docker:
   broker_host: 0.0.0.0
   broker_port: ${MASTER_BROKER_PORT}
   broker_url: http://base-docker-broker:${MASTER_BROKER_PORT}
+  # Server-wide cap on TOTAL concurrent broker eval jobs across ALL challenge
+  # slugs, enforced atomically with the per-slug cap under the ledger lock
+  # (surfaces as HTTP 429 docker_quota_exceeded). Bounds total eval load on the
+  # single manager node; RAM-derived at install time (@4GB/task, see
+  # _compute_eval_task_concurrency); unset/None would be unlimited.
+  broker_max_concurrent_global: ${EVAL_TASK_CONCURRENCY}
+  # Max bytes of job stdout/stderr the broker returns before last-resort
+  # tail-capping, so challenges receive effectively-full eval logs while staying
+  # bounded against OOM (the 64KB code default was too small for full output).
+  broker_log_limit_bytes: 5000000
   # Namespaced+repo allowlist (NOT the whole 'ghcr.io/baseintelligence/'
   # namespace, which production validate_allowed_image_prefixes rejects as too
   # broad). These two repo prefixes cover every first-party image the broker
@@ -1375,13 +1767,20 @@ _deploy_master_service() {
   #     broker/proxy read per-challenge tokens from here. The PROXY needs
   #     it to load each challenge's bearer token when verifying miner uploads (else
   #     500 "Challenge token file is missing"). Seeded by _seed_proxy_challenge_tokens.
-  #   * --update-order stop-first: these are FIXED host-port services (8082/19080,
-  #     mode=host); the default start-first ordering causes a transient port collision
-  #     (EADDRINUSE) on update. stop-first releases the port before the new task binds.
+  # (The Swarm update/rollback policy — including --update-order stop-first, required
+  # for these FIXED mode=host port services 8082/19080 to avoid a transient EADDRINUSE
+  # on update — is added via "${SWARM_UPDATE_POLICY[@]}" on the create below.)
   local -a extra=(
     --mount "type=volume,source=${VOL_BASE_SECRETS},destination=${SECRET_VOLUME_DIR}"
-    --update-order stop-first
   )
+  # Both master services serve a real HTTP /health liveness endpoint on their
+  # container port (base-docker-broker: docker_broker.py; base-master-proxy:
+  # app_proxy.py — the same endpoints the healthcheck() step curls), so add a
+  # container healthcheck to catch a booted-but-not-serving task (belt-and-suspenders
+  # with the crash-detection update-monitor). Conservative timings (40s start-period)
+  # so a slow cold boot never trips a false rollback.
+  _http_healthcheck_flags "${container_port}"
+  extra+=("${SWARM_HEALTHCHECK[@]}")
 
   # Broker-only extras (regression guards — do NOT strip these flags):
   #   1. host docker socket: the escape hatch shells out to `docker run` on the
@@ -1502,6 +1901,7 @@ _deploy_master_service() {
     --network "${NET_CHALLENGES}" \
     --replicas 1 \
     --restart-condition any \
+    "${SWARM_UPDATE_POLICY[@]}" \
     --hostname "${name}" \
     --with-registry-auth \
     --publish "published=${host_port},target=${container_port},mode=host" \
@@ -1532,6 +1932,27 @@ _deploy_master_service() {
 #     flag, which is precisely the single-node placement workaround (option (a)
 #     fallback from single_node_placement_fix): no constraint => schedules on
 #     the manager.
+# ============================================================================
+# 9b. Provision the agent-challenge terminal-bench-2.1 task cache (own_runner).
+#     own_runner reads task defs ONLY from node-local named volumes and fails
+#     closed on any digest mismatch; the runner image does NOT bake the ~89 task
+#     trees. This DOWNLOADS the byte-exact pinned dataset (download-...sh) and
+#     COPIES + DIGEST-VERIFIES it onto the volumes (acquire-...sh). Without it,
+#     every terminal-bench eval fails with `terminal_bench_failed` (empty cache).
+#     Node-local volumes: on a multi-node Swarm, provision on EVERY eval node.
+# ============================================================================
+provision_agent_challenge_cache() {
+  log "STEP 9b/12 provision_agent_challenge_cache: terminal-bench-2.1 task cache + digest"
+  local script_dir staging
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  staging="${AGENT_CHALLENGE_CACHE_STAGING:-/var/lib/base/agent-challenge-cache}"
+  # download-...sh and acquire-...sh each have their OWN dry-run/--apply gate, so
+  # `plan` prints the invocations in dry-run and executes them (with --apply) only
+  # in this script's --apply mode — matching the STEP's mutation policy exactly.
+  plan bash "${script_dir}/download-terminal-bench-cache.sh" --dest "${staging}" --apply
+  plan bash "${script_dir}/acquire-agent-challenge-cache.sh" --source "${staging}" --apply
+}
+
 # ============================================================================
 deploy_challenges() {
   log "STEP 10/12 deploy_challenges"
@@ -1567,13 +1988,39 @@ deploy_challenges() {
     "CHALLENGE_DOCKER_ALLOWED_IMAGES=${CHALLENGE_DOCKER_ALLOWED_IMAGES}"
     "CHALLENGE_VALIDATOR_ROLE=master"
     "CHALLENGE_DATABASE_URL_FILE=${SECRET_MOUNT_DIR}/database_url"
+    # Durable eval-loop concurrency: the worker drains up to this many attempts
+    # in parallel (mirrors cli_app _agent_challenge_own_runner_env for the
+    # dynamic path). Applied to BOTH the api and worker via ac_eval_env.
+    # RAM-derived at install time (@4GB/task, see _compute_eval_task_concurrency).
+    "CHALLENGE_EVALUATION_CONCURRENCY=${EVAL_TASK_CONCURRENCY}"
+    # Durable own-runner (DooD client) memory ceiling. The own_runner job is a
+    # lightweight terminal-bench orchestration client, so 2 GiB is ample; live
+    # prod ran this as an out-of-band override, made durable here. This caps ONLY
+    # the runner job container the broker launches — it does NOT clamp the inner
+    # terminal-bench task container (kept at its higher 8 GiB ceiling).
+    "CHALLENGE_DOCKER_MEMORY=2g"
+    # Live running-log streaming. The worker points the terminal-bench runner's
+    # log producer at the api over the eval overlay (LOG_STREAM_URL) and pins the
+    # runner JOB onto base_jobs_internal (BROKER_NETWORK) so it can resolve
+    # challenge-agent-challenge by name to POST task.log events; the api ingests
+    # them and serves the SSE feed. Both api+worker are already multi-homed onto
+    # NET_JOBS_INTERNAL below. Without these the runner lands on the default
+    # bridge network and log streaming silently no-ops (name resolution fails).
+    "CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL=http://challenge-agent-challenge:${AGENT_CHALLENGE_PORT}"
+    "CHALLENGE_DOCKER_BROKER_NETWORK=${NET_JOBS_INTERNAL}"
   )
   # Central AST+LLM gate review routing. Point the analyzer at the master gateway
   # ROOT (it appends /llm/v1) + read the scoped central-gate token from
   # /run/secrets/base_gateway_token. NO direct provider key on the service.
+  # The master routes via the INTERNAL overlay service name (base-master-proxy),
+  # NOT the gateway PUBLIC IP: the agent-challenge eval JOB + analyzer run on
+  # base_jobs_internal, which is --internal (NO egress), so the public IP is
+  # unreachable from there; the proxy is multi-homed onto base_jobs_internal so it
+  # IS reachable by this service name. Byte-matches cli_app
+  # _agent_challenge_own_runner_env (_settings_gateway_internal_base_url).
   local -a ac_gate_secret_specs=()
   ac_eval_env+=(
-    "CHALLENGE_LLM_GATEWAY_BASE_URL=${GATEWAY_PUBLIC_BASE_URL}"
+    "CHALLENGE_LLM_GATEWAY_BASE_URL=http://base-master-proxy:${MASTER_PROXY_PORT}"
     "CHALLENGE_LLM_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
   )
 
@@ -1587,6 +2034,8 @@ deploy_challenges() {
   CHALLENGE_EXTRA_NETWORKS=("${NET_JOBS_INTERNAL}")
   CHALLENGE_ENV=("${ac_eval_env[@]}")
   CHALLENGE_EXTRA_SECRETS=("source=base_gateway_token,target=base_gateway_token")
+  # API serves HTTP /health -> container healthcheck (worker sidecar below does not).
+  CHALLENGE_HEALTH_PORT="${AGENT_CHALLENGE_PORT}"
   _deploy_challenge_service \
     "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
     "base_agent_challenge_pg" \
@@ -1723,6 +2172,8 @@ deploy_challenges() {
   CHALLENGE_EXTRA_MOUNTS=("${prism_scorer_mounts[@]}")
   CHALLENGE_EXTRA_SECRETS=("${prism_extra_secrets[@]}")
   CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
+  # API serves HTTP /health -> container healthcheck (prism-worker below does not).
+  CHALLENGE_HEALTH_PORT="${PRISM_PORT}"
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
     "base_prism_pg" \
@@ -1761,17 +2212,28 @@ _deploy_challenge_service() {
     return 0
   fi
   local target_dir="${SECRET_MOUNT_DIR#/run/secrets/}"  # "base"
+  # Self-healing update/rollback policy (includes --update-order stop-first, required
+  # here because api + worker share a per-node /data volume — start-first would race
+  # two tasks on it). Kept in sync with swarm_backend.py SERVICE_UPDATE_ROLLBACK_POLICY.
   local -a argv=(
     docker service create
     --name "${name}"
     --network "${NET_CHALLENGES}"
     --replicas 1
     --restart-condition any
-    --update-order stop-first
+    "${SWARM_UPDATE_POLICY[@]}"
     --hostname "${name}"
     --with-registry-auth
     --mount "type=volume,source=${data_volume},destination=/data"
   )
+  # HTTP /health container healthcheck for the challenge API only (the default-CMD
+  # uvicorn service that serves /health on CHALLENGE_HEALTH_PORT). The worker sidecars
+  # set CHALLENGE_CMD and leave CHALLENGE_HEALTH_PORT empty, so they get crash-detection
+  # only (no /health server to probe).
+  if [[ -n "${CHALLENGE_HEALTH_PORT}" ]]; then
+    _http_healthcheck_flags "${CHALLENGE_HEALTH_PORT}"
+    argv+=("${SWARM_HEALTHCHECK[@]}")
+  fi
   # Caller-supplied ADDITIONAL networks (e.g. the isolated base_jobs_internal eval
   # overlay for the agent-challenge api+worker), each emitted as its own --network
   # after the default NET_CHALLENGES above. See CHALLENGE_EXTRA_NETWORKS declaration.
@@ -1830,6 +2292,7 @@ _deploy_challenge_service() {
   CHALLENGE_EXTRA_SECRETS=()
   CHALLENGE_EXTRA_CONSTRAINTS=()
   CHALLENGE_EXTRA_NETWORKS=()
+  CHALLENGE_HEALTH_PORT=""
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 
@@ -2223,6 +2686,8 @@ main_validator_node() {
   log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
   log "============================================================"
 
+  ensure_docker                   # 0  (install engine on a blank host; idempotent)
+  ensure_uv                       # 0b (install uv for the node-local base-supervisor.service; only when --install-supervisor)
   preflight                       # docker version + swarm + GHCR creds (no DB dumps)
   ghcr_login                      # private images
   swarm_init                      # the node's OWN swarm (the agent runs as a service on it)
@@ -2276,14 +2741,20 @@ main() {
   log "  static-challenges   : ${STATIC_CHALLENGES}  (opt-in)"
   log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
   log "  greenfield          : ${GREENFIELD}  (skip backup-dump preflight + restore_data; opt-in)"
+  _compute_eval_task_concurrency  # RAM-derived agent-challenge eval concurrency (@4GB/task)
   log "============================================================"
 
+  ensure_docker              # 0  (install engine on a blank host; idempotent)
+  ensure_uv                  # 0b (install uv for base-supervisor.service; only when --install-supervisor)
   preflight                  # 1
   ghcr_login                 # 1b (private images)
   apply_daemon_json          # 2  (DESTRUCTIVE behind --restart-dockerd)
   swarm_init                 # 3
   single_node_placement_fix  # 4  (REVIEW; non-default behind --single-node-placement)
   create_networks            # 5
+  auto_provision_secrets     # 5b (generate/derive/mint secrets; --auto-secrets)
+  ensure_validator_wallet    # 5c (idempotent wallet+hotkey; sets VALIDATOR_HOTKEY_SS58)
+  _auto_seed_mock_metagraph  # 5d (inject ss58 into MOCK_METAGRAPH when default)
   create_secrets             # 6
   deploy_postgres            # 7
   if [[ "${GREENFIELD}" == "true" ]]; then
@@ -2292,6 +2763,7 @@ main() {
     restore_data             # 8
   fi
   deploy_master              # 9
+  provision_agent_challenge_cache  # 9b (own_runner terminal-bench-2.1 task cache + digest)
   deploy_challenges          # 10 (master-orchestrated by default; direct via --static-challenges)
   healthcheck                # 11
   deploy_supervisor          # 12 (control-plane auto-update; install/enable behind --install-supervisor)

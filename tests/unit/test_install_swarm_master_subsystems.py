@@ -89,6 +89,8 @@ def _run(
     provider_mode: str | None = None,
     hf_token: str | None = HF_SENTINEL,
     drop_central_gateway_token: bool = False,
+    eval_ram_total_gb: str | None = "62",
+    eval_task_concurrency: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _docker_stub(bin_dir)
@@ -98,6 +100,17 @@ def _run(
     env["BROKER_WORKSPACE_DIR"] = str(tmp_path / "broker-ws")
     env["MASTER_CONFIG_PATH"] = str(tmp_path / "master.yaml")
     env["GATEWAY_PUBLIC_BASE_URL"] = GATEWAY_PUBLIC_BASE_URL
+    # Pin the RAM->concurrency inputs so the RAM-derived EVAL_TASK_CONCURRENCY is
+    # deterministic regardless of the CI host's real memory (62 GiB, default
+    # reserve 10, @4GB/task -> 13). A direct EVAL_TASK_CONCURRENCY override wins.
+    if eval_ram_total_gb is not None:
+        env["EVAL_RAM_TOTAL_GB"] = eval_ram_total_gb
+    else:
+        env.pop("EVAL_RAM_TOTAL_GB", None)
+    if eval_task_concurrency is not None:
+        env["EVAL_TASK_CONCURRENCY"] = eval_task_concurrency
+    else:
+        env.pop("EVAL_TASK_CONCURRENCY", None)
     if provider_mode is not None:
         env["GATEWAY_PROVIDER_MODE"] = provider_mode
     if hf_token is not None:
@@ -217,6 +230,102 @@ def test_rendered_master_config_wires_gateway_and_coordination(
     assert "orchestration_interval_seconds:" in out
 
 
+def test_rendered_master_config_carries_global_broker_cap(tmp_path: Path) -> None:
+    """The rendered master.yaml docker block sets the server-wide broker cap.
+
+    ``docker.broker_max_concurrent_global`` bounds TOTAL concurrent broker eval
+    jobs across ALL challenge slugs on the single manager node. It is RAM-derived
+    at install time (@4GB/task); with the pinned 62 GiB / reserve-10 inputs the
+    rendered value is 13. ``broker_log_limit_bytes`` raises the returned-log bound
+    so challenges get effectively-full eval output.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+
+    assert "broker_max_concurrent_global: 13" in out
+    assert "broker_log_limit_bytes: 5000000" in out
+
+
+def test_agent_challenge_services_carry_evaluation_concurrency(
+    tmp_path: Path,
+) -> None:
+    """agent-challenge api + worker carry the RAM-derived eval concurrency.
+
+    The durable eval-loop concurrency is RAM-derived at install time (@4GB/task);
+    with the pinned 62 GiB / reserve-10 inputs it renders 13. It is applied to
+    BOTH the api and the worker (via the static ``ac_eval_env`` array), mirroring
+    the dynamic path's ``cli_app._agent_challenge_own_runner_env``. The same array
+    carries the durable own-runner (DooD client) memory ceiling
+    ``CHALLENGE_DOCKER_MEMORY=2g``.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=13" in block
+        assert "CHALLENGE_DOCKER_MEMORY=2g" in block
+
+
+def test_eval_task_concurrency_is_ram_derived(tmp_path: Path) -> None:
+    """EVAL_TASK_CONCURRENCY is RAM-derived at a 4 GB/task budget, override-able.
+
+    With ``EVAL_RAM_TOTAL_GB=62`` and the default reserve (10 GiB):
+    ``max(4, floor((62 - 10) / 4)) = 13`` is rendered into BOTH the master.yaml
+    ``broker_max_concurrent_global`` and the ``ac_eval_env``
+    ``CHALLENGE_EVALUATION_CONCURRENCY`` (api + worker). A direct
+    ``EVAL_TASK_CONCURRENCY`` override wins over the RAM computation verbatim.
+    """
+    services = ("challenge-agent-challenge", "challenge-agent-challenge-worker")
+
+    # RAM-derived: 62 GiB, reserve 10, @4GB/task -> 13.
+    result = _run(tmp_path, eval_ram_total_gb="62")
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    assert "broker_max_concurrent_global: 13" in out
+    for service in services:
+        block = _service_block(out.splitlines(), service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=13" in block
+
+    # Direct override wins regardless of the RAM total.
+    override = _run(tmp_path, eval_ram_total_gb="62", eval_task_concurrency="7")
+    assert override.returncode == 0, f"stderr={override.stderr!r}"
+    out2 = override.stdout
+    assert "broker_max_concurrent_global: 7" in out2
+    for service in services:
+        block = _service_block(out2.splitlines(), service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=7" in block
+
+
+def test_agent_challenge_services_carry_log_streaming_env(
+    tmp_path: Path,
+) -> None:
+    """agent-challenge api + worker carry the live running-log streaming env.
+
+    The worker points the terminal-bench runner's log producer at the api
+    (CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL) and pins the runner JOB onto the
+    isolated eval overlay (CHALLENGE_DOCKER_BROKER_NETWORK=base_jobs_internal) so
+    it resolves challenge-agent-challenge by name to POST task.log events; the
+    api ingests them and serves the SSE feed. Applied to BOTH services via the
+    static ``ac_eval_env`` array, mirroring the dynamic path's
+    ``cli_app._agent_challenge_own_runner_env``. Without these the runner lands
+    on the default bridge network and log streaming silently no-ops.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert (
+            "CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL="
+            "http://challenge-agent-challenge:8000" in block
+        )
+        assert "CHALLENGE_DOCKER_BROKER_NETWORK=base_jobs_internal" in block
+
+
 def test_hf_publisher_token_mounted_on_prism_when_present(tmp_path: Path) -> None:
     result = _run(tmp_path, hf_token=HF_SENTINEL)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -263,8 +372,12 @@ def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None
     """agent-challenge api+worker get the gateway ROOT URL + scoped token mount.
 
     The analyzer appends ``/llm/v1`` to the base URL itself, so the installer
-    renders the gateway ROOT. The scoped token mounts at
-    ``/run/secrets/base_gateway_token`` and NO direct provider key is rendered.
+    renders the gateway ROOT — via the INTERNAL overlay service name
+    (``http://base-master-proxy:${MASTER_PROXY_PORT}``), NOT the public IP: the
+    agent-challenge eval JOB + analyzer run on the ``--internal``
+    base_jobs_internal overlay (no egress) where the public IP is unreachable. The
+    scoped token mounts at ``/run/secrets/base_gateway_token`` and NO direct
+    provider key is rendered.
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -272,7 +385,7 @@ def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None
 
     for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
         block = _service_block(lines, service)
-        assert f"CHALLENGE_LLM_GATEWAY_BASE_URL={GATEWAY_PUBLIC_BASE_URL}" in block
+        assert "CHALLENGE_LLM_GATEWAY_BASE_URL=http://base-master-proxy:19080" in block
         token_file = "CHALLENGE_LLM_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
         assert token_file in block
         assert "source=base_gateway_token,target=base_gateway_token" in block
@@ -306,6 +419,46 @@ def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
         # LLM path.
         assert "target=openrouter_api_key" not in block
         assert "target=yunwu_api_key" not in block
+
+
+def test_master_and_challenge_services_carry_update_rollback_and_health_policy(
+    tmp_path: Path,
+) -> None:
+    """The master services + the challenge API are created with the Swarm
+    self-healing update/rollback policy and an HTTP /health container healthcheck
+    (belt-and-suspenders auto-rollback for a broken image roll)."""
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    policy = (
+        "--update-failure-action rollback",
+        "--update-monitor 45s",
+        "--update-max-failure-ratio 0",
+        "--update-order stop-first",
+        "--rollback-failure-action pause",
+        "--rollback-monitor 45s",
+        "--rollback-max-failure-ratio 1",
+    )
+    for service in (
+        "base-docker-broker",
+        "base-master-proxy",
+        "challenge-agent-challenge",
+    ):
+        block = _service_block(lines, service)
+        for flag in policy:
+            assert flag in block, f"{service} missing {flag!r}"
+
+    # Health flags on the HTTP services (proxy + broker + challenge api), on port.
+    for service, port in (
+        ("base-master-proxy", "19080"),
+        ("base-docker-broker", "8082"),
+        ("challenge-agent-challenge", "8000"),
+    ):
+        block = _service_block(lines, service)
+        assert "--health-cmd" in block, service
+        assert f"localhost:{port}/health" in block, service
+        assert "--health-start-period 40s" in block, service
 
 
 def test_secret_values_never_leak_in_plan_output(tmp_path: Path) -> None:

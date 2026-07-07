@@ -42,12 +42,14 @@ from base.supervisor.image_updater import (
     build_image_updater_task,
     resolve_image_update_targets,
 )
+from base.supervisor.orphan_sweep import build_orphan_sweep_task
 from base.supervisor.reaper import build_reaper_task
 from base.supervisor.scheduler import ScheduledTask
 from base.supervisor.self_update import (
     build_self_update_task,
     run_startup_rollback_check,
 )
+from base.supervisor.service_locks import ServiceUpdateLocks
 from base.supervisor.weight_submit import build_weight_submit_task
 
 logger = logging.getLogger(__name__)
@@ -87,9 +89,15 @@ def build_broker_health_task(
 ) -> tuple[ScheduledTask, BrokerHealthGate]:
     """Build the broker ``/health`` probe task plus its shared gate."""
     if gate is None:
+        # The host supervisor runs outside the overlay and cannot resolve the
+        # overlay service DNS in ``docker.broker_url``; ``broker_health_url``
+        # (when set) points the probe at the broker's host-published port.
+        broker_health_url = (
+            settings.supervisor.broker_health_url or settings.docker.broker_url
+        )
         gate = BrokerHealthGate(
             http_health_prober(
-                f"{settings.docker.broker_url.rstrip('/')}/health",
+                f"{broker_health_url.rstrip('/')}/health",
                 DEFAULT_PROBE_TIMEOUT_SECONDS,
             ),
             failure_threshold=DEFAULT_FAILURE_THRESHOLD,
@@ -127,11 +135,26 @@ def build_scheduled_tasks(
     # duplication.
     alert_hook = build_alert_hook(settings)
 
+    # Recommendation H: a SHARED per-service update lock registry handed to BOTH
+    # the image-updater and config-sync so their independent 60s loops never
+    # issue overlapping `docker service update` on the same shared service
+    # (base-master-proxy / base-docker-broker).
+    service_update_locks = ServiceUpdateLocks()
+
     # ------------------------------------------------------------------
     # Task 17 registration point (reaper):
     # The reaper builder owns WorkloadLedger.reconstruct on first tick and
     # ledger access thereafter (see Task 7/14 notepad contracts).
     tasks.append(build_reaper_task(settings, health_gate=gate))
+    # Orphan own-runner sandbox sweep: host-level, ledger-independent age-based
+    # backstop for DooD sandbox containers (own-runner-task-* / own-runner-exec-*)
+    # leaked when a job is killed externally (broker timeout / reaper) before the
+    # runner's in-process teardown runs. Daemon-scoped (no broker dependency).
+    if settings.supervisor.orphan_sweep_enabled:
+        tasks.append(build_orphan_sweep_task(settings, health_gate=gate))
+        logger.info("orphan-sandbox-sweep: enabled")
+    else:
+        logger.info("orphan-sandbox-sweep: disabled (orphan_sweep_enabled=false)")
     # ------------------------------------------------------------------
     # Task 18 registration point (image-updater):
     # Targets are SETTINGS-DRIVEN (G-A5): resolve_image_update_targets defaults to
@@ -146,6 +169,8 @@ def build_scheduled_tasks(
             health_gate=gate,
             resolver=digest_resolver,
             targets=resolve_image_update_targets(settings),
+            alert_emit=alert_hook,
+            service_locks=service_update_locks,
         )
     )
     # Task 19 (challenge-image-updater) is NO LONGER registered on the HOST
@@ -171,6 +196,7 @@ def build_scheduled_tasks(
                 "base-master-proxy",
                 "base-docker-broker",
             ),
+            service_locks=service_update_locks,
         )
     )
     # Task 21 weights (on-chain submit): code-CAPABLE, RUNTIME-OFF by default.

@@ -8,6 +8,7 @@ processor/exporter rather than an inert TracerProvider).
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 
@@ -17,6 +18,7 @@ from typer.testing import CliRunner
 from base.cli_app import main
 from base.cli_app.main import app
 from base.config.settings import Settings
+from base.observability.logging import _resolve_level, configure_logging
 from base.observability.otel import init_otel
 from base.observability.sentry import init_sentry
 
@@ -44,12 +46,14 @@ def _configured_settings() -> Settings:
 def test_configure_observability_wires_init_from_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    log_calls: list[bool] = []
+    log_calls: list[tuple[bool, int | None]] = []
     sentry_calls: list[tuple[str | None, str | None]] = []
     otel_calls: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(
-        main, "configure_logging", lambda json_logs: log_calls.append(json_logs)
+        main,
+        "configure_logging",
+        lambda json_logs, level=None: log_calls.append((json_logs, level)),
     )
     monkeypatch.setattr(
         main,
@@ -63,9 +67,10 @@ def test_configure_observability_wires_init_from_settings(
     )
 
     settings = _configured_settings()
+    settings.observability.log_level = "DEBUG"
     main._configure_observability(settings)
 
-    assert log_calls == [False]
+    assert log_calls == [(False, logging.DEBUG)]
     assert sentry_calls == [("https://public@sentry.example/42", "development")]
     assert otel_calls == [("base-test", "http://otel-collector:4317")]
 
@@ -73,6 +78,31 @@ def test_configure_observability_wires_init_from_settings(
 def test_configure_observability_noop_safe_when_unconfigured() -> None:
     # Default Settings: no sentry DSN, no OTLP endpoint. Must not raise.
     main._configure_observability(Settings())
+
+
+def test_resolved_log_level_maps_name_and_falls_back() -> None:
+    settings = Settings()
+    settings.observability.log_level = "debug"
+    assert main._resolved_log_level(settings) == logging.DEBUG
+    settings.observability.log_level = "WARNING"
+    assert main._resolved_log_level(settings) == logging.WARNING
+    # Unrecognized level names fall back to INFO rather than raising.
+    settings.observability.log_level = "not-a-level"
+    assert main._resolved_log_level(settings) == logging.INFO
+
+
+def test_configure_logging_resolves_string_level_safely() -> None:
+    assert _resolve_level("debug") == logging.DEBUG
+    assert _resolve_level("INFO") == logging.INFO
+    assert _resolve_level("bogus") == logging.INFO
+    assert _resolve_level(logging.ERROR) == logging.ERROR
+    # A string level round-trips through configure_logging without raising and
+    # sets the effective root level.
+    try:
+        configure_logging(json_logs=True, level="warning")
+        assert logging.getLogger().getEffectiveLevel() == logging.WARNING
+    finally:
+        configure_logging(json_logs=True, level=logging.INFO)
 
 
 @pytest.mark.parametrize("command", ENTRYPOINTS, ids=lambda c: "-".join(c))
@@ -87,7 +117,7 @@ def test_entrypoint_initializes_sentry_and_otel(
     otel_calls: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(main, "load_settings", lambda config: settings)
-    monkeypatch.setattr(main, "configure_logging", lambda json_logs: None)
+    monkeypatch.setattr(main, "configure_logging", lambda json_logs, level=None: None)
     monkeypatch.setattr(
         main,
         "init_sentry",

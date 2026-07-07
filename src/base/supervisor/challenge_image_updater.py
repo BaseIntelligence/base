@@ -41,6 +41,17 @@ Pin policy (Task 18 parity): an update is only ever written with a full
 anything else yields a logged per-challenge skip, and sibling challenges
 are still processed. The tick itself never raises.
 
+Rollback + retry (recommendation F): the service's currently-running digest
+is captured BEFORE the roll; ``restart_challenge`` waits for readiness and
+RAISES when the post-roll service is unhealthy, so an unhealthy roll rolls the
+service BACK to that captured digest (via ``controller.rollback``) and records
+a per-slug :class:`RetryState` failure. That state backs off the roll between
+the fixed 60s ticks and, after ``max_attempts``, stops hammering + emits a
+``challenge_image_update_failed`` alert once; a NEW desired digest resets the
+state (same semantics as the master image-updater). Because this updater runs
+INSIDE the master proxy (one long-lived process), the retry state is in-memory
+per-process (persistence is not required here).
+
 Health-gate note (decided, Task 18 precedent): this job talks to the
 challenge DB registry and the public GHCR registry — it has NO broker HTTP
 dependency — so the shared :class:`BrokerHealthGate` is accepted for
@@ -54,12 +65,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from base.config.settings import Settings
+from base.supervisor.alerts import ALERT_CHALLENGE_IMAGE_UPDATE_FAILED, build_alert_hook
 from base.supervisor.health import BrokerHealthGate
 from base.supervisor.image_ref import (
     ImageReference,
@@ -67,7 +81,9 @@ from base.supervisor.image_ref import (
     parse_image_reference,
     resolve_remote_digest,
 )
+from base.supervisor.retry import JitterSource, RetryPolicy, RetryState
 from base.supervisor.scheduler import ScheduledTask
+from base.supervisor.weight_submit import AlertEmitter, WeightsAlert
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -96,11 +112,26 @@ class ChallengeImageUpdater:
         controller_factory: ControllerFactory,
         resolver: DigestResolver,
         tag: str = DEFAULT_MUTABLE_TAG,
+        retry_policy: RetryPolicy | None = None,
+        alert_emit: AlertEmitter | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        jitter_source: JitterSource = random.random,
     ) -> None:
         self._registry_factory = registry_factory
         self._controller_factory = controller_factory
         self._resolver = resolver
         self._tag = tag
+        self._retry_policy = retry_policy if retry_policy is not None else RetryPolicy()
+        self._alert_emit = alert_emit
+        self._clock = clock
+        self._jitter_source = jitter_source
+        # In-memory per-slug retry bookkeeping (this updater runs inside the
+        # single long-lived master proxy, so per-process state is sufficient).
+        self._retry_state: dict[str, RetryState] = {}
+        # Desired digest last pursued per slug; a change ends a failure episode
+        # (resets retry state + re-arms the exhaustion alert).
+        self._desired_digest: dict[str, str] = {}
+        self._alerted: set[str] = set()
 
     def run_once(self) -> None:
         """One synchronous tick; never raises (scheduler-thread friendly)."""
@@ -200,7 +231,8 @@ class ChallengeImageUpdater:
         """Roll the ACTIVE challenge's service to ``desired`` iff it is behind.
 
         Returns the per-tick action for the observability summary: ``rolled``,
-        ``already-current``, ``skipped-inactive`` or ``skipped-inspect-error``.
+        ``rolled-back``, ``already-current``, ``skipped-inactive``,
+        ``skipped-inspect-error``, ``skipped-backoff`` or ``skipped-exhausted``.
 
         The roll decision is made against the service's ACTUALLY-running image
         digest via ``controller.running_image`` — idempotent, so no
@@ -213,36 +245,164 @@ class ChallengeImageUpdater:
         dockerd hiccup, so the roll is skipped this tick and logged concisely at
         WARNING (no stack trace) to avoid flooding the logs every tick. Genuinely
         unexpected errors are NOT caught here and stay at exception level.
+
+        The roll itself is retry-with-rollback: ``restart_challenge`` waits for
+        readiness and RAISES a :class:`DockerOrchestrationError` when the
+        post-roll service is unhealthy, so the service is rolled BACK to the
+        pre-roll digest and a per-slug :class:`RetryState` failure is recorded
+        (backoff between ticks, exhaustion alert). A new desired digest resets
+        the state.
         """
         from base.master.docker_orchestrator import DockerOrchestrationError
         from base.schemas.challenge import ChallengeStatus
 
         if record.status != ChallengeStatus.ACTIVE:
             return "skipped-inactive"
+
+        slug = record.slug
+        now = self._clock()
+        state = self._retry_state.setdefault(slug, RetryState())
+        # A new desired digest ends any prior failure episode (reset budget +
+        # re-arm alert) so a fresh roll is attempted even mid-backoff.
+        if self._desired_digest.get(slug) != digest:
+            self._desired_digest[slug] = digest
+            state.record_success()
+            self._alerted.discard(slug)
+
+        previous_running: str | None = None
         accessor = getattr(controller, "running_image", None)
         if callable(accessor):
             try:
-                running = await accessor(record.slug)
+                previous_running = await accessor(slug)
             except DockerOrchestrationError as exc:
                 logger.warning(
                     "challenge-image-updater: %s: transient service-inspect "
                     "failure (%s); skipping roll this tick, retry next interval",
-                    record.slug,
+                    slug,
                     exc,
                 )
                 return "skipped-inspect-error"
-            if running is not None and extract_digest(running) == digest:
+            if previous_running is not None and extract_digest(previous_running) == (
+                digest
+            ):
+                state.record_success()
+                self._alerted.discard(slug)
                 return "already-current"
         elif desired == record.image:
             return "already-current"
-        result = await controller.restart(record.slug)
+
+        # Backoff gate: a repeatedly-failing roll backs off between the fixed
+        # ticks instead of hammering the same unhealthy rollout every 60s.
+        if not state.is_eligible(now):
+            logger.debug(
+                "challenge-image-updater: %s: backing off after %d failure(s); "
+                "skipping roll until eligible",
+                slug,
+                state.attempts,
+            )
+            return "skipped-backoff"
+        if state.is_exhausted(self._retry_policy):
+            # Budget spent for this digest: stop hammering (the alert already
+            # fired) until a new digest resets the state above.
+            logger.debug(
+                "challenge-image-updater: %s: retries exhausted for %s; skipping",
+                slug,
+                digest,
+            )
+            return "skipped-exhausted"
+
+        try:
+            result = await controller.restart(slug)
+        except DockerOrchestrationError as exc:
+            return await self._handle_roll_failure(
+                controller, record, previous_running, state, now, str(exc)
+            )
+        state.record_success()
+        self._alerted.discard(slug)
         logger.info(
             "challenge-image-updater: %s: rolled service to %s (%s)",
-            record.slug,
+            slug,
             desired,
             result.get("status") if isinstance(result, dict) else result,
         )
         return "rolled"
+
+    async def _handle_roll_failure(
+        self,
+        controller: Any,
+        record: Any,
+        previous_running: str | None,
+        state: RetryState,
+        now: float,
+        reason: str,
+    ) -> str:
+        """Roll the service back, count the failure + backoff, alert on exhaust.
+
+        The desired-digest roll came up UNHEALTHY; revert to the pre-roll
+        running image (``previous_running``) so the challenge keeps serving the
+        last-known-good digest while the retry budget spaces out further roll
+        attempts. The DB record is intentionally left at the desired digest so
+        the roll is retried (idempotently) on later ticks.
+        """
+        slug = record.slug
+        logger.error(
+            "challenge-image-updater: %s: roll came up unhealthy (%s); rolling back",
+            slug,
+            reason,
+        )
+        rollback = getattr(controller, "rollback", None)
+        if previous_running and callable(rollback):
+            try:
+                await rollback(slug, previous_running)
+                logger.warning(
+                    "challenge-image-updater: %s: rolled service back to %s",
+                    slug,
+                    previous_running,
+                )
+            except Exception:
+                logger.exception(
+                    "challenge-image-updater: %s: rollback to %s failed",
+                    slug,
+                    previous_running,
+                )
+        else:
+            logger.warning(
+                "challenge-image-updater: %s: no rollback target/seam available; "
+                "cannot revert the unhealthy roll",
+                slug,
+            )
+        state.record_failure(
+            now, self._retry_policy, error=reason, jitter_source=self._jitter_source
+        )
+        if state.is_exhausted(self._retry_policy) and slug not in self._alerted:
+            self._alerted.add(slug)
+            self._emit_alert(record, state)
+        return "rolled-back"
+
+    def _emit_alert(self, record: Any, state: RetryState) -> None:
+        if self._alert_emit is None:
+            return
+        message = (
+            f"challenge image auto-update for {record.slug!r} failed "
+            f"{state.attempts} times; roll is paused until a new digest"
+        )
+        try:
+            self._alert_emit(
+                WeightsAlert(
+                    kind=ALERT_CHALLENGE_IMAGE_UPDATE_FAILED,
+                    message=message,
+                    details={
+                        "slug": record.slug,
+                        "image": record.image,
+                        "attempts": state.attempts,
+                        "last_error": state.last_error,
+                    },
+                )
+            )
+        except Exception:
+            logger.exception(
+                "challenge-image-updater: alert hook raised for %r", record.slug
+            )
 
 
 def build_challenge_image_updater_task(
@@ -253,6 +413,8 @@ def build_challenge_image_updater_task(
     controller_factory: ControllerFactory | None = None,
     resolver: DigestResolver | None = None,
     tag: str = DEFAULT_MUTABLE_TAG,
+    retry_policy: RetryPolicy | None = None,
+    alert_emit: AlertEmitter | None = None,
     interval_seconds: float = CHALLENGE_IMAGE_UPDATER_INTERVAL_SECONDS,
 ) -> ScheduledTask:
     """Build the challenge-image-updater :class:`ScheduledTask`.
@@ -262,13 +424,14 @@ def build_challenge_image_updater_task(
     registry and the public GHCR registry — it never talks to the Docker
     broker over HTTP — so broker health is not a meaningful gate here.
 
-    ``registry_factory``/``controller_factory``/``resolver`` are test
-    seams. The defaults construct, per tick, exactly what the CLI command
-    constructs per invocation: ``_master_registry(settings)`` and
-    ``DockerRuntimeController(registry, _challenge_orchestrator(settings))``
+    ``registry_factory``/``controller_factory``/``resolver``/``retry_policy``/
+    ``alert_emit`` are test seams. The defaults construct, per tick, exactly
+    what the CLI command constructs per invocation: ``_master_registry(settings)``
+    and ``DockerRuntimeController(registry, _challenge_orchestrator(settings))``
     (imported lazily inside the factories so importing the supervisor
     package stays light — Task 21 precedent). The default ``resolver`` is
-    the REUSED :func:`resolve_remote_digest`.
+    the REUSED :func:`resolve_remote_digest`; the default ``alert_emit`` is the
+    settings-driven webhook alert hook (a log-only no-op until configured).
     """
     del health_gate  # recipe parity; not broker-dependent (see docstring).
     updater = _build_challenge_image_updater(
@@ -277,6 +440,8 @@ def build_challenge_image_updater_task(
         controller_factory=controller_factory,
         resolver=resolver,
         tag=tag,
+        retry_policy=retry_policy,
+        alert_emit=alert_emit,
     )
     return ScheduledTask(
         name="challenge-image-updater",
@@ -292,16 +457,19 @@ def _build_challenge_image_updater(
     controller_factory: ControllerFactory | None = None,
     resolver: DigestResolver | None = None,
     tag: str = DEFAULT_MUTABLE_TAG,
+    retry_policy: RetryPolicy | None = None,
+    alert_emit: AlertEmitter | None = None,
 ) -> ChallengeImageUpdater:
     """Build a :class:`ChallengeImageUpdater` with the production defaults.
 
-    ``registry_factory``/``controller_factory``/``resolver`` are test seams; the
-    defaults construct, per tick, exactly what the CLI command constructs per
-    invocation: ``_master_registry(settings)`` and
-    ``DockerRuntimeController(registry, _challenge_orchestrator(settings))``
+    ``registry_factory``/``controller_factory``/``resolver``/``retry_policy``/
+    ``alert_emit`` are test seams; the defaults construct, per tick, exactly
+    what the CLI command constructs per invocation: ``_master_registry(settings)``
+    and ``DockerRuntimeController(registry, _challenge_orchestrator(settings))``
     (imported lazily so importing the supervisor package stays light — Task 21
     precedent). The default ``resolver`` is the REUSED
-    :func:`resolve_remote_digest`.
+    :func:`resolve_remote_digest`; the default ``alert_emit`` is the
+    settings-driven webhook alert hook (a log-only no-op until configured).
     """
 
     def default_registry_factory() -> Any:
@@ -330,6 +498,8 @@ def _build_challenge_image_updater(
         ),
         resolver=resolver if resolver is not None else resolve_remote_digest,
         tag=tag,
+        retry_policy=retry_policy,
+        alert_emit=alert_emit if alert_emit is not None else build_alert_hook(settings),
     )
 
 
@@ -369,6 +539,8 @@ def build_challenge_image_update_lifespan(
     controller_factory: ControllerFactory | None = None,
     resolver: DigestResolver | None = None,
     tag: str = DEFAULT_MUTABLE_TAG,
+    retry_policy: RetryPolicy | None = None,
+    alert_emit: AlertEmitter | None = None,
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]] | None:
     """Build a FastAPI lifespan that runs the challenge-image-update loop.
 
@@ -379,8 +551,8 @@ def build_challenge_image_update_lifespan(
     gate — default-on for the master proxy).
 
     The updater is built from ``settings`` with the same default
-    registry/controller/resolver factories as ``build_challenge_image_updater_task``;
-    the factory arguments are test seams.
+    registry/controller/resolver/retry/alert seams as
+    ``build_challenge_image_updater_task``; the seam arguments are for tests.
     """
 
     if settings is None or interval_seconds is None or interval_seconds <= 0:
@@ -392,6 +564,8 @@ def build_challenge_image_update_lifespan(
         controller_factory=controller_factory,
         resolver=resolver,
         tag=tag,
+        retry_policy=retry_policy,
+        alert_emit=alert_emit,
     )
     loop_interval = interval_seconds
 

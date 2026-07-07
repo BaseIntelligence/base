@@ -41,6 +41,7 @@ Swarm-specific decisions (see ``.omo/plans/platform-docker-migration.md``):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import time
@@ -97,6 +98,8 @@ from base.schemas.docker_broker import (
     BrokerRunResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CHALLENGE_CONSTRAINT = "node.role==manager"
 DEFAULT_CPU_JOB_CONSTRAINT = "node.labels.base.workload==cpu"
 DEFAULT_GPU_JOB_CONSTRAINT = "node.labels.base.workload==gpu"
@@ -115,6 +118,49 @@ OVERLAY_MTU = "1450"
 #: Swarm generic-resource name advertised by the worker daemon.json
 #: (``node-generic-resources: ["NVIDIA-GPU=GPU-<uuid>"]``); case-sensitive.
 GPU_GENERIC_RESOURCE_NAME = "NVIDIA-GPU"
+
+#: Swarm self-healing rolling-update + rollback policy applied to every long-lived
+#: (``replicated``) first-party service so a broken image roll auto-rolls-back
+#: instead of pausing degraded. ``--update-monitor`` + ``--update-max-failure-ratio
+#: 0`` catch a task that crashes on start (a broken image) with NO container
+#: healthcheck required (the primary durability win). ``--update-order stop-first``
+#: is required for these singleton services bound to exclusive host ports/volumes on
+#: the manager: the default start-first ordering would collide on the port/volume.
+#: Rollback is best-effort (``--rollback-max-failure-ratio 1``) so a node never gets
+#: stuck failing to roll back. Kept in sync with ``deploy/swarm/install-swarm.sh``
+#: (``SWARM_UPDATE_POLICY``).
+SERVICE_UPDATE_ROLLBACK_POLICY: tuple[str, ...] = (
+    "--update-failure-action",
+    "rollback",
+    "--update-monitor",
+    "45s",
+    "--update-max-failure-ratio",
+    "0",
+    "--update-order",
+    "stop-first",
+    "--rollback-failure-action",
+    "pause",
+    "--rollback-monitor",
+    "45s",
+    "--rollback-max-failure-ratio",
+    "1",
+)
+
+#: Conservative container-healthcheck timings for a service that exposes an HTTP
+#: ``/health`` endpoint. ``--health-start-period 40s`` suppresses failures during a
+#: slow cold boot (it must exceed the real cold-start); because the update-monitor
+#: above is 45s a task still unhealthy AFTER the start-period within that window is
+#: caught. Kept in sync with ``install-swarm.sh``.
+_HEALTH_CHECK_TIMINGS: tuple[str, ...] = (
+    "--health-interval",
+    "10s",
+    "--health-timeout",
+    "5s",
+    "--health-retries",
+    "3",
+    "--health-start-period",
+    "40s",
+)
 
 #: Swarm task states that mean a replicated-job task will never run again
 #: (``--restart-condition none`` guarantees no new task is scheduled).
@@ -224,6 +270,11 @@ class SwarmServicePlan:
     hostname: str | None = None
     generic_resources: tuple[str, ...] = ()
     with_registry_auth: bool = False
+    #: Optional container HTTP health-probe command (``--health-cmd``). Set ONLY
+    #: for a service that serves a real HTTP ``/health`` endpoint (the challenge
+    #: API); when set, the conservative :data:`_HEALTH_CHECK_TIMINGS` are emitted so
+    #: a slow-but-healthy boot never trips a false rollback. A job leaves it unset.
+    health_cmd: str | None = None
 
 
 def gpu_generic_resources(gpu_count: int | None) -> tuple[str, ...]:
@@ -236,6 +287,24 @@ def gpu_generic_resources(gpu_count: int | None) -> tuple[str, ...]:
     if not gpu_count:
         return ()
     return (f"{GPU_GENERIC_RESOURCE_NAME}={gpu_count}",)
+
+
+def _http_health_cmd(port: int) -> str:
+    """Return the container HTTP ``/health`` probe command for ``port``.
+
+    A pure-Python one-liner (not ``curl``) because the python:3.12-slim service
+    images do not ship curl; ``urllib.urlopen`` raises (a non-zero exit) on any
+    non-2xx/connection error, which Swarm reads as unhealthy.
+    """
+
+    return (
+        'python -c "import urllib.request; '
+        f"urllib.request.urlopen('http://localhost:{port}/health', timeout=4)\""
+    )
+
+
+def _health_check_argv(health_cmd: str) -> list[str]:
+    return ["--health-cmd", health_cmd, *_HEALTH_CHECK_TIMINGS]
 
 
 def build_service_create_argv(docker_bin: str, plan: SwarmServicePlan) -> list[str]:
@@ -258,6 +327,11 @@ def build_service_create_argv(docker_bin: str, plan: SwarmServicePlan) -> list[s
             "--restart-condition",
             "any",
         ]
+        # Long-lived services get the Swarm self-healing update/rollback policy so a
+        # broken image roll auto-rolls-back; a replicated-job runs once and must not.
+        argv += list(SERVICE_UPDATE_ROLLBACK_POLICY)
+    if plan.health_cmd:
+        argv += _health_check_argv(plan.health_cmd)
     if plan.with_registry_auth:
         argv.append("--with-registry-auth")
     if plan.constraint:
@@ -426,6 +500,12 @@ class SwarmBrokerService(DockerBrokerService):
             # capability-gated escape hatch runs them as a direct local
             # ``docker run`` on this worker node instead.
             return self._run_escape_hatch(challenge_slug, request)
+        logger.info(
+            "broker swarm job accepted: slug=%s image=%s job_id=%s",
+            challenge_slug,
+            request.image,
+            request.job_id,
+        )
         limits = self._hardened_limits(request)
         self._validate_request(request)
         with TemporaryDirectory(
@@ -539,12 +619,17 @@ class SwarmBrokerService(DockerBrokerService):
             )
             service_id = ""
             try:
-                self.ledger.register(
-                    entry, max_concurrent=self._max_concurrent(challenge_slug)
-                )
+                self._register_job(entry)
                 service_id = self._create_job_service(plan)
                 self.ledger.register(replace(entry, key=service_id))
                 self.ledger.release(name)
+                logger.info(
+                    "broker swarm job service created: slug=%s job_id=%s service=%s; "
+                    "waiting for completion",
+                    challenge_slug,
+                    request.job_id,
+                    service_id,
+                )
                 outcome = self._wait_for_job(service_id, request.timeout_seconds)
                 raw_stdout, raw_stderr = self._service_logs_raw(service_id)
                 if cross_node:
@@ -569,6 +654,35 @@ class SwarmBrokerService(DockerBrokerService):
                 stderr = self._cap_log(raw_stderr)
                 if outcome.error and not stderr:
                     stderr = self._cap_log(outcome.error)
+                if outcome.timed_out:
+                    logger.error(
+                        "broker swarm job timed out: slug=%s job_id=%s service=%s "
+                        "timeout_seconds=%s",
+                        challenge_slug,
+                        request.job_id,
+                        service_id,
+                        request.timeout_seconds,
+                    )
+                elif outcome.error:
+                    logger.error(
+                        "broker swarm job failed: slug=%s job_id=%s service=%s "
+                        "returncode=%s",
+                        challenge_slug,
+                        request.job_id,
+                        service_id,
+                        outcome.returncode,
+                    )
+                logger.info(
+                    "broker swarm job finished: slug=%s job_id=%s service=%s "
+                    "returncode=%s timed_out=%s stdout_bytes=%d stderr_bytes=%d",
+                    challenge_slug,
+                    request.job_id,
+                    service_id,
+                    outcome.returncode,
+                    outcome.timed_out,
+                    len(stdout.encode(errors="replace")),
+                    len(stderr.encode(errors="replace")),
+                )
                 return BrokerRunResponse(
                     container_name=name,
                     stdout=stdout,
@@ -739,6 +853,11 @@ class SwarmBrokerService(DockerBrokerService):
     def _create_job_service(self, plan: SwarmServicePlan) -> str:
         created = self._command(build_service_create_argv(self.config.docker_bin, plan))
         if created.returncode != 0:
+            logger.error(
+                "broker swarm service create failed: service=%s rc=%s",
+                plan.name,
+                created.returncode,
+            )
             raise DockerExecutorError(
                 f"Swarm service create failed: {self._cap_log(created.stderr)}"
             )
@@ -1276,6 +1395,9 @@ class SwarmChallengeOrchestrator:
             cap_drop=resources.cap_drop,
             hostname=spec.container_name,
             generic_resources=gpu_generic_resources(resources.gpu_count),
+            # The long-lived challenge API serves HTTP ``/health`` on ``spec.port``;
+            # a replicated-job challenge spec has no HTTP endpoint, so it stays unset.
+            health_cmd=_http_health_cmd(spec.port) if mode == "replicated" else None,
         )
 
     def _build_environment(self, spec: ChallengeSpec) -> dict[str, str]:

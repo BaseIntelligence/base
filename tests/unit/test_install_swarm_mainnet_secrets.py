@@ -363,3 +363,42 @@ def test_runbook_documents_secrets_ghcr_and_placement() -> None:
     assert "--single-node-placement" in readme
     assert "node.role==worker" in readme
     assert "Pending" in readme
+
+
+# ---------------------------------------------------------------------------
+# Phase H guard: the hard-fail contract above is the DEFAULT (non-auto) behavior.
+# It must stay UNCHANGED when --auto-secrets is absent, and the opt-in seam must
+# be the ONLY thing that suppresses it — so the two modes never interfere.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("envvar", ["BASE_ADMIN_TOKEN", "MASTER_DATABASE_URL"])
+def test_hard_fail_unchanged_without_auto_secrets(envvar: str, tmp_path: Path) -> None:
+    # No --auto-secrets: a dropped required secret still hard-fails exactly as
+    # before (the auto-provisioning seam is fully opt-in).
+    result = _run(
+        tmp_path,
+        "--static-challenges",
+        drop_env=(envvar,),
+        extra_env={"SECRETS_ENV_FILE": str(tmp_path / "unused-secrets.env")},
+    )
+    assert result.returncode != 0, f"stdout={result.stdout!r}"
+    assert f"required secret env var ${envvar} is empty" in result.stderr
+
+
+@pytest.mark.parametrize("envvar", ["BASE_ADMIN_TOKEN", "MASTER_DATABASE_URL"])
+def test_auto_secrets_supplies_dropped_required_secret(
+    envvar: str, tmp_path: Path
+) -> None:
+    # WITH --auto-secrets the SAME drop no longer hard-fails: the value is
+    # generated (BASE_ADMIN_TOKEN) or derived (MASTER_DATABASE_URL). YUNWU stays
+    # external and is still provided by REQUIRED_SECRET_ENV.
+    result = _run(
+        tmp_path,
+        "--static-challenges",
+        "--auto-secrets",
+        drop_env=(envvar,),
+        extra_env={"SECRETS_ENV_FILE": str(tmp_path / "unused-secrets.env")},
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert f"required secret env var ${envvar} is empty" not in result.stderr
