@@ -6,9 +6,8 @@ Fake resolver + fake runner only — no network, no dockerd.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
-
-import pytest
 
 from base.config.settings import Settings
 from base.master.swarm_backend import SwarmCommandResult
@@ -24,6 +23,45 @@ from base.supervisor.image_updater import (
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 IMAGE = "ghcr.io/baseintelligence/base-master:latest"
+IMAGE_UPDATER_LOGGER = "base.supervisor.image_updater"
+
+
+class _AttachedHandler:
+    """Capture records on a named logger, immune to root-logging churn.
+
+    Mirrors the pattern in test_supervisor_weights.py: other tests reconfigure
+    root logging / raise logger levels (importing ``bittensor`` bumps every
+    already-created logger to CRITICAL) or disable loggers (alembic env.py),
+    which breaks ``caplog`` in a full-suite run, so we attach directly to the
+    target logger and reset its level/disabled flag.
+    """
+
+    def __init__(self, logger_name: str) -> None:
+        self._logger = logging.getLogger(logger_name)
+        self.messages: list[str] = []
+        self._lock = threading.Lock()
+        self._was_disabled = False
+
+        class _H(logging.Handler):
+            def __init__(inner) -> None:
+                super().__init__(level=logging.DEBUG)
+
+            def emit(inner, record: logging.LogRecord) -> None:
+                with self._lock:
+                    self.messages.append(record.getMessage())
+
+        self._handler = _H()
+
+    def __enter__(self) -> _AttachedHandler:
+        self._was_disabled = self._logger.disabled
+        self._logger.disabled = False
+        self._logger.setLevel(logging.DEBUG)
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._logger.removeHandler(self._handler)
+        self._logger.disabled = self._was_disabled
 
 
 class FakeRunner:
@@ -101,19 +139,17 @@ def test_new_digest_issues_exactly_one_update_per_service() -> None:
         )
 
 
-def test_resolver_failure_logs_and_skips_update(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_resolver_failure_logs_and_skips_update() -> None:
     runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
 
     def resolver(reference: ImageReference) -> str:
         raise RuntimeError("registry unreachable")
 
     updater = make_updater(runner, resolver)
-    with caplog.at_level(logging.WARNING):
+    with _AttachedHandler(IMAGE_UPDATER_LOGGER) as handler:
         updater.run_once()
     assert runner.update_calls == []
-    assert any("digest resolution failed" in rec.message for rec in caplog.records)
+    assert any("digest resolution failed" in msg for msg in handler.messages)
 
 
 def test_resolver_failure_does_not_block_other_targets() -> None:
@@ -139,9 +175,7 @@ def test_resolver_failure_does_not_block_other_targets() -> None:
     assert runner.update_calls[0][-1] == "base-other"
 
 
-def test_untagged_image_rejected_without_any_docker_calls(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_untagged_image_rejected_without_any_docker_calls() -> None:
     runner = FakeRunner()
     targets = (
         ImageUpdateTarget(
@@ -149,40 +183,34 @@ def test_untagged_image_rejected_without_any_docker_calls(
             image="ghcr.io/baseintelligence/base-master",
         ),
     )
-    with caplog.at_level(logging.ERROR):
+    with _AttachedHandler(IMAGE_UPDATER_LOGGER) as handler:
         make_updater(runner, make_resolver(DIGEST_B), targets).run_once()
     assert runner.calls == []
-    assert any("untagged image" in rec.message for rec in caplog.records)
+    assert any("untagged image" in msg for msg in handler.messages)
 
 
-def test_non_sha256_resolver_result_rejected(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_non_sha256_resolver_result_rejected() -> None:
     runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"})
-    with caplog.at_level(logging.ERROR):
+    with _AttachedHandler(IMAGE_UPDATER_LOGGER) as handler:
         make_updater(runner, make_resolver("md5:deadbeef")).run_once()
     assert runner.update_calls == []
-    assert any("refusing un-pinned update" in rec.message for rec in caplog.records)
+    assert any("refusing un-pinned update" in msg for msg in handler.messages)
 
 
-def test_missing_service_skipped_without_update(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_missing_service_skipped_without_update() -> None:
     runner = FakeRunner({})
-    with caplog.at_level(logging.WARNING):
+    with _AttachedHandler(IMAGE_UPDATER_LOGGER) as handler:
         make_updater(runner, make_resolver(DIGEST_B)).run_once()
     assert runner.update_calls == []
-    assert any("cannot inspect service" in rec.message for rec in caplog.records)
+    assert any("cannot inspect service" in msg for msg in handler.messages)
 
 
-def test_failed_service_update_logged_not_raised(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_failed_service_update_logged_not_raised() -> None:
     runner = FakeRunner({"base-admin": f"{IMAGE}@{DIGEST_A}"}, update_returncode=1)
-    with caplog.at_level(logging.ERROR):
+    with _AttachedHandler(IMAGE_UPDATER_LOGGER) as handler:
         make_updater(runner, make_resolver(DIGEST_B)).run_once()
     assert len(runner.update_calls) == 1
-    assert any("docker service update failed" in rec.message for rec in caplog.records)
+    assert any("docker service update failed" in msg for msg in handler.messages)
 
 
 def test_unpinned_current_image_is_updated() -> None:
