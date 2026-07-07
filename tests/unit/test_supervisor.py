@@ -421,3 +421,6 @@ def test_systemd_unit_template_is_notify_with_watchdog() -> None:
     assert "WatchdogSec=" in unit
     assert "Restart=always" in unit
     assert "master supervisor" in unit
+    # ProtectSystem=full makes /etc read-only; config-sync must still be able to
+    # write the node-local master.yaml (+ sidecar) under /etc/base.
+    assert "ReadWritePaths=/etc/base" in unit

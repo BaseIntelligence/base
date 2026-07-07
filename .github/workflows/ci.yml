@@ -219,6 +219,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Retry wrapper: the github-actions[bot] force-push to `release`
+          # intermittently 403s on the first attempt (a transient GitHub
+          # permission hiccup a re-run clears), so retry with backoff to keep the
+          # self-update manifest publish durable instead of needing a manual re-run.
+          retry() {
+            local n=0
+            until "$@"; do
+              n=$((n + 1))
+              if [ "$n" -ge 5 ]; then
+                echo "command failed after ${n} attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt ${n} failed (transient); retrying in $((n * 5))s..." >&2
+              sleep "$((n * 5))"
+            done
+          }
           # MONOTONIC, filesystem-safe version: the strictly-increasing GitHub
           # run number (advances on every merge to main) plus the merged commit
           # sha for traceability. No "/", never "." / ".." -> accepted by
@@ -239,7 +255,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add self-update-manifest.json
           git commit -q -m "self-update manifest ${version}"
-          git push -q --force \
+          retry git push -q --force \
             "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
             release
 

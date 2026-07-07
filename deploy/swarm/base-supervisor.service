@@ -49,6 +49,11 @@ TimeoutStopSec=30s
 # Task 17+ jobs need the docker CLI/socket.
 NoNewPrivileges=true
 ProtectSystem=full
+# config-sync rewrites the node-local master.yaml (+ .digest sidecar) under
+# /etc/base whenever the canonical config changes; ProtectSystem=full mounts
+# /etc read-only, so /etc/base must be re-exposed read-write or every
+# config-sync tick fails with EROFS (Read-only file system).
+ReadWritePaths=/etc/base
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
