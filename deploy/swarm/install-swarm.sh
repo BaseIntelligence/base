@@ -430,6 +430,10 @@ VALIDATOR_NODE=false       # opt-in: bring up a VALIDATOR node (auto-updatable a
 # initialize via the services' own normal migrations/bootstrap. Required because
 # the operator moved off k3s to Swarm, so the k3s dumps will NOT exist at deploy.
 GREENFIELD=false           # opt-in: skip backup-dump preflight + restore_data (fresh DBs).
+# Auto-secrets: generate/derive/mint every secret except the external
+# YUNWU_API_KEY (persisted to SECRETS_ENV_FILE, mode 600). Env-overridable so a
+# turnkey run can enable it; --auto-secrets / --turnkey also set it.
+AUTO_SECRETS="${AUTO_SECRETS:-false}"
 
 # ============================================================================
 # Output helpers
@@ -529,6 +533,51 @@ _compute_eval_task_concurrency() {
 }
 
 # ============================================================================
+# 0. ensure_docker() — install Docker Engine on a blank host if absent/too old.
+#    Idempotent (skip when docker >= MIN_DOCKER_MAJOR is already present) and
+#    dry-run-safe (mutations go through `plan`). Turnkey brings up a blank box.
+# ============================================================================
+ensure_docker() {
+  log "STEP 0 ensure_docker: ensuring Docker Engine >= ${MIN_DOCKER_MAJOR}"
+  if command -v docker >/dev/null 2>&1; then
+    local v major
+    v="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    major="${v%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]] && (( major >= MIN_DOCKER_MAJOR )); then
+      log "  docker ${v} present (>= ${MIN_DOCKER_MAJOR}) — skipping install (idempotent)"
+      return 0
+    fi
+    warn "  docker present but version '${v:-unknown}' < ${MIN_DOCKER_MAJOR} — will (re)install engine"
+  else
+    log "  docker not found — will install Docker Engine"
+  fi
+
+  if [[ "${SKIP_DOCKER_INSTALL:-false}" == "true" ]]; then
+    die "docker missing/too old and SKIP_DOCKER_INSTALL=true — install Docker >= ${MIN_DOCKER_MAJOR} manually and re-run"
+  fi
+
+  case "${DOCKER_INSTALL_METHOD:-get-docker}" in
+    get-docker)
+      warn "DESTRUCTIVE: installing Docker Engine via get.docker.com"
+      local getdocker="/tmp/get-docker.$$.sh"
+      plan curl -fsSL -o "${getdocker}" https://get.docker.com
+      plan sh "${getdocker}"
+      plan rm -f "${getdocker}"
+      ;;
+    apt)
+      warn "DESTRUCTIVE: installing Docker Engine via apt (docker.io)"
+      plan apt-get update
+      plan env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+      ;;
+    *)
+      die "unknown DOCKER_INSTALL_METHOD='${DOCKER_INSTALL_METHOD}' (want get-docker|apt)"
+      ;;
+  esac
+  plan systemctl enable --now docker
+  log "  Docker Engine install requested (verify 'docker version' >= ${MIN_DOCKER_MAJOR})"
+}
+
+# ============================================================================
 # Argument parsing
 # ============================================================================
 usage() {
@@ -541,6 +590,23 @@ DEFAULT MODE IS DRY-RUN (prints planned actions, changes nothing).
 Safety flags:
   --apply                 Execute mutating commands. Without this, dry-run only.
   --force                 Proceed even if this node is already a Swarm node.
+
+Turnkey (one-command blank-box bring-up):
+  --turnkey               Umbrella flag for a blank host: enables --apply,
+                          --restart-dockerd, --static-challenges,
+                          --single-node-placement, --install-supervisor,
+                          --greenfield and --auto-secrets, and defaults
+                          SKIP_GHCR_LOGIN=true. Brings up a full BASE validator
+                          with the ONLY external input being YUNWU_API_KEY.
+                          DESTRUCTIVE (restarts dockerd; see --restart-dockerd).
+  --auto-secrets          Auto-generate/derive/mint every secret except the
+                          external YUNWU_API_KEY, persisting them to
+                          SECRETS_ENV_FILE (mode 600) for coherent re-runs.
+                          Without it, all secret env vars below are REQUIRED.
+  --skip-ghcr-login       Skip `docker login ghcr.io` (first-party images are
+                          public) and ensure ${DOCKER_CONFIG:-~/.docker} exists
+                          with a `{}` config so the broker/proxy /root/.docker
+                          binds resolve (SKIP_GHCR_LOGIN=true env does the same).
 
 Opt-in DESTRUCTIVE / non-default steps (each separate, NOT in default --apply):
   --restart-dockerd       Install daemon.validator.json and restart dockerd.
@@ -612,6 +678,14 @@ Required environment (values NEVER hardcoded; supplied at runtime):
                                              `base master mint-central-gate-token --source llm_review`.
 
 Optional environment:
+  SKIP_DOCKER_INSTALL                        Set true to NOT auto-install Docker Engine
+                                             when it is missing/too old (default false);
+                                             ensure_docker then hard-fails instead.
+  DOCKER_INSTALL_METHOD                      Docker auto-install method when absent:
+                                             get-docker (default, get.docker.com) | apt.
+  SECRETS_ENV_FILE                           Path --auto-secrets persists/reloads the
+                                             generated secret values from (mode 600,
+                                             root-only; default /etc/base/secrets.env).
   HF_TOKEN                                   HuggingFace token for the prism HF
                                              checkpoint publisher (base_hf_token,
                                              mounted via HF_TOKEN_FILE). Absent => skipped.
@@ -681,6 +755,11 @@ parse_args() {
       --install-supervisor) INSTALL_SUPERVISOR=true ;;
       --validator-node) VALIDATOR_NODE=true ;;
       --greenfield) GREENFIELD=true ;;
+      --turnkey) APPLY=true; RESTART_DOCKERD=true; STATIC_CHALLENGES=true;
+                 SINGLE_NODE_PLACEMENT=true; INSTALL_SUPERVISOR=true; GREENFIELD=true;
+                 AUTO_SECRETS=true; SKIP_GHCR_LOGIN="${SKIP_GHCR_LOGIN:-true}" ;;
+      --auto-secrets) AUTO_SECRETS=true ;;
+      --skip-ghcr-login) SKIP_GHCR_LOGIN=true ;;
       --advertise-addr) ADVERTISE_ADDR="${2:?--advertise-addr needs a value}"; shift ;;
       --backup-dir) BACKUP_DIR="${2:?--backup-dir needs a value}"; shift ;;
       --master-config) MASTER_CONFIG_PATH="${2:?--master-config needs a value}"; shift ;;
@@ -761,6 +840,14 @@ preflight() {
 ghcr_login() {
   if [[ "${SKIP_GHCR_LOGIN:-false}" == "true" ]]; then
     log "STEP 1b ghcr_login: SKIP_GHCR_LOGIN=true — skipping ghcr login (public images)"
+    # Footgun fix: the broker + proxy bind ${DOCKER_CONFIG:-${HOME}/.docker}
+    # read-only at /root/.docker. With no `docker login` that dir may not exist,
+    # so the bind source is missing and `docker service create` fails at runtime.
+    # Ensure it exists with an empty `{}` config so the mount resolves (public
+    # images need no auth; the supervisor image-updater resolves public digests
+    # anonymously via the same config dir).
+    plan install -d -m 0700 "${DOCKER_CONFIG:-${HOME}/.docker}"
+    [[ -f "${DOCKER_CONFIG:-${HOME}/.docker}/config.json" ]] || plan sh -c "printf '{}' > \"${DOCKER_CONFIG:-${HOME}/.docker}/config.json\""
     return 0
   fi
   log "STEP 1b ghcr_login: authenticating to ghcr.io (token via stdin, hidden)"
@@ -926,6 +1013,157 @@ _create_overlay() {
   [[ "${internal}" == "true" ]] && argv+=(--internal)
   argv+=("${name}")
   plan "${argv[@]}"
+}
+
+# ============================================================================
+# 5b. auto_provision_secrets() + helpers  [--auto-secrets / --turnkey]
+#     Generate (AUTOGEN), derive (DB URLs), and mint (central gate token) every
+#     secret except the single external YUNWU_API_KEY, so a blank box needs only
+#     that one key. Values are persisted to SECRETS_ENV_FILE (mode 600) under
+#     --apply so re-runs/rotations stay coherent, and are NEVER printed to
+#     plan/log output. When --auto-secrets is not set this is a no-op and the
+#     operator-supplied env vars flow through create_secrets unchanged.
+# ============================================================================
+
+# _auto_mint_central_gate_token — set CENTRAL_GATEWAY_TOKEN by minting it from
+# $GATEWAY_TOKEN via the base CLI inside the (public) master image. Pure local
+# HMAC signing (no DB/network); runs before any service is up. Root-only temp
+# dir; the gateway secret is written at mode 600 (umask 077) and never logged.
+_auto_mint_central_gate_token() {
+  local tmp old_umask
+  old_umask="$(umask)"
+  umask 077
+  tmp="$(mktemp -d /run/base-install.XXXXXX)"; chmod 700 "${tmp}"
+  printf '%s' "${GATEWAY_TOKEN}" > "${tmp}/gateway_token_secret"   # mode 600 via umask 077
+  cat > "${tmp}/mint.yaml" <<'YAML'
+environment: development
+gateway:
+  token_secret_file: /run/secrets/gateway_token_secret
+YAML
+  CENTRAL_GATEWAY_TOKEN="$(docker run --rm \
+    --mount "type=bind,source=${tmp}/gateway_token_secret,target=/run/secrets/gateway_token_secret,readonly" \
+    --mount "type=bind,source=${tmp}/mint.yaml,target=/mint.yaml,readonly" \
+    "${IMAGE_MASTER}" \
+    base master mint-central-gate-token --config /mint.yaml \
+      --label turnkey-central-gate --source llm_review)"
+  rm -rf "${tmp}"
+  umask "${old_umask}"
+}
+
+# _persist_secrets_env FILE — write every AUTOGEN/DERIVED/MINTED value as an
+# `export NAME='VALUE'` line (single-quote-escaped) to FILE at mode 600 via
+# mktemp + install -D, so re-runs/rotations reuse the SAME values that back the
+# existing docker secrets. Secret values reach ONLY this file (never plan/log).
+# YUNWU_API_KEY/HF_TOKEN are the operator's to manage: persisted only if already
+# set in the environment.
+_persist_secrets_env() {
+  local file="$1" tmp name val
+  tmp="$(mktemp)"
+  chmod 600 "${tmp}"
+  printf '# BASE turnkey auto-provisioned secrets (mode 600, root-only). DO NOT COMMIT.\n' > "${tmp}"
+  for name in BASE_ADMIN_TOKEN MASTER_PG_PASSWORD AGENT_CHALLENGE_PG_PASSWORD PRISM_PG_PASSWORD \
+              AGENT_CHALLENGE_CHALLENGE_TOKEN AGENT_CHALLENGE_DOCKER_BROKER_TOKEN PRISM_CHALLENGE_TOKEN \
+              PRISM_DOCKER_BROKER_TOKEN GATEWAY_TOKEN AGENT_CHALLENGE_SUBMISSION_ENV_KEY \
+              MASTER_DATABASE_URL AGENT_CHALLENGE_DATABASE_URL PRISM_DATABASE_URL CENTRAL_GATEWAY_TOKEN \
+              YUNWU_API_KEY HF_TOKEN; do
+    val="${!name:-}"
+    [[ -z "${val}" ]] && continue
+    printf "export %s='%s'\n" "${name}" "${val//\'/\'\\\'\'}" >> "${tmp}"
+  done
+  install -D -m 600 "${tmp}" "${file}"
+  rm -f "${tmp}"
+}
+
+auto_provision_secrets() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || { log "STEP 5b auto_provision_secrets: --auto-secrets NOT set — using operator env"; return 0; }
+  log "STEP 5b auto_provision_secrets (values hidden; persisted to ${SECRETS_ENV_FILE:-/etc/base/secrets.env})"
+  local env_file="${SECRETS_ENV_FILE:-/etc/base/secrets.env}"
+  # shellcheck disable=SC1090
+  [[ -f "${env_file}" ]] && source "${env_file}"
+
+  local rnd; rnd() { openssl rand -hex 32; }
+  : "${BASE_ADMIN_TOKEN:=$(rnd)}"
+  : "${MASTER_PG_PASSWORD:=$(rnd)}"
+  : "${AGENT_CHALLENGE_PG_PASSWORD:=$(rnd)}"
+  : "${PRISM_PG_PASSWORD:=$(rnd)}"
+  : "${AGENT_CHALLENGE_CHALLENGE_TOKEN:=$(rnd)}"
+  : "${AGENT_CHALLENGE_DOCKER_BROKER_TOKEN:=$(rnd)}"
+  : "${PRISM_CHALLENGE_TOKEN:=$(rnd)}"
+  : "${PRISM_DOCKER_BROKER_TOKEN:=$(rnd)}"
+  : "${GATEWAY_TOKEN:=$(rnd)}"
+  : "${AGENT_CHALLENGE_SUBMISSION_ENV_KEY:=$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n')}"
+  : "${MASTER_DATABASE_URL:=postgresql+asyncpg://base:${MASTER_PG_PASSWORD}@base-master-postgres:5432/base}"
+  : "${AGENT_CHALLENGE_DATABASE_URL:=postgresql+asyncpg://challenge:${AGENT_CHALLENGE_PG_PASSWORD}@challenge-agent-challenge-postgres:5432/challenge}"
+  : "${PRISM_DATABASE_URL:=postgresql+asyncpg://challenge:${PRISM_PG_PASSWORD}@challenge-prism-postgres:5432/challenge}"
+
+  if [[ -z "${CENTRAL_GATEWAY_TOKEN:-}" ]]; then
+    if [[ "${APPLY}" == "true" ]]; then _auto_mint_central_gate_token
+    else
+      log "  (dry-run) would mint CENTRAL_GATEWAY_TOKEN from \$GATEWAY_TOKEN via:"
+      log "    docker run --rm --mount <gateway_token_secret> --mount <mint.yaml> ${IMAGE_MASTER} base master mint-central-gate-token --config /mint.yaml --label turnkey-central-gate --source llm_review"
+      CENTRAL_GATEWAY_TOKEN="<minted-at-apply>"
+    fi
+  fi
+  if [[ "${GATEWAY_PROVIDER_MODE}" == "real" && -z "${YUNWU_API_KEY:-}" ]]; then
+    die "YUNWU_API_KEY is the only required external secret for a turnkey deploy — set it and re-run (or GATEWAY_PROVIDER_MODE=mock)"
+  fi
+  export BASE_ADMIN_TOKEN MASTER_PG_PASSWORD AGENT_CHALLENGE_PG_PASSWORD PRISM_PG_PASSWORD \
+         AGENT_CHALLENGE_CHALLENGE_TOKEN AGENT_CHALLENGE_DOCKER_BROKER_TOKEN PRISM_CHALLENGE_TOKEN \
+         PRISM_DOCKER_BROKER_TOKEN GATEWAY_TOKEN AGENT_CHALLENGE_SUBMISSION_ENV_KEY \
+         MASTER_DATABASE_URL AGENT_CHALLENGE_DATABASE_URL PRISM_DATABASE_URL CENTRAL_GATEWAY_TOKEN
+  # NB: an `[[ ... ]] && _persist_secrets_env` tail would return 1 under `set -e`
+  # in dry-run (APPLY=false) and abort the run — keep this as an if-block so the
+  # function always returns 0 when not applying.
+  if [[ "${APPLY}" == "true" ]]; then
+    _persist_secrets_env "${env_file}"
+  fi
+}
+
+# ============================================================================
+# 5c. ensure_validator_wallet() + 5d. _auto_seed_mock_metagraph()
+#     [--auto-secrets / --turnkey]  Generate (idempotently) the validator
+#     wallet+hotkey inside the (public) master image, capture the ss58 hotkey,
+#     and seed it into MOCK_METAGRAPH (validator_permit=true) when the operator
+#     left MOCK_METAGRAPH at its default. Must run before deploy_master so the
+#     rendered master.yaml carries the permit-eligible hotkey.
+# ============================================================================
+
+# Generate (idempotently) the validator wallet+hotkey and echo the ss58 hotkey.
+_wallet_gen_py='
+import sys
+from bittensor_wallet import Wallet
+w = Wallet(name=sys.argv[1], hotkey="default", path=sys.argv[2])
+w.create_if_non_existent(coldkey_use_password=False, hotkey_use_password=False, suppress=True)
+print(w.hotkey.ss58_address)
+'
+ensure_validator_wallet() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || return 0
+  log "STEP 5c ensure_validator_wallet: wallet=${VALIDATOR_WALLET_NAME} path=${VALIDATOR_WALLET_PATH}"
+  if [[ "${APPLY}" != "true" ]]; then
+    log "  (dry-run) would: install -d ${VALIDATOR_WALLET_PATH}; docker run --entrypoint python3 ${IMAGE_MASTER} -c '<wallet-gen>' ${VALIDATOR_WALLET_NAME} ${VALIDATOR_WALLET_PATH}"
+    log "  (dry-run) would then chown the wallet tree to the master runtime uid: docker run ${IMAGE_POSTGRES} chown -R <uid>:<uid> ${VALIDATOR_WALLET_PATH}"
+    VALIDATOR_HOTKEY_SS58="<derived-at-apply>"
+    return 0
+  fi
+  install -d -m 0755 "${VALIDATOR_WALLET_PATH}"
+  # Run as root in the container so it can write the bind-mounted host dir; chown
+  # afterwards to the runtime uid so the read-only agent mount is readable.
+  VALIDATOR_HOTKEY_SS58="$(docker run --rm --user 0:0 --entrypoint python3 \
+    --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \
+    "${IMAGE_MASTER}" -c "${_wallet_gen_py}" "${VALIDATOR_WALLET_NAME}" "${VALIDATOR_WALLET_PATH}")"
+  local uid; uid="$(_master_runtime_uid)"
+  docker run --rm --user 0:0 \
+    --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \
+    "${IMAGE_POSTGRES}" chown -R "${uid}:${uid}" "${VALIDATOR_WALLET_PATH}"
+  log "  wallet ready; hotkey ss58=${VALIDATOR_HOTKEY_SS58}"
+}
+
+_auto_seed_mock_metagraph() {
+  [[ "${AUTO_SECRETS:-false}" == "true" ]] || return 0
+  if [[ "${MOCK_METAGRAPH}" == "[]" && -n "${VALIDATOR_HOTKEY_SS58:-}" ]]; then
+    MOCK_METAGRAPH="[{\"hotkey\":\"${VALIDATOR_HOTKEY_SS58}\",\"validator_permit\":true,\"stake\":${MOCK_METAGRAPH_STAKE:-1000}}]"
+    log "  auto-seeded MOCK_METAGRAPH with validator hotkey ${VALIDATOR_HOTKEY_SS58} (validator_permit=true)"
+  fi
 }
 
 # ============================================================================
@@ -2406,6 +2644,7 @@ main_validator_node() {
   log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
   log "============================================================"
 
+  ensure_docker                   # 0  (install engine on a blank host; idempotent)
   preflight                       # docker version + swarm + GHCR creds (no DB dumps)
   ghcr_login                      # private images
   swarm_init                      # the node's OWN swarm (the agent runs as a service on it)
@@ -2462,12 +2701,16 @@ main() {
   _compute_eval_task_concurrency  # RAM-derived agent-challenge eval concurrency (@4GB/task)
   log "============================================================"
 
+  ensure_docker              # 0  (install engine on a blank host; idempotent)
   preflight                  # 1
   ghcr_login                 # 1b (private images)
   apply_daemon_json          # 2  (DESTRUCTIVE behind --restart-dockerd)
   swarm_init                 # 3
   single_node_placement_fix  # 4  (REVIEW; non-default behind --single-node-placement)
   create_networks            # 5
+  auto_provision_secrets     # 5b (generate/derive/mint secrets; --auto-secrets)
+  ensure_validator_wallet    # 5c (idempotent wallet+hotkey; sets VALIDATOR_HOTKEY_SS58)
+  _auto_seed_mock_metagraph  # 5d (inject ss58 into MOCK_METAGRAPH when default)
   create_secrets             # 6
   deploy_postgres            # 7
   if [[ "${GREENFIELD}" == "true" ]]; then

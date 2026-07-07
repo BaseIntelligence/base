@@ -85,6 +85,7 @@ def _run(
     tmp_path: Path,
     *,
     extra_env: dict[str, str] | None = None,
+    extra_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _docker_stub(bin_dir)
@@ -104,6 +105,7 @@ def _run(
             str(tmp_path / "missing"),
             "--greenfield",
             "--static-challenges",
+            *extra_args,
         ],
         env=env,
         capture_output=True,
@@ -602,3 +604,51 @@ def test_challenge_services_named_challenge_slug_not_base_prefixed(
     # Standardization is SCOPED to challenge services: master/broker keep `base-`.
     assert _service_block(lines, "base-master-proxy")
     assert _service_block(lines, "base-docker-broker")
+
+
+# ---------------------------------------------------------------------------
+# Phase H (turnkey installer): --skip-ghcr-login makes ghcr_login a no-op AND
+# ensures ${DOCKER_CONFIG:-~/.docker} exists with a `{}` config so the broker /
+# proxy /root/.docker read-only binds resolve (the public-image footgun fix).
+# ---------------------------------------------------------------------------
+
+
+def test_skip_ghcr_login_is_noop_and_ensures_docker_config_dir(
+    tmp_path: Path,
+) -> None:
+    docker_cfg = tmp_path / "docker-config"  # non-existent => `{}` config planned
+    result = _run(
+        tmp_path,
+        extra_args=("--skip-ghcr-login",),
+        extra_env={"DOCKER_CONFIG": str(docker_cfg)},
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    # ghcr login is skipped (no `docker login ghcr.io` planned).
+    assert "skipping ghcr login" in out
+    assert "docker login ghcr.io" not in out
+    # The docker config dir + an empty `{}` config are planned so the RO binds
+    # resolve. Plan lines are printf '%q'-escaped, so strip backslashes to compare.
+    plan = out.replace("\\", "")
+    assert f"install -d -m 0700 {docker_cfg}" in plan
+    assert "printf '{}'" in plan
+    assert f"{docker_cfg}/config.json" in plan
+
+
+# ---------------------------------------------------------------------------
+# Phase H: the --validator-node bring-up also runs ensure_docker (STEP 0) BEFORE
+# preflight (STEP 1), so a blank validator host gets an engine first.
+# ---------------------------------------------------------------------------
+
+
+def test_validator_node_ensure_docker_before_preflight(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        extra_args=("--validator-node",),
+        extra_env={"VALIDATOR_MASTER_URL": "http://master.example:19080"},
+    )
+    step0 = "STEP 0 ensure_docker"
+    step1 = "STEP 1/12 preflight"
+    assert step0 in result.stdout
+    assert step1 in result.stdout
+    assert result.stdout.index(step0) < result.stdout.index(step1)

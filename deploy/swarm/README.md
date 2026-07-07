@@ -12,6 +12,55 @@ itself is driven by the `base master worker` CLI plus
 > `install-worker.sh` and `install-swarm.sh` both **default to dry-run** and
 > change nothing until `--apply` is passed.
 
+## Turnkey one-command bring-up (`--turnkey`)
+
+For a **blank host** the installer can bring up a complete BASE validator (Swarm
+manager + control plane + all ACTIVE challenges + the `base-supervisor`
+auto-update unit) with the **only** required external input being
+`YUNWU_API_KEY`:
+
+```
+YUNWU_API_KEY=<key> deploy/swarm/install-swarm.sh --turnkey
+```
+
+`--turnkey` is an umbrella flag that enables the safe blank-box combination:
+`--apply --restart-dockerd --static-challenges --single-node-placement
+--install-supervisor --greenfield --auto-secrets` and defaults
+`SKIP_GHCR_LOGIN=true`. It is **DESTRUCTIVE** (it restarts dockerd — see
+`--restart-dockerd`); on a blank box there is no prior `daemon.json` to clobber.
+
+The turnkey behavior is composed of individually usable flags/knobs:
+
+- **`ensure_docker` (STEP 0)** — runs before `preflight` on both `install-swarm.sh`
+  and `install-worker.sh`. If `docker` is absent or older than the required major
+  version it installs Docker Engine (idempotent — skipped when a recent engine is
+  already present; all mutations go through `plan`, so it is dry-run-safe).
+  - `SKIP_DOCKER_INSTALL=true` — do **not** auto-install; hard-fail instead
+    (pre-install Docker yourself). Default `false`.
+  - `DOCKER_INSTALL_METHOD` — `get-docker` (default; the `https://get.docker.com`
+    convenience script) or `apt` (installs `docker.io`). Use `apt` (or
+    `SKIP_DOCKER_INSTALL=true`) on air-gapped hosts with no outbound HTTPS.
+- **`--auto-secrets`** — auto-generate (opaque tokens / PG passwords / the Fernet
+  submission key), derive (the three `postgresql+asyncpg` DB URLs from the
+  generated PG passwords), and mint (the central-gate token, via
+  `base master mint-central-gate-token --source llm_review`) **every** secret
+  EXCEPT the external `YUNWU_API_KEY`. Without it, all the secret env vars below
+  are REQUIRED. `YUNWU_API_KEY` stays external: under `GATEWAY_PROVIDER_MODE=real`
+  an unset key still hard-fails (it is never synthesized).
+  - `SECRETS_ENV_FILE` — path the generated values are persisted to and reloaded
+    from on re-run (mode `600`, root-only; default `/etc/base/secrets.env`), so
+    re-runs and rotations stay coherent with the existing docker secrets. Secret
+    values reach this file only — never `plan`/log output.
+- **`--skip-ghcr-login`** — skip `docker login ghcr.io` (the first-party images
+  are public) and ensure `${DOCKER_CONFIG:-~/.docker}` exists with a `{}` config
+  so the broker/proxy `/root/.docker` read-only binds resolve (`SKIP_GHCR_LOGIN=true`
+  env does the same). Private-image deploys still set `GHCR_USER`/`GHCR_TOKEN`.
+
+`install-worker.sh --turnkey` is the compute-node analogue: it enables `--apply`
++ `--restart-dockerd` (auto-installs Docker via `ensure_docker`, applies the
+worker `daemon.json`, and joins the swarm). It still requires `--manager-addr`
+and a join token.
+
 ## Mainnet deploy prerequisites (secrets, GHCR, placement)
 
 Before a mainnet `install-swarm.sh --apply`, the operator must provide every

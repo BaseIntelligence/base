@@ -141,6 +141,51 @@ plan_secret_stdin() {
 }
 
 # ============================================================================
+# 0. ensure_docker() — install Docker Engine on a blank host if absent/too old.
+#    Idempotent (skip when docker >= MIN_DOCKER_MAJOR is already present) and
+#    dry-run-safe (mutations go through `plan`). Turnkey brings up a blank box.
+# ============================================================================
+ensure_docker() {
+  log "STEP 0 ensure_docker: ensuring Docker Engine >= ${MIN_DOCKER_MAJOR}"
+  if command -v docker >/dev/null 2>&1; then
+    local v major
+    v="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+    major="${v%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]] && (( major >= MIN_DOCKER_MAJOR )); then
+      log "  docker ${v} present (>= ${MIN_DOCKER_MAJOR}) — skipping install (idempotent)"
+      return 0
+    fi
+    warn "  docker present but version '${v:-unknown}' < ${MIN_DOCKER_MAJOR} — will (re)install engine"
+  else
+    log "  docker not found — will install Docker Engine"
+  fi
+
+  if [[ "${SKIP_DOCKER_INSTALL:-false}" == "true" ]]; then
+    die "docker missing/too old and SKIP_DOCKER_INSTALL=true — install Docker >= ${MIN_DOCKER_MAJOR} manually and re-run"
+  fi
+
+  case "${DOCKER_INSTALL_METHOD:-get-docker}" in
+    get-docker)
+      warn "DESTRUCTIVE: installing Docker Engine via get.docker.com"
+      local getdocker="/tmp/get-docker.$$.sh"
+      plan curl -fsSL -o "${getdocker}" https://get.docker.com
+      plan sh "${getdocker}"
+      plan rm -f "${getdocker}"
+      ;;
+    apt)
+      warn "DESTRUCTIVE: installing Docker Engine via apt (docker.io)"
+      plan apt-get update
+      plan env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+      ;;
+    *)
+      die "unknown DOCKER_INSTALL_METHOD='${DOCKER_INSTALL_METHOD}' (want get-docker|apt)"
+      ;;
+  esac
+  plan systemctl enable --now docker
+  log "  Docker Engine install requested (verify 'docker version' >= ${MIN_DOCKER_MAJOR})"
+}
+
+# ============================================================================
 # Argument parsing
 # ============================================================================
 usage() {
@@ -169,6 +214,10 @@ Optional (private image pulls):
 
 Safety flags:
   --apply                    Execute mutating commands. Without this, dry-run only.
+  --turnkey                  Blank-box alias: enables --apply and --restart-dockerd
+                             (auto-installs Docker via ensure_docker, applies the
+                             worker daemon.json, and joins the swarm). DESTRUCTIVE.
+                             Still requires --manager-addr + join token.
   --restart-dockerd          Install daemon.json + restart dockerd (DESTRUCTIVE;
                              not part of the default --apply path).
 
@@ -190,6 +239,7 @@ parse_args() {
     case "$1" in
       --apply) APPLY=true ;;
       --dry-run) APPLY=false ;;
+      --turnkey) APPLY=true; RESTART_DOCKERD=true ;;
       --restart-dockerd) RESTART_DOCKERD=true ;;
       --manager-addr) MANAGER_ADDR="${2:?--manager-addr needs a value}"; shift ;;
       --join-token) JOIN_TOKEN="${2:?--join-token needs a value}"; shift ;;
@@ -396,6 +446,7 @@ main() {
   log "  ghcr.io login    : $([[ -n "${GHCR_USER}" && -n "${GHCR_TOKEN}" ]] && echo 'enabled (token hidden)' || echo 'skipped (no GHCR_USER/GHCR_TOKEN)')"
   log "============================================================"
 
+  ensure_docker        # 0  (install engine on a blank host; idempotent)
   preflight            # 1
   ghcr_login           # 1b (ghcr.io auth for private pulls; skip if no creds)
   prepare_daemon_json  # 2a (read-only render)

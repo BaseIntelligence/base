@@ -111,3 +111,18 @@ def test_ghcr_login_skipped_when_credentials_absent(tmp_path: Path) -> None:
     assert SKIP_MARKER in combined
     # No login command should be planned when creds are absent.
     assert LOGIN_CMD_MARKER not in combined
+
+
+def test_ensure_docker_runs_before_preflight_and_ghcr(tmp_path: Path) -> None:
+    """Phase H regression: ensure_docker (STEP 0) precedes preflight and does NOT
+    disturb the ghcr login flow (the 29.x stub makes ensure_docker a no-op skip)."""
+    res = _run({"GHCR_USER": "echobt", "GHCR_TOKEN": SECRET_SENTINEL}, tmp_path)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 0, combined
+    assert "STEP 0 ensure_docker" in res.stdout
+    assert "skipping install (idempotent)" in res.stdout
+    assert res.stdout.index("STEP 0 ensure_docker") < res.stdout.index(
+        "STEP 1/3 preflight"
+    )
+    # The ghcr login is still planned after ensure_docker (flow unchanged).
+    assert LOGIN_CMD_MARKER in combined
