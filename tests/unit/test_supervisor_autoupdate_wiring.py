@@ -130,6 +130,28 @@ def test_self_update_enabled_without_manifest_is_rejected(tmp_path: Path) -> Non
         build_scheduled_tasks(settings)
 
 
+def test_self_update_config_knobs_feed_the_task(tmp_path: Path) -> None:
+    # The interval/uptime/boot/swap knobs flow from SupervisorSettings into the
+    # built self-update task (defaults equal the historical constants).
+    settings = _settings(
+        registry_docker_config_path=str(tmp_path / "absent.json"),
+        self_update_enabled=True,
+        self_update_manifest_url=MANIFEST_URL,
+        self_update_interval_seconds=111.0,
+        self_update_min_uptime_seconds=22.0,
+        self_update_max_boot_attempts=4,
+        self_update_max_swap_attempts=5,
+    )
+    tasks, _gate = build_scheduled_tasks(settings)
+
+    self_update = _task(tasks, "self-update")
+    assert self_update.interval_seconds == 111.0  # type: ignore[attr-defined]
+    updater = self_update.run.__self__  # type: ignore[attr-defined]
+    assert updater._min_uptime_seconds == 22.0
+    assert updater._max_boot_attempts == 4
+    assert updater._max_swap_attempts == 5
+
+
 # ---------------------------------------------------------------------------
 # Digest-compare roll / no-op + immutable pin (VAL-CODE-UPD-004)
 # ---------------------------------------------------------------------------

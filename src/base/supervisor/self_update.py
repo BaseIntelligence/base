@@ -84,6 +84,7 @@ from pathlib import Path
 from base.config.settings import Settings
 from base.master.swarm_backend import SwarmCliRunner, SwarmCommandRunner
 from base.supervisor.health import BrokerHealthGate
+from base.supervisor.retry import RetryPolicy
 from base.supervisor.scheduler import ScheduledTask
 
 logger = logging.getLogger(__name__)
@@ -92,8 +93,61 @@ DEFAULT_RELEASE_ROOT = Path("/var/lib/base/supervisor")
 SELF_UPDATE_INTERVAL_SECONDS = 300.0  # parity with autoUpgrade.schedule */5.
 DEFAULT_MIN_UPTIME_SECONDS = 30.0  # one full WatchdogSec window.
 DEFAULT_MAX_BOOT_ATTEMPTS = 3
+#: Distinct swap attempts a rolled-back version gets before it is blacklisted, so
+#: a transient boot failure is retried rather than permanently blacklisting a
+#: possibly-good version on a single rollback.
+DEFAULT_MAX_SWAP_ATTEMPTS = 3
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600.0
+#: Bounded retry for the two network downloads (manifest fetch + tarball
+#: download): a transient blip is retried with a short exponential backoff so it
+#: does not waste a whole update cycle. Reuses :class:`RetryPolicy.compute_delay`
+#: (jitter off — deterministic short floor) for the inter-attempt delay.
+DEFAULT_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_RETRY_POLICY = RetryPolicy(
+    max_attempts=DEFAULT_DOWNLOAD_ATTEMPTS,
+    base_delay=1.0,
+    max_delay=8.0,
+    jitter=False,
+)
 ROLLBACK_EXIT_CODE = 86
+
+
+def _with_download_retry[T](
+    operation: str,
+    func: Callable[[], T],
+    *,
+    attempts: int = DEFAULT_DOWNLOAD_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+    policy: RetryPolicy = _DOWNLOAD_RETRY_POLICY,
+) -> T:
+    """Run ``func`` with a bounded retry on transient download errors.
+
+    Retries ``(OSError, ValueError)`` (the failure surface of ``urlopen`` +
+    JSON/stream decode) up to ``attempts`` times with a short exponential
+    backoff, then re-raises the LAST exception so each caller keeps its existing
+    final-failure contract (manifest → ``None``; stager → "not staged").
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return func()
+        except (OSError, ValueError) as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            delay = policy.compute_delay(attempt)
+            logger.warning(
+                "self-update: %s failed (attempt %d/%d): %s; retrying in %.1fs",
+                operation,
+                attempt,
+                attempts,
+                exc,
+                delay,
+            )
+            sleep(delay)
+    assert last_exc is not None  # the loop body executes at least once
+    raise last_exc
+
 
 STATE_IDLE = "idle"
 STATE_PENDING = "pending"
@@ -130,12 +184,20 @@ class AvailableRelease:
 
 @dataclass(frozen=True)
 class UpdateState:
-    """Persisted self-update state machine record."""
+    """Persisted self-update state machine record.
+
+    ``boot_attempts`` counts boots of the NEW release within ONE swap (the
+    post-swap restart-storm budget); ``swap_attempts`` counts DISTINCT swap
+    attempts for ``new`` (the retry-before-blacklist budget) so a version that
+    rolled back is re-tried up to ``max_swap_attempts`` times before being
+    blacklisted. ``swap_attempts`` is read back-compatibly (absent → 0).
+    """
 
     status: str = STATE_IDLE
     previous: str | None = None
     new: str | None = None
     boot_attempts: int = 0
+    swap_attempts: int = 0
 
 
 @dataclass(frozen=True)
@@ -188,11 +250,13 @@ def load_state(paths: ReleasePaths) -> UpdateState:
     previous = raw.get("previous")
     new = raw.get("new")
     attempts = raw.get("boot_attempts")
+    swaps = raw.get("swap_attempts")
     return UpdateState(
         status=status if isinstance(status, str) else STATE_IDLE,
         previous=previous if isinstance(previous, str) else None,
         new=new if isinstance(new, str) else None,
         boot_attempts=attempts if isinstance(attempts, int) else 0,
+        swap_attempts=swaps if isinstance(swaps, int) else 0,
     )
 
 
@@ -204,6 +268,7 @@ def save_state(paths: ReleasePaths, state: UpdateState) -> None:
         "previous": state.previous,
         "new": state.new,
         "boot_attempts": state.boot_attempts,
+        "swap_attempts": state.swap_attempts,
     }
     tmp = paths.state_file.with_name(paths.state_file.name + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
@@ -247,21 +312,32 @@ def detect_running_version(paths: ReleasePaths) -> str | None:
 
 
 def http_manifest_detector(
-    url: str, *, timeout_seconds: float = 30.0
+    url: str,
+    *,
+    timeout_seconds: float = 30.0,
+    attempts: int = DEFAULT_DOWNLOAD_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> VersionDetector:
     """Detector fetching a JSON manifest ``{"version": ..., "source_url": ...}``.
 
     This is the "simple version manifest fetch" detection channel: the
     release pipeline publishes a tiny JSON document (e.g. a raw file on
     the release branch / GitHub release asset) naming the latest
-    supervisor release and its source tarball. Errors return None (a
+    supervisor release and its source tarball. The fetch is retried a bounded
+    number of times on a transient network error (``attempts``/``sleep`` are
+    injectable for tests); after exhausting the retries it returns None (a
     failed detection is a skipped tick, never a crash).
     """
 
+    def _fetch() -> object:
+        with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def detect() -> AvailableRelease | None:
         try:
-            with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
-                raw = json.loads(response.read().decode("utf-8"))
+            raw = _with_download_retry(
+                f"manifest fetch for {url}", _fetch, attempts=attempts, sleep=sleep
+            )
         except (OSError, ValueError):
             logger.warning("self-update: manifest fetch failed for %s", url)
             return None
@@ -284,6 +360,8 @@ def tarball_stager(
     uv_bin: str = "uv",
     uv_sync: bool = True,
     timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    attempts: int = DEFAULT_DOWNLOAD_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> ReleaseStager:
     """Default stager: GitHub-style tarball download + ``uv sync``.
 
@@ -291,8 +369,10 @@ def tarball_stager(
     single top-level directory is stripped), extracts with the safe ``data``
     tar filter, then pre-warms
     the per-release virtualenv with ``uv sync`` so the post-swap boot does
-    not pay resolution latency. Raises on any failure; the caller treats a
-    raising stager as "release not staged".
+    not pay resolution latency. The download is retried a bounded number of
+    times on a transient network error (``attempts``/``sleep`` are injectable
+    for tests). Raises on any failure; the caller treats a raising stager as
+    "release not staged".
     """
     command_runner = runner if runner is not None else SwarmCliRunner()
 
@@ -303,12 +383,20 @@ def tarball_stager(
             )
         target_dir.mkdir(parents=True, exist_ok=False)
         archive = target_dir.with_name(target_dir.name + ".tar.gz")
-        try:
-            response = urllib.request.urlopen(
-                release.source_url, timeout=timeout_seconds
-            )
+        source_url = release.source_url
+
+        def _download() -> None:
+            response = urllib.request.urlopen(source_url, timeout=timeout_seconds)
             with response, archive.open("wb") as handle:
                 shutil.copyfileobj(response, handle)
+
+        try:
+            _with_download_retry(
+                f"tarball download for {release.version!r}",
+                _download,
+                attempts=attempts,
+                sleep=sleep,
+            )
             with tarfile.open(archive) as tar:
                 members = tar.getmembers()
                 for member in members:
@@ -400,6 +488,7 @@ class SelfUpdater:
         clock: Callable[[], float] = time.monotonic,
         min_uptime_seconds: float = DEFAULT_MIN_UPTIME_SECONDS,
         max_boot_attempts: int = DEFAULT_MAX_BOOT_ATTEMPTS,
+        max_swap_attempts: int = DEFAULT_MAX_SWAP_ATTEMPTS,
     ) -> None:
         self._paths = paths
         self._detector = version_detector
@@ -419,6 +508,7 @@ class SelfUpdater:
         self._clock = clock
         self._min_uptime_seconds = min_uptime_seconds
         self._max_boot_attempts = max_boot_attempts
+        self._max_swap_attempts = max_swap_attempts
         self._started_at = clock()
 
     def tick(self) -> None:
@@ -442,13 +532,27 @@ class SelfUpdater:
         if release.version == current:
             logger.debug("self-update: already on %s; no-op", release.version)
             return
+        # Retry-before-blacklist: a rolled-back version is re-attempted up to
+        # max_swap_attempts DISTINCT swaps (a transient boot failure should not
+        # permanently blacklist a possibly-good version); only once the swap
+        # budget is spent is it refused until a DIFFERENT version is published.
+        swap_attempts = 0
         if state.status == STATE_ROLLED_BACK and state.new == release.version:
-            logger.warning(
-                "self-update: release %s was previously rolled back; refusing to "
-                "retry until a different version is published",
+            if state.swap_attempts >= self._max_swap_attempts:
+                logger.warning(
+                    "self-update: release %s rolled back after %d swap attempt(s); "
+                    "refusing to retry until a different version is published",
+                    release.version,
+                    state.swap_attempts,
+                )
+                return
+            swap_attempts = state.swap_attempts
+            logger.info(
+                "self-update: retrying rolled-back release %s (swap attempt %d/%d)",
                 release.version,
+                swap_attempts + 1,
+                self._max_swap_attempts,
             )
-            return
         release_dir = self._ensure_staged(release)
         if release_dir is None:
             return
@@ -470,7 +574,7 @@ class SelfUpdater:
                 release.version,
             )
             return
-        self._swap(release.version, previous=current)
+        self._swap(release.version, previous=current, swap_attempts=swap_attempts + 1)
 
     def _ensure_staged(self, release: AvailableRelease) -> Path | None:
         release_dir = self._paths.release_dir(release.version)
@@ -493,7 +597,9 @@ class SelfUpdater:
         )
         return release_dir
 
-    def _swap(self, version: str, *, previous: str | None) -> None:
+    def _swap(
+        self, version: str, *, previous: str | None, swap_attempts: int = 1
+    ) -> None:
         save_state(
             self._paths,
             UpdateState(
@@ -501,6 +607,7 @@ class SelfUpdater:
                 previous=previous,
                 new=version,
                 boot_attempts=0,
+                swap_attempts=swap_attempts,
             ),
         )
         atomic_symlink_swap(self._paths.current, f"releases/{version}")
@@ -675,18 +782,31 @@ def build_self_update_task(
     running_version: Callable[[], str | None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     manifest_url: str | None = None,
-    min_uptime_seconds: float = DEFAULT_MIN_UPTIME_SECONDS,
-    max_boot_attempts: int = DEFAULT_MAX_BOOT_ATTEMPTS,
-    interval_seconds: float = SELF_UPDATE_INTERVAL_SECONDS,
+    min_uptime_seconds: float | None = None,
+    max_boot_attempts: int | None = None,
+    max_swap_attempts: int | None = None,
+    interval_seconds: float | None = None,
 ) -> ScheduledTask:
     """Build the ``self-update`` :class:`ScheduledTask` (Task-16 recipe).
 
-    ``settings`` is accepted for recipe parity; the release-manifest URL is
+    The timing/retry knobs (``interval_seconds`` / ``min_uptime_seconds`` /
+    ``max_boot_attempts`` / ``max_swap_attempts``) default to their
+    ``settings.supervisor.self_update_*`` values (whose own defaults equal the
+    historical module constants, so behaviour is unchanged unless configured);
+    an explicit kwarg still overrides for tests. The release-manifest URL is
     deployment configuration wired by the cutover runbook (Task 27) via
     ``manifest_url``/``version_detector`` — with neither provided the task
     is an inert no-op (the safest default for a self-replacing job).
     """
-    del settings  # recipe parity; manifest wiring is deployment territory.
+    sup = settings.supervisor
+    if min_uptime_seconds is None:
+        min_uptime_seconds = sup.self_update_min_uptime_seconds
+    if max_boot_attempts is None:
+        max_boot_attempts = sup.self_update_max_boot_attempts
+    if max_swap_attempts is None:
+        max_swap_attempts = sup.self_update_max_swap_attempts
+    if interval_seconds is None:
+        interval_seconds = sup.self_update_interval_seconds
     if paths is None:
         paths = ReleasePaths()
     if version_detector is None:
@@ -714,6 +834,7 @@ def build_self_update_task(
         clock=clock,
         min_uptime_seconds=min_uptime_seconds,
         max_boot_attempts=max_boot_attempts,
+        max_swap_attempts=max_swap_attempts,
     )
     return ScheduledTask(
         name="self-update",

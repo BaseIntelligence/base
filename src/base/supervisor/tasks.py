@@ -48,6 +48,7 @@ from base.supervisor.self_update import (
     build_self_update_task,
     run_startup_rollback_check,
 )
+from base.supervisor.service_locks import ServiceUpdateLocks
 from base.supervisor.weight_submit import build_weight_submit_task
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,12 @@ def build_scheduled_tasks(
     # duplication.
     alert_hook = build_alert_hook(settings)
 
+    # Recommendation H: a SHARED per-service update lock registry handed to BOTH
+    # the image-updater and config-sync so their independent 60s loops never
+    # issue overlapping `docker service update` on the same shared service
+    # (base-master-proxy / base-docker-broker).
+    service_update_locks = ServiceUpdateLocks()
+
     # ------------------------------------------------------------------
     # Task 17 registration point (reaper):
     # The reaper builder owns WorkloadLedger.reconstruct on first tick and
@@ -147,6 +154,7 @@ def build_scheduled_tasks(
             resolver=digest_resolver,
             targets=resolve_image_update_targets(settings),
             alert_emit=alert_hook,
+            service_locks=service_update_locks,
         )
     )
     # Task 19 (challenge-image-updater) is NO LONGER registered on the HOST
@@ -172,6 +180,7 @@ def build_scheduled_tasks(
                 "base-master-proxy",
                 "base-docker-broker",
             ),
+            service_locks=service_update_locks,
         )
     )
     # Task 21 weights (on-chain submit): code-CAPABLE, RUNTIME-OFF by default.

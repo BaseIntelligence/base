@@ -355,6 +355,23 @@ def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:
     assert "base-config-sync" not in rollout_services
 
 
+def test_config_sync_and_image_updater_share_service_lock_registry() -> None:
+    # Recommendation H: a SHARED per-service update lock registry is threaded
+    # into BOTH the image-updater and config-sync so the two 60s loops never
+    # issue overlapping `docker service update` on the same shared service.
+    tasks, _gate = build_scheduled_tasks(Settings())
+    image_updater = image_updater_from_task(
+        next(t for t in tasks if t.name == "image-updater")
+    )
+    config_sync = next(t for t in tasks if t.name == "config-sync").run.__self__  # type: ignore[attr-defined]
+
+    assert image_updater._service_locks is not None
+    assert image_updater._service_locks is config_sync._service_locks
+    # The same service name resolves to the SAME lock object across both loops.
+    lock = image_updater._service_locks.get("base-master-proxy")
+    assert config_sync._service_locks.get("base-master-proxy") is lock
+
+
 def test_systemd_unit_template_is_notify_with_watchdog() -> None:
     unit = (ROOT / "deploy" / "swarm" / "base-supervisor.service").read_text()
     assert "Type=notify" in unit

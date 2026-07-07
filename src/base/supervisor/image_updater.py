@@ -58,6 +58,7 @@ service (under the supervisor it is a periodic task), so it is not a target.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -81,6 +82,7 @@ from base.supervisor.image_ref import (
 from base.supervisor.retry import JitterSource, RetryPolicy, RetryState
 from base.supervisor.scheduler import ScheduledTask
 from base.supervisor.self_update import DEFAULT_RELEASE_ROOT
+from base.supervisor.service_locks import ServiceUpdateLocks
 from base.supervisor.weight_submit import AlertEmitter, WeightsAlert
 
 logger = logging.getLogger(__name__)
@@ -206,6 +208,7 @@ class SwarmImageUpdater:
         convergence_timeout_seconds: float = CONVERGENCE_TIMEOUT_SECONDS,
         state_path: Path | None = None,
         jitter_source: JitterSource = random.random,
+        service_locks: ServiceUpdateLocks | None = None,
     ) -> None:
         self._targets = tuple(targets)
         self._runner = runner
@@ -221,6 +224,9 @@ class SwarmImageUpdater:
         self._convergence_timeout_seconds = convergence_timeout_seconds
         self._jitter_source = jitter_source
         self._state_path = state_path
+        #: Shared per-service update lock registry (H): serialises this loop's
+        #: rolls against config-sync's force-rollouts of the SAME services.
+        self._service_locks = service_locks
         self._retry_state: dict[str, RetryState] = {}
         # Desired digest last pursued per service; a change ends a failure episode
         # (resets retry state + re-arms the exhaustion alert).
@@ -340,25 +346,39 @@ class SwarmImageUpdater:
         self._record_last_known_good(target.service, current_digest)
 
         pinned = reference.pinned(digest)
-        if not self._issue_update(target.service, pinned):
+        # Hold the per-service lock across the whole roll (issue → converge →
+        # rollback) so config-sync cannot force-roll the SAME service mid-flight
+        # (H). Only one service lock is held at a time → deadlock-free.
+        with self._service_lock(target.service):
+            if not self._issue_update(target.service, pinned):
+                return self._handle_failure(
+                    target,
+                    reference,
+                    state,
+                    now,
+                    "docker service update returned non-zero",
+                )
+
+            converged = self._await_convergence(target.service)
+            if converged == _UPDATE_STATE_COMPLETED:
+                state.record_success()
+                self._alerted.discard(target.service)
+                logger.info(
+                    "image-updater: updated service %r to %s (converged)",
+                    target.service,
+                    pinned,
+                )
+                return True
+
             return self._handle_failure(
-                target, reference, state, now, "docker service update returned non-zero"
+                target, reference, state, now, f"convergence state {converged!r}"
             )
 
-        converged = self._await_convergence(target.service)
-        if converged == _UPDATE_STATE_COMPLETED:
-            state.record_success()
-            self._alerted.discard(target.service)
-            logger.info(
-                "image-updater: updated service %r to %s (converged)",
-                target.service,
-                pinned,
-            )
-            return True
-
-        return self._handle_failure(
-            target, reference, state, now, f"convergence state {converged!r}"
-        )
+    def _service_lock(self, service: str) -> contextlib.AbstractContextManager[object]:
+        """Acquire the shared per-service update lock (no-op when unwired)."""
+        if self._service_locks is None:
+            return contextlib.nullcontext()
+        return self._service_locks.get(service)
 
     def _handle_failure(
         self,
@@ -586,6 +606,7 @@ def build_image_updater_task(
     interval_seconds: float = IMAGE_UPDATER_INTERVAL_SECONDS,
     alert_emit: AlertEmitter | None = None,
     state_path: Path | None = DEFAULT_LAST_KNOWN_GOOD_PATH,
+    service_locks: ServiceUpdateLocks | None = None,
 ) -> ScheduledTask:
     """Build the first-party image-updater :class:`ScheduledTask`.
 
@@ -596,6 +617,8 @@ def build_image_updater_task(
     the existing :class:`SwarmCliRunner` subprocess seam. ``alert_emit`` is the
     Task-16 alert seam, fired once when a target exhausts its retry budget.
     ``state_path`` persists last-known-good digests for restart-durable rollback.
+    ``service_locks`` is the shared per-service update lock registry (H) so this
+    loop's rolls never overlap config-sync's force-rollouts of the same services.
     """
     del health_gate  # recipe parity; not broker-dependent.
     sup = settings.supervisor
@@ -613,6 +636,7 @@ def build_image_updater_task(
         alert_emit=alert_emit,
         global_hold=sup.image_update_hold,
         state_path=state_path,
+        service_locks=service_locks,
     )
     return ScheduledTask(
         name="image-updater",

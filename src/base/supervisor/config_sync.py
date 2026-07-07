@@ -47,6 +47,7 @@ daemon is a logged skip (treated as rolled out), so partial deployments are safe
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -64,6 +65,7 @@ from base.supervisor.config_source import (
 )
 from base.supervisor.health import BrokerHealthGate
 from base.supervisor.scheduler import ScheduledTask
+from base.supervisor.service_locks import ServiceUpdateLocks
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ class SwarmConfigSync:
         config_map_name: str = DEFAULT_CONFIG_MAP_NAME,
         namespace: str = DEFAULT_NAMESPACE,
         command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        service_locks: ServiceUpdateLocks | None = None,
     ) -> None:
         self._source = source
         self._target_path = target_path
@@ -111,6 +114,9 @@ class SwarmConfigSync:
         self._config_map_name = config_map_name
         self._namespace = namespace
         self._command_timeout_seconds = command_timeout_seconds
+        #: Shared per-service update lock registry (H): serialises this loop's
+        #: force-rollouts against the image-updater's rolls of the SAME services.
+        self._service_locks = service_locks
 
     def run_once(self) -> None:
         try:
@@ -226,18 +232,28 @@ class SwarmConfigSync:
                 all_rolled = False
         return all_rolled
 
+    def _service_lock(self, service: str) -> contextlib.AbstractContextManager[object]:
+        """Acquire the shared per-service update lock (no-op when unwired)."""
+        if self._service_locks is None:
+            return contextlib.nullcontext()
+        return self._service_locks.get(service)
+
     def _rollout_service(self, service: str) -> bool:
-        result = self._runner.run(
-            [
-                self._docker_bin,
-                "service",
-                "update",
-                "--detach",
-                "--force",
-                service,
-            ],
-            timeout_seconds=self._command_timeout_seconds,
-        )
+        # Hold the per-service lock ONLY around the docker mutation so the
+        # image-updater cannot roll the same service concurrently (short
+        # critical section; one service lock at a time → deadlock-free).
+        with self._service_lock(service):
+            result = self._runner.run(
+                [
+                    self._docker_bin,
+                    "service",
+                    "update",
+                    "--detach",
+                    "--force",
+                    service,
+                ],
+                timeout_seconds=self._command_timeout_seconds,
+            )
         if result.returncode == 0:
             logger.info("config-sync: forced rollout of service %r", service)
             return True
@@ -266,6 +282,7 @@ def build_config_sync_task(
     runner: SwarmCommandRunner | None = None,
     docker_bin: str = "docker",
     interval_seconds: float = CONFIG_SYNC_INTERVAL_SECONDS,
+    service_locks: ServiceUpdateLocks | None = None,
 ) -> ScheduledTask:
     """Build the config-sync :class:`ScheduledTask`.
 
@@ -275,7 +292,9 @@ def build_config_sync_task(
     to the canonical source (``BaseIntelligence/base`` @ ``main``,
     ``deploy/swarm/master.yaml``, ``sync_secrets=False``, ConfigMap-only);
     ``runner`` defaults to the existing
-    :class:`SwarmCliRunner` subprocess seam.
+    :class:`SwarmCliRunner` subprocess seam. ``service_locks`` is the shared
+    per-service update lock registry (H) so this loop's force-rollouts never
+    overlap the image-updater's rolls of the same services.
     """
     del settings, health_gate  # recipe parity; not broker-dependent.
     sync = SwarmConfigSync(
@@ -288,6 +307,7 @@ def build_config_sync_task(
         ),
         runner=runner if runner is not None else SwarmCliRunner(),
         docker_bin=docker_bin,
+        service_locks=service_locks,
     )
     return ScheduledTask(
         name="config-sync",

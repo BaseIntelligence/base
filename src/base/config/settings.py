@@ -385,6 +385,17 @@ class SupervisorSettings(BaseModel):
     #: registered at all (explicit-disable, no silent no-op).
     self_update_enabled: bool = False
     self_update_manifest_url: str | None = None
+    #: Self-update timing/retry knobs (Task 22 hardening). Defaults equal the
+    #: historical module constants so behaviour is unchanged unless configured.
+    #: ``interval``/``min_uptime`` drive the tick cadence and the commit dwell;
+    #: ``max_boot_attempts`` bounds the post-swap boot-storm rollback budget;
+    #: ``max_swap_attempts`` is how many DISTINCT swap attempts a rolled-back
+    #: version gets before it is blacklisted (so a transient boot failure is
+    #: retried rather than permanently blacklisting a possibly-good version).
+    self_update_interval_seconds: float = 300.0
+    self_update_min_uptime_seconds: float = 30.0
+    self_update_max_boot_attempts: int = 3
+    self_update_max_swap_attempts: int = 3
     #: Image-updater targets (each a Swarm service tracking a mutable tagged
     #: image). ``None`` (the default) means "use the built-in master defaults"
     #: (``base-master-proxy`` + ``base-docker-broker``), preserving prior

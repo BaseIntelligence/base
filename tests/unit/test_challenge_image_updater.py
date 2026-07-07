@@ -25,9 +25,12 @@ from base.supervisor.challenge_image_updater import (
     run_challenge_image_update_loop,
 )
 from base.supervisor.image_ref import ImageReference
+from base.supervisor.retry import RetryPolicy
+from base.supervisor.weight_submit import WeightsAlert
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
+DIGEST_C = "sha256:" + "c" * 64
 BASE = "ghcr.io/baseintelligence/demo:latest"
 
 
@@ -89,11 +92,26 @@ def make_updater(
     registry: FakeRegistry,
     controller: FakeController,
     resolver: Any,
+    *,
+    retry_policy: RetryPolicy | None = None,
+    alert_emit: Any = None,
+    clock: Any = None,
+    jitter_source: Any = None,
 ) -> ChallengeImageUpdater:
+    extra: dict[str, Any] = {}
+    if retry_policy is not None:
+        extra["retry_policy"] = retry_policy
+    if alert_emit is not None:
+        extra["alert_emit"] = alert_emit
+    if clock is not None:
+        extra["clock"] = clock
+    if jitter_source is not None:
+        extra["jitter_source"] = jitter_source
     return ChallengeImageUpdater(
         registry_factory=lambda: registry,
         controller_factory=lambda _registry: controller,
         resolver=resolver,
+        **extra,
     )
 
 
@@ -616,3 +634,165 @@ def test_create_proxy_app_wires_challenge_image_update_lifespan(
         challenge_image_update_interval_seconds=42.0,
     )
     assert calls == [(settings, 42.0)]
+
+
+# ---------------------------------------------------------------------------
+# Retry-with-rollback for an UNHEALTHY challenge roll (recommendation F).
+#
+# ``restart_challenge`` waits for readiness and RAISES a
+# ``DockerOrchestrationError`` when the post-roll service is unhealthy, so the
+# updater rolls the service back to the pre-roll digest and records a per-slug
+# ``RetryState`` failure (backoff between ticks, exhaustion alert, new-digest
+# reset — mirroring the master image-updater).
+# ---------------------------------------------------------------------------
+
+
+class UnhealthyRollController(ServiceAwareController):
+    """A controller whose roll comes up UNHEALTHY (restart raises) and that can
+    revert to a previous image via ``rollback`` (the production seam)."""
+
+    def __init__(self, running: str | None = None) -> None:
+        super().__init__(running=running)
+        self.rollbacks: list[tuple[str, str]] = []
+
+    async def restart(self, slug: str) -> dict[str, str]:
+        self.restarts.append(slug)
+        raise DockerOrchestrationError(f"challenge {slug!r} failed health checks")
+
+    async def rollback(self, slug: str, image: str) -> dict[str, str]:
+        self.rollbacks.append((slug, image))
+        return {"slug": slug, "operation": "rollback", "status": "ok"}
+
+
+class _AlertCollector:
+    def __init__(self) -> None:
+        self.alerts: list[WeightsAlert] = []
+
+    def __call__(self, alert: WeightsAlert) -> None:
+        self.alerts.append(alert)
+
+
+def test_unhealthy_roll_rolls_back_to_previous_digest() -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = UnhealthyRollController(running=f"{BASE}@{DIGEST_A}")
+    make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    # The roll was attempted, came up unhealthy, and the service was reverted to
+    # the digest it was running BEFORE the roll.
+    assert controller.restarts == ["demo"]
+    assert controller.rollbacks == [("demo", f"{BASE}@{DIGEST_A}")]
+
+
+def test_unhealthy_roll_reports_rolled_back_action(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = UnhealthyRollController(running=f"{BASE}@{DIGEST_A}")
+    logger_name = "base.supervisor.challenge_image_updater"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    assert any(
+        f"demo: desired={BASE}@{DIGEST_B} action=rolled-back" in message
+        for message in caplog.messages
+    )
+
+
+def test_repeated_unhealthy_roll_backs_off_between_ticks() -> None:
+    clock = {"t": 0.0}
+    policy = RetryPolicy(max_attempts=5, base_delay=60.0, jitter=False)
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = UnhealthyRollController(running=f"{BASE}@{DIGEST_A}")
+    updater = make_updater(
+        registry,
+        controller,
+        make_resolver(DIGEST_B),
+        retry_policy=policy,
+        clock=lambda: clock["t"],
+    )
+    # Tick 1: roll fails → rollback → backoff scheduled (next eligible at 60s).
+    updater.run_once()
+    assert controller.restarts == ["demo"]
+    assert controller.rollbacks == [("demo", f"{BASE}@{DIGEST_A}")]
+    # Tick 2 (t=30, still backing off): the roll is skipped, not hammered.
+    clock["t"] = 30.0
+    updater.run_once()
+    assert controller.restarts == ["demo"]
+    # Tick 3 (t=60, eligible again): the roll is retried.
+    clock["t"] = 60.0
+    updater.run_once()
+    assert controller.restarts == ["demo", "demo"]
+
+
+def test_max_attempts_emits_alert_and_stops_hammering() -> None:
+    clock = {"t": 0.0}
+    policy = RetryPolicy(max_attempts=2, base_delay=1.0, jitter=False)
+    alerts = _AlertCollector()
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = UnhealthyRollController(running=f"{BASE}@{DIGEST_A}")
+    updater = make_updater(
+        registry,
+        controller,
+        make_resolver(DIGEST_B),
+        retry_policy=policy,
+        clock=lambda: clock["t"],
+        alert_emit=alerts,
+    )
+    # Tick 1 (t=0): first failure, budget not yet spent → no alert.
+    updater.run_once()
+    assert alerts.alerts == []
+    # Tick 2 (t=1): second failure exhausts the budget → alert fired once.
+    clock["t"] = 1.0
+    updater.run_once()
+    assert len(alerts.alerts) == 1
+    assert alerts.alerts[0].kind == "challenge_image_update_failed"
+    assert alerts.alerts[0].details["slug"] == "demo"
+    assert alerts.alerts[0].details["attempts"] == 2
+    # Tick 3 (t=3): budget spent → no further roll and no duplicate alert.
+    clock["t"] = 3.0
+    updater.run_once()
+    assert controller.restarts == ["demo", "demo"]
+    assert len(alerts.alerts) == 1
+
+
+def test_new_digest_resets_retry_state() -> None:
+    clock = {"t": 0.0}
+    policy = RetryPolicy(max_attempts=2, base_delay=100.0, jitter=False)
+    resolved = {"digest": DIGEST_B}
+
+    def resolver(_reference: ImageReference) -> str:
+        return resolved["digest"]
+
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = UnhealthyRollController(running=f"{BASE}@{DIGEST_A}")
+    updater = make_updater(
+        registry,
+        controller,
+        resolver,
+        retry_policy=policy,
+        clock=lambda: clock["t"],
+    )
+    # Tick 1: roll fails → long backoff (next eligible at 100s).
+    updater.run_once()
+    assert controller.restarts == ["demo"]
+    # Tick 2 (still backing off): no roll.
+    updater.run_once()
+    assert controller.restarts == ["demo"]
+    # A NEW desired digest resets the state, so the roll is retried immediately
+    # despite the outstanding backoff for the previous digest.
+    resolved["digest"] = DIGEST_C
+    updater.run_once()
+    assert controller.restarts == ["demo", "demo"]
+
+
+def test_no_rollback_seam_records_failure_without_reverting() -> None:
+    # A controller WITHOUT a rollback seam still records the failure/backoff (it
+    # simply cannot revert); the tick never raises.
+    class _NoRollbackController(ServiceAwareController):
+        async def restart(self, slug: str) -> dict[str, str]:
+            self.restarts.append(slug)
+            raise DockerOrchestrationError("unhealthy")
+
+    registry = FakeRegistry([record("demo", f"{BASE}@{DIGEST_B}")])
+    controller = _NoRollbackController(running=f"{BASE}@{DIGEST_A}")
+    make_updater(registry, controller, make_resolver(DIGEST_B)).run_once()
+    assert controller.restarts == ["demo"]
+    assert not hasattr(controller, "rollbacks")

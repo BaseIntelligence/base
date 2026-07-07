@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -245,6 +246,23 @@ class DockerRuntimeController:
         return {
             "slug": slug,
             "operation": "restart",
+            "status": "ok",
+            "detail": runtime.container_name,
+        }
+
+    async def rollback(self, slug: str, image: str):
+        """Roll the challenge service BACK to a specific (previous) image.
+
+        Used by the challenge-image-updater when a roll to the desired digest
+        comes up UNHEALTHY: the service is reverted to the digest it was running
+        before the roll. Reuses ``restart_challenge`` with the record's image
+        overridden so the same update + readiness path applies to the revert.
+        """
+        spec = replace(await self._spec(slug), image=image)
+        runtime = self.orchestrator.restart_challenge(spec)
+        return {
+            "slug": slug,
+            "operation": "rollback",
             "status": "ok",
             "detail": runtime.container_name,
         }
