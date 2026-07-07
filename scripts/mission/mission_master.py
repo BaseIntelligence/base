@@ -23,7 +23,9 @@ holds no real chain/provider secrets. NOT for production: production uses
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -265,7 +267,43 @@ def _build_orchestration_driver(
     )
 
 
+def _configure_harness_logging(level: int = logging.INFO) -> None:
+    """Line-buffer stdout/stderr and route logs there so drill logs are
+    inspectable after teardown.
+
+    The harness redirects each spawned process' stdout/stderr to a log file and
+    tears it down with SIGTERM; block-buffered output would be lost on kill,
+    leaving a 0-byte log. Line-buffering flushes every completed log line
+    immediately (so nothing already logged is lost), and an ``atexit`` flush
+    covers the graceful-shutdown path.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(line_buffering=True)
+            except (ValueError, OSError):
+                pass
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+    atexit.register(_flush_streams)
+
+
+def _flush_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _configure_harness_logging()
     config = _load_config()
     asyncio.run(_init_db(config["db_url"]))
     app = build_app(config)
@@ -273,7 +311,7 @@ def main() -> None:
         app,
         host=str(config.get("host", "127.0.0.1")),
         port=int(config["port"]),
-        log_level=str(config.get("log_level", "warning")),
+        log_level=str(config.get("log_level", "info")),
     )
 
 

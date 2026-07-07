@@ -145,7 +145,7 @@ class WorkerUnitStatusService:
             ).append(replica)
 
         faults = (await session.execute(select(WorkerFault))).scalars().all()
-        faulted_units = {fault.work_unit_id for fault in faults}
+        faulted_units = {(fault.challenge_slug, fault.work_unit_id) for fault in faults}
 
         views: list[WorkerUnitStatusView] = []
         for primary in sorted(
@@ -165,7 +165,7 @@ class WorkerUnitStatusService:
                         executor_kind=EXECUTOR_KIND_VALIDATOR,
                         outcome=_audit_outcome(
                             audit,
-                            faulted=primary.work_unit_id in faulted_units,
+                            faulted=key in faulted_units,
                         ),
                     )
             views.append(

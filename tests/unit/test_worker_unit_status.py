@@ -206,13 +206,19 @@ async def _add_replica(
         )
 
 
-async def _add_fault(factory: Any, *, worker_id: str, work_unit_id: str) -> None:
+async def _add_fault(
+    factory: Any,
+    *,
+    worker_id: str,
+    work_unit_id: str,
+    challenge_slug: str = "prism",
+) -> None:
     async with session_scope(factory) as session:
         session.add(
             WorkerFault(
                 worker_id=worker_id,
                 work_unit_id=work_unit_id,
-                challenge_slug="prism",
+                challenge_slug=challenge_slug,
                 detail="manifest diverged from validator audit",
                 created_at=NOW,
             )
@@ -445,6 +451,62 @@ async def test_disputed_unit_audit_passed_when_resolved_without_fault(
     unit = units[0]
     assert unit.audit is not None
     assert unit.audit.outcome == AUDIT_OUTCOME_PASSED
+
+
+async def test_fault_keyed_by_challenge_and_unit_does_not_collide_across_slugs(
+    env: tuple[AsyncClient, Any, WorkerUnitStatusService],
+) -> None:
+    """Two disputed units sharing a work_unit_id under DIFFERENT challenge slugs
+    must not collide: a fault recorded for one slug's unit must not flip the
+    other slug's (fault-free) audit to ``mismatch-resolved``."""
+
+    _, factory, service = env
+    shared_unit_id = "U-shared"
+    for slug in ("prism", "other-challenge"):
+        await _add_primary(
+            factory,
+            work_unit_id=shared_unit_id,
+            submitter=MINER_H,
+            status=WorkAssignmentStatus.DISPUTED,
+            challenge_slug=slug,
+        )
+        await _add_replica(
+            factory,
+            work_unit_id=shared_unit_id,
+            worker_id=f"wa-{slug}",
+            miner_hotkey=MINER_A,
+            manifest=HASH_A,
+            challenge_slug=slug,
+        )
+        await _add_replica(
+            factory,
+            work_unit_id=shared_unit_id,
+            worker_id=f"wb-{slug}",
+            miner_hotkey=MINER_B,
+            manifest=HASH_B,
+            challenge_slug=slug,
+        )
+        await _add_audit_unit(
+            factory,
+            original_id=shared_unit_id,
+            status=WorkAssignmentStatus.COMPLETED,
+            resolved=True,
+            challenge_slug=slug,
+        )
+    # Only the prism unit's diverging worker is faulted.
+    await _add_fault(
+        factory,
+        worker_id="wb-prism",
+        work_unit_id=shared_unit_id,
+        challenge_slug="prism",
+    )
+
+    units = await service.list_units()
+    by_slug = {u.challenge_slug: u for u in units}
+    assert by_slug["prism"].audit is not None
+    assert by_slug["prism"].audit.outcome == AUDIT_OUTCOME_MISMATCH_RESOLVED
+    assert by_slug["other-challenge"].audit is not None
+    assert by_slug["other-challenge"].audit.outcome == AUDIT_OUTCOME_PASSED
 
 
 async def test_replica_without_proof_reports_absent_proof(
