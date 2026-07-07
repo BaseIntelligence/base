@@ -88,3 +88,87 @@ bearer). With `compute.worker_plane_enabled` off its router is unmounted (404).
 * prism: `127.0.0.1:3120`
 
 Both are inside the mission-allowed range 3100-3199. No component listens outside that range.
+
+## Legacy regression (flags OFF) — exact verification procedure (VAL-CROSS-006)
+
+This is the reproducible procedure proving that with ALL new flags OFF the compute plane behaves
+byte-for-byte as pre-mission. Re-run it exactly as below (scrutiny/re-validation). It has two parts:
+(a) both default suites green fully offline, and (b) a legacy validator-flow smoke.
+
+Prerequisites: the test PostgreSQL is up on 15433 (`services.yaml` `test-postgres`), and both venvs
+are synced (`services.yaml` `install`). No credentials are needed; the procedure UNSETS
+`LIUM_API_KEY` / `TARGON_API_KEY` / `BASE_LIVE_PROVIDER_TESTS` and leaves
+`BASE_COMPUTE__WORKER_PLANE_ENABLED` unset (flags OFF).
+
+### Offline egress guard
+
+`base/scripts/mission/no_external_egress.py` is a pytest plugin (`-p no_external_egress`) that blocks
+any DNS resolution or socket connect to a non-loopback host (raising an `OSError` subclass), while
+leaving loopback (test PostgreSQL on 127.0.0.1:15433, in-process stubs) and AF_UNIX sockets working.
+It installs from `pytest_configure` (before collection), so even a module that probes the network at
+import time is guarded and simply SKIPS. This operationalises "zero real egress to lium.io /
+api.targon.com". Unit-tested by `base/tests/unit/test_no_external_egress.py`.
+
+### (a) Both default suites, offline, flags OFF
+
+base (with the test PostgreSQL on 15433):
+
+```bash
+cd base
+env -u LIUM_API_KEY -u TARGON_API_KEY -u BASE_LIVE_PROVIDER_TESTS -u BASE_COMPUTE__WORKER_PLANE_ENABLED \
+  PYTHONPATH="$PWD/scripts/mission" \
+  BASE_TEST_DATABASE_URL=postgresql+asyncpg://base:base@localhost:15433/base_test \
+  uv run pytest -p no_external_egress --cov=base --cov-report=term-missing --cov-fail-under=80 \
+  -q -p no:cacheprovider
+```
+
+Expected: green, e.g. `1543 passed`, `Total coverage: 88.55%` (≥ 80% gate). No base test needs the
+network; the live Lium/Targon E2E is a standalone gated script (`base/scripts/live_lium_e2e.py`,
+`BASE_LIVE_PROVIDER_TESTS=1`) NOT collected by the default suite, so there are no live tests to skip.
+
+prism (the same egress guard, from the base scripts dir; `distributed_gloo` deselected as non-gating):
+
+```bash
+cd prism
+env -u LIUM_API_KEY -u TARGON_API_KEY -u BASE_LIVE_PROVIDER_TESTS -u BASE_COMPUTE__WORKER_PLANE_ENABLED \
+  PYTHONPATH="/root/prism-compute-plane/base/scripts/mission" \
+  uv run pytest -p no_external_egress -m "not distributed_gloo" --cov=prism_challenge \
+  --cov-report=term-missing --cov-fail-under=80 -q -p no:cacheprovider
+```
+
+Expected: green, e.g. `892 passed, 9 skipped, 7 deselected`, `Total coverage: 83.07%` (≥ 80% gate).
+The `7 deselected` are the `distributed_gloo` tests (non-gating). The `9 skipped` are the
+harness/dataset tests whose prep step needs to stage a tokenizer/dataset over the network
+(`"... needs network (prep/build step)"`); under the egress guard (external resolution disabled)
+they skip rather than run — exactly the offline behaviour. Nothing egresses to `lium.io` /
+`api.targon.com`.
+
+### (b) Legacy validator-flow smoke
+
+Stands up the SAME local deployment with flags OFF (base master `worker_plane_enabled: false`, prism
+`worker_plane_enabled: false`) and drives one legacy submission end-to-end. Scripts:
+`prism/scripts/mission/legacy_smoke.py` (orchestrator) + `mission_legacy_validator.py` (a real
+`validator_dispatch` executor) + the flags-OFF configs of `mission_master.py` / `mission_prism.py`.
+It prints every PID and kills them all by PID in a `finally`.
+
+```bash
+cd /root/prism-compute-plane           # dir containing base/ and prism/
+export PYTHONPATH="$PWD/base/src:$PWD/prism/src"
+prism/.venv/bin/python prism/scripts/mission/legacy_smoke.py
+```
+
+Expected: `OVERALL: PASS`. The smoke asserts, via HTTP + a read of the master/prism databases:
+
+1. the submission is ACCEPTED with no `NO_ACTIVE_WORKER` 403 (admission gate off, flags OFF);
+2. prism exposes exactly ONE gpu work unit for it (`GET /internal/v1/work_units`);
+3. the base master assigns that unit to the VALIDATOR
+   (`work_assignments.assigned_validator_hotkey` == the validator hotkey, `required_capability=gpu`)
+   and NEVER to a worker: `worker_registrations` and `worker_assignments` are empty and
+   `GET /v1/workers` shows zero workers — no worker-plane rows/side effects;
+4. the validator executes it via the real `validator_dispatch` path
+   (`mission_legacy_validator.py` logs `pulled + executing prism unit … via validator_dispatch`,
+   `pulled=1 executed=1`) and prism records a score
+   (`GET /v1/submissions/{id}` → `completed` with a `final_score`).
+
+`legacy_smoke.py` uses ports 3112 (master) / 3122 (prism), inside 3100-3199, distinct from the
+worker-plane drills' 3110/3120 so the two harnesses never collide.

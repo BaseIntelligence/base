@@ -195,6 +195,7 @@ def build_app(config: dict[str, Any]) -> Any:
         worker_assignment_service=worker_assignment_service,
         replication_factor=int(config.get("replication_factor", 2)),
         seed=config.get("orchestration_seed"),
+        worker_plane_enabled=bool(config.get("worker_plane_enabled", True)),
     )
 
     return create_proxy_app(
@@ -232,9 +233,16 @@ def _build_orchestration_driver(
     worker_assignment_service: WorkerAssignmentService,
     replication_factor: int,
     seed: Any,
+    worker_plane_enabled: bool = True,
 ) -> MasterOrchestrationDriver:
+    # With the worker plane OFF (legacy) no capability is owned by the worker plane, so
+    # gpu units route to online gpu validators byte-for-byte as pre-mission
+    # (VAL-MASTER-013 / VAL-CROSS-006).
+    worker_plane_capabilities = (
+        frozenset({CAPABILITY_GPU}) if worker_plane_enabled else frozenset()
+    )
     assignment_service = AssignmentService(
-        session_factory, worker_plane_capabilities=frozenset({CAPABILITY_GPU})
+        session_factory, worker_plane_capabilities=worker_plane_capabilities
     )
     worker_engine = WorkerAssignmentEngine(
         session_factory,
