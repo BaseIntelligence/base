@@ -102,6 +102,12 @@ DAEMON_JSON_DST="${DAEMON_JSON_DST:-/etc/docker/daemon.json}"
 # watches plus the digest the deploy pins). Override with your own
 # tag@sha256:<digest> at deploy time.
 IMAGE_MASTER="${IMAGE_MASTER:-ghcr.io/baseintelligence/base-master:latest@sha256:838ed7ca090f276a014a9c04820b84cc48ac3833af9b37c4047dfa8677156cb7}"
+# Mutable :latest ref for EPHEMERAL one-shot base-master CLI runs (central-gate
+# token mint, validator wallet generation, runtime-uid inspect). These MUST use
+# current code so newly-added CLI subcommands exist; a stale digest pin drops
+# e.g. `mint-central-gate-token`. Deployed SERVICES keep the pinned IMAGE_MASTER
+# (the supervisor image-updater rolls them to the :latest digest afterward).
+IMAGE_MASTER_CLI="${IMAGE_MASTER_CLI:-ghcr.io/baseintelligence/base-master:latest}"
 IMAGE_AGENT_CHALLENGE="${IMAGE_AGENT_CHALLENGE:-ghcr.io/baseintelligence/agent-challenge:latest@sha256:d12690a39b0a1311ffe237001f9c2fef364303c6162111d37d3b305a8d3159c5}"
 IMAGE_PRISM="${IMAGE_PRISM:-ghcr.io/baseintelligence/prism:latest@sha256:e052a3eced0b76424c858fcea5c04e948a6764b051a862a9b99d011a44f9ffd9}"
 # Prism GPU evaluator (CUDA cu128 torchrun runner). Must satisfy BOTH prism
@@ -498,7 +504,7 @@ _master_runtime_uid() {
     return 0
   fi
   local user_field uid
-  user_field="$(docker image inspect --format '{{.Config.User}}' "${IMAGE_MASTER}" 2>/dev/null || true)"
+  user_field="$(docker image inspect --format '{{.Config.User}}' "${IMAGE_MASTER_CLI}" 2>/dev/null || true)"
   uid="${user_field%%:*}"
   if [[ "${uid}" =~ ^[0-9]+$ ]]; then
     printf '%s' "${uid}"
@@ -1082,10 +1088,13 @@ environment: development
 gateway:
   token_secret_file: /run/secrets/gateway_token_secret
 YAML
-  CENTRAL_GATEWAY_TOKEN="$(docker run --rm \
+  # --user 0:0: the root-owned mode-600 temp files (mint.yaml + gateway secret)
+  # must be readable inside the container; the image's default non-root user
+  # cannot read them. Minting is pure local HMAC signing, so root is safe here.
+  CENTRAL_GATEWAY_TOKEN="$(docker run --rm --user 0:0 \
     --mount "type=bind,source=${tmp}/gateway_token_secret,target=/run/secrets/gateway_token_secret,readonly" \
     --mount "type=bind,source=${tmp}/mint.yaml,target=/mint.yaml,readonly" \
-    "${IMAGE_MASTER}" \
+    "${IMAGE_MASTER_CLI}" \
     base master mint-central-gate-token --config /mint.yaml \
       --label turnkey-central-gate --source llm_review)"
   rm -rf "${tmp}"
@@ -1142,7 +1151,7 @@ auto_provision_secrets() {
     if [[ "${APPLY}" == "true" ]]; then _auto_mint_central_gate_token
     else
       log "  (dry-run) would mint CENTRAL_GATEWAY_TOKEN from \$GATEWAY_TOKEN via:"
-      log "    docker run --rm --mount <gateway_token_secret> --mount <mint.yaml> ${IMAGE_MASTER} base master mint-central-gate-token --config /mint.yaml --label turnkey-central-gate --source llm_review"
+      log "    docker run --rm --user 0:0 --mount <gateway_token_secret> --mount <mint.yaml> ${IMAGE_MASTER_CLI} base master mint-central-gate-token --config /mint.yaml --label turnkey-central-gate --source llm_review"
       CENTRAL_GATEWAY_TOKEN="<minted-at-apply>"
     fi
   fi
@@ -1182,7 +1191,7 @@ ensure_validator_wallet() {
   [[ "${AUTO_SECRETS:-false}" == "true" ]] || return 0
   log "STEP 5c ensure_validator_wallet: wallet=${VALIDATOR_WALLET_NAME} path=${VALIDATOR_WALLET_PATH}"
   if [[ "${APPLY}" != "true" ]]; then
-    log "  (dry-run) would: install -d ${VALIDATOR_WALLET_PATH}; docker run --entrypoint python3 ${IMAGE_MASTER} -c '<wallet-gen>' ${VALIDATOR_WALLET_NAME} ${VALIDATOR_WALLET_PATH}"
+    log "  (dry-run) would: install -d ${VALIDATOR_WALLET_PATH}; docker run --entrypoint python3 ${IMAGE_MASTER_CLI} -c '<wallet-gen>' ${VALIDATOR_WALLET_NAME} ${VALIDATOR_WALLET_PATH}"
     log "  (dry-run) would then chown the wallet tree to the master runtime uid: docker run ${IMAGE_POSTGRES} chown -R <uid>:<uid> ${VALIDATOR_WALLET_PATH}"
     VALIDATOR_HOTKEY_SS58="<derived-at-apply>"
     return 0
@@ -1192,7 +1201,7 @@ ensure_validator_wallet() {
   # afterwards to the runtime uid so the read-only agent mount is readable.
   VALIDATOR_HOTKEY_SS58="$(docker run --rm --user 0:0 --entrypoint python3 \
     --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \
-    "${IMAGE_MASTER}" -c "${_wallet_gen_py}" "${VALIDATOR_WALLET_NAME}" "${VALIDATOR_WALLET_PATH}")"
+    "${IMAGE_MASTER_CLI}" -c "${_wallet_gen_py}" "${VALIDATOR_WALLET_NAME}" "${VALIDATOR_WALLET_PATH}")"
   local uid; uid="$(_master_runtime_uid)"
   docker run --rm --user 0:0 \
     --mount "type=bind,source=${VALIDATOR_WALLET_PATH},target=${VALIDATOR_WALLET_PATH}" \

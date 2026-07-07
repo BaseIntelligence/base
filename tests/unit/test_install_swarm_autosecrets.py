@@ -222,6 +222,9 @@ def test_mint_plan_is_shown_in_dry_run(tmp_path: Path) -> None:
     line = mint_lines[0]
     assert IMAGE_MASTER_MARKER in line
     assert "--source llm_review" in line
+    # The mint container runs as root so it can read the root-owned mode-600
+    # mint.yaml + gateway secret temp files (image default user is non-root).
+    assert "--user 0:0" in line
 
 
 def test_idempotent_when_secrets_already_exist(tmp_path: Path) -> None:

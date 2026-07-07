@@ -114,9 +114,13 @@ def test_installer_adds_no_separate_image_for_master_subsystems() -> None:
     # The only deploy images are master/challenge/evaluator/postgres plus the
     # validator-runtime image a validator NODE runs the agent from (--validator-node;
     # CI-built from Dockerfile.validator) — no gateway/coordination/HF-publisher-
-    # specific MASTER-SUBSYSTEM image.
+    # specific MASTER-SUBSYSTEM image. IMAGE_MASTER_CLI is NOT a separate subsystem
+    # image: it is the SAME base-master image at its mutable :latest tag, used only
+    # for the ephemeral one-shot CLI runs (mint / wallet-gen / runtime-uid inspect),
+    # while deployed services keep the digest-pinned IMAGE_MASTER.
     assert image_vars == {
         "IMAGE_MASTER",
+        "IMAGE_MASTER_CLI",
         "IMAGE_AGENT_CHALLENGE",
         "IMAGE_PRISM",
         "IMAGE_PRISM_EVALUATOR",
