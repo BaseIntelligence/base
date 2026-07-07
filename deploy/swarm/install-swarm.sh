@@ -1611,6 +1611,15 @@ deploy_challenges() {
     # in parallel (mirrors cli_app _agent_challenge_own_runner_env for the
     # dynamic path). Applied to BOTH the api and worker via ac_eval_env.
     "CHALLENGE_EVALUATION_CONCURRENCY=15"
+    # Live running-log streaming. The worker points the terminal-bench runner's
+    # log producer at the api over the eval overlay (LOG_STREAM_URL) and pins the
+    # runner JOB onto base_jobs_internal (BROKER_NETWORK) so it can resolve
+    # challenge-agent-challenge by name to POST task.log events; the api ingests
+    # them and serves the SSE feed. Both api+worker are already multi-homed onto
+    # NET_JOBS_INTERNAL below. Without these the runner lands on the default
+    # bridge network and log streaming silently no-ops (name resolution fails).
+    "CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL=http://challenge-agent-challenge:${AGENT_CHALLENGE_PORT}"
+    "CHALLENGE_DOCKER_BROKER_NETWORK=${NET_JOBS_INTERNAL}"
   )
   # Central AST+LLM gate review routing. Point the analyzer at the master gateway
   # ROOT (it appends /llm/v1) + read the scoped central-gate token from

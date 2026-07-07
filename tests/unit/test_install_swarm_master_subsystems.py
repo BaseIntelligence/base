@@ -251,6 +251,33 @@ def test_agent_challenge_services_carry_evaluation_concurrency(
         assert "CHALLENGE_EVALUATION_CONCURRENCY=15" in block
 
 
+def test_agent_challenge_services_carry_log_streaming_env(
+    tmp_path: Path,
+) -> None:
+    """agent-challenge api + worker carry the live running-log streaming env.
+
+    The worker points the terminal-bench runner's log producer at the api
+    (CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL) and pins the runner JOB onto the
+    isolated eval overlay (CHALLENGE_DOCKER_BROKER_NETWORK=base_jobs_internal) so
+    it resolves challenge-agent-challenge by name to POST task.log events; the
+    api ingests them and serves the SSE feed. Applied to BOTH services via the
+    static ``ac_eval_env`` array, mirroring the dynamic path's
+    ``cli_app._agent_challenge_own_runner_env``. Without these the runner lands
+    on the default bridge network and log streaming silently no-ops.
+    """
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
+        block = _service_block(lines, service)
+        assert (
+            "CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL="
+            "http://challenge-agent-challenge:8000" in block
+        )
+        assert "CHALLENGE_DOCKER_BROKER_NETWORK=base_jobs_internal" in block
+
+
 def test_hf_publisher_token_mounted_on_prism_when_present(tmp_path: Path) -> None:
     result = _run(tmp_path, hf_token=HF_SENTINEL)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
