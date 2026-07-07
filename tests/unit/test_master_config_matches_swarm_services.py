@@ -307,6 +307,13 @@ def test_master_yaml_supervisor_block_loads_into_supervisor_settings() -> None:
         == cfg["supervisor"]["self_update_manifest_url"]
     )
     assert supervisor.registry == cfg["supervisor"]["registry"]
+    # The host supervisor probes the broker at its host-published port (loopback),
+    # NOT the overlay service DNS in docker.broker_url it cannot resolve off-mesh.
+    assert supervisor.broker_health_url is not None
+    assert "base-docker-broker" not in supervisor.broker_health_url
+    health_host, health_port = _host_port_from_url(supervisor.broker_health_url)
+    assert health_host in {"127.0.0.1", "localhost"}
+    assert health_port == _host_port_from_url(cfg["docker"]["broker_url"])[1]
 
 
 # ---------------------------------------------------------------------------

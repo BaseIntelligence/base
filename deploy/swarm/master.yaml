@@ -144,5 +144,8 @@ observability:
 supervisor:
   registry: ghcr.io
   registry_docker_config_path: /root/.docker/config.json
+  # Host supervisor is outside the overlay: probe the broker on its host-published
+  # port (8082, manager) instead of the unresolvable overlay name in docker.broker_url.
+  broker_health_url: http://127.0.0.1:8082
   self_update_enabled: true
   self_update_manifest_url: https://raw.githubusercontent.com/BaseIntelligence/base/release/self-update-manifest.json

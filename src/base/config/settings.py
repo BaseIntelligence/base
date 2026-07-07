@@ -379,6 +379,16 @@ class SupervisorSettings(BaseModel):
     #: the same credentials the deploy already provisions. None disables the
     #: fallback (anonymous resolver).
     registry_docker_config_path: str | None = "/root/.docker/config.json"
+    #: Host-reachable broker ``/health`` URL for the supervisor's broker-health
+    #: probe. The host systemd supervisor runs OUTSIDE the swarm overlay, so it
+    #: cannot resolve the overlay service DNS in ``docker.broker_url``
+    #: (``http://base-docker-broker:8082``) — the probe would fail forever and
+    #: permanently trip the gate (blocking self-update's pre-swap gate). The
+    #: broker publishes 8082 in host mode on the manager, so point the probe at
+    #: the host-published port instead. ``None`` falls back to
+    #: ``docker.broker_url`` (in-overlay callers like the proxy keep the service
+    #: name).
+    broker_health_url: str | None = None
     #: Master self-update (Task 22). Enable ONLY with a manifest_url wired — the
     #: builder refuses ``self_update_enabled=true`` without one so the task is
     #: never registered-but-inert. Default OFF: the self-update task is not

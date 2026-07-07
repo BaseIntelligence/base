@@ -23,7 +23,7 @@ from base.supervisor.sd_notify import (
     SystemdNotifier,
     watchdog_interval_seconds,
 )
-from base.supervisor.tasks import build_scheduled_tasks
+from base.supervisor.tasks import build_broker_health_task, build_scheduled_tasks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -325,6 +325,46 @@ def test_build_scheduled_tasks_registers_health_probe_with_shared_gate() -> None
     probe_task = next(t for t in tasks_with_gate if t.name == "broker-health-probe")
     probe_task.run()
     assert not injected.healthy
+
+
+def test_broker_health_probe_prefers_supervisor_override_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The host supervisor cannot resolve the overlay name in docker.broker_url;
+    # a set supervisor.broker_health_url must win so the probe hits the
+    # host-published broker port instead of failing forever.
+    captured: dict[str, str] = {}
+
+    def fake_prober(url: str, timeout_seconds: float) -> Callable[[], bool]:
+        captured["url"] = url
+        return lambda: True
+
+    monkeypatch.setattr("base.supervisor.tasks.http_health_prober", fake_prober)
+    settings = Settings.model_validate(
+        {
+            "docker": {"broker_url": "http://base-docker-broker:8082"},
+            "supervisor": {"broker_health_url": "http://127.0.0.1:8082"},
+        }
+    )
+    build_broker_health_task(settings)
+    assert captured["url"] == "http://127.0.0.1:8082/health"
+
+
+def test_broker_health_probe_falls_back_to_docker_broker_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_prober(url: str, timeout_seconds: float) -> Callable[[], bool]:
+        captured["url"] = url
+        return lambda: True
+
+    monkeypatch.setattr("base.supervisor.tasks.http_health_prober", fake_prober)
+    settings = Settings.model_validate(
+        {"docker": {"broker_url": "http://base-docker-broker:8082"}}
+    )
+    build_broker_health_task(settings)
+    assert captured["url"] == "http://base-docker-broker:8082/health"
 
 
 def test_build_scheduled_tasks_targets_canonical_docker_broker() -> None:

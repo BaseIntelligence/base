@@ -88,9 +88,15 @@ def build_broker_health_task(
 ) -> tuple[ScheduledTask, BrokerHealthGate]:
     """Build the broker ``/health`` probe task plus its shared gate."""
     if gate is None:
+        # The host supervisor runs outside the overlay and cannot resolve the
+        # overlay service DNS in ``docker.broker_url``; ``broker_health_url``
+        # (when set) points the probe at the broker's host-published port.
+        broker_health_url = (
+            settings.supervisor.broker_health_url or settings.docker.broker_url
+        )
         gate = BrokerHealthGate(
             http_health_prober(
-                f"{settings.docker.broker_url.rstrip('/')}/health",
+                f"{broker_health_url.rstrip('/')}/health",
                 DEFAULT_PROBE_TIMEOUT_SECONDS,
             ),
             failure_threshold=DEFAULT_FAILURE_THRESHOLD,
