@@ -16,9 +16,10 @@ sec 3.3):
 
 from __future__ import annotations
 
+import hmac
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -31,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.db.models import WorkerRegistration, WorkerRequestNonce
 from base.db.session import session_scope
+from base.security.challenge_auth import bearer_token
 from base.security.miner_auth import SignatureVerifier, verify_substrate_signature
 from base.security.validator_auth import (
     body_sha256,
@@ -293,6 +295,34 @@ def build_worker_auth_dependency(
     return authenticate
 
 
+def build_internal_bearer_auth(
+    accepted_tokens: Callable[[], Iterable[str]],
+) -> Callable[[str | None], bool]:
+    """Authenticate the admission fleet-read via the internal bridge bearer.
+
+    The prism admission rule queries ``GET /v1/workers/active?hotkey=`` reusing
+    the SAME shared token base holds for the prism<->master bridge
+    (architecture.md sec 3.5); prism is neither a registered worker nor an
+    eligible validator, so it cannot use the signed-request path. This returns a
+    predicate over the raw ``Authorization`` header that is true only when it
+    carries ``Bearer <token>`` matching one of ``accepted_tokens`` (compared in
+    constant time). It is an ADDITIONAL acceptor layered on top of the
+    signed-request path and never weakens it; ``accepted_tokens`` is resolved per
+    call so token rotation is picked up without rebuilding the router.
+    """
+
+    def is_valid(authorization: str | None) -> bool:
+        presented = bearer_token(authorization)
+        if not presented:
+            return False
+        return any(
+            bool(expected) and hmac.compare_digest(presented, expected)
+            for expected in accepted_tokens()
+        )
+
+    return is_valid
+
+
 def _parse_epoch(raw: str) -> float:
     import math
 
@@ -325,6 +355,7 @@ __all__ = [
     "WorkerNonceStore",
     "WorkerReplayError",
     "WorkerSignedRequestVerifier",
+    "build_internal_bearer_auth",
     "build_worker_auth_dependency",
     "worker_binding_message",
 ]

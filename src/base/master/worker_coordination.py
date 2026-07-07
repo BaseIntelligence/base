@@ -29,7 +29,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -433,15 +433,38 @@ def build_worker_coordination_router(
     *,
     service: WorkerCoordinationService,
     auth_dependency: Callable[..., Any],
+    internal_auth: Callable[[str | None], bool] | None = None,
 ) -> APIRouter:
     """Build the worker coordination router (register/heartbeat/fleet reads).
 
     ``auth_dependency`` authenticates heartbeat + fleet reads as a registered
     worker (or, for reads, an eligible validator). Registration is authenticated
     by the miner binding signature carried in the body, not this dependency.
+
+    ``internal_auth`` (when provided) is an ADDITIONAL acceptor for the narrow
+    admission-support endpoint ``GET /v1/workers/active`` only: prism reuses the
+    prism<->master bridge shared bearer to read a hotkey's active workers
+    (architecture.md sec 3.5). It never weakens the signed-request path and is
+    NOT applied to the full-fleet ``GET /v1/workers`` view, which stays
+    signed-request only.
     """
 
     router = APIRouter()
+
+    async def authorize_active_read(request: Request) -> Any:
+        """Dual-auth the admission fleet-read: internal bearer OR signed request.
+
+        Accepts the prism<->master bridge shared bearer when configured; any
+        other caller (and any request without a matching bearer) falls through
+        to the unchanged signed-request path, so a bad/missing bearer with no
+        valid signature is still rejected 401/403.
+        """
+
+        if internal_auth is not None and internal_auth(
+            request.headers.get("authorization")
+        ):
+            return None
+        return await auth_dependency(request)
 
     @router.post("/v1/workers/register", response_model=WorkerRegisterResponse)
     async def register_worker(
@@ -535,7 +558,7 @@ def build_worker_coordination_router(
     @router.get(
         "/v1/workers/active",
         response_model=WorkerListResponse,
-        dependencies=[Depends(auth_dependency)],
+        dependencies=[Depends(authorize_active_read)],
     )
     async def list_active_workers(
         hotkey: str = Query(...),

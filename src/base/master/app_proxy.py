@@ -71,6 +71,7 @@ from base.security.validator_auth import (
 )
 from base.security.worker_auth import (
     WorkerSignedRequestVerifier,
+    build_internal_bearer_auth,
     build_worker_auth_dependency,
 )
 from base.supervisor.challenge_image_updater import (
@@ -138,6 +139,12 @@ PRISM_EXACT_PUBLIC_PATHS = {
 
 ClientFactory = Callable[[], AbstractAsyncContextManager[httpx.AsyncClient]]
 ChallengeTokenProvider = Callable[[str], str]
+
+#: Challenge slug whose prism<->master bridge shared token additionally
+#: authenticates the admission fleet-read ``GET /v1/workers/active`` (in addition
+#: to the signed-request path). prism reuses this same token as its
+#: admission-query bearer (architecture.md sec 3.5).
+WORKER_ADMISSION_BRIDGE_SLUG = "prism"
 
 
 def is_blocked_proxy_path(path: str) -> bool:
@@ -699,10 +706,19 @@ def create_proxy_app(
         app.state.validator_coordination_service = validator_service
 
     if worker_service is not None and worker_verifier is not None:
+
+        def _worker_admission_tokens() -> list[str]:
+            try:
+                token = token_provider(WORKER_ADMISSION_BRIDGE_SLUG)
+            except Exception:  # noqa: BLE001 - missing token => no internal bearer
+                return []
+            return [token] if token else []
+
         app.include_router(
             build_worker_coordination_router(
                 service=worker_service,
                 auth_dependency=build_worker_auth_dependency(worker_verifier),
+                internal_auth=build_internal_bearer_auth(_worker_admission_tokens),
             )
         )
         app.state.worker_coordination_service = worker_service

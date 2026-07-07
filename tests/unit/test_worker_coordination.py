@@ -46,6 +46,26 @@ MINER_H3 = "miner-H3"
 VALIDATOR = "val-permit"
 STRANGER = "stranger-key"
 
+# The prism<->master bridge shared token the admission fleet-read also accepts.
+INTERNAL_BRIDGE_TOKEN = "prism-bridge-shared-token"
+
+
+class _TokenRegistry:
+    """Minimal registry exposing ``get_token`` like the real challenge registry.
+
+    Mirrors production semantics: an unknown/unavailable slug raises
+    ``RuntimeError`` (exercises the token-resolver's defensive guard).
+    """
+
+    def __init__(self, tokens: dict[str, str]) -> None:
+        self._tokens = tokens
+
+    def get_token(self, slug: str) -> str:
+        token = self._tokens.get(slug)
+        if not token:
+            raise RuntimeError(f"no token for {slug!r}")
+        return token
+
 
 class FakeClock:
     def __init__(self, epoch: float) -> None:
@@ -189,6 +209,17 @@ class Harness:
         )
         return await self.client.get(path, params={"hotkey": hotkey}, headers=headers)
 
+    async def active_bearer(self, hotkey: str, *, token: str | None) -> Any:
+        headers = {} if token is None else {"Authorization": f"Bearer {token}"}
+        return await self.client.get(
+            "/v1/workers/active", params={"hotkey": hotkey}, headers=headers
+        )
+
+    async def list_bearer(self, *, token: str) -> Any:
+        return await self.client.get(
+            "/v1/workers", headers={"Authorization": f"Bearer {token}"}
+        )
+
     async def worker_row(self, worker_pubkey: str) -> WorkerRegistration | None:
         async with self.session_factory() as session:
             return (
@@ -231,7 +262,9 @@ class Harness:
             )
 
 
-async def _build_harness(*, mount_worker_plane: bool = True) -> tuple[Harness, Any]:
+async def _build_harness(
+    *, mount_worker_plane: bool = True, internal_token: str | None = None
+) -> tuple[Harness, Any]:
     engine = create_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -260,8 +293,12 @@ async def _build_harness(*, mount_worker_plane: bool = True) -> tuple[Harness, A
         now_fn=clock.time,
     )
 
+    registry: Any = object()
+    if internal_token is not None:
+        registry = _TokenRegistry({"prism": internal_token})
+
     app = create_proxy_app(
-        registry=object(),
+        registry=registry,
         nonce_store=FakeNonceStore(),
         metagraph_cache=FakeCache(),  # type: ignore[arg-type]
         worker_service=service if mount_worker_plane else None,
@@ -510,6 +547,108 @@ async def test_fleet_read_auth_accepts_worker_and_validator_rejects_stranger(
 async def test_fleet_read_rejects_unsigned_request(harness: Harness) -> None:
     unsigned = await harness.client.get("/v1/workers")
     assert unsigned.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Admission fleet-read dual-auth: internal bridge bearer OR signed request.
+# (master-admission-fleetread-auth; supports VAL-CROSS-004 / VAL-MASTER-016)
+# ---------------------------------------------------------------------------
+
+
+async def _active_worker(h: Harness, *, worker_pubkey: str, miner_hotkey: str) -> None:
+    reg = await h.register(worker_pubkey=worker_pubkey, miner_hotkey=miner_hotkey)
+    worker_id = reg.json()["worker"]["worker_id"]
+    h.clock.epoch = NOW_EPOCH + 10
+    await h.heartbeat(worker_id=worker_id, signer_pubkey=worker_pubkey)
+
+
+# (a) internal-bearer request returns that hotkey's ACTIVE workers.
+async def test_active_endpoint_accepts_internal_bridge_bearer() -> None:
+    h, engine = await _build_harness(internal_token=INTERNAL_BRIDGE_TOKEN)
+    try:
+        await _active_worker(h, worker_pubkey="wp-a", miner_hotkey=MINER_H1)
+        await _active_worker(h, worker_pubkey="wp-other", miner_hotkey=MINER_H2)
+
+        resp = await h.active_bearer(MINER_H1, token=INTERNAL_BRIDGE_TOKEN)
+        assert resp.status_code == 200
+        assert [w["worker_pubkey"] for w in resp.json()["workers"]] == ["wp-a"]
+
+        # An unknown / no-worker hotkey is a 2xx empty list, not an error.
+        empty = await h.active_bearer("nobody", token=INTERNAL_BRIDGE_TOKEN)
+        assert empty.status_code == 200
+        assert empty.json()["workers"] == []
+    finally:
+        await h.client.aclose()
+        await engine.dispose()
+
+
+# (b) missing/wrong bearer AND no valid signature => 401/403.
+async def test_active_endpoint_rejects_bad_bearer_without_signature() -> None:
+    h, engine = await _build_harness(internal_token=INTERNAL_BRIDGE_TOKEN)
+    try:
+        await _active_worker(h, worker_pubkey="wp-b", miner_hotkey=MINER_H1)
+
+        wrong = await h.active_bearer(MINER_H1, token="not-the-token")
+        assert wrong.status_code in (401, 403)
+
+        missing = await h.active_bearer(MINER_H1, token=None)
+        assert missing.status_code in (401, 403)
+    finally:
+        await h.client.aclose()
+        await engine.dispose()
+
+
+# (c) signed-request path still works unchanged when internal auth is configured.
+async def test_active_endpoint_signed_request_unchanged_with_internal_auth() -> None:
+    h, engine = await _build_harness(internal_token=INTERNAL_BRIDGE_TOKEN)
+    try:
+        await _active_worker(h, worker_pubkey="wp-c", miner_hotkey=MINER_H1)
+
+        by_validator = await h.active(MINER_H1, signer=VALIDATOR)
+        assert by_validator.status_code == 200
+        assert [w["worker_pubkey"] for w in by_validator.json()["workers"]] == ["wp-c"]
+
+        by_worker = await h.active(MINER_H1, signer="wp-c")
+        assert by_worker.status_code == 200
+
+        by_stranger = await h.active(MINER_H1, signer=STRANGER)
+        assert by_stranger.status_code == 403
+    finally:
+        await h.client.aclose()
+        await engine.dispose()
+
+
+# (d) full fleet view still rejects the internal bearer (signed-request only).
+async def test_full_fleet_endpoint_rejects_internal_bearer() -> None:
+    h, engine = await _build_harness(internal_token=INTERNAL_BRIDGE_TOKEN)
+    try:
+        await _active_worker(h, worker_pubkey="wp-d", miner_hotkey=MINER_H1)
+
+        by_bearer = await h.list_bearer(token=INTERNAL_BRIDGE_TOKEN)
+        assert by_bearer.status_code in (401, 403)
+
+        # sanity: the signed-request path to the full fleet still works.
+        signed = await h.list_workers(signer=VALIDATOR)
+        assert signed.status_code == 200
+    finally:
+        await h.client.aclose()
+        await engine.dispose()
+
+
+# With no bridge token configured the internal bearer is inert (signed-only).
+async def test_active_endpoint_bearer_inert_without_configured_token() -> None:
+    h, engine = await _build_harness(internal_token=None)
+    try:
+        await _active_worker(h, worker_pubkey="wp-e", miner_hotkey=MINER_H1)
+
+        bearer = await h.active_bearer(MINER_H1, token=INTERNAL_BRIDGE_TOKEN)
+        assert bearer.status_code in (401, 403)
+
+        signed = await h.active(MINER_H1, signer=VALIDATOR)
+        assert signed.status_code == 200
+    finally:
+        await h.client.aclose()
+        await engine.dispose()
 
 
 # Flag OFF (worker plane not mounted) => surface is inert (404), legacy safe.
