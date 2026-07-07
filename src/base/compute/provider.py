@@ -52,6 +52,7 @@ class InstanceSpec:
     ports: tuple[int, ...] = (22,)
     ssh_public_keys: tuple[str, ...] = ()
     ssh_key_name: str | None = None
+    startup_commands: str | None = None
     max_lifetime_hours: float | None = None
     max_price_per_hour: float | None = None
     gpu_count: int = 1

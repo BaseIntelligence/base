@@ -391,6 +391,43 @@ async def test_ensure_template_body_pins_digest_tag_env_and_ports() -> None:
     assert body["is_private"] is True
 
 
+@respx.mock
+async def test_ensure_template_includes_startup_commands_when_given() -> None:
+    respx.get(f"{BASE}/templates").mock(return_value=httpx.Response(200, json=[]))
+    post = respx.post(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json={"id": "tpl-new"})
+    )
+    await LiumClient("k").ensure_template(
+        name="prism-worker",
+        docker_image="ghcr.io/base/worker",
+        startup_commands="tail -f /dev/null",
+    )
+    body = json.loads(post.calls.last.request.content)
+    assert body["startup_commands"] == "tail -f /dev/null"
+
+
+@respx.mock
+async def test_ensure_template_omits_startup_commands_when_none() -> None:
+    respx.get(f"{BASE}/templates").mock(return_value=httpx.Response(200, json=[]))
+    post = respx.post(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json={"id": "tpl-new"})
+    )
+    await LiumClient("k").ensure_template(
+        name="prism-worker", docker_image="ghcr.io/base/worker"
+    )
+    body = json.loads(post.calls.last.request.content)
+    assert "startup_commands" not in body
+
+
+@respx.mock
+async def test_provision_forwards_spec_startup_commands_to_template() -> None:
+    routes = _mock_happy_path(template=[])
+    spec = _spec(startup_commands="tail -f /dev/null")
+    await LiumClient("k").provision(spec, offer=_offer())
+    body = json.loads(routes["tpl_post"].calls.last.request.content)
+    assert body["startup_commands"] == "tail -f /dev/null"
+
+
 # -- status / logs / balance -------------------------------------------------
 
 

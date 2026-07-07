@@ -1,0 +1,66 @@
+network:
+  name: base
+  netuid: 100
+  chain_endpoint: null
+  wallet_name: default
+  wallet_hotkey: default
+  wallet_path: null
+  master_uid: 0
+
+# Miner-funded GPU worker plane. All worker behavior is gated behind
+# compute.worker_plane_enabled on the MASTER; a worker agent still needs the
+# worker block below to know where the master is, how to identify itself, and
+# how to enroll.
+compute:
+  worker_plane_enabled: true
+
+worker:
+  agent:
+    # Master coordination-plane base URL (required).
+    master_url: http://127.0.0.1:8081
+    gateway_url: null
+    capabilities:
+      - gpu
+    poll_interval_seconds: 5.0
+    request_timeout_seconds: 15.0
+    # The worker's OWN local Docker broker (falls back to docker.broker_url).
+    broker_url: http://127.0.0.1:8082
+    broker_token_file: /run/secrets/base_broker_token
+  deploy:
+    # local | lium | targon
+    provider: local
+    gpu_count: 1
+    max_price_per_hour: null
+    max_lifetime_hours: 1.0
+    # Metachar-free keep-alive: Lium rejects shell metacharacters (&&, ;, |).
+    startup_commands: tail -f /dev/null
+    ready_timeout_seconds: 60.0
+    # ssh_public_key_file: /root/.config/prism-mission/lium_ssh_ed25519.pub
+    # ssh_key_name: prism-mission-worker
+  identity:
+    # Worker keypair (signs coordination requests + ExecutionProofs). Resolve
+    # from an sr25519 dev URI, a mnemonic, or a dedicated wallet; falls back to
+    # network.wallet when unset.
+    key_uri: null
+    key_mnemonic: null
+    wallet_name: null
+    wallet_hotkey: null
+    # Miner binding: EITHER a miner key that signs the binding at deploy time...
+    miner_key_uri: null
+    miner_key_mnemonic: null
+    miner_wallet_name: null
+    miner_wallet_hotkey: null
+    # ...OR a pre-signed binding (for a pod that never holds the miner key).
+    miner_hotkey: null
+    binding_signature: null
+    binding_nonce: null
+
+docker:
+  broker_url: http://127.0.0.1:8082
+  broker_allowed_images:
+    - ghcr.io/baseintelligence/
+
+observability:
+  log_json: true
+  sentry_dsn: null
+  otel_service_name: base-worker

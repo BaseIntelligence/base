@@ -210,6 +210,7 @@ class LiumClient:
         docker_image_tag: str | None = None,
         internal_ports: Sequence[int] = (22,),
         environment: Mapping[str, str] | None = None,
+        startup_commands: str | None = None,
         is_private: bool = True,
         container_start_immediately: bool = True,
     ) -> str:
@@ -230,6 +231,12 @@ class LiumClient:
             body["docker_image_tag"] = docker_image_tag
         if environment:
             body["environment"] = dict(environment)
+        # Lium rejects rents whose template startup_commands contain shell
+        # metacharacters ("Malicious startup command detected"), so a caller
+        # supplies a single metachar-free keep-alive here (e.g. "tail -f
+        # /dev/null"); omitted when None to preserve the image's own entrypoint.
+        if startup_commands is not None:
+            body["startup_commands"] = startup_commands
         created = await self._request("POST", "/templates", json_body=body)
         return str(created.json().get("id"))
 
@@ -282,6 +289,7 @@ class LiumClient:
                 docker_image_digest=spec.image_digest,
                 internal_ports=spec.ports or (22,),
                 environment=spec.env,
+                startup_commands=spec.startup_commands,
             )
         if spec.dockerfile_content is None:
             raise LiumError("InstanceSpec requires template_ref or dockerfile_content")

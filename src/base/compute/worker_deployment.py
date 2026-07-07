@@ -41,6 +41,17 @@ WORKER_APP_NAME = "prism-worker"
 # is bound to loopback inside the instance and needs no external mapping.
 WORKER_INTERNAL_PORTS: tuple[int, ...] = (22,)
 
+# Metachar-free keep-alive for the Lium template startup_commands. Lium rejects a
+# rent whose template startup_commands contain shell metacharacters ("Malicious
+# startup command detected"; live-confirmed, library/lium-api.md), so the value
+# MUST NOT contain '&&', ';', or '|'. The container's own entrypoint launches the
+# agent; this keep-alive only guarantees the pod stays up (Lium's pod agent
+# provides SSH independently of the container command).
+WORKER_STARTUP_COMMANDS = "tail -f /dev/null"
+
+# Shell metacharacters Lium's rent guard rejects in a template startup command.
+_SHELL_METACHARACTERS: tuple[str, ...] = ("&&", "||", ";", "|", "&", "`", "$(")
+
 # Default Targon GPU resource shape (inventory shape id + human GPU type). Real
 # Targon inventory ids carry a size suffix (h100-small, b200-large per
 # library/targon-api.md); a bare 'h100' would be rejected by a live deploy.
@@ -53,6 +64,25 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 def is_pinned_digest(value: str) -> bool:
     """Return ``True`` if ``value`` is a well-formed ``sha256:<64-hex>`` digest."""
     return bool(_DIGEST_RE.match(value))
+
+
+def is_metachar_free(command: str) -> bool:
+    """Return ``True`` if ``command`` carries no shell metacharacter Lium rejects.
+
+    Lium's rent guard refuses a template startup command containing shell
+    metacharacters (``&&``, ``;``, ``|`` ...); a compliant keep-alive is a single
+    plain command such as ``tail -f /dev/null``.
+    """
+    return not any(token in command for token in _SHELL_METACHARACTERS)
+
+
+def _require_metachar_free(command: str) -> str:
+    if not is_metachar_free(command):
+        raise ValueError(
+            "startup_commands must be a single metachar-free command (no "
+            "'&&', ';', '|', ...): Lium rejects shell metacharacters"
+        )
+    return command
 
 
 def _require_digest(image_digest: str) -> str:
@@ -84,6 +114,7 @@ def build_lium_worker_template(
     environment: Mapping[str, str] | None = None,
     internal_ports: Sequence[int] = WORKER_INTERNAL_PORTS,
     entrypoint: str = "",
+    startup_commands: str = WORKER_STARTUP_COMMANDS,
     is_private: bool = True,
     container_start_immediately: bool = True,
 ) -> dict[str, Any]:
@@ -91,9 +122,13 @@ def build_lium_worker_template(
 
     The returned dict is the exact JSON body for ``POST /templates``. ``image``
     is pinned by ``image_digest`` (validated to be ``sha256:<64 hex>``) and the
-    internal ports MUST include 22 (SSH).
+    internal ports MUST include 22 (SSH). ``startup_commands`` is validated to be
+    metachar-free (Lium rejects shell metacharacters at rent time), defaulting to
+    a plain keep-alive so the pod stays up while the image entrypoint runs the
+    agent.
     """
     _require_digest(image_digest)
+    _require_metachar_free(startup_commands)
     ports = [int(port) for port in internal_ports]
     if 22 not in ports:
         raise ValueError("internal_ports must include 22 (SSH)")
@@ -104,6 +139,7 @@ def build_lium_worker_template(
         "docker_image_digest": image_digest,
         "environment": dict(environment or {}),
         "entrypoint": entrypoint,
+        "startup_commands": startup_commands,
         "internal_ports": ports,
         "is_private": is_private,
         "container_start_immediately": container_start_immediately,

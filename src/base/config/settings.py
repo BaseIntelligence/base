@@ -229,6 +229,99 @@ class ComputeSettings(BaseModel):
     worker_health_interval_seconds: float = 60.0
 
 
+class WorkerAgentSettings(BaseModel):
+    """Miner-funded GPU worker agent runtime (architecture.md sec 3.2).
+
+    The agent registers with the master under a miner-signed binding, heartbeats,
+    pulls gpu work units, executes them on its OWN local broker, and posts
+    ExecutionProof-carrying results. It authenticates as its worker keypair, never
+    as a metagraph validator permit, and never holds a provider API key.
+    ``master_url`` is required to reach the coordination plane;
+    ``heartbeat_interval_seconds`` left unset uses the interval the master
+    returns from ``register``.
+    """
+
+    master_url: str | None = None
+    gateway_url: str | None = None
+    capabilities: list[str] = Field(default_factory=lambda: ["gpu"])
+    version: str | None = None
+    heartbeat_interval_seconds: int | None = None
+    poll_interval_seconds: float = 5.0
+    request_timeout_seconds: float = 15.0
+    #: Worker's OWN local Docker broker. Falls back to ``docker.broker_url``.
+    broker_url: str | None = None
+    broker_token: str | None = None
+    broker_token_file: str | None = "/run/secrets/base_broker_token"
+    #: Extra allowed eval-image prefixes (added to ``docker.broker_allowed_images``).
+    allowed_images: list[str] = Field(default_factory=list)
+    run_timeout_seconds: int = 3_600
+
+
+class WorkerDeploySettings(BaseModel):
+    """Provisioning inputs for ``base worker deploy`` (architecture.md sec 3.2).
+
+    ``provider`` selects the deploy target (``local`` runs the agent on this host;
+    ``lium``/``targon`` provision a paid GPU instance running the worker image).
+    Image fields default to the published worker image when unset. Cost guardrails
+    (``max_price_per_hour``/``max_lifetime_hours``) bound provider provisioning.
+    ``startup_commands`` MUST be metachar-free (Lium rejects shell metacharacters
+    at rent time).
+    """
+
+    provider: Literal["local", "lium", "targon"] = "local"
+    provider_instance_ref: str | None = None
+    image: str | None = None
+    image_digest: str | None = None
+    image_tag: str | None = None
+    template_name: str | None = None
+    gpu_count: int = 1
+    max_price_per_hour: float | None = None
+    max_lifetime_hours: float = 1.0
+    ssh_public_key: str | None = None
+    ssh_public_key_file: str | None = None
+    ssh_key_name: str | None = None
+    startup_commands: str = "tail -f /dev/null"
+    #: Seconds ``deploy --provider local`` polls the master for the worker to
+    #: reach ``active`` before reporting failure.
+    ready_timeout_seconds: float = 60.0
+
+
+class WorkerIdentitySettings(BaseModel):
+    """Worker keypair + miner binding material for the worker agent/CLI.
+
+    The WORKER keypair signs coordination requests + ExecutionProofs; the MINER
+    keypair signs the enrollment binding (``worker-binding:{worker_pubkey}:
+    {miner_hotkey}:{nonce}``). Each key resolves from an sr25519 dev URI
+    (``//Worker``), a mnemonic, or a bittensor wallet, in that order, falling
+    back to ``network.wallet`` for the worker key. When the binding is signed
+    out-of-band (e.g. a Lium/Targon pod that never holds the miner key) supply the
+    pre-signed ``miner_hotkey`` + ``binding_signature`` + ``binding_nonce``
+    instead of a miner key.
+    """
+
+    key_uri: str | None = None
+    key_mnemonic: str | None = None
+    wallet_name: str | None = None
+    wallet_hotkey: str | None = None
+    wallet_path: str | None = None
+    miner_hotkey: str | None = None
+    miner_key_uri: str | None = None
+    miner_key_mnemonic: str | None = None
+    miner_wallet_name: str | None = None
+    miner_wallet_hotkey: str | None = None
+    miner_wallet_path: str | None = None
+    binding_signature: str | None = None
+    binding_nonce: str | None = None
+
+
+class WorkerSettings(BaseModel):
+    """Top-level ``base worker`` config: agent runtime, deploy, and identity."""
+
+    agent: WorkerAgentSettings = Field(default_factory=WorkerAgentSettings)
+    deploy: WorkerDeploySettings = Field(default_factory=WorkerDeploySettings)
+    identity: WorkerIdentitySettings = Field(default_factory=WorkerIdentitySettings)
+
+
 class ProviderEntry(BaseModel):
     """One configured LLM provider: its OpenAI-compatible base URL + key.
 
@@ -405,6 +498,7 @@ class Settings(BaseModel):
     docker: DockerSettings = Field(default_factory=DockerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
+    worker: WorkerSettings = Field(default_factory=WorkerSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)

@@ -27,8 +27,10 @@ from base.compute.worker_deployment import (
     WORKER_IMAGE,
     WORKER_IMAGE_DIGEST,
     WORKER_IMAGE_TAG,
+    WORKER_STARTUP_COMMANDS,
     build_lium_worker_template,
     build_targon_worker_app,
+    is_metachar_free,
     is_pinned_digest,
     pinned_image_reference,
 )
@@ -39,6 +41,7 @@ __all__ = [
     "WORKER_IMAGE",
     "WORKER_IMAGE_DIGEST",
     "WORKER_IMAGE_TAG",
+    "WORKER_STARTUP_COMMANDS",
     "BalanceUnavailableError",
     "CostGuardrailError",
     "Instance",
@@ -53,6 +56,7 @@ __all__ = [
     "TargonError",
     "build_lium_worker_template",
     "build_targon_worker_app",
+    "is_metachar_free",
     "is_pinned_digest",
     "pinned_image_reference",
 ]

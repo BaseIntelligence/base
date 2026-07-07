@@ -1,0 +1,48 @@
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_SYSTEM_PYTHON=1 \
+    HOME=/var/lib/base \
+    BASE_COMPUTE__WORKER_PLANE_ENABLED=true \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# git: some `base @ git+...` challenge deps resolve via git. docker CLI: the
+# worker agent dispatches gpu eval to its OWN local broker, so it needs the
+# client binary to launch sibling eval containers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir uv docker
+
+RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.5.3.tgz -o /tmp/docker.tgz \
+    && tar -xzf /tmp/docker.tgz -C /tmp \
+    && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+    && rm -rf /tmp/docker /tmp/docker.tgz \
+    && docker --version
+
+RUN groupadd --system --gid 1000 base \
+    && useradd --system --uid 1000 --gid base --home-dir /var/lib/base --shell /usr/sbin/nologin base \
+    && mkdir -p /var/lib/base /var/lib/base/secrets \
+    && chown -R 1000:1000 /var/lib/base
+
+# The locally-built `base` package (this image's authoritative version). The
+# validator extra pulls bittensor (sr25519 keypairs for the worker binding +
+# ExecutionProof signatures). ``--chown`` makes the editable-install sources
+# readable by the non-root runtime user.
+COPY --chown=1000:1000 . .
+RUN uv pip install --system -e ".[validator]"
+
+# Build-time smoke check: prove the worker CLI is importable + registered.
+RUN base worker --help >/dev/null
+
+VOLUME ["/var/lib/base"]
+
+USER 1000:1000
+
+# Exec-form entrypoint: no shell, no metacharacters. The agent reads
+# config/worker.example.yaml plus BASE_* env overrides (master URL, worker key,
+# miner-signed binding) supplied at `docker run` time and registers on boot.
+CMD ["base", "worker", "agent", "--config", "config/worker.example.yaml"]

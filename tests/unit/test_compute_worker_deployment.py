@@ -25,12 +25,14 @@ from base.compute import (
     TargonClient,
     build_lium_worker_template,
     build_targon_worker_app,
+    is_metachar_free,
     pinned_image_reference,
 )
 from base.compute.worker_deployment import (
     WORKER_IMAGE,
     WORKER_IMAGE_DIGEST,
     WORKER_INTERNAL_PORTS,
+    WORKER_STARTUP_COMMANDS,
     is_pinned_digest,
 )
 
@@ -136,6 +138,40 @@ def test_lium_template_rejects_ports_without_ssh() -> None:
 def test_lium_template_rejects_malformed_digest() -> None:
     with pytest.raises(ValueError):
         build_lium_worker_template(image_digest="not-a-digest")
+
+
+# -- startup_commands metachar-free constraint (live-learned Lium guard) -------
+
+
+def test_lium_template_default_startup_commands_is_metachar_free() -> None:
+    template = build_lium_worker_template()
+    assert template["startup_commands"] == WORKER_STARTUP_COMMANDS
+    assert template["startup_commands"] == "tail -f /dev/null"
+    assert is_metachar_free(template["startup_commands"]) is True
+
+
+def test_lium_template_accepts_custom_metachar_free_startup_commands() -> None:
+    template = build_lium_worker_template(startup_commands="sleep infinity")
+    assert template["startup_commands"] == "sleep infinity"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "service ssh start && tail -f /dev/null",
+        "a; b",
+        "a | b",
+        "a || b",
+        "echo `id`",
+        "echo $(whoami)",
+    ],
+)
+def test_lium_template_rejects_startup_commands_with_metacharacters(
+    command: str,
+) -> None:
+    assert is_metachar_free(command) is False
+    with pytest.raises(ValueError):
+        build_lium_worker_template(startup_commands=command)
 
 
 # -- VAL-PROV-010 : Targon app definition -------------------------------------

@@ -14,6 +14,7 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -22,7 +23,12 @@ from base.schemas.assignment import (
     AssignmentResultResponse,
     AssignmentView,
 )
-from base.schemas.worker import WorkerHeartbeatResponse, WorkerRegisterResponse
+from base.schemas.worker import (
+    WorkerHeartbeatResponse,
+    WorkerListResponse,
+    WorkerRegisterResponse,
+    WorkerView,
+)
 from base.validator.agent.signing import RequestSigner, build_signed_headers
 
 
@@ -99,6 +105,20 @@ class WorkerCoordinationClient:
         data = await self._post("/v1/workers/assignments/pull", {}, signed=True)
         return AssignmentPullResponse.model_validate(data).assignments
 
+    async def list_workers(self, *, hotkey: str | None = None) -> list[WorkerView]:
+        """Read the fleet view (``GET /v1/workers``) as this worker identity.
+
+        With ``hotkey`` set, reads ``GET /v1/workers/active?hotkey=`` (exactly the
+        ACTIVE workers of that miner hotkey). The request is signed by the worker
+        keypair; a registered worker is an eligible coordination reader.
+        """
+
+        if hotkey is None:
+            data = await self._get("/v1/workers")
+        else:
+            data = await self._get("/v1/workers/active", query={"hotkey": hotkey})
+        return WorkerListResponse.model_validate(data).workers
+
     async def post_result(
         self,
         assignment_id: str,
@@ -133,6 +153,33 @@ class WorkerCoordinationClient:
         try:
             async with self._build_client() as client:
                 response = await client.post(path, content=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise WorkerCoordinationClientError(
+                f"worker request to {path} failed: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            raise WorkerCoordinationClientError(
+                f"worker request to {path} returned {response.status_code}",
+                status_code=response.status_code,
+            )
+        return response.json()
+
+    async def _get(
+        self, path: str, *, query: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
+        query_string = urlencode(sorted(query.items())) if query else ""
+        request_path = f"{path}?{query_string}" if query_string else path
+        headers = build_signed_headers(
+            self._signer,
+            method="GET",
+            path=path,
+            body=b"",
+            query_string=query_string,
+            now_fn=self._now_fn,
+        )
+        try:
+            async with self._build_client() as client:
+                response = await client.get(request_path, headers=headers)
         except httpx.HTTPError as exc:
             raise WorkerCoordinationClientError(
                 f"worker request to {path} failed: {exc}"
