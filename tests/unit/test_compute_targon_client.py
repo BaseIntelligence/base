@@ -190,6 +190,7 @@ async def test_multi_gpu_offer_filtered_by_per_gpu_max_price() -> None:
         {"max_lifetime_hours": None},
         {"max_lifetime_hours": 0},
         {"max_lifetime_hours": -1},
+        {"max_lifetime_hours": 0.5},
         {"max_price_per_hour": None},
         {"max_price_per_hour": 0},
     ],
@@ -197,19 +198,30 @@ async def test_multi_gpu_offer_filtered_by_per_gpu_max_price() -> None:
 async def test_provision_refuses_unbounded_spec_without_network(
     overrides: dict[str, object],
 ) -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy")
+    create = respx.post(f"{BASE}/workloads")
     with pytest.raises(CostGuardrailError):
         await TargonClient("k").provision(_spec(**overrides))
-    assert deploy.call_count == 0
+    assert create.call_count == 0
     assert respx.calls.call_count == 0
 
 
-# -- deploy call shape --------------------------------------------------------
+async def test_provision_sub_hour_lifetime_message_mentions_truncation() -> None:
+    with pytest.raises(CostGuardrailError) as exc_info:
+        await TargonClient("k").provision(_spec(max_lifetime_hours=0.5))
+    message = str(exc_info.value)
+    assert "at least 1 hour" in message
+    assert "termination_hours" in message
+
+
+# -- deploy call shape (two-step create-then-deploy) --------------------------
 
 
 @respx.mock
-async def test_provision_posts_single_deploy_with_workload_body() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+async def test_provision_creates_then_deploys_with_workload_body() -> None:
+    create = respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"uid": "wl-1"})
+    )
+    deploy = respx.post(f"{BASE}/workloads/wl-1/deploy").mock(
         return_value=httpx.Response(
             200, json={"uid": "wl-1", "state": {"status": "PENDING"}}
         )
@@ -219,35 +231,70 @@ async def test_provision_posts_single_deploy_with_workload_body() -> None:
     assert instance.id == "wl-1"
     assert instance.status == "PENDING"
     assert instance.provider == "targon"
+    assert create.call_count == 1
     assert deploy.call_count == 1
-    body = json.loads(deploy.calls.last.request.content)
+    body = json.loads(create.calls.last.request.content)
     assert body["name"] == "mission-workload"
+    assert body["type"] == "RENTAL"
     assert body["resource_name"] == "h100"
     assert body["image"] == "ghcr.io/base/worker"
     assert body["termination_hours"] == 2
     assert body["envs"] == [] or isinstance(body["envs"], list)
+    # The deploy step carries no body (matches the SDK / live route).
+    assert not deploy.calls.last.request.content
 
 
 @respx.mock
-async def test_deploy_passes_explicit_payload_verbatim() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+async def test_deploy_uses_create_uid_when_deploy_response_omits_it() -> None:
+    respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"uid": "wl-42"})
+    )
+    respx.post(f"{BASE}/workloads/wl-42/deploy").mock(
+        return_value=httpx.Response(200, json={"state": {"status": "DEPLOYING"}})
+    )
+    instance = await TargonClient("k").deploy({"name": "custom"})
+    assert instance.id == "wl-42"
+    assert instance.status == "DEPLOYING"
+
+
+@respx.mock
+async def test_deploy_passes_explicit_payload_verbatim_to_create() -> None:
+    create = respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"uid": "wl-9"})
+    )
+    respx.post(f"{BASE}/workloads/wl-9/deploy").mock(
         return_value=httpx.Response(200, json={"uid": "wl-9", "status": "RUNNING"})
     )
     payload = {"name": "custom", "resource_name": "h200", "image": "img"}
     instance = await TargonClient("k").deploy(payload)
     assert instance.id == "wl-9"
     assert instance.status == "RUNNING"
-    assert json.loads(deploy.calls.last.request.content) == payload
+    assert json.loads(create.calls.last.request.content) == payload
+
+
+@respx.mock
+async def test_deploy_raises_when_create_returns_no_uid() -> None:
+    create = respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"state": {"status": "PENDING"}})
+    )
+    deploy = respx.post(f"{BASE}/workloads//deploy")
+    with pytest.raises(TargonError):
+        await TargonClient("k").deploy({"name": "x"})
+    assert create.call_count == 1
+    assert deploy.call_count == 0
 
 
 @respx.mock
 async def test_provision_includes_env_and_ports() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+    create = respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"uid": "wl-1"})
+    )
+    respx.post(f"{BASE}/workloads/wl-1/deploy").mock(
         return_value=httpx.Response(200, json={"uid": "wl-1"})
     )
     spec = _spec(env={"ROLE": "worker"}, ports=(22, 8080))
     await TargonClient("k").provision(spec)
-    body = json.loads(deploy.calls.last.request.content)
+    body = json.loads(create.calls.last.request.content)
     assert {"name": "ROLE", "value": "worker"} in body["envs"]
     assert body["ports"] == [{"port": 22}, {"port": 8080}]
     assert body["ssh_public_keys"] == ["ssh-ed25519 AAAA"]
@@ -257,46 +304,63 @@ async def test_provision_includes_env_and_ports() -> None:
 
 
 @respx.mock
-async def test_deploy_402_raises_insufficient_credits_no_retry() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+async def test_deploy_402_on_create_raises_insufficient_credits_no_retry() -> None:
+    create = respx.post(f"{BASE}/workloads").mock(
         return_value=httpx.Response(402, json={"error": "payment required"})
     )
+    deploy = respx.post(url__regex=rf"{BASE}/workloads/.+/deploy")
     with pytest.raises(InsufficientCreditsError) as exc_info:
         await TargonClient("k").provision(_spec())
     assert isinstance(exc_info.value, ProviderError)
     assert isinstance(exc_info.value, TargonError)
+    assert create.call_count == 1
+    # A credit failure on create never proceeds to (or retries) the deploy step.
+    assert deploy.call_count == 0
+
+
+@respx.mock
+async def test_deploy_402_on_deploy_step_raises_insufficient_credits_no_retry() -> None:
+    create = respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(200, json={"uid": "wl-1"})
+    )
+    deploy = respx.post(f"{BASE}/workloads/wl-1/deploy").mock(
+        return_value=httpx.Response(402, json={"error": "insufficient credits"})
+    )
+    with pytest.raises(InsufficientCreditsError):
+        await TargonClient("k").provision(_spec())
+    assert create.call_count == 1
     assert deploy.call_count == 1
 
 
 @respx.mock
 async def test_deploy_403_raises_insufficient_credits_no_retry() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+    create = respx.post(f"{BASE}/workloads").mock(
         return_value=httpx.Response(403, text="forbidden")
     )
     with pytest.raises(InsufficientCreditsError):
         await TargonClient("k").deploy({"name": "x"})
-    assert deploy.call_count == 1
+    assert create.call_count == 1
 
 
 @respx.mock
 async def test_deploy_credit_body_raises_insufficient_credits() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+    create = respx.post(f"{BASE}/workloads").mock(
         return_value=httpx.Response(400, json={"error": "insufficient credits"})
     )
     with pytest.raises(InsufficientCreditsError):
         await TargonClient("k").deploy({"name": "x"})
-    assert deploy.call_count == 1
+    assert create.call_count == 1
 
 
 @respx.mock
 async def test_deploy_generic_error_raises_targon_error_not_credits() -> None:
-    deploy = respx.post(f"{BASE}/workloads/deploy").mock(
+    create = respx.post(f"{BASE}/workloads").mock(
         return_value=httpx.Response(500, text="boom")
     )
     with pytest.raises(TargonError) as exc_info:
         await TargonClient("k").deploy({"name": "x"})
     assert not isinstance(exc_info.value, InsufficientCreditsError)
-    assert deploy.call_count == 1
+    assert create.call_count == 1
 
 
 # -- VAL-PROV-008 (balance unavailable, typed, zero HTTP) ---------------------

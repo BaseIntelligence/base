@@ -76,7 +76,7 @@ async def test_targon_client_never_leaks_key(
 @respx.mock
 async def test_targon_deploy_failure_never_leaks_key() -> None:
     client = TargonClient(TARGON_SENTINEL)
-    respx.post(f"{TARGON_BASE}/workloads/deploy").mock(
+    respx.post(f"{TARGON_BASE}/workloads").mock(
         return_value=httpx.Response(402, json={"error": "payment required"})
     )
     with pytest.raises(TargonError) as exc_info:

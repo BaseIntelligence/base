@@ -9,7 +9,10 @@ baked in and two Targon-specific realities surfaced as typed errors:
   raises :class:`BalanceUnavailableError` WITHOUT issuing any HTTP request rather
   than returning a fake/silent value.
 * A deploy that fails for insufficient credits is surfaced as a distinct typed
-  :class:`InsufficientCreditsError` and is NEVER retried (exactly one HTTP call).
+  :class:`InsufficientCreditsError` and is NEVER retried. A deploy is a two-step
+  create-then-deploy flow (Targon has no single ``POST /workloads/deploy`` route):
+  ``POST /workloads`` (create -> ``uid``) then ``POST /workloads/{uid}/deploy``;
+  a credit failure at EITHER step raises and is not retried.
 
 The API key lives only in the request header; it is never logged, embedded in an
 error message, or exposed via ``repr``.
@@ -137,6 +140,12 @@ class TargonClient:
             raise CostGuardrailError(
                 "InstanceSpec.max_lifetime_hours must be a positive bound (hours)"
             )
+        if lifetime < 1:
+            raise CostGuardrailError(
+                "InstanceSpec.max_lifetime_hours must be at least 1 hour: Targon "
+                "termination_hours has 1-hour granularity, so a sub-hour bound "
+                "would truncate to termination_hours=0 and disable auto-termination"
+            )
         if spec.max_price_per_hour is None or spec.max_price_per_hour <= 0:
             raise CostGuardrailError(
                 "InstanceSpec.max_price_per_hour must be a positive bound"
@@ -144,21 +153,23 @@ class TargonClient:
         return await self.deploy(_build_workload_payload(spec, lifetime=lifetime))
 
     async def deploy(self, workload: Mapping[str, Any]) -> Instance:
-        response = await self._send(
-            "POST", "/workloads/deploy", json_body=dict(workload)
-        )
-        if response.status_code >= 400:
-            if _is_insufficient_credits(response.status_code, response.text):
-                raise InsufficientCreditsError(
-                    "Targon POST /workloads/deploy rejected for insufficient "
-                    f"credits (status {response.status_code})",
-                    status_code=response.status_code,
-                )
-            raise TargonError(
-                f"Targon POST /workloads/deploy returned {response.status_code}",
-                status_code=response.status_code,
-            )
-        return _parse_workload_instance(response.json())
+        """Deploy a workload via Targon's two-step create-then-deploy flow.
+
+        Targon has NO single ``POST /workloads/deploy`` route (confirmed against
+        the live API and the ``targon-sdk``): a workload is first CREATED
+        (``POST /workloads`` -> ``uid``) then DEPLOYED
+        (``POST /workloads/{uid}/deploy``). Both calls are part of ONE deploy
+        attempt -- an insufficient-credit failure at EITHER step is surfaced as a
+        typed :class:`InsufficientCreditsError` and is NEVER retried.
+        """
+        create = await self._send("POST", "/workloads", json_body=dict(workload))
+        self._raise_deploy_error(create, "POST /workloads")
+        uid = _extract_workload_uid(create.json())
+        if not uid:
+            raise TargonError("Targon POST /workloads returned no workload uid")
+        deployed = await self._send("POST", f"/workloads/{uid}/deploy")
+        self._raise_deploy_error(deployed, f"POST /workloads/{uid}/deploy")
+        return _parse_workload_instance(deployed.json(), fallback_uid=uid)
 
     async def status(self, instance_id: str) -> Instance:
         response = await self._request("GET", f"/workloads/{instance_id}")
@@ -210,6 +221,20 @@ class TargonClient:
 
     # -- internals ------------------------------------------------------------
 
+    def _raise_deploy_error(self, response: httpx.Response, route: str) -> None:
+        if response.status_code < 400:
+            return
+        if _is_insufficient_credits(response.status_code, response.text):
+            raise InsufficientCreditsError(
+                f"Targon {route} rejected for insufficient credits "
+                f"(status {response.status_code})",
+                status_code=response.status_code,
+            )
+        raise TargonError(
+            f"Targon {route} returned {response.status_code}",
+            status_code=response.status_code,
+        )
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._api_key}",
@@ -258,7 +283,7 @@ class TargonClient:
 
 
 def _build_workload_payload(spec: InstanceSpec, *, lifetime: float) -> dict[str, Any]:
-    payload: dict[str, Any] = {"name": spec.name, "type": "rental"}
+    payload: dict[str, Any] = {"name": spec.name, "type": "RENTAL"}
     if spec.template_ref:
         payload["resource_name"] = spec.template_ref
     if spec.image:
@@ -345,10 +370,10 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
-def _parse_workload_instance(data: Any) -> Instance:
+def _parse_workload_instance(data: Any, *, fallback_uid: str | None = None) -> Instance:
     if not isinstance(data, Mapping):
         raise TargonError("unexpected workload response shape")
-    uid = data.get("uid") or data.get("id") or ""
+    uid = data.get("uid") or data.get("id") or fallback_uid or ""
     status = ""
     state = data.get("state")
     if isinstance(state, Mapping):
@@ -356,3 +381,11 @@ def _parse_workload_instance(data: Any) -> Instance:
     if not status:
         status = str(data.get("status", ""))
     return Instance(id=str(uid), status=status, provider="targon", raw=data)
+
+
+def _extract_workload_uid(data: Any) -> str:
+    if isinstance(data, Mapping):
+        uid = data.get("uid") or data.get("id")
+        if uid:
+            return str(uid)
+    return ""
