@@ -1,55 +1,63 @@
-# Canonical master config synced by the supervisor (`base master supervisor`).
-# Secrets (database password, admin token) are injected via environment
-# (BASE_DATABASE__URL, BASE_SECURITY__ADMIN_TOKEN_FILE) or secret files
-# and are never committed here.
+# Rendered by deploy/swarm/install-swarm.sh (single-node Swarm bring-up).
+# backend=docker; kubernetes.broker_backend=docker (override live k8s values).
+# Force production so the image-pin / TLS / external-Postgres / broker-allowlist
+# policy guards (src/base/config/policy.py) FIRE at config load via
+# validate_settings_policy (a development default leaves them inert on the live
+# box — architecture.md sec 8, H3). This COUPLES with the narrowed
+# docker.broker_allowed_images below (a namespaced+repo allowlist the production
+# validate_allowed_image_prefixes accepts) and the tag + @sha256: digest-pinned
+# IMAGE_* refs the deploy uses.
+environment: production
 network:
   name: base
   netuid: 100
-  # Live master runs on finney mainnet. config-sync overwrites
-  # /etc/base/master.yaml from this file, so this MUST equal the live value
-  # (a null/empty here would clobber the running master's chain endpoint).
-  chain_endpoint: finney
+  chain_endpoint: ''          # empty in prod (no live chain) — keep empty.
   wallet_name: default
   wallet_hotkey: default
-  wallet_path: null
+  wallet_path: /var/lib/base/wallets
   master_uid: 0
-  # Static mock-metagraph seam (architecture.md G1), OFF in production ([] keeps
-  # the live-metagraph path). Explicit here to match the live config exactly.
+  # Config-driven static/mock metagraph (architecture.md G1). Non-empty => the
+  # proxy seeds MetagraphCache from this set and builds NO live Subtensor, so the
+  # listed validator hotkeys (validator_permit=true) are eligible with no chain;
+  # this is what makes the NO-CHAIN 1-master + N-validator deploy work. Empty ([])
+  # keeps the seam OFF (live-metagraph path unchanged). Rendered verbatim from the
+  # public MOCK_METAGRAPH env (ss58 hotkeys are NOT secrets). Miners stay
+  # submit-eligible via master.upload_extra_registered_hotkeys, independent of this.
+  # Optional per-entry display_name/logo_url (architecture.md sec 7.2/7.5) ride
+  # through this same verbatim render and are seeded UNTRUSTED into the identity
+  # cache as the no-chain self-declared fallback the public directory renders.
   mock_metagraph: []
 
 master:
-  registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
-  # Production-correct published proxy port (matches the live deploy + the
-  # installer's MASTER_PROXY_PORT default + gateway.public_base_url below).
-  # config-sync force-rolls base-master-proxy on any digest change, so a stale
-  # value here would clobber the live deploy onto the wrong port.
   proxy_port: 19080
-  epoch_interval_seconds: 360
-  metagraph_cache_ttl_seconds: 300
-  registry_state_file: /var/lib/base/registry.json
-  # Validator coordination plane (architecture.md sec 4): heartbeat cadence +
-  # offline timeout, the in-app crash-detection loop interval, the assignment
-  # lease, and the live orchestration driver interval. Persisted into the same
-  # control-plane Postgres wired in `database` below.
+  # Validator coordination plane (architecture.md §4): heartbeat cadence + offline
+  # timeout, the in-app crash-detection loop interval, and the assignment lease.
+  # The plane persists into the same base-master Postgres wired via
+  # BASE_DATABASE__URL below (no separate datastore). The live orchestration
+  # driver bridges challenge pending work into work_assignments, runs the balanced
+  # assignment engine + the full reassignment pass, and folds retry-exhausted units.
   validator_heartbeat_interval_seconds: 60
   validator_heartbeat_timeout_seconds: 180
   validator_health_interval_seconds: 60
   assignment_lease_seconds: 900
   orchestration_interval_seconds: 30
 
-validator:
-  registry_url: https://chain.joinbase.ai
-  registry_retry_seconds: 15
-  weights_url: null
-  weights_interval_seconds: 360
-  weights_timeout_seconds: 15.0
-  weights_retries: 3
-  weights_freshness_seconds: 720
-
 database:
-  # Override the password via BASE_DATABASE__URL in production.
-  url: postgresql+asyncpg://base:base@base-master-postgres:5432/base
+  # Password-less FALLBACK only. The pinned master image's config loader
+  # (base.config.loader) has NO *_FILE indirection for database.url and its
+  # entrypoint is a direct "base master proxy" (no FILE->env expansion), so the
+  # mounted base_master_database_url secret is NOT self-read. The real URL (with
+  # password) is injected at deploy time via the name-only BASE_DATABASE__URL env
+  # in _deploy_master_service, which the loader maps to database.url. Name-only
+  # env keeps the secret value out of the planned/logged argv.
+  url: postgresql+asyncpg://base@base-master-postgres:5432/base
+
+runtime:
+  backend: docker
+
+kubernetes:
+  broker_backend: docker
 
 docker:
   network_name: base_challenges
@@ -58,32 +66,53 @@ docker:
   broker_host: 0.0.0.0
   broker_port: 8082
   broker_url: http://base-docker-broker:8082
-  broker_workspace_dir: /tmp/base-docker-broker
+  # Namespaced+repo allowlist (NOT the whole 'ghcr.io/baseintelligence/'
+  # namespace, which production validate_allowed_image_prefixes rejects as too
+  # broad). These two repo prefixes cover every first-party image the broker
+  # actually runs: agent-challenge* (own_runner terminal-bench runner/analyzer)
+  # and prism* (the prism-evaluator GPU re-exec job). base-master is deployed as
+  # a service, never broker-run, so it is intentionally excluded.
   broker_allowed_images:
-    - ghcr.io/baseintelligence/
-  # Challenge API services run on the manager; broker jobs run on labeled workers.
-  challenge_placement_constraint: node.role==manager
-  cpu_job_constraint: node.labels.base.workload==cpu
-  gpu_job_constraint: node.labels.base.workload==gpu
+    - ghcr.io/baseintelligence/agent-challenge
+    - ghcr.io/baseintelligence/prism
+  allow_privileged: true
+  broker_privileged_slugs:
+    - agent-challenge
+  # Non-privileged Docker-out-of-Docker: the agent-challenge own_runner eval job
+  # is bind-mounted the host Docker socket (gated to this slug) so it can spawn
+  # sibling task containers without --privileged (which Swarm services reject).
+  broker_docker_socket_slugs:
+    - agent-challenge
+  # Read-only task cache + frozen digest manifest handed to the own_runner job
+  # from named volumes provisioned out-of-band by
+  # deploy/swarm/acquire-agent-challenge-cache.sh (source:target).
+  broker_eval_readonly_mounts:
+    - agent_challenge_task_cache:/opt/agent-challenge/task-cache
+    - agent_challenge_golden:/opt/agent-challenge/golden
 
 security:
-  admin_token_file: /var/lib/base/secrets/admin_token
+  # Swarm mounts the admin secret at the --secret target (admin_token) below in
+  # _deploy_master_service: 
+  # -> /run/secrets/admin_token (NOT the /run/secrets/base/"base/" subdir). The
+  # path MUST match that target verbatim or the master admin auth fails closed
+  # (GET /v1/validators -> 401), mirroring the working gateway token_secret_file.
+  admin_token_file: /run/secrets/admin_token
 
-# Master LLM gateway (architecture.md sec 5/sec 10; library/llm-yunwu-contract.md).
-# `base master proxy` ALWAYS builds the gateway; provider_mode selects the
-# deterministic mock provider (no egress) vs the real yunwu client whose key is
-# injected server-side from the secret file below (validators/eval runtimes hold NO
-# provider key). The gateway is config-driven + provider-agnostic (yunwu-only;
-# deepseek/openrouter removed from code AND config): a provider registry + per-source
-# route map selects the provider + model the gateway injects, keyed by the token
-# `source` claim (agent / llm_review). public_base_url is the external master gateway
-# root advertised to validators in the pull payload so eval runtimes target the
-# gateway's /llm/v1 route, NOT the master.registry_url (chain registry) fallback.
-# token_secret_file is the MANDATORY HMAC secret for scoped gateway tokens; the proxy
-# fails fast at startup if it is absent.
+# Master LLM gateway (architecture.md §5/§10; llm-yunwu-contract). The proxy
+# ALWAYS builds the gateway; provider_mode selects the deterministic mock provider
+# (no egress) vs the real yunwu client whose key is injected server-side from the
+# secret file below (validators/eval runtimes hold NO provider key). The gateway is
+# config-driven + provider-agnostic (yunwu-only; deepseek/openrouter removed from
+# code AND config): a provider registry + per-source route map selects the provider
+# + model the gateway injects, keyed by the token  claim (agent /
+# llm_review). public_base_url is the external master gateway root advertised to
+# validators in the pull payload so eval runtimes target the gateway's /llm/v1
+# route, NOT the WRONG master.registry_url (chain registry) fallback. The
+# token_secret_file is the MANDATORY HMAC secret for scoped gateway tokens (proxy
+# fails fast if absent).
 gateway:
   provider_mode: real
-  public_base_url: http://88.216.198.199:19080
+  public_base_url: http://86.38.238.235:19080
   token_secret_file: /run/secrets/gateway_token_secret
   providers:
     yunwu:
@@ -101,19 +130,17 @@ gateway:
 
 observability:
   log_json: true
-  sentry_dsn: null
-  otel_service_name: base-master
 
 # Control-plane supervisor (deploy/swarm/base-supervisor.service; architecture.md
-# sec 9 / research G-A2/G-A3). This block MUST live in the canonical config so a
-# config-sync tick (which overwrites /etc/base/master.yaml from this file) does
-# NOT drop self-update back to its default-OFF state on a supervisor restart.
-# The image-updater (service digest-pin roll) is always on regardless; keeping
-# self_update_enabled here keeps the `base` CODE self-update task registered,
-# wired to the manifest the platform CI publishes/overwrites on every merge to
-# main (a monotonic {"version","source_url"} JSON on the dedicated `release`
-# branch). registry_docker_config_path is where the image-updaters decode the
-# manager's GHCR credentials for PRIVATE ghcr.io/baseintelligence/* digests.
+# G4). The image-updater digest-pins base-master-proxy + base-docker-broker, and
+# the challenge-image-updater rolls the challenge services, by resolving their
+# GHCR tag digests. PRIVATE ghcr.io/baseintelligence/* packages need credentials:
+# the supervisor decodes auths["ghcr.io"].auth from the docker
+# config.json below (written on the manager by ghcr_login / STEP 1b), so no
+# extra secret is required. self_update_enabled is derived from
+# SUPERVISOR_SELF_UPDATE_MANIFEST_URL: set => self-update wired to that manifest;
+# empty => self-update EXPLICITLY DISABLED (the task is not registered — no inert
+# no-op). The image-updater (service digest-pin roll) is always on.
 supervisor:
   registry: ghcr.io
   registry_docker_config_path: /root/.docker/config.json

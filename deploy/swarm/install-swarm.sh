@@ -57,9 +57,9 @@ set -euo pipefail
 # Configuration (overridable via flags / environment). NO secrets here.
 # ============================================================================
 
-# Swarm advertise address (default = the live production host 88.216.198.199;
-# the old 51.83.112.164 host is decommissioned).
-ADVERTISE_ADDR="${ADVERTISE_ADDR:-88.216.198.199}"
+# Swarm advertise address (default = the live production host 86.38.238.235; the
+# old 51.83.112.164 and 88.216.198.199 hosts are decommissioned).
+ADVERTISE_ADDR="${ADVERTISE_ADDR:-86.38.238.235}"
 
 # Postgres dump + baseline directory produced by the cutover backup step.
 BACKUP_DIR="${BACKUP_DIR:-/root/cutover-backups/LATEST}"
@@ -575,7 +575,7 @@ Bring-up mode:
                           in --backup-dir are REQUIRED and restored (default).
 
 Configuration:
-  --advertise-addr IP     Swarm advertise address (default: 88.216.198.199).
+  --advertise-addr IP     Swarm advertise address (default: 86.38.238.235).
   --backup-dir DIR        pg_dump + baseline dir (default: /root/cutover-backups/LATEST).
   --master-config PATH    Rendered master config path (default: /etc/base/master.yaml).
   -h, --help              Show this help.
