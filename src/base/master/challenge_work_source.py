@@ -208,7 +208,73 @@ class HttpChallengeFoldTrigger:
         )
 
 
+class HttpChallengeResultForwarder:
+    """Forward a reconciled worker result to the challenge over HTTP.
+
+    Realizes :class:`base.master.worker_reconciliation.ChallengeResultForwarder`:
+    the master posts an accepted (reconciled) worker result to the challenge's
+    internal result route so the challenge folds exactly one outcome for the unit
+    (architecture.md sec 3.3). The challenge base URL + bearer token are resolved
+    from the registry exactly as the fold path does.
+    """
+
+    def __init__(
+        self,
+        registry: Any,
+        *,
+        timeout_seconds: float = 10.0,
+        retries: int = 3,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._registry = registry
+        self._timeout_seconds = timeout_seconds
+        self._retries = retries
+        self._transport = transport
+
+    async def forward_result(
+        self,
+        *,
+        challenge_slug: str,
+        work_unit_id: str,
+        submission_ref: str,
+        result_payload: Any,
+    ) -> None:
+        record = await _resolve(self._registry.get(challenge_slug))
+        token = await _resolve(self._registry.get_token(challenge_slug))
+        if not token:
+            raise RuntimeError(
+                f"challenge {challenge_slug!r} has no token for result forward"
+            )
+        url = f"{record.internal_base_url.rstrip('/')}/internal/v1/work_units/result"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Base-Challenge-Slug": challenge_slug,
+            "Accept": "application/json",
+        }
+        body = {
+            "work_unit_id": work_unit_id,
+            "submission_ref": submission_ref,
+            "result": dict(result_payload or {}),
+        }
+        last_error = "unknown error"
+        for _attempt in range(max(self._retries, 1)):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self._timeout_seconds, transport=self._transport
+                ) as client:
+                    response = await client.post(url, json=body, headers=headers)
+                    response.raise_for_status()
+                return
+            except Exception as exc:  # noqa: BLE001 - raised after retries exhausted
+                last_error = str(exc)
+        raise RuntimeError(
+            f"failed to forward result for work unit {work_unit_id} on "
+            f"{challenge_slug}: {last_error}"
+        )
+
+
 __all__ = [
     "HttpChallengeFoldTrigger",
+    "HttpChallengeResultForwarder",
     "HttpChallengeWorkSource",
 ]

@@ -221,6 +221,10 @@ async def test_run_once_bridges_and_assigns_to_online_validators() -> None:
         # Two tasks split across two online validators (balanced).
         assert {r.assigned_validator_hotkey for r in rows} == {"v1", "v2"}
         assert result.folded == []
+        # Flag OFF (no worker engine/reconciler wired): the worker plane is inert
+        # and the pass folds/routes exactly as it did before the worker plane.
+        assert result.worker is None
+        assert result.reconciliation is None
     finally:
         await engine.dispose()
 

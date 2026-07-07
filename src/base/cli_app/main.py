@@ -48,6 +48,7 @@ from base.master.assignment_coordination import (
 from base.master.challenge_client import ChallengeClient
 from base.master.challenge_work_source import (
     HttpChallengeFoldTrigger,
+    HttpChallengeResultForwarder,
     HttpChallengeWorkSource,
 )
 from base.master.docker_broker import create_docker_broker_app
@@ -83,6 +84,7 @@ from base.master.validator_coordination import ValidatorCoordinationService
 from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_assignment_engine import WorkerAssignmentEngine
 from base.master.worker_coordination import WorkerCoordinationService
+from base.master.worker_reconciliation import WorkerReconciliationService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
 from base.observability.sentry import init_sentry
@@ -506,6 +508,7 @@ def _master_orchestration_driver(
         session_factory, worker_plane_capabilities=worker_plane_capabilities
     )
     worker_engine: WorkerAssignmentEngine | None = None
+    worker_reconciler: WorkerReconciliationService | None = None
     if worker_plane_on:
         assert worker_service is not None
         assert worker_assignment_service is not None
@@ -514,6 +517,14 @@ def _master_orchestration_driver(
             assignment_service=worker_assignment_service,
             worker_service=worker_service,
             replication_factor=settings.compute.replication_factor,
+        )
+        worker_reconciler = WorkerReconciliationService(
+            session_factory,
+            result_forwarder=HttpChallengeResultForwarder(
+                registry,
+                timeout_seconds=settings.master.challenge_timeout_seconds,
+                retries=settings.master.challenge_retries,
+            ),
         )
     return MasterOrchestrationDriver(
         assignment_service=assignment_service,
@@ -529,6 +540,7 @@ def _master_orchestration_driver(
             retries=settings.master.challenge_retries,
         ),
         worker_assignment_engine=worker_engine,
+        worker_reconciler=worker_reconciler,
         seed=settings.master.orchestration_seed,
     )
 

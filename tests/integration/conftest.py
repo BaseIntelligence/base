@@ -29,6 +29,7 @@ APPLICATION_TABLES = (
     "worker_faults",
     "worker_registrations",
     "worker_request_nonces",
+    "worker_assignments",
     "work_results",
     "work_assignments",
     "llm_usage_records",

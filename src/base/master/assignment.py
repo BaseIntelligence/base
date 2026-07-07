@@ -34,6 +34,15 @@ CAPABILITY_GPU = "gpu"
 AGENT_CHALLENGE_SLUG = "agent-challenge"
 PRISM_SLUG = "prism"
 
+#: Work-unit payload key naming the executor kind that must run a unit
+#: (architecture.md sec 3.3). Absent/``worker`` gpu units route to the worker
+#: replica plane when the flag is on; ``validator`` gpu units (e.g. dispute
+#: AUDIT units) route to validators even with the worker plane on. Irrelevant to
+#: cpu units, which always route to validators.
+EXECUTOR_KIND_PAYLOAD_KEY = "executor_kind"
+EXECUTOR_KIND_WORKER = "worker"
+EXECUTOR_KIND_VALIDATOR = "validator"
+
 DEFAULT_MAX_ATTEMPTS = 3
 
 #: Payload marker set on a terminally-``failed`` work unit once it has been
@@ -105,6 +114,19 @@ def capability_matches(
             return True
         return gpu_serves_cpu and CAPABILITY_GPU in capabilities
     return required in capabilities
+
+
+def unit_executor_kind(payload: Mapping[str, Any] | None) -> str:
+    """Return the executor kind a unit's payload requests (defaults to worker).
+
+    A gpu unit with no explicit kind (the common submission unit) is
+    worker-executed when the worker plane is on; only a unit explicitly marked
+    ``validator`` (a dispute AUDIT unit) is validator-executed, so it routes to a
+    validator even while the worker plane owns gpu.
+    """
+
+    kind = (payload or {}).get(EXECUTOR_KIND_PAYLOAD_KEY)
+    return kind if kind == EXECUTOR_KIND_VALIDATOR else EXECUTOR_KIND_WORKER
 
 
 class AssignmentService:
@@ -337,7 +359,10 @@ class AssignmentService:
 
         for unit in pending:
             capability = unit.required_capability
-            if capability in self._worker_plane_capabilities:
+            if (
+                capability in self._worker_plane_capabilities
+                and unit_executor_kind(unit.payload) != EXECUTOR_KIND_VALIDATOR
+            ):
                 continue
             limit = self._capability_concurrency.get(capability)
             eligible = [

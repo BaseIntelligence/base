@@ -52,7 +52,12 @@ from base.db.models import (
     WorkerStatus,
 )
 from base.db.session import session_scope
-from base.master.assignment import CAPABILITY_GPU, DEFAULT_CAPABILITY_CONCURRENCY
+from base.master.assignment import (
+    CAPABILITY_GPU,
+    DEFAULT_CAPABILITY_CONCURRENCY,
+    EXECUTOR_KIND_VALIDATOR,
+    unit_executor_kind,
+)
 from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_coordination import WorkerCoordinationService
 
@@ -185,6 +190,8 @@ class WorkerAssignmentEngine:
         )
 
         for unit in pending_units:
+            if unit_executor_kind(unit.payload) == EXECUTOR_KIND_VALIDATOR:
+                continue
             existing = (
                 await session.execute(
                     select(func.count())

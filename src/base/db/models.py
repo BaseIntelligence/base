@@ -62,13 +62,20 @@ class ValidatorHealthEventType(StrEnum):
 
 
 class WorkAssignmentStatus(StrEnum):
-    """Lifecycle states for a work unit coordinated to a validator."""
+    """Lifecycle states for a work unit coordinated to a validator.
+
+    ``disputed`` is a terminal worker-plane outcome (architecture.md sec 3.3):
+    a gpu unit whose replica manifest hashes diverged is disputed and NEVER
+    forwarded to the challenge (before or after audit); it is only ever set by
+    worker-plane reconciliation, so the validator plane never observes it.
+    """
 
     PENDING = "pending"
     ASSIGNED = "assigned"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    DISPUTED = "disputed"
 
 
 class WorkerStatus(StrEnum):
