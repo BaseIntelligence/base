@@ -261,9 +261,9 @@ encodes these, but they are easy to regress on a manual deploy:
 
 | File | Target node | Purpose |
 |------|-------------|---------|
-| `daemon.validator.json` | Manager (validator / hotkey, **no GPU**) | `live-restore` + log rotation only. Deliberately **no** `node-generic-resources` and **no** `runtimes.nvidia` — the manager runs the control plane + challenge services, not GPU jobs. |
-| `daemon.cpu-worker.json` | CPU worker | `live-restore` + log rotation only. Same shape as the validator file: **no** GPU generic resource, **no** nvidia runtime. |
-| `daemon.worker.json` | GPU worker | Advertise the GPU as a Swarm generic resource, register the NVIDIA runtime, `live-restore`, log rotation. |
+| `daemon.validator.json` | Manager (validator / hotkey, **no GPU**) | Log rotation only. Deliberately **no** `node-generic-resources` and **no** `runtimes.nvidia` — the manager runs the control plane + challenge services, not GPU jobs. |
+| `daemon.cpu-worker.json` | CPU worker | Log rotation only. Same shape as the validator file: **no** GPU generic resource, **no** nvidia runtime. |
+| `daemon.worker.json` | GPU worker | Advertise the GPU as a Swarm generic resource, register the NVIDIA runtime, log rotation. |
 | `base-supervisor.service` | Manager | systemd unit for the control-plane supervisor (broker health-gating + scheduled jobs). |
 | `install-swarm.sh` | Manager | Single-node bring-up of the master + both challenges (dry-run by default). |
 | `../../scripts/install-worker.sh` | Worker | Enroll a CPU/GPU worker via the join-token model (dry-run by default). |
@@ -432,16 +432,15 @@ access instead flows through explicit paths — Swarm `--generic-resource` plus
 per-container runtime selection (and `--gpus` on the privileged escape hatch).
 CPU workloads keep `runc`.
 
-### `live-restore` (all nodes)
+### `live-restore` — removed (incompatible with Swarm)
 
-```json
-"live-restore": true
-```
-
-Containers keep running while `dockerd` restarts (daemon upgrades, config
-reloads). Required so applying config changes or engine updates does not kill
-in-flight challenge evaluations. **Caveat:** live-restore does *not* cover Swarm
-task management during the restart window — keep restarts short.
+`live-restore` is intentionally **absent** from every `daemon.json`. Docker
+refuses `docker swarm init` / `docker swarm join` while `live-restore` is
+enabled (`--live-restore daemon configuration is incompatible with swarm mode`),
+so it would block a blank node from ever joining the swarm. It is also inert on a
+node that is already a swarm member (the daemon disables it in swarm mode), so it
+bought nothing here. Every node in this deployment is a swarm member, so the
+setting is removed everywhere.
 
 ### `log-driver` / `log-opts` (all nodes)
 
@@ -456,7 +455,7 @@ containers created **after** the setting takes effect.
 
 ### CPU worker (`daemon.cpu-worker.json`) and manager (`daemon.validator.json`)
 
-Both are `live-restore` + log rotation **only**. They must never gain
+Both are log rotation **only**. They must never gain
 `node-generic-resources` or `runtimes.nvidia`: the CPU worker runs only CPU jobs,
 and the manager holds the hotkey and runs the control plane + challenge services,
 not GPU jobs.
@@ -502,14 +501,13 @@ it by hand on any node:
    ```
 
    `configuration OK` is required before any restart.
-3. **Restart implications.** Changing `node-generic-resources`, `runtimes`, or
-   `live-restore` requires a full daemon **restart** (a `SIGHUP` reload does not
-   apply them). With `live-restore: true` already effective, running containers
-   survive the restart; on the **first** application live-restore is not yet
-   active, so apply it before challenge/job workloads exist on the node.
-4. **Verify after restart.** `docker info` shows the nvidia runtime and
-   live-restore true (GPU worker); on the manager, `docker node inspect <node>`
-   shows the `NVIDIA-GPU` generic resource advertised by a GPU worker.
+3. **Restart implications.** Changing `node-generic-resources` or `runtimes`
+   requires a full daemon **restart** (a `SIGHUP` reload does not apply them).
+   The daemon restart briefly recreates local containers; on a swarm node, swarm
+   re-establishes service tasks afterward.
+4. **Verify after restart.** `docker info` shows the nvidia runtime (GPU worker);
+   on the manager, `docker node inspect <node>` shows the `NVIDIA-GPU` generic
+   resource advertised by a GPU worker.
 
 ## Disk hygiene: in-use-safe prune policy
 

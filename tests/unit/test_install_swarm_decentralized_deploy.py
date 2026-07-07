@@ -21,6 +21,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from base.config.loader import load_settings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -269,6 +271,61 @@ def test_published_ports_are_configurable(tmp_path: Path) -> None:
     assert "proxy_port: 28080" in out
     assert "broker_port: 28082" in out
     assert "broker_url: http://base-docker-broker:28082" in out
+
+
+# ---------------------------------------------------------------------------
+# swarm_init advertise-addr: the operational default auto-detects THIS host's
+# primary IPv4 (source IP of the default route) so a blank non-master box
+# advertises its OWN address, while an explicit override is honored verbatim and
+# the old hardcoded master IP is never advertised on a non-master box.
+# ---------------------------------------------------------------------------
+
+# The exact detection the installer runs at ADVERTISE_ADDR default resolution.
+_DETECT_ADVERTISE_ADDR_CMD = (
+    "ip -4 route get 1.1.1.1 2>/dev/null | "
+    "awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1); exit}}'"
+)
+
+
+def _detect_primary_ipv4() -> str:
+    """Detect this host's primary IPv4 exactly like the installer's default."""
+    proc = subprocess.run(
+        ["bash", "-c", _DETECT_ADVERTISE_ADDR_CMD],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip()
+
+
+def test_advertise_addr_unset_auto_detects_host_primary_ip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With ADVERTISE_ADDR unset the installer auto-detects the source IP of the
+    # default route; the swarm_init plan + STEP log must carry that same IP.
+    monkeypatch.delenv("ADVERTISE_ADDR", raising=False)
+    detected = _detect_primary_ipv4()
+    if not detected:
+        pytest.skip("no default-route source IPv4 detectable on this host")
+
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    assert f"docker swarm init --advertise-addr {detected}" in result.stdout
+    assert f"swarm_init (advertise-addr={detected})" in result.stdout
+
+
+def test_advertise_addr_override_is_honored_and_hardcoded_master_ip_gone(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, extra_env={"ADVERTISE_ADDR": "203.0.113.7"})
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+
+    # The explicit override flows straight into `docker swarm init`.
+    assert "docker swarm init --advertise-addr 203.0.113.7" in out
+    # The old hardcoded master IP must never be the advertise addr on a
+    # non-master box (regression on the 86.38.238.235 default).
+    assert "86.38.238.235" not in out
 
 
 # ---------------------------------------------------------------------------

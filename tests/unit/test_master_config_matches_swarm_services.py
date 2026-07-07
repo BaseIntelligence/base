@@ -124,13 +124,17 @@ def _installer_master_proxy_port_default() -> int:
     return int(match.group(1))
 
 
-def _installer_advertise_addr_default() -> str:
-    """Default advertise host the installer renders into gateway.public_base_url."""
+def _installer_production_advertise_addr() -> str:
+    """PRODUCTION advertise host the installer keeps in lock-step with the
+    canonical master.yaml gateway.public_base_url.
 
-    match = re.search(
-        r'ADVERTISE_ADDR="\$\{ADVERTISE_ADDR:-([^}"]+)\}"', _installer_text()
-    )
-    assert match is not None, "could not resolve ADVERTISE_ADDR default"
+    The operational ``ADVERTISE_ADDR`` default is now an ``$(ip ...)`` auto-detect
+    of THIS host's primary IP, so the canonical-config consistency check reads the
+    documented ``PRODUCTION_ADVERTISE_ADDR`` constant instead of the default.
+    """
+
+    match = re.search(r'PRODUCTION_ADVERTISE_ADDR="([^"]+)"', _installer_text())
+    assert match is not None, "could not resolve PRODUCTION_ADVERTISE_ADDR"
     return match.group(1)
 
 
@@ -272,10 +276,10 @@ def test_master_yaml_gateway_public_base_url_matches_installer_render() -> None:
     cfg = _master_yaml()
     host, port = _host_port_from_url(cfg["gateway"]["public_base_url"])
 
-    # Installer renders public_base_url as http://${ADVERTISE_ADDR}:${MASTER_PROXY_PORT};
-    # the canonical file must agree so config-sync does not clobber it, and the
-    # advertised port must equal the port the proxy actually binds to.
-    assert host == _installer_advertise_addr_default()
+    # Installer renders public_base_url from its PRODUCTION advertise IP + the
+    # ${MASTER_PROXY_PORT}; the canonical file must agree so config-sync does not
+    # clobber it, and the advertised port must equal the port the proxy binds to.
+    assert host == _installer_production_advertise_addr()
     assert port == _installer_master_proxy_port_default()
     assert port == int(cfg["master"]["proxy_port"])
 

@@ -57,9 +57,15 @@ set -euo pipefail
 # Configuration (overridable via flags / environment). NO secrets here.
 # ============================================================================
 
-# Swarm advertise address (default = the live production host 86.38.238.235; the
-# old 51.83.112.164 and 88.216.198.199 hosts are decommissioned).
-ADVERTISE_ADDR="${ADVERTISE_ADDR:-86.38.238.235}"
+# Canonical PRODUCTION master advertise IP. Kept in lock-step with
+# deploy/swarm/master.yaml's gateway.public_base_url (config-sync's canonical
+# file); see tests/unit/test_master_config_matches_swarm_services.py. This is a
+# documentation/consistency constant, NOT the operational default.
+PRODUCTION_ADVERTISE_ADDR="86.38.238.235"
+# Swarm advertise address. Operational default = auto-detect THIS host's primary
+# IPv4 (the source IP of the default route), so a blank box advertises its own
+# address. Override with --advertise-addr <ip> or ADVERTISE_ADDR=<ip>.
+ADVERTISE_ADDR="${ADVERTISE_ADDR:-$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')}"
 
 # Postgres dump + baseline directory produced by the cutover backup step.
 BACKUP_DIR="${BACKUP_DIR:-/root/cutover-backups/LATEST}"
@@ -667,7 +673,7 @@ Bring-up mode:
                           in --backup-dir are REQUIRED and restored (default).
 
 Configuration:
-  --advertise-addr IP     Swarm advertise address (default: 86.38.238.235).
+  --advertise-addr IP     Swarm advertise address (default: auto-detected primary IP of this host).
   --backup-dir DIR        pg_dump + baseline dir (default: /root/cutover-backups/LATEST).
   --master-config PATH    Rendered master config path (default: /etc/base/master.yaml).
   -h, --help              Show this help.
@@ -933,6 +939,7 @@ swarm_init() {
     log "  swarm already active — skipping init (idempotent)"
     return 0
   fi
+  [[ -n "${ADVERTISE_ADDR}" ]] || die "could not auto-detect advertise-addr (no default route / no 'ip' tool); pass --advertise-addr <ip>"
   plan docker swarm init --advertise-addr "${ADVERTISE_ADDR}"
 }
 
