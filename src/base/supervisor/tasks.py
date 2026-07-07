@@ -42,6 +42,7 @@ from base.supervisor.image_updater import (
     build_image_updater_task,
     resolve_image_update_targets,
 )
+from base.supervisor.orphan_sweep import build_orphan_sweep_task
 from base.supervisor.reaper import build_reaper_task
 from base.supervisor.scheduler import ScheduledTask
 from base.supervisor.self_update import (
@@ -145,6 +146,15 @@ def build_scheduled_tasks(
     # The reaper builder owns WorkloadLedger.reconstruct on first tick and
     # ledger access thereafter (see Task 7/14 notepad contracts).
     tasks.append(build_reaper_task(settings, health_gate=gate))
+    # Orphan own-runner sandbox sweep: host-level, ledger-independent age-based
+    # backstop for DooD sandbox containers (own-runner-task-* / own-runner-exec-*)
+    # leaked when a job is killed externally (broker timeout / reaper) before the
+    # runner's in-process teardown runs. Daemon-scoped (no broker dependency).
+    if settings.supervisor.orphan_sweep_enabled:
+        tasks.append(build_orphan_sweep_task(settings, health_gate=gate))
+        logger.info("orphan-sandbox-sweep: enabled")
+    else:
+        logger.info("orphan-sandbox-sweep: disabled (orphan_sweep_enabled=false)")
     # ------------------------------------------------------------------
     # Task 18 registration point (image-updater):
     # Targets are SETTINGS-DRIVEN (G-A5): resolve_image_update_targets defaults to

@@ -434,6 +434,15 @@ class SupervisorSettings(BaseModel):
     #: default (a held target is also settable per-target via
     #: :attr:`ImageUpdateTargetSetting.hold`).
     image_update_hold: bool = False
+    #: Orphan own-runner sandbox sweep (host-level backstop for DooD sandbox
+    #: containers leaked when a job is killed externally). Enabled by default.
+    orphan_sweep_enabled: bool = True
+    #: Age (seconds) beyond which an own-runner sandbox is considered orphaned
+    #: and force-removed. MUST exceed the max legit job lease
+    #: (evaluation_timeout_seconds + lease ~= 4500s); default 2h.
+    orphan_sweep_ttl_seconds: int = 7200
+    #: How often the orphan sweep runs.
+    orphan_sweep_interval_seconds: float = 300.0
 
 
 class Settings(BaseModel):
