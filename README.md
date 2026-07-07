@@ -61,6 +61,7 @@ Docs are grouped by audience.
 **Miners**
 
 - [Miner guide](docs/miner/README.md) — choose a challenge, submit through the proxy, and track leaderboards.
+- [Miner worker deployment guide](docs/miner/worker-plane.md) — deploy a miner-funded GPU worker on Lium or Targon with `base worker deploy`, monitor it with `base worker status`, and understand the PRISM admission rule and proof tiers.
 
 **Validators / operators**
 
@@ -214,6 +215,56 @@ capabilities, subscriptions, last heartbeat, resolved identity); it NEVER expose
 
 ---
 
+## Miner-Funded GPU Worker Plane
+
+The **worker plane** moves PRISM's heavy GPU evaluation off BASE validators and onto **worker
+agents running in GPU instances the miners themselves fund** (rented on Lium or Targon, or their
+own hardware). Validators keep only light plausibility checks, probabilistic replay audits, and
+on-chain weight submission. PRISM scoring is unchanged. Everything is gated behind
+`compute.worker_plane_enabled` (env `BASE_COMPUTE__WORKER_PLANE_ENABLED`); with the flag **off**
+(the default) gpu units route to validators exactly as today and the worker coordination surface is
+not even mounted (byte-for-byte legacy behavior).
+
+- **`base worker` CLI** (top-level, distinct from the legacy `base master worker` Swarm group):
+  - `base worker deploy --provider lium|targon|local [--max-price <usd/gpu/hr>]` — provision a
+    worker on a miner-funded instance (or locally) and enroll it. The miner's provider key
+    (`LIUM_API_KEY` / `TARGON_API_KEY`) authenticates provider calls only and is **never** sent to
+    the master. Deploy always sets a bounded instance lifetime and refuses offers above the price
+    cap.
+  - `base worker agent` — run the long-lived agent loop (register → heartbeat → pull → execute →
+    post), authenticated as the worker keypair.
+  - `base worker status [--hotkey <miner-hotkey>]` — render the fleet from the master's
+    `GET /v1/workers` (status, owner, provider, last-seen, fault count).
+- **Signed enrollment**: the miner signs `worker-binding:{worker_pubkey}:{miner_hotkey}:{nonce}`
+  (sr25519); the master verifies it against the metagraph. Status lifecycle is
+  `pending → active → stale → retired`; `active` requires a verified binding **and** a heartbeat
+  within `compute.worker_heartbeat_ttl_seconds` (default 120).
+- **Admission rule**: when enforced, a miner must have ≥1 **active** worker bound to their hotkey
+  to submit to PRISM; otherwise the submission is rejected `403 NO_ACTIVE_WORKER`. This is the
+  incentive to supply GPU without changing the subnet economics.
+- **Anti-collusion assignment**: a worker never evaluates its own owner's submission; each gpu unit
+  is replicated across **R=2 distinct-owner** workers (`compute.replication_factor`, degrading to
+  1 with a recorded warning). The master reconciles by comparing each replica's
+  `ExecutionProof.manifest_sha256`: equal ⇒ one result forwarded to the challenge; divergent ⇒ the
+  unit is `disputed` and a validator **audit** unit replays it authoritatively, flagging the lying
+  worker via `worker_faults`.
+- **ExecutionProof tiers** (carried on every result):
+  - **Tier 0** (mandatory, all backends): deterministic manifest hash + worker sr25519 signature —
+    the source of truth for reconciliation and audits.
+  - **Tier 1**: evaluator image digest matches the pinned digest (on Lium, cross-checkable against
+    the provider's signed image-digest endpoint).
+  - **Tier 2**: in-guest TDX + nvtrust attestation — schema shipped but gated **off on Targon**
+    today (no consumer-facing attestation surface), so Targon proofs carry tier ≤ 1.
+  - Audit sampling is tier-modulated (tier 0 ≈ 10%, tier 1 ≈ 5%, tier 2 ≈ 2%).
+
+Miners: see the [Miner worker deployment guide](docs/miner/worker-plane.md) for prerequisites,
+exact Lium/Targon commands, cost guidance, monitoring, and troubleshooting. The master subsystems
+live under `src/base/worker/` (agent) and `src/base/master/worker_coordination.py` (registry,
+enrollment, fleet, admission), with provider clients in `src/base/compute/`
+(`lium.py` / `targon.py`).
+
+---
+
 ## What BASE Does
 
 BASE coordinates the full lifecycle of a multi-challenge subnet:
@@ -251,6 +302,18 @@ gateway, and posts results. Each validator also submits its own on-chain weights
 master's final normalized vector from the weights API and commits it under its own hotkey (a
 dedicated submit-only host can run the same submitter). The master aggregates but never submits
 on-chain. Challenge API services are run by the master (manager) node.
+
+### Workers (miner-funded GPU worker plane)
+
+Workers are **miner-funded GPU executors** for PRISM. A miner runs `base worker deploy` to launch a
+worker agent inside a GPU instance the miner pays for (rented on **Lium** or **Targon**, or their
+own hardware); the agent registers with the master under a miner-signed hotkey↔worker binding,
+heartbeats, pulls `gpu` work units, executes the PRISM evaluator on its own broker, and posts
+results carrying an `ExecutionProof`. The provider API key (`LIUM_API_KEY` / `TARGON_API_KEY`)
+stays in the miner's environment and is never sent to the master. The entire worker plane is gated
+behind `compute.worker_plane_enabled` (env `BASE_COMPUTE__WORKER_PLANE_ENABLED`, default off ⇒
+byte-for-byte legacy behavior). See the [Worker plane](#miner-funded-gpu-worker-plane) section and
+the [Miner worker deployment guide](docs/miner/worker-plane.md).
 
 ---
 
