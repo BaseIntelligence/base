@@ -666,8 +666,10 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         ),
         # Durable eval-loop concurrency for the dynamic/registry-seeded path so
         # the agent-challenge worker drains up to this many attempts in parallel
-        # (matches the static install-swarm.sh ac_eval_env value).
-        "CHALLENGE_EVALUATION_CONCURRENCY": "15",
+        # (matches the static install-swarm.sh RAM-derived default for the 62 GiB
+        # manager at a 4 GB/task budget; the challenge config validator caps it at
+        # <=30 downstream).
+        "CHALLENGE_EVALUATION_CONCURRENCY": "13",
     }
 
 

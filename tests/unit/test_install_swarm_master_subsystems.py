@@ -89,6 +89,8 @@ def _run(
     provider_mode: str | None = None,
     hf_token: str | None = HF_SENTINEL,
     drop_central_gateway_token: bool = False,
+    eval_ram_total_gb: str | None = "62",
+    eval_task_concurrency: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _docker_stub(bin_dir)
@@ -98,6 +100,17 @@ def _run(
     env["BROKER_WORKSPACE_DIR"] = str(tmp_path / "broker-ws")
     env["MASTER_CONFIG_PATH"] = str(tmp_path / "master.yaml")
     env["GATEWAY_PUBLIC_BASE_URL"] = GATEWAY_PUBLIC_BASE_URL
+    # Pin the RAM->concurrency inputs so the RAM-derived EVAL_TASK_CONCURRENCY is
+    # deterministic regardless of the CI host's real memory (62 GiB, default
+    # reserve 10, @4GB/task -> 13). A direct EVAL_TASK_CONCURRENCY override wins.
+    if eval_ram_total_gb is not None:
+        env["EVAL_RAM_TOTAL_GB"] = eval_ram_total_gb
+    else:
+        env.pop("EVAL_RAM_TOTAL_GB", None)
+    if eval_task_concurrency is not None:
+        env["EVAL_TASK_CONCURRENCY"] = eval_task_concurrency
+    else:
+        env.pop("EVAL_TASK_CONCURRENCY", None)
     if provider_mode is not None:
         env["GATEWAY_PROVIDER_MODE"] = provider_mode
     if hf_token is not None:
@@ -221,26 +234,30 @@ def test_rendered_master_config_carries_global_broker_cap(tmp_path: Path) -> Non
     """The rendered master.yaml docker block sets the server-wide broker cap.
 
     ``docker.broker_max_concurrent_global`` bounds TOTAL concurrent broker eval
-    jobs across ALL challenge slugs on the single manager node, and
-    ``broker_log_limit_bytes`` raises the returned-log bound so challenges get
-    effectively-full eval output.
+    jobs across ALL challenge slugs on the single manager node. It is RAM-derived
+    at install time (@4GB/task); with the pinned 62 GiB / reserve-10 inputs the
+    rendered value is 13. ``broker_log_limit_bytes`` raises the returned-log bound
+    so challenges get effectively-full eval output.
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     out = result.stdout
 
-    assert "broker_max_concurrent_global: 30" in out
+    assert "broker_max_concurrent_global: 13" in out
     assert "broker_log_limit_bytes: 5000000" in out
 
 
 def test_agent_challenge_services_carry_evaluation_concurrency(
     tmp_path: Path,
 ) -> None:
-    """agent-challenge api + worker carry CHALLENGE_EVALUATION_CONCURRENCY=15.
+    """agent-challenge api + worker carry the RAM-derived eval concurrency.
 
-    The durable eval-loop concurrency is applied to BOTH the api and the worker
-    (via the static ``ac_eval_env`` array), mirroring the dynamic path's
-    ``cli_app._agent_challenge_own_runner_env``.
+    The durable eval-loop concurrency is RAM-derived at install time (@4GB/task);
+    with the pinned 62 GiB / reserve-10 inputs it renders 13. It is applied to
+    BOTH the api and the worker (via the static ``ac_eval_env`` array), mirroring
+    the dynamic path's ``cli_app._agent_challenge_own_runner_env``. The same array
+    carries the durable own-runner (DooD client) memory ceiling
+    ``CHALLENGE_DOCKER_MEMORY=2g``.
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -248,7 +265,38 @@ def test_agent_challenge_services_carry_evaluation_concurrency(
 
     for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
         block = _service_block(lines, service)
-        assert "CHALLENGE_EVALUATION_CONCURRENCY=15" in block
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=13" in block
+        assert "CHALLENGE_DOCKER_MEMORY=2g" in block
+
+
+def test_eval_task_concurrency_is_ram_derived(tmp_path: Path) -> None:
+    """EVAL_TASK_CONCURRENCY is RAM-derived at a 4 GB/task budget, override-able.
+
+    With ``EVAL_RAM_TOTAL_GB=62`` and the default reserve (10 GiB):
+    ``max(4, floor((62 - 10) / 4)) = 13`` is rendered into BOTH the master.yaml
+    ``broker_max_concurrent_global`` and the ``ac_eval_env``
+    ``CHALLENGE_EVALUATION_CONCURRENCY`` (api + worker). A direct
+    ``EVAL_TASK_CONCURRENCY`` override wins over the RAM computation verbatim.
+    """
+    services = ("challenge-agent-challenge", "challenge-agent-challenge-worker")
+
+    # RAM-derived: 62 GiB, reserve 10, @4GB/task -> 13.
+    result = _run(tmp_path, eval_ram_total_gb="62")
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    assert "broker_max_concurrent_global: 13" in out
+    for service in services:
+        block = _service_block(out.splitlines(), service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=13" in block
+
+    # Direct override wins regardless of the RAM total.
+    override = _run(tmp_path, eval_ram_total_gb="62", eval_task_concurrency="7")
+    assert override.returncode == 0, f"stderr={override.stderr!r}"
+    out2 = override.stdout
+    assert "broker_max_concurrent_global: 7" in out2
+    for service in services:
+        block = _service_block(out2.splitlines(), service)
+        assert "CHALLENGE_EVALUATION_CONCURRENCY=7" in block
 
 
 def test_agent_challenge_services_carry_log_streaming_env(

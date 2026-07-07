@@ -440,6 +440,37 @@ _master_runtime_uid() {
   fi
 }
 
+# `_compute_eval_task_concurrency` derives the agent-challenge eval task
+# concurrency from system RAM at a fixed 4 GB/task budget, so the number of tasks
+# run in parallel tracks the node's real memory instead of a hardcoded constant.
+# It sets three globals consumed by the master.yaml render + the ac_eval_env block:
+#   TOTAL_RAM_GB          total GiB (free -m total / 1024), or the EVAL_RAM_TOTAL_GB
+#                         override (tests/operators pin it deterministically).
+#   EVAL_RAM_RESERVE_GB   GiB withheld for the OS + master control-plane services
+#                         (default 10).
+#   EVAL_TASK_CONCURRENCY max(4, floor((TOTAL_RAM_GB - EVAL_RAM_RESERVE_GB) / 4)),
+#                         or the EVAL_TASK_CONCURRENCY override (used verbatim).
+# The 4 GB/task divisor ONLY sizes how many tasks may run at once; it deliberately
+# does NOT clamp the inner terminal-bench task container (kept at its higher 8 GiB
+# ceiling), relying on low actual per-task usage.
+_compute_eval_task_concurrency() {
+  if [[ -n "${EVAL_RAM_TOTAL_GB:-}" && "${EVAL_RAM_TOTAL_GB}" =~ ^[0-9]+$ ]]; then
+    TOTAL_RAM_GB="${EVAL_RAM_TOTAL_GB}"
+  else
+    TOTAL_RAM_GB=$(( $(free -m | awk '/^Mem:/{print $2}') / 1024 ))
+  fi
+  EVAL_RAM_RESERVE_GB="${EVAL_RAM_RESERVE_GB:-10}"
+  if [[ -n "${EVAL_TASK_CONCURRENCY:-}" && "${EVAL_TASK_CONCURRENCY}" =~ ^[0-9]+$ ]]; then
+    : # explicit operator/test override — used verbatim.
+  else
+    EVAL_TASK_CONCURRENCY=$(( (TOTAL_RAM_GB - EVAL_RAM_RESERVE_GB) / 4 ))
+    if (( EVAL_TASK_CONCURRENCY < 4 )); then
+      EVAL_TASK_CONCURRENCY=4
+    fi
+  fi
+  log "  eval task concurrency: RAM=${TOTAL_RAM_GB}GiB reserve=${EVAL_RAM_RESERVE_GB}GiB @4GB/task -> EVAL_TASK_CONCURRENCY=${EVAL_TASK_CONCURRENCY}"
+}
+
 # ============================================================================
 # Argument parsing
 # ============================================================================
@@ -1193,8 +1224,9 @@ docker:
   # Server-wide cap on TOTAL concurrent broker eval jobs across ALL challenge
   # slugs, enforced atomically with the per-slug cap under the ledger lock
   # (surfaces as HTTP 429 docker_quota_exceeded). Bounds total eval load on the
-  # single manager node; unset/None would be unlimited.
-  broker_max_concurrent_global: 30
+  # single manager node; RAM-derived at install time (@4GB/task, see
+  # _compute_eval_task_concurrency); unset/None would be unlimited.
+  broker_max_concurrent_global: ${EVAL_TASK_CONCURRENCY}
   # Max bytes of job stdout/stderr the broker returns before last-resort
   # tail-capping, so challenges receive effectively-full eval logs while staying
   # bounded against OOM (the 64KB code default was too small for full output).
@@ -1610,7 +1642,14 @@ deploy_challenges() {
     # Durable eval-loop concurrency: the worker drains up to this many attempts
     # in parallel (mirrors cli_app _agent_challenge_own_runner_env for the
     # dynamic path). Applied to BOTH the api and worker via ac_eval_env.
-    "CHALLENGE_EVALUATION_CONCURRENCY=15"
+    # RAM-derived at install time (@4GB/task, see _compute_eval_task_concurrency).
+    "CHALLENGE_EVALUATION_CONCURRENCY=${EVAL_TASK_CONCURRENCY}"
+    # Durable own-runner (DooD client) memory ceiling. The own_runner job is a
+    # lightweight terminal-bench orchestration client, so 2 GiB is ample; live
+    # prod ran this as an out-of-band override, made durable here. This caps ONLY
+    # the runner job container the broker launches — it does NOT clamp the inner
+    # terminal-bench task container (kept at its higher 8 GiB ceiling).
+    "CHALLENGE_DOCKER_MEMORY=2g"
     # Live running-log streaming. The worker points the terminal-bench runner's
     # log producer at the api over the eval overlay (LOG_STREAM_URL) and pins the
     # runner JOB onto base_jobs_internal (BROKER_NETWORK) so it can resolve
@@ -2329,6 +2368,7 @@ main() {
   log "  static-challenges   : ${STATIC_CHALLENGES}  (opt-in)"
   log "  install-supervisor  : ${INSTALL_SUPERVISOR}  (systemd; replaces Watchtower; opt-in)"
   log "  greenfield          : ${GREENFIELD}  (skip backup-dump preflight + restore_data; opt-in)"
+  _compute_eval_task_concurrency  # RAM-derived agent-challenge eval concurrency (@4GB/task)
   log "============================================================"
 
   preflight                  # 1
