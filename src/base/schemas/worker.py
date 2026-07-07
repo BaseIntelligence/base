@@ -73,3 +73,39 @@ class WorkerListResponse(BaseModel):
     """Response for ``GET /v1/workers`` and ``GET /v1/workers/active``."""
 
     workers: list[WorkerView] = Field(default_factory=list)
+
+
+class ProviderInfo(BaseModel):
+    """Provider/pod identity carried by an ExecutionProof (architecture 3.4)."""
+
+    name: str
+    executor_id: str | None = None
+    pod_id: str | None = None
+    miner_hotkey: str | None = None
+
+
+class WorkerSignature(BaseModel):
+    """The worker's sr25519 signature binding a manifest hash to a work unit."""
+
+    worker_pubkey: str
+    sig: str
+
+
+class ExecutionProof(BaseModel):
+    """Proof envelope attached to every worker result (architecture 3.4).
+
+    Tier 0 (mandatory, all backends) carries the deterministic
+    ``manifest_sha256`` plus the worker's sr25519 ``worker_signature`` over the
+    pinned message (``sha256(f"{manifest_sha256}:{unit_id}")``). Tier 1 adds
+    ``image_digest`` + a populated ``provider`` block; tier 2 adds a non-null
+    ``attestation``. The base worker plane emits tier 0; prism fills the higher
+    tiers.
+    """
+
+    version: int = 1
+    tier: int = 0
+    manifest_sha256: str
+    image_digest: str | None = None
+    provider: ProviderInfo | None = None
+    worker_signature: WorkerSignature
+    attestation: dict[str, Any] | None = None

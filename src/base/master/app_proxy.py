@@ -49,6 +49,10 @@ from base.master.validator_coordination import (
     build_validator_coordination_router,
     build_validator_health_lifespan,
 )
+from base.master.worker_assignment import (
+    WorkerAssignmentService,
+    build_worker_assignment_router,
+)
 from base.master.worker_coordination import (
     WorkerCoordinationService,
     build_worker_coordination_router,
@@ -368,6 +372,8 @@ def create_proxy_app(
     worker_service: WorkerCoordinationService | None = None,
     worker_verifier: WorkerSignedRequestVerifier | None = None,
     worker_health_interval_seconds: float | None = None,
+    worker_assignment_service: WorkerAssignmentService | None = None,
+    worker_assignment_verifier: WorkerSignedRequestVerifier | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
     llm_gateway_service: LLMGatewayService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
@@ -700,6 +706,17 @@ def create_proxy_app(
             )
         )
         app.state.worker_coordination_service = worker_service
+
+    if worker_assignment_service is not None and worker_assignment_verifier is not None:
+        app.include_router(
+            build_worker_assignment_router(
+                service=worker_assignment_service,
+                auth_dependency=build_worker_auth_dependency(
+                    worker_assignment_verifier
+                ),
+            )
+        )
+        app.state.worker_assignment_service = worker_assignment_service
 
     if assignment_coordination_service is not None and validator_verifier is not None:
         app.include_router(

@@ -846,3 +846,77 @@ class WorkerRequestNonce(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class WorkerAssignment(Base, TimestampMixin):
+    """A gpu work-unit replica coordinated to a miner-funded worker.
+
+    Distinct from :class:`WorkAssignment` (the validator plane): a single gpu
+    work unit is replicated to multiple workers bound to DISTINCT owners
+    (architecture.md sec 3.3 R=2), so this table keys one row PER (work unit,
+    worker) rather than one row per unit. ``worker_pubkey`` is the authenticated
+    identity the worker pull/post routes gate on; ``miner_hotkey`` is the owner
+    used for anti-collusion accounting. The reported result and its
+    ``ExecutionProof`` (and the extracted ``manifest_sha256`` used for
+    reconciliation) are stored on the row.
+    """
+
+    __tablename__ = "worker_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "work_unit_id",
+            "worker_id",
+            name="uq_worker_assignments_work_unit_worker",
+        ),
+        Index("ix_worker_assignments_work_unit_id", "work_unit_id"),
+        Index("ix_worker_assignments_status", "status"),
+        Index("ix_worker_assignments_worker_pubkey", "worker_pubkey"),
+        Index(
+            "ix_worker_assignments_status_worker_pubkey",
+            "status",
+            "worker_pubkey",
+        ),
+        Index("ix_worker_assignments_status_deadline", "status", "deadline_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    challenge_slug: Mapped[str] = mapped_column(Text, nullable=False)
+    work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    submission_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_pubkey: Mapped[str] = mapped_column(Text, nullable=False)
+    miner_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    required_capability: Mapped[str] = mapped_column(
+        Text, nullable=False, default="gpu", server_default="gpu"
+    )
+    status: Mapped[WorkAssignmentStatus] = mapped_column(
+        Enum(
+            WorkAssignmentStatus,
+            name="work_assignment_status",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+        default=WorkAssignmentStatus.PENDING,
+        server_default=WorkAssignmentStatus.PENDING.value,
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkpoint_ref: Mapped[str | None] = mapped_column(Text)
+    result_success: Mapped[bool | None] = mapped_column(Boolean)
+    result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    manifest_sha256: Mapped[str | None] = mapped_column(Text)

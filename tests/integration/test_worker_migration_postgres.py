@@ -97,7 +97,10 @@ async def test_worker_migration_downgrade_upgrade_roundtrip(
     # alembic env runs asyncio.run internally, so drive it from a worker thread
     # to avoid nesting event loops inside this async test.
     await asyncio.to_thread(
-        downgrade, config_path, database_url=migrated_postgres_database, revision="-1"
+        downgrade,
+        config_path,
+        database_url=migrated_postgres_database,
+        revision="0008_validator_subscriptions",
     )
     try:
         assert not await _table_exists(

@@ -69,6 +69,7 @@ from base.master.service import (
 )
 from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
+from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_coordination import WorkerCoordinationService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
@@ -89,6 +90,7 @@ from base.security.validator_auth import (
 from base.security.worker_auth import (
     CoordinationReadEligibility,
     MetagraphMinerMembership,
+    RegisteredWorkerEligibility,
     SqlAlchemyWorkerNonceStore,
     WorkerSignedRequestVerifier,
 )
@@ -367,6 +369,39 @@ def _worker_signed_request_verifier(
             ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
         ),
         eligibility=CoordinationReadEligibility(session_factory, metagraph_cache),
+        ttl_seconds=settings.compute.worker_signature_ttl_seconds,
+    )
+
+
+def _worker_assignment_service(
+    settings: Any,
+    session_factory: Any,
+    worker_service: WorkerCoordinationService,
+) -> WorkerAssignmentService:
+    return WorkerAssignmentService(
+        session_factory,
+        worker_service=worker_service,
+        lease_seconds=settings.master.assignment_lease_seconds,
+    )
+
+
+def _worker_assignment_verifier(
+    settings: Any,
+    session_factory: Any,
+) -> WorkerSignedRequestVerifier:
+    """Verifier for worker pull/result: WORKER identity only, no permit.
+
+    Distinct from the fleet-read verifier (which also admits validators): the
+    assignment surface requires a ``worker_registrations`` row so an unregistered
+    or validator-only key can never pull/post work (VAL-AGENT-018).
+    """
+
+    return WorkerSignedRequestVerifier(
+        nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        eligibility=RegisteredWorkerEligibility(session_factory),
         ttl_seconds=settings.compute.worker_signature_ttl_seconds,
     )
 
@@ -862,12 +897,20 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     # coordination surface is never mounted and legacy behavior is unchanged.
     worker_service: WorkerCoordinationService | None = None
     worker_verifier: WorkerSignedRequestVerifier | None = None
+    worker_assignment_service: WorkerAssignmentService | None = None
+    worker_assignment_verifier: WorkerSignedRequestVerifier | None = None
     if settings.compute.worker_plane_enabled:
         worker_service = _worker_coordination_service(
             settings, session_factory, runtime.metagraph_cache
         )
         worker_verifier = _worker_signed_request_verifier(
             settings, session_factory, runtime.metagraph_cache
+        )
+        worker_assignment_service = _worker_assignment_service(
+            settings, session_factory, worker_service
+        )
+        worker_assignment_verifier = _worker_assignment_verifier(
+            settings, session_factory
         )
     llm_gateway_service = _llm_gateway_service(settings, session_factory)
     assignment_service = _assignment_coordination_service(
@@ -915,6 +958,8 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_health_interval_seconds=(
             settings.compute.worker_health_interval_seconds
         ),
+        worker_assignment_service=worker_assignment_service,
+        worker_assignment_verifier=worker_assignment_verifier,
         assignment_coordination_service=assignment_service,
         llm_gateway_service=llm_gateway_service,
         orchestration_driver=orchestration_driver,
