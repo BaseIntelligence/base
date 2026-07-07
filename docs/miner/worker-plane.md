@@ -9,6 +9,7 @@ This guide covers, for both **Lium** and **Targon**:
 - [What the worker plane is](#what-the-worker-plane-is)
 - [Prerequisites](#prerequisites)
 - [Configuration](#configuration)
+- [Publishing the worker image](#publishing-the-worker-image)
 - [Deploy on Lium](#deploy-on-lium)
 - [Deploy on Targon](#deploy-on-targon)
 - [Deploy locally / on your own hardware](#deploy-locally--on-your-own-hardware)
@@ -125,6 +126,12 @@ worker:
     gpu_count: 1
     max_price_per_hour: 1.50  # cost cap per GPU/hour (also selectable via --max-price)
     max_lifetime_hours: 1.0   # bounded pod lifetime (keep it short)
+    # REQUIRED for a lium/targon deploy: a PUBLICLY-pullable, digest-pinned worker
+    # image. A provider deploy refuses to run without both (see "Publishing the
+    # worker image"). Not needed for provider: local.
+    image: ghcr.io/<your-public-namespace>/base-worker
+    image_digest: sha256:<64 hex>         # the immutable pin
+    image_tag: v1                          # optional convenience tag
     startup_commands: tail -f /dev/null   # MUST be metachar-free (see Troubleshooting)
     ssh_public_key_file: /path/to/your_key.pub   # Lium requires an SSH key
     ssh_key_name: my-worker-key
@@ -146,6 +153,64 @@ Every field is overridable by env with the `BASE_` prefix and `__` nesting, e.g.
 and a miner-signed binding. On a rented pod that must never hold your miner key, sign the binding
 on your own machine and pass the pre-signed `miner_hotkey` + `binding_signature` + `binding_nonce`
 instead of a miner key. The CLI does this for you when a miner key is configured locally.
+
+---
+
+## Publishing the worker image
+
+A `lium`/`targon` deploy runs a **worker image** you must publish yourself, pinned by digest.
+`base worker deploy --provider lium|targon` **refuses to run** unless `worker.deploy.image` **and**
+`worker.deploy.image_digest` are set (env `BASE_WORKER__DEPLOY__IMAGE` /
+`BASE_WORKER__DEPLOY__IMAGE_DIGEST`). There is deliberately **no baked-in default image**:
+
+> ⚠️ **A private-namespace registry image can fail provider pod creation.** Pinning a **private**
+> GHCR image (e.g. `ghcr.io/<private-namespace>/...`) makes **Lium pod creation fail with
+> `CREATION_FAILED`** — the rented executor host cannot pull a private image. The worker image
+> **must be PUBLICLY pullable**. This is why the deploy will not silently pin a placeholder.
+
+> 🚧 **Publishing is a release/operator action, not something the deploy does for you.** Pushing to
+> a public registry needs registry push credentials, so this step is performed once by whoever owns
+> the release (it may require access you do not have as a miner — coordinate with the subnet
+> operators for the canonical published image + digest).
+
+Build, publish, and pin `docker/Dockerfile.worker` (a slim `python:3.12-slim`-based image carrying
+the `base` worker agent + docker CLI):
+
+```bash
+# 1. Build from the base repo root (the Dockerfile COPYs the source in).
+docker build -f docker/Dockerfile.worker -t ghcr.io/<your-public-namespace>/base-worker:v1 .
+
+# 2. Log in and push to a PUBLIC registry namespace (make the package public in the
+#    registry UI so an unauthenticated provider host can pull it).
+echo "$GHCR_PAT" | docker login ghcr.io -u <your-username> --password-stdin
+docker push ghcr.io/<your-public-namespace>/base-worker:v1
+
+# 3. Read back the immutable digest the registry assigned, and pin THAT.
+docker buildx imagetools inspect ghcr.io/<your-public-namespace>/base-worker:v1 \
+  --format '{{println .Manifest.Digest}}'
+# -> sha256:<64 hex>
+```
+
+Then set the image + digest in your config (or via env), e.g.:
+
+```yaml
+worker:
+  deploy:
+    image: ghcr.io/<your-public-namespace>/base-worker
+    image_digest: sha256:<64 hex>   # the value printed above
+    image_tag: v1                    # optional convenience tag
+```
+
+**Verify it is actually pullable before deploying.** From a clean host with no registry auth:
+
+```bash
+docker pull ghcr.io/<your-public-namespace>/base-worker@sha256:<64 hex>
+```
+
+If that pull fails unauthenticated, the image is not public and a Lium deploy will
+`CREATION_FAILED`. Digest-pinning (`@sha256:...`) is also what earns **tier 1** proofs: the running
+image bytes are provably the ones you published (cross-checkable on Lium against
+`GET /watchtower/digest`).
 
 ---
 
@@ -327,6 +392,29 @@ Use exactly one of `local`, `lium`, or `targon` for `--provider`.
 **`no rentable offer within budget (...); nothing was provisioned` (exit code 1).**
 Every listed offer is above your cap. Raise `--max-price` (or `worker.deploy.max_price_per_hour`),
 or retry later when cheaper capacity appears. Nothing was rented.
+
+**`provider '<lium|targon>' deploy requires an explicit worker image ...` (exit code 1).**
+`worker.deploy.image` and/or `worker.deploy.image_digest` are unset. A provider deploy refuses to
+run without a **PUBLICLY-pullable, digest-pinned** worker image (it will not silently pin a
+placeholder). The check is **fail-fast** — no provider call is made. Set both (or the env vars
+`BASE_WORKER__DEPLOY__IMAGE` / `BASE_WORKER__DEPLOY__IMAGE_DIGEST`); see
+[Publishing the worker image](#publishing-the-worker-image). The digest must be `sha256:<64 hex>`
+(a mutable tag is not an immutable pin).
+
+**Lium pod stuck at / fails with `CREATION_FAILED`.**
+The executor host could not pull your worker image — almost always because the image is in a
+**private** registry namespace. Publish the image **publicly** and confirm an unauthenticated
+`docker pull <image>@<digest>` succeeds, then redeploy. See
+[Publishing the worker image](#publishing-the-worker-image).
+
+**Lium: `403 Request blocked` when deploying.**
+Lium's edge CDN/WAF rejects **any** request body that contains a **loopback URL**
+(`http://127.0.0.1...` / `http://localhost...`), and `base worker deploy` bakes the pod env into the
+`POST /templates` body. The CLI now **omits loopback coordination URLs** (master/broker/gateway)
+from that body automatically — a loopback `worker.agent.master_url` no longer trips the WAF, and the
+agent resolves the master URL at runtime from its own config (reaching a loopback master via a
+reverse SSH tunnel). Set `worker.agent.master_url` to a **public** master URL for a normal remote
+deploy; keep the loopback default only for a local/tunnelled master.
 
 **Targon balance is invisible / deploy fails on credits.**
 Targon exposes **no** balance, credits, or billing endpoint via its API — the value only exists

@@ -33,6 +33,7 @@ from base.compute.worker_deployment import (
     WORKER_IMAGE_DIGEST,
     WORKER_INTERNAL_PORTS,
     WORKER_STARTUP_COMMANDS,
+    is_loopback_url,
     is_pinned_digest,
 )
 
@@ -285,3 +286,41 @@ async def test_clients_need_no_provider_credentials_env(
 
 def test_default_internal_ports_include_ssh() -> None:
     assert 22 in WORKER_INTERNAL_PORTS
+
+
+# -- loopback detection (Lium edge-WAF 403 on loopback URLs) -------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://127.0.0.1:8081",
+        "http://localhost:3100",
+        "https://localhost",
+        "http://[::1]:8082",
+        "127.0.0.1:8081",
+        "localhost",
+        "http://0.0.0.0:9000",
+        "http://127.0.0.53",
+    ],
+)
+def test_is_loopback_url_detects_loopback(value: str) -> None:
+    assert is_loopback_url(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://master.example.com",
+        "http://master:3100",
+        "http://10.0.0.5:8081",
+        "http://broker.internal:8082",
+        "worker-binding:pubkey:hotkey:nonce",
+        "0xdeadbeef",
+        "gpu",
+        "true",
+        "",
+    ],
+)
+def test_is_loopback_url_ignores_non_loopback(value: str) -> None:
+    assert is_loopback_url(value) is False

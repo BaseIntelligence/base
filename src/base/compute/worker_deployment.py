@@ -21,13 +21,21 @@ carries only non-secret configuration (master URL, worker role, ...).
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
+from urllib.parse import urlsplit
 
-# M1 placeholder: the published prism-evaluator image, pinned by digest. This is
-# the same digest the swarm deploy pins (deploy/swarm/install-swarm.sh). M2 swaps
-# these two constants for docker/Dockerfile.worker's published image + digest.
+# Placeholder worker image, pinned by digest. IMPORTANT: this is a PRIVATE-namespace
+# GHCR image and is NOT reliably pullable by a rented provider host -- on Lium a
+# private-namespace image makes pod creation fail with CREATION_FAILED. It stands in
+# for docker/Dockerfile.worker's PUBLICLY-published image; a real `base worker deploy`
+# MUST override it with an explicit, publicly-pullable, digest-pinned image
+# (worker.deploy.image + worker.deploy.image_digest / BASE_WORKER__DEPLOY__IMAGE*).
+# See docs/miner/worker-plane.md ("Publishing the worker image") for the publish +
+# digest-pin procedure. The two constants remain only as defaults for the M1
+# declarative-definition builders below and their tests.
 WORKER_IMAGE = "ghcr.io/baseintelligence/prism-evaluator"
 WORKER_IMAGE_TAG = "latest"
 WORKER_IMAGE_DIGEST = (
@@ -64,6 +72,33 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 def is_pinned_digest(value: str) -> bool:
     """Return ``True`` if ``value`` is a well-formed ``sha256:<64-hex>`` digest."""
     return bool(_DIGEST_RE.match(value))
+
+
+def is_loopback_url(value: str) -> bool:
+    """Return ``True`` if ``value`` is a URL whose host is loopback/unspecified.
+
+    Lium's edge CDN/WAF returns ``403 "Request blocked"`` for ANY request body that
+    contains a loopback URL (``http://127.0.0.1...`` / ``http://localhost...``), and
+    ``base worker deploy`` bakes the pod env into the WAF-sensitive ``POST /templates``
+    body. Such values must therefore be stripped before the template is created. A
+    non-URL string (a signature, a hotkey, a flag) is never a loopback URL.
+    """
+    if not value:
+        return False
+    text = value.strip()
+    host = urlsplit(text).hostname
+    if host is None and "//" not in text:
+        host = urlsplit(f"//{text}").hostname
+    if not host:
+        return False
+    host = host.lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
 
 
 def is_metachar_free(command: str) -> bool:

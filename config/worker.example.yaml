@@ -32,6 +32,15 @@ worker:
     gpu_count: 1
     max_price_per_hour: null
     max_lifetime_hours: 1.0
+    # PUBLICLY-pullable, digest-pinned worker image. REQUIRED for a lium/targon
+    # deploy (env BASE_WORKER__DEPLOY__IMAGE / BASE_WORKER__DEPLOY__IMAGE_DIGEST).
+    # A provider deploy REFUSES to run without these: a private-namespace GHCR image
+    # fails Lium pod creation (CREATION_FAILED), so it must be a public image. See
+    # docs/miner/worker-plane.md ("Publishing the worker image") for how to build,
+    # publish, and digest-pin docker/Dockerfile.worker. Not needed for provider=local.
+    image: null                 # e.g. ghcr.io/<your-public-namespace>/base-worker
+    image_digest: null          # e.g. sha256:<64 hex> (the immutable pin)
+    image_tag: null             # optional convenience tag alongside the digest
     # Metachar-free keep-alive: Lium rejects shell metacharacters (&&, ;, |).
     startup_commands: tail -f /dev/null
     ready_timeout_seconds: 60.0

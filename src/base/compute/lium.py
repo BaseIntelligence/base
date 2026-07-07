@@ -30,6 +30,7 @@ from base.compute.provider import (
     Offer,
     ProviderError,
 )
+from base.compute.worker_deployment import is_loopback_url
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,19 @@ class LiumClient:
         if docker_image_tag:
             body["docker_image_tag"] = docker_image_tag
         if environment:
-            body["environment"] = dict(environment)
+            # Lium's edge WAF returns 403 "Request blocked" for ANY body carrying a
+            # loopback URL (http://127.0.0.1... / http://localhost...), so strip
+            # loopback-valued entries before POSTing the template. Such values are
+            # redundant anyway: the pod config defaults them to loopback and the
+            # agent resolves them at runtime (a reverse SSH tunnel reaches a local
+            # master). Non-loopback (real) values are preserved.
+            safe_environment = {
+                key: value
+                for key, value in environment.items()
+                if not is_loopback_url(value)
+            }
+            if safe_environment:
+                body["environment"] = safe_environment
         # Lium rejects rents whose template startup_commands contain shell
         # metacharacters ("Malicious startup command detected"), so a caller
         # supplies a single metachar-free keep-alive here (e.g. "tail -f

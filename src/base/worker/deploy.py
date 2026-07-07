@@ -19,15 +19,19 @@ or any master-bound request.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from collections.abc import Mapping
 from typing import Any
 
 from base.compute.provider import Offer
+from base.compute.worker_deployment import is_loopback_url, is_pinned_digest
 from base.security.worker_auth import worker_binding_message
 from base.validator.agent.signing import RequestSigner
 from base.worker.runtime import WorkerBinding
+
+logger = logging.getLogger(__name__)
 
 LOCAL_PROVIDER = "local"
 SUPPORTED_PROVIDERS: tuple[str, ...] = ("local", "lium", "targon")
@@ -67,6 +71,16 @@ class NoOfferWithinBudgetError(WorkerDeployError):
     """No rentable offer is at or below the requested ``--max-price`` cap."""
 
 
+class WorkerImageNotConfiguredError(WorkerDeployError):
+    """A provider deploy lacks an explicit, digest-pinned worker image.
+
+    A provider (``lium``/``targon``) deploy MUST pin a PUBLICLY-pullable worker
+    image; the baked-in placeholder is a PRIVATE-namespace GHCR image that fails
+    Lium pod creation (``CREATION_FAILED``), so we refuse to silently pin it and
+    surface an actionable error naming the config keys + env vars instead.
+    """
+
+
 def normalize_provider(provider: str) -> str:
     """Normalize + validate a ``--provider`` value to a supported provider."""
 
@@ -99,6 +113,41 @@ def require_provider_api_key(
     if value is None or not value.strip():
         raise MissingProviderKeyError(provider, env_var)
     return value
+
+
+def require_worker_image(
+    *, image: str | None, image_digest: str | None, provider: str
+) -> tuple[str, str]:
+    """Return the ``(image, digest)`` a provider deploy must pin, or refuse.
+
+    A ``lium``/``targon`` deploy MUST reference a PUBLICLY-pullable, digest-pinned
+    worker image via ``worker.deploy.image`` + ``worker.deploy.image_digest`` (env
+    ``BASE_WORKER__DEPLOY__IMAGE`` / ``BASE_WORKER__DEPLOY__IMAGE_DIGEST``). We do
+    NOT fall back to a baked-in placeholder: a private-namespace GHCR image makes
+    Lium pod creation fail with ``CREATION_FAILED``, so silently pinning it would
+    provision a pod that never boots. Raises :class:`WorkerImageNotConfiguredError`
+    (naming the config keys) when unset or when the digest is not ``sha256:<64 hex>``.
+    See docs/miner/worker-plane.md ("Publishing the worker image").
+    """
+
+    resolved_image = image.strip() if image else ""
+    resolved_digest = image_digest.strip() if image_digest else ""
+    if not resolved_image or not resolved_digest:
+        raise WorkerImageNotConfiguredError(
+            f"provider '{provider}' deploy requires an explicit worker image: set "
+            "worker.deploy.image + worker.deploy.image_digest (env "
+            "BASE_WORKER__DEPLOY__IMAGE / BASE_WORKER__DEPLOY__IMAGE_DIGEST) to a "
+            "PUBLICLY-pullable, digest-pinned image. The deploy refuses to pin a "
+            "baked-in placeholder because a private-namespace GHCR image fails Lium "
+            "pod creation (CREATION_FAILED). See docs/miner/worker-plane.md."
+        )
+    if not is_pinned_digest(resolved_digest):
+        raise WorkerImageNotConfiguredError(
+            "worker.deploy.image_digest must be a pinned digest of the form "
+            f"'sha256:<64 hex>' (got {resolved_digest!r}); a mutable tag is not an "
+            "immutable pin. See docs/miner/worker-plane.md."
+        )
+    return resolved_image, resolved_digest
 
 
 def rank_worker_offers(
@@ -195,29 +244,48 @@ def build_worker_pod_env(
     (the pod never holds the miner key, so the binding is pre-signed here). It
     NEVER contains a provider API key: the key authenticates the CLI's provider
     client and must not leave the CLI/agent environment (architecture invariant 1).
+
+    Loopback coordination URLs (master/broker/gateway) are OMITTED: Lium's edge WAF
+    403s on any request body carrying a loopback URL and this env is baked into the
+    WAF-sensitive template body, while the pod config already defaults these to
+    loopback (the agent resolves them at runtime, reaching a local master via an SSH
+    tunnel). A real (public) URL is passed through as an override.
     """
 
     env: dict[str, str] = {
         "BASE_COMPUTE__WORKER_PLANE_ENABLED": "true",
-        "BASE_WORKER__AGENT__MASTER_URL": master_url,
         "BASE_WORKER__DEPLOY__PROVIDER": provider,
         "BASE_WORKER__IDENTITY__MINER_HOTKEY": binding.miner_hotkey,
         "BASE_WORKER__IDENTITY__BINDING_SIGNATURE": binding.signature,
         "BASE_WORKER__IDENTITY__BINDING_NONCE": binding.nonce,
     }
+    _set_non_loopback(env, "BASE_WORKER__AGENT__MASTER_URL", master_url)
     if worker_key_uri:
         env["BASE_WORKER__IDENTITY__KEY_URI"] = worker_key_uri
     if worker_key_mnemonic:
         env["BASE_WORKER__IDENTITY__KEY_MNEMONIC"] = worker_key_mnemonic
     if broker_url:
-        env["BASE_WORKER__AGENT__BROKER_URL"] = broker_url
+        _set_non_loopback(env, "BASE_WORKER__AGENT__BROKER_URL", broker_url)
     if gateway_url:
-        env["BASE_WORKER__AGENT__GATEWAY_URL"] = gateway_url
+        _set_non_loopback(env, "BASE_WORKER__AGENT__GATEWAY_URL", gateway_url)
     if extra:
         for key, value in extra.items():
             if key not in PROVIDER_KEY_ENV.values():
                 env[key] = value
     return env
+
+
+def _set_non_loopback(env: dict[str, str], key: str, value: str) -> None:
+    """Set ``env[key] = value`` unless ``value`` is a WAF-triggering loopback URL."""
+
+    if is_loopback_url(value):
+        logger.info(
+            "omitting loopback URL from worker pod env %s (Lium WAF 403s on loopback "
+            "URLs; the agent resolves it at runtime from config)",
+            key,
+        )
+        return
+    env[key] = value
 
 
 __all__ = [
@@ -228,11 +296,13 @@ __all__ = [
     "NoOfferWithinBudgetError",
     "UnsupportedProviderError",
     "WorkerDeployError",
+    "WorkerImageNotConfiguredError",
     "build_signed_binding",
     "build_worker_pod_env",
     "normalize_provider",
     "plan_provider_deployment",
     "rank_worker_offers",
     "require_provider_api_key",
+    "require_worker_image",
     "select_worker_offer",
 ]

@@ -20,12 +20,14 @@ from base.worker.deploy import (
     NoOfferWithinBudgetError,
     UnsupportedProviderError,
     WorkerDeployError,
+    WorkerImageNotConfiguredError,
     build_signed_binding,
     build_worker_pod_env,
     normalize_provider,
     plan_provider_deployment,
     rank_worker_offers,
     require_provider_api_key,
+    require_worker_image,
     select_worker_offer,
 )
 from base.worker.executor import (
@@ -67,6 +69,7 @@ __all__ = [
     "WorkerCoordinationClient",
     "WorkerCoordinationClientError",
     "WorkerDeployError",
+    "WorkerImageNotConfiguredError",
     "WorkerProofError",
     "WorkerProofExecutor",
     "WorkerProvenance",
@@ -78,6 +81,7 @@ __all__ = [
     "plan_provider_deployment",
     "rank_worker_offers",
     "require_provider_api_key",
+    "require_worker_image",
     "select_worker_offer",
     "verify_execution_proof",
 ]

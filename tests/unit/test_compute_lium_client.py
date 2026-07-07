@@ -428,6 +428,64 @@ async def test_provision_forwards_spec_startup_commands_to_template() -> None:
     assert body["startup_commands"] == "tail -f /dev/null"
 
 
+# -- loopback env hygiene: Lium edge-WAF 403s on loopback URLs in the body -----
+
+
+@respx.mock
+async def test_ensure_template_strips_loopback_urls_from_environment() -> None:
+    respx.get(f"{BASE}/templates").mock(return_value=httpx.Response(200, json=[]))
+    post = respx.post(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json={"id": "tpl-new"})
+    )
+    await LiumClient("k").ensure_template(
+        name="prism-worker",
+        docker_image="ghcr.io/base/worker",
+        environment={
+            "BASE_WORKER__AGENT__MASTER_URL": "http://127.0.0.1:8081",
+            "BASE_WORKER__AGENT__BROKER_URL": "http://localhost:8082",
+            "ROLE": "worker",
+        },
+    )
+    body = json.loads(post.calls.last.request.content)
+    blob = json.dumps(body)
+    assert "127.0.0.1" not in blob
+    assert "localhost" not in blob
+    # Non-loopback env still travels.
+    assert body["environment"] == {"ROLE": "worker"}
+
+
+@respx.mock
+async def test_ensure_template_omits_environment_when_all_loopback() -> None:
+    respx.get(f"{BASE}/templates").mock(return_value=httpx.Response(200, json=[]))
+    post = respx.post(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json={"id": "tpl-new"})
+    )
+    await LiumClient("k").ensure_template(
+        name="prism-worker",
+        docker_image="ghcr.io/base/worker",
+        environment={"BASE_WORKER__AGENT__MASTER_URL": "http://127.0.0.1:8081"},
+    )
+    body = json.loads(post.calls.last.request.content)
+    assert "environment" not in body
+
+
+@respx.mock
+async def test_provision_template_post_carries_no_loopback_url() -> None:
+    routes = _mock_happy_path(template=[])
+    spec = _spec(
+        env={
+            "BASE_WORKER__AGENT__MASTER_URL": "http://127.0.0.1:8081",
+            "ROLE": "worker",
+        }
+    )
+    await LiumClient("k").provision(spec, offer=_offer())
+    body = json.loads(routes["tpl_post"].calls.last.request.content)
+    blob = json.dumps(body)
+    assert "127.0.0.1" not in blob
+    assert "localhost" not in blob
+    assert body["environment"] == {"ROLE": "worker"}
+
+
 # -- status / logs / balance -------------------------------------------------
 
 

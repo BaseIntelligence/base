@@ -134,6 +134,8 @@ def test_deploy_provider_selects_in_budget_offer_without_leaking_key(
             return Instance(id="pod-xyz", status="PENDING")
 
     monkeypatch.setenv("LIUM_API_KEY", _SENTINEL_KEY)
+    monkeypatch.setenv("BASE_WORKER__DEPLOY__IMAGE", "ghcr.io/public/base-worker")
+    monkeypatch.setenv("BASE_WORKER__DEPLOY__IMAGE_DIGEST", "sha256:" + "a" * 64)
     monkeypatch.setattr(cli_main, "LiumClient", _FakeLiumClient)
 
     result = runner.invoke(
@@ -166,6 +168,12 @@ def test_deploy_provider_selects_in_budget_offer_without_leaking_key(
     assert _SENTINEL_KEY not in repr(env)
     assert "LIUM_API_KEY" not in env
     assert env["BASE_WORKER__IDENTITY__MINER_HOTKEY"] == "miner-ss58"
+    # The explicitly-configured worker image is pinned (no silent placeholder).
+    assert spec.image == "ghcr.io/public/base-worker"
+    assert spec.image_digest == "sha256:" + "a" * 64
+    # The loopback master_url from the example config never reaches the pod env
+    # (Lium's edge WAF 403s on loopback URLs baked into the template body).
+    assert "127.0.0.1" not in repr(env)
 
 
 def test_deploy_provider_all_over_cap_provisions_nothing(
@@ -189,6 +197,8 @@ def test_deploy_provider_all_over_cap_provisions_nothing(
             return Instance(id="never", status="PENDING")
 
     monkeypatch.setenv("LIUM_API_KEY", _SENTINEL_KEY)
+    monkeypatch.setenv("BASE_WORKER__DEPLOY__IMAGE", "ghcr.io/public/base-worker")
+    monkeypatch.setenv("BASE_WORKER__DEPLOY__IMAGE_DIGEST", "sha256:" + "a" * 64)
     monkeypatch.setattr(cli_main, "LiumClient", _FakeLiumClient)
 
     result = runner.invoke(
@@ -207,6 +217,56 @@ def test_deploy_provider_all_over_cap_provisions_nothing(
     assert result.exit_code == 1
     assert provisioned["count"] == 0
     assert "no rentable offer within budget" in result.stderr
+
+
+def test_deploy_provider_without_worker_image_refuses(
+    monkeypatch: pytest.MonkeyPatch, _fake_keys: None
+) -> None:
+    """A provider deploy refuses when no explicit worker image + digest is set.
+
+    The M1 placeholder image is a PRIVATE-namespace GHCR image that fails Lium pod
+    creation, so the deploy must not silently pin it: an unset image is a clear,
+    actionable refusal that provisions nothing.
+    """
+
+    listed = {"count": 0}
+
+    class _FakeLiumClient:
+        def __init__(self, api_key: str) -> None:
+            pass
+
+        async def list_offers(
+            self, *, max_price_per_hour: float | None = None
+        ) -> list[Offer]:
+            listed["count"] += 1
+            return [Offer(id="a", gpu_type="H100", gpu_count=1, price_per_hour=0.5)]
+
+        async def provision(self, *a: object, **k: object) -> Instance:
+            raise AssertionError("provision must not run without a configured image")
+
+    monkeypatch.setenv("LIUM_API_KEY", _SENTINEL_KEY)
+    monkeypatch.delenv("BASE_WORKER__DEPLOY__IMAGE", raising=False)
+    monkeypatch.delenv("BASE_WORKER__DEPLOY__IMAGE_DIGEST", raising=False)
+    monkeypatch.setattr(cli_main, "LiumClient", _FakeLiumClient)
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "worker",
+            "deploy",
+            "--provider",
+            "lium",
+            "--max-price",
+            "1.0",
+            "--config",
+            "config/worker.example.yaml",
+        ],
+    )
+    assert result.exit_code == 1
+    # Refused before any provider network call (image check is fail-fast).
+    assert listed["count"] == 0
+    assert "worker.deploy.image" in result.stderr
+    assert "BASE_WORKER__DEPLOY__IMAGE" in result.stderr
 
 
 # -- VAL-AGENT-009 (unit-level): local deploy reports the active worker --------

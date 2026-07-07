@@ -27,8 +27,6 @@ from base.bittensor.identity_cache import (
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
 from base.compute import (
-    WORKER_IMAGE,
-    WORKER_IMAGE_DIGEST,
     InstanceSpec,
     LiumClient,
     TargonClient,
@@ -143,6 +141,7 @@ from base.worker.deploy import (
     UnsupportedProviderError,
     WorkerDeployError,
     build_worker_pod_env,
+    require_worker_image,
 )
 
 app = typer.Typer(help="BASE multi-challenge subnet CLI")
@@ -1743,13 +1742,15 @@ def _worker_instance_spec(
     offer: Any,
     env: Mapping[str, str],
     max_price: float | None,
+    image: str,
+    image_digest: str,
 ) -> InstanceSpec:
     deploy_cfg = settings.worker.deploy
     return InstanceSpec(
         name=f"prism-worker-{uuid.uuid4().hex[:12]}",
         template_ref=deploy_cfg.template_name or WORKER_TEMPLATE_NAME,
-        image=deploy_cfg.image or WORKER_IMAGE,
-        image_digest=deploy_cfg.image_digest or WORKER_IMAGE_DIGEST,
+        image=image,
+        image_digest=image_digest,
         env=dict(env),
         ports=(22,),
         ssh_public_keys=_worker_ssh_public_keys(deploy_cfg),
@@ -1771,6 +1772,14 @@ async def _run_worker_provider_deploy_async(
     max_price: float | None,
 ) -> None:
     deploy_cfg = settings.worker.deploy
+    # Fail fast (before any provider network call) when the deploy has no explicit,
+    # publicly-pullable, digest-pinned worker image: the deploy never silently pins
+    # a private-namespace placeholder that fails Lium pod creation.
+    image, image_digest = require_worker_image(
+        image=deploy_cfg.image,
+        image_digest=deploy_cfg.image_digest,
+        provider=provider,
+    )
     resolved_max_price = (
         max_price if max_price is not None else deploy_cfg.max_price_per_hour
     )
@@ -1802,6 +1811,8 @@ async def _run_worker_provider_deploy_async(
         offer=offer,
         env=pod_env,
         max_price=resolved_max_price,
+        image=image,
+        image_digest=image_digest,
     )
     if provider == "lium":
         instance = await client.provision(spec, offer=offer)

@@ -20,12 +20,14 @@ from base.worker.deploy import (
     MissingProviderKeyError,
     NoOfferWithinBudgetError,
     UnsupportedProviderError,
+    WorkerImageNotConfiguredError,
     build_signed_binding,
     build_worker_pod_env,
     normalize_provider,
     plan_provider_deployment,
     rank_worker_offers,
     require_provider_api_key,
+    require_worker_image,
     select_worker_offer,
 )
 
@@ -204,6 +206,89 @@ def test_build_worker_pod_env_never_carries_provider_key() -> None:
     assert env["BASE_WORKER__IDENTITY__BINDING_SIGNATURE"] == binding.signature
     assert env["BASE_WORKER__IDENTITY__MINER_HOTKEY"] == "mh"
     assert env["SAFE_VALUE"] == "ok"
+
+
+# -- loopback master_url hygiene (Lium edge-WAF 403; VAL follow-up) ------------
+
+
+def test_build_worker_pod_env_omits_loopback_urls() -> None:
+    # Lium's edge WAF 403s on any request body carrying a loopback URL, and this
+    # env is baked into the WAF-sensitive POST /templates body. A loopback
+    # coordination URL is also redundant (the pod config defaults to loopback and
+    # the agent resolves it at runtime), so it must not travel in the env.
+    binding = build_signed_binding(
+        worker_pubkey="wp", miner_signer=_FakeSigner("mh"), nonce="n1"
+    )
+    env = build_worker_pod_env(
+        master_url="http://127.0.0.1:8081",
+        provider="lium",
+        binding=binding,
+        broker_url="http://127.0.0.1:8082",
+        gateway_url="http://localhost:8081",
+    )
+    blob = repr(env)
+    assert "127.0.0.1" not in blob
+    assert "localhost" not in blob
+    assert "BASE_WORKER__AGENT__MASTER_URL" not in env
+    assert "BASE_WORKER__AGENT__BROKER_URL" not in env
+    assert "BASE_WORKER__AGENT__GATEWAY_URL" not in env
+    # The binding + provider still travel (they are not loopback URLs).
+    assert env["BASE_WORKER__IDENTITY__MINER_HOTKEY"] == "mh"
+    assert env["BASE_WORKER__DEPLOY__PROVIDER"] == "lium"
+
+
+def test_build_worker_pod_env_keeps_public_urls() -> None:
+    binding = build_signed_binding(
+        worker_pubkey="wp", miner_signer=_FakeSigner("mh"), nonce="n1"
+    )
+    env = build_worker_pod_env(
+        master_url="https://master.example.com",
+        provider="lium",
+        binding=binding,
+        broker_url="http://broker.internal:8082",
+        gateway_url="https://gateway.example.com",
+    )
+    assert env["BASE_WORKER__AGENT__MASTER_URL"] == "https://master.example.com"
+    assert env["BASE_WORKER__AGENT__BROKER_URL"] == "http://broker.internal:8082"
+    assert env["BASE_WORKER__AGENT__GATEWAY_URL"] == "https://gateway.example.com"
+
+
+# -- worker image config (no silent private-image pin; VAL follow-up) ----------
+
+
+def test_require_worker_image_returns_configured_image_and_digest() -> None:
+    digest = "sha256:" + "a" * 64
+    assert require_worker_image(
+        image="ghcr.io/public/base-worker", image_digest=digest, provider="lium"
+    ) == ("ghcr.io/public/base-worker", digest)
+
+
+@pytest.mark.parametrize("provider", ["lium", "targon"])
+def test_require_worker_image_raises_when_unset(provider: str) -> None:
+    with pytest.raises(WorkerImageNotConfiguredError) as exc:
+        require_worker_image(image=None, image_digest=None, provider=provider)
+    message = str(exc.value)
+    assert "worker.deploy.image" in message
+    assert "BASE_WORKER__DEPLOY__IMAGE" in message
+
+
+def test_require_worker_image_requires_both_image_and_digest() -> None:
+    digest = "sha256:" + "a" * 64
+    with pytest.raises(WorkerImageNotConfiguredError):
+        require_worker_image(
+            image="ghcr.io/public/base-worker", image_digest=None, provider="lium"
+        )
+    with pytest.raises(WorkerImageNotConfiguredError):
+        require_worker_image(image=None, image_digest=digest, provider="lium")
+
+
+def test_require_worker_image_rejects_malformed_digest() -> None:
+    with pytest.raises(WorkerImageNotConfiguredError):
+        require_worker_image(
+            image="ghcr.io/public/base-worker",
+            image_digest="latest",
+            provider="lium",
+        )
 
 
 # -- worker image entrypoint (VAL-AGENT-013/014, live metachar constraint) -----
