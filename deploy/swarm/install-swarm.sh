@@ -1732,9 +1732,15 @@ deploy_challenges() {
   # Central AST+LLM gate review routing. Point the analyzer at the master gateway
   # ROOT (it appends /llm/v1) + read the scoped central-gate token from
   # /run/secrets/base_gateway_token. NO direct provider key on the service.
+  # The master routes via the INTERNAL overlay service name (base-master-proxy),
+  # NOT the gateway PUBLIC IP: the agent-challenge eval JOB + analyzer run on
+  # base_jobs_internal, which is --internal (NO egress), so the public IP is
+  # unreachable from there; the proxy is multi-homed onto base_jobs_internal so it
+  # IS reachable by this service name. Byte-matches cli_app
+  # _agent_challenge_own_runner_env (_settings_gateway_internal_base_url).
   local -a ac_gate_secret_specs=()
   ac_eval_env+=(
-    "CHALLENGE_LLM_GATEWAY_BASE_URL=${GATEWAY_PUBLIC_BASE_URL}"
+    "CHALLENGE_LLM_GATEWAY_BASE_URL=http://base-master-proxy:${MASTER_PROXY_PORT}"
     "CHALLENGE_LLM_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
   )
 

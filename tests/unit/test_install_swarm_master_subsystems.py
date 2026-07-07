@@ -372,8 +372,12 @@ def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None
     """agent-challenge api+worker get the gateway ROOT URL + scoped token mount.
 
     The analyzer appends ``/llm/v1`` to the base URL itself, so the installer
-    renders the gateway ROOT. The scoped token mounts at
-    ``/run/secrets/base_gateway_token`` and NO direct provider key is rendered.
+    renders the gateway ROOT — via the INTERNAL overlay service name
+    (``http://base-master-proxy:${MASTER_PROXY_PORT}``), NOT the public IP: the
+    agent-challenge eval JOB + analyzer run on the ``--internal``
+    base_jobs_internal overlay (no egress) where the public IP is unreachable. The
+    scoped token mounts at ``/run/secrets/base_gateway_token`` and NO direct
+    provider key is rendered.
     """
     result = _run(tmp_path)
     assert result.returncode == 0, f"stderr={result.stderr!r}"
@@ -381,7 +385,7 @@ def test_central_gateway_routes_agent_challenge_consumer(tmp_path: Path) -> None
 
     for service in ("challenge-agent-challenge", "challenge-agent-challenge-worker"):
         block = _service_block(lines, service)
-        assert f"CHALLENGE_LLM_GATEWAY_BASE_URL={GATEWAY_PUBLIC_BASE_URL}" in block
+        assert "CHALLENGE_LLM_GATEWAY_BASE_URL=http://base-master-proxy:19080" in block
         token_file = "CHALLENGE_LLM_GATEWAY_TOKEN_FILE=/run/secrets/base_gateway_token"
         assert token_file in block
         assert "source=base_gateway_token,target=base_gateway_token" in block
