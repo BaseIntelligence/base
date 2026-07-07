@@ -58,6 +58,10 @@ from base.master.worker_coordination import (
     build_worker_coordination_router,
     build_worker_health_lifespan,
 )
+from base.master.worker_unit_status import (
+    WorkerUnitStatusService,
+    build_worker_unit_status_router,
+)
 from base.schemas.challenge import ChallengeRecord, ChallengeStatus
 from base.security.miner_auth import (
     MinerAuthError,
@@ -381,6 +385,7 @@ def create_proxy_app(
     worker_health_interval_seconds: float | None = None,
     worker_assignment_service: WorkerAssignmentService | None = None,
     worker_assignment_verifier: WorkerSignedRequestVerifier | None = None,
+    worker_unit_status_service: WorkerUnitStatusService | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
     llm_gateway_service: LLMGatewayService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
@@ -733,6 +738,15 @@ def create_proxy_app(
             )
         )
         app.state.worker_assignment_service = worker_assignment_service
+
+    if worker_unit_status_service is not None and worker_verifier is not None:
+        app.include_router(
+            build_worker_unit_status_router(
+                service=worker_unit_status_service,
+                auth_dependency=build_worker_auth_dependency(worker_verifier),
+            )
+        )
+        app.state.worker_unit_status_service = worker_unit_status_service
 
     if assignment_coordination_service is not None and validator_verifier is not None:
         app.include_router(

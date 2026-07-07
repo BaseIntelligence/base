@@ -85,6 +85,7 @@ from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_assignment_engine import WorkerAssignmentEngine
 from base.master.worker_coordination import WorkerCoordinationService
 from base.master.worker_reconciliation import WorkerReconciliationService
+from base.master.worker_unit_status import WorkerUnitStatusService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
 from base.observability.sentry import init_sentry
@@ -975,6 +976,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     worker_verifier: WorkerSignedRequestVerifier | None = None
     worker_assignment_service: WorkerAssignmentService | None = None
     worker_assignment_verifier: WorkerSignedRequestVerifier | None = None
+    worker_unit_status_service: WorkerUnitStatusService | None = None
     if settings.compute.worker_plane_enabled:
         worker_service = _worker_coordination_service(
             settings, session_factory, runtime.metagraph_cache
@@ -988,6 +990,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_assignment_verifier = _worker_assignment_verifier(
             settings, session_factory
         )
+        worker_unit_status_service = WorkerUnitStatusService(session_factory)
     llm_gateway_service = _llm_gateway_service(settings, session_factory)
     assignment_service = _assignment_coordination_service(
         settings, session_factory, gateway_service=llm_gateway_service
@@ -1041,6 +1044,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         ),
         worker_assignment_service=worker_assignment_service,
         worker_assignment_verifier=worker_assignment_verifier,
+        worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
         llm_gateway_service=llm_gateway_service,
         orchestration_driver=orchestration_driver,

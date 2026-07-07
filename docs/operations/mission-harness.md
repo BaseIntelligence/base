@@ -63,10 +63,24 @@ PID** so nothing is left listening.
    (`GET /v1/workers/active?hotkey=` returns ≥1) the resubmission (fresh nonce) is accepted.
 6. **VAL-CROSS-009** fleet agreement: `GET /v1/workers` and `base worker status` (pointed at the
    same master) report the same worker ids, owners, providers, statuses, and fault counts.
+11. **VAL-CROSS-011** dispute lifecycle discoverable via APIs alone: after the divergence drill, the
+   whole dispute → audit → invalidation → fault chain is reconstructed from operator surfaces with
+   **zero DB/file reads**:
+   * **(a) disputed state + (b) audit unit** come from the signed `GET /v1/workers/units` (the
+     master unit-status read surface): the primary unit reads `status: "disputed"` with its replicas
+     (worker id, owner hotkey, posted `manifest_sha256`, proof presence), and its `audit` block
+     names the linked audit unit id, `executor_kind: "validator"`, and terminal `outcome`
+     (`pending` / `passed` / `mismatch-resolved`).
+   * **(c) invalidation** comes from prism `GET /v1/submissions/{id}` (never a live-ranked
+     `completed` score).
+   * **(d) fault** is visible on both `GET /v1/workers` and `base worker status`.
 
-The dispute lifecycle (VAL-CROSS-011) is reconstructable after the fact from the same surfaces:
-the fault on `GET /v1/workers` (and `base worker status`) references the disputed unit id, and the
-prism submission status shows it never finalized to a live-ranked score.
+The dispute-lifecycle reconstruction (VAL-CROSS-011) runs at the end of drill 3 (it needs a live
+dispute), so selecting drill `3` also exercises it.
+
+`GET /v1/workers/units` is a signed read-only surface authenticated exactly like `GET /v1/workers`
+(a registered worker OR an eligible validator signed request — NOT the admission internal bridge
+bearer). With `compute.worker_plane_enabled` off its router is unmounted (404).
 
 ## Ports
 

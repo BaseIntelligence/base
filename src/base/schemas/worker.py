@@ -75,6 +75,52 @@ class WorkerListResponse(BaseModel):
     workers: list[WorkerView] = Field(default_factory=list)
 
 
+class WorkerReplicaView(BaseModel):
+    """One worker replica of a gpu unit, surfaced in the unit-status view."""
+
+    worker_id: str
+    miner_hotkey: str
+    status: str
+    manifest_sha256: str | None = None
+    has_proof: bool = False
+
+
+class WorkerAuditUnitView(BaseModel):
+    """The validator AUDIT unit linked to a disputed gpu unit.
+
+    ``outcome`` is the audit's terminal state: ``pending`` (not yet resolved),
+    ``mismatch-resolved`` (resolved with a fault attributed to the divergent
+    worker(s)), or ``passed`` (resolved with no fault).
+    """
+
+    work_unit_id: str
+    executor_kind: str
+    outcome: str
+
+
+class WorkerUnitStatusView(BaseModel):
+    """Per primary gpu unit status for operator dispute discovery (VAL-CROSS-011).
+
+    Exposes the unit id + status (INCLUDING ``disputed``), its replicas
+    (worker/owner/manifest/proof-presence), and, when disputed, the linked
+    validator audit unit with its terminal outcome -- so the full dispute ->
+    audit -> invalidation -> fault chain is reconstructable via APIs alone.
+    """
+
+    work_unit_id: str
+    challenge_slug: str
+    submission_ref: str
+    status: str
+    replicas: list[WorkerReplicaView] = Field(default_factory=list)
+    audit: WorkerAuditUnitView | None = None
+
+
+class WorkerUnitStatusListResponse(BaseModel):
+    """Response for ``GET /v1/workers/units``."""
+
+    units: list[WorkerUnitStatusView] = Field(default_factory=list)
+
+
 class ProviderInfo(BaseModel):
     """Provider/pod identity carried by an ExecutionProof (architecture 3.4)."""
 

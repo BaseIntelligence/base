@@ -48,6 +48,7 @@ from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_assignment_engine import WorkerAssignmentEngine
 from base.master.worker_coordination import WorkerCoordinationService
 from base.master.worker_reconciliation import WorkerReconciliationService
+from base.master.worker_unit_status import WorkerUnitStatusService
 from base.security.miner_auth import SqlAlchemyMinerNonceStore
 from base.security.validator_auth import (
     MetagraphValidatorEligibility,
@@ -164,6 +165,7 @@ def build_app(config: dict[str, Any]) -> Any:
         eligibility=RegisteredWorkerEligibility(session_factory),
         ttl_seconds=sig_ttl,
     )
+    worker_unit_status_service = WorkerUnitStatusService(session_factory)
 
     validator_service = ValidatorCoordinationService(
         session_factory,
@@ -212,6 +214,7 @@ def build_app(config: dict[str, Any]) -> Any:
         ),
         worker_assignment_service=worker_assignment_service,
         worker_assignment_verifier=worker_assignment_verifier,
+        worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
         orchestration_driver=driver,
         orchestration_interval_seconds=float(
