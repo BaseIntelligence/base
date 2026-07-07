@@ -578,6 +578,32 @@ ensure_docker() {
 }
 
 # ============================================================================
+# 0b. ensure_uv() — install the `uv` runtime the base-supervisor.service unit
+#     launches through (ExecStart=/usr/local/bin/uv run --project current ...).
+#     Only needed when we install the supervisor. Idempotent + dry-run-safe.
+#     NOTE: the unit hard-codes /usr/local/bin/uv, so UV_INSTALL_DIR must stay
+#     /usr/local/bin for the supervisor to boot (overridable only for tests).
+# ============================================================================
+ensure_uv() {
+  [[ "${INSTALL_SUPERVISOR:-false}" == "true" ]] || { log "STEP 0b ensure_uv: supervisor not being installed — skipping"; return 0; }
+  local uv_dir="${UV_INSTALL_DIR:-/usr/local/bin}"
+  log "STEP 0b ensure_uv: ensuring uv at ${uv_dir}/uv (base-supervisor.service ExecStart)"
+  if [[ -x "${uv_dir}/uv" ]]; then
+    log "  uv present at ${uv_dir}/uv — skipping install (idempotent)"
+    return 0
+  fi
+  if [[ "${SKIP_UV_INSTALL:-false}" == "true" ]]; then
+    die "uv missing at ${uv_dir}/uv and SKIP_UV_INSTALL=true — install uv there and re-run"
+  fi
+  warn "DESTRUCTIVE: installing uv via astral.sh to ${uv_dir} (base-supervisor runtime)"
+  local getuv="/tmp/uv-install.$$.sh"
+  plan curl -fsSL -o "${getuv}" https://astral.sh/uv/install.sh
+  plan env "UV_INSTALL_DIR=${uv_dir}" INSTALLER_NO_MODIFY_PATH=1 sh "${getuv}"
+  plan rm -f "${getuv}"
+  log "  uv install requested (verify ${uv_dir}/uv)"
+}
+
+# ============================================================================
 # Argument parsing
 # ============================================================================
 usage() {
@@ -681,8 +707,17 @@ Optional environment:
   SKIP_DOCKER_INSTALL                        Set true to NOT auto-install Docker Engine
                                              when it is missing/too old (default false);
                                              ensure_docker then hard-fails instead.
+  SKIP_UV_INSTALL                            Set true to NOT auto-install uv when it is
+                                             missing (default false); ensure_uv then
+                                             hard-fails instead. Installed only when
+                                             --install-supervisor is set.
   DOCKER_INSTALL_METHOD                      Docker auto-install method when absent:
                                              get-docker (default, get.docker.com) | apt.
+  UV_INSTALL_DIR                             Dir ensure_uv installs uv into (default
+                                             /usr/local/bin). MUST remain /usr/local/bin
+                                             for base-supervisor.service to boot (the unit
+                                             hard-codes /usr/local/bin/uv); override only
+                                             for tests.
   SECRETS_ENV_FILE                           Path --auto-secrets persists/reloads the
                                              generated secret values from (mode 600,
                                              root-only; default /etc/base/secrets.env).
@@ -2645,6 +2680,7 @@ main_validator_node() {
   log "============================================================"
 
   ensure_docker                   # 0  (install engine on a blank host; idempotent)
+  ensure_uv                       # 0b (install uv for the node-local base-supervisor.service; only when --install-supervisor)
   preflight                       # docker version + swarm + GHCR creds (no DB dumps)
   ghcr_login                      # private images
   swarm_init                      # the node's OWN swarm (the agent runs as a service on it)
@@ -2702,6 +2738,7 @@ main() {
   log "============================================================"
 
   ensure_docker              # 0  (install engine on a blank host; idempotent)
+  ensure_uv                  # 0b (install uv for base-supervisor.service; only when --install-supervisor)
   preflight                  # 1
   ghcr_login                 # 1b (private images)
   apply_daemon_json          # 2  (DESTRUCTIVE behind --restart-dockerd)
