@@ -357,9 +357,9 @@ def _extract_gpu_type(item: Mapping[str, Any]) -> str:
 def _extract_gpu_count(item: Mapping[str, Any]) -> int:
     spec = item.get("spec")
     if isinstance(spec, Mapping):
-        count = spec.get("gpu_count")
-        if count is not None:
-            return _coerce_int(count)
+        count = _coerce_int(spec.get("gpu_count"))
+        if count >= 1:
+            return count
     return _coerce_int(item.get("gpu_count"))
 
 

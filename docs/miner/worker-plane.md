@@ -131,7 +131,7 @@ worker:
     # worker image"). Not needed for provider: local.
     image: ghcr.io/<your-public-namespace>/base-worker
     image_digest: sha256:<64 hex>         # the immutable pin
-    image_tag: v1                          # optional convenience tag
+    image_tag: v1                          # informational-only (see note below)
     startup_commands: tail -f /dev/null   # MUST be metachar-free (see Troubleshooting)
     ssh_public_key_file: /path/to/your_key.pub   # Lium requires an SSH key
     ssh_key_name: my-worker-key
@@ -198,8 +198,14 @@ worker:
   deploy:
     image: ghcr.io/<your-public-namespace>/base-worker
     image_digest: sha256:<64 hex>   # the value printed above
-    image_tag: v1                    # optional convenience tag
+    image_tag: v1                    # informational-only (see note below)
 ```
+
+> **`image_tag` is informational-only.** A `lium`/`targon` deploy provisions the worker
+> **by digest** (`image` + `image_digest`); `worker.deploy.image_tag` is **not consumed** by
+> the deploy path and does **not** affect which image bytes run. Keep it only as a
+> human-readable note of the tag the digest was published under. What earns **tier 1** is the
+> digest pin, not the tag.
 
 **Verify it is actually pullable before deploying.** From a clean host with no registry auth:
 

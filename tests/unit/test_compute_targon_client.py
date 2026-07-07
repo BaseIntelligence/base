@@ -180,6 +180,31 @@ async def test_multi_gpu_offer_filtered_by_per_gpu_max_price() -> None:
     assert offers[0].price_per_hour == pytest.approx(2.5)
 
 
+@respx.mock
+async def test_multi_gpu_offer_count_from_numeric_field_filters_correctly() -> None:
+    inventory = [
+        {
+            "name": "h100x8",
+            # ``spec`` is present but carries no usable gpu_count; the count lives
+            # ONLY in the top-level numeric field. Per-GPU price must still be
+            # cost/count so the per-GPU cap filters the shape correctly.
+            "spec": {"gpu_type": "H100", "gpu_count": 0},
+            "gpu_count": 8,
+            "cost_per_hour": 16.0,
+            "available": 2,
+        }
+    ]
+    respx.get(f"{BASE}/inventory").mock(
+        return_value=httpx.Response(200, json=inventory)
+    )
+    # Per-GPU: 16.0 / 8 = 2.0 (within the 3.0/GPU cap). A whole-shape fallback
+    # (16.0 > 3.0) would have WRONGLY dropped this in-budget multi-GPU shape.
+    offers = await TargonClient("k").list_offers(max_price_per_hour=3.0)
+    assert len(offers) == 1
+    assert offers[0].gpu_count == 8
+    assert offers[0].price_per_hour == pytest.approx(2.0)
+
+
 # -- VAL-PROV-003 (provision guardrails, no network) --------------------------
 
 

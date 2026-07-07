@@ -131,12 +131,14 @@ class LiumClient:
             "POST", f"/executors/{selected.id}/rent", json_body=rent_body
         )
         # The rent succeeded: a billable pod may now exist. Every subsequent
-        # failure (pod-id resolution AND the status poll) must best-effort
-        # terminate + verify before re-raising, so cleanup keys off "rent
-        # succeeded" rather than "pod id resolved" -- a transient GET /pods
-        # failure during resolution must not leak a just-rented pod.
-        pod_id = self._extract_pod_id(rent)
+        # failure -- an unparseable rent body, pod-id resolution, AND the status
+        # poll -- must best-effort terminate + verify before re-raising, so
+        # cleanup keys strictly off "rent HTTP call succeeded" rather than "pod
+        # id resolved". The pod-id extraction stays INSIDE the try so a 2xx rent
+        # with a non-JSON body cannot leak a just-rented pod.
+        pod_id: str | None = None
         try:
+            pod_id = self._extract_pod_id(rent)
             if pod_id is None:
                 pod_id = await self._find_pod_id(spec.name)
             if pod_id is None:
@@ -347,7 +349,12 @@ class LiumClient:
     def _extract_pod_id(response: httpx.Response) -> str | None:
         if not response.content:
             return None
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise LiumError(
+                "Lium rent returned a 2xx response with an unparseable body"
+            ) from exc
         if not isinstance(data, Mapping):
             return None
         for key in ("id", "pod_id", "uuid"):

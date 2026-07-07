@@ -276,6 +276,9 @@ class WorkerDeploySettings(BaseModel):
     provider_instance_ref: str | None = None
     image: str | None = None
     image_digest: str | None = None
+    #: Informational-only: a human-readable tag recorded alongside the pin. The
+    #: digest-pinned deploy path provisions BY DIGEST (``image`` + ``image_digest``)
+    #: and never consumes this value, so it never affects which image bytes run.
     image_tag: str | None = None
     template_name: str | None = None
     gpu_count: int = 1

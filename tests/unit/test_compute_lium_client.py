@@ -681,6 +681,36 @@ async def test_provision_cleanup_survives_transient_pods_failure_in_resolution()
 
 
 @respx.mock
+async def test_provision_cleanup_after_unparseable_rent_body() -> None:
+    respx.get(f"{BASE}/ssh-keys").mock(
+        return_value=httpx.Response(200, json=[{"public_key": "ssh-ed25519 AAAA"}])
+    )
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json=[{"id": "tpl-1", "name": "prism-worker"}])
+    )
+    # A 2xx rent with a NON-JSON/garbage body: pod-id extraction raises while
+    # parsing. Because the rent HTTP call SUCCEEDED, a billable pod may now exist,
+    # so provision must still terminate + verify the just-rented pod (resolved by
+    # name) before re-raising -- no leaked pod.
+    respx.post(f"{BASE}/executors/exec-1/rent").mock(
+        return_value=httpx.Response(200, content=b"<html>not json</html>")
+    )
+    pods = respx.get(f"{BASE}/pods").mock(
+        side_effect=[
+            httpx.Response(200, json=[{"id": "pod-3", "pod_name": "mission-pod"}]),
+            httpx.Response(200, json=[]),
+        ]
+    )
+    delete = respx.delete(f"{BASE}/pods/pod-3").mock(return_value=httpx.Response(200))
+
+    with pytest.raises(LiumError):
+        await LiumClient("k").provision(_spec(), offer=_offer())
+
+    assert delete.call_count == 1  # the just-rented pod was terminated
+    assert pods.call_count == 2  # resolved by name, then verify_terminated polled
+
+
+@respx.mock
 async def test_provision_with_dockerfile_content_omits_template() -> None:
     respx.get(f"{BASE}/ssh-keys").mock(
         return_value=httpx.Response(200, json=[{"public_key": "ssh-ed25519 AAAA"}])

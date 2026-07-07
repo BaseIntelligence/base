@@ -40,7 +40,10 @@ worker:
     # publish, and digest-pin docker/Dockerfile.worker. Not needed for provider=local.
     image: null                 # e.g. ghcr.io/<your-public-namespace>/base-worker
     image_digest: null          # e.g. sha256:<64 hex> (the immutable pin)
-    image_tag: null             # optional convenience tag alongside the digest
+    # image_tag is INFORMATIONAL-ONLY: the deploy path pins BY DIGEST and never
+    # consumes this value, so it does not affect which image bytes run. Keep it as
+    # a human-readable note of the tag the digest was published under, if you like.
+    image_tag: null
     # Metachar-free keep-alive: Lium rejects shell metacharacters (&&, ;, |).
     startup_commands: tail -f /dev/null
     ready_timeout_seconds: 60.0
