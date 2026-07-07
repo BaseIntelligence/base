@@ -34,6 +34,15 @@ CAPABILITY_GPU = "gpu"
 AGENT_CHALLENGE_SLUG = "agent-challenge"
 PRISM_SLUG = "prism"
 
+#: Work-unit payload key naming the executor kind that must run a unit
+#: (architecture.md sec 3.3). Absent/``worker`` gpu units route to the worker
+#: replica plane when the flag is on; ``validator`` gpu units (e.g. dispute
+#: AUDIT units) route to validators even with the worker plane on. Irrelevant to
+#: cpu units, which always route to validators.
+EXECUTOR_KIND_PAYLOAD_KEY = "executor_kind"
+EXECUTOR_KIND_WORKER = "worker"
+EXECUTOR_KIND_VALIDATOR = "validator"
+
 DEFAULT_MAX_ATTEMPTS = 3
 
 #: Payload marker set on a terminally-``failed`` work unit once it has been
@@ -107,6 +116,19 @@ def capability_matches(
     return required in capabilities
 
 
+def unit_executor_kind(payload: Mapping[str, Any] | None) -> str:
+    """Return the executor kind a unit's payload requests (defaults to worker).
+
+    A gpu unit with no explicit kind (the common submission unit) is
+    worker-executed when the worker plane is on; only a unit explicitly marked
+    ``validator`` (a dispute AUDIT unit) is validator-executed, so it routes to a
+    validator even while the worker plane owns gpu.
+    """
+
+    kind = (payload or {}).get(EXECUTOR_KIND_PAYLOAD_KEY)
+    return kind if kind == EXECUTOR_KIND_VALIDATOR else EXECUTOR_KIND_WORKER
+
+
 class AssignmentService:
     """Create work units and assign pending ones across online validators."""
 
@@ -118,6 +140,7 @@ class AssignmentService:
         gpu_serves_cpu: bool = True,
         capability_concurrency: Mapping[str, int] | None = None,
         default_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        worker_plane_capabilities: frozenset[str] = frozenset(),
     ) -> None:
         self._session_factory = session_factory
         self._now_fn = now_fn
@@ -128,6 +151,11 @@ class AssignmentService:
             else capability_concurrency
         )
         self._default_max_attempts = default_max_attempts
+        #: Capabilities owned by the worker plane: units requiring one of these
+        #: are NOT routed to validators here (the worker replica engine assigns
+        #: them). Empty (the default) preserves legacy validator routing exactly,
+        #: so a flag-OFF master behaves byte-for-byte as before.
+        self._worker_plane_capabilities = frozenset(worker_plane_capabilities)
 
     async def create_agent_challenge_work_units(
         self,
@@ -331,6 +359,8 @@ class AssignmentService:
 
         for unit in pending:
             capability = unit.required_capability
+            if self._worker_plane_owns(capability, unit.payload):
+                continue
             limit = self._capability_concurrency.get(capability)
             eligible = [
                 hotkey
@@ -378,6 +408,13 @@ class AssignmentService:
         touched here; the subsequent :meth:`assign_pending` increments it as part
         of the reassignment.
 
+        Worker-plane units are skipped SYMMETRICALLY with :meth:`assign_pending`:
+        a unit whose capability is owned by the worker plane and that is not an
+        explicit ``validator`` executor-kind unit is maintained by the worker
+        replica engine (its primary is ``ASSIGNED`` with a NULL validator hotkey
+        by design), so it is neither assigned nor reclaimed here. With the worker
+        plane off this guard is inert and reclaim is byte-identical to legacy.
+
         When ``session`` is provided the work runs inside the caller's
         transaction; otherwise a fresh transaction is opened and committed here.
         """
@@ -416,6 +453,8 @@ class AssignmentService:
         )
 
         for unit in inflight:
+            if self._worker_plane_owns(unit.required_capability, unit.payload):
+                continue
             hotkey = unit.assigned_validator_hotkey
             validator_offline = hotkey is None or hotkey not in online
             deadline = unit.deadline_at
@@ -528,4 +567,25 @@ class AssignmentService:
     def _capability_matches(self, required: str, capabilities: set[str]) -> bool:
         return capability_matches(
             required, capabilities, gpu_serves_cpu=self._gpu_serves_cpu
+        )
+
+    def _worker_plane_owns(
+        self, capability: str, payload: Mapping[str, Any] | None
+    ) -> bool:
+        """Whether a unit belongs to the worker replica plane, not this plane.
+
+        A unit whose capability is owned by the worker plane and that is not an
+        explicit ``validator`` executor-kind unit (e.g. a dispute AUDIT unit) is
+        materialized and maintained by the worker replica engine, which sets the
+        primary ``ASSIGNED`` with a NULL ``assigned_validator_hotkey`` by design.
+        Such a unit must be skipped SYMMETRICALLY here: neither assigned to a
+        validator nor reclaimed as a stale-validator unit (a null hotkey is the
+        worker-owned marker, not "offline validator => reassignable"). Empty
+        ``_worker_plane_capabilities`` (flag OFF) makes this always ``False``, so
+        legacy validator assign/reclaim behavior is byte-identical.
+        """
+
+        return (
+            capability in self._worker_plane_capabilities
+            and unit_executor_kind(payload) != EXECUTOR_KIND_VALIDATOR
         )

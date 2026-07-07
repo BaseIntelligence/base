@@ -45,6 +45,15 @@ from base.master.docker_orchestrator import (
 )
 from base.master.reassignment import ReassignmentPassResult, run_reassignment_pass
 from base.master.validator_coordination import ValidatorCoordinationService
+from base.master.worker_assignment_engine import (
+    WorkerAssignmentEngine,
+    WorkerEnginePassResult,
+    run_worker_assignment_pass,
+)
+from base.master.worker_reconciliation import (
+    ReconciliationPassResult,
+    WorkerReconciliationService,
+)
 from base.schemas.challenge import ChallengeStatus
 
 logger = logging.getLogger(__name__)
@@ -114,6 +123,12 @@ class OrchestrationPassResult:
     #: work-unit ids of agent-challenge units folded this pass (newly failed, or
     #: re-folded after a prior fold attempt failed).
     folded: list[str]
+    #: worker-plane engine outcome for this pass, or ``None`` when the worker
+    #: plane is disabled (flag OFF -> no engine constructed, legacy routing).
+    worker: WorkerEnginePassResult | None = None
+    #: worker-plane reconciliation outcome for this pass, or ``None`` when the
+    #: worker plane is disabled (flag OFF -> no reconciler constructed).
+    reconciliation: ReconciliationPassResult | None = None
 
 
 class MasterOrchestrationDriver:
@@ -126,12 +141,16 @@ class MasterOrchestrationDriver:
         validator_service: ValidatorCoordinationService,
         work_source: ChallengeWorkSource,
         fold_trigger: ChallengeFoldTrigger | None = None,
+        worker_assignment_engine: WorkerAssignmentEngine | None = None,
+        worker_reconciler: WorkerReconciliationService | None = None,
         seed: int | None = None,
     ) -> None:
         self._assignment_service = assignment_service
         self._validator_service = validator_service
         self._work_source = work_source
         self._fold_trigger = fold_trigger
+        self._worker_assignment_engine = worker_assignment_engine
+        self._worker_reconciler = worker_reconciler
         self._seed = seed
 
     async def bridge_pending_work(self) -> dict[str, list[str]]:
@@ -174,7 +193,13 @@ class MasterOrchestrationDriver:
         return bridged
 
     async def run_once(self) -> OrchestrationPassResult:
-        """Bridge pending work, run the reassignment pass, then fold dead units."""
+        """Bridge work, reassign, replicate + reconcile worker units, then fold.
+
+        When the worker plane is on, the worker assignment/reassignment pass runs
+        (materializing gpu replicas) and reconciliation then folds reported
+        replicas into accept/dispute outcomes; both are ``None`` with the flag
+        off (legacy validator routing, byte-identical).
+        """
 
         bridged = await self.bridge_pending_work()
         reassignment = await run_reassignment_pass(
@@ -182,11 +207,22 @@ class MasterOrchestrationDriver:
             assignment_service=self._assignment_service,
             seed=self._seed,
         )
+        worker: WorkerEnginePassResult | None = None
+        if self._worker_assignment_engine is not None:
+            worker = await run_worker_assignment_pass(
+                engine=self._worker_assignment_engine,
+                seed=self._seed,
+            )
+        reconciliation: ReconciliationPassResult | None = None
+        if self._worker_reconciler is not None:
+            reconciliation = await self._worker_reconciler.reconcile_once()
         folded = await self._fold_failed()
         return OrchestrationPassResult(
             bridged=bridged,
             reassignment=reassignment,
             folded=folded,
+            worker=worker,
+            reconciliation=reconciliation,
         )
 
     async def _fold_failed(self) -> list[str]:

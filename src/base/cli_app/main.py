@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,6 +18,8 @@ from base.bittensor.factory import (
     create_bittensor_runtime,
     create_bittensor_submit_runtime,
     create_validator_keypair,
+    create_worker_keypair,
+    create_worker_miner_keypair,
 )
 from base.bittensor.identity_cache import (
     IDENTITY_DISPLAY_NAME_KEY,
@@ -25,12 +28,18 @@ from base.bittensor.identity_cache import (
 )
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
+from base.compute import (
+    InstanceSpec,
+    LiumClient,
+    TargonClient,
+)
+from base.compute.worker_deployment import WORKER_TEMPLATE_NAME
 from base.config import load_settings
 from base.config.policy import production_policy_enabled_for_settings
 from base.config.settings import MasterSettings, Settings
 from base.db.session import create_engine, create_session_factory
 from base.master.app_proxy import create_proxy_app
-from base.master.assignment import AssignmentService
+from base.master.assignment import CAPABILITY_GPU, AssignmentService
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     GatewayPayloadIssuer,
@@ -39,6 +48,7 @@ from base.master.assignment_coordination import (
 from base.master.challenge_client import ChallengeClient
 from base.master.challenge_work_source import (
     HttpChallengeFoldTrigger,
+    HttpChallengeResultForwarder,
     HttpChallengeWorkSource,
 )
 from base.master.docker_broker import create_docker_broker_app
@@ -71,6 +81,11 @@ from base.master.service import (
 )
 from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
+from base.master.worker_assignment import WorkerAssignmentService
+from base.master.worker_assignment_engine import WorkerAssignmentEngine
+from base.master.worker_coordination import WorkerCoordinationService
+from base.master.worker_reconciliation import WorkerReconciliationService
+from base.master.worker_unit_status import WorkerUnitStatusService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
 from base.observability.sentry import init_sentry
@@ -86,6 +101,13 @@ from base.security.validator_auth import (
     MetagraphValidatorEligibility,
     SqlAlchemyValidatorNonceStore,
     ValidatorSignedRequestVerifier,
+)
+from base.security.worker_auth import (
+    CoordinationReadEligibility,
+    MetagraphMinerMembership,
+    RegisteredWorkerEligibility,
+    SqlAlchemyWorkerNonceStore,
+    WorkerSignedRequestVerifier,
 )
 from base.template_engine import (
     ChallengeTemplateContext,
@@ -103,6 +125,26 @@ from base.validator.normal_runner import NormalValidatorRunner
 from base.validator.registry_client import RegistryClient
 from base.validator.weight_submitter import ValidatorWeightSubmitter
 from base.validator.weights_client import WeightsClient
+from base.worker import (
+    WorkerAgent,
+    WorkerBinding,
+    WorkerCoordinationClient,
+    WorkerProofExecutor,
+    WorkerProvenance,
+    build_signed_binding,
+    normalize_provider,
+    plan_provider_deployment,
+    require_provider_api_key,
+)
+from base.worker.deploy import (
+    LOCAL_PROVIDER,
+    MissingProviderKeyError,
+    NoOfferWithinBudgetError,
+    UnsupportedProviderError,
+    WorkerDeployError,
+    build_worker_pod_env,
+    require_worker_image,
+)
 
 app = typer.Typer(help="BASE multi-challenge subnet CLI")
 master_app = typer.Typer(help="Run master components")
@@ -112,6 +154,7 @@ challenge_app = typer.Typer(help="Manage and scaffold challenges")
 db_app = typer.Typer(help="Database helpers")
 registry_app = typer.Typer(help="Registry helpers")
 worker_app = typer.Typer(help="Manage Swarm workers (CPU/GPU job nodes)")
+worker_plane_app = typer.Typer(help="Deploy and manage miner-funded GPU worker agents")
 master_app.add_typer(master_challenges_app, name="challenges")
 master_app.add_typer(worker_app, name="worker")
 app.add_typer(master_app, name="master")
@@ -119,6 +162,7 @@ app.add_typer(validator_app, name="validator")
 app.add_typer(challenge_app, name="challenge")
 app.add_typer(db_app, name="db")
 app.add_typer(registry_app, name="registry")
+app.add_typer(worker_plane_app, name="worker")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -365,6 +409,68 @@ def _validator_signed_request_verifier(
     )
 
 
+def _worker_coordination_service(
+    settings: Any, session_factory: Any, metagraph_cache: MetagraphCache
+) -> WorkerCoordinationService:
+    return WorkerCoordinationService(
+        session_factory,
+        miner_membership=MetagraphMinerMembership(metagraph_cache),
+        binding_nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        heartbeat_ttl_seconds=settings.compute.worker_heartbeat_ttl_seconds,
+    )
+
+
+def _worker_signed_request_verifier(
+    settings: Any,
+    session_factory: Any,
+    metagraph_cache: MetagraphCache,
+) -> WorkerSignedRequestVerifier:
+    return WorkerSignedRequestVerifier(
+        nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        eligibility=CoordinationReadEligibility(session_factory, metagraph_cache),
+        ttl_seconds=settings.compute.worker_signature_ttl_seconds,
+    )
+
+
+def _worker_assignment_service(
+    settings: Any,
+    session_factory: Any,
+    worker_service: WorkerCoordinationService,
+) -> WorkerAssignmentService:
+    return WorkerAssignmentService(
+        session_factory,
+        worker_service=worker_service,
+        lease_seconds=settings.master.assignment_lease_seconds,
+    )
+
+
+def _worker_assignment_verifier(
+    settings: Any,
+    session_factory: Any,
+) -> WorkerSignedRequestVerifier:
+    """Verifier for worker pull/result: WORKER identity only, no permit.
+
+    Distinct from the fleet-read verifier (which also admits validators): the
+    assignment surface requires a ``worker_registrations`` row so an unregistered
+    or validator-only key can never pull/post work (VAL-AGENT-018).
+    """
+
+    return WorkerSignedRequestVerifier(
+        nonce_store=SqlAlchemyWorkerNonceStore(
+            session_factory,
+            ttl_seconds=settings.compute.worker_nonce_ttl_seconds,
+        ),
+        eligibility=RegisteredWorkerEligibility(session_factory),
+        ttl_seconds=settings.compute.worker_signature_ttl_seconds,
+    )
+
+
 def _assignment_coordination_service(
     settings: Any,
     session_factory: Any,
@@ -401,6 +507,9 @@ def _master_orchestration_driver(
     session_factory: Any,
     registry: Any,
     validator_service: ValidatorCoordinationService,
+    *,
+    worker_service: WorkerCoordinationService | None = None,
+    worker_assignment_service: WorkerAssignmentService | None = None,
 ) -> MasterOrchestrationDriver:
     """Build the live master orchestration driver (architecture.md sec 4).
 
@@ -408,9 +517,45 @@ def _master_orchestration_driver(
     ``work_assignments``, runs the balanced assignment + full reassignment pass,
     and folds retry-exhausted units back into their EvaluationJob via the
     challenge fold route.
+
+    When the worker plane is enabled (``compute.worker_plane_enabled``, with both
+    worker services wired), gpu units are routed AWAY from validators (the
+    validator ``AssignmentService`` skips them via ``worker_plane_capabilities``)
+    and materialized as replicas by a :class:`WorkerAssignmentEngine` run each
+    pass. With the flag OFF the engine is ``None`` and gpu units route to
+    validators byte-identically to legacy.
     """
 
-    assignment_service = AssignmentService(session_factory)
+    worker_plane_on = (
+        settings.compute.worker_plane_enabled
+        and worker_service is not None
+        and worker_assignment_service is not None
+    )
+    worker_plane_capabilities = (
+        frozenset({CAPABILITY_GPU}) if worker_plane_on else frozenset()
+    )
+    assignment_service = AssignmentService(
+        session_factory, worker_plane_capabilities=worker_plane_capabilities
+    )
+    worker_engine: WorkerAssignmentEngine | None = None
+    worker_reconciler: WorkerReconciliationService | None = None
+    if worker_plane_on:
+        assert worker_service is not None
+        assert worker_assignment_service is not None
+        worker_engine = WorkerAssignmentEngine(
+            session_factory,
+            assignment_service=worker_assignment_service,
+            worker_service=worker_service,
+            replication_factor=settings.compute.replication_factor,
+        )
+        worker_reconciler = WorkerReconciliationService(
+            session_factory,
+            result_forwarder=HttpChallengeResultForwarder(
+                registry,
+                timeout_seconds=settings.master.challenge_timeout_seconds,
+                retries=settings.master.challenge_retries,
+            ),
+        )
     return MasterOrchestrationDriver(
         assignment_service=assignment_service,
         validator_service=validator_service,
@@ -424,6 +569,8 @@ def _master_orchestration_driver(
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
         ),
+        worker_assignment_engine=worker_engine,
+        worker_reconciler=worker_reconciler,
         seed=settings.master.orchestration_seed,
     )
 
@@ -894,6 +1041,28 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     validator_verifier = _validator_signed_request_verifier(
         settings, session_factory, runtime.metagraph_cache
     )
+    # Miner-funded GPU worker plane (architecture.md sec 3.3), gated behind
+    # compute.worker_plane_enabled: OFF (default) leaves these None so the worker
+    # coordination surface is never mounted and legacy behavior is unchanged.
+    worker_service: WorkerCoordinationService | None = None
+    worker_verifier: WorkerSignedRequestVerifier | None = None
+    worker_assignment_service: WorkerAssignmentService | None = None
+    worker_assignment_verifier: WorkerSignedRequestVerifier | None = None
+    worker_unit_status_service: WorkerUnitStatusService | None = None
+    if settings.compute.worker_plane_enabled:
+        worker_service = _worker_coordination_service(
+            settings, session_factory, runtime.metagraph_cache
+        )
+        worker_verifier = _worker_signed_request_verifier(
+            settings, session_factory, runtime.metagraph_cache
+        )
+        worker_assignment_service = _worker_assignment_service(
+            settings, session_factory, worker_service
+        )
+        worker_assignment_verifier = _worker_assignment_verifier(
+            settings, session_factory
+        )
+        worker_unit_status_service = WorkerUnitStatusService(session_factory)
     llm_gateway_service = _llm_gateway_service(settings, session_factory)
     assignment_service = _assignment_coordination_service(
         settings, session_factory, gateway_service=llm_gateway_service
@@ -902,7 +1071,12 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     # work_assignments, runs balanced assignment + the full reassignment pass,
     # and folds retry-exhausted units, all on a Settings-driven interval.
     orchestration_driver = _master_orchestration_driver(
-        settings, session_factory, registry, validator_service
+        settings,
+        session_factory,
+        registry,
+        validator_service,
+        worker_service=worker_service,
+        worker_assignment_service=worker_assignment_service,
     )
     # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
     # master reconcile loop turns every ACTIVE registry challenge into a running
@@ -935,6 +1109,14 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         validator_health_interval_seconds=(
             settings.master.validator_health_interval_seconds
         ),
+        worker_service=worker_service,
+        worker_verifier=worker_verifier,
+        worker_health_interval_seconds=(
+            settings.compute.worker_health_interval_seconds
+        ),
+        worker_assignment_service=worker_assignment_service,
+        worker_assignment_verifier=worker_assignment_verifier,
+        worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
         llm_gateway_service=llm_gateway_service,
         orchestration_driver=orchestration_driver,
@@ -1445,6 +1627,411 @@ def validator_subscribe(
         typer.echo(
             f"Cleared subscriptions for validator {client.hotkey} "
             "(validating ALL challenges)"
+        )
+
+
+# -- worker plane (base worker ...) ------------------------------------------
+#
+# Top-level ``base worker`` app (DISTINCT from the legacy ``base master worker``
+# Swarm-node group). Deploys a miner-funded GPU worker agent locally or onto a
+# rented provider instance, runs the agent loop, and renders fleet status. The
+# provider API key comes from the MINER's env and is NEVER sent to the master.
+
+
+def _worker_master_url(settings: Any) -> str:
+    url = settings.worker.agent.master_url
+    if not url:
+        raise typer.BadParameter(
+            "worker.agent.master_url must be set to reach the master coordination plane"
+        )
+    return str(url)
+
+
+def _build_worker_binding(settings: Any, worker_pubkey: str) -> WorkerBinding:
+    """Resolve the miner-signed enrollment binding for the worker.
+
+    Prefers a pre-signed binding (miner_hotkey + signature + nonce) so a pod that
+    never holds the miner key can enroll; otherwise signs a fresh binding with the
+    configured miner keypair at deploy time.
+    """
+
+    identity = settings.worker.identity
+    if identity.binding_signature and identity.miner_hotkey and identity.binding_nonce:
+        return WorkerBinding(
+            miner_hotkey=str(identity.miner_hotkey),
+            signature=str(identity.binding_signature),
+            nonce=str(identity.binding_nonce),
+        )
+    miner_keypair = create_worker_miner_keypair(settings)
+    if miner_keypair is None:
+        raise typer.BadParameter(
+            "worker deploy needs a miner key (worker.identity.miner_key_uri / "
+            "miner_key_mnemonic / miner_wallet_*) or a pre-signed binding "
+            "(worker.identity.miner_hotkey + binding_signature + binding_nonce)"
+        )
+    return build_signed_binding(
+        worker_pubkey=worker_pubkey,
+        miner_signer=KeypairRequestSigner(miner_keypair),
+    )
+
+
+def _build_worker_agent(
+    settings: Any,
+    *,
+    provider: str,
+    provider_instance_ref: str | None = None,
+) -> WorkerAgent:
+    """Wire the miner-funded worker agent from settings (testable).
+
+    The agent signs coordination requests + ExecutionProofs with the WORKER
+    keypair, executes gpu units on its OWN broker via the shared executor seam,
+    and enrolls under a miner-signed binding. No provider API key is involved.
+    """
+
+    agent_cfg = settings.worker.agent
+    worker_keypair = create_worker_keypair(settings)
+    signer = KeypairRequestSigner(worker_keypair)
+    binding = _build_worker_binding(settings, signer.hotkey)
+    broker = BrokerConfig(
+        broker_url=agent_cfg.broker_url or settings.docker.broker_url,
+        broker_token=agent_cfg.broker_token,
+        broker_token_file=agent_cfg.broker_token_file,
+        allowed_images=tuple(
+            [*settings.docker.broker_allowed_images, *agent_cfg.allowed_images]
+        ),
+    )
+    executor = WorkerProofExecutor(
+        ChallengeDispatchExecutor(
+            generic=BrokerAssignmentExecutor(
+                run_timeout_seconds=agent_cfg.run_timeout_seconds
+            )
+        ),
+        signer=signer,
+        provenance=WorkerProvenance(
+            provider_name=provider, miner_hotkey=binding.miner_hotkey
+        ),
+    )
+    master_url = _worker_master_url(settings)
+    client = WorkerCoordinationClient(
+        master_url, signer, timeout_seconds=agent_cfg.request_timeout_seconds
+    )
+    return WorkerAgent(
+        client=client,
+        executor=executor,
+        broker=broker,
+        binding=binding,
+        provider=provider,
+        provider_instance_ref=(
+            provider_instance_ref or settings.worker.deploy.provider_instance_ref
+        ),
+        capabilities=list(agent_cfg.capabilities),
+        gateway_url=agent_cfg.gateway_url or master_url,
+        heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
+        poll_interval_seconds=agent_cfg.poll_interval_seconds,
+    )
+
+
+def _spawn_worker_agent_process(config: Path) -> Any:
+    """Launch a detached ``base worker agent`` process (monkeypatchable seam)."""
+
+    import subprocess
+    import sys
+
+    return subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        [
+            sys.executable,
+            "-m",
+            "base.cli_app.main",
+            "worker",
+            "agent",
+            "--config",
+            str(config),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+async def _wait_worker_active(
+    settings: Any,
+    signer: KeypairRequestSigner,
+    worker_pubkey: str,
+    *,
+    ready_timeout: float,
+    poll_interval: float = 3.0,
+) -> Any:
+    """Poll ``GET /v1/workers`` until ``worker_pubkey`` is active or time out."""
+
+    import time as _time
+
+    client = WorkerCoordinationClient(
+        _worker_master_url(settings),
+        signer,
+        timeout_seconds=settings.worker.agent.request_timeout_seconds,
+    )
+    deadline = _time.monotonic() + ready_timeout
+    last_error: Exception | None = None
+    while _time.monotonic() < deadline:
+        try:
+            for worker in await client.list_workers():
+                if worker.worker_pubkey == worker_pubkey and worker.status == "active":
+                    return worker
+        except Exception as exc:  # noqa: BLE001 - retried until the deadline
+            last_error = exc
+        await asyncio.sleep(poll_interval)
+    detail = f": {last_error}" if last_error is not None else ""
+    raise WorkerDeployError(
+        f"worker {worker_pubkey} did not reach active within "
+        f"{ready_timeout:.0f}s{detail}"
+    )
+
+
+def _run_worker_local_deploy(settings: Any, config: Path) -> None:
+    worker_keypair = create_worker_keypair(settings)
+    worker_pubkey = str(worker_keypair.ss58_address)
+    signer = KeypairRequestSigner(worker_keypair)
+    process = _spawn_worker_agent_process(config)
+    typer.echo(f"Started worker agent process pid={process.pid} (provider=local)")
+    ready_timeout = settings.worker.deploy.ready_timeout_seconds
+    try:
+        worker = asyncio.run(
+            _wait_worker_active(
+                settings, signer, worker_pubkey, ready_timeout=ready_timeout
+            )
+        )
+    except BaseException as exc:
+        with contextlib.suppress(Exception):
+            process.terminate()
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Worker {worker.worker_id} active "
+        f"(pubkey={worker.worker_pubkey}, owner={worker.miner_hotkey}, "
+        f"provider={worker.provider})"
+    )
+
+
+def _worker_ssh_public_keys(deploy_cfg: Any) -> tuple[str, ...]:
+    if deploy_cfg.ssh_public_key:
+        return (str(deploy_cfg.ssh_public_key).strip(),)
+    if deploy_cfg.ssh_public_key_file:
+        text = Path(deploy_cfg.ssh_public_key_file).read_text(encoding="utf-8").strip()
+        return (text,) if text else ()
+    return ()
+
+
+def _worker_instance_spec(
+    settings: Any,
+    *,
+    provider: str,
+    offer: Any,
+    env: Mapping[str, str],
+    max_price: float | None,
+    image: str,
+    image_digest: str,
+) -> InstanceSpec:
+    deploy_cfg = settings.worker.deploy
+    return InstanceSpec(
+        name=f"prism-worker-{uuid.uuid4().hex[:12]}",
+        template_ref=deploy_cfg.template_name or WORKER_TEMPLATE_NAME,
+        image=image,
+        image_digest=image_digest,
+        env=dict(env),
+        ports=(22,),
+        ssh_public_keys=_worker_ssh_public_keys(deploy_cfg),
+        ssh_key_name=deploy_cfg.ssh_key_name,
+        startup_commands=deploy_cfg.startup_commands,
+        max_lifetime_hours=deploy_cfg.max_lifetime_hours,
+        max_price_per_hour=(
+            max_price if max_price is not None else float(offer.price_per_hour)
+        ),
+        gpu_count=deploy_cfg.gpu_count,
+    )
+
+
+async def _run_worker_provider_deploy_async(
+    settings: Any,
+    *,
+    provider: str,
+    api_key: str,
+    max_price: float | None,
+) -> None:
+    deploy_cfg = settings.worker.deploy
+    # Fail fast (before any provider network call) when the deploy has no explicit,
+    # publicly-pullable, digest-pinned worker image: the deploy never silently pins
+    # a private-namespace placeholder that fails Lium pod creation.
+    image, image_digest = require_worker_image(
+        image=deploy_cfg.image,
+        image_digest=deploy_cfg.image_digest,
+        provider=provider,
+    )
+    resolved_max_price = (
+        max_price if max_price is not None else deploy_cfg.max_price_per_hour
+    )
+    client: Any = LiumClient(api_key) if provider == "lium" else TargonClient(api_key)
+    # Planning is offer selection only: no rent/deploy call is issued here, and an
+    # all-over-cap situation raises before anything is provisioned.
+    offer = await plan_provider_deployment(
+        client, gpu_count=deploy_cfg.gpu_count, max_price=resolved_max_price
+    )
+    typer.echo(
+        f"Selected {provider} offer {offer.id} "
+        f"({offer.gpu_type} x{offer.gpu_count}) @ {offer.price_per_hour}/GPU/hr"
+    )
+    worker_keypair = create_worker_keypair(settings)
+    signer = KeypairRequestSigner(worker_keypair)
+    binding = _build_worker_binding(settings, signer.hotkey)
+    pod_env = build_worker_pod_env(
+        master_url=_worker_master_url(settings),
+        provider=provider,
+        binding=binding,
+        worker_key_uri=settings.worker.identity.key_uri,
+        worker_key_mnemonic=settings.worker.identity.key_mnemonic,
+        broker_url=settings.worker.agent.broker_url,
+        gateway_url=settings.worker.agent.gateway_url,
+    )
+    spec = _worker_instance_spec(
+        settings,
+        provider=provider,
+        offer=offer,
+        env=pod_env,
+        max_price=resolved_max_price,
+        image=image,
+        image_digest=image_digest,
+    )
+    if provider == "lium":
+        instance = await client.provision(spec, offer=offer)
+    else:
+        instance = await client.provision(spec)
+    typer.echo(
+        f"Provisioned {provider} instance {instance.id} (status={instance.status}); "
+        "the worker enrolls with the master on boot"
+    )
+
+
+@worker_plane_app.command("agent")
+def worker_agent(
+    config: Path = typer.Option(Path("config/worker.example.yaml")),
+):
+    """Run the miner-funded GPU worker agent loop.
+
+    Registers with the master under a miner-signed binding, heartbeats to stay
+    active, pulls gpu work units, executes them on the worker's OWN broker, and
+    posts ExecutionProof-carrying results. Authenticates as the worker keypair and
+    never holds a provider API key.
+    """
+
+    settings = load_settings(config)
+    _configure_observability(settings)
+    agent = _build_worker_agent(settings, provider=settings.worker.deploy.provider)
+    typer.echo(f"Starting worker agent for pubkey {agent.worker_pubkey}")
+    asyncio.run(agent.run_forever())
+
+
+@worker_plane_app.command("deploy")
+def worker_deploy(
+    provider: str = typer.Option(
+        ...,
+        "--provider",
+        help="Where to run the worker agent: lium | targon | local.",
+    ),
+    max_price: float | None = typer.Option(
+        None,
+        "--max-price",
+        help="Max price per GPU/hour bounding provider offer selection.",
+    ),
+    config: Path = typer.Option(Path("config/worker.example.yaml")),
+):
+    """Deploy a worker agent locally or onto a rented provider instance.
+
+    ``--provider local`` starts an agent against the local master. ``--provider
+    lium|targon`` requires the provider API key env (``LIUM_API_KEY`` /
+    ``TARGON_API_KEY``), selects an offer within ``--max-price`` (preferring an
+    exact GPU-count executor), and provisions the worker image. The provider key
+    is used only to authenticate provider calls and is NEVER sent to the master.
+    """
+
+    try:
+        normalized = normalize_provider(provider)
+    except UnsupportedProviderError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    # Enforce the provider key BEFORE loading config or touching the network so a
+    # missing key is an actionable refusal with no side effects (VAL-AGENT-010).
+    api_key: str | None = None
+    if normalized != LOCAL_PROVIDER:
+        try:
+            api_key = require_provider_api_key(normalized)
+        except MissingProviderKeyError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from exc
+
+    settings = load_settings(config)
+    _configure_observability(settings)
+
+    if normalized == LOCAL_PROVIDER:
+        _run_worker_local_deploy(settings, config)
+        return
+
+    assert api_key is not None
+    try:
+        asyncio.run(
+            _run_worker_provider_deploy_async(
+                settings, provider=normalized, api_key=api_key, max_price=max_price
+            )
+        )
+    except NoOfferWithinBudgetError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except WorkerDeployError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@worker_plane_app.command("status")
+def worker_status(
+    config: Path = typer.Option(Path("config/worker.example.yaml")),
+    hotkey: str | None = typer.Option(
+        None,
+        "--hotkey",
+        help="Show only the ACTIVE workers of this miner hotkey.",
+    ),
+):
+    """Render the worker fleet from the master's ``GET /v1/workers``.
+
+    Reads the fleet as the worker keypair (a registered worker is an eligible
+    coordination reader) and prints each worker's status, owner, provider,
+    last-seen timestamp, and attributed fault count (so the CLI fleet view agrees
+    with the ``GET /v1/workers`` JSON, VAL-CROSS-009).
+    """
+
+    settings = load_settings(config)
+    _configure_observability(settings)
+    signer = KeypairRequestSigner(create_worker_keypair(settings))
+    client = WorkerCoordinationClient(
+        _worker_master_url(settings),
+        signer,
+        timeout_seconds=settings.worker.agent.request_timeout_seconds,
+    )
+    workers = asyncio.run(client.list_workers(hotkey=hotkey))
+    if not workers:
+        typer.echo("No workers registered.")
+        return
+    typer.echo(
+        f"{'WORKER_ID':<20} {'OWNER':<20} {'PROVIDER':<10} {'STATUS':<8} "
+        f"{'FAULTS':<6} LAST_SEEN"
+    )
+    for worker in workers:
+        last_seen = (
+            worker.last_heartbeat_at.isoformat()
+            if worker.last_heartbeat_at is not None
+            else "-"
+        )
+        fault_count = len(getattr(worker, "faults", None) or [])
+        typer.echo(
+            f"{worker.worker_id:<20} {worker.miner_hotkey:<20} "
+            f"{worker.provider:<10} {worker.status:<8} {fault_count:<6} {last_seen}"
         )
 
 

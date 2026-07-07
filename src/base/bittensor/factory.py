@@ -56,6 +56,82 @@ def create_validator_keypair(settings: Settings) -> Any:
     return _create_wallet(settings).hotkey
 
 
+def _keypair_from_uri_or_mnemonic(
+    *, uri: str | None, mnemonic: str | None
+) -> Any | None:
+    """Build an sr25519 keypair from a dev URI or a mnemonic (None if neither)."""
+
+    bittensor = _load_bittensor()
+    if uri:
+        return bittensor.Keypair.create_from_uri(uri)
+    if mnemonic:
+        return bittensor.Keypair.create_from_mnemonic(mnemonic)
+    return None
+
+
+def _wallet_keypair(
+    *, name: str | None, hotkey: str | None, path: str | None
+) -> Any | None:
+    """Build a keypair from a bittensor wallet's hotkey (None if unconfigured)."""
+
+    if not name and not hotkey and not path:
+        return None
+    bittensor = _load_bittensor()
+    wallet_kwargs: dict[str, Any] = {}
+    if name:
+        wallet_kwargs["name"] = name
+    if hotkey:
+        wallet_kwargs["hotkey"] = hotkey
+    if path:
+        wallet_kwargs["path"] = path
+    return bittensor.Wallet(**wallet_kwargs).hotkey
+
+
+def create_worker_keypair(settings: Settings) -> Any:
+    """Return the WORKER keypair signing coordination requests + proofs.
+
+    Resolves an sr25519 dev URI, then a mnemonic, then a dedicated bittensor
+    wallet, then falls back to ``network.wallet`` (the miner's own hotkey) so a
+    single-wallet local deploy works without extra key material.
+    """
+
+    identity = settings.worker.identity
+    keypair = _keypair_from_uri_or_mnemonic(
+        uri=identity.key_uri, mnemonic=identity.key_mnemonic
+    )
+    if keypair is not None:
+        return keypair
+    keypair = _wallet_keypair(
+        name=identity.wallet_name,
+        hotkey=identity.wallet_hotkey,
+        path=identity.wallet_path,
+    )
+    if keypair is not None:
+        return keypair
+    return _create_wallet(settings).hotkey
+
+
+def create_worker_miner_keypair(settings: Settings) -> Any | None:
+    """Return the MINER keypair that signs the enrollment binding, or None.
+
+    Resolves an sr25519 dev URI, then a mnemonic, then a bittensor wallet. Returns
+    None when no miner key is configured (the caller then requires a pre-signed
+    binding, e.g. a pod that never holds the miner key).
+    """
+
+    identity = settings.worker.identity
+    keypair = _keypair_from_uri_or_mnemonic(
+        uri=identity.miner_key_uri, mnemonic=identity.miner_key_mnemonic
+    )
+    if keypair is not None:
+        return keypair
+    return _wallet_keypair(
+        name=identity.miner_wallet_name,
+        hotkey=identity.miner_wallet_hotkey,
+        path=identity.miner_wallet_path,
+    )
+
+
 def _seed_mock_metagraph_cache(settings: Settings) -> MetagraphCache | None:
     """Seed a static ``MetagraphCache`` from ``network.mock_metagraph``.
 

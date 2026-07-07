@@ -49,6 +49,19 @@ from base.master.validator_coordination import (
     build_validator_coordination_router,
     build_validator_health_lifespan,
 )
+from base.master.worker_assignment import (
+    WorkerAssignmentService,
+    build_worker_assignment_router,
+)
+from base.master.worker_coordination import (
+    WorkerCoordinationService,
+    build_worker_coordination_router,
+    build_worker_health_lifespan,
+)
+from base.master.worker_unit_status import (
+    WorkerUnitStatusService,
+    build_worker_unit_status_router,
+)
 from base.schemas.challenge import ChallengeRecord, ChallengeStatus
 from base.security.miner_auth import (
     MinerAuthError,
@@ -59,6 +72,11 @@ from base.security.miner_auth import (
 from base.security.validator_auth import (
     ValidatorSignedRequestVerifier,
     build_validator_auth_dependency,
+)
+from base.security.worker_auth import (
+    WorkerSignedRequestVerifier,
+    build_internal_bearer_auth,
+    build_worker_auth_dependency,
 )
 from base.supervisor.challenge_image_updater import (
     build_challenge_image_update_lifespan,
@@ -125,6 +143,12 @@ PRISM_EXACT_PUBLIC_PATHS = {
 
 ClientFactory = Callable[[], AbstractAsyncContextManager[httpx.AsyncClient]]
 ChallengeTokenProvider = Callable[[str], str]
+
+#: Challenge slug whose prism<->master bridge shared token additionally
+#: authenticates the admission fleet-read ``GET /v1/workers/active`` (in addition
+#: to the signed-request path). prism reuses this same token as its
+#: admission-query bearer (architecture.md sec 3.5).
+WORKER_ADMISSION_BRIDGE_SLUG = "prism"
 
 
 def is_blocked_proxy_path(path: str) -> bool:
@@ -356,6 +380,12 @@ def create_proxy_app(
     validator_service: ValidatorCoordinationService | None = None,
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
     validator_health_interval_seconds: float | None = None,
+    worker_service: WorkerCoordinationService | None = None,
+    worker_verifier: WorkerSignedRequestVerifier | None = None,
+    worker_health_interval_seconds: float | None = None,
+    worker_assignment_service: WorkerAssignmentService | None = None,
+    worker_assignment_verifier: WorkerSignedRequestVerifier | None = None,
+    worker_unit_status_service: WorkerUnitStatusService | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
     llm_gateway_service: LLMGatewayService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
@@ -383,6 +413,9 @@ def create_proxy_app(
         lifespan=_combine_lifespans(
             build_validator_health_lifespan(
                 validator_service, validator_health_interval_seconds
+            ),
+            build_worker_health_lifespan(
+                worker_service, worker_health_interval_seconds
             ),
             build_master_orchestration_lifespan(
                 orchestration_driver, orchestration_interval_seconds
@@ -676,6 +709,44 @@ def create_proxy_app(
             )
         )
         app.state.validator_coordination_service = validator_service
+
+    if worker_service is not None and worker_verifier is not None:
+
+        def _worker_admission_tokens() -> list[str]:
+            try:
+                token = token_provider(WORKER_ADMISSION_BRIDGE_SLUG)
+            except Exception:  # noqa: BLE001 - missing token => no internal bearer
+                return []
+            return [token] if token else []
+
+        app.include_router(
+            build_worker_coordination_router(
+                service=worker_service,
+                auth_dependency=build_worker_auth_dependency(worker_verifier),
+                internal_auth=build_internal_bearer_auth(_worker_admission_tokens),
+            )
+        )
+        app.state.worker_coordination_service = worker_service
+
+    if worker_assignment_service is not None and worker_assignment_verifier is not None:
+        app.include_router(
+            build_worker_assignment_router(
+                service=worker_assignment_service,
+                auth_dependency=build_worker_auth_dependency(
+                    worker_assignment_verifier
+                ),
+            )
+        )
+        app.state.worker_assignment_service = worker_assignment_service
+
+    if worker_unit_status_service is not None and worker_verifier is not None:
+        app.include_router(
+            build_worker_unit_status_router(
+                service=worker_unit_status_service,
+                auth_dependency=build_worker_auth_dependency(worker_verifier),
+            )
+        )
+        app.state.worker_unit_status_service = worker_unit_status_service
 
     if assignment_coordination_service is not None and validator_verifier is not None:
         app.include_router(

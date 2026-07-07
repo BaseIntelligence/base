@@ -24,6 +24,7 @@ work_assignment_status = sa.Enum(
     "running",
     "completed",
     "failed",
+    "disputed",
     name="work_assignment_status",
     native_enum=False,
 )

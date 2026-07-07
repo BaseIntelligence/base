@@ -62,13 +62,35 @@ class ValidatorHealthEventType(StrEnum):
 
 
 class WorkAssignmentStatus(StrEnum):
-    """Lifecycle states for a work unit coordinated to a validator."""
+    """Lifecycle states for a work unit coordinated to a validator.
+
+    ``disputed`` is a terminal worker-plane outcome (architecture.md sec 3.3):
+    a gpu unit whose replica manifest hashes diverged is disputed and NEVER
+    forwarded to the challenge (before or after audit); it is only ever set by
+    worker-plane reconciliation, so the validator plane never observes it.
+    """
 
     PENDING = "pending"
     ASSIGNED = "assigned"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    DISPUTED = "disputed"
+
+
+class WorkerStatus(StrEnum):
+    """Lifecycle states for a miner-funded GPU worker (architecture.md sec 3.3).
+
+    ``pending`` -> ``active`` -> ``stale`` -> ``retired``. ``active`` requires a
+    verified miner binding AND a heartbeat within the freshness window
+    (``compute.worker_heartbeat_ttl_seconds``); ``retired`` is terminal (a
+    retired worker is never assignable and a heartbeat never resurrects it).
+    """
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    STALE = "stale"
+    RETIRED = "retired"
 
 
 class TimestampMixin:
@@ -713,3 +735,195 @@ class MinerRequestNonce(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class WorkerRegistration(Base, TimestampMixin):
+    """A miner-funded GPU worker enrolled with the master (architecture.md 3.3).
+
+    A worker is bound to exactly one miner hotkey via a miner-signed sr25519
+    binding (``worker-binding:{worker_pubkey}:{miner_hotkey}:{nonce}``). The
+    ``worker_pubkey`` is unique, so a pubkey has a single stable owner: a
+    re-registration under a DIFFERENT miner hotkey is rejected (no silent
+    rebind). ``worker_id`` is the public identifier used by the heartbeat route
+    and returned to the agent.
+    """
+
+    __tablename__ = "worker_registrations"
+    __table_args__ = (
+        Index("ix_worker_registrations_status", "status"),
+        Index("ix_worker_registrations_miner_hotkey", "miner_hotkey"),
+        Index("ix_worker_registrations_last_heartbeat_at", "last_heartbeat_at"),
+        Index(
+            "ix_worker_registrations_status_miner_hotkey",
+            "status",
+            "miner_hotkey",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    worker_pubkey: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    miner_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_signature: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_instance_ref: Mapped[str | None] = mapped_column(Text)
+    capabilities: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    status: Mapped[WorkerStatus] = mapped_column(
+        Enum(
+            WorkerStatus,
+            name="worker_status",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+        default=WorkerStatus.PENDING,
+        server_default=WorkerStatus.PENDING.value,
+    )
+    last_seen_meta: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkerFault(Base):
+    """A fault attributed to a worker replica during reconciliation/audit.
+
+    Written when a worker's ``ExecutionProof.manifest_sha256`` diverges from the
+    authoritative validator replay (architecture.md sec 3.3). Recording a fault
+    does NOT change the worker's ``worker_registrations.status``; faults are
+    surfaced read-only in the fleet view.
+    """
+
+    __tablename__ = "worker_faults"
+    __table_args__ = (
+        Index("ix_worker_faults_worker_id", "worker_id"),
+        Index("ix_worker_faults_work_unit_id", "work_unit_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    challenge_slug: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class WorkerRequestNonce(Base):
+    """Replay protection for worker-plane nonces.
+
+    Serves two purposes keyed on ``(hotkey, nonce)``: the miner binding nonce
+    (``hotkey`` = the miner hotkey) consumed at ``register`` and the request
+    envelope nonce (``hotkey`` = the worker pubkey) consumed on signed
+    heartbeat/fleet-read requests. Miner hotkeys and worker pubkeys never
+    collide, so one table safely dedups both.
+    """
+
+    __tablename__ = "worker_request_nonces"
+    __table_args__ = (
+        UniqueConstraint(
+            "hotkey", "nonce", name="uq_worker_request_nonces_hotkey_nonce"
+        ),
+        Index("ix_worker_request_nonces_created_at", "created_at"),
+        Index("ix_worker_request_nonces_hotkey", "hotkey"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    body_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class WorkerAssignment(Base, TimestampMixin):
+    """A gpu work-unit replica coordinated to a miner-funded worker.
+
+    Distinct from :class:`WorkAssignment` (the validator plane): a single gpu
+    work unit is replicated to multiple workers bound to DISTINCT owners
+    (architecture.md sec 3.3 R=2), so this table keys one row PER (work unit,
+    worker) rather than one row per unit. ``worker_pubkey`` is the authenticated
+    identity the worker pull/post routes gate on; ``miner_hotkey`` is the owner
+    used for anti-collusion accounting. The reported result and its
+    ``ExecutionProof`` (and the extracted ``manifest_sha256`` used for
+    reconciliation) are stored on the row.
+    """
+
+    __tablename__ = "worker_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "work_unit_id",
+            "worker_id",
+            name="uq_worker_assignments_work_unit_worker",
+        ),
+        Index("ix_worker_assignments_work_unit_id", "work_unit_id"),
+        Index("ix_worker_assignments_status", "status"),
+        Index("ix_worker_assignments_worker_pubkey", "worker_pubkey"),
+        Index(
+            "ix_worker_assignments_status_worker_pubkey",
+            "status",
+            "worker_pubkey",
+        ),
+        Index("ix_worker_assignments_status_deadline", "status", "deadline_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    challenge_slug: Mapped[str] = mapped_column(Text, nullable=False)
+    work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    submission_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_pubkey: Mapped[str] = mapped_column(Text, nullable=False)
+    miner_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    required_capability: Mapped[str] = mapped_column(
+        Text, nullable=False, default="gpu", server_default="gpu"
+    )
+    status: Mapped[WorkAssignmentStatus] = mapped_column(
+        Enum(
+            WorkAssignmentStatus,
+            name="work_assignment_status",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+        default=WorkAssignmentStatus.PENDING,
+        server_default=WorkAssignmentStatus.PENDING.value,
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkpoint_ref: Mapped[str | None] = mapped_column(Text)
+    result_success: Mapped[bool | None] = mapped_column(Boolean)
+    result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    manifest_sha256: Mapped[str | None] = mapped_column(Text)

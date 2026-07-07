@@ -1,11 +1,17 @@
-"""Long-running validator agent loop (architecture.md sec 2.2).
+"""Long-running miner-funded worker agent loop (architecture.md sec 3.2).
 
-The agent hotkey-registers + heartbeats with the master on a configurable
-interval (recovering across restarts because registration is an idempotent
-server-side upsert and all assignment state lives on the master), pulls its
-assignments, executes each via its OWN broker, and posts results. Every LLM call
-routes through the master gateway using a per-assignment scoped token; the agent
-holds no provider key.
+Mirrors :class:`base.validator.agent.runtime.ValidatorAgent` (they share the pure
+loop primitives in :mod:`base.coordination.agent_loop`) but enrolls as a WORKER:
+it registers with the master under a miner-signed binding, heartbeats to stay
+``active``, pulls gpu work units assigned to it, executes each via the
+:class:`AssignmentExecutor` seam on its OWN local broker, and posts results that
+always carry an ``ExecutionProof`` envelope. The agent authenticates every
+pull/post as its worker keypair, never as a metagraph validator permit.
+
+Resilience: an execution failure (e.g. an unreachable local broker) is posted as
+a ``success=false`` result and never crashes the loop; the agent keeps
+heartbeating and pulling. Registration is an idempotent server-side upsert keyed
+on the worker pubkey, so a restart re-registers into the same fleet entry.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from base.coordination.agent_loop import (
@@ -22,33 +29,50 @@ from base.coordination.agent_loop import (
     is_transient_error,
     sleep_until,
 )
-from base.validator.agent.coordination_client import CoordinationClient
 from base.validator.agent.executor import (
     AssignmentContext,
     AssignmentExecutor,
     BrokerConfig,
-    ExecutionResult,
     gateway_env_for_assignment,
 )
+from base.worker.coordination_client import WorkerCoordinationClient
 
 logger = logging.getLogger(__name__)
 
 _ACTIVE_STATUSES = frozenset({"assigned", "running"})
-_DEFAULT_HEARTBEAT_INTERVAL = 60
+_DEFAULT_HEARTBEAT_INTERVAL = 30
 
 
-class ValidatorAgent:
-    """Coordinated executor: register, heartbeat, pull, execute, post results."""
+@dataclass(frozen=True)
+class WorkerBinding:
+    """The miner-signed binding the agent presents at registration.
+
+    The MINER signs ``worker-binding:{worker_pubkey}:{miner_hotkey}:{nonce}``
+    (sr25519) out-of-band (by the deploy CLI); the agent only carries the signed
+    material. A fresh ``nonce`` is required per registration (a restart supplies
+    a new one), so a replayed binding is rejected while a same-owner re-enroll
+    with a fresh nonce is idempotent.
+    """
+
+    miner_hotkey: str
+    signature: str
+    nonce: str
+
+
+class WorkerAgent:
+    """Coordinated GPU worker: register, heartbeat, pull, execute, post proofs."""
 
     def __init__(
         self,
         *,
-        client: CoordinationClient,
+        client: WorkerCoordinationClient,
         executor: AssignmentExecutor,
         broker: BrokerConfig,
-        capabilities: list[str],
-        version: str | None,
-        gateway_url: str,
+        binding: WorkerBinding,
+        provider: str,
+        provider_instance_ref: str | None = None,
+        capabilities: list[str] | None = None,
+        gateway_url: str = "",
         heartbeat_interval_seconds: int | None = None,
         poll_interval_seconds: float = 5.0,
         last_seen_meta_factory: Callable[[], Mapping[str, Any]] | None = None,
@@ -57,41 +81,53 @@ class ValidatorAgent:
         self._client = client
         self._executor = executor
         self._broker = broker
-        self._capabilities = list(capabilities)
-        self._version = version
+        self._binding = binding
+        self._provider = provider
+        self._provider_instance_ref = provider_instance_ref
+        self._capabilities = list(capabilities or ["gpu"])
         self._gateway_url = gateway_url
         self._configured_interval = heartbeat_interval_seconds
         self._poll_interval = poll_interval_seconds
         self._last_seen_meta_factory = last_seen_meta_factory
         self._backoff = backoff or BackoffPolicy()
-        self._registered_interval: int | None = None
+        self._worker_id: str | None = None
+        self._heartbeat_ttl_seconds: int | None = None
 
     @property
-    def hotkey(self) -> str:
-        return self._client.hotkey
+    def worker_pubkey(self) -> str:
+        return self._client.worker_pubkey
+
+    @property
+    def worker_id(self) -> str | None:
+        return self._worker_id
 
     @property
     def heartbeat_interval(self) -> int:
         if self._configured_interval is not None:
             return self._configured_interval
-        return self._registered_interval or _DEFAULT_HEARTBEAT_INTERVAL
+        if self._heartbeat_ttl_seconds:
+            return max(1, self._heartbeat_ttl_seconds // 2)
+        return _DEFAULT_HEARTBEAT_INTERVAL
 
-    async def register(self, shutdown_event: asyncio.Event | None = None) -> int:
-        """Register (idempotent upsert) and resolve the heartbeat interval.
+    async def register(self, shutdown_event: asyncio.Event | None = None) -> str:
+        """Register (idempotent upsert) and resolve the worker id + heartbeat TTL.
 
-        Transient master failures (transport errors / ``429``/``5xx``) are
-        retried with bounded exponential backoff so a briefly-unavailable master
-        at startup does not crash the agent; a permanent error (``4xx``, e.g.
-        ineligible hotkey) fails fast. A set ``shutdown_event`` aborts the retry
-        loop (re-raising the last error).
+        Transient master failures (transport errors / ``429``/``5xx``) are retried
+        with bounded exponential backoff; a permanent error (``4xx``, e.g. a
+        forged binding or replayed nonce) fails fast so the caller surfaces it. A
+        set ``shutdown_event`` aborts the retry loop (re-raising the last error).
         """
 
         failures = 0
         while True:
             try:
                 response = await self._client.register(
+                    miner_hotkey=self._binding.miner_hotkey,
+                    binding_signature=self._binding.signature,
+                    nonce=self._binding.nonce,
+                    provider=self._provider,
+                    provider_instance_ref=self._provider_instance_ref,
                     capabilities=self._capabilities,
-                    version=self._version,
                     last_seen_meta=self._meta(),
                 )
             except Exception as exc:
@@ -100,8 +136,7 @@ class ValidatorAgent:
                 failures += 1
                 delay = self._backoff.delay(failures)
                 logger.warning(
-                    "validator agent register attempt %d failed (%s); "
-                    "retrying in %.1fs",
+                    "worker agent register attempt %d failed (%s); retrying in %.1fs",
                     failures,
                     exc,
                     delay,
@@ -109,11 +144,16 @@ class ValidatorAgent:
                 if not await backoff_sleep(shutdown_event, delay):
                     raise
                 continue
-            self._registered_interval = response.heartbeat_interval_seconds
-            return self.heartbeat_interval
+            self._worker_id = response.worker.worker_id
+            self._heartbeat_ttl_seconds = response.heartbeat_ttl_seconds
+            return self._worker_id
 
     async def heartbeat_once(self) -> None:
-        await self._client.heartbeat(last_seen_meta=self._meta())
+        if self._worker_id is None:
+            raise RuntimeError("worker agent must register before heartbeating")
+        await self._client.heartbeat(
+            worker_id=self._worker_id, last_seen_meta=self._meta()
+        )
 
     async def process_pending_assignments(self) -> AgentCycleSummary:
         """Pull, execute, and post results for all currently-assigned units."""
@@ -140,7 +180,7 @@ class ValidatorAgent:
                 failures = 0
             except Exception:
                 failures += 1
-                logger.exception("validator agent heartbeat failed")
+                logger.exception("worker agent heartbeat failed")
             delay = (
                 self._backoff.delay(failures) if failures else self.heartbeat_interval
             )
@@ -154,7 +194,7 @@ class ValidatorAgent:
                 failures = 0
             except Exception:
                 failures += 1
-                logger.exception("validator agent assignment pass failed")
+                logger.exception("worker agent assignment pass failed")
             delay = self._backoff.delay(failures) if failures else self._poll_interval
             await sleep_until(shutdown_event, delay)
 
@@ -174,25 +214,10 @@ class ValidatorAgent:
             assignment=assignment, gateway_env=gateway_env, broker=self._broker
         )
 
-        async def report_progress(
-            *,
-            checkpoint_ref: str | None = None,
-            meta: Mapping[str, Any] | None = None,
-        ) -> None:
-            try:
-                await self._client.progress(
-                    assignment.id, checkpoint_ref=checkpoint_ref, meta=meta
-                )
-            except Exception:
-                logger.warning(
-                    "validator agent progress heartbeat failed for %s",
-                    assignment.id,
-                )
-
         try:
-            result = await self._executor.execute(context, progress=report_progress)
+            result = await self._executor.execute(context, progress=_noop_progress)
         except Exception as exc:
-            logger.exception("validator agent execution failed for %s", assignment.id)
+            logger.exception("worker agent execution failed for %s", assignment.id)
             await self._client.post_result(
                 assignment.id, success=False, payload={"error": str(exc)}
             )
@@ -216,9 +241,19 @@ class ValidatorAgent:
         return meta
 
 
+async def _noop_progress(
+    *,
+    checkpoint_ref: str | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> None:
+    """Progress heartbeats are not part of the worker plane yet (no-op)."""
+
+    return None
+
+
 __all__ = [
     "AgentCycleSummary",
     "BackoffPolicy",
-    "ExecutionResult",
-    "ValidatorAgent",
+    "WorkerAgent",
+    "WorkerBinding",
 ]
