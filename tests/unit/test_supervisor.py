@@ -375,6 +375,9 @@ def test_config_sync_and_image_updater_share_service_lock_registry() -> None:
 def test_systemd_unit_template_is_notify_with_watchdog() -> None:
     unit = (ROOT / "deploy" / "swarm" / "base-supervisor.service").read_text()
     assert "Type=notify" in unit
+    # `uv run` forks the supervisor as a child, so systemd must accept sd_notify
+    # from any cgroup process, not just the main (uv) PID.
+    assert "NotifyAccess=all" in unit
     assert "WatchdogSec=" in unit
     assert "Restart=always" in unit
     assert "master supervisor" in unit

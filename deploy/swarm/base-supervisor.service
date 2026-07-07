@@ -24,7 +24,12 @@ Requires=docker.service
 
 [Service]
 Type=notify
-NotifyAccess=main
+# `uv run` launches the supervisor as a CHILD process (the uv process stays the
+# unit's main PID), so the sd_notify READY/WATCHDOG pings come from the child.
+# NotifyAccess=all lets systemd accept them from any process in the unit cgroup;
+# with the default (main) the service hangs in `activating` and crash-loops at
+# the start timeout because systemd ignores the child's READY.
+NotifyAccess=all
 WorkingDirectory=/var/lib/base/supervisor/current
 Environment=UV_CACHE_DIR=/var/lib/base/supervisor/uv-cache
 ExecStart=/usr/local/bin/uv run --project /var/lib/base/supervisor/current base master supervisor --config /etc/base/master.yaml

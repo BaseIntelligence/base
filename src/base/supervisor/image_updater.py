@@ -89,7 +89,15 @@ logger = logging.getLogger(__name__)
 
 # One-minute image-updater cadence.
 IMAGE_UPDATER_INTERVAL_SECONDS = 60.0
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
+# The forward roll issues `docker service update --image` WITHOUT `--detach`
+# (see `_issue_update`), so the docker CLI blocks through Swarm's health-gated,
+# stop-first rollout: image pull + 40s health-start-period + 45s update-monitor
+# routinely exceeds a minute. A 60s subprocess timeout would kill a
+# healthy-but-slow roll and raise a false SwarmBackendError that bypasses the
+# convergence/rollback path, so the ceiling sits well above the worst-case
+# rollout. The image-updater runs on its own daemon thread (see scheduler), so a
+# long-blocking roll never starves the watchdog or the other supervisor loops.
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 DEFAULT_MASTER_IMAGE = "ghcr.io/baseintelligence/base-master:latest"
 
 # Convergence poll: after issuing a (non-detached) service update, poll the
