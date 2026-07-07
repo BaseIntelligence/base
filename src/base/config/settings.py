@@ -227,6 +227,10 @@ class ComputeSettings(BaseModel):
     worker_signature_ttl_seconds: int = 300
     worker_nonce_ttl_seconds: int = 86_400
     worker_health_interval_seconds: float = 60.0
+    #: Number of DISTINCT-owner workers each gpu work unit is replicated across
+    #: when the worker plane is on. Degrades to 1 (with a recorded warning) when
+    #: fewer eligible distinct owners exist.
+    replication_factor: int = 2
 
 
 class WorkerAgentSettings(BaseModel):

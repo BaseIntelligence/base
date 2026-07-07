@@ -142,35 +142,88 @@ class WorkerAssignmentService:
         attempt_count: int = 1,
         max_attempts: int = 3,
         checkpoint_ref: str | None = None,
+        session: AsyncSession | None = None,
     ) -> WorkerAssignment:
         """Create one replica row binding ``work_unit_id`` to a worker.
 
         Low-level primitive shared by tests and the assignment engine (which adds
         gpu routing, self-evaluation exclusion, and R=2 on top). The engine is
-        responsible for eligibility; this only persists the row.
+        responsible for eligibility; this only persists the row. When ``session``
+        is provided the row is added to the caller's transaction (the caller
+        commits) so a whole replica-creation pass stays atomic; otherwise a fresh
+        transaction is opened and committed here.
         """
 
-        now = self._now_fn()
-        async with session_scope(self._session_factory) as session:
-            row = WorkerAssignment(
-                challenge_slug=challenge_slug,
+        if session is not None:
+            return await self._create_in_session(
+                session,
                 work_unit_id=work_unit_id,
+                challenge_slug=challenge_slug,
                 submission_ref=submission_ref,
                 worker_id=worker_id,
                 worker_pubkey=worker_pubkey,
                 miner_hotkey=miner_hotkey,
-                payload=dict(payload or {}),
+                payload=payload,
                 required_capability=required_capability,
                 status=status,
                 attempt_count=attempt_count,
                 max_attempts=max_attempts,
                 checkpoint_ref=checkpoint_ref,
-                created_at=now,
-                updated_at=now,
             )
-            session.add(row)
-            await session.flush()
-            return row
+        async with session_scope(self._session_factory) as own_session:
+            return await self._create_in_session(
+                own_session,
+                work_unit_id=work_unit_id,
+                challenge_slug=challenge_slug,
+                submission_ref=submission_ref,
+                worker_id=worker_id,
+                worker_pubkey=worker_pubkey,
+                miner_hotkey=miner_hotkey,
+                payload=payload,
+                required_capability=required_capability,
+                status=status,
+                attempt_count=attempt_count,
+                max_attempts=max_attempts,
+                checkpoint_ref=checkpoint_ref,
+            )
+
+    async def _create_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        work_unit_id: str,
+        challenge_slug: str,
+        submission_ref: str,
+        worker_id: str,
+        worker_pubkey: str,
+        miner_hotkey: str,
+        payload: Mapping[str, Any] | None,
+        required_capability: str,
+        status: WorkAssignmentStatus,
+        attempt_count: int,
+        max_attempts: int,
+        checkpoint_ref: str | None,
+    ) -> WorkerAssignment:
+        now = self._now_fn()
+        row = WorkerAssignment(
+            challenge_slug=challenge_slug,
+            work_unit_id=work_unit_id,
+            submission_ref=submission_ref,
+            worker_id=worker_id,
+            worker_pubkey=worker_pubkey,
+            miner_hotkey=miner_hotkey,
+            payload=dict(payload or {}),
+            required_capability=required_capability,
+            status=status,
+            attempt_count=attempt_count,
+            max_attempts=max_attempts,
+            checkpoint_ref=checkpoint_ref,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+        await session.flush()
+        return row
 
     async def pull(self, *, worker_pubkey: str) -> list[WorkerAssignment]:
         """Return the ACTIVE worker's assigned/running gpu replicas.

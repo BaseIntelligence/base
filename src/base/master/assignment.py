@@ -118,6 +118,7 @@ class AssignmentService:
         gpu_serves_cpu: bool = True,
         capability_concurrency: Mapping[str, int] | None = None,
         default_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        worker_plane_capabilities: frozenset[str] = frozenset(),
     ) -> None:
         self._session_factory = session_factory
         self._now_fn = now_fn
@@ -128,6 +129,11 @@ class AssignmentService:
             else capability_concurrency
         )
         self._default_max_attempts = default_max_attempts
+        #: Capabilities owned by the worker plane: units requiring one of these
+        #: are NOT routed to validators here (the worker replica engine assigns
+        #: them). Empty (the default) preserves legacy validator routing exactly,
+        #: so a flag-OFF master behaves byte-for-byte as before.
+        self._worker_plane_capabilities = frozenset(worker_plane_capabilities)
 
     async def create_agent_challenge_work_units(
         self,
@@ -331,6 +337,8 @@ class AssignmentService:
 
         for unit in pending:
             capability = unit.required_capability
+            if capability in self._worker_plane_capabilities:
+                continue
             limit = self._capability_concurrency.get(capability)
             eligible = [
                 hotkey

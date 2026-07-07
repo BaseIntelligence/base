@@ -39,7 +39,7 @@ from base.config.policy import production_policy_enabled_for_settings
 from base.config.settings import MasterSettings, Settings
 from base.db.session import create_engine, create_session_factory
 from base.master.app_proxy import create_proxy_app
-from base.master.assignment import AssignmentService
+from base.master.assignment import CAPABILITY_GPU, AssignmentService
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     GatewayPayloadIssuer,
@@ -81,6 +81,7 @@ from base.master.service import (
 from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.master.worker_assignment import WorkerAssignmentService
+from base.master.worker_assignment_engine import WorkerAssignmentEngine
 from base.master.worker_coordination import WorkerCoordinationService
 from base.observability.logging import configure_logging
 from base.observability.otel import init_otel
@@ -474,6 +475,9 @@ def _master_orchestration_driver(
     session_factory: Any,
     registry: Any,
     validator_service: ValidatorCoordinationService,
+    *,
+    worker_service: WorkerCoordinationService | None = None,
+    worker_assignment_service: WorkerAssignmentService | None = None,
 ) -> MasterOrchestrationDriver:
     """Build the live master orchestration driver (architecture.md sec 4).
 
@@ -481,9 +485,36 @@ def _master_orchestration_driver(
     ``work_assignments``, runs the balanced assignment + full reassignment pass,
     and folds retry-exhausted units back into their EvaluationJob via the
     challenge fold route.
+
+    When the worker plane is enabled (``compute.worker_plane_enabled``, with both
+    worker services wired), gpu units are routed AWAY from validators (the
+    validator ``AssignmentService`` skips them via ``worker_plane_capabilities``)
+    and materialized as replicas by a :class:`WorkerAssignmentEngine` run each
+    pass. With the flag OFF the engine is ``None`` and gpu units route to
+    validators byte-identically to legacy.
     """
 
-    assignment_service = AssignmentService(session_factory)
+    worker_plane_on = (
+        settings.compute.worker_plane_enabled
+        and worker_service is not None
+        and worker_assignment_service is not None
+    )
+    worker_plane_capabilities = (
+        frozenset({CAPABILITY_GPU}) if worker_plane_on else frozenset()
+    )
+    assignment_service = AssignmentService(
+        session_factory, worker_plane_capabilities=worker_plane_capabilities
+    )
+    worker_engine: WorkerAssignmentEngine | None = None
+    if worker_plane_on:
+        assert worker_service is not None
+        assert worker_assignment_service is not None
+        worker_engine = WorkerAssignmentEngine(
+            session_factory,
+            assignment_service=worker_assignment_service,
+            worker_service=worker_service,
+            replication_factor=settings.compute.replication_factor,
+        )
     return MasterOrchestrationDriver(
         assignment_service=assignment_service,
         validator_service=validator_service,
@@ -497,6 +528,7 @@ def _master_orchestration_driver(
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
         ),
+        worker_assignment_engine=worker_engine,
         seed=settings.master.orchestration_seed,
     )
 
@@ -952,7 +984,12 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     # work_assignments, runs balanced assignment + the full reassignment pass,
     # and folds retry-exhausted units, all on a Settings-driven interval.
     orchestration_driver = _master_orchestration_driver(
-        settings, session_factory, registry, validator_service
+        settings,
+        session_factory,
+        registry,
+        validator_service,
+        worker_service=worker_service,
+        worker_assignment_service=worker_assignment_service,
     )
     # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
     # master reconcile loop turns every ACTIVE registry challenge into a running
