@@ -417,6 +417,46 @@ def test_central_gateway_routes_prism_consumer(tmp_path: Path) -> None:
         assert "target=yunwu_api_key" not in block
 
 
+def test_master_and_challenge_services_carry_update_rollback_and_health_policy(
+    tmp_path: Path,
+) -> None:
+    """The master services + the challenge API are created with the Swarm
+    self-healing update/rollback policy and an HTTP /health container healthcheck
+    (belt-and-suspenders auto-rollback for a broken image roll)."""
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+
+    policy = (
+        "--update-failure-action rollback",
+        "--update-monitor 45s",
+        "--update-max-failure-ratio 0",
+        "--update-order stop-first",
+        "--rollback-failure-action pause",
+        "--rollback-monitor 45s",
+        "--rollback-max-failure-ratio 1",
+    )
+    for service in (
+        "base-docker-broker",
+        "base-master-proxy",
+        "challenge-agent-challenge",
+    ):
+        block = _service_block(lines, service)
+        for flag in policy:
+            assert flag in block, f"{service} missing {flag!r}"
+
+    # Health flags on the HTTP services (proxy + broker + challenge api), on port.
+    for service, port in (
+        ("base-master-proxy", "19080"),
+        ("base-docker-broker", "8082"),
+        ("challenge-agent-challenge", "8000"),
+    ):
+        block = _service_block(lines, service)
+        assert "--health-cmd" in block, service
+        assert f"localhost:{port}/health" in block, service
+        assert "--health-start-period 40s" in block, service
+
+
 def test_secret_values_never_leak_in_plan_output(tmp_path: Path) -> None:
     result = _run(tmp_path)
     combined = result.stdout + result.stderr

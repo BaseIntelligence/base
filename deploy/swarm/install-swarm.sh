@@ -354,6 +354,63 @@ CHALLENGE_EXTRA_CONSTRAINTS=()
 # Mirrors the dynamic orchestrator's job_network_slugs multi-homing (swarm_backend.py). Reset after
 # each deploy. Declared here so `set -u` never trips on `${#..[@]}`.
 CHALLENGE_EXTRA_NETWORKS=()
+# Per-call HTTP /health probe port consumed by _deploy_challenge_service. Set (to
+# the API's listen port) ONLY for a challenge API service that serves HTTP /health;
+# the worker sidecars leave it empty (crash-detection only). Reset after each deploy.
+CHALLENGE_HEALTH_PORT=""
+
+# ============================================================================
+# Swarm self-healing update/rollback policy (control-plane auto-update, G4)
+# ============================================================================
+# Applied to EVERY long-lived first-party service create (postgres, master
+# proxy/broker, challenge api + worker sidecars) so a broken image roll
+# auto-rolls-back instead of pausing degraded. Kept in sync with
+# swarm_backend.py SERVICE_UPDATE_ROLLBACK_POLICY (the dynamic orchestrator path).
+#   * --update-monitor 45s + --update-max-failure-ratio 0: any task that crashes on
+#     start (a broken image) within the window fails the update -> rollback, with NO
+#     container healthcheck required (the primary durability win).
+#   * --update-order stop-first: required for these singleton services bound to
+#     exclusive host ports/volumes on the manager (proxy/broker publish FIXED
+#     mode=host ports 19080/8082; postgres/challenge bind a per-node /data volume);
+#     the default start-first ordering causes a transient port/volume collision
+#     (EADDRINUSE) on update. stop-first releases the port/volume before the new task.
+#   * rollback is best-effort (--rollback-max-failure-ratio 1) so a node never gets
+#     stuck failing to roll back; --rollback-failure-action pause leaves a failed
+#     rollback for an operator instead of looping.
+SWARM_UPDATE_POLICY=(
+  --update-failure-action rollback
+  --update-monitor 45s
+  --update-max-failure-ratio 0
+  --update-order stop-first
+  --rollback-failure-action pause
+  --rollback-monitor 45s
+  --rollback-max-failure-ratio 1
+)
+
+# Container HTTP /health probe flags populated by _http_healthcheck_flags below;
+# consumed only after that call. Declared here so `set -u` never trips.
+SWARM_HEALTHCHECK=()
+
+# _http_healthcheck_flags PORT — populate SWARM_HEALTHCHECK with a container HTTP
+# /health probe for a service that serves HTTP on PORT (the master proxy + broker on
+# their published ports; the challenge api on its overlay port). A pure-python
+# one-liner is used instead of curl because the python:3.12-slim service images
+# (agent-challenge/prism service, base-master) are not guaranteed to ship curl in
+# every stage; urllib.urlopen raises (non-zero) on any non-2xx/connection error, so
+# Swarm reads it as unhealthy. CONSERVATIVE timings so a slow-but-healthy boot never
+# trips a false rollback: --health-start-period 40s suppresses failures during a slow
+# cold boot (must exceed the real cold-start) and, since --update-monitor is 45s, a
+# task still unhealthy AFTER the start-period within that window is still caught.
+_http_healthcheck_flags() {
+  local port="$1"
+  SWARM_HEALTHCHECK=(
+    --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${port}/health', timeout=4)\""
+    --health-interval 10s
+    --health-timeout 5s
+    --health-retries 3
+    --health-start-period 40s
+  )
+}
 
 # ============================================================================
 # Flags (all default to the SAFE / non-mutating / non-destructive value).
@@ -1000,11 +1057,15 @@ _deploy_postgres_service() {
     log "  service ${name} already exists — skipping (idempotent)"
     return 0
   fi
+  # Self-healing update/rollback policy (crash-detection only; postgres serves no
+  # HTTP /health, so no --health-cmd). stop-first is REQUIRED here: postgres binds a
+  # per-node named volume, and start-first would race two tasks on the same volume.
   plan docker service create \
     --name "${name}" \
     --network "${NET_CHALLENGES}" \
     --replicas 1 \
     --restart-condition any \
+    "${SWARM_UPDATE_POLICY[@]}" \
     --hostname "${name}" \
     --with-registry-auth \
     --mount "type=volume,source=${volume},destination=/var/lib/postgresql/data" \
@@ -1426,13 +1487,20 @@ _deploy_master_service() {
   #     broker/proxy read per-challenge tokens from here. The PROXY needs
   #     it to load each challenge's bearer token when verifying miner uploads (else
   #     500 "Challenge token file is missing"). Seeded by _seed_proxy_challenge_tokens.
-  #   * --update-order stop-first: these are FIXED host-port services (8082/19080,
-  #     mode=host); the default start-first ordering causes a transient port collision
-  #     (EADDRINUSE) on update. stop-first releases the port before the new task binds.
+  # (The Swarm update/rollback policy — including --update-order stop-first, required
+  # for these FIXED mode=host port services 8082/19080 to avoid a transient EADDRINUSE
+  # on update — is added via "${SWARM_UPDATE_POLICY[@]}" on the create below.)
   local -a extra=(
     --mount "type=volume,source=${VOL_BASE_SECRETS},destination=${SECRET_VOLUME_DIR}"
-    --update-order stop-first
   )
+  # Both master services serve a real HTTP /health liveness endpoint on their
+  # container port (base-docker-broker: docker_broker.py; base-master-proxy:
+  # app_proxy.py — the same endpoints the healthcheck() step curls), so add a
+  # container healthcheck to catch a booted-but-not-serving task (belt-and-suspenders
+  # with the crash-detection update-monitor). Conservative timings (40s start-period)
+  # so a slow cold boot never trips a false rollback.
+  _http_healthcheck_flags "${container_port}"
+  extra+=("${SWARM_HEALTHCHECK[@]}")
 
   # Broker-only extras (regression guards — do NOT strip these flags):
   #   1. host docker socket: the escape hatch shells out to `docker run` on the
@@ -1553,6 +1621,7 @@ _deploy_master_service() {
     --network "${NET_CHALLENGES}" \
     --replicas 1 \
     --restart-condition any \
+    "${SWARM_UPDATE_POLICY[@]}" \
     --hostname "${name}" \
     --with-registry-auth \
     --publish "published=${host_port},target=${container_port},mode=host" \
@@ -1679,6 +1748,8 @@ deploy_challenges() {
   CHALLENGE_EXTRA_NETWORKS=("${NET_JOBS_INTERNAL}")
   CHALLENGE_ENV=("${ac_eval_env[@]}")
   CHALLENGE_EXTRA_SECRETS=("source=base_gateway_token,target=base_gateway_token")
+  # API serves HTTP /health -> container healthcheck (worker sidecar below does not).
+  CHALLENGE_HEALTH_PORT="${AGENT_CHALLENGE_PORT}"
   _deploy_challenge_service \
     "challenge-agent-challenge" "${IMAGE_AGENT_CHALLENGE}" "${AGENT_CHALLENGE_PORT}" \
     "base_agent_challenge_pg" \
@@ -1815,6 +1886,8 @@ deploy_challenges() {
   CHALLENGE_EXTRA_MOUNTS=("${prism_scorer_mounts[@]}")
   CHALLENGE_EXTRA_SECRETS=("${prism_extra_secrets[@]}")
   CHALLENGE_EXTRA_CONSTRAINTS=("node.role==manager")
+  # API serves HTTP /health -> container healthcheck (prism-worker below does not).
+  CHALLENGE_HEALTH_PORT="${PRISM_PORT}"
   _deploy_challenge_service \
     "challenge-prism" "${IMAGE_PRISM}" "${PRISM_PORT}" \
     "base_prism_pg" \
@@ -1853,17 +1926,28 @@ _deploy_challenge_service() {
     return 0
   fi
   local target_dir="${SECRET_MOUNT_DIR#/run/secrets/}"  # "base"
+  # Self-healing update/rollback policy (includes --update-order stop-first, required
+  # here because api + worker share a per-node /data volume — start-first would race
+  # two tasks on it). Kept in sync with swarm_backend.py SERVICE_UPDATE_ROLLBACK_POLICY.
   local -a argv=(
     docker service create
     --name "${name}"
     --network "${NET_CHALLENGES}"
     --replicas 1
     --restart-condition any
-    --update-order stop-first
+    "${SWARM_UPDATE_POLICY[@]}"
     --hostname "${name}"
     --with-registry-auth
     --mount "type=volume,source=${data_volume},destination=/data"
   )
+  # HTTP /health container healthcheck for the challenge API only (the default-CMD
+  # uvicorn service that serves /health on CHALLENGE_HEALTH_PORT). The worker sidecars
+  # set CHALLENGE_CMD and leave CHALLENGE_HEALTH_PORT empty, so they get crash-detection
+  # only (no /health server to probe).
+  if [[ -n "${CHALLENGE_HEALTH_PORT}" ]]; then
+    _http_healthcheck_flags "${CHALLENGE_HEALTH_PORT}"
+    argv+=("${SWARM_HEALTHCHECK[@]}")
+  fi
   # Caller-supplied ADDITIONAL networks (e.g. the isolated base_jobs_internal eval
   # overlay for the agent-challenge api+worker), each emitted as its own --network
   # after the default NET_CHALLENGES above. See CHALLENGE_EXTRA_NETWORKS declaration.
@@ -1922,6 +2006,7 @@ _deploy_challenge_service() {
   CHALLENGE_EXTRA_SECRETS=()
   CHALLENGE_EXTRA_CONSTRAINTS=()
   CHALLENGE_EXTRA_NETWORKS=()
+  CHALLENGE_HEALTH_PORT=""
   : "${port}"  # port documented in inventory; challenges are overlay-internal
 }
 

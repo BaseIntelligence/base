@@ -351,6 +351,73 @@ def test_broker_still_mounts_docker_socket(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Swarm self-healing update/rollback policy on every long-lived service
+# (crash-detection + auto-rollback), plus an HTTP /health container healthcheck
+# on the services that serve one. Kept in sync with swarm_backend.py
+# SERVICE_UPDATE_ROLLBACK_POLICY (the dynamic orchestrator path).
+# ---------------------------------------------------------------------------
+
+_SWARM_UPDATE_POLICY_FLAGS = (
+    "--update-failure-action rollback",
+    "--update-monitor 45s",
+    "--update-max-failure-ratio 0",
+    "--update-order stop-first",
+    "--rollback-failure-action pause",
+    "--rollback-monitor 45s",
+    "--rollback-max-failure-ratio 1",
+)
+
+
+def test_all_long_lived_services_carry_update_rollback_policy(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+    for service in (
+        "base-master-postgres",
+        "base-docker-broker",
+        "base-master-proxy",
+        "challenge-agent-challenge",
+        "challenge-agent-challenge-worker",
+        "challenge-prism",
+        "challenge-prism-worker",
+    ):
+        block = _service_block(lines, service)
+        for flag in _SWARM_UPDATE_POLICY_FLAGS:
+            assert flag in block, f"{service} missing {flag!r}"
+        # stop-first must appear exactly once (no leftover duplicate flag).
+        assert block.count("--update-order stop-first") == 1, service
+
+
+def test_http_services_get_health_probe_and_others_do_not(tmp_path: Path) -> None:
+    result = _run(tmp_path)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = result.stdout.splitlines()
+    # Services with a real HTTP /health endpoint get a container healthcheck on
+    # their own listen port with conservative timings.
+    for service, port in (
+        ("base-docker-broker", "8082"),
+        ("base-master-proxy", "19080"),
+        ("challenge-agent-challenge", "8000"),
+        ("challenge-prism", "8080"),
+    ):
+        block = _service_block(lines, service)
+        assert "--health-cmd" in block, service
+        assert f"localhost:{port}/health" in block, service
+        assert "--health-interval 10s" in block, service
+        assert "--health-timeout 5s" in block, service
+        assert "--health-retries 3" in block, service
+        assert "--health-start-period 40s" in block, service
+    # postgres (not HTTP) and the worker sidecars (no /health server) rely on
+    # crash-detection only — NO container healthcheck.
+    for service in (
+        "base-master-postgres",
+        "challenge-agent-challenge-worker",
+        "challenge-prism-worker",
+    ):
+        assert "--health-cmd" not in _service_block(lines, service), service
+
+
+# ---------------------------------------------------------------------------
 # VAL-CODE-DEPLOY-004: validator.yaml template + N-validator run path
 # ---------------------------------------------------------------------------
 
