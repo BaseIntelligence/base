@@ -107,9 +107,7 @@ def _ps_handler(
 
 
 def _rm_ids(runner: FakeEscapeRunner) -> list[str]:
-    return [
-        call[-1] for call in runner.calls if _subcommand(call)[:2] == ("rm", "-f")
-    ]
+    return [call[-1] for call in runner.calls if _subcommand(call)[:2] == ("rm", "-f")]
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +232,7 @@ def test_one_bad_container_does_not_abort_sweep() -> None:
 
 
 def test_both_task_and_exec_prefixes_handled() -> None:
-    listing = (
-        "task_id\town-runner-task-aaaa\n"
-        "exec_id\town-runner-exec-bbbb\n"
-    )
+    listing = "task_id\town-runner-task-aaaa\nexec_id\town-runner-exec-bbbb\n"
     inspects = {
         "task_id": _state_json(_iso(timedelta(hours=3))),
         "exec_id": _state_json(_iso(timedelta(hours=6))),
