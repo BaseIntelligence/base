@@ -1635,7 +1635,7 @@ def test_build_service_create_argv_omits_with_registry_auth_by_default() -> None
 
 
 def test_build_service_create_argv_replicated_gets_policy_job_omits() -> None:
-    common = {
+    common: dict[str, Any] = {
         "name": "svc",
         "image": "ghcr.io/baseintelligence/x:1",
         "command": ("run",),

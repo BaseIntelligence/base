@@ -390,8 +390,8 @@ class _FakeResponse:
     def __enter__(self) -> _FakeResponse:
         return self
 
-    def __exit__(self, *_exc: object) -> bool:
-        return False
+    def __exit__(self, *_exc: object) -> None:
+        return None
 
     def read(self) -> bytes:
         return self._data

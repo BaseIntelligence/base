@@ -80,6 +80,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from base.config.settings import Settings
 from base.master.swarm_backend import SwarmCliRunner, SwarmCommandRunner
@@ -329,7 +330,7 @@ def http_manifest_detector(
     failed detection is a skipped tick, never a crash).
     """
 
-    def _fetch() -> object:
+    def _fetch() -> Any:
         with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
 
