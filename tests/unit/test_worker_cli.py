@@ -281,6 +281,51 @@ def test_status_renders_fleet_from_list_workers(
     assert "active" in result.stdout
 
 
+def test_status_surfaces_fault_count_agreeing_with_fleet_view(
+    monkeypatch: pytest.MonkeyPatch, _fake_keys: None
+) -> None:
+    """The CLI fleet view shows each worker's attributed fault count (VAL-CROSS-009)."""
+
+    class _FakeClient:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        async def list_workers(self, *, hotkey: str | None = None) -> list[object]:
+            return [
+                SimpleNamespace(
+                    worker_id="clean-1",
+                    miner_hotkey="owner-a",
+                    provider="local",
+                    status="active",
+                    last_heartbeat_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    faults=[],
+                ),
+                SimpleNamespace(
+                    worker_id="faulted-1",
+                    miner_hotkey="owner-b",
+                    provider="local",
+                    status="active",
+                    last_heartbeat_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    faults=[
+                        SimpleNamespace(work_unit_id="u1"),
+                        SimpleNamespace(work_unit_id="u2"),
+                    ],
+                ),
+            ]
+
+    monkeypatch.setattr(cli_main, "WorkerCoordinationClient", _FakeClient)
+    result = runner.invoke(
+        cli_main.app, ["worker", "status", "--config", "config/worker.example.yaml"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "FAULTS" in result.stdout
+    lines = {
+        line.split()[0]: line for line in result.stdout.splitlines() if line.split()
+    }
+    assert " 0 " in f" {lines['clean-1'].split()[4]} "
+    assert lines["faulted-1"].split()[4] == "2"
+
+
 def test_status_reports_empty_fleet(
     monkeypatch: pytest.MonkeyPatch, _fake_keys: None
 ) -> None:

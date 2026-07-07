@@ -1901,8 +1901,9 @@ def worker_status(
     """Render the worker fleet from the master's ``GET /v1/workers``.
 
     Reads the fleet as the worker keypair (a registered worker is an eligible
-    coordination reader) and prints each worker's status, owner, provider, and
-    last-seen timestamp.
+    coordination reader) and prints each worker's status, owner, provider,
+    last-seen timestamp, and attributed fault count (so the CLI fleet view agrees
+    with the ``GET /v1/workers`` JSON, VAL-CROSS-009).
     """
 
     settings = load_settings(config)
@@ -1918,7 +1919,8 @@ def worker_status(
         typer.echo("No workers registered.")
         return
     typer.echo(
-        f"{'WORKER_ID':<20} {'OWNER':<20} {'PROVIDER':<10} {'STATUS':<8} LAST_SEEN"
+        f"{'WORKER_ID':<20} {'OWNER':<20} {'PROVIDER':<10} {'STATUS':<8} "
+        f"{'FAULTS':<6} LAST_SEEN"
     )
     for worker in workers:
         last_seen = (
@@ -1926,9 +1928,10 @@ def worker_status(
             if worker.last_heartbeat_at is not None
             else "-"
         )
+        fault_count = len(getattr(worker, "faults", None) or [])
         typer.echo(
             f"{worker.worker_id:<20} {worker.miner_hotkey:<20} "
-            f"{worker.provider:<10} {worker.status:<8} {last_seen}"
+            f"{worker.provider:<10} {worker.status:<8} {fault_count:<6} {last_seen}"
         )
 
 
