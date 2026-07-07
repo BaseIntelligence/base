@@ -359,10 +359,7 @@ class AssignmentService:
 
         for unit in pending:
             capability = unit.required_capability
-            if (
-                capability in self._worker_plane_capabilities
-                and unit_executor_kind(unit.payload) != EXECUTOR_KIND_VALIDATOR
-            ):
+            if self._worker_plane_owns(capability, unit.payload):
                 continue
             limit = self._capability_concurrency.get(capability)
             eligible = [
@@ -411,6 +408,13 @@ class AssignmentService:
         touched here; the subsequent :meth:`assign_pending` increments it as part
         of the reassignment.
 
+        Worker-plane units are skipped SYMMETRICALLY with :meth:`assign_pending`:
+        a unit whose capability is owned by the worker plane and that is not an
+        explicit ``validator`` executor-kind unit is maintained by the worker
+        replica engine (its primary is ``ASSIGNED`` with a NULL validator hotkey
+        by design), so it is neither assigned nor reclaimed here. With the worker
+        plane off this guard is inert and reclaim is byte-identical to legacy.
+
         When ``session`` is provided the work runs inside the caller's
         transaction; otherwise a fresh transaction is opened and committed here.
         """
@@ -449,6 +453,8 @@ class AssignmentService:
         )
 
         for unit in inflight:
+            if self._worker_plane_owns(unit.required_capability, unit.payload):
+                continue
             hotkey = unit.assigned_validator_hotkey
             validator_offline = hotkey is None or hotkey not in online
             deadline = unit.deadline_at
@@ -561,4 +567,25 @@ class AssignmentService:
     def _capability_matches(self, required: str, capabilities: set[str]) -> bool:
         return capability_matches(
             required, capabilities, gpu_serves_cpu=self._gpu_serves_cpu
+        )
+
+    def _worker_plane_owns(
+        self, capability: str, payload: Mapping[str, Any] | None
+    ) -> bool:
+        """Whether a unit belongs to the worker replica plane, not this plane.
+
+        A unit whose capability is owned by the worker plane and that is not an
+        explicit ``validator`` executor-kind unit (e.g. a dispute AUDIT unit) is
+        materialized and maintained by the worker replica engine, which sets the
+        primary ``ASSIGNED`` with a NULL ``assigned_validator_hotkey`` by design.
+        Such a unit must be skipped SYMMETRICALLY here: neither assigned to a
+        validator nor reclaimed as a stale-validator unit (a null hotkey is the
+        worker-owned marker, not "offline validator => reassignable"). Empty
+        ``_worker_plane_capabilities`` (flag OFF) makes this always ``False``, so
+        legacy validator assign/reclaim behavior is byte-identical.
+        """
+
+        return (
+            capability in self._worker_plane_capabilities
+            and unit_executor_kind(payload) != EXECUTOR_KIND_VALIDATOR
         )

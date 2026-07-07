@@ -28,6 +28,9 @@ from base.db import (
 )
 from base.db.models import WorkAssignment, WorkAssignmentStatus
 from base.master.assignment import (
+    CAPABILITY_GPU,
+    EXECUTOR_KIND_PAYLOAD_KEY,
+    EXECUTOR_KIND_VALIDATOR,
     RESUME_CHECKPOINT_PAYLOAD_KEY,
     AssignmentService,
 )
@@ -89,6 +92,41 @@ async def _one(factory) -> WorkAssignment:
     rows = await _rows(factory)
     assert len(rows) == 1
     return rows[0]
+
+
+async def _add_gpu_primary(
+    factory,
+    work_unit_id: str,
+    *,
+    submission_ref: str,
+    assigned_validator_hotkey: str | None = None,
+    payload: dict | None = None,
+    status: WorkAssignmentStatus = WorkAssignmentStatus.ASSIGNED,
+    attempt_count: int = 1,
+    max_attempts: int = 3,
+) -> None:
+    """Insert a gpu primary ``work_assignments`` row.
+
+    A worker-owned prism primary is ``ASSIGNED`` with a NULL validator hotkey by
+    design (the worker replica plane owns it via ``worker_assignments`` rows).
+    """
+
+    async with session_scope(factory) as session:
+        session.add(
+            WorkAssignment(
+                challenge_slug="prism",
+                work_unit_id=work_unit_id,
+                submission_ref=submission_ref,
+                payload=payload or {},
+                required_capability=CAPABILITY_GPU,
+                assigned_validator_hotkey=assigned_validator_hotkey,
+                status=status,
+                attempt_count=attempt_count,
+                max_attempts=max_attempts,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
 
 
 # VAL-ASSIGN-024
@@ -417,5 +455,81 @@ async def test_run_reassignment_pass_rolls_back_atomically_on_failure() -> None:
         row = await _one(factory)
         assert row.status == WorkAssignmentStatus.RUNNING
         assert row.assigned_validator_hotkey == "v1"
+    finally:
+        await engine.dispose()
+
+
+# Reclaim/assign guard symmetry: with the worker plane ON a worker-owned prism
+# primary (gpu, NULL validator hotkey by design) must NOT be reclaimed as a
+# stale-validator unit -- the null hotkey means "owned by the worker replica
+# plane", not "offline validator => reassignable".
+async def test_reclaim_skips_worker_owned_primary_when_worker_plane_on() -> None:
+    engine, factory = await _setup()
+    try:
+        service = AssignmentService(
+            factory,
+            now_fn=lambda: NOW,
+            worker_plane_capabilities=frozenset({CAPABILITY_GPU}),
+        )
+        await _add_gpu_primary(factory, "psub", submission_ref="miner-H")
+
+        outcome = await service.reclaim_stale_assignments()
+
+        assert outcome.reverted == []
+        assert outcome.failed == []
+        row = await _one(factory)
+        assert row.status == WorkAssignmentStatus.ASSIGNED
+        assert row.assigned_validator_hotkey is None
+        assert row.attempt_count == 1  # untouched -> no churn
+    finally:
+        await engine.dispose()
+
+
+# Flag OFF: reclaim is byte-identical to legacy -- a null-hotkey gpu primary IS
+# reverted to pending (legacy reads a null hotkey as "offline => reassignable").
+async def test_reclaim_reverts_null_hotkey_gpu_primary_when_flag_off() -> None:
+    engine, factory = await _setup()
+    try:
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        await _add_gpu_primary(factory, "psub", submission_ref="miner-H")
+
+        outcome = await service.reclaim_stale_assignments()
+
+        assert outcome.reverted == ["psub"]
+        assert outcome.failed == []
+        row = await _one(factory)
+        assert row.status == WorkAssignmentStatus.PENDING
+        assert row.assigned_validator_hotkey is None
+    finally:
+        await engine.dispose()
+
+
+# Flag ON does not globally disable reclaim: a validator-owned gpu AUDIT unit
+# (executor_kind=validator) whose validator is offline IS still reclaimed, since
+# the guard only spares worker-owned units (executor_kind != validator).
+async def test_reclaim_still_reclaims_stale_validator_gpu_audit_unit_when_flag_on() -> (
+    None
+):
+    engine, factory = await _setup()
+    try:
+        service = AssignmentService(
+            factory,
+            now_fn=lambda: NOW,
+            worker_plane_capabilities=frozenset({CAPABILITY_GPU}),
+        )
+        await _add_gpu_primary(
+            factory,
+            "U:audit",
+            submission_ref="miner-H",
+            assigned_validator_hotkey="gone-val",
+            payload={EXECUTOR_KIND_PAYLOAD_KEY: EXECUTOR_KIND_VALIDATOR},
+        )
+
+        outcome = await service.reclaim_stale_assignments()
+
+        assert outcome.reverted == ["U:audit"]
+        row = await _one(factory)
+        assert row.status == WorkAssignmentStatus.PENDING
+        assert row.assigned_validator_hotkey is None
     finally:
         await engine.dispose()
