@@ -348,6 +348,11 @@ class ImageUpdateTargetSetting(BaseModel):
 
     service: str
     image: str
+    #: Per-target freeze: when True this service is skipped (never rolled or
+    #: rolled back) even while the global hold is off. An opt-in operator
+    #: pin/freeze to stop a bad rollout on a single service; default OFF so
+    #: auto-update happens by default.
+    hold: bool = False
 
 
 class SupervisorSettings(BaseModel):
@@ -393,6 +398,21 @@ class SupervisorSettings(BaseModel):
     validator_agent_target_enabled: bool = False
     validator_agent_service: str = DEFAULT_VALIDATOR_AGENT_SERVICE
     validator_agent_image: str = DEFAULT_VALIDATOR_RUNTIME_IMAGE
+    #: Durable-retry policy for the master image-updater's convergence-verified
+    #: rollout. ``image_update_max_attempts`` bounds how many times a failing
+    #: target is retried (with rollback) before the updater stops hammering it
+    #: and emits an ``image_update_failed`` alert; a NEW desired digest resets
+    #: the budget. The backoff doubles from ``base`` each attempt, capped at
+    #: ``max`` — see :class:`base.supervisor.retry.RetryPolicy`.
+    image_update_max_attempts: int = 5
+    image_update_backoff_base_seconds: float = 60.0
+    image_update_backoff_max_seconds: float = 1800.0
+    #: Global freeze: when True the image-updater skips EVERY target (logging
+    #: ``skipped-held``) and never rolls or rolls back. An opt-in operator freeze
+    #: to stop a bad rollout fleet-wide; default OFF so auto-update happens by
+    #: default (a held target is also settable per-target via
+    #: :attr:`ImageUpdateTargetSetting.hold`).
+    image_update_hold: bool = False
 
 
 class Settings(BaseModel):

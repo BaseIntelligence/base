@@ -60,6 +60,9 @@ class _FakeRunner:
     ) -> SwarmCommandResult:
         call = tuple(argv)
         if call[1:3] == ("service", "inspect"):
+            fmt = call[call.index("--format") + 1]
+            if "UpdateStatus.State" in fmt:
+                return SwarmCommandResult(call, 0, "completed\n", "")
             image = self._current_images.get(call[-1])
             if image is None:
                 return SwarmCommandResult(call, 1, "", "no such service")

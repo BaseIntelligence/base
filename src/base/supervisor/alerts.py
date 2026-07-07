@@ -16,6 +16,8 @@ without parsing the human message):
 - ``zero_miner_abort`` — chain-invalid zero-miner fallback aborted (Task 9).
 - ``gpu_down`` — GPU liveness probe failed (Task 15 GPU failures).
 - ``drand_unreachable`` — drand beacon reachability probe failed.
+- ``image_update_failed`` — a master image auto-update exhausted its retry budget
+  (rolled back each time) and is paused until a new digest appears.
 
 When ``alert_webhook_url`` is unset the hook is a structured-log-only NO-OP and
 makes NO network call, so default deploys and the test suite never touch the
@@ -47,6 +49,7 @@ ALERT_EVAL_FAILURE = "eval_pipeline_failure"
 ALERT_ZERO_MINER_ABORT = "zero_miner_abort"
 ALERT_GPU_DOWN = "gpu_down"
 ALERT_DRAND_UNREACHABLE = "drand_unreachable"
+ALERT_IMAGE_UPDATE_FAILED = "image_update_failed"
 
 HEALTH_PROBE_TASK_NAME = "validator-health-probe"
 
@@ -154,6 +157,9 @@ class WebhookAlertHook:
     def drand_unreachable(self, message: str, **details: Any) -> None:
         self.emit(ALERT_DRAND_UNREACHABLE, message, **details)
 
+    def image_update_failed(self, message: str, **details: Any) -> None:
+        self.emit(ALERT_IMAGE_UPDATE_FAILED, message, **details)
+
 
 def build_alert_hook(
     settings: Settings, *, transport: WebhookTransport | None = None
@@ -228,6 +234,7 @@ __all__ = [
     "ALERT_DRAND_UNREACHABLE",
     "ALERT_EVAL_FAILURE",
     "ALERT_GPU_DOWN",
+    "ALERT_IMAGE_UPDATE_FAILED",
     "ALERT_ZERO_MINER_ABORT",
     "HEALTH_PROBE_TASK_NAME",
     "AlertEmitter",

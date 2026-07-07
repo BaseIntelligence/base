@@ -146,6 +146,7 @@ def build_scheduled_tasks(
             health_gate=gate,
             resolver=digest_resolver,
             targets=resolve_image_update_targets(settings),
+            alert_emit=alert_hook,
         )
     )
     # Task 19 (challenge-image-updater) is NO LONGER registered on the HOST
