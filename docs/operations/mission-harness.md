@@ -1,9 +1,9 @@
 # Local mission harness (cross-repo end-to-end)
 
 A thin, config-driven launcher that stands up the **whole compute plane locally on loopback ports
-3100-3199 with no GPU** and runs six operator-observable drills (all via HTTP/CLI only). It is a
+3100-3199 with no GPU** and runs six operator-observable drills (HTTP/CLI only). It is a
 test/mission harness, **not a production path**: it uses a static mock metagraph and the prism
-repo's own CPU re-exec seam. Production still uses `base master proxy` with a real subtensor
+repo's own CPU re-exec seam, whereas production uses `base master proxy` with a real subtensor
 metagraph and the real GPU broker.
 
 ## What it stands up
@@ -17,16 +17,16 @@ metagraph and the real GPU broker.
 | orchestrator + drills + PID teardown | `prism/scripts/mission/launch.py` | prism |
 
 * **Mock metagraph**: five owner (miner) hotkeys (`//MissionAlice…//MissionErin`, no permit) plus a
-  validator hotkey (`//MissionValidator1`, with a validator permit), seeded statically so signed
+  validator hotkey (`//MissionValidator1`, with a permit), seeded statically so signed
   worker/validator requests authenticate with no chain.
 * **CPU re-exec seam as explicit config**: prism runs with
-  `worker_plane.cpu_reexec_test_mode: true`, which installs
-  `prism_challenge.evaluator.mock_reexec.cpu_reexec_run` over `DockerExecutor.run` and uses a tiny
-  deterministic `PrismContext` (vocab 64 / seq 16 / step budget 24). The launcher never touches any
-  HTTP surface; all drill observations are black-box.
+  `worker_plane.cpu_reexec_test_mode: true`, installing
+  `prism_challenge.evaluator.mock_reexec.cpu_reexec_run` over `DockerExecutor.run` with a tiny
+  deterministic `PrismContext` (vocab 64 / seq 16 / step budget 24). All drill observations are
+  black-box.
 * **Two+ workers on DISTINCT owner hotkeys**: each worker's executor runs the real CPU re-exec,
   normalizes the volatile `compute` timing fields, and signs a tier-0 ExecutionProof, so honest
-  replicas of the same submission converge on one `manifest_sha256`.
+  replicas of one submission converge on a single `manifest_sha256`.
 
 ## Virtualenv (important)
 
@@ -91,11 +91,11 @@ Both are inside the mission-allowed range 3100-3199. No component listens outsid
 
 ## Legacy regression (flags OFF) — exact verification procedure (VAL-CROSS-006)
 
-This is the reproducible procedure proving that with ALL new flags OFF the compute plane behaves
-byte-for-byte as pre-mission. Re-run it exactly as below (scrutiny/re-validation). It has two parts:
-(a) both default suites green fully offline, and (b) a legacy validator-flow smoke.
+This reproducible procedure proves that with ALL new flags OFF the compute plane behaves
+byte-for-byte as pre-mission. It has two parts: (a) both default suites green fully offline, and
+(b) a legacy validator-flow smoke.
 
-Prerequisites: the test PostgreSQL is up on 15433 (`services.yaml` `test-postgres`), and both venvs
+Prerequisites: the test PostgreSQL is up on 15433 (`services.yaml` `test-postgres`) and both venvs
 are synced (`services.yaml` `install`). No credentials are needed; the procedure UNSETS
 `LIUM_API_KEY` / `TARGON_API_KEY` / `BASE_LIVE_PROVIDER_TESTS` and leaves
 `BASE_COMPUTE__WORKER_PLANE_ENABLED` unset (flags OFF).
@@ -103,11 +103,11 @@ are synced (`services.yaml` `install`). No credentials are needed; the procedure
 ### Offline egress guard
 
 `base/scripts/mission/no_external_egress.py` is a pytest plugin (`-p no_external_egress`) that blocks
-any DNS resolution or socket connect to a non-loopback host (raising an `OSError` subclass), while
+any DNS resolution or socket connect to a non-loopback host (raising an `OSError` subclass) while
 leaving loopback (test PostgreSQL on 127.0.0.1:15433, in-process stubs) and AF_UNIX sockets working.
-It installs from `pytest_configure` (before collection), so even a module that probes the network at
-import time is guarded and simply SKIPS. This operationalises "zero real egress to lium.io /
-api.targon.com". Unit-tested by `base/tests/unit/test_no_external_egress.py`.
+It installs from `pytest_configure` (before collection), so a module that probes the network at
+import time is guarded and simply SKIPS — "zero real egress to lium.io / api.targon.com". Unit-tested
+by `base/tests/unit/test_no_external_egress.py`.
 
 ### (a) Both default suites, offline, flags OFF
 
@@ -124,7 +124,7 @@ env -u LIUM_API_KEY -u TARGON_API_KEY -u BASE_LIVE_PROVIDER_TESTS -u BASE_COMPUT
 
 Expected: green, e.g. `1543 passed`, `Total coverage: 88.55%` (≥ 80% gate). No base test needs the
 network; the live Lium/Targon E2E is a standalone gated script (`base/scripts/live_lium_e2e.py`,
-`BASE_LIVE_PROVIDER_TESTS=1`) NOT collected by the default suite, so there are no live tests to skip.
+`BASE_LIVE_PROVIDER_TESTS=1`) not collected by the default suite.
 
 prism (the same egress guard, from the base scripts dir; `distributed_gloo` deselected as non-gating):
 
@@ -137,11 +137,9 @@ env -u LIUM_API_KEY -u TARGON_API_KEY -u BASE_LIVE_PROVIDER_TESTS -u BASE_COMPUT
 ```
 
 Expected: green, e.g. `892 passed, 9 skipped, 7 deselected`, `Total coverage: 83.07%` (≥ 80% gate).
-The `7 deselected` are the `distributed_gloo` tests (non-gating). The `9 skipped` are the
-harness/dataset tests whose prep step needs to stage a tokenizer/dataset over the network
-(`"... needs network (prep/build step)"`); under the egress guard (external resolution disabled)
-they skip rather than run — exactly the offline behaviour. Nothing egresses to `lium.io` /
-`api.targon.com`.
+The `7 deselected` are the non-gating `distributed_gloo` tests; the `9 skipped` are harness/dataset
+tests whose prep step needs to stage a tokenizer/dataset over the network, which the egress guard
+disables — exactly the offline behaviour.
 
 ### (b) Legacy validator-flow smoke
 

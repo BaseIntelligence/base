@@ -3,16 +3,12 @@
 This guide covers running a BASE validator on Docker Swarm. There is no
 Kubernetes anywhere in BASE: the only backend is Docker Swarm.
 
-A validator runs in one of a few profiles, from a submit-only on-chain weight
-submitter through a full challenge-evaluating validator node. The
-[Compute Requirements](#compute-requirements) below size each profile, and the
-[Automatic Install (One Command)](#automatic-install-one-command) section brings
-up a self-updating validator node with the turnkey installer.
-
-The simplest profile is the submit-only on-chain weight submitter, installed as a
-systemd service. The submitter fetches the master weight vector from the public
-BASE endpoint and submits it on-chain. It runs no challenge orchestration: all
-challenge services run on the BASE master (manager) node.
+Validators run in a range of profiles, from a submit-only on-chain weight
+submitter to a full challenge-evaluating validator node. The simplest profile is
+the submit-only submitter, a systemd service that fetches the master weight
+vector from the public BASE endpoint and submits it on-chain. It runs
+no challenge orchestration: all challenge services run on the BASE master
+(manager) node. See [Compute Requirements](#compute-requirements) for sizing.
 
 The default weights endpoint is:
 
@@ -22,8 +18,8 @@ https://chain.joinbase.ai/v1/weights/latest
 
 ## Compute Requirements
 
-How much compute a validator needs depends on which evaluation work it performs.
-The numbers in this table are authoritative.
+Compute depends on which evaluation work the validator performs. These numbers
+are authoritative.
 
 | Validator profile | Compute |
 |-------------------|---------|
@@ -31,69 +27,60 @@ The numbers in this table are authoritative.
 | Validator running the base (agent-challenge) evaluation | 8 vCPU, 32 GB RAM |
 | PRISM challenge | No additional compute required |
 
-PRISM adds no compute to the validator: its heavy GPU evaluation is **delegated
-to miner-funded worker agents** (the worker plane), and the validator only
-performs light verification plus probabilistic replay audits. A validator
-therefore never needs a local GPU for PRISM.
+PRISM adds no validator compute: its heavy GPU evaluation is **delegated to
+miner-funded worker agents** (the worker plane), and the validator only performs
+light verification plus probabilistic replay audits. A validator never needs a
+local GPU for PRISM.
 
 ## Automatic Install (One Command)
 
-`deploy/swarm/install-swarm.sh` is the automatic, one-command install path. On a
-blank host it installs everything it needs: Docker Engine (its `ensure_docker`
-step), the `uv` runtime (its `ensure_uv` step, when the supervisor is installed),
-and the Docker Swarm (`swarm init`).
+`deploy/swarm/install-swarm.sh` is the one-command install path. On a blank host
+it installs everything it needs: Docker Engine (`ensure_docker`), the `uv`
+runtime (`ensure_uv`, when the supervisor is installed), and the Docker Swarm
+(`swarm init`).
 
 ### Dry-run by default
 
 The installer is **dry-run by default**: with no flags it prints every planned
-command via its `plan` gate and changes nothing. Pass `--apply` to execute.
-Every destructive step stays behind its own explicit flag, so nothing mutates
-until you opt in.
+command and changes nothing. Pass `--apply` to execute; every destructive step
+stays behind its own explicit flag.
 
 ```bash
-bash deploy/swarm/install-swarm.sh --help        # list flags + required env
-bash deploy/swarm/install-swarm.sh               # dry-run: prints the plan, changes nothing
+bash deploy/swarm/install-swarm.sh --help   # list flags + required env
+bash deploy/swarm/install-swarm.sh          # dry-run: prints the plan, changes nothing
 ```
 
-### Auto-update (base-supervisor image-updater)
+### Auto-update
 
 `--validator-node` brings up `base validator agent` as an **auto-updatable**
-Docker Swarm service (`base-validator-agent`) plus a node-local base-supervisor
-whose image-updater digest-pins that service on every new
+Swarm service (`base-validator-agent`) plus a node-local base-supervisor whose
+image-updater digest-pins that service on every new
 `base-validator-runtime:latest` digest. That image-updater **is** the
 auto-update: the validator's `base` code rolls forward automatically, with no
 manual `docker service update`.
 
-`--install-supervisor` enables the `base-supervisor.service` systemd unit, the
-control-plane auto-update unit. Its image-updater runs on a 60s interval, and
+`--install-supervisor` enables the `base-supervisor.service` systemd unit (the
+control-plane auto-update unit). Its image-updater runs on a 60s interval, and
 optional base self-update is wired only when `SUPERVISOR_SELF_UPDATE_MANIFEST_URL`
 is set (otherwise self-update is explicitly disabled, never left inert).
 
-### Quick start: validator node (dry-run first, then `--apply`)
-
-Set the required environment, run a dry-run to review the plan, then re-run with
-`--apply` (adding `--install-supervisor` to enable the node-local auto-update
-unit).
+### Quick start: validator node
 
 Required environment for `--validator-node`:
 
-- `VALIDATOR_MASTER_URL`: the MASTER coordination/gateway root (for example
-  `http://<master-host>:19080`). There is no default: a validator must never
-  point at its own advertise address, so an unset value fails fast.
+- `VALIDATOR_MASTER_URL`: the master coordination/gateway root (for example
+  `http://<master-host>:19080`). There is no default: an unset value fails fast
+  so a validator never points at its own advertise address.
 - `VALIDATOR_BROKER_TOKEN`: the validator's own broker token (mounted at
   `/run/secrets/base_broker_token`).
 - the validator hotkey wallet, staged under `VALIDATOR_WALLET_PATH` (default
   `/var/lib/base/wallets`), wallet name `VALIDATOR_WALLET_NAME`.
 
-`VALIDATOR_CAPABILITIES` selects the evaluation work this node performs:
-
-- `["cpu"]` (default): the base agent-challenge (Terminal-Bench) CPU
-  evaluation.
-- PRISM GPU evaluation is **delegated** to the miner-funded worker plane, so a
-  validator needs no GPU capability for PRISM; it only performs light
-  verification plus probabilistic replay audits. (`["gpu","cpu"]` remains
-  available for the legacy path where a validator itself runs PRISM GPU
-  re-execution at concurrency 1.)
+`VALIDATOR_CAPABILITIES` selects the evaluation work: `["cpu"]` (default) runs
+the base agent-challenge (Terminal-Bench) CPU evaluation. PRISM GPU evaluation is
+**delegated** to the worker plane, so no GPU capability is needed for PRISM
+(`["gpu","cpu"]` remains available for the legacy path where a validator runs
+PRISM GPU re-execution at concurrency 1).
 
 ```bash
 export VALIDATOR_MASTER_URL="http://<master-host>:19080"
@@ -112,7 +99,7 @@ The dry-run renders the node-local supervisor config
 (`validator_agent_target_enabled: true`, watching
 `base-validator-runtime:latest`) and the per-validator `validator.yaml`, and
 prints the `docker service create base-validator-agent ...` it would run. Review
-that plan before you pass `--apply`.
+the plan before you pass `--apply`.
 
 ## Secret Rule
 
@@ -151,12 +138,12 @@ connection: it only talks to the master over HTTP and to the chain.
 
 ## How The Submitter Works
 
-The submitter polls `validator.weights_url` (default
-`https://chain.joinbase.ai`) at `validator.weights_interval_seconds`, reads
-`/v1/weights/latest`, and submits the fetched vector on-chain for the configured
-`network.netuid`. It retries on transient master or chain failures and skips
-submission when the master vector is stale beyond
-`validator.weights_freshness_seconds`. The relevant `submitter.yaml` keys:
+The submitter polls `validator.weights_url` (default `https://chain.joinbase.ai`)
+at `validator.weights_interval_seconds`, reads `/v1/weights/latest`, and submits
+the fetched vector on-chain for the configured `network.netuid`. It retries on
+transient master or chain failures and skips submission when the master vector is
+stale beyond `validator.weights_freshness_seconds`. The relevant `submitter.yaml`
+keys:
 
 ```yaml
 network:
@@ -175,37 +162,25 @@ validator:
 
 ## Operator FAQ
 
-### Is Kubernetes required?
+**Is Kubernetes required?** No. There is no Kubernetes anywhere in BASE. The
+submitter is a single systemd-managed Python process; it deploys no orchestrator
+and runs no challenge workloads.
 
-No. There is no Kubernetes anywhere in BASE. The submitter is a single
-systemd-managed Python process. It does not deploy an orchestrator and does not
-run challenge workloads.
-
-### Do I need to run the challenges?
-
-No. Challenge services run on the BASE master (manager) node, scheduled as
-Docker Swarm services with the placement constraint `node.role==manager`. The
+**Do I need to run the challenges?** No. Challenge services run on the BASE master
+(manager) node as Docker Swarm services pinned to `node.role==manager`. The
 submitter only reads the master weight vector and submits it on-chain.
 
-### Do I need a database?
+**Do I need a database?** No. The submit path never opens the control-plane
+database; the shared PostgreSQL is used by the master/manager only.
 
-No. The submit path never opens the control-plane database. The shared
-control-plane PostgreSQL is used by the master/manager only and is not a submitter
-dependency.
+**What are the minimum requirements?** See
+[Compute Requirements](#compute-requirements). In short: a submit-only node needs
+very little (a Python runtime, network access to the master and chain, and the
+validator hotkey file) and fits in 2 vCPU / 4 GB RAM.
 
-### What are the minimum requirements?
-
-See [Compute Requirements](#compute-requirements) above for the authoritative
-sizing per validator profile. In short: a submit-only node needs very little (a
-Python runtime, network access to the master endpoint and the chain, and the
-validator hotkey file) and fits in 2 vCPU / 4 GB RAM. A validator that runs the
-base agent-challenge evaluation needs 8 vCPU and 32 GB RAM; PRISM adds no compute
-because its GPU evaluation is delegated to the miner-funded worker plane.
-
-### What if the requirements are too high?
-
-Use the Bittensor CHK / stake weight check flow to give validator power to the
-recommended BASE validator hotkey instead of running the submitter yourself:
+**What if the requirements are too high?** Use the Bittensor CHK / stake weight
+check flow to give validator power to the recommended BASE validator hotkey
+instead of running the submitter yourself:
 
 ```text
 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At
@@ -213,15 +188,15 @@ recommended BASE validator hotkey instead of running the submitter yourself:
 
 ## Manual Install
 
-If you do not use the unit file, run the same process under any supervisor:
+To run without the unit file, run the same process under any supervisor:
 
 ```text
 python /var/lib/base/submitter/run_submitter.py --config /etc/base/submitter.yaml
 ```
 
 Ensure the hotkey file exists at
-`/var/lib/base/wallets/base-validator/hotkeys/validator` and that
-`submitter.yaml` points `validator.weights_url` at the master endpoint.
+`/var/lib/base/wallets/base-validator/hotkeys/validator` and that `submitter.yaml`
+points `validator.weights_url` at the master endpoint.
 
 ## Runtime Checks
 

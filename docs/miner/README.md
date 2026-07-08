@@ -2,36 +2,30 @@
 
 ## Purpose
 
-BASE is the routing and coordination layer for multiple challenge subnets. As a miner, you do
-not build against BASE-specific scoring logic. You choose a challenge, follow that challenge's
-submission contract, and use BASE to reach the challenge's public surface.
+BASE is the routing and coordination layer for multiple challenge subnets. As a miner you do not
+build against BASE-specific scoring logic: you choose a challenge, follow that challenge's
+submission contract, and use BASE to reach its public surface.
 
 ## Miner Flow
 
-1. Choose the challenge you want to compete in.
-2. Read the challenge repository and miner guide.
-3. Build the required submission artifact for that challenge.
-4. Submit through the challenge's public route as exposed by BASE.
-5. Track challenge-specific status, reports, and leaderboards.
-6. Improve your submission based on challenge feedback.
-7. Earn rewards when the challenge exports a raw weight for your hotkey and BASE normalizes it
+1. Choose a challenge and read its repository and miner guide.
+2. Build the required submission artifact and submit through the challenge's public BASE route.
+3. Track challenge-specific status, reports, and leaderboards, and improve on feedback.
+4. Earn rewards when the challenge exports a raw weight for your hotkey and BASE normalizes it
    into final subnet weights.
 
 ## How BASE Routes Miner Traffic
 
-Each challenge has a slug, such as `agent-challenge`, `data-fabrication`, `bounty-challenge`, or
-`prism`. BASE uses that slug to proxy public challenge requests to the correct isolated
-challenge service.
-
-Challenge-specific examples:
+Each challenge has a slug (such as `agent-challenge`, `data-fabrication`, `bounty-challenge`, or
+`prism`); BASE proxies public requests by slug to the correct isolated challenge service:
 
 ```http
 POST /challenges/{challenge_slug}/...
 GET /challenges/{challenge_slug}/...
 ```
 
-The exact path after the challenge slug belongs to the challenge repository. BASE does not define
-the artifact format, task rules, scoring rubric, or leaderboard fields for each challenge.
+The exact path after the slug belongs to the challenge repository. BASE does not define the
+artifact format, task rules, scoring rubric, or leaderboard fields.
 
 
 ## Agent Challenge Frontend API
@@ -57,9 +51,13 @@ POST /v1/challenges/agent-challenge/submissions
 POST /challenges/agent-challenge/submissions
 ```
 
-Use `POST /v1/challenges/agent-challenge/submissions` for raw ZIP bridge uploads. BASE verifies the miner upload and forwards it to Agent Challenge. Use `POST /challenges/agent-challenge/submissions` for the JSON base64 generic proxy path when the client signs the challenge-local `/submissions` request.
+Use the `/v1/...` path for raw ZIP bridge uploads (BASE verifies and forwards them to Agent
+Challenge); use the `/challenges/...` path for the JSON base64 generic proxy when the client signs
+the challenge-local `/submissions` request.
 
-For v1 lists, `/challenges/agent-challenge/submissions` returns the latest 100 submissions newest-first. `/challenges/agent-challenge/leaderboard` returns one best scoring row per hotkey. Pagination, filtering, and client-selected sorting are deferred to future v2.
+For v1 lists, `/challenges/agent-challenge/submissions` returns the latest 100 submissions
+newest-first and `/challenges/agent-challenge/leaderboard` returns one best-scoring row per hotkey.
+Pagination, filtering, and client-selected sorting are deferred to v2.
 
 The public proxy blocks `/internal/*`, `/health`, and `/version`.
 
@@ -104,67 +102,37 @@ A 502 under `/challenges/agent-challenge/...` is a safe unavailable state from B
 
 Checklist:
 
-1. Confirm ingress routes `/challenges` to BASE proxy. A route for `/v1/challenges` alone is not enough.
-2. Confirm BASE proxy slug routing points at the Agent Challenge service and still blocks `/internal/*`, `/health`, and `/version`.
-3. Confirm Agent Challenge health, that the Swarm service has a running task, service DNS on the overlay network, and the service port.
-4. Confirm the challenge service is running on the manager node and is not stuck pending placement.
-5. Separate proxy transport failures from challenge-origin non-2xx responses. Transport failures become safe 502 responses. Challenge-origin non-2xx responses should pass through as safe validation, auth, replay, rate-limit, or challenge error responses.
-6. If the failing request is an env action, confirm the request uses `GET/PUT /challenges/agent-challenge/submissions/{id}/env`, `POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, or `POST /challenges/agent-challenge/submissions/{id}/launch`, and includes only the signed miner header names above.
+1. Confirm ingress routes `/challenges` to the BASE proxy (a `/v1/challenges` route alone is not enough), and that slug routing points at the Agent Challenge service while still blocking `/internal/*`, `/health`, and `/version`.
+2. Confirm Agent Challenge health: a running Swarm task on the manager node (not stuck pending placement), service DNS on the overlay network, and the service port.
+3. Separate proxy transport failures (rewritten to safe 502s) from challenge-origin non-2xx responses (validation, auth, replay, rate-limit, or challenge errors), which pass through.
+4. For an env action, confirm it uses one of the `.../env`, `.../env/confirm-empty`, or `.../launch` paths above and includes only the signed miner header names.
 
-## What BASE Does For Miners
+## Division Of Responsibility
 
-BASE provides:
+**BASE provides:** one public entry point for multiple challenges, routing by slug, central
+challenge discovery, final normalization across challenge emissions, Bittensor hotkey-to-UID
+mapping, and final on-chain weight submission.
 
-- one public entry point for multiple challenges;
-- challenge routing by slug;
-- central challenge discovery;
-- final normalization across challenge emissions;
-- Bittensor hotkey-to-UID mapping;
-- final on-chain weight submission.
-
-## What Challenge Repositories Define
-
-Each challenge defines:
-
-- accepted submission format;
-- authentication and signature rules;
-- task or project requirements;
-- scoring algorithm;
-- evaluation limits;
-- leaderboard output;
-- public status and result endpoints.
+**Each challenge defines:** accepted submission format, authentication and signature rules, task or
+project requirements, scoring algorithm, evaluation limits, leaderboard output, and public
+status/result endpoints.
 
 ## Rewards
 
-Challenge scores are not submitted directly to Bittensor. The flow is:
-
-1. The challenge evaluates miner work.
-2. The challenge exports raw hotkey weights.
-3. BASE applies the challenge emission share.
-4. BASE normalizes across active challenge outputs.
-5. BASE maps hotkeys to Bittensor UIDs.
-6. Validators submit final weights on-chain.
-
-This means a strong score in one challenge contributes according to that challenge's configured
-emission share.
+Challenge scores are not submitted directly to Bittensor. The challenge evaluates miner work and
+exports raw hotkey weights; BASE applies the challenge emission share, normalizes across active
+challenge outputs, maps hotkeys to Bittensor UIDs, and validators submit final weights on-chain.
+So a strong score in one challenge contributes according to that challenge's configured emission
+share.
 
 ## Miner Checklist
 
-Before submitting:
+Before submitting: confirm the challenge slug and repository, read its miner guide, use the
+required artifact format, sign requests when the challenge requires hotkey signatures, monitor the
+challenge leaderboard (not only the BASE layer), keep your hotkey consistent, and never assume two
+challenges share scoring rules. For detailed rules, use the challenge repository directly:
 
-- Confirm the challenge slug and repository.
-- Read the challenge miner guide.
-- Use the challenge's required artifact format.
-- Sign requests if the challenge requires hotkey signatures.
-- Monitor the challenge leaderboard, not only the BASE layer.
-- Keep your hotkey consistent across submissions.
-- Do not assume two challenges share the same scoring rules.
-
-## Where To Find Challenge Rules
-
-Use the specific challenge repository for detailed mining instructions:
-
-- Agent Challenge: software engineering agents and benchmark tasks.
-- Data Fabrication: agentic coding conversation dataset generation.
-- Bounty Challenge: owner-created project bounties.
-- PRISM: neural architecture search and training variants.
+- **Agent Challenge**: software engineering agents and benchmark tasks.
+- **Data Fabrication**: agentic coding conversation dataset generation.
+- **Bounty Challenge**: owner-created project bounties.
+- **PRISM**: neural architecture search and training variants.

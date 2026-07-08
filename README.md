@@ -2,9 +2,15 @@
 
 # BASE
 
-**Multi-challenge Bittensor subnet platform with master/validator orchestration**
+**Multi-challenge Bittensor subnet platform with master/validator orchestration.**
 
-**[Miner Guide](docs/miner/README.md) • [Validator Guide](docs/validator/README.md) • [Foundation Master Guide](docs/master/README.md) • [Architecture](docs/architecture.md) • [Challenges](docs/challenges.md) • [Security](docs/security.md) • [Website](https://joinbase.ai)**
+<a href="docs/miner/README.md">Miners</a> ·
+<a href="docs/validator/README.md">Validators</a> ·
+<a href="docs/master/README.md">Master</a> ·
+<a href="docs/architecture.md">Architecture</a> ·
+<a href="docs/challenges.md">Challenges</a> ·
+<a href="docs/security.md">Security</a> ·
+<a href="https://joinbase.ai">Website</a>
 
 [![CI](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml/badge.svg)](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/BaseIntelligence/base)](https://github.com/BaseIntelligence/base/blob/main/LICENSE)
@@ -20,372 +26,117 @@
 
 ## Overview
 
-BASE is a **multi-challenge Bittensor subnet platform**. It lets independent challenge
-subnets run under one validator network, routes miner traffic to the right challenge, collects raw
-challenge weights, normalizes emissions, maps miner hotkeys to Bittensor UIDs, and publishes the
-final vector for validators to submit on-chain.
+BASE is a **multi-challenge Bittensor subnet platform**: independent challenge subnets run under one
+validator network. BASE routes miner traffic to the right challenge, collects each challenge's raw
+weights, normalizes emissions, maps hotkeys to Bittensor UIDs, and publishes the final vector for
+validators to submit on-chain. Each challenge lives in its own repository and owns its submissions,
+scoring, state, and public miner experience; BASE is the orchestration layer that runs them as one
+subnet.
 
-Each challenge lives in its own repository and owns its submissions, scoring logic, state, and
-public miner experience. BASE provides the orchestration layer that makes those challenges run
-together as one subnet.
+It runs as a single **Docker Swarm**. A **master** (manager node) hosts the public proxy, the
+validator coordination plane, the LLM gateway, the broker, and the challenge API services — it
+coordinates and aggregates but **never executes** evaluation. Online **validators** are the
+decentralized executors: each registers with the master, pulls assignments, and runs evaluation on
+its own broker. There is no Kubernetes; the only backend is Swarm.
 
-BASE runs as a single Docker Swarm: a master (manager) node hosts the platform API (a single
-proxy that also serves the `/v1/registry` and `/v1/weights/latest` reads plus the token-gated admin
-routes), the validator coordination plane, the LLM gateway, broker, supervisor, and the challenge
-API services. The master coordinates and aggregates only; it never executes evaluation tasks.
-Online validators are the decentralized executors: each registers with the master, pulls
-assignments, and runs evaluation on its own broker and Docker. There is no Kubernetes and no
-`runtime.backend` selector; the only backend is Swarm.
-
-## Core Principles
-
-- One **BASE master** (Swarm manager) coordinates and aggregates; it never executes evaluation tasks.
-- Online **validators** are the decentralized executors; they pull assignments from the master and run evaluation on their own broker and Docker.
-- Validator-facing routes are hotkey-signed and gated on a metagraph validator permit.
-- All provider (LLM) calls go through the master LLM gateway; validators hold no provider keys.
-- Weights are computed from validator-reported evaluation results; there is no path that produces weights without validator evaluation.
-- One repository and image per **challenge**, isolated from other challenges.
-- Challenges expose a standard internal weight contract to BASE.
-- Public challenge APIs are proxied through BASE without exposing internal control routes.
-- The shared control-plane PostgreSQL is private to the master process.
-- Each challenge keeps its own SQLite database on its `/data` Swarm volume.
-- Challenge state remains owned by each challenge.
-- The master (manager) node runs all active challenge services, reconciled automatically from the registry; it aggregates the final weight vector but never submits on-chain. Each validator submits its own weights (a dedicated submit-only host can run the same submitter).
-
----
-
-## Documentation Index
-
-Docs are grouped by audience.
-
-**Miners**
-
-- [Miner guide](docs/miner/README.md) — choose a challenge, submit through the proxy, and track leaderboards.
-- [Miner worker deployment guide](docs/miner/worker-plane.md) — deploy a miner-funded GPU worker on Lium or Targon with `base worker deploy`, monitor it with `base worker status`, and understand the PRISM admission rule and proof tiers.
-
-**Validators / operators**
-
-- [Validator guide](docs/validator/README.md) — install the submit-only on-chain weight submitter.
-- [Validator operations](docs/operations/validator.md) — submitter plus manager-service runbook.
-- [Swarm deployment](deploy/swarm/README.md) — node `daemon.json` variants, worker enrollment, networking, prune policy, and the supervisor unit.
-- [Foundation master guide](docs/master/README.md) — Cortex Foundation master bring-up (foundation-only).
-- [Reward semantics](docs/reward-semantics.md) — reference spec for how the Terminal-Bench (harbor) scorer maps verifier output to a reward and submission status.
-- [Deploy from scratch](#deploy-from-scratch-quickstart) — the end-to-end bring-up quickstart below.
-
-**Developers / challenge integrators**
-
-- [Architecture](docs/architecture.md) — control-plane versus worker topology and the Swarm broker contract.
-- [Challenges](docs/challenges.md) — the challenge model.
-- [Challenge integration guide](docs/challenge-integration.md) — the API contract a challenge must expose.
-- [Security model](docs/security.md) — trust boundaries and secret handling.
-- [Versioning](docs/versioning.md) — SemVer, Git tag, and GHCR tag policy.
-
----
-
-## Network Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
-    BT[Bittensor] --> M[Master coordinator + aggregator]
-    M --> PG[(Control-plane Postgres)]
-    M --> C1[Challenge A API]
-    M --> C2[Challenge B API]
-    C1 --> D1[(Challenge A /data SQLite)]
-    C2 --> D2[(Challenge B /data SQLite)]
-    M --> CP[Coordination plane]
-    M --> GW[LLM gateway]
-    V[Validators: executors] -- register / heartbeat / pull / result --> CP
+    U[Miners] --> P[Public proxy]
+    P --> CH[Challenge APIs]
+    CH --> AG[Weight aggregator]
+
+    subgraph MASTER [Master - manager node]
+        P
+        CP[Coordination plane]
+        GW[LLM gateway]
+        AG
+        PG[(Control-plane Postgres)]
+    end
+
+    V[Validators - executors] -- register / pull / result --> CP
     V -- provider calls --> GW
     V --> VB[Own broker + Docker eval]
-    U[Miners] --> P[Proxy]
-    P --> C1
-    P --> C2
-    M --> W[Weights API]
-    V -- fetch /v1/weights/latest --> W
-    V -- set_weights (own hotkey) --> BT
+    AG --> W[GET /v1/weights/latest]
+    V -- fetch weights --> W
+    V -- set_weights own hotkey --> BT[Bittensor]
 ```
 
----
+## How It Works
 
-## Weight Flow
+1. The master tracks active challenges and their emission shares, and **auto-deploys** their services from the registry (a newly-registered ACTIVE challenge propagates with no manual step).
+2. Challenge services run isolated from the control plane and each other, each on its own `/data` volume.
+3. Miners reach a challenge through BASE's public proxy.
+4. Validators register, pull assignments from the coordination plane, execute evaluation on their own broker, and post results.
+5. Each challenge computes raw hotkey weights from those validator-reported results.
+6. BASE normalizes challenge outputs, applies emission shares, and maps hotkeys to UIDs.
+7. Each validator fetches the final vector from the weights API and submits it on-chain under its own hotkey; the master aggregates but **never submits on-chain**.
 
-```mermaid
-sequenceDiagram
-    participant V as Validators (executors)
-    participant CP as Coordination plane
-    participant A as Challenge get_weights
-    participant G as Aggregator
-    participant W as Weights API
-    participant BT as Bittensor
-
-    V->>CP: pull assignment, execute, post result
-    CP->>A: validator-reported results
-    A-->>G: hotkey -> weight (per challenge)
-    G-->>W: normalized uid weights (recompute on read)
-    V->>W: GET /v1/weights/latest (per validator)
-    V->>BT: set_weights (own hotkey)
-```
-
----
-
-## Decentralized Evaluation
-
-The master is a coordinator and aggregator; it never executes evaluation tasks. Online validators
-are the decentralized executors. These master subsystems (under `src/base/master/`, shipped in the
-`base-master` image) make this work:
-
-- **Validator registry and auth** (`validator_coordination.py`): `validators` and
-  `validator_health_events` tables, hotkey-signed register and heartbeat endpoints gated on a
-  metagraph validator permit, and edge-triggered crash/offline detection.
-- **Assignment and coordination plane** (`assignment.py`, `assignment_coordination.py`): balanced
-  least-loaded random assignment with capability routing and offline exclusion, plus pull-based
-  coordination (pull, progress, result) over the `work_assignments` and `work_results` tables, with
-  reassignment on crash or deadline.
-- **Orchestration driver** (`orchestration.py`): a live loop that bridges challenge pending work
-  into assignments, runs the assignment and reassignment passes, and durably folds retry-exhausted
-  units so the system runs autonomously.
-- **Registry-driven challenge deploy** (`orchestration.py`): a master reconcile loop reads the
-  challenge registry and idempotently deploys a service for every ACTIVE challenge (and tears down
-  services for challenges no longer ACTIVE), so installing the master auto-deploys all ACTIVE
-  challenges and a newly-registered challenge propagates with no manual step. It self-heals across
-  master restarts and deploys one combined-mode service per challenge (the API process also drains
-  the challenge's evaluation queue in-process).
-- **LLM gateway** (`llm_gateway/`): injects provider keys server-side and meters usage; validators
-  and eval runtimes hold no provider keys and authenticate with a per-assignment scoped gateway
-  token issued at pull time. It resolves the provider and model server-side from the token `source`
-  claim (`agent` for coded-challenge agents, `llm_review` for review gates) per the `master.yaml`
-  gateway config, injects the provider key, and redacts secrets in logs.
-- **Weights aggregation (master) and per-validator submission**: `/v1/weights/latest` is recomputed
-  on read from the validator-reported `get_weights` of each active challenge (a multi-challenge
-  emission-share blend with a zero-miner burn fallback). The master aggregates only and has no
-  on-chain submit path; each validator fetches that same vector and commits it on-chain under its
-  own hotkey (commit-reveal), gated by `validator.submit_on_chain_enabled` (default off; dry-run and
-  mock supported). There is no path that produces weights without validator evaluation.
-
-Validators run the validator agent runtime (`base.validator.agent`, with hotkey signing, a
-coordination client, and an executor seam). New CLI entrypoints:
-
-- `base master proxy` runs the single public API plus the coordination plane, LLM gateway, and
-  orchestration driver.
-- `base validator agent` runs the decentralized own-broker executor: it registers and heartbeats,
-  pulls assignments, executes them locally, routes provider calls through the master gateway, and
-  posts results. It also runs this node's own weight-submit loop, committing the master-aggregated
-  vector on-chain under its own hotkey when `validator.submit_on_chain_enabled` is set (default off).
-
-Control-plane migrations advance through alembic head `0008` (validator registry, LLM usage
-records, work assignments and results, registry hardening, and validator challenge subscriptions).
-
-### No-chain (mock-metagraph) decentralized deploy
-
-BASE can run the full decentralized coordination plane and validators **without a live Subtensor**,
-for staging or a no-chain production bring-up. A config-driven static metagraph
-(`network.mock_metagraph` in `master.yaml`, or the installer's `MOCK_METAGRAPH` env) lists the
-eligible validator hotkeys; when set, the bittensor runtime factory seeds the metagraph cache from
-that static set and never constructs a live Subtensor, so the listed validator hotkeys pass the
-hotkey-signed eligibility auth with no chain. It is **DEFAULT OFF** (inert/behaviour-preserving when
-unset) and miners stay submit-eligible via the `upload_extra_registered_hotkeys` allowlist,
-independent of the metagraph.
-
-Run N decentralized validator agents against such a master with the
-[`deploy/swarm/validator.yaml`](deploy/swarm/validator.yaml) template: copy it to
-`validator-1.yaml` / `validator-2.yaml` / … (one DISTINCT `network.wallet_name` hotkey and the right
-`capabilities` per validator, each listed in the master's `mock_metagraph` with
-`validator_permit=true`) and run one `base validator agent --config <file>` per validator. Exactly
-one validator should advertise `gpu` on a single-GPU cluster (it receives the prism GPU re-exec,
-concurrency 1); the others advertise `cpu` (agent-challenge Terminal-Bench tasks). See
-`deploy/swarm/README.md` "Running N decentralized validator agents".
-
-### Validator directory
-
-Validators opt in to which challenges they validate. A validator declares its set with the
-sr25519-signed `base validator subscribe --challenges prism,agent-challenge` CLI command (POST
-`/v1/validators/subscriptions`, `set_subscriptions` in `validator_coordination.py`); the master then
-assigns only subscribed challenges to that validator. An **empty** subscription means "validate ALL
-challenges" (the `assignment.py` filter and `validator_validates_challenge` treat empty/absent as
-unrestricted, preserving back-compat), and passing an empty value clears the subscription.
-
-Each validator's display identity (name + logo) is resolved on-chain from Bittensor by hotkey
-(`query_identity`) plus the top-level subnet identity (`get_subnet_identity`) via
-`bittensor/identity_cache.py`, with a self-declared fallback (the no-chain `mock_metagraph` seed or
-the validator-config values surfaced through `last_seen_meta`); self-declared identity is UNTRUSTED.
-The open (no-token) `GET /v1/validators/public` (and `?challenge=<slug>` to narrow to validators that
-validate that slug) serves the directory with **safe fields only** (hotkey, uid, status/online,
-capabilities, subscriptions, last heartbeat, resolved identity); it NEVER exposes raw
-`last_seen_meta`, tokens, or secrets.
-
----
-
-## Miner-Funded GPU Worker Plane
-
-The **worker plane** moves PRISM's heavy GPU evaluation off BASE validators and onto **worker
-agents running in GPU instances the miners themselves fund** (rented on Lium or Targon, or their
-own hardware). Validators keep only light plausibility checks, probabilistic replay audits, and
-on-chain weight submission. PRISM scoring is unchanged. Everything is gated behind
-`compute.worker_plane_enabled` (env `BASE_COMPUTE__WORKER_PLANE_ENABLED`); with the flag **off**
-(the default) gpu units route to validators exactly as today and the worker coordination surface is
-not even mounted (byte-for-byte legacy behavior).
-
-- **`base worker` CLI** (top-level, distinct from the legacy `base master worker` Swarm group):
-  - `base worker deploy --provider lium|targon|local [--max-price <usd/gpu/hr>]` — provision a
-    worker on a miner-funded instance (or locally) and enroll it. The miner's provider key
-    (`LIUM_API_KEY` / `TARGON_API_KEY`) authenticates provider calls only and is **never** sent to
-    the master. Deploy always sets a bounded instance lifetime and refuses offers above the price
-    cap.
-  - `base worker agent` — run the long-lived agent loop (register → heartbeat → pull → execute →
-    post), authenticated as the worker keypair.
-  - `base worker status [--hotkey <miner-hotkey>]` — render the fleet from the master's
-    `GET /v1/workers` (status, owner, provider, last-seen, fault count).
-- **Signed enrollment**: the miner signs `worker-binding:{worker_pubkey}:{miner_hotkey}:{nonce}`
-  (sr25519); the master verifies it against the metagraph. Status lifecycle is
-  `pending → active → stale → retired`; `active` requires a verified binding **and** a heartbeat
-  within `compute.worker_heartbeat_ttl_seconds` (default 120).
-- **Admission rule**: when enforced, a miner must have ≥1 **active** worker bound to their hotkey
-  to submit to PRISM; otherwise the submission is rejected `403 NO_ACTIVE_WORKER`. This is the
-  incentive to supply GPU without changing the subnet economics.
-- **Anti-collusion assignment**: a worker never evaluates its own owner's submission; each gpu unit
-  is replicated across **R=2 distinct-owner** workers (`compute.replication_factor`, degrading to
-  1 with a recorded warning). The master reconciles by comparing each replica's
-  `ExecutionProof.manifest_sha256`: equal ⇒ one result forwarded to the challenge; divergent ⇒ the
-  unit is `disputed` and a validator **audit** unit replays it authoritatively, flagging the lying
-  worker via `worker_faults`.
-- **ExecutionProof tiers** (carried on every result):
-  - **Tier 0** (mandatory, all backends): deterministic manifest hash + worker sr25519 signature —
-    the source of truth for reconciliation and audits.
-  - **Tier 1**: evaluator image digest matches the pinned digest (on Lium, cross-checkable against
-    the provider's signed image-digest endpoint).
-  - **Tier 2**: in-guest TDX + nvtrust attestation — schema shipped but gated **off on Targon**
-    today (no consumer-facing attestation surface), so Targon proofs carry tier ≤ 1.
-  - Audit sampling is tier-modulated (tier 0 ≈ 10%, tier 1 ≈ 5%, tier 2 ≈ 2%).
-
-Miners: see the [Miner worker deployment guide](docs/miner/worker-plane.md) for prerequisites,
-exact Lium/Targon commands, cost guidance, monitoring, and troubleshooting. The master subsystems
-live under `src/base/worker/` (agent) and `src/base/master/worker_coordination.py` (registry,
-enrollment, fleet, admission), with provider clients in `src/base/compute/`
-(`lium.py` / `targon.py`).
-
----
-
-## What BASE Does
-
-BASE coordinates the full lifecycle of a multi-challenge subnet:
-
-1. The master tracks active challenges and their emission shares.
-2. The master (manager) node auto-deploys the active challenge services from the registry via a reconcile loop, so a newly-registered ACTIVE challenge propagates with no manual step.
-3. Challenge services run isolated from the control plane and from each other, each on its own `/data` Swarm volume.
-4. Miners interact with the relevant challenge through BASE's public proxy.
-5. Online validators register with the master, pull assignments from the coordination plane, execute evaluation on their own broker and Docker, and post results.
-6. Each challenge computes raw hotkey weights from those validator-reported results using its own scoring rules.
-7. BASE normalizes challenge outputs, applies configured emissions, and maps hotkeys to UIDs.
-8. Each validator fetches the master's final vector from the weights API and submits it on-chain under its own hotkey at epoch boundaries; the master aggregates but never submits on-chain.
-
-If a challenge fails, BASE can isolate that challenge's contribution without taking down the
-entire subnet.
+If a challenge fails, BASE isolates that challenge's contribution without taking down the subnet.
 
 ## Roles
 
-### Miners
+| Role | Responsibility |
+|------|----------------|
+| **Master** | Coordinates + aggregates; runs the proxy, coordination plane, LLM gateway, broker, and challenge services. Never executes evals or submits on-chain. |
+| **Validators** | Decentralized executors: register + heartbeat, pull assignments, run on their own broker, route LLM calls through the gateway, and submit their own weights. |
+| **Challenge owners** | Own an independent repo, image, scoring logic, and state; expose the standard internal weight contract. |
+| **Workers** | Miner-funded GPU executors for PRISM (Lium/Targon or local), carrying an `ExecutionProof`. |
 
-Miners choose a challenge, follow that challenge's submission rules, and monitor challenge-specific
-leaderboards through BASE.
+## Miner-Funded GPU Worker Plane
 
-### Challenge Owners
+Optional, gated behind `compute.worker_plane_enabled` (env `BASE_COMPUTE__WORKER_PLANE_ENABLED`,
+default **off** ⇒ byte-for-byte legacy behavior). It moves PRISM's heavy GPU evaluation onto
+**worker agents in GPU instances the miners fund** (rented on **Lium** or **Targon**, or local),
+deployed with the `base worker` CLI. Validators keep only light plausibility checks, probabilistic
+replay audits, and weight submission.
 
-Challenge owners maintain independent repositories, images, scoring logic, public documentation, and
-weight contracts.
+- **Signed enrollment** — the miner signs a hotkey↔worker binding; provider keys (`LIUM_API_KEY` / `TARGON_API_KEY`) stay in the miner's environment and never reach the master.
+- **Anti-collusion** — a worker never evaluates its owner's submission; each unit replicates across **R=2 distinct-owner** workers and is reconciled by `ExecutionProof.manifest_sha256`.
+- **Proof tiers** — tier 0 (manifest hash + sr25519 signature), tier 1 (pinned image digest), tier 2 (in-guest attestation, gated off on Targon). Audit sampling is tier-modulated.
+- **Admission rule** — when enforced, a miner needs ≥1 active bound worker to submit to PRISM, else `403 NO_ACTIVE_WORKER`.
 
-### Validators
+See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 
-Validators are the decentralized executors. Each runs the validator agent (`base validator agent`):
-it hotkey-registers and heartbeats with the master, pulls assignments from the coordination plane,
-executes evaluation on its own broker and Docker, routes all provider calls through the master LLM
-gateway, and posts results. Each validator also submits its own on-chain weights: it fetches the
-master's final normalized vector from the weights API and commits it under its own hotkey (a
-dedicated submit-only host can run the same submitter). The master aggregates but never submits
-on-chain. Challenge API services are run by the master (manager) node.
+## Documentation
 
-### Workers (miner-funded GPU worker plane)
+| Audience | Guide | Contents |
+|----------|-------|----------|
+| Miners | <a href="docs/miner/README.md">Miner guide</a> | Choose a challenge, submit through the proxy, track leaderboards |
+| Miners | <a href="docs/miner/worker-plane.md">Worker deployment</a> | Deploy a miner-funded GPU worker on Lium/Targon |
+| Validators | <a href="docs/validator/README.md">Validator guide</a> | Install the submit-only on-chain weight submitter |
+| Validators | <a href="docs/operations/validator.md">Validator operations</a> | Submitter plus manager-service runbook |
+| Operators | <a href="docs/deploy.md">Deploy from scratch</a> | End-to-end Swarm bring-up quickstart |
+| Operators | <a href="docs/master/README.md">Foundation master guide</a> | Cortex Foundation master bring-up |
+| Developers | <a href="docs/architecture.md">Architecture</a> | Control-plane vs worker topology, the broker contract |
+| Developers | <a href="docs/challenges.md">Challenges</a> | The challenge model |
+| Developers | <a href="docs/challenge-integration.md">Challenge integration</a> | The API contract a challenge must expose |
+| Developers | <a href="docs/security.md">Security model</a> | Trust boundaries and secret handling |
+| Developers | <a href="docs/versioning.md">Versioning</a> | SemVer, Git tag, and GHCR tag policy |
+| Developers | <a href="docs/reward-semantics.md">Reward semantics</a> | Terminal-Bench scorer reward mapping |
 
-Workers are **miner-funded GPU executors** for PRISM. A miner runs `base worker deploy` to launch a
-worker agent inside a GPU instance the miner pays for (rented on **Lium** or **Targon**, or their
-own hardware); the agent registers with the master under a miner-signed hotkey↔worker binding,
-heartbeats, pulls `gpu` work units, executes the PRISM evaluator on its own broker, and posts
-results carrying an `ExecutionProof`. The provider API key (`LIUM_API_KEY` / `TARGON_API_KEY`)
-stays in the miner's environment and is never sent to the master. The entire worker plane is gated
-behind `compute.worker_plane_enabled` (env `BASE_COMPUTE__WORKER_PLANE_ENABLED`, default off ⇒
-byte-for-byte legacy behavior). See the [Worker plane](#miner-funded-gpu-worker-plane) section and
-the [Miner worker deployment guide](docs/miner/worker-plane.md).
+## Deploy
 
----
+`deploy/swarm/install-swarm.sh` is the canonical, Swarm-only entry point: **dry-run by default**,
+mutates only with `--apply`, every destructive step behind its own flag. Production is pre-mainnet
+hardened (image-pin, TLS, external-Postgres, and broker-allowlist policy guards fire at config load).
 
-## Repository Layout
-
-```text
-platform/
-  src/base/      # CLI, APIs, orchestration, Bittensor wrappers
-  alembic/                   # PostgreSQL migrations
-  config/                    # YAML example configs
-  docker/                    # Dockerfiles and OCI image assets
-  docs/                      # Project, miner, validator, and challenge docs
-  plan/                      # Detailed design plan
-  tests/                     # Unit/runtime validation tests
+```bash
+./deploy/swarm/install-swarm.sh          # dry-run: prints the planned docker swarm commands
+./deploy/swarm/install-swarm.sh --apply  # apply on a disposable / owned host
 ```
 
+The manager (`node.role==manager`) runs the control plane and the challenge services; CPU/GPU
+workers are enrolled with the `base master worker` CLI and scheduled by label
+(`node.labels.base.workload==cpu` / `node.labels.base.workload==gpu`).
 
-## Deployment Policy
-
-BASE uses a Docker Swarm only first-party deployment path and keeps Dockerfiles for the OCI images Swarm runs:
-
-- `deploy/swarm/install-swarm.sh` brings up the single-node Swarm manager (master proxy, broker, and challenge services on encrypted overlay networks). It is **dry-run by default**, mutates only with `--apply`, and keeps every destructive step behind its own explicit flag (`--restart-dockerd`, `--single-node-placement`, `--static-challenges`).
-- `deploy/swarm/base-supervisor.service` installs the manager-only systemd supervisor: broker-health, timeout-reaper, image-updater (rolls the master services, and the validator agent on a validator node), config-sync, and self-update loops. The challenge-image-updater runs inside the master proxy (co-hosted in its lifespan), not on the host supervisor, so it can reach the overlay registry database and Docker socket.
-- The master (manager) node runs the challenge services with the placement constraint `node.role==manager`. The broker dispatches CPU jobs to `node.labels.base.workload==cpu` workers and GPU jobs (`gpu_count>0`) to `node.labels.base.workload==gpu` workers with `--generic-resource NVIDIA-GPU=<N>`.
-- Worker nodes are enrolled manually with Swarm join tokens (no SSH) via the `base master worker` CLI group: `worker token [--cpu|--gpu]` prints `docker swarm join --token <TOKEN> <MANAGER_IP>:2377`; after the operator installs the matching `daemon.json` and joins, `worker label <node> --workload cpu|gpu` sets the scheduling label. The group also has `worker list`, `worker drain`, `worker rm`, and `worker inspect`.
-- Control-plane state is a single shared PostgreSQL supplied via `BASE_DATABASE_URL` or a Docker secret; SQLite is rejected for control-plane state. Each challenge keeps its own SQLite database on its `/data` Swarm volume; there is no Postgres server per challenge.
-- On-chain weight submission is per-validator: the validator agent submits its own weights (gated by `validator.submit_on_chain_enabled`, default off), and the standalone submit-only submitter (`deploy/swarm/submitter/`) is a systemd service for a dedicated submit-only host that reads `/v1/weights/latest` and submits on-chain. The master aggregates only and has no on-chain submit path; neither runs challenge orchestration.
-- The validator coordination plane (validator registry, hotkey-signed register/heartbeat/pull/progress/result, crash detection, and the orchestration driver) and the LLM gateway ship inside the `base-master` image and are wired by `install-swarm.sh`. The gateway requires a mandatory token-signing secret at `/run/secrets/gateway_token_secret` (`GATEWAY_TOKEN`), real-mode provider keys, and an advertised gateway base URL (`gateway.public_base_url`, set via `GATEWAY_PUBLIC_BASE_URL`); the proxy fails closed without the token secret.
-- Decentralized validator nodes run the validator agent (`base validator agent`) with their own broker and Docker. They authenticate with a hotkey signature plus a metagraph validator permit and reach providers only through the master gateway using a per-assignment scoped gateway token; no provider key is distributed to validators.
-- The prism HuggingFace checkpoint publisher reads an optional `HF_TOKEN` (the `base_hf_token` secret mounted at `/run/secrets/hf_token`); when it is absent, publishing is skipped.
-- The supervisor image-updater (host) and the challenge-image-updater (co-hosted in the master proxy) are the **canonical first-party GHCR auto-update path**, so the whole stack rolls on the mutable `:latest` tags published on every merge to `main` with no manual `docker service update`. They resolve the GHCR tag digest and roll Swarm services to `tag@sha256:<digest>` only when the digest changes from `ghcr.io/baseintelligence/base-master:latest`, and are a no-op when current. The resolver authenticates to GHCR (HTTP Basic against the token realm, from explicit credentials or the `auth` field of a docker `config.json`) so it can resolve **private** `ghcr.io/baseintelligence/*` digests; with no credentials it falls back to the anonymous public-package path, behaviour-preserving when unset. The image-updater targets are settings-driven: by default the installer-created service names `base-master-proxy` and `base-docker-broker`, plus the `base-validator-agent` runtime on a validator node so validator code auto-rolls too. Master/supervisor self-update is explicit: wired via `SUPERVISOR_SELF_UPDATE_MANIFEST_URL`, otherwise safely disabled (`supervisor.self_update_enabled=false`) with no inert half-state.
-- Pinned production mode uses a tag plus a `sha256` digest, for example `ghcr.io/baseintelligence/demo:1.2.3@sha256:<64-hex-digest>` for releases or `ghcr.io/baseintelligence/demo:latest@sha256:<64-hex-digest>` for the autonomous update channel, and disables mutable auto-update. Production rejects untagged images, missing digests, and non-SemVer non-`latest` tags. BASE release versioning starts at `3.0.0`; see `docs/versioning.md` for the SemVer, Git tag, mutable `latest`/`main`, and GHCR tag policy.
-- Swarm networking uses encrypted overlay networks at MTU 1450. Required inter-node ports: `2377/tcp` (management), `7946/tcp+udp` (gossip), `4789/udp` (VXLAN data plane), and IP protocol 50 (ESP) for the encrypted overlay.
-- Swarm services map CPU and memory to `--limit-cpu` and `--limit-memory` and PID ceilings to `--limit-pids`. `docker service create` does not support `--memory-swap` or `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`.
-- Broker image allowlists should stay scoped to `ghcr.io/baseintelligence/` unless a deployment explicitly adds another trusted registry namespace.
-
-See `deploy/swarm/` for the installer, supervisor unit, submitter, and `daemon.json` templates that define the production deployment.
-
-### Production hardening
-
-The bring-up is pre-mainnet hardened. `install-swarm.sh` renders the master config with
-`environment: production`, so the policy guards in `src/base/config/policy.py` (image-pin, TLS,
-external-Postgres, and broker-allowlist) FIRE at config load via `validate_settings_policy` instead
-of staying inert on a development default. That couples with a **narrowed**
-`docker.broker_allowed_images` (the `ghcr.io/baseintelligence/agent-challenge` and
-`ghcr.io/baseintelligence/prism` repo prefixes only, not the whole namespace) and tag + `@sha256:`
-digest-pinned `IMAGE_*` refs. The well-known `//Alice` dev keypair is DELIBERATELY ABSENT from the
-default `master.upload_extra_registered_hotkeys` allowlist, so a test key is submit-eligible only via
-an explicit operator opt-in. Observability is wired uniformly: every CLI entrypoint calls
-`_configure_observability`, which initializes Sentry (`init_sentry`) and OTEL (`init_otel`, with the
-OTLP exporter when an endpoint is set) and stays no-op safe when unconfigured. See
-`deploy/swarm/README.md` "Mainnet deploy prerequisites" for the required secrets, GHCR credentials,
-and placement runbook.
-
-## PRISM Evaluation Data Plane
-
-PRISM GPU evals re-execute the miner's training loop on locked FineWeb-Edu data under a forced random init. The broker delivers that locked data to the eval container through a **per-slug read-only mount** mechanism (`SwarmBrokerConfig.eval_readonly_mounts_by_slug` in `master/swarm_backend.py`, settings `docker.broker_eval_readonly_mounts_by_slug`, wired in `cli_app/main.py`) that is decoupled from the Docker-socket allowlist, so the prism eval job receives the data without the (root-equivalent) host Docker socket.
-
-- Every prism GPU eval job bind-mounts the locked FineWeb-Edu **train** volume (`prism_fineweb_edu_train` → `/data/fineweb-edu/train`) and the offline reference tokenizers (`prism_reference_tokenizers` → `/opt/prism/reference-tokenizers`) **read-only**, via the built-in `DEFAULT_PRISM_EVAL_READONLY_MOUNTS` (no `master.yaml` entry required).
-- Only the `train` split is exposed; the secret `val`/`test` held-out splits are never mounted into the eval container, which runs `network=none` on an internal overlay and carries no provider secret.
-
-`deploy/swarm/install-swarm.sh` canonicalizes the PRISM v2 eval-plane deploy wiring on the challenge service:
-
-- **Evaluator image** — `IMAGE_PRISM_EVALUATOR` defaults to the CI-published `ghcr.io/baseintelligence/prism-evaluator` image pinned by digest (`@sha256:<digest>`) and is passed as `PRISM_BASE_EVAL_IMAGE`. The published evaluator image already bundles `sentencepiece` + the offline tiktoken cache the locked pipeline needs, so no separately built tag is required.
-- **Host-side held-out** — the manager-pinned prism scorer (not the `network=none` eval container) mounts the SECRET val split read-only (`prism_fineweb_edu_val` → `/secret/val`) and reads it via `PRISM_BASE_EVAL_VAL_DATA_DIR=/secret/val` for the held-out delta; the held-out is gracefully skipped if val is absent.
-- **LLM hard gate** — `PRISM_LLM_REVIEW_ENABLED=true`; the prism gate calls the master gateway (`PRISM_LLM_GATEWAY_URL=<gateway root>/llm/v1`) with the scoped central-gate token (`base_gateway_token` → `/run/secrets/base_gateway_token`, `source=llm_review`); the gateway injects the provider key and model server-side. NO raw provider key is mounted on the challenge service or the eval container.
-
-See `deploy/swarm/README.md` for the full broker mount mechanism and deploy details.
+Full walkthrough (images, volumes, worker enrollment, on-chain submission, public edge) in
+<a href="docs/deploy.md">Deploy from scratch</a> and <a href="deploy/swarm/README.md">deploy/swarm/README.md</a>.
 
 ## Validation Quick Reference
 
-Run these commands from the repository root when validating the platform locally. The live Swarm checks require Docker. If a tool is missing, record the bounded blocker rather than claiming that surface was tested.
+Run from the repository root; live Swarm checks require Docker.
 
 ```bash
 uv sync --extra dev --extra master
@@ -393,268 +144,23 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
 uv run pytest -m "not postgres" --cov=base --cov-report=term-missing --cov-fail-under=80
-
-# Postgres integration tests (require a reachable database; no credentials in the repo):
-BASE_TEST_DATABASE_URL=<postgres-url> uv run pytest -m postgres
-
-bash -n deploy/swarm/install-swarm.sh
-./deploy/swarm/install-swarm.sh            # dry-run: prints the planned docker swarm commands, changes nothing
 ```
 
-For a live single-node check (mutating; run only on a disposable host):
+Evidence for local validation should live in a local, gitignored directory and must never contain
+tokens, credentialed database URLs, registry credentials, or private keys.
 
-```bash
-docker swarm init
-docker network create --driver overlay --opt encrypted \
-  --opt com.docker.network.driver.mtu=1450 base_challenges
-docker service ls
-docker swarm leave --force
+## Repository Layout
+
+```text
+platform/
+  src/base/    # CLI, APIs, orchestration, Bittensor wrappers
+  alembic/     # PostgreSQL migrations
+  config/      # YAML example configs
+  docker/      # Dockerfiles and OCI image assets
+  deploy/      # Swarm installer, supervisor unit, submitter, daemon.json templates
+  docs/        # Project, miner, validator, and challenge docs
+  tests/       # Unit / runtime validation tests
 ```
-
-Evidence for local validation should live in a local, gitignored evidence directory and must not contain tokens, credentialed database URLs, private registry credentials, bearer secrets, or private keys.
-
----
-
-## Deploy from Scratch (Quickstart)
-
-This is the end-to-end path to stand up the full subnet on a fresh Docker Swarm: a manager node
-(control plane plus the long-lived challenge services) and one or more CPU/GPU workers (short-lived
-broker eval jobs). It ties together image builds, image publishing/staging, volume provisioning,
-`install-swarm.sh --apply`, worker enrollment, and on-chain weight submission. Weights are always
-computed **dry-run** by default; on-chain submission is per-validator (the validator agent, or a
-standalone submit-only host), gated by `validator.submit_on_chain_enabled` and enabled as a
-separate, optional step. Run `install-swarm.sh` **dry-run first** (no flags) and only `--apply` on a
-host you own.
-
-The three backend repositories are sibling checkouts under a common parent
-(`platform/`, `agent-challenge/`, `prism/`); the frontend deploys separately to Vercel.
-
-### Topology and ports
-
-| Node | Swarm role | Runs |
-|------|------------|------|
-| Manager (also the validator / hotkey node) | `node.role==manager` | Control plane (proxy / broker / supervisor) **and** the challenge services (agent-challenge, PRISM) |
-| CPU worker | `node.labels.base.workload==cpu` | Short-lived CPU broker jobs |
-| GPU worker | `node.labels.base.workload==gpu` | Short-lived GPU broker jobs; advertises `NVIDIA-GPU` as a Swarm generic resource |
-
-The manager control-plane services are published on fixed host ports by
-`install-swarm.sh --apply` (overridable via the `MASTER_PROXY_PORT` /
-`MASTER_BROKER_PORT` env vars; the defaults below match the live box):
-
-| Manager service (host-published) | Host port |
-|---------|-----------|
-| base-master-proxy (single public API; serves `/v1/registry`, `/v1/weights/latest`, `/health`, and routes `/challenges/*`) | 19080 |
-| base-docker-broker | 8082 |
-
-`/v1/registry` and `/v1/weights/latest` are served by the proxy on `19080`; there
-is no separate admin service or port.
-
-The challenge services and the Postgres backing stores are **overlay-internal**
-(no host publish): clients reach the challenges **through the proxy** over the
-`base_challenges` overlay (e.g. `http://127.0.0.1:19080/challenges/prism/...`),
-and the master reaches Postgres by service name. They listen on their container
-ports only:
-
-| Overlay-internal service (reached via the proxy / by service name) | Container port |
-|---------|-----------|
-| challenge-agent-challenge (plus worker sidecar) | 8000 |
-| challenge-prism (SQLite-backed) | 8080 |
-| base-master-postgres (control plane) | 5432 |
-| challenge-agent-challenge-postgres | 5432 |
-| challenge-prism-postgres | 5432 |
-
-> The **live box** additionally exposes some of these on the host for **direct
-> debugging only** (not the canonical client path): prism on `18002`,
-> agent-challenge on `18001`, and the Postgres stores on `15432` / `15433` /
-> `15434`. Production clients always go through the proxy.
-
-GPU eval jobs are dispatched by the broker to a GPU worker via the constraint
-`node.labels.base.workload==gpu` plus `--generic-resource NVIDIA-GPU=<N>`.
-
-### Step 1 — Build the images
-
-Build from each repo's Dockerfile. `<tag>` is your release tag (a SemVer such as `3.0.0`, or
-`latest` for the mutable channel).
-
-```bash
-# base-master (this repo): proxy (single public API) + broker + supervisor
-docker build -f docker/Dockerfile.master -t ghcr.io/baseintelligence/base-master:<tag> .
-
-# prism API + GPU evaluator (from ../prism)
-docker build --target service   -t ghcr.io/baseintelligence/prism:<tag> ../prism
-docker build --target evaluator -t ghcr.io/baseintelligence/prism-evaluator:<tag> ../prism
-
-# agent-challenge API + own_runner eval-job image (from ../agent-challenge)
-docker build --target runtime               -t ghcr.io/baseintelligence/agent-challenge:<tag> ../agent-challenge
-docker build --target terminal-bench-runner -t ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag> ../agent-challenge
-```
-
-The prism evaluator image bundles `sentencepiece` and the offline tiktoken cache the locked
-FineWeb-Edu pipeline needs; the CI-published `prism-evaluator` image bakes these in, so deployments
-pin it by digest (Step 4) rather than building a separate tag.
-
-> **Build-order coupling:** prism pins its `base` dependency by git
-> (`base @ git+https://github.com/BaseIntelligence/base.git`, public HEAD), so a fresh
-> `prism` build bundles whatever is on the **pushed** platform HEAD. Push the platform commits the
-> prism/broker images depend on **before** building `prism` / `prism-evaluator`.
-
-### Step 2 — Publish or stage the images
-
-- **GHCR publish (preferred):** `docker push` each tag to `ghcr.io/baseintelligence/*`. Public
-  packages need no pull secret; the supervisor image-updaters then track digests automatically.
-- **Local-only staging (no `write:packages`):** build each image on the node that runs it (manager
-  for the services, GPU/CPU workers for the eval images), and deploy with
-  `docker service update --no-resolve-image` so a non-registry tag resolves to the node-local image.
-  Pre-pull/stage the prism evaluator and the agent-challenge runner on the worker nodes so the broker
-  resolves them locally.
-
-### Step 3 — Provision named volumes and secrets
-
-On the **GPU worker**, stage the locked PRISM data and reference tokenizers as read-only volumes
-(produced by prism's FineWeb-Edu prep job; see the prism repo):
-
-- `prism_fineweb_edu_train` → `/data/fineweb-edu/train` (miner-visible, read-only)
-- `prism_fineweb_edu_val`, `prism_fineweb_edu_test` → secret held-out, scorer-only (never mounted in
-  the `network=none` eval container)
-- `prism_reference_tokenizers` → `/opt/prism/reference-tokenizers`
-
-On the **manager**, provision the agent-challenge read-only task cache and golden volumes:
-
-```bash
-deploy/swarm/acquire-agent-challenge-cache.sh   # populates agent_challenge_task_cache + agent_challenge_golden
-```
-
-Verify each volume is both present **and populated** (a Docker named volume is auto-created empty on
-first mount, so an empty mount succeeds silently). The central LLM gates (PRISM `llm_review` + the
-agent-challenge analyzer) reach the provider only through the master gateway using the scoped
-central-gate token (`base_gateway_token`, `source=llm_review`); no raw provider key is mounted on any
-challenge/eval container. The single provider key is held only by the master gateway at
-`/run/secrets/yunwu_api_key` (the name reflects the provider selected in `master.yaml`).
-
-### Step 4 — Bring up the manager with `install-swarm.sh`
-
-`deploy/swarm/install-swarm.sh` is the canonical entry point. It is **dry-run by default** and
-mutates only with `--apply`; every destructive step is behind its own flag. Point the image tags at
-what you built/published via the `IMAGE_*` environment overrides:
-
-```bash
-export IMAGE_MASTER=ghcr.io/baseintelligence/base-master:<tag>
-export IMAGE_PRISM=ghcr.io/baseintelligence/prism:<tag>
-export IMAGE_PRISM_EVALUATOR=ghcr.io/baseintelligence/prism-evaluator:<tag>
-export IMAGE_AGENT_CHALLENGE=ghcr.io/baseintelligence/agent-challenge:<tag>
-export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag>
-
-./deploy/swarm/install-swarm.sh                         # dry-run: prints the planned docker commands
-./deploy/swarm/install-swarm.sh --apply                 # apply on a disposable / owned host
-./deploy/swarm/install-swarm.sh --apply --restart-dockerd   # also write /etc/docker/daemon.json + restart dockerd (fresh nodes)
-```
-
-The installer initializes the Swarm, creates the encrypted overlay networks (`base_challenges`
-and `base_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin (never
-argv), and creates the master proxy/broker (the broker pinned to `node.role==manager`). By default
-the challenge services are then deployed automatically by the master proxy's registry reconcile loop
-(one combined-mode service per ACTIVE challenge); `--static-challenges` instead creates them
-directly here (an API service plus a worker sidecar). It also wires the coordination plane and the LLM gateway: the mandatory
-`GATEWAY_TOKEN` becomes the `base_gateway_token_secret` mounted at
-`/run/secrets/gateway_token_secret`, the proxy advertises `GATEWAY_PUBLIC_BASE_URL`
-(`gateway.public_base_url`) so challenge gates and validators reach the gateway, real-mode provider
-keys are injected server-side, and an optional `HF_TOKEN` (`base_hf_token`) enables the prism
-HuggingFace checkpoint publisher. The PRISM eval read-only data mounts are supplied by the broker's
-built-in `DEFAULT_PRISM_EVAL_READONLY_MOUNTS`, so no `master.yaml` entry is required.
-
-### Step 5 — Enroll worker nodes
-
-Workers are added manually with a Swarm join token (no SSH). From the manager:
-
-```bash
-base master worker token --cpu      # or --gpu — prints the docker swarm join command
-```
-
-On the worker, install the matching `daemon.json` and join (the GPU `daemon.worker.json` advertises
-`NVIDIA-GPU` and registers the NVIDIA runtime):
-
-```bash
-JOIN_TOKEN=<TOKEN> scripts/install-worker.sh --manager-addr <MANAGER_IP>:2377 --workload cpu             # dry-run
-JOIN_TOKEN=<TOKEN> scripts/install-worker.sh --manager-addr <MANAGER_IP>:2377 --workload cpu --restart-dockerd --apply
-```
-
-Back on the manager, label the node so jobs schedule onto it:
-
-```bash
-docker node ls
-base master worker label <node> --workload cpu      # or gpu
-```
-
-See [`deploy/swarm/README.md`](deploy/swarm/README.md) for `daemon.json` details, networking ports,
-and the prune policy.
-
-### Step 6 — On-chain weight submission
-
-On-chain submission is per-validator: every validator agent submits its own weights when
-`validator.submit_on_chain_enabled` is enabled (see the validator command below). A dedicated
-submit-only host is also supported: a single systemd-managed process that reads `/v1/weights/latest`
-from the master and submits on-chain under its hotkey. It runs no challenge orchestration and needs
-only the validator hotkey.
-
-```bash
-cp deploy/swarm/submitter/run_submitter.py            /var/lib/base/submitter/
-cp deploy/swarm/submitter/submitter.yaml              /etc/base/submitter.yaml
-cp deploy/swarm/submitter/base-submitter.service  /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now base-submitter.service
-```
-
-Full submitter configuration and the operator FAQ are in the
-[Validator guide](docs/validator/README.md); manager-service runbooks are in
-[Validator operations](docs/operations/validator.md).
-
-Decentralized evaluation is performed by validator nodes. Each validator runs the agent executor
-against the master coordination plane (its hotkey must hold a metagraph validator permit); it pulls
-assignments, executes them on its own broker and Docker, routes provider calls through the master
-gateway, and submits its own weights on-chain when enabled:
-
-```bash
-base validator agent --config config/validator.example.yaml
-```
-
-### Step 7 — Verify
-
-The two manager services answer `/health` on their published host ports. The
-challenges are overlay-internal, so verify them **through the proxy** (the
-canonical client path) rather than on a host port:
-
-```bash
-docker service ls
-curl -sf http://127.0.0.1:19080/health                                 # proxy
-curl -sf http://127.0.0.1:8082/health                                  # broker
-curl -sf http://127.0.0.1:19080/v1/registry                            # registry (served by the proxy)
-curl -sf http://127.0.0.1:19080/v1/weights/latest                      # weights (served by the proxy)
-curl -sf http://127.0.0.1:19080/challenges/prism/leaderboard           # prism, via the proxy
-curl -sf http://127.0.0.1:19080/challenges/agent-challenge/leaderboard  # agent-challenge, via the proxy
-```
-
-A GPU eval job lands on a GPU worker via `node.labels.base.workload==gpu` plus
-`--generic-resource NVIDIA-GPU=<N>`; the long-lived challenge services stay on the manager.
-
-### Step 8 — Public edge (Cloudflare)
-
-The single platform API listens on `127.0.0.1:19080`. To expose it publicly as
-`https://chain.joinbase.ai`, front it with a Cloudflare tunnel using **one catch-all ingress
-rule** — `chain.joinbase.ai -> http://127.0.0.1:19080` — with **no `/v1` path-split**, because
-the one port already serves `/health`, `/v1/registry`, `/v1/weights/latest`, `/challenges/*`, and the
-token-gated admin/control-plane routes (which stay private on the same app). No edge-level path
-filtering is required.
-
-> **Public edge is LIVE.** `https://chain.joinbase.ai` is served entirely from this box via its
-> cloudflared tunnel, using the single catch-all ingress rule above
-> (`chain.joinbase.ai -> http://127.0.0.1:19080`). All public read routes return `200`:
-> `/health`, `/v1/registry`, `/v1/weights/latest`, `/challenges/prism/leaderboard`, and
-> `/challenges/agent-challenge/leaderboard`. Admin-write/control-plane and management routes stay
-> private (they return `401`/`405`), and `/internal/*` (plus `/version`) return `404` at the edge.
-> Public responses are field-identical to the local proxy `http://127.0.0.1:19080` (see Step 7); the
-> PRISM CURRENT epoch may legitimately be empty, which is real data, not an unavailable state.
-
----
 
 ## License
 

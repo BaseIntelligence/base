@@ -1,20 +1,16 @@
 # Harbor 0.13.1 Reward Semantics Reference
 
-Authoritative specification of **exactly** how stock `harbor==0.13.1` turns the
-float in `/logs/verifier/reward.txt` into a reward, aggregates it across
-metrics and trials (pass@k), and how agent-challenge maps that into
-`{status, reason_code, resolved}`.
-
-This is a **reference spec**. It documents existing harbor + agent-challenge
-behavior so an independent runner can reproduce it **byte-for-byte**. It does
-**not** propose changes and must not be used to alter thresholds or harbor
-behavior.
+Authoritative spec of **exactly** how stock `harbor==0.13.1` turns the float in
+`/logs/verifier/reward.txt` into a reward, aggregates it across metrics and
+trials (pass@k), and how agent-challenge maps that into
+`{status, reason_code, resolved}`. This is a **reference** that documents existing
+behavior so an independent runner can reproduce it **byte-for-byte**; it proposes
+no changes and must not be used to alter thresholds or harbor behavior.
 
 - Ground truth = the `harbor==0.13.1` PyPI wheel. The runner image
   `ghcr.io/baseintelligence/terminal-bench-harbor-runner:2.1` ships prebuilt
-  Harbor tooling (a `python:3.12-slim` base with `harbor==0.13.1`), so the wheel
-  is the authority; every claim below was executed against the real installed
-  harbor code.
+  Harbor tooling (`python:3.12-slim` + `harbor==0.13.1`), so the wheel is the
+  authority; every claim below was executed against the real installed code.
 - Consumer = agent-challenge `src/agent_challenge/evaluation/runner.py` and
   `terminal_bench.py`.
 
@@ -402,33 +398,28 @@ line and `normalize_terminal_bench_reason_code` canonicalizes any reason string.
 
 ## 6. Floating-point determinism (for an ε=0 / exact-match precision spec)
 
-- **Reward read**: `float(text)`. For the tbench-relevant inputs `0` and `1`
-  this is **exact** (0.0, 1.0 are exactly representable). General floats follow
-  IEEE-754 round-to-nearest from CPython's `float()` and are deterministic for a
-  given input string.
-- **Mean**: `sum(values) / len(values)`. `sum` over a Python list is
-  **left-to-right sequential** float addition (deterministic order given a
-  deterministic trial order). Division can be non-terminating in binary
-  (e.g. `2/3 = 0.6666666666666666`, `1/3 = 0.3333333333333333`) — these are the
-  exact CPython double results and reproduce bit-for-bit **only if** the runner
-  uses the same algorithm (Python `sum`/`/`, same operand order). A runner that
-  reorders trials, uses `math.fsum`, NumPy pairwise summation, or `Decimal` will
-  diverge in the last ULP → an ε=0 comparator would FAIL.
-- **Trial order**: `combined_trial_results` order determines both `sum` operand
-  order and (via `task_successes` insertion) pass@k task iteration. An
-  independent runner MUST preserve harbor's trial ordering to be bit-identical.
+- **Reward read**: `float(text)`. For the tbench inputs `0`/`1` this is **exact**
+  (0.0, 1.0 are representable); general floats follow CPython's IEEE-754
+  round-to-nearest, deterministic per input string.
+- **Mean**: `sum(values) / len(values)`, where list `sum` is **left-to-right
+  sequential** float addition. Division can be non-terminating in binary
+  (`2/3 = 0.6666666666666666`, `1/3 = 0.3333333333333333`); these exact CPython
+  results reproduce bit-for-bit **only if** the runner uses the same algorithm and
+  operand order. `math.fsum`, NumPy pairwise summation, `Decimal`, or reordered
+  trials diverge in the last ULP → an ε=0 comparator FAILS.
+- **Trial order**: `combined_trial_results` order fixes both the `sum` operand
+  order and (via `task_successes`) pass@k task iteration, so a runner MUST preserve
+  harbor's trial ordering to be bit-identical.
 - **Max/Min/Sum**: exact (no division).
 - **pass@k**: `product *= (n-c-i)/(n-i)` sequential float mult/div, then
-  `sum(...)/len(tasks)`. Deterministic but ULP-sensitive to operand order.
-- **`nan`/`inf`**: a `nan` reward propagates through `sum`/`/` to a `nan` metric;
-  `float("nan")` comparisons are always false, so an ε comparator must treat
-  `nan==nan` specially. `inf` propagates to `inf`/`nan`.
-- **Recommended precision spec for parity:** reproduce harbor's exact
-  algorithm (CPython `float()`, list `sum`, `/`, same trial order) and assert
-  **exact equality** on `0/1`-derived rewards and Mean results; for the general
-  float case, since the algorithm is identical, exact (ε=0) equality is
-  achievable and is the correct target. Only introduce a tiny ε (e.g. 1e-12) if
-  the runner deliberately diverges from CPython's summation, which it should not.
+  `sum(...)/len(tasks)` — deterministic but ULP-sensitive to operand order.
+- **`nan`/`inf`**: a `nan` reward propagates to a `nan` metric, and `float("nan")`
+  comparisons are always false, so an ε comparator must treat `nan==nan` specially;
+  `inf` propagates to `inf`/`nan`.
+- **Parity target:** reproduce harbor's exact algorithm (CPython `float()`, list
+  `sum`, `/`, same trial order) and assert **exact (ε=0) equality**. Only add a
+  tiny ε (e.g. 1e-12) if the runner deliberately diverges from CPython summation,
+  which it should not.
 
 ---
 
