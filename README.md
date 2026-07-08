@@ -18,8 +18,6 @@
 
 ![BASE Banner](assets/banner.jpg)
 
-![Live challenge board](assets/challenges.svg)
-
 </div>
 
 ---
