@@ -338,3 +338,71 @@ def test_execution_proof_string_tier_supported() -> None:
     )
     assert proof.tier == "phala-tdx"
     assert isinstance(proof.tier, str)
+
+
+# --- cross-repo emitted-envelope conformance (drift guard) ------------------
+# The agent-challenge canonical image emits the attested-result envelope below
+# (fixed input vector) on the ``execution_proof`` key of its
+# ``BASE_BENCHMARK_RESULT=`` line. base's ``ExecutionProof``/``PhalaAttestation``
+# are not importable inside the lean image, so the emitter builds plain dicts and
+# validates them with a self-contained conformance check; this pins the EXACT
+# emitted shape against base's REAL models so the two cannot drift (VAL-IMG-025 /
+# VAL-IMG-026). Regenerate via agent-challenge:
+#   agent_challenge.canonical.attested_result.emit_attested_benchmark_result(...)
+# (see agent-challenge tests/test_canonical_attested_result.py). Do NOT change
+# one side without the other.
+GOLDEN_EMITTED_ENVELOPE: dict[str, object] = {
+    "version": 1,
+    "tier": "phala-tdx",
+    "manifest_sha256": "1" * 64,
+    "worker_signature": {"worker_pubkey": "", "sig": ""},
+    "attestation": {
+        "tdx_quote": "abababababababab",
+        "event_log": [{"imr": 3, "event": "compose-hash", "digest": "c" * 64}],
+        "report_data": (
+            "807faf7c13ac9798f2f841ad9f05949a19d6bb1ab0833f67101a5d3ce2bbaa1d"
+            + "00" * 32
+        ),
+        "measurement": {
+            "mrtd": "a" * 96,
+            "rtmr0": "b0" * 48,
+            "rtmr1": "b1" * 48,
+            "rtmr2": "b2" * 48,
+            "rtmr3": "d" * 96,
+            "compose_hash": "c" * 64,
+            "os_image_hash": "e" * 64,
+        },
+        "vm_config": {"vcpu": 1, "memory_mb": 2048},
+    },
+}
+
+
+def test_emitted_envelope_validates_against_execution_proof() -> None:
+    proof = ExecutionProof.model_validate(GOLDEN_EMITTED_ENVELOPE)
+    assert proof.tier == PHALA_TDX_TIER
+    assert proof.attestation is not None
+    att = PhalaAttestation.model_validate(proof.attestation)
+    assert att.tdx_quote == "abababababababab"
+    assert att.measurement.compose_hash == "c" * 64
+    assert att.measurement.rtmr3 == "d" * 96
+    # report_data is the 64-byte (128-hex) TDX field, left-aligned + zero-padded.
+    assert len(att.report_data) == 128
+    assert att.report_data.endswith("00" * 32)
+
+
+@pytest.mark.parametrize("missing", ["manifest_sha256", "worker_signature"])
+def test_emitted_envelope_missing_required_field_rejected(missing: str) -> None:
+    payload = {k: v for k, v in GOLDEN_EMITTED_ENVELOPE.items() if k != missing}
+    with pytest.raises(ValidationError):
+        ExecutionProof.model_validate(payload)
+
+
+@pytest.mark.parametrize("missing", ["tdx_quote", "report_data", "measurement"])
+def test_emitted_attestation_missing_required_field_rejected(missing: str) -> None:
+    attestation = {
+        k: v
+        for k, v in GOLDEN_EMITTED_ENVELOPE["attestation"].items()  # type: ignore[union-attr]
+        if k != missing
+    }
+    with pytest.raises(ValidationError):
+        PhalaAttestation.model_validate(attestation)
