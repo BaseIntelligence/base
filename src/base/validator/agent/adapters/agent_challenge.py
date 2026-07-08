@@ -12,12 +12,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from base.schemas.worker import PHALA_TDX_TIER, ExecutionProof, WorkerSignature
 from base.validator.agent.executor import (
     AssignmentContext,
     AssignmentExecutionError,
     ExecutionResult,
     ProgressCallback,
 )
+from base.validator.agent.signing import RequestSigner
+from base.worker.proof import execution_proof_signing_payload
 
 CHALLENGE_SLUG = "agent-challenge"
 
@@ -58,4 +61,41 @@ def _load_dispatch() -> DispatchFn:
     return dispatch_assignment
 
 
-__all__ = ["CHALLENGE_SLUG", "AgentChallengeCycleExecutor"]
+def rebind_worker_signature(
+    proof: ExecutionProof, *, signer: RequestSigner, unit_id: str
+) -> ExecutionProof:
+    """Rebind a Phala-tier envelope's tier-0 worker signature to ``unit_id``.
+
+    The canonical eval image runs a LEAN CVM image with no bittensor/sr25519
+    keypair, so its emitted Phala-tier ``ExecutionProof`` carries only a
+    schema-valid PLACEHOLDER ``worker_signature`` (empty pubkey/sig). When the
+    validator ingests the attested ``BASE_BENCHMARK_RESULT`` payload it re-signs
+    the tier-0 layer over the pinned ``sha256(f"{manifest_sha256}:{unit_id}")``
+    message with its OWN signer, so ``verify_execution_proof`` enforces a real
+    signature bound to this unit (no cross-unit replay, VAL-VERIFY-013).
+
+    The trust root remains the **attestation** (the hardware-signed TDX quote),
+    which the validator verifies cryptographically; this rebind only anchors the
+    worker-plane envelope layer to a real key -- it never substitutes for quote
+    verification. The attestation payload is carried through unchanged.
+    """
+
+    if proof.tier != PHALA_TDX_TIER:
+        raise AssignmentExecutionError(
+            "rebind_worker_signature only applies to Phala-tier proofs"
+        )
+    signature = signer.sign(
+        execution_proof_signing_payload(
+            manifest_sha256=proof.manifest_sha256, unit_id=unit_id
+        )
+    )
+    return proof.model_copy(
+        update={
+            "worker_signature": WorkerSignature(
+                worker_pubkey=signer.hotkey, sig=signature
+            )
+        }
+    )
+
+
+__all__ = ["CHALLENGE_SLUG", "AgentChallengeCycleExecutor", "rebind_worker_signature"]
