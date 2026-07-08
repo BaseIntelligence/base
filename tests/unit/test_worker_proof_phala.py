@@ -401,7 +401,7 @@ def test_emitted_envelope_missing_required_field_rejected(missing: str) -> None:
 def test_emitted_attestation_missing_required_field_rejected(missing: str) -> None:
     attestation = {
         k: v
-        for k, v in GOLDEN_EMITTED_ENVELOPE["attestation"].items()  # type: ignore[union-attr]
+        for k, v in GOLDEN_EMITTED_ENVELOPE["attestation"].items()  # type: ignore[attr-defined]
         if k != missing
     }
     with pytest.raises(ValidationError):
