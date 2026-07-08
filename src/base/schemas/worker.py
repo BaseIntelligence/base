@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class WorkerFaultView(BaseModel):
@@ -137,6 +137,63 @@ class WorkerSignature(BaseModel):
     sig: str
 
 
+#: Tier value marking an ExecutionProof as a Phala Intel TDX attestation
+#: (architecture.md sec 6). Distinct from the integer worker-plane tiers so the
+#: Phala envelope is self-describing without disturbing tier 0/1/2.
+PHALA_TDX_TIER = "phala-tdx"
+
+
+class PhalaMeasurement(BaseModel):
+    """TDX measurement registers for a canonical Phala eval image (arch sec 6/7).
+
+    The static, allowlist-pinnable ``canonical_measurement`` is the subset
+    ``{mrtd, rtmr0, rtmr1, rtmr2, compose_hash, os_image_hash}``. ``rtmr3`` is the
+    runtime event-log register (it carries the live compose-hash event); it is
+    kept on the record for completeness but excluded from the pinned canonical
+    measurement bound into ``report_data``.
+    """
+
+    mrtd: str
+    rtmr0: str
+    rtmr1: str
+    rtmr2: str
+    rtmr3: str
+    compose_hash: str
+    os_image_hash: str
+
+    def canonical(self) -> dict[str, str]:
+        """The static, allowlist-pinnable subset (excludes runtime ``rtmr3``)."""
+
+        return {
+            "mrtd": self.mrtd,
+            "rtmr0": self.rtmr0,
+            "rtmr1": self.rtmr1,
+            "rtmr2": self.rtmr2,
+            "compose_hash": self.compose_hash,
+            "os_image_hash": self.os_image_hash,
+        }
+
+
+class PhalaAttestation(BaseModel):
+    """Phala Intel TDX attestation payload carried by a Phala-tier ExecutionProof.
+
+    Populates the ``attestation`` block of an ExecutionProof whose ``tier`` is
+    :data:`PHALA_TDX_TIER` (architecture.md sec 6). The architecture's
+    ``tdx_quote_b64`` / ``report_data_hex`` spellings are accepted as input
+    aliases; serialization always uses the canonical field names.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    tdx_quote: str = Field(validation_alias=AliasChoices("tdx_quote", "tdx_quote_b64"))
+    event_log: list[dict[str, Any]] = Field(default_factory=list)
+    report_data: str = Field(
+        validation_alias=AliasChoices("report_data", "report_data_hex")
+    )
+    measurement: PhalaMeasurement
+    vm_config: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionProof(BaseModel):
     """Proof envelope attached to every worker result (architecture 3.4).
 
@@ -145,11 +202,14 @@ class ExecutionProof(BaseModel):
     pinned message (``sha256(f"{manifest_sha256}:{unit_id}")``). Tier 1 adds
     ``image_digest`` + a populated ``provider`` block; tier 2 adds a non-null
     ``attestation``. The base worker plane emits tier 0; prism fills the higher
-    tiers.
+    tiers. The Phala TDX tier (``tier == PHALA_TDX_TIER``) carries a
+    :class:`PhalaAttestation` payload in ``attestation`` (architecture.md sec 6);
+    hence ``tier`` accepts the string Phala value in addition to the integer
+    worker-plane tiers.
     """
 
     version: int = 1
-    tier: int = 0
+    tier: int | str = 0
     manifest_sha256: str
     image_digest: str | None = None
     provider: ProviderInfo | None = None
