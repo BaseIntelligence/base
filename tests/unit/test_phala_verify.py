@@ -6,8 +6,11 @@ TTL nonce lifecycle the Phala-tier verifier relies on.
 
 from __future__ import annotations
 
+import json
+
 from base.schemas.worker import PhalaMeasurement
 from base.worker.phala_verify import (
+    MEASUREMENT_ALLOWLIST_FILE_ENV,
     InMemoryNonceValidator,
     MeasurementAllowlist,
     NonceState,
@@ -21,6 +24,16 @@ MEASUREMENT = {
     "rtmr2": "b2" * 48,
     "compose_hash": "c" * 64,
     "os_image_hash": "e" * 64,
+}
+
+#: A second, distinct canonical measurement (image rotation: old + new).
+OTHER_MEASUREMENT = {
+    "mrtd": "f" * 96,
+    "rtmr0": "a0" * 48,
+    "rtmr1": "a1" * 48,
+    "rtmr2": "a2" * 48,
+    "compose_hash": "d" * 64,
+    "os_image_hash": "9" * 64,
 }
 
 
@@ -50,6 +63,79 @@ def test_empty_allowlist_fails_closed() -> None:
     empty = MeasurementAllowlist()
     assert bool(empty) is False
     assert empty.contains(MEASUREMENT) is False
+
+
+# --- VAL-VERIFY-027: multiple canonical entries (image rotation) -------------
+
+
+def test_allowlist_holds_multiple_entries_matches_any() -> None:
+    rotation = MeasurementAllowlist.from_measurements([MEASUREMENT, OTHER_MEASUREMENT])
+    assert len(rotation.entries) == 2
+    # Either allowlisted entry (outgoing + incoming image) matches.
+    assert rotation.contains(MEASUREMENT) is True
+    assert rotation.contains(OTHER_MEASUREMENT) is True
+    # A measurement listed under neither entry is rejected.
+    third = {**MEASUREMENT, "compose_hash": "1" * 64}
+    assert rotation.contains(third) is False
+
+
+# --- VAL-VERIFY-025: fail-closed loading (empty / missing / unparseable) -----
+
+
+def test_from_json_parses_entries_object_and_bare_list() -> None:
+    obj = MeasurementAllowlist.from_json(json.dumps({"entries": [MEASUREMENT]}))
+    assert obj.contains(MEASUREMENT) is True
+    bare = MeasurementAllowlist.from_json(json.dumps([MEASUREMENT, OTHER_MEASUREMENT]))
+    assert bare.contains(MEASUREMENT) is True
+    assert bare.contains(OTHER_MEASUREMENT) is True
+
+
+def test_from_json_unparseable_fails_closed() -> None:
+    broken = MeasurementAllowlist.from_json("{ this is : not json ]")
+    assert bool(broken) is False
+    assert broken.contains(MEASUREMENT) is False
+
+
+def test_from_json_wrong_json_shape_fails_closed() -> None:
+    assert bool(MeasurementAllowlist.from_json(json.dumps(42))) is False
+    assert bool(MeasurementAllowlist.from_json(json.dumps("nope"))) is False
+    assert bool(MeasurementAllowlist.from_json(json.dumps({"other": []}))) is False
+
+
+def test_from_json_malformed_entry_fails_closed() -> None:
+    missing_register = {k: v for k, v in MEASUREMENT.items() if k != "mrtd"}
+    assert bool(MeasurementAllowlist.from_json(json.dumps([missing_register]))) is False
+    assert bool(MeasurementAllowlist.from_json(json.dumps(["not-a-mapping"]))) is False
+
+
+def test_from_file_missing_fails_closed(tmp_path) -> None:
+    absent = MeasurementAllowlist.from_file(tmp_path / "does-not-exist.json")
+    assert bool(absent) is False
+
+
+def test_from_file_reads_entries(tmp_path) -> None:
+    path = tmp_path / "allowlist.json"
+    path.write_text(json.dumps({"entries": [MEASUREMENT]}), encoding="utf-8")
+    loaded = MeasurementAllowlist.from_file(path)
+    assert loaded.contains(MEASUREMENT) is True
+
+
+def test_from_env_unconfigured_fails_closed() -> None:
+    assert bool(MeasurementAllowlist.from_env(env={})) is False
+    assert (
+        bool(MeasurementAllowlist.from_env(env={MEASUREMENT_ALLOWLIST_FILE_ENV: ""}))
+        is False
+    )
+
+
+def test_from_env_reads_configured_file(tmp_path) -> None:
+    path = tmp_path / "allowlist.json"
+    path.write_text(json.dumps([MEASUREMENT, OTHER_MEASUREMENT]), encoding="utf-8")
+    loaded = MeasurementAllowlist.from_env(
+        env={MEASUREMENT_ALLOWLIST_FILE_ENV: str(path)}
+    )
+    assert loaded.contains(MEASUREMENT) is True
+    assert loaded.contains(OTHER_MEASUREMENT) is True
 
 
 def test_nonce_single_use_lifecycle() -> None:

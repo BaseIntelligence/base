@@ -18,11 +18,14 @@ Supporting types for the Phala-tier verifier in
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from base.schemas.worker import PhalaMeasurement
@@ -36,6 +39,10 @@ CANONICAL_MEASUREMENT_FIELDS: tuple[str, ...] = (
     "compose_hash",
     "os_image_hash",
 )
+
+#: Env var naming a JSON file with the validator's canonical measurement
+#: allowlist. Unset/empty ⇒ an unconfigured validator ⇒ empty (fail-closed).
+MEASUREMENT_ALLOWLIST_FILE_ENV = "BASE_PHALA_MEASUREMENT_ALLOWLIST_FILE"
 
 
 def canonical_measurement_mapping(
@@ -52,8 +59,13 @@ def canonical_measurement_mapping(
 class MeasurementAllowlist:
     """A validator-owned set of canonical measurements a quote must match.
 
-    Matching is exact across ALL canonical registers. An empty allowlist matches
-    nothing (fail closed) -- an unconfigured validator never accepts a quote.
+    Matching is exact across ALL canonical registers. The allowlist can hold
+    MORE THAN ONE entry so that during a canonical-image rotation both the
+    outgoing and incoming measurements are trusted simultaneously -- a quote
+    matching ANY entry passes, one matching none is rejected. An empty allowlist
+    matches nothing (fail closed) -- an unconfigured validator never accepts a
+    quote, and every load path below fails closed (to empty) on a missing,
+    unreadable, or unparseable source rather than defaulting to accept-any.
     """
 
     entries: tuple[dict[str, str], ...] = ()
@@ -63,6 +75,64 @@ class MeasurementAllowlist:
         cls, measurements: Iterable[PhalaMeasurement | Mapping[str, object]]
     ) -> MeasurementAllowlist:
         return cls(tuple(canonical_measurement_mapping(m) for m in measurements))
+
+    @classmethod
+    def from_json(cls, text: str) -> MeasurementAllowlist:
+        """Parse a JSON allowlist, FAILING CLOSED (empty) on any malformed input.
+
+        Accepts either a bare ``[entry, ...]`` list or a ``{"entries": [...]}``
+        object. Invalid JSON, an unexpected top-level shape, a non-mapping entry,
+        or an entry missing a canonical register yields an EMPTY allowlist (which
+        rejects everything) -- never an accept-any allowlist and never an
+        exception a caller might mistake for success (VAL-VERIFY-025).
+        """
+
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return cls()
+        if isinstance(data, Mapping):
+            data = data.get("entries", [])
+        if not isinstance(data, list):
+            return cls()
+        entries: list[dict[str, str]] = []
+        for item in data:
+            if not isinstance(item, Mapping):
+                return cls()
+            try:
+                entries.append(canonical_measurement_mapping(item))
+            except (KeyError, TypeError):
+                return cls()
+        return cls(tuple(entries))
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> MeasurementAllowlist:
+        """Load an allowlist from a JSON file, FAILING CLOSED on any I/O error.
+
+        A missing or unreadable file yields an EMPTY allowlist (fail closed)
+        rather than raising or accepting anything.
+        """
+
+        file_path = Path(path)
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except OSError:
+            return cls()
+        return cls.from_json(text)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> MeasurementAllowlist:
+        """Load the allowlist named by :data:`MEASUREMENT_ALLOWLIST_FILE_ENV`.
+
+        When the env var is unset/empty the validator is UNCONFIGURED, which
+        fails closed to an empty allowlist (accepts nothing).
+        """
+
+        environ = os.environ if env is None else env
+        path = environ.get(MEASUREMENT_ALLOWLIST_FILE_ENV)
+        if not path:
+            return cls()
+        return cls.from_file(path)
 
     def __bool__(self) -> bool:
         return bool(self.entries)
@@ -149,6 +219,7 @@ class PhalaBinding:
 
 __all__ = [
     "CANONICAL_MEASUREMENT_FIELDS",
+    "MEASUREMENT_ALLOWLIST_FILE_ENV",
     "InMemoryNonceValidator",
     "MeasurementAllowlist",
     "NonceState",

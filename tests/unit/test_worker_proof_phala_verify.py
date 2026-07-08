@@ -672,3 +672,198 @@ def test_dcap_qvl_missing_binary_is_park_not_reject() -> None:
     verifier = DcapQvlVerifier(runner=runner)
     with pytest.raises(VerifierUnavailableError):
         verifier.verify("00" * 8)
+
+
+# --- VAL-VERIFY-025: empty/missing/unparseable allowlist fails closed --------
+
+
+def test_empty_or_missing_allowlist_fails_closed_then_populated_accepts() -> None:
+    # A genuine, fully-valid attested envelope that WOULD verify against a
+    # populated allowlist. An empty/missing allowlist must reject it (never
+    # accept-any) WITHOUT consuming the nonce, so the same valid result still
+    # accepts once the allowlist is populated.
+    proof, binding, verifier, populated, nonces = _fixture()
+
+    assert (
+        verify_execution_proof(
+            proof,
+            unit_id=UNIT_ID,
+            expected_binding=binding,
+            quote_verifier=verifier,
+            allowlist=MeasurementAllowlist(),
+            nonce_validator=nonces,
+        )
+        is False
+    )
+    # Absent/unconfigured allowlist (None) also fails closed.
+    assert (
+        verify_execution_proof(
+            proof,
+            unit_id=UNIT_ID,
+            expected_binding=binding,
+            quote_verifier=verifier,
+            allowlist=None,
+            nonce_validator=nonces,
+        )
+        is False
+    )
+    # The SAME valid result now accepts against the populated allowlist.
+    assert _verify(proof, binding, verifier, populated, nonces) is True
+
+
+def test_unparseable_or_missing_allowlist_config_fails_closed(tmp_path) -> None:
+    nonces = InMemoryNonceValidator()
+    nonce = nonces.issue()
+    attestation, measurement = _build_attestation(validator_nonce=nonce)
+    proof = build_phala_execution_proof(
+        signer=_signer(),
+        manifest_sha256=MANIFEST,
+        unit_id=UNIT_ID,
+        attestation=attestation,
+    )
+    binding = PhalaBinding(
+        agent_hash=AGENT_HASH,
+        task_ids=TASK_IDS,
+        scores_digest=SCORES_DIGEST,
+        validator_nonce=nonce,
+    )
+    verifier = StaticQuoteVerifier()
+
+    # Unparseable config => empty allowlist => reject (nonce not consumed).
+    unparseable = MeasurementAllowlist.from_json("{ not valid json ]")
+    assert bool(unparseable) is False
+    assert (
+        verify_execution_proof(
+            proof,
+            unit_id=UNIT_ID,
+            expected_binding=binding,
+            quote_verifier=verifier,
+            allowlist=unparseable,
+            nonce_validator=nonces,
+        )
+        is False
+    )
+    # Missing config file => empty allowlist => reject (nonce not consumed).
+    missing = MeasurementAllowlist.from_file(tmp_path / "absent.json")
+    assert bool(missing) is False
+    assert (
+        verify_execution_proof(
+            proof,
+            unit_id=UNIT_ID,
+            expected_binding=binding,
+            quote_verifier=verifier,
+            allowlist=missing,
+            nonce_validator=nonces,
+        )
+        is False
+    )
+    # A valid config carrying the measurement accepts the SAME valid result.
+    config = tmp_path / "allowlist.json"
+    config.write_text(json.dumps({"entries": [measurement]}), encoding="utf-8")
+    populated = MeasurementAllowlist.from_file(config)
+    assert bool(populated) is True
+    assert (
+        verify_execution_proof(
+            proof,
+            unit_id=UNIT_ID,
+            expected_binding=binding,
+            quote_verifier=verifier,
+            allowlist=populated,
+            nonce_validator=nonces,
+        )
+        is True
+    )
+
+
+# --- VAL-VERIFY-027: multi-entry allowlist (image rotation) ------------------
+
+
+def _rotation_case(
+    nonces: InMemoryNonceValidator,
+    *,
+    unit_id: str,
+    mrtd: str,
+    compose_payload: bytes,
+):
+    """A self-consistent (proof, binding, measurement) for a given image."""
+
+    nonce = nonces.issue()
+    attestation, measurement = _build_attestation(
+        validator_nonce=nonce, mrtd=mrtd, compose_payload=compose_payload
+    )
+    proof = build_phala_execution_proof(
+        signer=_signer(),
+        manifest_sha256=MANIFEST,
+        unit_id=unit_id,
+        attestation=attestation,
+    )
+    binding = PhalaBinding(
+        agent_hash=AGENT_HASH,
+        task_ids=TASK_IDS,
+        scores_digest=SCORES_DIGEST,
+        validator_nonce=nonce,
+    )
+    return proof, binding, measurement
+
+
+def test_two_entry_allowlist_accepts_either_rejects_third() -> None:
+    nonces = InMemoryNonceValidator()
+    old_proof, old_binding, old_m = _rotation_case(
+        nonces,
+        unit_id="unit-old",
+        mrtd="a1" * 48,
+        compose_payload=bytes.fromhex("c3" * 32),
+    )
+    new_proof, new_binding, new_m = _rotation_case(
+        nonces,
+        unit_id="unit-new",
+        mrtd="b2" * 48,
+        compose_payload=bytes.fromhex("d4" * 32),
+    )
+    third_proof, third_binding, _third_m = _rotation_case(
+        nonces,
+        unit_id="unit-third",
+        mrtd="c3" * 48,
+        compose_payload=bytes.fromhex("e5" * 32),
+    )
+    assert old_m != new_m
+
+    rotation = MeasurementAllowlist.from_measurements([old_m, new_m])
+    verifier = StaticQuoteVerifier()
+
+    # Both the outgoing (old) and incoming (new) images verify against the
+    # two-entry allowlist during a rotation window.
+    assert (
+        verify_execution_proof(
+            old_proof,
+            unit_id="unit-old",
+            expected_binding=old_binding,
+            quote_verifier=verifier,
+            allowlist=rotation,
+            nonce_validator=nonces,
+        )
+        is True
+    )
+    assert (
+        verify_execution_proof(
+            new_proof,
+            unit_id="unit-new",
+            expected_binding=new_binding,
+            quote_verifier=verifier,
+            allowlist=rotation,
+            nonce_validator=nonces,
+        )
+        is True
+    )
+    # A third image, listed under neither entry, is rejected.
+    assert (
+        verify_execution_proof(
+            third_proof,
+            unit_id="unit-third",
+            expected_binding=third_binding,
+            quote_verifier=verifier,
+            allowlist=rotation,
+            nonce_validator=nonces,
+        )
+        is False
+    )
