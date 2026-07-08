@@ -227,6 +227,33 @@ def test_report_data_hex_is_64_byte_zero_padded_field() -> None:
     assert field_bytes[32:] == b"\x00" * 32
 
 
+# --- pinned cross-repo golden vector (drift guard) --------------------------
+# This fixed input -> expected digest/field is asserted in BOTH repos against
+# their independent sec-6 implementations, using the same inputs
+# (``_report_data_kwargs`` here):
+#   base:            base.worker.proof.phala_report_data(_hex)
+#   agent-challenge: agent_challenge.canonical.report_data.report_data(_hex)
+#                    (tests/test_canonical_report_data.py::GOLDEN_DIGEST_HEX)
+# The agent-challenge helper is a self-contained replica because base is not
+# importable inside the canonical eval image; if either implementation drifts,
+# one repo's pinned-vector test fails. Do NOT change one side without the other.
+GOLDEN_REPORT_DATA_DIGEST_HEX = (
+    "dd2c57688b55e25df20e292b71e1cb97d8501e9280e1dd3475b3e61c30e38cc2"
+)
+GOLDEN_REPORT_DATA_FIELD_HEX = GOLDEN_REPORT_DATA_DIGEST_HEX + "00" * 32
+
+
+def test_report_data_matches_pinned_cross_repo_vector() -> None:
+    assert (
+        phala_report_data(**_report_data_kwargs()).hex()  # type: ignore[arg-type]
+        == GOLDEN_REPORT_DATA_DIGEST_HEX
+    )
+    assert (
+        phala_report_data_hex(**_report_data_kwargs())  # type: ignore[arg-type]
+        == GOLDEN_REPORT_DATA_FIELD_HEX
+    )
+
+
 # --- build_phala_execution_proof -------------------------------------------
 
 
