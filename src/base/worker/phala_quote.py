@@ -313,10 +313,19 @@ class DcapQvlVerifier:
 
     ``dcap-qvl`` verifies the quote against Intel collateral and reports the TCB
     status; this adapter shells out and parses that verdict. ``runner`` is
-    injectable for testing. A non-zero exit / unparseable output is a cryptographic
-    rejection (:class:`QuoteVerificationError`); a timeout / missing binary /
-    subprocess failure is a transient outage (:class:`VerifierUnavailableError`,
-    park) -- the two are deliberately distinct (VAL-VERIFY-014).
+    injectable for testing. The accept / reject / park mapping is deliberate
+    (VAL-VERIFY-014):
+
+    * a **non-zero exit** is a cryptographic verdict -- the tool judged the quote
+      invalid / its TCB unacceptable -- so it PERMANENTLY rejects
+      (:class:`QuoteVerificationError`); and
+    * a **timeout / missing binary / subprocess error** is a transient outage, so
+      it PARKS (:class:`VerifierUnavailableError`, retryable); and
+    * an **exit-0-but-unparseable / non-object / missing-TCB-status** output is a
+      *tooling* regression (dcap-qvl accepted the quote's cryptography but changed
+      its stdout format), NOT a fraud verdict -- so it PARKS
+      (:class:`VerifierUnavailableError`) rather than permanently fraud-rejecting a
+      legitimate result. It is never accepted (no verdict is returned).
     """
 
     binary: str = "dcap-qvl"
@@ -350,15 +359,24 @@ class DcapQvlVerifier:
         try:
             report = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:
-            raise QuoteVerificationError(f"dcap-qvl output is not JSON: {exc}") from exc
+            raise VerifierUnavailableError(
+                f"dcap-qvl exited 0 but its output is not JSON "
+                f"(tooling regression -- park, do not reject): {exc}"
+            ) from exc
         if not isinstance(report, Mapping):
-            raise QuoteVerificationError("dcap-qvl output was not a JSON object")
+            raise VerifierUnavailableError(
+                "dcap-qvl exited 0 but its output was not a JSON object "
+                "(tooling regression -- park, do not reject)"
+            )
 
         status = (
             report.get("status") or report.get("tcbStatus") or report.get("tcb_status")
         )
         if not isinstance(status, str) or not status:
-            raise QuoteVerificationError("dcap-qvl output is missing a TCB status")
+            raise VerifierUnavailableError(
+                "dcap-qvl exited 0 but its output is missing a TCB status "
+                "(tooling regression -- park, do not reject)"
+            )
         advisories = report.get("advisory_ids") or report.get("advisoryIDs") or []
         if not isinstance(advisories, Sequence) or isinstance(advisories, str | bytes):
             advisories = []

@@ -15,6 +15,7 @@ import pytest
 
 from base.worker.phala_quote import (
     DcapQvlVerifier,
+    QuoteError,
     QuoteStructureError,
     QuoteVerificationError,
     StaticQuoteVerifier,
@@ -159,31 +160,73 @@ def test_dcap_qvl_parses_advisories_and_alt_status_keys() -> None:
     assert verdict.advisory_ids == ("INTEL-SA-1",)
 
 
-def test_dcap_qvl_unparseable_json_is_reject() -> None:
+# --- exit-0-but-unparseable / missing-TCB-status output PARKS (retryable) ----
+# A dcap-qvl exit code of 0 means the tool accepted the quote's cryptography; if
+# its stdout is then unparseable / missing a TCB status that is a *tooling*
+# regression (output-format change), NOT a fraud verdict -- park (retry), never
+# permanently fraud-reject a legitimate result. Genuine invalid-quote/bad-TCB
+# verdicts (nonzero exit) still reject; the distinction is asserted below.
+
+
+def test_dcap_qvl_exit0_unparseable_json_is_park() -> None:
     def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
             args, returncode=0, stdout="not json", stderr=""
         )
 
-    with pytest.raises(QuoteVerificationError):
+    with pytest.raises(VerifierUnavailableError):
         DcapQvlVerifier(runner=runner).verify("00" * 8)
 
 
-def test_dcap_qvl_non_object_json_is_reject() -> None:
+def test_dcap_qvl_exit0_non_object_json_is_park() -> None:
     def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
             args, returncode=0, stdout="[1,2,3]", stderr=""
+        )
+
+    with pytest.raises(VerifierUnavailableError):
+        DcapQvlVerifier(runner=runner).verify("00" * 8)
+
+
+def test_dcap_qvl_exit0_missing_status_is_park() -> None:
+    def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, returncode=0, stdout="{}", stderr="")
+
+    with pytest.raises(VerifierUnavailableError):
+        DcapQvlVerifier(runner=runner).verify("00" * 8)
+
+
+def test_dcap_qvl_exit0_empty_stdout_is_park() -> None:
+    def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
+
+    with pytest.raises(VerifierUnavailableError):
+        DcapQvlVerifier(runner=runner).verify("00" * 8)
+
+
+# --- discriminator: a genuine rejection (nonzero exit) must NOT park ----------
+# Proves the park mapping above is not "everything parks": a real invalid-quote /
+# bad-TCB verdict from dcap-qvl (nonzero exit) is still a PERMANENT reject.
+
+
+def test_dcap_qvl_nonzero_exit_is_reject_not_park() -> None:
+    def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args, returncode=1, stdout="", stderr="quote rejected: bad signature"
         )
 
     with pytest.raises(QuoteVerificationError):
         DcapQvlVerifier(runner=runner).verify("00" * 8)
 
 
-def test_dcap_qvl_missing_status_is_reject() -> None:
+def test_dcap_qvl_exit0_unparseable_is_not_accepted() -> None:
+    # Never accept-any: an exit-0-but-unparseable result yields no QuoteVerdict.
     def runner(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args, returncode=0, stdout="{}", stderr="")
+        return subprocess.CompletedProcess(
+            args, returncode=0, stdout="not json", stderr=""
+        )
 
-    with pytest.raises(QuoteVerificationError):
+    with pytest.raises(QuoteError):
         DcapQvlVerifier(runner=runner).verify("00" * 8)
 
 
