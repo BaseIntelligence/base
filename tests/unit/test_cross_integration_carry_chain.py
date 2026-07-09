@@ -23,6 +23,13 @@ the two legs that live in the base repo:
   discriminator, not a constant pass). The challenge leg (envelope emitted
   alongside the result line and parsed by the host normalizer) is asserted in the
   agent-challenge repo.
+
+* **VAL-CROSS-021 (base leg)** -- with the flag OFF the BASE validator adapter +
+  master handle an agent-challenge unit exactly as legacy: no Phala tier is
+  required on results, no attestation gate is applied, and master orchestration
+  keeps the legacy reassign-on-failure (NEVER replicate) path for the cpu units.
+  A sibling gpu unit replicating to R=2 (VAL-CROSS-003 above) proves the R=1
+  reassign-only result here is not vacuous.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ from base.db import (
 )
 from base.db.models import WorkAssignment
 from base.master.assignment import CAPABILITY_GPU, AssignmentService
+from base.master.assignment_coordination import AssignmentCoordinationService
 from base.master.orchestration import (
     ChallengePendingWork,
     MasterOrchestrationDriver,
@@ -547,3 +555,84 @@ def test_val_cross_007_base_leg_report_data_reencode_breaks_verification() -> No
         )
         is False
     )
+
+
+# =========================================================================== #
+# VAL-CROSS-021 (base leg): flag OFF => the BASE side treats agent-challenge
+# units as legacy (no Phala tier, no attestation gate, reassign-never-replicate).
+# =========================================================================== #
+def _build_flag_off_driver(
+    factory: Any, works: list[ChallengePendingWork], *, service: AssignmentService
+) -> MasterOrchestrationDriver:
+    """A flag-OFF driver: no worker engine, no reconciler (legacy routing)."""
+
+    return MasterOrchestrationDriver(
+        assignment_service=service,
+        validator_service=ValidatorCoordinationService(factory, now_fn=lambda: NOW),
+        work_source=_FakeWorkSource(works=works),
+        fold_trigger=_FakeFoldTrigger(),
+        worker_assignment_engine=None,
+        worker_reconciler=None,
+        seed=1,
+    )
+
+
+async def _set_validator_status(
+    factory: Any, hotkey: str, status: ValidatorStatus
+) -> None:
+    async with session_scope(factory) as session:
+        validator = (
+            await session.execute(select(Validator).where(Validator.hotkey == hotkey))
+        ).scalar_one()
+        validator.status = status
+
+
+async def test_val_cross_021_flag_off_base_treats_agent_challenge_units_as_legacy() -> (
+    None
+):
+    engine, factory = await _setup()
+    try:
+        # Flag OFF: even an attestation-bearing agent-challenge submission is
+        # bridged exactly like legacy -- no Phala tier required, no worker plane.
+        service = AssignmentService(factory, now_fn=lambda: NOW, default_max_attempts=3)
+        driver = _build_flag_off_driver(
+            factory, works=[_attested_agent_work()], service=service
+        )
+        await _add_validator(factory, "v1", ["cpu"])
+
+        result = await driver.run_once()
+        assert result.worker is None  # no worker-plane engine ran (legacy)
+        assert result.reconciliation is None  # no attestation/audit reconcile
+
+        units = await _units(factory)
+        cpu_ids = ["sub:a", "sub:b", "sub:c"]
+        assert set(units) == set(cpu_ids)  # only the fanned cpu units
+        for uid in cpu_ids:
+            unit = units[uid]
+            assert unit.required_capability == "cpu"
+            assert unit.assigned_validator_hotkey == "v1"  # single executor (R=1)
+            assert unit.attempt_count == 1
+            assert await _replica_count(factory, uid) == 0  # never replicated
+        assert all(not uid.endswith(AUDIT_WORK_UNIT_SUFFIX) for uid in units)
+
+        # Legacy reassign-on-failure (NEVER replicate): the owner crashes, the cpu
+        # units revert to pending and reassign to a DIFFERENT validator (exactly
+        # one more attempt) -- still zero worker replicas. The gpu R=2 replica in
+        # VAL-CROSS-003 above proves this R=1 reassign-only path is not vacuous.
+        coordination = AssignmentCoordinationService(factory, now_fn=lambda: NOW)
+        await coordination.pull(hotkey="v1")  # assigned -> running
+        await _set_validator_status(factory, "v1", ValidatorStatus.OFFLINE)
+        await _add_validator(factory, "v2", ["cpu"])
+
+        outcome = await service.reclaim_stale_assignments()
+        assert set(outcome.reverted) == set(cpu_ids)
+        await service.assign_pending(seed=1)
+
+        units = await _units(factory)
+        for uid in cpu_ids:
+            unit = units[uid]
+            assert unit.assigned_validator_hotkey == "v2"  # reassigned, not replicated
+            assert unit.attempt_count == 2  # exactly one more attempt
+            assert await _replica_count(factory, uid) == 0  # NEVER a worker replica
+    finally:
+        await engine.dispose()
