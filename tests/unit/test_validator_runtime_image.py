@@ -32,7 +32,7 @@ DOCKERFILE_RUNTIME = ROOT / "docker" / "Dockerfile.validator-runtime"
 
 RUNTIME_IMAGE = "base-validator-runtime"
 RUNTIME_DOCKERFILE = "docker/Dockerfile.validator-runtime"
-AGENT_CHALLENGE_REF = "7553044666b56d51b1c1ab57f8a8e3c75a33883d"
+AGENT_CHALLENGE_REF = "d02f7329b17dbc3b663bcd518c746022bbc0afe8"
 PRISM_REF = "9edf6931428359408ba44e63b889e546ae071f46"
 
 
