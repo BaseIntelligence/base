@@ -1,0 +1,205 @@
+{
+  "description": "Shared positive and malformed vectors for Eval ExecutionProof v1 and its schema-version-2 Phala score report-data binding. The agent-challenge implementation must assert byte-identical results.",
+  "positive": {
+    "binding": {
+      "agent_hash": "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0",
+      "canonical_measurement": {
+        "compose_hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "mrtd": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "os_image_hash": "0fbc46b4f3c1c019f20d7985f653a46a0303e106edeed801b0ab29b0660d3b2e",
+        "rtmr0": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "rtmr1": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "rtmr2": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "eval_run_id": "eval-run-001",
+      "score_nonce": "score-nonce-001",
+      "scores_digest": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+      "task_ids": [
+        "task-a",
+        "task-b",
+        "task-c"
+      ]
+    },
+    "canonical_json_utf8_hex": "7b226167656e745f68617368223a2266306630663066306630663066306630663066306630663066306630663066306630663066306630663066306630663066306630663066306630663066306630222c2263616e6f6e6963616c5f6d6561737572656d656e74223a7b22636f6d706f73655f68617368223a2263336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333633363336333222c226d727464223a22613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131222c226f735f696d6167655f68617368223a2230666263343662346633633163303139663230643739383566363533613436613033303365313036656465656438303162306162323962303636306433623265222c2272746d7230223a22623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230623062306230222c2272746d7231223a22623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231623162316231222c2272746d7232223a22623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232227d2c22646f6d61696e223a22626173652d6167656e742d6368616c6c656e67652d7631222c226576616c5f72756e5f6964223a226576616c2d72756e2d303031222c22736368656d615f76657273696f6e223a322c2273636f72655f6e6f6e6365223a2273636f72652d6e6f6e63652d303031222c2273636f7265735f646967657374223a2239613961396139613961396139613961396139613961396139613961396139613961396139613961396139613961396139613961396139613961396139613961222c227461736b5f696473223a5b227461736b2d61222c227461736b2d62222c227461736b2d63225d7d",
+    "report_data_hex": "360ef521e929f903e1e93db74e4c3462d0622d21cc6b2c8f7ee8ff783389ebed0000000000000000000000000000000000000000000000000000000000000000",
+    "execution_proof": {
+      "version": 1,
+      "tier": "phala-tdx",
+      "manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "image_digest": "registry.example/eval@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "provider": null,
+      "worker_signature": {
+        "worker_pubkey": "",
+        "sig": ""
+      },
+      "attestation": {
+        "tdx_quote": "abababababababab",
+        "event_log": [
+          {
+            "imr": 3,
+            "event_type": 134217729,
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "event": "compose-hash",
+            "event_payload": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+          }
+        ],
+        "report_data": "360ef521e929f903e1e93db74e4c3462d0622d21cc6b2c8f7ee8ff783389ebed0000000000000000000000000000000000000000000000000000000000000000",
+        "measurement": {
+          "compose_hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "mrtd": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "os_image_hash": "0fbc46b4f3c1c019f20d7985f653a46a0303e106edeed801b0ab29b0660d3b2e",
+          "rtmr0": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+          "rtmr1": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+          "rtmr2": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "rtmr3": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "vm_config": {
+          "vcpu": 1,
+          "memory_mb": 2048,
+          "os_image_hash": "0fbc46b4f3c1c019f20d7985f653a46a0303e106edeed801b0ab29b0660d3b2e"
+        }
+      }
+    }
+  },
+  "malformed": [
+    {
+      "name": "duplicate_json_key",
+      "kind": "raw_json",
+      "value": "{\"version\":1,\"version\":1}"
+    },
+    {
+      "name": "tdx_quote_alias",
+      "kind": "rename",
+      "from": "attestation.tdx_quote",
+      "to": "attestation.tdx_quote_b64"
+    },
+    {
+      "name": "report_data_alias",
+      "kind": "rename",
+      "from": "attestation.report_data",
+      "to": "attestation.report_data_hex"
+    },
+    {
+      "name": "unknown_attestation_field",
+      "kind": "set",
+      "path": "attestation.unknown",
+      "value": "forbidden"
+    },
+    {
+      "name": "unknown_execution_proof_field",
+      "kind": "set",
+      "path": "unknown",
+      "value": "forbidden"
+    },
+    {
+      "name": "unknown_measurement_field",
+      "kind": "set",
+      "path": "attestation.measurement.unknown",
+      "value": "forbidden"
+    },
+    {
+      "name": "unknown_event_field",
+      "kind": "set",
+      "path": "attestation.event_log.0.unknown",
+      "value": "forbidden"
+    },
+    {
+      "name": "unknown_vm_config_field",
+      "kind": "set",
+      "path": "attestation.vm_config.unknown",
+      "value": "forbidden"
+    },
+    {
+      "name": "uppercase_quote",
+      "kind": "set",
+      "path": "attestation.tdx_quote",
+      "value": "ABAB"
+    },
+    {
+      "name": "odd_length_quote",
+      "kind": "set",
+      "path": "attestation.tdx_quote",
+      "value": "abc"
+    },
+    {
+      "name": "short_report_data",
+      "kind": "set",
+      "path": "attestation.report_data",
+      "value": "aa"
+    },
+    {
+      "name": "long_report_data",
+      "kind": "set",
+      "path": "attestation.report_data",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "short_mrtd",
+      "kind": "set",
+      "path": "attestation.measurement.mrtd",
+      "value": "aa"
+    },
+    {
+      "name": "long_mrtd",
+      "kind": "set",
+      "path": "attestation.measurement.mrtd",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "short_compose_hash",
+      "kind": "set",
+      "path": "attestation.measurement.compose_hash",
+      "value": "aa"
+    },
+    {
+      "name": "long_os_image_hash",
+      "kind": "set",
+      "path": "attestation.measurement.os_image_hash",
+      "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "name": "short_event_digest",
+      "kind": "set",
+      "path": "attestation.event_log.0.digest",
+      "value": "cc"
+    },
+    {
+      "name": "long_event_digest",
+      "kind": "set",
+      "path": "attestation.event_log.0.digest",
+      "value": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "odd_event_payload",
+      "kind": "set",
+      "path": "attestation.event_log.0.event_payload",
+      "value": "c"
+    },
+    {
+      "name": "uppercase_manifest",
+      "kind": "set",
+      "path": "manifest_sha256",
+      "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "invalid_image_digest",
+      "kind": "set",
+      "path": "image_digest",
+      "value": "registry.example/eval:latest"
+    },
+    {
+      "name": "provider_present",
+      "kind": "set",
+      "path": "provider",
+      "value": {
+        "name": "forbidden"
+      }
+    },
+    {
+      "name": "partial_placeholder_signature",
+      "kind": "set",
+      "path": "worker_signature.worker_pubkey",
+      "value": "not-empty"
+    }
+  ]
+}

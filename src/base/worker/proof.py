@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
@@ -191,7 +192,7 @@ def _verify_phala_attestation(
 
     if not allowlist:
         return False
-    if not expected_binding.validator_nonce:
+    if not expected_binding.nonce:
         return False
 
     try:
@@ -226,17 +227,25 @@ def _verify_phala_attestation(
     if not allowlist.contains(measurement):
         return False
 
+    binding_args: dict[str, str | None] = (
+        {
+            "eval_run_id": expected_binding.eval_run_id,
+            "score_nonce": expected_binding.score_nonce,
+        }
+        if expected_binding.is_eval_v2
+        else {"validator_nonce": expected_binding.validator_nonce}
+    )
     expected_report_data = phala_report_data_hex(
         canonical_measurement=measurement,
         agent_hash=expected_binding.agent_hash,
         task_ids=expected_binding.task_ids,
         scores_digest=expected_binding.scores_digest,
-        validator_nonce=expected_binding.validator_nonce,
+        **binding_args,
     )
     if report.report_data != bytes.fromhex(expected_report_data):
         return False
 
-    return nonce_validator.consume(expected_binding.validator_nonce) is NonceState.OK
+    return nonce_validator.consume(expected_binding.nonce) is NonceState.OK
 
 
 def _canonical_measurement_mapping(
@@ -246,8 +255,57 @@ def _canonical_measurement_mapping(
 
     if isinstance(canonical_measurement, PhalaMeasurement):
         return canonical_measurement.canonical()
-    static_fields = ("mrtd", "rtmr0", "rtmr1", "rtmr2", "compose_hash", "os_image_hash")
+    static_fields = (
+        "mrtd",
+        "rtmr0",
+        "rtmr1",
+        "rtmr2",
+        "compose_hash",
+        "os_image_hash",
+    )
     return {field: str(canonical_measurement[field]) for field in static_fields}
+
+
+def _is_visible_id(value: object) -> bool:
+    """Whether an Eval wire identifier is one to 128 visible ASCII bytes."""
+
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and all("!" <= char <= "~" for char in value)
+    )
+
+
+def _is_lower_hex(value: object, width: int) -> bool:
+    """Whether ``value`` has an exact-width lowercase hexadecimal encoding."""
+
+    return (
+        isinstance(value, str)
+        and len(value) == width
+        and re.fullmatch(r"[0-9a-f]+", value) is not None
+    )
+
+
+def _schema_v2_measurement(
+    canonical_measurement: PhalaMeasurement | Mapping[str, Any],
+) -> dict[str, str]:
+    """Validate and return the strict static Eval measurement object."""
+
+    try:
+        measurement = _canonical_measurement_mapping(canonical_measurement)
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            "schema-version-2 canonical measurement is incomplete"
+        ) from exc
+
+    register_fields = ("mrtd", "rtmr0", "rtmr1", "rtmr2")
+    if any(not _is_lower_hex(measurement[field], 96) for field in register_fields):
+        raise ValueError("schema-version-2 measurement registers must be 96 hex chars")
+    if not _is_lower_hex(measurement["compose_hash"], 64) or not _is_lower_hex(
+        measurement["os_image_hash"], 64
+    ):
+        raise ValueError("schema-version-2 measurement hashes must be 64 hex chars")
+    return measurement
 
 
 def phala_report_data(
@@ -256,31 +314,73 @@ def phala_report_data(
     agent_hash: str,
     task_ids: Iterable[str],
     scores_digest: str,
-    validator_nonce: str,
+    validator_nonce: str | None = None,
+    eval_run_id: str | None = None,
+    score_nonce: str | None = None,
 ) -> bytes:
     """The 32-byte ``report_data`` digest binding a Phala run (architecture sec 6).
 
-    ``SHA256`` over a canonical (sorted-key, compact) JSON preimage of
-    ``{tag, canonical_measurement, agent_hash, sorted(task_ids), scores_digest,
-    validator_nonce}`` with ``tag == PHALA_REPORT_DATA_TAG``. ``task_ids`` are
-    sorted so the binding is order-independent; the measurement contributes only
-    its static, pinnable subset (``rtmr3`` is runtime and excluded). Every other
-    component is bound, so changing any one changes the digest.
+    The schema-version-2 Eval boundary hashes canonical JSON over
+    ``{agent_hash, canonical_measurement, domain, eval_run_id, schema_version,
+    score_nonce, scores_digest, task_ids}``; its sorted task IDs are a
+    duplicate-free set and its measurement excludes runtime ``rtmr3``. Legacy
+    callers that still supply only ``validator_nonce`` retain the original v1
+    derivation until they migrate to the direct Eval boundary.
 
     This is the single source of truth for the derivation shared by the image
     emitter (M1) and the validator/master verifier (M4): both MUST call this
     function rather than re-implementing sec 6.
     """
 
-    preimage = {
-        "tag": PHALA_REPORT_DATA_TAG,
-        "canonical_measurement": _canonical_measurement_mapping(canonical_measurement),
-        "agent_hash": agent_hash,
-        "task_ids": sorted(task_ids),
-        "scores_digest": scores_digest,
-        "validator_nonce": validator_nonce,
-    }
-    encoded = json.dumps(preimage, sort_keys=True, separators=(",", ":")).encode()
+    supplied_tasks = tuple(task_ids)
+    if (eval_run_id is None) != (score_nonce is None):
+        raise ValueError("eval_run_id and score_nonce must be supplied together")
+
+    if eval_run_id is not None and score_nonce is not None:
+        if validator_nonce is not None:
+            raise ValueError("schema-version-2 binding does not use validator_nonce")
+        if (
+            not _is_visible_id(eval_run_id)
+            or not _is_visible_id(score_nonce)
+            or any(not _is_visible_id(task_id) for task_id in supplied_tasks)
+        ):
+            raise ValueError("schema-version-2 ids must be visible ASCII")
+        if not _is_lower_hex(agent_hash, 64) or not _is_lower_hex(scores_digest, 64):
+            raise ValueError("schema-version-2 digests must be 64 lowercase hex chars")
+        task_set = tuple(sorted(supplied_tasks))
+        if len(task_set) != len(set(task_set)):
+            raise ValueError("task_ids must be unique")
+        if supplied_tasks != task_set:
+            raise ValueError("schema-version-2 task_ids must be sorted")
+        preimage = {
+            "agent_hash": agent_hash,
+            "canonical_measurement": _schema_v2_measurement(canonical_measurement),
+            "domain": PHALA_REPORT_DATA_TAG,
+            "eval_run_id": eval_run_id,
+            "schema_version": 2,
+            "score_nonce": score_nonce,
+            "scores_digest": scores_digest,
+            "task_ids": list(supplied_tasks),
+        }
+    else:
+        if validator_nonce is None:
+            raise ValueError("validator_nonce is required for legacy bindings")
+        preimage = {
+            "tag": PHALA_REPORT_DATA_TAG,
+            "canonical_measurement": _canonical_measurement_mapping(
+                canonical_measurement
+            ),
+            "agent_hash": agent_hash,
+            "task_ids": sorted(supplied_tasks),
+            "scores_digest": scores_digest,
+            "validator_nonce": validator_nonce,
+        }
+    encoded = json.dumps(
+        preimage,
+        ensure_ascii=eval_run_id is None,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
     return hashlib.sha256(encoded).digest()
 
 
@@ -290,7 +390,9 @@ def phala_report_data_hex(
     agent_hash: str,
     task_ids: Iterable[str],
     scores_digest: str,
-    validator_nonce: str,
+    validator_nonce: str | None = None,
+    eval_run_id: str | None = None,
+    score_nonce: str | None = None,
 ) -> str:
     """``report_data`` as a 64-byte TDX field (128 hex chars, left-aligned).
 
@@ -305,6 +407,8 @@ def phala_report_data_hex(
         task_ids=task_ids,
         scores_digest=scores_digest,
         validator_nonce=validator_nonce,
+        eval_run_id=eval_run_id,
+        score_nonce=score_nonce,
     )
     return digest.ljust(PHALA_REPORT_DATA_BYTES, b"\x00").hex()
 

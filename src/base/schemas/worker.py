@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -192,6 +193,128 @@ class PhalaAttestation(BaseModel):
     )
     measurement: PhalaMeasurement
     vm_config: dict[str, Any] = Field(default_factory=dict)
+
+
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
+_REGISTER_PATTERN = r"^[0-9a-f]{96}$"
+_REPORT_DATA_PATTERN = r"^[0-9a-f]{128}$"
+_EVEN_HEX_PATTERN = r"^(?:[0-9a-f]{2})*$"
+_NONEMPTY_EVEN_HEX_PATTERN = r"^(?:[0-9a-f]{2})+$"
+_VISIBLE_ID_PATTERN = r"^[!-~]{1,128}$"
+
+
+class EvalPhalaMeasurement(BaseModel):
+    """Exact canonical measurement wire schema for Eval Phala attestations."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mrtd: str = Field(pattern=_REGISTER_PATTERN)
+    rtmr0: str = Field(pattern=_REGISTER_PATTERN)
+    rtmr1: str = Field(pattern=_REGISTER_PATTERN)
+    rtmr2: str = Field(pattern=_REGISTER_PATTERN)
+    rtmr3: str = Field(pattern=_REGISTER_PATTERN)
+    compose_hash: str = Field(pattern=_SHA256_PATTERN)
+    os_image_hash: str = Field(pattern=_SHA256_PATTERN)
+
+    def canonical(self) -> dict[str, str]:
+        """The static, allowlist-pinnable subset, excluding runtime ``rtmr3``."""
+
+        return {
+            "mrtd": self.mrtd,
+            "rtmr0": self.rtmr0,
+            "rtmr1": self.rtmr1,
+            "rtmr2": self.rtmr2,
+            "compose_hash": self.compose_hash,
+            "os_image_hash": self.os_image_hash,
+        }
+
+
+class EvalPhalaEventLogEntry(BaseModel):
+    """One schema-closed event-log entry on the canonical Eval wire."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    imr: int
+    event_type: int
+    digest: str = Field(pattern=_REGISTER_PATTERN)
+    event: str = Field(pattern=_VISIBLE_ID_PATTERN)
+    event_payload: str = Field(pattern=_EVEN_HEX_PATTERN)
+
+
+class EvalPhalaVmConfig(BaseModel):
+    """Evidence-only VM configuration carried in a canonical Eval attestation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    vcpu: int = Field(ge=1)
+    memory_mb: int = Field(ge=1)
+    os_image_hash: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+
+
+class EvalPhalaAttestation(BaseModel):
+    """Strict Eval Phala attestation boundary, with no legacy field aliases."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tdx_quote: str = Field(pattern=_NONEMPTY_EVEN_HEX_PATTERN)
+    event_log: list[EvalPhalaEventLogEntry]
+    report_data: str = Field(pattern=_REPORT_DATA_PATTERN)
+    measurement: EvalPhalaMeasurement
+    vm_config: EvalPhalaVmConfig
+
+
+class EvalWorkerSignature(BaseModel):
+    """The sole in-CVM worker-signature placeholder accepted on the Eval wire."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    worker_pubkey: Literal[""] = ""
+    sig: Literal[""] = ""
+
+
+class EvalExecutionProof(BaseModel):
+    """Schema-closed canonical Eval ``ExecutionProof`` wire envelope.
+
+    This is intentionally separate from the permissive legacy
+    :class:`ExecutionProof` model. The direct Eval result endpoint validates this
+    model before replacing its exact empty signature placeholder with a
+    validator-owned signature.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1]
+    tier: Literal["phala-tdx"]
+    manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    image_digest: str = Field(pattern=r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+    provider: Literal[None] = None
+    worker_signature: EvalWorkerSignature
+    attestation: EvalPhalaAttestation
+
+    def to_execution_proof(self) -> ExecutionProof:
+        """Convert validated canonical wire data to the legacy transport model."""
+
+        return ExecutionProof.model_validate(self.model_dump(mode="json"))
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """JSON object hook that rejects duplicate member names before Pydantic."""
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_eval_execution_proof_json(
+    data: str | bytes | bytearray,
+) -> EvalExecutionProof:
+    """Parse a canonical Eval proof while rejecting duplicate JSON object keys."""
+
+    decoded = json.loads(data, object_pairs_hook=_reject_duplicate_json_keys)
+    return EvalExecutionProof.model_validate(decoded)
 
 
 class ExecutionProof(BaseModel):

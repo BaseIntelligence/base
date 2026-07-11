@@ -214,7 +214,29 @@ class PhalaBinding:
     agent_hash: str
     task_ids: tuple[str, ...]
     scores_digest: str
-    validator_nonce: str
+    validator_nonce: str = ""
+    eval_run_id: str | None = None
+    score_nonce: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.eval_run_id is None) != (self.score_nonce is None):
+            raise ValueError("eval_run_id and score_nonce must be supplied together")
+        if self.is_eval_v2 and self.validator_nonce:
+            raise ValueError("schema-version-2 bindings do not use validator_nonce")
+
+    @property
+    def is_eval_v2(self) -> bool:
+        """Whether this immutable binding uses the schema-version-2 Eval shape."""
+
+        return self.eval_run_id is not None or self.score_nonce is not None
+
+    @property
+    def nonce(self) -> str:
+        """The purpose-scoped nonce consumed after a successful verification."""
+
+        return (
+            self.score_nonce if self.score_nonce is not None else self.validator_nonce
+        )
 
 
 __all__ = [

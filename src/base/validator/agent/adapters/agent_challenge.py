@@ -84,6 +84,10 @@ def rebind_worker_signature(
         raise AssignmentExecutionError(
             "rebind_worker_signature only applies to Phala-tier proofs"
         )
+    if proof.worker_signature.worker_pubkey != "" or proof.worker_signature.sig != "":
+        raise AssignmentExecutionError(
+            "rebind_worker_signature requires the exact empty Eval placeholder"
+        )
     signature = signer.sign(
         execution_proof_signing_payload(
             manifest_sha256=proof.manifest_sha256, unit_id=unit_id

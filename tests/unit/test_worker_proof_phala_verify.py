@@ -489,11 +489,12 @@ def test_repurposed_quote_rejected_for_other_submission() -> None:
         scores_digest="cc" * 32,
         validator_nonce=nonce_b,
     )
-    proof_b = build_phala_execution_proof(
-        signer=_signer(),
+    proof_b = ExecutionProof(
+        version=1,
+        tier=PHALA_TDX_TIER,
         manifest_sha256=MANIFEST,
-        unit_id="submission-B",
-        attestation=attestation_b,
+        worker_signature=WorkerSignature(worker_pubkey="", sig=""),
+        attestation=attestation_b.model_dump(mode="json"),
     )
     # Present B's envelope as submission A's result (A's expected binding).
     nonce_a = nonces.issue()
