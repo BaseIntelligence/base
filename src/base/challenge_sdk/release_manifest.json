@@ -1,0 +1,70 @@
+{
+  "distribution_name": "base",
+  "artifact_version": "3.1.0",
+  "sdk_contract_version": "1.0.0",
+  "api_version": "1.0",
+  "release_id": "v3.1.0",
+  "public_imports": {
+    "base.challenge_sdk.config": [
+      "ChallengeSettings",
+      "DockerExecutorSettings"
+    ],
+    "base.challenge_sdk.auth": [
+      "build_internal_auth_dependency",
+      "load_shared_token"
+    ],
+    "base.challenge_sdk.schemas": [
+      "AssignmentProgressRequest",
+      "AssignmentProgressResponse",
+      "AssignmentPullResponse",
+      "AssignmentResultRequest",
+      "AssignmentResultResponse",
+      "AssignmentView",
+      "ExecutionProof",
+      "HealthResponse",
+      "ProviderInfo",
+      "VersionResponse",
+      "WeightsResponse",
+      "WorkerSignature"
+    ],
+    "base.challenge_sdk.roles": [
+      "is_public_route",
+      "public_route"
+    ],
+    "base.challenge_sdk.app_factory": [
+      "ChallengeDatabase",
+      "create_challenge_app"
+    ],
+    "base.challenge_sdk.executor": [
+      "DockerContainerInfo",
+      "DockerExecutor",
+      "DockerExecutorError",
+      "DockerLimits",
+      "DockerMount",
+      "DockerRunResult",
+      "DockerRunSpec"
+    ],
+    "base.challenge_sdk.proof": [
+      "EXECUTION_PROOF_VERSION",
+      "ExecutionProof",
+      "ProviderInfo",
+      "WorkerSignature",
+      "execution_proof_signing_payload"
+    ],
+    "base.challenge_sdk.health": [
+      "HealthResponse",
+      "VersionResponse"
+    ],
+    "base.challenge_sdk.version": [
+      "API_VERSION",
+      "ARTIFACT_VERSION",
+      "DISTRIBUTION_NAME",
+      "RELEASE_ID",
+      "RELEASE_MANIFEST",
+      "SDK_CONTRACT_VERSION"
+    ],
+    "base.challenge_sdk.weights": [
+      "WeightsResponse"
+    ]
+  }
+}

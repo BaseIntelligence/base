@@ -169,7 +169,8 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     release_step = next(
         step
         for step in release_job["steps"]
-        if step.get("uses") == "softprops/action-gh-release@v2"
+        if step.get("uses")
+        == "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65"
     )
     release_config = release_step["with"]
     release_body = release_config["body"]
@@ -181,6 +182,11 @@ def test_ci_workflow_creates_github_releases_after_tag_image_publish() -> None:
     assert release_config["draft"] is False
     assert release_config["prerelease"] == "${{ contains(github.ref_name, '-') }}"
     assert release_config["make_latest"] == "${{ !contains(github.ref_name, '-') }}"
+    assert (
+        "base-${{ steps.release.outputs.version }}-py3-none-any.whl"
+        in release_config["files"]
+    )
+    assert "SHA256SUMS" in release_config["files"]
     assert "## Container Images" in release_body
     assert (
         "ghcr.io/baseintelligence/base:${{ steps.release.outputs.version }}"

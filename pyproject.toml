@@ -1,6 +1,6 @@
 [project]
 name = "base"
-version = "3.0.4"
+version = "3.1.0"
 description = "Multi-challenge Bittensor subnet validator platform"
 requires-python = ">=3.12"
 dependencies = [
@@ -34,6 +34,7 @@ dev = [
   "respx>=0.21",
   "ruff>=0.6",
   "mypy>=1.10",
+  "hatchling==1.31.0",
   "types-docker>=7.1",
   "types-PyYAML>=6.0"
 ]
@@ -44,7 +45,7 @@ validator = ["bittensor>=9"]
 base = "base.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

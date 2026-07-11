@@ -12,29 +12,20 @@ cannot be replayed across units.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
+from base.challenge_sdk.proof import (
+    EXECUTION_PROOF_VERSION,
+    execution_proof_signing_payload,
+)
 from base.schemas.worker import ExecutionProof, ProviderInfo, WorkerSignature
 from base.security.miner_auth import SignatureVerifier, verify_substrate_signature
 from base.validator.agent.signing import RequestSigner
-
-EXECUTION_PROOF_VERSION = 1
 
 #: Result-payload key carrying the serialized :class:`ExecutionProof`.
 PROOF_PAYLOAD_KEY = "execution_proof"
 #: Result-payload key carrying the deterministic prism manifest hash.
 MANIFEST_SHA256_PAYLOAD_KEY = "manifest_sha256"
-
-
-def execution_proof_signing_payload(*, manifest_sha256: str, unit_id: str) -> bytes:
-    """The exact bytes an ExecutionProof signature covers (pinned format).
-
-    ``sha256`` digest of the UTF-8 bytes of ``{manifest_sha256}:{unit_id}``.
-    """
-
-    message = f"{manifest_sha256}:{unit_id}".encode()
-    return hashlib.sha256(message).digest()
 
 
 def build_execution_proof(

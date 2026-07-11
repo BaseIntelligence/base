@@ -32,11 +32,8 @@ DOCKERFILE_RUNTIME = ROOT / "docker" / "Dockerfile.validator-runtime"
 
 RUNTIME_IMAGE = "base-validator-runtime"
 RUNTIME_DOCKERFILE = "docker/Dockerfile.validator-runtime"
-
-AGENT_CHALLENGE_REQ = (
-    "agent-challenge @ git+https://github.com/BaseIntelligence/agent-challenge.git"
-)
-PRISM_REQ = "prism-challenge @ git+https://github.com/BaseIntelligence/prism.git"
+AGENT_CHALLENGE_REF = "7553044666b56d51b1c1ab57f8a8e3c75a33883d"
+PRISM_REF = "9edf6931428359408ba44e63b889e546ae071f46"
 
 
 def _ci() -> dict:
@@ -103,40 +100,74 @@ def test_runtime_dockerfile_exists() -> None:
 def test_runtime_dockerfile_installs_base_then_both_dispatch_packages_no_deps() -> None:
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
 
-    # Local base is authoritative (validator extra), installed before the
-    # challenge packages.
-    assert '".[validator]"' in text
+    # Base is built as a wheel and installed non-editably before challenge
+    # adapters. Only the completed virtual environment crosses into runtime.
+    assert "uv build --wheel" in text
+    assert '"base @ file://${wheel}"' in text
+    assert "--require-hashes --requirements /tmp/base-requirements.txt" in text
+    assert " -e " not in text
+    assert "COPY --from=builder /opt/validator /opt/validator" in text
 
-    # Both challenge dispatch packages are installed WITHOUT their deps so their
-    # git-pinned `base @ git+...` does not clobber the local base above.
+    # Both challenge packages are checked out at required commit arguments,
+    # built as wheels, and installed without replacing canonical Base.
     assert "--no-deps" in text
-    assert AGENT_CHALLENGE_REQ in text
-    assert PRISM_REQ in text
+    assert "https://github.com/BaseIntelligence/agent-challenge.git" in text
+    assert "https://github.com/BaseIntelligence/prism.git" in text
+    assert "--no-emit-package base" in text
 
-    base_at = text.index('uv pip install --system -e ".[validator]"')
-    no_deps_at = text.index("--no-deps")
-    assert base_at < no_deps_at
+    base_at = text.index('"base @ file://${wheel}"')
+    challenge_at = text.index("git clone --filter=blob:none")
+    assert base_at < challenge_at
 
 
-def test_runtime_dockerfile_adds_leaf_runtime_deps_with_cpu_torch() -> None:
+def test_runtime_dockerfile_requires_immutable_challenge_commits() -> None:
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
 
-    # CPU torch wheel only (the real GPU re-exec runs in the broker-launched
-    # prism-evaluator container, not on the validator host).
-    assert "https://download.pytorch.org/whl/cpu" in text
-    assert "torch>=2.3" in text
+    assert "ARG AGENT_CHALLENGE_REF\n" in text
+    assert "ARG PRISM_REF\n" in text
+    assert "AGENT_CHALLENGE_REF=main" not in text
+    assert "PRISM_REF=main" not in text
+    assert text.count("grep -Eq '^[0-9a-f]{40}$'") == 2
 
-    # agent-challenge leaf deps.
-    assert "cryptography" in text
-    # prism leaf deps (everything except base/torch).
-    for dep in (
-        "numpy",
-        "langchain-openai",
-        "tiktoken",
-        "sentencepiece",
-        "huggingface_hub",
-    ):
-        assert dep in text, dep
+
+def test_ci_passes_immutable_challenge_commits_to_runtime_builds() -> None:
+    ci = _ci()
+
+    for job_name in ("docker-build", "docker-publish"):
+        entry = next(
+            item
+            for item in ci["jobs"][job_name]["strategy"]["matrix"]["include"]
+            if item["image"] == RUNTIME_IMAGE
+        )
+        assert entry["build_args"].splitlines() == [
+            f"AGENT_CHALLENGE_REF={AGENT_CHALLENGE_REF}",
+            f"PRISM_REF={PRISM_REF}",
+        ]
+        build_step = next(
+            step
+            for step in ci["jobs"][job_name]["steps"]
+            if step.get("uses") == "docker/build-push-action@v6"
+        )
+        assert build_step["with"]["build-args"] == "${{ matrix.build_args }}"
+
+
+def test_runtime_stage_contains_no_source_checkout_or_docker_socket_client() -> None:
+    text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
+    runtime = text.split("FROM python:3.12-slim AS runtime", maxsplit=1)[1]
+
+    assert "COPY . ." not in runtime
+    assert "git" not in runtime
+    assert "uv pip install" not in runtime
+    assert "docker.tgz" not in runtime
+
+
+def test_runtime_dockerfile_installs_locked_challenge_dependency_graphs() -> None:
+    text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
+
+    assert "uv export --project /build/agent-challenge --frozen" in text
+    assert "uv export --project /build/prism --frozen" in text
+    assert text.count("--require-hashes --requirements") == 3
+    assert "torch>=2.3" not in text
 
 
 def test_runtime_dockerfile_is_bittensor_only_no_legacy_substrate_stack() -> None:

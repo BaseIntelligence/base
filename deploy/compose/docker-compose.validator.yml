@@ -1,0 +1,47 @@
+name: ${COMPOSE_PROJECT_NAME:?set a unique validator project name}
+
+services:
+  validator:
+    image: >-
+      ${BASE_VALIDATOR_IMAGE_REPOSITORY:?set the immutable validator image repository}@sha256:${BASE_VALIDATOR_IMAGE_DIGEST:?set the immutable validator image digest}
+    command:
+      - base
+      - validator
+      - agent
+      - --config
+      - /run/base/validator.yaml
+    restart: unless-stopped
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: bind
+        source: ${BASE_VALIDATOR_CONFIG:?set the validator config file}
+        target: /run/base/validator.yaml
+        read_only: true
+      - type: bind
+        source: ${BASE_VALIDATOR_PROTOCOL_IDENTITY:?set the protocol identity directory}
+        target: /var/lib/base/identity
+        read_only: true
+      - type: bind
+        source: ${BASE_VALIDATOR_BROKER_TOKEN:?set the broker token file}
+        target: /run/secrets/base_broker_token
+        read_only: true
+      - type: volume
+        source: validator-state
+        target: /var/lib/base/state
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    networks:
+      - validator
+
+networks:
+  validator:
+    name: ${COMPOSE_PROJECT_NAME}_network
+
+volumes:
+  validator-state:
+    name: ${COMPOSE_PROJECT_NAME}_state

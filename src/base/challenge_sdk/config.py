@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,3 +25,26 @@ class DockerExecutorSettings(BaseSettings):
     docker_broker_url: str | None = None
     docker_broker_token: str | None = None
     docker_broker_token_file: str | None = None
+
+
+class ChallengeSettings(DockerExecutorSettings):
+    """Canonical settings shared by independently packaged challenges."""
+
+    model_config = SettingsConfigDict(env_prefix="CHALLENGE_", extra="forbid")
+
+    slug: str = "challenge"
+    name: str = "Challenge"
+    version: str = "0.1.0"
+    api_version: str = "1.0"
+    sdk_version: str = "1.0.0"
+    database_url: str = "sqlite+aiosqlite:////data/challenge.sqlite3"
+    shared_token: str | None = Field(default=None, repr=False)
+    shared_token_file: str | None = Field(
+        default="/run/secrets/base/challenge_token",
+        repr=False,
+    )
+    host: str = "0.0.0.0"
+    port: int = Field(default=8000, ge=1, le=65535)
+
+
+__all__ = ["ChallengeSettings", "DockerExecutorSettings"]

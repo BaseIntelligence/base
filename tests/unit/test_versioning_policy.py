@@ -4,28 +4,24 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "3.0.4"
-GIT_RELEASE_TAG = "v3.0.4"
 
 
 def _pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def test_base_release_version_sources_are_3_0_0() -> None:
+def test_base_release_version_sources_match() -> None:
     pyproject = _pyproject()
     lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    version = pyproject["project"]["version"]
 
-    assert pyproject["project"]["version"] == VERSION
-    assert f'name = "base"\nversion = "{VERSION}"' in lock
+    assert f'name = "base"\nversion = "{version}"' in lock
 
 
 def test_versioning_policy_documents_release_contract() -> None:
     policy = (ROOT / "docs" / "versioning.md").read_text(encoding="utf-8")
 
     required = [
-        VERSION,
-        GIT_RELEASE_TAG,
         "Semantic Versioning",
         "pyproject.toml",
         "GHCR",

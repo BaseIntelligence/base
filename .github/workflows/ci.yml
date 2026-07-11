@@ -132,10 +132,15 @@ jobs:
         include:
           - image: base
             dockerfile: docker/Dockerfile.validator
+            build_args: ""
           - image: base-master
             dockerfile: docker/Dockerfile.master
+            build_args: ""
           - image: base-validator-runtime
             dockerfile: docker/Dockerfile.validator-runtime
+            build_args: |
+              AGENT_CHALLENGE_REF=7553044666b56d51b1c1ab57f8a8e3c75a33883d
+              PRISM_REF=9edf6931428359408ba44e63b889e546ae071f46
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -144,6 +149,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
           push: false
           tags: ghcr.io/baseintelligence/${{ matrix.image }}:ci-${{ github.sha }}
 
@@ -165,12 +171,24 @@ jobs:
         include:
           - image: base
             dockerfile: docker/Dockerfile.validator
+            build_args: ""
           - image: base-master
             dockerfile: docker/Dockerfile.master
+            build_args: ""
           - image: base-validator-runtime
             dockerfile: docker/Dockerfile.validator-runtime
+            build_args: |
+              AGENT_CHALLENGE_REF=7553044666b56d51b1c1ab57f8a8e3c75a33883d
+              PRISM_REF=9edf6931428359408ba44e63b889e546ae071f46
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify release tag belongs to main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -194,6 +212,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -269,11 +288,48 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+      - name: Verify tag belongs to main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
       - name: Prepare release metadata
         id: release
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          python - "${version}" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import tomllib
+
+          expected = sys.argv[1]
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          manifest = json.loads(
+              pathlib.Path(
+                  "src/base/challenge_sdk/release_manifest.json"
+              ).read_text()
+          )
+          assert project["project"]["version"] == expected
+          assert manifest["artifact_version"] == expected
+          assert manifest["release_id"] == f"v{expected}"
+          PY
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=1704067200" >> "$GITHUB_ENV"
+      - name: Build immutable Python release artifacts
+        run: |
+          uv sync --locked --extra dev
+          uv build --no-build-isolation --wheel --sdist --out-dir dist
+          sha256sum dist/* | tee dist/SHA256SUMS
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ github.ref_name }}
           name: BASE ${{ steps.release.outputs.version }}
@@ -282,6 +338,10 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           make_latest: ${{ !contains(github.ref_name, '-') }}
+          files: |
+            dist/base-${{ steps.release.outputs.version }}-py3-none-any.whl
+            dist/base-${{ steps.release.outputs.version }}.tar.gz
+            dist/SHA256SUMS
           body: |
             ## Container Images
 
