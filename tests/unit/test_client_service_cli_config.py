@@ -483,6 +483,7 @@ def test_cli_master_proxy_builds_single_port_app_with_admin_deps(
                 "master:",
                 "  proxy_host: 127.0.0.1",
                 "  proxy_port: 0",
+                "  agent_challenge_attested_routes_enabled: true",
                 "docker:",
                 f"  secret_dir: {tmp_path / 'secrets'}",
                 "security:",
@@ -554,6 +555,7 @@ def test_cli_master_proxy_builds_single_port_app_with_admin_deps(
     assert token_provider() == "top-secret"
     assert captured["weight_service_cache"] is runtime.metagraph_cache
     assert proxy_kwargs["enforce_production_policy"] is False
+    assert proxy_kwargs["agent_challenge_attested_routes_enabled"] is True
 
 
 def test_cli_master_proxy_wires_coordination_plane_and_gateway(

@@ -1169,6 +1169,9 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
         readiness_probes=(database_probe,),
+        agent_challenge_attested_routes_enabled=(
+            settings.master.agent_challenge_attested_routes_enabled
+        ),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")

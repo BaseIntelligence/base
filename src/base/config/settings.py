@@ -63,6 +63,9 @@ class MasterSettings(BaseModel):
     upload_require_registered_hotkey: bool = True
     # ss58 hotkeys accepted without on-chain registration (QA/allowlist; empty in prod)
     upload_extra_registered_hotkeys: list[str] = Field(default_factory=list)
+    # Opt-in canonical Agent Challenge review/eval proxy topology. OFF preserves
+    # the legacy signed submission/env/launch proxy behavior byte-for-byte.
+    agent_challenge_attested_routes_enabled: bool = False
     # Validator coordination plane (architecture.md sec 4). The proxy serves the
     # hotkey-signed register/heartbeat/pull/progress/result routes, returns
     # ``validator_heartbeat_interval_seconds`` to validators, marks a validator
