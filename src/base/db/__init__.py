@@ -2,6 +2,8 @@
 
 from base.db.base import Base
 from base.db.models import (
+    AggregationEpoch,
+    AggregationEpochStatus,
     Challenge,
     ChallengeAuth,
     ChallengeCapability,
@@ -14,6 +16,8 @@ from base.db.models import (
     ChallengeStatus,
     ChallengeVolume,
     MinerRequestNonce,
+    RawWeightNonce,
+    RawWeightSnapshot,
     Validator,
     ValidatorHealthEvent,
     ValidatorHealthEventType,
@@ -36,6 +40,8 @@ from base.db.session import (
 )
 
 __all__ = [
+    "AggregationEpoch",
+    "AggregationEpochStatus",
     "Base",
     "Challenge",
     "ChallengeAuth",
@@ -50,6 +56,8 @@ __all__ = [
     "ChallengeStatus",
     "ChallengeVolume",
     "MinerRequestNonce",
+    "RawWeightNonce",
+    "RawWeightSnapshot",
     "Validator",
     "ValidatorHealthEvent",
     "ValidatorHealthEventType",

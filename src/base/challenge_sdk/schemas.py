@@ -287,7 +287,10 @@ class RawWeightPushRequest(_StrictModel):
     expires_at: datetime
     nonce: str = Field(min_length=1, max_length=256)
     payload_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Empty maps are rejected at schema (no accidental zero-emission contribution).
+    # All-zero maps with at least one hotkey key are accepted as explicit zero sources.
     weights: dict[str, StrictFloat] = Field(min_length=1)
+
 
     @field_validator("computed_at", "expires_at")
     @classmethod

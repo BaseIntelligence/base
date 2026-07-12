@@ -902,3 +902,156 @@ class WorkerAssignment(Base, TimestampMixin):
     result_success: Mapped[bool | None] = mapped_column(Boolean)
     result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     manifest_sha256: Mapped[str | None] = mapped_column(Text)
+
+
+class AggregationEpochStatus(StrEnum):
+    """Durable state for master aggregation epochs."""
+
+    OPEN = "open"
+    SEALED = "sealed"
+    WITHHELD = "withheld"
+
+
+class RawWeightSnapshot(Base):
+    """Immutable authenticated challenge raw-weight snapshot (push ingress).
+
+    One row per accepted ``(challenge_slug, epoch, revision)``. Higher accepted
+    revisions supersede selection while the matching aggregation epoch remains
+    open; sealing freezes the selected source. Exact concurrent delivery is
+    idempotent and conflicts preserve the original canonical bytes/digest.
+    """
+
+    __tablename__ = "raw_weight_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "challenge_slug",
+            "epoch",
+            "revision",
+            name="uq_raw_weight_snapshots_challenge_epoch_revision",
+        ),
+        UniqueConstraint(
+            "challenge_slug",
+            "nonce",
+            name="uq_raw_weight_snapshots_challenge_nonce",
+        ),
+        Index("ix_raw_weight_snapshots_challenge_epoch", "challenge_slug", "epoch"),
+        Index(
+            "ix_raw_weight_snapshots_selected",
+            "challenge_slug",
+            "epoch",
+            "is_selected_source",
+        ),
+        Index("ix_raw_weight_snapshots_payload_digest", "payload_digest"),
+        Index("ix_raw_weight_snapshots_received_at", "received_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    challenge_slug: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol_version: Mapped[str] = mapped_column(Text, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    weights: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    is_selected_source: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class RawWeightNonce(Base):
+    """Authentication and push-operation nonce ledger for raw weight ingress.
+
+    Distinct from validator/miner/worker nonces. Exact body-digest retry is
+    idempotent; nonce reuse with different bytes is a conflict.
+    """
+
+    __tablename__ = "raw_weight_nonces"
+    __table_args__ = (
+        UniqueConstraint(
+            "challenge_slug",
+            "nonce",
+            name="uq_raw_weight_nonces_challenge_nonce",
+        ),
+        Index("ix_raw_weight_nonces_created_at", "created_at"),
+        Index("ix_raw_weight_nonces_challenge", "challenge_slug"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    challenge_slug: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce: Mapped[str] = mapped_column(Text, nullable=False)
+    body_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("raw_weight_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AggregationEpoch(Base):
+    """Minimal durable epoch lifecycle for raw-source sealing / ordering.
+
+    Full aggregation and vector publication belong to a later feature; this
+    table only records open vs sealed so raw ingress can reject post-seal
+    revisions and stale epochs deterministically.
+    """
+
+    __tablename__ = "aggregation_epochs"
+    __table_args__ = (
+        UniqueConstraint("epoch", name="uq_aggregation_epochs_epoch"),
+        Index("ix_aggregation_epochs_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[AggregationEpochStatus] = mapped_column(
+        Enum(
+            AggregationEpochStatus,
+            name="aggregation_epoch_status",
+            values_callable=lambda obj: [e.value for e in obj],
+            native_enum=False,
+        ),
+        nullable=False,
+        default=AggregationEpochStatus.OPEN,
+        server_default=AggregationEpochStatus.OPEN.value,
+    )
+    sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

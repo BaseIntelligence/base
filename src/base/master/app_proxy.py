@@ -53,6 +53,10 @@ from base.master.orchestration import (
     build_master_orchestration_lifespan,
     build_master_registry_reconcile_lifespan,
 )
+from base.master.raw_weight_ingress import (
+    RawWeightIngressService,
+    build_raw_weight_ingress_router,
+)
 from base.master.registry import ChallengeNotFoundError
 from base.master.service import MasterWeightService
 from base.master.validator_coordination import (
@@ -424,6 +428,7 @@ def create_proxy_app(
     worker_assignment_verifier: WorkerSignedRequestVerifier | None = None,
     worker_unit_status_service: WorkerUnitStatusService | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
+    raw_weight_ingress_service: RawWeightIngressService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
     orchestration_interval_seconds: float | None = None,
     registry_reconciler: MasterChallengeReconciler | None = None,
@@ -880,6 +885,12 @@ def create_proxy_app(
             )
         )
         app.state.assignment_coordination_service = assignment_coordination_service
+
+    if raw_weight_ingress_service is not None:
+        app.include_router(
+            build_raw_weight_ingress_router(service=raw_weight_ingress_service)
+        )
+        app.state.raw_weight_ingress_service = raw_weight_ingress_service
 
     if orchestration_driver is not None:
         app.state.orchestration_driver = orchestration_driver
