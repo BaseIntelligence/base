@@ -632,8 +632,11 @@ async def _run_master_weight_epoch(
     service: MasterWeightService,
     registry: Any,
 ) -> FinalWeights:
+    from base.challenge_sdk.roles import Role, activate_role
+
     challenges, tokens = await active_challenge_inputs(registry)
-    return await service.run_epoch(challenges, tokens)
+    with activate_role(Role.MASTER):
+        return await service.run_epoch(challenges, tokens)
 
 
 async def _run_master_weight_epoch_response(
@@ -644,14 +647,17 @@ async def _run_master_weight_epoch_response(
     chain_endpoint: str,
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> MasterWeightsResponse:
+    from base.challenge_sdk.roles import Role, activate_role
+
     challenges, tokens = await active_challenge_inputs(registry)
-    return await service.compute_latest_response(
-        challenges,
-        tokens,
-        netuid=netuid,
-        chain_endpoint=chain_endpoint,
-        now_fn=now_fn,
-    )
+    with activate_role(Role.MASTER):
+        return await service.compute_latest_response(
+            challenges,
+            tokens,
+            netuid=netuid,
+            chain_endpoint=chain_endpoint,
+            now_fn=now_fn,
+        )
 
 
 PRISM_SLUG = "prism"
@@ -1617,7 +1623,10 @@ async def _run_validator_agent_runtime(
     """
 
     async def submit_weights() -> None:
-        await submitter.run_once()
+        from base.challenge_sdk.roles import Role, activate_role
+
+        with activate_role(Role.VALIDATOR):
+            await submitter.run_once()
 
     submit_task = asyncio.create_task(
         run_epoch_loop(weights_interval_seconds, submit_weights)

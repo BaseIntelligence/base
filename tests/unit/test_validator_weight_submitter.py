@@ -11,15 +11,25 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from base.challenge_sdk.roles import Role, activate_role
 from base.schemas.weights import MasterWeightsResponse
 from base.validator.weight_submitter import (
     ValidatorSubmitOutcome,
     ValidatorWeightSubmitter,
 )
+
+
+@pytest.fixture(autouse=True)
+def _activate_validator_role() -> Iterator[None]:
+    with activate_role(Role.VALIDATOR):
+        yield
 
 # Fixed reference time. Payloads anchor their computed_at/expires_at to REF and the
 # submitter clock is pinned to REF, so freshness/expiry are deterministic. REF is in

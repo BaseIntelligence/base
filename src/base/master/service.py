@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from base.bittensor.metagraph_cache import MetagraphCache
+from base.challenge_sdk.roles import Capability, Role, role_contract
 from base.master.aggregator import aggregate_challenge_weights
 from base.master.challenge_client import ChallengeClient
 from base.master.registry import record_to_registry_view
@@ -57,6 +58,7 @@ class MasterWeightService:
         self.metagraph_cache = metagraph_cache
         self.challenge_client = challenge_client or ChallengeClient()
 
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_RAW_WEIGHT_INGRESS)
     async def collect_weights(
         self, challenges: list[RegistryChallenge], tokens: dict[str, str]
     ) -> list[ChallengeWeightsResult]:
@@ -79,6 +81,7 @@ class MasterWeightService:
             results.append(result)
         return results
 
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_AGGREGATION)
     async def compute_weights(
         self, challenges: list[RegistryChallenge], tokens: dict[str, str]
     ) -> tuple[FinalWeights, list[ChallengeWeightsResult]]:
@@ -86,6 +89,7 @@ class MasterWeightService:
         results = await self.collect_weights(challenges, tokens)
         return aggregate_challenge_weights(results, hotkey_to_uid), results
 
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_VECTOR_READ)
     async def compute_latest_response(
         self,
         challenges: list[RegistryChallenge],
@@ -112,6 +116,7 @@ class MasterWeightService:
             ),
         )
 
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_AGGREGATION)
     async def run_epoch(
         self,
         challenges: list[RegistryChallenge],

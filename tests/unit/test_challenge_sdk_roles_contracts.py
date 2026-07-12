@@ -5,14 +5,20 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import APIRouter
+from fastapi.routing import APIRoute
 from pydantic import ValidationError
+from typer.main import get_command
 
 from base.challenge_sdk.api_manifest import API_MANIFEST, API_MANIFEST_DIGEST
+from base.challenge_sdk.app_factory import create_challenge_app
+from base.challenge_sdk.config import ChallengeSettings
 from base.challenge_sdk.roles import (
     CAPABILITY_REGISTRY_VERSION,
     ROLE_REGISTRY,
     Capability,
     Role,
+    RoleContractError,
     activate_role,
     capabilities_for_role,
     role_contract,
@@ -22,6 +28,10 @@ from base.challenge_sdk.schemas import (
     RawWeightPushRequest,
     VersionResponse,
 )
+from base.cli_app.main import app as cli_app
+from base.master.orchestration import MasterChallengeReconciler
+from base.master.service import MasterWeightService
+from base.validator.weight_submitter import ValidatorWeightSubmitter
 
 
 def test_registry_has_exact_roles_and_capabilities() -> None:
@@ -181,3 +191,124 @@ def test_api_manifest_is_immutable_and_self_describing() -> None:
     assert API_MANIFEST.version == "1"
     assert API_MANIFEST_DIGEST == API_MANIFEST.digest()
     assert API_MANIFEST.routes and API_MANIFEST.cli
+    assert ("POST", "/internal/v1/work_units/result") in API_MANIFEST.route_keys()
+    assert (
+        "POST",
+        "/internal/v1/challenges/{slug}/raw-weights",
+    ) in API_MANIFEST.route_keys()
+    assert "base master weights" in API_MANIFEST.cli_names()
+
+
+def test_api_manifest_matches_live_challenge_fastapi_surface(tmp_path) -> None:
+    class _Database:
+        async def init(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    secret = tmp_path / "token"
+    secret.write_text("test-shared-token", encoding="utf-8")
+    app = create_challenge_app(
+        settings=ChallengeSettings(
+            shared_token=None,
+            shared_token_file=str(secret),
+        ),
+        database=_Database(),
+        public_router=APIRouter(),
+        get_weights_fn=_async_weights,
+    )
+    live_routes: set[tuple[str, str]] = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods or ():
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            live_routes.add((method, route.path))
+    # Canonical factory-owned challenge routes from the release-owned manifest
+    # must exist on the live FastAPI surface. Target raw-weight + external result
+    # are inventory ownership now; result is attached by Prism and raw-weight
+    # ingress is owned by the weights milestone runtime wiring.
+    required_live = {
+        ("GET", "/health"),
+        ("GET", "/ready"),
+        ("GET", "/version"),
+        ("GET", "/internal/v1/get_weights"),
+    }
+    assert required_live.issubset(live_routes)
+    inventory = API_MANIFEST.route_keys()
+    assert required_live.issubset(inventory)
+    assert ("POST", "/internal/v1/work_units/result") in inventory
+    assert ("POST", "/internal/v1/challenges/{slug}/raw-weights") in inventory
+
+
+def test_api_manifest_cli_commands_exist_on_typer_surface() -> None:
+    command = get_command(cli_app)
+
+    def _names(cmd: object, prefix: str = "base") -> set[str]:
+        found: set[str] = set()
+        commands = getattr(cmd, "commands", None) or {}
+        for name, child in commands.items():
+            full = f"{prefix} {name}"
+            found.add(full)
+            found |= _names(child, full)
+        return found
+
+    live_cli = _names(command)
+    for name in API_MANIFEST.cli_names():
+        assert name in live_cli, f"manifest CLI missing from live Typer: {name}"
+
+
+async def _async_weights() -> dict[str, float]:
+    return {"5Ctest": 1.0}
+
+
+async def test_production_side_effect_entrypoints_are_role_gated() -> None:
+    """Capability-bearing side effects fail before mock effects under wrong role."""
+
+    score_calls: list[str] = []
+
+    @role_contract(
+        role=Role.CHALLENGE, capability=Capability.CHALLENGE_ORDINARY_PROOF
+    )
+    async def challenge_result_ingest(value: str) -> str:
+        score_calls.append(value)
+        return value
+
+    service = MasterWeightService(metagraph_cache=object())  # type: ignore[arg-type]
+    reconciler = MasterChallengeReconciler(
+        registry=object(),  # type: ignore[arg-type]
+        orchestrator=object(),  # type: ignore[arg-type]
+    )
+    submitter = ValidatorWeightSubmitter(
+        submit_enabled=True,
+        netuid=1,
+        weights_client=object(),  # type: ignore[arg-type]
+        weight_setter_factory=lambda: None,  # type: ignore[arg-type, return-value]
+    )
+
+    assert hasattr(service.compute_weights, "__base_role_contract__")
+    assert hasattr(service.collect_weights, "__base_role_contract__")
+    assert hasattr(reconciler.reconcile_once, "__base_role_contract__")
+    assert hasattr(submitter.run_once, "__base_role_contract__")
+    assert hasattr(challenge_result_ingest, "__base_role_contract__")
+
+    with activate_role(Role.VALIDATOR):
+        with pytest.raises(RoleContractError, match="master"):
+            await service.compute_weights([], {})
+        with pytest.raises(RoleContractError, match="master"):
+            await reconciler.reconcile_once()
+        with pytest.raises(RoleContractError, match="challenge"):
+            await challenge_result_ingest("scored")
+
+    with activate_role(Role.MASTER):
+        with pytest.raises(RoleContractError, match="validator"):
+            await submitter.run_once()
+        with pytest.raises(RoleContractError, match="challenge"):
+            await challenge_result_ingest("scored")
+
+    assert score_calls == []
+    with activate_role(Role.CHALLENGE):
+        assert await challenge_result_ingest("ok") == "ok"
+    assert score_calls == ["ok"]

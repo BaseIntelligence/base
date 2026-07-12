@@ -43,6 +43,7 @@ from base.bittensor.weight_setter import (
     is_rejected_set_weights_result,
     set_weights_rejection_message,
 )
+from base.challenge_sdk.roles import Capability, Role, role_contract
 from base.schemas.weights import MasterWeightsResponse
 from base.validator.weights_client import (
     WeightsClient,
@@ -103,6 +104,7 @@ class ValidatorWeightSubmitter:
     def last_submitted_key(self) -> tuple[int, datetime] | None:
         return self._last_submitted_key
 
+    @role_contract(role=Role.VALIDATOR, capability=Capability.VALIDATOR_OWN_SET_WEIGHTS)
     async def run_once(self) -> ValidatorSubmitOutcome:
         if not self._submit_enabled:
             logger.debug(

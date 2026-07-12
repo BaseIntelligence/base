@@ -16,6 +16,7 @@ import pytest
 
 from base.master.challenge_work_source import (
     HttpChallengeFoldTrigger,
+    HttpChallengeResultForwarder,
     HttpChallengeWorkSource,
     _parse_work_units,
 )
@@ -231,3 +232,81 @@ async def test_http_fold_trigger_raises_after_retries() -> None:
         await trigger.fold(
             challenge_slug="agent-challenge", job_id="j", task_id="t", reason="x"
         )
+
+
+def _valid_proof() -> dict[str, object]:
+    return {
+        "version": 1,
+        "tier": 0,
+        "manifest_sha256": "ab" * 32,
+        "worker_signature": {"worker_pubkey": "5Cworker", "sig": "0x" + "ab" * 32},
+    }
+
+
+async def test_result_forwarder_posts_external_result_envelope() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("Authorization")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"status": "accepted"})
+
+    registry = _FakeRegistry(
+        records=[_Record("prism", "http://prism:8000")],
+        tokens={"prism": "prism-token"},
+    )
+    forwarder = HttpChallengeResultForwarder(
+        registry, transport=httpx.MockTransport(handler)
+    )
+    proof = _valid_proof()
+    result_payload = {
+        "executed": 1,
+        "execution_proof": proof,
+        "manifest": {"schema_version": "prism_run_manifest.v2"},
+    }
+
+    await forwarder.forward_result(
+        challenge_slug="prism",
+        work_unit_id="unit-1",
+        submission_ref="hk-owner",
+        result_payload=result_payload,
+    )
+
+    assert str(captured["url"]).endswith("/internal/v1/work_units/result")
+    assert captured["auth"] == "Bearer prism-token"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["api_version"] == "1.0"
+    assert body["work_unit_id"] == "unit-1"
+    assert body["assignment_id"] == "unit-1"
+    assert body["submission_ref"] == "hk-owner"
+    assert body["challenge_slug"] == "prism"
+    assert body["proof"]["manifest_sha256"] == proof["manifest_sha256"]
+    nested = body["result"]["execution_proof"]["manifest_sha256"]
+    assert nested == proof["manifest_sha256"]
+
+
+async def test_result_forwarder_fails_closed_without_execution_proof() -> None:
+    posts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(200, json={"status": "accepted"})
+
+    registry = _FakeRegistry(
+        records=[_Record("prism", "http://prism:8000")],
+        tokens={"prism": "prism-token"},
+    )
+    forwarder = HttpChallengeResultForwarder(
+        registry, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(RuntimeError, match="execution_proof is required"):
+        await forwarder.forward_result(
+            challenge_slug="prism",
+            work_unit_id="unit-1",
+            submission_ref="hk-owner",
+            result_payload={"executed": 1},
+        )
+    assert posts == 0

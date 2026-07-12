@@ -35,6 +35,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI
 
+from base.challenge_sdk.roles import Capability, Role, activate_role, role_contract
 from base.master.assignment import (
     AGENT_CHALLENGE_SLUG,
     AssignmentService,
@@ -420,6 +421,7 @@ class MasterChallengeReconciler:
         self._orchestrator = orchestrator
         self._deployed: set[str] = set()
 
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_WATCHER)
     async def reconcile_once(self) -> RegistryReconcilePassResult:
         """Start newly-ACTIVE challenges and stop no-longer-ACTIVE ones."""
 
@@ -520,7 +522,8 @@ async def run_registry_reconcile_loop(
 
     while not shutdown_event.is_set():
         try:
-            await reconciler.reconcile_once()
+            with activate_role(Role.MASTER):
+                await reconciler.reconcile_once()
         except Exception:
             logger.exception("master registry reconcile pass failed")
         try:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from base.bittensor.metagraph_cache import MetagraphCache
+from base.challenge_sdk.roles import Role, activate_role
 from base.config.settings import Settings
 from base.master.aggregator import aggregate_challenge_weights
 from base.master.app_admin import create_admin_app
@@ -51,6 +53,13 @@ from base.schemas.weights import (
 from base.supervisor import weight_submit as ws
 from base.validator.normal_runner import NormalValidatorRunner
 from base.validator.weights_client import WeightsClient
+
+
+@pytest.fixture(autouse=True)
+def _activate_master_role() -> Iterator[None]:
+    with activate_role(Role.MASTER):
+        yield
+
 
 FIXED_NOW = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
 

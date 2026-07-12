@@ -211,14 +211,19 @@ def build_admin_router(
                 detail="Master weight service unavailable",
             )
         try:
+            from base.challenge_sdk.roles import Role, activate_role
+
             challenges, tokens = await active_challenge_inputs(challenge_registry)
-            return await weight_service.compute_latest_response(
-                challenges,
-                tokens,
-                netuid=netuid,
-                chain_endpoint=chain_endpoint,
-                now_fn=now_fn,
-            )
+            # Prefer request-scoped master role when the proxy middleware installed
+            # it; still fail closed when mis-invoked outside master context.
+            with activate_role(Role.MASTER):
+                return await weight_service.compute_latest_response(
+                    challenges,
+                    tokens,
+                    netuid=netuid,
+                    chain_endpoint=chain_endpoint,
+                    now_fn=now_fn,
+                )
         except HTTPException:
             raise
         except Exception as exc:

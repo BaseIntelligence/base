@@ -211,6 +211,16 @@ API_MANIFEST = ApiManifest(
             "auth": "challenge-auth",
             "roles": ["challenge"],
         },
+        {
+            "method": "POST",
+            "path": "/internal/v1/challenges/{slug}/raw-weights",
+            "media_type": "application/json",
+            "schema": "RawWeightPushRequest",
+            "response_schema": "RawWeightPushAcknowledgement",
+            "status": [200, 401, 403, 409, 422, 503],
+            "auth": "challenge-signature",
+            "roles": ["challenge", "master"],
+        },
     ),
     cli=(
         {

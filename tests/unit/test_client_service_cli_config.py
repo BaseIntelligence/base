@@ -20,6 +20,7 @@ from base.bittensor.identity_cache import ValidatorIdentityResolver
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.validator_loop import run_epoch_loop
 from base.bittensor.weight_setter import WeightSetter
+from base.challenge_sdk.roles import Role, activate_role
 from base.cli_app.main import DockerRuntimeController, app
 from base.config.loader import load_settings
 from base.config.settings import ValidatorSettings
@@ -219,7 +220,8 @@ async def test_master_weight_service_and_validator_runner() -> None:
         metagraph_cache=cast(MetagraphCache, Cache()),
         challenge_client=cast(ChallengeClient, Client()),
     )
-    final = await service.run_epoch([challenge], {"demo": "tok"})
+    with activate_role(Role.MASTER):
+        final = await service.run_epoch([challenge], {"demo": "tok"})
     # Absolute emission 10 -> uid 3 gets 0.10; the unallocated 0.90 burns to uid 0.
     assert final.uids == [0, 3]
     assert [round(w, 8) for w in final.weights] == [0.9, 0.1]
@@ -283,7 +285,8 @@ async def test_master_weight_service_computes_without_weight_setter() -> None:
     )
     assert not hasattr(service, "weight_setter")
 
-    final = await service.run_epoch([challenge], {"demo": "tok"})
+    with activate_role(Role.MASTER):
+        final = await service.run_epoch([challenge], {"demo": "tok"})
 
     # Absolute emission 10 -> uid 3 gets 0.10; the unallocated 0.90 burns to uid 0.
     assert final.uids == [0, 3]
@@ -306,7 +309,8 @@ async def test_master_weight_service_uid_zero_fallback_without_challenges() -> N
         challenge_client=cast(ChallengeClient, Client()),
     )
 
-    final = await service.run_epoch([], {})
+    with activate_role(Role.MASTER):
+        final = await service.run_epoch([], {})
 
     assert final.uids == [0]
     assert final.weights == [1.0]

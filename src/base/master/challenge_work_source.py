@@ -255,12 +255,14 @@ class HttpChallengeResultForwarder:
         payload = dict(result_payload or {})
         proof = payload.get("execution_proof")
         if not isinstance(proof, dict):
-            body = {
-                "work_unit_id": work_unit_id,
-                "submission_ref": submission_ref,
-                "result": payload,
-            }
-        else:
+            # Fail closed before any network POST: dual/legacy reduced bodies
+            # without a bound execution_proof are not part of the wire contract.
+            raise RuntimeError(
+                f"refusing to forward result for work unit {work_unit_id} on "
+                f"{challenge_slug}: execution_proof is required for "
+                "ExternalResultEnvelope"
+            )
+        try:
             envelope = ExternalResultEnvelope(
                 api_version="1.0",
                 work_unit_id=work_unit_id,
@@ -270,7 +272,13 @@ class HttpChallengeResultForwarder:
                 result=payload,
                 proof=ExecutionProof.model_validate(proof),
             )
-            body = envelope.model_dump(mode="json")
+        except Exception as exc:
+            raise RuntimeError(
+                f"refusing to forward result for work unit {work_unit_id} on "
+                f"{challenge_slug}: result does not satisfy ExternalResultEnvelope "
+                f"({exc})"
+            ) from exc
+        body = envelope.model_dump(mode="json")
         last_error = "unknown error"
         for _attempt in range(max(self._retries, 1)):
             try:

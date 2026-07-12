@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterator
 from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
 
+from base.challenge_sdk.roles import Role, activate_role
 from base.master.docker_orchestrator import ChallengeSpec
 from base.master.orchestration import (
     MasterChallengeReconciler,
@@ -23,6 +25,12 @@ from base.master.orchestration import (
     run_registry_reconcile_loop,
 )
 from base.schemas.challenge import ChallengeRecord, ChallengeStatus
+
+
+@pytest.fixture(autouse=True)
+def _activate_master_role() -> Iterator[None]:
+    with activate_role(Role.MASTER):
+        yield
 
 
 def _record(
