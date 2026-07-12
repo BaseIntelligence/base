@@ -34,12 +34,17 @@ from base.security.miner_auth import (
     NonceReplayError,
 )
 
+_PINNED_DIGEST = "b" * 64
+_PINNED_DEMO = f"ghcr.io/baseintelligence/demo:1.0.0@sha256:{_PINNED_DIGEST}"
+_PINNED_PRISM = f"ghcr.io/baseintelligence/prism:1.0.0@sha256:{_PINNED_DIGEST}"
+
 
 def _payload(slug: str = "demo") -> dict[str, Any]:
     return {
         "slug": slug,
         "name": "Demo",
-        "image": "ghcr.io/baseintelligence/demo:1.0.0",
+        # Digest-pinned so activation / ACTIVE-at-create satisfies VAL-CROSS-075.
+        "image": _PINNED_DEMO,
         "version": "1.0.0",
         "emission_percent": "40.0",
     }
@@ -49,7 +54,7 @@ def _prism_payload() -> dict[str, Any]:
     return {
         "slug": "prism",
         "name": "PRISM",
-        "image": "ghcr.io/baseintelligence/prism:latest",
+        "image": _PINNED_PRISM,
         "version": "0.1.0",
         "status": "active",
         "emission_percent": "30",
@@ -226,25 +231,26 @@ def test_weights_latest_is_public_and_computes_without_submit() -> None:
     assert service.calls == [
         (["weights-smoke"], {"weights-smoke": registry.get_token("weights-smoke")})
     ]
-    assert response.json() == {
-        "netuid": 42,
-        "chain_endpoint": "wss://chain.example:9944",
-        "uids": [9],
-        "weights": [1.0],
-        "hotkey_weights": {"miner-hotkey": 1.0},
-        "computed_at": "2030-01-01T12:00:00Z",
-        "expires_at": "2030-01-01T12:12:00Z",
-        "source_challenges": [
-            {
-                "slug": "weights-smoke",
-                "emission_percent": 100.0,
-                "weights": {"miner-hotkey": 1.0},
-                "ok": True,
-                "error": None,
-            }
-        ],
-        "metagraph_updated_at": "2030-01-01T12:00:00Z",
-    }
+    body = response.json()
+    # Assert the operator-facing weight vector surface; optional provenance
+    # fields may be None when the fake service does not seal an epoch.
+    assert body["netuid"] == 42
+    assert body["chain_endpoint"] == "wss://chain.example:9944"
+    assert body["uids"] == [9]
+    assert body["weights"] == [1.0]
+    assert body["hotkey_weights"] == {"miner-hotkey": 1.0}
+    assert body["computed_at"] == "2030-01-01T12:00:00Z"
+    assert body["expires_at"] == "2030-01-01T12:12:00Z"
+    assert body["source_challenges"] == [
+        {
+            "slug": "weights-smoke",
+            "emission_percent": 100.0,
+            "weights": {"miner-hotkey": 1.0},
+            "ok": True,
+            "error": None,
+        }
+    ]
+    assert body["metagraph_updated_at"] == "2030-01-01T12:00:00Z"
 
 
 def test_weights_latest_returns_bad_gateway_when_collection_fails() -> None:
@@ -342,7 +348,7 @@ def test_admin_challenge_crud_and_registry_active_only() -> None:
     assert challenge["description"] == "Build and evaluate coding agents."
     assert challenge["public_proxy_base_path"] == "/challenges/agent-challenge"
     assert challenge["internal_base_url"] == "http://challenge-agent-challenge:8000"
-    assert challenge["image"] == "ghcr.io/baseintelligence/demo:1.0.0"
+    assert challenge["image"] == _PINNED_DEMO
     assert challenge["version"] == "1.0.0"
     assert challenge["emission_percent"] == "40.0"
     assert challenge["status"] == "active"
@@ -414,7 +420,7 @@ def test_prism_registry_contract_and_agent_challenge_emission_update() -> None:
 
     prism = challenges["prism"]
     assert prism["name"] == "PRISM"
-    assert prism["image"] == "ghcr.io/baseintelligence/prism:latest"
+    assert prism["image"] == _PINNED_PRISM
     assert prism["version"] == "0.1.0"
     assert prism["status"] == "active"
     assert prism["emission_percent"] == "30"
@@ -2401,7 +2407,9 @@ def test_production_admin_rejects_unsafe_challenge_image() -> None:
 
     response = client.post(
         "/v1/admin/challenges",
-        json=_payload(),
+        # Explicit mutable tag (default `_payload` is already digest-pinned for
+        # adoption activation coverage).
+        json={**_payload(), "image": "ghcr.io/baseintelligence/demo:latest"},
         headers={"X-Admin-Token": "admin-secret"},
     )
 

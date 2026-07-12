@@ -46,7 +46,10 @@ def _agent_challenge_create() -> ChallengeCreate:
     return ChallengeCreate(
         slug="agent-challenge",
         name="Agent Challenge",
-        image="ghcr.io/baseintelligence/agent-challenge:latest",
+        image=(
+            "ghcr.io/baseintelligence/agent-challenge:0.1.0"
+            f"@sha256:{'a' * 64}"
+        ),
         version="0.1.0",
         status=ChallengeStatus.ACTIVE,
         emission_percent=Decimal("40"),

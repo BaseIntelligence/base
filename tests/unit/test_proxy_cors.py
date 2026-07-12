@@ -22,7 +22,7 @@ def _payload(slug: str = "demo") -> dict[str, Any]:
     return {
         "slug": slug,
         "name": "Demo",
-        "image": "ghcr.io/baseintelligence/demo:1.0.0",
+        "image": "ghcr.io/baseintelligence/demo:1.0.0@sha256:" + ("c" * 64),
         "version": "1.0.0",
         "emission_percent": "40.0",
     }

@@ -32,6 +32,10 @@ from base.db.models import (
     ChallengeStatus as DbChallengeStatus,
 )
 from base.db.session import session_scope
+from base.master.challenge_adoption import (
+    validate_payload_for_registration,
+    validate_record_for_activation,
+)
 from base.schemas.challenge import (
     ChallengeAdminView,
     ChallengeCreate,
@@ -111,6 +115,11 @@ class ChallengeRegistry:
         with self._lock:
             if payload.slug in self._records:
                 raise ChallengeAlreadyExistsError(payload.slug)
+            validate_payload_for_registration(
+                payload, production_policy=self.production_policy
+            )
+            # Keep the legacy image helper for production digests; adoption
+            # already enforces the contract when prepare ACTIVE/production.
             validate_image_reference(payload.image, production=self.production_policy)
 
             token = secrets.token_urlsafe(32)
@@ -172,6 +181,11 @@ class ChallengeRegistry:
     def set_status(self, slug: str, status: ChallengeStatus) -> ChallengeRecord:
         """Set the lifecycle status for a challenge."""
 
+        if status == ChallengeStatus.ACTIVE:
+            record = self.get(slug)
+            validate_record_for_activation(
+                record, production_policy=self.production_policy
+            )
         return self.update(slug, ChallengeUpdate(status=status))
 
     def get(self, slug: str) -> ChallengeRecord:
@@ -348,6 +362,9 @@ class DatabaseChallengeRegistry:
         self.production_policy = production_policy
 
     async def create(self, payload: ChallengeCreate) -> tuple[ChallengeRecord, str]:
+        validate_payload_for_registration(
+            payload, production_policy=self.production_policy
+        )
         validate_image_reference(payload.image, production=self.production_policy)
         token = secrets.token_urlsafe(32)
         broker_token = secrets.token_urlsafe(32)
@@ -383,6 +400,11 @@ class DatabaseChallengeRegistry:
             return _record_from_model(model)
 
     async def set_status(self, slug: str, status: ChallengeStatus) -> ChallengeRecord:
+        if status == ChallengeStatus.ACTIVE:
+            record = await self.get(slug)
+            validate_record_for_activation(
+                record, production_policy=self.production_policy
+            )
         return await self.update(slug, ChallengeUpdate(status=status))
 
     async def get(self, slug: str) -> ChallengeRecord:

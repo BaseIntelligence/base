@@ -40,6 +40,11 @@ from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     build_assignment_coordination_router,
 )
+from base.master.challenge_adoption import (
+    ChallengeAdoptionError,
+    validate_payload_for_registration,
+    validate_record_for_activation,
+)
 from base.master.challenge_dashboard import (
     ChallengeMetricsProvider,
     render_challenges_dashboard_svg,
@@ -361,6 +366,9 @@ def build_admin_router(
     )
     async def create_challenge(payload: ChallengeCreate) -> ChallengeCreateResponse:
         try:
+            validate_payload_for_registration(
+                payload, production_policy=enforce_production_policy
+            )
             validate_image_reference(
                 payload.image, production=enforce_production_policy
             )
@@ -370,7 +378,7 @@ def build_admin_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Challenge '{payload.slug}' already exists",
             ) from exc
-        except ProductionPolicyError as exc:
+        except (ChallengeAdoptionError, ProductionPolicyError) as exc:
             _raise_policy_error(exc)
         broker_token = ""
         get_broker_token = getattr(challenge_registry, "get_broker_token", None)
@@ -411,10 +419,29 @@ def build_admin_router(
                 validate_image_reference(
                     payload.image, production=enforce_production_policy
                 )
-            return record_to_admin_view(await registry_update(slug, payload))
+            current = await registry_get(slug)
+            # Project the post-patch record and fail closed *before* mutation so
+            # ACTIVE challenges cannot retain mutable or out-of-policy edits.
+            if payload.status is not None:
+                projected_status = payload.status
+            else:
+                projected_status = current.status
+            becomes_or_stays_active = (
+                projected_status == ChallengeStatus.ACTIVE
+                or current.status == ChallengeStatus.ACTIVE
+            )
+            if becomes_or_stays_active:
+                projected = current.model_copy(
+                    update=payload.model_dump(exclude_unset=True)
+                )
+                validate_record_for_activation(
+                    projected, production_policy=enforce_production_policy
+                )
+            record = await registry_update(slug, payload)
+            return record_to_admin_view(record)
         except ChallengeNotFoundError as exc:
             raise _not_found(slug) from exc
-        except ProductionPolicyError as exc:
+        except (ChallengeAdoptionError, ProductionPolicyError) as exc:
             _raise_policy_error(exc)
 
     @router.post(
@@ -424,11 +451,20 @@ def build_admin_router(
     )
     async def activate_challenge(slug: str) -> ChallengeAdminView:
         try:
+            # Fail closed before mutating DRAFT/INACTIVE -> ACTIVE: only
+            # digest-pinned, capability-scoped, network/volume-safe challenges
+            # may become active in the Compose adoption path (VAL-CROSS-075).
+            existing = await registry_get(slug)
+            validate_record_for_activation(
+                existing, production_policy=enforce_production_policy
+            )
             return record_to_admin_view(
                 await registry_set_status(slug, ChallengeStatus.ACTIVE)
             )
         except ChallengeNotFoundError as exc:
             raise _not_found(slug) from exc
+        except (ChallengeAdoptionError, ProductionPolicyError) as exc:
+            _raise_policy_error(exc)
 
     @router.post(
         "/v1/admin/challenges/{slug}/deactivate",

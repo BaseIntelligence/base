@@ -27,12 +27,15 @@ from base.schemas.challenge import (
     ChallengeUpdate,
 )
 
+_PINNED_DIGEST = "a" * 64
+_PINNED_IMAGE = f"ghcr.io/baseintelligence/demo:1.0.0@sha256:{_PINNED_DIGEST}"
+
 
 def payload(slug: str = "demo") -> ChallengeCreate:
     return ChallengeCreate(
         slug=slug,
         name="Demo",
-        image="ghcr.io/baseintelligence/demo:1.0.0",
+        image=_PINNED_IMAGE,
         version="1.0.0",
         emission_percent=Decimal("10"),
     )
@@ -79,7 +82,7 @@ def test_registry_view_filters_frontend_metadata() -> None:
         ChallengeCreate(
             slug="agent-challenge",
             name="Agent Challenge",
-            image="ghcr.io/baseintelligence/agent-challenge:1.0.0",
+            image=f"ghcr.io/baseintelligence/agent-challenge:1.0.0@sha256:{_PINNED_DIGEST}",
             version="1.0.0",
             emission_percent=Decimal("20"),
             status=ChallengeStatus.ACTIVE,

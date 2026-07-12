@@ -20,7 +20,7 @@ def test_file_registry_reloads_between_instances(tmp_path: Path) -> None:
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/baseintelligence/demo:1.0.0",
+            image=f"ghcr.io/baseintelligence/demo:1.0.0@sha256:{'d' * 64}",
             version="1.0.0",
         )
     )
@@ -41,7 +41,7 @@ def test_file_registry_persists_challenge_token_file(tmp_path: Path) -> None:
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/baseintelligence/demo:1.0.0",
+            image=f"ghcr.io/baseintelligence/demo:1.0.0@sha256:{'d' * 64}",
             version="1.0.0",
         )
     )
