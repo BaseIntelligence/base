@@ -33,6 +33,7 @@ from base.master.replay_audit import (
     ReplayAuditRequest,
     ReplayAuditResult,
     ReplayAuditWireError,
+    parse_replay_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ class HttpChallengeReplayClient:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
                     raw = response.content
-                parsed = response.json()
+                parsed = parse_replay_json(raw)
                 if not isinstance(parsed, dict):
                     raise ValueError("replay request response must be an object")
                 request = ReplayAuditRequest.from_mapping(parsed, raw_body=raw)
@@ -209,7 +210,7 @@ class HttpChallengeReplayClient:
                 ) as client:
                     response = await client.post(url, json=body, headers=headers)
                     response.raise_for_status()
-                    payload = response.json()
+                    payload = parse_replay_json(response.content)
                 if not isinstance(payload, dict):
                     raise ValueError("replay result response must be an object")
                 return payload
@@ -275,7 +276,7 @@ class HttpChallengeReplaySource:
                 ) as client:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
-                    body = response.json()
+                    body = parse_replay_json(response.content)
                 raw_requests = body.get("requests") if isinstance(body, dict) else None
                 if not isinstance(raw_requests, list):
                     raise ValueError("replay request list must contain requests")

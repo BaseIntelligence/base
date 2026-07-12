@@ -13,24 +13,68 @@ from base.master.replay_audit import (
     REPLAY_AUDIT_RESULT_KIND,
     ReplayAuditRequest,
     ReplayAuditResult,
+    plan_sha256,
     replay_assignment_payload,
+    scoring_policy_digest,
 )
 
 
 def _plan() -> dict[str, Any]:
+    policy = {
+        "schema_version": 1,
+        "per_task_aggregation": "best_of_k",
+        "keep_policy": "threshold_band",
+        "drop_lowest_n": 0,
+        "threshold_f64be": "3fe0000000000000",
+    }
     return {
         "schema_version": 1,
         "eval_run_id": "run-1",
         "submission_id": "sub-1",
         "submission_version": 2,
-        "selected_tasks": [{"task_id": "task-b"}, {"task_id": "task-a"}],
+        "authorizing_review_digest": "01" * 32,
+        "agent_hash": "02" * 32,
+        "selected_tasks": [
+            {
+                "task_id": "task-a",
+                "image_ref": "registry.example/task@sha256:" + "03" * 32,
+                "task_config_sha256": "04" * 32,
+            },
+            {
+                "task_id": "task-b",
+                "image_ref": "registry.example/task@sha256:" + "05" * 32,
+                "task_config_sha256": "06" * 32,
+            },
+        ],
         "k": 3,
-        "scoring_policy": {
-            "schema_version": 1,
-            "mode": "best_of_k",
-            "keep": {"mode": "threshold_band", "threshold": 0.5},
+        "scoring_policy": policy,
+        "scoring_policy_digest": scoring_policy_digest(policy),
+        "eval_app": {
+            "image_ref": "registry.example/eval@sha256:" + "07" * 32,
+            "compose_hash": "08" * 32,
+            "app_identity": "eval-app-v1",
+            "kms_key_algorithm": "x25519",
+            "kms_public_key_hex": "09" * 32,
+            "kms_public_key_sha256": __import__("hashlib")
+            .sha256(bytes.fromhex("09" * 32))
+            .hexdigest(),
+            "measurement": {
+                "mrtd": "0a" * 48,
+                "rtmr0": "0b" * 48,
+                "rtmr1": "0c" * 48,
+                "rtmr2": "0d" * 48,
+                "os_image_hash": "0e" * 32,
+                "key_provider": "validator-kms",
+                "vm_shape": "tdx.small",
+            },
         },
-        "scoring_policy_digest": "a" * 64,
+        "key_release_endpoint": "tcp://release.example:8701",
+        "result_endpoint": "/evaluation/v1/runs/run-1/result",
+        "key_release_nonce": "key-nonce-1",
+        "score_nonce": "score-nonce-1",
+        "run_token_sha256": "0f" * 32,
+        "issued_at_ms": 1_000,
+        "expires_at_ms": 2_000,
     }
 
 
@@ -44,7 +88,7 @@ def _request() -> dict[str, Any]:
         "submission_id": "sub-1",
         "eval_run_id": "run-1",
         "replay_attempt": 1,
-        "plan_sha256": "b" * 64,
+        "plan_sha256": plan_sha256(plan),
         "eval_plan": plan,
         "k": 3,
         "selected_tasks": plan["selected_tasks"],
@@ -63,10 +107,10 @@ def _result() -> dict[str, Any]:
         "submission_id": "sub-1",
         "eval_run_id": "run-1",
         "replay_attempt": 1,
-        "plan_sha256": "b" * 64,
+        "plan_sha256": plan_sha256(_plan()),
         "trial_scores_by_task": {
-            "task-b": [0.5, 0.75, 1.0],
             "task-a": [0.25, 0.5, 0.75],
+            "task-b": [0.5, 0.75, 1.0],
         },
     }
 
@@ -238,4 +282,4 @@ async def test_normal_adapter_does_not_invoke_replay_entrypoint() -> None:
 def test_result_wire_serializes_without_losing_trial_order() -> None:
     result = ReplayAuditResult.from_mapping(_result())
     encoded = json.dumps(result.to_dict(), separators=(",", ":"))
-    assert encoded.index("task-b") < encoded.index("task-a")
+    assert encoded.index("task-a") < encoded.index("task-b")
