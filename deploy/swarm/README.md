@@ -1,16 +1,30 @@
-# BASE Docker Swarm deployment (`deploy/swarm`)
+# BASE Docker Swarm deployment (`deploy/swarm`) — HISTORICAL / NON-TARGET
 
-The single supported backend is **Docker Swarm**. There is no Kubernetes.
+> **NOT A SUPPORTED INSTALL DESTINATION.**
+>
+> Compose is the only supported shipping operator path. Use:
+>
+> - `deploy/compose/install-master.sh`
+> - `deploy/compose/install-validator.sh`
+> - [docs/compose.md](../../docs/compose.md) and [docs/deploy.md](../../docs/deploy.md)
+>
+> Material in this directory is retained as a frozen historical reference for
+> existing multi-host fabric notes only. New operators must not run
+> `install-swarm.sh` for greenfield Base installs. Mission work never mutates a
+> live Swarm.
 
-This directory holds the node `daemon.json` variants, the control-plane
-supervisor systemd unit, and the single-node bring-up script. Worker enrollment
-itself is driven by the `base master worker` CLI plus
-`scripts/install-worker.sh` (see **Adding a worker** below).
+The single supported **target** backend is **Docker Compose**. There is no
+Kubernetes path and Swarm is not advertised for new installs.
 
-> **Status: REVIEW BEFORE APPLYING.** The `daemon.json` files and
-> `base-supervisor.service` are installed on real hosts by an operator.
-> `install-worker.sh` and `install-swarm.sh` both **default to dry-run** and
-> change nothing until `--apply` is passed.
+This directory holds historical node `daemon.json` variants, the control-plane
+supervisor systemd unit, and the single-node Soft Swarm bring-up script. Worker
+enrollment notes below describe legacy Swarm workers.
+
+> **Status: HISTORICAL / NON-TARGET.** The `daemon.json` files and
+> `base-supervisor.service` apply only to host-specific legacy operations outside
+> the Compose target path. `install-worker.sh` and `install-swarm.sh` both
+> **default to dry-run** and change nothing until `--apply` is passed. Do not
+> treat them as the primary entrypoint.
 
 ## Turnkey one-command bring-up (`--turnkey`)
 

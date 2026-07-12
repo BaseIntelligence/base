@@ -106,9 +106,10 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 | Miners | <a href="docs/miner/worker-plane.md">Worker deployment</a> | Deploy a miner-funded GPU worker on Lium/Targon |
 | Validators | <a href="docs/validator/README.md">Validator guide</a> | Install the submit-only on-chain weight submitter |
 | Validators | <a href="docs/operations/validator.md">Validator operations</a> | Submitter plus manager-service runbook |
-| Operators | <a href="docs/deploy.md">Deploy from scratch</a> | End-to-end Swarm bring-up quickstart |
-| Operators | <a href="docs/master/README.md">Foundation master guide</a> | Cortex Foundation master bring-up |
-| Developers | <a href="docs/architecture.md">Architecture</a> | Control-plane vs worker topology, the broker contract |
+| Operators | <a href="docs/compose.md">Compose deployment</a> | Supported single-host master and validator install |
+| Operators | <a href="docs/deploy.md">Deploy from scratch</a> | Operator navigation for Compose-only bring-up |
+| Operators | <a href="docs/master/README.md">Foundation master guide</a> | Cortex foundation master reference notes |
+| Developers | <a href="docs/architecture.md">Architecture</a> | Control-plane vs challenge vs validator topology |
 | Developers | <a href="docs/challenges.md">Challenges</a> | The challenge model |
 | Developers | <a href="docs/challenge-integration.md">Challenge integration</a> | The API contract a challenge must expose |
 | Developers | <a href="docs/security.md">Security model</a> | Trust boundaries and secret handling |
@@ -117,25 +118,31 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 
 ## Deploy
 
-`deploy/swarm/install-swarm.sh` is the canonical, Swarm-only entry point: **dry-run by default**,
-mutates only with `--apply`, every destructive step behind its own flag. Production is pre-mainnet
-hardened (image-pin, TLS, external-Postgres, and broker-allowlist policy guards fire at config load).
+**Docker Compose is the only supported shipping operator path.** Install the master control
+plane (PostgreSQL + master application + one long-lived container per active challenge) with:
 
 ```bash
-./deploy/swarm/install-swarm.sh          # dry-run: prints the planned docker swarm commands
-./deploy/swarm/install-swarm.sh --apply  # apply on a disposable / owned host
+./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
 ```
 
-The manager (`node.role==manager`) runs the control plane and the challenge services; CPU/GPU
-workers are enrolled with the `base master worker` CLI and scheduled by label
-(`node.labels.base.workload==cpu` / `node.labels.base.workload==gpu`).
+Install each independent validator with:
 
-Full walkthrough (images, volumes, worker enrollment, on-chain submission, public edge) in
-<a href="docs/deploy.md">Deploy from scratch</a> and <a href="deploy/swarm/README.md">deploy/swarm/README.md</a>.
+```bash
+./deploy/compose/install-validator.sh \
+  --project-name base-mission-validator-a \
+  --master-url http://127.0.0.1:3180
+```
+
+Full walkthrough: <a href="docs/compose.md">Compose deployment</a> and
+<a href="docs/deploy.md">Deploy from scratch</a>.
+
+Historical `deploy/swarm/` material and the Swarm control-plane supervisor are **unsupported**
+for new installs and are retained only as frozen reference under an explicit non-target banner.
+Do not treat Swarm installers as a destination path.
 
 ## Validation Quick Reference
 
-Run from the repository root; live Swarm checks require Docker.
+Run from the repository root with Docker Compose available.
 
 ```bash
 uv sync --extra dev --extra master

@@ -50,6 +50,11 @@ docker:
   network_name: base_challenges
   secret_dir: /var/lib/base/secrets
   internal_network: true
+  # Compose is the only shipping orchestration backend for this topology.
+  orchestration_backend: compose
+  compose_project_name: base-mission-master
+  compose_file: /run/base/compose/docker-compose.yml
+  compose_override_dir: /var/lib/base/compose-overrides
   broker_host: 0.0.0.0
   broker_port: 8082
   # Broker is not a separate Compose service in the target topology.

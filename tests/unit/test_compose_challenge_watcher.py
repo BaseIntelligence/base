@@ -668,9 +668,13 @@ def test_state_store_atomic_roundtrip(tmp_path: Path) -> None:
 
 def test_compose_backend_refuses_unpinned_and_foreign_project(tmp_path: Path) -> None:
     from base.master.compose_backend import ComposeChallengeOrchestrator
+    from base.master.docker_orchestrator import ChallengeSpec
 
     compose = tmp_path / "docker-compose.yml"
-    compose.write_text("services: {}\n", encoding="utf-8")
+    compose.write_text(
+        "services:\n  challenge-prism:\n    image: example\n",
+        encoding="utf-8",
+    )
     orch = ComposeChallengeOrchestrator(
         project_name="mission-p",
         compose_file=compose,
@@ -680,11 +684,48 @@ def test_compose_backend_refuses_unpinned_and_foreign_project(tmp_path: Path) ->
         orch.pull_image("ghcr.io/baseintelligence/demo:latest")
     with pytest.raises(DockerOrchestrationError):
         orch.pull_image("ghcr.io/baseintelligence/demo@sha256:deadbeef")
-    # Override writer accepts fully pinned image.
-    path = orch._write_service_override("challenge-prism", PINNED_A)
+    # Static base service: image-pin override only.
+    path = orch._write_service_override(
+        "challenge-prism", ChallengeSpec(slug="prism", image=PINNED_A)
+    )
     text = path.read_text(encoding="utf-8")
     assert DIGEST_A in text
     assert "base.managed_by: master-watcher" in text
+    assert "volumes:" not in text
+
+
+def test_compose_backend_dynamic_challenge_override_is_full_service(
+    tmp_path: Path,
+) -> None:
+    """VAL-COMPOSE-008/025: second active challenge is installable via override."""
+
+    from base.master.compose_backend import ComposeChallengeOrchestrator
+    from base.master.docker_orchestrator import ChallengeSpec
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  challenge-prism:\n    image: example\n",
+        encoding="utf-8",
+    )
+    orch = ComposeChallengeOrchestrator(
+        project_name="mission-p",
+        compose_file=compose,
+        override_dir=tmp_path / "ovr",
+    )
+    spec = ChallengeSpec(
+        slug="challenge-b",
+        image=PINNED_B,
+        env={"PRISM_COMBINED_MODE": "true"},
+        port=8080,
+    )
+    path = orch._write_service_override("challenge-challenge-b", spec)
+    text = path.read_text(encoding="utf-8")
+    assert "challenge-challenge-b:" in text
+    assert DIGEST_B in text
+    assert "base.compose.lifecycle: managed" in text
+    assert "source: challenge-challenge-b_data" in text
+    assert "networks:" in text
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_watcher_lifespan_none_when_disabled() -> None:

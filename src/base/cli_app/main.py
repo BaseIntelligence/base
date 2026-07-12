@@ -1178,11 +1178,22 @@ def master_broker(config: Path = typer.Option(Path("config/master.example.yaml")
 
 @master_app.command("supervisor")
 def master_supervisor(config: Path = typer.Option(Path("config/master.example.yaml"))):
-    """Run the Swarm control-plane supervisor (systemd Type=notify)."""
+    """Unsupported legacy host supervisor (historical Swarm control plane).
+
+    Compose is the only supported shipping runtime. This command remains only
+    for frozen multi-host tooling and is not part of the operator install path.
+    Prefer ``deploy/compose/install-master.sh``.
+    """
     settings = load_settings(config)
     _configure_observability(settings)
     from base.supervisor import build_supervisor
 
+    typer.echo(
+        "WARNING: base master supervisor is a historical/non-target surface. "
+        "Compose installers (deploy/compose/install-master.sh) are the supported "
+        "operator entrypoint.",
+        err=True,
+    )
     supervisor = build_supervisor(settings)
     typer.echo(
         f"Starting platform supervisor with {len(supervisor.tasks)} scheduled task(s)"

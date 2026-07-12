@@ -49,6 +49,11 @@ services:
     init: true
     # Writable /tmp is required for uvicorn/temp files; rootfs stays locked down.
     read_only: false
+    # Socket ownership is root:docker. The master runs as uid 1000; attach the
+    # host docker group (default 987) so compose reconcile/watchers may talk to
+    # the daemon without running the application as root (VAL-COMPOSE-024/054).
+    group_add:
+      - "${BASE_DOCKER_GID:-987}"
     cap_drop:
       - ALL
     security_opt:
@@ -145,6 +150,11 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    labels:
+      base.component: challenge
+      base.challenge.slug: prism
+      base.compose.lifecycle: static
+      base.managed_by: compose-install
     depends_on:
       base-master-validator:
         condition: service_healthy

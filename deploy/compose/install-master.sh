@@ -85,9 +85,13 @@ if [[ ! -f "${PRISM_TOKEN_FILE}" ]]; then
   umask 077
   _random_token >"${PRISM_TOKEN_FILE}"
 fi
-# Bind-mounted into non-root containers (uid 1000). Host parent dirs stay 0700.
-# Files are therefore readable by the container user without embedding secrets in env.
-chmod 644 "${ADMIN_TOKEN_FILE}" "${POSTGRES_PASSWORD_FILE}" "${PRISM_TOKEN_FILE}"
+# Host parent dirs stay 0700. Application secrets (admin/prism) are owned by the
+# non-root container uid (1000) with mode 0600. PostgreSQL's official image runs
+# as its own user and only needs the password file mount, so that one file is
+# mode 0640 (no world read) rather than 0600-as-uid-1000 which it cannot open.
+chown 1000:1000 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}" 2>/dev/null || true
+chmod 600 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}"
+chmod 640 "${POSTGRES_PASSWORD_FILE}"
 
 # Resolve local image digests when operator pins are not provided.
 _resolve_local_digest() {
@@ -154,6 +158,14 @@ fi
 PG_PASSWORD="$(tr -d '\n' <"${POSTGRES_PASSWORD_FILE}")"
 # Assemble operator-local master config with DB password (file mode 0600).
 # The password never enters Compose YAML or container environment listings.
+# Detect host docker.sock group so the non-root master can use compose.
+DOCKER_GID="${BASE_DOCKER_GID:-}"
+if [[ -z "${DOCKER_GID}" ]]; then
+  if [[ -S /var/run/docker.sock ]]; then
+    DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  fi
+  DOCKER_GID="${DOCKER_GID:-987}"
+fi
 umask 077
 cat >"${MASTER_CONFIG}" <<EOF
 network:
@@ -167,7 +179,7 @@ network:
   # No-chain static metagraph: compose app/db networks are internal and do not
   # require live Subtensor connectivity for the control plane to become ready.
   mock_metagraph:
-    - hotkey: 5ComposeMasterMockHotkey000000000000000000000000
+    - hotkey: 5FakeMasterHotkeyForDisposableComposeMission000001
       uid: 0
       validator_permit: true
       stake: 1000.0
@@ -224,7 +236,12 @@ observability:
   sentry_dsn: null
   otel_service_name: base-master
 EOF
-chmod 644 "${MASTER_CONFIG}"
+# Master config embeds the private-network DB URL; keep 0600 and uid 1000.
+# Re-assert admin/prism modes after config write. Postgres password stays 0640.
+chown 1000:1000 "${MASTER_CONFIG}" "${ADMIN_TOKEN_FILE}" \
+  "${PRISM_TOKEN_FILE}" 2>/dev/null || true
+chmod 600 "${MASTER_CONFIG}" "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}"
+chmod 640 "${POSTGRES_PASSWORD_FILE}"
 unset PG_PASSWORD
 
 export COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
@@ -236,6 +253,7 @@ export BASE_ADMIN_TOKEN_FILE="${ADMIN_TOKEN_FILE}"
 export BASE_POSTGRES_PASSWORD_FILE="${POSTGRES_PASSWORD_FILE}"
 export PRISM_SHARED_TOKEN_FILE="${PRISM_TOKEN_FILE}"
 export BASE_MASTER_HOST_PORT="${HOST_PORT}"
+export BASE_DOCKER_GID="${DOCKER_GID}"
 
 echo "Installing master Compose project '${PROJECT_NAME}' (API 127.0.0.1:${HOST_PORT})"
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" config --quiet
@@ -243,3 +261,60 @@ docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --wait
 
 echo "Master Compose install complete."
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
+
+# Seed the packaged prism challenge into the registry as ACTIVE so reconcile
+# adopts the static container instead of treating it as foreign (VAL-COMPOSE-024).
+ADMIN_TOKEN="$(tr -d '\n' <"${ADMIN_TOKEN_FILE}")"
+PRISM_IMAGE_REF="${PRISM_IMAGE_REPOSITORY}@sha256:${PRISM_IMAGE_DIGEST}"
+SEED_PAYLOAD="$(cat <<SEED
+{
+  "slug": "prism",
+  "name": "PRISM",
+  "image": "${PRISM_IMAGE_REF}",
+  "version": "0.1.0",
+  "emission_percent": "30.0000",
+  "status": "active",
+  "internal_base_url": "http://challenge-prism:8080",
+  "required_capabilities": ["get_weights", "proxy_routes"],
+  "resources": {},
+  "volumes": {"sqlite": "challenge-prism-data"},
+  "env": {
+    "PRISM_COMBINED_MODE": "true",
+    "PRISM_DOCKER_ENABLED": "false"
+  },
+  "secrets": [],
+  "metadata": {"combined_mode_env": "PRISM_COMBINED_MODE"}
+}
+SEED
+)"
+if command -v curl >/dev/null 2>&1; then
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -o /dev/null "http://127.0.0.1:${HOST_PORT}/health"; then
+      break
+    fi
+    sleep 1
+  done
+  set +e
+  create_code="$(
+    curl -sS -o /tmp/base-compose-seed-prism.json -w '%{http_code}' \
+      -X POST "http://127.0.0.1:${HOST_PORT}/v1/admin/challenges" \
+      -H "Content-Type: application/json" \
+      -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+      -d "${SEED_PAYLOAD}"
+  )"
+  if [[ "${create_code}" != "200" && "${create_code}" != "201" ]]; then
+    # Already present: re-activate / refresh pin.
+    curl -sS -o /tmp/base-compose-seed-prism-patch.json -w '%{http_code}' \
+      -X PATCH "http://127.0.0.1:${HOST_PORT}/v1/admin/challenges/prism" \
+      -H "Content-Type: application/json" \
+      -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+      -d "{\"image\": \"${PRISM_IMAGE_REF}\", \"status\": \"active\"}" >/dev/null
+    curl -sS -o /tmp/base-compose-seed-prism-activate.json -w '%{http_code}' \
+      -X POST "http://127.0.0.1:${HOST_PORT}/v1/admin/challenges/prism/activate" \
+      -H "X-Admin-Token: ${ADMIN_TOKEN}" >/dev/null || true
+  fi
+  set -e
+  rm -f /tmp/base-compose-seed-prism.json /tmp/base-compose-seed-prism-patch.json \
+    /tmp/base-compose-seed-prism-activate.json 2>/dev/null || true
+fi
+unset ADMIN_TOKEN SEED_PAYLOAD

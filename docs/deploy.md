@@ -1,171 +1,95 @@
 # Deploy From Scratch
 
-End-to-end path to stand up the full subnet on a fresh Docker Swarm: a manager node (control plane
-plus the long-lived challenge services) and one or more CPU/GPU workers (short-lived broker eval
-jobs). Weights are computed **dry-run** by default; on-chain submission is per-validator and gated
-by `validator.submit_on_chain_enabled`. Run `install-swarm.sh` **dry-run first** (no flags) and only
-`--apply` on a host you own.
+Compose-only path for a fresh host: one master project (control plane + long-lived
+challenge services) and optional independent validator projects. Swarm is **not** a
+supported install destination.
 
-The three backend repositories are sibling checkouts under a common parent (`platform/`,
-`agent-challenge/`, `prism/`); the frontend deploys separately.
-
-## Topology and Ports
-
-| Node | Swarm role | Runs |
-|------|------------|------|
-| Manager (also validator / hotkey node) | `node.role==manager` | Control plane (proxy / broker / supervisor) **and** the challenge services |
-| CPU worker | `node.labels.base.workload==cpu` | Short-lived CPU broker jobs |
-| GPU worker | `node.labels.base.workload==gpu` | Short-lived GPU broker jobs; advertises `NVIDIA-GPU` as a Swarm generic resource |
-
-Manager control-plane services are published on fixed host ports by `install-swarm.sh --apply`
-(overridable via `MASTER_PROXY_PORT` / `MASTER_BROKER_PORT`):
-
-| Manager service (host-published) | Host port |
-|---------|-----------|
-| base-master-proxy (single public API; serves `/v1/registry`, `/v1/weights/latest`, `/health`, routes `/challenges/*`) | 19080 |
-| base-docker-broker | 8082 |
-
-Challenge services and the Postgres stores are **overlay-internal** (no host publish): clients reach
-challenges **through the proxy** over the `base_challenges` overlay
-(e.g. `http://127.0.0.1:19080/challenges/prism/...`), and the master reaches Postgres by service name.
-
-| Overlay-internal service | Container port |
-|---------|-----------|
-| challenge-agent-challenge (plus worker sidecar) | 8000 |
-| challenge-prism (SQLite-backed) | 8080 |
-| base-master-postgres / challenge-*-postgres | 5432 |
-
-GPU eval jobs are dispatched by the broker to a GPU worker via `node.labels.base.workload==gpu` plus
-`--generic-resource NVIDIA-GPU=<N>`.
-
-## Step 1 — Build the images
-
-`<tag>` is your release tag (a SemVer such as `3.0.0`, or `latest` for the mutable channel).
+## Quick start
 
 ```bash
-# base-master (this repo): proxy + broker + supervisor
-docker build -f docker/Dockerfile.master -t ghcr.io/baseintelligence/base-master:<tag> .
+# 1. Master control plane + packaged challenge-prism
+./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
 
-# prism API + GPU evaluator (from ../prism)
-docker build --target service   -t ghcr.io/baseintelligence/prism:<tag> ../prism
-docker build --target evaluator -t ghcr.io/baseintelligence/prism-evaluator:<tag> ../prism
+# 2. Health / version
+curl -fsS http://127.0.0.1:3180/health
+curl -fsS http://127.0.0.1:3180/version
 
-# agent-challenge API + eval-job image (from ../agent-challenge)
-docker build --target runtime               -t ghcr.io/baseintelligence/agent-challenge:<tag> ../agent-challenge
-docker build --target terminal-bench-runner -t ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag> ../agent-challenge
+# 3. Independent validator (own project, identity, and wallet)
+./deploy/compose/install-validator.sh \
+  --project-name base-mission-validator-a \
+  --master-url http://127.0.0.1:3180
 ```
 
-> **Build-order coupling:** prism pins its `base` dependency by git (public HEAD), so a fresh `prism`
-> build bundles whatever is on the **pushed** platform HEAD. Push the platform commits the
-> prism/broker images depend on **before** building `prism` / `prism-evaluator`.
+Immutable image pins may be supplied via environment (`BASE_MASTER_IMAGE_*`,
+`PRISM_IMAGE_*`, `POSTGRES_IMAGE_*`, `BASE_VALIDATOR_IMAGE_*`). When unset, the
+install helpers resolve local mission image digests.
 
-## Step 2 — Publish or stage the images
+## Topology
 
-- **GHCR publish (preferred):** `docker push` each tag to `ghcr.io/baseintelligence/*`. Public
-  packages need no pull secret; the supervisor image-updaters then track digests automatically.
-- **Local-only staging:** build each image on the node that runs it and deploy with
-  `docker service update --no-resolve-image` so a non-registry tag resolves to the node-local image.
+| Compose project | Services |
+|-----------------|----------|
+| Master (`install-master.sh`) | `base-master-validator`, `master-postgres`, one long-lived `challenge-<slug>` per active challenge |
+| Validator (`install-validator.sh`) | one `validator` runtime with own identity/wallet |
 
-## Step 3 — Provision named volumes and secrets
+Networks (master project):
 
-On the **GPU worker**, stage the locked PRISM data and reference tokenizers as read-only volumes:
+- `db` (internal): master + PostgreSQL only; no host `5432`.
+- `app` (internal): master + challenge services.
+- `public` (non-internal): master host port only (default `127.0.0.1:3180`).
 
-- `prism_fineweb_edu_train` → `/data/fineweb-edu/train` (miner-visible, read-only)
-- `prism_fineweb_edu_val`, `prism_fineweb_edu_test` → secret held-out, scorer-only (never mounted in the `network=none` eval container)
-- `prism_reference_tokenizers` → `/opt/prism/reference-tokenizers`
+Secrets are host files mode `0600` bind-mounted read-only. Compose manifests never
+embed secret values. Operator-local state lives under
+`${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/`.
 
-On the **manager**, provision the agent-challenge read-only task cache and golden volumes:
+## Operator surfaces
+
+| Goal | Command / surface |
+|------|-------------------|
+| Master install | `./deploy/compose/install-master.sh` |
+| Validator install | `./deploy/compose/install-validator.sh` |
+| Health | `GET /health`, `GET /ready`, `GET /version` on the master port |
+| Registry (public read) | `GET /v1/registry` |
+| Challenge activate | `POST /v1/admin/challenges/{slug}/activate` with `X-Admin-Token` |
+| Challenge deactivate | `POST /v1/admin/challenges/{slug}/deactivate` |
+| Raw-weight / vector status | Master admin and unpublished weight routes (see API docs) |
+| Update / watcher | Master-resident challenge watcher (digest pin pull + recreate) |
+
+For deeper service cardinality, networking, and no-evaluator rules see
+[Compose-only deployment](compose.md).
+
+## Runtime behavior
+
+- The master reconcile loop adopts healthy challenge containers after restart
+  and installs services for newly ACTIVE registry challenges (project-scoped
+  Compose only; never `docker service` / Swarm).
+- Inactive, draft, and disabled challenges never start.
+- Deactivation stops and removes the managed long-lived container while keeping
+  the named state volume for reactivation.
+- Prism runs in combined mode (`PRISM_COMBINED_MODE=true`). Base and Prism never
+  launch evaluator containers.
+
+## Unsupported / historical
+
+- `deploy/swarm/` (including `install-swarm.sh`, overlays, Swarm secrets,
+  replicated jobs, placement constraints, and the host supervisor) is a frozen
+  historical artifact, **not** a supported operator path for new installs.
+- LLM gateway services, tokens, routes, and provider clients have been removed
+  from the target path.
+
+If a future multi-host footprint is required, it is out of scope for this
+release and must not reintroduce Swarm as a silent fallback from Compose
+installers or README navigation.
+
+## Verify install
 
 ```bash
-deploy/swarm/acquire-agent-challenge-cache.sh
+docker compose -p base-mission-master -f deploy/compose/docker-compose.yml ps
+curl -fsS http://127.0.0.1:3180/health
+curl -fsS http://127.0.0.1:3180/v1/registry
 ```
 
-Verify each volume is both present **and populated** (a Docker named volume is auto-created empty on
-first mount). The central LLM gates reach the provider only through the master gateway using the
-scoped `base_gateway_token` (`source=llm_review`); no raw provider key is mounted on any challenge or
-eval container. The single provider key is held only by the master gateway.
-
-## Step 4 — Bring up the manager
-
-`deploy/swarm/install-swarm.sh` is the canonical entry point: **dry-run by default**, mutates only
-with `--apply`, and keeps every destructive step behind its own flag.
+Teardown (mission-owned project only):
 
 ```bash
-export IMAGE_MASTER=ghcr.io/baseintelligence/base-master:<tag>
-export IMAGE_PRISM=ghcr.io/baseintelligence/prism:<tag>
-export IMAGE_PRISM_EVALUATOR=ghcr.io/baseintelligence/prism-evaluator:<tag>
-export IMAGE_AGENT_CHALLENGE=ghcr.io/baseintelligence/agent-challenge:<tag>
-export AGENT_CHALLENGE_RUNNER_IMAGE=ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:<tag>
-
-./deploy/swarm/install-swarm.sh                            # dry-run: prints the planned docker commands
-./deploy/swarm/install-swarm.sh --apply                    # apply on a disposable / owned host
-./deploy/swarm/install-swarm.sh --apply --restart-dockerd  # also write daemon.json + restart dockerd
+docker compose -p base-mission-master -f deploy/compose/docker-compose.yml down -v
 ```
-
-The installer initializes the Swarm, creates the encrypted overlay networks (`base_challenges`,
-`base_jobs_internal`, MTU 1450), creates the value-bearing Docker secrets via stdin, and creates the
-master proxy/broker. Challenge services are then deployed automatically by the proxy's registry
-reconcile loop (one combined-mode service per ACTIVE challenge); `--static-challenges` instead
-creates them directly. It also wires the coordination plane and the LLM gateway (mandatory
-`GATEWAY_TOKEN`, advertised `GATEWAY_PUBLIC_BASE_URL`, server-side provider keys, optional `HF_TOKEN`).
-
-## Step 5 — Enroll worker nodes
-
-Workers are added manually with a Swarm join token (no SSH). From the manager:
-
-```bash
-base master worker token --cpu      # or --gpu — prints the docker swarm join command
-```
-
-On the worker, install the matching `daemon.json` and join, then label the node back on the manager:
-
-```bash
-JOIN_TOKEN=<TOKEN> scripts/install-worker.sh --manager-addr <MANAGER_IP>:2377 --workload cpu --restart-dockerd --apply
-base master worker label <node> --workload cpu      # or gpu
-```
-
-See [`deploy/swarm/README.md`](../deploy/swarm/README.md) for `daemon.json` details, networking
-ports, and the prune policy.
-
-## Step 6 — On-chain weight submission
-
-On-chain submission is per-validator (the validator agent submits its own weights when
-`validator.submit_on_chain_enabled` is on). A dedicated submit-only host is also supported:
-
-```bash
-cp deploy/swarm/submitter/run_submitter.py       /var/lib/base/submitter/
-cp deploy/swarm/submitter/submitter.yaml         /etc/base/submitter.yaml
-cp deploy/swarm/submitter/base-submitter.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now base-submitter.service
-```
-
-Decentralized evaluation runs on validator nodes (hotkey must hold a metagraph validator permit):
-
-```bash
-base validator agent --config config/validator.example.yaml
-```
-
-Full submitter configuration is in the [Validator guide](validator/README.md); manager runbooks are
-in [Validator operations](operations/validator.md).
-
-## Step 7 — Verify
-
-```bash
-docker service ls
-curl -sf http://127.0.0.1:19080/health                                 # proxy
-curl -sf http://127.0.0.1:8082/health                                  # broker
-curl -sf http://127.0.0.1:19080/v1/registry                            # registry (via proxy)
-curl -sf http://127.0.0.1:19080/v1/weights/latest                      # weights (via proxy)
-curl -sf http://127.0.0.1:19080/challenges/prism/leaderboard           # prism, via proxy
-curl -sf http://127.0.0.1:19080/challenges/agent-challenge/leaderboard  # agent-challenge, via proxy
-```
-
-## Step 8 — Public edge (Cloudflare)
-
-The single platform API listens on `127.0.0.1:19080`. To expose it publicly as
-`https://chain.joinbase.ai`, front it with a Cloudflare tunnel using **one catch-all ingress rule**
-(`chain.joinbase.ai -> http://127.0.0.1:19080`) with **no `/v1` path-split**: the one port already
-serves `/health`, `/v1/registry`, `/v1/weights/latest`, `/challenges/*`, and the token-gated
-control-plane routes. Public read routes return `200`; admin-write/control-plane routes stay private
-(`401`/`405`), and `/internal/*` returns `404` at the edge.

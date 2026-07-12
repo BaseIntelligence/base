@@ -262,6 +262,10 @@ def test_healthchecks_present_for_application_readiness(tmp_path: Path) -> None:
 def test_install_script_is_compose_only() -> None:
     content = INSTALL_MASTER.read_text(encoding="utf-8")
     assert "docker compose" in content
+    assert "orchestration_backend: compose" in content
+    assert "BASE_DOCKER_GID" in content
+    # Application host secrets end as mode 0600 (admin/prism/master.yaml).
+    assert "chmod 600" in content
     for forbidden in (
         "docker service",
         "docker stack",
@@ -269,6 +273,32 @@ def test_install_script_is_compose_only() -> None:
         "docker secret create",
     ):
         assert forbidden not in content
+
+
+def test_operator_entrypoint_docs_are_compose_only() -> None:
+    """VAL-COMPOSE-002 / VAL-CROSS-065 / VAL-CROSS-077: Compose is the destination."""
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    deploy = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    compose_docs = (ROOT / "docs" / "compose.md").read_text(encoding="utf-8")
+    swarm_readme = (ROOT / "deploy" / "swarm" / "README.md").read_text(encoding="utf-8")
+
+    assert "deploy/compose/install-master.sh" in readme
+    assert "deploy/compose/install-validator.sh" in readme
+    # README Deploy section must not present Swarm as canonical entrypoint.
+    deploy_section = readme.split("## Deploy", 1)[1].split("## ", 1)[0]
+    assert "install-swarm.sh" not in deploy_section
+    assert "canonical, Swarm-only" not in deploy_section
+    assert "Docker Compose is the only supported" in deploy_section
+
+    assert "install-master.sh" in deploy
+    assert "install-validator.sh" in deploy
+    assert "not a supported install destination" in deploy.lower() or (
+        "not** a supported" in deploy.lower()
+    )
+    assert "compose" in compose_docs.lower()
+    assert "HISTORICAL" in swarm_readme or "NON-TARGET" in swarm_readme
+    assert "NOT A SUPPORTED INSTALL DESTINATION" in swarm_readme
 
 
 def test_master_compose_source_has_no_swarm_or_gateway() -> None:
@@ -290,9 +320,32 @@ def test_master_compose_source_has_no_swarm_or_gateway() -> None:
     assert "evaluator" not in (parsed.get("services") or {})
     prism = (parsed.get("services") or {}).get("challenge-prism") or {}
     assert "/var/run/docker.sock" not in json.dumps(prism).lower()
+    prism_labels = prism.get("labels") or {}
+    assert prism_labels.get("base.compose.lifecycle") == "static"
+    assert prism_labels.get("base.challenge.slug") == "prism"
     master = (parsed.get("services") or {}).get("base-master-validator") or {}
     master_blob = json.dumps(master).lower()
     assert "challenge_watcher" in master_blob or "compose_project_name" in master_blob
+    assert master.get("group_add") is not None
+    env = master.get("environment") or {}
+    assert (
+        str(env.get("BASE_DOCKER__ORCHESTRATION_BACKEND", "")).lower() == "compose"
+        or "compose" in json.dumps(env).lower()
+    )
+
+
+def test_challenge_orchestrator_defaults_to_compose() -> None:
+    """VAL-COMPOSE-024: proxy builds ComposeChallengeOrchestrator by default."""
+
+    from base.cli_app.main import _challenge_orchestrator
+    from base.config.settings import Settings
+    from base.master.compose_backend import ComposeChallengeOrchestrator
+
+    settings = Settings()
+    # Default path without orchestration_backend yaml still prefers compose.
+    orch = _challenge_orchestrator(settings)
+    assert isinstance(orch, ComposeChallengeOrchestrator)
+    assert orch.project_name  # resolved from env or fallback
 
 
 def test_first_party_dockerfiles_run_as_non_root_user() -> None:
