@@ -15,6 +15,7 @@ from base.db.models import (
     ChallengeSecret,
     ChallengeStatus,
     ChallengeVolume,
+    FinalWeightVector,
     MinerRequestNonce,
     RawWeightNonce,
     RawWeightSnapshot,
@@ -42,6 +43,7 @@ from base.db.session import (
 __all__ = [
     "AggregationEpoch",
     "AggregationEpochStatus",
+    "FinalWeightVector",
     "Base",
     "Challenge",
     "ChallengeAuth",

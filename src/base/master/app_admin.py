@@ -35,6 +35,7 @@ from base.master.admin.auth import (
 from base.master.admin.runtime import (
     RuntimeController,
 )
+from base.master.aggregation import VectorNotFoundError
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
     build_assignment_coordination_router,
@@ -222,6 +223,35 @@ def build_admin_router(
                 )
         except HTTPException:
             raise
+        except VectorNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no sealed weight vector available",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+
+    @router.get("/v1/weights/{vector_id}", response_model=MasterWeightsResponse)
+    async def get_weight_vector(vector_id: str) -> MasterWeightsResponse:
+        if weight_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Master weight service unavailable",
+            )
+        try:
+            from base.challenge_sdk.roles import Role, activate_role
+
+            with activate_role(Role.MASTER):
+                return await weight_service.get_vector_response(vector_id)
+        except HTTPException:
+            raise
+        except VectorNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"vector '{vector_id}' not found",
+            ) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)

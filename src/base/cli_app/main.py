@@ -65,6 +65,10 @@ from base.master.orchestration import (
     MasterChallengeReconciler,
     MasterOrchestrationDriver,
 )
+from base.master.raw_weight_ingress import (
+    ChallengeCredentialStore,
+    RawWeightIngressService,
+)
 from base.master.registry import (
     ChallengeNotFoundError,
     DatabaseChallengeRegistry,
@@ -369,6 +373,7 @@ def _master_compute_metagraph_cache(settings) -> MetagraphCache:
 def _master_weight_service(
     settings,
     metagraph_cache: MetagraphCache | None = None,
+    session_factory: Any = None,
 ) -> MasterWeightService:
     return MasterWeightService(
         metagraph_cache=metagraph_cache or _master_compute_metagraph_cache(settings),
@@ -376,6 +381,7 @@ def _master_weight_service(
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
         ),
+        session_factory=session_factory,
     )
 
 
@@ -551,7 +557,6 @@ def _master_orchestration_driver(
     )
 
 
-
 def _challenge_orchestrator(settings):
     from base.master.swarm_backend import SwarmChallengeOrchestrator
 
@@ -646,8 +651,6 @@ def _settings_docker_broker_url(settings: Any | None) -> str:
     docker_settings = getattr(settings, "docker", None)
     broker_url = getattr(docker_settings, "broker_url", None)
     return str(broker_url or DEFAULT_BASE_BROKER_URL)
-
-
 
 
 def _parse_eval_readonly_mounts(values: list[str]) -> tuple[tuple[str, str], ...]:
@@ -902,11 +905,15 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     weight_service = _master_weight_service(
         settings,
         metagraph_cache=runtime.metagraph_cache,
+        session_factory=session_factory,
+    )
+    raw_weight_ingress_service = RawWeightIngressService(
+        session_factory,
+        credential_store=ChallengeCredentialStore(registry),
     )
     # Coordination plane: hotkey-signed register/heartbeat/pull/progress/result
     # routes, the token-gated GET /v1/validators read view, the in-app
-    # crash-detection loop, and the LLM gateway (metering + token lifecycle bound
-    # to live work_assignments state).
+    # crash-detection loop, and durable raw-weight push ingress.
     validator_service = _validator_coordination_service(settings, session_factory)
     validator_verifier = _validator_signed_request_verifier(
         settings, session_factory, runtime.metagraph_cache
@@ -985,6 +992,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_assignment_verifier=worker_assignment_verifier,
         worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
+        raw_weight_ingress_service=raw_weight_ingress_service,
         orchestration_driver=orchestration_driver,
         orchestration_interval_seconds=(settings.master.orchestration_interval_seconds),
         registry_reconciler=registry_reconciler,
@@ -1153,8 +1161,6 @@ def worker_inspect(node: str):
     _docker_cli(["node", "inspect", node])
 
 
-
-
 @master_app.command("refresh-challenge-images")
 def master_refresh_challenge_images(
     config: Path = typer.Option(Path("config/master.example.yaml")),
@@ -1230,7 +1236,9 @@ def master_weights(
     settings = load_settings(config)
     _configure_observability(settings)
     _run_startup_migrations(settings)
-    registry = _master_registry(settings)
+    engine = create_engine(settings.database.url)
+    session_factory = create_session_factory(engine)
+    registry = _master_registry(settings, session_factory)
     runtime = create_bittensor_runtime(settings)
     # Re-assert logging AFTER bittensor init (which resets root logging to
     # WARNING) so this loop's INFO records are not swallowed; see master_proxy.
@@ -1240,6 +1248,7 @@ def master_weights(
     service = _master_weight_service(
         settings,
         metagraph_cache=runtime.metagraph_cache,
+        session_factory=session_factory,
     )
 
     async def epoch() -> None:

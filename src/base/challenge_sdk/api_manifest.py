@@ -134,6 +134,15 @@ API_MANIFEST = ApiManifest(
             "roles": ["master", "validator"],
         },
         {
+            "method": "GET",
+            "path": "/v1/weights/{vector_id}",
+            "media_type": "application/json",
+            "schema": "MasterWeightsResponse",
+            "status": [200, 404, 502, 503],
+            "auth": "none",
+            "roles": ["master", "validator"],
+        },
+        {
             "method": "POST",
             "path": "/v1/validators/register",
             "media_type": "application/json",

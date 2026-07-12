@@ -1015,11 +1015,12 @@ class RawWeightNonce(Base):
 
 
 class AggregationEpoch(Base):
-    """Minimal durable epoch lifecycle for raw-source sealing / ordering.
+    """Durable aggregation-epoch lifecycle (open, sealed, or withheld).
 
-    Full aggregation and vector publication belong to a later feature; this
-    table only records open vs sealed so raw ingress can reject post-seal
-    revisions and stale epochs deterministically.
+    Opening records the expected active challenge set and emission policy for
+    the barrier. Sealing produces one immutable final vector when every expected
+    source is available; missing or invalid active sources transition the epoch
+    to ``withheld`` without inventing/carrying-forward contributions.
     """
 
     __tablename__ = "aggregation_epochs"
@@ -1044,6 +1045,26 @@ class AggregationEpoch(Base):
         server_default=AggregationEpochStatus.OPEN.value,
     )
     sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expected_challenges: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    emission_policy_version: Mapped[str | None] = mapped_column(Text)
+    emission_shares: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    source_outcome_policy_version: Mapped[str | None] = mapped_column(Text)
+    burn_policy_version: Mapped[str | None] = mapped_column(Text)
+    mapping_policy_version: Mapped[str | None] = mapped_column(Text)
+    outcome_reason: Mapped[str | None] = mapped_column(Text)
+    vector_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("final_weight_vectors.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_outcomes: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1054,4 +1075,78 @@ class AggregationEpoch(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class FinalWeightVector(Base):
+    """Immutable master-owned final weight vector with full provenance.
+
+    One sealed vector per successful epoch. Validators fetch these bytes only;
+    re-aggregation on read is forbidden.
+    """
+
+    __tablename__ = "final_weight_vectors"
+    __table_args__ = (
+        UniqueConstraint("vector_digest", name="uq_final_weight_vectors_digest"),
+        UniqueConstraint("epoch", name="uq_final_weight_vectors_epoch"),
+        Index("ix_final_weight_vectors_computed_at", "computed_at"),
+        Index("ix_final_weight_vectors_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    protocol_version: Mapped[str] = mapped_column(Text, nullable=False)
+    netuid: Mapped[int] = mapped_column(Integer, nullable=False)
+    chain_endpoint: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    vector_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    uids: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    weights: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    hotkey_weights: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    chain_domain_bytes: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    source_snapshot_ids: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    source_snapshot_digests: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    source_outcomes: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    emission_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    emission_shares: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    burn_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    mapping_policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    metagraph_block: Mapped[int | None] = mapped_column(BigInteger)
+    metagraph_hash: Mapped[str | None] = mapped_column(Text)
+    metagraph_identity: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    hotkey_to_uid: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    metagraph_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
