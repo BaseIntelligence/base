@@ -91,7 +91,8 @@ def _sanitize_assignment_payload(payload: Mapping[str, Any] | None) -> dict[str,
     """Return assignment payload without legacy LLM-gateway fields."""
     cleaned = dict(payload or {})
     for key in list(cleaned):
-        if key in _LEGACY_GATEWAY_PAYLOAD_KEYS or key.upper() in _LEGACY_GATEWAY_PAYLOAD_KEYS:
+        legacy = _LEGACY_GATEWAY_PAYLOAD_KEYS
+        if key in legacy or key.upper() in legacy:
             cleaned.pop(key, None)
     return cleaned
 

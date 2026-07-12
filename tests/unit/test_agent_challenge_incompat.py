@@ -7,12 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from base.challenge_sdk.roles import Role, activate_role
 from base.master.agent_challenge_compat import (
     AGENT_CHALLENGE_INCOMPATIBLE_CODE,
     agent_challenge_incompatibility,
 )
-from base.challenge_sdk.roles import Role, activate_role
-from base.master.orchestration import MasterChallengeReconciler, RegistryReconcilePassResult
+from base.master.orchestration import (
+    MasterChallengeReconciler,
+    RegistryReconcilePassResult,
+)
 
 
 class _Registry:
@@ -39,7 +42,9 @@ class _Orchestrator:
 
 
 @pytest.mark.asyncio
-async def test_reconciler_refuses_agent_challenge(caplog: pytest.LogCaptureFixture) -> None:
+async def test_reconciler_refuses_agent_challenge(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     orchestrator = _Orchestrator()
     challenges = [
         SimpleNamespace(
@@ -73,9 +78,12 @@ async def test_reconciler_refuses_agent_challenge(caplog: pytest.LogCaptureFixtu
             emission_percent=85,
         ),
     ]
-    # challenge_spec_from_registry may need more fields; wrap reconcile path by
-    # only exercising the gate before start only for agent-challenge.
-    reconciler = MasterChallengeReconciler(registry=_Registry(challenges), orchestrator=orchestrator)
+    # Only the agent-challenge gate matters before start; wrap that path.
+    registry = _Registry(challenges)
+    reconciler = MasterChallengeReconciler(
+        registry=registry,
+        orchestrator=orchestrator,
+    )
 
     class _FixedReconciler(MasterChallengeReconciler):
         async def _active_challenges(self):  # type: ignore[override]
@@ -84,9 +92,12 @@ async def test_reconciler_refuses_agent_challenge(caplog: pytest.LogCaptureFixtu
         def _running_challenge_slugs(self) -> set[str]:  # type: ignore[override]
             return set()
 
-    reconciler = _FixedReconciler(registry=_Registry(challenges), orchestrator=orchestrator)
+    reconciler = _FixedReconciler(
+        registry=registry,
+        orchestrator=orchestrator,
+    )
     with caplog.at_level(logging.ERROR):
-        # start_challenge for prism will likely fail with incomplete namespace; intercept
+        # Intercept prism start; namespace is incomplete in this unit test.
         def _start(spec):  # noqa: ANN001
             if getattr(spec, "slug", None) == "prism":
                 orchestrator.started.append("prism")
@@ -94,11 +105,15 @@ async def test_reconciler_refuses_agent_challenge(caplog: pytest.LogCaptureFixtu
             orchestrator.started.append(getattr(spec, "slug", "unknown"))
 
         orchestrator.start_challenge = _start  # type: ignore[method-assign]
-        # monkeypatch challenge_spec_from_registry to identity-like object
+        # Monkeypatch challenge_spec_from_registry to identity-like object.
         import base.master.orchestration as orch
 
         original = orch.challenge_spec_from_registry
-        orch.challenge_spec_from_registry = lambda challenge: SimpleNamespace(slug=challenge.slug)
+
+        def _spec_from_registry(challenge):  # noqa: ANN001
+            return SimpleNamespace(slug=challenge.slug)
+
+        orch.challenge_spec_from_registry = _spec_from_registry
         try:
             with activate_role(Role.MASTER):
                 result = await reconciler.reconcile_once()
