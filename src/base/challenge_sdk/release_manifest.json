@@ -20,16 +20,41 @@
       "AssignmentResultRequest",
       "AssignmentResultResponse",
       "AssignmentView",
+      "EmptyObject",
+      "ErrorResponse",
       "ExecutionProof",
+      "ExternalResultEnvelope",
+      "ExternalResultResponse",
       "HealthResponse",
       "ProviderInfo",
       "VersionResponse",
+      "ValidatorHeartbeatRequest",
+      "ValidatorHeartbeatResponse",
+      "ValidatorRegisterRequest",
+      "ValidatorRegisterResponse",
+      "ValidatorView",
       "WeightsResponse",
       "WorkerSignature"
     ],
     "base.challenge_sdk.roles": [
+      "CAPABILITY_REGISTRY_VERSION",
+      "Capability",
+      "CapabilityRegistry",
+      "CapabilitySpec",
+      "Role",
+      "RoleContext",
+      "ROLE_REGISTRY",
+      "RoleContractError",
+      "activate_role",
+      "capabilities_for_role",
+      "challenge_only",
+      "current_role",
       "is_public_route",
-      "public_route"
+      "master_only",
+      "public_route",
+      "role_contract",
+      "validator_only",
+      "worker_only"
     ],
     "base.challenge_sdk.app_factory": [
       "ChallengeDatabase",
@@ -62,6 +87,26 @@
       "RELEASE_ID",
       "RELEASE_MANIFEST",
       "SDK_CONTRACT_VERSION"
+    ],
+    "base.challenge_sdk.api_manifest": [
+      "API_MANIFEST",
+      "API_MANIFEST_DIGEST",
+      "ApiManifest"
+    ],
+    "base.challenge_sdk": [
+      "API_MANIFEST",
+      "API_MANIFEST_DIGEST",
+      "Capability",
+      "CapabilityRegistry",
+      "CapabilitySpec",
+      "EmptyObject",
+      "ErrorResponse",
+      "ExternalResultResponse",
+      "Role",
+      "ROLE_REGISTRY",
+      "RawWeightPushRequest",
+      "RawWeightPushAcknowledgement",
+      "ExternalResultEnvelope"
     ],
     "base.challenge_sdk.weights": [
       "WeightsResponse"

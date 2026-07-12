@@ -2482,7 +2482,8 @@ def test_single_port_proxy_serves_registry_weights_health_and_challenges() -> No
     assert len(health_routes) == 1
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.json() == {"status": "ok"}
+    assert health.json()["status"] == "ok"
+    assert health.json()["role"] == "master"
 
     # Public registry + weights + dashboard are served on the single port.
     assert client.get("/v1/registry").status_code == 200

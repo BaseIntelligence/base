@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 
 from .auth import build_internal_auth_dependency
 from .config import ChallengeSettings
+from .roles import Role
 from .schemas import HealthResponse, VersionResponse, WeightsResponse
 from .version import (
     API_VERSION,
@@ -89,7 +90,12 @@ def create_challenge_app(
 
     @app.get("/health", response_model=HealthResponse, include_in_schema=False)
     async def health() -> HealthResponse:
-        return HealthResponse(slug=settings.slug, version=settings.version)
+        return HealthResponse(
+            slug=settings.slug,
+            version=settings.version,
+            role=Role.CHALLENGE.value,
+            capabilities=tuple(settings.capabilities),
+        )
 
     @app.get("/version", response_model=VersionResponse, include_in_schema=False)
     async def version() -> VersionResponse:
@@ -101,11 +107,7 @@ def create_challenge_app(
             challenge_version=settings.version,
             sdk_contract_version=SDK_CONTRACT_VERSION,
             sdk_version=SDK_CONTRACT_VERSION,
-            capabilities=[
-                "challenge.scoring",
-                "challenge.ordinary_proof",
-                "challenge.state",
-            ],
+            capabilities=tuple(settings.capabilities),
         )
 
     internal_router = APIRouter(
