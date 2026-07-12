@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -433,13 +434,89 @@ def test_eval_execution_proof_rejects_one_over_event_log_byte_bound() -> None:
         EvalExecutionProof.model_validate(payload)
 
 
-def test_eval_execution_proof_rejects_one_over_vm_config_byte_bound() -> None:
+def _closed_vm_config(*, vcpu: int, memory_mb: int) -> dict[str, Any]:
+    """Closed three-field inventory used by the transport-bound tests."""
+
+    return {"vcpu": vcpu, "memory_mb": memory_mb, "os_image_hash": None}
+
+
+def _closed_vm_config_encoded_size(vm_config: dict[str, Any]) -> int:
+    """Exact compact UTF-8 size for a closed three-field vm_config dict."""
+
+    return len(
+        json.dumps(
+            vm_config,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def _closed_vm_config_at_encoded_size(total_bytes: int) -> dict[str, Any]:
+    """Build a closed-field vm_config whose compact encoding is exactly total_bytes.
+
+    Reaching the 256 KiB contract budget with only three fields requires a huge
+    integer. Callers must raise CPython's int-to-str digit limit first so
+    ``json.dumps`` can materialize that encoding.
+    """
+
+    # Compact skeleton strip of memory_mb digits:
+    # '{"vcpu":1,"memory_mb":,"os_image_hash":null}'
+    skeleton = (
+        _closed_vm_config_encoded_size(_closed_vm_config(vcpu=1, memory_mb=0)) - 1
+    )
+    digits_needed = total_bytes - skeleton
+    assert digits_needed >= 1, total_bytes
+    # 10**(n-1) serializes as exactly n decimal digits under compact JSON.
+    memory_mb = 10 ** (digits_needed - 1) if digits_needed > 1 else 0
+    config = _closed_vm_config(vcpu=1, memory_mb=memory_mb)
+    assert _closed_vm_config_encoded_size(config) == total_bytes
+    return config
+
+
+def test_eval_max_vm_config_bytes_matches_contract() -> None:
+    """Contract requires eval_result_max_vm_config_bytes = 256 KiB for Eval."""
+
+    assert EVAL_MAX_VM_CONFIG_BYTES == 262144
+
+
+def test_eval_execution_proof_accepts_vm_config_at_byte_bound() -> None:
+    """Closed-field encoding at EVAL_MAX_VM_CONFIG_BYTES passes the byte bound.
+
+    The huge integer used for padding is later rejected by the integer upper
+    limit, but that rejection must not be the transport byte-budget error.
+    """
+
     payload = copy.deepcopy(POSITIVE["execution_proof"])
-    payload["attestation"]["vm_config"]["os_image_hash"] = None
-    padding = "a" * EVAL_MAX_VM_CONFIG_BYTES
-    payload["attestation"]["vm_config"]["extra_padding"] = padding
-    with pytest.raises(ValidationError):
-        EvalExecutionProof.model_validate(payload)
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        payload["attestation"]["vm_config"] = _closed_vm_config_at_encoded_size(
+            EVAL_MAX_VM_CONFIG_BYTES
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            EvalExecutionProof.model_validate(payload)
+        assert "vm_config exceeds its byte bound" not in str(exc_info.value)
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+def test_eval_execution_proof_rejects_one_over_vm_config_byte_bound() -> None:
+    """One closed-field encoding byte past 256 KiB rejects de-serialization."""
+
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        payload["attestation"]["vm_config"] = _closed_vm_config_at_encoded_size(
+            EVAL_MAX_VM_CONFIG_BYTES + 1
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            EvalExecutionProof.model_validate(payload)
+        assert "vm_config exceeds its byte bound" in str(exc_info.value)
+    finally:
+        sys.set_int_max_str_digits(previous)
 
 
 @pytest.mark.parametrize("field", ["imr", "event_type"])
