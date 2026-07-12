@@ -190,9 +190,10 @@ def test_prism_combined_mode_and_no_evaluator(tmp_path: Path) -> None:
     command = " ".join(str(part) for part in prism.get("command", []))
     assert "uvicorn" in command
     assert "evaluator" not in command.lower()
-    # No docker.sock mount for Prism.
+    # No docker.sock mount for Prism (master may mount it for the watcher).
+    prism_blob = json.dumps(prism)
+    assert "/var/run/docker.sock" not in prism_blob
     blobs = json.dumps(rendered)
-    assert "/var/run/docker.sock" not in blobs
     assert "docker service" not in blobs
     assert "docker stack" not in blobs
 
@@ -283,10 +284,15 @@ def test_master_compose_source_has_no_swarm_or_gateway() -> None:
         "gateway_token",
     ):
         assert forbidden not in content, forbidden
-    # Challenge must not mount an evaluator image or docker socket.
+    # Challenge must not mount an evaluator image. The master application may
+    # mount the host docker socket (read-only) for the in-process watcher only.
     parsed = yaml.safe_load(MASTER_COMPOSE.read_text(encoding="utf-8"))
     assert "evaluator" not in (parsed.get("services") or {})
-    assert "/var/run/docker.sock" not in content
+    prism = (parsed.get("services") or {}).get("challenge-prism") or {}
+    assert "/var/run/docker.sock" not in json.dumps(prism).lower()
+    master = (parsed.get("services") or {}).get("base-master-validator") or {}
+    master_blob = json.dumps(master).lower()
+    assert "challenge_watcher" in master_blob or "compose_project_name" in master_blob
 
 
 def test_first_party_dockerfiles_run_as_non_root_user() -> None:

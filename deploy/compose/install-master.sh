@@ -179,8 +179,10 @@ master:
   epoch_interval_seconds: 360
   metagraph_cache_ttl_seconds: 300
   registry_state_file: /var/lib/base/registry.json
-  registry_reconcile_interval_seconds: 0
+  registry_reconcile_interval_seconds: 30
   challenge_image_update_interval_seconds: 0
+  challenge_watcher_interval_seconds: 60
+  challenge_watcher_state_path: /var/lib/base/challenge_watcher_state.json
   orchestration_interval_seconds: 30
 
 validator:
@@ -200,6 +202,10 @@ docker:
   network_name: base_challenges
   secret_dir: /var/lib/base/secrets
   internal_network: true
+  orchestration_backend: compose
+  compose_project_name: ${PROJECT_NAME}
+  compose_file: /run/base/compose/docker-compose.yml
+  compose_override_dir: /var/lib/base/compose-overrides
   broker_host: 0.0.0.0
   broker_port: 8082
   broker_url: http://127.0.0.1:9

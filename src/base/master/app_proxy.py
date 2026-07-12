@@ -97,6 +97,9 @@ from base.security.worker_auth import (
 from base.supervisor.challenge_image_updater import (
     build_challenge_image_update_lifespan,
 )
+from base.supervisor.challenge_watcher import (
+    build_challenge_watcher_lifespan,
+)
 
 DEFAULT_CORS_ALLOWED_ORIGINS = [
     "https://joinbase.ai",
@@ -439,6 +442,8 @@ def create_proxy_app(
     registry_reconcile_interval_seconds: float | None = None,
     challenge_image_updater_settings: Settings | None = None,
     challenge_image_update_interval_seconds: float | None = None,
+    challenge_watcher_settings: Settings | None = None,
+    challenge_watcher_interval_seconds: float | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
     allowed_cors_origins: list[str] | None = None,
     readiness_probes: Sequence[ReadinessProbe] = (),
@@ -472,6 +477,10 @@ def create_proxy_app(
             build_challenge_image_update_lifespan(
                 challenge_image_updater_settings,
                 challenge_image_update_interval_seconds,
+            ),
+            build_challenge_watcher_lifespan(
+                challenge_watcher_settings,
+                challenge_watcher_interval_seconds,
             ),
         ),
     )

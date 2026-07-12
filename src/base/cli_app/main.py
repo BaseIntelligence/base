@@ -559,18 +559,48 @@ def _master_orchestration_driver(
 
 
 def _challenge_orchestrator(settings):
-    from base.master.swarm_backend import SwarmChallengeOrchestrator
+    """Return the challenge service orchestrator for the configured backend.
 
-    return SwarmChallengeOrchestrator(
-        network_name=settings.docker.network_name,
-        internal_network=settings.docker.internal_network,
-        docker_broker_url=settings.docker.broker_url,
-        challenge_placement_constraint=settings.docker.challenge_placement_constraint,
-        # Multi-home the agent-challenge service onto the isolated eval overlay
-        # (base_jobs_internal) so its DooD eval job can reach the API for log
-        # streaming by name; the job network is base_jobs_internal (see
-        # AGENT_CHALLENGE_JOB_NETWORK).
-        job_network_slugs=frozenset({AGENT_CHALLENGE_SLUG}),
+    Compose is the mission target path (single-host master). Swarm remains only
+    as an explicit override for legacy host tooling — never selected by the
+    Compose installer.
+    """
+    import os
+
+    backend = str(
+        getattr(settings.docker, "orchestration_backend", "compose") or "compose"
+    )
+    if backend == "swarm":
+        from base.master.swarm_backend import SwarmChallengeOrchestrator
+
+        return SwarmChallengeOrchestrator(
+            network_name=settings.docker.network_name,
+            internal_network=settings.docker.internal_network,
+            docker_broker_url=settings.docker.broker_url,
+            challenge_placement_constraint=settings.docker.challenge_placement_constraint,
+            # Multi-home the agent-challenge service onto the isolated eval overlay
+            # (base_jobs_internal) so its DooD eval job can reach the API for log
+            # streaming by name; the job network is base_jobs_internal (see
+            # AGENT_CHALLENGE_JOB_NETWORK).
+            job_network_slugs=frozenset({AGENT_CHALLENGE_SLUG}),
+        )
+
+    from base.master.compose_backend import ComposeChallengeOrchestrator
+
+    project = (
+        getattr(settings.docker, "compose_project_name", None)
+        or os.environ.get("COMPOSE_PROJECT_NAME")
+        or "base-mission-master"
+    )
+    return ComposeChallengeOrchestrator(
+        project_name=str(project),
+        compose_file=getattr(
+            settings.docker, "compose_file", "/run/base/compose/docker-compose.yml"
+        ),
+        override_dir=getattr(
+            settings.docker, "compose_override_dir", "/var/lib/base/compose-overrides"
+        ),
+        docker_bin="docker",
     )
 
 
@@ -1050,6 +1080,12 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         challenge_image_updater_settings=settings,
         challenge_image_update_interval_seconds=(
             settings.master.challenge_image_update_interval_seconds
+        ),
+        # Compose certificate: digest-pinned challenge watcher (mission target).
+        # Independent of the Swarm GHCR tag tracker above; <=0 disables.
+        challenge_watcher_settings=settings,
+        challenge_watcher_interval_seconds=(
+            settings.master.challenge_watcher_interval_seconds
         ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
         readiness_probes=(database_probe,),

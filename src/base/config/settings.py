@@ -95,6 +95,12 @@ class MasterSettings(BaseModel):
     # host supervisor. Runs every ``challenge_image_update_interval_seconds``
     # (<=0 disables it; default-on).
     challenge_image_update_interval_seconds: float = 60.0
+    # Compose challenge watcher (mission Compose path): digest-pinned pull +
+    # targeted recreation with health/version verification, rollback, backoff
+    # and durable intent. Runs in-process inside base-master-validator.
+    # ``<=0`` disables; default-on when compose backend is selected.
+    challenge_watcher_interval_seconds: float = 60.0
+    challenge_watcher_state_path: str = "/var/lib/base/challenge_watcher_state.json"
 
 
 class ValidatorAgentSettings(BaseModel):
@@ -161,6 +167,17 @@ class DockerSettings(BaseModel):
     network_name: str = "base_challenges"
     secret_dir: str = "/var/lib/base/secrets"
     internal_network: bool = True
+    #: Challenge orchestration backend for the master proxy.
+    #: ``compose`` is the mission target path; ``swarm`` remains for host-side
+    #: tooling only and is never the default Compose deployment.
+    orchestration_backend: Literal["compose", "swarm"] = "compose"
+    #: Compose project boundary the watcher may mutate (must match
+    #: ``COMPOSE_PROJECT_NAME`` of the master install).
+    compose_project_name: str | None = None
+    #: Master Compose file path visible inside the application container.
+    compose_file: str = "/run/base/compose/docker-compose.yml"
+    #: Directory for per-challenge compose override fragments (image pins).
+    compose_override_dir: str = "/var/lib/base/compose-overrides"
     broker_host: str = "0.0.0.0"
     broker_port: int = 8082
     broker_url: str = "http://base-docker-broker:8082"

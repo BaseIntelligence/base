@@ -1193,3 +1193,40 @@ class ValidatorSubmissionObservation(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class ChallengeWatcherState(Base, TimestampMixin):
+    """Durable Compose challenge-watcher intent and rollout state.
+
+    One row per challenge slug. Survives master restart so backoff, preferred
+    rollback digest, and in-flight phase can be reconstructed without mistaking
+    the desired registry image for the currently-running digest.
+    """
+
+    __tablename__ = "challenge_watcher_state"
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_challenge_watcher_state_slug"),
+        Index("ix_challenge_watcher_state_phase", "phase"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    slug: Mapped[str] = mapped_column(Text, nullable=False)
+    desired_digest: Mapped[str | None] = mapped_column(Text)
+    current_digest: Mapped[str | None] = mapped_column(Text)
+    rollback_digest: Mapped[str | None] = mapped_column(Text)
+    desired_image: Mapped[str | None] = mapped_column(Text)
+    rollback_image: Mapped[str | None] = mapped_column(Text)
+    phase: Mapped[str] = mapped_column(Text, nullable=False, default="idle")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_result: Mapped[str | None] = mapped_column(Text)
+    last_health_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_version_ok: Mapped[bool | None] = mapped_column(Boolean)
+    alerted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    project_name: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )

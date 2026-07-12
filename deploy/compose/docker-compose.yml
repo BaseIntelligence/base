@@ -59,14 +59,24 @@ services:
     environment:
       BASE_MASTER__PROXY_HOST: 0.0.0.0
       BASE_MASTER__PROXY_PORT: "8081"
-      # Static Compose topology owns challenge services; disable legacy reconcile.
-      BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "0"
+      # Static Compose topology owns challenge services; registry reconcile is
+      # opt-in for dynamic challenges via admin API (default still useful for
+      # adoption/orphan when docker socket is mounted).
+      BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "${BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS:-30}"
+      # Swarm/GHCR tag tracker stays off on Compose path; watcher is canonical.
       BASE_MASTER__CHALLENGE_IMAGE_UPDATE_INTERVAL_SECONDS: "0"
+      BASE_MASTER__CHALLENGE_WATCHER_INTERVAL_SECONDS: "${BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS:-60}"
+      BASE_MASTER__CHALLENGE_WATCHER_STATE_PATH: /var/lib/base/challenge_watcher_state.json
       BASE_MASTER__ORCHESTRATION_INTERVAL_SECONDS: "30"
       BASE_SECURITY__ADMIN_TOKEN_FILE: /run/secrets/admin_token
-      BASE_DOCKER__NETWORK_NAME: base_challenges
+      BASE_DOCKER__NETWORK_NAME: ${COMPOSE_PROJECT_NAME}_app
       BASE_DOCKER__INTERNAL_NETWORK: "true"
       BASE_DOCKER__SECRET_DIR: /var/lib/base/secrets
+      BASE_DOCKER__ORCHESTRATION_BACKEND: compose
+      BASE_DOCKER__COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      BASE_DOCKER__COMPOSE_FILE: /run/base/compose/docker-compose.yml
+      BASE_DOCKER__COMPOSE_OVERRIDE_DIR: /var/lib/base/compose-overrides
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
       BASE_OBSERVABILITY__LOG_JSON: "true"
       # DB URL is assembled from file-backed password by install helper into the
       # mounted master.yaml (never rendered as a compose environment secret).
@@ -78,6 +88,16 @@ services:
       - type: bind
         source: ${BASE_ADMIN_TOKEN_FILE:?set the admin token file}
         target: /run/secrets/admin_token
+        read_only: true
+      # Compose file + project docker.sock so the in-process watcher can pull and
+      # recreate only project-scoped challenge services (VAL-COMPOSE-030/041/054).
+      - type: bind
+        source: ${BASE_COMPOSE_FILE:-./docker-compose.yml}
+        target: /run/base/compose/docker-compose.yml
+        read_only: true
+      - type: bind
+        source: ${BASE_DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
         read_only: true
       - type: volume
         source: master-state
