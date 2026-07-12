@@ -36,6 +36,28 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
         encoding="utf-8",
     )
     master_config.chmod(0o600)
+    env_file = secrets / "compose.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "COMPOSE_PROJECT_NAME=mission-compose-topology-test",
+                "BASE_MASTER_IMAGE_REPOSITORY=registry.example/base-master",
+                f"BASE_MASTER_IMAGE_DIGEST={'a' * 64}",
+                "PRISM_IMAGE_REPOSITORY=registry.example/prism",
+                f"PRISM_IMAGE_DIGEST={'b' * 64}",
+                "POSTGRES_IMAGE_REPOSITORY=registry.example/postgres",
+                f"POSTGRES_IMAGE_DIGEST={'c' * 64}",
+                f"BASE_MASTER_CONFIG={master_config}",
+                f"BASE_ADMIN_TOKEN_FILE={admin}",
+                f"BASE_POSTGRES_PASSWORD_FILE={postgres}",
+                f"PRISM_SHARED_TOKEN_FILE={prism}",
+                "BASE_MASTER_HOST_PORT=3180",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
     return {
         **os.environ,
         "COMPOSE_PROJECT_NAME": "mission-compose-topology-test",
@@ -50,6 +72,7 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
         "BASE_POSTGRES_PASSWORD_FILE": str(postgres),
         "PRISM_SHARED_TOKEN_FILE": str(prism),
         "BASE_MASTER_HOST_PORT": "3180",
+        "BASE_COMPOSE_ENV_FILE": str(env_file),
     }
 
 
@@ -250,6 +273,21 @@ def test_secrets_are_file_mounted_not_inline(tmp_path: Path) -> None:
         assert forbidden not in blob
 
 
+def test_master_mounts_sealed_compose_env_file(tmp_path: Path) -> None:
+    """Install seals .env; master mounts it for in-container compose up."""
+
+    rendered = _render_master(tmp_path)
+    master = rendered["services"]["base-master-validator"]
+    env = master.get("environment") or {}
+    assert env.get("BASE_DOCKER__COMPOSE_ENV_FILE") == "/run/base/compose/.env"
+    mounts = master.get("volumes") or []
+    targets = {
+        m.get("target") or m.get("Target") for m in mounts if isinstance(m, dict)
+    }
+    assert "/run/base/compose/.env" in targets
+    assert "/run/base/compose/docker-compose.yml" in targets
+
+
 def test_healthchecks_present_for_application_readiness(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
     for name in ("master-postgres", "base-master-validator", "challenge-prism"):
@@ -264,6 +302,11 @@ def test_install_script_is_compose_only() -> None:
     assert "docker compose" in content
     assert "orchestration_backend: compose" in content
     assert "BASE_DOCKER_GID" in content
+    # Sealed compose env for in-container dynamic compose up (VAL-COMPOSE-008).
+    assert "COMPOSE_ENV_FILE" in content
+    assert "compose.env" in content
+    assert "--env-file" in content
+    assert "compose_env_file: /run/base/compose/.env" in content
     # Application host secrets end as mode 0600 (admin/prism/master.yaml).
     assert "chmod 600" in content
     for forbidden in (

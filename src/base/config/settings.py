@@ -178,6 +178,9 @@ class DockerSettings(BaseModel):
     compose_file: str = "/run/base/compose/docker-compose.yml"
     #: Directory for per-challenge compose override fragments (image pins).
     compose_override_dir: str = "/var/lib/base/compose-overrides"
+    #: Sealed install-time compose env file (image digests + secret paths).
+    #: Default sits next to ``compose_file`` at ``/run/base/compose/.env``.
+    compose_env_file: str = "/run/base/compose/.env"
     broker_host: str = "0.0.0.0"
     broker_port: int = 8082
     broker_url: str = "http://base-docker-broker:8082"

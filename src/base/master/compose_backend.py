@@ -36,6 +36,90 @@ _SAFE_SLUG_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 _SERVICE_NAME_RE = re.compile(r"^challenge-[a-z0-9][a-z0-9_.-]*$")
 
 
+#: Install-time compose interpolation keys sealed into
+#: ``/run/base/compose/.env`` by ``install-master.sh``. Dynamic
+#: ``docker compose up`` must carry these so the multi-service base file can
+#: interpolate without host shell exports (VAL-COMPOSE-008/025).
+_SEALED_COMPOSE_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "COMPOSE_PROJECT_NAME",
+        "BASE_MASTER_IMAGE_REPOSITORY",
+        "BASE_MASTER_IMAGE_DIGEST",
+        "PRISM_IMAGE_REPOSITORY",
+        "PRISM_IMAGE_DIGEST",
+        "POSTGRES_IMAGE_REPOSITORY",
+        "POSTGRES_IMAGE_DIGEST",
+        "BASE_MASTER_CONFIG",
+        "BASE_ADMIN_TOKEN_FILE",
+        "BASE_POSTGRES_PASSWORD_FILE",
+        "PRISM_SHARED_TOKEN_FILE",
+        "BASE_MASTER_HOST_PORT",
+        "BASE_DOCKER_GID",
+        "BASE_COMPOSE_FILE",
+        "BASE_POSTGRES_DB",
+        "BASE_POSTGRES_USER",
+        "BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS",
+        "BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS",
+    }
+)
+
+
+def resolve_compose_env_file(
+    compose_file: Path,
+    env_file: str | Path | None = None,
+) -> Path | None:
+    """Return the sealed compose env file if present, else None.
+
+    Prefer an explicit path, then ``<compose_file_dir>/.env`` (the install
+    mount target), then ``BASE_COMPOSE_ENV_FILE`` / ``COMPOSE_ENV_FILE``.
+    """
+
+    candidates: list[Path] = []
+    if env_file is not None and str(env_file).strip():
+        candidates.append(Path(env_file))
+    candidates.append(Path(compose_file).parent / ".env")
+    for key in ("BASE_COMPOSE_ENV_FILE", "COMPOSE_ENV_FILE"):
+        raw = os.environ.get(key)
+        if raw:
+            candidates.append(Path(raw))
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def load_compose_env_file(path: Path) -> dict[str, str]:
+    """Parse KEY=VALUE lines from a sealed compose env file (no export shell)."""
+
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise DockerOrchestrationError(
+            f"cannot read compose env file {path}: {exc}"
+        ) from exc
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
 @dataclass(frozen=True)
 class ComposeRunner:
     """Thin wrapper around ``docker compose`` CLI with fixed project boundary."""
@@ -45,6 +129,7 @@ class ComposeRunner:
     docker_bin: str = "docker"
     work_dir: Path | None = None
     timeout_seconds: float = 300.0
+    env_file: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.project_name or not self.project_name.strip():
@@ -62,6 +147,38 @@ class ComposeRunner:
             raise DockerOrchestrationError(f"compose file not found: {path}")
         return path
 
+    def _resolved_env_file(self) -> Path | None:
+        return resolve_compose_env_file(Path(self.compose_file), self.env_file)
+
+    def _compose_base_cmd(self, compose_file: Path) -> list[str]:
+        cmd = [
+            self.docker_bin,
+            "compose",
+            "-p",
+            self.project_name,
+        ]
+        env_file = self._resolved_env_file()
+        if env_file is not None:
+            cmd.extend(["--env-file", str(env_file)])
+        cmd.extend(["-f", str(compose_file)])
+        return cmd
+
+    def _merged_env(self, env: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Process env for compose, with sealed install pins layered in."""
+
+        merged = dict(os.environ)
+        sealed = self._resolved_env_file()
+        if sealed is not None:
+            for key, value in load_compose_env_file(sealed).items():
+                # Process-env wins over sealed file so pods can override pins at
+                # runtime for advanced operators; install pins fill gaps.
+                merged.setdefault(key, value)
+        if env:
+            merged.update(env)
+        # Force project identity even if COMPOSE_PROJECT_NAME differs in the env.
+        merged["COMPOSE_PROJECT_NAME"] = self.project_name
+        return merged
+
     def run(
         self,
         args: Sequence[str],
@@ -73,20 +190,8 @@ class ComposeRunner:
         """Run a project-scoped compose command."""
 
         compose_file = self._require_compose_file()
-        cmd = [
-            self.docker_bin,
-            "compose",
-            "-p",
-            self.project_name,
-            "-f",
-            str(compose_file),
-            *args,
-        ]
-        merged = dict(os.environ)
-        if env:
-            merged.update(env)
-        # Force project identity even if COMPOSE_PROJECT_NAME differs in the env.
-        merged["COMPOSE_PROJECT_NAME"] = self.project_name
+        cmd = [*self._compose_base_cmd(compose_file), *args]
+        merged = self._merged_env(env)
         logger.debug("compose runner: %s", " ".join(cmd))
         completed = subprocess.run(
             cmd,
@@ -114,6 +219,7 @@ class ComposeChallengeOrchestrator:
     compose_file: str | Path
     docker_bin: str = "docker"
     override_dir: str | Path = "/var/lib/base/compose-overrides"
+    env_file: str | Path | None = None
     request_timeout_seconds: float = 5.0
     health_retries: int = 12
     health_retry_delay_seconds: float = 2.0
@@ -126,6 +232,8 @@ class ComposeChallengeOrchestrator:
     def __post_init__(self) -> None:
         self.compose_file = Path(self.compose_file)
         self.override_dir = Path(self.override_dir)
+        resolved_env = resolve_compose_env_file(self.compose_file, self.env_file)
+        self.env_file = resolved_env
         try:
             self.override_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -141,6 +249,7 @@ class ComposeChallengeOrchestrator:
             docker_bin=self.docker_bin,
             work_dir=self.compose_file.parent if self.compose_file.exists() else None,
             timeout_seconds=self.command_timeout_seconds,
+            env_file=resolved_env,
         )
 
     @property
@@ -215,6 +324,9 @@ class ComposeChallengeOrchestrator:
         # Project-scoped tear-down: stop + remove container, keep named volumes
         # for reactivation (VAL-COMPOSE-027/029).
         self.runner.run(["rm", "-sf", service], check=False)
+        # Also remove any project-labeled leftovers that compose rm missed
+        # (prior-generation orphans without a live compose service).
+        self._remove_project_labeled_challenge_containers(slug)
         self._runtime.pop(slug, None)
         # Drop generated override so a later reactivation regenerates intentionally.
         override = self._override_path(service)
@@ -225,6 +337,41 @@ class ComposeChallengeOrchestrator:
                 logger.warning(
                     "compose orchestrator: could not remove override %s", override
                 )
+
+    def _remove_project_labeled_challenge_containers(self, slug: str) -> None:
+        """Force-remove running containers for slug labeled against this project."""
+
+        completed = subprocess.run(
+            [
+                self.docker_bin,
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={self.project_name}",
+                "--filter",
+                f"label=base.challenge.slug={slug}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=self.command_timeout_seconds,
+        )
+        if completed.returncode != 0:
+            return
+        ids = [
+            line.strip()
+            for line in (completed.stdout or "").splitlines()
+            if line.strip()
+        ]
+        if not ids:
+            return
+        subprocess.run(
+            [self.docker_bin, "rm", "-f", *ids],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=self.command_timeout_seconds,
+        )
 
     def restart_challenge(self, spec: ChallengeSpec) -> ChallengeRuntime:
         """Recreate the challenge service on the desired immutable image."""
@@ -269,7 +416,12 @@ class ComposeChallengeOrchestrator:
         return str(image) if image else None
 
     def list_running_challenge_slugs(self) -> frozenset[str]:
-        """Discover challenge services inside THIS compose project only."""
+        """Discover challenge services inside THIS compose project only.
+
+        Combines ``docker compose ps`` with a project-label docker inspect so
+        cross-restart orphans created by a prior generation without a live
+        compose service entry (VAL-COMPOSE-028) are still stopped.
+        """
 
         completed = self.runner.run(
             ["ps", "--format", "json", "--status", "running"],
@@ -308,6 +460,66 @@ class ComposeChallengeOrchestrator:
             )
             if slug:
                 slugs.add(str(slug))
+        # Supplement with label discovery for project-scoped orphans that
+        # compose ps may not surface (prior-generation docker run leftovers).
+        try:
+            labeled = self._list_project_labeled_challenge_slugs()
+        except Exception:
+            logger.exception("compose orchestrator: project-label orphan scan failed")
+            labeled = frozenset()
+        return frozenset(slugs | set(labeled))
+
+    def _list_project_labeled_challenge_slugs(self) -> frozenset[str]:
+        """Slugs for running containers labeled with this compose project."""
+
+        completed = subprocess.run(
+            [
+                self.docker_bin,
+                "ps",
+                "--filter",
+                f"label=com.docker.compose.project={self.project_name}",
+                "--filter",
+                "label=base.component=challenge",
+                "--format",
+                "{{.ID}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=self.command_timeout_seconds,
+        )
+        if completed.returncode != 0:
+            return frozenset()
+        slugs: set[str] = set()
+        for line in (completed.stdout or "").splitlines():
+            cid = line.strip()
+            if not cid:
+                continue
+            inspect = subprocess.run(
+                [
+                    self.docker_bin,
+                    "inspect",
+                    "--format",
+                    '{{ index .Config.Labels "base.challenge.slug" }}'
+                    '|{{ index .Config.Labels "com.docker.compose.service" }}',
+                    cid,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.command_timeout_seconds,
+            )
+            if inspect.returncode != 0:
+                continue
+            raw = (inspect.stdout or "").strip()
+            if "|" not in raw:
+                continue
+            slug_label, service = raw.split("|", 1)
+            slug = (slug_label or "").strip()
+            if not slug and service.startswith("challenge-"):
+                slug = service.removeprefix("challenge-")
+            if slug:
+                slugs.add(slug)
         return frozenset(slugs)
 
     def wait_until_ready(
@@ -351,28 +563,50 @@ class ComposeChallengeOrchestrator:
         return (completed.stdout or "").strip() == self.project_name
 
     def _compose_up(self, service: str, *, force_recreate: bool, pull: bool) -> None:
+        """Bring up one challenge service under the project boundary.
+
+        Static topology services (declared in the base master compose file)
+        use base + image-pin override with the sealed install env file so
+        shared service pins (postgres/master digests, password paths) still
+        interpolate. Fully managed dynamic overrides are self-contained: they
+        declare image, networks (by absolute project name), volumes, and labels
+        and do not re-require host install vars for `compose up`.
+        """
+
         override = self._override_path(service)
-        # Multi-file compose (base + image pin override) uses docker_bin directly
-        # because ComposeRunner pins a single primary file only.
-        cmd = [
-            self.docker_bin,
-            "compose",
-            "-p",
-            self.project_name,
-            "-f",
-            str(self.compose_file),
-        ]
-        if override.is_file():
+        static = self._service_defined_in_base_compose(service)
+        if static or not override.is_file():
+            # Base file path requires sealed install pins.
+            cmd = self.runner._compose_base_cmd(Path(self.compose_file))
+            if override.is_file():
+                cmd.extend(["-f", str(override)])
+        else:
+            # Dynamic managed service: self-contained override only.
+            # Still attach --env-file when present so project identity / future
+            # pins remain consistent; overrides themselves do not interpolate
+            # install-time secrets.
+            cmd = [
+                self.docker_bin,
+                "compose",
+                "-p",
+                self.project_name,
+            ]
+            env_file = self.runner._resolved_env_file()
+            if env_file is not None:
+                cmd.extend(["--env-file", str(env_file)])
             cmd.extend(["-f", str(override)])
         cmd.append("up")
-        cmd.extend(["-d", "--no-deps", "--remove-orphans"])
+        # Never pass --remove-orphans: a self-contained managed override only
+        # defines the challenge service, so Compose would treat master/postgres/
+        # prism as orphans and SIGKILL them (exit 137). Orphan challenge cleanup
+        # is owned by the registry reconciler (stop_challenge), not compose up.
+        cmd.extend(["-d", "--no-deps"])
         if force_recreate:
             cmd.append("--force-recreate")
         if pull:
             cmd.extend(["--pull", "missing"])
         cmd.append(service)
-        env = dict(os.environ)
-        env["COMPOSE_PROJECT_NAME"] = self.project_name
+        env = self.runner._merged_env()
         completed = subprocess.run(
             cmd,
             capture_output=True,
@@ -421,6 +655,10 @@ class ComposeChallengeOrchestrator:
 
         volume_key = f"{service.replace('.', '_')}_data"
         volume_name = f"{self.project_name}_{volume_key}"
+        # Attach to the already-created master app network by absolute name so
+        # this override is self-contained (no COMPOSE_PROJECT_NAME / image pin
+        # interpolation required for `docker compose -f override up`).
+        app_network_name = f"{self.project_name}_app"
         env = dict(spec.env or {})
         # Combined Prism-style defaults when operators register a new challenge
         # without fleshing out env: keep the service startable and private.
@@ -441,6 +679,8 @@ class ComposeChallengeOrchestrator:
         env_block = "\n".join(env_lines) if env_lines else "      {}"
         content = (
             f"# generated by base compose orchestrator — do not hand-edit\n"
+            f"# Self-contained managed challenge: no host install env required.\n"
+            f"name: {self.project_name}\n"
             f"services:\n"
             f"  {service}:\n"
             f"    image: {image}\n"
@@ -459,6 +699,11 @@ class ComposeChallengeOrchestrator:
             f"      base.challenge.slug: {slug}\n"
             f"      base.managed_by: master-watcher\n"
             f"      base.compose.lifecycle: managed\n"
+            f"      com.docker.compose.project: {self.project_name}\n"
+            f"networks:\n"
+            f"  app:\n"
+            f"    name: {app_network_name}\n"
+            f"    external: true\n"
             f"volumes:\n"
             f"  {volume_key}:\n"
             f"    name: {volume_name}\n"
@@ -686,4 +931,10 @@ def _parse_label_string(raw: str) -> dict[str, str]:
     return labels
 
 
-__all__ = ["ComposeChallengeOrchestrator", "ComposeRunner"]
+__all__ = [
+    "ComposeChallengeOrchestrator",
+    "ComposeRunner",
+    "load_compose_env_file",
+    "resolve_compose_env_file",
+    "_SEALED_COMPOSE_ENV_KEYS",
+]

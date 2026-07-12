@@ -81,6 +81,7 @@ services:
       BASE_DOCKER__COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
       BASE_DOCKER__COMPOSE_FILE: /run/base/compose/docker-compose.yml
       BASE_DOCKER__COMPOSE_OVERRIDE_DIR: /var/lib/base/compose-overrides
+      BASE_DOCKER__COMPOSE_ENV_FILE: /run/base/compose/.env
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
       BASE_OBSERVABILITY__LOG_JSON: "true"
       # DB URL is assembled from file-backed password by install helper into the
@@ -94,11 +95,17 @@ services:
         source: ${BASE_ADMIN_TOKEN_FILE:?set the admin token file}
         target: /run/secrets/admin_token
         read_only: true
-      # Compose file + project docker.sock so the in-process watcher can pull and
-      # recreate only project-scoped challenge services (VAL-COMPOSE-030/041/054).
+      # Compose file + sealed install env + docker.sock so the in-process
+      # watcher can pull/recreate only project-scoped challenge services
+      # (VAL-COMPOSE-008/025/030/041/054). The .env carries image digests and
+      # secret-file paths required by docker-compose.yml interpolation.
       - type: bind
         source: ${BASE_COMPOSE_FILE:-./docker-compose.yml}
         target: /run/base/compose/docker-compose.yml
+        read_only: true
+      - type: bind
+        source: ${BASE_COMPOSE_ENV_FILE:?set sealed compose env file from install-master}
+        target: /run/base/compose/.env
         read_only: true
       - type: bind
         source: ${BASE_DOCKER_SOCKET:-/var/run/docker.sock}

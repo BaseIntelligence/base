@@ -639,6 +639,7 @@ def _challenge_orchestrator(settings):
         override_dir=getattr(
             settings.docker, "compose_override_dir", "/var/lib/base/compose-overrides"
         ),
+        env_file=getattr(settings.docker, "compose_env_file", "/run/base/compose/.env"),
         docker_bin="docker",
     )
 
