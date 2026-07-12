@@ -49,6 +49,10 @@ from base.master.docker_orchestrator import (
     challenge_spec_from_registry,
 )
 from base.master.reassignment import ReassignmentPassResult, run_reassignment_pass
+from base.master.replay_audit import (
+    ReplayAuditRequest,
+    ReplayAuditResult,
+)
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.master.worker_assignment_engine import (
     WorkerAssignmentEngine,
@@ -92,6 +96,12 @@ class ChallengePendingWork:
     job_id: str | None = None
     checkpoint_ref: str | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
+
+
+class ReplayAuditSource(Protocol):
+    """Source of sampled, separately-labelled replay requests."""
+
+    async def fetch_sampled_requests(self) -> Sequence[Any]: ...
 
 
 class ChallengeWorkSource(Protocol):
@@ -145,6 +155,8 @@ class MasterOrchestrationDriver:
         assignment_service: AssignmentService,
         validator_service: ValidatorCoordinationService,
         work_source: ChallengeWorkSource,
+        replay_source: ReplayAuditSource | None = None,
+        replay_result_forwarder: Any | None = None,
         fold_trigger: ChallengeFoldTrigger | None = None,
         worker_assignment_engine: WorkerAssignmentEngine | None = None,
         worker_reconciler: WorkerReconciliationService | None = None,
@@ -153,6 +165,8 @@ class MasterOrchestrationDriver:
         self._assignment_service = assignment_service
         self._validator_service = validator_service
         self._work_source = work_source
+        self._replay_source = replay_source
+        self._replay_result_forwarder = replay_result_forwarder
         self._fold_trigger = fold_trigger
         self._worker_assignment_engine = worker_assignment_engine
         self._worker_reconciler = worker_reconciler
@@ -197,6 +211,56 @@ class MasterOrchestrationDriver:
                 bridged.setdefault(work.challenge_slug, []).append(work_unit_id)
         return bridged
 
+    async def bridge_replay_requests(self) -> list[str]:
+        """Materialize only sampled labelled replay requests as assignments."""
+
+        if self._replay_source is None:
+            return []
+        requests = await self._replay_source.fetch_sampled_requests()
+        created: list[str] = []
+        for request in requests:
+            created.append(
+                await self._assignment_service.create_replay_audit_work_unit(
+                    request=request,
+                )
+            )
+        return created
+
+    async def forward_replay_results(self) -> list[str]:
+        """Deliver completed replay trials and mark forwarding durably."""
+
+        if self._replay_result_forwarder is None:
+            return []
+        forwarded: list[str] = []
+        for (
+            assignment,
+            result_row,
+        ) in await self._assignment_service.get_unforwarded_replay_results():
+            payload = dict(result_row.payload or {}).get("replay_audit_result")
+            if not isinstance(payload, Mapping):
+                logger.warning(
+                    "replay assignment %s returned malformed result",
+                    assignment.work_unit_id,
+                )
+                continue
+            result = ReplayAuditResult.from_mapping(payload)
+            result.validate_against(
+                # The request was validated at assignment creation and preserved
+                # byte-for-byte in the assignment payload.
+                ReplayAuditRequest.from_mapping(
+                    assignment.payload["replay_audit_request"]
+                )
+            )
+            await self._replay_result_forwarder.forward(
+                challenge_slug=assignment.challenge_slug,
+                result=result,
+            )
+            await self._assignment_service.mark_replay_result_forwarded(
+                str(result_row.id)
+            )
+            forwarded.append(assignment.work_unit_id)
+        return forwarded
+
     async def run_once(self) -> OrchestrationPassResult:
         """Bridge work, reassign, replicate + reconcile worker units, then fold.
 
@@ -207,6 +271,7 @@ class MasterOrchestrationDriver:
         """
 
         bridged = await self.bridge_pending_work()
+        replayed = await self.bridge_replay_requests()
         reassignment = await run_reassignment_pass(
             validator_service=self._validator_service,
             assignment_service=self._assignment_service,
@@ -222,6 +287,9 @@ class MasterOrchestrationDriver:
         if self._worker_reconciler is not None:
             reconciliation = await self._worker_reconciler.reconcile_once()
         folded = await self._fold_failed()
+        await self.forward_replay_results()
+        if replayed:
+            bridged.setdefault(AGENT_CHALLENGE_SLUG, []).extend(replayed)
         return OrchestrationPassResult(
             bridged=bridged,
             reassignment=reassignment,

@@ -12,6 +12,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from base.master.replay_audit import (
+    REPLAY_AUDIT_REQUEST_KEY,
+    ReplayAuditRequest,
+    ReplayAuditResult,
+    is_replay_assignment_payload,
+)
 from base.schemas.worker import PHALA_TDX_TIER, ExecutionProof, WorkerSignature
 from base.validator.agent.executor import (
     AssignmentContext,
@@ -32,12 +38,20 @@ DispatchFn = Callable[..., Awaitable[Mapping[str, Any]]]
 class AgentChallengeCycleExecutor:
     """Run a pulled agent-challenge assignment via the sibling validator cycle."""
 
-    def __init__(self, *, dispatch: DispatchFn | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        dispatch: DispatchFn | None = None,
+        dispatch_replay: DispatchFn | None = None,
+    ) -> None:
         self._dispatch = dispatch
+        self._dispatch_replay = dispatch_replay
 
     async def execute(
         self, context: AssignmentContext, *, progress: ProgressCallback
     ) -> ExecutionResult:
+        if is_replay_assignment_payload(context.assignment.payload):
+            return await self._execute_replay(context)
         dispatch = self._dispatch or _load_dispatch()
         broker = context.broker
         result = await dispatch(
@@ -50,6 +64,36 @@ class AgentChallengeCycleExecutor:
         )
         return ExecutionResult(success=True, payload=dict(result))
 
+    async def _execute_replay(self, context: AssignmentContext) -> ExecutionResult:
+        payload = context.assignment.payload
+        raw_request = payload.get(REPLAY_AUDIT_REQUEST_KEY)
+        if not isinstance(raw_request, Mapping):
+            raise AssignmentExecutionError("replay assignment has no labelled request")
+        request = ReplayAuditRequest.from_mapping(raw_request)
+        dispatch = self._dispatch_replay or _load_replay_dispatch()
+        broker = context.broker
+        result = await dispatch(
+            request=request.to_dict(),
+            work_unit_id=context.assignment.work_unit_id,
+            payload=dict(payload),
+            broker_url=broker.broker_url,
+            broker_token=broker.broker_token,
+            broker_token_file=broker.broker_token_file,
+            broker_allowed_images=tuple(broker.allowed_images),
+        )
+        if not isinstance(result, Mapping):
+            raise AssignmentExecutionError(
+                "replay dispatch returned a non-object result"
+            )
+        replay_result = ReplayAuditResult.from_mapping(
+            result.get("replay_audit_result", result)
+        )
+        replay_result.validate_against(request)
+        return ExecutionResult(
+            success=True,
+            payload={"replay_audit_result": replay_result.to_dict()},
+        )
+
 
 def _load_dispatch() -> DispatchFn:
     try:
@@ -59,6 +103,16 @@ def _load_dispatch() -> DispatchFn:
             f"agent-challenge dispatch adapter is unavailable: {exc}"
         ) from exc
     return dispatch_assignment
+
+
+def _load_replay_dispatch() -> DispatchFn:
+    try:
+        from agent_challenge.validator_dispatch import dispatch_replay_audit
+    except Exception as exc:  # noqa: BLE001 - surfaced as a dispatch failure
+        raise AssignmentExecutionError(
+            f"agent-challenge replay dispatch adapter is unavailable: {exc}"
+        ) from exc
+    return dispatch_replay_audit
 
 
 def rebind_worker_signature(
@@ -102,4 +156,8 @@ def rebind_worker_signature(
     )
 
 
-__all__ = ["CHALLENGE_SLUG", "AgentChallengeCycleExecutor", "rebind_worker_signature"]
+__all__ = [
+    "CHALLENGE_SLUG",
+    "AgentChallengeCycleExecutor",
+    "rebind_worker_signature",
+]
