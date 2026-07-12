@@ -377,3 +377,57 @@ def test_database_defaults_remain_postgres() -> None:
         (ROOT / "config" / "master.example.yaml").read_text(encoding="utf-8")
     )
     assert master_example["database"]["url"].startswith("postgresql+asyncpg://")
+
+
+def test_master_dockerfile_ships_compose_cli_plugin() -> None:
+    """VAL-COMPOSE-008/024-029: master image must ship working docker compose."""
+
+    content = (ROOT / "docker" / "Dockerfile.master").read_text(encoding="utf-8")
+    assert "cli-plugins" in content
+    assert "docker-compose" in content
+    assert "docker compose version" in content
+    # Compose v5 (or source compatible) release artifact is pinned in Dockerfile.
+    assert "docker/compose/releases/download" in content
+    assert "USER 1000:1000" in content
+    # Static docker CLI alone is insufficient; both binary + plugin are needed.
+    assert "docker-29.5.3.tgz" in content or (
+        "download.docker.com/linux/static" in content
+    )
+
+
+def test_master_cli_default_import_avoids_swarm_backend() -> None:
+    """VAL-CROSS-065: default master CLI graph does not import swarm_backend."""
+
+    import sys
+
+    # Drop residual modules so the assertion measures this process import path.
+    for key in list(sys.modules):
+        if key == "base.master.swarm_backend" or key.startswith(
+            "base.master.swarm_backend."
+        ):
+            del sys.modules[key]
+
+    import base.cli_app.main as cli_main
+
+    assert "base.master.swarm_backend" not in sys.modules
+    # Top-level name must not re-export SwarmChallengeOrchestrator.
+    assert not hasattr(cli_main, "SwarmChallengeOrchestrator")
+    source = Path(cli_main.__file__).read_text(encoding="utf-8")
+    # Eager top-level import of swarm_backend is forbidden for the default graph.
+    assert (
+        "from base.master.swarm_backend import"
+        not in source.split("def _challenge_orchestrator", 1)[0]
+    )
+    # Lazy import remains only behind explicit orchestration_backend=swarm.
+    orch_src = source.split("def _challenge_orchestrator", 1)[1].split(
+        "def _resolve_master_weight_epoch", 1
+    )[0]
+    assert "SwarmChallengeOrchestrator" in orch_src
+    assert 'backend == "swarm"' in orch_src or "orchestration_backend" in orch_src
+    # Sanity: compose factory remains the default path and still avoids Swarm.
+    from base.config.settings import Settings
+    from base.master.compose_backend import ComposeChallengeOrchestrator
+
+    orch = cli_main._challenge_orchestrator(Settings())
+    assert isinstance(orch, ComposeChallengeOrchestrator)
+    assert "base.master.swarm_backend" not in sys.modules

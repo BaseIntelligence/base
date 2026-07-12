@@ -11,10 +11,19 @@ process that runs the control-plane scheduled tasks. Module layout:
 - ``tasks.py``     — the ONLY registration seam; Tasks 17-22 add one module
   each plus one line here.
 
-No kubernetes/helm imports anywhere in this package — keep it that way.
+No kubectl/helm imports anywhere in this package — keep it that way.
+
+Import hygiene (VAL-CROSS-065): this package initializer must NOT pull
+:mod:`base.master.swarm_backend` or the full Swarm task graph. Historical
+task builders that require Swarm stay behind lazy imports in
+:func:`build_scheduled_tasks` / :func:`build_supervisor` only, so the
+supported Compose master entrypoints (proxy, watcher) may import
+``base.supervisor.challenge_watcher`` without loading Swarm backends.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from base.config.settings import Settings
 from base.supervisor.health import BrokerHealthGate, http_health_prober
@@ -24,7 +33,6 @@ from base.supervisor.sd_notify import (
     SystemdNotifier,
     watchdog_interval_seconds,
 )
-from base.supervisor.tasks import build_scheduled_tasks
 
 __all__ = [
     "BrokerHealthGate",
@@ -37,6 +45,17 @@ __all__ = [
     "http_health_prober",
     "watchdog_interval_seconds",
 ]
+
+
+def build_scheduled_tasks(settings: Settings) -> Any:
+    """Lazy re-export of the historical Swarm supervisor task registry.
+
+    Deferred so ``import base.supervisor`` (or sibling modules such as the
+    Compose challenge watcher) does not load Swarm CLI runners by default.
+    """
+    from base.supervisor.tasks import build_scheduled_tasks as _build
+
+    return _build(settings)
 
 
 def build_supervisor(settings: Settings) -> Supervisor:

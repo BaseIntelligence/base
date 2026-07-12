@@ -78,7 +78,6 @@ from base.master.service import (
     active_challenge_inputs,
 )
 from base.master.submission_observation import ValidatorSubmissionObservationService
-from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.master.worker_assignment import WorkerAssignmentService
 from base.master.worker_assignment_engine import WorkerAssignmentEngine
@@ -153,7 +152,13 @@ validator_app = typer.Typer(help="Run normal validator components")
 challenge_app = typer.Typer(help="Manage and scaffold challenges")
 db_app = typer.Typer(help="Database helpers")
 registry_app = typer.Typer(help="Registry helpers")
-worker_app = typer.Typer(help="Manage Swarm workers (CPU/GPU job nodes)")
+worker_app = typer.Typer(
+    help=(
+        "HISTORICAL/NON-TARGET: Swarm node join/label helpers. "
+        "Not part of the supported Compose operator path; prefer "
+        "deploy/compose/install-master.sh."
+    ),
+)
 worker_plane_app = typer.Typer(help="Deploy and manage miner-funded GPU worker agents")
 master_app.add_typer(master_challenges_app, name="challenges")
 master_app.add_typer(worker_app, name="worker")
@@ -164,6 +169,11 @@ app.add_typer(db_app, name="db")
 app.add_typer(registry_app, name="registry")
 app.add_typer(worker_plane_app, name="worker")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+#: Historical isolated Swarm eval overlay name (``base_jobs_internal``). Kept as
+#: a local string so the default master CLI import graph does **not** pull in
+#: :mod:`base.master.swarm_backend` (VAL-CROSS-065 Compose-only operator surface).
+DEFAULT_JOB_NETWORK = "base_jobs_internal"
 
 
 def _resolved_log_level(settings: Settings) -> int:
@@ -725,11 +735,9 @@ AGENT_CHALLENGE_GOLDEN_DIR = "/opt/agent-challenge/golden"
 AGENT_CHALLENGE_INTERNAL_BASE_URL = "http://challenge-agent-challenge:8000"
 #: Overlay the DooD eval JOB attaches to (``CHALLENGE_DOCKER_BROKER_NETWORK``).
 #: This is the dedicated ISOLATED eval overlay (``base_jobs_internal``: created
-#: ``--internal`` so no internet egress, and NOT hosting postgres), reused from
-#: ``swarm_backend.DEFAULT_JOB_NETWORK`` as the single source of truth. The
-#: agent-challenge API + proxy are multi-homed onto it so the job can resolve
-#: ONLY those two by name (log streaming + LLM gateway), never postgres. See
-#: AGENTS.md "Eval job network isolation (base_jobs_internal)".
+#: ``--internal`` so no internet egress, and NOT hosting postgres). Historical
+#: Swarm tooling uses the same name; Compose target path does not create it.
+#: See AGENTS.md "Eval job network isolation (base_jobs_internal)".
 AGENT_CHALLENGE_JOB_NETWORK = DEFAULT_JOB_NETWORK
 PRISM_IMAGE = "ghcr.io/baseintelligence/prism:latest"
 PRISM_EVALUATOR_IMAGE = "ghcr.io/baseintelligence/prism-evaluator:latest"
@@ -1218,12 +1226,23 @@ def _docker_cli(args: list[str]) -> None:
         raise typer.Exit(code=completed.returncode)
 
 
+def _warn_master_worker_historical() -> None:
+    """Surface that ``base master worker`` is non-target on Compose installs."""
+    typer.echo(
+        "WARNING: base master worker is a historical/non-target Swarm surface. "
+        "Compose installers (deploy/compose/install-master.sh) are the supported "
+        "operator entrypoint.",
+        err=True,
+    )
+
+
 @worker_app.command("token")
 def worker_token(
     role: str = typer.Option("worker", "--role", help="worker or manager"),
     rotate: bool = typer.Option(False, "--rotate", help="Rotate the join token first."),
 ):
-    """Print the ``docker swarm join`` command for a new worker/manager node."""
+    """Historical: print the ``docker swarm join`` command (non-target)."""
+    _warn_master_worker_historical()
     if role not in {"worker", "manager"}:
         raise typer.BadParameter("role must be 'worker' or 'manager'")
     args = ["swarm", "join-token"]
@@ -1235,7 +1254,8 @@ def worker_token(
 
 @worker_app.command("list")
 def worker_list():
-    """List Swarm nodes (``docker node ls``)."""
+    """Historical: list Swarm nodes (``docker node ls``; non-target)."""
+    _warn_master_worker_historical()
     _docker_cli(["node", "ls"])
 
 
@@ -1244,7 +1264,8 @@ def worker_label(
     node: str,
     workload: str = typer.Option(..., "--workload", help="cpu or gpu"),
 ):
-    """Label a node so the broker schedules cpu/gpu jobs onto it."""
+    """Historical: label a Swarm node (non-target)."""
+    _warn_master_worker_historical()
     if workload not in {"cpu", "gpu"}:
         raise typer.BadParameter("workload must be 'cpu' or 'gpu'")
     _docker_cli(["node", "update", "--label-add", f"base.workload={workload}", node])
@@ -1257,7 +1278,8 @@ def worker_drain(
         False, "--active", help="Restore availability=active instead of draining."
     ),
 ):
-    """Drain (or reactivate) a node's Swarm availability."""
+    """Historical: drain or reactivate a Swarm node (non-target)."""
+    _warn_master_worker_historical()
     availability = "active" if active else "drain"
     _docker_cli(["node", "update", "--availability", availability, node])
 
@@ -1267,7 +1289,8 @@ def worker_rm(
     node: str,
     force: bool = typer.Option(False, "--force"),
 ):
-    """Remove a node from the Swarm (``docker node rm``)."""
+    """Historical: remove a Swarm node (non-target)."""
+    _warn_master_worker_historical()
     args = ["node", "rm"]
     if force:
         args.append("--force")
@@ -1277,7 +1300,8 @@ def worker_rm(
 
 @worker_app.command("inspect")
 def worker_inspect(node: str):
-    """Inspect a Swarm node (``docker node inspect``)."""
+    """Historical: inspect a Swarm node (non-target)."""
+    _warn_master_worker_historical()
     _docker_cli(["node", "inspect", node])
 
 

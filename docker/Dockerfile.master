@@ -20,6 +20,19 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-29.
     && rm -rf /tmp/docker /tmp/docker.tgz \
     && docker --version
 
+# ComposeChallengeOrchestrator shell-outs to `docker compose -p ...` for
+# list/start/stop/recreate. The static docker CLI alone is not enough: ship the
+# official Compose v5 CLI plugin so in-container reconcile works (VAL-COMPOSE-
+# 008/024/025/027/028/029). Install into both default plugin search paths so
+# non-root uid 1000 and root path lookups both succeed.
+RUN mkdir -p /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins \
+    && curl -fsSL https://github.com/docker/compose/releases/download/v5.0.2/docker-compose-linux-x86_64 \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose \
+    && ln -sf /usr/local/lib/docker/cli-plugins/docker-compose \
+        /usr/libexec/docker/cli-plugins/docker-compose \
+    && docker compose version
+
 COPY . .
 RUN if [ -f pyproject.toml ]; then uv pip install --system -e ".[master]"; fi
 # Host worktrees may carry mode 0600 files; ensure the non-root runtime can read

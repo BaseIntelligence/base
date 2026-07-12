@@ -57,10 +57,34 @@ def test_worker_help_lists_agent_deploy_status() -> None:
 
 
 def test_legacy_master_worker_group_intact() -> None:
+    """VAL-CROSS-065: residual Swarm master worker is historical/non-target."""
     result = runner.invoke(cli_main.app, ["master", "worker", "--help"])
     assert result.exit_code == 0
     for legacy in ("token", "list", "label", "drain", "rm", "inspect"):
         assert legacy in result.stdout
+    help_blob = (result.stdout or "") + (result.stderr or "")
+    assert "HISTORICAL" in help_blob or "NON-TARGET" in help_blob
+    assert "install-master.sh" in help_blob
+
+
+def test_legacy_master_worker_token_warns_historical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subcommands still exist but emit a historical/non-target warning first."""
+    calls: list[list[str]] = []
+
+    def _capture(args: list[str]) -> None:
+        calls.append(list(args))
+
+    monkeypatch.setattr(cli_main, "_docker_cli", _capture)
+    result = runner.invoke(
+        cli_main.app, ["master", "worker", "token", "--role", "worker"]
+    )
+    assert result.exit_code == 0
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "historical" in combined.lower() or "non-target" in combined.lower()
+    assert "install-master.sh" in combined
+    assert calls and calls[0][:2] == ["swarm", "join-token"]
 
 
 # -- VAL-AGENT-010: provider-key refusal --------------------------------------
