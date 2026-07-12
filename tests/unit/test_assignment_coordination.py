@@ -33,6 +33,7 @@ from base.db import (
 from base.db.models import WorkAssignment, WorkAssignmentStatus
 from base.master.app_proxy import create_proxy_app
 from base.master.assignment_coordination import AssignmentCoordinationService
+from base.master.validator_coordination import ValidatorCoordinationService
 from base.security.validator_auth import (
     MetagraphValidatorEligibility,
     SqlAlchemyValidatorNonceStore,
@@ -262,11 +263,16 @@ async def harness() -> AsyncIterator[Harness]:
         lease_seconds=LEASE_SECONDS,
         now_fn=clock.now,
     )
+    validator_service = ValidatorCoordinationService(
+        session_factory,
+        now_fn=clock.now,
+    )
     app = create_proxy_app(
         registry=object(),
         nonce_store=FakeNonceStore(),
         metagraph_cache=FakeCache(),  # type: ignore[arg-type]
         validator_verifier=verifier,
+        validator_service=validator_service,
         assignment_coordination_service=service,
     )
     transport = ASGITransport(app=app)
@@ -308,8 +314,9 @@ async def test_stale_timestamp_and_replayed_nonce_rejected(harness: Harness) -> 
 
     first = await harness.pull(nonce="replay-1")
     assert first.status_code == 200
+    # Exact body+nonce replay is idempotent (same body hash).
     replay = await harness.pull(nonce="replay-1")
-    assert replay.status_code == 409
+    assert replay.status_code == 200
 
 
 # VAL-ASSIGN-012
@@ -362,7 +369,7 @@ async def test_pull_returns_only_callers_non_terminal_capability_matched(
 
     response = await harness.pull(hotkey="permitted")
     assert response.status_code == 200
-    returned = {a["id"] for a in response.json()["assignments"]}
+    returned = {a["assignment_id"] for a in response.json()["assignments"]}
     assert returned == {mine_assigned, mine_running}
 
 
@@ -514,12 +521,17 @@ async def test_result_post_is_idempotent(harness: Harness) -> None:
     assert first.status_code == 200
     first_ref = first.json()["result_ref"]
 
-    second = await harness.result(assignment_id, success=True, payload={"score": 0.99})
-    assert second.status_code == 200
-    second_body = second.json()
-    assert second_body["idempotent"] is True
-    assert second_body["result_ref"] == first_ref
-    assert second_body["status"] == "completed"
+    exact = await harness.result(assignment_id, success=True, payload={"score": 0.5})
+    assert exact.status_code == 200
+    exact_body = exact.json()
+    assert exact_body["idempotent"] is True
+    assert exact_body["result_ref"] == first_ref
+    assert exact_body["status"] == "completed"
+
+    conflict = await harness.result(
+        assignment_id, success=True, payload={"score": 0.99}
+    )
+    assert conflict.status_code == 409
 
     row = await harness.get_assignment(assignment_id)
     assert row is not None
@@ -553,3 +565,188 @@ async def test_result_unknown_assignment_returns_404(harness: Harness) -> None:
     await harness.add_validator("permitted", ["cpu"])
     response = await harness.result(str(uuid.uuid4()), success=True)
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Canonical weight/SDK coordination contracts
+# ---------------------------------------------------------------------------
+
+
+async def test_pull_returns_canonical_schema_fields(harness: Harness) -> None:
+    """VAL-SDK-045 / VAL-WEIGHT-006: pull payloads include the required fields."""
+
+    await harness.add_validator("permitted", ["cpu"])
+    assignment_id = await harness.add_assignment(
+        work_unit_id="u-canon",
+        hotkey="permitted",
+        status=WorkAssignmentStatus.ASSIGNED,
+    )
+
+    response = await harness.pull(hotkey="permitted")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["api_version"] == "1.0"
+    assert len(body["assignments"]) == 1
+    view = body["assignments"][0]
+    for key in (
+        "api_version",
+        "assignment_id",
+        "work_unit_id",
+        "submission_ref",
+        "challenge_slug",
+        "payload_digest",
+        "required_capability",
+        "revision",
+        "attempt",
+        "status",
+        "lease_deadline",
+    ):
+        assert key in view
+    assert view["assignment_id"] == assignment_id
+    assert view["payload_digest"]
+    assert "gateway_token" not in view
+    assert "gateway_url" not in view
+
+
+async def test_two_validators_register_with_distinct_identities(
+    harness: Harness,
+) -> None:
+    """VAL-WEIGHT-001: two independent authenticated registrations."""
+
+    a = await harness.signed(
+        path="/v1/validators/register",
+        body=json.dumps({"capabilities": ["cpu"], "version": "1.0.0"}).encode(),
+        hotkey="permitted",
+    )
+    b = await harness.signed(
+        path="/v1/validators/register",
+        body=json.dumps({"capabilities": ["cpu", "gpu"], "version": "1.0.1"}).encode(),
+        hotkey="permitted2",
+    )
+    assert a.status_code == 200
+    assert b.status_code == 200
+    a_body = a.json()["validator"]
+    b_body = b.json()["validator"]
+    assert a_body["hotkey"] == "permitted"
+    assert b_body["hotkey"] == "permitted2"
+    assert a_body["hotkey"] != b_body["hotkey"]
+    assert a.json()["idempotent"] is False
+    assert b.json()["idempotent"] is False
+
+
+async def test_registration_idempotent_exact_retry(harness: Harness) -> None:
+    """VAL-WEIGHT-003: exact registration retry reuses identity, no duplicate."""
+
+    body = json.dumps({"capabilities": ["cpu"], "version": "3.0.0"}).encode()
+    nonce = "reg-exact-1"
+    first = await harness.signed(
+        path="/v1/validators/register", body=body, nonce=nonce, hotkey="permitted"
+    )
+    second = await harness.signed(
+        path="/v1/validators/register", body=body, nonce=nonce, hotkey="permitted"
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["validator"]["hotkey"] == second.json()["validator"]["hotkey"]
+    assert second.json()["idempotent"] is True
+
+    conflict = await harness.signed(
+        path="/v1/validators/register",
+        body=json.dumps({"capabilities": ["gpu"], "version": "9.9.9"}).encode(),
+        nonce=nonce,
+        hotkey="permitted",
+    )
+    assert conflict.status_code == 409
+
+
+async def test_heartbeat_sequence_ordering_and_cross_identity(
+    harness: Harness,
+) -> None:
+    """VAL-WEIGHT-004 / VAL-WEIGHT-005: sequenced heartbeats and isolation."""
+
+    for hotkey in ("permitted", "permitted2"):
+        reg = await harness.signed(
+            path="/v1/validators/register",
+            body=json.dumps({"capabilities": ["cpu"], "version": "1.0.0"}).encode(),
+            hotkey=hotkey,
+        )
+        assert reg.status_code == 200
+
+    ok_a = await harness.signed(
+        path="/v1/validators/heartbeat",
+        body=json.dumps(
+            {"sequence": 1, "last_seen_meta": {"node": "a"}, "version": "1.0.0"}
+        ).encode(),
+        hotkey="permitted",
+    )
+    assert ok_a.status_code == 200
+    assert ok_a.json()["sequence"] == 1
+
+    # exact retry of sequence 1 is idempotent
+    retry = await harness.signed(
+        path="/v1/validators/heartbeat",
+        body=json.dumps(
+            {"sequence": 1, "last_seen_meta": {"node": "a"}, "version": "1.0.0"}
+        ).encode(),
+        hotkey="permitted",
+        nonce="hb-retry-1",
+    )
+    assert retry.status_code == 200
+    assert retry.json()["idempotent"] is True
+
+    # lower sequence rejected
+    lower = await harness.signed(
+        path="/v1/validators/heartbeat",
+        body=json.dumps({"sequence": 1, "version": "2.0.0"}).encode(),
+        hotkey="permitted",
+    )
+    # same sequence with different content must conflict
+    assert lower.status_code == 409
+
+    advance = await harness.signed(
+        path="/v1/validators/heartbeat",
+        body=json.dumps(
+            {"sequence": 2, "last_seen_meta": {"node": "a2"}, "version": "1.1.0"}
+        ).encode(),
+        hotkey="permitted",
+    )
+    assert advance.status_code == 200
+    assert advance.json()["sequence"] == 2
+
+    # A cannot heartbeat B's hotkey: identity comes from signature, so requesting
+    # as B only updates B.
+    b_hb = await harness.signed(
+        path="/v1/validators/heartbeat",
+        body=json.dumps({"sequence": 5, "last_seen_meta": {"node": "b"}}).encode(),
+        hotkey="permitted2",
+    )
+    assert b_hb.status_code == 200
+    assert b_hb.json()["sequence"] == 5
+
+
+async def test_result_digest_conflict_preserves_first(harness: Harness) -> None:
+    """VAL-SDK-050 / VAL-WEIGHT-009: conflict does not overwrite committed result."""
+
+    await harness.add_validator("permitted", ["cpu"])
+    assignment_id = await harness.add_assignment(
+        work_unit_id="u-conflict",
+        hotkey="permitted",
+        status=WorkAssignmentStatus.RUNNING,
+    )
+
+    first = await harness.result(
+        assignment_id, success=True, payload={"score": 0.42, "tag": "first"}
+    )
+    assert first.status_code == 200
+    first_ref = first.json()["result_ref"]
+
+    for_conflict = await harness.result(
+        assignment_id, success=False, payload={"score": 0.42, "tag": "first"}
+    )
+    assert for_conflict.status_code == 409
+
+    row = await harness.get_assignment(assignment_id)
+    assert row is not None
+    assert row.status == WorkAssignmentStatus.COMPLETED
+    assert row.result_ref == first_ref
+    assert await harness.count_results(assignment_id) == 1

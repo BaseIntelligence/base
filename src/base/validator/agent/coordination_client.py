@@ -78,11 +78,18 @@ class CoordinationClient:
     async def heartbeat(
         self,
         *,
+        sequence: int = 0,
         last_seen_meta: Mapping[str, Any] | None = None,
+        capabilities: list[str] | None = None,
+        version: str | None = None,
     ) -> ValidatorHeartbeatResponse:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = {"sequence": int(sequence)}
         if last_seen_meta is not None:
             payload["last_seen_meta"] = dict(last_seen_meta)
+        if capabilities is not None:
+            payload["capabilities"] = list(capabilities)
+        if version is not None:
+            payload["version"] = version
         data = await self._post("/v1/validators/heartbeat", payload)
         return ValidatorHeartbeatResponse.model_validate(data)
 
@@ -116,10 +123,18 @@ class CoordinationClient:
         success: bool,
         payload: Mapping[str, Any] | None = None,
         checkpoint_ref: str | None = None,
+        proof: Mapping[str, Any] | None = None,
+        api_version: str | None = None,
     ) -> AssignmentResultResponse:
-        body: dict[str, Any] = {"success": success, "payload": dict(payload or {})}
+        body: dict[str, Any] = {
+            "api_version": api_version or "1.0",
+            "success": success,
+            "payload": dict(payload or {}),
+        }
         if checkpoint_ref is not None:
             body["checkpoint_ref"] = checkpoint_ref
+        if proof is not None:
+            body["proof"] = dict(proof)
         data = await self._post(f"/v1/assignments/{assignment_id}/result", body)
         return AssignmentResultResponse.model_validate(data)
 

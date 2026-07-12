@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from base.challenge_sdk.version import API_VERSION
 from base.db.models import (
     WorkAssignmentStatus,
     WorkerAssignment,
@@ -47,6 +48,7 @@ from base.schemas.assignment import (
     AssignmentResultRequest,
     AssignmentResultResponse,
     AssignmentView,
+    compute_payload_digest,
 )
 from base.worker.proof import MANIFEST_SHA256_PAYLOAD_KEY, PROOF_PAYLOAD_KEY
 
@@ -95,17 +97,21 @@ def _extract_manifest_sha256(payload: Mapping[str, Any]) -> str | None:
 def worker_assignment_to_view(assignment: WorkerAssignment) -> AssignmentView:
     """Convert a persisted worker replica row to the shared assignment view."""
 
+    payload = dict(assignment.payload or {})
     return AssignmentView(
-        id=str(assignment.id),
+        api_version=API_VERSION,
+        assignment_id=str(assignment.id),
         challenge_slug=assignment.challenge_slug,
         work_unit_id=assignment.work_unit_id,
         submission_ref=assignment.submission_ref,
-        payload=dict(assignment.payload or {}),
+        payload=payload,
+        payload_digest=compute_payload_digest(payload),
         required_capability=assignment.required_capability,
         status=WorkAssignmentStatus(assignment.status).value,
-        attempt_count=assignment.attempt_count,
+        revision=1,
+        attempt=max(int(assignment.attempt_count or 0), 1),
         max_attempts=assignment.max_attempts,
-        deadline_at=assignment.deadline_at,
+        lease_deadline=assignment.deadline_at,
         last_progress_at=assignment.last_progress_at,
         checkpoint_ref=assignment.checkpoint_ref,
     )
@@ -356,7 +362,8 @@ def build_worker_assignment_router(
     ) -> AssignmentPullResponse:
         units = await service.pull(worker_pubkey=identity.hotkey)
         return AssignmentPullResponse(
-            assignments=[worker_assignment_to_view(unit) for unit in units]
+            api_version=API_VERSION,
+            assignments=[worker_assignment_to_view(unit) for unit in units],
         )
 
     @router.post(
@@ -387,6 +394,7 @@ def build_worker_assignment_router(
                 detail="worker assignment not owned by caller",
             ) from exc
         return AssignmentResultResponse(
+            api_version=API_VERSION,
             status=outcome.status,
             result_ref=outcome.result_ref,
             idempotent=outcome.idempotent,

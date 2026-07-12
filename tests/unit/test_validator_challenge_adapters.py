@@ -32,7 +32,7 @@ from base.validator.agent.adapters import (
 
 def _assignment(slug: str, *, capability: str) -> AssignmentView:
     return AssignmentView(
-        id="11111111-1111-1111-1111-111111111111",
+        assignment_id="11111111-1111-1111-1111-111111111111",
         challenge_slug=slug,
         work_unit_id=f"sub:{slug}",
         submission_ref="sub",
@@ -43,7 +43,7 @@ def _assignment(slug: str, *, capability: str) -> AssignmentView:
         },
         required_capability=capability,
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
 

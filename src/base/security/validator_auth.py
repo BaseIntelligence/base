@@ -86,7 +86,12 @@ class ValidatorEligibility(Protocol):
 
 
 class SqlAlchemyValidatorNonceStore:
-    """Persisted ``(hotkey, nonce)`` replay guard for validator requests."""
+    """Persisted ``(hotkey, nonce)`` replay guard for validator requests.
+
+    Exact retry of the same signed body (same body hash) is accepted as an
+    idempotent reserve so registration/result delivery can safely re-POST with
+    the original nonce. Reuse of a nonce with different content is a conflict.
+    """
 
     def __init__(
         self,
@@ -105,6 +110,8 @@ class SqlAlchemyValidatorNonceStore:
         body_hash: str,
         created_at: datetime,
     ) -> None:
+        from sqlalchemy import select
+
         cutoff = created_at - timedelta(seconds=self.ttl_seconds)
         try:
             async with session_scope(self.session_factory) as session:
@@ -113,6 +120,18 @@ class SqlAlchemyValidatorNonceStore:
                         ValidatorRequestNonce.created_at < cutoff
                     )
                 )
+                existing = (
+                    await session.execute(
+                        select(ValidatorRequestNonce).where(
+                            ValidatorRequestNonce.hotkey == hotkey,
+                            ValidatorRequestNonce.nonce == nonce,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    if existing.body_hash == body_hash:
+                        return
+                    raise ValidatorReplayError("nonce already used with different body")
                 session.add(
                     ValidatorRequestNonce(
                         id=uuid.uuid4(),

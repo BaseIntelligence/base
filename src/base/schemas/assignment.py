@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from base.challenge_sdk.version import API_VERSION
 
 # Residual LLM-gateway keys that must never be accepted on progress/result
 # wire input (VAL-GATE-017). Nested bags named ``gateway`` are also rejected.
@@ -98,26 +108,98 @@ def _reject_legacy_gateway_fields(value: Any, *, label: str) -> Any:
     return value
 
 
+def canonicalize_json(value: Any) -> bytes:
+    """Return stable UTF-8 JSON bytes for digest comparison."""
+
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+
+
+def compute_payload_digest(payload: Any) -> str:
+    """SHA-256 hex digest of the canonical payload map."""
+
+    return hashlib.sha256(canonicalize_json(payload)).hexdigest()
+
+
+def compute_result_digest(
+    *,
+    success: bool,
+    payload: Any,
+    checkpoint_ref: str | None = None,
+    proof: Any | None = None,
+) -> str:
+    """SHA-256 hex digest binding terminal result identity for retry comparison."""
+
+    envelope = {
+        "success": bool(success),
+        "payload": payload if payload is not None else {},
+        "checkpoint_ref": checkpoint_ref,
+        "proof": proof if proof is not None else None,
+    }
+    return hashlib.sha256(canonicalize_json(envelope)).hexdigest()
+
+
 class AssignmentView(BaseModel):
     """Public view of a coordinated work-unit assignment for a validator."""
 
-    id: str
-    challenge_slug: str
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    # Canonical wire fields (VAL-SDK-045).
+    api_version: str = Field(default=API_VERSION, pattern=r"^\d+\.\d+$")
+    assignment_id: str = Field(validation_alias="id")
     work_unit_id: str
     submission_ref: str
+    challenge_slug: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    payload_digest: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
     required_capability: str
+    revision: int = Field(default=1, ge=1)
+    attempt: int = Field(default=1, ge=0, validation_alias="attempt_count")
     status: str
-    attempt_count: int
-    max_attempts: int
-    deadline_at: datetime | None = None
-    last_progress_at: datetime | None = None
+    lease_deadline: datetime | None = Field(
+        default=None, validation_alias="deadline_at"
+    )
     checkpoint_ref: str | None = None
+    # Retained for existing operator/admin-facing consumers.
+    max_attempts: int = 3
+    last_progress_at: datetime | None = None
+
+    @property
+    def id(self) -> str:
+        """Compatibility alias used by existing agent runtime code."""
+
+        return self.assignment_id
+
+    @property
+    def attempt_count(self) -> int:
+        """Compatibility alias used by existing agent runtime code."""
+
+        return self.attempt
+
+    @property
+    def deadline_at(self) -> datetime | None:
+        """Compatibility alias used by existing agent runtime code."""
+
+        return self.lease_deadline
+
+    @model_validator(mode="after")
+    def ensure_payload_digest(self) -> AssignmentView:
+        if not self.payload_digest:
+            object.__setattr__(
+                self, "payload_digest", compute_payload_digest(self.payload)
+            )
+        return self
 
 
 class AssignmentPullResponse(BaseModel):
     """Response for ``POST /v1/assignments/pull``."""
 
+    api_version: str = Field(default=API_VERSION, pattern=r"^\d+\.\d+$")
     assignments: list[AssignmentView] = Field(default_factory=list)
 
 
@@ -152,10 +234,17 @@ class AssignmentProgressRequest(BaseModel):
 class AssignmentProgressResponse(BaseModel):
     """Response for a successful progress heartbeat."""
 
+    api_version: str = Field(default=API_VERSION, pattern=r"^\d+\.\d+$")
     status: str
-    deadline_at: datetime | None = None
+    lease_deadline: datetime | None = Field(
+        default=None, validation_alias="deadline_at"
+    )
     last_progress_at: datetime | None = None
     checkpoint_ref: str | None = None
+
+    @property
+    def deadline_at(self) -> datetime | None:
+        return self.lease_deadline
 
 
 class AssignmentResultRequest(BaseModel):
@@ -163,14 +252,25 @@ class AssignmentResultRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    api_version: str = Field(default=API_VERSION, pattern=r"^\d+\.\d+$")
     success: bool
     payload: dict[str, Any] = Field(default_factory=dict)
     checkpoint_ref: str | None = None
+    proof: dict[str, Any] | None = None
 
     @field_validator("payload")
     @classmethod
     def reject_gateway_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
         return _reject_legacy_gateway_fields(value, label="result payload")
+
+    @field_validator("proof")
+    @classmethod
+    def reject_gateway_proof(
+        cls, value: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        return _reject_legacy_gateway_fields(value, label="result proof")
 
     @model_validator(mode="before")
     @classmethod
@@ -179,7 +279,8 @@ class AssignmentResultRequest(BaseModel):
             top = {
                 key: value
                 for key, value in data.items()
-                if key not in {"success", "payload", "checkpoint_ref"}
+                if key
+                not in {"api_version", "success", "payload", "checkpoint_ref", "proof"}
             }
             _reject_legacy_gateway_fields(top, label="result request")
         return data
@@ -188,6 +289,7 @@ class AssignmentResultRequest(BaseModel):
 class AssignmentResultResponse(BaseModel):
     """Response for a result post (idempotent when already terminal)."""
 
+    api_version: str = Field(default=API_VERSION, pattern=r"^\d+\.\d+$")
     status: str
     result_ref: str | None = None
     idempotent: bool = False

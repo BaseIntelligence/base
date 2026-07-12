@@ -163,7 +163,7 @@ async def test_register_retries_as_update_on_integrity_error(tmp_path: Any) -> N
 
         service._register_in_session = racing  # type: ignore[method-assign]
 
-        result = await service.register(
+        result, _ = await service.register(
             hotkey="permitted",
             uid=7,
             capabilities=["cpu", "gpu"],
@@ -195,7 +195,7 @@ async def test_register_retries_as_update_on_integrity_error(tmp_path: Any) -> N
 async def test_register_with_none_version_coalesces_to_default(tmp_path: Any) -> None:
     service, session_factory, _clock, engine = await _build_file_service(tmp_path)
     try:
-        validator = await service.register(
+        validator, _ = await service.register(
             hotkey="permitted",
             uid=1,
             capabilities=["cpu"],

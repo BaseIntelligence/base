@@ -482,6 +482,10 @@ class Validator(Base, TimestampMixin):
         server_default=func.now(),
     )
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_sequence: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    last_heartbeat_payload_digest: Mapped[str | None] = mapped_column(Text)
     last_seen_meta: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
@@ -599,6 +603,10 @@ class WorkAssignment(Base, TimestampMixin):
     max_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=3, server_default="3"
     )
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    payload_digest: Mapped[str | None] = mapped_column(Text)
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     checkpoint_ref: Mapped[str | None] = mapped_column(Text)
@@ -616,6 +624,7 @@ class WorkResult(Base):
 
     __tablename__ = "work_results"
     __table_args__ = (
+        UniqueConstraint("assignment_id", name="uq_work_results_assignment_id"),
         Index("ix_work_results_assignment_id", "assignment_id"),
         Index("ix_work_results_challenge_slug", "challenge_slug"),
         Index("ix_work_results_validator_hotkey", "validator_hotkey"),
@@ -631,6 +640,14 @@ class WorkResult(Base):
     validator_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
     success: Mapped[bool] = mapped_column(Boolean, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    result_digest: Mapped[str | None] = mapped_column(Text)
+    checkpoint_ref: Mapped[str | None] = mapped_column(Text)
+    proof: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
         default=dict,

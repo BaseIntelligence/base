@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ValidatorView(BaseModel):
@@ -19,6 +19,7 @@ class ValidatorView(BaseModel):
     version: str | None = None
     registered_at: datetime
     last_heartbeat_at: datetime | None = None
+    last_heartbeat_sequence: int = 0
     last_seen_meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -31,6 +32,8 @@ class ValidatorListResponse(BaseModel):
 class ValidatorRegisterRequest(BaseModel):
     """Body for ``POST /v1/validators/register``."""
 
+    model_config = ConfigDict(extra="forbid")
+
     capabilities: list[str] = Field(default_factory=lambda: ["cpu"])
     version: str | None = None
     last_seen_meta: dict[str, Any] | None = None
@@ -41,12 +44,25 @@ class ValidatorRegisterResponse(BaseModel):
 
     validator: ValidatorView
     heartbeat_interval_seconds: int
+    idempotent: bool = False
 
 
 class ValidatorHeartbeatRequest(BaseModel):
     """Body for ``POST /v1/validators/heartbeat``."""
 
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(default=0, ge=0)
     last_seen_meta: dict[str, Any] | None = None
+    capabilities: list[str] | None = None
+    version: str | None = None
+
+    @field_validator("sequence")
+    @classmethod
+    def reject_boolean_sequence(cls, value: int) -> int:
+        if isinstance(value, bool):
+            raise ValueError("boolean is not a sequence integer")
+        return value
 
 
 class ValidatorHeartbeatResponse(BaseModel):
@@ -54,6 +70,8 @@ class ValidatorHeartbeatResponse(BaseModel):
 
     status: str
     now: datetime
+    sequence: int = 0
+    idempotent: bool = False
 
 
 class ValidatorSubscriptionRequest(BaseModel):
@@ -62,6 +80,8 @@ class ValidatorSubscriptionRequest(BaseModel):
     ``slugs`` is the set of challenge slugs the validator opts in to. An empty
     list clears the subscription (the validator validates ALL challenges).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     slugs: list[str] = Field(default_factory=list)
 

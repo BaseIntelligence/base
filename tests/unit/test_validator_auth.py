@@ -204,17 +204,27 @@ async def test_non_numeric_timestamp_rejected_401(auth_client) -> None:
         assert response.status_code == 401
 
 
-# VAL-VREG-012: replayed (hotkey, nonce) rejected; a fresh nonce succeeds.
+# VAL-VREG-012 / VAL-WEIGHT-003: exact body+nonce retry is idempotent; changed
+# bytes under the same nonce remain a conflict. A fresh nonce always succeeds.
 async def test_replayed_nonce_rejected(auth_client) -> None:
     client, session_factory = auth_client
     first = await client.post(
         "/protected", content=b"{}", headers=signed_headers(nonce="replay")
     )
-    second = await client.post(
+    exact = await client.post(
         "/protected", content=b"{}", headers=signed_headers(nonce="replay")
     )
     assert first.status_code == 200
-    assert second.status_code == 409
+    assert exact.status_code == 200
+    assert await _nonce_count(session_factory) == 1
+
+    conflict_body = b'{"x":1}'
+    conflict = await client.post(
+        "/protected",
+        content=conflict_body,
+        headers=signed_headers(nonce="replay", body=conflict_body),
+    )
+    assert conflict.status_code == 409
     assert await _nonce_count(session_factory) == 1
 
     fresh = await client.post(

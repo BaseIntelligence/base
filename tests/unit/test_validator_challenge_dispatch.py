@@ -31,14 +31,14 @@ def _assignment(
     slug: str, *, payload: dict[str, Any] | None = None, capability: str = "cpu"
 ) -> AssignmentView:
     return AssignmentView(
-        id="11111111-1111-1111-1111-111111111111",
+        assignment_id="11111111-1111-1111-1111-111111111111",
         challenge_slug=slug,
         work_unit_id=f"sub:{slug}",
         submission_ref="sub",
         payload=payload or {},
         required_capability=capability,
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
 

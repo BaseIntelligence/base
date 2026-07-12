@@ -210,7 +210,7 @@ def _assignment(
     # Mirrors what the master pull route stamps: the scoped gateway token + base
     # URLs (so the cycle builds gateway env, never gateway=None).
     return AssignmentView(
-        id=assignment_id,
+        assignment_id=assignment_id,
         challenge_slug=slug,
         work_unit_id=work_unit_id,
         submission_ref="miner-hotkey",
@@ -221,7 +221,7 @@ def _assignment(
         },
         required_capability=capability,
         status="assigned",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
 

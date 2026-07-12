@@ -100,7 +100,7 @@ async def test_register_and_heartbeat_flow_on_postgres(
 
         # Heartbeat persists metadata + advances last_heartbeat_at.
         clock.value = BASE_TS + timedelta(seconds=60)
-        _, now = await service.heartbeat(
+        _, now, _idem = await service.heartbeat(
             hotkey=hotkey, last_seen_meta={"concurrency": 2}
         )
         assert now == clock.value
@@ -122,7 +122,7 @@ async def test_register_and_heartbeat_flow_on_postgres(
             ).scalar_one()
             row.status = ValidatorStatus.OFFLINE
         clock.value = BASE_TS + timedelta(seconds=90)
-        validator, _ = await service.heartbeat(hotkey=hotkey)
+        validator, _now, _idem = await service.heartbeat(hotkey=hotkey)
         assert validator.status == ValidatorStatus.ONLINE
         events = await _events(session_factory, hotkey)
         assert events[-1] == ValidatorHealthEventType.ONLINE
@@ -173,7 +173,7 @@ async def test_crash_detection_and_recovery_flow_on_postgres(
 
         # Recovery via heartbeat flips back to online.
         clock.value = BASE_TS + timedelta(seconds=450)
-        validator, _ = await service.heartbeat(hotkey=hotkey)
+        validator, _now, _idem = await service.heartbeat(hotkey=hotkey)
         assert validator.status == ValidatorStatus.ONLINE
 
         events = await _events(session_factory, hotkey)

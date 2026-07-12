@@ -30,6 +30,7 @@ from base.db.models import (
     ValidatorStatus,
 )
 from base.db.session import session_scope
+from base.schemas.assignment import compute_payload_digest
 from base.schemas.validator import (
     PublicIdentityView,
     PublicValidatorView,
@@ -52,6 +53,10 @@ DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 180
 
 class ValidatorNotRegisteredError(LookupError):
     """Heartbeat received for a hotkey without a ``validators`` row (HTTP 404)."""
+
+
+class ValidatorHeartbeatSequenceError(ValueError):
+    """Heartbeat sequence is stale or conflicts with known state (HTTP 409)."""
 
 
 class ValidatorCoordinationService:
@@ -78,7 +83,7 @@ class ValidatorCoordinationService:
         capabilities: list[str],
         version: str | None,
         last_seen_meta: Mapping[str, Any] | None = None,
-    ) -> Validator:
+    ) -> tuple[Validator, bool]:
         """Create or update the validator row and emit lifecycle events.
 
         First registration appends ``registered`` + ``online`` events; an
@@ -91,6 +96,9 @@ class ValidatorCoordinationService:
         same new hotkey that loses the race raises ``IntegrityError`` on insert
         and is transparently retried as an idempotent update (no 500, single
         row).
+
+        Returns ``(validator, created)`` where ``created`` is True only for the
+        first durable registration of the hotkey.
         """
 
         now = self._now_fn()
@@ -130,7 +138,7 @@ class ValidatorCoordinationService:
         capabilities: list[str],
         version: str,
         last_seen_meta: Mapping[str, Any] | None,
-    ) -> Validator:
+    ) -> tuple[Validator, bool]:
         existing = (
             await session.execute(select(Validator).where(Validator.hotkey == hotkey))
         ).scalar_one_or_none()
@@ -144,6 +152,8 @@ class ValidatorCoordinationService:
                 version=version,
                 registered_at=now,
                 last_heartbeat_at=now,
+                last_heartbeat_sequence=0,
+                last_heartbeat_payload_digest=None,
                 last_seen_meta=dict(last_seen_meta or {}),
             )
             session.add(validator)
@@ -154,7 +164,7 @@ class ValidatorCoordinationService:
                 now,
             )
             await self._add_event(session, hotkey, ValidatorHealthEventType.ONLINE, now)
-            return validator
+            return validator, True
 
         was_offline = existing.status == ValidatorStatus.OFFLINE
         existing.uid = uid
@@ -172,21 +182,37 @@ class ValidatorCoordinationService:
                 now,
                 message="re-registered after offline",
             )
-        return existing
+        return existing, False
 
     async def heartbeat(
         self,
         *,
         hotkey: str,
+        sequence: int = 0,
         last_seen_meta: Mapping[str, Any] | None = None,
-    ) -> tuple[Validator, datetime]:
+        capabilities: Sequence[str] | None = None,
+        version: str | None = None,
+    ) -> tuple[Validator, datetime, bool]:
         """Refresh liveness; flip an offline validator back to online.
+
+        ``sequence`` is a validator-scoped monotonic heartbeat counter. Exact
+        retries (same sequence + same anti-clobber content digest) are
+        idempotent. Lower sequences and same-sequence payload conflicts are
+        rejected with :class:`ValidatorHeartbeatSequenceError` without mutation.
 
         Raises :class:`ValidatorNotRegisteredError` when the hotkey has no
         registered row (the validator must ``register`` first).
         """
 
         now = self._now_fn()
+        content = {
+            "last_seen_meta": dict(last_seen_meta)
+            if last_seen_meta is not None
+            else None,
+            "capabilities": list(capabilities) if capabilities is not None else None,
+            "version": version,
+        }
+        content_digest = compute_payload_digest(content)
         async with session_scope(self._session_factory) as session:
             validator = (
                 await session.execute(
@@ -196,11 +222,36 @@ class ValidatorCoordinationService:
             if validator is None:
                 raise ValidatorNotRegisteredError(hotkey)
 
+            current_seq = int(validator.last_heartbeat_sequence or 0)
+            if sequence <= 0:
+                # Legacy/unsequenced clients: always advance monotonically.
+                sequence = current_seq + 1
+            elif sequence < current_seq:
+                raise ValidatorHeartbeatSequenceError(
+                    f"stale heartbeat sequence {sequence} < {current_seq}"
+                )
+            elif sequence == current_seq:
+                if (
+                    validator.last_heartbeat_payload_digest is not None
+                    and validator.last_heartbeat_payload_digest != content_digest
+                ):
+                    raise ValidatorHeartbeatSequenceError(
+                        f"conflicting heartbeat sequence {sequence}"
+                    )
+                # Exact same sequence + same content digest: no mutation.
+                return validator, now, True
+
             was_offline = validator.status == ValidatorStatus.OFFLINE
             validator.status = ValidatorStatus.ONLINE
             validator.last_heartbeat_at = now
+            validator.last_heartbeat_sequence = sequence
+            validator.last_heartbeat_payload_digest = content_digest
             if last_seen_meta is not None:
                 validator.last_seen_meta = dict(last_seen_meta)
+            if capabilities is not None:
+                validator.capabilities = list(capabilities)
+            if version is not None:
+                validator.version = version
             if was_offline:
                 await self._add_event(
                     session,
@@ -209,7 +260,7 @@ class ValidatorCoordinationService:
                     now,
                     message="recovered via heartbeat",
                 )
-            return validator, now
+            return validator, now, False
 
     async def set_subscriptions(
         self,
@@ -377,6 +428,9 @@ def validator_to_view(validator: Validator) -> ValidatorView:
         version=validator.version,
         registered_at=validator.registered_at,
         last_heartbeat_at=validator.last_heartbeat_at,
+        last_heartbeat_sequence=int(
+            getattr(validator, "last_heartbeat_sequence", 0) or 0
+        ),
         last_seen_meta=dict(validator.last_seen_meta),
     )
 
@@ -466,7 +520,8 @@ def build_validator_coordination_router(
         payload: ValidatorRegisterRequest,
         identity: ValidatorIdentity = Depends(auth_dependency),
     ) -> ValidatorRegisterResponse:
-        validator = await service.register(
+        # Hotkey is server-derived from the verified signed identity only.
+        validator, created = await service.register(
             hotkey=identity.hotkey,
             uid=identity.uid,
             capabilities=payload.capabilities,
@@ -476,6 +531,7 @@ def build_validator_coordination_router(
         return ValidatorRegisterResponse(
             validator=validator_to_view(validator),
             heartbeat_interval_seconds=service.heartbeat_interval_seconds,
+            idempotent=not created,
         )
 
     @router.post("/v1/validators/heartbeat", response_model=ValidatorHeartbeatResponse)
@@ -484,18 +540,28 @@ def build_validator_coordination_router(
         identity: ValidatorIdentity = Depends(auth_dependency),
     ) -> ValidatorHeartbeatResponse:
         try:
-            validator, now = await service.heartbeat(
+            validator, now, idempotent = await service.heartbeat(
                 hotkey=identity.hotkey,
+                sequence=payload.sequence,
                 last_seen_meta=payload.last_seen_meta,
+                capabilities=payload.capabilities,
+                version=payload.version,
             )
         except ValidatorNotRegisteredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="validator not registered",
             ) from exc
+        except ValidatorHeartbeatSequenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc) or "heartbeat sequence conflict",
+            ) from exc
         return ValidatorHeartbeatResponse(
             status=ValidatorStatus(validator.status).value,
             now=now,
+            sequence=int(validator.last_heartbeat_sequence or 0),
+            idempotent=idempotent,
         )
 
     @router.post(

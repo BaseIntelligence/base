@@ -20,14 +20,14 @@ from base.validator.agent.executor import (
 
 def _assignment(payload: dict[str, Any], *, capability: str = "cpu") -> AssignmentView:
     return AssignmentView(
-        id="11111111-1111-1111-1111-111111111111",
+        assignment_id="11111111-1111-1111-1111-111111111111",
         challenge_slug="agent-challenge",
         work_unit_id="sub:task-1",
         submission_ref="sub",
         payload=payload,
         required_capability=capability,
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
 
