@@ -345,6 +345,55 @@ def _is_agent_challenge_signed_route(
     )
 
 
+def _is_agent_challenge_enabled_mode_allowed_route(
+    slug: str,
+    method: str,
+    path: str,
+) -> bool:
+    """Return whether an enabled-mode Agent Challenge proxy path is allowlisted.
+
+    When attested routes are enabled the BASE proxy is fail-closed: only the
+    exact signed review/eval rows plus the normative status/SSE and benchmark
+    metadata surfaces may reach agent-challenge. Capability, assignment,
+    evidence, key-release, direct-result, results, and every other neighbor are
+    denied locally before any upstream call.
+    """
+
+    if slug != "agent-challenge":
+        return False
+
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    normalized_method = method.upper()
+    canonical_path = f"/{path}"
+    if path.startswith("/") or canonical_path != normalized:
+        return False
+
+    if _is_agent_challenge_signed_route(
+        slug,
+        method,
+        path,
+        attested_routes_enabled=True,
+    ):
+        return True
+
+    if (
+        len(parts) == 3
+        and parts[0] == "submissions"
+        and parts[2] in {"status", "events"}
+        and normalized_method == "GET"
+    ):
+        return True
+    if (
+        len(parts) == 2
+        and parts[0] == "benchmarks"
+        and parts[1] == "tasks"
+        and normalized_method == "GET"
+    ):
+        return True
+    return False
+
+
 def _is_blocked_agent_challenge_proxy_path(
     slug: str,
     method: str,
@@ -352,52 +401,18 @@ def _is_blocked_agent_challenge_proxy_path(
     *,
     attested_routes_enabled: bool,
 ) -> bool:
-    """Deny challenge-direct attested capabilities and unlisted mutations.
+    """Deny every enabled-mode Agent Challenge route outside the allowlist.
 
-    The canonical BASE boundary exposes only the explicitly signed
-    submission-scoped review/eval routes. Assignment capabilities, internal
-    evidence, key release, and direct result ingestion remain challenge-direct.
-    Wrong methods and neighboring review/eval routes are denied locally so an
-    upstream catch-all can never widen this allowlist.
+    Capability, assignment, evidence, key-release, direct-result, and results
+    aliases never fall through to the challenge. Wrong methods and neighboring
+    review/eval routes are denied locally so an upstream catch-all can never
+    widen this allowlist.
     """
 
     if slug != "agent-challenge" or not attested_routes_enabled:
         return False
 
-    normalized = normpath(f"/{path.lstrip('/')}")
-    parts = [part for part in normalized.split("/") if part]
-    if not parts:
-        return False
-
-    if parts[0] in {
-        "evaluation",
-        "internal",
-        "key-release",
-        "key_release",
-        "keyrelease",
-        "review",
-    }:
-        return True
-    if len(parts) == 1 and parts[0] in {"nonce", "release"}:
-        return True
-    if len(parts) >= 3 and parts[0] == "submissions" and parts[2] in {"env", "launch"}:
-        return True
-    if (
-        len(parts) >= 3
-        and parts[0] == "submissions"
-        and parts[2]
-        in {
-            "eval",
-            "review",
-        }
-    ):
-        return not _is_agent_challenge_signed_route(
-            slug,
-            method,
-            path,
-            attested_routes_enabled=True,
-        )
-    return False
+    return not _is_agent_challenge_enabled_mode_allowed_route(slug, method, path)
 
 
 def _has_canonical_agent_challenge_raw_path(

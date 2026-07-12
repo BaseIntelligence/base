@@ -387,6 +387,27 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("POST", "/keyrelease/release"),
         ("GET", "/nonce"),
         ("POST", "/release"),
+        # Fall-through aliases that a deny-list leave-behind would still forward.
+        ("GET", "/results"),
+        ("POST", "/results"),
+        ("GET", "/result"),
+        ("POST", "/result"),
+        ("GET", "/submissions/sub-1/results"),
+        ("POST", "/submissions/sub-1/results"),
+        ("GET", "/submissions/sub-1/result"),
+        ("POST", "/submissions/sub-1/result"),
+        ("GET", "/capability"),
+        ("POST", "/capability/token"),
+        ("GET", "/capabilities/token"),
+        ("POST", "/assignments/assignment-1"),
+        ("GET", "/assignment/assignment-1"),
+        ("GET", "/evidence/object-1"),
+        ("GET", "/submissions/sub-1/evidence/object-1"),
+        ("POST", "/key_release/release"),
+        ("GET", "/direct-result"),
+        ("POST", "/direct/result"),
+        ("GET", "/anything-private"),
+        ("POST", "/evals/run-1/result"),
     ),
 )
 @pytest.mark.parametrize(
@@ -418,11 +439,81 @@ def test_attested_private_neighbors_and_aliases_are_local_404(
             "X-Signature": "miner-signature",
             "X-Nonce": "miner-nonce",
             "X-Timestamp": "1700000000",
+            "X-Allowlist-Digest": "caller-allowlist",
+            "X-Measurement-MRTD": "caller-measurement",
+            "X-RA-TLS-Peer-Key": "caller-peer",
+            "X-Review-Verified": "true",
+            "X-Base-Verified-Hotkey": "caller-verified",
         },
     )
 
     assert response.status_code == 404
     assert upstream_calls == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    (
+        (
+            "GET",
+            "/challenges/agent-challenge/submissions/sub-1/status",
+            "/submissions/sub-1/status",
+        ),
+        (
+            "GET",
+            "/challenges/agent-challenge/submissions/sub-1/events",
+            "/submissions/sub-1/events",
+        ),
+        (
+            "GET",
+            "/challenges/agent-challenge/benchmarks/tasks",
+            "/benchmarks/tasks",
+        ),
+    ),
+)
+def test_attested_public_status_and_benchmark_routes_remain_forwardable(
+    method: str,
+    path: str,
+    upstream_path: str,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(
+            200,
+            content=b'{"schema_version":1,"safe":true}',
+            headers={"content-type": "application/json"},
+        )
+
+    response = _proxy_client(handler).request(
+        method,
+        path,
+        headers={
+            "Authorization": "Bearer caller-capability",
+            "X-Allowlist-Digest": "caller-allowlist",
+            "X-Measurement-MRTD": "caller-measurement",
+            "X-RA-TLS-Peer-Key": "caller-peer",
+            "X-Review-Verified": "true",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == b'{"schema_version":1,"safe":true}'
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-public-header"] == "preserved"
+    assert headers.get_list("x-base-proxy") == ["true"]
+    assert headers.get_list("x-base-challenge-slug") == ["agent-challenge"]
+    assert "authorization" not in headers
+    assert "x-allowlist-digest" not in headers
+    assert "x-measurement-mrtd" not in headers
+    assert "x-ra-tls-peer-key" not in headers
+    assert "x-review-verified" not in headers
 
 
 def test_attested_signed_upstream_auth_error_is_preserved_without_rewriting() -> None:
