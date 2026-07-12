@@ -294,6 +294,35 @@ class DockerRuntimeController:
             "detail": runtime.container_name,
         }
 
+    async def verify(self, slug: str):
+        """Re-probe /health+/version without force-recreating the service.
+
+        Used by the challenge watcher when resuming a mid-rollout durable phase
+        with digests already matching (VAL-CROSS-071). Prefer orchestrator
+        ``wait_until_ready``; fall back to a full restart path only when that
+        seam is absent.
+        """
+        spec = await self._spec(slug)
+        waiter = getattr(self.orchestrator, "wait_until_ready", None)
+        if callable(waiter):
+            health, version = waiter(spec)
+            return {
+                "slug": slug,
+                "operation": "verify",
+                "status": "ok",
+                "detail": {
+                    "health": health,
+                    "version": version,
+                },
+            }
+        runtime = self.orchestrator.restart_challenge(spec)
+        return {
+            "slug": slug,
+            "operation": "verify",
+            "status": "ok",
+            "detail": runtime.container_name,
+        }
+
     async def rollback(self, slug: str, image: str):
         """Roll the challenge service BACK to a specific (previous) image.
 

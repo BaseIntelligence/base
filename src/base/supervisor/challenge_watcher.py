@@ -66,9 +66,29 @@ class WatcherPhase(StrEnum):
     EXHAUSTED = "exhausted"
 
 
+# Phases that mean a rollout was interrupted and must re-verify on resume even
+# when running/desired digests already match (VAL-CROSS-071 mid-rollout recovery).
+_MID_ROLLOUT_PHASES = frozenset(
+    {
+        WatcherPhase.RESOLVING,
+        WatcherPhase.PULLING,
+        WatcherPhase.RECREATING,
+        WatcherPhase.VERIFYING,
+        WatcherPhase.COMMITTING,
+        WatcherPhase.ROLLING_BACK,
+    }
+)
+
+
 @dataclass
 class ChallengeWatcherRecord:
-    """One challenge's durable watcher intent + outcome bookkeeping."""
+    """One challenge's durable watcher intent + outcome bookkeeping.
+
+    Backoff eligibility is always driven by wall-clock fields
+    (``next_eligible_at`` / ``last_failure_at``). ``next_eligible_monotonic`` is
+    process-local only after rehydration and is never treated as durable across
+    restarts (VAL-COMPOSE-039 / VAL-CROSS-071).
+    """
 
     slug: str
     desired_digest: str | None = None
@@ -79,6 +99,8 @@ class ChallengeWatcherRecord:
     phase: WatcherPhase = WatcherPhase.IDLE
     attempts: int = 0
     next_eligible_monotonic: float = 0.0
+    next_eligible_at: float | None = None
+    last_failure_at: float | None = None
     last_error: str | None = None
     last_result: str | None = None
     last_health_ok: bool | None = None
@@ -96,7 +118,9 @@ class ChallengeWatcherRecord:
             "rollback_image": self.rollback_image,
             "phase": self.phase.value,
             "attempts": self.attempts,
-            "next_eligible_monotonic": self.next_eligible_monotonic,
+            # Do not persist process-local mono timestamps as authoritative.
+            "next_eligible_at": self.next_eligible_at,
+            "last_failure_at": self.last_failure_at,
             "last_error": self.last_error,
             "last_result": self.last_result,
             "last_health_ok": self.last_health_ok,
@@ -121,7 +145,10 @@ class ChallengeWatcherRecord:
             rollback_image=_opt_str(raw.get("rollback_image")),
             phase=phase,
             attempts=int(raw.get("attempts") or 0),
-            next_eligible_monotonic=float(raw.get("next_eligible_monotonic") or 0.0),
+            # Intentionally leave next_eligible_monotonic at 0 until rehydrate.
+            next_eligible_monotonic=0.0,
+            next_eligible_at=_opt_float(raw.get("next_eligible_at")),
+            last_failure_at=_opt_float(raw.get("last_failure_at")),
             last_error=_opt_str(raw.get("last_error")),
             last_result=_opt_str(raw.get("last_result")),
             last_health_ok=_opt_bool(raw.get("last_health_ok")),
@@ -137,10 +164,24 @@ class ChallengeWatcherRecord:
             last_error=self.last_error,
         )
 
-    def apply_retry_state(self, state: RetryState) -> None:
+    def apply_retry_state(
+        self,
+        state: RetryState,
+        *,
+        process_now: float | None = None,
+        wall_now: float | None = None,
+    ) -> None:
         self.attempts = state.attempts
         self.next_eligible_monotonic = state.next_eligible_monotonic
         self.last_error = state.last_error
+        if state.attempts == 0 and state.next_eligible_monotonic == 0.0:
+            self.next_eligible_at = None
+            self.last_failure_at = None
+            return
+        if process_now is not None and wall_now is not None:
+            remaining = max(0.0, state.next_eligible_monotonic - process_now)
+            self.last_failure_at = wall_now
+            self.next_eligible_at = wall_now + remaining
 
 
 class WatcherStateStore:
@@ -201,6 +242,7 @@ class ChallengeWatcher:
         retry_policy: RetryPolicy | None = None,
         alert_emit: AlertEmitter | None = None,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
         jitter_source: JitterSource = random.random,
         allow_mutable_tracking: bool = True,
     ) -> None:
@@ -212,12 +254,43 @@ class ChallengeWatcher:
         self._retry_policy = retry_policy if retry_policy is not None else RetryPolicy()
         self._alert_emit = alert_emit
         self._clock = clock
+        self._wall_clock = wall_clock
         self._jitter_source = jitter_source
         self._allow_mutable_tracking = allow_mutable_tracking
         self._records: dict[str, ChallengeWatcherRecord] = self._state_store.load()
+        self._rehydrate_backoff_eligibility()
         # Per-challenge serialization locks (at most one rollout mutates a slug).
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
+
+    def _rehydrate_backoff_eligibility(self) -> None:
+        """Rebuild process-local mono deadlines from durable wall-clock state.
+
+        Persisted ``next_eligible_monotonic`` values are never trusted after a
+        process restart: monotonic clocks reset and would stick forever. Prefer
+        ``next_eligible_at``; otherwise recompute from ``last_failure_at`` +
+        current attempt delay (VAL-COMPOSE-039 / VAL-CROSS-071).
+        """
+
+        mono_now = self._clock()
+        wall_now = self._wall_clock()
+        for record in self._records.values():
+            if record.next_eligible_at is not None:
+                remaining = max(0.0, float(record.next_eligible_at) - wall_now)
+                record.next_eligible_monotonic = mono_now + remaining
+                continue
+            if record.last_failure_at is not None and record.attempts > 0:
+                delay = self._retry_policy.compute_delay(
+                    record.attempts,
+                    jitter=1.0 if not self._retry_policy.jitter else 0.5,
+                )
+                eligible_at = float(record.last_failure_at) + delay
+                record.next_eligible_at = eligible_at
+                remaining = max(0.0, eligible_at - wall_now)
+                record.next_eligible_monotonic = mono_now + remaining
+                continue
+            # No durable wall source: treat as immediately eligible.
+            record.next_eligible_monotonic = 0.0
 
     def _lock_for(self, slug: str) -> asyncio.Lock:
         lock = self._locks.get(slug)
@@ -310,7 +383,9 @@ class ChallengeWatcher:
                 error=str(exc),
                 jitter_source=self._jitter_source,
             )
-            watcher.apply_retry_state(state)
+            watcher.apply_retry_state(
+                state, process_now=now, wall_now=self._wall_clock()
+            )
             self._persist()
             logger.warning(
                 "challenge-watcher: %s resolution failure (%s); non-disruptive",
@@ -325,7 +400,9 @@ class ChallengeWatcher:
             watcher.desired_image = desired_image
             state = watcher.as_retry_state()
             state.record_success()
-            watcher.apply_retry_state(state)
+            watcher.apply_retry_state(
+                state, process_now=now, wall_now=self._wall_clock()
+            )
             watcher.alerted = False
             watcher.phase = WatcherPhase.IDLE
             watcher.last_error = None
@@ -348,9 +425,18 @@ class ChallengeWatcher:
             watcher.current_digest = running_digest
 
         if running_digest == desired_digest:
+            # Mid-rollout resume: digests may already match after a crash mid
+            # recreate/verify; never short-circuit past re-verification
+            # (VAL-CROSS-071).
+            if watcher.phase in _MID_ROLLOUT_PHASES:
+                return await self._resume_mid_rollout(
+                    controller, watcher, slug, desired_digest, desired_image
+                )
             state = watcher.as_retry_state()
             state.record_success()
-            watcher.apply_retry_state(state)
+            watcher.apply_retry_state(
+                state, process_now=now, wall_now=self._wall_clock()
+            )
             watcher.phase = WatcherPhase.IDLE
             watcher.last_result = "already-current"
             watcher.last_error = None
@@ -426,7 +512,9 @@ class ChallengeWatcher:
                 error=str(exc),
                 jitter_source=self._jitter_source,
             )
-            watcher.apply_retry_state(state)
+            watcher.apply_retry_state(
+                state, process_now=now, wall_now=self._wall_clock()
+            )
             if state.is_exhausted(self._retry_policy) and not watcher.alerted:
                 watcher.alerted = True
                 self._emit_alert(slug, image, state)
@@ -466,7 +554,7 @@ class ChallengeWatcher:
         watcher.last_health_ok = True
         watcher.last_version_ok = True
         state.record_success()
-        watcher.apply_retry_state(state)
+        watcher.apply_retry_state(state, process_now=now, wall_now=self._wall_clock())
         watcher.phase = WatcherPhase.IDLE
         watcher.alerted = False
         self._persist()
@@ -476,6 +564,59 @@ class ChallengeWatcher:
             desired_digest,
         )
         return "rolled"
+
+    async def _resume_mid_rollout(
+        self,
+        controller: Any,
+        watcher: ChallengeWatcherRecord,
+        slug: str,
+        desired_digest: str,
+        desired_image: str,
+    ) -> str:
+        """Finish or roll back a mid-rollout resume when digests already match.
+
+        Digest equality alone must not short-circuit past readiness when the
+        durable phase shows we crashed mid-rollout (VAL-CROSS-071).
+        """
+
+        rollback_image = watcher.rollback_image
+        rollback_digest = watcher.rollback_digest
+        watcher.phase = WatcherPhase.VERIFYING
+        self._persist()
+        try:
+            await _verify_ready(controller, slug)
+        except Exception as exc:
+            return await self._rollback(
+                controller,
+                watcher,
+                slug,
+                rollback_image,
+                rollback_digest,
+                reason=str(exc),
+                failure_kind="health-or-version-failed",
+            )
+
+        now = self._clock()
+        state = watcher.as_retry_state()
+        watcher.phase = WatcherPhase.COMMITTING
+        watcher.current_digest = desired_digest
+        watcher.rollback_digest = desired_digest
+        watcher.rollback_image = desired_image
+        watcher.last_result = "resumed-verified"
+        watcher.last_error = None
+        watcher.last_health_ok = True
+        watcher.last_version_ok = True
+        state.record_success()
+        watcher.apply_retry_state(state, process_now=now, wall_now=self._wall_clock())
+        watcher.phase = WatcherPhase.IDLE
+        watcher.alerted = False
+        self._persist()
+        logger.info(
+            "challenge-watcher: %s desired=%s action=resumed-verified",
+            slug,
+            desired_digest,
+        )
+        return "resumed-verified"
 
     async def _rollback(
         self,
@@ -520,7 +661,7 @@ class ChallengeWatcher:
         state.record_failure(
             now, self._retry_policy, error=reason, jitter_source=self._jitter_source
         )
-        watcher.apply_retry_state(state)
+        watcher.apply_retry_state(state, process_now=now, wall_now=self._wall_clock())
         if state.is_exhausted(self._retry_policy):
             watcher.phase = WatcherPhase.EXHAUSTED
             if not watcher.alerted:
@@ -630,6 +771,31 @@ async def _running_image(controller: Any, slug: str) -> str | None:
     return result
 
 
+async def _verify_ready(controller: Any, slug: str) -> None:
+    """Re-probe challenge readiness without force-recreating when possible.
+
+    Prefer an explicit ``verify`` seam (mid-rollout resume). Otherwise fall back
+    to ``restart`` so health/version still gate completion, then fail closed when
+    neither seam exists.
+    """
+
+    verify = getattr(controller, "verify", None)
+    if callable(verify):
+        result = verify(slug)
+        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+            await result  # type: ignore[misc]
+        return
+    restart = getattr(controller, "restart", None)
+    if callable(restart):
+        result = restart(slug)
+        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+            await result  # type: ignore[misc]
+        return
+    raise DockerOrchestrationError(
+        f"controller cannot verify readiness for challenge {slug!r}"
+    )
+
+
 def _opt_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -641,6 +807,17 @@ def _opt_bool(value: Any) -> bool | None:
     if value is None:
         return None
     return bool(value)
+
+
+def _opt_float(value: Any) -> float | None:
+    if value is None or value is False:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_challenge_watcher(

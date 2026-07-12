@@ -72,9 +72,11 @@ class FakeController:
     def __init__(self, running: dict[str, str] | None = None) -> None:
         self.running = dict(running or {})
         self.restarts: list[str] = []
+        self.verifies: list[str] = []
         self.rollbacks: list[tuple[str, str]] = []
         self.pulls: list[str] = []
         self.fail_restart_with: Exception | None = None
+        self.fail_verify_with: Exception | None = None
         self.fail_pull_with: Exception | None = None
         self.restart_delay_ticks = 0
 
@@ -96,6 +98,17 @@ class FakeController:
             del uid, image
         # Controller leaves update of running image to the test/registry position.
         return {"slug": slug, "operation": "restart", "status": "ok"}
+
+    async def verify(self, slug: str) -> dict[str, str]:
+        """Re-probe readiness without force-recreate (mid-rollout resume)."""
+
+        self.verifies.append(slug)
+        if self.fail_verify_with is not None:
+            raise self.fail_verify_with
+        if self.fail_restart_with is not None:
+            # Preserve older tests that only set fail_restart_with.
+            raise self.fail_restart_with
+        return {"slug": slug, "operation": "verify", "status": "ok"}
 
     async def rollback(self, slug: str, image: str) -> dict[str, str]:
         self.rollbacks.append((slug, image))
@@ -119,6 +132,7 @@ def make_watcher(
     *,
     retry_policy: RetryPolicy | None = None,
     clock: Any = None,
+    wall_clock: Any = None,
     jitter_source: Any = None,
 ) -> ChallengeWatcher:
     extra: dict[str, Any] = {
@@ -127,6 +141,8 @@ def make_watcher(
     }
     if clock is not None:
         extra["clock"] = clock
+    if wall_clock is not None:
+        extra["wall_clock"] = wall_clock
     if jitter_source is not None:
         extra["jitter_source"] = jitter_source
     return ChallengeWatcher(
@@ -337,6 +353,7 @@ async def test_watcher_resumes_after_restart(tmp_path: Path) -> None:
     policy = RetryPolicy(
         max_attempts=5, base_delay=100.0, max_delay=400.0, jitter=False
     )
+    wall = {"t": 1_000.0}
     first = ChallengeWatcher(
         registry_factory=lambda: registry,
         controller_factory=lambda _r: controller,
@@ -345,14 +362,21 @@ async def test_watcher_resumes_after_restart(tmp_path: Path) -> None:
         project_name="mission-watcher-test",
         retry_policy=policy,
         clock=lambda: 0.0,
+        wall_clock=lambda: wall["t"],
     )
     assert (await first.run_once())["demo"] == "health-or-version-failed"
     loaded = WatcherStateStore(store_path).load()["demo"]
     assert loaded.desired_digest == DIGEST_B
     assert loaded.rollback_digest == DIGEST_A
     assert loaded.attempts == 1
+    assert loaded.next_eligible_at == pytest.approx(1_100.0)
+    raw = json.loads(store_path.read_text(encoding="utf-8"))
+    # Durable JSON must not store authoritative process-local mono timestamps.
+    assert "next_eligible_monotonic" not in raw["challenges"]["demo"]
+    assert raw["challenges"]["demo"]["next_eligible_at"] == pytest.approx(1_100.0)
 
-    # Master restart: new process loads durable state.
+    # Master restart: new process loads durable state. Model monotonic clock
+    # RESET to a small value while wall-clock still within the backoff window.
     second = ChallengeWatcher(
         registry_factory=lambda: registry,
         controller_factory=lambda _r: controller,
@@ -360,7 +384,8 @@ async def test_watcher_resumes_after_restart(tmp_path: Path) -> None:
         state_store=WatcherStateStore(store_path),
         project_name="mission-watcher-test",
         retry_policy=policy,
-        clock=lambda: 1.0,  # still within backoff
+        clock=lambda: 0.5,  # reset mono; wall source decides residual delay
+        wall_clock=lambda: 1_050.0,
     )
     assert (await second.run_once())["demo"] == "skipped-backoff"
     # New healthy digest converges immediately after restart load.
@@ -371,10 +396,197 @@ async def test_watcher_resumes_after_restart(tmp_path: Path) -> None:
         state_store=WatcherStateStore(store_path),
         project_name="mission-watcher-test",
         retry_policy=policy,
-        clock=lambda: 1.0,
+        clock=lambda: 0.5,
+        wall_clock=lambda: 1_050.0,
     )
     controller.fail_restart_with = None
     assert (await third.run_once())["demo"] == "rolled"
+
+
+@pytest.mark.asyncio
+async def test_backoff_survives_monotonic_clock_reset(tmp_path: Path) -> None:
+    """Persisted mono deadlines must not stick forever after process restart.
+
+    VAL-COMPOSE-039 / VAL-CROSS-071: wall-clock next_eligible_at (or last_failure
+    + delay) drives residual backoff after the monotonic clock resets.
+    """
+
+    store_path = tmp_path / "watcher.json"
+    registry = FakeRegistry([record("demo", BASE)])
+    controller = FakeController(running={"demo": PINNED_A})
+    controller.fail_restart_with = DockerOrchestrationError("unhealthy")
+    policy = RetryPolicy(
+        max_attempts=5, base_delay=100.0, max_delay=400.0, jitter=False
+    )
+    mono = {"t": 5_000.0}
+    wall = {"t": 2_000.0}
+    first = ChallengeWatcher(
+        registry_factory=lambda: registry,
+        controller_factory=lambda _r: controller,
+        resolver=make_resolver(DIGEST_B),
+        state_store=WatcherStateStore(store_path),
+        project_name="mission-watcher-test",
+        retry_policy=policy,
+        clock=lambda: mono["t"],
+        wall_clock=lambda: wall["t"],
+    )
+    assert (await first.run_once())["demo"] == "health-or-version-failed"
+    persisted = WatcherStateStore(store_path).load()["demo"]
+    assert persisted.next_eligible_at == pytest.approx(2_100.0)
+    assert persisted.last_failure_at == pytest.approx(2_000.0)
+
+    # Process restarts: mono clocks start near 0 again, wall barely advanced.
+    mono_reset = 1.0
+    wall["t"] = 2_050.0
+    second = ChallengeWatcher(
+        registry_factory=lambda: registry,
+        controller_factory=lambda _r: controller,
+        resolver=make_resolver(DIGEST_B),
+        state_store=WatcherStateStore(store_path),
+        project_name="mission-watcher-test",
+        retry_policy=policy,
+        clock=lambda: mono_reset,
+        wall_clock=lambda: wall["t"],
+    )
+    assert (await second.run_once())["demo"] == "skipped-backoff"
+    # Wall advances past next_eligible_at → residual delay expires.
+    wall["t"] = 2_100.0
+    third = ChallengeWatcher(
+        registry_factory=lambda: registry,
+        controller_factory=lambda _r: controller,
+        resolver=make_resolver(DIGEST_B),
+        state_store=WatcherStateStore(store_path),
+        project_name="mission-watcher-test",
+        retry_policy=policy,
+        clock=lambda: mono_reset + 5.0,
+        wall_clock=lambda: wall["t"],
+    )
+    assert (await third.run_once())["demo"] == "health-or-version-failed"
+    reloaded = WatcherStateStore(store_path).load()["demo"]
+    assert reloaded.attempts == 2
+    assert reloaded.next_eligible_at == pytest.approx(2_300.0)  # +200s delay
+
+
+@pytest.mark.asyncio
+async def test_mid_verifying_resume_reprobes_and_rolls_back(tmp_path: Path) -> None:
+    """Digest equality must not skip re-verify while phase is mid-rollout.
+
+    Restart mid VERIFYING with already-current desired digest re-probes
+    /health+/version and finishes rollback on failure (VAL-CROSS-071).
+    """
+
+    store_path = tmp_path / "watcher.json"
+    # Durable mid-rollout snapshot: desired already offlined onto the container,
+    # but verify never completed and rollback still points at previous good.
+    store_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "challenges": {
+                    "demo": {
+                        "slug": "demo",
+                        "desired_digest": DIGEST_B,
+                        "current_digest": DIGEST_B,
+                        "rollback_digest": DIGEST_A,
+                        "desired_image": PINNED_B,
+                        "rollback_image": PINNED_A,
+                        "phase": WatcherPhase.VERIFYING.value,
+                        "attempts": 0,
+                        "last_error": None,
+                        "last_result": None,
+                        "last_health_ok": None,
+                        "last_version_ok": None,
+                        "alerted": False,
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    registry = FakeRegistry([record("demo", PINNED_B)])
+    controller = FakeController(running={"demo": PINNED_B})
+    controller.fail_verify_with = DockerOrchestrationError(
+        "Challenge 'demo' failed health/version checks"
+    )
+    watcher = ChallengeWatcher(
+        registry_factory=lambda: registry,
+        controller_factory=lambda _r: controller,
+        resolver=make_resolver(DIGEST_B),
+        state_store=WatcherStateStore(store_path),
+        project_name="mission-watcher-test",
+        retry_policy=RetryPolicy(
+            max_attempts=3, base_delay=10.0, max_delay=40.0, jitter=False
+        ),
+        clock=lambda: 10.0,
+        wall_clock=lambda: 5_000.0,
+    )
+    actions = await watcher.run_once()
+    assert actions["demo"] == "health-or-version-failed"
+    assert controller.verifies == ["demo"]
+    assert controller.restarts == []  # verify-only path, no force recreate
+    assert controller.rollbacks == [("demo", PINNED_A)]
+    assert controller.running["demo"] == PINNED_A
+    state = WatcherStateStore(store_path).load()["demo"]
+    assert state.phase in {WatcherPhase.BACKOFF, WatcherPhase.EXHAUSTED}
+    assert state.current_digest == DIGEST_A
+    assert state.rollback_digest == DIGEST_A
+    assert state.last_result == "rolled-back"
+    # Failure message contains "version" so the failure flag is last_version_ok;
+    # successful rollback itself marks the restored service health True.
+    assert state.last_version_ok is False
+    assert state.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_mid_verifying_resume_healthy_commits(tmp_path: Path) -> None:
+    store_path = tmp_path / "watcher.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "challenges": {
+                    "demo": {
+                        "slug": "demo",
+                        "desired_digest": DIGEST_B,
+                        "current_digest": DIGEST_B,
+                        "rollback_digest": DIGEST_A,
+                        "desired_image": PINNED_B,
+                        "rollback_image": PINNED_A,
+                        "phase": WatcherPhase.VERIFYING.value,
+                        "attempts": 0,
+                        "last_error": None,
+                        "last_result": None,
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    registry = FakeRegistry([record("demo", PINNED_B)])
+    controller = FakeController(running={"demo": PINNED_B})
+    watcher = ChallengeWatcher(
+        registry_factory=lambda: registry,
+        controller_factory=lambda _r: controller,
+        resolver=make_resolver(DIGEST_B),
+        state_store=WatcherStateStore(store_path),
+        project_name="mission-watcher-test",
+        retry_policy=RetryPolicy(
+            max_attempts=3, base_delay=10.0, max_delay=40.0, jitter=False
+        ),
+        clock=lambda: 10.0,
+        wall_clock=lambda: 5_000.0,
+    )
+    actions = await watcher.run_once()
+    assert actions["demo"] == "resumed-verified"
+    assert controller.verifies == ["demo"]
+    assert controller.rollbacks == []
+    state = WatcherStateStore(store_path).load()["demo"]
+    assert state.phase == WatcherPhase.IDLE
+    assert state.current_digest == DIGEST_B
+    assert state.last_result == "resumed-verified"
 
 
 @pytest.mark.asyncio
@@ -529,8 +741,7 @@ def test_compose_project_boundary_helpers() -> None:
                     "Service": "challenge-prism",
                     "Project": "mission-p",
                     "Labels": (
-                        "base.challenge.slug=prism,"
-                        "com.docker.compose.project=mission-p"
+                        "base.challenge.slug=prism,com.docker.compose.project=mission-p"
                     ),
                 }
             ]
