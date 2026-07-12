@@ -33,7 +33,7 @@ DOCKERFILE_RUNTIME = ROOT / "docker" / "Dockerfile.validator-runtime"
 RUNTIME_IMAGE = "base-validator-runtime"
 RUNTIME_DOCKERFILE = "docker/Dockerfile.validator-runtime"
 AGENT_CHALLENGE_REF = "d02f7329b17dbc3b663bcd518c746022bbc0afe8"
-PRISM_REF = "9edf6931428359408ba44e63b889e546ae071f46"
+PRISM_REF = "680440d59411fa578ba564b0b04bf437a78c7f66"
 
 
 def _ci() -> dict:
