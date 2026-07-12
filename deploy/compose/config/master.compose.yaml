@@ -1,0 +1,70 @@
+# Master configuration for the Compose-only topology.
+# Secret values (database password, admin token) come from host files mounted
+# into the container; greenfield install scripts assemble the database URL
+# into an operator-local override before `docker compose up`.
+network:
+  name: base
+  netuid: 100
+  chain_endpoint: null
+  wallet_name: default
+  wallet_hotkey: default
+  wallet_path: null
+  master_uid: 0
+  # Optional static metagraph for no-chain local/disposable validation.
+  # Empty keeps the live-chain path; the installer seeds a disposable mock set
+  # because the informed topology uses internal bridge networks.
+  mock_metagraph:
+    - hotkey: 5ComposeMasterMockHotkey000000000000000000000000
+      uid: 0
+      validator_permit: true
+      stake: 1000.0
+
+master:
+  registry_url: https://chain.joinbase.ai
+  proxy_host: 0.0.0.0
+  proxy_port: 8081
+  epoch_interval_seconds: 360
+  metagraph_cache_ttl_seconds: 300
+  registry_state_file: /var/lib/base/registry.json
+  # Compose owns long-lived challenge services; disable dynamic reconcile loops.
+  registry_reconcile_interval_seconds: 0
+  challenge_image_update_interval_seconds: 0
+  orchestration_interval_seconds: 30
+
+validator:
+  registry_url: https://chain.joinbase.ai
+  registry_retry_seconds: 15
+  weights_url: null
+  weights_interval_seconds: 360
+  weights_timeout_seconds: 15.0
+  weights_retries: 3
+  weights_freshness_seconds: 720
+  submit_on_chain_enabled: false
+
+database:
+  # Overridden by the install helper / local operator file with the real password.
+  # Placeholder keeps environment-free `compose config` from embedding secrets.
+  url: postgresql+asyncpg://base:CHANGE_ME@master-postgres:5432/base
+
+docker:
+  network_name: base_challenges
+  secret_dir: /var/lib/base/secrets
+  internal_network: true
+  broker_host: 0.0.0.0
+  broker_port: 8082
+  # Broker is not a separate Compose service in the target topology.
+  broker_url: http://127.0.0.1:9
+  broker_workspace_dir: /tmp/base-docker-broker
+  broker_allowed_images:
+    - ghcr.io/baseintelligence/
+  challenge_placement_constraint: null
+  cpu_job_constraint: null
+  gpu_job_constraint: null
+
+security:
+  admin_token_file: /run/secrets/admin_token
+
+observability:
+  log_json: true
+  sentry_dsn: null
+  otel_service_name: base-master

@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0012_coordination_protocol_semantics"
+revision: str = "0012_coord_protocol"
 down_revision: str | None = "0011_drop_llm_usage_records"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

@@ -31,11 +31,12 @@ validators to submit on-chain. Each challenge lives in its own repository and ow
 scoring, state, and public miner experience; BASE is the orchestration layer that runs them as one
 subnet.
 
-It runs as a single **Docker Swarm**. A **master** (manager node) hosts the public proxy, the
-validator coordination plane, the LLM gateway, the broker, and the challenge API services — it
-coordinates and aggregates but **never executes** evaluation. Online **validators** are the
-decentralized executors: each registers with the master, pulls assignments, and runs evaluation on
-its own broker. There is no Kubernetes; the only backend is Swarm.
+It runs as a single-host **Docker Compose** topology. A **master** application hosts the public
+proxy, validator coordination plane, aggregation, and watcher, with PostgreSQL as the durable
+control plane and one long-lived combined service per active challenge. The master coordinates and
+aggregates but **never submits** on-chain weights and **never launches** evaluator containers.
+Online **validators** use independent Compose projects, register with the master, pull assignments,
+report results, and submit the master's final vector with their own wallets.
 
 ## Architecture
 

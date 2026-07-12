@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0013_raw_weight_ingress"
-down_revision: str | None = "0012_coordination_protocol_semantics"
+down_revision: str | None = "0012_coord_protocol"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

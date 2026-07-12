@@ -1,0 +1,189 @@
+# Compose-only master topology (mission target path).
+# One application container, one PostgreSQL 16 control plane, one long-lived
+# combined challenge service per active challenge. No multi-host scheduler,
+# no LLM proxy, and no short-lived job or evaluator services.
+name: ${COMPOSE_PROJECT_NAME:?set a unique master project name}
+
+services:
+  master-postgres:
+    image: >-
+      ${POSTGRES_IMAGE_REPOSITORY:?set the immutable postgres image repository}@sha256:${POSTGRES_IMAGE_DIGEST:?set the immutable postgres image digest}
+    restart: unless-stopped
+    init: true
+    environment:
+      POSTGRES_DB: ${BASE_POSTGRES_DB:-base}
+      POSTGRES_USER: ${BASE_POSTGRES_USER:-base}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - type: volume
+        source: master-postgres-data
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: ${BASE_POSTGRES_PASSWORD_FILE:?set postgres password file}
+        target: /run/secrets/postgres_password
+        read_only: true
+    networks:
+      - db
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # PostgreSQL stays private (VAL-COMPOSE-006/013): no host ports.
+
+  base-master-validator:
+    image: >-
+      ${BASE_MASTER_IMAGE_REPOSITORY:?set the immutable master image repository}@sha256:${BASE_MASTER_IMAGE_DIGEST:?set the immutable master image digest}
+    command:
+      - base
+      - master
+      - proxy
+      - --config
+      - /run/base/master.yaml
+    restart: unless-stopped
+    init: true
+    # Writable /tmp is required for uvicorn/temp files; rootfs stays locked down.
+    read_only: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      master-postgres:
+        condition: service_healthy
+    environment:
+      BASE_MASTER__PROXY_HOST: 0.0.0.0
+      BASE_MASTER__PROXY_PORT: "8081"
+      # Static Compose topology owns challenge services; disable legacy reconcile.
+      BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "0"
+      BASE_MASTER__CHALLENGE_IMAGE_UPDATE_INTERVAL_SECONDS: "0"
+      BASE_MASTER__ORCHESTRATION_INTERVAL_SECONDS: "30"
+      BASE_SECURITY__ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      BASE_DOCKER__NETWORK_NAME: base_challenges
+      BASE_DOCKER__INTERNAL_NETWORK: "true"
+      BASE_DOCKER__SECRET_DIR: /var/lib/base/secrets
+      BASE_OBSERVABILITY__LOG_JSON: "true"
+      # DB URL is assembled from file-backed password by install helper into the
+      # mounted master.yaml (never rendered as a compose environment secret).
+    volumes:
+      - type: bind
+        source: ${BASE_MASTER_CONFIG:?set the master config file}
+        target: /run/base/master.yaml
+        read_only: true
+      - type: bind
+        source: ${BASE_ADMIN_TOKEN_FILE:?set the admin token file}
+        target: /run/secrets/admin_token
+        read_only: true
+      - type: volume
+        source: master-state
+        target: /var/lib/base
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 268435456
+          mode: 1777
+    networks:
+      - db
+      - app
+      # Non-internal attachment required so the loopback host port can bind.
+      - public
+    ports:
+      - target: 8081
+        published: ${BASE_MASTER_HOST_PORT:-3180}
+        protocol: tcp
+        host_ip: 127.0.0.1
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8081/ready >/dev/null || curl -fsS http://127.0.0.1:8081/health | grep -Eq '\"(ready|status)\":\\s*(\"?true\"?|\"?ok\"?)'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 40s
+
+  challenge-prism:
+    image: >-
+      ${PRISM_IMAGE_REPOSITORY:?set the immutable prism image repository}@sha256:${PRISM_IMAGE_DIGEST:?set the immutable prism image digest}
+    command:
+      - uvicorn
+      - prism_challenge.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      base-master-validator:
+        condition: service_healthy
+    environment:
+      PRISM_COMBINED_MODE: "true"
+      PRISM_SLUG: prism
+      PRISM_DATABASE_URL: sqlite+aiosqlite:////data/prism.sqlite3
+      PRISM_SHARED_TOKEN_FILE: /run/secrets/prism_shared_token
+      PRISM_MASTER_BASE_URL: http://base-master-validator:8081
+      PRISM_RAW_WEIGHT_PUSH_ENABLED: "true"
+      # Prefer external result path; no docker socket is mounted for Prism.
+      PRISM_DOCKER_ENABLED: "false"
+      PRISM_WORKER_PLANE__ENABLED: "false"
+    volumes:
+      - type: volume
+        source: challenge-prism-data
+        target: /data
+      - type: bind
+        source: ${PRISM_SHARED_TOKEN_FILE:?set the prism shared token file}
+        target: /run/secrets/prism_shared_token
+        read_only: true
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 268435456
+          mode: 1777
+    networks:
+      - app
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 40s
+    # Challenge API is internal-only (VAL-COMPOSE-016): no host ports.
+
+networks:
+  db:
+    name: ${COMPOSE_PROJECT_NAME}_db
+    driver: bridge
+    internal: true
+  app:
+    name: ${COMPOSE_PROJECT_NAME}_app
+    driver: bridge
+    internal: true
+  public:
+    # Host-facing attachment for the master public API only. PostgreSQL and
+    # challenge services never join this network.
+    name: ${COMPOSE_PROJECT_NAME}_public
+    driver: bridge
+
+volumes:
+  master-postgres-data:
+    name: ${COMPOSE_PROJECT_NAME}_postgres_data
+  master-state:
+    name: ${COMPOSE_PROJECT_NAME}_master_state
+  challenge-prism-data:
+    name: ${COMPOSE_PROJECT_NAME}_challenge_prism_data
