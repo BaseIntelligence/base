@@ -126,7 +126,9 @@ def test_health_responds_while_threadpool_is_saturated() -> None:
                 worker.join(timeout=30)
 
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.json()["status"] == "ok"
+        assert response.json()["role"] == "master"
+        assert client.get("/version").status_code == 200
         assert elapsed < HEALTH_BUDGET_SECONDS, (
             f"/health took {elapsed:.3f}s while {THREADPOOL_TOKENS} slow sync "
             "ops held every threadpool token"

@@ -26,6 +26,15 @@ from base.challenge_sdk.executors.docker import (
     DockerMount,
     DockerRunSpec,
 )
+from base.challenge_sdk.roles import Role, capabilities_for_role
+from base.challenge_sdk.schemas import HealthResponse, VersionResponse
+from base.challenge_sdk.version import (
+    API_VERSION,
+    ARTIFACT_VERSION,
+    DISTRIBUTION_NAME,
+    RELEASE_ID,
+    SDK_CONTRACT_VERSION,
+)
 from base.master.workload_ledger import (
     WorkloadCapacityError,
     WorkloadEntry,
@@ -745,13 +754,52 @@ def create_docker_broker_app(
     broker: BrokerService = service or DockerBrokerService()
     app = FastAPI(title="BASE Docker Broker", version="1.0")
 
-    @app.get("/health", include_in_schema=False)
-    async def health() -> dict[str, str]:
+    @app.api_route(
+        "/health",
+        methods=["GET", "HEAD"],
+        response_model=HealthResponse,
+        include_in_schema=False,
+    )
+    async def health() -> HealthResponse:
         # Must stay native ``async def`` with zero blocking work: sync handlers
         # share the anyio threadpool with long-running /v1/docker/* calls, and a
         # sync probe queueing behind them lets the supervisor watchdog restart a
         # healthy broker (death-spiral).
-        return {"status": "ok"}
+        return HealthResponse(
+            slug="base-broker",
+            version=ARTIFACT_VERSION,
+            role=Role.MASTER.value,
+            capabilities=capabilities_for_role(Role.MASTER),
+        )
+
+    @app.api_route(
+        "/ready",
+        methods=["GET", "HEAD"],
+        response_model=HealthResponse,
+        include_in_schema=False,
+    )
+    async def ready() -> HealthResponse:
+        return await health()
+
+    @app.api_route(
+        "/version",
+        methods=["GET", "HEAD"],
+        response_model=VersionResponse,
+        include_in_schema=False,
+    )
+    async def version() -> VersionResponse:
+        return VersionResponse(
+            distribution_name=DISTRIBUTION_NAME,
+            artifact_version=ARTIFACT_VERSION,
+            release_id=RELEASE_ID,
+            api_version=API_VERSION,
+            challenge_slug=None,
+            challenge_version=ARTIFACT_VERSION,
+            sdk_contract_version=SDK_CONTRACT_VERSION,
+            sdk_version=SDK_CONTRACT_VERSION,
+            role=Role.MASTER.value,
+            capabilities=capabilities_for_role(Role.MASTER),
+        )
 
     @app.post("/v1/docker/run", response_model=BrokerRunResponse)
     def run_container(

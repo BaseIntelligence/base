@@ -77,6 +77,7 @@ def test_challenge_app_projects_release_identity() -> None:
         "artifact_version": ARTIFACT_VERSION,
         "release_id": f"v{ARTIFACT_VERSION}",
         "api_version": API_VERSION,
+        "challenge_slug": "release-test",
         "challenge_version": "2.3.4",
         "sdk_contract_version": SDK_CONTRACT_VERSION,
         "sdk_version": SDK_CONTRACT_VERSION,

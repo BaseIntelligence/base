@@ -117,6 +117,15 @@ API_MANIFEST = ApiManifest(
         },
         {
             "method": "GET",
+            "path": "/ready",
+            "media_type": "application/json",
+            "schema": "HealthResponse",
+            "status": [200, 503],
+            "auth": "none",
+            "roles": ["master", "challenge"],
+        },
+        {
+            "method": "GET",
             "path": "/v1/weights/latest",
             "media_type": "application/json",
             "schema": "MasterWeightsResponse",
@@ -221,6 +230,12 @@ API_MANIFEST = ApiManifest(
             "role": "validator",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
+        },
+        {
+            "name": "base validator status",
+            "role": "validator",
+            "json": True,
+            "exit_codes": {"success": 0, "unready": 1, "config": 2},
         },
         {
             "name": "base validator agent",

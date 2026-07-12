@@ -683,8 +683,13 @@ class DockerOrchestrator:
         return decoded
 
     def _validate_health(self, spec: ChallengeSpec, health: dict[str, Any]) -> None:
-        if health.get("status") != "ok":
-            raise DockerOrchestrationError(f"Challenge {spec.slug!r} health is not ok")
+        if (
+            health.get("status") not in {"ok", "degraded"}
+            or health.get("ready", True) is not True
+        ):
+            raise DockerOrchestrationError(
+                f"Challenge {spec.slug!r} health is not ready"
+            )
         response_slug = health.get("slug")
         if response_slug is not None and response_slug != spec.slug:
             raise DockerOrchestrationError(

@@ -30,8 +30,10 @@
       "ExecutionProof",
       "ExternalResultEnvelope",
       "ExternalResultResponse",
+      "HealthCheck",
       "HealthResponse",
       "ProviderInfo",
+      "RuntimeStatusResponse",
       "VersionResponse",
       "ValidatorHeartbeatRequest",
       "ValidatorHeartbeatResponse",
@@ -83,7 +85,10 @@
       "execution_proof_signing_payload"
     ],
     "base.challenge_sdk.health": [
+      "HealthCheck",
       "HealthResponse",
+      "ReadinessProbe",
+      "RuntimeStatusResponse",
       "VersionResponse"
     ],
     "base.challenge_sdk.version": [
@@ -108,11 +113,14 @@
       "EmptyObject",
       "ErrorResponse",
       "ExternalResultResponse",
+      "HealthCheck",
+      "ReadinessProbe",
       "Role",
       "ROLE_REGISTRY",
       "RawWeightPushRequest",
       "RawWeightPushAcknowledgement",
-      "ExternalResultEnvelope"
+      "ExternalResultEnvelope",
+      "RuntimeStatusResponse"
     ],
     "base.challenge_sdk.weights": [
       "WeightsResponse"

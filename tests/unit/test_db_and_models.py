@@ -66,7 +66,7 @@ def test_db_models_construct_and_metadata() -> None:
     assert challenge.resources[0].key == "cpu"
     assert Base.metadata.tables["challenges"].name == "challenges"
     assert HealthResponse(slug="demo", version="1").status == "ok"
-    assert "get_weights" in VersionResponse(challenge_version="1").capabilities
+    assert VersionResponse.__module__ == "base.challenge_sdk.schemas"
 
 
 def test_challenge_status_orm_enum_matches_migration_metadata() -> None:

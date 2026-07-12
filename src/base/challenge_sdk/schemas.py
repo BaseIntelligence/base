@@ -279,13 +279,48 @@ class WorkUnitFoldRequest(_StrictModel):
     reason: str = Field(min_length=1, max_length=256)
 
 
+class HealthCheck(_StrictModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    status: Literal["ok", "degraded", "unhealthy"]
+    required: StrictBool = True
+
+
 class HealthResponse(_StrictModel):
     status: Literal["ok", "degraded", "unhealthy"] = "ok"
     slug: str
     version: str
     role: Literal["master", "validator", "challenge", "worker"] = "challenge"
-    ready: bool = True
+    ready: StrictBool = True
     capabilities: tuple[str, ...] = ()
+    checks: tuple[HealthCheck, ...] = ()
+
+    @field_validator("capabilities")
+    @classmethod
+    def unique_capabilities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("capabilities must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def validate_health_contract(self) -> HealthResponse:
+        _validate_role_capabilities(self.role, self.capabilities)
+        if len(self.checks) != len({check.name for check in self.checks}):
+            raise ValueError("health check names must be unique")
+        required_healthy = all(
+            check.status == "ok" for check in self.checks if check.required
+        )
+        if self.ready != required_healthy:
+            raise ValueError("ready must match mandatory health check state")
+        expected_status = (
+            "unhealthy"
+            if not required_healthy
+            else "degraded"
+            if any(check.status != "ok" for check in self.checks)
+            else "ok"
+        )
+        if self.status != expected_status:
+            raise ValueError("status must match health check state")
+        return self
 
 
 class VersionResponse(_StrictModel):
@@ -293,6 +328,11 @@ class VersionResponse(_StrictModel):
     artifact_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     release_id: str = Field(min_length=1)
     api_version: str = Field(pattern=r"^\d+\.\d+$")
+    challenge_slug: str | None = Field(
+        default=None,
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
     challenge_version: str = Field(min_length=1)
     sdk_contract_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     sdk_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
@@ -308,16 +348,39 @@ class VersionResponse(_StrictModel):
 
     @model_validator(mode="after")
     def validate_role_capabilities(self) -> VersionResponse:
-        from .roles import ROLE_REGISTRY, RoleContractError
-
-        for token in self.capabilities:
-            try:
-                owner = ROLE_REGISTRY.get(token).role.value
-            except RoleContractError as exc:
-                raise ValueError("capabilities contain unknown tokens") from exc
-            if owner != self.role:
-                raise ValueError("capabilities contain tokens owned by another role")
+        _validate_role_capabilities(self.role, self.capabilities)
+        if self.role == "challenge" and self.challenge_slug is None:
+            raise ValueError("challenge version responses require challenge_slug")
+        if self.role != "challenge" and self.challenge_slug is not None:
+            raise ValueError("only challenge responses may include challenge_slug")
         return self
+
+
+class RuntimeStatusResponse(_StrictModel):
+    health: HealthResponse
+    version: VersionResponse
+
+    @model_validator(mode="after")
+    def validate_shared_identity(self) -> RuntimeStatusResponse:
+        if self.health.role != self.version.role:
+            raise ValueError("health and version roles must match")
+        if self.health.version != self.version.challenge_version:
+            raise ValueError("health and version runtime versions must match")
+        if self.health.capabilities != self.version.capabilities:
+            raise ValueError("health and version capabilities must match")
+        return self
+
+
+def _validate_role_capabilities(role: str, capabilities: tuple[str, ...]) -> None:
+    from .roles import ROLE_REGISTRY, RoleContractError
+
+    for token in capabilities:
+        try:
+            owner = ROLE_REGISTRY.get(token).role.value
+        except RoleContractError as exc:
+            raise ValueError("capabilities contain unknown tokens") from exc
+        if owner != role:
+            raise ValueError("capabilities contain tokens owned by another role")
 
 
 class WeightsResponse(_StrictModel):
@@ -349,10 +412,12 @@ __all__ = [
     "ExternalResultResponse",
     "ErrorResponse",
     "ExecutionProof",
+    "HealthCheck",
     "HealthResponse",
     "ProviderInfo",
     "RawWeightPushAcknowledgement",
     "RawWeightPushRequest",
+    "RuntimeStatusResponse",
     "ValidatorHeartbeatRequest",
     "ValidatorHeartbeatResponse",
     "ValidatorRegisterRequest",

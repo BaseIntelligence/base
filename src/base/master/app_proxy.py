@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from posixpath import normpath
@@ -13,11 +13,17 @@ from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 from base.bittensor.identity_cache import ValidatorIdentityResolver
 from base.bittensor.metagraph_cache import MetagraphCache
+from base.challenge_sdk.health import (
+    ReadinessProbe,
+    evaluate_readiness,
+    health_from_checks,
+)
 from base.challenge_sdk.roles import Role, capabilities_for_role
 from base.challenge_sdk.schemas import HealthResponse, VersionResponse
 from base.challenge_sdk.version import (
@@ -405,6 +411,7 @@ def create_proxy_app(
     challenge_image_update_interval_seconds: float | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
     allowed_cors_origins: list[str] | None = None,
+    readiness_probes: Sequence[ReadinessProbe] = (),
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -447,6 +454,37 @@ def create_proxy_app(
         with activate_role(Role.MASTER, capabilities=with_role):
             return await call_next(request)
 
+    async def current_health() -> HealthResponse:
+        checks = await evaluate_readiness(readiness_probes)
+        return health_from_checks(
+            slug="base-master",
+            version=ARTIFACT_VERSION,
+            role=Role.MASTER.value,
+            capabilities=tuple(capabilities_for_role(Role.MASTER)),
+            checks=checks,
+        )
+
+    @app.middleware("http")
+    async def refuse_mutations_while_unready(
+        request: Request, call_next: Any
+    ) -> Response:
+        discovery_path = request.url.path in {"/health", "/ready", "/version"}
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not discovery_path:
+            health = await current_health()
+            if not health.ready:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "detail": {
+                            "code": "runtime_not_ready",
+                            "detail": (
+                                "mandatory runtime dependencies are unavailable"
+                            ),
+                        }
+                    },
+                )
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=(
@@ -484,22 +522,43 @@ def create_proxy_app(
     else:
         verifier = miner_verifier
 
-    @app.get("/health", response_model=HealthResponse, include_in_schema=False)
+    @app.api_route(
+        "/health",
+        methods=["GET", "HEAD"],
+        response_model=HealthResponse,
+        include_in_schema=False,
+    )
     async def health() -> HealthResponse:
-        return HealthResponse(
-            slug="base-master",
-            version=ARTIFACT_VERSION,
-            role=Role.MASTER.value,
-            capabilities=tuple(capabilities_for_role(Role.MASTER)),
+        return await current_health()
+
+    @app.api_route(
+        "/ready",
+        methods=["GET", "HEAD"],
+        response_model=HealthResponse,
+        include_in_schema=False,
+    )
+    async def ready() -> HealthResponse | JSONResponse:
+        response = await current_health()
+        if response.ready:
+            return response
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=response.model_dump(mode="json"),
         )
 
-    @app.get("/version", response_model=VersionResponse, include_in_schema=False)
+    @app.api_route(
+        "/version",
+        methods=["GET", "HEAD"],
+        response_model=VersionResponse,
+        include_in_schema=False,
+    )
     async def version() -> VersionResponse:
         return VersionResponse(
             distribution_name=DISTRIBUTION_NAME,
             artifact_version=ARTIFACT_VERSION,
             release_id=RELEASE_ID,
             api_version=API_VERSION,
+            challenge_slug=None,
             challenge_version=ARTIFACT_VERSION,
             sdk_contract_version=SDK_CONTRACT_VERSION,
             sdk_version=SDK_CONTRACT_VERSION,

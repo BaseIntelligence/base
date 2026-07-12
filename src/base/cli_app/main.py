@@ -59,6 +59,7 @@ from base.master.docker_orchestrator import (
     combined_mode_env_from_metadata,
     port_from_internal_base_url,
 )
+from base.master.health import migration_head, postgres_readiness_probe
 from base.master.llm_gateway import (
     GatewayTokenAuthority,
     LLMGatewayService,
@@ -123,6 +124,7 @@ from base.validator.agent import (
 )
 from base.validator.normal_runner import NormalValidatorRunner
 from base.validator.registry_client import RegistryClient
+from base.validator.status import validator_runtime_status
 from base.validator.weight_submitter import ValidatorWeightSubmitter
 from base.validator.weights_client import WeightsClient
 from base.worker import (
@@ -1009,6 +1011,13 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     _run_startup_migrations(settings)
     engine = create_engine(settings.database.url)
     session_factory = create_session_factory(engine)
+    database_probe = postgres_readiness_probe(
+        session_factory,
+        expected_migration_revision=migration_head(
+            str(PROJECT_ROOT / "alembic.ini"),
+            settings.database.url,
+        ),
+    )
     registry = _master_registry(settings, session_factory)
     runtime = create_bittensor_runtime(settings)
     # bittensor init resets the root logger to WARNING ("Enabling default logging
@@ -1134,6 +1143,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
             settings.master.challenge_image_update_interval_seconds
         ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
+        readiness_probes=(database_probe,),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")
@@ -1432,6 +1442,58 @@ async def _run_validator_runtime(
         runner.run_forever(),
         run_epoch_loop(weights_interval_seconds, submit_weights),
     )
+
+
+@contextlib.asynccontextmanager
+async def _validator_status_client(
+    base_url: str,
+    timeout_seconds: float,
+):
+    async with httpx.AsyncClient(
+        base_url=base_url.rstrip("/"),
+        timeout=timeout_seconds,
+    ) as client:
+        yield client
+
+
+async def _read_validator_runtime_status(settings: Any):
+    from base.challenge_sdk.schemas import HealthResponse, VersionResponse
+
+    agent_settings = settings.validator.agent
+    master_url = agent_settings.master_url or settings.validator.resolved_weights_url
+    master_health: HealthResponse | None = None
+    master_version: VersionResponse | None = None
+    try:
+        async with _validator_status_client(
+            master_url,
+            agent_settings.request_timeout_seconds,
+        ) as client:
+            health_response = await client.get("/health")
+            health_response.raise_for_status()
+            master_health = HealthResponse.model_validate(health_response.json())
+            version_response = await client.get("/version")
+            version_response.raise_for_status()
+            master_version = VersionResponse.model_validate(version_response.json())
+    except Exception:
+        pass
+    return validator_runtime_status(
+        master_health=master_health,
+        master_version=master_version,
+        submission_enabled=settings.validator.submit_on_chain_enabled,
+    )
+
+
+@validator_app.command("status")
+def validator_status(
+    config: Path = typer.Option(Path("config/validator.example.yaml")),
+) -> None:
+    """Report validator identity, capabilities, and master-aware readiness."""
+
+    settings = load_settings(config)
+    runtime_status = asyncio.run(_read_validator_runtime_status(settings))
+    typer.echo(runtime_status.model_dump_json())
+    if not runtime_status.health.ready:
+        raise typer.Exit(code=1)
 
 
 @validator_app.command("run")
