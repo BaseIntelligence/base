@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 
 class WorkerFaultView(BaseModel):
@@ -202,6 +209,17 @@ _EVEN_HEX_PATTERN = r"^(?:[0-9a-f]{2})*$"
 _NONEMPTY_EVEN_HEX_PATTERN = r"^(?:[0-9a-f]{2})+$"
 _VISIBLE_ID_PATTERN = r"^[!-~]{1,128}$"
 
+# Eval result wire limits are deliberately fixed at the schema boundary.  The
+# direct result endpoint uses the same defaults, but the BASE conformance model
+# must remain safe when it is used independently of that endpoint.
+EVAL_MAX_QUOTE_BYTES = 64 * 1024
+EVAL_MAX_EVENT_LOG_ENTRIES = 4096
+EVAL_MAX_EVENT_LOG_BYTES = 2 * 1024 * 1024
+EVAL_MAX_VM_CONFIG_BYTES = 64 * 1024
+EVAL_MAX_STRING_BYTES = 16 * 1024
+EVAL_MAX_PAYLOAD_BYTES = EVAL_MAX_STRING_BYTES
+EVAL_MAX_INTEGER = (1 << 63) - 1
+
 
 class EvalPhalaMeasurement(BaseModel):
     """Exact canonical measurement wire schema for Eval Phala attestations."""
@@ -234,11 +252,14 @@ class EvalPhalaEventLogEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    imr: int
-    event_type: int
+    imr: int = Field(ge=0, le=EVAL_MAX_INTEGER)
+    event_type: int = Field(ge=0, le=EVAL_MAX_INTEGER)
     digest: str = Field(pattern=_REGISTER_PATTERN)
-    event: str = Field(pattern=_VISIBLE_ID_PATTERN)
-    event_payload: str = Field(pattern=_EVEN_HEX_PATTERN)
+    event: str = Field(pattern=_VISIBLE_ID_PATTERN, max_length=EVAL_MAX_STRING_BYTES)
+    event_payload: str = Field(
+        pattern=_EVEN_HEX_PATTERN,
+        max_length=EVAL_MAX_PAYLOAD_BYTES,
+    )
 
 
 class EvalPhalaVmConfig(BaseModel):
@@ -246,9 +267,9 @@ class EvalPhalaVmConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    vcpu: int = Field(ge=1)
-    memory_mb: int = Field(ge=1)
-    os_image_hash: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    vcpu: int = Field(ge=1, le=EVAL_MAX_INTEGER)
+    memory_mb: int = Field(ge=1, le=EVAL_MAX_INTEGER)
+    os_image_hash: str | None = Field(pattern=_SHA256_PATTERN)
 
 
 class EvalPhalaAttestation(BaseModel):
@@ -256,11 +277,78 @@ class EvalPhalaAttestation(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    tdx_quote: str = Field(pattern=_NONEMPTY_EVEN_HEX_PATTERN)
+    tdx_quote: str = Field(
+        pattern=_NONEMPTY_EVEN_HEX_PATTERN,
+        max_length=2 * EVAL_MAX_QUOTE_BYTES,
+    )
     event_log: list[EvalPhalaEventLogEntry]
     report_data: str = Field(pattern=_REPORT_DATA_PATTERN)
     measurement: EvalPhalaMeasurement
     vm_config: EvalPhalaVmConfig
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_transport_bounds(cls, value: Any) -> Any:
+        """Reject large nested transports before quote verification/allocation."""
+
+        if not isinstance(value, Mapping):
+            return value
+        event_log = value.get("event_log")
+        if isinstance(event_log, list):
+            if len(event_log) > EVAL_MAX_EVENT_LOG_ENTRIES:
+                raise ValueError("event_log exceeds its entry bound")
+            encoded_bytes = 2 + max(0, len(event_log) - 1)
+            for event in event_log:
+                if not isinstance(event, Mapping):
+                    continue
+                if set(event) != {
+                    "imr",
+                    "event_type",
+                    "digest",
+                    "event",
+                    "event_payload",
+                }:
+                    raise ValueError("event_log entry has invalid fields")
+                for field, limit in (
+                    ("digest", len("a" * 96)),
+                    ("event", EVAL_MAX_STRING_BYTES),
+                    ("event_payload", EVAL_MAX_PAYLOAD_BYTES),
+                ):
+                    field_value = event.get(field)
+                    if isinstance(field_value, str) and len(field_value) > limit:
+                        raise ValueError(f"event_log.{field} exceeds its string bound")
+                try:
+                    encoded_bytes += len(
+                        json.dumps(
+                            event,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")
+                    )
+                except (TypeError, ValueError, UnicodeEncodeError) as exc:
+                    raise ValueError("event_log is not encodable") from exc
+                if encoded_bytes > EVAL_MAX_EVENT_LOG_BYTES:
+                    raise ValueError("event_log exceeds its byte bound")
+        vm_config = value.get("vm_config")
+        if isinstance(vm_config, Mapping):
+            if set(vm_config) != {"vcpu", "memory_mb", "os_image_hash"}:
+                raise ValueError("vm_config has invalid fields")
+            os_image_hash = vm_config.get("os_image_hash")
+            if isinstance(os_image_hash, str) and len(os_image_hash) > 64:
+                raise ValueError("vm_config.os_image_hash exceeds its string bound")
+            try:
+                encoded = json.dumps(
+                    vm_config,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeEncodeError) as exc:
+                raise ValueError("vm_config is not encodable") from exc
+            if len(encoded) > EVAL_MAX_VM_CONFIG_BYTES:
+                raise ValueError("vm_config exceeds its byte bound")
+        return value
 
 
 class EvalWorkerSignature(BaseModel):
@@ -268,8 +356,8 @@ class EvalWorkerSignature(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    worker_pubkey: Literal[""] = ""
-    sig: Literal[""] = ""
+    worker_pubkey: Literal[""]
+    sig: Literal[""]
 
 
 class EvalExecutionProof(BaseModel):
@@ -286,8 +374,11 @@ class EvalExecutionProof(BaseModel):
     version: Literal[1]
     tier: Literal["phala-tdx"]
     manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    image_digest: str = Field(pattern=r"^[^@\s]+@sha256:[0-9a-f]{64}$")
-    provider: Literal[None] = None
+    image_digest: str = Field(
+        pattern=r"^[^@\s]+@sha256:[0-9a-f]{64}$",
+        max_length=EVAL_MAX_STRING_BYTES,
+    )
+    provider: Literal[None]
     worker_signature: EvalWorkerSignature
     attestation: EvalPhalaAttestation
 

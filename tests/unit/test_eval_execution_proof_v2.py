@@ -12,6 +12,13 @@ import pytest
 from pydantic import ValidationError
 
 from base.schemas.worker import (
+    EVAL_MAX_EVENT_LOG_BYTES,
+    EVAL_MAX_EVENT_LOG_ENTRIES,
+    EVAL_MAX_INTEGER,
+    EVAL_MAX_PAYLOAD_BYTES,
+    EVAL_MAX_QUOTE_BYTES,
+    EVAL_MAX_STRING_BYTES,
+    EVAL_MAX_VM_CONFIG_BYTES,
     EvalExecutionProof,
     WorkerSignature,
     parse_eval_execution_proof_json,
@@ -313,3 +320,134 @@ def test_rebind_only_accepts_exact_empty_placeholder(
         )
         with pytest.raises(AssignmentExecutionError):
             rebind_worker_signature(forged, signer=_Signer(), unit_id="eval-run-001")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "provider",
+        "worker_signature.worker_pubkey",
+        "worker_signature.sig",
+        "attestation.tdx_quote",
+        "attestation.event_log",
+        "attestation.report_data",
+        "attestation.measurement",
+        "attestation.vm_config",
+        "attestation.event_log.0.imr",
+        "attestation.event_log.0.event_type",
+        "attestation.event_log.0.digest",
+        "attestation.event_log.0.event",
+        "attestation.event_log.0.event_payload",
+        "attestation.vm_config.vcpu",
+        "attestation.vm_config.memory_mb",
+        "attestation.vm_config.os_image_hash",
+    ],
+)
+def test_eval_execution_proof_requires_every_nested_member(path: str) -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    *parents, leaf = path.split(".")
+    cursor: Any = payload
+    for parent in parents:
+        cursor = cursor[int(parent)] if parent.isdigit() else cursor[parent]
+    cursor.pop(int(leaf) if leaf.isdigit() else leaf)
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+def test_eval_execution_proof_accepts_required_nullable_vm_image_hash() -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    payload["attestation"]["vm_config"]["os_image_hash"] = None
+    parsed = EvalExecutionProof.model_validate(payload)
+    assert parsed.attestation.vm_config.os_image_hash is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "attestation.measurement.mrtd",
+        "attestation.measurement.rtmr0",
+        "attestation.measurement.rtmr1",
+        "attestation.measurement.rtmr2",
+        "attestation.measurement.rtmr3",
+        "attestation.measurement.compose_hash",
+        "attestation.measurement.os_image_hash",
+    ],
+)
+def test_eval_execution_proof_requires_every_measurement_member(path: str) -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    *parents, leaf = path.split(".")
+    cursor: Any = payload
+    for parent in parents:
+        cursor = cursor[parent]
+    cursor.pop(leaf)
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attestation.tdx_quote", "aa" * (EVAL_MAX_QUOTE_BYTES + 1)),
+        ("attestation.event_log.0.event_payload", "aa" * (EVAL_MAX_PAYLOAD_BYTES + 1)),
+        ("attestation.vm_config.os_image_hash", "a" * (EVAL_MAX_STRING_BYTES + 1)),
+        ("image_digest", "registry.example/" + "a" * EVAL_MAX_STRING_BYTES),
+    ],
+)
+def test_eval_execution_proof_rejects_one_over_scalar_bounds(
+    field: str, value: str
+) -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    _set_path(payload, field, value)
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+def test_eval_execution_proof_rejects_one_over_event_collection_bound() -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    event = copy.deepcopy(payload["attestation"]["event_log"][0])
+    payload["attestation"]["event_log"] = [
+        copy.deepcopy(event) for _ in range(EVAL_MAX_EVENT_LOG_ENTRIES + 1)
+    ]
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+def test_eval_execution_proof_rejects_one_over_event_log_byte_bound() -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    event = copy.deepcopy(payload["attestation"]["event_log"][0])
+    event["event_payload"] = "aa" * 1024
+    payload["attestation"]["event_log"] = [
+        copy.deepcopy(event) for _ in range(EVAL_MAX_EVENT_LOG_ENTRIES)
+    ]
+    assert (
+        len(
+            json.dumps(
+                payload["attestation"]["event_log"],
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        )
+        > EVAL_MAX_EVENT_LOG_BYTES
+    )
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+def test_eval_execution_proof_rejects_one_over_vm_config_byte_bound() -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    payload["attestation"]["vm_config"]["os_image_hash"] = None
+    padding = "a" * EVAL_MAX_VM_CONFIG_BYTES
+    payload["attestation"]["vm_config"]["extra_padding"] = padding
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["imr", "event_type"])
+@pytest.mark.parametrize("value", [-1, EVAL_MAX_INTEGER + 1])
+def test_eval_execution_proof_rejects_out_of_range_event_integers(
+    field: str, value: int
+) -> None:
+    payload = copy.deepcopy(POSITIVE["execution_proof"])
+    payload["attestation"]["event_log"][0][field] = value
+    with pytest.raises(ValidationError):
+        EvalExecutionProof.model_validate(payload)
