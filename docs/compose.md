@@ -44,7 +44,37 @@ Base and Prism do **not** launch evaluator containers. Prism runs in `PRISM_COMB
 
 Entrypoint: `deploy/compose/docker-compose.validator.yml`
 
-Each validator is an independent Compose project with its own network, volume, identity, and wallet material. Validators never receive master PostgreSQL credentials and never orchestrate challenges.
+One-command install for an independent validator (no master source tree required once artifacts and image pins exist):
+
+```bash
+./deploy/compose/install-validator.sh \
+  --project-name base-mission-validator-a \
+  --master-url http://127.0.0.1:3180
+```
+
+Or, with only the validator deployment artifacts on a clean host directory:
+
+```bash
+docker compose -p base-mission-validator-a \
+  -f docker-compose.validator.yml --env-file .env up -d
+```
+
+Each validator is an independent Compose project with its own network, volume, protocol identity, optional submission wallet, and credentials. Required inputs:
+
+| Input | Role |
+| --- | --- |
+| `COMPOSE_PROJECT_NAME` | Unique project name (distinct network + state volume) |
+| `BASE_VALIDATOR_IMAGE_*` | Immutable image repository + sha256 digest |
+| `BASE_VALIDATOR_CONFIG` | Host path to `validator.yaml` (`validator.agent.master_url` required) |
+| `BASE_VALIDATOR_PROTOCOL_IDENTITY` | Host directory for the protocol signing wallet |
+| `BASE_VALIDATOR_BROKER_TOKEN` | Host secret file mounted read-only |
+
+Validators never receive master PostgreSQL credentials, challenge volumes, Docker socket access, aggregation controls, or challenge lifecycle operators. Teardown of one validator project does not affect another validator or the master:
+
+```bash
+docker compose -p base-mission-validator-a -f docker-compose.validator.yml down
+# preserve identity/state for reinstall, or add -v to drop disposable state
+```
 
 ## Unsupported (removed from target path)
 

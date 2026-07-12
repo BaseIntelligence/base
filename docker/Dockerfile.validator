@@ -16,13 +16,17 @@ RUN apt-get update \
 
 COPY . .
 RUN if [ -f pyproject.toml ]; then uv pip install --system -e ".[validator]"; fi
-RUN groupadd --system --gid 1000 base \
+# Host worktrees may carry mode 0600 files; ensure the non-root runtime can read
+# the installed source tree (mission images run as uid 1000).
+RUN find /app -type d -exec chmod 755 {} + \
+    && find /app -type f -exec chmod a+r {} + \
+    && groupadd --system --gid 1000 base \
     && useradd --system --uid 1000 --gid base --home-dir /var/lib/base --shell /usr/sbin/nologin base \
-    && mkdir -p /var/lib/base /var/lib/base/secrets /var/lib/base-db \
-    && chown -R 1000:1000 /var/lib/base /var/lib/base-db
+    && mkdir -p /var/lib/base /var/lib/base/secrets /var/lib/base-db /var/lib/base/state /var/lib/base/identity \
+    && chown -R 1000:1000 /var/lib/base /var/lib/base-db /app
 
 VOLUME ["/var/lib/base"]
 
 USER 1000:1000
 
-CMD ["base", "validator", "run", "--config", "config/validator.example.yaml"]
+CMD ["base", "validator", "agent", "--config", "/run/base/validator.yaml"]

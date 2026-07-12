@@ -1,5 +1,11 @@
 name: ${COMPOSE_PROJECT_NAME:?set a unique validator project name}
 
+# Independent, source-free validator project.
+# - No master PostgreSQL, challenge services, or Docker socket.
+# - Distinct project name, network, volume, credentials, identity, and state.
+# - Operators install via install-validator.sh or:
+#     docker compose -p <unique> -f docker-compose.validator.yml up -d
+
 services:
   validator:
     image: >-
@@ -13,10 +19,14 @@ services:
     restart: unless-stopped
     read_only: true
     init: true
+    user: "1000:1000"
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    environment:
+      # Explicitly no master/db/socket paths. Config drives master_url + identity.
+      HOME: /var/lib/base
     volumes:
       - type: bind
         source: ${BASE_VALIDATOR_CONFIG:?set the validator config file}
@@ -37,10 +47,14 @@ services:
       - /tmp:size=256m,mode=1777
     networks:
       - validator
+    # No published ports required: the validator is an outbound client of master.
+    # No healthcheck HTTP surface required; restart policy + logs are operator signals.
+    # Docker socket is intentionally absent (cannot orchestrate challenges).
 
 networks:
   validator:
     name: ${COMPOSE_PROJECT_NAME}_network
+    driver: bridge
 
 volumes:
   validator-state:

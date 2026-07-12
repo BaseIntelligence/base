@@ -1,0 +1,156 @@
+=== independent validator black-box ===
+master_project=base-iv-master-1535740
+validator_a=base-iv-val-a-1535740
+validator_b=base-iv-val-b-1535740
+Installing master...
+master install ok
+{"status":"ok","slug":"base-master","version":"3.1.2","role":"master","ready":true,"capabilities":["master.coordination","master.registry","master.persistence","master.raw_weight_ingress","master.aggregation","master.vector_read","master.watcher"],"checks":[{"name":"postgresql","status":"ok","required":true}]}
+{"distribution_name":"base","artifact_version":"3.1.2","release_id":"v3.1.2","api_version":"1.0","challenge_slug":null,"challenge_version":"3.1.2","sdk_contract_version":"1.0.0","sdk_version":"1.0.0","role":"master","capabilities":["master.coordination","master.registry","master.persistence","master.raw_weight_ingress","master.aggregation","master.vector_read","master.watcher"]}
+Installing validator A...
+validator A install ok
+hotkey_a=5CXAng1L1wC3hYrvFaGPbECUWAmGATD515ATnNnhE19NwzL7
+Installing validator B...
+validator B install ok
+hotkey_b=5GLNRnSriNTaYMsPJASgeLEK9HGZCzHMimEK2URQWfkij8qh
+restarting master app with eligible hotkeys...
+base_img=mission/base-master@sha256:f741bbde3e847e0a4de9a23074cbc04868aa469e79d00e108f10782850feec40 prism_img=mission/prism@sha256:8554abe1342e7eb2091a790f51d46eabc7c76b05ef048a46d1c6fb99db074b88 pg_img=postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
+hotkey_a=5CXAng1L1wC3hYrvFaGPbECUWAmGATD515ATnNnhE19NwzL7
+hotkey_b=5GLNRnSriNTaYMsPJASgeLEK9HGZCzHMimEK2URQWfkij8qh
+recreate master app with eligible hotkeys
+master healthy attempt 2
+=== project inventory ===
+NAME                                             IMAGE                                                                                         COMMAND                  SERVICE                 CREATED              STATUS                        PORTS
+base-iv-master-1535740-base-master-validator-1   mission/base-master@sha256:f741bbde3e847e0a4de9a23074cbc04868aa469e79d00e108f10782850feec40   "base master proxy -…"   base-master-validator   15 seconds ago       Up 12 seconds (healthy)       8000-8001/tcp, 8082/tcp, 127.0.0.1:3180->8081/tcp
+base-iv-master-1535740-challenge-prism-1         mission/prism@sha256:8554abe1342e7eb2091a790f51d46eabc7c76b05ef048a46d1c6fb99db074b88         "uvicorn prism_chall…"   challenge-prism         About a minute ago   Up About a minute (healthy)   8080/tcp
+base-iv-master-1535740-master-postgres-1         postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416              "docker-entrypoint.s…"   master-postgres         About a minute ago   Up About a minute (healthy)   5432/tcp
+NAME                                             IMAGE                                                                                         COMMAND                  SERVICE                 CREATED              STATUS                        PORTS
+base-iv-master-1535740-base-master-validator-1   mission/base-master@sha256:f741bbde3e847e0a4de9a23074cbc04868aa469e79d00e108f10782850feec40   "base master proxy -…"   base-master-validator   15 seconds ago       Up 12 seconds (healthy)       8000-8001/tcp, 8082/tcp, 127.0.0.1:3180->8081/tcp
+base-iv-master-1535740-challenge-prism-1         mission/prism@sha256:8554abe1342e7eb2091a790f51d46eabc7c76b05ef048a46d1c6fb99db074b88         "uvicorn prism_chall…"   challenge-prism         About a minute ago   Up About a minute (healthy)   8080/tcp
+base-iv-master-1535740-master-postgres-1         postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416              "docker-entrypoint.s…"   master-postgres         About a minute ago   Up About a minute (healthy)   5432/tcp
+NAME                                             IMAGE                                                                                         COMMAND                  SERVICE                 CREATED              STATUS                        PORTS
+base-iv-master-1535740-base-master-validator-1   mission/base-master@sha256:f741bbde3e847e0a4de9a23074cbc04868aa469e79d00e108f10782850feec40   "base master proxy -…"   base-master-validator   15 seconds ago       Up 12 seconds (healthy)       8000-8001/tcp, 8082/tcp, 127.0.0.1:3180->8081/tcp
+base-iv-master-1535740-challenge-prism-1         mission/prism@sha256:8554abe1342e7eb2091a790f51d46eabc7c76b05ef048a46d1c6fb99db074b88         "uvicorn prism_chall…"   challenge-prism         About a minute ago   Up About a minute (healthy)   8080/tcp
+base-iv-master-1535740-master-postgres-1         postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416              "docker-entrypoint.s…"   master-postgres         About a minute ago   Up About a minute (healthy)   5432/tcp
+=== networks volumes ===
+base-iv-master-1535740_app
+base-iv-master-1535740_db
+base-iv-master-1535740_public
+base-iv-val-a-1535740_network
+base-iv-val-b-1535740_network
+base-iv-master-1535740_challenge_prism_data
+base-iv-master-1535740_master_state
+base-iv-master-1535740_postgres_data
+base-iv-val-a-1535740_state
+base-iv-val-b-1535740_state
+netA=base-iv-val-a-1535740_network netB=base-iv-val-b-1535740_network volA=base-iv-val-a-1535740_state volB=base-iv-val-b-1535740_state
+=== mounts no docker.sock/postgres ===
+using validator digest cbd6ce7d49a3d9bb48ca5d2692e632394c69c08733ad00ba6072a3f95adf0feb
+validators not stable
+resume blackbox hotkeys A=5CXAng1L1wC3hYrvFaGPbECUWAmGATD515ATnNnhE19NwzL7 B=5GLNRnSriNTaYMsPJASgeLEK9HGZCzHMimEK2URQWfkij8qh
+running_a=validator running_b=validator
+=== inventory ===
+NAME                                             IMAGE                                                                                         COMMAND                  SERVICE                 CREATED         STATUS                   PORTS
+base-iv-master-1535740-base-master-validator-1   mission/base-master@sha256:f741bbde3e847e0a4de9a23074cbc04868aa469e79d00e108f10782850feec40   "base master proxy -…"   base-master-validator   3 minutes ago   Up 3 minutes (healthy)   8000-8001/tcp, 8082/tcp, 127.0.0.1:3180->8081/tcp
+base-iv-master-1535740-challenge-prism-1         mission/prism@sha256:8554abe1342e7eb2091a790f51d46eabc7c76b05ef048a46d1c6fb99db074b88         "uvicorn prism_chall…"   challenge-prism         4 minutes ago   Up 4 minutes (healthy)   8080/tcp
+base-iv-master-1535740-master-postgres-1         postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416              "docker-entrypoint.s…"   master-postgres         4 minutes ago   Up 4 minutes (healthy)   5432/tcp
+NAME                                IMAGE                                                                                                    COMMAND                  SERVICE     CREATED         STATUS         PORTS
+base-iv-val-a-1535740-validator-1   mission/base-validator-runtime@sha256:cbd6ce7d49a3d9bb48ca5d2692e632394c69c08733ad00ba6072a3f95adf0feb   "base validator agen…"   validator   2 minutes ago   Up 2 minutes   
+NAME                                IMAGE                                                                                                    COMMAND                  SERVICE     CREATED         STATUS         PORTS
+base-iv-val-b-1535740-validator-1   mission/base-validator-runtime@sha256:cbd6ce7d49a3d9bb48ca5d2692e632394c69c08733ad00ba6072a3f95adf0feb   "base validator agen…"   validator   2 minutes ago   Up 2 minutes   
+=== networks/volumes isolation ===
+base-iv-master-1535740_app
+base-iv-master-1535740_db
+base-iv-master-1535740_public
+base-iv-val-a-1535740_network
+base-iv-val-b-1535740_network
+base-iv-master-1535740_challenge_prism_data
+base-iv-master-1535740_master_state
+base-iv-master-1535740_postgres_data
+base-iv-val-a-1535740_state
+base-iv-val-b-1535740_state
+distinct nets/vols OK A=base-iv-val-a-1535740_network/base-iv-val-a-1535740_state B=base-iv-val-b-1535740_network/base-iv-val-b-1535740_state
+=== mounts no socket/src ===
+base-iv-val-a-1535740 destinations ['/run/base/validator.yaml', '/run/secrets/base_broker_token', '/var/lib/base', '/var/lib/base/identity', '/var/lib/base/state']
+base-iv-val-a-1535740 mounts_ok
+base-iv-val-b-1535740 destinations ['/run/base/validator.yaml', '/run/secrets/base_broker_token', '/var/lib/base', '/var/lib/base/identity', '/var/lib/base/state']
+base-iv-val-b-1535740 mounts_ok
+=== registration logs ===
+validator-1  | {"ts": "2026-07-12T18:55:30.450575+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-12 18:55:30.450[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey 5CXAng1L1wC3hYrvFaGPbECUWAmGATD515ATnNnhE19NwzL7
+validator-1  | {"ts": "2026-07-12T18:55:31.047114+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-12 18:55:31.047[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey 5GLNRnSriNTaYMsPJASgeLEK9HGZCzHMimEK2URQWfkij8qh
+VAL-COMPOSE-046 no orchestration keys in validator config PASS
+A network removed
+=== continue checks with both running ===
+=== final blackbox segment ===
+both running; durable identity OK
+hash_a ac5c23aeecfb35b1b0337352dbeb040393fd4f2a4df9d0659a55e63b70acd3ab
+hash_b ac5c23aeecfb35b1b0337352dbeb040393fd4f2a4df9d0659a55e63b70acd3ab
+equal True
+prefix b'{"error":true}'
+VAL-WEIGHT-053 PASS
+VAL-SDK-084/115 source-free config PASS
+missing_master_exit=2 missing_identity_exit=2
+4:│ Invalid value: validator.agent.master_url is required (absolute http/https   │
+5:│ URL to the master coordination plane); refusing to default to localhost      │
+5:╭─ Error ──────────────────────────────────────────────────────────────────────╮
+6:│ Invalid value: validator protocol signing identity is missing or unreadable  │
+7:│ (network.wallet_name / wallet_hotkey / wallet_path); refusing to start with  │
+8:│ anonymous identity                                                           │
+VAL-SDK-086 PASS
+ineligible_exit=1
+33:│   119 │   │   except exceptions.CancelledError:                              │
+40:│    689 │   │   │   raise RuntimeError('Event loop stopped before Future      │
+56:│   1648 │   │   with contextlib.suppress(asyncio.CancelledError):             │
+91:│   156 │   │   │   │   f"coordination request to {path} failed: {exc}"        │
+94:│ ❱ 159 │   │   │   raise CoordinationClientError(                             │
+100:CoordinationClientError: coordination request to /v1/validators/register 
+101:returned 403
+VAL-SDK-090 PASS
+VAL-SDK-092 PASS
+VAL-SDK-089 PASS
+validator-1  | {"ts": "2026-07-12T18:55:31.047114+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-12 18:55:31.047[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey 5GLNRnSriNTaYMsPJASgeLEK9HGZCzHMimEK2URQWfkij8qh
+VAL-COMPOSE-062 PASS
+                                                                                
+ Usage: base [OPTIONS] COMMAND [ARGS]...                                        
+                                                                                
+ BASE multi-challenge subnet CLI                                                
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --install-completion          Install completion for the current shell.      │
+│ --show-completion             Show completion for the current shell, to copy │
+│                               it or customize the installation.              │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ master     Run master components                                             │
+│ validator  Run normal validator components                                   │
+│ challenge  Manage and scaffold challenges                                    │
+│ db         Database helpers                                                  │
+│ registry   Registry helpers                                                  │
+│ worker     Deploy and manage miner-funded GPU worker agents                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+                                                                                
+ Usage: base validator [OPTIONS] COMMAND [ARGS]...                              
+                                                                                
+ Run normal validator components                                                
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status     Report validator identity, capabilities, and master-aware         │
+│            readiness.                                                        │
+│ run        Legacy registry-sync runner WITHOUT on-chain weight submission.   │
+│ agent      Run the decentralized validator agent (own-broker executor +      │
+│            submitter).                                                       │
+│ subscribe  Set this validator's challenge subscriptions (sr25519-signed).    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+VAL-CROSS-077 PASS
+BLACKBOX_OK

@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from typer import BadParameter
 from typer.testing import CliRunner
 
 from base.cli_app.main import (
     _build_validator_agent,
     _build_validator_weight_submitter,
+    _require_validator_master_url,
+    _require_validator_protocol_identity,
     _run_validator_agent_runtime,
     app,
 )
@@ -178,3 +181,47 @@ def test_operations_doc_documents_validator_agent() -> None:
     assert "scoped gateway token" in lowered
     assert "holds no provider key" in lowered
     assert "heartbeat" in lowered
+
+
+def test_require_validator_master_url_rejects_missing() -> None:
+    settings = Settings()
+    settings.validator.agent = ValidatorAgentSettings(master_url=None)
+    with pytest.raises(BadParameter, match="master_url"):
+        _require_validator_master_url(settings)
+
+
+def test_require_validator_master_url_rejects_non_absolute() -> None:
+    settings = Settings()
+    settings.validator.agent = ValidatorAgentSettings(master_url="master:8081")
+    with pytest.raises(BadParameter, match="absolute"):
+        _require_validator_master_url(settings)
+
+
+def test_require_validator_master_url_accepts_explicit_http() -> None:
+    settings = Settings()
+    settings.validator.agent = ValidatorAgentSettings(
+        master_url="http://127.0.0.1:3180"
+    )
+    assert _require_validator_master_url(settings) == "http://127.0.0.1:3180"
+
+
+def test_require_validator_protocol_identity_rejects_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(settings: Any) -> Any:
+        raise RuntimeError("missing wallet")
+
+    monkeypatch.setattr("base.cli_app.main.create_validator_keypair", _boom)
+    with pytest.raises(BadParameter, match="protocol signing identity"):
+        _require_validator_protocol_identity(Settings())
+
+
+def test_require_validator_protocol_identity_accepts_hotkey(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "base.cli_app.main.create_validator_keypair",
+        lambda settings: _FakeKeypair(),
+    )
+    keypair = _require_validator_protocol_identity(Settings())
+    assert keypair.ss58_address == "agent-hotkey"

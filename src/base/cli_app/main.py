@@ -1454,12 +1454,60 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
     )
 
 
+def _require_validator_master_url(settings: Any) -> str:
+    """Resolve the explicit master coordination URL for a validator process.
+
+    VAL-SDK-086: missing/invalid master URL must fail closed without inventing a
+    localhost default or silently treating the validator as its own master.
+    ``registry_url`` / ``weights_url`` alone are not enough for coordination
+    installer surfaces (Compose, CLI agent).
+    """
+
+    agent_cfg = settings.validator.agent
+    master_url = getattr(agent_cfg, "master_url", None)
+    if not master_url or not str(master_url).strip():
+        raise typer.BadParameter(
+            "validator.agent.master_url is required (absolute http/https URL to "
+            "the master coordination plane); refusing to default to localhost"
+        )
+    url = str(master_url).strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise typer.BadParameter(
+            "validator.agent.master_url must be an absolute http:// or https:// URL"
+        )
+    return url
+
+
+def _require_validator_protocol_identity(settings: Any) -> Any:
+    """Load and validate the protocol signing identity (hotkey keypair).
+
+    The protocol identity is required in every mode for registration/heartbeat.
+    A Bittensor submission wallet is only constructed when submission is
+    explicitly enabled (see weight submitter wiring).
+    """
+
+    try:
+        keypair = create_validator_keypair(settings)
+    except Exception as exc:  # noqa: BLE001 - surface operator-facing failure
+        raise typer.BadParameter(
+            "validator protocol signing identity is missing or unreadable "
+            "(network.wallet_name / wallet_hotkey / wallet_path); "
+            "refusing to start with anonymous identity"
+        ) from exc
+    ss58 = getattr(keypair, "ss58_address", None)
+    if not ss58:
+        raise typer.BadParameter(
+            "validator protocol signing identity did not yield a hotkey address"
+        )
+    return keypair
+
+
 def _build_coordination_client(settings: Any) -> CoordinationClient:
     """Build a signed coordination client from validator settings (testable)."""
 
     agent_cfg = settings.validator.agent
-    master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
-    signer = KeypairRequestSigner(create_validator_keypair(settings))
+    master_url = _require_validator_master_url(settings)
+    signer = KeypairRequestSigner(_require_validator_protocol_identity(settings))
     return CoordinationClient(
         master_url,
         signer,
@@ -1617,6 +1665,9 @@ def validator_agent(
 
     settings = load_settings(config)
     _configure_observability(settings)
+    # Fail closed before constructing loops when master URL/identity are absent.
+    _require_validator_master_url(settings)
+    _require_validator_protocol_identity(settings)
     agent = _build_validator_agent(settings)
     submitter = _build_validator_weight_submitter(settings)
     typer.echo(f"Starting validator agent for hotkey {agent.hotkey}")
