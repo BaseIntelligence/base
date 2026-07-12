@@ -400,8 +400,8 @@ class AggregationService:
 
             active_set = expected or sorted(selected_by_slug.keys())
             for slug in active_set:
-                snap = selected_by_slug.get(slug)
-                if snap is None:
+                selected_snap = selected_by_slug.get(slug)
+                if selected_snap is None:
                     missing.append(slug)
                     outcomes.append(
                         {
@@ -414,6 +414,7 @@ class AggregationService:
                         }
                     )
                     continue
+                snap = selected_snap
                 weights = dict(snap.weights or {})
                 positive = {
                     str(hotkey): float(value)

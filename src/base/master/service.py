@@ -84,7 +84,7 @@ class MasterWeightService:
         self.challenge_client = challenge_client or ChallengeClient()
         self._session_factory = session_factory
         if aggregation_service is not None:
-            self.aggregation = aggregation_service
+            self.aggregation: AggregationService | None = aggregation_service
         elif session_factory is not None:
             self.aggregation = AggregationService(
                 session_factory,
