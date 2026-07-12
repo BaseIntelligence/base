@@ -605,6 +605,18 @@ def create_proxy_app(
             capabilities=tuple(capabilities_for_role(Role.MASTER)),
         )
 
+    @app.api_route(
+        "/metrics",
+        methods=["GET", "HEAD"],
+        include_in_schema=False,
+    )
+    async def metrics() -> Response:
+        # VAL-WEIGHT-068: low-cardinality weight-flow counters without secrets.
+        from base.master.weight_flow_metrics import prometheus_text
+
+        body = prometheus_text()
+        return Response(content=body, media_type="text/plain; version=0.0.4")
+
     async def forward_upstream(
         challenge: ChallengeRecord,
         *,

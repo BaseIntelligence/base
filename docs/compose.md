@@ -30,7 +30,11 @@ Cardinality is exactly one application container, one PostgreSQL container, and 
 
 ### Secrets
 
-Secrets are host files (mode `0600`), bind-mounted read-only. Compose manifests never embed secret values. Operator-local state for greenfield install lives under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/`.
+Secrets are host files (mode `0600`, parent dirs `0700`), bind-mounted read-only.
+Compose manifests never embed secret values. Production failed-closed when the
+required `*_FILE` paths are missing, empty, world/group-readable, or replaced by
+inline environment secrets. Operator-local state for greenfield install lives
+under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/`.
 
 ### Images
 
@@ -75,6 +79,31 @@ Validators never receive master PostgreSQL credentials, challenge volumes, Docke
 docker compose -p base-mission-validator-a -f docker-compose.validator.yml down
 # preserve identity/state for reinstall, or add -v to drop disposable state
 ```
+
+## Backup, restore, and teardown
+
+Operator scripts live next to the manifests (mode-aware, Compose-only, no Swarm):
+
+```bash
+# Control-plane PostgreSQL + provenance metadata (no secret values in artifacts)
+./deploy/compose/backup-master.sh --project-name base-mission-master --output-dir ./backup-master
+./deploy/compose/restore-master.sh --project-name base-mission-master --backup-dir ./backup-master
+
+# Challenge-owned SQLite volume (Prism long-lived data)
+./deploy/compose/backup-challenge.sh --project-name base-mission-master --service challenge-prism
+
+# Non-destructive teardown retains postgres/challenge volumes
+./deploy/compose/teardown-master.sh --project-name base-mission-master
+# Explicit data destruction of owned volumes only
+./deploy/compose/teardown-master.sh --project-name base-mission-master --destroy-data
+```
+
+Production rejects inline or missing file-backed secrets (`admin_token_file` mode
+`0600` / parent `0700`) and never embeds secret values in Compose YAML or `/metrics`.
+
+Operational metrics for the weight plane are exposed on `GET /metrics`
+(low-cardinality counters: accepted/rejected/replay pushes, aggregation outcomes,
+fetch failures, submit outcomes) without tokens or DSN material.
 
 ## Unsupported (removed from target path)
 

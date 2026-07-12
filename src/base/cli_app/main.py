@@ -977,6 +977,18 @@ async def seed_prism_challenges(
 @master_app.command("proxy")
 def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))):
     settings = load_settings(config)
+    # Production fail-closed: require a present, least-privilege admin secret
+    # file before migrations, listeners, watchers, or wallets are started.
+    if production_policy_enabled_for_settings(settings):
+        from base.config.policy import assert_protected_secret_file
+
+        file_path = settings.security.admin_token_file
+        if not file_path:
+            raise SystemExit(
+                "production requires security.admin_token_file "
+                "before master proxy starts"
+            )
+        assert_protected_secret_file(file_path, name="admin_token", require_exists=True)
     _configure_observability(settings)
     import uvicorn
 

@@ -42,6 +42,7 @@ from base.db.models import (
     RawWeightSnapshot,
 )
 from base.db.session import session_scope
+from base.master.weight_flow_metrics import get_weight_flow_metrics
 from base.security.tokens import hash_token, verify_token
 
 # Published policy: freshness uses server receipt with bounded clock skew.
@@ -250,7 +251,7 @@ class RawWeightIngressService:
         await self._validate_epoch_window(payload)
 
         try:
-            return await self._commit(
+            outcome = await self._commit(
                 payload=payload,
                 body_hash=body_hash,
                 receipt=receipt,
@@ -258,15 +259,78 @@ class RawWeightIngressService:
         except IntegrityError:
             # Lost a concurrent exact/conflicting race — re-read for idempotence
             # or raise a stable conflict without mutation.
-            return await self._resolve_after_race(payload, body_hash=body_hash)
+            try:
+                outcome = await self._resolve_after_race(payload, body_hash=body_hash)
+            except Exception:
+                get_weight_flow_metrics().record_push(
+                    outcome="conflict",
+                    challenge_slug=payload.challenge_slug,
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                )
+                raise
+        except (
+            RawWeightAuthError,
+            RawWeightForbiddenError,
+            RawWeightConflictError,
+            RawWeightFreshnessError,
+            RawWeightSchemaError,
+            RawWeightSealedError,
+        ) as classified:
+            label = {
+                RawWeightAuthError: "rejected_auth",
+                RawWeightForbiddenError: "rejected_forbidden",
+                RawWeightConflictError: "conflict",
+                RawWeightFreshnessError: "rejected_freshness",
+                RawWeightSchemaError: "rejected_schema",
+                RawWeightSealedError: "rejected_sealed",
+            }[type(classified)]
+            get_weight_flow_metrics().record_push(
+                outcome=label,
+                challenge_slug=getattr(payload, "challenge_slug", route_slug),
+                epoch=getattr(payload, "epoch", None),
+                revision=getattr(payload, "revision", None),
+                payload_digest=getattr(payload, "payload_digest", None),
+            )
+            raise
         except Exception as exc:
             message = str(exc).lower()
             if any(
                 token in message
                 for token in ("unique", "locked", "constraint", "integrity")
             ):
-                return await self._resolve_after_race(payload, body_hash=body_hash)
-            raise
+                try:
+                    outcome = await self._resolve_after_race(
+                        payload, body_hash=body_hash
+                    )
+                except Exception:
+                    get_weight_flow_metrics().record_push(
+                        outcome="conflict",
+                        challenge_slug=payload.challenge_slug,
+                        epoch=payload.epoch,
+                        revision=payload.revision,
+                        payload_digest=payload.payload_digest,
+                    )
+                    raise
+            else:
+                get_weight_flow_metrics().record_push(
+                    outcome="rejected_unavailable",
+                    challenge_slug=payload.challenge_slug,
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                )
+                raise
+        get_weight_flow_metrics().record_push(
+            outcome="replay" if outcome.idempotent else "accepted",
+            challenge_slug=outcome.challenge_slug,
+            epoch=outcome.epoch,
+            revision=outcome.revision,
+            snapshot_id=outcome.snapshot_id,
+            payload_digest=outcome.payload_digest,
+        )
+        return outcome
 
     async def seal_epoch(self, epoch: int) -> AggregationEpoch:
         """Mark an epoch sealed so subsequent revisions fail closed."""
@@ -816,31 +880,49 @@ def build_raw_weight_ingress_router(
                 challenge_slug_header=x_base_challenge_slug,
             )
         except RawWeightAuthError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="rejected_auth", challenge_slug=slug
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=UNAUTHORIZED_DETAIL,
             ) from exc
         except RawWeightForbiddenError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="rejected_forbidden", challenge_slug=slug
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=FORBIDDEN_DETAIL,
             ) from exc
         except RawWeightConflictError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="conflict", challenge_slug=slug
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=CONFLICT_DETAIL,
             ) from exc
         except RawWeightSealedError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="rejected_sealed", challenge_slug=slug
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc) or SEALED_REVISION_DETAIL,
             ) from exc
         except RawWeightFreshnessError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="rejected_freshness", challenge_slug=slug
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=FRESHNESS_DETAIL,
             ) from exc
         except RawWeightSchemaError as exc:
+            get_weight_flow_metrics().record_push(
+                outcome="rejected_schema", challenge_slug=slug
+            )
             message = str(exc) or SCHEMA_DETAIL
             if message == PAYLOAD_TOO_LARGE_DETAIL:
                 raise HTTPException(

@@ -143,12 +143,17 @@ def test_production_settings_require_postgres_safe_prefixes_and_tls(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "prod.yaml"
+    secret = tmp_path / "admin_token"
+    secret.write_text("test-admin-token\n", encoding="utf-8")
+    secret.chmod(0o600)
     config.write_text(
         "\n".join(
             [
                 "environment: production",
                 "database:",
-                "  url: postgresql+asyncpg://user:pass@postgres.platform/platform",
+                "  url: postgresql+asyncpg://base:secret@postgres:5432/platform",
+                "security:",
+                f"  admin_token_file: {secret}",
                 "docker:",
                 "  broker_allowed_images:",
                 "    - ghcr.io/baseintelligence/",

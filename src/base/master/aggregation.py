@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import math
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from base.master.aggregator import (
     ZERO_MINER_BURN_UID,
     aggregate_challenge_weights,
 )
+from base.master.weight_flow_metrics import get_weight_flow_metrics
 from base.schemas.weights import (
     MASTER_WEIGHTS_FRESHNESS_SECONDS,
     ChallengeWeightsResult,
@@ -324,6 +326,7 @@ class AggregationService:
         Missing expected active sources withhold the epoch without publishing.
         """
 
+        started = time.perf_counter()
         now = self._now_fn()
         async with session_scope(self._session_factory) as session:
             epoch_row = (
@@ -553,6 +556,14 @@ class AggregationService:
             epoch_row.mapping_policy_version = MAPPING_POLICY_VERSION
             await session.flush()
             await session.refresh(vector)
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            get_weight_flow_metrics().record_aggregation(
+                outcome="sealed",
+                duration_ms=duration_ms,
+                vector_id=str(vector.id),
+                epoch=int(epoch),
+                snapshot_digest=digest,
+            )
             logger.info(
                 "sealed aggregation epoch",
                 extra={
@@ -560,6 +571,7 @@ class AggregationService:
                     "vector_id": str(vector.id),
                     "vector_digest": digest[:16],
                     "sources": len(source_ids),
+                    "correlation_id": f"epoch:{int(epoch)}:vector:{vector.id}",
                 },
             )
             return vector
