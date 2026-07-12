@@ -47,10 +47,6 @@ from base.master.assignment_coordination import (
 )
 from base.master.challenge_dashboard import ChallengeMetricsProvider
 from base.master.docker_orchestrator import DockerOrchestrationError
-from base.master.llm_gateway import (
-    LLMGatewayService,
-    build_llm_gateway_router,
-)
 from base.master.orchestration import (
     MasterChallengeReconciler,
     MasterOrchestrationDriver,
@@ -402,7 +398,6 @@ def create_proxy_app(
     worker_assignment_verifier: WorkerSignedRequestVerifier | None = None,
     worker_unit_status_service: WorkerUnitStatusService | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
-    llm_gateway_service: LLMGatewayService | None = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
     orchestration_interval_seconds: float | None = None,
     registry_reconciler: MasterChallengeReconciler | None = None,
@@ -852,10 +847,6 @@ def create_proxy_app(
             )
         )
         app.state.assignment_coordination_service = assignment_coordination_service
-
-    if llm_gateway_service is not None:
-        app.include_router(build_llm_gateway_router(service=llm_gateway_service))
-        app.state.llm_gateway_service = llm_gateway_service
 
     if orchestration_driver is not None:
         app.state.orchestration_driver = orchestration_driver

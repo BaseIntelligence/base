@@ -33,7 +33,6 @@ from base.validator.agent.executor import (
     AssignmentContext,
     AssignmentExecutor,
     BrokerConfig,
-    gateway_env_for_assignment,
 )
 from base.worker.coordination_client import WorkerCoordinationClient
 
@@ -72,7 +71,6 @@ class WorkerAgent:
         provider: str,
         provider_instance_ref: str | None = None,
         capabilities: list[str] | None = None,
-        gateway_url: str = "",
         heartbeat_interval_seconds: int | None = None,
         poll_interval_seconds: float = 5.0,
         last_seen_meta_factory: Callable[[], Mapping[str, Any]] | None = None,
@@ -85,7 +83,6 @@ class WorkerAgent:
         self._provider = provider
         self._provider_instance_ref = provider_instance_ref
         self._capabilities = list(capabilities or ["gpu"])
-        self._gateway_url = gateway_url
         self._configured_interval = heartbeat_interval_seconds
         self._poll_interval = poll_interval_seconds
         self._last_seen_meta_factory = last_seen_meta_factory
@@ -207,12 +204,7 @@ class WorkerAgent:
         )
 
     async def _execute_one(self, assignment: Any) -> bool:
-        gateway_env = gateway_env_for_assignment(
-            assignment, gateway_url=self._gateway_url
-        )
-        context = AssignmentContext(
-            assignment=assignment, gateway_env=gateway_env, broker=self._broker
-        )
+        context = AssignmentContext(assignment=assignment, broker=self._broker)
 
         try:
             result = await self._executor.execute(context, progress=_noop_progress)

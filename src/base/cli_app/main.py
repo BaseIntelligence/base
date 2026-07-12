@@ -36,14 +36,15 @@ from base.compute import (
 from base.compute.worker_deployment import WORKER_TEMPLATE_NAME
 from base.config import load_settings
 from base.config.policy import production_policy_enabled_for_settings
-from base.config.settings import MasterSettings, Settings
+from base.config.settings import Settings
 from base.db.session import create_engine, create_session_factory
+from base.master.agent_challenge_compat import (
+    AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+)
 from base.master.app_proxy import create_proxy_app
 from base.master.assignment import CAPABILITY_GPU, AssignmentService
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
-    GatewayPayloadIssuer,
-    WorkAssignmentLifecycleResolver,
 )
 from base.master.challenge_client import ChallengeClient
 from base.master.challenge_work_source import (
@@ -60,14 +61,6 @@ from base.master.docker_orchestrator import (
     port_from_internal_base_url,
 )
 from base.master.health import migration_head, postgres_readiness_probe
-from base.master.llm_gateway import (
-    GatewayTokenAuthority,
-    LLMGatewayService,
-    ProviderConfig,
-    SourceRoute,
-    SqlAlchemyUsageRecorder,
-    build_llm_gateway_service,
-)
 from base.master.orchestration import (
     MasterChallengeReconciler,
     MasterOrchestrationDriver,
@@ -476,31 +469,12 @@ def _worker_assignment_verifier(
 def _assignment_coordination_service(
     settings: Any,
     session_factory: Any,
-    *,
-    gateway_service: LLMGatewayService | None = None,
 ) -> AssignmentCoordinationService:
-    """Build the pull/progress/result coordination service.
+    """Build the pull/progress/result coordination service."""
 
-    When the LLM gateway is wired, the pull route stamps a fresh per-assignment
-    scoped gateway token + the master gateway base URLs into each returned
-    payload (architecture.md sec 5; VAL-LLM-024). The token authority is the
-    same one the gateway verifies against, so the issued token actually
-    authorizes that assignment's gateway calls. No raw provider key is ever
-    placed in the payload.
-    """
-
-    gateway_payload_issuer: GatewayPayloadIssuer | None = None
-    if gateway_service is not None:
-        gateway_payload_issuer = GatewayPayloadIssuer(
-            issuer=gateway_service,
-            gateway_base_url=(
-                settings.gateway.public_base_url or settings.master.registry_url
-            ),
-        )
     return AssignmentCoordinationService(
         session_factory,
         lease_seconds=settings.master.assignment_lease_seconds,
-        gateway_payload_issuer=gateway_payload_issuer,
     )
 
 
@@ -576,40 +550,6 @@ def _master_orchestration_driver(
         seed=settings.master.orchestration_seed,
     )
 
-
-def _llm_gateway_service(settings: Any, session_factory: Any) -> LLMGatewayService:
-    """Build the master LLM gateway from ``Settings.gateway``.
-
-    The work_assignments-backed resolver binds a scoped token to live assignment
-    state and the SQLAlchemy recorder persists per-(validator, assignment) usage.
-    Construction fails fast when a non-mock provider has no configured key.
-    """
-
-    gateway = settings.gateway
-    api_keys = {
-        name: read_secret(entry.api_key, entry.api_key_file)
-        for name, entry in gateway.providers.items()
-    }
-    return build_llm_gateway_service(
-        api_keys=api_keys,
-        token_secret=read_secret(gateway.token_secret, gateway.token_secret_file),
-        provider_config=ProviderConfig(
-            mode=gateway.provider_mode,
-            providers={
-                name: entry.base_url for name, entry in gateway.providers.items()
-            },
-            timeout_seconds=gateway.request_timeout_seconds,
-        ),
-        sources={
-            name: SourceRoute(provider=route.provider, model=route.model)
-            for name, route in gateway.sources.items()
-        },
-        default_provider=gateway.default_provider,
-        default_model=gateway.default_model,
-        token_ttl_seconds=gateway.token_ttl_seconds,
-        usage_recorder=SqlAlchemyUsageRecorder(session_factory),
-        assignment_resolver=WorkAssignmentLifecycleResolver(session_factory),
-    )
 
 
 def _challenge_orchestrator(settings):
@@ -708,42 +648,6 @@ def _settings_docker_broker_url(settings: Any | None) -> str:
     return str(broker_url or DEFAULT_BASE_BROKER_URL)
 
 
-def _settings_gateway_public_base_url(settings: Any | None) -> str:
-    """Return the master LLM gateway public base URL for challenge routing.
-
-    Mirrors the value install-swarm.sh renders (``GATEWAY_PUBLIC_BASE_URL`` ==
-    ``settings.gateway.public_base_url``), so a challenge the reconciler creates
-    PURELY from the registry routes its LLM through the master gateway. Falls
-    back to ``master.registry_url`` (the same fallback the assignment-pull
-    gateway issuer uses), then the ``MasterSettings`` default.
-    """
-
-    gateway_settings = getattr(settings, "gateway", None)
-    public_base_url = getattr(gateway_settings, "public_base_url", None)
-    if public_base_url:
-        return str(public_base_url)
-    master_settings = getattr(settings, "master", None)
-    registry_url = getattr(master_settings, "registry_url", None)
-    return str(registry_url or MasterSettings().registry_url)
-
-
-def _settings_gateway_internal_base_url(settings: Any | None) -> str:
-    """Return the master LLM gateway INTERNAL overlay base URL for challenge routing.
-
-    The master's OWN agent-challenge eval JOB + analyzer run on the ``--internal``
-    ``base_jobs_internal`` overlay (NO egress), so they CANNOT reach the gateway
-    PUBLIC IP; they reach it by the overlay service name ``base-master-proxy``
-    (the proxy is multi-homed onto that overlay). Byte-matches install-swarm.sh
-    (``http://base-master-proxy:${MASTER_PROXY_PORT}``). The port comes from the
-    master ``proxy_port`` (the installer renders ``proxy_port: ${MASTER_PROXY_PORT}``
-    == 19080 into the master config), defaulting to
-    :data:`MASTER_PROXY_SERVICE_PORT` (19080) when absent.
-    """
-
-    master_settings = getattr(settings, "master", None)
-    proxy_port = getattr(master_settings, "proxy_port", None)
-    port = proxy_port or MASTER_PROXY_SERVICE_PORT
-    return f"http://{MASTER_PROXY_SERVICE_NAME}:{port}"
 
 
 def _parse_eval_readonly_mounts(values: list[str]) -> tuple[tuple[str, str], ...]:
@@ -828,19 +732,14 @@ def _prism_image_for_settings(image: str, settings: Any | None) -> str:
 
 
 def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
-    """Env for the agent-challenge own_runner Swarm DooD execution plane.
+    """Env retained only for historical call sites; agent-challenge is blocked.
 
-    The challenge's config validator accepts only
-    ``terminal_bench_execution_backend == "own_runner"``; this wires the
-    own_runner knobs: the runner job image (``CHALLENGE_HARBOR_RUNNER_IMAGE``,
-    the legacy knob name own_runner reads), the read-only task-cache + frozen
-    digest manifest mount targets (broker-injected via
-    ``broker_eval_readonly_mounts``), the per-attempt log-stream URL, and the
-    overlay the job attaches to so it can reach the challenge API.
+    After LLM-gateway removal, Base refuses to activate/seed/reconcile current
+    agent-challenge images with ``AGENT_CHALLENGE_INCOMPATIBLE_NO_LLM_GATEWAY``.
+    This helper intentionally omits every gateway URL/token secret.
     """
     broker_url = _settings_docker_broker_url(settings)
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
-    gateway_base_url = _settings_gateway_internal_base_url(settings)
     return {
         "CHALLENGE_BENCHMARK_BACKEND": "terminal_bench",
         "CHALLENGE_DOCKER_ENABLED": "true",
@@ -848,14 +747,6 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_DOCKER_BROKER_URL": broker_url,
         "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
         "CHALLENGE_DOCKER_BROKER_NETWORK": AGENT_CHALLENGE_JOB_NETWORK,
-        # Central AST+LLM gate routing (byte-matches install-swarm.sh): the
-        # analyzer LLM review routes through the master gateway ROOT (it appends
-        # /llm/v1 itself) via the INTERNAL overlay service name base-master-proxy,
-        # NOT the gateway public IP — the eval JOB + analyzer run on
-        # base_jobs_internal (--internal, no egress), so the public IP is
-        # unreachable from there. The scoped central-gate token file is mounted
-        # from the shared base_gateway_token secret; NO raw provider key here.
-        "CHALLENGE_LLM_GATEWAY_BASE_URL": gateway_base_url,
         "CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND": "own_runner",
         "CHALLENGE_HARBOR_RUNNER_IMAGE": AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE,
         "CHALLENGE_OWN_RUNNER_CACHE_ROOT": AGENT_CHALLENGE_TASK_CACHE_DIR,
@@ -866,11 +757,6 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE": (
             AGENT_CHALLENGE_SUBMISSION_ENV_KEY_FILE
         ),
-        # Durable eval-loop concurrency for the dynamic/registry-seeded path so
-        # the agent-challenge worker drains up to this many attempts in parallel
-        # (matches the static install-swarm.sh RAM-derived default for the 62 GiB
-        # manager at a 4 GB/task budget; the challenge config validator caps it at
-        # <=30 downstream).
         "CHALLENGE_EVALUATION_CONCURRENCY": "13",
     }
 
@@ -891,7 +777,6 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
     challenge_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/challenge_token"
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
     broker_url = _settings_docker_broker_url(settings)
-    gateway_base_url = _settings_gateway_public_base_url(settings)
     prism_image = _prism_image_for_settings(PRISM_IMAGE, settings)
     evaluator_image = _prism_image_for_settings(PRISM_EVALUATOR_IMAGE, settings)
     return ChallengeCreate(
@@ -920,13 +805,6 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
             "PRISM_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "CHALLENGE_DOCKER_BROKER_TOKEN_FILE": docker_broker_token_file,
             "PRISM_BASE_EVAL_IMAGE": evaluator_image,
-            # Central llm_review gate routing (byte-matches install-swarm.sh):
-            # PRISM_LLM_GATEWAY_URL is the FULL gateway route prism uses directly
-            # as the chat base_url (single source-driven /llm/v1 route; the
-            # gateway injects the provider + model). The scoped central-gate token
-            # is read from /run/secrets/base_gateway_token by config default; NO
-            # raw provider key here.
-            "PRISM_LLM_GATEWAY_URL": f"{gateway_base_url}/llm/v1",
         },
         secrets=["challenge_token", "docker_broker_token"],
         metadata={
@@ -979,32 +857,9 @@ async def seed_prism_challenges(
     except (ChallengeNotFoundError, KeyError):
         result[AGENT_CHALLENGE_SLUG] = "missing"
     else:
-        record = await _resolve(registry.get(AGENT_CHALLENGE_SLUG))
-        metadata = dict(getattr(record, "metadata", {}) or {})
-        # Combined mode: retire the separate-worker command hint (scrub any stale
-        # value from an already-seeded record) and declare the image's opt-in
-        # combined-worker env var so the single service drains in-process.
-        metadata.pop("worker_command", None)
-        metadata["combined_mode_env"] = "CHALLENGE_COMBINED_WORKER"
-        env = dict(getattr(record, "env", {}) or {})
-        env.update(_agent_challenge_own_runner_env(settings))
-        required_capabilities = set(getattr(record, "required_capabilities", []) or [])
-        required_capabilities.update({"docker_executor", "get_weights", "proxy_routes"})
-        await _resolve(
-            registry.update(
-                AGENT_CHALLENGE_SLUG,
-                ChallengeUpdate(
-                    emission_percent=AGENT_CHALLENGE_EMISSION_PERCENT,
-                    env=env,
-                    metadata=metadata,
-                    required_capabilities=sorted(required_capabilities),
-                    secrets=_agent_challenge_secret_names(
-                        list(getattr(record, "secrets", []) or [])
-                    ),
-                ),
-            )
-        )
-        result[AGENT_CHALLENGE_SLUG] = "updated"
+        # Existing registry rows remain visible but must not be re-activated or
+        # upgraded through the removed LLM gateway contract.
+        result[AGENT_CHALLENGE_SLUG] = AGENT_CHALLENGE_INCOMPATIBLE_CODE
     return result
 
 
@@ -1078,10 +933,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
             settings, session_factory
         )
         worker_unit_status_service = WorkerUnitStatusService(session_factory)
-    llm_gateway_service = _llm_gateway_service(settings, session_factory)
-    assignment_service = _assignment_coordination_service(
-        settings, session_factory, gateway_service=llm_gateway_service
-    )
+    assignment_service = _assignment_coordination_service(settings, session_factory)
     # Live autonomy: the orchestration driver bridges challenge pending work into
     # work_assignments, runs balanced assignment + the full reassignment pass,
     # and folds retry-exhausted units, all on a Settings-driven interval.
@@ -1133,7 +985,6 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_assignment_verifier=worker_assignment_verifier,
         worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
-        llm_gateway_service=llm_gateway_service,
         orchestration_driver=orchestration_driver,
         orchestration_interval_seconds=(settings.master.orchestration_interval_seconds),
         registry_reconciler=registry_reconciler,
@@ -1302,42 +1153,6 @@ def worker_inspect(node: str):
     _docker_cli(["node", "inspect", node])
 
 
-@master_app.command("mint-central-gate-token")
-def master_mint_central_gate_token(
-    config: Path = typer.Option(Path("config/master.example.yaml")),
-    principal: str = typer.Option("central-gate", "--principal"),
-    label: str = typer.Option(..., "--label"),
-    ttl_seconds: int = typer.Option(31_536_000, "--ttl-seconds"),
-    source: str = typer.Option("llm_review", "--source"),
-    model: str | None = typer.Option(None, "--model"),
-) -> None:
-    """Mint a non-assignment-scoped ``central-gate`` gateway token.
-
-    The token authorizes the central safety gates (agent-challenge analyzer LLM
-    review + prism ``llm_review`` gate) to call the master LLM gateway WITHOUT a
-    live work assignment; the gateway records usage under
-    ``(validator_hotkey=principal, assignment_id=label)`` and resolves the
-    provider + model from the ``--source`` claim (default ``llm_review``). An
-    optional ``--model`` pins a specific model. It is signed with the configured
-    gateway token secret (``gateway.token_secret`` / ``token_secret_file``, e.g.
-    ``/run/secrets/gateway_token_secret``). ONLY the token string is printed to
-    stdout (no logging) so it can be piped straight into the ``base_gateway_token``
-    docker secret.
-    """
-    settings = load_settings(config)
-    secret = read_secret(
-        settings.gateway.token_secret, settings.gateway.token_secret_file
-    )
-    authority = GatewayTokenAuthority(secret)
-    typer.echo(
-        authority.issue_central_gate(
-            principal=principal,
-            label=label,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            model=model,
-        )
-    )
 
 
 @master_app.command("refresh-challenge-images")
@@ -1548,7 +1363,6 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
 
     agent_cfg = settings.validator.agent
     master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
-    gateway_url = agent_cfg.gateway_url or master_url
     client = _build_coordination_client(settings)
     broker = BrokerConfig(
         broker_url=agent_cfg.broker_url or settings.docker.broker_url,
@@ -1577,7 +1391,6 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
         broker=broker,
         capabilities=list(agent_cfg.capabilities),
         version=agent_cfg.version,
-        gateway_url=gateway_url,
         heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
         poll_interval_seconds=agent_cfg.poll_interval_seconds,
         last_seen_meta_factory=last_seen_meta_factory,
@@ -1796,7 +1609,6 @@ def _build_worker_agent(
             provider_instance_ref or settings.worker.deploy.provider_instance_ref
         ),
         capabilities=list(agent_cfg.capabilities),
-        gateway_url=agent_cfg.gateway_url or master_url,
         heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
         poll_interval_seconds=agent_cfg.poll_interval_seconds,
     )
@@ -1959,7 +1771,6 @@ async def _run_worker_provider_deploy_async(
         worker_key_uri=settings.worker.identity.key_uri,
         worker_key_mnemonic=settings.worker.identity.key_mnemonic,
         broker_url=settings.worker.agent.broker_url,
-        gateway_url=settings.worker.agent.gateway_url,
     )
     spec = _worker_instance_spec(
         settings,

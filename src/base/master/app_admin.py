@@ -43,10 +43,6 @@ from base.master.challenge_dashboard import (
     ChallengeMetricsProvider,
     render_challenges_dashboard_svg,
 )
-from base.master.llm_gateway import (
-    LLMGatewayService,
-    build_llm_gateway_router,
-)
 from base.master.registry import (
     ChallengeAlreadyExistsError,
     ChallengeNotFoundError,
@@ -418,7 +414,6 @@ def create_admin_app(
     validator_verifier: ValidatorSignedRequestVerifier | None = None,
     validator_health_interval_seconds: float | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
-    llm_gateway_service: LLMGatewayService | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
 ) -> FastAPI:
     """Create the private admin/registry FastAPI app.
@@ -469,10 +464,6 @@ def create_admin_app(
             )
         )
         app.state.assignment_coordination_service = assignment_coordination_service
-
-    if llm_gateway_service is not None:
-        app.include_router(build_llm_gateway_router(service=llm_gateway_service))
-        app.state.llm_gateway_service = llm_gateway_service
 
     @app.middleware("http")
     async def no_secret_request_state(request: Request, call_next):  # type: ignore[no-untyped-def]

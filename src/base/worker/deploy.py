@@ -235,7 +235,6 @@ def build_worker_pod_env(
     worker_key_uri: str | None = None,
     worker_key_mnemonic: str | None = None,
     broker_url: str | None = None,
-    gateway_url: str | None = None,
     extra: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the ``BASE_``-prefixed env for a provisioned pod's worker agent.
@@ -245,7 +244,7 @@ def build_worker_pod_env(
     NEVER contains a provider API key: the key authenticates the CLI's provider
     client and must not leave the CLI/agent environment (architecture invariant 1).
 
-    Loopback coordination URLs (master/broker/gateway) are OMITTED: Lium's edge WAF
+    Loopback coordination URLs (master/broker) are OMITTED: Lium's edge WAF
     403s on any request body carrying a loopback URL and this env is baked into the
     WAF-sensitive template body, while the pod config already defaults these to
     loopback (the agent resolves them at runtime, reaching a local master via an SSH
@@ -266,11 +265,9 @@ def build_worker_pod_env(
         env["BASE_WORKER__IDENTITY__KEY_MNEMONIC"] = worker_key_mnemonic
     if broker_url:
         _set_non_loopback(env, "BASE_WORKER__AGENT__BROKER_URL", broker_url)
-    if gateway_url:
-        _set_non_loopback(env, "BASE_WORKER__AGENT__GATEWAY_URL", gateway_url)
     if extra:
         for key, value in extra.items():
-            if key not in PROVIDER_KEY_ENV.values():
+            if key not in PROVIDER_KEY_ENV.values() and "GATEWAY" not in key.upper():
                 env[key] = value
     return env
 

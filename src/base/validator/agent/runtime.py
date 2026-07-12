@@ -3,9 +3,8 @@
 The agent hotkey-registers + heartbeats with the master on a configurable
 interval (recovering across restarts because registration is an idempotent
 server-side upsert and all assignment state lives on the master), pulls its
-assignments, executes each via its OWN broker, and posts results. Every LLM call
-routes through the master gateway using a per-assignment scoped token; the agent
-holds no provider key.
+assignments, executes each via its OWN broker, and posts results. The agent never
+holds a provider key and never calls an LLM gateway.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from base.validator.agent.executor import (
     AssignmentExecutor,
     BrokerConfig,
     ExecutionResult,
-    gateway_env_for_assignment,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,7 +46,6 @@ class ValidatorAgent:
         broker: BrokerConfig,
         capabilities: list[str],
         version: str | None,
-        gateway_url: str,
         heartbeat_interval_seconds: int | None = None,
         poll_interval_seconds: float = 5.0,
         last_seen_meta_factory: Callable[[], Mapping[str, Any]] | None = None,
@@ -59,7 +56,6 @@ class ValidatorAgent:
         self._broker = broker
         self._capabilities = list(capabilities)
         self._version = version
-        self._gateway_url = gateway_url
         self._configured_interval = heartbeat_interval_seconds
         self._poll_interval = poll_interval_seconds
         self._last_seen_meta_factory = last_seen_meta_factory
@@ -167,12 +163,7 @@ class ValidatorAgent:
         )
 
     async def _execute_one(self, assignment: Any) -> bool:
-        gateway_env = gateway_env_for_assignment(
-            assignment, gateway_url=self._gateway_url
-        )
-        context = AssignmentContext(
-            assignment=assignment, gateway_env=gateway_env, broker=self._broker
-        )
+        context = AssignmentContext(assignment=assignment, broker=self._broker)
 
         async def report_progress(
             *,

@@ -6,10 +6,6 @@ heartbeat progress on a running unit (prism may report a checkpoint ref), and
 post results back; the master persists results for weight computation. The
 master only coordinates; validators execute the work on their own brokers.
 
-This module also provides :class:`WorkAssignmentLifecycleResolver`, the
-production source of truth for the LLM gateway's token-lifecycle binding: a
-scoped gateway token is rejected once its assignment is completed, failed, or
-reassigned away (architecture.md sec 5).
 """
 
 from __future__ import annotations
@@ -18,7 +14,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -32,7 +28,6 @@ from base.db.models import (
 )
 from base.db.session import session_scope
 from base.master.assignment import capability_matches
-from base.master.llm_gateway import BASE_LLM_GATEWAY_URL_ENV
 from base.schemas.assignment import (
     AssignmentProgressRequest,
     AssignmentProgressResponse,
@@ -48,63 +43,20 @@ DEFAULT_LEASE_SECONDS = 900
 _PULLABLE_STATUSES = (WorkAssignmentStatus.ASSIGNED, WorkAssignmentStatus.RUNNING)
 _TERMINAL_STATUSES = (WorkAssignmentStatus.COMPLETED, WorkAssignmentStatus.FAILED)
 
-#: Assignment-payload key carrying the scoped gateway token issued at pull time.
-GATEWAY_TOKEN_PAYLOAD_KEY = "gateway_token"
-#: Assignment-payload key carrying the master gateway root base URL.
-GATEWAY_BASE_URL_PAYLOAD_KEY = "gateway_url"
-#: The ``source`` claim stamped onto assignment tokens (coded challenge agents).
-ASSIGNMENT_TOKEN_SOURCE = "agent"
-_LLM_GATEWAY_PATH = "/llm/v1"
-
-
-@runtime_checkable
-class GatewayTokenIssuer(Protocol):
-    """Mints a scoped gateway token (satisfied by ``LLMGatewayService``)."""
-
-    def issue_token(
-        self,
-        *,
-        validator_hotkey: str,
-        assignment_id: str,
-        ttl_seconds: int | None = None,
-        source: str | None = None,
-        model: str | None = None,
-    ) -> str: ...
-
-
-@dataclass(frozen=True)
-class GatewayPayloadIssuer:
-    """Builds the per-assignment gateway fields stamped into a pull payload.
-
-    Issues a fresh scoped token for ``(validator_hotkey, assignment_id)`` stamped
-    with ``source=agent`` (the gateway resolves provider + model from it) and
-    advertises the master gateway base URL so the eval runtime points
-    ``BASE_LLM_GATEWAY_URL`` at ``{root}/llm/v1``. A raw provider key is NEVER
-    part of this payload (architecture.md sec 5).
-    """
-
-    issuer: GatewayTokenIssuer
-    gateway_base_url: str
-
-    def build(
-        self,
-        *,
-        validator_hotkey: str,
-        assignment_id: str,
-        ttl_seconds: int | None,
-    ) -> dict[str, str]:
-        base = self.gateway_base_url.rstrip("/")
-        token = self.issuer.issue_token(
-            validator_hotkey=validator_hotkey,
-            assignment_id=assignment_id,
-            ttl_seconds=ttl_seconds,
-            source=ASSIGNMENT_TOKEN_SOURCE,
-        )
-        return {
-            GATEWAY_TOKEN_PAYLOAD_KEY: token,
-            GATEWAY_BASE_URL_PAYLOAD_KEY: base,
-            BASE_LLM_GATEWAY_URL_ENV: f"{base}{_LLM_GATEWAY_PATH}",
-        }
+# Legacy gateway payload field names. Preferences reject/drop these rather than
+# re-issue tokens; the LLM gateway has been removed from Base.
+_LEGACY_GATEWAY_PAYLOAD_KEYS = frozenset(
+    {
+        "gateway_token",
+        "gateway_url",
+        "BASE_GATEWAY_TOKEN",
+        "BASE_GATEWAY_TOKEN_FILE",
+        "BASE_LLM_GATEWAY_URL",
+        "PRISM_GATEWAY_TOKEN",
+        "PRISM_GATEWAY_TOKEN_FILE",
+        "PRISM_LLM_GATEWAY_URL",
+    }
+)
 
 
 class AssignmentNotFoundError(LookupError):
@@ -135,21 +87,19 @@ def _parse_uuid(value: str) -> uuid.UUID | None:
         return None
 
 
-def assignment_to_view(
-    assignment: WorkAssignment,
-    *,
-    gateway_payload: Mapping[str, str] | None = None,
-) -> AssignmentView:
-    """Convert a persisted assignment row to its public view.
+def _sanitize_assignment_payload(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return assignment payload without legacy LLM-gateway fields."""
+    cleaned = dict(payload or {})
+    for key in list(cleaned):
+        if key in _LEGACY_GATEWAY_PAYLOAD_KEYS or key.upper() in _LEGACY_GATEWAY_PAYLOAD_KEYS:
+            cleaned.pop(key, None)
+    return cleaned
 
-    ``gateway_payload`` (when provided) is merged into the view payload only; it
-    is the ephemeral per-pull scoped gateway token + base URLs and is never
-    persisted to the ``work_assignments`` row.
-    """
 
-    payload = dict(assignment.payload or {})
-    if gateway_payload:
-        payload.update(gateway_payload)
+def assignment_to_view(assignment: WorkAssignment) -> AssignmentView:
+    """Convert a persisted assignment row to its public view."""
+
+    payload = _sanitize_assignment_payload(assignment.payload)
     return AssignmentView(
         id=str(assignment.id),
         challenge_slug=assignment.challenge_slug,
@@ -175,43 +125,12 @@ class AssignmentCoordinationService:
         *,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         gpu_serves_cpu: bool = True,
-        gateway_payload_issuer: GatewayPayloadIssuer | None = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._lease_seconds = lease_seconds
         self._gpu_serves_cpu = gpu_serves_cpu
-        self._gateway_payload_issuer = gateway_payload_issuer
         self._now_fn = now_fn
-
-    def gateway_payload(
-        self, unit: WorkAssignment, *, hotkey: str
-    ) -> dict[str, str] | None:
-        """Issue an ephemeral scoped gateway token + base URLs for a pulled unit.
-
-        Returns ``None`` when no gateway issuer is configured. The token is
-        minted fresh at pull time and never persisted, so its lifecycle binding
-        (VAL-LLM-023) follows the live assignment state and its expiry is bounded
-        by the unit's lease deadline.
-        """
-
-        if self._gateway_payload_issuer is None:
-            return None
-        return self._gateway_payload_issuer.build(
-            validator_hotkey=hotkey,
-            assignment_id=str(unit.id),
-            ttl_seconds=self._token_ttl_seconds(unit),
-        )
-
-    def _token_ttl_seconds(self, unit: WorkAssignment) -> int:
-        deadline = unit.deadline_at
-        if deadline is not None:
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=UTC)
-            remaining = int((deadline - self._now_fn()).total_seconds())
-            if remaining > 0:
-                return remaining
-        return self._lease_seconds
 
     async def pull(self, *, hotkey: str) -> list[WorkAssignment]:
         """Return the caller's assigned/running, capability-matched work units.
@@ -373,35 +292,6 @@ class AssignmentCoordinationService:
         ).scalar_one_or_none()
 
 
-class WorkAssignmentLifecycleResolver:
-    """Production ``AssignmentLifecycleResolver`` backed by ``work_assignments``.
-
-    A scoped gateway token is active only while its assignment row is still
-    ``assigned``/``running`` AND owned by the same validator. Once the assignment
-    is completed, failed, or reassigned to a different validator, the resolver
-    reports inactive so the gateway rejects the token (architecture.md sec 5).
-    """
-
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
-
-    async def is_active(self, *, validator_hotkey: str, assignment_id: str) -> bool:
-        parsed = _parse_uuid(assignment_id)
-        if parsed is None:
-            return False
-        async with self._session_factory() as session:
-            unit = (
-                await session.execute(
-                    select(WorkAssignment).where(WorkAssignment.id == parsed)
-                )
-            ).scalar_one_or_none()
-        if unit is None:
-            return False
-        if unit.assigned_validator_hotkey != validator_hotkey:
-            return False
-        return WorkAssignmentStatus(unit.status) in _PULLABLE_STATUSES
-
-
 def build_assignment_coordination_router(
     *,
     service: AssignmentCoordinationService,
@@ -422,15 +312,7 @@ def build_assignment_coordination_router(
     ) -> AssignmentPullResponse:
         units = await service.pull(hotkey=identity.hotkey)
         return AssignmentPullResponse(
-            assignments=[
-                assignment_to_view(
-                    unit,
-                    gateway_payload=service.gateway_payload(
-                        unit, hotkey=identity.hotkey
-                    ),
-                )
-                for unit in units
-            ]
+            assignments=[assignment_to_view(unit) for unit in units]
         )
 
     @router.post(

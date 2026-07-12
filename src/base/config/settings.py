@@ -101,16 +101,13 @@ class ValidatorAgentSettings(BaseModel):
     """Decentralized validator executor agent (architecture.md sec 2.2).
 
     The agent hotkey-registers + heartbeats with the master coordination plane,
-    pulls its assignments, executes them on its OWN broker + Docker, posts
-    results, and routes LLM calls through the master gateway (it never holds a
-    provider key). ``heartbeat_interval_seconds`` left unset (``None``) means the
-    agent uses the interval the master returns from ``register``.
+    pulls its assignments, executes them on its OWN broker + Docker, and posts
+    results. ``heartbeat_interval_seconds`` left unset (``None``) means the agent
+    uses the interval the master returns from ``register``.
     """
 
     #: Master coordination-plane base URL. Falls back to ``registry_url``.
     master_url: str | None = None
-    #: Master LLM gateway base URL. Falls back to ``master_url``.
-    gateway_url: str | None = None
     capabilities: list[str] = Field(default_factory=lambda: ["cpu"])
     version: str | None = None
     heartbeat_interval_seconds: int | None = None
@@ -259,7 +256,6 @@ class WorkerAgentSettings(BaseModel):
     """
 
     master_url: str | None = None
-    gateway_url: str | None = None
     capabilities: list[str] = Field(default_factory=lambda: ["gpu"])
     version: str | None = None
     heartbeat_interval_seconds: int | None = None
@@ -340,79 +336,6 @@ class WorkerSettings(BaseModel):
     agent: WorkerAgentSettings = Field(default_factory=WorkerAgentSettings)
     deploy: WorkerDeploySettings = Field(default_factory=WorkerDeploySettings)
     identity: WorkerIdentitySettings = Field(default_factory=WorkerIdentitySettings)
-
-
-class ProviderEntry(BaseModel):
-    """One configured LLM provider: its OpenAI-compatible base URL + key.
-
-    The key is injected server-side by the gateway (validators/agents never hold
-    it). ``api_key`` is an inline value (dev/tests); ``api_key_file`` points at a
-    mounted secret (production, e.g. ``/run/secrets/yunwu_api_key``).
-    """
-
-    base_url: str
-    api_key: str | None = None
-    api_key_file: str | None = None
-
-
-class SourceRoute(BaseModel):
-    """A request ``source`` claim's routing: provider + optional model override."""
-
-    provider: str
-    model: str | None = None
-
-
-def _default_gateway_providers() -> dict[str, ProviderEntry]:
-    return {
-        "yunwu": ProviderEntry(
-            base_url="https://yunwu.ai/v1",
-            api_key_file="/run/secrets/yunwu_api_key",
-        )
-    }
-
-
-def _default_gateway_sources() -> dict[str, SourceRoute]:
-    return {
-        "agent": SourceRoute(provider="yunwu", model="claude-opus-4-8"),
-        "llm_review": SourceRoute(provider="yunwu", model="claude-opus-4-8"),
-    }
-
-
-class GatewaySettings(BaseModel):
-    """Master LLM gateway config (architecture.md sec 5; llm-yunwu-contract).
-
-    Provider-agnostic + config-driven: a provider registry (name -> base URL +
-    key) plus a per-``source`` route map selects the provider + model the gateway
-    injects. The provider is config-selected: ``mock`` (deterministic, no egress;
-    used by tests) or ``real`` (HTTP clients pinned to the configured bases).
-    Provider keys are injected server-side; validators/eval runtimes hold only a
-    scoped gateway token and point their client base URL at the master gateway.
-    The defaults exist only so local/dev + tests work; production values come from
-    ``deploy/swarm/master.yaml``. There is NO model-enforcement constant and no
-    hardcoded provider base URL used at runtime.
-    """
-
-    provider_mode: Literal["mock", "real"] = "mock"
-    #: Externally-reachable master gateway root URL advertised to validators in
-    #: the pull payload (the LLM route is mounted under ``/llm/v1`` on the proxy).
-    #: The master stamps ``BASE_LLM_GATEWAY_URL`` + the scoped token from this
-    #: base; falls back to ``master.registry_url``.
-    public_base_url: str | None = None
-    #: Configured provider registry (name -> base URL + server-side key).
-    providers: dict[str, ProviderEntry] = Field(
-        default_factory=_default_gateway_providers
-    )
-    #: Provider used when a token's ``source`` has no configured route.
-    default_provider: str = "yunwu"
-    #: Model injected when neither the token nor the source route pins one.
-    default_model: str = "claude-opus-4-8"
-    #: Per-``source`` routing (``agent`` for coded agents, ``llm_review`` for the
-    #: central safety gates); both map to yunwu / ``claude-opus-4-8`` by default.
-    sources: dict[str, SourceRoute] = Field(default_factory=_default_gateway_sources)
-    token_secret: str | None = None
-    token_secret_file: str | None = "/run/secrets/gateway_token_secret"
-    token_ttl_seconds: int = 3_600
-    request_timeout_seconds: float = 30.0
 
 
 class ObservabilitySettings(BaseModel):
@@ -573,7 +496,6 @@ class Settings(BaseModel):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
-    gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
 

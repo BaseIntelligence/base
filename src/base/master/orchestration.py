@@ -36,6 +36,10 @@ from typing import Any, Protocol
 from fastapi import FastAPI
 
 from base.challenge_sdk.roles import Capability, Role, activate_role, role_contract
+from base.master.agent_challenge_compat import (
+    agent_challenge_incompatibility,
+    is_agent_challenge_slug,
+)
 from base.master.assignment import (
     AGENT_CHALLENGE_SLUG,
     AssignmentService,
@@ -445,6 +449,16 @@ class MasterChallengeReconciler:
         for challenge in active:
             slug = challenge.slug
             if slug in self._deployed:
+                continue
+            if is_agent_challenge_slug(slug):
+                diagnostic = agent_challenge_incompatibility()
+                logger.error(
+                    "refusing to start %s: %s (%s)",
+                    slug,
+                    diagnostic.message,
+                    diagnostic.code,
+                )
+                # Keep master healthy: surface the diagnostic without launching.
                 continue
             spec = challenge_spec_from_registry(challenge)
             try:
