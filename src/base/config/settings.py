@@ -139,6 +139,13 @@ class ValidatorSettings(BaseModel):
     # Defaults False so a deploy NEVER auto-commits weights on-chain; the first
     # on-chain commit is human-gated (plan Task 27) by flipping this flag.
     submit_on_chain_enabled: bool = False
+    #: Durable per-validator submission ledger directory (own volume). Composes
+    #: mount ``validator-state`` at ``/var/lib/base/state`` by default.
+    submission_state_dir: str = "/var/lib/base/state"
+    #: Bound on per-vector set_weights attempts before RETRY_EXHAUSTED.
+    submission_max_attempts: int = 5
+    submission_backoff_base_seconds: float = 1.0
+    submission_backoff_max_seconds: float = 300.0
     agent: ValidatorAgentSettings = Field(default_factory=ValidatorAgentSettings)
 
     @property

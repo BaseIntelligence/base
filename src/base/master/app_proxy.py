@@ -59,6 +59,7 @@ from base.master.raw_weight_ingress import (
 )
 from base.master.registry import ChallengeNotFoundError
 from base.master.service import MasterWeightService
+from base.master.submission_observation import ValidatorSubmissionObservationService
 from base.master.validator_coordination import (
     ValidatorCoordinationService,
     build_validator_coordination_router,
@@ -429,6 +430,9 @@ def create_proxy_app(
     worker_unit_status_service: WorkerUnitStatusService | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
     raw_weight_ingress_service: RawWeightIngressService | None = None,
+    submission_observation_service: (
+        ValidatorSubmissionObservationService | None
+    ) = None,
     orchestration_driver: MasterOrchestrationDriver | None = None,
     orchestration_interval_seconds: float | None = None,
     registry_reconciler: MasterChallengeReconciler | None = None,
@@ -824,6 +828,12 @@ def create_proxy_app(
                 include_health=False,
                 validator_service=validator_service,
                 identity_resolver=identity_resolver,
+                submission_observation_service=submission_observation_service,
+                validator_auth_dependency=(
+                    build_validator_auth_dependency(validator_verifier)
+                    if validator_verifier is not None
+                    else None
+                ),
             )
         )
         app.state.runtime_controller = runtime_controller

@@ -50,6 +50,10 @@ from base.master.registry import (
     record_to_admin_view,
 )
 from base.master.service import MasterWeightService, active_challenge_inputs
+from base.master.submission_observation import (
+    SubmissionObservationConflictError,
+    ValidatorSubmissionObservationService,
+)
 from base.master.validator_coordination import (
     ValidatorCoordinationService,
     build_validator_coordination_router,
@@ -70,8 +74,13 @@ from base.schemas.validator import (
     PublicIdentityView,
     PublicValidatorsResponse,
 )
-from base.schemas.weights import MasterWeightsResponse
+from base.schemas.weights import (
+    MasterWeightsResponse,
+    ValidatorSubmissionObservationRequest,
+    ValidatorSubmissionObservationResponse,
+)
 from base.security.validator_auth import (
+    ValidatorIdentity,
     ValidatorSignedRequestVerifier,
     build_validator_auth_dependency,
 )
@@ -99,6 +108,10 @@ def build_admin_router(
     include_health: bool = True,
     validator_service: ValidatorCoordinationService | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
+    submission_observation_service: (
+        ValidatorSubmissionObservationService | None
+    ) = None,
+    validator_auth_dependency: Callable[..., Any] | None = None,
 ) -> APIRouter:
     """Build the admin/registry routes as a reusable ``APIRouter``.
 
@@ -112,7 +125,9 @@ def build_admin_router(
     ``validator_service`` (when provided) backs the open validator directory read
     ``GET /v1/validators/public``; ``identity_resolver`` (when provided) resolves
     each validator's display identity plus the top-level subnet identity for that
-    route.
+    route. ``submission_observation_service`` (when provided with
+    ``validator_auth_dependency``) accepts non-authoritative validator chain
+    outcomes without any master set_weights side effect.
     """
 
     router = APIRouter()
@@ -232,6 +247,44 @@ def build_admin_router(
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
+
+    if (
+        submission_observation_service is not None
+        and validator_auth_dependency is not None
+    ):
+
+        @router.post(
+            "/v1/weights/submission-observations",
+            response_model=ValidatorSubmissionObservationResponse,
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def report_submission_observation(
+            payload: ValidatorSubmissionObservationRequest,
+            identity: ValidatorIdentity = Depends(validator_auth_dependency),
+        ) -> ValidatorSubmissionObservationResponse:
+            """Accept a validator-owned, non-authoritative chain outcome.
+
+            Master never sets weights and never treats this as chain finality.
+            """
+
+            try:
+                from base.challenge_sdk.roles import Role, activate_role
+
+                with activate_role(Role.MASTER):
+                    return await submission_observation_service.record(
+                        validator_hotkey=identity.hotkey,
+                        request=payload,
+                    )
+            except SubmissionObservationConflictError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=str(exc),
+                ) from exc
 
     @router.get("/v1/weights/{vector_id}", response_model=MasterWeightsResponse)
     async def get_weight_vector(vector_id: str) -> MasterWeightsResponse:
@@ -445,6 +498,9 @@ def create_admin_app(
     validator_health_interval_seconds: float | None = None,
     assignment_coordination_service: AssignmentCoordinationService | None = None,
     identity_resolver: ValidatorIdentityResolver | None = None,
+    submission_observation_service: (
+        ValidatorSubmissionObservationService | None
+    ) = None,
 ) -> FastAPI:
     """Create the private admin/registry FastAPI app.
 
@@ -458,6 +514,11 @@ def create_admin_app(
         lifespan=build_validator_health_lifespan(
             validator_service, validator_health_interval_seconds
         ),
+    )
+    validator_auth = (
+        build_validator_auth_dependency(validator_verifier)
+        if validator_verifier is not None
+        else None
     )
     app.include_router(
         build_admin_router(
@@ -473,6 +534,8 @@ def create_admin_app(
             include_health=True,
             validator_service=validator_service,
             identity_resolver=identity_resolver,
+            submission_observation_service=submission_observation_service,
+            validator_auth_dependency=validator_auth,
         )
     )
     if validator_service is not None and validator_verifier is not None:

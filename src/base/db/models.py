@@ -1150,3 +1150,46 @@ class FinalWeightVector(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class ValidatorSubmissionObservation(Base):
+    """Non-authoritative validator-reported chain-submission observations.
+
+    Keyed by validator identity + immutable vector identity. Exact retries are
+    idempotent; conflicts are auditable. Does not mutate final_weight_vectors
+    and never implies the master performed set_weights.
+    """
+
+    __tablename__ = "validator_submission_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "validator_hotkey",
+            "vector_id",
+            "vector_digest",
+            "outcome",
+            "attempt",
+            name="uq_validator_submission_observation_identity",
+        ),
+        Index("ix_validator_submission_observations_vector", "vector_id"),
+        Index("ix_validator_submission_observations_hotkey", "validator_hotkey"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    validator_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    vector_id: Mapped[str] = mapped_column(Text, nullable=False)
+    vector_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    netuid: Mapped[int] = mapped_column(Integer, nullable=False)
+    chain_endpoint: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

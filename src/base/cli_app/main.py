@@ -77,6 +77,7 @@ from base.master.service import (
     MasterWeightService,
     active_challenge_inputs,
 )
+from base.master.submission_observation import ValidatorSubmissionObservationService
 from base.master.swarm_backend import DEFAULT_JOB_NETWORK
 from base.master.validator_coordination import ValidatorCoordinationService
 from base.master.worker_assignment import WorkerAssignmentService
@@ -911,6 +912,9 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         session_factory,
         credential_store=ChallengeCredentialStore(registry),
     )
+    submission_observation_service = ValidatorSubmissionObservationService(
+        session_factory
+    )
     # Coordination plane: hotkey-signed register/heartbeat/pull/progress/result
     # routes, the token-gated GET /v1/validators read view, the in-app
     # crash-detection loop, and durable raw-weight push ingress.
@@ -993,8 +997,11 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_unit_status_service=worker_unit_status_service,
         assignment_coordination_service=assignment_service,
         raw_weight_ingress_service=raw_weight_ingress_service,
+        submission_observation_service=submission_observation_service,
         orchestration_driver=orchestration_driver,
-        orchestration_interval_seconds=(settings.master.orchestration_interval_seconds),
+        orchestration_interval_seconds=(
+            settings.master.orchestration_interval_seconds
+        ),
         registry_reconciler=registry_reconciler,
         registry_reconcile_interval_seconds=(
             settings.master.registry_reconcile_interval_seconds
@@ -1371,7 +1378,6 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
     """Wire the decentralized validator agent from settings (testable)."""
 
     agent_cfg = settings.validator.agent
-    master_url = agent_cfg.master_url or settings.validator.resolved_weights_url
     client = _build_coordination_client(settings)
     broker = BrokerConfig(
         broker_url=agent_cfg.broker_url or settings.docker.broker_url,
@@ -1413,8 +1419,18 @@ def _build_validator_weight_submitter(settings: Any) -> ValidatorWeightSubmitter
     and commits it under THIS node's hotkey (its own ``WeightSetter``), gated by
     ``validator.submit_on_chain_enabled`` (default off). It never aggregates its
     own vector. The ``WeightSetter`` is built lazily so a gate-off validator never
-    constructs a live ``Subtensor``.
+    constructs a live ``Subtensor``. Durable ledger state lives under
+    ``validator.submission_state_dir`` (validator Compose volume).
     """
+
+    expected_hotkey: str | None = None
+    if settings.validator.submit_on_chain_enabled:
+        # Public identity fingerprint only when submission is explicitly enabled.
+        # Disabled mode must not construct a submission wallet/Subtensor.
+        try:
+            expected_hotkey = str(create_validator_keypair(settings).ss58_address)
+        except Exception:
+            expected_hotkey = None
 
     return ValidatorWeightSubmitter(
         submit_enabled=settings.validator.submit_on_chain_enabled,
@@ -1428,6 +1444,13 @@ def _build_validator_weight_submitter(settings: Any) -> ValidatorWeightSubmitter
             create_bittensor_submit_runtime(settings).weight_setter
         ),
         weights_freshness_seconds=settings.validator.weights_freshness_seconds,
+        expected_hotkey=expected_hotkey,
+        expected_chain_endpoint=settings.network.chain_endpoint or "",
+        state_dir=settings.validator.submission_state_dir,
+        max_attempts=settings.validator.submission_max_attempts,
+        backoff_base_seconds=settings.validator.submission_backoff_base_seconds,
+        backoff_max_seconds=settings.validator.submission_backoff_max_seconds,
+        require_provenance=False,
     )
 
 

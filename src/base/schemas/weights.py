@@ -89,3 +89,48 @@ class MasterWeightsResponse(BaseModel):
         if value <= datetime.now(UTC):
             raise ValueError("expires_at must be in the future")
         return value
+
+
+class ValidatorSubmissionObservationRequest(BaseModel):
+    """Validator-reported chain outcome for an immutable master vector.
+
+    Non-authoritative: the master stores the observation without claiming chain
+    finality and never performs set_weights.
+    """
+
+    vector_id: str
+    vector_digest: str
+    netuid: int
+    chain_endpoint: str = ""
+    outcome: str
+    attempt: int = Field(ge=1)
+    error_code: str | None = None
+    observed_at: datetime | None = None
+
+    @field_validator("outcome")
+    @classmethod
+    def validate_outcome(cls, value: str) -> str:
+        allowed = {"accepted", "rejected", "unknown", "retry_exhausted", "superseded"}
+        cleaned = str(value).strip().lower()
+        if cleaned not in allowed:
+            raise ValueError(f"outcome must be one of {sorted(allowed)}")
+        return cleaned
+
+    @field_validator("vector_id", "vector_digest")
+    @classmethod
+    def validate_nonempty(cls, value: str) -> str:
+        cleaned = str(value).strip()
+        if not cleaned:
+            raise ValueError("must be non-empty")
+        return cleaned
+
+
+class ValidatorSubmissionObservationResponse(BaseModel):
+    observation_id: str
+    validator_hotkey: str
+    vector_id: str
+    vector_digest: str
+    outcome: str
+    attempt: int
+    created_at: datetime
+    idempotent: bool = False
