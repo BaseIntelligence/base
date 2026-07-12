@@ -10,11 +10,11 @@ from contextlib import asynccontextmanager
 from time import time
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
 
-from .auth import build_internal_auth_dependency
+from .auth import build_internal_auth_dependency, load_shared_token
 from .config import ChallengeSettings
-from .roles import Role
+from .roles import Capability, Role, activate_role, role_contract
 from .schemas import HealthResponse, VersionResponse, WeightsResponse
 from .version import (
     API_VERSION,
@@ -67,18 +67,28 @@ def create_challenge_app(
             "Incompatible challenge SDK version: "
             f"expected {SDK_CONTRACT_VERSION!r}, actual {settings.sdk_version!r}"
         )
+    server_capabilities = tuple(settings.capabilities)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if load_shared_token(settings) is None:
+            raise RuntimeError(
+                "challenge authentication secret is missing or empty; refusing to start"
+            )
         await database.init()
-        tasks = [
-            asyncio.create_task(factory(app), name="challenge-background-task")
-            for factory in background_tasks
-        ]
-        for task in tasks:
-            task.add_done_callback(_log_unexpected_background_exit)
+        tasks: list[asyncio.Task[None]] = []
         try:
-            yield
+            with activate_role(
+                settings.role,
+                capabilities=server_capabilities,
+            ):
+                tasks = [
+                    asyncio.create_task(factory(app), name="challenge-background-task")
+                    for factory in background_tasks
+                ]
+                for task in tasks:
+                    task.add_done_callback(_log_unexpected_background_exit)
+                yield
         finally:
             for task in tasks:
                 task.cancel()
@@ -87,17 +97,31 @@ def create_challenge_app(
             await database.close()
 
     app = FastAPI(title=settings.name, version=settings.version, lifespan=lifespan)
+    server_capabilities = tuple(settings.capabilities)
+
+    @app.middleware("http")
+    async def establish_challenge_role(
+        request: Request,
+        call_next: Callable[[Request], Coroutine[Any, Any, Response]],
+    ) -> Response:
+        with activate_role(
+            settings.role,
+            capabilities=server_capabilities,
+        ):
+            return await call_next(request)
 
     @app.get("/health", response_model=HealthResponse, include_in_schema=False)
+    @role_contract(role=Role.CHALLENGE, capability=Capability.CHALLENGE_STATE)
     async def health() -> HealthResponse:
         return HealthResponse(
             slug=settings.slug,
             version=settings.version,
             role=Role.CHALLENGE.value,
-            capabilities=tuple(settings.capabilities),
+            capabilities=server_capabilities,
         )
 
     @app.get("/version", response_model=VersionResponse, include_in_schema=False)
+    @role_contract(role=Role.CHALLENGE, capability=Capability.CHALLENGE_STATE)
     async def version() -> VersionResponse:
         return VersionResponse(
             distribution_name=DISTRIBUTION_NAME,
@@ -107,7 +131,7 @@ def create_challenge_app(
             challenge_version=settings.version,
             sdk_contract_version=SDK_CONTRACT_VERSION,
             sdk_version=SDK_CONTRACT_VERSION,
-            capabilities=tuple(settings.capabilities),
+            capabilities=server_capabilities,
         )
 
     internal_router = APIRouter(
@@ -116,6 +140,7 @@ def create_challenge_app(
     )
 
     @internal_router.get("/get_weights", response_model=WeightsResponse)
+    @role_contract(role=Role.CHALLENGE, capability=Capability.CHALLENGE_STATE)
     async def get_weights() -> WeightsResponse:
         weights = await get_weights_fn()
         return WeightsResponse(

@@ -273,6 +273,12 @@ class ExternalResultResponse(_StrictModel):
     audit_unit_id: str | None = None
 
 
+class WorkUnitFoldRequest(_StrictModel):
+    job_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=256)
+
+
 class HealthResponse(_StrictModel):
     status: Literal["ok", "degraded", "unhealthy"] = "ok"
     slug: str
@@ -355,4 +361,5 @@ __all__ = [
     "VersionResponse",
     "WeightsResponse",
     "WorkerSignature",
+    "WorkUnitFoldRequest",
 ]

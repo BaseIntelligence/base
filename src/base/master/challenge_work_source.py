@@ -24,6 +24,7 @@ from typing import Any
 
 import httpx
 
+from base.challenge_sdk.schemas import ExecutionProof, ExternalResultEnvelope
 from base.master.orchestration import (
     WORK_UNIT_MAX_ATTEMPTS_REASON,
     ChallengePendingWork,
@@ -251,11 +252,25 @@ class HttpChallengeResultForwarder:
             "X-Base-Challenge-Slug": challenge_slug,
             "Accept": "application/json",
         }
-        body = {
-            "work_unit_id": work_unit_id,
-            "submission_ref": submission_ref,
-            "result": dict(result_payload or {}),
-        }
+        payload = dict(result_payload or {})
+        proof = payload.get("execution_proof")
+        if not isinstance(proof, dict):
+            body = {
+                "work_unit_id": work_unit_id,
+                "submission_ref": submission_ref,
+                "result": payload,
+            }
+        else:
+            envelope = ExternalResultEnvelope(
+                api_version="1.0",
+                work_unit_id=work_unit_id,
+                assignment_id=work_unit_id,
+                submission_ref=submission_ref,
+                challenge_slug=challenge_slug,
+                result=payload,
+                proof=ExecutionProof.model_validate(proof),
+            )
+            body = envelope.model_dump(mode="json")
         last_error = "unknown error"
         for _attempt in range(max(self._retries, 1)):
             try:

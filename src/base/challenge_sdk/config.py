@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .compatibility import require_compatible
 from .roles import (
     CAPABILITY_REGISTRY_VERSION,
     Role,
@@ -113,6 +114,16 @@ class ChallengeSettings(DockerExecutorSettings):
 
     @model_validator(mode="after")
     def validate_compatibility(self) -> ChallengeSettings:
+        require_compatible(
+            version=API_VERSION,
+            compatibility_range=self.api_compatibility_range,
+            label="API version",
+        )
+        require_compatible(
+            version=SDK_CONTRACT_VERSION,
+            compatibility_range=self.sdk_compatibility_range,
+            label="SDK version",
+        )
         if self.api_version != API_VERSION:
             raise ValueError(
                 "Incompatible API version: "

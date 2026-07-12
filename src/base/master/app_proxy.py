@@ -438,6 +438,15 @@ def create_proxy_app(
             ),
         ),
     )
+    with_role = capabilities_for_role(Role.MASTER)
+
+    @app.middleware("http")
+    async def establish_master_role(request: Request, call_next: Any) -> Response:
+        from base.challenge_sdk.roles import activate_role
+
+        with activate_role(Role.MASTER, capabilities=with_role):
+            return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=(

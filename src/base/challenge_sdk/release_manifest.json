@@ -9,6 +9,11 @@
       "ChallengeSettings",
       "DockerExecutorSettings"
     ],
+    "base.challenge_sdk.compatibility": [
+      "SemVer",
+      "is_compatible",
+      "require_compatible"
+    ],
     "base.challenge_sdk.auth": [
       "build_internal_auth_dependency",
       "load_shared_token"
@@ -34,7 +39,8 @@
       "ValidatorRegisterResponse",
       "ValidatorView",
       "WeightsResponse",
-      "WorkerSignature"
+      "WorkerSignature",
+      "WorkUnitFoldRequest"
     ],
     "base.challenge_sdk.roles": [
       "CAPABILITY_REGISTRY_VERSION",

@@ -3,6 +3,7 @@
 from .api_manifest import API_MANIFEST, API_MANIFEST_DIGEST, ApiManifest
 from .app_factory import ChallengeDatabase, create_challenge_app
 from .auth import build_internal_auth_dependency, load_shared_token
+from .compatibility import SemVer, is_compatible, require_compatible
 from .config import ChallengeSettings, DockerExecutorSettings
 from .executors.docker import (
     DockerContainerInfo,
@@ -54,6 +55,7 @@ from .schemas import (
     ValidatorView,
     VersionResponse,
     WeightsResponse,
+    WorkUnitFoldRequest,
 )
 from .version import (
     API_VERSION,
@@ -92,6 +94,7 @@ __all__ = [
     "RawWeightPushRequest",
     "ChallengeDatabase",
     "ChallengeSettings",
+    "SemVer",
     "DISTRIBUTION_NAME",
     "DockerContainerInfo",
     "DockerExecutor",
@@ -112,7 +115,10 @@ __all__ = [
     "ValidatorRegisterResponse",
     "ValidatorView",
     "WeightsResponse",
+    "WorkUnitFoldRequest",
     "build_internal_auth_dependency",
+    "is_compatible",
+    "require_compatible",
     "activate_role",
     "capabilities_for_role",
     "challenge_only",

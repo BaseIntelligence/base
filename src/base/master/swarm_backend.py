@@ -55,6 +55,7 @@ from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from base.challenge_sdk.compatibility import is_compatible
 from base.challenge_sdk.executors.docker import (
     DockerExecutorError,
     DockerLimits,
@@ -1534,9 +1535,18 @@ class SwarmChallengeOrchestrator:
 
     def _validate_version(self, spec: ChallengeSpec, version: dict[str, Any]) -> None:
         api_version = version.get("api_version")
-        if api_version != spec.expected_api_version:
+        if not isinstance(api_version, str) or not is_compatible(
+            api_version, spec.expected_api_version
+        ):
             raise DockerOrchestrationError(
-                f"Challenge {spec.slug!r} API version {api_version!r} is incompatible"
+                f"Challenge {spec.slug!r} API version {api_version!r} is incompatible "
+                f"(expected {spec.expected_api_version!r})"
+            )
+        sdk_version = version.get("sdk_version", "1.0.0")
+        if not isinstance(sdk_version, str) or not is_compatible(sdk_version, "^1.0.0"):
+            raise DockerOrchestrationError(
+                f"Challenge {spec.slug!r} SDK version {sdk_version!r} is incompatible "
+                "(expected ^1.0.0)"
             )
         if (
             spec.version is not None

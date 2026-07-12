@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from base.challenge_sdk.compatibility import is_compatible
 from base.master.workload_ledger import WorkloadClass
 
 DEFAULT_API_VERSION = "1.0"
@@ -692,9 +693,23 @@ class DockerOrchestrator:
 
     def _validate_version(self, spec: ChallengeSpec, version: dict[str, Any]) -> None:
         api_version = version.get("api_version")
-        if api_version != spec.expected_api_version:
+        if not isinstance(api_version, str) or not is_compatible(
+            api_version, spec.expected_api_version
+        ):
             raise DockerOrchestrationError(
-                f"Challenge {spec.slug!r} API version {api_version!r} is incompatible"
+                f"Challenge {spec.slug!r} API version {api_version!r} is incompatible "
+                f"(expected {spec.expected_api_version!r})"
+            )
+        sdk_version = version.get("sdk_version", "1.0.0")
+        if not isinstance(sdk_version, str):
+            raise DockerOrchestrationError(
+                f"Challenge {spec.slug!r} returned an invalid SDK version"
+            )
+        expected_sdk_range = "^1.0.0"
+        if not is_compatible(sdk_version, expected_sdk_range):
+            raise DockerOrchestrationError(
+                f"Challenge {spec.slug!r} SDK version {sdk_version!r} is incompatible "
+                f"with expected range {expected_sdk_range!r}"
             )
         if (
             spec.version is not None

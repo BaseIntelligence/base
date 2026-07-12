@@ -35,6 +35,25 @@ class ApiManifest(BaseModel):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
+    def route_keys(self) -> frozenset[tuple[str, str]]:
+        """Return the method/path identity set for generated-surface checks."""
+
+        return frozenset(
+            (str(route["method"]), str(route["path"])) for route in self.routes
+        )
+
+    def cli_names(self) -> frozenset[str]:
+        """Return the canonical role-qualified CLI operation names."""
+
+        return frozenset(str(command["name"]) for command in self.cli)
+
+    def capability_tokens(self) -> frozenset[str]:
+        """Return every capability token advertised by the canonical registry."""
+
+        from .roles import ROLE_REGISTRY
+
+        return frozenset(ROLE_REGISTRY.capabilities)
+
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
@@ -165,35 +184,72 @@ API_MANIFEST = ApiManifest(
             "auth": "challenge-auth",
             "roles": ["challenge"],
         },
+        {
+            "method": "POST",
+            "path": "/internal/v1/work_units/fold",
+            "media_type": "application/json",
+            "schema": "WorkUnitFoldRequest",
+            "status": [200, 401, 404, 409, 422],
+            "auth": "challenge-auth",
+            "roles": ["challenge"],
+        },
+        {
+            "method": "GET",
+            "path": "/internal/v1/get_weights",
+            "media_type": "application/json",
+            "schema": "WeightsResponse",
+            "status": [200, 401, 503],
+            "auth": "challenge-auth",
+            "roles": ["challenge"],
+        },
     ),
     cli=(
         {
-            "name": "base master",
+            "name": "base master proxy",
             "role": "master",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
         },
         {
-            "name": "base validator",
+            "name": "base master weights",
+            "role": "master",
+            "json": True,
+            "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
+        },
+        {
+            "name": "base validator run",
             "role": "validator",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
         },
         {
-            "name": "base challenge",
+            "name": "base validator agent",
+            "role": "validator",
+            "json": True,
+            "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
+            "gated": True,
+        },
+        {
+            "name": "base challenge create",
             "role": "challenge",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
         },
         {
-            "name": "base worker",
+            "name": "base worker agent",
             "role": "worker",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
         },
         {
-            "name": "base validator set-weights",
-            "role": "validator",
+            "name": "base challenge register",
+            "role": "challenge",
+            "json": True,
+            "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
+        },
+        {
+            "name": "base worker deploy",
+            "role": "worker",
             "json": True,
             "exit_codes": {"success": 0, "config": 2, "auth": 3, "conflict": 4},
             "gated": True,
