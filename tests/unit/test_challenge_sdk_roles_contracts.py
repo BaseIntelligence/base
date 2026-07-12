@@ -162,8 +162,8 @@ def test_raw_weight_digest_and_strict_values() -> None:
 def test_version_response_rejects_caller_capability_claims() -> None:
     response = VersionResponse(
         distribution_name="base",
-        artifact_version="3.1.1",
-        release_id="v3.1.1",
+        artifact_version="3.1.2",
+        release_id="v3.1.2",
         api_version="1.0",
         challenge_slug="prism",
         challenge_version="0.1.0",
