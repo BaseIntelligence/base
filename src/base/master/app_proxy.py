@@ -162,6 +162,23 @@ ChallengeTokenProvider = Callable[[str], str]
 WORKER_ADMISSION_BRIDGE_SLUG = "prism"
 
 
+def is_architecture_report_path(path: str) -> bool:
+    """Return whether a path targets the removed architecture-report surface.
+
+    Matches both bare and ``/v1``-prefixed forms used by direct and
+    ``/challenges/{slug}/...`` proxy prefixes (VAL-GATE-015).
+    """
+
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    if parts[0] == "v1":
+        parts = parts[1:]
+    # architectures/{id}/report[/*]
+    return len(parts) >= 3 and parts[0] == "architectures" and parts[2] == "report"
+
+
 def is_blocked_proxy_path(path: str) -> bool:
     """Return whether a public proxy path targets a private challenge route."""
 
@@ -171,6 +188,7 @@ def is_blocked_proxy_path(path: str) -> bool:
         or normalized == "/internal"
         or normalized.startswith("/internal/")
         or _is_benchmark_execution_path(normalized)
+        or is_architecture_report_path(normalized)
     )
 
 
@@ -189,6 +207,9 @@ def prism_upstream_proxy_path(slug: str, path: str) -> str:
     normalized = normpath(f"/{path.lstrip('/')}")
     if slug != "prism" or normalized == "/.":
         return path
+    # Never rewrite the removed architecture-report surface (VAL-GATE-015).
+    if is_architecture_report_path(normalized):
+        return path
     if normalized.startswith("/v1/"):
         return normalized
     if is_blocked_proxy_path(normalized):
@@ -196,7 +217,12 @@ def prism_upstream_proxy_path(slug: str, path: str) -> str:
     if normalized in PRISM_EXACT_PUBLIC_PATHS:
         return f"/v1{normalized}"
     parts = [part for part in normalized.split("/") if part]
-    if parts and parts[0] == "architectures":
+    # List/detail/variants remain public; report is excluded above.
+    if (
+        parts
+        and parts[0] == "architectures"
+        and not (len(parts) >= 3 and parts[2] == "report")
+    ):
         return f"/v1{normalized}"
     if len(parts) == 2 and parts[0] == "submissions":
         return f"/v1{normalized}"
@@ -623,6 +649,13 @@ def create_proxy_app(
         )
 
     async def proxy_request(slug: str, path: str, request: Request) -> Response:
+        # Removed LLM architecture-report surface: normal not-found with zero
+        # upstream challenge resolution or provider work (VAL-GATE-015).
+        if is_architecture_report_path(path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not Found",
+            )
         if is_blocked_proxy_path(path):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

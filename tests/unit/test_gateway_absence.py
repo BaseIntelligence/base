@@ -189,3 +189,115 @@ def test_gateway_not_listed_as_direct_dependency() -> None:
     requires = "\n".join(dist.requires or [])
     for banned in ("openai", "langchain", "anthropic", "tiktoken"):
         assert banned not in requires.lower()
+
+
+def test_proxy_architecture_report_paths_return_not_found_without_upstream() -> None:
+    """VAL-GATE-015: report paths not-found before challenge resolve / forward."""
+
+    class Registry:
+        def __init__(self) -> None:
+            self.get_calls = 0
+            self.list_calls = 0
+
+        async def list(self):
+            self.list_calls += 1
+            return []
+
+        async def get(self, slug: str):
+            self.get_calls += 1
+            raise KeyError(slug)
+
+    class MinerVerifier:
+        async def verify(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("unused")
+
+    registry = Registry()
+    app = create_proxy_app(
+        registry=registry,
+        miner_verifier=MinerVerifier(),  # type: ignore[arg-type]
+    )
+    client = TestClient(app)
+    paths = (
+        "/v1/architectures/arch-1/report",
+        "/architectures/arch-1/report",
+        "/challenges/prism/architectures/arch-1/report",
+        "/challenges/prism/v1/architectures/arch-1/report",
+        "/challenges/demo/architectures/missing/report",
+    )
+    for path in paths:
+        response = client.get(path)
+        assert response.status_code == 404, path
+    # Short-circuit must not resolve the challenge or call registry.
+    assert registry.get_calls == 0
+    assert registry.list_calls == 0
+
+
+def test_assignment_progress_and_result_reject_gateway_fields() -> None:
+    """VAL-GATE-017: progress/result schemas 4xx on gateway_* and nested bags."""
+
+    from pydantic import ValidationError
+
+    from base.schemas.assignment import (
+        AssignmentProgressRequest,
+        AssignmentResultRequest,
+    )
+
+    with pytest.raises(ValidationError) as progress_exc:
+        AssignmentProgressRequest.model_validate(
+            {"gateway_token": "tok", "meta": {"ok": 1}}
+        )
+    assert "gateway" in str(progress_exc.value).lower()
+
+    with pytest.raises(ValidationError) as progress_meta_exc:
+        AssignmentProgressRequest.model_validate(
+            {"meta": {"gateway_url": "http://example/llm"}}
+        )
+    assert "gateway" in str(progress_meta_exc.value).lower()
+
+    with pytest.raises(ValidationError) as result_exc:
+        AssignmentResultRequest.model_validate(
+            {
+                "success": True,
+                "payload": {
+                    "score": 1.0,
+                    "gateway_token": "tok",
+                    "provider": {"model": "gpt-4o", "api_key": "secret"},
+                },
+            }
+        )
+    body = str(result_exc.value).lower()
+    assert "gateway" in body or "provider" in body
+
+    with pytest.raises(ValidationError):
+        AssignmentResultRequest.model_validate(
+            {
+                "success": True,
+                "BASE_LLM_GATEWAY_URL": "http://example",
+                "payload": {},
+            }
+        )
+
+    # Clean payload still validates (including ExecutionProof-shaped provider metadata).
+    clean = AssignmentResultRequest.model_validate(
+        {
+            "success": True,
+            "payload": {
+                "score": 0.5,
+                "proof": {
+                    "provider": {
+                        "name": "lium",
+                        "executor_id": "ex-1",
+                        "pod_id": "pod-1",
+                    }
+                },
+            },
+        }
+    )
+    assert clean.success is True
+    assert clean.payload["score"] == 0.5
+
+    sdk_progress = __import__(
+        "base.challenge_sdk.schemas", fromlist=["AssignmentProgressRequest"]
+    ).AssignmentProgressRequest
+    with pytest.raises(ValidationError):
+        sdk_progress.model_validate({"meta": {"gateway_token": "x"}})

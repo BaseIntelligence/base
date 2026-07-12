@@ -76,7 +76,8 @@ def _prism_payload() -> dict[str, Any]:
         ("architectures", "/v1/architectures"),
         ("architectures/arch-1", "/v1/architectures/arch-1"),
         ("architectures/arch-1/variants", "/v1/architectures/arch-1/variants"),
-        ("architectures/arch-1/report", "/v1/architectures/arch-1/report"),
+        # Removed architecture-report surface is not rewritten to /v1 (VAL-GATE-015).
+        ("architectures/arch-1/report", "architectures/arch-1/report"),
         ("submissions/sub-1/curve", "/v1/submissions/sub-1/curve"),
         ("training-variants", "/v1/training-variants"),
         ("epochs", "/v1/epochs"),
@@ -894,7 +895,6 @@ def test_prism_architecture_lab_routes_forward_to_public_surface() -> None:
         ("/challenges/prism/architectures?epoch_id=42", "architectures"),
         ("/challenges/prism/architectures/arch-1", "architecture"),
         ("/challenges/prism/architectures/arch-1/variants", "architecture_variants"),
-        ("/challenges/prism/architectures/arch-1/report", "architecture_report"),
         ("/challenges/prism/submissions/sub-1/curve", "submission_curve"),
     ]
 
@@ -904,14 +904,16 @@ def test_prism_architecture_lab_routes_forward_to_public_surface() -> None:
         assert response.status_code == 200
         assert response.json()["route"] == route_name
 
+    # Legacy architecture report short-circuits before upstream (VAL-GATE-015).
+    report_response = proxy_client.get("/challenges/prism/architectures/arch-1/report")
+    assert report_response.status_code == 404
+    assert "architecture_report" not in captured
+
     assert captured["architectures"]["path"] == "/v1/architectures"
     assert captured["architectures"]["query"] == "epoch_id=42"
     assert captured["architecture"]["path"] == "/v1/architectures/arch-1"
     assert captured["architecture_variants"]["path"] == (
         "/v1/architectures/arch-1/variants"
-    )
-    assert captured["architecture_report"]["path"] == (
-        "/v1/architectures/arch-1/report"
     )
     assert captured["submission_curve"]["path"] == "/v1/submissions/sub-1/curve"
 

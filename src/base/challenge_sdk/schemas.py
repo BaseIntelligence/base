@@ -90,9 +90,110 @@ class AssignmentPullResponse(_StrictModel):
     assignments: tuple[AssignmentView, ...] = ()
 
 
+_LEGACY_GATEWAY_KEYS = frozenset(
+    {
+        "gateway_token",
+        "gateway_url",
+        "gateway_base_url",
+        "BASE_GATEWAY_TOKEN",
+        "BASE_GATEWAY_TOKEN_FILE",
+        "BASE_LLM_GATEWAY_URL",
+        "PRISM_GATEWAY_TOKEN",
+        "PRISM_GATEWAY_TOKEN_FILE",
+        "PRISM_LLM_GATEWAY_URL",
+        "llm_gateway_url",
+        "llm_gateway_token",
+        "llm_gateway_token_file",
+        "gateway",
+        "llm_provider",
+        "llm",
+    }
+)
+
+_LLM_PROVIDER_NESTED_KEYS = frozenset(
+    {
+        "gateway_token",
+        "gateway_url",
+        "api_key",
+        "base_url",
+        "model",
+        "openai_api_key",
+        "openrouter_api_key",
+        "token",
+        "token_file",
+    }
+)
+
+
+def _reject_legacy_gateway_mapping(value: Any, *, label: str) -> Any:
+    if not isinstance(value, dict):
+        return value
+    hits: list[str] = []
+
+    def is_legacy_key(key_str: str) -> bool:
+        return (
+            key_str in _LEGACY_GATEWAY_KEYS
+            or key_str.upper() in _LEGACY_GATEWAY_KEYS
+            or key_str.startswith("gateway_")
+            or key_str.startswith("GATEWAY_")
+            or key_str.startswith("llm_gateway")
+            or key_str.startswith("LLM_GATEWAY")
+        )
+
+    def is_llm_provider_bag(nested: Any) -> bool:
+        if not isinstance(nested, dict):
+            return False
+        return any(
+            str(nested_key) in _LLM_PROVIDER_NESTED_KEYS
+            or str(nested_key).startswith("gateway_")
+            or str(nested_key).startswith("llm_gateway")
+            for nested_key in nested
+        )
+
+    def walk(node: dict[str, Any], path: str) -> None:
+        for key, nested in node.items():
+            key_str = str(key)
+            here = f"{path}.{key_str}" if path else key_str
+            if is_legacy_key(key_str):
+                hits.append(here)
+                continue
+            if key_str in {"provider", "Provider"} and is_llm_provider_bag(nested):
+                hits.append(here)
+                continue
+            if isinstance(nested, dict):
+                walk(nested, here)
+
+    walk(value, "")
+    if hits:
+        raise ValueError(
+            f"unsupported removed LLM gateway fields in {label}: "
+            + ", ".join(sorted(hits))
+        )
+    return value
+
+
 class AssignmentProgressRequest(_StrictModel):
     checkpoint_ref: str | None = None
     meta: dict[str, Any] | None = None
+
+    @field_validator("meta")
+    @classmethod
+    def reject_gateway_meta(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        return _reject_legacy_gateway_mapping(value, label="meta")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_top_level_gateway_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            top = {
+                key: value
+                for key, value in data.items()
+                if key not in {"checkpoint_ref", "meta"}
+            }
+            _reject_legacy_gateway_mapping(top, label="progress request")
+        return data
 
 
 class AssignmentProgressResponse(_StrictModel):
@@ -109,6 +210,33 @@ class AssignmentResultRequest(_StrictModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     checkpoint_ref: str | None = None
     proof: dict[str, Any] | None = None
+
+    @field_validator("payload")
+    @classmethod
+    def reject_gateway_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _reject_legacy_gateway_mapping(value, label="result payload")
+
+    @field_validator("proof")
+    @classmethod
+    def reject_gateway_proof(
+        cls, value: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        return _reject_legacy_gateway_mapping(value, label="result proof")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_top_level_gateway_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            top = {
+                key: value
+                for key, value in data.items()
+                if key
+                not in {"api_version", "success", "payload", "checkpoint_ref", "proof"}
+            }
+            _reject_legacy_gateway_mapping(top, label="result request")
+        return data
 
 
 class AssignmentResultResponse(_StrictModel):
