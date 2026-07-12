@@ -920,7 +920,9 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
             "cpu": "2",
             "memory": "8g",
         },
-        volumes={"data": "/data"},
+        # Named Docker volume source for challenge SQLite (Compose-only
+        # adoption). Container mount target remains /data via the orchestrator.
+        volumes={"sqlite": "base_prism_sqlite"},
         env={
             "PRISM_SHARED_TOKEN_FILE": challenge_token_file,
             "CHALLENGE_SHARED_TOKEN_FILE": challenge_token_file,

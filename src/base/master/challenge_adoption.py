@@ -32,7 +32,25 @@ _SEMVER_API_RE = re.compile(
     r"^(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:\.(0|[1-9]\d*))?(?:[-+][0-9A-Za-z.-]+)?$"
 )
 _SAFE_VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_HOST_PATH_VOLUME_RE = re.compile(r"^(/|[A-Za-z]:\\|~)")
+# Named Docker volume sources (no slashes) or safe container mount targets.
+_SAFE_CONTAINER_MOUNT_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_./-]*$")
+_FORBIDDEN_MOUNT_PREFIXES = (
+    "/var/run",
+    "/run/docker",
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/home",
+    "/boot",
+    "/usr",
+    "/lib",
+    "/bin",
+    "/sbin",
+    "/opt",
+)
+_HOST_PATH_VOLUME_RE = re.compile(r"^(\./|\.\./|[A-Za-z]:\\|~)")
 _FORBIDDEN_CAPABILITY_FRAGMENTS = (
     "set_weights",
     "master.",
@@ -180,9 +198,20 @@ def _validate_share(emission_percent: Decimal | float | int | str | None) -> Non
 
 
 def _validate_volumes(volumes: Mapping[str, Any] | None, *, slug: str) -> None:
+    """Validate registry volume maps for Compose-safe adoption.
+
+    ``ChallengeRecord.volumes`` is ``name -> mount_path`` (container path).
+    Operators may also declare a named Docker volume under the ``sqlite`` key
+    (used by adoption tests and registry defaults). Adoption therefore accepts:
+
+    * named volume identifiers (``base_<slug>_sqlite`` style, no slashes);
+    * safe absolute *container* mount targets (e.g. ``/data``).
+
+    It rejects Docker socket binds, host-relative paths, Windows/home binds,
+    and host-sensitive absolute roots that would escape the challenge volume.
+    """
+
     mapping = dict(_as_mapping(volumes))
-    # Default sqlite volume is injected by the registry when omitted; adoption
-    # still rejects host binds and docker.sock style mounts when declared.
     for key, value in mapping.items():
         if not isinstance(key, str) or not key.strip():
             raise ChallengeAdoptionError("volume keys must be non-empty strings")
@@ -196,30 +225,52 @@ def _validate_volumes(volumes: Mapping[str, Any] | None, *, slug: str) -> None:
             raise ChallengeAdoptionError(
                 "challenge volumes must not mount the Docker socket"
             )
-        if _HOST_PATH_VOLUME_RE.search(candidate) or candidate.startswith("."):
+        if _HOST_PATH_VOLUME_RE.search(candidate) or candidate in {".", ".."}:
             raise ChallengeAdoptionError(
                 f"challenge volume {key!r} rejects host bind paths "
-                f"(use named Compose volumes only)"
+                f"(use named Compose volumes or container-local mounts)"
             )
+        if candidate.startswith("/"):
+            if candidate == "/":
+                raise ChallengeAdoptionError(
+                    f"challenge volume {key!r} rejects root filesystem mounts"
+                )
+            if any(
+                candidate == prefix or candidate.startswith(prefix + "/")
+                for prefix in _FORBIDDEN_MOUNT_PREFIXES
+            ):
+                raise ChallengeAdoptionError(
+                    f"challenge volume {key!r} rejects host-sensitive mount "
+                    f"path {candidate!r}"
+                )
+            if not _SAFE_CONTAINER_MOUNT_RE.fullmatch(candidate):
+                raise ChallengeAdoptionError(
+                    f"challenge volume {key!r} mount path is not a safe "
+                    f"container path (got {candidate!r})"
+                )
+            continue
+        # Named Docker volume source (no path separators).
         if not _SAFE_VOLUME_NAME_RE.fullmatch(candidate):
             raise ChallengeAdoptionError(
                 f"challenge volume {key!r} must be a safe named volume "
-                f"(got {candidate!r})"
+                f"or container mount path (got {candidate!r})"
             )
     if "sqlite" in mapping:
-        expected_prefix = f"base_{slug.replace('-', '_')}"
-        sqlite_name = str(mapping["sqlite"])
-        if not sqlite_name.startswith("base_"):
-            raise ChallengeAdoptionError(
-                "challenge sqlite volume must be challenge-owned "
-                f"(expected base_* name, got {sqlite_name!r})"
-            )
-        # Prefer the deterministic default form but allow pre-seeded siblings.
-        slug_token = slug.replace("-", "_")
-        if expected_prefix not in sqlite_name and slug_token not in sqlite_name:
-            raise ChallengeAdoptionError(
-                "challenge sqlite volume must be scoped to the challenge slug"
-            )
+        sqlite_value = str(mapping["sqlite"]).strip()
+        # Named-volume form must stay challenge-scoped; mount-path form (/data)
+        # is covered by the container-path checks above.
+        if not sqlite_value.startswith("/"):
+            expected_prefix = f"base_{slug.replace('-', '_')}"
+            if not sqlite_value.startswith("base_"):
+                raise ChallengeAdoptionError(
+                    "challenge sqlite volume must be challenge-owned "
+                    f"(expected base_* name, got {sqlite_value!r})"
+                )
+            slug_token = slug.replace("-", "_")
+            if expected_prefix not in sqlite_value and slug_token not in sqlite_value:
+                raise ChallengeAdoptionError(
+                    "challenge sqlite volume must be scoped to the challenge slug"
+                )
 
 
 def _validate_network_policy(
@@ -287,6 +338,21 @@ def _scan_for_clear_credentials(
                     if "hint" in key_text.lower() or "docs" in key_text.lower():
                         _walk(path, value, strict_keys=strict_keys)
                         continue
+                    # Compose path indirection (*_FILE → /run/secrets/...) is the
+                    # approved way to wire credentials without storing clear values.
+                    key_lower = key_text.lower()
+                    if (
+                        key_lower.endswith("_file")
+                        or key_lower.endswith("_path")
+                        or "file" in key_lower
+                    ) and isinstance(value, str):
+                        normalized = value.strip()
+                        if (
+                            normalized.startswith("/run/secrets/")
+                            or normalized.startswith("/var/run/secrets/")
+                            or normalized.startswith("/run/base/")
+                        ) and not _CANARY_VALUE_RE.search(normalized):
+                            continue
                     if isinstance(value, (str, bytes, int, float, Decimal)):
                         raise ChallengeAdoptionError(
                             f"clear credential material rejected under {path}"
@@ -415,9 +481,10 @@ def validate_payload_for_registration(
         internal_base_url=payload.internal_base_url,
         require_digest_pin=production_policy or creating_active,
         production_policy=production_policy,
-        # Full volume/capability/credential scan for production create only;
-        # ACTIVE-at-create in non-production is still digest-fail-closed.
-        full_contract=production_policy,
+        # Full contract for production creates and for any ACTIVE registration:
+        # mutable tags, unsafe volumes, and foreign capabilities cannot become
+        # active without the activate contract (VAL-CROSS-075).
+        full_contract=production_policy or creating_active,
     )
 
 

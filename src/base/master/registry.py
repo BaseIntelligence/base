@@ -175,6 +175,16 @@ class ChallengeRegistry:
             data.update(updates)
             data["updated_at"] = datetime.now(UTC)
             updated = ChallengeRecord(**data)
+            # ACTIVE challenges must remain adoption-compliant after every
+            # mutation (image, volumes, capabilities, share, network policy).
+            projected_status = updated.status
+            if (
+                projected_status == ChallengeStatus.ACTIVE
+                or record.status == ChallengeStatus.ACTIVE
+            ):
+                validate_record_for_activation(
+                    updated, production_policy=self.production_policy
+                )
             self._records[slug] = updated
             return updated
 
@@ -393,6 +403,17 @@ class DatabaseChallengeRegistry:
                 )
             if not updates:
                 return _record_from_model(model)
+            current = _record_from_model(model)
+            projected = current.model_copy(update=updates)
+            if (
+                projected.status == ChallengeStatus.ACTIVE
+                or current.status == ChallengeStatus.ACTIVE
+            ):
+                # Fail closed before mutate so a bad patch cannot leave ACTIVE
+                # with a mutable image, host bind, or foreign capability.
+                validate_record_for_activation(
+                    projected, production_policy=self.production_policy
+                )
             await _apply_model_updates(session, model, updates)
             await session.flush()
             await session.refresh(model)

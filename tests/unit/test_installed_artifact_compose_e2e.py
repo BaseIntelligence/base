@@ -479,12 +479,50 @@ def test_dev_draft_can_exist_but_activate_requires_pin() -> None:
             )
         )
 
+    # ACTIVE-at-create still runs full adoption: empty and foreign caps fail closed.
+    with pytest.raises(ChallengeAdoptionError, match="capability"):
+        registry.create(
+            ChallengeCreate(
+                slug="local-active-no-caps",
+                name="Local Active No Caps",
+                image=_pinned("localhost:5000/platform/demo", "1.0.0", "8"),
+                version="1.0.0",
+                status=ChallengeStatus.ACTIVE,
+                required_capabilities=[],
+            )
+        )
+    with pytest.raises(ChallengeAdoptionError, match="capability"):
+        registry.create(
+            ChallengeCreate(
+                slug="local-active-bad-caps",
+                name="Local Active Bad Caps",
+                image=_pinned("localhost:5000/platform/demo", "1.0.0", "c"),
+                version="1.0.0",
+                status=ChallengeStatus.ACTIVE,
+                required_capabilities=["validator.own_set_weights"],
+            )
+        )
+
     registry.update(
         "local-draft",
-        ChallengeUpdate(image=_pinned("localhost:5000/platform/demo", "1.0.0", "9")),
+        ChallengeUpdate(
+            image=_pinned("localhost:5000/platform/demo", "1.0.0", "9"),
+            required_capabilities=["get_weights", "proxy_routes"],
+            volumes={"sqlite": "base_local_draft_sqlite"},
+            internal_base_url="http://challenge-local-draft:8000",
+        ),
     )
     activated = registry.set_status("local-draft", ChallengeStatus.ACTIVE)
     assert activated.status == ChallengeStatus.ACTIVE
+
+    # ACTIVE updates must remain adoption-compliant (no mutable image surge).
+    with pytest.raises(ChallengeAdoptionError, match="digest-pinned|digest"):
+        registry.update(
+            "local-draft",
+            ChallengeUpdate(image="localhost:5000/platform/demo:latest"),
+        )
+    assert registry.get("local-draft").image.endswith(_sha256("9"))
+    assert registry.get("local-draft").status == ChallengeStatus.ACTIVE
 
 
 def test_compose_orchestrator_refuses_non_immutable_image(tmp_path: Path) -> None:
@@ -530,3 +568,25 @@ def test_master_compose_yaml_source_has_no_mutable_image_defaults() -> None:
     validator_text = VALIDATOR_COMPOSE.read_text(encoding="utf-8")
     assert ":latest" not in validator_text
     assert "sha256" in validator_text.lower()
+
+
+def test_prism_seed_registration_satisfies_active_adoption_contract() -> None:
+    """Seeded Prism ACTIVE create is digest-pinned and Compose-safe."""
+
+    from base.cli_app.main import prism_challenge_create
+
+    payload = prism_challenge_create()
+    assert payload.status == ChallengeStatus.ACTIVE
+    assert DIGEST_IMAGE_RE.match(payload.image)
+    assert "sqlite" in payload.volumes
+    assert payload.volumes["sqlite"].startswith("base_prism")
+    # Full contract must accept the shipped Prism seed under production.
+    validate_payload_for_registration(payload, production_policy=True)
+    registry = ChallengeRegistry(production_policy=True)
+    record, token = registry.create(payload)
+    assert record.status == ChallengeStatus.ACTIVE
+    assert token
+    view = record_to_admin_view(record).model_dump(mode="json")
+    assert "challenge_token" not in view
+    assert "docker_broker_token" not in view
+    assert token not in json.dumps(view)
