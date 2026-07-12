@@ -494,13 +494,97 @@ async def test_freshness_window_enforced(harness: dict[str, Any]) -> None:
         computed_at=past,
         expires_at=past + timedelta(minutes=1),
     )
-    # Schema may also reject expires_at in the past relative to wall clock in validator;
-    # server still must reject. If schema rejects first that is fine (422).
+    # Schema no longer hard-rejects expires_at vs wall clock; server receipt
+    # policy still rejects out-of-window deliveries (422).
     r = await client.post(
         path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
     )
     assert r.status_code == 422
     assert await _count_snapshots(session_factory) == 0
+
+
+@pytest.mark.asyncio
+async def test_delayed_in_window_delivery_accepts_past_schema_expires(
+    harness: dict[str, Any],
+) -> None:
+    """VAL-WEIGHT-019: receipt policy, not schema dual-policy, is authoritative.
+
+    Payload computed/expires are within 5 minutes of receipt, but absolute
+    wall-clock ``expires_at`` may already be in the past relative to a delayed
+    client parse. Schema must accept; server receipt-window must accept when
+    ``receipt < expires_at + skew``.
+    """
+
+    client = harness["client"]
+    clock = harness["clock"]
+    session_factory = harness["session_factory"]
+    path = f"/internal/v1/challenges/{SLUG}/raw-weights"
+
+    # expires_at is 10s in the "past" relative to receipt; skew is 30s so still
+    # inside ``expires_at + skew``.
+    computed = clock.now() - timedelta(seconds=40)
+    expires = clock.now() - timedelta(seconds=10)
+    body = _build_body(
+        clock=clock,
+        nonce="delayed-window-1",
+        computed_at=computed,
+        expires_at=expires,
+    )
+    # Schema itself must parse (no wall-clock future gate).
+    payload = RawWeightPushRequest.model_validate_json(body.decode())
+    assert payload.expires_at < datetime.now(UTC)
+
+    r = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r.status_code == 200, r.text
+    assert await _count_snapshots(session_factory) == 1
+    selected = await _selected(session_factory)
+    assert selected is not None
+    assert selected.nonce == "delayed-window-1"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_multi_revision_highest_wins(
+    harness: dict[str, Any],
+) -> None:
+    """VAL-WEIGHT-017/095: concurrent revisions converge on max revision selected."""
+
+    client = harness["client"]
+    clock = harness["clock"]
+    session_factory = harness["session_factory"]
+    path = f"/internal/v1/challenges/{SLUG}/raw-weights"
+
+    async def push(rev: int) -> int:
+        body = _build_body(
+            clock=clock,
+            revision=rev,
+            nonce=f"race-r{rev}",
+            weights={HOTKEY: float(rev)},
+        )
+        headers = _signed_headers(path=path, body=body, clock=clock)
+        response = await client.post(path, content=body, headers=headers)
+        return response.status_code
+
+    # Race lower and higher revisions; after all complete the selected source
+    # must be the highest revision even if lower commits last on some schedules.
+    statuses = await asyncio.gather(*[push(rev) for rev in (1, 5, 3, 4, 2)])
+    assert set(statuses) == {200}, statuses
+    assert await _count_snapshots(session_factory) == 5
+    selected = await _selected(session_factory)
+    assert selected is not None
+    assert selected.revision == 5
+    assert float(selected.weights[HOTKEY]) == 5.0
+
+    # A later higher revision still wins selection.
+    body = _build_body(clock=clock, revision=6, nonce="race-r6", weights={HOTKEY: 6.0})
+    r6 = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r6.status_code == 200
+    selected = await _selected(session_factory)
+    assert selected is not None
+    assert selected.revision == 6
 
 
 @pytest.mark.asyncio

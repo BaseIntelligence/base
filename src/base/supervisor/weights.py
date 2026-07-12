@@ -57,19 +57,32 @@ def compute_weights_once(settings: Settings) -> FinalWeights:
     # any future cli_app <-> supervisor import cycle (cli_app.main already
     # imports the supervisor lazily inside `master supervisor`).
     from base.cli_app import main as cli_main
+    from base.db.session import create_engine, create_session_factory
 
     cli_main._run_startup_migrations(settings)
-    registry = cli_main._master_registry(settings)
+    engine = create_engine(settings.database.url)
+    session_factory = create_session_factory(engine)
+    registry = cli_main._master_registry(settings, session_factory)
     runtime = cli_main.create_bittensor_runtime(settings)
     service = cli_main._master_weight_service(
         settings,
         metagraph_cache=runtime.metagraph_cache,
+        session_factory=session_factory,
     )
-    final = asyncio.run(cli_main._run_master_weight_epoch(service, registry))
+    epoch = cli_main._resolve_master_weight_epoch(settings)
+    final = asyncio.run(
+        cli_main._run_master_weight_epoch(
+            service,
+            registry,
+            epoch=epoch,
+            netuid=int(settings.network.netuid),
+            chain_endpoint=str(settings.network.chain_endpoint or ""),
+        )
+    )
     logger.info(
-        "supervisor weights tick: compute-only, %d uids",
+        "supervisor weights tick: durable seal, %d uids",
         len(final.uids),
-        extra={"uids": len(final.uids)},
+        extra={"uids": len(final.uids), "epoch": epoch},
     )
     return final
 

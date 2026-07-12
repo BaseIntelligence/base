@@ -74,6 +74,9 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
         final = await cli_module._run_master_weight_epoch(  # noqa: SLF001
             service,
             registry,
+            epoch=1,
+            netuid=42,
+            chain_endpoint="wss://chain.example:9944",
         )
 
         assert final.uids == [9]

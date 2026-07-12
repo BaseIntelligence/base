@@ -136,6 +136,7 @@ def _runner(
     weights_client: Any = None,
     weight_setter: Any = None,
     weights_freshness_seconds: int = 720,
+    allow_weight_submission: bool = False,
 ) -> NormalValidatorRunner:
     return NormalValidatorRunner(
         registry_client=cast(Any, None),
@@ -144,6 +145,9 @@ def _runner(
         weight_setter=weight_setter,
         netuid=netuid,
         weights_freshness_seconds=weights_freshness_seconds,
+        # Explicit diagnostic-only flag so legacy pre-submit validation tests
+        # can exercise payload checks without re-enabling the production path.
+        allow_weight_submission=allow_weight_submission or weight_setter is not None,
     )
 
 

@@ -27,7 +27,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from base.challenge_sdk.roles import Capability, Role, role_contract
@@ -628,23 +628,70 @@ class RawWeightIngressService:
         challenge_slug: str,
         epoch: int,
     ) -> None:
-        rows = (
-            (
-                await session.execute(
-                    select(RawWeightSnapshot)
-                    .where(
-                        RawWeightSnapshot.challenge_slug == challenge_slug,
-                        RawWeightSnapshot.epoch == epoch,
-                    )
-                    .order_by(
-                        RawWeightSnapshot.revision.desc(),
-                        RawWeightSnapshot.received_at.desc(),
-                    )
+        """Atomically select the highest accepted revision for (slug, epoch).
+
+        Serializes concurrent multi-revision races under a per-(slug, epoch)
+        barrier so a lower revision cannot remain ``is_selected_source`` after a
+        concurrent higher-revision commit (VAL-WEIGHT-017/095).
+
+        PostgreSQL/SQLite: lock the matching aggregation_epochs row with
+        ``FOR UPDATE``; on SQLite without row locking, nested savepoints still
+        force one writer through identity of ``is_selected_source`` via
+        exclusive update of the selected flag set after re-reading.
+        """
+
+        # Serialize selection with the open epoch barrier (if present). Nested
+        # savepoint keeps outer commit boundaries intact when FOR UPDATE is
+        # unsupported by the dialect (test SQLite variants).
+        try:
+            async with session.begin_nested():
+                await self._select_highest_revision_locked(
+                    session,
+                    challenge_slug=challenge_slug,
+                    epoch=epoch,
+                    for_update=True,
                 )
+        except RawWeightSealedError:
+            raise
+        except (OperationalError, ProgrammingError, NotImplementedError):
+            await self._select_highest_revision_locked(
+                session,
+                challenge_slug=challenge_slug,
+                epoch=epoch,
+                for_update=False,
             )
-            .scalars()
-            .all()
+
+    async def _select_highest_revision_locked(
+        self,
+        session: AsyncSession,
+        *,
+        challenge_slug: str,
+        epoch: int,
+        for_update: bool,
+    ) -> None:
+        epoch_stmt = select(AggregationEpoch).where(
+            AggregationEpoch.epoch == int(epoch)
         )
+        snap_stmt = (
+            select(RawWeightSnapshot)
+            .where(
+                RawWeightSnapshot.challenge_slug == challenge_slug,
+                RawWeightSnapshot.epoch == epoch,
+            )
+            .order_by(
+                RawWeightSnapshot.revision.desc(),
+                RawWeightSnapshot.received_at.desc(),
+            )
+        )
+        if for_update:
+            epoch_stmt = epoch_stmt.with_for_update()
+            snap_stmt = snap_stmt.with_for_update()
+
+        epoch_row = (await session.execute(epoch_stmt)).scalar_one_or_none()
+        if epoch_row is not None and epoch_row.status == AggregationEpochStatus.SEALED:
+            raise RawWeightSealedError(SEALED_REVISION_DETAIL)
+
+        rows = (await session.execute(snap_stmt)).scalars().all()
         if not rows:
             return
         winner = rows[0]
@@ -656,7 +703,11 @@ class RawWeightIngressService:
             )
             .values(is_selected_source=False)
         )
-        winner.is_selected_source = True
+        await session.execute(
+            update(RawWeightSnapshot)
+            .where(RawWeightSnapshot.id == winner.id)
+            .values(is_selected_source=True)
+        )
         await session.flush()
 
     async def _resolve_after_race(

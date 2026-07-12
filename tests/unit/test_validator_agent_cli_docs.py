@@ -105,13 +105,43 @@ def test_build_validator_weight_submitter_is_gated_off_by_default() -> None:
     submitter = _build_validator_weight_submitter(Settings())
     assert isinstance(submitter, ValidatorWeightSubmitter)
     assert submitter.submit_enabled is False
+    # Production force-provenance even when gate is off.
+    assert submitter._require_provenance is True
+    assert submitter._observation_reporter is not None
 
 
-def test_build_validator_weight_submitter_enabled_when_gate_on() -> None:
+def test_build_validator_weight_submitter_enabled_when_gate_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _KP:
+        ss58_address = "bound-hotkey"
+
+    monkeypatch.setattr(
+        "base.cli_app.main.create_validator_keypair",
+        lambda settings: _KP(),
+    )
     settings = Settings()
     settings.validator.submit_on_chain_enabled = True
     submitter = _build_validator_weight_submitter(settings)
     assert submitter.submit_enabled is True
+    assert submitter._require_provenance is True
+    assert submitter._expected_hotkey == "bound-hotkey"
+    assert submitter._observation_reporter is not None
+
+
+def test_build_validator_weight_submitter_fail_closed_on_identity_bind_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(settings: Any) -> Any:
+        raise RuntimeError("no wallet")
+
+    monkeypatch.setattr("base.cli_app.main.create_validator_keypair", _boom)
+    settings = Settings()
+    settings.validator.submit_on_chain_enabled = True
+    submitter = _build_validator_weight_submitter(settings)
+    assert submitter.submit_enabled is True
+    assert submitter._expected_hotkey is None
+    assert getattr(submitter, "_identity_unbound", False) is True
 
 
 async def test_run_validator_agent_runtime_runs_own_submit_loop() -> None:

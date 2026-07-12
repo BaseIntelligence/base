@@ -351,6 +351,71 @@ def test_compute_latest_without_durable_store_still_aggregates() -> None:
     assert response.vector_id is None
 
 
+@pytest.mark.asyncio
+async def test_run_epoch_with_session_factory_refuses_get_weights_fallback(
+    session_factory: async_sessionmaker,
+) -> None:
+    """VAL-CROSS-067: durable session force-seal; missing ids fail closed."""
+
+    pulls: list[str] = []
+
+    class _Pull:
+        async def get_weights(self, **kwargs: Any) -> Any:
+            pulls.append(str(kwargs.get("slug")))
+            from base.schemas.weights import ChallengeWeightsResult
+
+            return ChallengeWeightsResult(
+                slug=str(kwargs["slug"]),
+                emission_percent=float(kwargs["emission_percent"]),
+                weights={"5CkeyAAA": 1.0},
+                ok=True,
+            )
+
+    master = MasterWeightService(
+        metagraph_cache=StubMetagraphCache({"5CkeyAAA": 3}),  # type: ignore[arg-type]
+        challenge_client=_Pull(),  # type: ignore[arg-type]
+        session_factory=session_factory,
+    )
+    challenges = [_challenge("prism", "100")]
+    with activate_role(Role.MASTER):
+        with pytest.raises(RuntimeError, match="VAL-CROSS-067"):
+            await master.run_epoch(challenges, {"prism": "tok"})
+        with pytest.raises(RuntimeError, match="VAL-CROSS-067"):
+            await master.run_epoch(challenges, {"prism": "tok"}, epoch=1)
+        with pytest.raises(RuntimeError, match="VAL-CROSS-067"):
+            await master.run_epoch(challenges, {"prism": "tok"}, netuid=42)
+    assert pulls == []
+
+    await _insert_selected_snapshot(
+        session_factory,
+        slug="prism",
+        epoch=11,
+        revision=1,
+        weights={"5CkeyAAA": 1.0},
+    )
+    with activate_role(Role.MASTER):
+        final = await master.run_epoch(
+            challenges,
+            {"prism": "tok"},
+            epoch=11,
+            netuid=42,
+            chain_endpoint="wss://c",
+        )
+    assert final.uids
+    assert pulls == []
+
+
+def test_cli_run_master_weight_epoch_forwards_epoch_and_netuid() -> None:
+    import inspect
+
+    import base.cli_app.main as cli_main
+
+    params = inspect.signature(cli_main._run_master_weight_epoch).parameters
+    assert "epoch" in params
+    assert "netuid" in params
+    assert "chain_endpoint" in params
+
+
 def _challenge(slug: str, emission: str) -> RegistryChallenge:
     return RegistryChallenge(
         slug=slug,

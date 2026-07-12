@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -137,8 +137,9 @@ def _submitter(
     expected_hotkey: str | None = None,
     max_attempts: int = 5,
     backoff_base_seconds: float = 0.0,
-    require_provenance: bool = False,
+    require_provenance: bool = True,
     observation_reporter: Any = None,
+    chain_reconciler: Any = None,
 ) -> ValidatorWeightSubmitter:
     def default_factory() -> Any:
         return setter
@@ -156,6 +157,7 @@ def _submitter(
         backoff_max_seconds=0.0,
         require_provenance=require_provenance,
         observation_reporter=observation_reporter,
+        chain_reconciler=chain_reconciler,
     )
 
 
@@ -578,6 +580,100 @@ async def test_observation_reporter_called_on_success(tmp_path: Path) -> None:
     assert seen[0]["outcome"] == "accepted"
     assert seen[0]["vector_id"] == "vector-1"
     assert submitter.ledger.all_records()[0].observed_to_master is True
+
+
+async def test_missing_expected_hotkey_fails_closed_before_set_weights(
+    tmp_path: Path,
+) -> None:
+    client = _FetchClient(_fresh_payload())
+    setter = _RecordingSetter("wallet-hotkey")
+    submitter = _submitter(
+        client=client,
+        setter=setter,
+        state_dir=tmp_path,
+        expected_hotkey=None,
+    )
+    outcome = await submitter.run_once()
+    assert outcome is ValidatorSubmitOutcome.IDENTITY_MISMATCH
+    assert setter.calls == []
+
+
+async def test_unknown_held_across_restart_without_reconciler(
+    tmp_path: Path,
+) -> None:
+    client = _FetchClient(_fresh_payload())
+    setter = _RecordingSetter(
+        "hotkey-A", raises=RuntimeError("timeout waiting for inclusion")
+    )
+    first = _submitter(
+        client=client,
+        setter=setter,
+        state_dir=tmp_path,
+        expected_hotkey="hotkey-A",
+        backoff_base_seconds=0.0,
+    )
+    assert await first.run_once() is ValidatorSubmitOutcome.UNKNOWN
+    # Simulate process restart with the same durable ledger path.
+    restarted = _submitter(
+        client=client,
+        setter=_RecordingSetter("hotkey-A"),
+        state_dir=tmp_path,
+        expected_hotkey="hotkey-A",
+        backoff_base_seconds=0.0,
+    )
+    assert await restarted.run_once() is ValidatorSubmitOutcome.UNKNOWN
+    # No second blind submission while UNKNOWN remains unreconciled.
+    assert restarted.ledger.all_records()[0].status == SubmissionStatus.UNKNOWN.value
+
+
+async def test_unknown_reconciler_promotes_to_already_submitted(
+    tmp_path: Path,
+) -> None:
+    client = _FetchClient(_fresh_payload())
+    setter = _RecordingSetter(
+        "hotkey-A", raises=RuntimeError("timeout waiting for inclusion")
+    )
+    first = _submitter(
+        client=client,
+        setter=setter,
+        state_dir=tmp_path,
+        expected_hotkey="hotkey-A",
+        backoff_base_seconds=0.0,
+    )
+    assert await first.run_once() is ValidatorSubmitOutcome.UNKNOWN
+
+    def reconciler(_record: Any) -> bool | None:
+        return True
+
+    restarted = ValidatorWeightSubmitter(
+        submit_enabled=True,
+        netuid=100,
+        weights_client=client,
+        weight_setter_factory=lambda: _RecordingSetter("hotkey-A"),
+        clock=lambda: REF,
+        state_dir=tmp_path,
+        expected_hotkey="hotkey-A",
+        max_attempts=5,
+        backoff_base_seconds=0.0,
+        backoff_max_seconds=0.0,
+        require_provenance=True,
+        chain_reconciler=reconciler,
+    )
+    outcome = await restarted.run_once()
+    assert outcome is ValidatorSubmitOutcome.ALREADY_SUBMITTED
+    record = restarted.ledger.all_records()[0]
+    assert record.status == SubmissionStatus.ACCEPTED.value
+    assert record.reconciled_at is not None
+
+
+def test_require_provenance_defaults_true() -> None:
+    submitter = ValidatorWeightSubmitter(
+        submit_enabled=False,
+        netuid=100,
+        weights_client=cast(Any, object()),
+        weight_setter_factory=lambda: None,
+    )
+    assert submitter._require_provenance is True
 
 
 async def test_logs_do_not_include_wallet_secrets(

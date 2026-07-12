@@ -574,15 +574,54 @@ def _challenge_orchestrator(settings):
     )
 
 
+def _resolve_master_weight_epoch(
+    settings: Any,
+    *,
+    epoch: int | None = None,
+    now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> int:
+    """Resolve the integer epoch identity for a durable seal tick.
+
+    Preference order: explicit CLI/operator override, then a deterministic
+    wall-clock bucket derived from ``master.epoch_interval_seconds``. Challenge
+    raw-weight pushes and the master seal share this identity so snapshots land
+    in the same epoch key (VAL-CROSS-067).
+    """
+
+    if epoch is not None:
+        return int(epoch)
+    raw_interval = getattr(settings.master, "epoch_interval_seconds", 360) or 360
+    interval = max(1, int(raw_interval))
+    return int(now_fn().timestamp()) // interval
+
+
 async def _run_master_weight_epoch(
     service: MasterWeightService,
     registry: Any,
+    *,
+    epoch: int,
+    netuid: int,
+    chain_endpoint: str = "",
 ) -> FinalWeights:
+    """Run one master weight epoch with explicit seal identity.
+
+    When the service is wired with a DB ``session_factory``, this seals and
+    publishes from durable ``raw_weight_snapshots`` only. Callers must provide
+    concrete ``epoch`` and ``netuid`` so production never falls back to
+    intermediate ``get_weights`` (VAL-CROSS-067).
+    """
+
     from base.challenge_sdk.roles import Role, activate_role
 
     challenges, tokens = await active_challenge_inputs(registry)
     with activate_role(Role.MASTER):
-        return await service.run_epoch(challenges, tokens)
+        return await service.run_epoch(
+            challenges,
+            tokens,
+            epoch=int(epoch),
+            netuid=int(netuid),
+            chain_endpoint=chain_endpoint or "",
+        )
 
 
 async def _run_master_weight_epoch_response(
@@ -999,9 +1038,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         raw_weight_ingress_service=raw_weight_ingress_service,
         submission_observation_service=submission_observation_service,
         orchestration_driver=orchestration_driver,
-        orchestration_interval_seconds=(
-            settings.master.orchestration_interval_seconds
-        ),
+        orchestration_interval_seconds=(settings.master.orchestration_interval_seconds),
         registry_reconciler=registry_reconciler,
         registry_reconcile_interval_seconds=(
             settings.master.registry_reconcile_interval_seconds
@@ -1239,6 +1276,12 @@ def master_challenges_seed_prism(
 def master_weights(
     config: Path = typer.Option(Path("config/master.example.yaml")),
     once: bool = typer.Option(False, "--once/--loop"),
+    epoch: int | None = typer.Option(
+        None,
+        "--epoch",
+        help="Optional explicit epoch identity for durable seal; defaults to "
+        "wall-clock bucket from master.epoch_interval_seconds.",
+    ),
 ):
     settings = load_settings(config)
     _configure_observability(settings)
@@ -1257,15 +1300,26 @@ def master_weights(
         metagraph_cache=runtime.metagraph_cache,
         session_factory=session_factory,
     )
+    resolved_epoch = _resolve_master_weight_epoch(settings, epoch=epoch)
+    netuid = int(settings.network.netuid)
+    chain_endpoint = str(settings.network.chain_endpoint or "")
 
-    async def epoch() -> None:
-        final = await _run_master_weight_epoch(service, registry)
+    async def epoch_tick() -> None:
+        final = await _run_master_weight_epoch(
+            service,
+            registry,
+            epoch=resolved_epoch
+            if once
+            else _resolve_master_weight_epoch(settings, epoch=epoch),
+            netuid=netuid,
+            chain_endpoint=chain_endpoint,
+        )
         typer.echo(f"computed {len(final.uids)} weights")
 
     if once:
-        asyncio.run(epoch())
+        asyncio.run(epoch_tick())
         return
-    asyncio.run(run_epoch_loop(settings.master.epoch_interval_seconds, epoch))
+    asyncio.run(run_epoch_loop(settings.master.epoch_interval_seconds, epoch_tick))
 
 
 async def _run_validator_runtime(
@@ -1335,11 +1389,17 @@ def validator_status(
 
 @validator_app.command("run")
 def validator_run(config: Path = typer.Option(Path("config/validator.example.yaml"))):
+    """Legacy registry-sync runner WITHOUT on-chain weight submission.
+
+    The sole gated ``set_weights`` path is ``base validator agent`` via
+    :class:`ValidatorWeightSubmitter`. This legacy entry point no longer
+    constructs a ``WeightSetter`` / calls ``set_weights`` so operators cannot
+    bypass ledger, identity, provenance, or observation wiring.
+    """
+
     settings = load_settings(config)
     _configure_observability(settings)
-    runtime = create_bittensor_submit_runtime(settings)
-    # Re-assert logging AFTER bittensor init (which resets root logging to
-    # WARNING) so this runtime's INFO records are not swallowed; see master_proxy.
+    # Registry sync only — do not build a submit runtime or inject WeightSetter.
     configure_logging(
         settings.observability.log_json, level=_resolved_log_level(settings)
     )
@@ -1347,14 +1407,11 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
         registry_client=RegistryClient(settings.validator.registry_url),
         orchestrator=_challenge_orchestrator(settings),
         retry_seconds=settings.validator.registry_retry_seconds,
-        weights_client=WeightsClient(
-            settings.validator.resolved_weights_url,
-            timeout_seconds=settings.validator.weights_timeout_seconds,
-            retries=settings.validator.weights_retries,
-        ),
-        weight_setter=runtime.weight_setter,
+        weights_client=None,
+        weight_setter=None,
         netuid=settings.network.netuid,
         weights_freshness_seconds=settings.validator.weights_freshness_seconds,
+        allow_weight_submission=False,
     )
     asyncio.run(
         _run_validator_runtime(runner, settings.validator.weights_interval_seconds)
@@ -1421,25 +1478,45 @@ def _build_validator_weight_submitter(settings: Any) -> ValidatorWeightSubmitter
     own vector. The ``WeightSetter`` is built lazily so a gate-off validator never
     constructs a live ``Subtensor``. Durable ledger state lives under
     ``validator.submission_state_dir`` (validator Compose volume).
+
+    Production wiring (sole gated path):
+    * ``require_provenance=True`` (forced)
+    * fail-closed identity when enabled and expected hotkey cannot be bound
+    * optional non-authoritative observation reporter to master
+    * UNKNOWN outcomes held/reconciled across restart (no blind multi-submit)
     """
 
+    weights_client = WeightsClient(
+        settings.validator.resolved_weights_url,
+        timeout_seconds=settings.validator.weights_timeout_seconds,
+        retries=settings.validator.weights_retries,
+    )
     expected_hotkey: str | None = None
+    identity_unbound = False
     if settings.validator.submit_on_chain_enabled:
         # Public identity fingerprint only when submission is explicitly enabled.
         # Disabled mode must not construct a submission wallet/Subtensor.
         try:
             expected_hotkey = str(create_validator_keypair(settings).ss58_address)
         except Exception:
+            # Fail closed: leave expected_hotkey unset so the submitter rejects
+            # identity before set_weights rather than submitting anonymously.
             expected_hotkey = None
+            identity_unbound = True
+            logging.getLogger(__name__).error(
+                "validator submit enabled but cannot bind expected hotkey; "
+                "identity will fail closed on every tick"
+            )
+        if not expected_hotkey:
+            identity_unbound = True
 
-    return ValidatorWeightSubmitter(
+    async def _report_observation(payload: dict[str, Any]) -> Any:
+        return await weights_client.report_submission_observation(payload)
+
+    submitter = ValidatorWeightSubmitter(
         submit_enabled=settings.validator.submit_on_chain_enabled,
         netuid=settings.network.netuid,
-        weights_client=WeightsClient(
-            settings.validator.resolved_weights_url,
-            timeout_seconds=settings.validator.weights_timeout_seconds,
-            retries=settings.validator.weights_retries,
-        ),
+        weights_client=weights_client,
         weight_setter_factory=lambda: (
             create_bittensor_submit_runtime(settings).weight_setter
         ),
@@ -1450,8 +1527,12 @@ def _build_validator_weight_submitter(settings: Any) -> ValidatorWeightSubmitter
         max_attempts=settings.validator.submission_max_attempts,
         backoff_base_seconds=settings.validator.submission_backoff_base_seconds,
         backoff_max_seconds=settings.validator.submission_backoff_max_seconds,
-        require_provenance=False,
+        require_provenance=True,
+        observation_reporter=_report_observation,
     )
+    # Surface the fail-closed binding explicitly for tests and operators.
+    submitter._identity_unbound = identity_unbound  # type: ignore[attr-defined]
+    return submitter
 
 
 async def _run_validator_agent_runtime(

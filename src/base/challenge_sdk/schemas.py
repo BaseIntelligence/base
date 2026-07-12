@@ -291,7 +291,6 @@ class RawWeightPushRequest(_StrictModel):
     # All-zero maps with at least one hotkey key are accepted as explicit zero sources.
     weights: dict[str, StrictFloat] = Field(min_length=1)
 
-
     @field_validator("computed_at", "expires_at")
     @classmethod
     def require_timezone(cls, value: datetime) -> datetime:
@@ -322,10 +321,13 @@ class RawWeightPushRequest(_StrictModel):
 
     @model_validator(mode="after")
     def validate_freshness_and_digest(self) -> RawWeightPushRequest:
+        # Structural ordering only. Receipt-time freshness is
+        # ``raw-weight-freshness.v1`` on the master
+        # (computed_at - skew <= receipt < expires_at + skew). Do not reject
+        # delayed-in-window deliveries solely because wall-clock now has passed
+        # expires_at relative to the client parse time (VAL-WEIGHT-019).
         if self.expires_at <= self.computed_at:
             raise ValueError("expires_at must be after computed_at")
-        if self.expires_at <= datetime.now(UTC):
-            raise ValueError("expires_at must be in the future")
         canonical_payload = self.model_dump(
             mode="json",
             exclude={"payload_digest"},

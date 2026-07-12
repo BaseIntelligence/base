@@ -54,13 +54,30 @@ def _wire_fake_cli_compute_path(
     def _migrate(settings: Any) -> None:
         recorder["migrations"] += 1
 
-    async def _fake_epoch(service: Any, registry: Any) -> FinalWeights:
-        recorder["epoch_calls"].append({"service": service, "registry": registry})
+    async def _fake_epoch(
+        service: Any,
+        registry: Any,
+        *,
+        epoch: int,
+        netuid: int,
+        chain_endpoint: str = "",
+    ) -> FinalWeights:
+        recorder["epoch_calls"].append(
+            {
+                "service": service,
+                "registry": registry,
+                "epoch": epoch,
+                "netuid": netuid,
+                "chain_endpoint": chain_endpoint,
+            }
+        )
         return FinalWeights(uids=[1, 2], weights=[0.5, 0.5])
 
     monkeypatch.setattr(cli_main, "_run_startup_migrations", _migrate)
     monkeypatch.setattr(
-        cli_main, "_master_registry", lambda settings: recorder["registry"]
+        cli_main,
+        "_master_registry",
+        lambda settings, session_factory=None: recorder["registry"],
     )
     monkeypatch.setattr(
         cli_main,
@@ -70,9 +87,21 @@ def _wire_fake_cli_compute_path(
     monkeypatch.setattr(
         cli_main,
         "_master_weight_service",
-        lambda settings, *, metagraph_cache: recorder["service"],
+        lambda settings, *, metagraph_cache, session_factory=None: recorder["service"],
     )
     monkeypatch.setattr(cli_main, "_run_master_weight_epoch", _fake_epoch)
+    monkeypatch.setattr(
+        cli_main, "_resolve_master_weight_epoch", lambda settings, **_: 99
+    )
+    # Avoid real DB engine construction in the supervisor path.
+    monkeypatch.setattr(
+        "base.db.session.create_engine",
+        lambda *a, **k: SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(
+        "base.db.session.create_session_factory",
+        lambda engine: object(),
+    )
     return recorder
 
 

@@ -88,6 +88,10 @@ class ValidatorSubmitOutcome(StrEnum):
 WeightSetterFactory = Callable[[], WeightSetter | None]
 Clock = Callable[[], datetime]
 ObservationReporter = Callable[[dict[str, Any]], Any]
+#: Optional chain reconcilers return True when on-chain state already matches the
+#: durable record (so UNKNOWN can promote to ACCEPTED without a blind resubmit),
+#: False when it does not match / is still absent, or None when indeterminate.
+ChainReconciler = Callable[[SubmissionRecord], bool | None]
 
 
 class ValidatorWeightSubmitter:
@@ -110,8 +114,9 @@ class ValidatorWeightSubmitter:
         backoff_base_seconds: float = 1.0,
         backoff_max_seconds: float = 300.0,
         observation_reporter: ObservationReporter | None = None,
-        require_provenance: bool = False,
+        require_provenance: bool = True,
         sleep_fn: Callable[[float], None] | None = None,
+        chain_reconciler: ChainReconciler | None = None,
     ) -> None:
         self._submit_enabled = submit_enabled
         self._netuid = netuid
@@ -128,6 +133,7 @@ class ValidatorWeightSubmitter:
         self._observation_reporter = observation_reporter
         self._require_provenance = require_provenance
         self._sleep_fn = sleep_fn or time.sleep
+        self._chain_reconciler = chain_reconciler
         if ledger is not None:
             self._ledger = ledger
         else:
@@ -387,15 +393,17 @@ class ValidatorWeightSubmitter:
         return self._expected_hotkey or "unknown"
 
     def _check_wallet_identity(self, setter: WeightSetter) -> str | None:
+        # Fail closed: submission requires a bound expected hotkey that matches
+        # the owner wallet. Missing/blank expected identity is never treated as
+        # an anonymous allow path.
         if not self._expected_hotkey:
-            # When identity is not configured, do not invent one; still require a
-            # wallet on the setter so the gate-on path cannot submit anonymously
-            # without operator intent expressed via expected_hotkey.
-            public = self._public_hotkey(setter)
-            if public == "unknown":
-                return "submission wallet public hotkey is unavailable"
-            return None
+            return (
+                "submission wallet identity is unbound: expected_hotkey is "
+                "required when submit_on_chain_enabled"
+            )
         public = self._public_hotkey(setter)
+        if public == "unknown":
+            return "submission wallet public hotkey is unavailable"
         if public != self._expected_hotkey:
             return (
                 f"wallet hotkey {public!r} does not match authenticated "
@@ -429,14 +437,15 @@ class ValidatorWeightSubmitter:
     def _reconcile_unknown(
         self, record: SubmissionRecord
     ) -> ValidatorSubmitOutcome | None:
-        """Attempt reconciliation of an ambiguous prior acceptance.
+        """Reconcile an ambiguous prior acceptance across restarts.
 
-        Without a live chain query seam injected, treat UNKNOWN as needing one
-        more chain observation only when attempts remain. Callers still avoid
-        blind infinite resubmission via max_attempts.
+        Prefer an injected :data:`ChainReconciler`. When it confirms the on-chain
+        vector already matches, promote ``UNKNOWN`` → ``ACCEPTED`` and skip
+        resubmit. When it reports absent/mismatched, allow one more attempt.
+        Without a reconciler, hold UNKNOWN (do not blind-resubmit) and still
+        observe the ambiguity so operators can see the gap.
         """
 
-        # If a reconciler was stamped, honor it.
         if record.reconciled_at and record.status == SubmissionStatus.ACCEPTED.value:
             self._last_submitted_key = (
                 record.vector_id,
@@ -444,7 +453,40 @@ class ValidatorWeightSubmitter:
                 record.netuid,
             )
             return ValidatorSubmitOutcome.ALREADY_SUBMITTED
-        return None
+
+        decision: bool | None = None
+        if self._chain_reconciler is not None:
+            try:
+                decision = self._chain_reconciler(record)
+            except Exception:
+                logger.exception(
+                    "chain reconciler failed for vector_id=%s; holding UNKNOWN",
+                    record.vector_id,
+                )
+                decision = None
+        else:
+            # Default fail-closed: no live chain query seam injected → prefer
+            # holding UNKNOWN over a blind second submission.
+            decision = None
+
+        if decision is True:
+            self._ledger.mark_status(
+                record,
+                status=SubmissionStatus.ACCEPTED,
+                accepted=True,
+                reconciled=True,
+            )
+            self._last_submitted_key = (
+                record.vector_id,
+                record.vector_digest,
+                record.netuid,
+            )
+            return ValidatorSubmitOutcome.ALREADY_SUBMITTED
+        if decision is False:
+            # Confirmed not committed: allow a retick with remaining attempts.
+            return None
+        # Indeterminate: hold UNKNOWN so restarts do not multi-submit.
+        return ValidatorSubmitOutcome.UNKNOWN
 
     async def _maybe_observe(self, record: SubmissionRecord, *, outcome: str) -> None:
         if self._observation_reporter is None:

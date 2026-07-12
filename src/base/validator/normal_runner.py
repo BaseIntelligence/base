@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 
 
 class NormalValidatorRunner:
+    """Legacy local challenge registry runner.
+
+    Weight submission is disabled by default. The sole production gated
+    ``set_weights`` path is
+    :class:`base.validator.weight_submitter.ValidatorWeightSubmitter`
+    (wired exclusively through ``base validator agent``). Callers that still
+    inject a ``weight_setter`` for unit-test validation of pre-submit checks
+    must set ``allow_weight_submission=True`` explicitly; production CLI never
+    does.
+    """
+
     def __init__(
         self,
         *,
@@ -33,6 +44,7 @@ class NormalValidatorRunner:
         weight_setter: WeightSetter | None = None,
         netuid: int | None = None,
         weights_freshness_seconds: int = 720,
+        allow_weight_submission: bool = False,
     ) -> None:
         self.registry_client = registry_client
         self.orchestrator = orchestrator
@@ -41,6 +53,14 @@ class NormalValidatorRunner:
         self.weight_setter = weight_setter
         self.netuid = netuid
         self.weights_freshness_seconds = weights_freshness_seconds
+        self.allow_weight_submission = allow_weight_submission
+        if weight_setter is not None and not allow_weight_submission:
+            logger.warning(
+                "NormalValidatorRunner weight_setter ignored: sole gated submit "
+                "path is ValidatorWeightSubmitter (set allow_weight_submission "
+                "only for explicit diagnostic tests)"
+            )
+            self.weight_setter = None
 
     async def run_once(self) -> None:
         registry = await self.registry_client.fetch_registry()
@@ -50,6 +70,12 @@ class NormalValidatorRunner:
             self.orchestrator.start_challenge(challenge_spec_from_registry(challenge))
 
     async def submit_latest_weights(self) -> bool:
+        if not self.allow_weight_submission:
+            logger.warning(
+                "legacy NormalValidatorRunner weight submission is disabled; "
+                "use base validator agent / ValidatorWeightSubmitter"
+            )
+            return False
         if (
             self.weights_client is None
             or self.weight_setter is None

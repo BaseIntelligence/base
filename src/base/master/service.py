@@ -295,11 +295,22 @@ class MasterWeightService:
     ) -> FinalWeights:
         """Run one aggregation epoch.
 
-        With durable storage and an epoch number, seals from raw snapshots.
-        Otherwise uses the diagnostic pull aggregator for CLI dry-run tests.
+        When durable storage (``session_factory`` / ``AggregationService``) is
+        configured, this **must** seal from durable ``raw_weight_snapshots`` only
+        and never fall back to challenge ``get_weights`` (VAL-CROSS-067). Seal
+        requires concrete ``epoch`` and ``netuid``.
+
+        Without durable storage, the diagnostic pull aggregator remains available
+        for unit/CLI dry-run tests that inject a stub challenge client.
         """
 
-        if self.aggregation is not None and epoch is not None and netuid is not None:
+        if self.aggregation is not None:
+            if epoch is None or netuid is None:
+                raise RuntimeError(
+                    "durable seal path requires concrete epoch and netuid; "
+                    "refusing get_weights fallback for sealed aggregation "
+                    "(VAL-CROSS-067)"
+                )
             response = await self.seal_epoch(
                 int(epoch),
                 challenges,
