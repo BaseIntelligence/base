@@ -18,3 +18,7 @@ build/
 plan/
 
 .omo/
+*.env
+secrets/
+*.pem
+*.key

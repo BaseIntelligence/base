@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -138,8 +139,54 @@ def test_compute_uses_cli_path_with_zero_chain_calls(
     assert recorder["set_weights_calls"] == []
 
 
+@pytest.fixture
+def scheduler_error_messages() -> Iterator[list[str]]:
+    """Capture ERROR records from ``base.supervisor.scheduler`` order-independently.
+
+    The full suite runs, in alphabetical order, files that import bittensor
+    (which forces every already-created logger's level to CRITICAL) and files
+    that run alembic's ``fileConfig`` (which can set ``logging.disable`` and a
+    logger's ``.disabled`` flag). Any of those left set would swallow the
+    scheduler's error log and fail this test only in the full run. Snapshot and
+    neutralize every one of those process-wide knobs for the duration of the
+    test, capture via a handler on the scheduler's own logger (propagation off),
+    then restore the prior state so this test perturbs no sibling.
+    """
+    logger = logging.getLogger("base.supervisor.scheduler")
+
+    class _RecordingHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(level=logging.ERROR)
+            self.messages: list[str] = []
+            self._lock = threading.Lock()
+
+        def emit(self, record: logging.LogRecord) -> None:
+            with self._lock:
+                self.messages.append(record.getMessage())
+
+    handler = _RecordingHandler()
+    prev_disable = logging.root.manager.disable
+    prev_disabled = logger.disabled
+    prev_level = logger.level
+    prev_propagate = logger.propagate
+    logging.disable(logging.NOTSET)
+    logger.disabled = False
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = prev_propagate
+        logger.setLevel(prev_level)
+        logger.disabled = prev_disabled
+        logging.disable(prev_disable)
+
+
 def test_compute_raise_is_logged_and_schedule_continues(
     monkeypatch: pytest.MonkeyPatch,
+    scheduler_error_messages: list[str],
 ) -> None:
     counts = {"n": 0}
     lock = threading.Lock()
@@ -155,27 +202,8 @@ def test_compute_raise_is_logged_and_schedule_continues(
     shutdown = threading.Event()
     worker = TaskWorker(task=fast, shutdown=shutdown)
 
-    class _RecordingHandler(logging.Handler):
-        def __init__(self) -> None:
-            super().__init__(level=logging.ERROR)
-            self.messages: list[str] = []
-            self._lock = threading.Lock()
-
-        def emit(self, record: logging.LogRecord) -> None:
-            with self._lock:
-                self.messages.append(record.getMessage())
-
-    # Attach directly to the scheduler logger: immune to other tests
-    # reconfiguring root logging (which breaks caplog in the full run).
-    # Re-enable it too: alembic's env.py fileConfig (run by any migration
-    # test) disables all previously-imported loggers suite-wide.
-    scheduler_logger = logging.getLogger("base.supervisor.scheduler")
-    handler = _RecordingHandler()
-    was_disabled = scheduler_logger.disabled
-    scheduler_logger.disabled = False
-    scheduler_logger.addHandler(handler)
+    worker.start()
     try:
-        worker.start()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             with lock:
@@ -185,7 +213,9 @@ def test_compute_raise_is_logged_and_schedule_continues(
         shutdown.set()
         assert worker.join(timeout=5.0)
     finally:
-        scheduler_logger.removeHandler(handler)
-        scheduler_logger.disabled = was_disabled
+        shutdown.set()
+        worker.join(timeout=5.0)
     assert counts["n"] >= 3  # schedule kept ticking after each raise
-    assert any("raised; continuing schedule" in message for message in handler.messages)
+    assert any(
+        "raised; continuing schedule" in message for message in scheduler_error_messages
+    )

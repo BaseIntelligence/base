@@ -101,3 +101,8 @@ execution routes.
 Challenges export raw **hotkey** weights. The master aggregates and serves the
 final vector; validators fetch and call `set_weights`. Challenges never submit
 final UID vectors and never receive master database credentials.
+
+## Agent Challenge Phala attestation notes
+
+Private control-plane work (work units, fold, weights, bridge launch) stays on challenge-direct or master-internal channels, never on the public edge. Full attested mode evaluation is one miner-funded external eval (R=1) with **no** BASE validator multi-replica re-exec assignment for those units; cross-repo review→eval behavior is available after PR merge. See [Architecture: Agent Challenge Phala path](architecture.md#agent-challenge-phala-intel-tdx-path).
+5. If attested routes are enabled, confirm the client hit an allowlisted review/eval/status path (not a private result or capability route).

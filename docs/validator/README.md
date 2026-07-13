@@ -174,3 +174,5 @@ uv run pytest tests/unit/test_validator_compose_artifact.py tests/unit/test_vali
 
 Start a live submit path only when wallet material on the host is intentionally
 authorized for chain use. CI publishes Docker images to GHCR only from trusted events.
+
+Agent Challenge Phala full-attested mode is also **not** a multi-replica validator re-exec path: evaluation is one miner-funded external eval (R=1) and BASE creates zero agent-challenge multi-replica work rows for that submission. Validators may still run sampled labelled replay audits and the legacy R=1 `own_runner` path when attestation flags are off. See [Architecture: Agent Challenge Phala path](../architecture.md#agent-challenge-phala-intel-tdx-path).

@@ -25,8 +25,15 @@ from base.db.models import (
     ValidatorStatus,
     WorkAssignment,
     WorkAssignmentStatus,
+    WorkResult,
 )
 from base.db.session import session_scope
+from base.master.replay_audit import (
+    REPLAY_AUDIT_ASSIGNMENT_KIND,
+    REPLAY_AUDIT_FORWARDED_KEY,
+    ReplayAuditRequest,
+    replay_assignment_payload,
+)
 
 CAPABILITY_CPU = "cpu"
 CAPABILITY_GPU = "gpu"
@@ -263,6 +270,104 @@ class AssignmentService:
                 )
             )
         return work_unit_id
+
+    async def create_replay_audit_work_unit(
+        self,
+        *,
+        request: ReplayAuditRequest,
+        max_attempts: int | None = None,
+        challenge_slug: str = AGENT_CHALLENGE_SLUG,
+    ) -> str:
+        """Create one CPU assignment for one labelled replay audit.
+
+        A replay is one full-plan unit, not one ordinary task unit.  The exact
+        request body is copied into the payload and is never rebuilt from local
+        scoring configuration.  Repeated discovery returns the same unit.
+        """
+
+        now = self._now_fn()
+        max_att = self._default_max_attempts if max_attempts is None else max_attempts
+        work_unit_id = request.work_unit_id
+        async with session_scope(self._session_factory) as session:
+            existing = (
+                await session.execute(
+                    select(WorkAssignment).where(
+                        WorkAssignment.challenge_slug == challenge_slug,
+                        WorkAssignment.work_unit_id == work_unit_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if existing.payload.get("replay_audit_request") != request.to_dict():
+                    raise ValueError("replay assignment identity changed")
+                return work_unit_id
+            session.add(
+                WorkAssignment(
+                    challenge_slug=challenge_slug,
+                    work_unit_id=work_unit_id,
+                    submission_ref=request.submission_id,
+                    payload=replay_assignment_payload(request),
+                    required_capability=CAPABILITY_CPU,
+                    status=WorkAssignmentStatus.PENDING,
+                    attempt_count=0,
+                    max_attempts=max_att,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return work_unit_id
+
+    async def get_unforwarded_replay_results(
+        self, *, challenge_slug: str = AGENT_CHALLENGE_SLUG
+    ) -> list[tuple[WorkAssignment, WorkResult]]:
+        """Return completed labelled replay results awaiting challenge delivery."""
+
+        async with self._session_factory() as session:
+            assignments = (
+                (
+                    await session.execute(
+                        select(WorkAssignment)
+                        .where(WorkAssignment.challenge_slug == challenge_slug)
+                        .where(WorkAssignment.status == WorkAssignmentStatus.COMPLETED)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            output: list[tuple[WorkAssignment, WorkResult]] = []
+            for assignment in assignments:
+                if (
+                    assignment.payload.get("assignment_kind")
+                    != REPLAY_AUDIT_ASSIGNMENT_KIND
+                    or not assignment.result_ref
+                ):
+                    continue
+                result = (
+                    await session.execute(
+                        select(WorkResult).where(
+                            WorkResult.assignment_id == assignment.id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if result is None or (result.payload or {}).get(
+                    REPLAY_AUDIT_FORWARDED_KEY
+                ):
+                    continue
+                output.append((assignment, result))
+            return output
+
+    async def mark_replay_result_forwarded(self, result_id: str) -> None:
+        import uuid
+
+        parsed = uuid.UUID(result_id)
+        async with session_scope(self._session_factory) as session:
+            result = (
+                await session.execute(select(WorkResult).where(WorkResult.id == parsed))
+            ).scalar_one_or_none()
+            if result is not None:
+                payload = dict(result.payload or {})
+                payload[REPLAY_AUDIT_FORWARDED_KEY] = True
+                result.payload = payload
 
     def transaction(self) -> AbstractAsyncContextManager[AsyncSession]:
         """Open a single committed transaction over the control-plane DB.

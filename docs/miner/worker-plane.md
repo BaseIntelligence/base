@@ -17,9 +17,14 @@ This guide covers, for both **Lium** and **Targon**:
 - [Monitoring your fleet](#monitoring-your-fleet)
 - [Troubleshooting](#troubleshooting)
 
-> The whole worker plane is gated behind a feature flag
+> The whole (PRISM) worker plane is gated behind a feature flag
 > (`compute.worker_plane_enabled` on the master, `worker_plane` in the prism config). With
 > the flag off, nothing here applies and the subnet behaves exactly as before.
+>
+> **This guide is PRISM-only.** Agent Challenge Phala Intel TDX attestation (other
+> challenge, separate flags, R=1 external eval, public-proxy allowlist) is **not** the
+> miner GPU worker plane. See [Architecture: Agent Challenge Phala path](../architecture.md#agent-challenge-phala-intel-tdx-path)
+> and the agent-challenge operator docs (available after PR merge).
 
 ---
 

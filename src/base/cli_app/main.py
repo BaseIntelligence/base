@@ -49,6 +49,8 @@ from base.master.assignment_coordination import (
 from base.master.challenge_client import ChallengeClient
 from base.master.challenge_work_source import (
     HttpChallengeFoldTrigger,
+    HttpChallengeReplayClient,
+    HttpChallengeReplaySource,
     HttpChallengeResultForwarder,
     HttpChallengeWorkSource,
 )
@@ -582,6 +584,16 @@ def _master_orchestration_driver(
         assignment_service=assignment_service,
         validator_service=validator_service,
         work_source=HttpChallengeWorkSource(
+            registry,
+            timeout_seconds=settings.master.challenge_timeout_seconds,
+            retries=settings.master.challenge_retries,
+        ),
+        replay_source=HttpChallengeReplaySource(
+            registry,
+            timeout_seconds=settings.master.challenge_timeout_seconds,
+            retries=settings.master.challenge_retries,
+        ),
+        replay_result_forwarder=HttpChallengeReplayClient(
             registry,
             timeout_seconds=settings.master.challenge_timeout_seconds,
             retries=settings.master.challenge_retries,
@@ -1157,6 +1169,9 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         ),
         identity_resolver=ValidatorIdentityResolver(cache=runtime.identity_cache),
         readiness_probes=(database_probe,),
+        agent_challenge_attested_routes_enabled=(
+            settings.master.agent_challenge_attested_routes_enabled
+        ),
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")

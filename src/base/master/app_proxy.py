@@ -129,6 +129,34 @@ SENSITIVE_REQUEST_HEADERS = {
     "x-base-request-hash",
 }
 
+ATTESTED_SENSITIVE_REQUEST_HEADERS = {
+    "cf-connecting-ip",
+    "forwarded",
+    "true-client-ip",
+    "via",
+    "x-base-challenge-slug",
+    "x-base-proxy",
+    "x-internal-authorization",
+    "x-proxy-trust",
+    "x-real-ip",
+}
+
+ATTESTED_SENSITIVE_REQUEST_HEADER_PREFIXES = (
+    "x-admin-",
+    "x-allowlist-",
+    "x-attestation-",
+    "x-base-",
+    "x-forwarded-",
+    "x-internal-",
+    "x-measurement-",
+    "x-proxy-",
+    "x-ra-tls-",
+    "x-ratls-",
+    "x-review-",
+    "x-trust-",
+    "x-trusted-",
+)
+
 MINER_SIGNATURE_HEADERS = {
     "x-hotkey",
     "x-signature",
@@ -259,27 +287,166 @@ def _is_agent_challenge_env_route(slug: str, method: str, path: str) -> bool:
     return False
 
 
-def _is_agent_challenge_signed_route(slug: str, method: str, path: str) -> bool:
+def _is_agent_challenge_signed_route(
+    slug: str,
+    method: str,
+    path: str,
+    *,
+    attested_routes_enabled: bool = False,
+) -> bool:
     """Routes where the miner signs the challenge-local path.
 
     The miner's signature headers (``X-Hotkey``/``X-Signature``/``X-Nonce``/
     ``X-Timestamp``) must survive the generic ``/challenges/{slug}`` passthrough
-    so the challenge can verify them. This covers the signed env actions plus the
-    JSON base64 submission upload (``POST /submissions``) per the frontend API
-    contract.
+    so the challenge can verify them. Fully legacy mode keeps its env/launch
+    actions. Full attested mode replaces those with the exact review/eval
+    allowlist while retaining signed ``POST /submissions``.
     """
 
-    if _is_agent_challenge_env_route(slug, method, path):
-        return True
     if slug != "agent-challenge":
         return False
+
     normalized = normpath(f"/{path.lstrip('/')}")
     parts = [part for part in normalized.split("/") if part]
-    return len(parts) == 1 and parts[0] == "submissions" and method.upper() == "POST"
+    normalized_method = method.upper()
+    if not attested_routes_enabled:
+        return _is_agent_challenge_env_route(slug, method, path) or (
+            len(parts) == 1
+            and parts[0] == "submissions"
+            and normalized_method == "POST"
+        )
+
+    canonical_path = f"/{path}"
+    if path.startswith("/") or canonical_path != normalized:
+        return False
+
+    if len(parts) == 1 and parts[0] == "submissions":
+        return normalized_method == "POST"
+    if len(parts) != 4 or parts[0] != "submissions":
+        return False
+
+    route = (parts[2], parts[3])
+    signed_post_routes = {
+        ("review", "prepare"),
+        ("review", "retry"),
+        ("review", "deployed"),
+        ("review", "cancel"),
+        ("eval", "prepare"),
+        ("eval", "retry"),
+        ("eval", "cancel"),
+        ("eval", "failure"),
+    }
+    signed_get_routes = {
+        ("review", "report"),
+        ("eval", "status"),
+    }
+    return (normalized_method == "POST" and route in signed_post_routes) or (
+        normalized_method == "GET" and route in signed_get_routes
+    )
+
+
+def _is_agent_challenge_enabled_mode_allowed_route(
+    slug: str,
+    method: str,
+    path: str,
+) -> bool:
+    """Return whether an enabled-mode Agent Challenge proxy path is allowlisted.
+
+    When attested routes are enabled the BASE proxy is fail-closed: only the
+    exact signed review/eval rows plus the normative status/SSE and benchmark
+    metadata surfaces may reach agent-challenge. Capability, assignment,
+    evidence, key-release, direct-result, results, and every other neighbor are
+    denied locally before any upstream call.
+    """
+
+    if slug != "agent-challenge":
+        return False
+
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    normalized_method = method.upper()
+    canonical_path = f"/{path}"
+    if path.startswith("/") or canonical_path != normalized:
+        return False
+
+    if _is_agent_challenge_signed_route(
+        slug,
+        method,
+        path,
+        attested_routes_enabled=True,
+    ):
+        return True
+
+    if (
+        len(parts) == 3
+        and parts[0] == "submissions"
+        and parts[2] in {"status", "events"}
+        and normalized_method == "GET"
+    ):
+        return True
+    if (
+        len(parts) == 2
+        and parts[0] == "benchmarks"
+        and parts[1] == "tasks"
+        and normalized_method == "GET"
+    ):
+        return True
+    return False
+
+
+def _is_blocked_agent_challenge_proxy_path(
+    slug: str,
+    method: str,
+    path: str,
+    *,
+    attested_routes_enabled: bool,
+) -> bool:
+    """Deny every enabled-mode Agent Challenge route outside the allowlist.
+
+    Capability, assignment, evidence, key-release, direct-result, and results
+    aliases never fall through to the challenge. Wrong methods and neighboring
+    review/eval routes are denied locally so an upstream catch-all can never
+    widen this allowlist.
+    """
+
+    if slug != "agent-challenge" or not attested_routes_enabled:
+        return False
+
+    return not _is_agent_challenge_enabled_mode_allowed_route(slug, method, path)
+
+
+def _has_canonical_agent_challenge_raw_path(
+    request: Request, *, slug: str, path: str
+) -> bool:
+    """Require literal canonical BASE prefix/path bytes for attested routing."""
+
+    expected = f"/challenges/{slug}"
+    if path:
+        expected = f"{expected}/{path}"
+    try:
+        expected_bytes = expected.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return request.scope.get("raw_path") == expected_bytes
+
+
+def _is_sensitive_request_header(
+    lowered: str, *, strip_attested_trust_headers: bool
+) -> bool:
+    return lowered in SENSITIVE_REQUEST_HEADERS or (
+        strip_attested_trust_headers
+        and (
+            lowered in ATTESTED_SENSITIVE_REQUEST_HEADERS
+            or lowered.startswith(ATTESTED_SENSITIVE_REQUEST_HEADER_PREFIXES)
+        )
+    )
 
 
 def _forward_headers(
-    request: Request, *, preserve_miner_signature_headers: bool = False
+    request: Request,
+    *,
+    preserve_miner_signature_headers: bool = False,
+    strip_attested_trust_headers: bool = False,
 ) -> dict[str, str]:
     """Copy safe request headers for forwarding to a public challenge route."""
 
@@ -291,7 +458,13 @@ def _forward_headers(
         )
         if (
             lowered in HOP_BY_HOP_HEADERS
-            or (lowered in SENSITIVE_REQUEST_HEADERS and not preserve_header)
+            or (
+                _is_sensitive_request_header(
+                    lowered,
+                    strip_attested_trust_headers=strip_attested_trust_headers,
+                )
+                and not preserve_header
+            )
             or lowered == "host"
         ):
             continue
@@ -447,6 +620,7 @@ def create_proxy_app(
     identity_resolver: ValidatorIdentityResolver | None = None,
     allowed_cors_origins: list[str] | None = None,
     readiness_probes: Sequence[ReadinessProbe] = (),
+    agent_challenge_attested_routes_enabled: bool = False,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
 
@@ -686,6 +860,38 @@ def create_proxy_app(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not Found",
             )
+        if (
+            agent_challenge_attested_routes_enabled
+            and slug == "agent-challenge"
+            and not _has_canonical_agent_challenge_raw_path(
+                request,
+                slug=slug,
+                path=path,
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proxy path not found",
+            )
+        if (
+            agent_challenge_attested_routes_enabled
+            and slug != "agent-challenge"
+            and slug.casefold() in {"agent challenge", "agent-challenge"}
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proxy path not found",
+            )
+        if _is_blocked_agent_challenge_proxy_path(
+            slug,
+            request.method,
+            path,
+            attested_routes_enabled=agent_challenge_attested_routes_enabled,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proxy path not found",
+            )
         if is_blocked_proxy_path(path):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -701,7 +907,13 @@ def create_proxy_app(
         headers = _forward_headers(
             request,
             preserve_miner_signature_headers=_is_agent_challenge_signed_route(
-                slug, request.method, path
+                slug,
+                request.method,
+                path,
+                attested_routes_enabled=agent_challenge_attested_routes_enabled,
+            ),
+            strip_attested_trust_headers=(
+                agent_challenge_attested_routes_enabled and slug == "agent-challenge"
             ),
         )
         headers["X-Base-Challenge-Slug"] = slug

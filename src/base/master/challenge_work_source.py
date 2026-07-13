@@ -29,6 +29,12 @@ from base.master.orchestration import (
     WORK_UNIT_MAX_ATTEMPTS_REASON,
     ChallengePendingWork,
 )
+from base.master.replay_audit import (
+    ReplayAuditRequest,
+    ReplayAuditResult,
+    ReplayAuditWireError,
+    parse_replay_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +109,184 @@ class HttpChallengeWorkSource:
             "failed to fetch work units for challenge %s: %s", slug, last_error
         )
         return None
+
+
+class HttpChallengeReplayClient:
+    """Fetch labelled replay requests and post raw replay trials.
+
+    This client is intentionally separate from :class:`HttpChallengeWorkSource`.
+    The normal ``/internal/v1/work_units`` route is never used for replay audits,
+    and a replay body is accepted only after the explicit protocol label and
+    immutable-plan checks pass.
+    """
+
+    def __init__(
+        self,
+        registry: Any,
+        *,
+        timeout_seconds: float = 10.0,
+        retries: int = 3,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._registry = registry
+        self._timeout_seconds = timeout_seconds
+        self._retries = retries
+        self._transport = transport
+
+    async def fetch_request(
+        self, *, challenge_slug: str, eval_run_id: str
+    ) -> ReplayAuditRequest:
+        record = await _resolve(self._registry.get(challenge_slug))
+        token = await _resolve(self._registry.get_token(challenge_slug))
+        if not token:
+            raise RuntimeError(
+                f"challenge {challenge_slug!r} has no token for replay request"
+            )
+        url = (
+            f"{record.internal_base_url.rstrip('/')}/internal/v1/replay-audits/"
+            f"{eval_run_id}/request"
+        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Base-Challenge-Slug": challenge_slug,
+            "Accept": "application/json",
+        }
+        last_error: Exception | None = None
+        for _attempt in range(max(self._retries, 1)):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self._timeout_seconds, transport=self._transport
+                ) as client:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    raw = response.content
+                parsed = parse_replay_json(raw)
+                if not isinstance(parsed, dict):
+                    raise ValueError("replay request response must be an object")
+                request = ReplayAuditRequest.from_mapping(parsed, raw_body=raw)
+                if request.eval_run_id != eval_run_id:
+                    raise ValueError("replay request run identity mismatch")
+                return request
+            except ReplayAuditWireError:
+                raise
+            except (ValueError, TypeError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - retry transport failures
+                last_error = exc
+        assert last_error is not None
+        raise RuntimeError(
+            f"failed to fetch replay request for {eval_run_id} on "
+            f"{challenge_slug}: {last_error}"
+        ) from last_error
+
+    async def post_result(
+        self,
+        *,
+        challenge_slug: str,
+        result: ReplayAuditResult,
+    ) -> dict[str, Any]:
+        record = await _resolve(self._registry.get(challenge_slug))
+        token = await _resolve(self._registry.get_token(challenge_slug))
+        if not token:
+            raise RuntimeError(
+                f"challenge {challenge_slug!r} has no token for replay result"
+            )
+        url = (
+            f"{record.internal_base_url.rstrip('/')}/internal/v1/replay-audits/"
+            f"{result.eval_run_id}/result"
+        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Base-Challenge-Slug": challenge_slug,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        body = result.to_dict()
+        last_error: Exception | None = None
+        for _attempt in range(max(self._retries, 1)):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self._timeout_seconds, transport=self._transport
+                ) as client:
+                    response = await client.post(url, json=body, headers=headers)
+                    response.raise_for_status()
+                    payload = parse_replay_json(response.content)
+                if not isinstance(payload, dict):
+                    raise ValueError("replay result response must be an object")
+                return payload
+            except (ReplayAuditWireError, ValueError, TypeError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - retry transient HTTP failures
+                last_error = exc
+        assert last_error is not None
+        raise RuntimeError(
+            f"failed to post replay result {result.audit_id} on "
+            f"{challenge_slug}: {last_error}"
+        ) from last_error
+
+    async def forward(
+        self, *, challenge_slug: str, result: ReplayAuditResult
+    ) -> dict[str, Any]:
+        """Forward one validated replay result to the challenge comparator."""
+
+        return await self.post_result(challenge_slug=challenge_slug, result=result)
+
+
+class HttpChallengeReplaySource:
+    """Discover sampled replay requests without touching normal work units."""
+
+    def __init__(
+        self,
+        registry: Any,
+        *,
+        timeout_seconds: float = 10.0,
+        retries: int = 3,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._registry = registry
+        self._client = HttpChallengeReplayClient(
+            registry,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            transport=transport,
+        )
+
+    async def fetch_sampled_requests(self) -> list[ReplayAuditRequest]:
+        records = await _resolve(self._registry.list(active_only=True))
+        requests: list[ReplayAuditRequest] = []
+        for record in records:
+            if record.slug != "agent-challenge":
+                continue
+            token = await _resolve(self._registry.get_token(record.slug))
+            if not token:
+                continue
+            url = (
+                f"{record.internal_base_url.rstrip('/')}"
+                "/internal/v1/replay-audits/requests"
+            )
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "X-Base-Challenge-Slug": record.slug,
+                "Accept": "application/json",
+            }
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self._client._timeout_seconds,
+                    transport=self._client._transport,
+                ) as client:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    body = parse_replay_json(response.content)
+                raw_requests = body.get("requests") if isinstance(body, dict) else None
+                if not isinstance(raw_requests, list):
+                    raise ValueError("replay request list must contain requests")
+                for raw in raw_requests:
+                    requests.append(ReplayAuditRequest.from_mapping(raw))
+            except ReplayAuditWireError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - audit is best effort
+                logger.warning("failed to discover replay requests: %s", exc)
+        return requests
 
 
 def _parse_work_units(slug: str, payload: dict[str, Any]) -> list[ChallengePendingWork]:
@@ -298,6 +482,8 @@ class HttpChallengeResultForwarder:
 
 __all__ = [
     "HttpChallengeFoldTrigger",
+    "HttpChallengeReplayClient",
+    "HttpChallengeReplaySource",
     "HttpChallengeResultForwarder",
     "HttpChallengeWorkSource",
 ]

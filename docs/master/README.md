@@ -96,3 +96,17 @@ Backup / restore / teardown scripts (Compose-only):
 unsupported** for new installs. They must not be documented as the required master path
 and must not be run against live production Swarm fabric from this guide. See
 [deploy/swarm/README.md](../../deploy/swarm/README.md) for the explicit non-target banner.
+
+## Agent Challenge attested proxy flag
+
+The master proxy setting `master.agent_challenge_attested_routes_enabled` (default
+**false**) selects the public agent-challenge topology:
+
+- **Off:** legacy signed submission / env / launch passthrough (byte-identical).
+- **On:** fail-closed allowlist for review/eval miner flows; private and result
+  routes never fall through the public edge.
+
+Full attested evaluation ownership and score policy stay in the agent-challenge
+service. See [Architecture](../architecture.md#agent-challenge-phala-intel-tdx-path)
+and [Challenges](../challenges.md). Foundation install diffs for challenge-side
+CVM credentials are out of scope here and must not appear in this guide.
