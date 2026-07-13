@@ -1,0 +1,216 @@
+=== simple-server validator compose smoke ===
+date_utc=2026-07-13T14:32:23Z
+master_project=base-simple-smoke-m-ss2211354
+validator_a=base-simple-smoke-va-ss2211354
+validator_b=base-simple-smoke-vb-ss2211354
+host_port=3188
+master_url=http://84.32.70.61:3188
+state_root=/tmp/base-simple-smoke-ss2211354
+submit_on_chain=false
+public_chain_default=https://chain.joinbase.ai
+images:
+  master=mission/base-master@sha256:<DIGEST>
+  prism=mission/prism@sha256:<DIGEST>
+  postgres=postgres@sha256:<DIGEST>
+  validator=mission/base-validator-runtime@sha256:<DIGEST>
+
+=== STATUSES ===
+STATUS_MASTER_INSTALL=PASS
+STATUS_MASTER_HEALTH=PASS
+STATUS_VAL_A_INSTALL=PASS
+STATUS_VAL_A_UP=PASS
+STATUS_VAL_MOUNTS=PASS
+STATUS_VAL_REACH_MASTER=PASS
+STATUS_REG_AUTH=PASS
+STATUS_VAL_B_INSTALL=PASS
+STATUS_TEARDOWN=PASS
+STATUS_NO_SWARM_TOUCH=PASS
+notes=
+
+=== redacted command outputs ===
+=== baseline (read-only) ===
+docker=29.2.1
+compose=5.0.2
+live_swarm_services_sample=base-master-postgres.1.ck8ohkk6fkgj6px40yqquzc0k challenge-prism-worker.1.cb6raluwdyv21gh15aiuy8oyb challenge-prism.1.x9fglbtquoc5r1ozrifj1tdl5 challenge-prism-postgres.1.y5wp1k8wftku2vva2818i8cjy 
+port free
+=== 1) install-master ===
+Installing master Compose project 'base-simple-smoke-m-ss2211354' (API 127.0.0.1:3188)
+ Network base-simple-smoke-m-ss2211354_public Creating 
+ Network base-simple-smoke-m-ss2211354_public Created 
+ Network base-simple-smoke-m-ss2211354_app Creating 
+ Network base-simple-smoke-m-ss2211354_app Created 
+ Network base-simple-smoke-m-ss2211354_db Creating 
+ Network base-simple-smoke-m-ss2211354_db Created 
+ Volume base-simple-smoke-m-ss2211354_master_state Creating 
+ Volume base-simple-smoke-m-ss2211354_master_state Created 
+ Volume base-simple-smoke-m-ss2211354_challenge_prism_data Creating 
+ Volume base-simple-smoke-m-ss2211354_challenge_prism_data Created 
+ Volume base-simple-smoke-m-ss2211354_postgres_data Creating 
+ Volume base-simple-smoke-m-ss2211354_postgres_data Created 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Creating 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Created 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Creating 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Created 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Creating 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Created 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Starting 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Started 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Waiting 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Healthy 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Starting 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Started 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Waiting 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Healthy 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Starting 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Started 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Waiting 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Waiting 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Waiting 
+ Container base-simple-smoke-m-ss2211354-master-postgres-1 Healthy 
+ Container base-simple-smoke-m-ss2211354-base-master-validator-1 Healthy 
+ Container base-simple-smoke-m-ss2211354-challenge-prism-1 Healthy 
+Master Compose install complete.
+NAME                                                    IMAGE                                                                                         COMMAND                  SERVICE                 CREATED          STATUS                    PORTS
+base-simple-smoke-m-ss2211354-base-master-validator-1   mission/base-master@sha256:<HEX64_REDACTED>   "base master proxy -…"   base-master-validator   18 seconds ago   Up 11 seconds (healthy)   8000-8001/tcp, 8082/tcp, 127.0.0.1:3188->8081/tcp
+base-simple-smoke-m-ss2211354-challenge-prism-1         mission/prism@sha256:<HEX64_REDACTED>         "uvicorn prism_chall…"   challenge-prism         17 seconds ago   Up 5 seconds (healthy)    8080/tcp
+base-simple-smoke-m-ss2211354-master-postgres-1         postgres@sha256:<HEX64_REDACTED>              "docker-entrypoint.s…"   master-postgres         18 seconds ago   Up 16 seconds (healthy)   5432/tcp
+install-master exit=0
+=== 2) wait /health /ready /version ===
+attempt 1 health={"status":"ok","slug":"base-master","version":"3.1.2","role":"master","ready":true,"capabilities":["master.coordination","master.registry","master.persistence",
+attempt 1 ready={"status":"ok","slug":"base-master","version":"3.1.2","role":"master","ready":true,"capabilities":["master.coordination","master.registry","master.persistence",
+attempt 1 version={"distribution_name":"base","artifact_version":"3.1.2","release_id":"v3.1.2","api_version":"1.0","challenge_slug":null,"challenge_version":"3.1.2","sdk_contract_version":"1.0.0","sdk_version":"1.0.0",
+final health:
+{"status":"ok","slug":"base-master","version":"3.1.2","role":"master","ready":true,"capabilities":["master.coordination","master.registry","master.persistence","master.raw_weight_ingress","master.aggregation","master.vector_read","master.watcher"],"checks":[{"name":"postgresql","status":"ok","required":true}]}
+final ready:
+{"status":"ok","slug":"base-master","version":"3.1.2","role":"master","ready":true,"capabilities":["master.coordination","master.registry","master.persistence","master.raw_weight_ingress","master.aggregation","master.vector_read","master.watcher"],"checks":[{"name":"postgresql","status":"ok","required":true}]}
+final version:
+{"distribution_name":"base","artifact_version":"3.1.2","release_id":"v3.1.2","api_version":"1.0","challenge_slug":null,"challenge_version":"3.1.2","sdk_contract_version":"1.0.0","sdk_version":"1.0.0","role":"master","capabilities":["master.coordination","master.registry","master.persistence","master.raw_weight_ingress","master.aggregation","master.vector_read","master.watcher"]}
+NAME                                                    IMAGE                                                                                         COMMAND                  SERVICE                 CREATED          STATUS                    PORTS
+base-simple-smoke-m-ss2211354-base-master-validator-1   mission/base-master@sha256:<HEX64_REDACTED>   "base master proxy -…"   base-master-validator   18 seconds ago   Up 11 seconds (healthy)   8000-8001/tcp, 8082/tcp, 127.0.0.1:3188->8081/tcp
+base-simple-smoke-m-ss2211354-challenge-prism-1         mission/prism@sha256:<HEX64_REDACTED>         "uvicorn prism_chall…"   challenge-prism         17 seconds ago   Up 5 seconds (healthy)    8080/tcp
+base-simple-smoke-m-ss2211354-master-postgres-1         postgres@sha256:<HEX64_REDACTED>              "docker-entrypoint.s…"   master-postgres         18 seconds ago   Up 16 seconds (healthy)   5432/tcp
+using MASTER_URL_EFFECTIVE=http://84.32.70.61:3188 for validators (host-reachable)
+=== 3) install-validator A ===
+Installing independent validator Compose project 'base-simple-smoke-va-ss2211354'
+  master_url=http://84.32.70.61:3188
+  protocol_hotkey=<HOTKEY_REDACTED>
+  state_dir=/tmp/base-simple-smoke-ss2211354/val-a
+  submit_on_chain=false
+ Network base-simple-smoke-va-ss2211354_network Creating 
+ Network base-simple-smoke-va-ss2211354_network Created 
+ Volume base-simple-smoke-va-ss2211354_state Creating 
+ Volume base-simple-smoke-va-ss2211354_state Created 
+ Container base-simple-smoke-va-ss2211354-validator-1 Creating 
+ Container base-simple-smoke-va-ss2211354-validator-1 Created 
+ Container base-simple-smoke-va-ss2211354-validator-1 Starting 
+ Container base-simple-smoke-va-ss2211354-validator-1 Started 
+Validator Compose install complete.
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED                  STATUS                  PORTS
+base-simple-smoke-va-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   Less than a second ago   Up Less than a second   
+Hotkey public identity (also written to /tmp/base-simple-smoke-ss2211354/val-a/config/hotkey.ss58): <HOTKEY_REDACTED>
+Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests.
+install-validator A exit=0
+hotkey_a=<HOTKEY_REDACTED>
+valA ps attempt 1: NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED                  STATUS                  PORTS
+base-simple-smoke-va-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   Less than a second ago   Up Less than a second   
+=== 4) mounts check (no docker.sock/postgres/challenge) ===
+dests=/run/base/validator.yaml /var/lib/base/identity /run/secrets/base_broker_token /var/lib/base/state /var/lib/base 
+srcs=/tmp/base-simple-smoke-ss2211354/val-a/config/validator.yaml /tmp/base-simple-smoke-ss2211354/val-a/identity /tmp/base-simple-smoke-ss2211354/val-a/secrets/broker_token /var/lib/docker/volumes/base-simple-smoke-va-ss2211354_state/_data /var/lib/docker/volumes/<HEX64_REDACTED>/_data 
+mounts_ok
+networks={"base-simple-smoke-va-ss2211354_network":{"IPAMConfig":null,"Links":null,"Aliases":["base-simple-smoke-va-ss2211354-validator-1","validator"],"DriverOpts":null,"GwPriority":0,"NetworkID":"<HEX64_REDACTED>","EndpointID":"<HEX64_REDACTED>","Gateway":"172.31.0.1","IPAddress":"172.31.0.2","MacAddress":"f6:9b:bf:d9:cf:f4","IPPrefixLen":16,"IPv6Gateway":"","GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DNSNames":["base-simple-smoke-va-ss2211354-validator-1","validator","c375228a1690"]}}
+validator_a_logs:
+validator-1  | {"ts": "2026-07-13T14:31:51.599798+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-13 14:31:51.599[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey <HOTKEY_REDACTED>
+=== registration/auth path: inject eligible hotkey ===
+mock_metagraph entries 2
+error while interpolating services.base-master-validator.volumes.[].source: required variable BASE_COMPOSE_ENV_FILE is missing a value: set sealed compose env file from install-master
+master healthy after recreate attempt 1
+ Container base-simple-smoke-va-ss2211354-validator-1 Restarting 
+ Container base-simple-smoke-va-ss2211354-validator-1 Started 
+validator_a_logs_after_eligible:
+validator-1  | {"ts": "2026-07-13T14:31:51.599798+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-13 14:31:51.599[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey <HOTKEY_REDACTED>
+validator-1  | {"ts": "2026-07-13T14:32:00.016337+00:00", "level": "INFO", "logger": "bittensor", "message": "Enabling default logging (Warning level)"}
+validator-1  | [34m2026-07-13 14:32:00.016[39m | [1m[37m  INFO  [0m | Enabling default logging (Warning level)
+validator-1  | Starting validator agent for hotkey <HOTKEY_REDACTED>
+=== optional dual-path validator B ===
+Installing independent validator Compose project 'base-simple-smoke-vb-ss2211354'
+  master_url=http://84.32.70.61:3188
+  protocol_hotkey=<HOTKEY_REDACTED>
+  state_dir=/tmp/base-simple-smoke-ss2211354/val-b
+  submit_on_chain=false
+ Network base-simple-smoke-vb-ss2211354_network Creating 
+ Network base-simple-smoke-vb-ss2211354_network Created 
+ Volume base-simple-smoke-vb-ss2211354_state Creating 
+ Volume base-simple-smoke-vb-ss2211354_state Created 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Creating 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Created 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Starting 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Started 
+Validator Compose install complete.
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED                  STATUS                  PORTS
+base-simple-smoke-vb-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   Less than a second ago   Up Less than a second   
+Hotkey public identity (also written to /tmp/base-simple-smoke-ss2211354/val-b/config/hotkey.ss58): <HOTKEY_REDACTED>
+Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests.
+install-validator B exit=0
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED         STATUS         PORTS
+base-simple-smoke-vb-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   3 seconds ago   Up 3 seconds   
+netA=base-simple-smoke-va-ss2211354_network netB=base-simple-smoke-vb-ss2211354_network volA=base-simple-smoke-va-ss2211354_state volB=base-simple-smoke-vb-ss2211354_state
+dual-path isolation networks/volumes PASS
+=== inventory before teardown ===
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED         STATUS         PORTS
+base-simple-smoke-vb-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   4 seconds ago   Up 3 seconds   
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED          STATUS          PORTS
+base-simple-smoke-va-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   30 seconds ago   Up 20 seconds   
+NAME                                         IMAGE                                                                                                    COMMAND                  SERVICE     CREATED         STATUS         PORTS
+base-simple-smoke-vb-ss2211354-validator-1   mission/base-validator-runtime@sha256:<HEX64_REDACTED>   "base validator agen…"   validator   4 seconds ago   Up 3 seconds   
+base-simple-smoke-m-ss2211354_app
+base-simple-smoke-m-ss2211354_db
+base-simple-smoke-m-ss2211354_public
+base-simple-smoke-va-ss2211354_network
+base-simple-smoke-vb-ss2211354_network
+base-simple-smoke-m-ss2211354_challenge_prism_data
+base-simple-smoke-m-ss2211354_master_state
+base-simple-smoke-m-ss2211354_postgres_data
+base-simple-smoke-va-ss2211354_state
+base-simple-smoke-vb-ss2211354_state
+base-simple-smoke-vb-ss2211354-validator-1 Up 3 seconds
+base-simple-smoke-va-ss2211354-validator-1 Up 21 seconds
+base-simple-smoke-m-ss2211354-challenge-prism-1 Up 37 seconds (healthy)
+base-simple-smoke-m-ss2211354-base-master-validator-1 Up 43 seconds (healthy)
+base-simple-smoke-m-ss2211354-master-postgres-1 Up 49 seconds (healthy)
+submit_on_chain remains off
+public chain default present in master config
+pre-teardown statuses written
+=== TEARDOWN begin ===
+=== TEARDOWN begin ===
+ Container base-simple-smoke-va-ss2211354-validator-1 Stopping 
+ Container base-simple-smoke-va-ss2211354-validator-1 Stopped 
+ Container base-simple-smoke-va-ss2211354-validator-1 Removing 
+ Container base-simple-smoke-va-ss2211354-validator-1 Removed 
+ Volume base-simple-smoke-va-ss2211354_state Removing 
+ Network base-simple-smoke-va-ss2211354_network Removing 
+ Volume base-simple-smoke-va-ss2211354_state Removed 
+ Network base-simple-smoke-va-ss2211354_network Removed 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Stopping 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Stopped 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Removing 
+ Container base-simple-smoke-vb-ss2211354-validator-1 Removed 
+ Volume base-simple-smoke-vb-ss2211354_state Removing 
+ Network base-simple-smoke-vb-ss2211354_network Removing 
+ Volume base-simple-smoke-vb-ss2211354_state Removed 
+ Network base-simple-smoke-vb-ss2211354_network Removed 
+time="2026-07-13T14:32:20Z" level=warning msg="Warning: No resource found to remove for project \"base-simple-smoke-vb-ss2211354\"."
+base-simple-smoke-m-ss2211354-challenge-prism-1
+base-simple-smoke-m-ss2211354-base-master-validator-1
+base-simple-smoke-m-ss2211354-master-postgres-1
+base-simple-smoke-m-ss2211354_app
+base-simple-smoke-m-ss2211354_db
+base-simple-smoke-m-ss2211354_public
+base-simple-smoke-m-ss2211354_challenge_prism_data
+base-simple-smoke-m-ss2211354_master_state
+base-simple-smoke-m-ss2211354_postgres_data
+teardown residual clean
+teardown residual clean
