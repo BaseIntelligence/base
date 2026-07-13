@@ -80,6 +80,56 @@ def test_validator_compose_is_source_free_and_digest_pinned(tmp_path: Path) -> N
     assert str(ROOT) not in json.dumps(rendered)
 
 
+def test_validator_compose_home_is_writable_state_volume(tmp_path: Path) -> None:
+    """read_only rootfs: HOME must land on the state volume for bittensor."""
+    rendered = _render(tmp_path, "validator-home")
+    service = rendered["services"]["validator"]
+
+    assert service["read_only"] is True
+    environment = service.get("environment") or {}
+    # Compose may render as list ("HOME=...") or mapping depending on engine.
+    if isinstance(environment, list):
+        home_entries = [item for item in environment if item.startswith("HOME=")]
+        assert home_entries, "HOME must be set on the validator service"
+        assert home_entries[0] == "HOME=/var/lib/base/state"
+        home_value = home_entries[0].split("=", 1)[1]
+    else:
+        assert "HOME" in environment
+        home_value = environment["HOME"]
+        assert home_value == "/var/lib/base/state"
+
+    # HOME must not equal the read-only parent that is not a volume mount root alone.
+    assert home_value != "/var/lib/base"
+    assert home_value != "/root"
+    assert not home_value.startswith("/home/")
+
+    mount_targets = {mount["target"] for mount in service["volumes"]}
+    assert home_value in mount_targets or any(
+        home_value.startswith(t.rstrip("/") + "/") or home_value == t
+        for t in mount_targets
+    )
+    # Canonical contract: HOME is exactly the state volume mountpoint.
+    assert home_value == "/var/lib/base/state"
+    state_mounts = [
+        m for m in service["volumes"] if m.get("target") == "/var/lib/base/state"
+    ]
+    assert len(state_mounts) == 1
+    assert state_mounts[0].get("read_only") in (None, False)
+
+
+def test_install_validator_mentions_writable_home_and_identity_note() -> None:
+    content = INSTALL_VALIDATOR.read_text(encoding="utf-8")
+    assert "HOME=/var/lib/base/state" in content or "/var/lib/base/state" in content
+    assert "read_only" in content
+    assert "bittensor" in content.lower()
+    # Operator warning path for symlink identity parents (live-host residual).
+    assert "symlink" in content.lower()
+    # Agent-only install: no master project bootstrap.
+    assert "docker-compose.validator.yml" in content
+    assert "install-master" not in content
+    assert "master-postgres" not in content
+
+
 def test_validator_projects_render_distinct_network_and_state(tmp_path: Path) -> None:
     first = _render(tmp_path, "validator-a")
     second = _render(tmp_path, "validator-b")
@@ -180,3 +230,12 @@ def test_compose_docs_document_independent_validator_install() -> None:
     assert "independent" in docs.lower()
     assert "docker compose" in docs.lower()
     assert "docker.sock" in docs.lower() or "docker socket" in docs.lower()
+
+
+def test_compose_docs_document_writable_home_under_read_only() -> None:
+    docs = COMPOSE_DOCS.read_text(encoding="utf-8")
+    assert "HOME" in docs
+    assert "/var/lib/base/state" in docs
+    assert ".bittensor" in docs
+    assert "read_only" in docs
+    assert "uid 1000" in docs or "1000" in docs

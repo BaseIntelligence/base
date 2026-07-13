@@ -30,6 +30,11 @@ Each validator is an independent Compose project with its own identity, network,
 volume, and secrets. See [Validator guide](../validator/README.md) and
 [Compose deployment](../compose.md).
 
+**Read-only rootfs notes:** container `HOME` must be the writable state volume
+(`/var/lib/base/state`) so bittensor can create `$HOME/.bittensor`. Bind
+protocol identity as a real directory readable by uid 1000 (avoid host
+symlinks with restrictive parent modes). See `docs/compose.md` for the table.
+
 ### Weight model reminder
 
 Challenges push raw weights to the master; the master aggregates; validators fetch

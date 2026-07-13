@@ -108,6 +108,19 @@ docker compose -p base-mission-validator-a -f docker-compose.validator.yml down
 # preserve identity/state for reinstall, or add -v to drop disposable state
 ```
 
+### Validator HOME and identity under `read_only`
+
+The validator service runs `read_only: true` with `user: "1000:1000"`. Writable surfaces are:
+
+| Path | Purpose |
+| --- | --- |
+| `/var/lib/base/state` (named volume) | Runtime state + **`HOME`** (defaults to this path so bittensor can write `$HOME/.bittensor`) |
+| `/tmp` (tmpfs) | Temporary files |
+
+Do **not** set `HOME` to `/var/lib/base`: that path is not itself a volume, so bittensor membership/wallet caches fail with read-only filesystem errors. `install-validator.sh` and `docker-compose.validator.yml` default `HOME=/var/lib/base/state`.
+
+Protocol identity (`BASE_VALIDATOR_PROTOCOL_IDENTITY` → `/var/lib/base/identity`) is mounted **read-only**. Bind a **real directory** tree with parents traversable by uid 1000 (typically parent mode `0755`). A host symlink whose parent is mode `0700` prevents wallet load inside the container even when the leaf wallet files look correct.
+
 ## Backup, restore, and teardown
 
 Operator scripts live next to the manifests (mode-aware, Compose-only, no Swarm):

@@ -193,6 +193,15 @@ if [[ -z "${IMAGE_REPO}" || -z "${IMAGE_DIGEST}" ]]; then
   fi
 fi
 
+# Protocol identity must be a real directory tree (not a host symlink bounce).
+# Under uid 1000 + read-only identity mount, a symlink whose parent is mode
+# 0700 (or not traversable by the container user) fails bittensor wallet load.
+# Prefer a real directory with parents at least mode 0755 for container reads.
+if [[ -L "${IDENTITY_DIR}" ]]; then
+  echo "warning: BASE_VALIDATOR protocol identity path is a symlink (${IDENTITY_DIR});" >&2
+  echo "  bind a real directory readable by uid 1000 (parent dirs typically mode 755)." >&2
+fi
+
 # Create a disposable protocol-identity wallet when none exists.
 _hotkey_exists() {
   [[ -f "${IDENTITY_DIR}/${WALLET_NAME}/hotkeys/${WALLET_HOTKEY}" ]]
@@ -389,6 +398,7 @@ echo "  master_url=${MASTER_URL}"
 echo "  protocol_hotkey=${HOTKEY_SS58}"
 echo "  state_dir=${STATE_DIR}"
 echo "  submit_on_chain=${SUBMIT_FLAG}"
+echo "  note: container HOME=/var/lib/base/state (writable under read_only rootfs for bittensor)"
 
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" config --quiet
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d
@@ -397,3 +407,4 @@ echo "Validator Compose install complete."
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
 echo "Hotkey public identity (also written to ${HOTKEY_PUB_FILE}): ${HOTKEY_SS58}"
 echo "Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests."
+echo "Operator note: keep protocol identity as a real directory readable by uid 1000 (avoid host symlinks with restrictive parents)."

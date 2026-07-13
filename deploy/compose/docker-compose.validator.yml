@@ -26,7 +26,10 @@ services:
       - no-new-privileges:true
     environment:
       # Explicitly no master/db/socket paths. Config drives master_url + identity.
-      HOME: /var/lib/base
+      # HOME must sit on the writable state volume: read_only:true makes
+      # /var/lib/base itself non-writable, and bittensor writes under
+      # $HOME/.bittensor (identity caches + wallet side data).
+      HOME: /var/lib/base/state
     volumes:
       - type: bind
         source: ${BASE_VALIDATOR_CONFIG:?set the validator config file}
