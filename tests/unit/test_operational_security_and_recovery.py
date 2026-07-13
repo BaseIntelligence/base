@@ -164,7 +164,7 @@ def test_require_protected_secret_file_mode_and_content(tmp_path: Path) -> None:
 
 def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
     # Pydantic wraps ProductionPolicyError as ValidationError; accept both.
-    common_db = {"url": "postgresql+asyncpg://base:pwd@postgres:5432/base"}
+    common_db = {"url": "postgresql+asyncpg://base:x@localhost:5432/base"}
     common_docker = {"broker_allowed_images": ["ghcr.io/baseintelligence/base-master"]}
     with pytest.raises(
         (ProductionPolicyError, ValidationError), match="inline admin_token"
@@ -172,6 +172,20 @@ def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
         Settings(
             environment="production",
             security={"admin_token": "INLINE-CANARY", "admin_token_file": None},
+            database=common_db,
+            docker=common_docker,
+        )
+    # Dual source (non-empty inline + file path) is also fail-closed.
+    with pytest.raises(
+        (ProductionPolicyError, ValidationError),
+        match="inline admin_token when admin_token_file is set",
+    ):
+        Settings(
+            environment="production",
+            security={
+                "admin_token": "INLINE-CANARY",
+                "admin_token_file": str(tmp_path / "missing-admin"),
+            },
             database=common_db,
             docker=common_docker,
         )
@@ -355,6 +369,19 @@ def test_teardown_scripts_support_preserve_and_destroy() -> None:
     assert "volumes retained" in content.lower() or "retained" in content
 
 
+def test_teardown_has_no_dead_swarm_refuse_loop() -> None:
+    """Post-parse argv dead-walk over $1/$2 is gone; only compose down remains."""
+
+    content = TEARDOWN_MASTER.read_text(encoding="utf-8")
+    # Dead hygiene markers that previously looked like a security gate but never ran.
+    assert "for forbidden in service stack swarm node" not in content
+    assert "refusing Swarm subroutine" not in content
+    assert "${1:-}" not in content or "unknown argument" in content
+    # Real ops path is docker compose down for the named project only.
+    assert 'docker compose -p "${PROJECT_NAME}"' in content
+    assert "down --remove-orphans" in content
+
+
 def test_backup_restore_scripts_cover_control_plane_and_challenge() -> None:
     master_backup = BACKUP_MASTER.read_text(encoding="utf-8")
     assert "pg_dump" in master_backup
@@ -420,13 +447,29 @@ def test_weight_flow_metrics_correlation_and_prometheus_sanitized() -> None:
     assert snap["pushes"]["rejected_auth"] == 1
     assert snap["aggregation_outcomes"]["sealed"] == 1
     assert snap["fetch_failures"] == 1
+    assert snap["submit_outcomes"]["ok"] == 1
     text = prometheus_text(metrics)
     assert "base_raw_weight_pushes_total" in text
     assert "base_aggregation_outcomes_total" in text
+    assert "base_weight_submit_outcomes_total" in text
+    assert "base_weight_fetch_failures_total" in text
     assert "CANARY" not in text
     assert "token" not in text.lower() or "outbound" not in text
     # Global metrics module remains import-safe.
     get_weight_flow_metrics().reset()
+
+
+def test_submission_observation_and_weight_fetch_hook_metrics() -> None:
+    """Residual modular wiring: observation → submit; weights 404 → fetch_failure."""
+
+    observation = (ROOT / "src/base/master/submission_observation.py").read_text(
+        encoding="utf-8"
+    )
+    assert "get_weight_flow_metrics" in observation
+    assert "record_submit" in observation
+    admin = (ROOT / "src/base/master/app_admin.py").read_text(encoding="utf-8")
+    assert "record_fetch_failure" in admin
+    assert "get_weight_flow_metrics" in admin
 
 
 def test_metrics_route_present_on_proxy() -> None:
@@ -529,6 +572,23 @@ def test_install_master_creates_0600_secret_files() -> None:
     assert "chmod 700" in content
     assert "admin_token" in content
     assert "POSTGRES_PASSWORD_FILE" in content
+
+
+def test_shipping_install_drivers_do_not_require_swarm() -> None:
+    """Compose installers must not promote Swarm as the required runtime."""
+
+    for path in (INSTALL_MASTER, COMPOSE_DIR / "install-validator.sh"):
+        content = path.read_text(encoding="utf-8").lower()
+        assert "install-swarm" not in content
+        assert "docker swarm is required" not in content
+        assert "swarm is required" not in content
+        assert "docker compose" in content
+    worker = ROOT / "scripts" / "install-worker.sh"
+    text = worker.read_text(encoding="utf-8")
+    lowered = text.lower()
+    assert "historical" in lowered or "non-target" in lowered
+    assert "compose/install-master.sh" in text
+    assert "not the shipping runtime" in lowered or "not required" in lowered
 
 
 def test_policy_validate_secret_configuration_is_wired() -> None:

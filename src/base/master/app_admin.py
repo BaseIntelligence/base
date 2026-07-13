@@ -227,6 +227,8 @@ def build_admin_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Master weight service unavailable",
             )
+        from base.master.weight_flow_metrics import get_weight_flow_metrics
+
         try:
             from base.challenge_sdk.roles import Role, activate_role
 
@@ -244,11 +246,14 @@ def build_admin_router(
         except HTTPException:
             raise
         except VectorNotFoundError as exc:
+            # Residual fetch-failure hook for VAL-WEIGHT-068 (no sealed vector).
+            get_weight_flow_metrics().record_fetch_failure()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="no sealed weight vector available",
             ) from exc
         except Exception as exc:
+            get_weight_flow_metrics().record_fetch_failure()
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc

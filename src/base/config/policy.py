@@ -153,7 +153,15 @@ def validate_secret_configuration(settings: Any, *, production: bool) -> None:
         raise ProductionPolicyError("production requires security settings")
     inline = getattr(security, "admin_token", None)
     file_path = getattr(security, "admin_token_file", None)
-    if inline and not file_path:
+    inline_set = bool(inline is not None and str(inline).strip())
+    if inline_set and file_path:
+        # Dual sources are fail-closed even when the file path is present:
+        # production must use the secret file exclusively (VAL-COMPOSE-051/055).
+        raise ProductionPolicyError(
+            "production rejects inline admin_token when admin_token_file is set; "
+            "use file-backed admin_token only"
+        )
+    if inline_set:
         raise ProductionPolicyError(
             "production rejects inline admin_token; use admin_token_file"
         )

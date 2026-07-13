@@ -191,10 +191,10 @@ class DockerSettings(BaseModel):
     #: Server-wide cap on TOTAL concurrent broker jobs across ALL challenge
     #: slugs, enforced atomically alongside the per-slug cap at
     #: ``/v1/docker/run`` (surfaces as HTTP 429 ``docker_quota_exceeded``).
-    #: Defaults to ``13`` — the RAM-derived value for the 62 GiB manager at a
-    #: 4 GB/task budget — so the non-install code path is bounded consistently
-    #: with ``install-swarm.sh`` (which renders the RAM-derived value from
-    #: ``_compute_eval_task_concurrency`` at deploy). ``None`` means UNLIMITED.
+    #: Defaults to ``13`` — a RAM-derived bound for a ~62 GiB host at a
+    #: 4 GB/task budget on historical worker-broker deploys. Compose installs
+    #: inherit the same default when a Docker broker is enabled; ``None`` means
+    #: UNLIMITED (not recommended for shared hosts).
     broker_max_concurrent_global: int | None = 13
     #: Max bytes of stdout/stderr the broker returns per job before tail-capping
     #: (the last-resort bound; ``DockerExecutor``/``_cap_log`` keep only the

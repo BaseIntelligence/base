@@ -34,13 +34,9 @@ if [[ -z "${PROJECT_NAME}" ]]; then
 fi
 COMPOSE_FILE="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yml}"
 
-# Explicitly refuse Swarm primitives.
-for forbidden in service stack swarm node; do
-  if [[ "${1:-}" == "docker" && "${2:-}" == "${forbidden}" ]]; then
-    echo "refusing Swarm subroutine" >&2
-    exit 2
-  fi
-done
+# Compose-only: this script invokes only `docker compose` for the named project.
+# Historical residual: a dead post-opts argv walk after the flag parser never
+# executed meaningfully; it is intentionally absent (no security-theater loop).
 
 if [[ "${DESTROY}" -eq 1 ]]; then
   echo "destructive teardown for project ${PROJECT_NAME}"

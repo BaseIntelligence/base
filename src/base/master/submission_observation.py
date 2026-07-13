@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from base.challenge_sdk.roles import Capability, Role, role_contract
 from base.db.models import ValidatorSubmissionObservation
 from base.db.session import session_scope
+from base.master.weight_flow_metrics import get_weight_flow_metrics
 from base.schemas.weights import (
     ValidatorSubmissionObservationRequest,
     ValidatorSubmissionObservationResponse,
@@ -40,9 +41,7 @@ class ValidatorSubmissionObservationService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    @role_contract(
-        role=Role.MASTER, capability=Capability.MASTER_COORDINATION
-    )
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_COORDINATION)
     async def record(
         self,
         *,
@@ -54,8 +53,7 @@ class ValidatorSubmissionObservationService:
         async with session_scope(self._session_factory) as session:
             existing = await session.scalar(
                 select(ValidatorSubmissionObservation).where(
-                    ValidatorSubmissionObservation.validator_hotkey
-                    == validator_hotkey,
+                    ValidatorSubmissionObservation.validator_hotkey == validator_hotkey,
                     ValidatorSubmissionObservation.vector_id == request.vector_id,
                     ValidatorSubmissionObservation.vector_digest
                     == request.vector_digest,
@@ -73,6 +71,10 @@ class ValidatorSubmissionObservationService:
                     raise SubmissionObservationConflictError(
                         "conflicting observation under the same operation identity"
                     )
+                get_weight_flow_metrics().record_submit(
+                    outcome=str(existing.outcome),
+                    attempt=int(existing.attempt),
+                )
                 return ValidatorSubmissionObservationResponse(
                     observation_id=str(existing.id),
                     validator_hotkey=existing.validator_hotkey,
@@ -99,6 +101,10 @@ class ValidatorSubmissionObservationService:
             )
             session.add(row)
             await session.flush()
+            get_weight_flow_metrics().record_submit(
+                outcome=str(row.outcome),
+                attempt=int(row.attempt),
+            )
             logger.info(
                 "validator submission observation recorded: hotkey=%s vector=%s "
                 "outcome=%s attempt=%s (non-authoritative)",

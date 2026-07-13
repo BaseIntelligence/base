@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# One-command independent validator Compose install.
+# One-command independent validator Compose install (supported shipping path).
 # Creates protected config + protocol identity, then runs
 # `docker compose up -d` from validator-only artifacts (no master source,
-# master PostgreSQL, challenge services, Swarm, or Docker socket).
+# master PostgreSQL, challenge services, historical fabric helpers, or Docker
+# socket). Docker Compose is the only required runtime for new installs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

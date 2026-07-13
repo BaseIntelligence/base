@@ -68,7 +68,7 @@ services:
       # opt-in for dynamic challenges via admin API (default still useful for
       # adoption/orphan when docker socket is mounted).
       BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "${BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS:-30}"
-      # Swarm/GHCR tag tracker stays off on Compose path; watcher is canonical.
+      # Historical GHCR-tag service tracker stays off; Compose watcher is canonical.
       BASE_MASTER__CHALLENGE_IMAGE_UPDATE_INTERVAL_SECONDS: "0"
       BASE_MASTER__CHALLENGE_WATCHER_INTERVAL_SECONDS: "${BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS:-60}"
       BASE_MASTER__CHALLENGE_WATCHER_STATE_PATH: /var/lib/base/challenge_watcher_state.json

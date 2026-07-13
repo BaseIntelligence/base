@@ -1,49 +1,37 @@
 #!/usr/bin/env bash
 #
-# install-worker.sh — enroll THIS host as a CPU or GPU worker into the BASE
-# Docker Swarm, using the MANUAL join-token model (NO SSH).
+# install-worker.sh — HISTORICAL / NON-TARGET worker Swarm enrollment helper.
 #
-# ============================================================================
-# STATUS: DRAFT FOR HUMAN REVIEW. DO NOT EXECUTE BLINDLY.
-# ============================================================================
+# Supported greenfield installs are Docker Compose only:
+#   deploy/compose/install-master.sh
+#   deploy/compose/install-validator.sh
+# Do NOT use this script for new Compose installs. It remains only for
+# operators still maintaining a historical Swarm fabric outside this mission
+# target path. Swarm is NOT required and is NOT the shipping runtime.
 #
-# Run this ON THE WORKER HOST. It does NOT reach out to the manager over SSH and
-# it does NOT fetch the join token for you. The operator obtains the token on the
-# manager first:
+# Status: DRAFT / LEGACY. Do not execute blindly.
 #
-#     # on the MANAGER:
+# When used against a legacy Swarm manager, run this ON THE WORKER HOST. It
+# does NOT reach the manager over SSH and does not fetch the join token.
+# Historical manager helper:
 #     base master worker token --cpu      # or --gpu
-#       -> prints: docker swarm join --token <TOKEN> <MANAGER_IP>:2377
-#
-# then runs THIS script on the worker with that token + manager address, and
-# finally labels the node back ON THE MANAGER (printed at the end here):
-#
+# then label on the manager after join:
 #     base master worker label <node> --workload cpu|gpu
 #
-# What this script does (in order):
+# What this script does (in order, legacy Swarm only):
 #   1. preflight       — docker present, required inputs supplied (read-only).
-#   1b. ghcr_login     — authenticate to ghcr.io so deploy-time pulls of the
-#                        private ghcr.io/baseintelligence/* images work on this
-#                        worker. Credentials come from the RUNTIME env
-#                        (GHCR_USER / GHCR_TOKEN); token is fed on stdin (never
-#                        argv, never logged, never hardcoded). Non-fatal skip
-#                        when the vars are unset (the manager can still ship
-#                        creds per-service via `docker service create
-#                        --with-registry-auth`). Mirrors install-swarm.sh.
-#   2. daemon.json     — prepare the right worker daemon.json:
-#                          cpu -> deploy/swarm/daemon.cpu-worker.json (as-is)
-#                          gpu -> deploy/swarm/daemon.worker.json with the GPU
-#                                 generic-resource UUID(s) substituted from
-#                                 `nvidia-smi`. Installed + dockerd restarted
-#                                 ONLY behind --restart-dockerd.
+#   1b. ghcr_login     — authenticate to ghcr.io for private pulls (optional).
+#   2. daemon.json     — prepare legacy worker daemon.json templates under
+#                        deploy/swarm/ (DESTRUCTIVE only with --restart-dockerd).
 #   3. swarm join      — docker swarm join --token <token> <manager-addr>.
-#   4. follow-up       — print the manager-side `base master worker label`.
+#   4. follow-up       — print the historical manager-side label reminder.
 #
-# Safety model (mirrors deploy/swarm/install-swarm.sh):
+# Safety model (legacy path):
 #   * DEFAULT MODE IS DRY-RUN. With no flags the script prints every planned
 #     mutating command (via `plan`) and changes NOTHING. Pass --apply to execute.
 #   * Engine restart is DESTRUCTIVE and gated behind its OWN flag
 #     (--restart-dockerd); the default --apply path does NOT touch dockerd.
+#   * Supported greenfield operators should stop here and use deploy/compose/*.
 #
 # Secret handling:
 #   * The join token is NEVER hardcoded and NEVER printed. Supply it via the
@@ -192,12 +180,15 @@ usage() {
   cat <<'EOF'
 Usage: install-worker.sh --manager-addr <ip:2377> --workload cpu|gpu [OPTIONS]
 
-Enroll THIS host as a CPU or GPU worker into the BASE Docker Swarm using the
-manual join-token model (no SSH). DEFAULT MODE IS DRY-RUN (prints planned
-actions, changes nothing).
+HISTORICAL / NON-TARGET: enroll a worker into a legacy BASE Docker Swarm fabric.
+Supported greenfield installs use Docker Compose only
+(deploy/compose/install-master.sh and install-validator.sh). Swarm is not
+required and is not the shipping runtime.
+
+DEFAULT MODE IS DRY-RUN (prints planned actions, changes nothing).
 
 Required:
-  --manager-addr <ip:2377>   Swarm manager advertise address to join.
+  --manager-addr <ip:2377>   Legacy Swarm manager advertise address to join.
   --workload cpu|gpu         Worker class. Selects the daemon.json template and
                              the label hint printed for the manager.
   Join token                 Supply via JOIN_TOKEN env (preferred) or
@@ -208,29 +199,24 @@ Optional (private image pulls):
                              ghcr.io/baseintelligence/* images on this worker.
                              Supplied at runtime via env; the token is fed on
                              stdin only (never argv/logged/hardcoded). If unset,
-                             the ghcr.io login step is skipped (non-fatal) and
-                             the worker relies on the manager's per-service
-                             'docker service create --with-registry-auth'.
+                             the ghcr.io login step is skipped (non-fatal).
 
 Safety flags:
   --apply                    Execute mutating commands. Without this, dry-run only.
   --turnkey                  Blank-box alias: enables --apply and --restart-dockerd
-                             (auto-installs Docker via ensure_docker, applies the
-                             worker daemon.json, and joins the swarm). DESTRUCTIVE.
-                             Still requires --manager-addr + join token.
+                             (DESTRUCTIVE). Still requires --manager-addr + join token.
   --restart-dockerd          Install daemon.json + restart dockerd (DESTRUCTIVE;
                              not part of the default --apply path).
 
 Other:
-  --join-token <token>       Worker join token (env JOIN_TOKEN preferred so the
+  --join-token <token>       Worker join token (prefer JOIN_TOKEN env so the
                              value stays off argv / shell history).
   --dry-run                  Force dry-run (default).
   -h, --help                 Show this help.
 
-Get the token first ON THE MANAGER:
-  base master worker token --cpu   # or --gpu
-After this script joins, label the node ON THE MANAGER:
-  base master worker label <node> --workload cpu|gpu
+Preferred operator path for new installs:
+  deploy/compose/install-master.sh
+  deploy/compose/install-validator.sh
 EOF
 }
 
