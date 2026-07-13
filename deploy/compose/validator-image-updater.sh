@@ -432,8 +432,16 @@ if ! compose_cmd up -d --force-recreate --no-deps "${SERVICE_NAME}"; then
   exit 1
 fi
 
-# Verify running container actually carries the desired digest.
-verify_run="$(inspect_running_digest || true)"
+# Verify running container actually carries the desired digest (brief wait;
+# container name / image metadata can lag a second after compose up).
+verify_run=""
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+  verify_run="$(inspect_running_digest || true)"
+  if [[ -n "${verify_run}" && "${verify_run}" == "${remote}" ]]; then
+    break
+  fi
+  sleep 1
+done
 if [[ -z "${verify_run}" || "${verify_run}" != "${remote}" ]]; then
   log "error: post-recreate verify failed (run=${verify_run:-none} desired=${remote}); rolling back"
   if [[ -n "${rollback_digest}" ]]; then
