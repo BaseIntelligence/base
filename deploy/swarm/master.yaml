@@ -26,7 +26,13 @@ network:
   # Optional per-entry display_name/logo_url (architecture.md sec 7.2/7.5) ride
   # through this same verbatim render and are seeded UNTRUSTED into the identity
   # cache as the no-chain self-declared fallback the public directory renders.
-  mock_metagraph: []
+  mock_metagraph:
+    # Independent live validator (validator-5gzi / wallet validator-1).
+    - hotkey: 5CiY7qfpeFM9y44s6J6RQbET8RQ5rPKd4tkvqh4HxSZSgsCv
+      uid: 1
+      validator_permit: true
+      stake: 1.0
+      display_name: validator-5gzi
 
 master:
   proxy_host: 0.0.0.0

@@ -347,7 +347,15 @@ def test_master_yaml_equals_live_production_config() -> None:
     # the mock-metagraph seam OFF.
     assert cfg["network"]["chain_endpoint"] == CHAIN_ENDPOINT_PRODUCTION
     assert cfg["network"]["chain_endpoint"] is not None
-    assert cfg["network"]["mock_metagraph"] == []
+    # NO-CHAIN live pair: independent validator hotkey is permit-listed.
+    mock = cfg["network"]["mock_metagraph"]
+    assert isinstance(mock, list) and mock
+    assert any(
+        entry.get("hotkey", "").startswith("5CiY7qf")
+        and entry.get("validator_permit") is True
+        for entry in mock
+        if isinstance(entry, dict)
+    )
 
     # broker allowlist matches the live NARROW namespaced+repo allowlist (the two
     # first-party repos the broker actually runs).
