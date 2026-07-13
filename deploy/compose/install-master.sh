@@ -185,6 +185,7 @@ network:
       stake: 1000.0
 
 master:
+  # Public chain/registry control plane (not an operator master IP inventory).
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081
@@ -198,6 +199,7 @@ master:
   orchestration_interval_seconds: 30
 
 validator:
+  # Public network registry/weights default; Validators attach via --master-url.
   registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null

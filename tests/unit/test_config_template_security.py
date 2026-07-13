@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -58,9 +59,17 @@ def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
     validator_example = yaml.safe_load(
         (root / "config" / "validator.example.yaml").read_text(encoding="utf-8")
     )
+    master_compose = yaml.safe_load(
+        (root / "deploy" / "compose" / "config" / "master.compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert master_example["master"]["registry_url"] == expected
+    assert master_example["validator"]["registry_url"] == expected
     assert validator_example["validator"]["registry_url"] == expected
+    assert master_compose["master"]["registry_url"] == expected
+    assert master_compose["validator"]["registry_url"] == expected
     assert ValidatorSettings().weights_url is None
     assert ValidatorSettings().resolved_weights_url == expected
     assert (
@@ -79,10 +88,83 @@ def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
     assert ValidatorSettings().weights_retries == 3
     assert ValidatorSettings().weights_freshness_seconds == 720
     assert validator_example["validator"]["weights_url"] is None
+    assert master_compose["validator"]["weights_url"] is None
     assert validator_example["validator"]["weights_interval_seconds"] == 360
     assert validator_example["validator"]["weights_timeout_seconds"] == 15.0
     assert validator_example["validator"]["weights_retries"] == 3
     assert validator_example["validator"]["weights_freshness_seconds"] == 720
+
+
+def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
+    """Compose install/templates must keep public registry on chain.joinbase.ai.
+
+    Operator ``--master-url`` stays an explicit coordination root and must not be
+    invented as a hard-coded public IP default. Public registry/weights defaults
+    remain ``https://chain.joinbase.ai``.
+    """
+    root = Path(__file__).resolve().parents[2]
+    expected = "https://chain.joinbase.ai"
+    retired_public_hosts = (
+        "86.38.238.235",
+        "51.83.112.164",
+        "88.216.198.199",
+    )
+
+    install_master = (root / "deploy" / "compose" / "install-master.sh").read_text(
+        encoding="utf-8"
+    )
+    install_validator = (
+        root / "deploy" / "compose" / "install-validator.sh"
+    ).read_text(encoding="utf-8")
+    master_compose = (
+        root / "deploy" / "compose" / "config" / "master.compose.yaml"
+    ).read_text(encoding="utf-8")
+    master_example = (root / "config" / "master.example.yaml").read_text(
+        encoding="utf-8"
+    )
+    validator_example = (root / "config" / "validator.example.yaml").read_text(
+        encoding="utf-8"
+    )
+    validator_docs = (root / "docs" / "validator" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    ops_validator_docs = (root / "docs" / "operations" / "validator.md").read_text(
+        encoding="utf-8"
+    )
+
+    for shipping in (
+        install_master,
+        master_compose,
+        master_example,
+        validator_example,
+    ):
+        assert f"registry_url: {expected}" in shipping
+        for host in retired_public_hosts:
+            assert host not in shipping
+
+    # Master install renders both master + validator registry defaults to public chain.
+    assert install_master.count(f"registry_url: {expected}") >= 2
+    assert "weights_url: null" in install_master
+
+    # Validator install requires an explicit operator master URL and never invents
+    # a hard-coded public IP master default. registry/weights may follow that
+    # operator root for a private master, but public docs keep the chain host.
+    assert "--master-url" in install_validator
+    assert "VALIDATOR_MASTER_URL" in install_validator
+    assert "validator install requires --master-url" in install_validator
+    for host in retired_public_hosts:
+        assert host not in install_validator
+    # No default IP master for empty --master-url.
+    assert (
+        re.search(r'MASTER_URL="\$\{VALIDATOR_MASTER_URL:-[^"]+\}"', install_validator)
+        is None
+    )
+
+    assert expected in validator_docs
+    assert f"{expected}/v1/weights/latest" in validator_docs
+    assert expected in ops_validator_docs
+    # master_url is the operator coordination root, not the public chain URL.
+    assert "master_url: https://chain.joinbase.ai" not in ops_validator_docs
 
 
 def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() -> None:
@@ -92,6 +174,8 @@ def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() ->
         root / "config" / "master.example.yaml",
         root / "config" / "validator.example.yaml",
         root / "docs" / "validator" / "README.md",
+        root / "deploy" / "compose" / "config" / "master.compose.yaml",
+        root / "deploy" / "compose" / "install-master.sh",
         root / "deploy" / "swarm" / "master.yaml",
     ]
 

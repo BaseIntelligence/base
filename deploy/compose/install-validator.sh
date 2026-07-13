@@ -114,6 +114,9 @@ if [[ -z "${MASTER_URL}" ]]; then
 fi
 
 # Reject empty or clearly invalid master URLs early (VAL-SDK-086).
+# master_url is the operator's master coordination root (their running master
+# API). It is never defaulted to a public IP inventory. Public chain/registry
+# docs and Settings defaults remain https://chain.joinbase.ai.
 case "${MASTER_URL}" in
   http://*|https://*) ;;
   *)

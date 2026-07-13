@@ -77,13 +77,24 @@ On the Compose path the process is packaged as the `validator` service from
 
 ```yaml
 validator:
+  # Public network defaults (Settings / examples); resolved_weights_url falls
+  # back to registry_url when weights_url is null.
+  registry_url: https://chain.joinbase.ai
+  weights_url: null
   agent:
-    master_url: https://chain.joinbase.ai
+    # Operator master coordination root (install-validator --master-url).
+    # This is *not* the public chain URL. Examples for a local master:
+    master_url: http://127.0.0.1:3180
     capabilities: ["cpu"]
     version: "0.1.0"
     heartbeat_interval_seconds: 60
     poll_interval_seconds: 5.0
 ```
+
+Public registry and published weights documentation uses
+`https://chain.joinbase.ai` (for example `GET /v1/weights/latest` there).
+`install-validator.sh --master-url` must point at the operator master API that
+owns assignments; it never invents a hardcoded public IP as the master default.
 
 There is no master LLM gateway route and no per-assignment `BASE_LLM_GATEWAY_URL`
 / `BASE_GATEWAY_TOKEN` contract in the shipping target path.

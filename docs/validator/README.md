@@ -15,6 +15,12 @@ The default public weights endpoint is:
 https://chain.joinbase.ai/v1/weights/latest
 ```
 
+Settings defaults for `registry_url` / resolved weights on the public network also
+use `https://chain.joinbase.ai`. Installer `--master-url` is the **operator master
+coordination root** (required, never invented as a hard-coded public IP). Local
+examples often use `http://127.0.0.1:3180`; public operators point both registry
+and master at the public control plane when that is the live master.
+
 ## Compute Requirements
 
 | Validator profile | Compute |

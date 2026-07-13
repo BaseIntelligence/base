@@ -59,6 +59,19 @@ Every deployable first-party reference is immutable: `repository@sha256:<64 hex>
 
 Base and Prism do **not** launch evaluator containers. Prism runs in `PRISM_COMBINED_MODE=true` and verifies/ingests external results. External long-lived TEE runtimes are never lifecycle-managed by this Compose project.
 
+## Public chain and master URL
+
+- Public chain/registry control-plane URL: `https://chain.joinbase.ai`
+  (master `registry_url` and validator `registry_url` / default weights resolution
+  for the public network).
+- Validator coordination uses an **explicit** operator master URL
+  (`install-validator.sh --master-url` / `validator.agent.master_url`). That is
+  the operator's running master API (often loopback in disposable setups), not a
+  hardcoded public IP host inventory.
+- Docker Compose installers must not invent alternate public master IP defaults.
+  Historical Swarm advertise addresses under `deploy/swarm/` are unsupported for
+  greenfield Compose installs.
+
 ## Validator project
 
 Entrypoint: `deploy/compose/docker-compose.validator.yml`
