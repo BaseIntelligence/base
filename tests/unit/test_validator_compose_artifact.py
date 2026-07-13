@@ -69,11 +69,20 @@ def test_validator_compose_is_source_free_and_digest_pinned(tmp_path: Path) -> N
         "/run/secrets/base_broker_token",
         "/var/lib/base/identity",
         "/var/lib/base/state",
+        "/var/run/docker.sock",
     }
+    # Host docker.sock bind (prod prep for later challenges-on-validator path).
+    sock_mounts = [m for m in mounts if m.get("target") == "/var/run/docker.sock"]
+    assert len(sock_mounts) == 1
+    assert sock_mounts[0].get("type") in ("bind", None) or sock_mounts[0].get("source")
+    # Non-root agent needs host docker GID via group_add (mirrors master).
+    group_add = service.get("group_add") or []
+    assert group_add, "validator must group_add host docker GID for socket access"
+
     blob = json.dumps(rendered).lower()
-    assert "/var/run/docker.sock" not in blob
+    assert "/var/run/docker.sock" in blob
     assert "postgres" not in blob
-    assert "challenge" not in blob
+    assert "challenge-prism" not in blob
     assert "gateway" not in blob
     assert "docker service" not in blob
     assert "docker stack" not in blob
@@ -124,9 +133,9 @@ def test_install_validator_mentions_writable_home_and_identity_note() -> None:
     assert "bittensor" in content.lower()
     # Operator warning path for symlink identity parents (live-host residual).
     assert "symlink" in content.lower()
-    # Agent-only install: no master project bootstrap.
+    # Agent-only install: no master project bootstrap commands.
     assert "docker-compose.validator.yml" in content
-    assert "install-master" not in content
+    assert "install-master.sh" not in content
     assert "master-postgres" not in content
 
 
@@ -242,6 +251,10 @@ def test_install_validator_help_is_agent_only_and_joinbase_only() -> None:
     assert "weights_url: ${MASTER_URL}" in content
     # No silent default that invents a public host when --master-url is omitted.
     assert re.search(r'MASTER_URL="\$\{VALIDATOR_MASTER_URL:-[^"]+\}"', content) is None
+    # Shipping mounts host docker.sock + detects DOCKER_GID (like master).
+    assert "BASE_DOCKER_GID" in content
+    assert "docker.sock" in content
+    assert "stat -c" in content
 
 
 def test_compose_docs_document_independent_validator_install() -> None:
@@ -251,6 +264,8 @@ def test_compose_docs_document_independent_validator_install() -> None:
     assert "independent" in docs.lower()
     assert "docker compose" in docs.lower()
     assert "docker.sock" in docs.lower() or "docker socket" in docs.lower()
+    # Primary network example is joinbase (not loopback-first shipping lead).
+    assert "https://chain.joinbase.ai" in docs
 
 
 def test_compose_docs_document_writable_home_under_read_only() -> None:

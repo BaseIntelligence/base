@@ -72,8 +72,9 @@ Independent **validators** now auto-update their runtime image by default.
 `ghcr.io/baseintelligence/base-validator-runtime:latest`, always applies as
 `repository@sha256:<digest>` (never bare `:latest` as the compose runtime
 selector), and recreates only the agent service with LKG rollback, hold, and
-bounded backoff. The agent container never mounts `docker.sock`. Opt out with
-`--no-auto-update` or freeze with `BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`.
+bounded backoff. Image auto-update remains host-side; shipping Compose may also
+mount host `docker.sock` into the agent for later challenges-on-validator prep.
+Opt out with `--no-auto-update` or freeze with `BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`.
 
 Master application images for the Compose master project remain operator-
 driven (reinstall/recreate with new pins). There is no supported

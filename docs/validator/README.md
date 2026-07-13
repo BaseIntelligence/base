@@ -58,9 +58,15 @@ Installers and manifests:
 | Example env | `deploy/compose/.env.validator.example` |
 
 ```bash
+# Public network shipping example
 ./deploy/compose/install-validator.sh \
-  --project-name base-mission-validator-a \
-  --master-url http://127.0.0.1:3180
+  --project-name base-validator-live \
+  --master-url https://chain.joinbase.ai
+
+# Local disposable master only (secondary smoke/dev)
+# ./deploy/compose/install-validator.sh \
+#   --project-name base-mission-validator-a \
+#   --master-url http://127.0.0.1:3180
 ```
 
 Required inputs the installer stages (or accepts via env / flags):
@@ -71,10 +77,12 @@ Required inputs the installer stages (or accepts via env / flags):
 | `BASE_VALIDATOR_IMAGE_*` | Immutable image repository + sha256 digest |
 | Protocol identity | Host directory for the protocol signing wallet |
 | Broker / capability config | Written into `validator.yaml` under the operator state dir |
+| `BASE_DOCKER_GID` / socket | Host docker group + `/var/run/docker.sock` bind (default on) |
 
 Each validator runs as **its own Compose project** with distinct network, volume,
 identity, and secrets. It never receives master PostgreSQL credentials, challenge
-`/data` volumes, Docker socket access, or aggregation operators.
+`/data` volumes, or aggregation operators. Shipping Compose mounts host
+`docker.sock` into the agent for later challenges-on-validator prep.
 
 Source-free reinstall pattern (after `install-validator.sh --copy-artifacts DIR`):
 
@@ -107,9 +115,11 @@ By default, `install-validator.sh` enables a **host-side** systemd timer
 4. On failure: restores last-known-good, applies exponential backoff, and after
    exhaustion skips until a **new** remote digest appears.
 
-The long-lived agent container still has **no docker.sock**. Opt out with
-`--no-auto-update`, or freeze later with `BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`. State
-lives next to artifacts as `image_update_state.json`.
+Image auto-update remains **host-side** (the agent also mounts `docker.sock` for
+later challenges-on-validator prep, but the digest reconciler is the host timer).
+Opt out with `--no-auto-update`, or freeze later with
+`BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`. State lives next to artifacts as
+`image_update_state.json`.
 
 Challenge auto-update on the **master** side remains the master-resident
 digest-aware watcher (see [master guide](../master/README.md) and

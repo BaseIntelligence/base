@@ -1,12 +1,12 @@
 name: ${COMPOSE_PROJECT_NAME:?set a unique validator project name}
 
 # Independent, agent-only, source-free validator project.
-# - Validators NEVER run master, master PostgreSQL, challenge services, or Docker socket.
+# - Validators NEVER run master, master PostgreSQL, or challenge control-plane services.
+# - Host docker.sock is mounted (prod prep for a later challenges-on-validator path).
 # - Distinct project name, network, volume, credentials, identity, and state.
 # - Config must set validator.agent.master_url to an external Base master API
-#   (install-validator.sh --master-url). Local smoke, private operator master, or
-#   the public network API https://chain.joinbase.ai ; never invent a silent
-#   hostname default.
+#   (install-validator.sh --master-url). Prefer https://chain.joinbase.ai for
+#   network validators; local smoke uses an explicit loopback --master-url only.
 # - Operators install via install-validator.sh or:
 #     docker compose -p <unique> -f docker-compose.validator.yml up -d
 
@@ -24,12 +24,16 @@ services:
     read_only: true
     init: true
     user: "1000:1000"
+    # Host docker group so non-root uid 1000 can use the mounted socket
+    # (same pattern as master compose; detect via install-validator.sh / BASE_DOCKER_GID).
+    group_add:
+      - "${BASE_DOCKER_GID:-987}"
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     environment:
-      # Explicitly no master/db/socket paths. Config drives master_url + identity.
+      # Config drives master_url + identity. No master/db control-plane paths.
       # HOME must sit on the writable state volume: read_only:true makes
       # /var/lib/base itself non-writable, and bittensor writes under
       # $HOME/.bittensor (identity caches + wallet side data).
@@ -47,6 +51,12 @@ services:
         source: ${BASE_VALIDATOR_BROKER_TOKEN:?set the broker token file}
         target: /run/secrets/base_broker_token
         read_only: true
+      # Host Docker socket (read/write) for later challenges-on-validator migration prep.
+      # Image auto-update still runs host-side; this project remains agent-only (no master
+      # / postgres / marketplace stack).
+      - type: bind
+        source: ${BASE_DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
       - type: volume
         source: validator-state
         target: /var/lib/base/state
@@ -56,7 +66,6 @@ services:
       - validator
     # No published ports required: the validator is an outbound client of master.
     # No healthcheck HTTP surface required; restart policy + logs are operator signals.
-    # Docker socket is intentionally absent (cannot orchestrate challenges).
 
 networks:
   validator:

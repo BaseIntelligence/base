@@ -383,7 +383,8 @@ def test_updater_script_and_units_present_and_executable() -> None:
     content = UPDATER_SCRIPT.read_text(encoding="utf-8")
     assert "BASE_VALIDATOR_IMAGE_DIGEST" in content
     assert "force-recreate" in content
-    assert "docker.sock" in content  # documents that agent has none
+    # Documents host-side updater vs agent sock (agent may mount sock separately).
+    assert "docker.sock" in content
     assert "COMPOSE_PROJECT_NAME" in content
     # never instruct compose up with bare latest alone as runtime selector
     assert (
@@ -417,21 +418,20 @@ def test_install_validator_enables_auto_update_by_default() -> None:
     assert "image_update_state.json" in content
     # systemd enable
     assert "systemctl" in content
-    # never mount docker.sock into agent via installer
-    assert (
-        "docker.sock" not in content
-        or "no docker.sock" in content.lower()
-        or "never" in content.lower()
-    )
+    # Auto-update remains host-side; agent also mounts docker.sock for migration prep.
+    assert "docker.sock" in content
+    assert "BASE_DOCKER_GID" in content
 
 
-def test_compose_artifact_still_agent_only_no_socket() -> None:
+def test_compose_artifact_agent_only_with_docker_socket() -> None:
     text = COMPOSE_FILE.read_text(encoding="utf-8")
-    assert "/var/run/docker.sock" not in text
+    assert "/var/run/docker.sock" in text
+    assert "BASE_DOCKER_GID" in text
+    assert "group_add" in text
     assert "services:" in text
     assert "validator:" in text
     assert "BASE_VALIDATOR_IMAGE_DIGEST" in text
-    # Comment may mention master postgres as forbidden; service must not declare one.
+    # Service must not declare master/challenge control-plane.
     assert "master-postgres" not in text
     assert "challenge-prism" not in text
     assert "docker service" not in text

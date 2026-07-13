@@ -153,18 +153,19 @@ active challenge) with:
 ```
 
 Install each **agent-only** independent validator with an explicit Base master URL (validators never
-run master, PostgreSQL, challenges, or Docker socket):
+run master, PostgreSQL, or challenge control-plane services; shipping Compose mounts host
+`docker.sock` for later challenges-on-validator prep):
 
 ```bash
-# Local disposable master
-./deploy/compose/install-validator.sh \
-  --project-name base-mission-validator-a \
-  --master-url http://127.0.0.1:3180
-
-# Public network Base master API (authoritative)
+# Public network Base master API (authoritative shipping example)
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
   --master-url https://chain.joinbase.ai
+
+# Local disposable master (secondary; smoke/dev only)
+./deploy/compose/install-validator.sh \
+  --project-name base-mission-validator-a \
+  --master-url http://127.0.0.1:3180
 ```
 
 The public Base master / coordination / weights API for this network is

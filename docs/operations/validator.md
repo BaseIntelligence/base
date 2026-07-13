@@ -14,17 +14,17 @@ Validators **never run master**. `install-validator.sh` starts only the agent
 container and requires an explicit Base master coordination URL.
 
 ```bash
-# Local disposable master (mission smoke)
-./deploy/compose/install-validator.sh \
-  --project-name base-mission-validator-a \
-  --master-url http://127.0.0.1:3180
-
-# Public network Base master API
+# Public network Base master API (shipping primary)
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
   --master-url https://chain.joinbase.ai
 
-docker compose -p base-mission-validator-a \
+# Local disposable master (mission smoke only)
+./deploy/compose/install-validator.sh \
+  --project-name base-mission-validator-a \
+  --master-url http://127.0.0.1:3180
+
+docker compose -p base-validator-live \
   -f deploy/compose/docker-compose.validator.yml ps
 
 # Image auto-update is ON by default (host timer tracks :latest digests).
@@ -34,15 +34,17 @@ docker compose -p base-mission-validator-a \
 #   edit BASE_VALIDATOR_IMAGE_DIGEST then compose up -d --force-recreate
 
 # stop
-docker compose -p base-mission-validator-a \
+docker compose -p base-validator-live \
   -f deploy/compose/docker-compose.validator.yml down
 # Also stop auto-update when tearing down permanently:
-#   systemctl disable --now base-validator-image-updater@base-mission-validator-a.timer
+#   systemctl disable --now base-validator-image-updater@base-validator-live.timer
 ```
 
 Each validator is an independent Compose project with its own identity, network,
 volume, and secrets. Images auto-update by default via a **host-side** digest
-reconciler (agent still has no docker.sock). See
+reconciler. Shipping Compose also mounts host `docker.sock` into the agent
+(uid `1000` + docker group) for later challenges-on-validator prep; the project
+remains agent-only (no master/postgres/challenge stack). See
 [Validator guide](../validator/README.md) and
 [Compose deployment](../compose.md).
 
@@ -133,7 +135,8 @@ Mutable `latest` alone is not a production runtime selector. Validator runtime
 images auto-update by default through a host-side digest reconciler that always
 applies `repository@sha256:<digest>`. Master challenge auto-update remains the
 master-resident digest-aware watcher; validators do not mutate master challenge
-services and never mount docker.sock into the agent container.
+services. Shipping Compose mounts host docker.sock into the agent for later
+challenges-on-validator prep only (still agent-only: no master stack).
 
 ## Agent Challenge evaluation notes
 

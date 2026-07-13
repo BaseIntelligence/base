@@ -2,7 +2,8 @@
 # Host-side digest reconciler for independent Compose validators (Option A).
 # Tracks BASE_VALIDATOR_TRACK_IMAGE (default base-validator-runtime:latest),
 # always applies repository@sha256:<digest> pins, never bare :latest runtime.
-# Agent container still has no docker.sock — this script runs on the host only.
+# This script always runs on the host only. The agent may also mount docker.sock
+# for later challenges-on-validator prep; image auto-update remains host-side.
 set -euo pipefail
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }

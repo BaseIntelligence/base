@@ -311,6 +311,11 @@ def test_secret_least_privilege_scope_matrix(tmp_path: Path) -> None:
 
 
 def test_docker_socket_only_on_master(tmp_path: Path) -> None:
+    """Master project: only base-master-validator mounts docker.sock.
+
+    Independent validator Compose separately mounts host docker.sock for later
+    challenges-on-validator migration prep (agent-only; no master stack).
+    """
     rendered = _render_master(tmp_path)
     for name, svc in rendered["services"].items():
         blob = json.dumps(svc)
@@ -318,9 +323,12 @@ def test_docker_socket_only_on_master(tmp_path: Path) -> None:
             assert "/var/run/docker.sock" in blob
         else:
             assert "/var/run/docker.sock" not in blob
-    # Validator compose never mounts docker.sock.
     source = VALIDATOR_COMPOSE.read_text(encoding="utf-8")
-    assert "docker.sock" not in source
+    assert "/var/run/docker.sock" in source
+    assert "group_add" in source
+    # Still agent-only: no control-plane Postgres or challenge services declared.
+    assert "master-postgres" not in source
+    assert "challenge-prism" not in source
 
 
 # ---------------------------------------------------------------------------

@@ -2,8 +2,9 @@
 # One-command independent validator Compose install (supported shipping path).
 # Creates protected config + protocol identity, then runs
 # `docker compose up -d` from validator-only artifacts (no master source,
-# master PostgreSQL, challenge services, historical fabric helpers, or Docker
-# socket). Docker Compose is the only required runtime for new installs.
+# master PostgreSQL, or challenge services). Host docker.sock is mounted into
+# the agent container (prod prep for a later challenges-on-validator path).
+# Docker Compose is the only required runtime for new installs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,17 +14,19 @@ usage() {
   cat <<'EOF'
 Usage: install-validator.sh --master-url URL [options]
 
-Agent-only install: validators NEVER run master, PostgreSQL, challenge services,
-or a Docker socket. This installer only starts the validator agent container and
-points it at an external Base master/coordination API via --master-url.
+Agent-only install: validators NEVER run master, PostgreSQL control plane, or
+challenge services. This installer starts the validator agent container, mounts
+host docker.sock for later challenge-migration prep, and points the agent at an
+external Base master/coordination API via --master-url.
 
 Required:
   --master-url URL           Absolute Base master coordination API URL (http/https).
                              This is master_url (register/heartbeat/pull/result),
                              not an unrelated public challenge front.
-                             Local smoke: http://127.0.0.1:3180
                              Public network Base master API:
                                https://chain.joinbase.ai
+                             Local smoke only:
+                               http://127.0.0.1:3180
                              Verify /health returns role=master / base-master
                              before using any public hostname.
 
@@ -67,13 +70,24 @@ SUBMIT_ON_CHAIN=0
 COPY_ARTIFACTS=""
 IMAGE_REPO="${BASE_VALIDATOR_IMAGE_REPOSITORY:-}"
 IMAGE_DIGEST="${BASE_VALIDATOR_IMAGE_DIGEST:-}"
-# Auto-update ON by default (host-side timer; agent never gets docker.sock).
+# Auto-update ON by default (host-side timer; agent mounts docker.sock separately
+# for later challenges-on-validator migration prep — auto-update still host-side).
 ENABLE_AUTO_UPDATE=1
 case "${BASE_VALIDATOR_AUTO_UPDATE:-1}" in
   0|false|FALSE|no|NO|off|OFF) ENABLE_AUTO_UPDATE=0 ;;
 esac
 TRACK_IMAGE="${BASE_VALIDATOR_TRACK_IMAGE:-ghcr.io/baseintelligence/base-validator-runtime:latest}"
 IMAGE_UPDATE_INTERVAL="${BASE_VALIDATOR_IMAGE_UPDATE_INTERVAL:-90}"
+# Detect host docker.sock group so the non-root agent (uid 1000) can open the
+# mounted socket (group_add), same pattern as the master installer.
+DOCKER_GID="${BASE_DOCKER_GID:-}"
+if [[ -z "${DOCKER_GID}" ]]; then
+  if [[ -S /var/run/docker.sock ]]; then
+    DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  fi
+  DOCKER_GID="${DOCKER_GID:-987}"
+fi
+DOCKER_SOCKET="${BASE_DOCKER_SOCKET:-/var/run/docker.sock}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -152,9 +166,9 @@ done
 if [[ -z "${MASTER_URL}" ]]; then
   echo "validator install requires --master-url (absolute http/https Base master URL)" >&2
   echo "Validators never run master. Point --master-url at the Base master/coordination API" >&2
-  echo "this operator actually uses (local disposable master, private operator master, or" >&2
-  echo "the public network Base master API):" >&2
+  echo "this operator actually uses. Public network Base master API:" >&2
   echo "  https://chain.joinbase.ai  (verify GET /health role=master)" >&2
+  echo "Local disposable smoke only: http://127.0.0.1:<port>" >&2
   exit 2
 fi
 
@@ -391,8 +405,8 @@ validator:
     capabilities: ${_cap_yaml}
     poll_interval_seconds: 5.0
     request_timeout_seconds: 15.0
-    # No local broker/Docker orchestration in the independent install profile.
-    # Assignment execution never receives a Docker socket in this project.
+    # No local broker/challenge-control-plane in the independent agent profile.
+    # Host docker.sock is composed-in separately (migration prep); broker is stubbed.
     broker_url: http://127.0.0.1:9
     broker_token_file: /run/secrets/base_broker_token
 EOF
@@ -433,12 +447,14 @@ BASE_VALIDATOR_PROTOCOL_IDENTITY=${IDENTITY_DIR}
 BASE_VALIDATOR_BROKER_TOKEN=${BROKER_TOKEN_FILE}
 BASE_VALIDATOR_TRACK_IMAGE=${TRACK_IMAGE}
 BASE_VALIDATOR_IMAGE_UPDATE_HOLD=0
+BASE_DOCKER_GID=${DOCKER_GID}
+BASE_DOCKER_SOCKET=${DOCKER_SOCKET}
 EOF
 chmod 600 "${ARTIFACTS_DIR}/.env"
 cp -f "${ARTIFACTS_DIR}/.env" "${ARTIFACTS_DIR}/.env.example"
 chmod 600 "${ARTIFACTS_DIR}/.env.example"
 
-# Stage host-side image updater (agent still has no docker.sock).
+# Stage host-side image updater (auto-update remains host-side; agent sock is separate).
 UPDATER_SRC="${SCRIPT_DIR}/validator-image-updater.sh"
 UPDATER_UNIT_SRC="${SCRIPT_DIR}/systemd/base-validator-image-updater@.service"
 UPDATER_TIMER_SRC="${SCRIPT_DIR}/systemd/base-validator-image-updater@.timer"
@@ -478,14 +494,17 @@ export BASE_VALIDATOR_IMAGE_DIGEST="${IMAGE_DIGEST}"
 export BASE_VALIDATOR_CONFIG="${CONFIG_FILE}"
 export BASE_VALIDATOR_PROTOCOL_IDENTITY="${IDENTITY_DIR}"
 export BASE_VALIDATOR_BROKER_TOKEN="${BROKER_TOKEN_FILE}"
+export BASE_DOCKER_GID="${DOCKER_GID}"
+export BASE_DOCKER_SOCKET="${DOCKER_SOCKET}"
 
 echo "Installing agent-only validator Compose project '${PROJECT_NAME}'"
 echo "  master_url=${MASTER_URL}  (coordination API; registry/weights follow when master hosts both)"
 echo "  protocol_hotkey=${HOTKEY_SS58}"
 echo "  state_dir=${STATE_DIR}"
 echo "  submit_on_chain=${SUBMIT_FLAG}"
-echo "  auto_update=${ENABLE_AUTO_UPDATE} (host-side digest tracker; agent has no docker.sock)"
-echo "  profile: agent-only (no master, postgres, challenges, or docker.sock on this host)"
+echo "  auto_update=${ENABLE_AUTO_UPDATE} (host-side digest tracker)"
+echo "  docker_socket=${DOCKER_SOCKET} (gid=${DOCKER_GID}; mounted for later challenges-on-validator prep)"
+echo "  profile: agent-only (no master, postgres, or challenge control-plane on this host)"
 echo "  note: container HOME=/var/lib/base/state (writable under read_only rootfs for bittensor)"
 
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" --env-file "${ARTIFACTS_DIR}/.env" config --quiet
@@ -543,4 +562,5 @@ echo "Hotkey public identity (also written to ${HOTKEY_PUB_FILE}): ${HOTKEY_SS58
 echo "Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests."
 echo "Operator note: keep protocol identity as a real directory readable by uid 1000 (avoid host symlinks with restrictive parents)."
 echo "Operator note: validators never run master. Confirm --master-url /health is Base master (role=master)."
-echo "Operator note: validator runtime images auto-update by default via host timer (digest pins only; agent has no docker.sock)."
+echo "Operator note: validator runtime images auto-update by default via host timer (digest pins only)."
+echo "Operator note: agent mounts host docker.sock (prod prep); still agent-only Compose (no master stack)."

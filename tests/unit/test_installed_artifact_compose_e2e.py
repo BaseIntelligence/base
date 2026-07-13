@@ -251,9 +251,10 @@ def test_master_and_validator_compose_are_digest_pinned_and_isolated(
     vsvc = validator["services"]["validator"]
     assert DIGEST_IMAGE_RE.match(vsvc["image"])
     vblob = json.dumps(validator).lower()
-    assert "docker.sock" not in vblob
+    # Shipping validator mounts host docker.sock (prod prep); stays agent-only.
+    assert "docker.sock" in vblob
     assert "postgres" not in vblob
-    assert "challenge" not in vblob
+    assert "challenge-prism" not in vblob
     assert "gateway" not in vblob
     for forbidden in SWARM_FORBIDDEN:
         assert forbidden not in vblob

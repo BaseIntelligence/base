@@ -43,8 +43,10 @@ Each validator Compose install enables a **host-side** timer by default
 (`base-validator-image-updater@<project>.timer`) that tracks
 `ghcr.io/baseintelligence/base-validator-runtime:latest` by digest, rewrites
 project `.env` pins atomically, and recreates only the agent service. Runtime
-is always `repository@sha256:<digest>` (never bare `:latest`). The agent
-container has no `docker.sock`. Opt out with `install-validator.sh --no-auto-update`.
+is always `repository@sha256:<digest>` (never bare `:latest`). Image auto-update
+remains host-side even though shipping Compose also mounts host `docker.sock`
+into the agent (prod prep for a later challenges-on-validator path). Opt out
+with `install-validator.sh --no-auto-update`.
 
 ### Networking
 
@@ -71,7 +73,9 @@ Base and Prism do **not** launch evaluator containers. Prism runs in `PRISM_COMB
 ## Public Base master API vs registry aliases
 
 Validators **never run master**. An independent validator install is agent-only
-(no master app, PostgreSQL control plane, challenge services, or Docker socket).
+(no master app, PostgreSQL control plane, or challenge services). Shipping
+Compose mounts host `docker.sock` into the agent for later challenges-on-validator
+migration prep; it does not add a master/postgres/challenges stack.
 `--master-url` / `validator.agent.master_url` is a **client pointer** to the
 Base master / coordination API the operator actually runs.
 
@@ -100,15 +104,21 @@ Entrypoint: `deploy/compose/docker-compose.validator.yml`
 One-command install for an independent validator (no master source tree required once artifacts and image pins exist):
 
 ```bash
+# Public network shipping example
 ./deploy/compose/install-validator.sh \
-  --project-name base-mission-validator-a \
-  --master-url http://127.0.0.1:3180
+  --project-name base-validator-live \
+  --master-url https://chain.joinbase.ai
+
+# Local disposable master only (secondary smoke/dev)
+# ./deploy/compose/install-validator.sh \
+#   --project-name base-mission-validator-a \
+#   --master-url http://127.0.0.1:3180
 ```
 
 Or, with only the validator deployment artifacts on a clean host directory:
 
 ```bash
-docker compose -p base-mission-validator-a \
+docker compose -p base-validator-live \
   -f docker-compose.validator.yml --env-file .env up -d
 ```
 
@@ -121,8 +131,9 @@ Each validator is an independent Compose project with its own network, volume, p
 | `BASE_VALIDATOR_CONFIG` | Host path to `validator.yaml` (`validator.agent.master_url` required) |
 | `BASE_VALIDATOR_PROTOCOL_IDENTITY` | Host directory for the protocol signing wallet |
 | `BASE_VALIDATOR_BROKER_TOKEN` | Host secret file mounted read-only |
+| `BASE_DOCKER_GID` / `BASE_DOCKER_SOCKET` | Host docker group + socket path (`group_add` + bind) |
 
-Validators never receive master PostgreSQL credentials, challenge volumes, Docker socket access, aggregation controls, or challenge lifecycle operators. Teardown of one validator project does not affect another validator or the master:
+Validators never receive master PostgreSQL credentials, challenge volumes, aggregation controls, or master challenge lifecycle operators. Host `docker.sock` is mounted into the agent (uid `1000` + `group_add` docker GID) for production prep; the project remains agent-only. Teardown of one validator project does not affect another validator or the master:
 
 ```bash
 docker compose -p base-mission-validator-a -f docker-compose.validator.yml down
