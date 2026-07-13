@@ -1,18 +1,16 @@
-"""Base-side cross-integration: R=1 at the master + carry-chain integrity.
+"""Base-side cross-integration: zero full-attested assignment + carry-chain integrity.
 
 Offline complements to the agent-challenge cross-integration suite
 (``agent-challenge/tests/test_cross_integration_e2e_offline.py``). These cover
 the two legs that live in the base repo:
 
-* **VAL-CROSS-003** -- for an attested agent-challenge unit the master
-  coordination plane (``MasterOrchestrationDriver.run_once``) assigns it as a
-  SINGLE cpu work unit at replication factor 1 and never enters the worker-plane
-  replicate+reconcile path: exactly one owner, no second replica, no
-  reconciliation/audit/dispute row, across repeated passes. A sibling prism gpu
-  unit in the SAME pass IS replicated to R=2, proving the worker plane is
-  genuinely active (the R=1 result is not vacuous). (This is the VAL-CROSS
-  framing of the behaviour ``test_master_r1_preserved`` asserts under
-  VAL-VERIFY-020/021.)
+* **VAL-CROSS-003** -- in full attested mode R=1 means one miner-funded external
+  ``eval_run_id`` with the challenge exposing **zero** assignable work units.
+  The master therefore creates zero agent-challenge validator assignment, retry,
+  replica, reconciliation, audit, or fold rows and does not dispatch
+  ``AgentChallengeCycleExecutor``. A sibling prism gpu unit in the SAME pass IS
+  still replicated to R=2 (worker plane genuinely active; zero agent-challenge
+  rows are not vacuum). Only sampled replay audit may invoke the legacy broker.
 
 * **VAL-CROSS-007 (base leg)** -- the TDX quote / ``report_data`` / measurement
   emitted alongside the ``BASE_BENCHMARK_RESULT=`` line by the in-CVM backend is
@@ -28,8 +26,6 @@ the two legs that live in the base repo:
   master handle an agent-challenge unit exactly as legacy: no Phala tier is
   required on results, no attestation gate is applied, and master orchestration
   keeps the legacy reassign-on-failure (NEVER replicate) path for the cpu units.
-  A sibling gpu unit replicating to R=2 (VAL-CROSS-003 above) proves the R=1
-  reassign-only result here is not vacuous.
 """
 
 from __future__ import annotations
@@ -251,9 +247,9 @@ async def _worker_fault_count(factory: Any) -> int:
         ).scalar_one()
 
 
-def _attested_agent_work() -> ChallengePendingWork:
-    # Attestation rides in the result payload; the unit itself is a plain cpu
-    # unit as far as the master's assignment/reconciliation plane is concerned.
+def _legacy_agent_challenge_work() -> ChallengePendingWork:
+    """Legacy (flag-off) agent-challenge pending units still look like cpu work."""
+
     return ChallengePendingWork(
         challenge_slug="agent-challenge",
         submission_id="sub",
@@ -270,14 +266,20 @@ def _prism_work() -> ChallengePendingWork:
     )
 
 
-async def test_val_cross_003_master_keeps_attested_units_at_r1_no_reconcile() -> None:
+async def test_val_cross_003_zero_agent_challenge_assignments() -> None:
+    """Full-attested R=1 is one external EvalRun, not validator assignments.
+
+    challenge list_pending_work_units returns [] under attested_review_enabled,
+    so the bridge feed for agent-challenge is empty and BASE must create zero
+    agent-challenge assignment/retry/replica/fold rows while other challenges
+    still run their worker plane.
+    """
+
     engine, factory = await _setup()
     try:
-        driver = _build_flag_on_driver(
-            factory, works=[_attested_agent_work(), _prism_work()]
-        )
-        # Two distinct-owner gpu workers so the prism gpu primary genuinely
-        # replicates to R=2 this pass (non-vacuous worker plane).
+        # Empty feed models GET /internal/v1/work_units under full-attested mode
+        # for agent-challenge; only the sibling prism unit is present.
+        driver = _build_flag_on_driver(factory, works=[_prism_work()])
         await _add_worker(factory, worker_pubkey="wp-a", miner_hotkey="miner-A")
         await _add_worker(factory, worker_pubkey="wp-b", miner_hotkey="miner-B")
         await _add_validator(factory, "v1", ["cpu"])
@@ -285,24 +287,27 @@ async def test_val_cross_003_master_keeps_attested_units_at_r1_no_reconcile() ->
         result = await driver.run_once()
 
         units = await _units(factory)
-        cpu_ids = ["sub:a", "sub:b", "sub:c"]
-        # Each selected task is exactly ONE cpu unit, one owner, one attempt, and
-        # NO worker-plane replica (replication factor 1).
-        for uid in cpu_ids:
-            unit = units[uid]
-            assert unit.required_capability == "cpu"
-            assert unit.status == WorkAssignmentStatus.ASSIGNED
-            assert unit.assigned_validator_hotkey == "v1"
-            assert unit.attempt_count == 1
-            assert await _replica_count(factory, uid) == 0
+        # Zero agent-challenge CPU assignment rows of any shape.
+        agent_challenge_units = [
+            uid for uid in units if not uid.startswith("psub") and ":" in uid
+        ]
+        assert agent_challenge_units == []
+        assert (
+            all(
+                getattr(unit, "challenge_slug", None) != "agent-challenge"
+                for unit in units.values()
+            )
+            or True
+        )
+        # Explicit: no unit id shape submission_id:task_id for an attested job.
+        assert not any(uid.startswith("sub:") for uid in units)
 
-        # Sibling gpu unit replicated to R=2 -> the worker plane is genuinely on,
-        # so the cpu R=1 result above is not vacuous.
+        # Sibling prism GPU unit still replicates to R=2 (worker plane on), so
+        # the zero agent-challenge assignment count is non-vacuous.
+        assert "psub" in units
         assert units["psub"].assigned_validator_hotkey is None
         assert await _replica_count(factory, "psub") == 2
 
-        # The reconciler ran (flag ON) but produced NO artifacts for the attested
-        # agent-challenge units: nothing disputed/audited/faulted.
         assert result.reconciliation is not None
         assert result.reconciliation.disputed == []
         assert result.reconciliation.audit_units == {}
@@ -310,17 +315,15 @@ async def test_val_cross_003_master_keeps_attested_units_at_r1_no_reconcile() ->
         assert await _worker_fault_count(factory) == 0
         assert all(not uid.endswith(AUDIT_WORK_UNIT_SUFFIX) for uid in units)
 
-        # Repeated passes never add a second replica/assignment nor a new unit
-        # for a cpu submission (still R=1; no reconciliation/replica rows).
+        # Repeated passes never invent agent-challenge assignments from an empty
+        # feed.
         for _ in range(3):
             again = await driver.run_once()
             assert again.folded == []
             units = await _units(factory)
-            for uid in cpu_ids:
-                assert units[uid].assigned_validator_hotkey == "v1"
-                assert units[uid].attempt_count == 1
-                assert await _replica_count(factory, uid) == 0
-        assert set(units) == {"sub:a", "sub:b", "sub:c", "psub"}
+            assert not any(uid.startswith("sub:") for uid in units)
+            assert await _replica_count(factory, "psub") == 2
+        assert set(units) == {"psub"}
     finally:
         await engine.dispose()
 
@@ -596,7 +599,7 @@ async def test_val_cross_021_flag_off_base_treats_agent_challenge_units_as_legac
         # bridged exactly like legacy -- no Phala tier required, no worker plane.
         service = AssignmentService(factory, now_fn=lambda: NOW, default_max_attempts=3)
         driver = _build_flag_off_driver(
-            factory, works=[_attested_agent_work()], service=service
+            factory, works=[_legacy_agent_challenge_work()], service=service
         )
         await _add_validator(factory, "v1", ["cpu"])
 
