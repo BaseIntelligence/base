@@ -193,6 +193,11 @@ def test_runtime_dockerfile_has_import_smoke_check() -> None:
         "import base, agent_challenge.validator_dispatch, "
         "prism_challenge.validator_dispatch" in text
     )
+    # PrismSettings defaults docker_backend=broker, which requires a token at
+    # module import. The smoke check pins CLI + dummy token so install-time
+    # imports stay deploy-agnostic (runtime still gets real deploy env).
+    assert "PRISM_DOCKER_BACKEND=cli" in text
+    assert "PRISM_SHARED_TOKEN=ci-import-smoke" in text
 
 
 def test_runtime_dockerfile_cmd_runs_the_validator_agent() -> None:
