@@ -66,16 +66,6 @@ PHALA_REPORT_DATA_TAG = "base-agent-challenge-v1"
 PHALA_REPORT_DATA_BYTES = 64
 
 
-def execution_proof_signing_payload(*, manifest_sha256: str, unit_id: str) -> bytes:
-    """The exact bytes an ExecutionProof signature covers (pinned format).
-
-    ``sha256`` digest of the UTF-8 bytes of ``{manifest_sha256}:{unit_id}``.
-    """
-
-    message = f"{manifest_sha256}:{unit_id}".encode()
-    return hashlib.sha256(message).digest()
-
-
 def build_execution_proof(
     *,
     signer: RequestSigner,
