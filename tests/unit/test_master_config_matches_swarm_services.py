@@ -42,13 +42,13 @@ POSTGRES_DEFAULT_PORT = 5432
 # config-sync overwrites /etc/base/master.yaml from the canonical file, so a
 # stale value here would roll the live proxy onto the wrong port on the next sync.
 PROXY_PORT_PRODUCTION = 19080
-# Live production host advertised in gateway.public_base_url (86.38.238.235; the
-# old 51.83.112.164 and 88.216.198.199 hosts are decommissioned). The live master
-# runs NO-CHAIN (chain_endpoint empty), not finney.
+# Live production master host (86.38.238.235; the old 51.83.112.164 and
+# 88.216.198.199 hosts are decommissioned). The live master runs NO-CHAIN
+# (chain_endpoint empty), not finney. LLM gateway was removed from Base main.
 ADVERTISE_ADDR_PRODUCTION = "86.38.238.235"
 CHAIN_ENDPOINT_PRODUCTION = ""
 # Values that MUST NOT reappear in the canonical config: they would break the
-# live master on a config-sync (old port / decommissioned hosts).
+# live master on a config-sync (old port / decommissioned hosts / removed gateway).
 STALE_TOKENS = ("18080", "51.83.112.164", "88.216.198.199")
 
 
@@ -272,16 +272,21 @@ def test_master_yaml_proxy_port_is_production_correct_and_matches_installer() ->
     assert proxy_port == _installer_master_proxy_port_default()
 
 
-def test_master_yaml_gateway_public_base_url_matches_installer_render() -> None:
-    cfg = _master_yaml()
-    host, port = _host_port_from_url(cfg["gateway"]["public_base_url"])
+def test_master_yaml_has_no_removed_gateway_block() -> None:
+    """Post-gateway main images reject top-level gateway: and related env keys.
 
-    # Installer renders public_base_url from its PRODUCTION advertise IP + the
-    # ${MASTER_PROXY_PORT}; the canonical file must agree so config-sync does not
-    # clobber it, and the advertised port must equal the port the proxy binds to.
-    assert host == _installer_production_advertise_addr()
-    assert port == _installer_master_proxy_port_default()
-    assert port == int(cfg["master"]["proxy_port"])
+    Config-sync writes this file onto production hosts; reintroducing gateway
+    fails closed under base-master tip digests and crash-loops the proxy.
+    """
+
+    cfg = _master_yaml()
+    assert "gateway" not in cfg
+    raw = MASTER_YAML.read_text(encoding="utf-8")
+    assert re.search(r"(?m)^gateway:\s*$", raw) is None
+    # Installer still documents the production advertise host; keep alignment
+    # with the live proxy port without a gateway public_base_url field.
+    assert _installer_production_advertise_addr() == ADVERTISE_ADDR_PRODUCTION
+    assert int(cfg["master"]["proxy_port"]) == _installer_master_proxy_port_default()
 
 
 def test_master_yaml_carries_supervisor_block_for_self_update() -> None:
@@ -332,36 +337,17 @@ def test_master_yaml_supervisor_block_loads_into_supervisor_settings() -> None:
 def test_master_yaml_equals_live_production_config() -> None:
     cfg = _master_yaml()
 
-    # master + gateway published proxy endpoint (live 86.38.238.235:19080).
+    # master published proxy port (live 86.38.238.235:19080 via Caddy/chain.joinbase.ai).
     assert int(cfg["master"]["proxy_port"]) == PROXY_PORT_PRODUCTION
-    assert (
-        cfg["gateway"]["public_base_url"]
-        == f"http://{ADVERTISE_ADDR_PRODUCTION}:{PROXY_PORT_PRODUCTION}"
-    )
+    # Gateway removed; production policy / secret mounts use host mode-safe path.
+    assert "gateway" not in cfg
+    assert cfg["security"]["admin_token_file"] == "/var/lib/base/secrets/admin_token"
 
     # network: live master runs NO-CHAIN (chain_endpoint empty, NOT finney) with
     # the mock-metagraph seam OFF.
     assert cfg["network"]["chain_endpoint"] == CHAIN_ENDPOINT_PRODUCTION
     assert cfg["network"]["chain_endpoint"] is not None
     assert cfg["network"]["mock_metagraph"] == []
-
-    # gateway: real provider(s), keys injected server-side from secret files. The
-    # gateway is config-driven + provider-agnostic (yunwu-only; deepseek/openrouter
-    # removed): a provider registry + default_model + per-source route map (keyed by
-    # the token `source` claim). See library/llm-yunwu-contract.md.
-    gateway = cfg["gateway"]
-    assert gateway["provider_mode"] == "real"
-    assert gateway["token_secret_file"] == "/run/secrets/gateway_token_secret"
-    assert gateway["default_provider"] == "yunwu"
-    assert gateway["default_model"] == "claude-opus-4-8"
-    assert gateway["providers"]["yunwu"]["base_url"] == "https://yunwu.ai/v1"
-    assert gateway["providers"]["yunwu"]["api_key_file"] == "/run/secrets/yunwu_api_key"
-    assert gateway["sources"]["agent"]["provider"] == "yunwu"
-    assert gateway["sources"]["agent"]["model"] == "claude-opus-4-8"
-    assert gateway["sources"]["llm_review"]["provider"] == "yunwu"
-    assert gateway["sources"]["llm_review"]["model"] == "claude-opus-4-8"
-    assert "deepseek_api_key_file" not in gateway
-    assert "openrouter_api_key_file" not in gateway
 
     # broker allowlist matches the live NARROW namespaced+repo allowlist (the two
     # first-party repos the broker actually runs).
@@ -389,6 +375,8 @@ def test_master_yaml_equals_live_production_config() -> None:
     # allowlist, which passes the production policy guards (image-pin / TLS /
     # external-postgres / broker-allowlist) instead of tripping them.
     assert cfg["environment"] == "production"
+    # Installer production advertise host remains the live master for operator docs.
+    assert _installer_production_advertise_addr() == ADVERTISE_ADDR_PRODUCTION
 
 
 def test_master_yaml_has_no_stale_decommissioned_host_or_port() -> None:
