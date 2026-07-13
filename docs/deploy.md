@@ -18,8 +18,7 @@ curl -fsS http://127.0.0.1:3180/version
 ./deploy/compose/install-validator.sh \
   --project-name base-mission-validator-a \
   --master-url http://127.0.0.1:3180
-# Network validators: --master-url https://chain.joinbase.ai (live known-good)
-# After product cutover fronts Base master: https://chain.platform.network
+# Network validators: --master-url https://chain.joinbase.ai
 ```
 
 Immutable image pins may be supplied via environment (`BASE_MASTER_IMAGE_*`,

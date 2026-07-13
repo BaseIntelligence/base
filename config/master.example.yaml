@@ -17,8 +17,7 @@ network:
   #     stake: 1000.0
 
 master:
-  # Public registry alias. Live known-good Base master front: chain.joinbase.ai.
-  # Preferred product hostname chain.platform.network once cutover fronts Base master.
+  # Public registry alias. Authoritative public Base master API: chain.joinbase.ai.
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081

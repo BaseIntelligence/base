@@ -17,24 +17,22 @@ submission always uses the **validator's own wallet**. See
 | `validator.agent.master_url` (`--master-url`) | Required Base master coordination API (register/heartbeat/pull/result). Never invented. |
 | `validator.registry_url` / `validator.weights_url` | Registry / published-weights aliases. Installer sets them equal to `--master-url` when that master hosts both. |
 
-### Public hostnames (preferred product vs live known-good)
+### Public Base master URL
 
-| URL | Status as of 2026-07-13 |
+| URL | Role |
 | --- | --- |
-| `https://chain.platform.network` | Preferred **product** Base master hostname once cutover completes. Live `/health` currently serves **agent-challenge**, not Base master. Do not force this as an operator default without re-verify. |
-| `https://chain.joinbase.ai` | Live known-good Base master front (`role=master`). Settings defaults and public weights examples use this until cutover. |
-| `http://127.0.0.1:3180` | Local disposable master for smoke only. |
+| `https://chain.joinbase.ai` | Authoritative public Base master / coordination / weights API (`role=master`). Settings defaults, installer samples, and public weights examples recommend this host. |
+| `http://127.0.0.1:3180` (or private operator master) | Local disposable or private master for smoke / self-hosted control planes only (explicit `--master-url`). |
 
-Default public weights example (live known-good):
+Default public weights example:
 
 ```text
 https://chain.joinbase.ai/v1/weights/latest
 ```
 
-Network operators may point `--master-url` (and therefore generated registry/weights)
-at `https://chain.joinbase.ai` today, or at their own operator master. After
-`chain.platform.network` fronts Base master end-to-end, product messaging prefers that
-hostname; until then document both.
+Network operators should point `--master-url` (and therefore generated registry/weights
+when the master hosts both) at `https://chain.joinbase.ai`, or at their own operator
+master when self-hosting.
 
 ## Compute Requirements
 

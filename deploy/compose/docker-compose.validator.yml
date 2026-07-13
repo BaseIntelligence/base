@@ -4,8 +4,9 @@ name: ${COMPOSE_PROJECT_NAME:?set a unique validator project name}
 # - Validators NEVER run master, master PostgreSQL, challenge services, or Docker socket.
 # - Distinct project name, network, volume, credentials, identity, and state.
 # - Config must set validator.agent.master_url to an external Base master API
-#   (install-validator.sh --master-url). Local smoke or known-good network front
-#   only; never invent a non-master public hostname default.
+#   (install-validator.sh --master-url). Local smoke, private operator master, or
+#   the public network API https://chain.joinbase.ai ; never invent a silent
+#   hostname default.
 # - Operators install via install-validator.sh or:
 #     docker compose -p <unique> -f docker-compose.validator.yml up -d
 

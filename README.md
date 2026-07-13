@@ -153,15 +153,15 @@ run master, PostgreSQL, challenges, or Docker socket):
   --project-name base-mission-validator-a \
   --master-url http://127.0.0.1:3180
 
-# Live known-good public Base master front (2026-07-13)
+# Public network Base master API (authoritative)
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
   --master-url https://chain.joinbase.ai
 ```
 
-Preferred product hostname is `https://chain.platform.network` once DNS/Caddy/CF cutover fronts Base
-master (`GET /health` → `role=master`). As of 2026-07-13 that hostname still returns agent-challenge,
-so operators must keep the live known-good front until cutover is proven.
+The public Base master / coordination / weights API for this network is
+`https://chain.joinbase.ai` (verify `GET /health` → `role=master`). Local disposable
+masters remain valid for smoke only via an explicit loopback `--master-url`.
 
 Typical master services: `base-master-validator`, `master-postgres`, and one `challenge-<slug>` per
 active challenge (for example `challenge-prism`). Validators are separate Compose projects with their

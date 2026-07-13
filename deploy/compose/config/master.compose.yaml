@@ -21,9 +21,8 @@ network:
 
 master:
   # Public chain/registry control plane for the shipping public network.
-  # Live known-good Base master front: chain.joinbase.ai.
-  # Preferred product hostname chain.platform.network once cutover fronts Base
-  # master (not agent-challenge). Do not invent bare manager IP defaults here.
+  # Authoritative public Base master API: chain.joinbase.ai.
+  # Do not invent bare manager IP defaults here.
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081
@@ -37,7 +36,7 @@ master:
 
 validator:
   # Public network default; do not substitute ad-hoc public IP hosts here.
-  # Live known-good Base master front until platform.network cutover is proven.
+  # Authoritative public Base master API: chain.joinbase.ai.
   registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null

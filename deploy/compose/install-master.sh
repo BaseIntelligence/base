@@ -185,10 +185,9 @@ network:
       stake: 1000.0
 
 master:
-  # Public registry alias for this control plane. Live known-good Base master
-  # front (2026-07-13): https://chain.joinbase.ai . Preferred product hostname
-  # https://chain.platform.network applies once DNS/Caddy/CF cutover fronts
-  # Base master (today it still serves agent-challenge). Not an IP inventory.
+  # Public registry alias for this control plane. Authoritative public Base
+  # master API for this network: https://chain.joinbase.ai .
+  # Not an ad-hoc IP inventory.
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081

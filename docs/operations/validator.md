@@ -19,14 +19,10 @@ container and requires an explicit Base master coordination URL.
   --project-name base-mission-validator-a \
   --master-url http://127.0.0.1:3180
 
-# Live network Base master front (known-good 2026-07-13)
+# Public network Base master API
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
   --master-url https://chain.joinbase.ai
-
-# Preferred product hostname after platform.network fronts Base master:
-# --master-url https://chain.platform.network
-# Verify GET /health returns role=master first (today it is agent-challenge).
 
 docker compose -p base-mission-validator-a \
   -f deploy/compose/docker-compose.validator.yml ps
@@ -96,16 +92,14 @@ On the Compose path the process is packaged as the `validator` service from
 ```yaml
 validator:
   # When master hosts registry + weights, keep these equal to master_url.
-  # Product/Settings network defaults still document the live known-good front
-  # https://chain.joinbase.ai until platform.network cutover.
+  # Public network Settings default:
   registry_url: https://chain.joinbase.ai
   weights_url: null
   agent:
     # Base master coordination API only (--master-url). Required; never invented.
     # Local smoke:
     master_url: http://127.0.0.1:3180
-    # Live known-good network: https://chain.joinbase.ai
-    # Preferred product hostname once cutover: https://chain.platform.network
+    # Public network sample: https://chain.joinbase.ai
     capabilities: ["cpu"]
     version: "0.1.0"
     heartbeat_interval_seconds: 60
@@ -115,8 +109,7 @@ validator:
 `master_url` is the Base master coordination root. `registry_url` / `weights_url`
 are public/registry aliases that may share that host; installers copy
 `--master-url` into all three when the master hosts both. Never default operators
-to a bare manager IP, invent localhost, or force `chain.platform.network` while
-its `/health` is not Base master.
+to a bare manager IP or invent localhost for production.
 
 There is no master LLM gateway route and no per-assignment `BASE_LLM_GATEWAY_URL`
 / `BASE_GATEWAY_TOKEN` contract in the shipping target path.

@@ -44,11 +44,7 @@ class NetworkSettings(BaseModel):
 
 class MasterSettings(BaseModel):
     # Public registry/alias default for this control plane.
-    # Live known-good Base master network front (2026-07-13): chain.joinbase.ai.
-    # Preferred product hostname chain.platform.network is documented for
-    # cutover once it fronts Base master (today it serves agent-challenge).
-    # Do not silently force the preferred hostname as a runtime default while
-    # /health there is not role=master.
+    # Authoritative public Base master API: chain.joinbase.ai.
     registry_url: str = "https://chain.joinbase.ai"
     # Ignored back-compat: the admin/registry surface is served by the proxy on
     # proxy_port (single public API); there is no separate admin listener.
@@ -144,9 +140,8 @@ class ValidatorAgentSettings(BaseModel):
 
 
 class ValidatorSettings(BaseModel):
-    # Public registry/weights alias default. Live known-good Base master front:
-    # https://chain.joinbase.ai (2026-07-13). Preferred product hostname
-    # https://chain.platform.network is not a runtime default until cutover.
+    # Public registry/weights alias default for the public network:
+    # https://chain.joinbase.ai .
     registry_url: str = "https://chain.joinbase.ai"
     registry_retry_seconds: int = 15
     weights_url: str | None = None

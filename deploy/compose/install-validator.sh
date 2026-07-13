@@ -22,11 +22,8 @@ Required:
                              This is master_url (register/heartbeat/pull/result),
                              not an unrelated public challenge front.
                              Local smoke: http://127.0.0.1:3180
-                             Live known-good network front (2026-07-13):
+                             Public network Base master API:
                                https://chain.joinbase.ai
-                             Preferred product hostname (once DNS/Caddy/CF
-                               cutover fronts Base master):
-                               https://chain.platform.network
                              Verify /health returns role=master / base-master
                              before using any public hostname.
 
@@ -126,20 +123,16 @@ if [[ -z "${MASTER_URL}" ]]; then
   echo "validator install requires --master-url (absolute http/https Base master URL)" >&2
   echo "Validators never run master. Point --master-url at the Base master/coordination API" >&2
   echo "this operator actually uses (local disposable master, private operator master, or" >&2
-  echo "a known-good public front). Preferred product hostname once cutaway is complete:" >&2
-  echo "  https://chain.platform.network" >&2
-  echo "Live known-good Base master front as of 2026-07-13:" >&2
+  echo "the public network Base master API):" >&2
   echo "  https://chain.joinbase.ai  (verify GET /health role=master)" >&2
-  echo "Do not invent chain.platform.network until it fronts Base master (not agent-challenge)." >&2
   exit 2
 fi
 
 # Reject empty or clearly invalid master URLs early (VAL-SDK-086).
 # master_url is the Base master coordination root only (register/heartbeat/pull/
 # result + weights when the master hosts both). It is never defaulted to a public
-# IP inventory or a non-master hostname. Public Settings defaults for registry/
-# weights remain the live known-good network front (https://chain.joinbase.ai)
-# until product cutover makes chain.platform.network the Base master front.
+# IP inventory. Public Settings defaults for registry/weights recommend the
+# public network Base master API: https://chain.joinbase.ai
 case "${MASTER_URL}" in
   http://*|https://*) ;;
   *)

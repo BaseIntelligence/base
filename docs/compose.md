@@ -73,17 +73,16 @@ Do not conflate these roles:
 | `master_url` (`--master-url`) | Base master coordination API (register/heartbeat/pull/result). Required and explicit. |
 | `registry_url` / `weights_url` | Public registry / weights aliases. When the master hosts both, installers set them equal to `master_url`. Product docs may also document network defaults separately. |
 
-### Hostnames (preferred vs live known-good)
+### Hostnames
 
-| Hostname | Role as of 2026-07-13 | Operator guidance |
+| Hostname | Role | Operator guidance |
 | --- | --- | --- |
-| `https://chain.platform.network` | **Preferred product** Base master API hostname once DNS/Caddy/CF cutover fronts Base master. Live `/health` currently returns **agent-challenge 1.0.1**, not Base master. | Document as preferred product URL, but **do not hardcode as the only install default** while runtime proof fails. Verify `/health` returns `role=master` / `base-master` before using it. |
-| `https://chain.joinbase.ai` | **Live known-good** public Base master front (Caddy on validator-master). `/health` returns `role=master`, ready. Direct path also exists on operator infra (`:19080`). | Network validators and Settings defaults use this until platform.network cutover completes. |
-| `http://127.0.0.1:<port>` | Disposable local smoke master | Allowed for local Compose smoke only; never a production invent default. |
+| `https://chain.joinbase.ai` | Authoritative public Base master API for this network (`role=master`). Settings defaults, installer samples, and public weights examples use this host. | Network validators: `--master-url https://chain.joinbase.ai`. Verify `GET /health` returns `role=master` / ready. |
+| `http://127.0.0.1:<port>` or private operator master | Disposable local smoke / private operator control plane | Allowed when the operator explicitly passes that URL; never invented as a silent default. |
 
-Docker Compose installers must not invent alternate public master IP defaults.
-Historical Swarm advertise addresses under `deploy/swarm/` are unsupported for
-greenfield Compose installs.
+Docker Compose installers must not invent alternate public master hostname or IP
+defaults. Historical Swarm advertise addresses under `deploy/swarm/` are unsupported
+for greenfield Compose installs.
 
 ## Validator project
 
