@@ -93,13 +93,27 @@ docker compose -p base-mission-validator-a -f docker-compose.validator.yml down
 ### Image pins and updates
 
 Production validators use **digest-pinned** images
-(`repository@sha256:<64 hex>`). Mutable `latest` without a digest is not a production
-selector. Validator image updates are operator-driven Compose recreate (or a future
-validator-side pin process), not Swarm `docker service update` of a mutable tag.
+(`repository@sha256:<64 hex>`). Mutable `latest` without a digest is never a
+runtime selector. Runtime compose always runs the pin form above.
 
-Challenge auto-update on the **master** side is the master-resident digest-aware
-watcher (see [master guide](../master/README.md) and [compose.md](../compose.md));
-validators do not orchestrate master challenge rollouts.
+By default, `install-validator.sh` enables a **host-side** systemd timer
+(`base-validator-image-updater@<project>.timer`, every 60–120s) that:
+
+1. Resolves `ghcr.io/baseintelligence/base-validator-runtime:latest` to a
+   `sha256:<digest>`.
+2. Compares it to `BASE_VALIDATOR_IMAGE_DIGEST` in the project `.env`.
+3. On change: rewrites `.env` to a REPO+DIGEST pin only, then
+   `docker compose pull && up -d --force-recreate --no-deps validator`.
+4. On failure: restores last-known-good, applies exponential backoff, and after
+   exhaustion skips until a **new** remote digest appears.
+
+The long-lived agent container still has **no docker.sock**. Opt out with
+`--no-auto-update`, or freeze later with `BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`. State
+lives next to artifacts as `image_update_state.json`.
+
+Challenge auto-update on the **master** side remains the master-resident
+digest-aware watcher (see [master guide](../master/README.md) and
+[compose.md](../compose.md)); validators never orchestrate master challenge rollouts.
 
 ## Weight submission model
 

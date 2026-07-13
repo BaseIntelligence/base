@@ -67,10 +67,17 @@ watcher**, not Swarm service mutation of `latest`:
 6. On failure: restore the previous digest, record bounded backoff, and resume
    safely after master restart.
 
-Validators and master application images themselves are upgraded by operator-
-driven Compose reinstall/recreate with new pins (installers honor
-`*_IMAGE_REPOSITORY` / `*_IMAGE_DIGEST`). There is no supported “always follow
-mutable `latest` via Swarm image updater” path for new installs.
+Independent **validators** now auto-update their runtime image by default.
+`install-validator.sh` enables a host-side systemd timer that tracks
+`ghcr.io/baseintelligence/base-validator-runtime:latest`, always applies as
+`repository@sha256:<digest>` (never bare `:latest` as the compose runtime
+selector), and recreates only the agent service with LKG rollback, hold, and
+bounded backoff. The agent container never mounts `docker.sock`. Opt out with
+`--no-auto-update` or freeze with `BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1`.
+
+Master application images for the Compose master project remain operator-
+driven (reinstall/recreate with new pins). There is no supported
+“always follow mutable `latest` via Swarm image updater” path for new installs.
 
 To freeze challenges, stop advancing desired digests (or disable the watcher
 interval) and leave the running pin in place. To roll back, set the approved pin

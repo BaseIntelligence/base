@@ -1,0 +1,15 @@
+[Unit]
+Description=Base validator image auto-update timer for project %i
+Documentation=file:///usr/local/lib/base/validator-image-updater.sh
+Requires=base-validator-image-updater@%i.service
+
+[Timer]
+# Mirror master image-updater cadence (60–120s).
+OnBootSec=90
+OnUnitActiveSec=90
+AccuracySec=15
+Unit=base-validator-image-updater@%i.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

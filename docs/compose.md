@@ -37,6 +37,15 @@ auto-update path:
 It never mutates live Swarm fabric, never runs evaluator containers, and only acts
 inside the configured Compose project.
 
+### Independent validator image auto-update
+
+Each validator Compose install enables a **host-side** timer by default
+(`base-validator-image-updater@<project>.timer`) that tracks
+`ghcr.io/baseintelligence/base-validator-runtime:latest` by digest, rewrites
+project `.env` pins atomically, and recreates only the agent service. Runtime
+is always `repository@sha256:<digest>` (never bare `:latest`). The agent
+container has no `docker.sock`. Opt out with `install-validator.sh --no-auto-update`.
+
 ### Networking
 
 - `db` network: internal bridge. Master + PostgreSQL only. No host publication of `5432`.

@@ -39,12 +39,19 @@ Options:
   --submit-on-chain          Enable on-chain submission (requires wallet mount)
   --copy-artifacts DIR       Also copy validator Compose artifacts into DIR
                              (source-free host directory for re-install)
+  --auto-update              Enable host-side image auto-update (default: ON)
+  --no-auto-update           Opt out of host-side digest-tracked auto-update
+  --track-image REPO:TAG     Mutable track tag resolved to digest each tick
+                             (default: ghcr.io/baseintelligence/base-validator-runtime:latest)
+  --image-update-interval N  systemd timer seconds (default: 90; range 60-120)
   -h, --help
 
 Environment overrides:
   VALIDATOR_MASTER_URL
   BASE_VALIDATOR_IMAGE_REPOSITORY / BASE_VALIDATOR_IMAGE_DIGEST
   BASE_VALIDATOR_LOCAL_IMAGE
+  BASE_VALIDATOR_AUTO_UPDATE          (0/false to default off; default ON)
+  BASE_VALIDATOR_TRACK_IMAGE
   COMPOSE_PROJECT_NAME
 EOF
 }
@@ -60,6 +67,13 @@ SUBMIT_ON_CHAIN=0
 COPY_ARTIFACTS=""
 IMAGE_REPO="${BASE_VALIDATOR_IMAGE_REPOSITORY:-}"
 IMAGE_DIGEST="${BASE_VALIDATOR_IMAGE_DIGEST:-}"
+# Auto-update ON by default (host-side timer; agent never gets docker.sock).
+ENABLE_AUTO_UPDATE=1
+case "${BASE_VALIDATOR_AUTO_UPDATE:-1}" in
+  0|false|FALSE|no|NO|off|OFF) ENABLE_AUTO_UPDATE=0 ;;
+esac
+TRACK_IMAGE="${BASE_VALIDATOR_TRACK_IMAGE:-ghcr.io/baseintelligence/base-validator-runtime:latest}"
+IMAGE_UPDATE_INTERVAL="${BASE_VALIDATOR_IMAGE_UPDATE_INTERVAL:-90}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -105,6 +119,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --copy-artifacts)
       COPY_ARTIFACTS="$2"
+      shift 2
+      ;;
+    --auto-update)
+      ENABLE_AUTO_UPDATE=1
+      shift
+      ;;
+    --no-auto-update)
+      ENABLE_AUTO_UPDATE=0
+      shift
+      ;;
+    --track-image)
+      TRACK_IMAGE="$2"
+      shift 2
+      ;;
+    --image-update-interval)
+      IMAGE_UPDATE_INTERVAL="$2"
       shift 2
       ;;
     -h|--help)
@@ -392,20 +422,52 @@ chmod 644 "${CONFIG_FILE}"
 
 # Stage validator-only deployment artifacts for source-free reinstalls.
 cp -f "${COMPOSE_FILE}" "${ARTIFACTS_DIR}/docker-compose.validator.yml"
-cat >"${ARTIFACTS_DIR}/.env.example" <<EOF
+# Live .env used for compose --env-file and host-side image auto-update.
+umask 077
+cat >"${ARTIFACTS_DIR}/.env" <<EOF
 COMPOSE_PROJECT_NAME=${PROJECT_NAME}
 BASE_VALIDATOR_IMAGE_REPOSITORY=${IMAGE_REPO}
 BASE_VALIDATOR_IMAGE_DIGEST=${IMAGE_DIGEST}
 BASE_VALIDATOR_CONFIG=${CONFIG_FILE}
 BASE_VALIDATOR_PROTOCOL_IDENTITY=${IDENTITY_DIR}
 BASE_VALIDATOR_BROKER_TOKEN=${BROKER_TOKEN_FILE}
+BASE_VALIDATOR_TRACK_IMAGE=${TRACK_IMAGE}
+BASE_VALIDATOR_IMAGE_UPDATE_HOLD=0
 EOF
+chmod 600 "${ARTIFACTS_DIR}/.env"
+cp -f "${ARTIFACTS_DIR}/.env" "${ARTIFACTS_DIR}/.env.example"
 chmod 600 "${ARTIFACTS_DIR}/.env.example"
+
+# Stage host-side image updater (agent still has no docker.sock).
+UPDATER_SRC="${SCRIPT_DIR}/validator-image-updater.sh"
+UPDATER_UNIT_SRC="${SCRIPT_DIR}/systemd/base-validator-image-updater@.service"
+UPDATER_TIMER_SRC="${SCRIPT_DIR}/systemd/base-validator-image-updater@.timer"
+if [[ -f "${UPDATER_SRC}" ]]; then
+  cp -f "${UPDATER_SRC}" "${ARTIFACTS_DIR}/validator-image-updater.sh"
+  chmod 755 "${ARTIFACTS_DIR}/validator-image-updater.sh"
+fi
+if [[ -f "${UPDATER_UNIT_SRC}" ]]; then
+  cp -f "${UPDATER_UNIT_SRC}" "${ARTIFACTS_DIR}/base-validator-image-updater@.service"
+fi
+if [[ -f "${UPDATER_TIMER_SRC}" ]]; then
+  cp -f "${UPDATER_TIMER_SRC}" "${ARTIFACTS_DIR}/base-validator-image-updater@.timer"
+fi
+# Durable state next to artifacts (mode 0600 once first tick writes it).
+: >"${ARTIFACTS_DIR}/image_update_state.json" 2>/dev/null || true
+chmod 600 "${ARTIFACTS_DIR}/image_update_state.json" 2>/dev/null || true
 
 if [[ -n "${COPY_ARTIFACTS}" ]]; then
   mkdir -p "${COPY_ARTIFACTS}"
   cp -f "${ARTIFACTS_DIR}/docker-compose.validator.yml" "${COPY_ARTIFACTS}/"
-  cp -f "${ARTIFACTS_DIR}/.env.example" "${COPY_ARTIFACTS}/.env"
+  cp -f "${ARTIFACTS_DIR}/.env" "${COPY_ARTIFACTS}/.env"
+  if [[ -f "${ARTIFACTS_DIR}/validator-image-updater.sh" ]]; then
+    cp -f "${ARTIFACTS_DIR}/validator-image-updater.sh" "${COPY_ARTIFACTS}/"
+  fi
+  for unit in base-validator-image-updater@.service base-validator-image-updater@.timer; do
+    if [[ -f "${ARTIFACTS_DIR}/${unit}" ]]; then
+      cp -f "${ARTIFACTS_DIR}/${unit}" "${COPY_ARTIFACTS}/"
+    fi
+  done
   # Do not copy identity secrets unless the operator state dir is the target.
   echo "Copied validator Artifacts to ${COPY_ARTIFACTS}"
 fi
@@ -422,15 +484,63 @@ echo "  master_url=${MASTER_URL}  (coordination API; registry/weights follow whe
 echo "  protocol_hotkey=${HOTKEY_SS58}"
 echo "  state_dir=${STATE_DIR}"
 echo "  submit_on_chain=${SUBMIT_FLAG}"
+echo "  auto_update=${ENABLE_AUTO_UPDATE} (host-side digest tracker; agent has no docker.sock)"
 echo "  profile: agent-only (no master, postgres, challenges, or docker.sock on this host)"
 echo "  note: container HOME=/var/lib/base/state (writable under read_only rootfs for bittensor)"
 
-docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" config --quiet
-docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d
+docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" --env-file "${ARTIFACTS_DIR}/.env" config --quiet
+docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" --env-file "${ARTIFACTS_DIR}/.env" up -d
+
+# Host-side auto-update: systemd timer@ + service@ installed by default.
+if [[ "${ENABLE_AUTO_UPDATE}" -eq 1 ]]; then
+  if [[ ! -f "${ARTIFACTS_DIR}/validator-image-updater.sh" ]]; then
+    echo "warning: auto-update requested but validator-image-updater.sh missing under artifacts" >&2
+  elif ! command -v systemctl >/dev/null 2>&1; then
+    echo "warning: systemctl unavailable; staged updater at ${ARTIFACTS_DIR}/validator-image-updater.sh for cron" >&2
+  else
+    install -d -m 0755 /usr/local/lib/base
+    install -m 0755 "${ARTIFACTS_DIR}/validator-image-updater.sh" /usr/local/lib/base/validator-image-updater.sh
+    if [[ -f "${ARTIFACTS_DIR}/base-validator-image-updater@.service" ]]; then
+      install -m 0644 "${ARTIFACTS_DIR}/base-validator-image-updater@.service" \
+        /etc/systemd/system/base-validator-image-updater@.service
+    fi
+    if [[ -f "${ARTIFACTS_DIR}/base-validator-image-updater@.timer" ]]; then
+      install -m 0644 "${ARTIFACTS_DIR}/base-validator-image-updater@.timer" \
+        /etc/systemd/system/base-validator-image-updater@.timer
+      if [[ "${IMAGE_UPDATE_INTERVAL}" != "90" ]]; then
+        install -d -m 0755 "/etc/systemd/system/base-validator-image-updater@${PROJECT_NAME}.timer.d"
+        cat >"/etc/systemd/system/base-validator-image-updater@${PROJECT_NAME}.timer.d/interval.conf" <<EOF
+[Timer]
+OnUnitActiveSec=${IMAGE_UPDATE_INTERVAL}
+EOF
+      fi
+    fi
+    install -d -m 0755 /etc/base/validator-image-updater
+    cat >"/etc/base/validator-image-updater/${PROJECT_NAME}.env" <<EOF
+COMPOSE_PROJECT_NAME=${PROJECT_NAME}
+BASE_VALIDATOR_ARTIFACTS_DIR=${ARTIFACTS_DIR}
+BASE_VALIDATOR_COMPOSE_FILE=${ARTIFACTS_DIR}/docker-compose.validator.yml
+BASE_VALIDATOR_ENV_FILE=${ARTIFACTS_DIR}/.env
+BASE_VALIDATOR_IMAGE_UPDATE_STATE=${ARTIFACTS_DIR}/image_update_state.json
+BASE_VALIDATOR_TRACK_IMAGE=${TRACK_IMAGE}
+BASE_VALIDATOR_IMAGE_UPDATE_HOLD=0
+EOF
+    chmod 600 "/etc/base/validator-image-updater/${PROJECT_NAME}.env"
+    systemctl daemon-reload
+    systemctl enable --now "base-validator-image-updater@${PROJECT_NAME}.timer"
+    echo "Enabled host auto-update timer: base-validator-image-updater@${PROJECT_NAME}.timer"
+    echo "  track_image=${TRACK_IMAGE} (always applied as repository@sha256:<digest>)"
+    echo "  hold: set BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1 in ${ARTIFACTS_DIR}/.env"
+    echo "  state: ${ARTIFACTS_DIR}/image_update_state.json"
+  fi
+else
+  echo "Auto-update disabled (--no-auto-update). Image pins stay operator-driven."
+fi
 
 echo "Validator Compose install complete."
-docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
+docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" --env-file "${ARTIFACTS_DIR}/.env" ps
 echo "Hotkey public identity (also written to ${HOTKEY_PUB_FILE}): ${HOTKEY_SS58}"
 echo "Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests."
 echo "Operator note: keep protocol identity as a real directory readable by uid 1000 (avoid host symlinks with restrictive parents)."
 echo "Operator note: validators never run master. Confirm --master-url /health is Base master (role=master)."
+echo "Operator note: validator runtime images auto-update by default via host timer (digest pins only; agent has no docker.sock)."

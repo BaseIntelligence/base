@@ -27,16 +27,23 @@ container and requires an explicit Base master coordination URL.
 docker compose -p base-mission-validator-a \
   -f deploy/compose/docker-compose.validator.yml ps
 
-# update: pull/recreate with a new digest pin, then
-# re-run install-validator.sh or docker compose up -d with updated env
+# Image auto-update is ON by default (host timer tracks :latest digests).
+# Opt out: add --no-auto-update. Freeze later:
+#   BASE_VALIDATOR_IMAGE_UPDATE_HOLD=1 in the project .env
+# Manual pin still works:
+#   edit BASE_VALIDATOR_IMAGE_DIGEST then compose up -d --force-recreate
 
 # stop
 docker compose -p base-mission-validator-a \
   -f deploy/compose/docker-compose.validator.yml down
+# Also stop auto-update when tearing down permanently:
+#   systemctl disable --now base-validator-image-updater@base-mission-validator-a.timer
 ```
 
 Each validator is an independent Compose project with its own identity, network,
-volume, and secrets. See [Validator guide](../validator/README.md) and
+volume, and secrets. Images auto-update by default via a **host-side** digest
+reconciler (agent still has no docker.sock). See
+[Validator guide](../validator/README.md) and
 [Compose deployment](../compose.md).
 
 **Read-only rootfs notes:** container `HOME` must be the writable state volume
@@ -122,9 +129,11 @@ Pin the validator runtime by immutable digest:
 repository@sha256:<64-hex>
 ```
 
-Mutable `latest` alone is not a production selector. Master challenge auto-update
-is the master-resident digest-aware watcher; validators do not mutate master
-challenge services.
+Mutable `latest` alone is not a production runtime selector. Validator runtime
+images auto-update by default through a host-side digest reconciler that always
+applies `repository@sha256:<digest>`. Master challenge auto-update remains the
+master-resident digest-aware watcher; validators do not mutate master challenge
+services and never mount docker.sock into the agent container.
 
 ## Agent Challenge evaluation notes
 

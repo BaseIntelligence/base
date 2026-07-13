@@ -1,0 +1,22 @@
+[Unit]
+Description=Base validator image auto-update once for project %i
+Documentation=file:///usr/local/lib/base/validator-image-updater.sh
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Instance name (%i) is the Compose project name (e.g. base-validator-5gzi).
+Environment=COMPOSE_PROJECT_NAME=%i
+# Operators should drop env in /etc/base/validator-image-updater/%i.env
+# (ARTIFACTS_DIR, TRACK_IMAGE, HOLD, …). Installer writes this file.
+EnvironmentFile=-/etc/base/validator-image-updater/%i.env
+EnvironmentFile=-/var/lib/base/validator-artifacts/.env
+ExecStart=/usr/local/lib/base/validator-image-updater.sh once
+Nice=10
+TimeoutStartSec=600
+# Host-only helper. The long-lived agent container never gets docker.sock.
+
+[Install]
+WantedBy=multi-user.target
