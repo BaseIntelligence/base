@@ -93,10 +93,10 @@ docker:
 security:
   # Swarm mounts the admin secret at the --secret target (admin_token) below in
   # _deploy_master_service: 
-  # -> /run/secrets/admin_token (NOT the /run/secrets/base/"base/" subdir). The
+  # -> /var/lib/base/secrets/admin_token (NOT the /run/secrets/base/"base/" subdir). The
   # path MUST match that target verbatim or the master admin auth fails closed
   # (GET /v1/validators -> 401), mirroring the working gateway token_secret_file.
-  admin_token_file: /run/secrets/admin_token
+  admin_token_file: /var/lib/base/secrets/admin_token
 
 observability:
   log_json: true
