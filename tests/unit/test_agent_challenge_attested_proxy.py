@@ -121,7 +121,7 @@ def _registry() -> ChallengeRegistry:
         ChallengeCreate(
             slug="agent-challenge",
             name="Agent Challenge",
-            image="ghcr.io/baseintelligence/agent-challenge:latest",
+            image="ghcr.io/baseintelligence/agent-challenge:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             version="1.0.0",
             emission_percent=Decimal("100"),
             status=ChallengeStatus.ACTIVE,

@@ -213,19 +213,18 @@ async def test_replay_adapter_uses_replay_entrypoint_only() -> None:
         return _result()
 
     assignment = AssignmentView(
-        id="11111111-1111-1111-1111-111111111111",
+        assignment_id="11111111-1111-1111-1111-111111111111",
         challenge_slug="agent-challenge",
         work_unit_id="replay:run-1:1",
         submission_ref="sub-1",
         payload=replay_assignment_payload(ReplayAuditRequest.from_mapping(_request())),
         required_capability="cpu",
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={},
         broker=BrokerConfig(broker_url="http://validator-broker:8082"),
     )
     executor = AgentChallengeCycleExecutor(dispatch_replay=dispatch_replay)
@@ -254,19 +253,18 @@ async def test_normal_adapter_does_not_invoke_replay_entrypoint() -> None:
         return _result()
 
     assignment = AssignmentView(
-        id="22222222-2222-2222-2222-222222222222",
+        assignment_id="22222222-2222-2222-2222-222222222222",
         challenge_slug="agent-challenge",
         work_unit_id="ordinary:run-1",
         submission_ref="sub-1",
-        payload={"gateway_token": "token", "gateway_url": "http://gateway"},
+        payload={"task_id": "task-1"},
         required_capability="cpu",
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={},
         broker=BrokerConfig(broker_url="http://validator-broker:8082"),
     )
     executor = AgentChallengeCycleExecutor(

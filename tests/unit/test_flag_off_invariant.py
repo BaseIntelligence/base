@@ -296,7 +296,7 @@ async def test_val_verify_023_adapter_dispatches_legacy_without_verifier(
 
     adapter = AgentChallengeCycleExecutor(dispatch=_fake_dispatch)
     assignment = AssignmentView(
-        id="11111111-1111-1111-1111-111111111111",
+        assignment_id="11111111-1111-1111-1111-111111111111",
         challenge_slug="agent-challenge",
         work_unit_id="sub:agent-challenge",
         submission_ref="sub",
@@ -304,12 +304,11 @@ async def test_val_verify_023_adapter_dispatches_legacy_without_verifier(
         payload={"task_id": "task-1", "proof": {"tier": "phala-tdx"}},
         required_capability="cpu",
         status="running",
-        attempt_count=1,
+        attempt=1,
         max_attempts=3,
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={"BASE_GATEWAY_TOKEN": "scoped-token"},
         broker=BrokerConfig(
             broker_url="http://broker-val:8082",
             broker_token="bt",
