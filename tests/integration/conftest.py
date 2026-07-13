@@ -32,7 +32,6 @@ APPLICATION_TABLES = (
     "worker_assignments",
     "work_results",
     "work_assignments",
-    "llm_usage_records",
     "challenges",
 )
 ENV_VAR_MESSAGE = "BASE_TEST_DATABASE_URL or BASE_DATABASE__URL"

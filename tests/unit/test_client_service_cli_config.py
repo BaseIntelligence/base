@@ -657,14 +657,21 @@ def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
                 "  proxy_host: 127.0.0.1",
                 "  proxy_port: 0",
                 "  validator_health_interval_seconds: 0.05",
+                f"  challenge_watcher_state_path: {tmp_path / 'watcher.json'}",
                 "docker:",
                 f"  secret_dir: {tmp_path / 'secrets'}",
+                f"  compose_file: {tmp_path / 'docker-compose.yml'}",
+                f"  compose_override_dir: {tmp_path / 'overrides'}",
+                "  compose_project_name: mission-cli-proxy-test",
                 "security:",
                 "  admin_token: top-secret",
             ]
         ),
         encoding="utf-8",
     )
+    (tmp_path / "secrets").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "overrides").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
     cache = MetagraphCache(netuid=21, ttl_seconds=300)

@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 
 from base.challenge_sdk.roles import Role, activate_role
-from base.config.settings import Settings
+from base.config.settings import MasterSettings, Settings
 from base.master.docker_orchestrator import DockerOrchestrationError
 from base.schemas.challenge import ChallengeStatus, ChallengeUpdate
 from base.supervisor.challenge_watcher import (
@@ -728,12 +728,20 @@ def test_compose_backend_dynamic_challenge_override_is_full_service(
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_watcher_lifespan_none_when_disabled() -> None:
-    settings = Settings()
+def test_watcher_lifespan_none_when_disabled(tmp_path: Path) -> None:
+    # Disabled interval never constructs watcher state under /var/lib/base.
     assert build_challenge_watcher_lifespan(None, 60.0) is None
+    settings = Settings(
+        master=MasterSettings(
+            challenge_watcher_state_path=str(tmp_path / "watcher.json")
+        )
+    )
     assert build_challenge_watcher_lifespan(settings, 0) is None
     assert build_challenge_watcher_lifespan(settings, -1) is None
-    lifespan = build_challenge_watcher_lifespan(settings, 0.01)
+    # Enabled path with an explicit writable state path is non-None.
+    lifespan = build_challenge_watcher_lifespan(
+        settings, 0.01, state_path=tmp_path / "watcher.json"
+    )
     assert lifespan is not None
 
 

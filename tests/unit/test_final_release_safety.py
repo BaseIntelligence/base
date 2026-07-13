@@ -548,21 +548,29 @@ def test_offline_egress_guard_plugin_is_available_for_release_suites() -> None:
 
 
 def test_burn_weights_script_remains_untracked_and_byte_identical() -> None:
-    """VAL-CROSS-079: unrelated user-owned burn_weights_24h.py is untouched."""
+    """VAL-CROSS-079: user-owned burn_weights_24h.py must stay out of git tree."""
 
-    assert BURN_WEIGHTS.is_file()
-    digest = _sha256_file(BURN_WEIGHTS)
-    assert digest == BURN_WEIGHTS_SHA256
-    # Untracked relative to the Base repo (user-owned, protected).
+    # On GHA checkouts the protected local script is absent (never committed).
+    # When present locally, bytes + untracked status must match the known identity.
     completed = subprocess.run(
-        ["git", "status", "--porcelain", "--", str(BURN_WEIGHTS.relative_to(ROOT))],
-        check=True,
+        ["git", "ls-files", "--error-unmatch", "scripts/burn_weights_24h.py"],
+        check=False,
         capture_output=True,
         text=True,
         cwd=ROOT,
     )
-    status = completed.stdout.strip()
-    assert status.startswith("??") or status == "", status
+    assert completed.returncode != 0, "burn_weights_24h.py must not be tracked"
+    if BURN_WEIGHTS.is_file():
+        digest = _sha256_file(BURN_WEIGHTS)
+        assert digest == BURN_WEIGHTS_SHA256
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", "scripts/burn_weights_24h.py"],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        ).stdout.strip()
+        assert status.startswith("??") or status == "", status
     # Never imported or executed by automated tests.
     for relative in AUTOMATED_TEST_GLOBS:
         path = ROOT / relative
@@ -577,7 +585,9 @@ def test_burn_weights_script_remains_untracked_and_byte_identical() -> None:
 
 def test_agent_challenge_repo_is_out_of_scope_for_automated_validation() -> None:
     agent = Path("/projects/platform-network/agent-challenge")
-    assert agent.is_dir()
+    # Mission worktrees have the sibling checkout; CI for Base alone may not.
+    if not agent.is_dir():
+        pytest.skip("agent-challenge sibling checkout not present in this workspace")
     # Automated Base tests may name the diagnostic constant but never write there.
     offenders: list[str] = []
     for path in (ROOT / "tests").rglob("*.py"):
