@@ -125,6 +125,16 @@ connection pooling, storage resize workflows, challenge Alembic migration
 automation, or automated destructive purge beyond the explicit operator scripts
 documented for the master Compose project ([compose.md](compose.md)).
 
+## Agent Challenge attestation surfaces (BASE-owned)
+
+Integrator notes for challenges that participate in the Phala / attested topology (today: agent-challenge). Implement these contracts only when your challenge ships the matching attested mode; generated demo challenges still use the weight + SQLite contract above.
+
+- **Public proxy.** BASE never publicly proxies `/internal/*`, result-ingestion, capability, assignment, evidence, or key-release neighbors. Opt-in review/eval allowlisting is `master.agent_challenge_attested_routes_enabled` (default off keeps legacy submission/env/launch).
+- **ExecutionProof.** Prefer the schema-closed Eval wire (`EvalExecutionProof`, tier `phala-tdx`) documented in [Architecture](architecture.md#executionproof-phala-tier-base-schema). Bound `vm_config` JSON encoding to **256 KiB**; quotes, event logs, and string fields have fixed ceilings in `src/base/schemas/worker.py`.
+- **R=1 full attested mode.** When the challenge exposes no assignable work units for a fully attested submission, BASE creates **zero** validator multi-replica work rows for that submission. Do not rely on BASE worker-plane R=2 reconciliation for that path; use challenge-owned miner-funded external eval and BASE shared proof helpers only where you integrate them.
+- **Flag off.** Leave BASE and challenge attestation flags off for the legacy R=1 `own_runner` / env-launch path. Mixed topologies are unsupported.
+- Challenge-owned review→eval and RA-TLS containers, images, and operator docs: **available after PR merge** in the agent-challenge repository.
+
 ## Build and publish
 
 The generated CI workflow tests the challenge and pushes its Docker image to GHCR

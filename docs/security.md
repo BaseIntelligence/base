@@ -97,3 +97,16 @@ and must not display raw text such as `BASE request failed with status 502`.
 * LLM gateway services, routes, tokens, and provider clients
 * Swarm install path for greenfield hosts (`install-swarm.sh`, Swarm secrets, overlays)
 * Application-launched evaluator containers
+
+## Phala attestation residual risk
+
+BASE ships fail-closed Phala-tier verification helpers (schema bounds, measurement allowlist, `dcap-qvl` temp-file quote verify, park-vs-reject on verifier outage). Product posture is **cryptographically-anchored trust-but-audit**, not a claim of absolute TEE safety.
+
+Residual risks operators should plan for:
+
+* Hardware / microarchitectural TEE residual risk (including published TDX class attacks such as TEE.fail-style research) is not eliminated by software allowlists.
+* Intel PCS / collateral freshness and `dcap-qvl` availability affect park vs reject; a parked result is intentionally not accepted.
+* Challenge-owned score acceptance, RA-TLS key release, and CVM image pinning remain agent-challenge responsibilities (available after PR merge for cross-repo docs). BASE proxy must never expose those private challenge routes on the public edge.
+* Flag-off (`agent_challenge_attested_routes_enabled=false`) preserves the legacy non-Phala public surfaces; operators enabling the flag must deploy the matching agent-challenge attested mode rather than mixing topologies.
+
+* Public proxy strips sensitive headers (and, for agent-challenge attested mode, strips attested trust-shaped headers and prefixes).
