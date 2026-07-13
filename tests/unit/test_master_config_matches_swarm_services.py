@@ -337,9 +337,9 @@ def test_master_yaml_supervisor_block_loads_into_supervisor_settings() -> None:
 def test_master_yaml_equals_live_production_config() -> None:
     cfg = _master_yaml()
 
-    # master published proxy port (live 86.38.238.235:19080 via Caddy/chain.joinbase.ai).
+    # master published proxy port (live :19080 via Caddy/chain.joinbase.ai).
     assert int(cfg["master"]["proxy_port"]) == PROXY_PORT_PRODUCTION
-    # Gateway removed; production policy / secret mounts use host mode-safe path.
+    # Gateway removed; production policy uses host mode-safe admin path.
     assert "gateway" not in cfg
     assert cfg["security"]["admin_token_file"] == "/var/lib/base/secrets/admin_token"
 
