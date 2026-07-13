@@ -119,6 +119,9 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     install_validator = (
         root / "deploy" / "compose" / "install-validator.sh"
     ).read_text(encoding="utf-8")
+    env_validator_example = (
+        root / "deploy" / "compose" / ".env.validator.example"
+    ).read_text(encoding="utf-8")
     master_compose = (
         root / "deploy" / "compose" / "config" / "master.compose.yaml"
     ).read_text(encoding="utf-8")
@@ -150,6 +153,19 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
         assert "chain.platform.network" not in shipping
         for host in retired_public_hosts:
             assert host not in shipping
+
+    # Operator-copyable validator Compose env template: joinbase-only + explicit
+    # --master-url and local loopback smoke. Must never reintroduce preferred-
+    # product / cutover wording for chain.platform.network.
+    assert expected in env_validator_example
+    assert "--master-url" in env_validator_example
+    assert "http://127.0.0.1:3180" in env_validator_example
+    assert "never run master" in env_validator_example.lower()
+    assert "chain.platform.network" not in env_validator_example
+    assert "preferred product" not in env_validator_example.lower()
+    assert "after cutover" not in env_validator_example.lower()
+    for host in retired_public_hosts:
+        assert host not in env_validator_example
 
     # Master install renders both master + validator registry defaults to public chain.
     assert install_master.count(f"registry_url: {expected}") >= 2
@@ -186,7 +202,8 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     assert expected in compose_docs
     assert expected in deploy_docs
     assert expected in readme
-    # Shipping docs are joinbase-only: no preferred-product / cutover framing.
+    # Shipping docs + operator-copyable env examples are joinbase-only:
+    # no preferred-product / cutover framing.
     for body in (
         validator_docs,
         ops_validator_docs,
@@ -195,6 +212,7 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
         readme,
         install_validator,
         install_master,
+        env_validator_example,
     ):
         assert "chain.platform.network" not in body
         assert "preferred product" not in body.lower()
