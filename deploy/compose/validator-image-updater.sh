@@ -245,8 +245,12 @@ resolve_remote_digest() {
 }
 
 compose_cmd() {
-  # shellcheck disable=SC2086
-  timeout "${COMMAND_TIMEOUT}" "${DOCKER_BIN}" compose -p "${PROJECT_NAME}" \
+  # Drop process-env IMAGE pins so --env-file is authoritative (compose
+  # prefers existing process env over the env-file, which would freeze
+  # auto-update on the pre-tick digest).
+  env -u BASE_VALIDATOR_IMAGE_REPOSITORY -u BASE_VALIDATOR_IMAGE_DIGEST \
+    -u COMPOSE_FILE -u COMPOSE_PATH \
+    timeout "${COMMAND_TIMEOUT}" "${DOCKER_BIN}" compose -p "${PROJECT_NAME}" \
     -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 

@@ -373,6 +373,17 @@ def current_env_repository(env: Mapping[str, str]) -> str | None:
 def subprocess_command_runner(
     argv: Sequence[str], timeout_seconds: float
 ) -> CommandResult:
+    # Compose prefers process env over --env-file; scrub IMAGE pin vars so a
+    # host/systemd EnvironmentFile cannot freeze auto-update to a stale digest.
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in {
+            "BASE_VALIDATOR_IMAGE_REPOSITORY",
+            "BASE_VALIDATOR_IMAGE_DIGEST",
+        }
+    }
     try:
         completed = subprocess.run(
             list(argv),
@@ -380,6 +391,7 @@ def subprocess_command_runner(
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            env=clean_env,
         )
     except subprocess.TimeoutExpired as exc:
         return CommandResult(

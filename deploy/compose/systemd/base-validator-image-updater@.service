@@ -9,10 +9,10 @@ Requires=docker.service
 Type=oneshot
 # Instance name (%i) is the Compose project name (e.g. base-validator-5gzi).
 Environment=COMPOSE_PROJECT_NAME=%i
-# Operators should drop env in /etc/base/validator-image-updater/%i.env
-# (ARTIFACTS_DIR, TRACK_IMAGE, HOLD, …). Installer writes this file.
+# Paths + track/hold only. Do NOT EnvironmentFile the project .env: compose
+# prefers process-env IMAGE pins over --env-file, which freezes auto-update
+# to the pre-tick digest and never applies the newly rewritten pin.
 EnvironmentFile=-/etc/base/validator-image-updater/%i.env
-EnvironmentFile=-/var/lib/base/validator-artifacts/.env
 ExecStart=/usr/local/lib/base/validator-image-updater.sh once
 Nice=10
 TimeoutStartSec=600
