@@ -340,17 +340,44 @@ class DcapQvlVerifier:
         )
 
     def verify(self, quote_hex: str) -> QuoteVerdict:
-        args = [self.binary, "verify", "--hex", quote_hex]
+        import tempfile
+        from pathlib import Path
+
+        # dcap-qvl's third argument is a *file path*, not the hex body.
+        # Live TDX quotes are ~10k hex chars; passing them as argv raises
+        # "File name too long (os error 36)" and collapses to permanent reject.
+        if not isinstance(quote_hex, str) or not quote_hex:
+            raise QuoteVerificationError("quote_hex must be a non-empty hex string")
+        quote_path: Path | None = None
         try:
-            proc = self._run(args)
-        except FileNotFoundError as exc:
-            raise VerifierUnavailableError(f"dcap-qvl not available: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise VerifierUnavailableError(f"dcap-qvl timed out: {exc}") from exc
-        except subprocess.SubprocessError as exc:
-            raise VerifierUnavailableError(
-                f"dcap-qvl invocation failed: {exc}"
-            ) from exc
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="ascii",
+                prefix="dcap-qvl-quote-",
+                suffix=".hex",
+                delete=False,
+            ) as handle:
+                handle.write(quote_hex)
+                quote_path = Path(handle.name)
+            args = [self.binary, "verify", "--hex", str(quote_path)]
+            try:
+                proc = self._run(args)
+            except FileNotFoundError as exc:
+                raise VerifierUnavailableError(
+                    f"dcap-qvl not available: {exc}"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise VerifierUnavailableError(f"dcap-qvl timed out: {exc}") from exc
+            except subprocess.SubprocessError as exc:
+                raise VerifierUnavailableError(
+                    f"dcap-qvl invocation failed: {exc}"
+                ) from exc
+        finally:
+            if quote_path is not None:
+                try:
+                    quote_path.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover - best-effort cleanup
+                    pass
 
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
