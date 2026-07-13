@@ -4,22 +4,37 @@ This guide covers running a BASE validator as an **independent Docker Compose
 project**. Compose is the only supported shipping backend for new installs. There is
 no Kubernetes path, and Docker Swarm is **not** required.
 
-Validators range from lightweight weight fetchers/submitters to full challenge-
-evaluating agents. On-chain submission always uses the **validator's own wallet**.
-Challenge control-plane state and aggregation stay on the master. See
+**Validators never run master.** The install is agent-only: one validator container
+points at an external Base master/coordination API. Challenge control-plane state,
+aggregation, PostgreSQL, and the challenge watcher stay on the master host. On-chain
+submission always uses the **validator's own wallet**. See
 [Compute Requirements](#compute-requirements).
 
-The default public weights endpoint is:
+### `master_url` vs registry / weights aliases
+
+| Setting | Role |
+| --- | --- |
+| `validator.agent.master_url` (`--master-url`) | Required Base master coordination API (register/heartbeat/pull/result). Never invented. |
+| `validator.registry_url` / `validator.weights_url` | Registry / published-weights aliases. Installer sets them equal to `--master-url` when that master hosts both. |
+
+### Public hostnames (preferred product vs live known-good)
+
+| URL | Status as of 2026-07-13 |
+| --- | --- |
+| `https://chain.platform.network` | Preferred **product** Base master hostname once cutover completes. Live `/health` currently serves **agent-challenge**, not Base master. Do not force this as an operator default without re-verify. |
+| `https://chain.joinbase.ai` | Live known-good Base master front (`role=master`). Settings defaults and public weights examples use this until cutover. |
+| `http://127.0.0.1:3180` | Local disposable master for smoke only. |
+
+Default public weights example (live known-good):
 
 ```text
 https://chain.joinbase.ai/v1/weights/latest
 ```
 
-Settings defaults for `registry_url` / resolved weights on the public network also
-use `https://chain.joinbase.ai`. Installer `--master-url` is the **operator master
-coordination root** (required, never invented as a hard-coded public IP). Local
-examples often use `http://127.0.0.1:3180`; public operators point both registry
-and master at the public control plane when that is the live master.
+Network operators may point `--master-url` (and therefore generated registry/weights)
+at `https://chain.joinbase.ai` today, or at their own operator master. After
+`chain.platform.network` fronts Base master end-to-end, product messaging prefers that
+hostname; until then document both.
 
 ## Compute Requirements
 

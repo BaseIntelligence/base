@@ -1550,12 +1550,14 @@ def validator_run(config: Path = typer.Option(Path("config/validator.example.yam
 
 
 def _require_validator_master_url(settings: Any) -> str:
-    """Resolve the explicit master coordination URL for a validator process.
+    """Resolve the explicit Base master coordination URL for a validator process.
 
     VAL-SDK-086: missing/invalid master URL must fail closed without inventing a
     localhost default or silently treating the validator as its own master.
-    ``registry_url`` / ``weights_url`` alone are not enough for coordination
-    installer surfaces (Compose, CLI agent).
+    Validators never run master; ``validator.agent.master_url`` is a client pointer
+    to the external Base master/coordination API (register/heartbeat/pull/result).
+    ``registry_url`` / ``weights_url`` are aliases that may share the same host when
+    master hosts both, but they alone are not enough for agent coordination.
     """
 
     agent_cfg = settings.validator.agent
@@ -1563,7 +1565,8 @@ def _require_validator_master_url(settings: Any) -> str:
     if not master_url or not str(master_url).strip():
         raise typer.BadParameter(
             "validator.agent.master_url is required (absolute http/https URL to "
-            "the master coordination plane); refusing to default to localhost"
+            "the Base master coordination API); validators never invent a localhost "
+            "or non-master public hostname default"
         )
     url = str(master_url).strip()
     if not (url.startswith("http://") or url.startswith("https://")):
@@ -1750,12 +1753,14 @@ def validator_agent(
 ):
     """Run the decentralized validator agent (own-broker executor + submitter).
 
-    Hotkey-registers + heartbeats with the master, pulls assignments, executes
-    them on the validator's OWN broker + Docker, posts results, and routes all
-    LLM calls through the master gateway (no provider key on the validator). In
-    the same runtime it runs THIS node's OWN on-chain weight submitter, which
-    fetches the master-aggregated vector and commits it under this validator's
-    hotkey (a no-op while ``validator.submit_on_chain_enabled`` is off).
+    Hotkey-registers + heartbeats with the Base master coordination API, pulls
+    assignments, executes or verifies work on the validator side, and posts
+    results. Validators never run master: ``validator.agent.master_url`` must
+    point at an external Base master (required, no localhost invent). There is
+    no LLM gateway in the target path. In the same runtime it runs THIS node's
+    OWN on-chain weight submitter, which fetches the master-aggregated vector
+    and commits it under this validator's hotkey (a no-op while
+    ``validator.submit_on_chain_enabled`` is off).
     """
 
     settings = load_settings(config)

@@ -221,6 +221,29 @@ def test_install_validator_requires_master_url() -> None:
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
     assert "master-url" in combined or "master_url" in combined
+    # Agent-only messaging + dual-host guidance (preferred product vs live front).
+    assert "never" in combined and "master" in combined
+    assert "chain.joinbase.ai" in combined
+    assert "chain.platform.network" in combined
+
+
+def test_install_validator_help_is_agent_only_and_dual_host_aware() -> None:
+    content = INSTALL_VALIDATOR.read_text(encoding="utf-8")
+    assert "agent-only" in content or "NEVER run master" in content
+    assert "--master-url" in content
+    assert "chain.platform.network" in content
+    assert "chain.joinbase.ai" in content
+    assert "role=master" in content
+    # Generated config always binds agent.master_url to the operator flag.
+    assert "master_url: ${MASTER_URL}" in content
+    assert "registry_url: ${MASTER_URL}" in content
+    assert "weights_url: ${MASTER_URL}" in content
+    # No uninstallable default that force master_url onto a non-master hostname.
+    assert "master_url: https://chain.platform.network" not in content
+    assert (
+        'MASTER_URL="${VALIDATOR_MASTER_URL:-https://chain.platform.network}"'
+        not in content
+    )
 
 
 def test_compose_docs_document_independent_validator_install() -> None:

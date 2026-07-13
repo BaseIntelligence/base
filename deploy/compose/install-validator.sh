@@ -13,8 +13,22 @@ usage() {
   cat <<'EOF'
 Usage: install-validator.sh --master-url URL [options]
 
+Agent-only install: validators NEVER run master, PostgreSQL, challenge services,
+or a Docker socket. This installer only starts the validator agent container and
+points it at an external Base master/coordination API via --master-url.
+
 Required:
-  --master-url URL           Absolute master coordination URL (http/https)
+  --master-url URL           Absolute Base master coordination API URL (http/https).
+                             This is master_url (register/heartbeat/pull/result),
+                             not an unrelated public challenge front.
+                             Local smoke: http://127.0.0.1:3180
+                             Live known-good network front (2026-07-13):
+                               https://chain.joinbase.ai
+                             Preferred product hostname (once DNS/Caddy/CF
+                               cutover fronts Base master):
+                               https://chain.platform.network
+                             Verify /health returns role=master / base-master
+                             before using any public hostname.
 
 Options:
   --project-name NAME        Unique Compose project (default: base-mission-validator)
@@ -109,14 +123,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${MASTER_URL}" ]]; then
-  echo "validator install requires --master-url (absolute http/https master URL)" >&2
+  echo "validator install requires --master-url (absolute http/https Base master URL)" >&2
+  echo "Validators never run master. Point --master-url at the Base master/coordination API" >&2
+  echo "this operator actually uses (local disposable master, private operator master, or" >&2
+  echo "a known-good public front). Preferred product hostname once cutaway is complete:" >&2
+  echo "  https://chain.platform.network" >&2
+  echo "Live known-good Base master front as of 2026-07-13:" >&2
+  echo "  https://chain.joinbase.ai  (verify GET /health role=master)" >&2
+  echo "Do not invent chain.platform.network until it fronts Base master (not agent-challenge)." >&2
   exit 2
 fi
 
 # Reject empty or clearly invalid master URLs early (VAL-SDK-086).
-# master_url is the operator's master coordination root (their running master
-# API). It is never defaulted to a public IP inventory. Public chain/registry
-# docs and Settings defaults remain https://chain.joinbase.ai.
+# master_url is the Base master coordination root only (register/heartbeat/pull/
+# result + weights when the master hosts both). It is never defaulted to a public
+# IP inventory or a non-master hostname. Public Settings defaults for registry/
+# weights remain the live known-good network front (https://chain.joinbase.ai)
+# until product cutover makes chain.platform.network the Base master front.
 case "${MASTER_URL}" in
   http://*|https://*) ;;
   *)
@@ -125,8 +148,8 @@ case "${MASTER_URL}" in
     ;;
 esac
 if [[ "${MASTER_URL}" == "http://localhost"* || "${MASTER_URL}" == "http://127.0.0.1"* ]]; then
-  # Loopback is allowed when the operator intentionally points at a local master,
-  # but empty/self defaults are not invented: master URL must be explicit.
+  # Loopback is allowed for disposable local smoke masters only. Empty/self
+  # defaults are never invented: master URL must be explicit.
   :
 fi
 
@@ -311,6 +334,12 @@ if [[ "${SUBMIT_ON_CHAIN}" -eq 1 ]]; then
   SUBMIT_FLAG="true"
 fi
 
+# Render validator config:
+# - agent.master_url ALWAYS equals --master-url (coordination API).
+# - registry_url / weights_url follow the same master when that master hosts
+#   both (Compose master default). Operators on a multi-front production
+#   network may later edit registry_url/weights_url independently, but the
+#   generated install must never invent a non-master public hostname here.
 umask 077
 cat >"${CONFIG_FILE}" <<EOF
 network:
@@ -323,6 +352,7 @@ network:
   master_uid: 0
 
 validator:
+  # When the master hosts registry + weights, keep these equal to master_url.
   registry_url: ${MASTER_URL}
   registry_retry_seconds: 15
   weights_url: ${MASTER_URL}
@@ -333,6 +363,7 @@ validator:
   submit_on_chain_enabled: ${SUBMIT_FLAG}
   submission_state_dir: /var/lib/base/state
   agent:
+    # Coordination API pointer only (never a non-master challenge front).
     master_url: ${MASTER_URL}
     capabilities: ${_cap_yaml}
     poll_interval_seconds: 5.0
@@ -393,11 +424,12 @@ export BASE_VALIDATOR_CONFIG="${CONFIG_FILE}"
 export BASE_VALIDATOR_PROTOCOL_IDENTITY="${IDENTITY_DIR}"
 export BASE_VALIDATOR_BROKER_TOKEN="${BROKER_TOKEN_FILE}"
 
-echo "Installing independent validator Compose project '${PROJECT_NAME}'"
-echo "  master_url=${MASTER_URL}"
+echo "Installing agent-only validator Compose project '${PROJECT_NAME}'"
+echo "  master_url=${MASTER_URL}  (coordination API; registry/weights follow when master hosts both)"
 echo "  protocol_hotkey=${HOTKEY_SS58}"
 echo "  state_dir=${STATE_DIR}"
 echo "  submit_on_chain=${SUBMIT_FLAG}"
+echo "  profile: agent-only (no master, postgres, challenges, or docker.sock on this host)"
 echo "  note: container HOME=/var/lib/base/state (writable under read_only rootfs for bittensor)"
 
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" config --quiet
@@ -408,3 +440,4 @@ docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
 echo "Hotkey public identity (also written to ${HOTKEY_PUB_FILE}): ${HOTKEY_SS58}"
 echo "Register this hotkey in the master mock_metagraph (validator_permit: true) for coordination tests."
 echo "Operator note: keep protocol identity as a real directory readable by uid 1000 (avoid host symlinks with restrictive parents)."
+echo "Operator note: validators never run master. Confirm --master-url /health is Base master (role=master)."

@@ -96,14 +96,19 @@ def test_registry_url_defaults_and_examples_use_chain_endpoint() -> None:
 
 
 def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
-    """Compose install/templates must keep public registry on chain.joinbase.ai.
+    """Compose install/templates keep live registry defaults on chain.joinbase.ai.
 
     Operator ``--master-url`` stays an explicit coordination root and must not be
-    invented as a hard-coded public IP default. Public registry/weights defaults
-    remain ``https://chain.joinbase.ai``.
+    invented as a hard-coded public IP default. Public registry/weights Settings
+    defaults remain the live known-good Base master front
+    ``https://chain.joinbase.ai`` until platform.network cutover is proven.
+    Preferred product hostname ``https://chain.platform.network`` may be
+    documented with cutover caveats but must not become the silent Settings
+    default while runtime proof fails (agent-challenge front).
     """
     root = Path(__file__).resolve().parents[2]
     expected = "https://chain.joinbase.ai"
+    preferred_product = "https://chain.platform.network"
     retired_public_hosts = (
         "86.38.238.235",
         "51.83.112.164",
@@ -131,6 +136,8 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     ops_validator_docs = (root / "docs" / "operations" / "validator.md").read_text(
         encoding="utf-8"
     )
+    compose_docs = (root / "docs" / "compose.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
 
     for shipping in (
         install_master,
@@ -139,6 +146,8 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
         validator_example,
     ):
         assert f"registry_url: {expected}" in shipping
+        # Preferred product hostname is not a silent Settings/template default.
+        assert f"registry_url: {preferred_product}" not in shipping
         for host in retired_public_hosts:
             assert host not in shipping
 
@@ -146,12 +155,22 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     assert install_master.count(f"registry_url: {expected}") >= 2
     assert "weights_url: null" in install_master
 
-    # Validator install requires an explicit operator master URL and never invents
-    # a hard-coded public IP master default. registry/weights may follow that
-    # operator root for a private master, but public docs keep the chain host.
+    # Validator install is agent-only, requires explicit --master-url, and never
+    # invents a hard-coded public IP or non-master hostname default. Generated
+    # registry/weights follow --master-url when master hosts both.
     assert "--master-url" in install_validator
     assert "VALIDATOR_MASTER_URL" in install_validator
     assert "validator install requires --master-url" in install_validator
+    assert (
+        "NEVER run master" in install_validator
+        or "never run master" in install_validator
+    )
+    assert "agent-only" in install_validator
+    assert "master_url: ${MASTER_URL}" in install_validator
+    assert "registry_url: ${MASTER_URL}" in install_validator
+    assert "weights_url: ${MASTER_URL}" in install_validator
+    # Do not hardcode platform.network as generated agent.master_url.
+    assert "master_url: https://chain.platform.network" not in install_validator
     for host in retired_public_hosts:
         assert host not in install_validator
     # No default IP master for empty --master-url.
@@ -163,8 +182,42 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     assert expected in validator_docs
     assert f"{expected}/v1/weights/latest" in validator_docs
     assert expected in ops_validator_docs
-    # master_url is the operator coordination root, not the public chain URL.
-    assert "master_url: https://chain.joinbase.ai" not in ops_validator_docs
+    # Shipping docs state preferred product hostname + live known-good caveat.
+    assert preferred_product in validator_docs
+    assert preferred_product in compose_docs
+    assert preferred_product in readme
+    assert "agent-challenge" in validator_docs
+    assert (
+        "never run master" in validator_docs.lower()
+        or "never run master" in compose_docs.lower()
+    )
+    # Example yaml in ops docs can illustrate local smoke master_url (loopback).
+    assert "master_url: http://127.0.0.1:3180" in ops_validator_docs
+    # Generated install never forces preferred product hostname as master default.
+    assert "master_url: https://chain.platform.network" not in install_validator
+
+
+def test_master_url_role_distinguished_from_registry_aliases() -> None:
+    """master_url is coordination API; registry/weights are separate aliases."""
+    root = Path(__file__).resolve().parents[2]
+    install_validator = (
+        root / "deploy" / "compose" / "install-validator.sh"
+    ).read_text(encoding="utf-8")
+    compose_docs = (root / "docs" / "compose.md").read_text(encoding="utf-8")
+    validator_docs = (root / "docs" / "validator" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    # Clear distinction across installer help + docs.
+    for body in (install_validator, compose_docs, validator_docs):
+        assert "master_url" in body
+        assert "registry_url" in body or "registry" in body.lower()
+        assert "coordination" in body.lower() or "Base master" in body
+
+    # Settings defaults still live known-good front, not preferred product only.
+    assert MasterSettings().registry_url == "https://chain.joinbase.ai"
+    assert ValidatorSettings().registry_url == "https://chain.joinbase.ai"
+    assert "platform.network" not in MasterSettings().registry_url
 
 
 def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() -> None:

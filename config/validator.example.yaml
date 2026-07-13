@@ -13,6 +13,11 @@ network:
 # 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At
 
 validator:
+  # Live known-good Base master network front (Settings default, 2026-07-13).
+  # Preferred product hostname https://chain.platform.network applies once
+  # cutover fronts Base master (verify /health role=master first).
+  # Agent coordination uses validator.agent.master_url (--master-url), which is
+  # required and is never invented by the runtime.
   registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null

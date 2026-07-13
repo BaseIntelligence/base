@@ -14,15 +14,20 @@ supported install destination.
 curl -fsS http://127.0.0.1:3180/health
 curl -fsS http://127.0.0.1:3180/version
 
-# 3. Independent validator (own project, identity, and wallet)
+# 3. Independent agent-only validator (own project/identity; never runs master)
 ./deploy/compose/install-validator.sh \
   --project-name base-mission-validator-a \
   --master-url http://127.0.0.1:3180
+# Network validators: --master-url https://chain.joinbase.ai (live known-good)
+# After product cutover fronts Base master: https://chain.platform.network
 ```
 
 Immutable image pins may be supplied via environment (`BASE_MASTER_IMAGE_*`,
 `PRISM_IMAGE_*`, `POSTGRES_IMAGE_*`, `BASE_VALIDATOR_IMAGE_*`). When unset, the
 install helpers resolve local mission image digests.
+
+`--master-url` is the Base master coordination API pointer only. Validators do not
+host master, control-plane PostgreSQL, challenge services, or Docker socket.
 
 ## Topology
 

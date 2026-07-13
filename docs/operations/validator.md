@@ -8,12 +8,25 @@ units under `deploy/swarm/` are unsupported for greenfield bring-up.
 
 ## Install, update, stop
 
-### Preferred: independent Compose validator
+### Preferred: agent-only independent Compose validator
+
+Validators **never run master**. `install-validator.sh` starts only the agent
+container and requires an explicit Base master coordination URL.
 
 ```bash
+# Local disposable master (mission smoke)
 ./deploy/compose/install-validator.sh \
   --project-name base-mission-validator-a \
   --master-url http://127.0.0.1:3180
+
+# Live network Base master front (known-good 2026-07-13)
+./deploy/compose/install-validator.sh \
+  --project-name base-validator-live \
+  --master-url https://chain.joinbase.ai
+
+# Preferred product hostname after platform.network fronts Base master:
+# --master-url https://chain.platform.network
+# Verify GET /health returns role=master first (today it is agent-challenge).
 
 docker compose -p base-mission-validator-a \
   -f deploy/compose/docker-compose.validator.yml ps
@@ -82,24 +95,28 @@ On the Compose path the process is packaged as the `validator` service from
 
 ```yaml
 validator:
-  # Public network defaults (Settings / examples); resolved_weights_url falls
-  # back to registry_url when weights_url is null.
+  # When master hosts registry + weights, keep these equal to master_url.
+  # Product/Settings network defaults still document the live known-good front
+  # https://chain.joinbase.ai until platform.network cutover.
   registry_url: https://chain.joinbase.ai
   weights_url: null
   agent:
-    # Operator master coordination root (install-validator --master-url).
-    # This is *not* the public chain URL. Examples for a local master:
+    # Base master coordination API only (--master-url). Required; never invented.
+    # Local smoke:
     master_url: http://127.0.0.1:3180
+    # Live known-good network: https://chain.joinbase.ai
+    # Preferred product hostname once cutover: https://chain.platform.network
     capabilities: ["cpu"]
     version: "0.1.0"
     heartbeat_interval_seconds: 60
     poll_interval_seconds: 5.0
 ```
 
-Public registry and published weights documentation uses
-`https://chain.joinbase.ai` (for example `GET /v1/weights/latest` there).
-`install-validator.sh --master-url` must point at the operator master API that
-owns assignments; it never invents a hardcoded public IP as the master default.
+`master_url` is the Base master coordination root. `registry_url` / `weights_url`
+are public/registry aliases that may share that host; installers copy
+`--master-url` into all three when the master hosts both. Never default operators
+to a bare manager IP, invent localhost, or force `chain.platform.network` while
+its `/health` is not Base master.
 
 There is no master LLM gateway route and no per-assignment `BASE_LLM_GATEWAY_URL`
 / `BASE_GATEWAY_TOKEN` contract in the shipping target path.

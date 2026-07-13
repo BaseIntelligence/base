@@ -185,7 +185,10 @@ network:
       stake: 1000.0
 
 master:
-  # Public chain/registry control plane (not an operator master IP inventory).
+  # Public registry alias for this control plane. Live known-good Base master
+  # front (2026-07-13): https://chain.joinbase.ai . Preferred product hostname
+  # https://chain.platform.network applies once DNS/Caddy/CF cutover fronts
+  # Base master (today it still serves agent-challenge). Not an IP inventory.
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081
@@ -199,7 +202,9 @@ master:
   orchestration_interval_seconds: 30
 
 validator:
-  # Public network registry/weights default; Validators attach via --master-url.
+  # Network default registry/weights host for Settings-style examples only.
+  # Independent validators never run inside this master Compose project; they
+  # install agent-only and pass --master-url at the Base master coordination API.
   registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null

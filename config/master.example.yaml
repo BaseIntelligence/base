@@ -17,6 +17,8 @@ network:
   #     stake: 1000.0
 
 master:
+  # Public registry alias. Live known-good Base master front: chain.joinbase.ai.
+  # Preferred product hostname chain.platform.network once cutover fronts Base master.
   registry_url: https://chain.joinbase.ai
   proxy_host: 0.0.0.0
   proxy_port: 8081
@@ -25,6 +27,7 @@ master:
   registry_state_file: /var/lib/base/registry.json
 
 validator:
+  # Network defaults only; independent validators install agent-only with --master-url.
   registry_url: https://chain.joinbase.ai
   registry_retry_seconds: 15
   weights_url: null
