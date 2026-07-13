@@ -740,7 +740,7 @@ class ComposeValidatorImageUpdater:
                     self.docker_bin,
                     "inspect",
                     "--format",
-                    "{{.Config.Image}} {{json .RepoDigests}}",
+                    "{{.Config.Image}}",
                     name,
                 ],
                 min(self.command_timeout_seconds, 30.0),

@@ -257,8 +257,11 @@ compose_cmd() {
 
 inspect_running_digest() {
   local out dig name
+  # Only Config.Image: some engines reject {{json .RepoDigests}} with a
+  # template error that empties the whole inspect output.
   for name in "${PROJECT_NAME}-${SERVICE_NAME}-1" "${PROJECT_NAME}_${SERVICE_NAME}_1"; do
-    out="$("${DOCKER_BIN}" inspect --format '{{.Config.Image}} {{json .RepoDigests}}' "${name}" 2>/dev/null || true)"
+    out="$("${DOCKER_BIN}" inspect --format '{{.Config.Image}}' "${name}" 2>/dev/null || true)"
+    [[ -z "${out}" ]] && continue
     if dig="$(normalize_digest "${out}" 2>/dev/null)"; then
       printf '%s' "${dig}"
       return 0
