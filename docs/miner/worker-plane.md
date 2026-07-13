@@ -75,8 +75,9 @@ into the pod env, and never logged.
   ╰────────────────────────────────────────────────────────────────────────────╯
   ```
 
-  > `base worker` (the miner-funded GPU worker plane) is a distinct, top-level group from the
-  > legacy `base master worker` group (Docker Swarm node management). They do not collide.
+  > `base worker` (the miner-funded GPU worker plane) is a distinct, top-level group from any
+  > historical `base master worker` Swarm node-management commands. Swarm is not the supported
+  > base install path; the groups still do not collide.
 
 - A **provider account with credit**:
   - **Lium**: an API key (`LIUM_API_KEY`) and a registered SSH key (Lium requires an SSH public

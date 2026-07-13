@@ -8,25 +8,34 @@ A challenge is an independent repository and Docker image. It owns its logic,
 public routes, submissions, scoring data, database schema, and challenge-local
 files.
 
-Challenge state is SQLite on the challenge `/data` Swarm volume: BASE injects
+Challenge state is SQLite on the challenge named **Compose volume** mounted at
+`/data`. BASE injects
 `CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3` and mounts
 `/data`. There is no Postgres server per challenge; the `/data` volume is the
 single home for the database, artifacts, analyzer output, and uploaded files.
 
-The challenge runs on the manager node as a Swarm replicated service (placement
-`node.role==manager`) on an encrypted overlay network. The `/data` volume is
-retained by default when the service is removed.
+In the supported Compose topology the challenge runs as a **long-lived service**
+in the master Compose project (`challenge-<slug>`), joined only to the private
+`app` network with the master — never to the master `db` network and never with
+control-plane Postgres credentials. The `/data` volume is retained by default
+when the service is stopped or removed.
 
-## Required API
+There is **no LLM gateway**. Scoring and admission are challenge-owned. Base and
+Prism do not create short-lived evaluator containers for challenge evaluation;
+external TEE or miner-funded workers are outside the challenge Compose service
+lifecycle.
+
+## Required API surface
 
 ```text
 GET /health
 GET /version
-GET /internal/v1/get_weights
 ```
 
-The internal endpoint is authenticated with a per-challenge shared token mounted
-by the master.
+Raw weight publication in the target path is an authenticated **push** from the
+challenge to the master (not a master-polled scrap of standalone weights alone).
+Challenges also expose challenge-local public routes the proxy rewrites under
+`/challenges/{slug}/...`.
 
 ## Create a challenge
 
@@ -43,20 +52,34 @@ Public routes are exposed through `/challenges/{slug}/...`. The master blocks
 as `POST /internal/v1/submissions/{submission_id}/launch`, and generic benchmark
 execution-shaped routes such as `/benchmark-executions` from the public proxy.
 
+## Lifecycle on Compose
+
+1. Register the challenge image and metadata with the master registry (immutable
+   digest pin for production).
+2. Activate the challenge. The master reconcile / adoption path installs a
+   long-lived Compose service for ACTIVE challenges only.
+3. The master-resident **digest-aware watcher** keeps that service aligned with
+   the approved pin (controlled pull, targeted recreate, health/version verify,
+   rollback and bounded backoff on failure). See [compose.md](compose.md).
+4. Deactivate stops and removes the managed container while keeping the named
+   volume for reactivation.
+5. Inactive, draft, and disabled challenges never start.
+
 ## Proxy failure behavior
 
 The BASE proxy preserves challenge-origin non-2xx responses when the challenge
-answered safely. Transport failures, unreachable services, Swarm service DNS
-failures, and connection timeouts become safe 502 responses. Frontends should
-render unavailable copy and retry with backoff instead of showing raw text such
-as `BASE request failed with status 502`.
+answered safely. Transport failures, unreachable services, Compose service DNS
+failures on the private network, and connection timeouts become safe 502
+responses. Frontends should render unavailable copy and retry with backoff
+instead of showing raw text such as `BASE request failed with status 502`.
 
 Operator checklist for challenge 502s:
 
-1. Confirm ingress includes `/challenges` and routes it to the BASE proxy.
-2. Confirm the slug maps to a running challenge service.
-3. Confirm challenge health, the Swarm service name, service DNS on the overlay
-   network, the service port, and at least one running task.
+1. Confirm ingress includes `/challenges` and routes it to the BASE master proxy.
+2. Confirm the slug maps to a running long-lived challenge service in the master
+   Compose project.
+3. Confirm challenge health (`/health`), Compose service name, connectivity on
+   the private `app` network, and the challenge listen port.
 4. Determine whether the response came from proxy transport handling or the
    challenge origin. Only transport failures should be rewritten to 502.
 
@@ -71,5 +94,10 @@ Only the signed miner headers `X-Hotkey`, `X-Signature`, `X-Nonce`, and
 `X-Timestamp` are preserved for those routes.
 `POST /internal/v1/submissions/{submission_id}/launch` is a bridge/internal API
 only, not a public miner API, and the proxy must not expose generic benchmark
-execution routes. The generic BASE broker remains the execution substrate for
-controlled BASE SDK jobs behind the challenge boundary.
+execution routes.
+
+## Weights
+
+Challenges export raw **hotkey** weights. The master aggregates and serves the
+final vector; validators fetch and call `set_weights`. Challenges never submit
+final UID vectors and never receive master database credentials.

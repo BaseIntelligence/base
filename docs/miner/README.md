@@ -103,7 +103,7 @@ A 502 under `/challenges/agent-challenge/...` is a safe unavailable state from B
 Checklist:
 
 1. Confirm ingress routes `/challenges` to the BASE proxy (a `/v1/challenges` route alone is not enough), and that slug routing points at the Agent Challenge service while still blocking `/internal/*`, `/health`, and `/version`.
-2. Confirm Agent Challenge health: a running Swarm task on the manager node (not stuck pending placement), service DNS on the overlay network, and the service port.
+2. Confirm Agent Challenge health: a running long-lived challenge container in the master Compose project (not stuck restarting), service reachability on the private app network, and the challenge listen port.
 3. Separate proxy transport failures (rewritten to safe 502s) from challenge-origin non-2xx responses (validation, auth, replay, rate-limit, or challenge errors), which pass through.
 4. For an env action, confirm it uses one of the `.../env`, `.../env/confirm-empty`, or `.../launch` paths above and includes only the signed miner header names.
 

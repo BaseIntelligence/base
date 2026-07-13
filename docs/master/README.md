@@ -1,72 +1,98 @@
-# Cortex Foundation Master Installation Guide
+# Master Installation Guide
 
-Foundation-only installer for Cortex Foundation master infrastructure. Do not run this for validators or third-party operators.
+Operator guide for the supported **Docker Compose** master control plane. Compose is
+the only shipping runtime for new installs. Do not use Swarm scripts for greenfield
+bring-up: historical material lives under `deploy/swarm/` and is **unsupported**.
 
-This guide covers the committed Docker Swarm bring-up for the master control plane: the BASE master proxy, broker, challenge services, and the systemd supervisor on the manager node. It does not configure the on-chain submitter, chain submission, or any key material.
+This guide covers installing the master application, PostgreSQL control plane,
+long-lived challenge services, and the in-process digest-aware challenge watcher. It
+does not configure on-chain submission (validators own wallets and `set_weights`).
 
-## Manager node
+## Topology
 
-The master runs as a single-node Docker Swarm manager hosting the platform API (a single proxy that also serves the `/v1/registry` and `/v1/weights/latest` reads plus the token-gated admin routes), the broker, the supervisor, and the challenge service containers. Challenge code runs on the manager pinned to `node.role==manager`; only short-lived broker jobs are dispatched to worker nodes. Default manager ports are proxy `8080` and broker `8082`. The control-plane database URL is supplied through a Docker secret, never on the command line. Use a disposable host when validating a full bring-up.
+| Piece | Details |
+| --- | --- |
+| Installer | `deploy/compose/install-master.sh` |
+| Compose file | `deploy/compose/docker-compose.yml` |
+| App | `base-master-validator` (proxy, coordination, aggregation, watcher) |
+| Database | `master-postgres` (private `db` network only) |
+| Challenges | one long-lived `challenge-<slug>` per ACTIVE registry entry |
+| Secrets | host files under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/secrets` |
 
-## Automatic Install
+There is **no LLM gateway** container or Swarm broker overlay in this path. The master
+coordinates and aggregates; it **never** submits on-chain weights and **never** launches
+evaluator containers.
 
-`install-swarm.sh` is **dry-run by default**: with no flags it prints every planned mutating command and changes nothing. It performs work only with `--apply`, and every destructive step is behind its own explicit opt-in flag:
-
-```bash
-./deploy/swarm/install-swarm.sh                                  # dry-run: prints the plan
-./deploy/swarm/install-swarm.sh --apply
-./deploy/swarm/install-swarm.sh --apply --restart-dockerd        # write /etc/docker/daemon.json + restart dockerd
-./deploy/swarm/install-swarm.sh --apply --single-node-placement  # non-default placement override
-./deploy/swarm/install-swarm.sh --apply --static-challenges      # create challenge services directly
-```
-
-It initializes the Swarm, creates the encrypted overlay networks (`base_challenges` and the internal `base_jobs_internal`, MTU 1450), creates value-bearing Docker secrets via stdin (never argv), and creates the master proxy, broker, and challenge services. No secret value is ever printed; plan output shows only the environment variable name. It produces no docker-compose or stack YAML: the installer is imperative `docker swarm` / `docker service create` / `docker secret` / `docker network` only.
-
-## Supervisor
-
-The control-plane supervisor replaces the old Kubernetes CronJobs with a single watchdog-supervised systemd service. Install the unit from `deploy/swarm/base-supervisor.service`:
-
-```bash
-cp deploy/swarm/base-supervisor.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now base-supervisor.service
-```
-
-The unit is `Type=notify` with a 30s watchdog and runs `base master supervisor --config /etc/base/master.yaml`. Its manager-only loops are broker-health, timeout-reaper, image-updater, challenge-image-updater, config-sync, and self-update. The image updaters resolve the public GHCR tag digest and roll the Swarm services to `tag@sha256:<digest>` only when a mutable tag moves; no GHCR pull secret is required for public packages.
-
-## Worker enrollment
-
-Workers run short-lived CPU/GPU broker jobs and are added manually with a Swarm join token (no SSH). Manage them from the manager with the `base master worker` CLI group: `list`, `token [--cpu|--gpu]`, `label <node> --workload cpu|gpu`, `drain <node>`, `inspect <node>`, `rm <node>`.
-
-Enrollment flow:
-
-1. On the manager, run `base master worker token --cpu` (or `--gpu`) and copy the printed join command:
-
-   ```text
-   docker swarm join --token <TOKEN> <MANAGER_IP>:2377
-   ```
-
-2. On the worker, install the matching `daemon.json` (`deploy/swarm/daemon.worker.json` for GPU workers, which advertises `node-generic-resources: ["NVIDIA-GPU=GPU-<uuid>"]` and registers the NVIDIA runtime), then run the join command.
-3. On the manager, label the node with `base master worker label <node> --workload cpu` or `--workload gpu` (setting `node.labels.base.workload`).
-
-The broker then schedules CPU jobs onto `node.labels.base.workload==cpu` and GPU jobs onto `node.labels.base.workload==gpu` with `--generic-resource NVIDIA-GPU=<N>`.
-
-## Explicit Non Goals
-
-- No on-chain submitter, master weights CLI, or master on-chain submission unit.
-- Never asks for, prints, or stores key material.
-- Produces or consumes no docker-compose / stack files.
-
-## Runtime Checks
+## Install
 
 ```bash
-docker service ls
-docker service ps base-master-proxy base-docker-broker
-docker service logs -f base-master-proxy
-journalctl -u base-supervisor.service -f
-docker node ls
+./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
 ```
 
-## Validation Commands
+Optional immutable image pins (repository + sha256 digest):
 
-Before changing the installer or docs, run `bash -n deploy/swarm/install-swarm.sh`, `uv run ruff check .`, `uv run mypy src tests`, and `uv run pytest`. Run the full installer only when the current host is owned by Cortex Foundation master infrastructure.
+- `BASE_MASTER_IMAGE_REPOSITORY` / `BASE_MASTER_IMAGE_DIGEST`
+- `PRISM_IMAGE_REPOSITORY` / `PRISM_IMAGE_DIGEST`
+- `POSTGRES_IMAGE_REPOSITORY` / `POSTGRES_IMAGE_DIGEST`
+
+When pins are unset, the installer may resolve local mission image digests for disposable
+bring-up. Production should pin published digests.
+
+What the installer does:
+
+1. Creates state/config dirs (`0700`) and secret files (`0600`).
+2. Writes a local master config suitable for the Compose networks.
+3. Runs `docker compose up -d --wait` for the master project cardinality.
+
+Detailed networking, secrets, and evaluation boundary rules live in
+[docs/compose.md](../compose.md) and [docs/deploy.md](../deploy.md).
+
+## Auto-update (challenge watcher)
+
+Challenge image rollouts are owned by the **master-resident watcher**, not by Swarm
+`docker service update` of mutable tags:
+
+| Property | Behavior |
+| --- | --- |
+| Pin model | Immutable `repository@sha256:<digest>` only |
+| Scope | Project-bound Compose services only |
+| Steps | resolve → controlled pull → targeted recreate → health/version verify → commit |
+| Failure | Rollback to previous digest; bounded exponential backoff |
+| Durability | Intent and phase survive master restart (filesystem state) |
+| Forbidden | Evaluator container creation; Swarm/stack APIs |
+
+Operators freeze or recover by keeping freeze/desired digests stable and consulting
+watcher health after pull failures. Configurable knobs (when present in master settings)
+include interval and state path defaults under the master application data volume.
+
+## Runtime checks
+
+```bash
+docker compose -p base-mission-master -f deploy/compose/docker-compose.yml ps
+curl -fsS http://127.0.0.1:3180/health
+curl -fsS http://127.0.0.1:3180/version
+curl -fsS http://127.0.0.1:3180/v1/registry
+docker compose -p base-mission-master -f deploy/compose/docker-compose.yml logs -f base-master-validator
+```
+
+Backup / restore / teardown scripts (Compose-only):
+
+```bash
+./deploy/compose/backup-master.sh --project-name base-mission-master --output-dir ./backup-master
+./deploy/compose/restore-master.sh --project-name base-mission-master --backup-dir ./backup-master
+./deploy/compose/teardown-master.sh --project-name base-mission-master
+```
+
+## Explicit non-goals
+
+- No on-chain `set_weights` from the master.
+- No Swarm init, secrets, overlays, or `docker service` create paths for new installs.
+- No reintroduction of LLM gateway secrets or routes.
+- No application-owned short-lived evaluator jobs.
+
+## Historical Swarm note
+
+`deploy/swarm/install-swarm.sh` and related supervisor/unit files are **historical /
+unsupported** for new installs. They must not be documented as the required master path
+and must not be run against live production Swarm fabric from this guide. See
+[deploy/swarm/README.md](../../deploy/swarm/README.md) for the explicit non-target banner.

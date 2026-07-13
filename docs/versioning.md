@@ -10,7 +10,7 @@ Update these together for every release:
 - `uv.lock`: editable `base` package entry, without a leading `v`.
 - `.github/workflows/ci.yml`: GHCR tag policy.
 
-For the `3.0.4` release the Python package version is `3.0.4` and the Git release tag is `v3.0.4`.
+For the `3.1.2` SDK release the Python package version is `3.1.2` and the Git release tag is `v3.1.2`.
 
 ## SemVer Rules
 
@@ -22,7 +22,7 @@ For the `3.0.4` release the Python package version is `3.0.4` and the Git releas
 
 ## GitHub And GHCR Tags
 
-Use Git tags with a leading `v` (such as `v3.0.4`) for release events. The GitHub Actions metadata policy publishes canonical GHCR image tags from the tag event using:
+Use Git tags with a leading `v` (such as `v3.1.2`) for release events. The GitHub Actions metadata policy publishes canonical GHCR image tags from the tag event using:
 
 ```text
 type=semver,pattern={{version}}
@@ -30,7 +30,7 @@ type=semver,pattern={{raw}}
 type=sha,prefix=sha-
 ```
 
-So a `v3.0.4` tag publishes the canonical `3.0.4` image tag, the compatibility `v3.0.4` tag, and a traceable `sha-<commit>` tag. Branch builds publish a mutable `main` tag, and `main` also publishes `latest`; those mutable tags feed the supervisor image-updater auto-update channel on first-party deployments.
+So a `v3.1.2` tag publishes the canonical `3.1.2` image tag, the compatibility `v3.1.2` tag, and a traceable `sha-<commit>` tag. Branch builds may publish a mutable `main` / `latest` tag for development convenience; those tags are **not** production selectors by themselves.
 
 Pull requests build images with `push: false`. GHCR publication happens only from trusted events: `main`, `v*.*.*` tags, or a manual `workflow_dispatch` with `confirm_publish` set to `true`.
 
@@ -38,20 +38,51 @@ Pull requests build images with `push: false`. GHCR publication happens only fro
 
 Pushing a `v*.*.*` tag creates a GitHub Release only after CI validation and both GHCR publish jobs succeed. Branch pushes and manual `workflow_dispatch` runs can publish images under the trusted-event rules above but do not create a GitHub Release.
 
-Release descriptions combine GitHub-generated release notes with a maintained body listing the published `base` and `base-master` GHCR tags (canonical SemVer, compatibility `v` tag, traceable `sha-<commit>` tag) plus a note that production should pin the SemVer tag and immutable digest. Tags containing a hyphen (such as `v3.1.0-rc.1`) are marked prereleases; stable tags are marked as the latest release.
+Release descriptions combine GitHub-generated release notes with a maintained body listing the published `base` / `base-master` / runtime GHCR tags (canonical SemVer, compatibility `v` tag, traceable `sha-<commit>` tag) plus a note that production must pin an **immutable digest**. Tags containing a hyphen (such as `v3.1.0-rc.1`) are marked prereleases; stable tags are marked as the latest release.
 
 ## Production Image Policy
 
-Pinned production references must use a SemVer image tag plus a digest:
+Pinned production references must use repository plus digest (optionally with a human Tag context):
 
 ```text
-ghcr.io/baseintelligence/base:3.0.4@sha256:<64-hex-digest>
+ghcr.io/baseintelligence/base-master@sha256:<64-hex-digest>
+# or repository:tag@sha256:<64-hex-digest>
 ```
 
-The digest is the immutable deployment selector; the tag provides human-readable release context. Production policy accepts digest-pinned `latest` only for the autonomous update channel and rejects untagged references, missing digests, non-SemVer non-`latest` tags, and mutable auto-update in pinned production mode.
+The digest is the immutable deployment selector. Production policy rejects untagged
+references used as the sole pin, missing digests on production targets, and any
+auto-update that only mutates a floating `latest` without digest verification.
 
-Mutable tags such as `latest` and `main` are allowed for the default supervisor auto-update mode. In that mode the manager runs the master admin, proxy, broker, and challenge services from `ghcr.io/baseintelligence/base-master:latest`, and the image-updater / challenge-image-updater loops resolve the public GHCR tag digest and roll the Swarm services to `tag@sha256:<digest>` only when a mutable tag moves. The on-chain submitter deploys from `ghcr.io/baseintelligence/base:latest`; it fetches master-computed weights and performs the final Bittensor submission. The updaters use anonymous GHCR digest checks (no pull secret needed while packages are public). To roll back or freeze, disable mutable auto-update and pin SemVer plus digest.
+## Auto-update policy (Compose watcher)
+
+Supported challenge auto-update is the **master-resident Compose challenge
+watcher**, not Swarm service mutation of `latest`:
+
+1. Desired image is an approved **digest-pinned** reference.
+2. Watcher records current vs desired digest and durable rollout phase/intent.
+3. Controlled `docker pull` of the desired pin.
+4. Targeted recreate of only the affected long-lived Compose service inside the
+   project boundary.
+5. Health and version verification before commit.
+6. On failure: restore the previous digest, record bounded backoff, and resume
+   safely after master restart.
+
+Validators and master application images themselves are upgraded by operator-
+driven Compose reinstall/recreate with new pins (installers honor
+`*_IMAGE_REPOSITORY` / `*_IMAGE_DIGEST`). There is no supported “always follow
+mutable `latest` via Swarm image updater” path for new installs.
+
+To freeze challenges, stop advancing desired digests (or disable the watcher
+interval) and leave the running pin in place. To roll back, set the approved pin
+back to the previous digest and let the watcher (or a controlled recreate) apply
+it after verify.
 
 ## Release Execution Boundary
 
 Do not create Git tags, GitHub releases, GHCR packages, or real-node rollouts unless the operator explicitly confirms that external side effect. Local validation and `push: false` Docker builds are safe pre-release checks.
+
+## Historical note
+
+Documentation or tools under `deploy/swarm/` that describe rolling Swarm services
+to `tag@sha256` whenever a mutable tag moves are **historical**. They are not the
+shipping auto-update mechanism for Compose topology installs.

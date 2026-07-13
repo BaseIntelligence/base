@@ -4,10 +4,10 @@
 
 ## Isolation Rules
 
-* The shared control-plane PostgreSQL is reachable only by the master or validator control-plane process that owns the deployment; its URL comes from `BASE_DATABASE_URL` or a Docker secret.
-* Challenges never receive master, validator, or central control-plane PostgreSQL credentials. Each challenge gets only its own SQLite database on its `/data` Swarm volume (`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`).
-* The submitter never receives master DB credentials.
-* Internal challenge calls require per-challenge shared tokens.
+* The shared control-plane PostgreSQL is reachable only by the master process that owns the Compose project; its URL is provided as a file-backed secret (or explicitly documented env for non-production). Challenges never receive it.
+* Challenges never receive master, validator, or central control-plane PostgreSQL credentials. Each challenge gets only its own SQLite database on its `/data` Compose volume (`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`).
+* Validators never receive master DB credentials; each validator uses independent Compose project credentials and its own wallet when submitting on-chain.
+* Internal challenge calls require per-challenge shared tokens mounted as secret files.
 * The public proxy strips sensitive headers and blocks internal challenge paths.
 * Agent Challenge env and launch proxy routes preserve only `X-Hotkey`, `X-Signature`, `X-Nonce`, and `X-Timestamp` for signed miner actions.
 
@@ -15,41 +15,85 @@
 
 The production boundary is stricter than local development:
 
-* Dev, test, and local runs may use SQLite for master state. Production control-plane state must use PostgreSQL from a Docker secret or an explicit `BASE_DATABASE_URL`; SQLite is rejected.
+* Dev, test, and local runs may use SQLite for master state. Production control-plane state must use PostgreSQL from a secret file (preferred) or an explicit `BASE_DATABASE_URL`; SQLite is rejected.
 * Challenge runtime state is always SQLite on the challenge `/data` volume.
-* Dev and local challenge images may be local, mutable, or `latest`. Production images must carry a tag and a `sha256` digest: SemVer tags for pinned releases, `latest@sha256:<digest>` reserved for the autonomous update channel. Untagged references and missing digests are rejected.
+* Dev and local challenge images may be local builds for disposable tests. Production images must be **digest-pinned** (`repository@sha256:<64 hex>`). Untagged references and missing digests are rejected for production installs.
 * Production image allowlists must be scoped to a registry and namespace such as `ghcr.io/baseintelligence/`. Broad prefixes such as `baseintelligence/` are development-only.
 
-## Swarm Runtime Boundary
+## Compose Runtime Boundary
 
-First-party deployments use Docker Swarm rolling service updates. Challenge services run on the manager node (`node.role==manager`); broker-dispatched evaluation jobs run on workers constrained by `node.labels.base.workload==cpu` or `==gpu`. Broker-created challenge jobs never receive the host Docker socket.
+First-party deployments use Docker Compose on a single host:
 
-Broker GPU placement is expressed only through Swarm node labels and generic resources. A positive broker `gpu_count` becomes `--generic-resource NVIDIA-GPU=<N>` on a job constrained to `node.labels.base.workload==gpu`; the case-sensitive name `NVIDIA-GPU` must match the worker `daemon.json` advertisement. Omitted or `None` stays CPU-only. Challenge metadata, labels, environment values, and device IDs carry no placement semantics. Network isolation uses encrypted overlay networks (MTU 1450); a job requesting `network: none` attaches to a dedicated internal encrypted overlay with no external routes, because Swarm services cannot attach to the predefined `none` network.
+* Master project: `base-master-validator`, `master-postgres`, and one long-lived challenge service per ACTIVE challenge.
+* Networks: internal `db` (master + Postgres only), internal `app` (master + challenges), and a non-internal network solely so the master public API can bind a host port.
+* Challenges never join `db` and never receive the Docker socket. The master application may mount the Docker socket **read-only** solely to manage its own Compose project (watcher / adoption); challenge containers never receive it.
+* Validators run in **independent** Compose projects with their own networks, volumes, and identities.
+* Base and Prism do **not** create short-lived evaluator containers. Evaluation is external/long-lived (TEE or miner-funded workers) and is verified/ingested rather than lifecycle-managed as `--rm` jobs by the application.
+* Docker Swarm (`docker service`, `docker stack`, Swarm secrets, overlays, placement constraints, join tokens) is **not** a supported target for new installs.
 
-The control-plane database credential is written only into a Docker secret and must never appear in stdout, stderr, service definitions, docs evidence, or support logs. Challenge services receive only per-challenge runtime secrets. The `/data` volume is retained by default when a challenge is removed; manual deletion is an explicit, destructive purge.
+The control-plane database credential must never appear in stdout, stderr, rendered Compose manifests, docs evidence, or support logs. Challenge services receive only per-challenge runtime secrets. The `/data` volume is retained by default when a challenge is removed; manual deletion is an explicit, destructive purge.
 
-### Privileged escape hatch
+### Privileged and GPU evaluation
 
-A Swarm service cannot run `--privileged` or `--gpus`, so `docker service create` never emits them. A challenge that legitimately needs a privileged Docker-in-Docker job uses the capability-gated escape hatch: instead of a Swarm service, the broker runs the job as a direct local `docker run` on a worker. The escape hatch is the only path that grants privilege, it is gated per challenge, and the DinD container owns its own `/var/lib/docker` volume rather than the host Docker socket.
+Application paths must not grant challenges host Docker privilege or raw GPU
+device mounts through the Compose target topology. Heavy evaluation that needs
+special hardware lives in external worker/TEE boundaries with their own trust
+model (see miner worker plane and Prism TEE docs). Capability-gated historical
+DinD escape hatches on multi-host Swarm fabric are not reintroduced as a required
+Compose operator path.
 
-## PID and Swap Boundary
+## PID and Resource Boundary
 
-Swarm service resources map CPU and memory to `--limit-cpu`/`--limit-memory` and PID ceilings to `--limit-pids`. `docker service create` supports neither `--memory-swap` nor `--security-opt`, so swap limits are not emitted and `no-new-privileges` is enforced daemon-wide via `daemon.json`. If production needs swap ceilings, enforce them with daemon or cgroup configuration and document that policy in the node runbook.
+Compose `deploy.resources` / container `cpus` / `mem_limit` / `pids_limit`
+fields (as used by the shipping manifests and orchestrator) enforce operator-set
+ceilings where the engine supports them. Prefer daemon-wide `no-new-privileges`
+and documented host cgroup policy when a finer node-wide swap policy is required.
 
-## Broker Archive and Cleanup Security
+## Evaluation Cleanup Security
 
-Broker archive uploads are untrusted input: the Swarm broker path rejects absolute paths, parent traversal, links, and device members before extraction, and malformed broker images are rejected before any service is created.
+Since the Compose target path does not create ephemeral evaluator Swarm services,
+cleanup is project-scoped:
 
-Broker job cleanup is two-layered. The broker `/v1/docker/cleanup` path removes the Swarm service (`docker service rm`) and releases the workload and GPU ledger entries on success and failure. The manager-only supervisor timeout-reaper independently reaps jobs that exceed their timeout, so a crashed or unreachable challenge cannot leak long-running services. Evidence should prove cleanup without storing archive payloads, bearer credentials, private keys, or credentialed database URLs.
+* Teardown scripts and `docker compose down` affect only the named project.
+* Watcher failure paths roll images back rather than leaving half-applied pins
+  without durable intent.
+* Evidence should prove teardown without capturing secret file contents,
+  private keys, or credentialed database URLs.
+
+Historical broker archive extraction hardening (path traversal, link rejection)
+remains relevant for any residual broker surface, but that surface is not a
+required greenfield Swarm deploy.
 
 ## Secrets
 
-Admin tokens, challenge tokens, the control-plane database URL, registry credentials, and wallet material must come from files, environment variables, or Docker secrets. Swarm secrets are mounted at `/run/secrets/base/<name>`, and value-bearing secrets reach `docker secret create` via stdin, never as argv. Never store clear-text secrets in registry metadata responses, docs, or evidence files.
+Admin tokens, challenge tokens, the control-plane database password/URL pieces,
+registry credentials, and wallet material must come from **files** (mode `0600`,
+parent directories `0700`) or tightly controlled environment injection that never
+embeds values in Compose YAML. Prefer `*_FILE` mounts read-only into containers.
+Never store clear-text secrets in registry metadata responses, docs, or evidence files.
 
-Agent Challenge miner env values are per-submission secrets owned by the challenge, not by the BASE registry. They are master-validator scoped, encrypted at rest by Agent Challenge, injected into the Harbor/Terminal-Bench runtime, and cannot be retrieved after submission. The BASE proxy forwards the request body to the challenge but must not parse, persist, log, registry-serialize, or evidence-capture submitted env values. Public responses expose metadata only: env keys, count, empty confirmation, lock state, and timestamps.
+Agent Challenge miner env values are per-submission secrets owned by the challenge,
+not by the BASE registry. They are master-validator scoped, encrypted at rest by
+Agent Challenge, injected into the Harbor/Terminal-Bench runtime, and cannot be
+retrieved after submission. The BASE proxy forwards the request body to the
+challenge but must not parse, persist, log, registry-serialize, or evidence-capture
+submitted env values. Public responses expose metadata only: env keys, count, empty
+confirmation, lock state, and timestamps.
 
 ## Failure Behavior
 
-If a challenge fails health checks or `get_weights`, its contribution is zero for that epoch; the master does not auto-disable it.
+If a challenge fails health checks or raw-weight publication for an epoch, its
+contribution is handled by master aggregation policy for that epoch; operators
+should inspect watcher and registry status rather than assuming silent Swarm
+service self-heal.
 
-For public challenge requests, transport failures at ingress, the BASE proxy, or challenge service discovery become safe 502 responses. Challenge-origin non-2xx responses pass through when safe. User interfaces should render unavailable copy and must not display raw text such as `BASE request failed with status 502`.
+For public challenge requests, transport failures at ingress, the BASE proxy, or
+challenge service discovery become safe 502 responses. Challenge-origin non-2xx
+responses pass through when safe. User interfaces should render unavailable copy
+and must not display raw text such as `BASE request failed with status 502`.
+
+## Removed surfaces
+
+* LLM gateway services, routes, tokens, and provider clients
+* Swarm install path for greenfield hosts (`install-swarm.sh`, Swarm secrets, overlays)
+* Application-launched evaluator containers

@@ -16,11 +16,26 @@ Exact cardinality after install:
 
 | Service | Role |
 | --- | --- |
-| `base-master-validator` | Master API, coordination, aggregation, health/version |
+| `base-master-validator` | Master API, coordination, aggregation, health/version, digest-aware challenge watcher |
 | `master-postgres` | PostgreSQL 16 control plane (private) |
 | `challenge-prism` | One long-lived combined Prism challenge service |
 
 Cardinality is exactly one application container, one PostgreSQL container, and one long-lived container per active challenge. There is no gateway, broker sidecar, challenge PostgreSQL, evaluator, or worker sidecar service in this topology.
+
+### Challenge auto-update (watcher)
+
+The watcher runs **inside** `base-master-validator` and is the only supported challenge
+auto-update path:
+
+1. Resolve approved immutable image pin (`repository@sha256:<digest>`).
+2. Persist desired/current digest and rollout phase (durable intent).
+3. Controlled pull of the desired image.
+4. Targeted recreate of only the affected Compose service (project boundary).
+5. Health + version verification before commit.
+6. On failure: restore previous digest, bounded backoff, resume after restart.
+
+It never mutates live Swarm fabric, never runs evaluator containers, and only acts
+inside the configured Compose project.
 
 ### Networking
 

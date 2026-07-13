@@ -4,33 +4,38 @@
 
 ## Implement weights
 
-In the generated challenge repository, implement:
+In the generated challenge repository, implement scoring that produces raw
+hotkey weights. The supported target path has the challenge **push** an
+authenticated raw-weight payload to the master (challenge-scoped credential,
+versioned epoch/revision, idempotent, replay-protected). The master normalizes
+returned values, so raw scores are acceptable as long as they are finite and
+non-negative.
 
 ```python
 async def get_weights() -> dict[str, float]:
     return {"5F...hotkey": 1.0}
 ```
 
-The master normalizes returned values, so raw scores are acceptable as long as
-they are finite and non-negative.
+Challenges never submit final UID vectors and never open the master control-plane
+PostgreSQL.
 
 ## Challenge database contract
 
 Generated challenges use the async SQLAlchemy SDK and read their runtime database
 URL from `CHALLENGE_DATABASE_URL`. The runtime is SQLite-backed; BASE points that
-URL at the SQLite file on the challenge `/data` Swarm volume:
+URL at the SQLite file on the challenge `/data` **Compose volume**:
 
 ```text
 sqlite+aiosqlite:////data/challenge.sqlite3
 ```
 
-The same URL is used for local generated runs and the deployed Swarm service.
-There is no Postgres server per challenge; each challenge mounts its own `/data`
-volume for the SQLite file and artifacts.
+The same URL is used for local generated runs and the deployed long-lived
+Compose challenge service. There is no Postgres server per challenge; each
+challenge mounts its own `/data` volume for the SQLite file and artifacts.
 
 Challenges must never receive `BASE_DATABASE_URL`, master database URLs, or any
 central control-plane PostgreSQL credentials. The shared control-plane PostgreSQL
-is only for master and validator state.
+is only for master state.
 
 ## Async SQLAlchemy usage
 
@@ -80,20 +85,21 @@ set. Challenge Alembic migration automation is not part of this implementation.
 
 ## Persistent storage
 
-Challenge services get a `/data` Swarm volume. Use `/data` for the SQLite
-database, artifacts, analyzer output, uploaded files, and any local state that
-should survive restarts. It is the only persistent store for a challenge, and
-BASE retains it by default when the service is removed so state and the SQLite
-database survive accidental deletion.
+Challenge services get a named **Compose volume** mounted at `/data`. Use `/data`
+for the SQLite database, artifacts, analyzer output, uploaded files, and any local
+state that should survive restarts. It is the only persistent store for a
+challenge, and BASE retains it by default when the service is removed so state
+survives accidental deletion.
 
 ## Operator cleanup and purge
 
-A normal stop removes the Swarm service but keeps the `/data` volume for reuse. To
-intentionally purge a challenge database, inspect the volume first, then delete
-only the matching slug volume:
+A normal stop or deactivation removes the long-lived Compose service but keeps
+the `/data` volume for reuse. To intentionally purge a challenge database,
+inspect the volume first, then delete only the matching slug volume:
 
 ```bash
 docker volume ls --filter label=base.challenge.slug=<slug>
+# or list volumes owned by the master Compose project and identify the slug volume
 
 docker volume rm <challenge-data-volume>
 ```
@@ -101,14 +107,25 @@ docker volume rm <challenge-data-volume>
 These commands are manual and destructive. Confirm the slug and volume first.
 BASE provides no automated destructive purge in this implementation.
 
+## Runtime topology notes
+
+- Challenges join the master project's private `app` network only.
+- They never join the master `db` network.
+- Evaluation is not performed by short-lived evaluator containers created from
+  Base or Prism; Prism verifies/ingests external results when used.
+- Production images for challenges installed via registry adoption must use
+  digest pins; the master challenge watcher rolls forward only with controlled
+  pull + recreate + health/version verify and rolls back on failure.
+
 ## Out of scope
 
-No Postgres server per challenge, no Docker Compose or stack-file Postgres
-support, and no automatic backups, restore workflows, high availability,
+No Postgres server per challenge, no Swarm service graph for challenge
+lifecycle on the target path, and no automatic backups, high availability,
 connection pooling, storage resize workflows, challenge Alembic migration
-automation, or automated destructive purge.
+automation, or automated destructive purge beyond the explicit operator scripts
+documented for the master Compose project ([compose.md](compose.md)).
 
 ## Build and publish
 
 The generated CI workflow tests the challenge and pushes its Docker image to GHCR
-on main/tags.
+on main/tags. Pin published digests in the master registry for production adopts.
