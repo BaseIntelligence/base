@@ -110,6 +110,13 @@ replay audits, and weight submission.
 - **Signed enrollment** — the miner signs a hotkey↔worker binding; provider keys (`LIUM_API_KEY` / `TARGON_API_KEY`) stay in the miner's environment and never reach the master.
 - **Anti-collusion** — a worker never evaluates its owner's submission; each unit replicates across **R=2 distinct-owner** workers and is reconciled by `ExecutionProof.manifest_sha256`.
 - **Proof tiers** — tier 0 (manifest hash + sr25519 signature), tier 1 (pinned image digest), tier 2 (in-guest attestation, gated off on Targon). Audit sampling is tier-modulated.
+- **Agent Challenge Phala Intel TDX path (separate from the PRISM worker plane):** BASE carries
+  the Phala-tier `ExecutionProof` / eval proof schema, quote verification helpers, R=1 assignment
+  for attested units, and public-proxy deny rules so agent-challenge capability, internal, and
+  direct result-ingestion routes stay challenge-direct (never BASE-public-proxied). End-to-end
+  self-deploy review→eval, RA-TLS key release, and score acceptance are owned by the
+  agent-challenge service when its attestation flags are on; with those flags off, legacy R=1
+  own_runner behavior is preserved. Cross-repo links resolve after PR merge.
 - **Admission rule** — when enforced, a miner needs ≥1 active bound worker to submit to Prism, else `403 NO_ACTIVE_WORKER`.
 
 See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
