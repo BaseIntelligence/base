@@ -501,9 +501,15 @@ class ComposeValidatorImageUpdater:
             return "invalid-digest"
 
         env = self._load_env()
-        current = current_env_digest(env)
-        if current is None:
-            current = self._inspect_running_digest()
+        env_digest = current_env_digest(env)
+        running_digest = self._inspect_running_digest()
+        # No-op only when both the env pin and the running container (when
+        # inspectable) already match the desired digest. A rewritten .env with
+        # a lagging container must still force recreate.
+        both_current = env_digest == desired_norm and (
+            running_digest is None or running_digest == desired_norm
+        )
+        current = running_digest or env_digest
 
         # New desired digest ends a prior failure episode.
         if state.desired_digest != desired_norm:
@@ -514,9 +520,9 @@ class ComposeValidatorImageUpdater:
             state.alerted = False
             state.last_error = None
 
-        if current == desired_norm:
+        if both_current:
             self._retry_state.record_success()
-            state.current_digest = current
+            state.current_digest = desired_norm
             state.phase = UpdaterPhase.IDLE
             state.attempts = 0
             state.next_eligible_at = None

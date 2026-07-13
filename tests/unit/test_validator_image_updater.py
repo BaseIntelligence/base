@@ -470,3 +470,41 @@ def test_state_json_roundtrip(tmp_path: Path) -> None:
     assert loaded.phase == UpdaterPhase.BACKOFF
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert "next_eligible_at" in raw
+
+
+def test_env_ahead_of_running_container_forces_update(tmp_path: Path) -> None:
+    """Rewritten .env pin with lagging container must recreate, not no-op."""
+    compose, env_path, state_path = _seed_project(tmp_path, digest=DIGEST_B)
+    # env already at B, running still A
+    runner = FakeRunner(image=f"{REPO}@{DIGEST_A}", running=True)
+    # When pull/up succeeds, runner.image still A until we flip it mid-calls
+    class FlippingRunner(FakeRunner):
+        def __call__(self, argv, timeout_seconds):
+            result = super().__call__(argv, timeout_seconds)
+            if "up" in argv and "compose" in argv and result.returncode == 0:
+                self.image = f"{REPO}@{DIGEST_B}"
+            return result
+
+    runner = FlippingRunner(image=f"{REPO}@{DIGEST_A}", running=True)
+    clock = FakeClock()
+    updater = ComposeValidatorImageUpdater(
+        project_name="base-validator-test",
+        compose_file=compose,
+        env_file=env_path,
+        state_path=state_path,
+        track_image=TRACK,
+        resolver=lambda _ref: DIGEST_B,
+        runner=runner,
+        clock=clock,
+        wall_clock=clock,
+        sleep=clock.sleep,
+        jitter_source=lambda: 0.0,
+        verify_timeout_seconds=5.0,
+        verify_poll_seconds=1.0,
+        retry_policy=RetryPolicy(
+            max_attempts=3, base_delay=1.0, max_delay=2.0, jitter=False
+        ),
+    )
+    outcome = updater.run_once()
+    assert outcome == "updated"
+    assert any("pull" in c for c in runner.pull_calls)

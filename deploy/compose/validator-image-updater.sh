@@ -254,6 +254,19 @@ compose_cmd() {
     -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 
+
+inspect_running_digest() {
+  local out dig name
+  for name in "${PROJECT_NAME}-${SERVICE_NAME}-1" "${PROJECT_NAME}_${SERVICE_NAME}_1"; do
+    out="$("${DOCKER_BIN}" inspect --format '{{.Config.Image}} {{json .RepoDigests}}' "${name}" 2>/dev/null || true)"
+    if dig="$(normalize_digest "${out}" 2>/dev/null)"; then
+      printf '%s' "${dig}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 current_digest_from_env() {
   local raw
   raw="$(read_env_key BASE_VALIDATOR_IMAGE_DIGEST "${ENV_FILE}" || true)"
@@ -316,7 +329,11 @@ if ! remote="$(resolve_remote_digest "${TRACK_IMAGE}")"; then
   exit 0
 fi
 remote="$(normalize_digest "${remote}")"
-current="$(current_digest_from_env || true)"
+current_env="$(current_digest_from_env || true)"
+current_run="$(inspect_running_digest || true)"
+# Prefer running container as truth when present so a rewritten .env with a
+# failed/stale recreate does not permanently no-op.
+current="${current_run:-${current_env}}"
 
 if [[ "${desired_digest}" != "${remote}" ]]; then
   attempts=0
@@ -324,16 +341,23 @@ if [[ "${desired_digest}" != "${remote}" ]]; then
   desired_digest="${remote}"
 fi
 
-if [[ -n "${current}" && "${current}" == "${remote}" ]]; then
+if [[ -n "${current_env}" && "${current_env}" == "${remote}" \
+  && -n "${current_run}" && "${current_run}" == "${remote}" ]]; then
   log "info: no-op project=${PROJECT_NAME} already at ${remote}"
   if command -v jq >/dev/null 2>&1; then
     save_state_json "$(jq -n \
       --arg d "${remote}" \
-      --arg c "${current}" \
+      --arg c "${current_run}" \
       --arg t "${TRACK_IMAGE}" \
       '{desired_digest:$d,current_digest:$c,rollback_digest:null,phase:"idle",attempts:0,next_eligible_at:null,hold:false,last_error:null,alerted:false,track_image:$t}')"
   fi
   exit 0
+fi
+
+# Env already at desired but container lags: force recreate without clamoring as new resolve.
+if [[ -n "${current_env}" && "${current_env}" == "${remote}" \
+  && ( -z "${current_run}" || "${current_run}" != "${remote}" ) ]]; then
+  log "info: env pin current but container lags (run=${current_run:-none}); forcing recreate"
 fi
 
 if (( attempts >= MAX_ATTEMPTS )); then
@@ -404,6 +428,30 @@ if ! compose_cmd up -d --force-recreate --no-deps "${SERVICE_NAME}"; then
       --argjson a "${attempts}" \
       --argjson n "${next}" \
       '{desired_digest:$d,current_digest:null,rollback_digest:$r,phase:"backoff",attempts:$a,next_eligible_at:$n,hold:false,last_error:"recreate failed",alerted:false,track_image:$t}')"
+  fi
+  exit 1
+fi
+
+# Verify running container actually carries the desired digest.
+verify_run="$(inspect_running_digest || true)"
+if [[ -z "${verify_run}" || "${verify_run}" != "${remote}" ]]; then
+  log "error: post-recreate verify failed (run=${verify_run:-none} desired=${remote}); rolling back"
+  if [[ -n "${rollback_digest}" ]]; then
+    write_env_atomic "${repo}" "${rollback_digest#sha256:}"
+    compose_cmd up -d --force-recreate --no-deps "${SERVICE_NAME}" || true
+  fi
+  attempts=$((attempts + 1))
+  delay=$(( BASE_DELAY * (2 ** (attempts - 1)) ))
+  if (( delay > MAX_DELAY )); then delay="${MAX_DELAY}"; fi
+  next=$(( now + delay ))
+  if command -v jq >/dev/null 2>&1; then
+    save_state_json "$(jq -n \
+      --arg d "${remote}" \
+      --arg r "${rollback_digest}" \
+      --arg t "${TRACK_IMAGE}" \
+      --argjson a "${attempts}" \
+      --argjson n "${next}" \
+      '{desired_digest:$d,current_digest:null,rollback_digest:$r,phase:"backoff",attempts:$a,next_eligible_at:$n,hold:false,last_error:"verify failed",alerted:false,track_image:$t}')"
   fi
   exit 1
 fi
