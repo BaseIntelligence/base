@@ -2605,7 +2605,6 @@ validator:
   registry_url: ${VALIDATOR_MASTER_URL}
   agent:
     master_url: ${VALIDATOR_MASTER_URL}
-    gateway_url: ${VALIDATOR_MASTER_URL}
     capabilities: ${VALIDATOR_CAPABILITIES}
     broker_url: ${VALIDATOR_BROKER_URL}
     broker_token_file: /run/secrets/base_broker_token

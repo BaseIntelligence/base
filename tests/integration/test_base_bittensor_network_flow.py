@@ -10,6 +10,7 @@ import pytest
 import base.master.challenge_client as challenge_client_module
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.bittensor.weight_setter import WeightSetter
+from base.challenge_sdk.roles import Role, activate_role
 from base.master.challenge_client import ChallengeClient
 from base.master.service import MasterWeightService
 from base.schemas.challenge import ChallengeStatus, RegistryChallenge
@@ -57,12 +58,13 @@ async def test_base_challenge_weights_and_bittensor_weight_epoch(
         metagraph_cache=MetagraphCache(netuid=42, ttl_seconds=0, subtensor=subtensor),
         challenge_client=ChallengeClient(retries=1),
     )
-    latest = await service.compute_latest_response(
-        challenges,
-        tokens,
-        netuid=42,
-        chain_endpoint="wss://chain.example:9944",
-    )
+    with activate_role(Role.MASTER):
+        latest = await service.compute_latest_response(
+            challenges,
+            tokens,
+            netuid=42,
+            chain_endpoint="wss://chain.example:9944",
+        )
 
     assert latest.uids == [1, 2, 3]
     assert latest.weights == pytest.approx([0.15, 0.65, 0.20])
@@ -97,6 +99,7 @@ async def test_base_challenge_weights_and_bittensor_weight_epoch(
             subtensor=subtensor, wallet="validator-a-hotkey", netuid=42
         ),
         netuid=42,
+        allow_weight_submission=True,
     )
     validator_b = NormalValidatorRunner(
         registry_client=cast(Any, SimpleNamespace()),
@@ -106,10 +109,12 @@ async def test_base_challenge_weights_and_bittensor_weight_epoch(
             subtensor=subtensor, wallet="validator-b-hotkey", netuid=42
         ),
         netuid=42,
+        allow_weight_submission=True,
     )
 
-    assert await validator_a.submit_latest_weights() is True
-    assert await validator_b.submit_latest_weights() is True
+    with activate_role(Role.VALIDATOR):
+        assert await validator_a.submit_latest_weights() is True
+        assert await validator_b.submit_latest_weights() is True
     assert weights_client.fetches == [latest, latest]
     assert subtensor.set_weight_calls == [
         {
@@ -209,7 +214,7 @@ def _registry_challenge(
     return RegistryChallenge(
         slug=slug,
         name=slug,
-        image=f"ghcr.io/baseintelligence/{slug}:latest",
+        image=f"ghcr.io/baseintelligence/{slug}:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         emission_percent=emission_percent,
         status=ChallengeStatus.ACTIVE,

@@ -28,7 +28,7 @@ def _payload(slug: str) -> ChallengeCreate:
     return ChallengeCreate(
         slug=slug,
         name="Reseed Demo",
-        image="ghcr.io/baseintelligence/demo:1.0.0",
+        image="ghcr.io/baseintelligence/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1.0.0",
         emission_percent=Decimal("10"),
         env={"A": "1", "B": "old"},

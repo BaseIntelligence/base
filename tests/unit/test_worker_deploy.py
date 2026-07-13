@@ -224,14 +224,12 @@ def test_build_worker_pod_env_omits_loopback_urls() -> None:
         provider="lium",
         binding=binding,
         broker_url="http://127.0.0.1:8082",
-        gateway_url="http://localhost:8081",
     )
     blob = repr(env)
     assert "127.0.0.1" not in blob
     assert "localhost" not in blob
     assert "BASE_WORKER__AGENT__MASTER_URL" not in env
     assert "BASE_WORKER__AGENT__BROKER_URL" not in env
-    assert "BASE_WORKER__AGENT__GATEWAY_URL" not in env
     # The binding + provider still travel (they are not loopback URLs).
     assert env["BASE_WORKER__IDENTITY__MINER_HOTKEY"] == "mh"
     assert env["BASE_WORKER__DEPLOY__PROVIDER"] == "lium"
@@ -246,11 +244,9 @@ def test_build_worker_pod_env_keeps_public_urls() -> None:
         provider="lium",
         binding=binding,
         broker_url="http://broker.internal:8082",
-        gateway_url="https://gateway.example.com",
     )
     assert env["BASE_WORKER__AGENT__MASTER_URL"] == "https://master.example.com"
     assert env["BASE_WORKER__AGENT__BROKER_URL"] == "http://broker.internal:8082"
-    assert env["BASE_WORKER__AGENT__GATEWAY_URL"] == "https://gateway.example.com"
 
 
 # -- worker image config (no silent private-image pin; VAL follow-up) ----------

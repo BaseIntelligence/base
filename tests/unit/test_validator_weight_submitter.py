@@ -648,8 +648,8 @@ async def test_unknown_reconciler_promotes_to_already_submitted(
     restarted = ValidatorWeightSubmitter(
         submit_enabled=True,
         netuid=100,
-        weights_client=client,
-        weight_setter_factory=lambda: _RecordingSetter("hotkey-A"),
+        weights_client=cast(Any, client),
+        weight_setter_factory=lambda: cast(Any, _RecordingSetter("hotkey-A")),
         clock=lambda: REF,
         state_dir=tmp_path,
         expected_hotkey="hotkey-A",

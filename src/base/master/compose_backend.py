@@ -232,25 +232,39 @@ class ComposeChallengeOrchestrator:
     def __post_init__(self) -> None:
         self.compose_file = Path(self.compose_file)
         self.override_dir = Path(self.override_dir)
-        resolved_env = resolve_compose_env_file(self.compose_file, self.env_file)
+        compose_path = self.compose_path
+        override_dir = self.override_dir_path
+        resolved_env = resolve_compose_env_file(compose_path, self.env_file)
         self.env_file = resolved_env
         try:
-            self.override_dir.mkdir(parents=True, exist_ok=True)
+            override_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             # Host path may be read-only until volume is ready; mutations recreate.
             logger.warning(
                 "compose orchestrator: cannot create override dir %s (%s)",
-                self.override_dir,
+                override_dir,
                 exc,
             )
         self._runner = ComposeRunner(
             project_name=self.project_name,
-            compose_file=self.compose_file,
+            compose_file=compose_path,
             docker_bin=self.docker_bin,
-            work_dir=self.compose_file.parent if self.compose_file.exists() else None,
+            work_dir=compose_path.parent if compose_path.exists() else None,
             timeout_seconds=self.command_timeout_seconds,
             env_file=resolved_env,
         )
+
+    @property
+    def compose_path(self) -> Path:
+        """Normalized Compose file path (fields accept ``str | Path``)."""
+
+        return Path(self.compose_file)
+
+    @property
+    def override_dir_path(self) -> Path:
+        """Normalized override directory (fields accept ``str | Path``)."""
+
+        return Path(self.override_dir)
 
     @property
     def runner(self) -> ComposeRunner:
@@ -577,7 +591,7 @@ class ComposeChallengeOrchestrator:
         static = self._service_defined_in_base_compose(service)
         if static or not override.is_file():
             # Base file path requires sealed install pins.
-            cmd = self.runner._compose_base_cmd(Path(self.compose_file))
+            cmd = self.runner._compose_base_cmd(self.compose_path)
             if override.is_file():
                 cmd.extend(["-f", str(override)])
         else:
@@ -613,7 +627,7 @@ class ComposeChallengeOrchestrator:
             text=True,
             check=False,
             timeout=self.recreate_timeout_seconds,
-            cwd=str(self.compose_file.parent),
+            cwd=str(self.compose_path.parent),
             env=env,
         )
         if completed.returncode != 0:
@@ -743,7 +757,7 @@ class ComposeChallengeOrchestrator:
         return value
 
     def _override_path(self, service: str) -> Path:
-        return self.override_dir / f"{service}.override.yml"
+        return self.override_dir_path / f"{service}.override.yml"
 
     def _is_static_lifecycle(self, service: str) -> bool:
         inspect = self._inspect_service_container(service)

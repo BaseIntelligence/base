@@ -53,10 +53,7 @@ def _stale_prism_create() -> ChallengeCreate:
     return ChallengeCreate(
         slug="prism",
         name="PRISM",
-        image=(
-            "ghcr.io/baseintelligence/prism:0.1.0"
-            f"@sha256:{'b' * 64}"
-        ),
+        image=(f"ghcr.io/baseintelligence/prism:0.1.0@sha256:{'b' * 64}"),
         version="0.1.0",
         status=ChallengeStatus.ACTIVE,
         required_capabilities=["get_weights", "proxy_routes"],

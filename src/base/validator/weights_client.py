@@ -101,9 +101,7 @@ def validate_master_weights_payload(
         expected = (expected_chain_endpoint or "").strip()
         actual = (payload.chain_endpoint or "").strip()
         if expected and actual and expected != actual:
-            return (
-                f"chain_endpoint mismatch: expected {expected!r}, got {actual!r}"
-            )
+            return f"chain_endpoint mismatch: expected {expected!r}, got {actual!r}"
     if payload.expires_at <= now:
         return "payload expired"
     if (now - payload.computed_at).total_seconds() > weights_freshness_seconds:

@@ -11,7 +11,6 @@ from typing import cast
 
 import httpx
 import pytest
-from base.master.llm_gateway import LLMGatewayService, SqlAlchemyUsageRecorder
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -27,7 +26,6 @@ from base.config.loader import load_settings
 from base.config.settings import ValidatorSettings
 from base.master.assignment_coordination import (
     AssignmentCoordinationService,
-    WorkAssignmentLifecycleResolver,
 )
 from base.master.challenge_client import ChallengeClient
 from base.master.docker_orchestrator import ChallengeSpec
@@ -149,25 +147,23 @@ def test_master_weights_response_public_payload_contract() -> None:
 
     payload = response.model_dump(mode="json")
 
-    assert payload == {
-        "netuid": 42,
-        "chain_endpoint": "wss://chain.example:9944",
-        "uids": [3, 7],
-        "weights": [0.25, 0.75],
-        "hotkey_weights": {"hk-a": 0.25, "hk-b": 0.75},
-        "computed_at": "2030-01-01T12:00:00Z",
-        "expires_at": "2030-01-01T12:12:00Z",
-        "source_challenges": [
-            {
-                "slug": "demo",
-                "emission_percent": 100.0,
-                "weights": {"hk-b": 1.0},
-                "ok": True,
-                "error": None,
-            }
-        ],
-        "metagraph_updated_at": "2030-01-01T11:59:30Z",
-    }
+    assert payload["netuid"] == 42
+    assert payload["chain_endpoint"] == "wss://chain.example:9944"
+    assert payload["uids"] == [3, 7]
+    assert payload["weights"] == [0.25, 0.75]
+    assert payload["hotkey_weights"] == {"hk-a": 0.25, "hk-b": 0.75}
+    assert payload["computed_at"] == "2030-01-01T12:00:00Z"
+    assert payload["expires_at"] == "2030-01-01T12:12:00Z"
+    assert payload["source_challenges"] == [
+        {
+            "slug": "demo",
+            "emission_percent": 100.0,
+            "weights": {"hk-b": 1.0},
+            "ok": True,
+            "error": None,
+        }
+    ]
+    assert payload["metagraph_updated_at"] == "2030-01-01T11:59:30Z"
     assert "auth" not in payload
     assert "signature" not in payload
 
@@ -204,7 +200,7 @@ async def test_master_weight_service_and_validator_runner() -> None:
     challenge = RegistryChallenge(
         slug="demo",
         name="Demo",
-        image="ghcr.io/o/demo:1",
+        image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         emission_percent=Decimal("10"),
         status=ChallengeStatus.ACTIVE,
@@ -268,7 +264,7 @@ async def test_master_weight_service_computes_without_weight_setter() -> None:
     challenge = RegistryChallenge(
         slug="demo",
         name="Demo",
-        image="ghcr.io/o/demo:1",
+        image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         emission_percent=Decimal("10"),
         status=ChallengeStatus.ACTIVE,
@@ -418,7 +414,7 @@ def test_cli_create_and_runtime_controller(tmp_path: Path) -> None:
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/o/demo:1",
+            image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             version="1",
             resources={"cpus": "1.5", "memory": "2g"},
             metadata={"combined_mode_env": "CHALLENGE_COMBINED_WORKER"},
@@ -491,8 +487,6 @@ def test_cli_master_proxy_builds_single_port_app_with_admin_deps(
                 f"  secret_dir: {tmp_path / 'secrets'}",
                 "security:",
                 "  admin_token: top-secret",
-                "gateway:",
-                "  token_secret: gw-secret",
             ]
         ),
         encoding="utf-8",
@@ -509,7 +503,12 @@ def test_cli_master_proxy_builds_single_port_app_with_admin_deps(
     registry = object()
     nonce_store = object()
 
-    def fake_weight_service(settings: object, metagraph_cache: object = None) -> object:
+    def fake_weight_service(
+        settings: object,
+        metagraph_cache: object = None,
+        session_factory: object = None,
+    ) -> object:
+        del session_factory
         captured["weight_service_cache"] = metagraph_cache
         return weight_service
 
@@ -577,8 +576,6 @@ def test_cli_master_proxy_wires_coordination_plane_and_gateway(
                 f"  secret_dir: {tmp_path / 'secrets'}",
                 "security:",
                 "  admin_token: top-secret",
-                "gateway:",
-                "  token_secret: gw-secret",
             ]
         ),
         encoding="utf-8",
@@ -607,7 +604,7 @@ def test_cli_master_proxy_wires_coordination_plane_and_gateway(
     monkeypatch.setattr(
         cli_module,
         "_master_weight_service",
-        lambda settings, metagraph_cache=None: object(),
+        lambda settings, metagraph_cache=None, session_factory=None: object(),
     )
     monkeypatch.setattr(cli_module, "create_proxy_app", fake_create_proxy_app)
     monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda settings: None)
@@ -646,12 +643,6 @@ def test_cli_master_proxy_wires_coordination_plane_and_gateway(
 
     assert isinstance(proxy_kwargs["identity_resolver"], ValidatorIdentityResolver)
 
-    gateway = proxy_kwargs["llm_gateway_service"]
-    assert isinstance(gateway, LLMGatewayService)
-    # Real resolver + recorder bound to the master DB session factory.
-    assert isinstance(gateway._assignment_resolver, WorkAssignmentLifecycleResolver)
-    assert isinstance(gateway._usage_recorder, SqlAlchemyUsageRecorder)
-
 
 def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -670,8 +661,6 @@ def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
                 f"  secret_dir: {tmp_path / 'secrets'}",
                 "security:",
                 "  admin_token: top-secret",
-                "gateway:",
-                "  token_secret: gw-secret",
             ]
         ),
         encoding="utf-8",
@@ -693,7 +682,7 @@ def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
     monkeypatch.setattr(
         cli_module,
         "_master_weight_service",
-        lambda settings, metagraph_cache=None: None,
+        lambda settings, metagraph_cache=None, session_factory=None: None,
     )
     monkeypatch.setattr(cli_module, "_run_startup_migrations", lambda settings: None)
     monkeypatch.setattr(
@@ -720,14 +709,10 @@ def test_cli_built_proxy_app_serves_coordination_and_runs_health_loop(
     assert "/v1/assignments/pull" in paths
     assert "/v1/assignments/{assignment_id}/progress" in paths
     assert "/v1/assignments/{assignment_id}/result" in paths
-    assert "/llm/v1/{path:path}" in paths
-    assert "/llm/deepseek/{path:path}" not in paths
-    assert "/llm/openrouter/{path:path}" not in paths
 
     service = built.state.validator_coordination_service
     assert isinstance(service, ValidatorCoordinationService)
     assert built.state.assignment_coordination_service is not None
-    assert isinstance(built.state.llm_gateway_service, LLMGatewayService)
 
     # The background crash-detection loop runs live when the app starts.
     calls: list[int] = []
@@ -782,7 +767,7 @@ def test_cli_master_weights_once_defaults_to_compute_only(
         ChallengeCreate(
             slug="demo",
             name="Demo",
-            image="ghcr.io/o/demo:1",
+            image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             version="1",
             emission_percent=Decimal("10"),
             status=ChallengeStatus.ACTIVE,
@@ -866,9 +851,10 @@ def test_cli_master_weights_once_defaults_to_compute_only(
     assert created_runtime["wallet_hotkey"] == "hotkey"
     assert sealed_calls
     call = sealed_calls[0]
-    assert call["kwargs"]["netuid"] == 12
-    assert isinstance(call["kwargs"]["epoch"], int)
-    assert call["kwargs"]["chain_endpoint"] == "ws://chain"
+    kwargs = cast(dict[str, object], call["kwargs"])
+    assert kwargs["netuid"] == 12
+    assert isinstance(kwargs["epoch"], int)
+    assert kwargs["chain_endpoint"] == "ws://chain"
     assert setter_calls == []
 
 
@@ -1268,18 +1254,42 @@ def test_validator_run_does_not_construct_weights_client(
     assert result.exit_code == 0
 
 
-def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
+def test_seed_prism_challenges_is_idempotent_and_preserves_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prism seeding is idempotent; agent-challenge is diagnostic-only.
+
+    After gateway removal, seed never upgrades ``agent-challenge``; an existing
+    row is reported as ``AGENT_CHALLENGE_INCOMPATIBLE_NO_LLM_GATEWAY`` while its
+    pre-existing token is preserved (seed does not mutate agent-challenge).
+    """
+
+    import base.supervisor.image_ref as image_ref_module
+    from base.master.agent_challenge_compat import AGENT_CHALLENGE_INCOMPATIBLE_CODE
+
+    # Avoid live GHCR HEAD during this unit test.
+    def resolve_digest(image_reference, **kwargs: object) -> str:
+        del kwargs
+        repo = image_reference.repository
+        if repo.endswith("/prism"):
+            return "sha256:" + "a" * 64
+        if repo.endswith("/prism-evaluator"):
+            return "sha256:" + "b" * 64
+        return "sha256:" + "c" * 64
+
+    monkeypatch.setattr(image_ref_module, "resolve_remote_digest", resolve_digest)
+
     registry = ChallengeRegistry()
     _, agent_token = registry.create(
         ChallengeCreate(
             slug="agent-challenge",
             name="Agent Challenge",
-            image="ghcr.io/baseintelligence/agent-challenge:latest",
+            image=(
+                "ghcr.io/baseintelligence/agent-challenge:latest@sha256:" + ("c" * 64)
+            ),
             version="0.1.0",
             status=ChallengeStatus.ACTIVE,
             emission_percent=Decimal("40"),
-            # Stale separate-worker hint from an earlier seed; the re-seed must
-            # scrub it (combined-mode migration).
             metadata={"worker_command": ["agent-challenge-worker"]},
         )
     )
@@ -1291,8 +1301,14 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     prism_token = registry.get_token("prism")
     second = asyncio.run(cli_module.seed_prism_challenges(registry, settings))
 
-    assert first == {"prism": "created", "agent-challenge": "updated"}
-    assert second == {"prism": "updated", "agent-challenge": "updated"}
+    assert first == {
+        "prism": "created",
+        "agent-challenge": AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+    }
+    assert second == {
+        "prism": "updated",
+        "agent-challenge": AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+    }
     assert registry.get_token("agent-challenge") == agent_token
     assert registry.get_token("prism") == prism_token
 
@@ -1301,7 +1317,6 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     prism = registry.get("prism")
     agent = registry.get("agent-challenge")
     assert prism.name == "PRISM"
-    assert prism.image == "ghcr.io/baseintelligence/prism:latest"
     assert prism.version == "0.1.0"
     assert prism.status == ChallengeStatus.ACTIVE
     assert prism.emission_percent == Decimal("30")
@@ -1316,9 +1331,6 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     assert prism.env["PRISM_DOCKER_BROKER_TOKEN_FILE"] == (
         "/run/secrets/base/docker_broker_token"
     )
-    assert prism.env["PRISM_BASE_EVAL_IMAGE"] == (
-        "ghcr.io/baseintelligence/prism-evaluator:latest"
-    )
     assert prism.secrets == ["challenge_token", "docker_broker_token"]
     assert "gpu_count" not in prism.resources
     assert "gpu_capabilities" not in prism.resources
@@ -1329,57 +1341,14 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens() -> None:
     )
     assert prism.metadata["runtime_database_journal_mode"] == "wal"
     assert prism.metadata["workload_class"] == "service"
-    # Combined mode: prism single service opts in via PRISM_COMBINED_MODE; no
-    # separate-worker command hint is seeded.
     assert prism.metadata["combined_mode_env"] == "PRISM_COMBINED_MODE"
     assert "worker_command" not in prism.metadata
     assert "postgres" not in str(prism.metadata)
     assert "token" not in prism.metadata
     assert "database_url" not in prism.metadata
-    assert agent.emission_percent == Decimal("15")
-    # Combined mode: agent-challenge single service opts in via
-    # CHALLENGE_COMBINED_WORKER; the retired worker_command hint is dropped.
-    assert agent.metadata["combined_mode_env"] == "CHALLENGE_COMBINED_WORKER"
-    assert "worker_command" not in agent.metadata
-    assert agent.required_capabilities == [
-        "docker_executor",
-        "get_weights",
-        "proxy_routes",
-    ]
-    assert agent.secrets == [
-        "challenge_token",
-        "docker_broker_token",
-        "submission_env_encryption_key",
-    ]
-    assert agent.env["CHALLENGE_BENCHMARK_BACKEND"] == "terminal_bench"
-    assert agent.env["CHALLENGE_DOCKER_ENABLED"] == "true"
-    assert agent.env["CHALLENGE_DOCKER_BACKEND"] == "broker"
-    assert agent.env["CHALLENGE_DOCKER_BROKER_URL"] == "http://base-broker:8082"
-    assert agent.env["CHALLENGE_DOCKER_BROKER_TOKEN_FILE"] == (
-        "/run/secrets/base/docker_broker_token"
-    )
-    # The eval JOB joins the ISOLATED internal eval overlay (base_jobs_internal:
-    # no postgres, no internet egress), NOT the broad base_challenges overlay.
-    assert agent.env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_jobs_internal"
-    assert agent.env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "own_runner"
-    assert agent.env["CHALLENGE_HARBOR_RUNNER_IMAGE"] == (
-        "ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:latest"
-    )
-    assert agent.env["CHALLENGE_OWN_RUNNER_CACHE_ROOT"] == (
-        "/opt/agent-challenge/task-cache"
-    )
-    assert agent.env["CHALLENGE_OWN_RUNNER_DIGEST_MANIFEST"] == (
-        "/opt/agent-challenge/golden/dataset-digest.json"
-    )
-    assert agent.env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"] == (
-        "http://challenge-agent-challenge:8000"
-    )
-    assert agent.env["CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE"] == (
-        "/run/secrets/base/submission_env_encryption_key"
-    )
-    # base_sdk knobs are retired by the own_runner cutover.
-    assert "CHALLENGE_BASE_SDK_RUNNER_IMAGE" not in agent.env
-    assert "CHALLENGE_BASE_SDK_ENVIRONMENT_IMPORT_PATH" not in agent.env
+    # Seed leaves an existing agent-challenge row untouched (diagnostic only).
+    assert agent.emission_percent == Decimal("40")
+    assert agent.metadata.get("worker_command") == ["agent-challenge-worker"]
 
 
 def test_seed_prism_challenges_pins_images_for_production_policy(

@@ -308,7 +308,14 @@ def test_gated_run_rejects_disallowed_image(tmp_path: Path) -> None:
     service = _service(tmp_path, runner, **_GATED)
 
     with pytest.raises(DockerExecutorError, match="not allowed"):
-        service.run("agent", _run_request(image="docker.io/evil:latest"))
+        service.run(
+            "agent",
+            _run_request(
+                image=(
+                    "docker.io/evil:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ),
+        )
 
     assert runner.calls == []
 

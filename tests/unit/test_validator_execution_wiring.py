@@ -119,18 +119,12 @@ class FakeCoordinationClient:
         return SimpleNamespace(idempotent=already_done, status="ok")
 
 
-def _gateway_env_from_payload(payload: dict[str, Any]) -> dict[str, str]:
-    """Mirror the sibling cycle: build gateway env from the scoped payload token.
+def _dispatch_env_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    """Build non-secret task env for fake challenge dispatch (no gateway)."""
 
-    Raises if the scoped token is absent (the cycle never runs gateway=None).
-    """
-
-    token = payload["gateway_token"]
-    base = str(payload["gateway_url"]).rstrip("/")
-    return {
-        "BASE_LLM_GATEWAY_URL": f"{base}/llm/v1",
-        "BASE_GATEWAY_TOKEN": token,
-    }
+    env = {"TASK_ID": str(payload.get("task_id") or "")}
+    # Defensive: never pass through removed gateway scaffoles if present in payload.
+    return {k: v for k, v in env.items() if "GATEWAY" not in k.upper()}
 
 
 def _fake_agent_challenge_dispatch(**kwargs: Any) -> Any:
@@ -142,7 +136,7 @@ def _fake_agent_challenge_dispatch(**kwargs: Any) -> Any:
 
     async def _run() -> dict[str, Any]:
         payload = kwargs["payload"]
-        env = _gateway_env_from_payload(payload)
+        env = _dispatch_env_from_payload(payload)
         executor = FakeDockerExecutor(
             challenge="agent-challenge",
             backend="broker",
@@ -175,7 +169,7 @@ def _make_prism_dispatch(train_dir: Path, artifacts_dir: Path) -> Any:
     def _fake_prism_dispatch(**kwargs: Any) -> Any:
         async def _run() -> dict[str, Any]:
             payload = kwargs["payload"]
-            env = _gateway_env_from_payload(payload)
+            env = _dispatch_env_from_payload(payload)
             executor = FakeDockerExecutor(
                 challenge="prism",
                 backend="broker",
@@ -216,8 +210,6 @@ def _assignment(
         submission_ref="miner-hotkey",
         payload={
             "task_id": "terminal-bench/task-0",
-            "gateway_token": "scoped-token",
-            "gateway_url": GATEWAY_URL,
         },
         required_capability=capability,
         status="assigned",
@@ -235,7 +227,6 @@ def _agent(
         broker=BrokerConfig(broker_url="http://broker-val:8082", broker_token="t"),
         capabilities=["gpu", "cpu"],
         version="1.0.0",
-        gateway_url=GATEWAY_URL,
         heartbeat_interval_seconds=60,
         poll_interval_seconds=0.01,
     )
@@ -307,11 +298,12 @@ async def test_pulled_assignments_dispatch_real_runs_per_challenge(
     mount_targets = {(m.target, m.read_only) for m in prism_spec.mounts}
     assert mount_targets == {("/data/train", True), ("/artifacts", False)}
 
-    # Gateway env injected for BOTH dispatches (never gateway=None); no provider key.
+    # No provider key or legacy gateway env is injected into eval containers.
     for _challenge, spec in FakeDockerExecutor.captured:
-        assert spec.env["BASE_GATEWAY_TOKEN"] == "scoped-token"
-        assert spec.env["BASE_LLM_GATEWAY_URL"] == f"{GATEWAY_URL}/llm/v1"
+        assert "BASE_GATEWAY_TOKEN" not in spec.env
+        assert "BASE_LLM_GATEWAY_URL" not in spec.env
         assert not any(key.upper().endswith("_API_KEY") for key in spec.env)
+        assert "GATEWAY" not in " ".join(spec.env).upper()
 
     # Both results were posted to the master.
     assert {p["assignment_id"] for p in client.posted} == {"a1", "p1"}

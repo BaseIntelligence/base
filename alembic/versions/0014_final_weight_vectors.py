@@ -157,15 +157,22 @@ def upgrade() -> None:
         "aggregation_epochs",
         sa.Column("outcome_reason", sa.Text(), nullable=True),
     )
-    op.add_column(
-        "aggregation_epochs",
-        sa.Column(
-            "vector_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("final_weight_vectors.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-    )
+    # SQLite cannot ALTER-add a column FK constraint without batch mode.
+    with op.batch_alter_table("aggregation_epochs") as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "vector_id",
+                sa.Uuid(as_uuid=True),
+                nullable=True,
+            )
+        )
+        batch_op.create_foreign_key(
+            "fk_aggregation_epochs_vector_id",
+            "final_weight_vectors",
+            ["vector_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
     op.add_column(
         "aggregation_epochs",
         sa.Column(
@@ -181,7 +188,8 @@ def downgrade() -> None:
     """Revert the migration."""
 
     op.drop_column("aggregation_epochs", "source_outcomes")
-    op.drop_column("aggregation_epochs", "vector_id")
+    with op.batch_alter_table("aggregation_epochs") as batch_op:
+        batch_op.drop_column("vector_id")
     op.drop_column("aggregation_epochs", "outcome_reason")
     op.drop_column("aggregation_epochs", "mapping_policy_version")
     op.drop_column("aggregation_epochs", "burn_policy_version")

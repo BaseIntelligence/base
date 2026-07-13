@@ -154,7 +154,7 @@ def test_rejects_unsafe_image_refs(tmp_path: Path, image: str) -> None:
 
 def test_rejects_images_outside_allowlist(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="docker.io/library/python:latest",
+        image="docker.io/library/python:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/x"),),
     )

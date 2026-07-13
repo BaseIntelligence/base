@@ -420,7 +420,7 @@ def _challenge(slug: str, emission: str) -> RegistryChallenge:
     return RegistryChallenge(
         slug=slug,
         name=slug.title(),
-        image=f"ghcr.io/x/{slug}:1",
+        image=f"ghcr.io/x/{slug}:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1.0.0",
         emission_percent=Decimal(emission),
         status=ChallengeStatus.ACTIVE,

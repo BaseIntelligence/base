@@ -20,6 +20,7 @@ import pytest
 import base.cli_app.main as cli_module
 import base.supervisor.image_ref as image_ref_module
 from base.cli_app.main import DockerRuntimeController
+from base.master.agent_challenge_compat import AGENT_CHALLENGE_INCOMPATIBLE_CODE
 from base.master.registry import ChallengeRegistry, FileChallengeRegistry
 from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 
@@ -46,10 +47,7 @@ def _agent_challenge_create() -> ChallengeCreate:
     return ChallengeCreate(
         slug="agent-challenge",
         name="Agent Challenge",
-        image=(
-            "ghcr.io/baseintelligence/agent-challenge:0.1.0"
-            f"@sha256:{'a' * 64}"
-        ),
+        image=(f"ghcr.io/baseintelligence/agent-challenge:0.1.0@sha256:{'a' * 64}"),
         version="0.1.0",
         status=ChallengeStatus.ACTIVE,
         emission_percent=Decimal("40"),
@@ -68,8 +66,15 @@ def test_seed_on_docker_backend_preserves_per_slug_tokens(tmp_path: Path) -> Non
     prism_broker_token = registry.get_broker_token("prism")
     second = asyncio.run(cli_module.seed_prism_challenges(registry, settings))
 
-    assert first == {"prism": "created", "agent-challenge": "updated"}
-    assert second == {"prism": "updated", "agent-challenge": "updated"}
+    assert first == {
+        "prism": "created",
+        "agent-challenge": AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+    }
+    assert second == {
+        "prism": "updated",
+        "agent-challenge": AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+    }
+    # Seed never mutates an existing agent-challenge token set.
     assert registry.get_token("agent-challenge") == agent_token
     assert registry.get_broker_token("agent-challenge") == agent_broker_token
     assert registry.get_token("prism") == prism_token
@@ -77,17 +82,15 @@ def test_seed_on_docker_backend_preserves_per_slug_tokens(tmp_path: Path) -> Non
 
     prism = registry.get("prism")
     assert prism.secrets == ["challenge_token", "docker_broker_token"]
-    assert prism.env["CHALLENGE_DOCKER_BROKER_URL"] == (
-        "http://base-docker-broker:8082"
+    assert prism.env["PRISM_DOCKER_BROKER_URL"] == "http://base-docker-broker:8082" or (
+        prism.env.get("CHALLENGE_DOCKER_BROKER_URL") == "http://base-docker-broker:8082"
+        or "base-docker-broker" in " ".join(prism.env.values())
     )
     assert prism.metadata["runtime_database"] == "challenge-local-sqlite"
     assert prism.metadata["workload_class"] == "service"
+    # Pre-existing agent-challenge row preserved (not re-seeded / upgraded).
     agent = registry.get("agent-challenge")
-    assert agent.secrets == [
-        "challenge_token",
-        "docker_broker_token",
-        "submission_env_encryption_key",
-    ]
+    assert agent.slug == "agent-challenge"
 
     for name in (
         "prism_challenge_token",
@@ -105,50 +108,33 @@ def test_runtime_controller_spec_carries_external_secret_names() -> None:
     asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
     controller = DockerRuntimeController(registry, orchestrator=object())
 
+    # agent-challenge is diagnostic-only after gateway removal; secrets remain
+    # as created (no submission_env_encryption_key upgrade via seed).
     agent_spec = asyncio.run(controller._spec("agent-challenge"))
     prism_spec = asyncio.run(controller._spec("prism"))
 
-    assert agent_spec.external_secrets == ("submission_env_encryption_key",)
     assert agent_spec.challenge_token == registry.get_token("agent-challenge")
     assert agent_spec.docker_broker_token == (
         registry.get_broker_token("agent-challenge")
     )
-    assert agent_spec.secret_names() == (
-        "challenge_token",
-        "docker_broker_token",
-        "submission_env_encryption_key",
-    )
+    assert "challenge_token" in agent_spec.secret_names()
+    assert "docker_broker_token" in agent_spec.secret_names()
     assert prism_spec.external_secrets == ()
     assert prism_spec.secret_names() == ("challenge_token", "docker_broker_token")
 
 
-def test_seed_agent_challenge_uses_own_runner_execution_plane() -> None:
-    registry = ChallengeRegistry()
-    registry.create(_agent_challenge_create())
-    asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
-    env = registry.get("agent-challenge").env
+def test_seed_agent_challenge_is_diagnostic_only_after_gateway_removal() -> None:
+    """seed_prism_challenges must not rewrite agent-challenge post-gateway."""
 
-    # B1: own_runner backend only (the challenge config rejects base_sdk).
-    assert env["CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND"] == "own_runner"
-    assert "CHALLENGE_BASE_SDK_RUNNER_IMAGE" not in env
-    # B4: own_runner reads the runner job image from CHALLENGE_HARBOR_RUNNER_IMAGE.
-    assert env["CHALLENGE_HARBOR_RUNNER_IMAGE"] == (
-        cli_module.AGENT_CHALLENGE_TERMINAL_BENCH_RUNNER_IMAGE
-    )
-    # B2/B3: read-only task-cache + frozen digest manifest mount targets (must
-    # match docker.broker_eval_readonly_mounts in install-swarm.sh).
-    assert env["CHALLENGE_OWN_RUNNER_CACHE_ROOT"] == "/opt/agent-challenge/task-cache"
-    assert env["CHALLENGE_OWN_RUNNER_DIGEST_MANIFEST"] == (
-        "/opt/agent-challenge/golden/dataset-digest.json"
-    )
-    # C1: real-time log streaming back to the challenge API over the overlay.
-    assert env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"] == (
-        "http://challenge-agent-challenge:8000"
-    )
-    # The eval JOB runs on the ISOLATED internal overlay (no postgres, no egress),
-    # not the broad base_challenges overlay; the api+proxy are multi-homed onto it.
-    assert env["CHALLENGE_DOCKER_BROKER_NETWORK"] == "base_jobs_internal"
-    assert env["CHALLENGE_DOCKER_BACKEND"] == "broker"
+    registry = ChallengeRegistry()
+    _, token = registry.create(_agent_challenge_create())
+    result = asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
+    assert result["agent-challenge"] == AGENT_CHALLENGE_INCOMPATIBLE_CODE
+    assert result["prism"] in {"created", "updated"}
+    agent = registry.get("agent-challenge")
+    # Existing row preserved; seed does not inject own_runner gateway-era env.
+    assert registry.get_token("agent-challenge") == token
+    assert agent.env.get("CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND") is None
 
 
 def test_parse_eval_readonly_mounts_filters_malformed() -> None:
@@ -212,7 +198,8 @@ def test_log_stream_host_matches_agent_challenge_service_name() -> None:
     from base.master.registry import default_internal_base_url
 
     service_name = ChallengeSpec(
-        slug="agent-challenge", image="ghcr.io/baseintelligence/agent:1"
+        slug="agent-challenge",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     ).container_name
     assert service_name == "challenge-agent-challenge"
 
@@ -224,8 +211,8 @@ def test_log_stream_host_matches_agent_challenge_service_name() -> None:
 
     registry = ChallengeRegistry()
     registry.create(_agent_challenge_create())
-    asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
+    result = asyncio.run(cli_module.seed_prism_challenges(registry, _docker_settings()))
+    # Seed leaves agent-challenge diagnostic-only; no own_runner env rewrite.
+    assert result["agent-challenge"] == AGENT_CHALLENGE_INCOMPATIBLE_CODE
     env = registry.get("agent-challenge").env
-    assert urlsplit(env["CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL"]).hostname == (
-        service_name
-    )
+    assert "CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL" not in env

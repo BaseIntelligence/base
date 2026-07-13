@@ -269,9 +269,7 @@ async def test_production_side_effect_entrypoints_are_role_gated() -> None:
 
     score_calls: list[str] = []
 
-    @role_contract(
-        role=Role.CHALLENGE, capability=Capability.CHALLENGE_ORDINARY_PROOF
-    )
+    @role_contract(role=Role.CHALLENGE, capability=Capability.CHALLENGE_ORDINARY_PROOF)
     async def challenge_result_ingest(value: str) -> str:
         score_calls.append(value)
         return value

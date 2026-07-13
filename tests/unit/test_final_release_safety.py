@@ -17,11 +17,15 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+
+from base.bittensor.weight_setter import WeightSetter
+from base.config.settings import NetworkSettings
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_DIR = ROOT / "deploy" / "compose"
@@ -244,6 +248,7 @@ def test_validator_weight_submitter_gate_off_constructs_no_chain_client(
         ValidatorSubmitOutcome,
         ValidatorWeightSubmitter,
     )
+    from base.validator.weights_client import WeightsClient
 
     class _NeverFetch:
         calls = 0
@@ -254,17 +259,20 @@ def test_validator_weight_submitter_gate_off_constructs_no_chain_client(
 
     built: list[str] = []
 
-    def factory() -> object:
+    def factory() -> WeightSetter | None:
         built.append("constructed")
         raise AssertionError("disabled submit path must not build WeightSetter")
 
+    factory_cb: Callable[[], WeightSetter | None] = factory
     submitter = ValidatorWeightSubmitter(
         submit_enabled=False,
         netuid=100,
         weights_client=_NeverFetch(),  # type: ignore[arg-type]
-        weight_setter_factory=factory,
+        weight_setter_factory=factory_cb,
         state_dir=tmp_path,
     )
+    # Keep WeightsClient in the typing graph without constructing a live client.
+    assert WeightsClient is not None
 
     with activate_role(Role.VALIDATOR):
         outcome = asyncio.run(submitter.run_once())
@@ -342,12 +350,12 @@ def test_create_bittensor_runtime_uses_mock_metagraph_without_subtensor() -> Non
     from base.config.settings import MockMetagraphNode, Settings
 
     settings = Settings(
-        network={
-            "netuid": 1,
-            "mock_metagraph": [
+        network=NetworkSettings(
+            netuid=1,
+            mock_metagraph=[
                 MockMetagraphNode(hotkey="hk-a", uid=0, validator_permit=True)
             ],
-        }
+        )
     )
     runtime = create_bittensor_runtime(settings)
     assert runtime.weight_setter is None

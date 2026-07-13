@@ -58,7 +58,7 @@ def test_orchestrator_sets_challenge_shared_token_file(tmp_path: Path) -> None:
     env = orchestrator._build_environment(  # noqa: SLF001
         ChallengeSpec(
             slug="demo",
-            image="ghcr.io/baseintelligence/demo:1.0.0",
+            image="ghcr.io/baseintelligence/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             challenge_token="secret",
         )
     )

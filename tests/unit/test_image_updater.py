@@ -224,7 +224,10 @@ def test_resolver_failure_logs_and_skips_update() -> None:
 
 
 def test_resolver_failure_does_not_block_other_targets() -> None:
-    other_image = "ghcr.io/baseintelligence/other:latest"
+    other_image = (
+        "ghcr.io/baseintelligence/other:latest@sha256:"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     runner = FakeRunner(
         {
             "base-admin": f"{IMAGE}@{DIGEST_A}",

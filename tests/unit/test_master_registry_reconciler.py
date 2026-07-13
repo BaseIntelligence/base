@@ -45,7 +45,7 @@ def _record(
     return ChallengeRecord(
         slug=slug,
         name=slug.title(),
-        image=f"ghcr.io/o/{slug}:1",
+        image=f"ghcr.io/o/{slug}:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         emission_percent=Decimal("0"),
         status=status,
@@ -131,7 +131,7 @@ class FakeOrchestrator:
 async def test_starts_all_active_challenges_once_idempotent() -> None:
     registry = FakeRegistry(
         [
-            _record("agent-challenge"),
+            _record("demo"),
             _record("prism"),
             _record("draft-one", ChallengeStatus.DRAFT),
         ]
@@ -140,15 +140,15 @@ async def test_starts_all_active_challenges_once_idempotent() -> None:
     reconciler = MasterChallengeReconciler(registry=registry, orchestrator=orchestrator)
 
     first = await reconciler.reconcile_once()
-    assert sorted(first.started) == ["agent-challenge", "prism"]
+    assert sorted(first.started) == ["demo", "prism"]
     assert first.stopped == []
-    assert sorted(orchestrator.started) == ["agent-challenge", "prism"]
+    assert sorted(orchestrator.started) == ["demo", "prism"]
 
     # Idempotent on re-run: each ACTIVE challenge is started exactly once.
     second = await reconciler.reconcile_once()
     assert second.started == []
     assert second.stopped == []
-    assert sorted(orchestrator.started) == ["agent-challenge", "prism"]
+    assert sorted(orchestrator.started) == ["demo", "prism"]
     # It asks the registry for ACTIVE challenges only.
     assert registry.active_only_calls == [True, True]
 
@@ -198,26 +198,26 @@ async def test_new_active_challenge_deploys_next_pass() -> None:
 
     # Register a new ACTIVE challenge; it deploys on the next pass, and the
     # already-deployed one is not re-started.
-    registry.records.append(_record("agent-challenge"))
+    registry.records.append(_record("demo"))
     result = await reconciler.reconcile_once()
-    assert result.started == ["agent-challenge"]
+    assert result.started == ["demo"]
     assert result.stopped == []
-    assert orchestrator.started == ["prism", "agent-challenge"]
+    assert orchestrator.started == ["prism", "demo"]
 
 
 async def test_deactivated_challenge_is_stopped() -> None:
     prism = _record("prism")
-    registry = FakeRegistry([prism, _record("agent-challenge")])
+    registry = FakeRegistry([prism, _record("demo")])
     orchestrator = FakeOrchestrator()
     reconciler = MasterChallengeReconciler(registry=registry, orchestrator=orchestrator)
 
     await reconciler.reconcile_once()
-    assert sorted(orchestrator.started) == ["agent-challenge", "prism"]
+    assert sorted(orchestrator.started) == ["demo", "prism"]
 
     # Flip prism away from ACTIVE -> its service is torn down next pass.
     registry.records = [
         _record("prism", ChallengeStatus.INACTIVE),
-        _record("agent-challenge"),
+        _record("demo"),
     ]
     result = await reconciler.reconcile_once()
     assert result.started == []
@@ -226,14 +226,14 @@ async def test_deactivated_challenge_is_stopped() -> None:
 
 
 async def test_removed_challenge_is_stopped() -> None:
-    registry = FakeRegistry([_record("prism"), _record("agent-challenge")])
+    registry = FakeRegistry([_record("prism"), _record("demo")])
     orchestrator = FakeOrchestrator()
     reconciler = MasterChallengeReconciler(registry=registry, orchestrator=orchestrator)
 
     await reconciler.reconcile_once()
 
     # Remove prism from the registry entirely -> torn down next pass.
-    registry.records = [_record("agent-challenge")]
+    registry.records = [_record("demo")]
     result = await reconciler.reconcile_once()
     assert result.stopped == ["prism"]
     assert orchestrator.stopped == ["prism"]
@@ -325,7 +325,7 @@ async def test_mixed_pass_adopts_starts_and_stops_across_restart() -> None:
     registry = FakeRegistry(
         [
             _record("prism", ChallengeStatus.ACTIVE),  # already running -> adopt
-            _record("agent-challenge", ChallengeStatus.ACTIVE),  # no svc -> start
+            _record("demo", ChallengeStatus.ACTIVE),  # no svc -> start
             _record("regtest", ChallengeStatus.INACTIVE),  # orphan svc -> stop
         ]
     )
@@ -335,11 +335,11 @@ async def test_mixed_pass_adopts_starts_and_stops_across_restart() -> None:
     result = await reconciler.reconcile_once()
 
     assert result.adopted == ["prism"]
-    assert result.started == ["agent-challenge"]
+    assert result.started == ["demo"]
     assert result.stopped == ["regtest"]
-    assert orchestrator.started == ["agent-challenge"]
+    assert orchestrator.started == ["demo"]
     assert orchestrator.stopped == ["regtest"]
-    assert orchestrator.running == {"prism", "agent-challenge"}
+    assert orchestrator.running == {"prism", "demo"}
 
 
 async def test_reconcile_pass_emits_info_summary(
@@ -350,7 +350,7 @@ async def test_reconcile_pass_emits_info_summary(
 
     registry = FakeRegistry(
         [
-            _record("agent-challenge", ChallengeStatus.ACTIVE),
+            _record("demo", ChallengeStatus.ACTIVE),
             _record("prism", ChallengeStatus.ACTIVE),  # already running -> adopt
             _record("regtest", ChallengeStatus.INACTIVE),  # orphan -> stop
         ]
@@ -369,7 +369,7 @@ async def test_reconcile_pass_emits_info_summary(
     assert len(summaries) == 1
     summary = summaries[0]
     assert "adopted=['prism']" in summary
-    assert "started=['agent-challenge']" in summary
+    assert "started=['demo']" in summary
     assert "stopped=['regtest']" in summary
 
 
@@ -401,7 +401,7 @@ async def test_spec_is_built_like_the_legacy_runner() -> None:
     registry = FakeRegistry(
         [
             _record(
-                "agent-challenge",
+                "demo",
                 resources={"cpu": "2", "memory": "1g"},
                 env={"FOO": "bar"},
                 metadata={"combined_mode_env": "CHALLENGE_COMBINED_WORKER"},
@@ -413,8 +413,9 @@ async def test_spec_is_built_like_the_legacy_runner() -> None:
 
     await reconciler.reconcile_once()
     spec = orchestrator.specs[0]
-    assert spec.slug == "agent-challenge"
-    assert spec.image == "ghcr.io/o/agent-challenge:1"
+    assert spec.slug == "demo"
+    assert spec.image.startswith("ghcr.io/o/demo:1")
+    assert "@sha256:" in spec.image
     assert spec.workload_class == "service"
     assert spec.resources.cpu == 2.0
     assert spec.resources.memory == "1g"
@@ -487,7 +488,7 @@ async def test_reconciler_creates_no_separate_worker_service() -> None:
 
     registry = FakeRegistry(
         [
-            _record("agent-challenge", metadata={"combined_mode_env": "X"}),
+            _record("demo", metadata={"combined_mode_env": "X"}),
             _record("prism", metadata={"combined_mode_env": "Y"}),
         ]
     )
@@ -496,7 +497,7 @@ async def test_reconciler_creates_no_separate_worker_service() -> None:
 
     await reconciler.reconcile_once()
     names = sorted(spec.container_name for spec in orchestrator.specs)
-    assert names == ["challenge-agent-challenge", "challenge-prism"]
+    assert names == ["challenge-demo", "challenge-prism"]
     assert not any(name.endswith("-worker") for name in names)
 
 
@@ -538,12 +539,12 @@ async def test_stop_failure_is_retried_next_pass() -> None:
 
 
 async def test_supports_async_registry() -> None:
-    registry = FakeAsyncRegistry([_record("prism"), _record("agent-challenge")])
+    registry = FakeAsyncRegistry([_record("prism"), _record("demo")])
     orchestrator = FakeOrchestrator()
     reconciler = MasterChallengeReconciler(registry=registry, orchestrator=orchestrator)
 
     result = await reconciler.reconcile_once()
-    assert sorted(result.started) == ["agent-challenge", "prism"]
+    assert sorted(result.started) == ["demo", "prism"]
 
 
 async def test_run_registry_reconcile_loop_runs_then_stops() -> None:

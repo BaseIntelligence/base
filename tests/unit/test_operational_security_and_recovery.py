@@ -28,7 +28,12 @@ from pydantic import ValidationError
 from base.challenge_sdk.app_factory import create_challenge_app
 from base.challenge_sdk.config import ChallengeSettings
 from base.config.policy import ProductionPolicyError
-from base.config.settings import Settings
+from base.config.settings import (
+    DatabaseSettings,
+    DockerSettings,
+    SecuritySettings,
+    Settings,
+)
 from base.master.weight_flow_metrics import (
     WeightFlowMetrics,
     get_weight_flow_metrics,
@@ -164,14 +169,18 @@ def test_require_protected_secret_file_mode_and_content(tmp_path: Path) -> None:
 
 def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
     # Pydantic wraps ProductionPolicyError as ValidationError; accept both.
-    common_db = {"url": "postgresql+asyncpg://base:x@localhost:5432/base"}
-    common_docker = {"broker_allowed_images": ["ghcr.io/baseintelligence/base-master"]}
+    common_db = DatabaseSettings(url="postgresql+asyncpg://base:x@localhost:5432/base")
+    common_docker = DockerSettings(
+        broker_allowed_images=["ghcr.io/baseintelligence/base-master"]
+    )
     with pytest.raises(
         (ProductionPolicyError, ValidationError), match="inline admin_token"
     ):
         Settings(
             environment="production",
-            security={"admin_token": "INLINE-CANARY", "admin_token_file": None},
+            security=SecuritySettings(
+                admin_token="INLINE-CANARY", admin_token_file=None
+            ),
             database=common_db,
             docker=common_docker,
         )
@@ -182,17 +191,17 @@ def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
     ):
         Settings(
             environment="production",
-            security={
-                "admin_token": "INLINE-CANARY",
-                "admin_token_file": str(tmp_path / "missing-admin"),
-            },
+            security=SecuritySettings(
+                admin_token="INLINE-CANARY",
+                admin_token_file=str(tmp_path / "missing-admin"),
+            ),
             database=common_db,
             docker=common_docker,
         )
     # Path required but may be a container mount that does not exist offline.
     Settings(
         environment="production",
-        security={"admin_token_file": str(tmp_path / "missing-admin")},
+        security=SecuritySettings(admin_token_file=str(tmp_path / "missing-admin")),
         database=common_db,
         docker=common_docker,
     )
@@ -211,7 +220,7 @@ def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
     ):
         Settings(
             environment="production",
-            security={"admin_token_file": str(loose)},
+            security=SecuritySettings(admin_token_file=str(loose)),
             database=common_db,
             docker=common_docker,
         )
@@ -221,7 +230,7 @@ def test_production_rejects_inline_and_missing_secrets(tmp_path: Path) -> None:
     with pytest.raises((ProductionPolicyError, ValidationError), match="empty"):
         Settings(
             environment="production",
-            security={"admin_token_file": str(empty)},
+            security=SecuritySettings(admin_token_file=str(empty)),
             database=common_db,
             docker=common_docker,
         )

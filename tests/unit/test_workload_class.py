@@ -14,14 +14,17 @@ from base.master.workload_ledger import WorkloadEntry
 
 
 def test_challenge_spec_defaults_to_job() -> None:
-    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/baseintelligence/eval:1")
+    spec = ChallengeSpec(
+        slug="eval-run",
+        image="ghcr.io/baseintelligence/eval:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
     assert spec.workload_class == "job"
 
 
 def test_challenge_spec_accepts_explicit_service() -> None:
     spec = ChallengeSpec(
         slug="prism",
-        image="ghcr.io/baseintelligence/prism:1",
+        image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
     )
     assert spec.workload_class == "service"
@@ -31,14 +34,17 @@ def test_challenge_spec_rejects_invalid_workload_class() -> None:
     with pytest.raises(DockerOrchestrationError, match="workload_class"):
         ChallengeSpec(
             slug="prism",
-            image="ghcr.io/baseintelligence/prism:1",
+            image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             workload_class="daemon",  # type: ignore[arg-type]
         )
 
 
 def test_challenge_spec_default_matches_workload_ledger_default() -> None:
     entry = WorkloadEntry(key="svc-1", kind="swarm_service", challenge_slug="prism")
-    spec = ChallengeSpec(slug="eval-run", image="ghcr.io/baseintelligence/eval:1")
+    spec = ChallengeSpec(
+        slug="eval-run",
+        image="ghcr.io/baseintelligence/eval:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
     assert spec.workload_class == entry.workload_class == "job"
 
 
@@ -48,7 +54,10 @@ async def test_cli_runtime_controller_spec_is_service() -> None:
 
     class _Record:
         slug = "prism"
-        image = "ghcr.io/baseintelligence/prism:1"
+        image = (
+            "ghcr.io/baseintelligence/prism:1.0.0@sha256:"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
         version = "1.0.0"
         env: dict[str, str] = {}
         resources: dict[str, str] = {}

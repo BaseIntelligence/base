@@ -79,7 +79,12 @@ def _reject_removed_gateway_config(data: dict[str, Any]) -> None:
                     unknown.append(f"{section_name}.{key}")
     for env_key in os.environ:
         upper = env_key.upper()
-        if any(upper == prefix or upper.startswith(f"{prefix}_") or upper.startswith(f"{prefix}__") for prefix in _REMOVED_GATEWAY_ENV_PREFIXES):
+        if any(
+            upper == prefix
+            or upper.startswith(f"{prefix}_")
+            or upper.startswith(f"{prefix}__")
+            for prefix in _REMOVED_GATEWAY_ENV_PREFIXES
+        ):
             unknown.append(env_key)
         if upper.startswith("BASE_") and "GATEWAY" in upper:
             unknown.append(env_key)

@@ -30,6 +30,7 @@ import pytest
 from sqlalchemy import select
 
 from base.bittensor.metagraph_cache import MetagraphCache
+from base.challenge_sdk.roles import Role, activate_role
 from base.db import (
     Base,
     Validator,
@@ -68,6 +69,13 @@ from base.security.worker_auth import (
     SqlAlchemyWorkerNonceStore,
 )
 from base.worker.proof import MANIFEST_SHA256_PAYLOAD_KEY, PROOF_PAYLOAD_KEY
+
+
+@pytest.fixture(autouse=True)
+def _activate_master_role():
+    with activate_role(Role.MASTER):
+        yield
+
 
 NOW = datetime(2026, 6, 28, 12, 0, 0, tzinfo=UTC)
 TTL = 120
@@ -412,6 +420,8 @@ async def test_audit_outcome_faults_divergent_worker_only(env: Env) -> None:
     await _add_gpu_validator(env.factory)
     await env.validator_plane.assign_pending(seed=1)
     audit = await _unit(env.factory, audit_work_unit_id("U"))
+    # Pull transitions ASSIGNED -> RUNNING required by coordination post_result.
+    await env.validator_coordination.pull(hotkey=GPU_VALIDATOR)
     await env.validator_coordination.post_result(
         assignment_id=str(audit.id),
         hotkey=GPU_VALIDATOR,
@@ -463,6 +473,8 @@ async def test_audit_faults_are_idempotent(env: Env) -> None:
     await _add_gpu_validator(env.factory)
     await env.validator_plane.assign_pending(seed=1)
     audit = await _unit(env.factory, audit_work_unit_id("U"))
+    # Pull transitions ASSIGNED -> RUNNING required by coordination post_result.
+    await env.validator_coordination.pull(hotkey=GPU_VALIDATOR)
     await env.validator_coordination.post_result(
         assignment_id=str(audit.id),
         hotkey=GPU_VALIDATOR,

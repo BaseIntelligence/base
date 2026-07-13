@@ -1,4 +1,4 @@
-"""Unit tests for the validator agent execution seam."""
+"""Unit tests for the validator agent execution seam (gateway removed)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from base.validator.agent.executor import (
     AssignmentExecutionError,
     BrokerAssignmentExecutor,
     BrokerConfig,
-    gateway_env_for_assignment,
 )
 
 
@@ -30,24 +29,6 @@ def _assignment(payload: dict[str, Any], *, capability: str = "cpu") -> Assignme
         attempt=1,
         max_attempts=3,
     )
-
-
-def test_gateway_env_points_at_gateway_and_carries_token_no_provider_key() -> None:
-    assignment = _assignment({"gateway_token": "scoped-token"})
-    env = gateway_env_for_assignment(assignment, gateway_url="https://master/")
-
-    assert env["BASE_LLM_GATEWAY_URL"] == "https://master/llm/v1"
-    assert env["BASE_GATEWAY_TOKEN"] == "scoped-token"
-    # No provider-path base URLs and no raw provider key ever reach the runtime.
-    assert "DEEPSEEK_BASE_URL" not in env
-    assert "OPENROUTER_BASE_URL" not in env
-    assert "DEEPSEEK_API_KEY" not in env
-    assert "OPENROUTER_API_KEY" not in env
-
-
-def test_gateway_env_without_token_omits_token_key() -> None:
-    env = gateway_env_for_assignment(_assignment({}), gateway_url="https://master")
-    assert "BASE_GATEWAY_TOKEN" not in env
 
 
 class _FakeDockerExecutor:
@@ -67,7 +48,7 @@ class _FakeDockerExecutor:
         )
 
 
-async def test_broker_executor_dispatches_run_spec_with_gateway_env(
+async def test_broker_executor_dispatches_run_spec_stripping_provider_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(executor_module, "DockerExecutor", _FakeDockerExecutor)
@@ -76,16 +57,16 @@ async def test_broker_executor_dispatches_run_spec_with_gateway_env(
             "run_spec": {
                 "image": "ghcr.io/baseintelligence/runner:1",
                 "command": ["run", "--task", "task-1"],
-                "env": {"FOO": "bar", "DEEPSEEK_API_KEY": "leaked"},
+                "env": {
+                    "FOO": "bar",
+                    "DEEPSEEK_API_KEY": "leaked",
+                    "BASE_GATEWAY_TOKEN": "scoped",
+                },
             }
         }
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={
-            "BASE_GATEWAY_TOKEN": "scoped",
-            "BASE_LLM_GATEWAY_URL": "g/llm/v1",
-        },
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082", broker_token="t"),
     )
 
@@ -106,58 +87,9 @@ async def test_broker_executor_dispatches_run_spec_with_gateway_env(
     spec = fake.spec
     assert spec.image == "ghcr.io/baseintelligence/runner:1"
     assert spec.command == ("run", "--task", "task-1")
-    # gateway env injected; the provider key from run_spec env is stripped.
     assert spec.env["FOO"] == "bar"
-    assert spec.env["BASE_GATEWAY_TOKEN"] == "scoped"
     assert "DEEPSEEK_API_KEY" not in spec.env
-
-
-class _LeakingDockerExecutor:
-    """Fake broker executor whose container echoes the gateway token."""
-
-    last: _LeakingDockerExecutor | None = None
-
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-        _LeakingDockerExecutor.last = self
-
-    def run(self, spec: Any, timeout_seconds: int) -> DockerRunResult:
-        token = spec.env["BASE_GATEWAY_TOKEN"]
-        return DockerRunResult(
-            container_name="c1",
-            stdout=f"using token {token} to call gateway",
-            stderr=f"error with auth header Bearer {token}",
-            returncode=0,
-        )
-
-
-async def test_broker_executor_redacts_gateway_token_from_captured_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(executor_module, "DockerExecutor", _LeakingDockerExecutor)
-    secret_token = "scoped-gateway-token-abc123"
-    assignment = _assignment({"run_spec": {"image": "img:1", "command": ["run"]}})
-    context = AssignmentContext(
-        assignment=assignment,
-        gateway_env={
-            "BASE_GATEWAY_TOKEN": secret_token,
-            "BASE_LLM_GATEWAY_URL": "http://master/llm/v1",
-        },
-        broker=BrokerConfig(broker_url="http://127.0.0.1:8082"),
-    )
-
-    async def _noop_progress(**_: Any) -> None:
-        return None
-
-    result = await BrokerAssignmentExecutor().execute(context, progress=_noop_progress)
-
-    # The container surfaced the token, but it is redacted from captured output.
-    assert secret_token not in result.payload["stdout"]
-    assert secret_token not in result.payload["stderr"]
-    assert "[REDACTED_GATEWAY_TOKEN]" in result.payload["stdout"]
-    assert "[REDACTED_GATEWAY_TOKEN]" in result.payload["stderr"]
-    # Non-secret content is preserved.
-    assert "to call gateway" in result.payload["stdout"]
+    assert "BASE_GATEWAY_TOKEN" not in spec.env
 
 
 async def test_broker_executor_gpu_capability_requests_gpu(
@@ -170,7 +102,6 @@ async def test_broker_executor_gpu_capability_requests_gpu(
     )
     context = AssignmentContext(
         assignment=assignment,
-        gateway_env={},
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082"),
     )
 
@@ -185,7 +116,6 @@ async def test_broker_executor_gpu_capability_requests_gpu(
 async def test_broker_executor_missing_run_spec_raises() -> None:
     context = AssignmentContext(
         assignment=_assignment({}),
-        gateway_env={},
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082"),
     )
 

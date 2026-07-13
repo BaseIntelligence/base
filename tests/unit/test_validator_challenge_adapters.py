@@ -51,7 +51,6 @@ def _assignment(slug: str, *, capability: str) -> AssignmentView:
 def _context(assignment: AssignmentView) -> AssignmentContext:
     return AssignmentContext(
         assignment=assignment,
-        gateway_env={"BASE_GATEWAY_TOKEN": "scoped-token"},
         broker=BrokerConfig(
             broker_url="http://broker-val:8082",
             broker_token="bt",

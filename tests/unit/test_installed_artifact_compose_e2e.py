@@ -322,7 +322,7 @@ def test_production_registry_activation_requires_digest_and_returns_token_once()
     None
 ):
     registry = ChallengeRegistry(production_policy=True)
-    # Production create requires digests.
+    # Production create requires digests (mutable tag only is refused).
     with pytest.raises((ChallengeAdoptionError, ValueError), match="digest|tag"):
         registry.create(
             ChallengeCreate(

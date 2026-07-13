@@ -487,7 +487,6 @@ def test_validator_template_exists_and_loads_with_agent_block() -> None:
 
     agent = settings.validator.agent
     assert agent.master_url
-    assert agent.gateway_url
     assert agent.broker_url
     assert agent.capabilities  # cpu (and gpu for the GPU validator)
     # A distinct hotkey wallet identity the agent signs coordination calls with.

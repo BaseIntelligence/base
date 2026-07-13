@@ -47,7 +47,7 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
             ChallengeCreate(
                 slug="weights-smoke-active",
                 name="Weights Smoke Active",
-                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=Decimal("100"),
                 status=ChallengeStatus.ACTIVE,
@@ -58,7 +58,7 @@ async def test_master_weights_dry_run_uses_postgres_active_challenges_without_su
             ChallengeCreate(
                 slug="weights-smoke-inactive",
                 name="Weights Smoke Inactive",
-                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=Decimal("0"),
                 status=ChallengeStatus.INACTIVE,
@@ -115,7 +115,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="prism",
                 name="PRISM",
-                image="ghcr.io/baseintelligence/prism:latest",
+                image="ghcr.io/baseintelligence/prism:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="0.1.0",
                 emission_percent=Decimal("30"),
                 status=ChallengeStatus.ACTIVE,
@@ -126,7 +126,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="agent-challenge",
                 name="Agent Challenge",
-                image="ghcr.io/baseintelligence/agent-challenge:1.0.0",
+                image="ghcr.io/baseintelligence/agent-challenge:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=Decimal("15"),
                 status=ChallengeStatus.ACTIVE,
@@ -137,7 +137,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="weights-api-active",
                 name="Weights API Active",
-                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=Decimal("5"),
                 status=ChallengeStatus.ACTIVE,
@@ -148,7 +148,7 @@ async def test_master_weights_latest_response_uses_active_challenges_no_submit(
             ChallengeCreate(
                 slug="weights-api-inactive",
                 name="Weights API Inactive",
-                image="ghcr.io/baseintelligence/weights-smoke:1.0.0",
+                image="ghcr.io/baseintelligence/weights-smoke:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=Decimal("50"),
                 status=ChallengeStatus.INACTIVE,

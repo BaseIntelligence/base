@@ -97,20 +97,25 @@ def test_targets_are_settings_driven() -> None:
     custom = [
         ImageUpdateTargetSetting(
             service="custom-svc",
-            image="ghcr.io/baseintelligence/base-master:latest",
+            image="ghcr.io/baseintelligence/base-master:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
     ]
     targets = resolve_image_update_targets(_settings(image_updater_targets=custom))
     assert targets == (
         ImageUpdateTarget(
             service="custom-svc",
-            image="ghcr.io/baseintelligence/base-master:latest",
+            image="ghcr.io/baseintelligence/base-master:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
     )
 
 
 def test_build_scheduled_tasks_honours_configured_targets() -> None:
-    custom = [ImageUpdateTargetSetting(service="custom-svc", image="ghcr.io/x:latest")]
+    custom = [
+        ImageUpdateTargetSetting(
+            service="custom-svc",
+            image="ghcr.io/x:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+    ]
     targets = _image_updater_targets(_settings(image_updater_targets=custom))
     assert [t.service for t in targets] == ["custom-svc"]
 
@@ -185,13 +190,13 @@ def test_custom_validator_service_name_and_image_respected() -> None:
             image_updater_targets=[],
             validator_agent_target_enabled=True,
             validator_agent_service="base-validator-prod",
-            validator_agent_image="ghcr.io/baseintelligence/base:latest",
+            validator_agent_image="ghcr.io/baseintelligence/base:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
     )
     assert targets == (
         ImageUpdateTarget(
             service="base-validator-prod",
-            image="ghcr.io/baseintelligence/base:latest",
+            image="ghcr.io/baseintelligence/base:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ),
     )
 

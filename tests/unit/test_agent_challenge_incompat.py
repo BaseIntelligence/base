@@ -22,7 +22,8 @@ class _Registry:
     def __init__(self, challenges) -> None:
         self._challenges = challenges
 
-    async def list(self):
+    async def list(self, *, active_only: bool = False):
+        del active_only
         return list(self._challenges)
 
 
@@ -31,10 +32,12 @@ class _Orchestrator:
         self.started: list[str] = []
         self.stopped: list[str] = []
 
-    def start_challenge(self, spec) -> None:
+    def start_challenge(self, spec, *, recreate: bool = False) -> None:
+        del recreate
         self.started.append(spec.slug)
 
-    def stop_challenge(self, slug: str) -> None:
+    def stop_challenge(self, slug: str, *, remove: bool = False) -> None:
+        del remove
         self.stopped.append(slug)
 
     def list_running_challenge_slugs(self) -> frozenset[str]:
@@ -50,7 +53,7 @@ async def test_reconciler_refuses_agent_challenge(
         SimpleNamespace(
             slug="agent-challenge",
             status="active",
-            image="ghcr.io/example/agent-challenge:latest",
+            image="ghcr.io/example/agent-challenge:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             internal_base_url="http://challenge-agent-challenge:8000",
             env={},
             metadata={},
@@ -65,7 +68,7 @@ async def test_reconciler_refuses_agent_challenge(
         SimpleNamespace(
             slug="prism",
             status="active",
-            image="ghcr.io/example/prism:latest",
+            image="ghcr.io/example/prism:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             internal_base_url="http://challenge-prism:8080",
             env={},
             metadata={},
@@ -98,7 +101,8 @@ async def test_reconciler_refuses_agent_challenge(
     )
     with caplog.at_level(logging.ERROR):
         # Intercept prism start; namespace is incomplete in this unit test.
-        def _start(spec):  # noqa: ANN001
+        def _start(spec, *, recreate: bool = False):  # noqa: ANN001
+            del recreate
             if getattr(spec, "slug", None) == "prism":
                 orchestrator.started.append("prism")
                 return

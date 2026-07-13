@@ -279,7 +279,7 @@ def _broker_executor() -> DockerExecutor:
 
 def _gpu_spec(workspace: Path, artifacts: Path) -> DockerRunSpec:
     return DockerRunSpec(
-        image="ghcr.io/baseintelligence/prism-evaluator:latest",
+        image="ghcr.io/baseintelligence/prism-evaluator:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("torchrun", "/workspace/runner.py", "/workspace/payload.json"),
         mounts=(
             DockerMount(workspace, "/workspace"),

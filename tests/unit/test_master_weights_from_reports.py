@@ -116,7 +116,7 @@ def _make_active_registry(
             ChallengeCreate(
                 slug=slug,
                 name=slug.title(),
-                image=f"ghcr.io/baseintelligence/{slug}:1.0.0",
+                image=f"ghcr.io/baseintelligence/{slug}:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 version="1.0.0",
                 emission_percent=emission,  # type: ignore[arg-type]
                 status=ChallengeStatus.ACTIVE,

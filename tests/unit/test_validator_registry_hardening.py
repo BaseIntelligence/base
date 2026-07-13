@@ -128,7 +128,7 @@ async def test_register_retries_as_update_on_integrity_error(tmp_path: Any) -> N
         original = service._register_in_session
         state = {"calls": 0}
 
-        async def racing(session: Any, **kwargs: Any) -> Validator:
+        async def racing(session: Any, **kwargs: Any) -> Any:
             state["calls"] += 1
             if state["calls"] == 1:
                 # A concurrent first-register commits the row first, then our

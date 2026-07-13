@@ -83,7 +83,6 @@ def _agent(
         broker=BrokerConfig(broker_url="http://127.0.0.1:8082"),
         capabilities=["cpu"],
         version="0.1.0",
-        gateway_url="http://master",
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         poll_interval_seconds=0.0,
         backoff=backoff,

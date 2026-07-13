@@ -307,8 +307,9 @@ def test_validator_node_requires_master_url(tmp_path: Path) -> None:
 
 
 def test_validator_node_master_url_is_not_self_referential(tmp_path: Path) -> None:
-    # The rendered validator.yaml points registry/master/gateway at the explicit
+    # The rendered validator.yaml points registry/master at the explicit
     # VALIDATOR_MASTER_URL (the MASTER), never the node's own advertise address.
+    # LLM gateway_url is removed after gateway cutover.
     result = _run(
         tmp_path,
         "--validator-node",
@@ -317,7 +318,7 @@ def test_validator_node_master_url_is_not_self_referential(tmp_path: Path) -> No
     assert result.returncode == 0, f"stderr={result.stderr!r}"
     out = result.stdout
     assert "master_url: http://master-host:19080" in out
-    assert "gateway_url: http://master-host:19080" in out
+    assert "gateway_url:" not in out
     assert "registry_url: http://master-host:19080" in out
 
 

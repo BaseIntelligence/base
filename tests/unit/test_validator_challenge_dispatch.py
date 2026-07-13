@@ -46,10 +46,6 @@ def _assignment(
 def _context(assignment: AssignmentView) -> AssignmentContext:
     return AssignmentContext(
         assignment=assignment,
-        gateway_env={
-            "BASE_GATEWAY_TOKEN": "scoped",
-            "BASE_LLM_GATEWAY_URL": "g/llm/v1",
-        },
         broker=BrokerConfig(broker_url="http://broker-val:8082"),
     )
 

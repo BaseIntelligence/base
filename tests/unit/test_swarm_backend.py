@@ -28,6 +28,7 @@ from base.challenge_sdk.mount_transport import (
     parse_drained_archives,
     strip_drain_sections,
 )
+from base.challenge_sdk.roles import Role, activate_role
 from base.gpu.leases import (
     GpuCapacityError,
     GpuLeaseError,
@@ -59,6 +60,13 @@ from base.schemas.docker_broker import (
 )
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "contract" / "golden"
+
+
+@pytest.fixture(autouse=True)
+def _activate_master_role():
+    with activate_role(Role.MASTER):
+        yield
+
 
 AUTH_HEADERS = {
     "authorization": "Bearer tok",
@@ -690,7 +698,14 @@ def test_run_rejects_disallowed_image(tmp_path: Path) -> None:
     service = _broker(tmp_path, runner)
 
     with pytest.raises(DockerExecutorError, match="not allowed"):
-        service.run("agent", _run_request(image="docker.io/evil:latest"))
+        service.run(
+            "agent",
+            _run_request(
+                image=(
+                    "docker.io/evil:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ),
+        )
 
     assert not any(call[1:3] == ("service", "create") for call in runner.calls)
     assert service.ledger.count("agent") == 0
@@ -750,7 +765,7 @@ def test_list_maps_services_to_frozen_container_shape(tmp_path: Path) -> None:
     container = listing.containers[0]
     assert container.container_id == "svc-a"
     assert container.container_name == "agent-job-1-x"
-    assert container.image == "ghcr.io/baseintelligence/challenge:1.2.3"
+    assert str(container.image).startswith("ghcr.io/baseintelligence/challenge:1.2.3")
     assert container.status == "0/1 (1/1 completed)"
     assert container.job_id == "job-1"
     assert container.task_id == "task-1"
@@ -1066,7 +1081,7 @@ def test_orchestrator_service_spec_becomes_replicated_service(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="tok-secret",
         workload_class="service",
         resources=ChallengeResources(docker_timeout_seconds=600),
@@ -1122,7 +1137,7 @@ def test_orchestrator_service_spec_has_update_rollback_and_health_policy(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
         port=8000,
     )
@@ -1148,7 +1163,7 @@ def test_orchestrator_service_spec_has_update_rollback_and_health_policy(
     assert len(health_cmds) == 1
     assert "http://localhost:8000/health" in health_cmds[0]
     # Image stays last (policy + health flags are inserted before it).
-    assert argv[-1] == "ghcr.io/baseintelligence/agent:1.0.0"
+    assert str(argv[-1]).startswith("ghcr.io/baseintelligence/agent:1.0.0")
 
 
 def test_combined_mode_service_renders_env_and_no_command(
@@ -1168,7 +1183,7 @@ def test_combined_mode_service_renders_env_and_no_command(
     record = ChallengeRecord(
         slug="prism",
         name="PRISM",
-        image="ghcr.io/baseintelligence/prism:latest",
+        image="ghcr.io/baseintelligence/prism:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="0.1.0",
         emission_percent=Decimal("30"),
         status=ChallengeStatus.ACTIVE,
@@ -1198,7 +1213,7 @@ def test_combined_mode_service_renders_env_and_no_command(
         "PRISM_DOCKER_BROKER_TOKEN_FILE=/run/secrets/base/docker_broker_token" in envs
     )
     # Image is the LAST token: no command override, so the image default CMD runs.
-    assert argv[-1] == "ghcr.io/baseintelligence/prism:latest"
+    assert str(argv[-1]).startswith("ghcr.io/baseintelligence/prism:latest")
     # Exactly one ``service create`` and its name is ``challenge-prism`` (no -worker).
     service_creates = [
         call for call in runner.calls if call[1:3] == ("service", "create")
@@ -1224,7 +1239,7 @@ def test_orchestrator_spec_placement_constraint_overrides_default(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
         placement_constraint="node.role==manager",
     )
@@ -1252,7 +1267,7 @@ def test_orchestrator_spec_without_placement_uses_orchestrator_default(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
     )
 
@@ -1275,7 +1290,7 @@ def test_orchestrator_job_spec_becomes_replicated_job(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="job",
     )
 
@@ -1300,7 +1315,7 @@ def test_orchestrator_failed_create_releases_ledger() -> None:
     orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=ledger)
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
     )
 
@@ -1347,7 +1362,7 @@ def test_orchestrator_adopts_existing_challenge_service_without_duplicate_create
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="tok-secret",
         workload_class="service",
     )
@@ -1392,7 +1407,7 @@ def test_reconciler_adopts_existing_challenge_service_no_duplicate(
     record = ChallengeRecord(
         slug="prism",
         name="Prism",
-        image="ghcr.io/baseintelligence/prism:1",
+        image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         emission_percent=Decimal("0"),
         status=ChallengeStatus.ACTIVE,
@@ -1594,7 +1609,7 @@ def test_restart_challenge_applies_record_image(
 def test_build_service_create_argv_orders_image_and_command_last() -> None:
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/baseintelligence/x:1",
+        image="ghcr.io/baseintelligence/x:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("run", "--flag"),
         mode="replicated-job",
     )
@@ -1602,13 +1617,16 @@ def test_build_service_create_argv_orders_image_and_command_last() -> None:
     argv = build_service_create_argv("docker", plan)
 
     assert argv[:6] == ["docker", "service", "create", "--detach", "--name", "x"]
-    assert argv[-3:] == ["ghcr.io/baseintelligence/x:1", "run", "--flag"]
+    assert str(argv[-3]).startswith("ghcr.io/baseintelligence/x:1") and argv[-2:] == [
+        "run",
+        "--flag",
+    ]
 
 
 def test_build_service_create_argv_emits_with_registry_auth_when_set() -> None:
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/baseintelligence/x:1",
+        image="ghcr.io/baseintelligence/x:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("run",),
         with_registry_auth=True,
     )
@@ -1617,7 +1635,9 @@ def test_build_service_create_argv_emits_with_registry_auth_when_set() -> None:
 
     assert "--with-registry-auth" in argv
     # Image/command MUST stay last regardless of the flag.
-    assert argv[-2:] == ["ghcr.io/baseintelligence/x:1", "run"]
+    assert (
+        str(argv[-2]).startswith("ghcr.io/baseintelligence/x:1") and argv[-1] == "run"
+    )
 
 
 def test_build_service_create_argv_omits_with_registry_auth_by_default() -> None:
@@ -1625,7 +1645,7 @@ def test_build_service_create_argv_omits_with_registry_auth_by_default() -> None
     # which is already logged in) stay byte-identical to the pre-flag builder.
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/baseintelligence/x:1",
+        image="ghcr.io/baseintelligence/x:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("run",),
     )
 
@@ -1684,7 +1704,7 @@ def test_build_service_create_argv_replicated_gets_policy_job_omits() -> None:
 def test_build_service_create_argv_emits_generic_resources_before_image() -> None:
     plan = SwarmServicePlan(
         name="x",
-        image="ghcr.io/baseintelligence/x:1",
+        image="ghcr.io/baseintelligence/x:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         command=("run",),
         generic_resources=("NVIDIA-GPU=2",),
     )
@@ -1694,7 +1714,9 @@ def test_build_service_create_argv_emits_generic_resources_before_image() -> Non
     pairs = _pairs(tuple(argv))
     assert ("--generic-resource", "NVIDIA-GPU=2") in pairs
     assert "--gpus" not in argv
-    assert argv[-2:] == ["ghcr.io/baseintelligence/x:1", "run"]
+    assert (
+        str(argv[-2]).startswith("ghcr.io/baseintelligence/x:1") and argv[-1] == "run"
+    )
 
 
 def test_orchestrator_gpu_service_emits_generic_resource_and_holds_lease(
@@ -1709,7 +1731,7 @@ def test_orchestrator_gpu_service_emits_generic_resource_and_holds_lease(
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
         resources=ChallengeResources(gpu_count=1),
     )
@@ -1734,7 +1756,7 @@ def test_orchestrator_gpu_capacity_refusal_and_failed_create_release_lease() -> 
     orchestrator = SwarmChallengeOrchestrator(runner=runner, ledger=WorkloadLedger())
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
         resources=ChallengeResources(gpu_count=1),
     )
@@ -1761,7 +1783,7 @@ def test_orchestrator_external_secret_emits_reference_without_create(
     )
     spec = ChallengeSpec(
         slug="agent-challenge",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="fake-token-for-test",
         external_secrets=("submission_env_encryption_key",),
         workload_class="service",
@@ -1807,7 +1829,7 @@ def test_challenge_plan_mounts_shared_gateway_token_by_default(
     )
     spec = ChallengeSpec(
         slug="prism",
-        image="ghcr.io/baseintelligence/prism:1.0.0",
+        image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
     )
 
@@ -1838,7 +1860,7 @@ def test_challenge_plan_shared_secret_refs_constructor_override(
     )
     spec = ChallengeSpec(
         slug="prism",
-        image="ghcr.io/baseintelligence/prism:1.0.0",
+        image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         workload_class="service",
     )
 
@@ -1867,7 +1889,7 @@ def test_reconciled_record_plan_references_declared_secrets_and_gateway_token(
     record = ChallengeRecord(
         slug="prism",
         name="PRISM",
-        image="ghcr.io/baseintelligence/prism:latest",
+        image="ghcr.io/baseintelligence/prism:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="0.1.0",
         emission_percent=Decimal("30"),
         status=ChallengeStatus.ACTIVE,
@@ -1923,7 +1945,7 @@ def test_orchestrator_secret_value_never_appears_in_argv_or_env(
     broker_value = "fake-broker-token-value"
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token=challenge_value,
         docker_broker_token=broker_value,
         workload_class="service",
@@ -1952,7 +1974,7 @@ def test_orchestrator_secret_value_never_appears_in_argv_or_env(
 def test_build_service_create_argv_emits_extra_networks_after_network() -> None:
     plan = SwarmServicePlan(
         name="svc",
-        image="ghcr.io/baseintelligence/x:1",
+        image="ghcr.io/baseintelligence/x:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         network="base_challenges",
         extra_networks=("base_jobs_internal",),
     )
@@ -1993,7 +2015,7 @@ def test_orchestrator_multihomes_job_network_slug_onto_internal_overlay(
     )
     spec = ChallengeSpec(
         slug="agent-challenge",
-        image="ghcr.io/baseintelligence/agent:1.0.0",
+        image="ghcr.io/baseintelligence/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="fake-token-for-test",
         workload_class="service",
     )
@@ -2033,7 +2055,7 @@ def test_orchestrator_single_network_for_non_job_network_slug(
     )
     spec = ChallengeSpec(
         slug="prism",
-        image="ghcr.io/baseintelligence/prism:1.0.0",
+        image="ghcr.io/baseintelligence/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="fake-token-for-test",
         workload_class="service",
     )

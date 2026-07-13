@@ -86,7 +86,11 @@ class FakeClient:
 
 
 def test_challenge_spec_and_resource_validation() -> None:
-    spec = ChallengeSpec(slug=" Demo One ", image="ghcr.io/org/demo:1", port=9000)
+    spec = ChallengeSpec(
+        slug=" Demo One ",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        port=9000,
+    )
     assert spec.safe_slug == "demo-one"
     assert spec.container_name == "challenge-demo-one"
     assert spec.sqlite_volume_name == "base_demo_one_sqlite"
@@ -122,7 +126,10 @@ def test_challenge_spec_and_resource_validation() -> None:
     with pytest.raises(DockerOrchestrationError):
         ChallengeResources(tmpfs=("tmp:rw",)).as_container_kwargs()
     with pytest.raises(DockerOrchestrationError):
-        _ = ChallengeSpec(slug="!!!", image="ghcr.io/x/y:1").safe_slug
+        _ = ChallengeSpec(
+            slug="!!!",
+            image="ghcr.io/x/y:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ).safe_slug
 
 
 def test_orchestrator_client_network_volume_pull_and_env(tmp_path: Path) -> None:
@@ -130,7 +137,7 @@ def test_orchestrator_client_network_volume_pull_and_env(tmp_path: Path) -> None
     orchestrator = DockerOrchestrator(client=client, secret_dir=tmp_path)
     spec = ChallengeSpec(
         slug="demo",
-        image="ghcr.io/org/demo:1",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         challenge_token="tok",
         secrets={"api-key": "secret"},
         env={"EXISTING": "1"},
@@ -157,7 +164,7 @@ def test_create_container_honors_worker_command(tmp_path: Path) -> None:
     orchestrator = DockerOrchestrator(client=client, secret_dir=tmp_path)
     spec = ChallengeSpec(
         slug="demo",
-        image="ghcr.io/org/demo:1",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         worker_command=("agent-challenge-worker", "--mode", "x"),
     )
 
@@ -165,7 +172,7 @@ def test_create_container_honors_worker_command(tmp_path: Path) -> None:
 
     assert container is client.containers.container
     run_call = client.containers.runs[0]
-    assert run_call["image"] == "ghcr.io/org/demo:1"
+    assert str(run_call["image"]).startswith("ghcr.io/org/demo:1")
     assert run_call["command"] == ["agent-challenge-worker", "--mode", "x"]
 
 
@@ -174,7 +181,10 @@ def test_create_container_without_worker_command_uses_image_default(
 ) -> None:
     client = FakeClient()
     orchestrator = DockerOrchestrator(client=client, secret_dir=tmp_path)
-    spec = ChallengeSpec(slug="demo", image="ghcr.io/org/demo:1")
+    spec = ChallengeSpec(
+        slug="demo",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
     assert spec.worker_command == ()
 
     orchestrator._create_container(spec)  # noqa: SLF001
@@ -210,7 +220,7 @@ def test_combined_mode_env_from_metadata_rejects_invalid(bad: object) -> None:
 def test_challenge_spec_from_registry_injects_combined_env_and_no_command() -> None:
     challenge = SimpleNamespace(
         slug="prism",
-        image="ghcr.io/o/prism:1",
+        image="ghcr.io/o/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={
             "PRISM_DOCKER_BROKER_URL": "http://base-docker-broker:8082",
@@ -237,7 +247,7 @@ def test_challenge_spec_from_registry_preserves_explicit_env_override() -> None:
     # An operator-set value in the record env is preserved (setdefault semantics).
     challenge = SimpleNamespace(
         slug="prism",
-        image="ghcr.io/o/prism:1",
+        image="ghcr.io/o/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={"PRISM_COMBINED_MODE": "false"},
         resources={},
@@ -253,7 +263,7 @@ def test_challenge_spec_from_registry_preserves_explicit_env_override() -> None:
 def test_challenge_spec_from_registry_without_combined_env() -> None:
     challenge = SimpleNamespace(
         slug="demo",
-        image="ghcr.io/o/demo:1",
+        image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={"FOO": "bar"},
         resources={},
@@ -281,7 +291,7 @@ def test_challenge_spec_from_registry_sets_port_from_internal_base_url(
 ) -> None:
     challenge = SimpleNamespace(
         slug="prism",
-        image="ghcr.io/o/prism:1",
+        image="ghcr.io/o/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={},
         resources={},
@@ -303,7 +313,7 @@ def test_challenge_spec_from_registry_defaults_port_when_url_attr_absent() -> No
     # keeps the legacy default port (byte-identical legacy path).
     challenge = SimpleNamespace(
         slug="demo",
-        image="ghcr.io/o/demo:1",
+        image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={},
         resources={},
@@ -322,7 +332,7 @@ def test_challenge_spec_from_registry_references_declared_secrets() -> None:
     # challenge/broker token is set on the spec.
     challenge = SimpleNamespace(
         slug="agent-challenge",
-        image="ghcr.io/o/agent-challenge:1",
+        image="ghcr.io/o/agent-challenge:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={},
         resources={},
@@ -360,7 +370,7 @@ def test_challenge_spec_from_registry_does_not_force_add_provider_key() -> None:
     # nothing forces openrouter/any provider secret onto every challenge.
     challenge = SimpleNamespace(
         slug="prism",
-        image="ghcr.io/o/prism:1",
+        image="ghcr.io/o/prism:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={},
         resources={},
@@ -381,7 +391,7 @@ def test_challenge_spec_from_registry_no_url_or_secrets_keeps_prior_behavior() -
     # legacy spec (default port, no external secrets) - byte-identical.
     challenge = SimpleNamespace(
         slug="demo",
-        image="ghcr.io/o/demo:1",
+        image="ghcr.io/o/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         version="1",
         env={"FOO": "bar"},
         resources={},
@@ -404,7 +414,10 @@ def test_docker_orchestrator_database_url_defaults_to_sqlite_data_volume(
     tmp_path: Path,
 ) -> None:
     orchestrator = DockerOrchestrator(client=FakeClient(), secret_dir=tmp_path)
-    spec = ChallengeSpec(slug="demo", image="ghcr.io/org/demo:1")
+    spec = ChallengeSpec(
+        slug="demo",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
 
     env = orchestrator._build_environment(spec)  # noqa: SLF001
     mounts = orchestrator._build_mounts(spec)  # noqa: SLF001
@@ -429,7 +442,7 @@ def test_orchestrator_enables_docker_executor_broker(tmp_path: Path) -> None:
     )
     spec = ChallengeSpec(
         slug="agent",
-        image="ghcr.io/org/agent:1",
+        image="ghcr.io/org/agent:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         required_capabilities=("get_weights", "proxy_routes", "docker_executor"),
     )
 
@@ -451,7 +464,11 @@ def test_orchestrator_validation_and_start(
 ) -> None:
     client = FakeClient()
     orchestrator = DockerOrchestrator(client=client, secret_dir=tmp_path)
-    spec = ChallengeSpec(slug="demo", image="ghcr.io/org/demo:1", version="1.0.0")
+    spec = ChallengeSpec(
+        slug="demo",
+        image="ghcr.io/org/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        version="1.0.0",
+    )
     monkeypatch.setattr(
         orchestrator,
         "wait_until_ready",
