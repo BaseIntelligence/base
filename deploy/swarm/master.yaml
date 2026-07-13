@@ -98,36 +98,6 @@ security:
   # (GET /v1/validators -> 401), mirroring the working gateway token_secret_file.
   admin_token_file: /run/secrets/admin_token
 
-# Master LLM gateway (architecture.md §5/§10; llm-yunwu-contract). The proxy
-# ALWAYS builds the gateway; provider_mode selects the deterministic mock provider
-# (no egress) vs the real yunwu client whose key is injected server-side from the
-# secret file below (validators/eval runtimes hold NO provider key). The gateway is
-# config-driven + provider-agnostic (yunwu-only; deepseek/openrouter removed from
-# code AND config): a provider registry + per-source route map selects the provider
-# + model the gateway injects, keyed by the token  claim (agent /
-# llm_review). public_base_url is the external master gateway root advertised to
-# validators in the pull payload so eval runtimes target the gateway's /llm/v1
-# route, NOT the WRONG master.registry_url (chain registry) fallback. The
-# token_secret_file is the MANDATORY HMAC secret for scoped gateway tokens (proxy
-# fails fast if absent).
-gateway:
-  provider_mode: real
-  public_base_url: http://86.38.238.235:19080
-  token_secret_file: /run/secrets/gateway_token_secret
-  providers:
-    yunwu:
-      base_url: https://yunwu.ai/v1
-      api_key_file: /run/secrets/yunwu_api_key
-  default_provider: yunwu
-  default_model: claude-opus-4-8
-  sources:
-    agent:
-      provider: yunwu
-      model: claude-opus-4-8
-    llm_review:
-      provider: yunwu
-      model: claude-opus-4-8
-
 observability:
   log_json: true
 
