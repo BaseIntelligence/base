@@ -477,6 +477,7 @@ def test_env_ahead_of_running_container_forces_update(tmp_path: Path) -> None:
     compose, env_path, state_path = _seed_project(tmp_path, digest=DIGEST_B)
     # env already at B, running still A
     runner = FakeRunner(image=f"{REPO}@{DIGEST_A}", running=True)
+
     # When pull/up succeeds, runner.image still A until we flip it mid-calls
     class FlippingRunner(FakeRunner):
         def __call__(self, argv, timeout_seconds):
