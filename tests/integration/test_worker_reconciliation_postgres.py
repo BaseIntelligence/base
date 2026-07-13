@@ -246,6 +246,8 @@ async def test_dispute_and_audit_faults_on_postgres(
         await validator_plane.assign_pending(seed=1)
         audit = await _unit(factory, audit_work_unit_id("U"))
         assert audit.assigned_validator_hotkey == GPU_VALIDATOR
+        # Pull transitions ASSIGNED -> RUNNING required by coordination post_result.
+        await coordination.pull(hotkey=GPU_VALIDATOR)
         await coordination.post_result(
             assignment_id=str(audit.id),
             hotkey=GPU_VALIDATOR,

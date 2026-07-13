@@ -128,12 +128,12 @@ async def test_coordination_lifecycle_parity_on_postgres(
         assert outcome.idempotent is False
         assert outcome.status == "completed"
 
-        # Idempotent re-post is a safe no-op.
+        # Exact re-post is idempotent; differing payload is a conflict.
         repeat = await coordination.post_result(
             assignment_id=assignment_id,
             hotkey="vp-gpu",
             success=True,
-            payload={"score": 0.1},
+            payload={"score": 0.77},
         )
         assert repeat.idempotent is True
         assert repeat.result_ref == outcome.result_ref

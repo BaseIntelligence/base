@@ -305,6 +305,8 @@ async def test_disputed_unit_discoverable_on_postgres(
                     )
                 )
             ).scalar_one()
+        # Pull transitions ASSIGNED -> RUNNING required by coordination post_result.
+        await svc["validator_coordination"].pull(hotkey=GPU_VALIDATOR)
         await svc["validator_coordination"].post_result(
             assignment_id=str(audit.id),
             hotkey=GPU_VALIDATOR,
