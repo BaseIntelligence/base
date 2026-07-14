@@ -72,6 +72,9 @@ case "${cmd}" in
       exit 2
     fi
     bash "${INSTALLER}" --project-name "${PROJECT_NAME}" --port "${HOST_PORT}" --state-dir "${STATE_DIR}"
+    # Durable eval temp on Prism data volume (non-noexec) for dual-family admission.
+    docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
+      exec -T challenge-prism sh -c 'mkdir -p "${TMPDIR:-/data/tmp}" && chmod 700 "${TMPDIR:-/data/tmp}" && ls -ld "${TMPDIR:-/data/tmp}"'
     ;;
   health)
     if [[ -z "${HOST_PORT}" ]]; then
@@ -88,6 +91,9 @@ case "${cmd}" in
       exec -T challenge-prism python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read().decode())"
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
       exec -T challenge-prism python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/version', timeout=5).read().decode())"
+    # TMPDIR probe: must be writable under /data (not INFRA_TMPDIR_UNUSABLE).
+    docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
+      exec -T challenge-prism python -c "import os, tempfile, pathlib; d=os.environ.get('TMPDIR',''); p=pathlib.Path(d or '/data/tmp'); p.mkdir(parents=True, exist_ok=True); t=tempfile.NamedTemporaryFile(dir=str(p), delete=True); t.write(b'ok'); t.flush(); print('TMPDIR', d or '(unset)', 'writable', True, 'path', p)"
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
     ;;
   down)

@@ -210,8 +210,13 @@ def test_prism_combined_mode_and_no_evaluator(tmp_path: Path) -> None:
         "0",
         "no",
     }
+    # Durable eval temp on the data volume (VAL-GPULAB-001 / INFRA_TMPDIR_UNUSABLE fix).
+    assert environment.get("TMPDIR") == "/data/tmp"
+    assert environment.get("TEMP") == "/data/tmp"
+    assert environment.get("TMP") == "/data/tmp"
     command = " ".join(str(part) for part in prism.get("command", []))
     assert "uvicorn" in command
+    assert "/data/tmp" in command
     assert "evaluator" not in command.lower()
     # No docker.sock mount for Prism (master may mount it for the watcher).
     prism_blob = json.dumps(prism)

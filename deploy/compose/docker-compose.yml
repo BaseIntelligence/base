@@ -143,13 +143,13 @@ services:
   challenge-prism:
     image: >-
       ${PRISM_IMAGE_REPOSITORY:?set the immutable prism image repository}@sha256:${PRISM_IMAGE_DIGEST:?set the immutable prism image digest}
+    # Create durable eval temp under the writable /data volume before serving.
+    # RO rootfs + empty volume mount masks image /data; Python tempfile must not
+    # die with INFRA_TMPDIR_UNUSABLE on /tmp alone (VAL-GPULAB-001).
     command:
-      - uvicorn
-      - prism_challenge.app:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
+      - sh
+      - -c
+      - mkdir -p "$${TMPDIR:-/data/tmp}" && chmod 700 "$${TMPDIR:-/data/tmp}" && exec uvicorn prism_challenge.app:app --host 0.0.0.0 --port 8080
     restart: unless-stopped
     init: true
     read_only: true
@@ -175,6 +175,10 @@ services:
       # Prefer external result path; no docker socket is mounted for Prism.
       PRISM_DOCKER_ENABLED: "false"
       PRISM_WORKER_PLANE__ENABLED: "false"
+      # Eval/static gates need a writable non-noexec temp (data volume), not only tmpfs /tmp.
+      TMPDIR: /data/tmp
+      TEMP: /data/tmp
+      TMP: /data/tmp
     volumes:
       - type: volume
         source: challenge-prism-data
