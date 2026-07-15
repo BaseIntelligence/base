@@ -77,6 +77,28 @@ def test_legacy_gateway_env_is_rejected(
         load_settings(cfg)
 
 
+def test_gateway_free_digest_allowlist_env_does_not_reject_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Allowlist for attestation-only AC digests is not a restored LLM gateway."""
+
+    digest = "sha256:" + ("b" * 64)
+    monkeypatch.setenv("BASE_AGENT_CHALLENGE_GATEWAY_FREE_DIGESTS", digest)
+    # Ensure residual provider keys are not present.
+    for key in (
+        "BASE_GATEWAY_TOKEN",
+        "BASE_LLM_GATEWAY_URL",
+        "GATEWAY_TOKEN",
+        "CENTRAL_GATEWAY_TOKEN",
+        "PRISM_LLM_GATEWAY_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    cfg = tmp_path / "clean.yaml"
+    cfg.write_text("environment: development\n", encoding="utf-8")
+    settings = load_settings(cfg)
+    assert settings is not None
+
+
 def test_cli_has_no_mint_central_gate_token() -> None:
     from base.cli_app import main as cli_main
 

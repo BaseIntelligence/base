@@ -57,6 +57,15 @@ _REMOVED_NESTED_GATEWAY_KEYS = frozenset(
     }
 )
 
+#: Operator env that is intentionally gateway-adjacent in name only: allowlist of
+#: attestation-only / gateway-free agent-challenge image digests (not provider keys).
+#: Read by :mod:`base.master.agent_challenge_compat`; must not trip removal reject.
+_ALLOWED_GATEWAY_ADJACENT_ENV = frozenset(
+    {
+        "BASE_AGENT_CHALLENGE_GATEWAY_FREE_DIGESTS",
+    }
+)
+
 
 def _reject_removed_gateway_config(data: dict[str, Any]) -> None:
     """Fail closed when legacy LLM-gateway configuration is supplied."""
@@ -79,6 +88,8 @@ def _reject_removed_gateway_config(data: dict[str, Any]) -> None:
                     unknown.append(f"{section_name}.{key}")
     for env_key in os.environ:
         upper = env_key.upper()
+        if upper in _ALLOWED_GATEWAY_ADJACENT_ENV:
+            continue
         if any(
             upper == prefix
             or upper.startswith(f"{prefix}_")
