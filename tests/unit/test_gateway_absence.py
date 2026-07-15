@@ -87,6 +87,8 @@ def test_cli_has_no_mint_central_gate_token() -> None:
 
 
 def test_proxy_openapi_has_no_llm_gateway_paths() -> None:
+    """VAL-ACAT-043: Base never restores /llm/v1 proxy routes post unlock."""
+
     class FakeCache:
         def get(self) -> dict[str, int]:
             return {}
@@ -109,6 +111,7 @@ def test_proxy_openapi_has_no_llm_gateway_paths() -> None:
     app = create_proxy_app(
         registry=FakeRegistry(),
         miner_verifier=MinerVerifier(),  # type: ignore[arg-type]
+        agent_challenge_attested_routes_enabled=True,
     )
     client = TestClient(app)
     openapi = client.get("/openapi.json").json()
@@ -116,11 +119,17 @@ def test_proxy_openapi_has_no_llm_gateway_paths() -> None:
     joined = "\n".join(paths)
     assert "/llm/v1" not in joined
     assert "gateway_token" not in joined
+    assert "chat/completions" not in joined
     assert "architecture" not in joined or "/v1/architectures/" not in joined
     # Former gateway path returns normal not-found through the ASGI app.
     for method in ("get", "post", "put", "delete"):
-        response = getattr(client, method)("/llm/v1/chat/completions")
-        assert response.status_code == 404
+        for path in (
+            "/llm/v1/chat/completions",
+            "/v1/llm/chat/completions",
+            "/llm/v1/models",
+        ):
+            response = getattr(client, method)(path)
+            assert response.status_code == 404, (method, path)
 
 
 def test_agent_challenge_incompatibility_diagnostic() -> None:
@@ -132,7 +141,11 @@ def test_agent_challenge_incompatibility_diagnostic() -> None:
     assert "adapter" in diagnostic["message"].lower()
 
 
-def test_seed_prism_challenges_blocks_agent_challenge() -> None:
+def test_seed_prism_challenges_blocks_agent_challenge_without_gateway_free_digest() -> (
+    None
+):
+    """VAL-ACAT-042: unpinned / pre-upgrade AC remains refuse diagnostic."""
+
     import asyncio
 
     from base.cli_app.main import seed_prism_challenges
@@ -154,9 +167,11 @@ def test_seed_prism_challenges_blocks_agent_challenge() -> None:
                         "env": {},
                         "secrets": [],
                         "required_capabilities": [],
+                        "image": "ghcr.io/example/prism:1@sha256:" + ("d" * 64),
                     },
                 )()
             if slug == "agent-challenge" and self.has_agent:
+                # Legacy pre-upgrade pin (not on gateway-free allowlist).
                 return type(
                     "R",
                     (),
@@ -165,6 +180,10 @@ def test_seed_prism_challenges_blocks_agent_challenge() -> None:
                         "env": {},
                         "secrets": [],
                         "required_capabilities": [],
+                        "image": (
+                            "ghcr.io/example/agent-challenge:legacy@sha256:"
+                            + ("a" * 64)
+                        ),
                     },
                 )()
             raise ChallengeNotFoundError(slug)

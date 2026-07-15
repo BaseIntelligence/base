@@ -570,3 +570,80 @@ def test_attested_proxy_flag_defaults_off_and_keeps_generic_legacy_behavior() ->
     assert "x-signature" not in captured["headers"]
     assert "x-nonce" not in captured["headers"]
     assert "x-timestamp" not in captured["headers"]
+
+
+def test_forged_trust_headers_do_not_elevate_private_routes() -> None:
+    """VAL-ACAT-047/048: forged trust headers never open private aliases."""
+
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request.url.path)
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _proxy_client(handler)
+    trust_headers = {
+        "Authorization": "Bearer caller-capability",
+        "X-Attestation-Verified": "true",
+        "X-RA-TLS-Peer-Key": "forged",
+        "X-Base-Verified-Hotkey": "forged-hotkey",
+        "X-Trust-Level": "admin",
+        "X-Review-Verified": "true",
+        "X-Allowlist-Digest": "forged-allowlist",
+        "X-Measurement-MRTD": "forged-mrtd",
+        "X-Base-Internal-Token": "forged-internal",
+    }
+    private_paths = (
+        "/challenges/agent-challenge/internal/v1/reviews/session-1/report",
+        "/challenges/agent-challenge/key-release/release",
+        "/challenges/agent-challenge/keyrelease/release",
+        "/challenges/agent-challenge/capability/token",
+        "/challenges/agent-challenge/submissions/sub-1/eval/result",
+        "/challenges/agent-challenge/llm/v1/chat/completions",
+    )
+    for path in private_paths:
+        response = client.post(
+            path,
+            content=b'{"forged":true}',
+            headers=trust_headers,
+        )
+        assert response.status_code == 404, path
+    assert upstream_calls == []
+
+
+def test_public_submit_strips_trust_headers_non_elevating() -> None:
+    """VAL-ACAT-048: strip trust headers on allowlisted public paths."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = request.headers
+        captured["path"] = request.url.path
+        return httpx.Response(201, json={"accepted": True})
+
+    client = _proxy_client(handler)
+    response = client.post(
+        "/challenges/agent-challenge/submissions",
+        content=b'{"schema_version":1,"agent_zip_sha256":"' + b"a" * 64 + b'"}',
+        headers={
+            "Content-Type": "application/vnd.base.signed+json",
+            "X-Hotkey": "miner-hotkey",
+            "X-Signature": "miner-signature",
+            "X-Nonce": "miner-nonce",
+            "X-Timestamp": "1700000000",
+            "X-Attestation-Verified": "true",
+            "X-RA-TLS-Peer-Key": "forged",
+            "X-Base-Verified-Hotkey": "forged",
+            "X-Trust-Level": "admin",
+            "X-Public-Header": "ok",
+        },
+    )
+    assert response.status_code == 201
+    assert captured["path"] == "/submissions"
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-hotkey"] == "miner-hotkey"
+    assert headers["x-public-header"] == "ok"
+    assert "x-attestation-verified" not in headers
+    assert "x-ra-tls-peer-key" not in headers
+    assert "x-base-verified-hotkey" not in headers
+    assert "x-trust-level" not in headers

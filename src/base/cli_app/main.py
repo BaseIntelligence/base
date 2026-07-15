@@ -40,6 +40,8 @@ from base.config.settings import Settings
 from base.db.session import create_engine, create_session_factory
 from base.master.agent_challenge_compat import (
     AGENT_CHALLENGE_INCOMPATIBLE_CODE,
+    decide_agent_challenge_activation,
+    filter_forbidden_gateway_env,
 )
 from base.master.app_proxy import create_proxy_app
 from base.master.assignment import CAPABILITY_GPU, AssignmentService
@@ -871,15 +873,16 @@ def _prism_image_for_settings(image: str, settings: Any | None) -> str:
 
 
 def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
-    """Env retained only for historical call sites; agent-challenge is blocked.
+    """Env for long-lived agent-challenge Compose service (gateway-free only).
 
-    After LLM-gateway removal, Base refuses to activate/seed/reconcile current
-    agent-challenge images with ``AGENT_CHALLENGE_INCOMPATIBLE_NO_LLM_GATEWAY``.
-    This helper intentionally omits every gateway URL/token secret.
+    After LLM-gateway removal, pre-upgrade images remain refused with
+    ``AGENT_CHALLENGE_INCOMPATIBLE_NO_LLM_GATEWAY``. Gateway-free digests may
+    start; this helper intentionally omits every gateway URL/token secret and
+    never places OpenRouter keys on master or challenge env.
     """
     broker_url = _settings_docker_broker_url(settings)
     docker_broker_token_file = f"{DEFAULT_SECRET_MOUNT_DIR}/docker_broker_token"
-    return {
+    env = {
         "CHALLENGE_BENCHMARK_BACKEND": "terminal_bench",
         "CHALLENGE_DOCKER_ENABLED": "true",
         "CHALLENGE_DOCKER_BACKEND": "broker",
@@ -898,6 +901,8 @@ def _agent_challenge_own_runner_env(settings: Any | None) -> dict[str, str]:
         ),
         "CHALLENGE_EVALUATION_CONCURRENCY": "13",
     }
+    # Defense in depth: never leak residual gateway bags even if callers merge.
+    return filter_forbidden_gateway_env(env)
 
 
 def _agent_challenge_secret_names(existing: list[str] | None = None) -> list[str]:
@@ -994,13 +999,21 @@ async def seed_prism_challenges(
         result[PRISM_SLUG] = "updated"
 
     try:
-        await _resolve(registry.get(AGENT_CHALLENGE_SLUG))
+        existing_ac = await _resolve(registry.get(AGENT_CHALLENGE_SLUG))
     except (ChallengeNotFoundError, KeyError):
         result[AGENT_CHALLENGE_SLUG] = "missing"
     else:
-        # Existing registry rows remain visible but must not be re-activated or
-        # upgraded through the removed LLM gateway contract.
-        result[AGENT_CHALLENGE_SLUG] = AGENT_CHALLENGE_INCOMPATIBLE_CODE
+        # Unlock only for gateway-free upgraded digests. Pre-upgrade images keep
+        # the stable diagnostic; never re-seed gateway secrets onto AC.
+        decision = decide_agent_challenge_activation(
+            image=getattr(existing_ac, "image", None),
+            env=getattr(existing_ac, "env", None),
+            slug=AGENT_CHALLENGE_SLUG,
+        )
+        if decision.allowed:
+            result[AGENT_CHALLENGE_SLUG] = "compatible"
+        else:
+            result[AGENT_CHALLENGE_SLUG] = AGENT_CHALLENGE_INCOMPATIBLE_CODE
     return result
 
 
