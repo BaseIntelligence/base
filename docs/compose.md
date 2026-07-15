@@ -90,7 +90,8 @@ Do not conflate these roles:
 
 | Hostname | Role | Operator guidance |
 | --- | --- | --- |
-| `https://chain.joinbase.ai` | Authoritative public Base master API for this network (`role=master`). Settings defaults, installer samples, and public weights examples use this host. | Network validators: `--master-url https://chain.joinbase.ai`. Verify `GET /health` returns `role=master` / ready. |
+| `https://chain.joinbase.ai` | Authoritative public Base master API for this network (`role=master`). Settings defaults, installer samples, and public weights examples use this host. Live master Compose project: `base-master-prod`. | Network validators: `--master-url https://chain.joinbase.ai`. Verify `GET /health` returns `role=master` / ready. |
+| `https://chain.platform.network` | Non-authoritative secondary only (may return 502). | Do not ship as master URL or installer default. |
 | `http://127.0.0.1:<port>` or private operator master | Disposable local smoke / private operator control plane | Allowed when the operator explicitly passes that URL; never invented as a silent default. |
 
 Docker Compose installers must not invent alternate public master hostname or IP

@@ -21,7 +21,8 @@ submission always uses the **validator's own wallet**. See
 
 | URL | Role |
 | --- | --- |
-| `https://chain.joinbase.ai` | Authoritative public Base master / coordination / weights API (`role=master`). Settings defaults, installer samples, and public weights examples recommend this host. |
+| `https://chain.joinbase.ai` | Authoritative public Base master / coordination / weights API (`role=master`). Settings defaults, installer samples, and public weights examples recommend this host. Live Compose master: `base-master-prod`. |
+| `https://chain.platform.network` | Non-authoritative secondary only (may return 502). Do not use as shipping `--master-url`. |
 | `http://127.0.0.1:3180` (or private operator master) | Local disposable or private master for smoke / self-hosted control planes only (explicit `--master-url`). |
 
 Default public weights example:
