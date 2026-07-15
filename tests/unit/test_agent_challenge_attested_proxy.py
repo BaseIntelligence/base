@@ -539,6 +539,7 @@ def test_attested_signed_upstream_auth_error_is_preserved_without_rewriting() ->
 
 
 def test_attested_proxy_flag_defaults_off_and_keeps_generic_legacy_behavior() -> None:
+    """Flag default remains off; legacy unpinned paths stay open."""
     assert MasterSettings().agent_challenge_attested_routes_enabled is False
     captured: dict[str, Any] = {}
 
@@ -548,14 +549,11 @@ def test_attested_proxy_flag_defaults_off_and_keeps_generic_legacy_behavior() ->
         return httpx.Response(404, content=b'{"detail":"Not Found"}')
 
     client = _proxy_client(handler, attested_routes_enabled=False)
-    response = client.post(
-        "/challenges/agent-challenge/submissions/sub-1/review/prepare",
-        content=b'{"schema_version":1}',
+    # Neighbor status path stays generically forwardable when flag is off
+    # (not part of the signed-review/eval row).
+    response = client.get(
+        "/challenges/agent-challenge/submissions/sub-1/status",
         headers={
-            "X-Hotkey": "legacy-miner",
-            "X-Signature": "legacy-signature",
-            "X-Nonce": "legacy-nonce",
-            "X-Timestamp": "1700000000",
             "X-Forwarded-For": "198.51.100.7",
             "X-Review-Legacy-Metadata": "legacy-value",
         },
@@ -563,13 +561,86 @@ def test_attested_proxy_flag_defaults_off_and_keeps_generic_legacy_behavior() ->
 
     assert response.status_code == 404
     assert response.content == b'{"detail":"Not Found"}'
-    assert captured["path"] == "/submissions/sub-1/review/prepare"
+    assert captured["path"] == "/submissions/sub-1/status"
     assert captured["headers"]["x-forwarded-for"] == "198.51.100.7"
     assert captured["headers"]["x-review-legacy-metadata"] == "legacy-value"
-    assert "x-hotkey" not in captured["headers"]
-    assert "x-signature" not in captured["headers"]
-    assert "x-nonce" not in captured["headers"]
-    assert "x-timestamp" not in captured["headers"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/challenges/agent-challenge/openapi.json",
+        "/challenges/agent-challenge/docs",
+        "/challenges/agent-challenge/redoc",
+        "/challenges/agent-challenge/leaderboard",
+    ),
+)
+def test_attested_mode_allows_public_discovery_read_routes(path: str) -> None:
+    """Flag-on must not 404 joinbase readiness openapi/docs/leaderboard."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(200, content=b'{"ok":true}')
+
+    response = _proxy_client(handler, attested_routes_enabled=True).get(path)
+    assert response.status_code == 200
+    assert captured["path"] == path.removeprefix("/challenges/agent-challenge")
+
+
+def test_flag_off_still_preserves_miner_signature_headers_on_review_prepare() -> None:
+    """Auth-binding residual 401: even with attested flag off, minersign headers
+    must reach dual-flag agent-challenge for POST review/prepare (and exact
+    eval/review signed neighbors). Previously SENSITIVE_REQUEST_HEADERS stripped
+    them when flag was false, so joinbase returned HTTP 401 while submit (in the
+    legacy preserve set) still returned 201.
+    """
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        captured["body"] = await request.aread()
+        # Simulate challenge delivering one-time capability after valid signature.
+        return httpx.Response(
+            200,
+            content=(
+                b'{"schema_version":1,"session_id":"rs_test","assignment_id":"ra_test",'
+                b'"attempt":1,"assignment":{},"review_session_token":"delivered-once"}'
+            ),
+            headers={"content-type": "application/json"},
+        )
+
+    client = _proxy_client(handler, attested_routes_enabled=False)
+    request_body = b"{}"
+    response = client.post(
+        "/challenges/agent-challenge/submissions/1/review/prepare",
+        content=request_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hotkey": "5D7D4EGayNMinerHotkeyExampleForTestOnly",
+            "X-Signature": "0x" + ("ab" * 32),
+            "X-Nonce": "fresh-nonce-review-prepare",
+            "X-Timestamp": "1700000000",
+            "X-Forwarded-For": "198.51.100.7",
+            "X-Attestation-Verified": "should-not-elevate",
+            "X-Base-Verified-Hotkey": "forged",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"review_session_token" in response.content
+    assert captured["path"] == "/submissions/1/review/prepare"
+    assert captured["body"] == request_body
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-hotkey"] == "5D7D4EGayNMinerHotkeyExampleForTestOnly"
+    assert headers["x-signature"].startswith("0x")
+    assert headers["x-nonce"] == "fresh-nonce-review-prepare"
+    assert headers["x-timestamp"] == "1700000000"
+    # Signature headers alone unblocked the residual 401; trust-header
+    # stripping is the separate fail-closed surface when the flagged mode is on.
 
 
 def test_forged_trust_headers_do_not_elevate_private_routes() -> None:

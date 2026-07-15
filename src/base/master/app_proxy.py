@@ -287,35 +287,23 @@ def _is_agent_challenge_env_route(slug: str, method: str, path: str) -> bool:
     return False
 
 
-def _is_agent_challenge_signed_route(
-    slug: str,
+def _is_agent_challenge_exact_review_eval_signed_route(
     method: str,
     path: str,
-    *,
-    attested_routes_enabled: bool = False,
 ) -> bool:
-    """Routes where the miner signs the challenge-local path.
+    """True for the exact miner-signed review/eval challenge-local routes.
 
-    The miner's signature headers (``X-Hotkey``/``X-Signature``/``X-Nonce``/
-    ``X-Timestamp``) must survive the generic ``/challenges/{slug}`` passthrough
-    so the challenge can verify them. Fully legacy mode keeps its env/launch
-    actions. Full attested mode replaces those with the exact review/eval
-    allowlist while retaining signed ``POST /submissions``.
+    Signature headers must be preserved for these paths whether the master
+    attested-routes allowlist flag is on or off. When dual-flag agent-challenge
+    is active and Base still has the flag off, stripping these headers causes
+    a hard residual HTTP 401 on ``review/prepare`` / ``eval/prepare`` while
+    unsigned ``POST /submissions`` remains working because it alone was in the
+    legacy preserve set.
     """
-
-    if slug != "agent-challenge":
-        return False
 
     normalized = normpath(f"/{path.lstrip('/')}")
     parts = [part for part in normalized.split("/") if part]
     normalized_method = method.upper()
-    if not attested_routes_enabled:
-        return _is_agent_challenge_env_route(slug, method, path) or (
-            len(parts) == 1
-            and parts[0] == "submissions"
-            and normalized_method == "POST"
-        )
-
     canonical_path = f"/{path}"
     if path.startswith("/") or canonical_path != normalized:
         return False
@@ -343,6 +331,40 @@ def _is_agent_challenge_signed_route(
     return (normalized_method == "POST" and route in signed_post_routes) or (
         normalized_method == "GET" and route in signed_get_routes
     )
+
+
+def _is_agent_challenge_signed_route(
+    slug: str,
+    method: str,
+    path: str,
+    *,
+    attested_routes_enabled: bool = False,
+) -> bool:
+    """Routes where the miner signs the challenge-local path.
+
+    The miner's signature headers (``X-Hotkey``/``X-Signature``/``X-Nonce``/
+    ``X-Timestamp``) must survive the generic ``/challenges/{slug}`` passthrough
+    so the challenge can verify them.
+
+    Full attested mode uses the exact review/eval allowlist (plus signed
+    ``POST /submissions``). Legacy mode keeps env/launch signed surfaces, and
+    also preserves the same exact review/eval signed row so dual-flag AC
+    prepare/deploy cannot residual as HTTP 401 when the Base allowlist flag
+    is not yet flipped.
+    """
+
+    if slug != "agent-challenge":
+        return False
+
+    # Exact review/eval + public submit always need miner signature headers,
+    # independent of the allowlist topology flag.
+    if _is_agent_challenge_exact_review_eval_signed_route(method, path):
+        return True
+
+    if not attested_routes_enabled:
+        return _is_agent_challenge_env_route(slug, method, path)
+
+    return False
 
 
 def _is_agent_challenge_enabled_mode_allowed_route(
@@ -389,6 +411,28 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         and parts[0] == "benchmarks"
         and parts[1] == "tasks"
         and normalized_method == "GET"
+    ):
+        return True
+
+    # Public discovery / readiness (joinbase probes and miner docs). These are
+    # unauthenticated read surfaces, not capability or trust injection.
+    if (
+        normalized_method == "GET"
+        and len(parts) == 1
+        and parts[0]
+        in {
+            "openapi.json",
+            "docs",
+            "redoc",
+            "leaderboard",
+        }
+    ):
+        return True
+    if (
+        normalized_method == "GET"
+        and len(parts) == 2
+        and parts[0] == "docs"
+        and parts[1] in {"oauth2-redirect", "swagger-ui-init.js"}
     ):
         return True
     return False
