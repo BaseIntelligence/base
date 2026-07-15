@@ -171,17 +171,17 @@ run master, PostgreSQL, or challenge control-plane services; shipping Compose mo
 The public Base master / coordination / weights API for this network is
 `https://chain.joinbase.ai` (verify `GET /health` → `role=master`). Local disposable
 masters remain valid for smoke only via an explicit loopback `--master-url`.
-`https://chain.platform.network` is a non-authoritative secondary hostname only (may
-return 502); do not document it as the shipping master URL.
+Any other historical public hostname is non-authoritative only (may return 502);
+do not document it as the shipping master URL.
 
 ### Production topology
 
 | Piece | Live production |
 |-------|-----------------|
 | Master runtime | Compose project **`base-master-prod`** on `86.38.238.235` (Swarm inactive after cutover) |
-| Public master API | **`https://chain.joinbase.ai` only** (`role=master`). `chain.platform.network` is non-authoritative secondary. |
+| Public master API | **`https://chain.joinbase.ai` only** (`role=master`). Other historical hostnames are non-authoritative secondary. |
 | Example validator | **validator-5gzi**: agent-only Compose at `31.22.104.239`, `master_url=https://chain.joinbase.ai` |
-| Challenges | **Prism** healthy/active. **agent-challenge** registry-active but product refuses start with `AGENT_CHALLENGE_INCOMPATIBLE_NO_LLM_GATEWAY` (no LLM gateway on Compose). |
+| Challenges | **Prism** healthy/active. **agent-challenge** registry-active; gateway-free image digests may start after allowlist pin (no LLM gateway on Compose). |
 | REAL-PROVIDER TEE (Lium/Targon) | **BLOCKED** |
 | On-chain weights | Validators call `set_weights` with their own wallets. Master and ops track do **not**. |
 | Public website | **https://joinbase.ai** (Vercel project `platform`, repo `echobt/frontend-platform-figma`) → API `https://chain.joinbase.ai` |

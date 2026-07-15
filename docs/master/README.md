@@ -18,7 +18,7 @@ does not configure on-chain submission (validators own wallets and `set_weights`
 | Database | `master-postgres` (private `db` network only) |
 | Challenges | one long-lived `challenge-<slug>` per ACTIVE registry entry |
 | Secrets | host files under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/secrets` |
-| Live production | Compose project **`base-master-prod`**; public API **`https://chain.joinbase.ai` only** (Swarm inactive after cutover). `chain.platform.network` secondary/non-authoritative. |
+| Live production | Compose project **`base-master-prod`**; public API **`https://chain.joinbase.ai` only** (Swarm inactive after cutover). Other historical hostnames are secondary/non-authoritative. |
 
 There is **no LLM gateway** container or Swarm broker overlay in this path. The master
 coordinates and aggregates; it **never** submits on-chain weights and **never** launches

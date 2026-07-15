@@ -6,6 +6,7 @@ Covers VAL-ACAT-019, 041, 042, 045, 046 (Base unit surface).
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +44,7 @@ OTHER_IMAGE = f"ghcr.io/example/agent-challenge:other@{OTHER_DIGEST}"
 
 
 @pytest.fixture(autouse=True)
-def _clear_digest_registry() -> None:
+def _clear_digest_registry() -> Generator[None, None, None]:
     clear_gateway_free_digest_registry()
     yield
     clear_gateway_free_digest_registry()
