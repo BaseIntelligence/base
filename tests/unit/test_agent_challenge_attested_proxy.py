@@ -305,6 +305,114 @@ def test_attested_signed_route_strips_caller_authority_and_proxy_headers() -> No
 
 
 @pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    (
+        (
+            "GET",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1",
+            "/review/v1/assignments/assignment-1",
+        ),
+        (
+            "GET",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1/artifact",
+            "/review/v1/assignments/assignment-1/artifact",
+        ),
+        (
+            "GET",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1/rules",
+            "/review/v1/assignments/assignment-1/rules",
+        ),
+        (
+            "POST",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1/model-call-started",
+            "/review/v1/assignments/assignment-1/model-call-started",
+        ),
+        (
+            "POST",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1/failure",
+            "/review/v1/assignments/assignment-1/failure",
+        ),
+        (
+            "POST",
+            "/challenges/agent-challenge/review/v1/assignments/assignment-1/report",
+            "/review/v1/assignments/assignment-1/report",
+        ),
+    ),
+)
+@pytest.mark.parametrize("attested_routes_enabled", (False, True))
+def test_review_capability_routes_preserve_authorization_bearer(
+    method: str,
+    path: str,
+    upstream_path: str,
+    attested_routes_enabled: bool,
+) -> None:
+    """Measured-review guest Bearer must survive proxy on closed /review/v1 table.
+
+    Residual RuntimeError class-only guest failures after public_logs=true map to
+    assignment fetch 401 when Authorization is stripped generically.
+    """
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=attested_routes_enabled)
+    response = client.request(
+        method,
+        path,
+        content=b'{"marker":true}' if method == "POST" else None,
+        headers={
+            "Authorization": "Bearer ra_assignment-1.deadbeef",
+            "Proxy-Authorization": "Basic should-still-strip",
+            "X-Admin-Token": "should-strip",
+            "X-Base-Verified-Hotkey": "should-strip",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+    headers: httpx.Headers = captured["headers"]
+    assert headers["authorization"] == "Bearer ra_assignment-1.deadbeef"
+    assert headers["x-public-header"] == "preserved"
+    assert "proxy-authorization" not in headers
+    assert "x-admin-token" not in headers
+    assert "x-base-verified-hotkey" not in headers
+
+
+def test_review_capability_authorization_not_preserved_on_signed_prepare() -> None:
+    """Signed miner routes still strip Authorization (only signature headers)."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=False)
+    response = client.post(
+        "/challenges/agent-challenge/submissions/sub-1/review/prepare",
+        content=b"{}",
+        headers={
+            "Authorization": "Bearer should-not-forward",
+            "X-Hotkey": "miner-hotkey",
+            "X-Signature": "miner-signature",
+            "X-Nonce": "miner-nonce",
+            "X-Timestamp": "1700000000",
+        },
+    )
+    assert response.status_code == 200
+    headers: httpx.Headers = captured["headers"]
+    assert "authorization" not in headers
+    assert headers["x-hotkey"] == "miner-hotkey"
+
+
+@pytest.mark.parametrize(
     "path",
     (
         "/challenges/agent-challenge/submissions/sub-1/review/prepare/",
@@ -372,11 +480,13 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("PUT", "/submissions/sub-1/env"),
         ("POST", "/submissions/sub-1/env/confirm-empty"),
         ("POST", "/submissions/sub-1/launch"),
-        ("GET", "/review/v1/assignments/assignment-1/artifact"),
-        ("GET", "/review/v1/assignments/assignment-1/rules"),
-        ("POST", "/review/v1/assignments/assignment-1/model-call-started"),
-        ("POST", "/review/v1/assignments/assignment-1/failure"),
-        ("POST", "/review/v1/assignments/assignment-1/report"),
+        # review/v1 guest capability table is allowlisted + Authorization preserved
+        # (see test_review_capability_routes_preserve_authorization_bearer). Neighbor
+        # aliases and unconstrained assignment paths remain blocked below.
+        ("GET", "/review/v1/assignments"),
+        ("POST", "/review/v1/assignments"),
+        ("GET", "/review/v1/assignments/assignment-1/extra"),
+        ("POST", "/review/v1/assignments/assignment-1/unknown"),
         ("GET", "/internal/v1/reviews/session-1/report"),
         ("GET", "/internal/v1/reviews/session-1/evidence/object-1"),
         ("POST", "/internal/v1/reviews/session-1/approvals"),

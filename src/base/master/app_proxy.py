@@ -333,6 +333,52 @@ def _is_agent_challenge_exact_review_eval_signed_route(
     )
 
 
+def _is_agent_challenge_review_capability_route(method: str, path: str) -> bool:
+    """True for measured-review guest routes that authenticate with Bearer capability.
+
+    The Phala guest reviewer calls ``/review/v1/assignments/{id}`` and its
+    sibling artifact/rules/model-call/failure/report paths with
+    ``Authorization: Bearer <REVIEW_SESSION_TOKEN>``. The generic proxy strips
+    ``authorization`` as a sensitive header; without preserving it on this
+    closed route table the guest fails closed at assignment fetch (RuntimeError)
+    even when dual-flag AC is healthy and the capability token is valid.
+
+    Independent of ``agent_challenge_attested_routes_enabled`` so residual
+    production (signature preserve while the allowlist flag is still false)
+    still works. Exact path shapes only; no neighbor aliases.
+    """
+
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    normalized_method = method.upper()
+    canonical_path = f"/{path}"
+    if path.startswith("/") or canonical_path != normalized:
+        return False
+
+    if len(parts) < 3 or parts[0] != "review" or parts[1] != "v1":
+        return False
+    if parts[2] != "assignments":
+        return False
+
+    # GET /review/v1/assignments/{assignment_id}
+    if len(parts) == 4 and normalized_method == "GET":
+        return True
+
+    # GET|POST /review/v1/assignments/{assignment_id}/{action}
+    if len(parts) != 5:
+        return False
+    action = parts[4]
+    if normalized_method == "GET" and action in {"artifact", "rules"}:
+        return True
+    if normalized_method == "POST" and action in {
+        "model-call-started",
+        "failure",
+        "report",
+    }:
+        return True
+    return False
+
+
 def _is_agent_challenge_signed_route(
     slug: str,
     method: str,
@@ -397,6 +443,11 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         path,
         attested_routes_enabled=True,
     ):
+        return True
+
+    # Measured-review guest capability table (Authorization bearer only). Exact
+    # shapes already gated by _is_agent_challenge_review_capability_route.
+    if _is_agent_challenge_review_capability_route(method, path):
         return True
 
     if (
@@ -490,6 +541,7 @@ def _forward_headers(
     request: Request,
     *,
     preserve_miner_signature_headers: bool = False,
+    preserve_review_capability_authorization: bool = False,
     strip_attested_trust_headers: bool = False,
 ) -> dict[str, str]:
     """Copy safe request headers for forwarding to a public challenge route."""
@@ -499,6 +551,8 @@ def _forward_headers(
         lowered = key.lower()
         preserve_header = (
             preserve_miner_signature_headers and lowered in MINER_SIGNATURE_HEADERS
+        ) or (
+            preserve_review_capability_authorization and lowered == "authorization"
         )
         if (
             lowered in HOP_BY_HOP_HEADERS
@@ -955,6 +1009,13 @@ def create_proxy_app(
                 request.method,
                 path,
                 attested_routes_enabled=agent_challenge_attested_routes_enabled,
+            ),
+            preserve_review_capability_authorization=(
+                slug == "agent-challenge"
+                and _is_agent_challenge_review_capability_route(
+                    request.method,
+                    path,
+                )
             ),
             strip_attested_trust_headers=(
                 agent_challenge_attested_routes_enabled and slug == "agent-challenge"
