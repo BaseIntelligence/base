@@ -108,6 +108,12 @@ SIGNED_ROUTES = (
     ),
     _SignedRoute(
         "GET",
+        "/challenges/agent-challenge/submissions/sub-1/review/history",
+        "/submissions/sub-1/review/history",
+        200,
+    ),
+    _SignedRoute(
+        "GET",
         "/challenges/agent-challenge/submissions/sub-1/eval/status",
         "/submissions/sub-1/eval/status",
         200,
@@ -471,7 +477,8 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("GET", "/submissions/sub-1/review/prepare"),
         ("PUT", "/submissions/sub-1/review/retry"),
         ("POST", "/submissions/sub-1/review/report"),
-        ("GET", "/submissions/sub-1/review/history"),
+        # GET review/history is signature-preserved (signed_get_routes) — not private.
+        ("POST", "/submissions/sub-1/review/history"),
         ("GET", "/submissions/sub-1/eval/prepare"),
         ("POST", "/submissions/sub-1/eval/status"),
         ("POST", "/submissions/sub-1/eval/result"),
@@ -751,6 +758,55 @@ def test_flag_off_still_preserves_miner_signature_headers_on_review_prepare() ->
     assert headers["x-timestamp"] == "1700000000"
     # Signature headers alone unblocked the residual 401; trust-header
     # stripping is the separate fail-closed surface when the flagged mode is on.
+
+
+def test_flag_off_still_preserves_miner_signature_headers_on_review_history() -> None:
+    """Live residual v11: miner GET review/history long-poll needs sign headers.
+
+    Even when agent_challenge_attested_routes_enabled is off (joinbase dual-flag
+    residual), the master must forward X-Hotkey/X-Signature/X-Nonce/X-Timestamp
+    for exact GET submissions/{id}/review/history. Omitting this row from
+    signed_get_routes caused HTTP 401 on history polls until ad-hoc hotpatch.
+    """
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(
+            200,
+            content=b'{"schema_version":1,"events":[],"cursor":null}',
+            headers={"content-type": "application/json"},
+        )
+
+    client = _proxy_client(handler, attested_routes_enabled=False)
+    response = client.get(
+        "/challenges/agent-challenge/submissions/1/review/history",
+        headers={
+            "X-Hotkey": "5D7D4EGayNMinerHotkeyExampleForTestOnly",
+            "X-Signature": "0x" + ("cd" * 32),
+            "X-Nonce": "fresh-nonce-review-history",
+            "X-Timestamp": "1700000001",
+            "X-Forwarded-For": "198.51.100.9",
+            "X-Attestation-Verified": "should-not-elevate",
+            "X-Base-Verified-Hotkey": "forged",
+            "Authorization": "Bearer should-not-forward",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b'"events"' in response.content
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/submissions/1/review/history"
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-hotkey"] == "5D7D4EGayNMinerHotkeyExampleForTestOnly"
+    assert headers["x-signature"].startswith("0x")
+    assert headers["x-nonce"] == "fresh-nonce-review-history"
+    assert headers["x-timestamp"] == "1700000001"
+    # Authorization remains stripped on signed miner routes (Bearer is guest).
+    assert "authorization" not in headers
 
 
 def test_forged_trust_headers_do_not_elevate_private_routes() -> None:

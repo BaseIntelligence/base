@@ -326,6 +326,10 @@ def _is_agent_challenge_exact_review_eval_signed_route(
     }
     signed_get_routes = {
         ("review", "report"),
+        # Miner long-poll history (selfdeploy review history). Without this
+        # signed row dual-flag joinbase residual HTTP 401 when the generic
+        # proxy strips X-Hotkey/X-Signature; live ops previously hotpatched only.
+        ("review", "history"),
         ("eval", "status"),
     }
     return (normalized_method == "POST" and route in signed_post_routes) or (
@@ -551,9 +555,7 @@ def _forward_headers(
         lowered = key.lower()
         preserve_header = (
             preserve_miner_signature_headers and lowered in MINER_SIGNATURE_HEADERS
-        ) or (
-            preserve_review_capability_authorization and lowered == "authorization"
-        )
+        ) or (preserve_review_capability_authorization and lowered == "authorization")
         if (
             lowered in HOP_BY_HOP_HEADERS
             or (
