@@ -105,7 +105,22 @@ class TargonClient:
     # -- apps / workloads listing --------------------------------------------
 
     async def list_apps(self) -> list[dict[str, Any]]:
-        response = await self._request("GET", "/apps")
+        """List apps.
+
+        Targon has retired ``GET /apps`` on some accounts/regions with HTTP 410
+        Gone (workloads remain the inventory surface). Treat 410 as an empty
+        list so shared Lium/Targon read-only preflights do not hard-fail forever
+        when the retired apps route is gone; non-410 errors still raise.
+        """
+        response = await self._send("GET", "/apps")
+        if response.status_code == 410:
+            logger.info("Targon GET /apps returned 410 Gone; treating as empty list")
+            return []
+        if response.status_code >= 400:
+            raise TargonError(
+                f"Targon GET /apps returned {response.status_code}",
+                status_code=response.status_code,
+            )
         return _as_list(response.json(), "items")
 
     async def create_app(

@@ -413,6 +413,30 @@ async def test_list_apps_returns_items() -> None:
 
 
 @respx.mock
+async def test_list_apps_treats_410_gone_as_empty() -> None:
+    """Targon retired GET /apps with 410 Gone; inventory still works via /workloads.
+
+    Live smoke (BASE_LIVE_PROVIDER_TESTS Lium path) calls list_apps in a shared
+    read-only preflight. Raising on 410 blocked Lium rent entirely; empty list is
+    the correct retired-endpoint semantics (no invent, no retry cascade).
+    """
+    route = respx.get(f"{BASE}/apps").mock(
+        return_value=httpx.Response(410, text="Gone")
+    )
+    apps = await TargonClient("k").list_apps()
+    assert apps == []
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_list_apps_still_raises_on_non_gone_errors() -> None:
+    respx.get(f"{BASE}/apps").mock(return_value=httpx.Response(500, text="boom"))
+    with pytest.raises(TargonError) as exc_info:
+        await TargonClient("k").list_apps()
+    assert exc_info.value.status_code == 500
+
+
+@respx.mock
 async def test_create_app_posts_name() -> None:
     route = respx.post(f"{BASE}/apps").mock(
         return_value=httpx.Response(200, json={"uid": "app-2", "name": "worker"})
