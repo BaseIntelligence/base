@@ -230,12 +230,12 @@ async def test_provision_refuses_unbounded_spec_without_network(
     assert respx.calls.call_count == 0
 
 
-async def test_provision_sub_hour_lifetime_message_mentions_truncation() -> None:
+async def test_provision_sub_hour_lifetime_message_mentions_delete_window() -> None:
     with pytest.raises(CostGuardrailError) as exc_info:
         await TargonClient("k").provision(_spec(max_lifetime_hours=0.5))
     message = str(exc_info.value)
     assert "at least 1 hour" in message
-    assert "termination_hours" in message
+    assert "DELETE" in message
 
 
 # -- deploy call shape (two-step create-then-deploy) --------------------------
@@ -263,8 +263,14 @@ async def test_provision_creates_then_deploys_with_workload_body() -> None:
     assert body["type"] == "RENTAL"
     assert body["resource_name"] == "h100"
     assert body["image"] == "ghcr.io/base/worker"
-    assert body["termination_hours"] == 2
-    assert body["envs"] == [] or isinstance(body["envs"], list)
+    # Live API rejects unknown fields (termination_hours/gpu_count/ssh_public_keys).
+    assert "termination_hours" not in body
+    assert "gpu_count" not in body
+    assert "ssh_public_keys" not in body
+    assert "image_digest" not in body
+    assert "envs" not in body  # empty env omitted
+    # Default ports=(22,) remaps to Targon SSH DIRECT 2222 (ports must be >=1024).
+    assert body["ports"] == [{"port": 2222, "protocol": "TCP", "routing": "DIRECT"}]
     # The deploy step carries no body (matches the SDK / live route).
     assert not deploy.calls.last.request.content
 
@@ -310,7 +316,7 @@ async def test_deploy_raises_when_create_returns_no_uid() -> None:
 
 
 @respx.mock
-async def test_provision_includes_env_and_ports() -> None:
+async def test_provision_includes_env_ports_and_ssh_key_uids() -> None:
     create = respx.post(f"{BASE}/workloads").mock(
         return_value=httpx.Response(200, json={"uid": "wl-1"})
     )
@@ -318,11 +324,54 @@ async def test_provision_includes_env_and_ports() -> None:
         return_value=httpx.Response(200, json={"uid": "wl-1"})
     )
     spec = _spec(env={"ROLE": "worker"}, ports=(22, 8080))
-    await TargonClient("k").provision(spec)
+    await TargonClient("k").provision(
+        spec, ssh_key_uids=("shk-abc123",), commands=("sleep", "infinity")
+    )
     body = json.loads(create.calls.last.request.content)
     assert {"name": "ROLE", "value": "worker"} in body["envs"]
-    assert body["ports"] == [{"port": 22}, {"port": 8080}]
-    assert body["ssh_public_keys"] == ["ssh-ed25519 AAAA"]
+    assert body["ports"] == [
+        {"port": 2222, "protocol": "TCP", "routing": "DIRECT"},
+        {"port": 8080, "protocol": "TCP", "routing": "PROXIED"},
+    ]
+    assert body["ssh_keys"] == ["shk-abc123"]
+    assert body["commands"] == ["sleep", "infinity"]
+    assert "ssh_public_keys" not in body
+
+
+@respx.mock
+async def test_provision_requires_image_and_resource_name() -> None:
+    with pytest.raises(CostGuardrailError, match="resource_name"):
+        await TargonClient("k").provision(_spec(template_ref=None))
+    with pytest.raises(CostGuardrailError, match="image"):
+        await TargonClient("k").provision(_spec(image=None))
+
+
+@respx.mock
+async def test_list_ssh_keys_returns_items() -> None:
+    respx.get(f"{BASE}/ssh-keys").mock(
+        return_value=httpx.Response(
+            200, json={"items": [{"uid": "shk-1", "name": "ops"}]}
+        )
+    )
+    keys = await TargonClient("k").list_ssh_keys()
+    assert keys == [{"uid": "shk-1", "name": "ops"}]
+
+
+@respx.mock
+async def test_raise_deploy_error_includes_reason_snippet() -> None:
+    respx.post(f"{BASE}/workloads").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": "Failed to decode request body",
+                "reason": "INVALID_JSON_BODY",
+            },
+        )
+    )
+    with pytest.raises(TargonError) as exc_info:
+        await TargonClient("k").deploy({"name": "x"})
+    assert "INVALID_JSON_BODY" in str(exc_info.value)
+    assert not isinstance(exc_info.value, InsufficientCreditsError)
 
 
 # -- VAL-PROV-007 (insufficient credits, typed, no retry) ---------------------
