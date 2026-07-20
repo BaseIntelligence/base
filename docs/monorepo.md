@@ -199,6 +199,22 @@ docker buildx build \
 
 Base ruff/mypy/pytest jobs remain root-scoped in `.github/workflows/ci.yml`.
 
+### Master image embeds challenge packages (master-embed scaffold)
+
+`docker/Dockerfile.master` installs workspace members **prism-challenge** and
+**agent-challenge** (locked export + wheels; no git clone) beside `base[master]`.
+`docker/master-entrypoint.sh` supervises:
+
+| Process | Bind |
+| --- | --- |
+| `base master proxy` | `:8081` |
+| Prism | `127.0.0.1:18080` |
+| agent-challenge | `127.0.0.1:18081` |
+
+Data under `/var/lib/base/challenges/{prism,agent-challenge}`. Dual-run opt-out:
+`BASE_MASTER_EMBED_CHALLENGES=0`. Public slugs and proxy httpx path unchanged.
+Unit contracts: `tests/unit/test_master_embed_challenges.py` (VAL-MEMB-001/002).
+
 ### Deploy + miner docs (monorepo archive)
 
 Operator docs reference monorepo **local build paths** while keeping public image

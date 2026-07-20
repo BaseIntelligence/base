@@ -16,13 +16,26 @@ does not configure on-chain submission (validators own wallets and `set_weights`
 | Compose file | `deploy/compose/docker-compose.yml` |
 | App | `base-master-validator` (proxy, coordination, aggregation, watcher) |
 | Database | `master-postgres` (private `db` network only) |
-| Challenges | one long-lived `challenge-<slug>` per ACTIVE registry entry |
+| Challenges | **Target:** ASGI inside the master container on localhost (Prism `127.0.0.1:18080`, agent-challenge `127.0.0.1:18081`) via `docker/master-entrypoint.sh`. Dual-run may still keep optional `challenge-<slug>` Compose services until the compose-drop milestone. |
+| Challenge data | `/var/lib/base/challenges/{prism,agent-challenge}` on the master volume; shared token files only |
 | Secrets | host files under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/secrets` |
 | Live production | Compose project **`base-master-prod`**; public API **`https://chain.joinbase.ai` only** (Swarm inactive after cutover). Other historical hostnames are secondary/non-authoritative. |
 
 There is **no LLM gateway** container or Swarm broker overlay in this path. The master
 coordinates and aggregates; it **never** submits on-chain weights and **never** launches
 evaluator containers.
+
+### Master image embed ports
+
+| Surface | Port |
+| --- | --- |
+| Public proxy | `8081` (host publish via Compose) |
+| Embedded Prism | `127.0.0.1:18080` |
+| Embedded agent-challenge | `127.0.0.1:18081` |
+
+Build: `docker build -f docker/Dockerfile.master -t ghcr.io/baseintelligence/base-master:local .`
+Opt out of embed (proxy-only dual-run): `BASE_MASTER_EMBED_CHALLENGES=0`.
+Public `/challenges/prism` and `/challenges/agent-challenge` stay on the proxy httpx path.
 
 ## Install
 

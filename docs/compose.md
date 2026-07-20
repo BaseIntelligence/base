@@ -16,11 +16,36 @@ Exact cardinality after install:
 
 | Service | Role |
 | --- | --- |
-| `base-master-validator` | Master API, coordination, aggregation, health/version, digest-aware challenge watcher |
+| `base-master-validator` | Master API, coordination, aggregation, health/version, digest-aware challenge watcher; **may embed** Prism + agent-challenge ASGI on loopback (see below) |
 | `master-postgres` | PostgreSQL 16 control plane (private) |
-| `challenge-prism` | One long-lived combined Prism challenge service |
+| `challenge-prism` | Optional dual-run: long-lived combined Prism challenge service (being superseded by master embed) |
 
-Cardinality is exactly one application container, one PostgreSQL container, and one long-lived container per active challenge. There is no gateway, broker sidecar, challenge PostgreSQL, evaluator, or worker sidecar service in this topology.
+Cardinality is exactly one application container, one PostgreSQL container, and (during dual-run) optionally one long-lived container per active challenge. There is no gateway, broker sidecar, challenge PostgreSQL, evaluator, or worker sidecar service in this topology.
+
+### Embedded challenges inside master (scaffold)
+
+The `base-master` image (`docker/Dockerfile.master`) installs monorepo packages
+`prism-challenge` and `agent-challenge` and runs them under
+`docker/master-entrypoint.sh` (supervisor) on **localhost only**:
+
+| Process | Bind | Notes |
+| --- | --- | --- |
+| `base master proxy` | `0.0.0.0:8081` (published host port) | Public API + `/challenges/*` reverse proxy (httpx unchanged) |
+| Prism ASGI | `127.0.0.1:18080` | `uvicorn prism_challenge.app:app` |
+| Agent-challenge ASGI | `127.0.0.1:18081` | `uvicorn agent_challenge.app:app` |
+
+Data paths on the master volume:
+
+- `/var/lib/base/challenges/prism` (SQLite + TMPDIR)
+- `/var/lib/base/challenges/agent-challenge` (SQLite + artifacts)
+
+Shared tokens stay file-backed (`PRISM_SHARED_TOKEN_FILE`,
+`CHALLENGE_SHARED_TOKEN_FILE`). Dual-run: set
+`BASE_MASTER_EMBED_CHALLENGES=0` to keep a separate `challenge-*` Compose service
+owning ASGI while the proxy still talks to that service. After the compose-drop
+milestone, registry `internal_base_url` points at `http://127.0.0.1:18080` /
+`:18081`. Public path prefixes `/challenges/prism` and
+`/challenges/agent-challenge` are unchanged.
 
 ### Challenge auto-update (watcher)
 

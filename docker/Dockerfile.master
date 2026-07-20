@@ -1,11 +1,41 @@
+# syntax=docker/dockerfile:1
+#
+# base-master — monorepo build with embedded challenge ASGI (VAL-MEMB-001/002)
+#
+# GHCR name (invariant): ghcr.io/baseintelligence/base-master
+#
+# Installs:
+#   • base[master] (proxy, coordination, aggregation, compose watcher)
+#   • monorepo packages prism-challenge + agent-challenge (localhost uvicorn)
+#
+# Runtime supervisor (docker/master-entrypoint.sh):
+#   base master proxy :8081
+#   prism              127.0.0.1:18080
+#   agent-challenge    127.0.0.1:18081
+#
+# Public paths /challenges/prism and /challenges/agent-challenge stay on the
+# proxy (httpx → localhost internal_base_url after registry cutover).
+#
+# Build from monorepo root (context = .):
+#
+#   docker build -f docker/Dockerfile.master \
+#     -t ghcr.io/baseintelligence/base-master:local .
+
 FROM python:3.12-slim AS runtime
+
+LABEL org.opencontainers.image.source="https://github.com/BaseIntelligence/base" \
+      org.opencontainers.image.title="base-master" \
+      org.opencontainers.image.description="Base master control plane with optional embedded Prism + agent-challenge ASGI"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_SYSTEM_PYTHON=1 \
     HOME=/var/lib/base \
     BASE_DOCKER__NETWORK_NAME=base_challenges \
-    BASE_DOCKER__SECRET_DIR=/var/lib/base/secrets
+    BASE_DOCKER__SECRET_DIR=/var/lib/base/secrets \
+    BASE_MASTER_EMBED_CHALLENGES=1 \
+    BASE_MASTER_PRISM_PORT=18080 \
+    BASE_MASTER_AC_PORT=18081
 
 WORKDIR /app
 
@@ -34,20 +64,55 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins \
     && docker compose version
 
 COPY . .
-RUN if [ -f pyproject.toml ]; then uv pip install --system -e ".[master]"; fi
+
+# Base master extras first, then monorepo challenge packages (same install
+# shape as Dockerfile.validator-runtime: locked export + wheels, no git clone).
+RUN test -f pyproject.toml \
+    && test -f packages/challenges/agent-challenge/pyproject.toml \
+    && test -f packages/challenges/prism/pyproject.toml \
+    && test -f packages/challenges/agent-challenge/src/agent_challenge/app.py \
+    && test -f packages/challenges/prism/src/prism_challenge/app.py \
+    && uv pip install --system -e ".[master]" \
+    && uv export --package agent-challenge --frozen --no-dev \
+      --no-emit-project --no-emit-package base \
+      --format requirements-txt --output-file /tmp/agent-requirements.txt \
+    && uv export --package prism-challenge --frozen --no-dev \
+      --no-emit-project --no-emit-package base \
+      --format requirements-txt --output-file /tmp/prism-requirements.txt \
+    && uv pip install --system --require-hashes --requirements /tmp/agent-requirements.txt \
+    && uv pip install --system --require-hashes --requirements /tmp/prism-requirements.txt \
+    && uv build --package agent-challenge --wheel --out-dir /tmp/challenge-wheels \
+    && uv build --package prism-challenge --wheel --out-dir /tmp/challenge-wheels \
+    && uv pip install --system --no-deps /tmp/challenge-wheels/*.whl \
+    && rm -rf /tmp/challenge-wheels /tmp/agent-requirements.txt /tmp/prism-requirements.txt \
+    && PRISM_DOCKER_BACKEND=cli CHALLENGE_DOCKER_BACKEND=cli \
+       PRISM_SHARED_TOKEN=ci-import-smoke CHALLENGE_SHARED_TOKEN=ci-import-smoke \
+       python -c "import base, prism_challenge.app, agent_challenge.app; import uvicorn"
+
+# Supervisor entrypoint: proxy + localhost challenge uvicons (VAL-MEMB-002).
+COPY docker/master-entrypoint.sh /usr/local/bin/base-master-entrypoint
+RUN chmod 0755 /usr/local/bin/base-master-entrypoint
+
 # Host worktrees may carry mode 0600 files; ensure the non-root runtime can read
 # the installed source tree (mission images run as uid 1000).
 RUN find /app -type d -exec chmod 755 {} + \
     && find /app -type f -exec chmod a+r {} + \
     && groupadd --system --gid 1000 base \
     && useradd --system --uid 1000 --gid base --home-dir /var/lib/base --shell /usr/sbin/nologin base \
-    && mkdir -p /var/lib/base /var/lib/base/secrets /var/lib/base-db \
+    && mkdir -p \
+        /var/lib/base \
+        /var/lib/base/secrets \
+        /var/lib/base/challenges/prism \
+        /var/lib/base/challenges/agent-challenge \
+        /var/lib/base-db \
     && chown -R 1000:1000 /var/lib/base /var/lib/base-db /app
 
 VOLUME ["/var/lib/base"]
 
-EXPOSE 8000 8001 8082
+# 8081 = master proxy (compose publishes this). Challenge ASGI binds loopback only.
+EXPOSE 8081
 
 USER 1000:1000
 
+ENTRYPOINT ["/usr/local/bin/base-master-entrypoint"]
 CMD ["base", "master", "proxy", "--config", "config/master.example.yaml"]
