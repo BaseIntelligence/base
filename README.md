@@ -5,12 +5,14 @@
 **Multi-challenge Bittensor subnet platform with master/validator orchestration.**
 
 <a href="docs/miner/README.md">Miners</a> ·
+<a href="docs/miner/getting-started.md">Miner getting started</a> ·
 <a href="docs/validator/README.md">Validators</a> ·
 <a href="docs/master/README.md">Master</a> ·
 <a href="docs/architecture.md">Architecture</a> ·
 <a href="docs/challenges.md">Challenges</a> ·
 <a href="docs/security.md">Security</a> ·
-<a href="https://joinbase.ai">Website</a>
+<a href="https://joinbase.ai">Website</a> ·
+<a href="https://chain.joinbase.ai/health">chain.joinbase.ai</a>
 
 [![CI](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml/badge.svg)](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/BaseIntelligence/base)](https://github.com/BaseIntelligence/base/blob/main/LICENSE)
@@ -51,8 +53,9 @@ Immutable Base Python package pin for consumers (including Prism):
 | SHA-256 | `3a61c2d3a343ed6de55e80215486e3de0c9639276443d08f2ed316bc807f2ff0` |
 
 There is no LLM gateway in this release. Challenge admission and scoring are owned by each challenge
-service (Prism is deterministic). Agent-challenge remains diagnostic/incompatible relative to the
-Compose target path.
+service (Prism is deterministic; NO-TEE provider-trust path). Agent Challenge is gateway-free and
+mineable on the Compose master when attested flags and pins are healthy. Default emission shares are
+**50% Prism + 50% Agent Challenge** (absolute). Day-1 miner path: [docs/miner/getting-started.md](docs/miner/getting-started.md).
 
 ## Architecture
 
@@ -126,7 +129,12 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 
 | Audience | Guide | Contents |
 |----------|-------|----------|
-| Miners | <a href="docs/miner/README.md">Miner guide</a> | Choose a challenge, submit through the proxy, track leaderboards |
+| Miners | <a href="docs/miner/README.md">Miner hub</a> | Phala-style IA: start here for joinbase mining |
+| Miners | <a href="docs/miner/getting-started.md">Miner getting started</a> | Wallet, chain.joinbase.ai, pick Prism or Agent Challenge (&lt;15 min) |
+| Miners | <a href="docs/miner/concepts.md">Miner concepts</a> | Absolute **50/50** emission (Prism + Agent Challenge), roles |
+| Miners | <a href="docs/miner/how-to.md">Miner how-to</a> | Links into challenge repos and day-1 tasks |
+| Miners | <a href="docs/miner/reference.md">Miner reference</a> | Public routes and signature headers |
+| Miners | <a href="docs/miner/troubleshooting.md">Miner troubleshooting</a> | 401 / 429 / 502 checklist |
 | Miners | <a href="docs/miner/worker-plane.md">Worker deployment</a> | Deploy a miner-funded GPU worker on Lium/Targon |
 | Validators | <a href="docs/validator/README.md">Validator guide</a> | Run an independent validator and submit on-chain weights |
 | Operators | <a href="docs/compose.md">Compose deployment</a> | Supported single-host master and validator install |
