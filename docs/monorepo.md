@@ -119,8 +119,8 @@ Import package names stay stable:
 ### Positive
 
 - Single lockfile root and one place for shared `challenge_sdk` changes.
-- Later milestones can COPY `packages/challenges/*` into validator-runtime
-  (drop `AGENT_CHALLENGE_REF` / `PRISM_REF` clones).
+- Validator-runtime COPYs `packages/challenges/*` (no
+  `AGENT_CHALLENGE_REF` / `PRISM_REF` clones); see section above.
 - Miner and deploy docs can converge under Base without renaming public URLs.
 
 ### Trade-offs / follow-ups
