@@ -72,7 +72,12 @@ def test_challenges_path_depend_on_workspace_base() -> None:
     assert "releases/download" not in joined
     assert "git+https://github.com/BaseIntelligence/base" not in joined
     assert "base @ " not in joined
-    assert all(d.strip() == "base" or not d.strip().startswith("base ") for d in prism_deps + agent_deps if "base" in d)
+    assert all(
+        d.strip() == "base" or not d.strip().startswith("base ")
+        for d in prism_deps + agent_deps
+        if "base" in d
+    )
+
 
 def test_base_package_stays_at_src_base() -> None:
     """ADR choice: keep base installable from root src/base (minimal churn)."""
