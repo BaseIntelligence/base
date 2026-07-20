@@ -931,14 +931,18 @@ def prism_challenge_create(settings: Any | None = None) -> ChallengeCreate:
         emission_percent=PRISM_EMISSION_PERCENT,
         status=ChallengeStatus.ACTIVE,
         description="PRISM architecture and training reward challenge.",
-        internal_base_url="http://challenge-prism:8080",
+        # Embedded master topology: ASGI listens on loopback inside master
+        # (VAL-MEMB-004). Override via ChallengeCreate.internal_base_url only
+        # for emergency dual-run against a separate challenge container.
+        internal_base_url="http://127.0.0.1:18080",
         required_capabilities=["get_weights", "proxy_routes"],
         resources={
             "cpu": "2",
             "memory": "8g",
         },
-        # Named Docker volume source for challenge SQLite (Compose-only
-        # adoption). Container mount target remains /data via the orchestrator.
+        # SQLite lives under the master volume path used by master-entrypoint
+        # (/var/lib/base/challenges/prism). Named volume key kept for registry
+        # metadata compatibility; no separate challenge Compose volume.
         volumes={"sqlite": "base_prism_sqlite"},
         env={
             "PRISM_SHARED_TOKEN_FILE": challenge_token_file,

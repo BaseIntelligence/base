@@ -1329,7 +1329,7 @@ def test_seed_prism_challenges_is_idempotent_and_preserves_tokens(
     assert prism.version == "0.1.0"
     assert prism.status == ChallengeStatus.ACTIVE
     assert prism.emission_percent == Decimal("30")
-    assert prism.internal_base_url == "http://challenge-prism:8080"
+    assert prism.internal_base_url == "http://127.0.0.1:18080"
     assert prism.public_proxy_base_path == "/challenges/prism"
     assert prism.required_capabilities == ["get_weights", "proxy_routes"]
     challenge_token_file = "/run/secrets/base/challenge_token"

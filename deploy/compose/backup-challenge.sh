@@ -6,12 +6,17 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: backup-challenge.sh --project-name NAME [--service challenge-prism] [--output-dir DIR]
+Usage: backup-challenge.sh --project-name NAME [--service base-master-validator] [--output-dir DIR]
+
+Default service is base-master-validator (embedded challenges live under
+/var/lib/base/challenges/prism on the master volume). Historical
+--service challenge-prism remains accepted for emergency dual-run stacks.
 EOF
 }
 
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
-SERVICE="challenge-prism"
+# Embedded topology: challenge SQLite is under the master container volume.
+SERVICE="base-master-validator"
 OUTPUT_DIR=""
 COMPOSE_FILE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,21 +42,33 @@ OUTPUT_DIR="${OUTPUT_DIR:-${PWD}/challenge-backup-${PROJECT_NAME}-${SERVICE}-${S
 umask 077
 mkdir -p "${OUTPUT_DIR}/data" "${OUTPUT_DIR}/manifest"
 
-# Online consistent SQLite backup inside the challenge container.
+# Online consistent SQLite backup inside the challenge (or master embed) container.
 docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" exec -T "${SERVICE}" \
   python - <<'PY'
 from pathlib import Path
 import sqlite3
 import sys
 
-src = Path("/data/prism.sqlite3")
-if not src.is_file():
-    # Accept alternative challenge sqlite names used by other challenges.
-    candidates = sorted(Path("/data").glob("*.sqlite3"))
-    if not candidates:
-        print("no sqlite database under /data", file=sys.stderr)
-        sys.exit(1)
-    src = candidates[0]
+candidates: list[Path] = []
+for path in (
+    Path("/var/lib/base/challenges/prism/prism.sqlite3"),
+    Path("/var/lib/base/challenges/prism/challenge.sqlite3"),
+    Path("/data/prism.sqlite3"),
+    Path("/data/challenge.sqlite3"),
+):
+    if path.is_file():
+        candidates.append(path)
+if not candidates:
+    for root in (Path("/var/lib/base/challenges/prism"), Path("/data")):
+        if root.is_dir():
+            candidates.extend(sorted(root.glob("*.sqlite3")))
+if not candidates:
+    print(
+        "no sqlite database under embed path or /data",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+src = candidates[0]
 dst = Path("/tmp/challenge-backup.sqlite3")
 if dst.exists():
     dst.unlink()

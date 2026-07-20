@@ -14,9 +14,15 @@ Usage: install-master.sh [--project-name NAME] [--port PORT] [--state-dir DIR]
 
 Environment overrides (optional):
   BASE_MASTER_IMAGE_REPOSITORY / BASE_MASTER_IMAGE_DIGEST
-  PRISM_IMAGE_REPOSITORY / PRISM_IMAGE_DIGEST
   POSTGRES_IMAGE_REPOSITORY / POSTGRES_IMAGE_DIGEST
   BASE_MASTER_HOST_PORT
+
+Embedded challenges (no separate PRISM_IMAGE / challenge-* Compose service):
+  Registry seed sets internal_base_url to http://127.0.0.1:18080 (Prism)
+  and documents AC at http://127.0.0.1:18081 when registered.
+  Challenge ASGI is supervised inside the master image (master-entrypoint).
+  Optional historical PRISM_IMAGE_* pins are ignored for topology (emergency
+  dual-run only; not required).
 EOF
 }
 
@@ -128,28 +134,20 @@ if [[ -z "${BASE_MASTER_IMAGE_REPOSITORY:-}" || -z "${BASE_MASTER_IMAGE_DIGEST:-
   fi
 fi
 
-if [[ -z "${PRISM_IMAGE_REPOSITORY:-}" || -z "${PRISM_IMAGE_DIGEST:-}" ]]; then
-  if digest="$(_tag_with_digest "${PRISM_LOCAL_IMAGE:-prism-sdk-review-service:local}" "mission/prism")"; then
-    PRISM_IMAGE_REPOSITORY="mission/prism"
-    PRISM_IMAGE_DIGEST="${digest}"
-  elif digest="$(_tag_with_digest "ghcr.io/baseintelligence/prism:m8-redeploy" "mission/prism")"; then
-    PRISM_IMAGE_REPOSITORY="mission/prism"
-    PRISM_IMAGE_DIGEST="${digest}"
-  elif digest="$(_tag_with_digest "ghcr.io/baseintelligence/prism:latest" "mission/prism")"; then
-    # Public GHCR name unchanged; local tag for compose pin only.
-    PRISM_IMAGE_REPOSITORY="mission/prism"
-    PRISM_IMAGE_DIGEST="${digest}"
-  else
-    echo "PRISM_IMAGE_REPOSITORY/DIGEST unset and no local prism image found." >&2
-    echo "Monorepo local build (GHCR name unchanged):" >&2
-    echo "  docker buildx build -f packages/challenges/prism/Dockerfile \\" >&2
-    echo "    --build-context monorepo=. --target service \\" >&2
-    echo "    -t ghcr.io/baseintelligence/prism:local \\" >&2
-    echo "    packages/challenges/prism" >&2
-    echo "Then: PRISM_LOCAL_IMAGE=ghcr.io/baseintelligence/prism:local $0 ..." >&2
-    echo "Public prod image name remains ghcr.io/baseintelligence/prism (digest-pin)." >&2
-    exit 1
-  fi
+# Separate Prism challenge image is NOT required. Challenges run as localhost
+# uvicorn inside the master container (master-entrypoint). Optional historical
+# PRISM_IMAGE_* env vars are accepted only so older operator shells/scripts do
+# not fail; they are not interpolated into docker-compose.yml.
+if [[ -n "${PRISM_IMAGE_REPOSITORY:-}" || -n "${PRISM_IMAGE_DIGEST:-}" ]]; then
+  echo "note: PRISM_IMAGE_* is unused for master topology (embedded challenges); ignoring for compose." >&2
+fi
+# Registry seed still stores a non-empty image string for schema compatibility.
+# Prefer optional pin when present; otherwise a stable metadata-only placeholder
+# (not pulled; not a Compose service image). Use latest@sha256:zeros so digests
+# still match the repository@sha256 form expected by policy validators.
+PRISM_REGISTRY_IMAGE_REF="ghcr.io/baseintelligence/prism:latest@sha256:$(printf '%064d' 0)"
+if [[ -n "${PRISM_IMAGE_REPOSITORY:-}" && -n "${PRISM_IMAGE_DIGEST:-}" ]]; then
+  PRISM_REGISTRY_IMAGE_REF="${PRISM_IMAGE_REPOSITORY}@sha256:${PRISM_IMAGE_DIGEST}"
 fi
 
 POSTGRES_IMAGE_REPOSITORY="${POSTGRES_IMAGE_REPOSITORY:-postgres}"
@@ -205,9 +203,12 @@ master:
   epoch_interval_seconds: 360
   metagraph_cache_ttl_seconds: 300
   registry_state_file: /var/lib/base/registry.json
-  registry_reconcile_interval_seconds: 30
+  # Embedded challenges: no challenge-* Compose services to reconcile/watch.
+  # Keep loops disabled so master health never depends on missing services
+  # (VAL-MEMB-005). Operators may raise >0 only for emergency dual-run.
+  registry_reconcile_interval_seconds: 0
   challenge_image_update_interval_seconds: 0
-  challenge_watcher_interval_seconds: 60
+  challenge_watcher_interval_seconds: 0
   challenge_watcher_state_path: /var/lib/base/challenge_watcher_state.json
   orchestration_interval_seconds: 30
 
@@ -264,7 +265,6 @@ unset PG_PASSWORD
 
 export COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
 export BASE_MASTER_IMAGE_REPOSITORY BASE_MASTER_IMAGE_DIGEST
-export PRISM_IMAGE_REPOSITORY PRISM_IMAGE_DIGEST
 export POSTGRES_IMAGE_REPOSITORY POSTGRES_IMAGE_DIGEST
 export BASE_MASTER_CONFIG="${MASTER_CONFIG}"
 export BASE_ADMIN_TOKEN_FILE="${ADMIN_TOKEN_FILE}"
@@ -275,18 +275,17 @@ export BASE_DOCKER_GID="${DOCKER_GID}"
 export BASE_COMPOSE_FILE="${COMPOSE_FILE}"
 
 # Sealed compose env: host install pins required by docker-compose.yml
-# interpolation. Mounted read-only into the master container so in-process
-# ComposeChallengeOrchestrator can pass --env-file for dynamic compose up
-# without re-exporting install vars into the host shell on every reconcile.
+# interpolation. Mounted read-only into the master container. No PRISM_IMAGE_*
+# (challenges are embedded; static challenge service removed — VAL-MEMB-006).
 COMPOSE_ENV_FILE="${CONFIG_DIR}/compose.env"
 umask 077
 cat >"${COMPOSE_ENV_FILE}" <<EOF
 # Generated by install-master.sh — do not hand-edit. Mode 0600.
+# Topology: master + postgres only. Challenges bind 127.0.0.1:18080/18081
+# inside base-master-validator (no challenge-* Compose services).
 COMPOSE_PROJECT_NAME=${PROJECT_NAME}
 BASE_MASTER_IMAGE_REPOSITORY=${BASE_MASTER_IMAGE_REPOSITORY}
 BASE_MASTER_IMAGE_DIGEST=${BASE_MASTER_IMAGE_DIGEST}
-PRISM_IMAGE_REPOSITORY=${PRISM_IMAGE_REPOSITORY}
-PRISM_IMAGE_DIGEST=${PRISM_IMAGE_DIGEST}
 POSTGRES_IMAGE_REPOSITORY=${POSTGRES_IMAGE_REPOSITORY}
 POSTGRES_IMAGE_DIGEST=${POSTGRES_IMAGE_DIGEST}
 BASE_MASTER_CONFIG=${MASTER_CONFIG}
@@ -298,22 +297,24 @@ BASE_DOCKER_GID=${DOCKER_GID}
 BASE_COMPOSE_FILE=${COMPOSE_FILE}
 BASE_POSTGRES_DB=base
 BASE_POSTGRES_USER=base
+BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS=0
+BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS=0
 EOF
 chown 1000:1000 "${COMPOSE_ENV_FILE}" 2>/dev/null || true
 chmod 600 "${COMPOSE_ENV_FILE}"
 export BASE_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"
 
-echo "Installing master Compose project '${PROJECT_NAME}' (API 127.0.0.1:${HOST_PORT})"
+echo "Installing master Compose project '${PROJECT_NAME}' (API 127.0.0.1:${HOST_PORT}; challenges embedded localhost)"
 docker compose --env-file "${COMPOSE_ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" config --quiet
 docker compose --env-file "${COMPOSE_ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --wait
 
 echo "Master Compose install complete."
 docker compose --env-file "${COMPOSE_ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
 
-# Seed the packaged prism challenge into the registry as ACTIVE so reconcile
-# adopts the static container instead of treating it as foreign (VAL-COMPOSE-024).
+# Seed prism into the registry as ACTIVE with localhost internal_base_url so the
+# master proxy forwards /challenges/prism/* to embedded uvicorn (VAL-MEMB-004).
 ADMIN_TOKEN="$(tr -d '\n' <"${ADMIN_TOKEN_FILE}")"
-PRISM_IMAGE_REF="${PRISM_IMAGE_REPOSITORY}@sha256:${PRISM_IMAGE_DIGEST}"
+PRISM_IMAGE_REF="${PRISM_REGISTRY_IMAGE_REF}"
 SEED_PAYLOAD="$(cat <<SEED
 {
   "slug": "prism",
@@ -322,16 +323,21 @@ SEED_PAYLOAD="$(cat <<SEED
   "version": "0.1.0",
   "emission_percent": "30.0000",
   "status": "active",
-  "internal_base_url": "http://challenge-prism:8080",
+  "internal_base_url": "http://127.0.0.1:18080",
   "required_capabilities": ["get_weights", "proxy_routes"],
   "resources": {},
-  "volumes": {"sqlite": "challenge-prism-data"},
+  "volumes": {"sqlite": "base_prism_sqlite"},
   "env": {
     "PRISM_COMBINED_MODE": "true",
     "PRISM_DOCKER_ENABLED": "false"
   },
   "secrets": [],
-  "metadata": {"combined_mode_env": "PRISM_COMBINED_MODE"}
+  "metadata": {
+    "combined_mode_env": "PRISM_COMBINED_MODE",
+    "embed_topology": "master-localhost",
+    "default_internal_base_url": "http://127.0.0.1:18080",
+    "agent_challenge_internal_base_url": "http://127.0.0.1:18081"
+  }
 }
 SEED
 )"
@@ -351,12 +357,12 @@ if command -v curl >/dev/null 2>&1; then
       -d "${SEED_PAYLOAD}"
   )"
   if [[ "${create_code}" != "200" && "${create_code}" != "201" ]]; then
-    # Already present: re-activate / refresh pin.
+    # Already present: re-activate + flip internal URL to embedded localhost.
     curl -sS -o /tmp/base-compose-seed-prism-patch.json -w '%{http_code}' \
       -X PATCH "http://127.0.0.1:${HOST_PORT}/v1/admin/challenges/prism" \
       -H "Content-Type: application/json" \
       -H "X-Admin-Token: ${ADMIN_TOKEN}" \
-      -d "{\"image\": \"${PRISM_IMAGE_REF}\", \"status\": \"active\"}" >/dev/null
+      -d "{\"image\": \"${PRISM_IMAGE_REF}\", \"status\": \"active\", \"internal_base_url\": \"http://127.0.0.1:18080\"}" >/dev/null
     curl -sS -o /tmp/base-compose-seed-prism-activate.json -w '%{http_code}' \
       -X POST "http://127.0.0.1:${HOST_PORT}/v1/admin/challenges/prism/activate" \
       -H "X-Admin-Token: ${ADMIN_TOKEN}" >/dev/null || true

@@ -273,6 +273,16 @@ def _validate_volumes(volumes: Mapping[str, Any] | None, *, slug: str) -> None:
                 )
 
 
+# Official master-embed loopback endpoints (docker/master-entrypoint.sh).
+# These are the only allowed 127.0.0.1 internal_base_url forms (VAL-MEMB-004).
+_EMBEDDED_INTERNAL_BASE_URLS: frozenset[str] = frozenset(
+    {
+        "http://127.0.0.1:18080",
+        "http://127.0.0.1:18081",
+    }
+)
+
+
 def _validate_network_policy(
     *,
     internal_base_url: str | None,
@@ -285,7 +295,12 @@ def _validate_network_policy(
             raise ChallengeAdoptionError(
                 "internal_base_url must be an http(s) challenge-network URL"
             )
-        if "localhost" in url or "127.0.0.1" in url or "0.0.0.0" in url:
+        # Master-embed topology binds challenge ASGI on fixed loopback ports
+        # inside the master container. Allow only those exact URLs; continue
+        # to reject arbitrary localhost / 0.0.0.0 / other loopback targets.
+        if url.rstrip("/") in _EMBEDDED_INTERNAL_BASE_URLS:
+            pass
+        elif "localhost" in url or "127.0.0.1" in url or "0.0.0.0" in url:
             raise ChallengeAdoptionError(
                 "internal_base_url must not target loopback or host-published addresses"
             )

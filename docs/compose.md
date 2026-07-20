@@ -16,13 +16,14 @@ Exact cardinality after install:
 
 | Service | Role |
 | --- | --- |
-| `base-master-validator` | Master API, coordination, aggregation, health/version, digest-aware challenge watcher; **may embed** Prism + agent-challenge ASGI on loopback (see below) |
+| `base-master-validator` | Master API, coordination, aggregation; **embeds** Prism + agent-challenge ASGI on loopback (see below) |
 | `master-postgres` | PostgreSQL 16 control plane (private) |
-| `challenge-prism` | Optional dual-run: long-lived combined Prism challenge service (being superseded by master embed) |
 
-Cardinality is exactly one application container, one PostgreSQL container, and (during dual-run) optionally one long-lived container per active challenge. There is no gateway, broker sidecar, challenge PostgreSQL, evaluator, or worker sidecar service in this topology.
+Cardinality is exactly one application container and one PostgreSQL container.
+There is **no** `challenge-prism` / `challenge-*` Compose service, no gateway,
+broker sidecar, challenge PostgreSQL, evaluator, or worker sidecar.
 
-### Embedded challenges inside master (scaffold)
+### Embedded challenges inside master
 
 The `base-master` image (`docker/Dockerfile.master`) installs monorepo packages
 `prism-challenge` and `agent-challenge` and runs them under
@@ -40,27 +41,32 @@ Data paths on the master volume:
 - `/var/lib/base/challenges/agent-challenge` (SQLite + artifacts)
 
 Shared tokens stay file-backed (`PRISM_SHARED_TOKEN_FILE`,
-`CHALLENGE_SHARED_TOKEN_FILE`). Dual-run: set
-`BASE_MASTER_EMBED_CHALLENGES=0` to keep a separate `challenge-*` Compose service
-owning ASGI while the proxy still talks to that service. After the compose-drop
-milestone, registry `internal_base_url` points at `http://127.0.0.1:18080` /
-`:18081`. Public path prefixes `/challenges/prism` and
-`/challenges/agent-challenge` are unchanged.
+`CHALLENGE_SHARED_TOKEN_FILE`). Registry seed and
+`default_internal_base_url()` use:
+
+- Prism: `http://127.0.0.1:18080`
+- agent-challenge: `http://127.0.0.1:18081`
+
+Public path prefixes `/challenges/prism` and `/challenges/agent-challenge` are
+unchanged. **No `PRISM_IMAGE_*` pin is required** for master topology; optional
+historical pins are ignored by `install-master.sh` for Compose interpolation.
+
+Emergency dual-run (proxy-only master + separate challenge container) is
+operator-only: set `BASE_MASTER_EMBED_CHALLENGES=0` **and** override registry
+`internal_base_url` + restore a challenge service file; not the shipping path.
 
 ### Challenge auto-update (watcher)
 
-The watcher runs **inside** `base-master-validator` and is the only supported challenge
-auto-update path:
+With embedded challenges there is no separate challenge Compose service to pull
+or recreate. Shipping defaults set:
 
-1. Resolve approved immutable image pin (`repository@sha256:<digest>`).
-2. Persist desired/current digest and rollout phase (durable intent).
-3. Controlled pull of the desired image.
-4. Targeted recreate of only the affected Compose service (project boundary).
-5. Health + version verification before commit.
-6. On failure: restore previous digest, bounded backoff, resume after restart.
+- `BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS=0` (watcher lifespan off)
+- `BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS=0` (no dynamic challenge start)
 
-It never mutates live Swarm fabric, never runs evaluator containers, and only acts
-inside the configured Compose project.
+Master health therefore stays green without `challenge-*` services
+(VAL-MEMB-005). When re-enabled for emergency dual-run, the watcher still only
+acts inside the configured Compose project (resolve → pull → targeted recreate →
+health/version → commit/rollback) and never mutates live Swarm fabric.
 
 ### Independent validator image auto-update
 
@@ -76,7 +82,7 @@ with `install-validator.sh --no-auto-update`.
 ### Networking
 
 - `db` network: internal bridge. Master + PostgreSQL only. No host publication of `5432`.
-- `app` network: internal bridge. Master + challenge services.
+- `app` network: internal bridge (available for future attachments; challenges bind loopback inside master).
 - Only the master public API is published, bound to loopback in the test range `3100-3199` (default `3180`).
 
 ### Secrets

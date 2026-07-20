@@ -43,8 +43,6 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
                 "COMPOSE_PROJECT_NAME=mission-compose-topology-test",
                 "BASE_MASTER_IMAGE_REPOSITORY=registry.example/base-master",
                 f"BASE_MASTER_IMAGE_DIGEST={'a' * 64}",
-                "PRISM_IMAGE_REPOSITORY=registry.example/prism",
-                f"PRISM_IMAGE_DIGEST={'b' * 64}",
                 "POSTGRES_IMAGE_REPOSITORY=registry.example/postgres",
                 f"POSTGRES_IMAGE_DIGEST={'c' * 64}",
                 f"BASE_MASTER_CONFIG={master_config}",
@@ -63,8 +61,6 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
         "COMPOSE_PROJECT_NAME": "mission-compose-topology-test",
         "BASE_MASTER_IMAGE_REPOSITORY": "registry.example/base-master",
         "BASE_MASTER_IMAGE_DIGEST": "a" * 64,
-        "PRISM_IMAGE_REPOSITORY": "registry.example/prism",
-        "PRISM_IMAGE_DIGEST": "b" * 64,
         "POSTGRES_IMAGE_REPOSITORY": "registry.example/postgres",
         "POSTGRES_IMAGE_DIGEST": "c" * 64,
         "BASE_MASTER_CONFIG": str(master_config),
@@ -114,17 +110,20 @@ def test_master_compose_file_exists_and_parses(tmp_path: Path) -> None:
 def test_master_compose_exact_cardinality_and_service_names(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
     services = rendered["services"]
+    # VAL-MEMB-003: no separate challenge-* Compose services (embed in master).
     assert set(services) == {
         "master-postgres",
         "base-master-validator",
-        "challenge-prism",
     }
+    assert "challenge-prism" not in services
     assert "base-docker-broker" not in services
     assert "gateway" not in json.dumps(services).lower()
     assert "llm" not in json.dumps(services).lower()
     for forbidden in (
+        "challenge-prism",
         "challenge-prism-worker",
         "challenge-prism-postgres",
+        "challenge-agent-challenge",
         "evaluator",
         "broker",
         "watchtower",
@@ -133,9 +132,9 @@ def test_master_compose_exact_cardinality_and_service_names(tmp_path: Path) -> N
         assert forbidden not in services
 
 
-def test_master_and_challenge_images_are_digest_pinned(tmp_path: Path) -> None:
+def test_master_and_postgres_images_are_digest_pinned(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
-    for name in ("base-master-validator", "challenge-prism", "master-postgres"):
+    for name in ("base-master-validator", "master-postgres"):
         image = rendered["services"][name]["image"]
         assert DIGEST_IMAGE_RE.match(image), image
         digest = image.rsplit("@sha256:", 1)[1]
@@ -170,60 +169,41 @@ def test_networks_are_internal_and_project_scoped(tmp_path: Path) -> None:
     assert public.get("name", "").startswith("mission-compose-topology-test_")
     master_nets = set(rendered["services"]["base-master-validator"].get("networks", {}))
     assert master_nets == {"db", "app", "public"}
-    assert set(rendered["services"]["challenge-prism"].get("networks", {})) == {"app"}
     assert set(rendered["services"]["master-postgres"].get("networks", {})) == {"db"}
 
 
 def test_challenge_isolation_matrix(tmp_path: Path) -> None:
+    """No separate prism service; master does not share PG password."""
+
     rendered = _render_master(tmp_path)
-    prism = rendered["services"]["challenge-prism"]
-    postgres = rendered["services"]["master-postgres"]
-    assert set(prism.get("networks", {})) == {"app"}
+    services = rendered["services"]
+    assert "challenge-prism" not in services
+    postgres = services["master-postgres"]
+    master = services["base-master-validator"]
     assert set(postgres.get("networks", {})) == {"db"}
-    # Challenge never attaches kafka/postgres network and never mounts DB volume.
-    mounts = prism.get("volumes", [])
-    sources = {m.get("source") for m in mounts if isinstance(m, dict)}
-    assert "master-postgres-data" not in sources
-    env_keys = {str(k).upper() for k in (prism.get("environment") or {})}
-    # Challenge may have its own SQLite URL (PRISM_DATABASE_URL); it must not hold
-    # master PostgreSQL credentials or password material.
-    for forbidden in (
-        "POSTGRES_PASSWORD",
-        "PGPASSWORD",
-        "BASE_DATABASE",
-        "MASTER_POSTGRES",
-    ):
-        assert not any(forbidden in key for key in env_keys)
-    # No connection string pointing at the private postgres service name.
-    env_blob = json.dumps(prism.get("environment") or {}).lower()
-    assert "master-postgres" not in env_blob
+    # Master never mounts the postgres password; challenges never get a service.
+    master_targets = {
+        m.get("target") for m in (master.get("volumes") or []) if isinstance(m, dict)
+    }
+    assert "/run/secrets/postgres_password" not in master_targets
+    env_blob = json.dumps(master.get("environment") or {}).lower()
+    assert "postgres_password" not in env_blob or "file" in env_blob
     assert "5432/base" not in env_blob
 
 
 def test_prism_combined_mode_and_no_evaluator(tmp_path: Path) -> None:
+    """No evaluator/challenge service; compose remains Swarm/gateway free."""
+
     rendered = _render_master(tmp_path)
-    prism = rendered["services"]["challenge-prism"]
-    environment = prism.get("environment") or {}
-    assert str(environment.get("PRISM_COMBINED_MODE")).lower() in {"true", "1"}
-    assert str(environment.get("PRISM_DOCKER_ENABLED", "")).lower() in {
-        "false",
-        "0",
-        "no",
-    }
-    # Durable eval temp on the data volume (VAL-GPULAB-001 / INFRA_TMPDIR_UNUSABLE fix).
-    assert environment.get("TMPDIR") == "/data/tmp"
-    assert environment.get("TEMP") == "/data/tmp"
-    assert environment.get("TMP") == "/data/tmp"
-    command = " ".join(str(part) for part in prism.get("command", []))
-    assert "uvicorn" in command
-    assert "/data/tmp" in command
-    assert "evaluator" not in command.lower()
-    # No docker.sock mount for Prism (master may mount it for the watcher).
-    prism_blob = json.dumps(prism)
-    assert "/var/run/docker.sock" not in prism_blob
+    assert "challenge-prism" not in rendered["services"]
     blobs = json.dumps(rendered)
     assert "docker service" not in blobs
     assert "docker stack" not in blobs
+    assert "evaluator" not in blobs.lower()
+    # Installer seed documents embedded combined mode; Compose has no evaluator.
+    install = INSTALL_MASTER.read_text(encoding="utf-8")
+    assert "PRISM_COMBINED_MODE" in install
+    assert "http://127.0.0.1:18080" in install
 
 
 def test_master_public_port_is_minimal_and_loopback(tmp_path: Path) -> None:
@@ -238,23 +218,24 @@ def test_master_public_port_is_minimal_and_loopback(tmp_path: Path) -> None:
     host_ip = published.get("host_ip") or published.get("HostIp")
     if host_ip is not None:
         assert host_ip in {"127.0.0.1", "localhost"}
-    assert not (rendered["services"]["challenge-prism"].get("ports") or [])
+    assert "challenge-prism" not in rendered["services"]
 
 
 def test_volumes_are_isolated_and_named(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
     volumes = rendered["volumes"]
     assert "master-postgres-data" in volumes
-    assert "challenge-prism-data" in volumes
     assert "master-state" in volumes
+    # Separate challenge volume removed; SQLite lives on master-state.
+    assert "challenge-prism-data" not in volumes
     for volume in volumes.values():
         assert volume.get("name", "").startswith("mission-compose-topology-test_")
-    prism_mounts = {
+    master_mounts = {
         m.get("target")
-        for m in rendered["services"]["challenge-prism"].get("volumes", [])
+        for m in rendered["services"]["base-master-validator"].get("volumes", [])
         if isinstance(m, dict)
     }
-    assert "/data" in prism_mounts
+    assert "/var/lib/base" in master_mounts
 
 
 def test_secrets_are_file_mounted_not_inline(tmp_path: Path) -> None:
@@ -295,7 +276,7 @@ def test_master_mounts_sealed_compose_env_file(tmp_path: Path) -> None:
 
 def test_healthchecks_present_for_application_readiness(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
-    for name in ("master-postgres", "base-master-validator", "challenge-prism"):
+    for name in ("master-postgres", "base-master-validator"):
         health = rendered["services"][name].get("healthcheck")
         assert health is not None, name
         test_cmd = " ".join(str(part) for part in health.get("test", []))
@@ -314,6 +295,10 @@ def test_install_script_is_compose_only() -> None:
     assert "compose_env_file: /run/base/compose/.env" in content
     # Application host secrets end as mode 0600 (admin/prism/master.yaml).
     assert "chmod 600" in content
+    # VAL-MEMB-004/006: localhost seed; PRISM_IMAGE not required for topology.
+    assert "http://127.0.0.1:18080" in content
+    assert "PRISM_IMAGE_* is unused" in content
+    assert "challenge_watcher_interval_seconds: 0" in content
     for forbidden in (
         "docker service",
         "docker stack",
@@ -362,16 +347,13 @@ def test_master_compose_source_has_no_swarm_or_gateway() -> None:
         "gateway_token",
     ):
         assert forbidden not in content, forbidden
-    # Challenge must not mount an evaluator image. The master application may
-    # mount the host docker socket (read-only) for the in-process watcher only.
+    # No separate challenge service; master may mount docker.sock (read-only).
     parsed = yaml.safe_load(MASTER_COMPOSE.read_text(encoding="utf-8"))
-    assert "evaluator" not in (parsed.get("services") or {})
-    prism = (parsed.get("services") or {}).get("challenge-prism") or {}
-    assert "/var/run/docker.sock" not in json.dumps(prism).lower()
-    prism_labels = prism.get("labels") or {}
-    assert prism_labels.get("base.compose.lifecycle") == "static"
-    assert prism_labels.get("base.challenge.slug") == "prism"
-    master = (parsed.get("services") or {}).get("base-master-validator") or {}
+    services = parsed.get("services") or {}
+    assert "evaluator" not in services
+    assert "challenge-prism" not in services
+    assert not any(str(name).startswith("challenge-") for name in services)
+    master = services.get("base-master-validator") or {}
     master_blob = json.dumps(master).lower()
     assert "challenge_watcher" in master_blob or "compose_project_name" in master_blob
     assert master.get("group_add") is not None
@@ -380,6 +362,14 @@ def test_master_compose_source_has_no_swarm_or_gateway() -> None:
         str(env.get("BASE_DOCKER__ORCHESTRATION_BACKEND", "")).lower() == "compose"
         or "compose" in json.dumps(env).lower()
     )
+    # Watcher safe default off without challenge-* services (VAL-MEMB-005).
+    watcher = str(env.get("BASE_MASTER__CHALLENGE_WATCHER_INTERVAL_SECONDS", ""))
+    assert "0" in watcher
+    # Shared token mounted on master for embedded challenges (VAL-MEMB-006).
+    assert "PRISM_SHARED_TOKEN_FILE" in json.dumps(env)
+    mounts = master.get("volumes") or []
+    targets = {m.get("target") for m in mounts if isinstance(m, dict)}
+    assert "/run/secrets/prism_shared_token" in targets
 
 
 def test_challenge_orchestrator_defaults_to_compose() -> None:

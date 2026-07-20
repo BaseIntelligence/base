@@ -29,9 +29,13 @@ master:
   epoch_interval_seconds: 360
   metagraph_cache_ttl_seconds: 300
   registry_state_file: /var/lib/base/registry.json
-  # Compose owns long-lived challenge services; disable dynamic reconcile loops.
+  # Challenges are embedded in the master container (127.0.0.1:18080/18081).
+  # Disable dynamic reconcile + challenge watcher so missing challenge-* Compose
+  # services never break master health (VAL-MEMB-005).
   registry_reconcile_interval_seconds: 0
   challenge_image_update_interval_seconds: 0
+  challenge_watcher_interval_seconds: 0
+  challenge_watcher_state_path: /var/lib/base/challenge_watcher_state.json
   orchestration_interval_seconds: 30
 
 validator:

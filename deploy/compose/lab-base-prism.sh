@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
-# Durable disposable Base master + postgres + Prism lab (Compose only).
-# Unique project name, mission-band host port, digest-pinned images via install-master,
-# always-teardown with sealed env. Never touches live Swarm or set_weights.
+# Durable disposable Base master + postgres lab with embedded Prism (Compose only).
+# Unique project name, mission-band host port, digest-pinned master image via
+# install-master, always-teardown with sealed env. Never touches live Swarm or
+# set_weights. Challenges run inside the master container on localhost.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +21,8 @@ Rules:
   - Port must NOT be 19080 or 443 (live production listeners)
   - Prefer free ports in 3181-3199 mission band
   - Always run "down" after lab work (destroys volumes by default)
+  - Prism ASGI is embedded at 127.0.0.1:18080 inside base-master-validator
+    (no challenge-prism Compose service; no required PRISM_IMAGE pin)
 EOF
 }
 
@@ -72,9 +74,9 @@ case "${cmd}" in
       exit 2
     fi
     bash "${INSTALLER}" --project-name "${PROJECT_NAME}" --port "${HOST_PORT}" --state-dir "${STATE_DIR}"
-    # Durable eval temp on Prism data volume (non-noexec) for dual-family admission.
+    # Ensure durable eval temp under the master volume path used by embed.
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
-      exec -T challenge-prism sh -c 'mkdir -p "${TMPDIR:-/data/tmp}" && chmod 700 "${TMPDIR:-/data/tmp}" && ls -ld "${TMPDIR:-/data/tmp}"'
+      exec -T base-master-validator sh -c 'mkdir -p /var/lib/base/challenges/prism/tmp && chmod 700 /var/lib/base/challenges/prism /var/lib/base/challenges/prism/tmp && ls -ld /var/lib/base/challenges/prism/tmp'
     ;;
   health)
     if [[ -z "${HOST_PORT}" ]]; then
@@ -87,13 +89,15 @@ case "${cmd}" in
     echo
     curl -fsS "http://127.0.0.1:${HOST_PORT}/version"
     echo
+    # Public proxy path (preferred) + loopback ASGI inside master container.
+    curl -fsS -o /dev/null -w 'prism_openapi %{http_code}\n' \
+      "http://127.0.0.1:${HOST_PORT}/challenges/prism/openapi.json" || true
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
-      exec -T challenge-prism python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read().decode())"
+      exec -T base-master-validator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18080/health', timeout=5).read().decode())"
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
-      exec -T challenge-prism python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/version', timeout=5).read().decode())"
-    # TMPDIR probe: must be writable under /data (not INFRA_TMPDIR_UNUSABLE).
+      exec -T base-master-validator python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:18080/version', timeout=5).read().decode())"
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" \
-      exec -T challenge-prism python -c "import os, tempfile, pathlib; d=os.environ.get('TMPDIR',''); p=pathlib.Path(d or '/data/tmp'); p.mkdir(parents=True, exist_ok=True); t=tempfile.NamedTemporaryFile(dir=str(p), delete=True); t.write(b'ok'); t.flush(); print('TMPDIR', d or '(unset)', 'writable', True, 'path', p)"
+      exec -T base-master-validator python -c "import os, tempfile, pathlib; p=pathlib.Path('/var/lib/base/challenges/prism/tmp'); p.mkdir(parents=True, exist_ok=True); t=tempfile.NamedTemporaryFile(dir=str(p), delete=True); t.write(b'ok'); t.flush(); print('embed_tmpdir', p, 'writable', True)"
     docker compose --env-file "${ENV_FILE}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" ps
     ;;
   down)

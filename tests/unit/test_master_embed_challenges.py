@@ -162,9 +162,12 @@ def test_public_challenge_proxy_paths_unchanged() -> None:
     assert "httpx" in proxy
 
 
-def test_compose_still_allows_dual_run_challenge_service() -> None:
-    """M1 keeps optional challenge-prism service; drop is a later milestone."""
+def test_compose_drops_challenge_services() -> None:
+    """M2: no challenge-* Compose services; master owns embed ASGI."""
     text = COMPOSE_YML.read_text(encoding="utf-8")
-    assert "challenge-prism:" in text
+    assert "challenge-prism:" not in text
+    assert "challenge-agent-challenge:" not in text
     assert "base-master-validator:" in text
     assert "8081" in text
+    assert "PRISM_IMAGE_REPOSITORY" not in text
+    assert "18080" in DOCS_COMPOSE.read_text(encoding="utf-8")

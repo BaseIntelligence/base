@@ -484,7 +484,8 @@ def test_compose_config_defaults_do_not_embed_live_swarm_or_providers() -> None:
     services = master.get("services") or {}
     assert "base-master-validator" in services
     assert "master-postgres" in services
-    assert "challenge-prism" in services
+    assert "challenge-prism" not in services
+    assert not any(str(name).startswith("challenge-") for name in services)
     blob = json.dumps(master).lower()
     for forbidden in ("docker service", "docker stack", "swarm", "overlay"):
         # Image digests and project names may not include these tokens.
@@ -665,8 +666,6 @@ def test_resource_inventory_delta_is_empty_for_config_only_validation(
                 f"COMPOSE_PROJECT_NAME={project}",
                 "BASE_MASTER_IMAGE_REPOSITORY=registry.example/base-master",
                 f"BASE_MASTER_IMAGE_DIGEST={'a' * 64}",
-                "PRISM_IMAGE_REPOSITORY=registry.example/prism",
-                f"PRISM_IMAGE_DIGEST={'b' * 64}",
                 "POSTGRES_IMAGE_REPOSITORY=registry.example/postgres",
                 f"POSTGRES_IMAGE_DIGEST={'c' * 64}",
                 f"BASE_MASTER_CONFIG={master_config}",
@@ -685,8 +684,6 @@ def test_resource_inventory_delta_is_empty_for_config_only_validation(
         "COMPOSE_PROJECT_NAME": project,
         "BASE_MASTER_IMAGE_REPOSITORY": "registry.example/base-master",
         "BASE_MASTER_IMAGE_DIGEST": "a" * 64,
-        "PRISM_IMAGE_REPOSITORY": "registry.example/prism",
-        "PRISM_IMAGE_DIGEST": "b" * 64,
         "POSTGRES_IMAGE_REPOSITORY": "registry.example/postgres",
         "POSTGRES_IMAGE_DIGEST": "c" * 64,
         "BASE_MASTER_CONFIG": str(master_config),

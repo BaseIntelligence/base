@@ -99,8 +99,6 @@ def _secret_env(tmp_path: Path, project: str = "mission-e2e-compose") -> dict[st
                 f"COMPOSE_PROJECT_NAME={project}",
                 "BASE_MASTER_IMAGE_REPOSITORY=registry.example/base-master",
                 f"BASE_MASTER_IMAGE_DIGEST={_sha256('1')}",
-                "PRISM_IMAGE_REPOSITORY=registry.example/prism",
-                f"PRISM_IMAGE_DIGEST={_sha256('2')}",
                 "POSTGRES_IMAGE_REPOSITORY=registry.example/postgres",
                 f"POSTGRES_IMAGE_DIGEST={_sha256('3')}",
                 f"BASE_MASTER_CONFIG={master_config}",
@@ -119,8 +117,6 @@ def _secret_env(tmp_path: Path, project: str = "mission-e2e-compose") -> dict[st
         "COMPOSE_PROJECT_NAME": project,
         "BASE_MASTER_IMAGE_REPOSITORY": "registry.example/base-master",
         "BASE_MASTER_IMAGE_DIGEST": _sha256("1"),
-        "PRISM_IMAGE_REPOSITORY": "registry.example/prism",
-        "PRISM_IMAGE_DIGEST": _sha256("2"),
         "POSTGRES_IMAGE_REPOSITORY": "registry.example/postgres",
         "POSTGRES_IMAGE_DIGEST": _sha256("3"),
         "BASE_MASTER_CONFIG": str(master_config),
@@ -202,7 +198,7 @@ def test_operator_navigation_documents_compose_only_install_paths() -> None:
 def test_master_and_validator_compose_are_digest_pinned_and_isolated(
     tmp_path: Path,
 ) -> None:
-    """Compose-only boundaries: master+postgres+prism vs independent validator."""
+    """Compose-only boundaries: master+postgres (embedded challenges) vs validator."""
 
     master_env = _secret_env(tmp_path / "master", "mission-e2e-master")
     quiet = subprocess.run(
@@ -217,8 +213,8 @@ def test_master_and_validator_compose_are_digest_pinned_and_isolated(
     assert set(master["services"]) == {
         "base-master-validator",
         "master-postgres",
-        "challenge-prism",
     }
+    assert "challenge-prism" not in master["services"]
     for name, svc in master["services"].items():
         assert DIGEST_IMAGE_RE.match(svc["image"]), (name, svc["image"])
         assert "build" not in svc

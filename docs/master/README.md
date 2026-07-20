@@ -16,8 +16,9 @@ does not configure on-chain submission (validators own wallets and `set_weights`
 | Compose file | `deploy/compose/docker-compose.yml` |
 | App | `base-master-validator` (proxy, coordination, aggregation, watcher) |
 | Database | `master-postgres` (private `db` network only) |
-| Challenges | **Target:** ASGI inside the master container on localhost (Prism `127.0.0.1:18080`, agent-challenge `127.0.0.1:18081`) via `docker/master-entrypoint.sh`. Dual-run may still keep optional `challenge-<slug>` Compose services until the compose-drop milestone. |
+| Challenges | ASGI **inside** the master container on localhost (Prism `127.0.0.1:18080`, agent-challenge `127.0.0.1:18081`) via `docker/master-entrypoint.sh`. **No** separate `challenge-*` Compose services. |
 | Challenge data | `/var/lib/base/challenges/{prism,agent-challenge}` on the master volume; shared token files only |
+| Registry seed | `internal_base_url=http://127.0.0.1:18080` (Prism); AC defaults to `:18081` via `default_internal_base_url` |
 | Secrets | host files under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/secrets` |
 | Live production | Compose project **`base-master-prod`**; public API **`https://chain.joinbase.ai` only** (Swarm inactive after cutover). Other historical hostnames are secondary/non-authoritative. |
 
@@ -45,9 +46,10 @@ Public `/challenges/prism` and `/challenges/agent-challenge` stay on the proxy h
 
 Optional immutable image pins (repository + sha256 digest):
 
-- `BASE_MASTER_IMAGE_REPOSITORY` / `BASE_MASTER_IMAGE_DIGEST`
-- `PRISM_IMAGE_REPOSITORY` / `PRISM_IMAGE_DIGEST`
+- `BASE_MASTER_IMAGE_REPOSITORY` / `BASE_MASTER_IMAGE_DIGEST` (**required** for topology)
 - `POSTGRES_IMAGE_REPOSITORY` / `POSTGRES_IMAGE_DIGEST`
+- `PRISM_IMAGE_*` is **not required** (challenges are embedded in the master image;
+  historical env vars are ignored for Compose interpolation)
 
 When pins are unset, the installer may resolve local mission image digests for disposable
 bring-up. Production should pin published digests.
@@ -61,23 +63,16 @@ What the installer does:
 Detailed networking, secrets, and evaluation boundary rules live in
 [docs/compose.md](../compose.md) and [docs/deploy.md](../deploy.md).
 
-## Auto-update (challenge watcher)
+## Challenge watcher (safe default off)
 
-Challenge image rollouts are owned by the **master-resident watcher**, not by Swarm
-`docker service update` of mutable tags:
+With embedded challenges there is no `challenge-*` Compose service to roll.
+Shipping install sets `challenge_watcher_interval_seconds: 0` and
+`registry_reconcile_interval_seconds: 0` so the watcher lifespan is not started
+and master health does not depend on missing challenge containers.
 
-| Property | Behavior |
-| --- | --- |
-| Pin model | Immutable `repository@sha256:<digest>` only |
-| Scope | Project-bound Compose services only |
-| Steps | resolve → controlled pull → targeted recreate → health/version verify → commit |
-| Failure | Rollback to previous digest; bounded exponential backoff |
-| Durability | Intent and phase survive master restart (filesystem state) |
-| Forbidden | Evaluator container creation; Swarm/stack APIs |
-
-Operators freeze or recover by keeping freeze/desired digests stable and consulting
-watcher health after pull failures. Configurable knobs (when present in master settings)
-include interval and state path defaults under the master application data volume.
+For emergency dual-run against a separate challenge container, operators may
+raise the intervals and override `internal_base_url`. The watcher still never
+uses Swarm APIs and never creates evaluator containers.
 
 ## Runtime checks
 

@@ -67,9 +67,27 @@ def _token_hint(token: str) -> str:
     return f"{token[:4]}…{token[-4:]}"
 
 
-def default_internal_base_url(slug: str) -> str:
-    """Build the Docker-network URL for a challenge container."""
+# Loopback ports for challenges embedded in the master container supervisor
+# (docker/master-entrypoint.sh). Compose no longer ships separate challenge-*
+# services; the public proxy still reverse-proxies via httpx to these URLs.
+_EMBEDDED_INTERNAL_BASE_URLS: dict[str, str] = {
+    "prism": "http://127.0.0.1:18080",
+    "agent-challenge": "http://127.0.0.1:18081",
+}
 
+
+def default_internal_base_url(slug: str) -> str:
+    """Build the default internal base URL for a challenge.
+
+    First-party challenges that ship embedded in the master image
+    (``prism``, ``agent-challenge``) default to localhost uvicorn ports inside
+    the master container. Other slugs keep the historical Docker DNS form
+    ``http://challenge-<slug>:8000`` for emergency dual-run / dynamic overrides.
+    """
+
+    normalized = (slug or "").strip().lower()
+    if normalized in _EMBEDDED_INTERNAL_BASE_URLS:
+        return _EMBEDDED_INTERNAL_BASE_URLS[normalized]
     return f"http://challenge-{slug}:8000"
 
 

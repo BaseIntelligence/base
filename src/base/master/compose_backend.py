@@ -45,6 +45,7 @@ _SEALED_COMPOSE_ENV_KEYS: frozenset[str] = frozenset(
         "COMPOSE_PROJECT_NAME",
         "BASE_MASTER_IMAGE_REPOSITORY",
         "BASE_MASTER_IMAGE_DIGEST",
+        # Historical dual-run pins (optional; not required after embed drop).
         "PRISM_IMAGE_REPOSITORY",
         "PRISM_IMAGE_DIGEST",
         "POSTGRES_IMAGE_REPOSITORY",

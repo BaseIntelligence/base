@@ -94,8 +94,6 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
                 "COMPOSE_PROJECT_NAME=mission-opsec",
                 "BASE_MASTER_IMAGE_REPOSITORY=registry.example/base-master",
                 f"BASE_MASTER_IMAGE_DIGEST={_sha256_digest('a')}",
-                "PRISM_IMAGE_REPOSITORY=registry.example/prism",
-                f"PRISM_IMAGE_DIGEST={_sha256_digest('b')}",
                 "POSTGRES_IMAGE_REPOSITORY=registry.example/postgres",
                 f"POSTGRES_IMAGE_DIGEST={_sha256_digest('c')}",
                 f"BASE_MASTER_CONFIG={master_config}",
@@ -114,8 +112,6 @@ def _secret_env(tmp_path: Path) -> dict[str, str]:
         "COMPOSE_PROJECT_NAME": "mission-opsec",
         "BASE_MASTER_IMAGE_REPOSITORY": "registry.example/base-master",
         "BASE_MASTER_IMAGE_DIGEST": _sha256_digest("a"),
-        "PRISM_IMAGE_REPOSITORY": "registry.example/prism",
-        "PRISM_IMAGE_DIGEST": _sha256_digest("b"),
         "POSTGRES_IMAGE_REPOSITORY": "registry.example/postgres",
         "POSTGRES_IMAGE_DIGEST": _sha256_digest("c"),
         "BASE_MASTER_CONFIG": str(master_config),
@@ -250,9 +246,9 @@ def test_secrets_file_backed_and_canaries_absent_from_rendered_config(
     services = rendered["services"]
     master = services["base-master-validator"]
     postgres = services["master-postgres"]
-    prism = services["challenge-prism"]
-    # Only *_FILE style env names for secret material on postgres/master/prism.
-    for svc in (master, postgres, prism):
+    assert "challenge-prism" not in services
+    # Only *_FILE style env names for secret material on postgres/master.
+    for svc in (master, postgres):
         env = svc.get("environment") or {}
         for key, value in env.items():
             key_l = str(key).lower()
@@ -271,6 +267,7 @@ def test_secrets_file_backed_and_canaries_absent_from_rendered_config(
         if isinstance(m, dict)
     }
     assert "/run/secrets/admin_token" in targets
+    assert "/run/secrets/prism_shared_token" in targets
 
 
 def test_secret_least_privilege_scope_matrix(tmp_path: Path) -> None:
@@ -289,20 +286,18 @@ def test_secret_least_privilege_scope_matrix(tmp_path: Path) -> None:
 
     postgres_targets = mount_targets("master-postgres")
     master_targets = mount_targets("base-master-validator")
-    prism_targets = mount_targets("challenge-prism")
     assert "/run/secrets/postgres_password" in postgres_targets
     assert "/run/secrets/admin_token" not in postgres_targets
     assert "/run/secrets/prism_shared_token" not in postgres_targets
     assert "/run/secrets/admin_token" in master_targets
-    assert "/run/secrets/prism_shared_token" not in master_targets
+    # Embedded challenges: prism token mounts on master only (no challenge service).
+    assert "/run/secrets/prism_shared_token" in master_targets
     assert "/run/secrets/postgres_password" not in master_targets
-    assert "/run/secrets/prism_shared_token" in prism_targets
-    assert "/run/secrets/admin_token" not in prism_targets
-    assert "/run/secrets/postgres_password" not in prism_targets
-    # No master DB password in Prism env.
-    prism_env = json.dumps(services["challenge-prism"].get("environment") or {}).lower()
-    assert "postgres_password" not in prism_env
-    assert "master-postgres" not in prism_env
+    assert "challenge-prism" not in services
+    # Master env does not inline canary password values.
+    master_env = json.dumps(services["base-master-validator"].get("environment") or {})
+    assert "CANARY-PG-PASSWORD-OPSEC-002" not in master_env
+    assert "CANARY-PRISM-TOKEN-OPSEC-003" not in master_env
 
 
 # ---------------------------------------------------------------------------
@@ -337,23 +332,19 @@ def test_docker_socket_only_on_master(tmp_path: Path) -> None:
 
 
 def test_external_tee_not_lifecycle_managed(tmp_path: Path) -> None:
-    """Master/Prism manifests never create/stop an external TEE service."""
+    """Master manifests never create/stop an external TEE service."""
 
     rendered = _render_master(tmp_path)
     services = set(rendered["services"])
     assert "tee" not in services
     assert "external-tee" not in services
-    # External long-lived TEE is never declared as a Compose service.
-    prism_env = rendered["services"]["challenge-prism"].get("environment") or {}
-    assert str(prism_env.get("PRISM_DOCKER_ENABLED", "")).lower() in {
-        "false",
-        "0",
-        "no",
-        "",
-    }
+    assert "challenge-prism" not in services
     content = MASTER_COMPOSE.read_text(encoding="utf-8").lower()
     for forbidden in ("docker run", "docker service create", "swarm service create"):
         assert forbidden not in content
+    # Installer seed still marks Prism docker off for any residual dual-run.
+    install = INSTALL_MASTER.read_text(encoding="utf-8")
+    assert "PRISM_DOCKER_ENABLED" in install
 
 
 # ---------------------------------------------------------------------------

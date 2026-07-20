@@ -47,6 +47,8 @@ def test_registry_update_views_and_errors() -> None:
     assert record.slug == "demo-case"
     assert token
     assert default_internal_base_url("x") == "http://challenge-x:8000"
+    assert default_internal_base_url("prism") == "http://127.0.0.1:18080"
+    assert default_internal_base_url("agent-challenge") == "http://127.0.0.1:18081"
     assert default_public_proxy_base_path("x") == "/challenges/x"
     assert default_sqlite_volume_name("a-b") == "base_a_b_sqlite"
 

@@ -1,7 +1,9 @@
 # Compose-only master topology (mission target path).
-# One application container, one PostgreSQL 16 control plane, one long-lived
-# combined challenge service per active challenge. No multi-host scheduler,
-# no LLM proxy, and no short-lived job or evaluator services.
+# One application container + one PostgreSQL 16 control plane.
+# Challenges (Prism + agent-challenge) run as localhost uvicorn inside the
+# master image supervisor (see docker/master-entrypoint.sh). There is no
+# separate challenge-* Compose service. No multi-host scheduler, no LLM proxy,
+# and no short-lived job or evaluator services.
 name: ${COMPOSE_PROJECT_NAME:?set a unique master project name}
 
 services:
@@ -50,8 +52,8 @@ services:
     # Writable /tmp is required for uvicorn/temp files; rootfs stays locked down.
     read_only: false
     # Socket ownership is root:docker. The master runs as uid 1000; attach the
-    # host docker group (default 987) so compose reconcile/watchers may talk to
-    # the daemon without running the application as root (VAL-COMPOSE-024/054).
+    # host docker group (default 987) so compose tools may talk to the daemon
+    # without running the application as root (VAL-COMPOSE-024/054).
     group_add:
       - "${BASE_DOCKER_GID:-987}"
     cap_drop:
@@ -64,13 +66,14 @@ services:
     environment:
       BASE_MASTER__PROXY_HOST: 0.0.0.0
       BASE_MASTER__PROXY_PORT: "8081"
-      # Static Compose topology owns challenge services; registry reconcile is
-      # opt-in for dynamic challenges via admin API (default still useful for
-      # adoption/orphan when docker socket is mounted).
-      BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "${BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS:-30}"
-      # Historical GHCR-tag service tracker stays off; Compose watcher is canonical.
+      # Embedded challenges live inside this container (127.0.0.1:18080/18081).
+      # Dynamic challenge-container reconcile and image watcher are off by default
+      # so missing challenge-* Compose services never degrade master health
+      # (VAL-MEMB-003/005). Operators may re-enable for emergency dual-run.
+      BASE_MASTER__REGISTRY_RECONCILE_INTERVAL_SECONDS: "${BASE_MASTER_REGISTRY_RECONCILE_INTERVAL_SECONDS:-0}"
+      # Historical GHCR-tag service tracker stays off.
       BASE_MASTER__CHALLENGE_IMAGE_UPDATE_INTERVAL_SECONDS: "0"
-      BASE_MASTER__CHALLENGE_WATCHER_INTERVAL_SECONDS: "${BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS:-60}"
+      BASE_MASTER__CHALLENGE_WATCHER_INTERVAL_SECONDS: "${BASE_MASTER_CHALLENGE_WATCHER_INTERVAL_SECONDS:-0}"
       BASE_MASTER__CHALLENGE_WATCHER_STATE_PATH: /var/lib/base/challenge_watcher_state.json
       BASE_MASTER__ORCHESTRATION_INTERVAL_SECONDS: "30"
       BASE_SECURITY__ADMIN_TOKEN_FILE: /run/secrets/admin_token
@@ -84,6 +87,9 @@ services:
       BASE_DOCKER__COMPOSE_ENV_FILE: /run/base/compose/.env
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
       BASE_OBSERVABILITY__LOG_JSON: "true"
+      # Shared challenge token for embedded Prism / AC (file-backed only).
+      PRISM_SHARED_TOKEN_FILE: /run/secrets/prism_shared_token
+      CHALLENGE_SHARED_TOKEN_FILE: /run/secrets/prism_shared_token
       # DB URL is assembled from file-backed password by install helper into the
       # mounted master.yaml (never rendered as a compose environment secret).
     volumes:
@@ -95,10 +101,12 @@ services:
         source: ${BASE_ADMIN_TOKEN_FILE:?set the admin token file}
         target: /run/secrets/admin_token
         read_only: true
-      # Compose file + sealed install env + docker.sock so the in-process
-      # watcher can pull/recreate only project-scoped challenge services
-      # (VAL-COMPOSE-008/025/030/041/054). The .env carries image digests and
-      # secret-file paths required by docker-compose.yml interpolation.
+      - type: bind
+        source: ${PRISM_SHARED_TOKEN_FILE:?set the prism shared token file}
+        target: /run/secrets/prism_shared_token
+        read_only: true
+      # Compose file + sealed install env + docker.sock for optional operator
+      # tooling. Challenge ASGI is embedded; watcher interval defaults to 0.
       - type: bind
         source: ${BASE_COMPOSE_FILE:-./docker-compose.yml}
         target: /run/base/compose/docker-compose.yml
@@ -140,72 +148,6 @@ services:
       retries: 24
       start_period: 40s
 
-  challenge-prism:
-    image: >-
-      ${PRISM_IMAGE_REPOSITORY:?set the immutable prism image repository}@sha256:${PRISM_IMAGE_DIGEST:?set the immutable prism image digest}
-    # Create durable eval temp under the writable /data volume before serving.
-    # RO rootfs + empty volume mount masks image /data; Python tempfile must not
-    # die with INFRA_TMPDIR_UNUSABLE on /tmp alone (VAL-GPULAB-001).
-    command:
-      - sh
-      - -c
-      - mkdir -p "$${TMPDIR:-/data/tmp}" && chmod 700 "$${TMPDIR:-/data/tmp}" && exec uvicorn prism_challenge.app:app --host 0.0.0.0 --port 8080
-    restart: unless-stopped
-    init: true
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    labels:
-      base.component: challenge
-      base.challenge.slug: prism
-      base.compose.lifecycle: static
-      base.managed_by: compose-install
-    depends_on:
-      base-master-validator:
-        condition: service_healthy
-    environment:
-      PRISM_COMBINED_MODE: "true"
-      PRISM_SLUG: prism
-      PRISM_DATABASE_URL: sqlite+aiosqlite:////data/prism.sqlite3
-      PRISM_SHARED_TOKEN_FILE: /run/secrets/prism_shared_token
-      PRISM_MASTER_BASE_URL: http://base-master-validator:8081
-      PRISM_RAW_WEIGHT_PUSH_ENABLED: "true"
-      # Prefer external result path; no docker socket is mounted for Prism.
-      PRISM_DOCKER_ENABLED: "false"
-      PRISM_WORKER_PLANE__ENABLED: "false"
-      # Eval/static gates need a writable non-noexec temp (data volume), not only tmpfs /tmp.
-      TMPDIR: /data/tmp
-      TEMP: /data/tmp
-      TMP: /data/tmp
-    volumes:
-      - type: volume
-        source: challenge-prism-data
-        target: /data
-      - type: bind
-        source: ${PRISM_SHARED_TOKEN_FILE:?set the prism shared token file}
-        target: /run/secrets/prism_shared_token
-        read_only: true
-      - type: tmpfs
-        target: /tmp
-        tmpfs:
-          size: 268435456
-          mode: 1777
-    networks:
-      - app
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)\"",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 24
-      start_period: 40s
-    # Challenge API is internal-only (VAL-COMPOSE-016): no host ports.
-
 networks:
   db:
     name: ${COMPOSE_PROJECT_NAME}_db
@@ -216,8 +158,8 @@ networks:
     driver: bridge
     internal: true
   public:
-    # Host-facing attachment for the master public API only. PostgreSQL and
-    # challenge services never join this network.
+    # Host-facing attachment for the master public API only. PostgreSQL never
+    # joins this network. Challenges bind loopback inside the master container.
     name: ${COMPOSE_PROJECT_NAME}_public
     driver: bridge
 
@@ -226,5 +168,3 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME}_postgres_data
   master-state:
     name: ${COMPOSE_PROJECT_NAME}_master_state
-  challenge-prism-data:
-    name: ${COMPOSE_PROJECT_NAME}_challenge_prism_data
