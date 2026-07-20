@@ -41,6 +41,7 @@ jobs:
           uv run pytest \
             tests/unit/test_monorepo_workspace.py \
             tests/unit/test_monorepo_challenge_images.py \
+            tests/unit/test_validator_runtime_image.py \
             -q --maxfail=1 --tb=short
 
   ruff:
@@ -163,9 +164,8 @@ jobs:
             build_args: ""
           - image: base-validator-runtime
             dockerfile: docker/Dockerfile.validator-runtime
-            build_args: |
-              AGENT_CHALLENGE_REF=d02f7329b17dbc3b663bcd518c746022bbc0afe8
-              PRISM_REF=680440d59411fa578ba564b0b04bf437a78c7f66
+            # Monorepo: packages/challenges/* COPY'd in Dockerfile (no clone pins).
+            build_args: ""
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -202,9 +202,8 @@ jobs:
             build_args: ""
           - image: base-validator-runtime
             dockerfile: docker/Dockerfile.validator-runtime
-            build_args: |
-              AGENT_CHALLENGE_REF=d02f7329b17dbc3b663bcd518c746022bbc0afe8
-              PRISM_REF=680440d59411fa578ba564b0b04bf437a78c7f66
+            # Monorepo: packages/challenges/* COPY'd in Dockerfile (no clone pins).
+            build_args: ""
     steps:
       - uses: actions/checkout@v4
         with:

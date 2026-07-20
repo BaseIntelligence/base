@@ -1,15 +1,34 @@
+# syntax=docker/dockerfile:1
+#
+# base-validator-runtime — monorepo build (VAL-MONO-009/010)
+#
+# GHCR name (invariant): ghcr.io/baseintelligence/base-validator-runtime
+#
+# Challenge dispatch packages are installed from in-tree monorepo paths:
+#   packages/challenges/prism
+#   packages/challenges/agent-challenge
+# There is NO git clone of BaseIntelligence/prism or agent-challenge, and no
+# AGENT_CHALLENGE_REF / PRISM_REF build-args.
+#
+# Build from monorepo root (context = .):
+#
+#   docker build -f docker/Dockerfile.validator-runtime \
+#     -t ghcr.io/baseintelligence/base-validator-runtime:local .
+
 FROM python:3.12-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1
 
+# git is not required: challenges are COPY'd from the monorepo build context.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir uv
 
 WORKDIR /build/base
 COPY . .
 
+# Canonical Base wheel + locked validator dependency graph (hashes).
 RUN uv build --wheel --out-dir /dist \
     && uv export --locked --no-dev --extra validator --no-emit-project \
       --format requirements-txt --output-file /tmp/base-requirements.txt \
@@ -21,33 +40,25 @@ RUN uv build --wheel --out-dir /dist \
     && uv pip install --python /opt/validator/bin/python --no-deps \
       "base @ file://${wheel}"
 
-# Challenge adapters are build inputs only. A release build must provide exact
-# forty-character commits; floating branches and tags are rejected.
-ARG AGENT_CHALLENGE_REF
-ARG PRISM_REF
-RUN printf '%s\n' "${AGENT_CHALLENGE_REF}" | grep -Eq '^[0-9a-f]{40}$' \
-    && printf '%s\n' "${PRISM_REF}" | grep -Eq '^[0-9a-f]{40}$' \
-    && git clone --filter=blob:none \
-      https://github.com/BaseIntelligence/agent-challenge.git /build/agent-challenge \
-    && git -C /build/agent-challenge checkout --detach "${AGENT_CHALLENGE_REF}" \
-    && git clone --filter=blob:none \
-      https://github.com/BaseIntelligence/prism.git /build/prism \
-    && git -C /build/prism checkout --detach "${PRISM_REF}"
-
-# Install each challenge's complete locked dependency graph by hash, excluding
-# the already-installed canonical Base wheel, then install only built wheels.
-RUN uv export --project /build/agent-challenge --frozen --no-dev \
+# Install each in-tree challenge's complete locked dependency graph by hash,
+# excluding the already-installed canonical Base wheel, then install only the
+# built challenge wheels (no-deps so they cannot clobber Base).
+RUN test -f packages/challenges/agent-challenge/pyproject.toml \
+    && test -f packages/challenges/prism/pyproject.toml \
+    && test -f packages/challenges/agent-challenge/src/agent_challenge/validator_dispatch.py \
+    && test -f packages/challenges/prism/src/prism_challenge/validator_dispatch.py \
+    && uv export --package agent-challenge --frozen --no-dev \
       --no-emit-project --no-emit-package base \
       --format requirements-txt --output-file /tmp/agent-requirements.txt \
-    && uv export --project /build/prism --frozen --no-dev \
+    && uv export --package prism-challenge --frozen --no-dev \
       --no-emit-project --no-emit-package base \
       --format requirements-txt --output-file /tmp/prism-requirements.txt \
     && uv pip install --python /opt/validator/bin/python \
       --require-hashes --requirements /tmp/agent-requirements.txt \
     && uv pip install --python /opt/validator/bin/python \
       --require-hashes --requirements /tmp/prism-requirements.txt \
-    && uv build --project /build/agent-challenge --wheel --out-dir /dist/challenges \
-    && uv build --project /build/prism --wheel --out-dir /dist/challenges \
+    && uv build --package agent-challenge --wheel --out-dir /dist/challenges \
+    && uv build --package prism-challenge --wheel --out-dir /dist/challenges \
     && uv pip install --python /opt/validator/bin/python --no-deps \
       /dist/challenges/*.whl \
     && PRISM_DOCKER_BACKEND=cli CHALLENGE_DOCKER_BACKEND=cli \
@@ -56,6 +67,10 @@ RUN uv export --project /build/agent-challenge --frozen --no-dev \
       "import base, agent_challenge.validator_dispatch, prism_challenge.validator_dispatch"
 
 FROM python:3.12-slim AS runtime
+
+LABEL org.opencontainers.image.source="https://github.com/BaseIntelligence/base" \
+      org.opencontainers.image.title="base-validator-runtime" \
+      org.opencontainers.image.description="Base validator agent runtime with monorepo challenge dispatch packages"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

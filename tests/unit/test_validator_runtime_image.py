@@ -1,4 +1,4 @@
-"""Guard tests for the combined validator runtime image (m5-validator-runtime-image).
+"""Guard tests for the combined validator runtime image (monorepo, VAL-MONO-009/010).
 
 A decentralized validator must be able to DISPATCH both challenges from a single
 image. That requires two things to stay in lockstep:
@@ -7,13 +7,12 @@ image. That requires two things to stay in lockstep:
    (``agent-challenge`` and ``prism``) so the per-slug adapters resolve, and
 2. platform CI builds + publishes a ``base-validator-runtime`` image (from
    ``docker/Dockerfile.validator-runtime``) that installs ``base`` PLUS both
-   challenge dispatch packages and proves both ``validator_dispatch`` modules are
-   importable via a build-time smoke check.
+   monorepo challenge packages (COPY, not git clone) and proves both
+   ``validator_dispatch`` modules are importable via a build-time smoke check.
 
 These are file-inspection + import guards: a future edit that drops a dispatch
-slug, removes the runtime image from CI, breaks the no-deps challenge install
-(which would clobber the local ``base``), or deletes the import smoke check fails
-loudly here.
+slug, removes the runtime image from CI, reintroduces external challenge clones,
+or deletes the import smoke check fails loudly here.
 """
 
 from __future__ import annotations
@@ -32,8 +31,15 @@ DOCKERFILE_RUNTIME = ROOT / "docker" / "Dockerfile.validator-runtime"
 
 RUNTIME_IMAGE = "base-validator-runtime"
 RUNTIME_DOCKERFILE = "docker/Dockerfile.validator-runtime"
-AGENT_CHALLENGE_REF = "d02f7329b17dbc3b663bcd518c746022bbc0afe8"
-PRISM_REF = "680440d59411fa578ba564b0b04bf437a78c7f66"
+
+# Forbidden external clone surfaces (pre-monorepo).
+FORBIDDEN_CLONE_MARKERS = (
+    "AGENT_CHALLENGE_REF",
+    "PRISM_REF",
+    "https://github.com/BaseIntelligence/agent-challenge.git",
+    "https://github.com/BaseIntelligence/prism.git",
+    "git clone",
+)
 
 
 def _ci() -> dict:
@@ -97,40 +103,47 @@ def test_runtime_dockerfile_exists() -> None:
     assert DOCKERFILE_RUNTIME.is_file()
 
 
-def test_runtime_dockerfile_installs_base_then_both_dispatch_packages_no_deps() -> None:
+def test_runtime_dockerfile_installs_base_then_monorepo_challenge_wheels() -> None:
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
 
     # Base is built as a wheel and installed non-editably before challenge
-    # adapters. Only the completed virtual environment crosses into runtime.
+    # packages. Only the completed virtual environment crosses into runtime.
     assert "uv build --wheel" in text
     assert '"base @ file://${wheel}"' in text
     assert "--require-hashes --requirements /tmp/base-requirements.txt" in text
     assert " -e " not in text
     assert "COPY --from=builder /opt/validator /opt/validator" in text
 
-    # Both challenge packages are checked out at required commit arguments,
-    # built as wheels, and installed without replacing canonical Base.
+    # Challenges come from monorepo package paths (COPY context), not external git.
+    assert "packages/challenges/agent-challenge" in text
+    assert "packages/challenges/prism" in text
+    assert "uv build --package agent-challenge" in text
+    assert "uv build --package prism-challenge" in text
     assert "--no-deps" in text
-    assert "https://github.com/BaseIntelligence/agent-challenge.git" in text
-    assert "https://github.com/BaseIntelligence/prism.git" in text
     assert "--no-emit-package base" in text
 
     base_at = text.index('"base @ file://${wheel}"')
-    challenge_at = text.index("git clone --filter=blob:none")
-    assert base_at < challenge_at
+    challenge_export_at = text.index("uv export --package agent-challenge")
+    assert base_at < challenge_export_at
 
 
-def test_runtime_dockerfile_requires_immutable_challenge_commits() -> None:
+def test_runtime_dockerfile_has_no_external_challenge_clone() -> None:
+    """VAL-MONO-009: no AGENT_CHALLENGE_REF/PRISM_REF clone of external repos."""
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
+    # Ignore comment-only lines that document the removal.
+    instructions = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    for marker in FORBIDDEN_CLONE_MARKERS:
+        assert marker not in instructions, (
+            f"forbidden clone marker still present: {marker}"
+        )
+    assert "ARG AGENT_CHALLENGE_REF" not in instructions
+    assert "ARG PRISM_REF" not in instructions
 
-    assert "ARG AGENT_CHALLENGE_REF\n" in text
-    assert "ARG PRISM_REF\n" in text
-    assert "AGENT_CHALLENGE_REF=main" not in text
-    assert "PRISM_REF=main" not in text
-    assert text.count("grep -Eq '^[0-9a-f]{40}$'") == 2
 
-
-def test_ci_passes_immutable_challenge_commits_to_runtime_builds() -> None:
+def test_ci_runtime_build_has_no_external_challenge_ref_build_args() -> None:
+    """CI must not pass legacy external SHA pins for monorepo runtime builds."""
     ci = _ci()
 
     for job_name in ("docker-build", "docker-publish"):
@@ -139,16 +152,11 @@ def test_ci_passes_immutable_challenge_commits_to_runtime_builds() -> None:
             for item in ci["jobs"][job_name]["strategy"]["matrix"]["include"]
             if item["image"] == RUNTIME_IMAGE
         )
-        assert entry["build_args"].splitlines() == [
-            f"AGENT_CHALLENGE_REF={AGENT_CHALLENGE_REF}",
-            f"PRISM_REF={PRISM_REF}",
-        ]
-        build_step = next(
-            step
-            for step in ci["jobs"][job_name]["steps"]
-            if step.get("uses") == "docker/build-push-action@v6"
-        )
-        assert build_step["with"]["build-args"] == "${{ matrix.build_args }}"
+        build_args = (entry.get("build_args") or "").strip()
+        assert "AGENT_CHALLENGE_REF" not in build_args
+        assert "PRISM_REF" not in build_args
+        # Empty string or omitted is fine; no clone pins.
+        assert build_args in ("",)
 
 
 def test_runtime_stage_contains_no_source_checkout_or_docker_socket_client() -> None:
@@ -156,7 +164,7 @@ def test_runtime_stage_contains_no_source_checkout_or_docker_socket_client() -> 
     runtime = text.split("FROM python:3.12-slim AS runtime", maxsplit=1)[1]
 
     assert "COPY . ." not in runtime
-    assert "git" not in runtime
+    assert "git clone" not in runtime
     assert "uv pip install" not in runtime
     assert "docker.tgz" not in runtime
 
@@ -164,8 +172,8 @@ def test_runtime_stage_contains_no_source_checkout_or_docker_socket_client() -> 
 def test_runtime_dockerfile_installs_locked_challenge_dependency_graphs() -> None:
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
 
-    assert "uv export --project /build/agent-challenge --frozen" in text
-    assert "uv export --project /build/prism --frozen" in text
+    assert "uv export --package agent-challenge --frozen" in text
+    assert "uv export --package prism-challenge --frozen" in text
     assert text.count("--require-hashes --requirements") == 3
     assert "torch>=2.3" not in text
 
@@ -188,6 +196,7 @@ def test_runtime_dockerfile_is_bittensor_only_no_legacy_substrate_stack() -> Non
 
 
 def test_runtime_dockerfile_has_import_smoke_check() -> None:
+    """VAL-MONO-010: build-time import of both validator_dispatch modules."""
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
     assert (
         "import base, agent_challenge.validator_dispatch, "
@@ -203,3 +212,27 @@ def test_runtime_dockerfile_has_import_smoke_check() -> None:
 def test_runtime_dockerfile_cmd_runs_the_validator_agent() -> None:
     text = DOCKERFILE_RUNTIME.read_text(encoding="utf-8")
     assert '"base", "validator", "agent"' in text
+
+
+def test_monorepo_packages_ship_validator_dispatch_modules() -> None:
+    """In-tree packages must expose the dispatch entrypoints the image smokes."""
+    ac_dispatch = (
+        ROOT
+        / "packages"
+        / "challenges"
+        / "agent-challenge"
+        / "src"
+        / "agent_challenge"
+        / "validator_dispatch.py"
+    )
+    prism_dispatch = (
+        ROOT
+        / "packages"
+        / "challenges"
+        / "prism"
+        / "src"
+        / "prism_challenge"
+        / "validator_dispatch.py"
+    )
+    assert ac_dispatch.is_file()
+    assert prism_dispatch.is_file()

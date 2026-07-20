@@ -129,8 +129,45 @@ Import package names stay stable:
 |-----------|------|
 | `mono-import-challenges` | **Done:** import prism + agent-challenge; workspace `base` path dep; smoke imports |
 | `mono-ci-images` | **Done:** challenge Docker + path-filtered CI from monorepo; **same GHCR names** |
-| `mono-validator-runtime` | Runtime image installs in-tree packages; import smoke for validator_dispatch |
+| `mono-validator-runtime` | **Done:** runtime image COPYs in-tree packages (no external clone); import smoke |
 | `mono-deploy-docs-archive` | Deploy/miner docs + standalone-repo SoT notes |
+
+### Validator-runtime (no external challenge clone)
+
+`docker/Dockerfile.validator-runtime` builds
+`ghcr.io/baseintelligence/base-validator-runtime` from the monorepo root context:
+
+1. Build + install the canonical `base` wheel (`uv build --wheel`, hash-locked
+   validator deps).
+2. Export locked challenge dep graphs from workspace packages
+   (`uv export --package agent-challenge|prism-challenge --frozen`, excluding
+   `base`), install them by hash.
+3. Build challenge wheels from `packages/challenges/{prism,agent-challenge}` and
+   `uv pip install --no-deps` them into the validator venv.
+4. Smoke: `import base, agent_challenge.validator_dispatch, prism_challenge.validator_dispatch`
+   (with `PRISM_DOCKER_BACKEND=cli` + dummy shared tokens).
+
+There are **no** `AGENT_CHALLENGE_REF` / `PRISM_REF` build-args and **no**
+`git clone` of `BaseIntelligence/prism` or `BaseIntelligence/agent-challenge`.
+CI matrix rows for `base-validator-runtime` pass empty `build_args`.
+
+Local build (from monorepo root):
+
+```bash
+docker build -f docker/Dockerfile.validator-runtime \
+  -t ghcr.io/baseintelligence/base-validator-runtime:local .
+```
+
+Local import smoke without a full image build (needs workspace sync of both
+challenge packages; torch for prism):
+
+```bash
+UV_CACHE_DIR=/var/tmp/uv-cache uv sync --package prism-challenge --package agent-challenge
+PRISM_DOCKER_BACKEND=cli CHALLENGE_DOCKER_BACKEND=cli \
+PRISM_SHARED_TOKEN=ci-import-smoke CHALLENGE_SHARED_TOKEN=ci-import-smoke \
+uv run --package prism-challenge python -c \
+  "import base, agent_challenge.validator_dispatch, prism_challenge.validator_dispatch; print('ok')"
+```
 
 ### CI path matrix (challenge images)
 
