@@ -140,6 +140,13 @@ class ValidatorAgentSettings(BaseModel):
     # it back as the identity fallback (zero new server schema). Empty => omitted.
     display_name: str | None = None
     logo_url: str | None = None
+    #: Weight-only default (master-embed architecture). When False (shipping
+    #: default), the agent does not run challenge execution adapters / assignment
+    #: pull-execute: normal validators only heartbeat, fetch
+    #: ``GET /v1/weights/latest``, and (when gated on) call ``set_weights``.
+    #: Master is the sole writer of submissions/leaderboard. Optional future
+    #: audit re-exec is non-write only and must be enabled explicitly.
+    challenge_execution_enabled: bool = False
 
 
 class ValidatorSettings(BaseModel):

@@ -116,6 +116,7 @@ from base.template_engine import (
     render_challenge_template,
 )
 from base.validator.agent import (
+    AssignmentExecutor,
     BrokerAssignmentExecutor,
     BrokerConfig,
     ChallengeDispatchExecutor,
@@ -1646,7 +1647,13 @@ def _build_coordination_client(settings: Any) -> CoordinationClient:
 
 
 def _build_validator_agent(settings: Any) -> ValidatorAgent:
-    """Wire the decentralized validator agent from settings (testable)."""
+    """Wire the decentralized validator agent from settings (testable).
+
+    Shipping default is weight-only: ``challenge_execution_enabled=False``
+    disables Prism/agent-challenge adapters and the assignment pull loop.
+    Validators fetch ``GET {master}/v1/weights/latest`` and (when gated)
+    ``set_weights``; they never host challenge writer DBs or leaderboards.
+    """
 
     agent_cfg = settings.validator.agent
     client = _build_coordination_client(settings)
@@ -1658,11 +1665,23 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
             [*settings.docker.broker_allowed_images, *agent_cfg.allowed_images]
         ),
     )
-    executor = ChallengeDispatchExecutor(
-        generic=BrokerAssignmentExecutor(
-            run_timeout_seconds=agent_cfg.run_timeout_seconds
+    # Default OFF: empty factories so misconfig cannot silently run challenge
+    # writers. Opt-in re-enables the production ChallengeDispatchExecutor path.
+    if getattr(agent_cfg, "challenge_execution_enabled", False):
+        executor: AssignmentExecutor = ChallengeDispatchExecutor(
+            generic=BrokerAssignmentExecutor(
+                run_timeout_seconds=agent_cfg.run_timeout_seconds
+            )
         )
-    )
+        execute_assignments = True
+    else:
+        executor = ChallengeDispatchExecutor(
+            factories={},
+            generic=BrokerAssignmentExecutor(
+                run_timeout_seconds=agent_cfg.run_timeout_seconds
+            ),
+        )
+        execute_assignments = False
     identity_meta: dict[str, Any] = {}
     if agent_cfg.display_name is not None:
         identity_meta[IDENTITY_DISPLAY_NAME_KEY] = agent_cfg.display_name
@@ -1680,6 +1699,7 @@ def _build_validator_agent(settings: Any) -> ValidatorAgent:
         heartbeat_interval_seconds=agent_cfg.heartbeat_interval_seconds,
         poll_interval_seconds=agent_cfg.poll_interval_seconds,
         last_seen_meta_factory=last_seen_meta_factory,
+        execute_assignments=execute_assignments,
     )
 
 

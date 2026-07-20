@@ -34,7 +34,19 @@ def test_validator_docs_document_own_wallet_submission() -> None:
     assert "docker service create" not in guide
 
 
+def test_validator_docs_document_weight_only_default() -> None:
+    guide = _read(VALIDATOR_GUIDE)
+    ops = _read(VALIDATOR_OPS)
+    blob = guide + "\n" + ops
+    assert "weight-only" in blob.lower()
+    assert "https://chain.joinbase.ai" in blob
+    assert "challenge_execution_enabled" in blob
+    assert "/v1/weights/latest" in blob
+
+
 def test_compose_validator_installer_exists() -> None:
     assert COMPOSE_INSTALLER.is_file()
     script = _read(COMPOSE_INSTALLER)
     assert "docker compose" in script or "compose" in script.lower()
+    assert "challenge_execution_enabled: false" in script
+    assert "https://chain.joinbase.ai" in script

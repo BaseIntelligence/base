@@ -249,6 +249,9 @@ def test_install_validator_help_is_agent_only_and_joinbase_only() -> None:
     assert "master_url: ${MASTER_URL}" in content
     assert "registry_url: ${MASTER_URL}" in content
     assert "weights_url: ${MASTER_URL}" in content
+    # Weight-only default: challenge adapters off.
+    assert "challenge_execution_enabled: false" in content
+    assert "weight-only" in content.lower() or "Weight-only" in content
     # No silent default that invents a public host when --master-url is omitted.
     assert re.search(r'MASTER_URL="\$\{VALIDATOR_MASTER_URL:-[^"]+\}"', content) is None
     # Shipping mounts host docker.sock + detects DOCKER_GID (like master).

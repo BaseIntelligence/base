@@ -8,13 +8,15 @@ units under `deploy/swarm/` are unsupported for greenfield bring-up.
 
 ## Install, update, stop
 
-### Preferred: agent-only independent Compose validator
+### Preferred: weight-only independent Compose validator
 
 Validators **never run master**. `install-validator.sh` starts only the agent
-container and requires an explicit Base master coordination URL.
+container (weight-only default) and requires an explicit Base master coordination
+URL. Challenge execution adapters default **off**; the project never includes
+master, postgres, or `challenge-*` services.
 
 ```bash
-# Public network Base master API (shipping primary)
+# Public network Base master API (shipping primary) — weight-only
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
   --master-url https://chain.joinbase.ai
@@ -42,10 +44,10 @@ docker compose -p base-validator-live \
 
 Each validator is an independent Compose project with its own identity, network,
 volume, and secrets. Images auto-update by default via a **host-side** digest
-reconciler. Shipping Compose also mounts host `docker.sock` into the agent
-(uid `1000` + docker group) for later challenges-on-validator prep; the project
-remains agent-only (no master/postgres/challenge stack). See
-[Validator guide](../validator/README.md) and
+reconciler. Shipping Compose may mount host `docker.sock` into the agent
+(uid `1000` + docker group) as **optional** migration prep only — not for
+challenge control-plane. The project remains agent-only (no master/postgres/
+challenge stack). See [Validator guide](../validator/README.md) and
 [Compose deployment](../compose.md).
 
 **Read-only rootfs notes:** container `HOME` must be the writable state volume
@@ -53,11 +55,17 @@ remains agent-only (no master/postgres/challenge stack). See
 protocol identity as a real directory readable by uid 1000 (avoid host
 symlinks with restrictive parent modes). See `docs/compose.md` for the table.
 
-### Weight model reminder
+### Weight-only model (shipping)
 
-Challenges push raw weights to the master; the master aggregates; validators fetch
-`GET /v1/weights/latest` and call `set_weights` with their own wallets. There is
-**no LLM gateway** assignment token loop in the target path.
+1. Master (sole writer) embeds challenges + aggregates raw weights.
+2. Validator fetches `GET https://chain.joinbase.ai/v1/weights/latest`.
+3. Validator calls `set_weights` with its own wallet when
+   `submit_on_chain_enabled` is true (default false).
+4. `validator.agent.challenge_execution_enabled` defaults **false** — no Prism/AC
+   adapters, no submissions/leaderboard writer on the validator.
+5. Optional future audit re-exec is non-write only (not the default path).
+
+There is **no LLM gateway** assignment token loop in the target path.
 
 ## Runtime commands
 
@@ -103,12 +111,14 @@ validator:
   # When master hosts registry + weights, keep these equal to master_url.
   # Public network Settings default:
   registry_url: https://chain.joinbase.ai
-  weights_url: null
+  weights_url: https://chain.joinbase.ai
+  submit_on_chain_enabled: false
   agent:
     # Base master coordination API only (--master-url). Required; never invented.
-    # Local smoke:
-    master_url: http://127.0.0.1:3180
-    # Public network sample: https://chain.joinbase.ai
+    # Public network sample:
+    master_url: https://chain.joinbase.ai
+    # Weight-only default (no challenge adapters / no writer role):
+    challenge_execution_enabled: false
     capabilities: ["cpu"]
     version: "0.1.0"
     heartbeat_interval_seconds: 60
@@ -121,7 +131,10 @@ are public/registry aliases that may share that host; installers copy
 to a bare manager IP or invent localhost for production.
 
 There is no master LLM gateway route and no per-assignment `BASE_LLM_GATEWAY_URL`
-/ `BASE_GATEWAY_TOKEN` contract in the shipping target path.
+/ `BASE_GATEWAY_TOKEN` contract in the shipping target path. Challenge execution
+adapters stay off unless an operator explicitly sets
+`challenge_execution_enabled: true` (still never a challenge DB / leaderboard
+writer).
 
 ### Validator agent image (digest pin)
 
@@ -133,28 +146,27 @@ repository@sha256:<64-hex>
 
 Mutable `latest` alone is not a production runtime selector. Validator runtime
 images auto-update by default through a host-side digest reconciler that always
-applies `repository@sha256:<digest>`. Master challenge auto-update remains the
-master-resident digest-aware watcher; validators do not mutate master challenge
-services. Shipping Compose mounts host docker.sock into the agent for later
-challenges-on-validator prep only (still agent-only: no master stack).
+applies `repository@sha256:<digest>`. Master-embedded challenge processes live
+inside the master container; validators do not mutate master challenge services.
+Shipping Compose may mount host docker.sock into the agent as optional migration
+prep only (still agent-only weight-only: no master/postgres/challenge stack).
 
-## Agent Challenge evaluation notes
+## Challenge evaluation notes (master-owned)
 
-Agent Challenge Terminal-Bench evaluation, when used, runs through challenge-local
-and broker/session contracts owned by the agent-challenge repository. Base public
-proxy only exposes challenge public routes and must block `/internal/*`,
-`POST /internal/v1/submissions/{submission_id}/launch`, and generic benchmark
-execution-shaped routes. **Base/Prism application code must not create short-lived
-evaluator containers.**
+Challenge scoring / submissions / leaderboard are **master-owned** (embedded ASGI
+in the master container). Normal validators do not run Terminal-Bench or Prism
+re-exec by default. Base public proxy exposes challenge public routes and must
+block `/internal/*` and benchmark launch-shaped routes.
 
-Inspect long-lived challenge container logs on the master Compose project:
+Inspect embedded challenge logs on the **master** project (service name is the
+master app container, not a separate `challenge-*` service):
 
 ```bash
 docker compose -p base-mission-master -f deploy/compose/docker-compose.yml \
-  logs --since=30m challenge-prism
+  logs --since=30m base-master-validator
 ```
 
-Use placeholder service names and never print token values.
+Never print token values.
 
 ## Validation
 

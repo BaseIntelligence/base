@@ -4,11 +4,32 @@ This guide covers running a BASE validator as an **independent Docker Compose
 project**. Compose is the only supported shipping backend for new installs. There is
 no Kubernetes path, and Docker Swarm is **not** required.
 
-**Validators never run master.** The install is agent-only: one validator container
-points at an external Base master/coordination API. Challenge control-plane state,
-aggregation, PostgreSQL, and the challenge watcher stay on the master host. On-chain
-submission always uses the **validator's own wallet**. See
-[Compute Requirements](#compute-requirements).
+## Weight-only default (shipping)
+
+Normal validators are **weight-only**:
+
+1. Point `--master-url` at the public Base master (`https://chain.joinbase.ai`).
+2. Register / heartbeat with that master.
+3. Fetch `GET https://chain.joinbase.ai/v1/weights/latest`.
+4. Call `set_weights` with the **validator's own wallet** when
+   `submit_on_chain_enabled` is turned on (default off / human-gated).
+
+**Validators never run master**, never host PostgreSQL control-plane, never run
+`challenge-prism` / `challenge-agent-challenge` services, and never write miner
+submissions or leaderboards. Challenge ASGI and scoring run **inside the master
+container** on localhost; public paths stay on `chain.joinbase.ai`.
+
+Challenge execution adapters (`prism` / `agent-challenge` assignment cycles)
+default **off** via `validator.agent.challenge_execution_enabled: false` (installer
+and Settings default). Optional future **audit re-exec** may re-run challenge work
+for inspection only; it must stay **non-write** (no submissions/leaderboard
+mutation). Do not enable challenge execution on a shipping network validator unless
+you intentionally run an experimental executor profile.
+
+Host `docker.sock` on the Compose project is optional migration prep only; it is
+**not** a challenge control-plane and does not start challenge services.
+
+See [Compute Requirements](#compute-requirements).
 
 ### `master_url` vs registry / weights aliases
 
@@ -39,14 +60,13 @@ master when self-hosting.
 
 | Validator profile | Compute |
 |-------------------|---------|
-| Submit-only / simple validator (no challenge execution) | 2 vCPU, 4 GB RAM |
-| Validator running base (agent-challenge) evaluation | 8 vCPU, 32 GB RAM |
-| PRISM challenge | No additional local GPU required for standard Verify path |
+| **Weight-only (shipping default)** | 2 vCPU, 4 GB RAM |
+| Experimental executor profile (`challenge_execution_enabled: true`) | 8 vCPU, 32 GB RAM+ |
+| PRISM on master (not on validator) | Challenge scoring lives on master; validators do not need GPU for weights |
 
-PRISM heavy GPU evaluation is delegated to miner-funded workers (worker plane) or
-external long-lived TEE paths; the validator performs light verification and
-probabilistic audit work. Operator sizing should still leave headroom for Docker
-and chain clients.
+Shipping network validators use the weight-only row. Master embeds challenge ASGI;
+miners talk to `https://chain.joinbase.ai`. Optional experimental executor profiles
+are not the default and still must never host challenge writer DBs.
 
 ## Supported install (one command)
 
@@ -128,11 +148,24 @@ digest-aware watcher (see [master guide](../master/README.md) and
 
 ## Weight submission model
 
-1. Challenges push authenticated raw weights to the master.
-2. Master persists snapshots and aggregates a final vector.
-3. Validator fetches `GET /v1/weights/latest` (or the configured weights URL).
-4. Validator submits with its own hotkey / wallet (`set_weights` path).
-5. Master never submits on-chain.
+1. Challenges (embedded on master) push authenticated raw weights to the master.
+2. Master persists snapshots and aggregates a final vector (sole writer).
+3. Validator fetches `GET /v1/weights/latest` (default host
+   `https://chain.joinbase.ai`).
+4. Validator submits with its own hotkey / wallet (`set_weights` path) when gated on.
+5. Master never submits on-chain. Validators never write submissions/leaderboard.
+
+Installer-generated `validator.yaml` sets:
+
+```yaml
+validator:
+  registry_url: https://chain.joinbase.ai   # or your --master-url
+  weights_url: https://chain.joinbase.ai
+  submit_on_chain_enabled: false              # flip with --submit-on-chain
+  agent:
+    master_url: https://chain.joinbase.ai
+    challenge_execution_enabled: false        # weight-only default
+```
 
 There is **no LLM gateway** in the current target path: agents do not obtain scoped
 gateway tokens for a master `/llm/v1` route.
@@ -154,15 +187,16 @@ Typical on-chain hotkey layout when using a host wallet mount:
 
 **Is Kubernetes or Swarm required?** No. New installs use Docker Compose only.
 
-**Do I need to run the challenges on the validator host?** No. Long-lived challenge
-services run in the master Compose project. The validator coordinates with the master
-and runs evaluation only for work assigned to that validator.
+**Do I need to run the challenges on the validator host?** No. Challenges are
+embedded inside the **master** container (localhost ASGI). Validators do not start
+`challenge-*` Compose services and do not write submissions/leaderboard. Shipping
+default leaves challenge execution adapters **off**.
 
 **Do I need the master database?** No. Validators never open the control-plane
 PostgreSQL; they talk HTTP to the master and (optionally) to the chain.
 
 **What are the minimum requirements?** See [Compute Requirements](#compute-requirements).
-A weights-only node needs a network path to master and chain plus identity material.
+A weight-only node needs a network path to master and chain plus identity material.
 
 **What if the requirements are too high?** Use the Bittensor CHK / stake weight check
 flow to give validator power to a recommended BASE validator hotkey instead of running

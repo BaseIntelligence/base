@@ -58,6 +58,8 @@ def test_build_validator_agent_wires_settings(
 
     assert agent.hotkey == "agent-hotkey"
     assert agent.heartbeat_interval == 30
+    # Shipping default: weight-only (challenge adapters off).
+    assert agent._execute_assignments is False
 
 
 def test_build_validator_agent_threads_self_declared_identity(

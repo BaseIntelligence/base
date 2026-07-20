@@ -2,9 +2,12 @@
 # One-command independent validator Compose install (supported shipping path).
 # Creates protected config + protocol identity, then runs
 # `docker compose up -d` from validator-only artifacts (no master source,
-# master PostgreSQL, or challenge services). Host docker.sock is mounted into
-# the agent container (prod prep for a later challenges-on-validator path).
-# Docker Compose is the only required runtime for new installs.
+# master PostgreSQL, or challenge services). Default profile is weight-only:
+# GET https://chain.joinbase.ai/v1/weights/latest + set_weights (when gated);
+# challenge execution adapters are OFF (master is sole writer).
+# Host docker.sock is mounted into the agent container (optional migration
+# prep only — not for challenge control-plane). Docker Compose is the only
+# required runtime for new installs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,15 +18,17 @@ usage() {
 Usage: install-validator.sh --master-url URL [options]
 
 Agent-only install: validators NEVER run master, PostgreSQL control plane, or
-challenge services. This installer starts the validator agent container, mounts
-host docker.sock for later challenge-migration prep, and points the agent at an
-external Base master/coordination API via --master-url.
+challenge services. Shipping default is weight-only against the public master:
+  GET {master}/v1/weights/latest  then  set_weights (own wallet, when gated on)
+Challenge execution adapters default OFF (no submissions/leaderboard writer on
+the validator). Optional future audit re-exec is non-write only and must be
+enabled explicitly in validator.yaml. docker.sock is optional migration prep,
+not challenge control-plane.
 
 Required:
   --master-url URL           Absolute Base master coordination API URL (http/https).
-                             This is master_url (register/heartbeat/pull/result),
-                             not an unrelated public challenge front.
-                             Public network Base master API:
+                             This is master_url (register/heartbeat + weights).
+                             Public network Base master API (shipping default):
                                https://chain.joinbase.ai
                              Local smoke only:
                                http://127.0.0.1:3180
@@ -390,6 +395,7 @@ network:
 
 validator:
   # When the master hosts registry + weights, keep these equal to master_url.
+  # Public shipping example: https://chain.joinbase.ai
   registry_url: ${MASTER_URL}
   registry_retry_seconds: 15
   weights_url: ${MASTER_URL}
@@ -405,8 +411,12 @@ validator:
     capabilities: ${_cap_yaml}
     poll_interval_seconds: 5.0
     request_timeout_seconds: 15.0
+    # Weight-only default: no Prism/AC challenge adapters, no assignment execute.
+    # Master is sole writer (submissions/leaderboard). Do not flip true unless you
+    # intentionally run an experimental executor profile (still never challenge DB).
+    challenge_execution_enabled: false
     # No local broker/challenge-control-plane in the independent agent profile.
-    # Host docker.sock is composed-in separately (migration prep); broker is stubbed.
+    # Host docker.sock is composed-in separately (migration prep only); broker stubbed.
     broker_url: http://127.0.0.1:9
     broker_token_file: /run/secrets/base_broker_token
 EOF

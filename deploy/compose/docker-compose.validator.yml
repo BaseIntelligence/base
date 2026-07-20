@@ -1,8 +1,10 @@
 name: ${COMPOSE_PROJECT_NAME:?set a unique validator project name}
 
-# Independent, agent-only, source-free validator project.
-# - Validators NEVER run master, master PostgreSQL, or challenge control-plane services.
-# - Host docker.sock is mounted (prod prep for a later challenges-on-validator path).
+# Independent, agent-only, source-free validator project (weight-only default).
+# - Normal validators: GET {master}/v1/weights/latest + set_weights (own wallet).
+# - Challenge execution adapters default OFF (master is sole writer of
+#   submissions/leaderboard). Never run master, postgres, or challenge services.
+# - Host docker.sock is optional migration prep only — not challenge control-plane.
 # - Distinct project name, network, volume, credentials, identity, and state.
 # - Config must set validator.agent.master_url to an external Base master API
 #   (install-validator.sh --master-url). Prefer https://chain.joinbase.ai for

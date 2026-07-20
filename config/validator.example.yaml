@@ -23,15 +23,25 @@ validator:
   weights_timeout_seconds: 15.0
   weights_retries: 3
   weights_freshness_seconds: 720
+  # On-chain submit is human-gated (default off).
+  submit_on_chain_enabled: false
+  agent:
+    # Required for network installs (install-validator --master-url).
+    # master_url: https://chain.joinbase.ai
+    # Weight-only default: no challenge execution adapters / assignment loop.
+    # Master alone writes submissions + leaderboard.
+    challenge_execution_enabled: false
 
 database:
-  url: postgresql+asyncpg://base:<password>@postgres.base.svc.cluster.local/base
+  # Independent validators do not need master postgres; leave unused.
+  url: postgresql+*********************************************************/base
 
 docker:
-  network_name: base_challenges
+  network_name: base_validator_local
   secret_dir: /var/lib/base/secrets
   internal_network: true
-  broker_url: http://base-docker-broker:8082
+  # Stub broker: weight-only profile never dispatches challenge jobs.
+  broker_url: http://127.0.0.1:9
   broker_allowed_images:
     - ghcr.io/baseintelligence/
 

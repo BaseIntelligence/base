@@ -36,7 +36,12 @@ _DEFAULT_HEARTBEAT_INTERVAL = 60
 
 
 class ValidatorAgent:
-    """Coordinated executor: register, heartbeat, pull, execute, post results."""
+    """Coordinated executor: register, heartbeat, pull, execute, post results.
+
+    Shipping default is weight-only: ``execute_assignments=False`` skips the
+    assignment pull/execute loop so normal validators never act as challenge
+    writers (submissions/leaderboard stay on master).
+    """
 
     def __init__(
         self,
@@ -50,6 +55,7 @@ class ValidatorAgent:
         poll_interval_seconds: float = 5.0,
         last_seen_meta_factory: Callable[[], Mapping[str, Any]] | None = None,
         backoff: BackoffPolicy | None = None,
+        execute_assignments: bool = True,
     ) -> None:
         self._client = client
         self._executor = executor
@@ -61,6 +67,8 @@ class ValidatorAgent:
         self._last_seen_meta_factory = last_seen_meta_factory
         self._backoff = backoff or BackoffPolicy()
         self._registered_interval: int | None = None
+        # Weight-only shipping path leaves this False (no challenge adapters).
+        self._execute_assignments = bool(execute_assignments)
 
     @property
     def hotkey(self) -> str:
@@ -112,7 +120,14 @@ class ValidatorAgent:
         await self._client.heartbeat(last_seen_meta=self._meta())
 
     async def process_pending_assignments(self) -> AgentCycleSummary:
-        """Pull, execute, and post results for all currently-assigned units."""
+        """Pull, execute, and post results for all currently-assigned units.
+
+        Weight-only agents (``execute_assignments=False``) return an empty
+        summary without contacting the assignment pull surface.
+        """
+
+        if not self._execute_assignments:
+            return AgentCycleSummary(pulled=0, completed=0, failed=0)
 
         assignments = await self._client.pull()
         completed = 0
@@ -143,6 +158,10 @@ class ValidatorAgent:
             await sleep_until(shutdown_event, delay)
 
     async def run_assignment_loop(self, shutdown_event: asyncio.Event) -> None:
+        if not self._execute_assignments:
+            # Weight-only: no assignment poll; wait until shutdown.
+            await shutdown_event.wait()
+            return
         failures = 0
         while not shutdown_event.is_set():
             try:
@@ -157,10 +176,14 @@ class ValidatorAgent:
     async def run_forever(self, shutdown_event: asyncio.Event | None = None) -> None:
         shutdown_event = shutdown_event or asyncio.Event()
         await self.register(shutdown_event)
-        await asyncio.gather(
-            self.run_heartbeat_loop(shutdown_event),
-            self.run_assignment_loop(shutdown_event),
-        )
+        if self._execute_assignments:
+            await asyncio.gather(
+                self.run_heartbeat_loop(shutdown_event),
+                self.run_assignment_loop(shutdown_event),
+            )
+        else:
+            # Weight-only: register + heartbeat only; weights loop is outside.
+            await self.run_heartbeat_loop(shutdown_event)
 
     async def _execute_one(self, assignment: Any) -> bool:
         context = AssignmentContext(assignment=assignment, broker=self._broker)
