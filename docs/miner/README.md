@@ -13,6 +13,8 @@ on the first page.
 | [Getting started](getting-started.md) | joinbase + chain URLs, wallet, pick a challenge, first submit |
 | [Concepts](concepts.md) | Multi-challenge BASE, absolute **50/50** emission (Prism + Agent Challenge) |
 | [How-to](how-to.md) | Links into Prism and Agent Challenge miner guides |
+| [Prism miner hub](prism/README.md) | Unified Prism day-1 + lab path (monorepo) |
+| [Agent Challenge miner hub](agent-challenge/README.md) | Unified AC day-1 + submit/self-deploy (monorepo) |
 | [Reference](reference.md) | Public routes, headers, discovery |
 | [Troubleshooting](troubleshooting.md) | 401 / 429 / 502 and common auth failures |
 | [Worker plane (Prism GPU)](worker-plane.md) | Optional miner-funded GPU workers (advanced) |
@@ -46,7 +48,12 @@ policy on seal). BASE never calls `set_weights`; independent validators fetch
 2. Confirm the network is live: `curl -fsS https://chain.joinbase.ai/health`.
 3. List challenges: `curl -fsS https://chain.joinbase.ai/v1/registry`.
 4. Pick **Prism** or **Agent Challenge** and follow that challenge’s Getting started
-   ([How-to](how-to.md)).
+   ([Prism](prism/getting-started.md) · [Agent Challenge](agent-challenge/getting-started.md);
+   overview [How-to](how-to.md)).
 5. Submit through the signed public path; watch the challenge leaderboard.
 
 Full walkthrough: [Getting started](getting-started.md).
+
+Product source of truth for both challenges is this monorepo
+([SOURCE_OF_TRUTH.md](../SOURCE_OF_TRUTH.md)). Public slugs stay
+`/challenges/prism` and `/challenges/agent-challenge`.

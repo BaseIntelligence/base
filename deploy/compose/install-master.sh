@@ -135,8 +135,19 @@ if [[ -z "${PRISM_IMAGE_REPOSITORY:-}" || -z "${PRISM_IMAGE_DIGEST:-}" ]]; then
   elif digest="$(_tag_with_digest "ghcr.io/baseintelligence/prism:m8-redeploy" "mission/prism")"; then
     PRISM_IMAGE_REPOSITORY="mission/prism"
     PRISM_IMAGE_DIGEST="${digest}"
+  elif digest="$(_tag_with_digest "ghcr.io/baseintelligence/prism:latest" "mission/prism")"; then
+    # Public GHCR name unchanged; local tag for compose pin only.
+    PRISM_IMAGE_REPOSITORY="mission/prism"
+    PRISM_IMAGE_DIGEST="${digest}"
   else
     echo "PRISM_IMAGE_REPOSITORY/DIGEST unset and no local prism image found." >&2
+    echo "Monorepo local build (GHCR name unchanged):" >&2
+    echo "  docker buildx build -f packages/challenges/prism/Dockerfile \\" >&2
+    echo "    --build-context monorepo=. --target service \\" >&2
+    echo "    -t ghcr.io/baseintelligence/prism:local \\" >&2
+    echo "    packages/challenges/prism" >&2
+    echo "Then: PRISM_LOCAL_IMAGE=ghcr.io/baseintelligence/prism:local $0 ..." >&2
+    echo "Public prod image name remains ghcr.io/baseintelligence/prism (digest-pin)." >&2
     exit 1
   fi
 fi

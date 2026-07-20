@@ -1,8 +1,8 @@
 # ADR: Base monorepo layout (Prism + agent-challenge)
 
-**Status:** Accepted (import in progress)  
+**Status:** Accepted (M1–M5 monorepo residual)  
 **Date:** 2026-07-20  
-**Decision owners:** Base monorepo residual (`mono-skeleton` → `mono-import-challenges` → later milestones)
+**Decision owners:** Base monorepo residual (`mono-skeleton` → `mono-import-challenges` → `mono-ci-images` → `mono-validator-runtime` → `mono-deploy-docs-archive`)
 
 ## Context
 
@@ -130,7 +130,7 @@ Import package names stay stable:
 | `mono-import-challenges` | **Done:** import prism + agent-challenge; workspace `base` path dep; smoke imports |
 | `mono-ci-images` | **Done:** challenge Docker + path-filtered CI from monorepo; **same GHCR names** |
 | `mono-validator-runtime` | **Done:** runtime image COPYs in-tree packages (no external clone); import smoke |
-| `mono-deploy-docs-archive` | Deploy/miner docs + standalone-repo SoT notes |
+| `mono-deploy-docs-archive` | **Done:** deploy/compose/swarm monorepo local-build paths; unified miner hubs under `docs/miner/{prism,agent-challenge}/`; SoT note ([SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md)) |
 
 ### Validator-runtime (no external challenge clone)
 
@@ -199,6 +199,23 @@ docker buildx build \
 
 Base ruff/mypy/pytest jobs remain root-scoped in `.github/workflows/ci.yml`.
 
+### Deploy + miner docs (monorepo archive)
+
+Operator docs reference monorepo **local build paths** while keeping public image
+names and API slugs stable:
+
+- Compose / deploy: [compose.md](compose.md), [deploy.md](deploy.md#monorepo-local-image-builds)
+- Historical swarm note: [deploy/swarm/README.md](../deploy/swarm/README.md) (not a shipping path)
+- Installer hint: `deploy/compose/install-master.sh` prints monorepo `docker buildx`
+  commands when no Prism image is available
+- Unified miner hubs: [docs/miner/prism/](miner/prism/README.md),
+  [docs/miner/agent-challenge/](miner/agent-challenge/README.md)
+- Transition / SoT: [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md)
+
+Public API prefixes remain `/challenges/prism` and `/challenges/agent-challenge`
+(master proxy `Mount`-style routes + challenge bridges under
+`/v1/challenges/{prism,agent-challenge}/…`).
+
 ## Alternatives considered
 
 1. **Polyrepo forever** — rejected; blocks shared SDK and forces clone pins.
@@ -209,4 +226,6 @@ Base ruff/mypy/pytest jobs remain root-scoped in `.github/workflows/ci.yml`.
 
 - Mission residual layout: monorepo Prism+AC into Base
 - Validation: `VAL-MONO-001` (workspace root), `VAL-MONO-002` (Base still alone),
-  `VAL-MONO-003`..`006` (import + workspace base + challenge_sdk sharing)
+  `VAL-MONO-003`..`006` (import + workspace base + challenge_sdk sharing),
+  `VAL-MONO-007`..`010` (images + validator-runtime),
+  `VAL-MONO-011`..`015` (deploy/miner docs + slugs + safety)

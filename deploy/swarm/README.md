@@ -12,6 +12,14 @@
 > existing multi-host fabric notes only. New operators must not run
 > `install-swarm.sh` for greenfield Base installs. Mission work never mutates a
 > live Swarm.
+>
+> **Monorepo note:** first-party challenge product sources and image Dockerfiles
+> now live in `BaseIntelligence/base` under `packages/challenges/{prism,agent-challenge}`.
+> Public GHCR names stay `ghcr.io/baseintelligence/{prism,prism-evaluator,agent-challenge,agent-challenge-terminal-bench-runner,base,base-master,base-validator-runtime}`.
+> Public slugs stay `/challenges/prism` and `/challenges/agent-challenge`. For local
+> challenge image builds see [docs/deploy.md](../../docs/deploy.md#monorepo-local-image-builds)
+> and [docs/monorepo.md](../../docs/monorepo.md) — do not `git clone` standalone
+> prism/agent-challenge remotes into new greenfield image builds.
 
 The single supported **target** backend is **Docker Compose**. There is no
 Kubernetes path and Swarm is not advertised for new installs.

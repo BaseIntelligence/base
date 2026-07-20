@@ -1,22 +1,27 @@
 # How-to (miners)
 
-Task-oriented entry points. BASE owns routing and rewards aggregation; **challenge repos**
-own pack/sign/score details.
+Task-oriented entry points. BASE owns routing and rewards aggregation. **Challenge product
+sources and day-1 miner docs now live in this monorepo** under
+`docs/miner/{prism,agent-challenge}/` and `packages/challenges/*`.
 
 ## Choose your challenge
 
-| Goal | Challenge | Start here |
-|------|-----------|------------|
-| Neural architecture research (held-out primary emission) | **Prism** | [Prism Getting started](https://github.com/BaseIntelligence/prism/blob/main/docs/miner/getting-started.md) · [hub](https://github.com/BaseIntelligence/prism/tree/main/docs/miner) |
-| Software-engineering agents | **Agent Challenge** | [AC Getting started](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/getting-started.md) · [submit-agent](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/submit-agent.md) (self-deploy is advanced) |
+| Goal | Challenge | Start here (monorepo hub) |
+|------|-----------|---------------------------|
+| Neural architecture research (held-out primary emission) | **Prism** | [Prism Getting started](prism/getting-started.md) · [hub](prism/README.md) |
+| Software-engineering agents | **Agent Challenge** | [AC Getting started](agent-challenge/getting-started.md) · [submit-agent](agent-challenge/submit-agent.md) (self-deploy is advanced) |
 | Optional Prism GPU workers | Prism + BASE worker plane | [worker-plane.md](worker-plane.md) |
 
-Repository map (siblings under the BaseIntelligence org / this monorepo checkout):
+Repository / path map (source of truth is **BaseIntelligence/base**):
 
-| Slug | Typical checkout path | Public slug paths | Day-1 doc |
+| Slug | Monorepo product path | Public slug paths | Day-1 doc |
 |------|----------------------|-------------------|-----------|
-| `prism` | `../prism` or `BaseIntelligence/prism` | `/challenges/prism/...`, `/v1/challenges/prism/...` | `docs/miner/getting-started.md` |
-| `agent-challenge` | `../agent-challenge` or `BaseIntelligence/agent-challenge` | `/challenges/agent-challenge/...`, `/v1/challenges/agent-challenge/...` | `docs/miner/getting-started.md` |
+| `prism` | `packages/challenges/prism` | `/challenges/prism/...`, `/v1/challenges/prism/...` | [docs/miner/prism/getting-started.md](prism/getting-started.md) |
+| `agent-challenge` | `packages/challenges/agent-challenge` | `/challenges/agent-challenge/...`, `/v1/challenges/agent-challenge/...` | [docs/miner/agent-challenge/getting-started.md](agent-challenge/getting-started.md) |
+
+Standalone remotes `BaseIntelligence/prism` and `BaseIntelligence/agent-challenge` are
+transitioning: prefer this monorepo for product edits. See
+[docs/monorepo.md](../monorepo.md) and [SOURCE_OF_TRUTH.md](../SOURCE_OF_TRUTH.md).
 
 ### Cross-cut honesty (read once)
 
@@ -55,9 +60,9 @@ curl -fsS https://chain.joinbase.ai/challenges/agent-challenge/leaderboard | hea
 
 ### Prism: pack a seed and submit
 
-1. Read [Prism Getting started](https://github.com/BaseIntelligence/prism/blob/main/docs/miner/getting-started.md)
-   (two-script contract, seed families under `examples/`).
-2. Pack with `scripts/pack_seed_family.py` / documented zip layout.
+1. Read [Prism Getting started](prism/getting-started.md)
+   (two-script contract, seed families under `packages/challenges/prism/examples/`).
+2. Pack with `packages/challenges/prism/scripts/pack_seed_family.py` / documented zip layout.
 3. Sign with your hotkey (canonical
    `prism:{hotkey}:{nonce}:{timestamp}:{sha256(zip)}`).
 4. `POST https://chain.joinbase.ai/v1/challenges/prism/submissions` with signature headers.
@@ -70,9 +75,9 @@ IMAGE_PIN); do not invent REAL-PROVIDER TEE or a Base LLM gateway.
 ### Agent Challenge: dashboard or script submit
 
 1. Prefer https://joinbase.ai dashboard flow when live for your account.
-2. Else follow [AC Getting started](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/getting-started.md)
-   and [submit-agent](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/submit-agent.md)
-   (`scripts/submit_agent.py`).
+2. Else follow [AC Getting started](agent-challenge/getting-started.md)
+   and [submit-agent](agent-challenge/submit-agent.md)
+   (`packages/challenges/agent-challenge/scripts/submit_agent.py`).
 3. Proxy JSON upload:
    `POST https://chain.joinbase.ai/challenges/agent-challenge/submissions`
    (or ZIP bridge `POST https://chain.joinbase.ai/v1/challenges/agent-challenge/submissions`).
@@ -81,8 +86,8 @@ IMAGE_PIN); do not invent REAL-PROVIDER TEE or a Base LLM gateway.
    `/challenges/agent-challenge/submissions/{id}/...`).
 
 **Advanced:** Phala self-deploy / attestation TEE
-([self-deploy](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/self-deploy.md),
-[attestation-tee](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/attestation-tee.md)).
+([self-deploy](agent-challenge/self-deploy.md),
+[attestation-tee](agent-challenge/attestation-tee.md)).
 Keep that after a working day-1 submit path. No Base LLM gateway restore.
 
 ### Optional: deploy a Prism GPU worker

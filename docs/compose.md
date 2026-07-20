@@ -66,6 +66,59 @@ under `${XDG_STATE_HOME:-~/.local/state}/base-compose/<project>/`.
 
 Every deployable first-party reference is immutable: `repository@sha256:<64 hex>`. Mutable `latest` tags are rejected by the contract tests.
 
+Public image **names** (never renamed by the monorepo residual):
+
+| Role | GHCR name |
+| --- | --- |
+| Master | `ghcr.io/baseintelligence/base-master` |
+| Validator runtime | `ghcr.io/baseintelligence/base-validator-runtime` |
+| Prism challenge | `ghcr.io/baseintelligence/prism` |
+| Prism evaluator | `ghcr.io/baseintelligence/prism-evaluator` |
+| Agent Challenge | `ghcr.io/baseintelligence/agent-challenge` |
+| AC terminal-bench runner | `ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner` |
+
+#### Monorepo local builds (Compose lab / operator pin)
+
+Build from the Base monorepo root (BuildKit required for challenge images). Package
+sources live under `packages/challenges/{prism,agent-challenge}`; workspace `base`
+is supplied via named context `monorepo=.`:
+
+```bash
+# Prism long-lived service image (public name unchanged)
+docker buildx build \
+  -f packages/challenges/prism/Dockerfile \
+  --build-context monorepo=. \
+  --target service \
+  -t ghcr.io/baseintelligence/prism:local \
+  packages/challenges/prism
+
+# Agent Challenge runtime (public name unchanged)
+docker buildx build \
+  -f packages/challenges/agent-challenge/Dockerfile \
+  --build-context monorepo=. \
+  --target runtime \
+  -t ghcr.io/baseintelligence/agent-challenge:local \
+  packages/challenges/agent-challenge
+
+# Master + validator-runtime (repo-root Dockerfiles)
+docker build -f docker/Dockerfile.master \
+  -t ghcr.io/baseintelligence/base-master:local .
+docker build -f docker/Dockerfile.validator-runtime \
+  -t ghcr.io/baseintelligence/base-validator-runtime:local .
+```
+
+Wire a local pin into Compose install without renaming GHCR:
+
+```bash
+PRISM_LOCAL_IMAGE=ghcr.io/baseintelligence/prism:local \
+BASE_MASTER_LOCAL_IMAGE=ghcr.io/baseintelligence/base-master:local \
+  ./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
+```
+
+Or export `PRISM_IMAGE_REPOSITORY` + `PRISM_IMAGE_DIGEST` (and master counterparts)
+explicitly. See [deploy.md](deploy.md#monorepo-local-image-builds) and
+[monorepo.md](monorepo.md).
+
 ### Evaluation boundary
 
 Base and Prism do **not** launch evaluator containers. Prism runs in `PRISM_COMBINED_MODE=true` and verifies/ingests external results. External long-lived TEE runtimes are never lifecycle-managed by this Compose project.
@@ -186,3 +239,6 @@ fetch failures, submit outcomes) without tokens or DSN material.
 - Application-launched `docker run` / `docker compose run` evaluator jobs
 
 Historical `deploy/swarm/` material is not a supported operator path for new installs.
+Swarm historical notes still document the same public GHCR names; new challenge
+image builds use monorepo paths under `packages/challenges/*` (see Images above),
+not standalone prism/agent-challenge clones.

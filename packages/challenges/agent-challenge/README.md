@@ -2,6 +2,12 @@
 
 Import packages: **`agent_challenge`**, **`agent_challenge_runner`**
 
+> **Source of truth:** this tree inside **BaseIntelligence/base**. The historical
+> standalone remote `BaseIntelligence/agent-challenge` is a transition dual-source
+> / archive surface — prefer monorepo paths for product edits, images, and miner
+> docs ([docs/SOURCE_OF_TRUTH.md](../../../docs/SOURCE_OF_TRUTH.md),
+> [docs/miner/agent-challenge/](../../../docs/miner/agent-challenge/README.md)).
+
 Product sources live in this uv workspace member under the Base monorepo
 (`BaseIntelligence/base`). Shared contracts come from workspace **`base`**
 (`base.challenge_sdk`), not floating `git+base` HEAD.

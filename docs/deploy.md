@@ -75,11 +75,40 @@ For deeper service cardinality, networking, and no-evaluator rules see
 - Prism runs in combined mode (`PRISM_COMBINED_MODE=true`). Base and Prism never
   launch evaluator containers.
 
+## Monorepo local image builds
+
+First-party challenge + base images are built from this monorepo
+(`BaseIntelligence/base`). Public **GHCR image names are unchanged**; only the
+build context moved under `packages/challenges/*`.
+
+| Image (name never renames) | Monorepo local build |
+|----------------------------|----------------------|
+| `ghcr.io/baseintelligence/base-master` | `docker build -f docker/Dockerfile.master -t ghcr.io/baseintelligence/base-master:local .` |
+| `ghcr.io/baseintelligence/base-validator-runtime` | `docker build -f docker/Dockerfile.validator-runtime -t ghcr.io/baseintelligence/base-validator-runtime:local .` |
+| `ghcr.io/baseintelligence/prism` | `docker buildx build -f packages/challenges/prism/Dockerfile --build-context monorepo=. --target service -t ghcr.io/baseintelligence/prism:local packages/challenges/prism` |
+| `ghcr.io/baseintelligence/prism-evaluator` | same Dockerfile, `--target evaluator` |
+| `ghcr.io/baseintelligence/agent-challenge` | `docker buildx build -f packages/challenges/agent-challenge/Dockerfile --build-context monorepo=. --target runtime -t ghcr.io/baseintelligence/agent-challenge:local packages/challenges/agent-challenge` |
+| `ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner` | same Dockerfile, `--target terminal-bench-runner` |
+
+Compose installers accept operator pins via `BASE_MASTER_IMAGE_*`,
+`PRISM_IMAGE_*`, `BASE_VALIDATOR_IMAGE_*` (repository + digest). For disposable
+local smoke you can set `PRISM_LOCAL_IMAGE=ghcr.io/baseintelligence/prism:local`
+(and the matching master local tag) so `install-master.sh` resolves a digest from
+the monorepo-built image. Production still rolls digest-only pins of the same
+public names.
+
+Public challenge API slugs stay `/challenges/prism` and
+`/challenges/agent-challenge` (proxy + registry); monorepo packaging does not
+rename routes. Layout ADR: [monorepo.md](monorepo.md). Challenge image CI:
+`.github/workflows/challenge-images.yml`.
+
 ## Unsupported / historical
 
 - `deploy/swarm/` (including `install-swarm.sh`, overlays, Swarm secrets,
   replicated jobs, placement constraints, and the host supervisor) is a frozen
   historical artifact, **not** a supported operator path for new installs.
+  Historical notes there still reference the same public GHCR names; greenfield
+  challenge image builds now use monorepo paths above, not standalone clones.
 - LLM gateway services, tokens, routes, and provider clients have been removed
   from the target path.
 

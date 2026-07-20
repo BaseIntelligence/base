@@ -2,6 +2,12 @@
 
 Import package: **`prism_challenge`**
 
+> **Source of truth:** this tree inside **BaseIntelligence/base**. The historical
+> standalone remote `BaseIntelligence/prism` is a transition dual-source / archive
+> surface — prefer monorepo paths for product edits, images, and miner docs
+> ([docs/SOURCE_OF_TRUTH.md](../../../docs/SOURCE_OF_TRUTH.md),
+> [docs/miner/prism/](../../../docs/miner/prism/README.md)).
+
 Product sources live in this uv workspace member under the Base monorepo
 (`BaseIntelligence/base`). Shared contracts come from workspace **`base`**
 (`base.challenge_sdk`), not the standalone release wheel.

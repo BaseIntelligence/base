@@ -42,6 +42,14 @@ on-chain weights and **never launches** evaluator containers. Online **validator
 Compose projects, register with the master, pull assignments, report results, and submit the master's
 final vector with their own wallets.
 
+**Monorepo source of truth:** first-party Prism and Agent Challenge product sources live in this
+repository under `packages/challenges/{prism,agent-challenge}`. Public GHCR names and challenge
+slugs (`/challenges/prism`, `/challenges/agent-challenge`) are unchanged. Miner day-1 docs are
+unified under [docs/miner/](docs/miner/README.md) (including
+[prism](docs/miner/prism/README.md) and [agent-challenge](docs/miner/agent-challenge/README.md)).
+Layout and transition notes: [docs/monorepo.md](docs/monorepo.md),
+[docs/SOURCE_OF_TRUTH.md](docs/SOURCE_OF_TRUTH.md).
+
 ### Public SDK release
 
 Immutable Base Python package pin for consumers (including Prism):
@@ -132,13 +140,17 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 | Miners | <a href="docs/miner/README.md">Miner hub</a> | Phala-style IA: start here for joinbase mining |
 | Miners | <a href="docs/miner/getting-started.md">Miner getting started</a> | Wallet, chain.joinbase.ai, pick Prism or Agent Challenge (&lt;15 min) |
 | Miners | <a href="docs/miner/concepts.md">Miner concepts</a> | Absolute **50/50** emission (Prism + Agent Challenge), roles |
-| Miners | <a href="docs/miner/how-to.md">Miner how-to</a> | Links into challenge repos and day-1 tasks |
+| Miners | <a href="docs/miner/how-to.md">Miner how-to</a> | Day-1 tasks + monorepo challenge hubs |
+| Miners | <a href="docs/miner/prism/README.md">Prism miner hub</a> | Pack / sign / submit Prism seeds |
+| Miners | <a href="docs/miner/agent-challenge/README.md">Agent Challenge miner hub</a> | Submit agent + advanced self-deploy |
 | Miners | <a href="docs/miner/reference.md">Miner reference</a> | Public routes and signature headers |
 | Miners | <a href="docs/miner/troubleshooting.md">Miner troubleshooting</a> | 401 / 429 / 502 checklist |
 | Miners | <a href="docs/miner/worker-plane.md">Worker deployment</a> | Deploy a miner-funded GPU worker on Lium/Targon |
 | Validators | <a href="docs/validator/README.md">Validator guide</a> | Run an independent validator and submit on-chain weights |
 | Operators | <a href="docs/compose.md">Compose deployment</a> | Supported single-host master and validator install |
 | Operators | <a href="docs/deploy.md">Deploy from scratch</a> | Operator navigation for Compose-only bring-up |
+| Operators | <a href="docs/monorepo.md">Monorepo layout</a> | Workspace members, local image builds, GHCR names |
+| Operators | <a href="docs/SOURCE_OF_TRUTH.md">Source of truth</a> | Standalone remote transition note |
 | Operators | <a href="docs/master/README.md">Foundation master guide</a> | Master reference notes |
 | Developers | <a href="docs/architecture.md">Architecture</a> | Control-plane vs challenge vs validator topology |
 | Developers | <a href="docs/challenges.md">Challenges</a> | The challenge model |
