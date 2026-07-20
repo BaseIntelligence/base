@@ -1,20 +1,78 @@
 [project]
 name = "prism-challenge"
-version = "0.0.0"
-description = "Prism challenge workspace stub (product code lands via git subtree import)"
+version = "0.1.0"
+description = "Prism neural architecture search challenge for BASE"
 requires-python = ">=3.12"
-# No production dependencies yet. After mono-import-challenges this package
-# path-depends on workspace `base` (challenge_sdk) instead of the release wheel.
-dependencies = []
+dependencies = [
+  "aiosqlite>=0.20",
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  # Workspace member: resolved via root [tool.uv.sources] base = { workspace = true }
+  "base",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  "PyYAML>=6.0",
+  "numpy>=1.26",
+  "torch>=2.3",
+  "uvicorn[standard]>=0.30",
+  "tiktoken>=0.7",
+  "sentencepiece>=0.2",
+  "huggingface_hub>=0.24",
+  "cryptography>=49.0.0",
+  "pyjwt[crypto]>=2.13.0",
+]
+
+[project.optional-dependencies]
+bittensor = ["bittensor>=9"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5",
+  "pytest-timeout>=2.3",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "bittensor>=9"
+]
 
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+prism-worker = "prism_challenge.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/prism_challenge"]
 
-[tool.uv]
-# Stub only: do not install this member into the default Base venv until the
-# real package is imported and wired (avoids accidental empty-package import).
-package = true
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "distributed_gloo: multi-rank gloo collective functional tests; quarantined from the publish-gating CI suite and run in a separate non-gating job with a per-test timeout so a collective hang never stalls image publish",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["prism_challenge"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+
+[tool.coverage.run]
+source = ["prism_challenge"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

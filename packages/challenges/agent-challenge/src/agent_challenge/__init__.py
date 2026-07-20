@@ -1,8 +1,6 @@
-"""Agent-challenge package stub.
+"""Agent Challenge package."""
 
-Real `agent_challenge` sources land under this tree via git subtree import
-(`mono-import-challenges`). Until then this module is an empty workspace
-placeholder so the Base monorepo uv workspace validates.
-"""
+__all__ = ["__version__"]
 
-__all__: list[str] = []
+# Asserted verbatim by tests/test_health.py (challenge_version/sdk_version); bump in lockstep.
+__version__ = "1.0.1"

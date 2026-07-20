@@ -1,0 +1,6 @@
+{"split":"train","text":"A prism separates light into measurable bands for a science lesson.","token_count":12,"source":"tiny-fixture"}
+{"split":"train","text":"Students compare two algorithms by recording loss after each step.","token_count":11,"source":"tiny-fixture"}
+{"split":"validation","text":"Validation examples stay separate so evaluation remains reproducible.","token_count":9,"source":"tiny-fixture"}
+{"split":"validation","text":"A compact model can still show stable gradients on held out text.","token_count":12,"source":"tiny-fixture"}
+{"split":"test","text":"The test split is held back for final artifact checks only.","token_count":11,"source":"tiny-fixture"}
+{"split":"test","text":"Byte normalized scoring counts text bytes rather than tokenizer choices.","token_count":10,"source":"tiny-fixture"}

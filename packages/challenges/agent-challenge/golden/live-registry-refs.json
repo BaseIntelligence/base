@@ -1,0 +1,25 @@
+{
+  "schema": "harbor-independence/live-registry-refs@1",
+  "note": "SIDE manifest (NOT the frozen golden dataset digest). Maps a small deterministic subset of Terminal-Bench 2.1 task_ids to PULLABLE, digest-pinned registry refs published to the miner's public Docker Hub namespace so an in-CVM DooD orchestrator can `docker pull` them for a live smoke E2E. This file does NOT affect golden/dataset-digest.json, its per-task content_digest_sha256, the canonical_content_digest_sha256, or the canonical compose/measurement. Resolution is opt-in and fail-closed (see agent_challenge.canonical.live_registry).",
+  "dataset": "terminal-bench/terminal-bench-2-1",
+  "namespace": "docker.io/mathiiss",
+  "orchestrator_image": "docker.io/mathiiss/agent-challenge-canonical@sha256:02331f0909f617e333f113be376d353770a673669946bcddaac3c53cbde7c9d8",
+  "orchestrator_image_source": "services.yaml build-canonical (`uv run python -m agent_challenge.canonical.build --build`) built reproducibly (BuildKit SOURCE_DATE_EPOCH + rewrite-timestamp, provenance/sbom off) and pushed to the miner Docker Hub namespace",
+  "tasks": {
+    "adaptive-rejection-sampler": {
+      "registry_ref": "docker.io/mathiiss/agent-challenge-tb21-adaptive-rejection-sampler@sha256:7c8bd5835f19506222805de68d65f83d6cca5b502f7d71dc5e2d9d4dd447c0c8",
+      "source_ref": "alexgshaw/adaptive-rejection-sampler:20251031",
+      "content_digest_sha256": "bcaa2399985cd57666018025846289ab25e193ae0dd8fb7f0ffab2410c24d4de"
+    },
+    "bn-fit-modify": {
+      "registry_ref": "docker.io/mathiiss/agent-challenge-tb21-bn-fit-modify@sha256:c0371862a0861f282eb206471452ea9aa8d494e3687bdc8167c96ab39d73db50",
+      "source_ref": "alexgshaw/bn-fit-modify:20251031",
+      "content_digest_sha256": "b5f9644970c17ad9ddb46b7266f7bcd87c761d77d7e6f55d7cfe7284d5ff66e9"
+    },
+    "break-filter-js-from-html": {
+      "registry_ref": "docker.io/mathiiss/agent-challenge-tb21-break-filter-js-from-html@sha256:2a5bd51bab582993befc1a24252c03af673cb1db7cf7d0b2195d66a42a3872a7",
+      "source_ref": "alexgshaw/break-filter-js-from-html:20251031",
+      "content_digest_sha256": "678008d1a4fd1e6e1b9b3cc9a327219fe4b410a31eafc52e9099bbf947eea600"
+    }
+  }
+}

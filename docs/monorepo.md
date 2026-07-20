@@ -1,8 +1,8 @@
 # ADR: Base monorepo layout (Prism + agent-challenge)
 
-**Status:** Accepted (skeleton)  
+**Status:** Accepted (import in progress)  
 **Date:** 2026-07-20  
-**Decision owners:** Base monorepo residual (`mono-skeleton` → later milestones)
+**Decision owners:** Base monorepo residual (`mono-skeleton` → `mono-import-challenges` → later milestones)
 
 ## Context
 
@@ -48,7 +48,7 @@ platform/                                 # BaseIntelligence/base
     └── monorepo.md                       # this ADR
 ```
 
-### 3. uv workspace membership (M1 skeleton)
+### 3. uv workspace membership
 
 Root `pyproject.toml` declares:
 
@@ -63,12 +63,46 @@ members = [
 base = { workspace = true }
 ```
 
-M1 ships **stubs only** (valid package dirs + empty import shells). Product
-sources arrive in `mono-import-challenges` via `git subtree add` (no submodules).
+M1 shipped stubs; **M2 (`mono-import-challenges`) imported product sources** for
+both challenges under `packages/challenges/*` (history-preserving import from the
+standalone remotes / local checkouts). No git submodules.
+
+Challenge `pyproject.toml` files depend on the plain requirement `"base"`, which
+uv resolves to the workspace root package via `[tool.uv.sources]`. The previous
+Prism release-wheel pin and agent-challenge floating `git+base` HEAD pin are
+**removed** so shared `base.challenge_sdk` always comes from monorepo source.
 
 Default `uv sync --extra dev --extra master` continues to install **Base** for
-local/CI gates. Challenge members are workspace-visible but not required for the
-Base unit suite until later milestones wire path dependencies and image builds.
+local/CI gates. Installing a challenge member also pulls workspace `base`:
+
+```bash
+uv sync --package prism-challenge
+uv sync --package agent-challenge
+```
+
+### 3b. Shared `base.challenge_sdk` usage
+
+Challenges import shared contracts from the workspace Base package, for example:
+
+```python
+from base.challenge_sdk.app_factory import create_challenge_app
+from base.challenge_sdk.config import ChallengeSettings
+from base.challenge_sdk.executor import DockerExecutor, DockerRunSpec
+from base.challenge_sdk.proof import ExecutionProof  # prism
+from base.challenge_sdk.roles import Capability, Role, role_contract
+from base.challenge_sdk.schemas import ExternalResultEnvelope
+```
+
+There is no separate `challenge_sdk` distribution. Evolving shared schemas,
+auth, or app factory happens once under `src/base/challenge_sdk/` and is visible
+to both challenges on the next workspace lock/sync.
+
+Import package names stay stable:
+
+| Distribution | Import package(s) |
+|--------------|-------------------|
+| `prism-challenge` | `prism_challenge` |
+| `agent-challenge` | `agent_challenge`, `agent_challenge_runner` |
 
 ### 4. Invariants (never break production)
 
@@ -93,7 +127,7 @@ Base unit suite until later milestones wire path dependencies and image builds.
 
 | Milestone | Work |
 |-----------|------|
-| `mono-import-challenges` | `git subtree add` prism + agent-challenge; flip challenge deps to workspace `base` |
+| `mono-import-challenges` | **Done:** import prism + agent-challenge; workspace `base` path dep; smoke imports |
 | `mono-ci-images` | Challenge Docker + CI publish from monorepo contexts; **same GHCR names** |
 | `mono-validator-runtime` | Runtime image installs in-tree packages; import smoke for validator_dispatch |
 | `mono-deploy-docs-archive` | Deploy/miner docs + standalone-repo SoT notes |
@@ -113,4 +147,5 @@ cannot silently disappear. Full challenge image matrix path-filters land in
 ## References
 
 - Mission residual layout: monorepo Prism+AC into Base
-- Validation: `VAL-MONO-001` (workspace root), `VAL-MONO-002` (Base still alone)
+- Validation: `VAL-MONO-001` (workspace root), `VAL-MONO-002` (Base still alone),
+  `VAL-MONO-003`..`006` (import + workspace base + challenge_sdk sharing)

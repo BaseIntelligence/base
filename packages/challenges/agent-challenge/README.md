@@ -1,15 +1,29 @@
-# agent-challenge (workspace stub)
+# agent-challenge (workspace member)
 
-Import package: **`agent_challenge`**
+Import packages: **`agent_challenge`**, **`agent_challenge_runner`**
 
-This tree is a uv workspace member placeholder. Product sources will be
-imported from `BaseIntelligence/agent-challenge` with `git subtree add`
-(no submodules). The runner package (`agent_challenge_runner`) lands with
-the same subtree when present upstream.
+Product sources live in this uv workspace member under the Base monorepo
+(`BaseIntelligence/base`). Shared contracts come from workspace **`base`**
+(`base.challenge_sdk`), not floating `git+base` HEAD.
 
-Do not rename:
+## Shared SDK
+
+```python
+from base.challenge_sdk.executors.docker import DockerExecutor
+# challenge-local re-exports may wrap SDK types under agent_challenge.sdk.*
+```
+
+```bash
+# from monorepo root
+uv sync --package agent-challenge
+uv run --package agent-challenge python -c "import agent_challenge; import base.challenge_sdk"
+```
+
+## Do not rename
 
 - GHCR: `ghcr.io/baseintelligence/agent-challenge`,
   `ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner`
 - Public slug: `/challenges/agent-challenge`
 - Python import: `agent_challenge`
+
+See [`docs/monorepo.md`](../../../docs/monorepo.md).

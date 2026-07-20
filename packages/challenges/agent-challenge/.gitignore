@@ -1,0 +1,61 @@
+# Build artifacts
+/target/
+**/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.env
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+*.profraw
+coverage/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Benchmark results
+benchmark_results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Sisyphus planning/execution state
+.sisyphus/
+
+# OMO scratch/evidence (local-only; never committed or linted)
+.omo/
+.env.*
+secrets/
+*.pem
+*.key
+
+# Local documentation evidence (never publish)
+.docs-evidence/

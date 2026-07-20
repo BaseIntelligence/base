@@ -1,8 +1,4 @@
-"""Prism challenge package stub.
+"""Prism challenge package."""
 
-Real `prism_challenge` sources land under this tree via git subtree import
-(`mono-import-challenges`). Until then this module is an empty workspace
-placeholder so the Base monorepo uv workspace validates.
-"""
-
-__all__: list[str] = []
+__all__ = ["__version__"]
+__version__ = "0.1.0"

@@ -1,0 +1,122 @@
+slug: prism
+name: Prism
+version: 0.1.0
+api_version: "1.0"
+sdk_version: 1.0.0
+database_url: sqlite+aiosqlite:////data/prism.sqlite3
+database_path: /tmp/prism.sqlite3
+shared_token_file: /run/secrets/base/challenge_token
+allow_insecure_signatures: false
+signature_ttl_seconds: 300
+epoch_seconds: 21600
+max_code_bytes: 7500000
+# Dual param ladder (explore provisional / promote confirm-or-revoke).
+# Default continuous admission = explore 124M; promote pin = 350M.
+max_parameters: 124000000
+explore_max_parameters: 124000000
+promote_max_parameters: 350000000
+param_ladder_stage: explore
+max_layers: 96
+# Sequence geometry + optional token_budget (VAL-SCALE-006).
+# Default short-ctx seq=128; scale-eval P1 raises sequence_length to ≥256 (target 512)
+# and sets token_budget ≥1000000 under a matched ProtocolPin. max_sequence_length is the ceiling.
+max_sequence_length: 512
+sequence_length: 128
+# token_budget: null  # unset = runner/pin default; set e.g. 1000000 for P1 scale cups
+fineweb_sample_count: 128
+# Locked FineWeb-Edu mounts (read-only train; host-only secret val).
+# full_scale_eval phase-1 = sample-10BT; phase-2 = sample-100BT (VAL-SCALE-015).
+# Dry-run readiness: probe_full_scale_readiness() — missing mounts → BLOCKED_with_reason
+# (no 100BT spend required for the probe). Public multi-seed Official posture = K≥3.
+# base_eval_data_dir: /data/fineweb-edu/train
+# base_eval_train_data_dir: /data/fineweb-edu/train
+# base_eval_val_data_dir: /data/fineweb-edu/val
+# Phase-2 sample-100BT root is the sibling .../fineweb-edu/sample-100BT unless overridden.
+execution_backend: base_gpu
+prism_role: challenge
+public_submissions_enabled: true
+worker_claim_timeout_seconds: 900
+l2_top_k: 200
+l3_top_k: 20
+kendall_tau_min: 0.4
+arch_weight: 0.7
+recipe_weight: 0.3
+component_rewards_enabled: true
+architecture_reward_weight: 0.50
+training_reward_weight: 0.50
+architecture_improvement_min_delta_abs: 0.01
+architecture_improvement_min_delta_rel: 0.005
+architecture_transfer_min_delta_abs: 0.08
+architecture_transfer_min_delta_rel: 0.05
+training_improvement_min_delta_abs: 0.02
+training_improvement_min_delta_rel: 0.005
+training_transfer_min_delta_abs: 0.05
+training_transfer_min_delta_rel: 0.03
+training_improvement_z_score: 1.0
+training_metric_default_std: 0.0
+component_eval_seed_count: 1
+component_eval_repeat_count: 1
+subnet_rules_file: null
+plagiarism_enabled: true
+plagiarism_min_similarity: 0.65
+plagiarism_static_reject_threshold: 0.96
+plagiarism_top_k: 2
+plagiarism_sandbox_enabled: false
+plagiarism_sandbox_image: python:3.12-alpine
+plagiarism_sandbox_timeout_seconds: 30
+plagiarism_storage_max_files: 200
+plagiarism_storage_max_bytes: 2000000
+docker_backend: cli
+docker_broker_url: null
+docker_broker_token_file: null
+docker_network: none
+docker_cpus: 1.0
+docker_memory: 512m
+docker_memory_swap: 512m
+docker_pids_limit: 128
+docker_read_only: true
+docker_user: null
+docker_enabled: false
+base_eval_image: ghcr.io/baseintelligence/prism-evaluator:latest
+base_eval_timeout_seconds: 900
+base_eval_orchestration_timeout_seconds: 0.0
+base_eval_orchestration_grace_seconds: 300
+base_eval_cpus: 2.0
+base_eval_memory: 8g
+base_eval_memory_swap: 8g
+base_eval_pids_limit: 512
+base_eval_read_only: true
+base_eval_max_gpu_count: 8
+base_eval_gpu_count: 1
+base_eval_gpu_vram_mib: 0
+base_eval_gpu_type: null
+base_gpu_targets: null
+base_eval_gpu_server: null
+base_eval_gpu_device_ids: []
+base_eval_task: architecture
+validator_hotkeys: []
+validator_assignment_timeout_seconds: 900
+validator_assignment_max_attempts: 3
+# Worker-plane feature block (architecture.md 3.4/3.5). OFF by default: with these defaults prism
+# behaves exactly as before the compute plane (no ExecutionProof emission, no admission gate, legacy
+# audit-free finalization). Env overrides use the nested delimiter, e.g.
+# PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=true.
+worker_plane:
+  enabled: false
+  # When true, POST /v1/submissions (and the base bridge path) is rejected 403 NO_ACTIVE_WORKER
+  # unless the master's GET /v1/workers/active?hotkey= confirms >=1 active worker for the hotkey.
+  admission_requires_worker: false
+  # Base master coordination base URL the admission rule queries; auth reuses the bridge shared
+  # token. Unset while admission_requires_worker is on => admission fails closed.
+  master_base_url: null
+  admission_timeout_seconds: 5.0
+  audit_rate_tier0: 0.10
+  audit_rate_tier1: 0.05
+  audit_rate_tier2: 0.02
+  # Server-side SECRET salt mixed into the audit sampler seed so audit selection cannot be predicted
+  # from the public submission_id alone, yet stays reproducible for a fixed salt (VAL-FINAL-006).
+  # Kept out of the config repr. Leave null to sample from the seed only (legacy behaviour).
+  audit_salt: null
+  # Pinned evaluator/worker image digest (sha256:<64hex>) a tier-1 proof claim is checked against.
+  # IMAGE_PIN only: max effective tier is 1. Prism has no TEE verifier / require_for_score path.
+  pinned_image_digest: null

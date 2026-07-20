@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      confirm_publish:
+        description: "Type true to publish the Docker images to GHCR"
+        required: true
+        default: "false"
+
+permissions:
+  contents: read
+
+env:
+  SERVICE_IMAGE_NAME: ghcr.io/baseintelligence/prism
+  EVALUATOR_IMAGE_NAME: ghcr.io/baseintelligence/prism-evaluator
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Ruff lint
+        run: ruff check .
+      - name: Mypy type check
+        run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Pytest with coverage
+        # Exclude the flaky multi-rank gloo collectives from the publish-gating suite: a collective
+        # hang must never run to GitHub's ~6h job ceiling and silently stall image publication. They
+        # run separately in distributed-gloo-tests (non-gating). timeout-minutes is a final backstop.
+        run: pytest -m "not distributed_gloo" --cov=prism_challenge --cov-report=term-missing --cov-fail-under=80
+
+  distributed-gloo-tests:
+    # The world_size=4 gloo collective reliably times out on CPU-only (2-core ubuntu-latest)
+    # runners, so `continue-on-error: true` keeps this non-gating job from failing the workflow.
+    # It is also non-gating by DEPENDENCY (NOT in docker-build/docker-publish `needs`, so it can
+    # never block image publication), and this job's timeout-minutes + the per-test
+    # @pytest.mark.timeout(300) backstop bound any collective hang so it fails fast instead of
+    # burning a ~6h job. To get real regression signal, run these on a self-hosted
+    # multi-core/GPU runner.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Pytest distributed gloo (non-gating)
+        run: pytest -m "distributed_gloo" -p no:cacheprovider
+
+  docker-build:
+    needs:
+      - lint
+      - test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: ghcr.io/baseintelligence/prism
+            target: service
+          - image: ghcr.io/baseintelligence/prism-evaluator
+            target: evaluator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.image }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: ${{ matrix.target }}
+          push: false
+          tags: ${{ matrix.image }}:ci-${{ github.sha }}
+
+  docker-publish:
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.confirm_publish == 'true'))
+    needs:
+      - docker-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate service Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SERVICE_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build and publish service image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: service
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Generate evaluator Docker metadata
+        id: evaluator-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.EVALUATOR_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build and publish evaluator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: evaluator
+          push: true
+          tags: ${{ steps.evaluator-meta.outputs.tags }}
+          labels: ${{ steps.evaluator-meta.outputs.labels }}
+
+  github-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - docker-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Prepare release metadata
+        id: release
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Prism ${{ steps.release.outputs.version }}
+          generate_release_notes: true
+          append_body: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+          body: |
+            ## Container Images
+
+            - `ghcr.io/baseintelligence/prism:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/prism:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/prism:sha-${{ github.sha }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:sha-${{ github.sha }}`
+
+            ## Deployment Notes
+
+            BASE master deployments should pin the SemVer image tag plus the
+            immutable `@sha256` digest. The `latest` tag is published only from
+            `main`, not from release tags.

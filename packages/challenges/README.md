@@ -1,18 +1,17 @@
 # First-party challenges (workspace members)
 
-Future home of in-tree challenge packages after monorepo import:
+In-tree challenge packages imported into the Base monorepo:
 
 | Path | Distribution name | Import package | Status |
 |------|-------------------|----------------|--------|
-| `prism/` | `prism-challenge` | `prism_challenge` | Stub (subtree import pending) |
-| `agent-challenge/` | `agent-challenge` | `agent_challenge` | Stub (subtree import pending) |
+| `prism/` | `prism-challenge` | `prism_challenge` | Imported (product sources) |
+| `agent-challenge/` | `agent-challenge` | `agent_challenge` (+ `agent_challenge_runner`) | Imported (product sources) |
 
-These directories are declared as **uv workspace members** from the repo-root
-`pyproject.toml`. They are intentionally empty product shells until the
-`mono-import-challenges` milestone runs `git subtree add` from the standalone
-remotes.
+These directories are **uv workspace members** from the repo-root `pyproject.toml`.
+Both depend on workspace `base` (shared `base.challenge_sdk`) instead of the
+legacy release wheel (Prism) or floating `git+base` (agent-challenge).
 
-Public contracts that must not change when real code lands:
+Public contracts that must not change:
 
 - GHCR image names (`ghcr.io/baseintelligence/prism`, `…/agent-challenge`, …)
 - Public master paths `/challenges/prism` and `/challenges/agent-challenge`
