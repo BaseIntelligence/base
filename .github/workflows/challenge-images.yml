@@ -1,0 +1,386 @@
+# Challenge image matrix (Base monorepo).
+#
+# Builds and optionally publishes first-party challenge images from
+# packages/challenges/* with IDENTICAL GHCR names (never rename):
+#   ghcr.io/baseintelligence/prism
+#   ghcr.io/baseintelligence/prism-evaluator
+#   ghcr.io/baseintelligence/agent-challenge
+#   ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner
+#
+# Path-filtered: challenge package / Dockerfile / this workflow only.
+# Labels org.opencontainers.image.source → Base monorepo.
+name: Challenge images
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+    paths:
+      - "packages/challenges/prism/**"
+      - "packages/challenges/agent-challenge/**"
+      - "src/base/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/challenge-images.yml"
+  pull_request:
+    paths:
+      - "packages/challenges/prism/**"
+      - "packages/challenges/agent-challenge/**"
+      - "src/base/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/challenge-images.yml"
+  workflow_dispatch:
+    inputs:
+      confirm_publish:
+        description: "Type true to publish challenge Docker images to GHCR"
+        required: true
+        default: "false"
+      force_all:
+        description: "Build all challenge images even without path changes"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: challenge-images-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Resolve which challenge packages changed (path filter). workflow_dispatch
+  # and force_all build the full matrix.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      prism: ${{ steps.filter.outputs.prism }}
+      agent_challenge: ${{ steps.filter.outputs.agent_challenge }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            prism:
+              - 'packages/challenges/prism/**'
+              - 'src/base/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/challenge-images.yml'
+            agent_challenge:
+              - 'packages/challenges/agent-challenge/**'
+              - 'src/base/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/challenge-images.yml'
+            any:
+              - 'packages/challenges/prism/**'
+              - 'packages/challenges/agent-challenge/**'
+              - 'src/base/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/challenge-images.yml'
+
+  # Scoped challenge lint/test (member ruff + targeted smoke — not full torch suites).
+  prism-checks:
+    needs: changes
+    if: >-
+      needs.changes.outputs.prism == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_all == 'true')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/challenges/prism
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Sync workspace + prism-challenge
+        working-directory: .
+        run: |
+          set -euo pipefail
+          export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+          uv sync --locked --package prism-challenge --extra dev
+      - name: Ruff (package-scoped)
+        run: |
+          set -euo pipefail
+          uv run --package prism-challenge ruff check src tests
+      - name: Import smoke
+        working-directory: .
+        run: |
+          set -euo pipefail
+          uv run --package prism-challenge python -c "import prism_challenge; import base.challenge_sdk; print('prism_ok', prism_challenge.__file__)"
+
+  agent-challenge-checks:
+    needs: changes
+    if: >-
+      needs.changes.outputs.agent_challenge == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.force_all == 'true')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/challenges/agent-challenge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Sync workspace + agent-challenge
+        working-directory: .
+        run: |
+          set -euo pipefail
+          export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+          uv sync --locked --package agent-challenge --extra dev
+      - name: Ruff (package-scoped)
+        run: |
+          set -euo pipefail
+          uv run --package agent-challenge ruff check src tests
+      - name: Import smoke
+        working-directory: .
+        run: |
+          set -euo pipefail
+          uv run --package agent-challenge python -c "import agent_challenge; import base.challenge_sdk; print('ac_ok', agent_challenge.__file__)"
+
+  # Assert GHCR name invariants + monorepo Dockerfile contracts before build.
+  monorepo-image-contract:
+    needs: changes
+    if: >-
+      needs.changes.outputs.any == 'true' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install base dev extras
+        run: |
+          set -euo pipefail
+          export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+          uv sync --locked --extra dev --extra master
+      - name: Monorepo challenge image contracts
+        run: |
+          set -euo pipefail
+          uv run pytest tests/unit/test_monorepo_challenge_images.py -q --maxfail=1 --tb=short
+
+  docker-build:
+    needs:
+      - changes
+      - monorepo-image-contract
+      - prism-checks
+      - agent-challenge-checks
+    # Continue when a path-skipped checks job is skipped (needs success|skipped).
+    if: >-
+      always() &&
+      needs.monorepo-image-contract.result == 'success' &&
+      (needs.prism-checks.result == 'success' || needs.prism-checks.result == 'skipped') &&
+      (needs.agent-challenge-checks.result == 'success' || needs.agent-challenge-checks.result == 'skipped') &&
+      (
+        needs.changes.outputs.any == 'true' ||
+        (github.event_name == 'workflow_dispatch' && inputs.force_all == 'true')
+      )
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: prism
+            package_dir: packages/challenges/prism
+            dockerfile: packages/challenges/prism/Dockerfile
+            target: service
+            ghcr: ghcr.io/baseintelligence/prism
+            filter_key: prism
+          - image: prism-evaluator
+            package_dir: packages/challenges/prism
+            dockerfile: packages/challenges/prism/Dockerfile
+            target: evaluator
+            ghcr: ghcr.io/baseintelligence/prism-evaluator
+            filter_key: prism
+          - image: agent-challenge
+            package_dir: packages/challenges/agent-challenge
+            dockerfile: packages/challenges/agent-challenge/Dockerfile
+            target: runtime
+            ghcr: ghcr.io/baseintelligence/agent-challenge
+            filter_key: agent_challenge
+          - image: agent-challenge-terminal-bench-runner
+            package_dir: packages/challenges/agent-challenge
+            dockerfile: packages/challenges/agent-challenge/Dockerfile
+            target: terminal-bench-runner
+            ghcr: ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner
+            filter_key: agent_challenge
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if package path filter idle
+        id: gate
+        run: |
+          set -euo pipefail
+          key="${{ matrix.filter_key }}"
+          force="${{ github.event_name == 'workflow_dispatch' && inputs.force_all == 'true' }}"
+          if [ "$force" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$key" in
+            prism)
+              val="${{ needs.changes.outputs.prism }}"
+              ;;
+            agent_challenge)
+              val="${{ needs.changes.outputs.agent_challenge }}"
+              ;;
+            *)
+              echo "unknown filter key: $key" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$val" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping ${{ matrix.ghcr }} (path filter idle)"
+          fi
+      - uses: docker/setup-buildx-action@v3
+        if: steps.gate.outputs.build == 'true'
+      - name: Assert GHCR name string
+        if: steps.gate.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          expected='${{ matrix.ghcr }}'
+          case "$expected" in
+            ghcr.io/baseintelligence/prism|\
+            ghcr.io/baseintelligence/prism-evaluator|\
+            ghcr.io/baseintelligence/agent-challenge|\
+            ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner) ;;
+            *)
+              echo "REFUSING non-invariant image name: $expected" >&2
+              exit 1
+              ;;
+          esac
+          test -f "${{ matrix.dockerfile }}"
+          test -d "${{ matrix.package_dir }}"
+          grep -F 'COPY --from=monorepo' "${{ matrix.dockerfile }}"
+          grep -F 'org.opencontainers.image.source="https://github.com/BaseIntelligence/base"' \
+            "${{ matrix.dockerfile }}"
+      - name: Build ${{ matrix.ghcr }} (no push)
+        if: steps.gate.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.package_dir }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-contexts: |
+            monorepo=.
+          push: false
+          load: false
+          tags: ${{ matrix.ghcr }}:ci-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/BaseIntelligence/base
+            org.opencontainers.image.title=${{ matrix.image }}
+          cache-from: type=gha,scope=challenge-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=challenge-${{ matrix.image }}
+
+  docker-publish:
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      (
+        github.ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && inputs.confirm_publish == 'true')
+      ) &&
+      needs.docker-build.result == 'success'
+    needs:
+      - docker-build
+      - monorepo-image-contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: prism
+            package_dir: packages/challenges/prism
+            dockerfile: packages/challenges/prism/Dockerfile
+            target: service
+            ghcr: ghcr.io/baseintelligence/prism
+          - image: prism-evaluator
+            package_dir: packages/challenges/prism
+            dockerfile: packages/challenges/prism/Dockerfile
+            target: evaluator
+            ghcr: ghcr.io/baseintelligence/prism-evaluator
+          - image: agent-challenge
+            package_dir: packages/challenges/agent-challenge
+            dockerfile: packages/challenges/agent-challenge/Dockerfile
+            target: runtime
+            ghcr: ghcr.io/baseintelligence/agent-challenge
+          - image: agent-challenge-terminal-bench-runner
+            package_dir: packages/challenges/agent-challenge
+            dockerfile: packages/challenges/agent-challenge/Dockerfile
+            target: terminal-bench-runner
+            ghcr: ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify release tag belongs to main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.ghcr }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/BaseIntelligence/base
+            org.opencontainers.image.title=${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Assert GHCR name invariant
+        run: |
+          set -euo pipefail
+          expected='${{ matrix.ghcr }}'
+          case "$expected" in
+            ghcr.io/baseintelligence/prism|\
+            ghcr.io/baseintelligence/prism-evaluator|\
+            ghcr.io/baseintelligence/agent-challenge|\
+            ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner) ;;
+            *)
+              echo "REFUSING non-invariant image name: $expected" >&2
+              exit 1
+              ;;
+          esac
+      - name: Build and publish ${{ matrix.ghcr }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.package_dir }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-contexts: |
+            monorepo=.
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=challenge-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=challenge-${{ matrix.image }}

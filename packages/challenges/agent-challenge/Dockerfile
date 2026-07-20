@@ -1,3 +1,30 @@
+# syntax=docker/dockerfile:1
+#
+# Agent-challenge images (monorepo-aware).
+#
+# Build from Base monorepo ROOT with BuildKit named context `monorepo` (repo root)
+# and primary context = this package directory:
+#
+#   docker buildx build \
+#     -f packages/challenges/agent-challenge/Dockerfile \
+#     --build-context monorepo=. \
+#     --target runtime \
+#     -t ghcr.io/baseintelligence/agent-challenge:local \
+#     packages/challenges/agent-challenge
+#
+#   docker buildx build \
+#     -f packages/challenges/agent-challenge/Dockerfile \
+#     --build-context monorepo=. \
+#     --target terminal-bench-runner \
+#     -t ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner:local \
+#     packages/challenges/agent-challenge
+#
+# GHCR names are INVARIANT (do not rename):
+#   ghcr.io/baseintelligence/agent-challenge
+#   ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner
+#
+# OCI source label points at the Base monorepo (not the archived standalone remote).
+
 # ---------------------------------------------------------------------------
 # dcap-qvl (Phala dcap-qvl-cli): trustless Intel PCS quote verifier used by
 # review + key-release paths (DcapQvlVerifier). Baking the binary into the
@@ -17,6 +44,10 @@ RUN cargo install dcap-qvl-cli --version "${DCAP_QVL_CLI_VERSION}" \
 
 FROM python:3.12-slim AS runtime
 
+LABEL org.opencontainers.image.source="https://github.com/BaseIntelligence/base" \
+      org.opencontainers.image.title="agent-challenge" \
+      org.opencontainers.image.description="Agent-challenge service image (Base monorepo)"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
@@ -27,12 +58,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker.io git \
     && rm -rf /var/lib/apt/lists/*
 
-# Verified dcap-qvl on PATH for uid 10001 (world-executable under /usr/local/bin).
-# Runtime PCS egress remains a network/ops concern (internal Docker nets need a
-# public attachment or host-side verify); packaging only closes the binary gap.
 COPY --from=dcap-qvl-builder /usr/local/cargo/bin/dcap-qvl /usr/local/bin/dcap-qvl
 RUN chmod 0755 /usr/local/bin/dcap-qvl \
     && test -x /usr/local/bin/dcap-qvl
+
+# Workspace Base first (path dep; not floating git+base).
+COPY --from=monorepo pyproject.toml README.md /tmp/base-src/
+COPY --from=monorepo src/base /tmp/base-src/src/base
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir /tmp/base-src \
+    && rm -rf /tmp/base-src
 
 COPY pyproject.toml README.md ./
 COPY .rules ./.rules
@@ -57,6 +92,10 @@ CMD ["uvicorn", "agent_challenge.app:app", "--host", "0.0.0.0", "--port", "8000"
 
 FROM python:3.12-slim AS terminal-bench-runner
 
+LABEL org.opencontainers.image.source="https://github.com/BaseIntelligence/base" \
+      org.opencontainers.image.title="agent-challenge-terminal-bench-runner" \
+      org.opencontainers.image.description="Agent-challenge terminal-bench runner (Base monorepo)"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
@@ -78,21 +117,21 @@ RUN set -eux; \
     update-alternatives --set iptables /usr/sbin/iptables-legacy || true; \
     apt-get clean; rm -rf /var/lib/apt/lists/*
 
+COPY --from=monorepo pyproject.toml README.md /tmp/base-src/
+COPY --from=monorepo src/base /tmp/base-src/src/base
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir /tmp/base-src \
+    && rm -rf /tmp/base-src
+
 COPY pyproject.toml README.md ./
 COPY .rules ./.rules
 COPY src ./src
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+RUN pip install --no-cache-dir .
 
 # Pre-bake the toolchain a submitted agent needs so its install resolves fully
 # offline. Runner jobs run on an egress-free network, so own_runner installs the
-# agent with `--no-index --no-build-isolation` (see runner._own_runner_script):
-#   * build backends: cover the common PEP 517 backends so `--no-build-isolation`
-#     finds them without an isolated pypi fetch (the setuptools>=61 fetch that
-#     broke offline installs); `editables` backs modern editable (`-e .`) builds.
-#   * runtime deps: the baseagent skeleton's dependencies, so a skeleton-derived
-#     agent's requirements.txt / pyproject dependencies are already satisfied.
+# agent with `--no-index --no-build-isolation` (see runner._own_runner_script).
 RUN pip install --no-cache-dir \
         "setuptools>=61" \
         "wheel>=0.40" \

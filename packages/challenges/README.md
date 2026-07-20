@@ -13,8 +13,15 @@ legacy release wheel (Prism) or floating `git+base` (agent-challenge).
 
 Public contracts that must not change:
 
-- GHCR image names (`ghcr.io/baseintelligence/prism`, `…/agent-challenge`, …)
+- GHCR image names (`ghcr.io/baseintelligence/prism`, `…/prism-evaluator`,
+  `…/agent-challenge`, `…/agent-challenge-terminal-bench-runner`)
 - Public master paths `/challenges/prism` and `/challenges/agent-challenge`
 - Python import names `prism_challenge` and `agent_challenge`
+
+Challenge images build from these package paths via root workflow
+[`.github/workflows/challenge-images.yml`](../../.github/workflows/challenge-images.yml)
+(BuildKit named context `monorepo=.` for workspace `base`). Nested
+`*/.github/workflows/ci.yml` files are historical leftovers from the standalone
+remotes and are **not** executed by GitHub (only repo-root workflows run).
 
 See [`docs/monorepo.md`](../../docs/monorepo.md).

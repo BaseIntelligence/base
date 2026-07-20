@@ -128,15 +128,39 @@ Import package names stay stable:
 | Milestone | Work |
 |-----------|------|
 | `mono-import-challenges` | **Done:** import prism + agent-challenge; workspace `base` path dep; smoke imports |
-| `mono-ci-images` | Challenge Docker + CI publish from monorepo contexts; **same GHCR names** |
+| `mono-ci-images` | **Done:** challenge Docker + path-filtered CI from monorepo; **same GHCR names** |
 | `mono-validator-runtime` | Runtime image installs in-tree packages; import smoke for validator_dispatch |
 | `mono-deploy-docs-archive` | Deploy/miner docs + standalone-repo SoT notes |
 
-### CI path matrix (placeholder)
+### CI path matrix (challenge images)
 
-M1 adds a cheap workspace-path check job so the member directories and this ADR
-cannot silently disappear. Full challenge image matrix path-filters land in
-`mono-ci-images`; Base ruff/mypy/pytest jobs remain root-scoped.
+Root workflow [`.github/workflows/challenge-images.yml`](../.github/workflows/challenge-images.yml)
+path-filters on `packages/challenges/**` (+ shared `src/base` / lock) and builds:
+
+| Target stage | GHCR name (unchanged) | Context |
+|--------------|----------------------|---------|
+| `service` | `ghcr.io/baseintelligence/prism` | `packages/challenges/prism` + BuildKit `monorepo=.` |
+| `evaluator` | `ghcr.io/baseintelligence/prism-evaluator` | same |
+| `runtime` | `ghcr.io/baseintelligence/agent-challenge` | `packages/challenges/agent-challenge` + `monorepo=.` |
+| `terminal-bench-runner` | `ghcr.io/baseintelligence/agent-challenge-terminal-bench-runner` | same |
+
+Dockerfiles install workspace `base` via `COPY --from=monorepo` (not release wheel /
+floating git). Labels set `org.opencontainers.image.source` to
+`https://github.com/BaseIntelligence/base`. Publish stays gated (main / tag /
+`workflow_dispatch` + `confirm_publish=true`); PR and path-idle runs build-only.
+
+Local smoke (from monorepo root, BuildKit required):
+
+```bash
+docker buildx build \
+  -f packages/challenges/prism/Dockerfile \
+  --build-context monorepo=. \
+  --target service \
+  -t ghcr.io/baseintelligence/prism:local \
+  packages/challenges/prism
+```
+
+Base ruff/mypy/pytest jobs remain root-scoped in `.github/workflows/ci.yml`.
 
 ## Alternatives considered
 
