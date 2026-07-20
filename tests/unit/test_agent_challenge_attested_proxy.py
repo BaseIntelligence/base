@@ -10,7 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from base.config.settings import MasterSettings
-from base.master.app_proxy import create_proxy_app
+from base.master.app_proxy import (
+    _is_agent_challenge_enabled_mode_allowed_route,
+    create_proxy_app,
+)
 from base.master.registry import ChallengeRegistry
 from base.schemas.challenge import ChallengeCreate, ChallengeStatus
 from base.security.miner_auth import NonceReplayError
@@ -479,6 +482,11 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("POST", "/submissions/sub-1/review/report"),
         # GET review/history is signature-preserved (signed_get_routes) — not private.
         ("POST", "/submissions/sub-1/review/history"),
+        # Public GET review/tee is allowlisted; wrong method + neighbors stay denied.
+        ("POST", "/submissions/sub-1/review/tee"),
+        ("PUT", "/submissions/sub-1/review/tee"),
+        ("GET", "/submissions/sub-1/review/tee/extra"),
+        ("GET", "/submissions/sub-1/review/math"),
         ("GET", "/submissions/sub-1/eval/prepare"),
         ("POST", "/submissions/sub-1/eval/status"),
         ("POST", "/submissions/sub-1/eval/result"),
@@ -580,6 +588,12 @@ def test_attested_private_neighbors_and_aliases_are_local_404(
             "GET",
             "/challenges/agent-challenge/submissions/sub-1/events",
             "/submissions/sub-1/events",
+        ),
+        # Public TEE math (safe subset) — same class as status/events.
+        (
+            "GET",
+            "/challenges/agent-challenge/submissions/sub-1/review/tee",
+            "/submissions/sub-1/review/tee",
         ),
         (
             "GET",
@@ -884,3 +898,101 @@ def test_public_submit_strips_trust_headers_non_elevating() -> None:
     assert "x-ra-tls-peer-key" not in headers
     assert "x-base-verified-hotkey" not in headers
     assert "x-trust-level" not in headers
+
+
+@pytest.mark.parametrize(
+    "submission_id",
+    ("sub-1", "42", "abc-def"),
+)
+def test_enabled_mode_allowlist_allows_public_review_tee_get(
+    submission_id: str,
+) -> None:
+    """VAL-PLATATM-001: GET submissions/{id}/review/tee is public allowlisted."""
+
+    path = f"submissions/{submission_id}/review/tee"
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "GET",
+            path,
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    (
+        ("GET", "internal/v1/reviews/session-1/report"),
+        ("GET", "internal/v1/reviews/session-1/evidence/object-1"),
+        ("POST", "internal/v1/reviews/session-1/approvals"),
+        ("POST", "submissions/sub-1/review/tee"),
+        ("PUT", "submissions/sub-1/review/tee"),
+        ("GET", "submissions/sub-1/review/tee/extra"),
+        ("GET", "submissions/sub-1/review/math"),
+        ("GET", "key-release/nonce"),
+        ("POST", "key-release/release"),
+        ("GET", "evidence/object-1"),
+        ("GET", "submissions/sub-1/evidence/object-1"),
+    ),
+)
+def test_enabled_mode_allowlist_denies_internal_and_tee_neighbors(
+    method: str,
+    path: str,
+) -> None:
+    """VAL-PLATATM-002: internal + non-public tee neighbors remain denied."""
+
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            method,
+            path,
+        )
+        is False
+    )
+
+
+def test_public_review_tee_get_strips_trust_headers() -> None:
+    """VAL-PLATATM-002: trust header strip unchanged on public GET review/tee."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = request.headers
+        captured["path"] = request.url.path
+        return httpx.Response(
+            200,
+            content=b'{"available":false}',
+            headers={"content-type": "application/json"},
+        )
+
+    response = _proxy_client(handler).get(
+        "/challenges/agent-challenge/submissions/sub-1/review/tee",
+        headers={
+            "Authorization": "Bearer caller-capability",
+            "X-Attestation-Verified": "true",
+            "X-RA-TLS-Peer-Key": "forged",
+            "X-Base-Verified-Hotkey": "forged",
+            "X-Trust-Level": "admin",
+            "X-Allowlist-Digest": "caller-allowlist",
+            "X-Measurement-MRTD": "caller-measurement",
+            "X-Review-Verified": "true",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == b'{"available":false}'
+    assert captured["path"] == "/submissions/sub-1/review/tee"
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-public-header"] == "preserved"
+    assert headers.get_list("x-base-proxy") == ["true"]
+    assert headers.get_list("x-base-challenge-slug") == ["agent-challenge"]
+    assert "authorization" not in headers
+    assert "x-attestation-verified" not in headers
+    assert "x-ra-tls-peer-key" not in headers
+    assert "x-base-verified-hotkey" not in headers
+    assert "x-trust-level" not in headers
+    assert "x-allowlist-digest" not in headers
+    assert "x-measurement-mrtd" not in headers
+    assert "x-review-verified" not in headers

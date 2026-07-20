@@ -461,6 +461,17 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         and normalized_method == "GET"
     ):
         return True
+    # Public TEE math (safe subset only on the challenge). Same unauthenticated
+    # inspectability class as status/events — never confuses with signed
+    # review/report or internal full-envelope paths.
+    if (
+        len(parts) == 4
+        and parts[0] == "submissions"
+        and parts[2] == "review"
+        and parts[3] == "tee"
+        and normalized_method == "GET"
+    ):
+        return True
     if (
         len(parts) == 2
         and parts[0] == "benchmarks"
