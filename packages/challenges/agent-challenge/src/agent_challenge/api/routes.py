@@ -172,6 +172,10 @@ from ..submissions.artifacts import (
     store_zip_bytes,
     store_zip_uri,
 )
+from ..submissions.miner_env import (
+    MinerEnvValidationError,
+    validate_miner_env,
+)
 from ..submissions.rate_limit import (
     RateLimitExceeded,
     consume_submission_rate_limit,
@@ -257,10 +261,6 @@ SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_SECONDS = 1.0
 DEFAULT_TASK_EVENT_REPLAY_LIMIT = 100
 MAX_TASK_EVENT_REPLAY_LIMIT = 200
-MINER_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-MAX_MINER_ENV_KEYS = 64
-MAX_MINER_ENV_VALUE_BYTES = 16 * 1024
-MAX_MINER_ENV_TOTAL_BYTES = 128 * 1024
 #: Public source endpoint caps: per-file decompressed content cap (bodies beyond
 #: this are trimmed) and an overall decompressed payload cap (once reached, no
 #: further files are added). Both bound the redacted text placed in the response;
@@ -4076,38 +4076,11 @@ def _ensure_miner_env_editable(submission: AgentSubmission) -> None:
 
 
 def _validated_miner_env(env: Mapping[str, object]) -> dict[str, str]:
-    if len(env) > MAX_MINER_ENV_KEYS:
-        raise HTTPException(
-            status_code=422,
-            detail="too many env vars",
-        )
-    total_bytes = 0
-    validated: dict[str, str] = {}
-    for key, value in env.items():
-        if not MINER_ENV_KEY_RE.fullmatch(key):
-            raise HTTPException(
-                status_code=422,
-                detail="invalid env var key",
-            )
-        if not isinstance(value, str):
-            raise HTTPException(
-                status_code=422,
-                detail="env var values must be strings",
-            )
-        value_bytes = value.encode("utf-8")
-        if len(value_bytes) > MAX_MINER_ENV_VALUE_BYTES:
-            raise HTTPException(
-                status_code=422,
-                detail="env var value too large",
-            )
-        total_bytes += len(value_bytes)
-        if total_bytes > MAX_MINER_ENV_TOTAL_BYTES:
-            raise HTTPException(
-                status_code=422,
-                detail="env var payload too large",
-            )
-        validated[key] = value
-    return validated
+    """Admit miner env keys/tokens only; reject URL/proxy/host injection."""
+    try:
+        return validate_miner_env(env)
+    except MinerEnvValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.reason) from exc
 
 
 def _miner_env_metadata_response(

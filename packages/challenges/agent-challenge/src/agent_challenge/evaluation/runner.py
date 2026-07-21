@@ -59,6 +59,7 @@ from ..sdk.executors import (
     DockerRunSpec,
 )
 from ..submissions.artifacts import ArtifactValidationError, extract_zip_to_directory
+from ..submissions.miner_env import sanitize_miner_env_for_job
 from ..submissions.state_machine import (
     InvalidSubmissionStatusTransition,
     ensure_submission_status,
@@ -128,6 +129,12 @@ TERMINAL_BENCH_CONTROL_ENV_KEYS = frozenset(
         "BASE_AGENT_PATH",
         "BASE_BENCHMARK_DATASET",
         *TERMINAL_BENCH_WRITABLE_ENV,
+        # Dispatcher owns log streaming; miner cannot override (VAL-ACLOCK-004).
+        "BASE_LOG_STREAM_URL",
+        "BASE_LOG_STREAM_ATTEMPT_ID",
+        "BASE_LOG_STREAM_TOKEN",
+        "BASE_LOG_STREAM_SLUG",
+        "BASE_LOG_STREAM_TIMEOUT_SECONDS",
     }
 )
 VERDICT_SUBMISSION_STATUSES = {
@@ -1582,15 +1589,18 @@ def _terminal_bench_env(
         if value and name not in TERMINAL_BENCH_CONTROL_ENV_KEYS:
             env[name] = value
     operator_env_names = set(settings.harbor_forward_env_vars)
-    for name, value in (miner_env or {}).items():
+    # VAL-ACLOCK: only keys/tokens; drop URL/proxy/host/gateway/stream injection.
+    # sanitize_miner_env_for_job is fail-closed even if an older stored env row
+    # still contains a rejected key from before the lock landed.
+    for name, value in sanitize_miner_env_for_job(miner_env).items():
         if name in TERMINAL_BENCH_CONTROL_ENV_KEYS or name in operator_env_names:
             continue
         # VAL-ACAT-013: never forward residual Base gateway names from miner env.
         if name in {"BASE_LLM_GATEWAY_URL", "BASE_GATEWAY_TOKEN", "GATEWAY_TOKEN"}:
             continue
-        # Legacy gateway gate still drops raw provider keys when residual conf is
-        # present; without gateway the measured OR policy also forbids raw
-        # host-side API keys floating in untrusted sandboxes when pattern matches.
+        # Measured OpenRouter is the only raw provider key forwarded into the job;
+        # other *_API_KEY / *_API_TOKEN values stay off the job container (agents
+        # still only see OPENROUTER via filter_agent_env).
         if _is_provider_key_env(name) and name != "OPENROUTER_API_KEY":
             continue
         env[name] = value

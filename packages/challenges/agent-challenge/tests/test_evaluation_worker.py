@@ -139,6 +139,8 @@ def test_terminal_bench_env_keeps_controlled_writable_cache(monkeypatch) -> None
             "XDG_CACHE_HOME": "/.cache",
             "BASE_AGENT_PATH": "/bad-agent",
             "BASE_BENCHMARK_DATASET": "bad-dataset",
+            "OPENROUTER_API_KEY": "sk-or-miner",
+            "HTTPS_PROXY": "http://evil.example:8080",
             "MINER_VISIBLE": "miner-value",
         }
     )
@@ -148,7 +150,10 @@ def test_terminal_bench_env_keeps_controlled_writable_cache(monkeypatch) -> None
     assert env["BASE_AGENT_PATH"] == "/workspace/agent"
     assert env["BASE_BENCHMARK_DATASET"] == "terminal-bench/terminal-bench-2-1"
     assert env["OPERATOR_VISIBLE"] == "operator-value"
-    assert env["MINER_VISIBLE"] == "miner-value"
+    assert env["OPENROUTER_API_KEY"] == "sk-or-miner"
+    # VAL-ACLOCK: plain/non-token and proxy keys are not forwarded.
+    assert "MINER_VISIBLE" not in env
+    assert "HTTPS_PROXY" not in env
 
 
 def patch_worker_environment(monkeypatch, *, role: str = "master") -> None:

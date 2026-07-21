@@ -84,13 +84,13 @@ async def test_miner_env_put_locks_and_returns_redacted_metadata(
 
     response = await client.put(
         f"/submissions/{submission_id}/env",
-        json={"env": {"API_TOKEN": first_value, "SECOND_VALUE": second_value}},
+        json={"env": {"API_TOKEN": first_value, "OPENROUTER_API_KEY": second_value}},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["submission_id"] == submission_id
-    assert payload["keys"] == ["API_TOKEN", "SECOND_VALUE"]
+    assert payload["keys"] == ["API_TOKEN", "OPENROUTER_API_KEY"]
     assert payload["count"] == 2
     assert payload["locked"] is True
     assert payload["env_confirmed_empty"] is False
@@ -103,7 +103,7 @@ async def test_miner_env_put_locks_and_returns_redacted_metadata(
     replacement_value = "replacement-sensitive-value"
     replacement = await client.put(
         f"/submissions/{submission_id}/env",
-        json={"env": {"ONLY_KEY": replacement_value}},
+        json={"env": {"EVAL_RUN_TOKEN": replacement_value}},
     )
     redacted = await client.get(f"/submissions/{submission_id}/env")
 
@@ -111,7 +111,7 @@ async def test_miner_env_put_locks_and_returns_redacted_metadata(
     assert replacement_value not in json.dumps(replacement.json(), sort_keys=True)
     assert redacted.status_code == 200
     redacted_payload = redacted.json()
-    assert redacted_payload["keys"] == ["API_TOKEN", "SECOND_VALUE"]
+    assert redacted_payload["keys"] == ["API_TOKEN", "OPENROUTER_API_KEY"]
     assert redacted_payload["count"] == 2
     redacted_serialized = json.dumps(redacted_payload, sort_keys=True)
     assert replacement_value not in redacted_serialized
@@ -123,7 +123,7 @@ async def test_miner_env_put_locks_and_returns_redacted_metadata(
     async with database_session() as session:
         env_vars = (await session.execute(select(SubmissionEnvVar))).scalars().all()
 
-    assert [env_var.key for env_var in env_vars] == ["API_TOKEN", "SECOND_VALUE"]
+    assert [env_var.key for env_var in env_vars] == ["API_TOKEN", "OPENROUTER_API_KEY"]
     assert env_vars[0].value_ciphertext != first_value
     assert env_vars[0].value_sha256 == hashlib.sha256(first_value.encode()).hexdigest()
 
@@ -376,13 +376,13 @@ async def test_env_limits_are_enforced_without_value_echo(
 
     response = await client.put(
         f"/submissions/{submission_id}/env",
-        json={"env": {"OVERSIZE": oversize_value}},
+        json={"env": {"API_TOKEN": oversize_value}},
     )
 
     assert response.status_code == 422
     serialized = json.dumps(response.json(), sort_keys=True)
     assert oversize_value not in serialized
-    assert "OVERSIZE" not in serialized
+    assert "API_TOKEN" not in serialized
 
 
 async def test_expected_env_route_validation_states_never_return_service_unavailable(
