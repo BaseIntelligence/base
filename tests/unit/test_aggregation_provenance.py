@@ -229,6 +229,96 @@ async def test_missing_active_source_withholds_epoch(
 
 
 @pytest.mark.asyncio
+async def test_all_missing_sources_seal_zero_miner_burn(
+    session_factory: async_sessionmaker,
+) -> None:
+    """Clean empty slate: every active source missing → seal uid0 burn vector.
+
+    Partial missing still withholds (test_missing_active_source_withholds_epoch).
+    VAL-MINERDY-005 product path for zero scored miners after challenge DB wipe.
+    """
+
+    clock = FakeClock()
+    service = AggregationService(session_factory, now_fn=clock.now)
+    epoch = 11
+    with activate_role(Role.MASTER):
+        await service.open_epoch(
+            epoch,
+            expected_challenges=["prism", "agent-challenge"],
+            emission_shares={"prism": 0.5, "agent-challenge": 0.5},
+        )
+        vector = await service.seal_epoch(
+            epoch,
+            hotkey_to_uid={"5CkeyAAA": 10, "5CkeyBBB": 20},
+            netuid=100,
+            chain_endpoint="wss://chain.test",
+        )
+    assert vector.epoch == epoch
+    assert vector.uids == [0]
+    assert vector.weights == [1.0]
+    assert vector.hotkey_weights == {}
+    assert vector.vector_digest
+    # Outcomes record missing for both challenges; no accepted miner sources.
+    reasons = {
+        str(o.get("challenge_slug")): str(o.get("reason_code") or o.get("outcome"))
+        for o in (vector.source_outcomes or [])
+    }
+    assert reasons.get("prism") == "missing"
+    assert reasons.get("agent-challenge") == "missing"
+    with activate_role(Role.MASTER):
+        latest = await service.get_latest_vector()
+    assert latest is not None
+    assert latest.id == vector.id
+    assert latest.uids == [0]
+
+
+@pytest.mark.asyncio
+async def test_all_empty_snapshot_sources_seal_zero_miner_burn(
+    session_factory: async_sessionmaker,
+) -> None:
+    """All active sources present but empty weight maps → zero-miner seal."""
+
+    clock = FakeClock()
+    service = AggregationService(session_factory, now_fn=clock.now)
+    epoch = 12
+    await _insert_selected_snapshot(
+        session_factory,
+        slug="prism",
+        epoch=epoch,
+        revision=1,
+        weights={},
+        digest="e" * 64,
+    )
+    await _insert_selected_snapshot(
+        session_factory,
+        slug="agent-challenge",
+        epoch=epoch,
+        revision=1,
+        weights={},
+        digest="f" * 64,
+    )
+    with activate_role(Role.MASTER):
+        await service.open_epoch(
+            epoch,
+            expected_challenges=["prism", "agent-challenge"],
+            emission_shares={"prism": 0.5, "agent-challenge": 0.5},
+        )
+        vector = await service.seal_epoch(
+            epoch,
+            hotkey_to_uid={"5CkeyAAA": 3},
+            netuid=100,
+        )
+    assert vector.uids == [0]
+    assert vector.weights == [1.0]
+    reasons = {
+        str(o.get("challenge_slug")): str(o.get("reason_code") or o.get("outcome"))
+        for o in (vector.source_outcomes or [])
+    }
+    assert reasons.get("prism") == "empty"
+    assert reasons.get("agent-challenge") == "empty"
+
+
+@pytest.mark.asyncio
 async def test_vector_by_id_immutable_and_latest_serves_persisted(
     session_factory: async_sessionmaker,
 ) -> None:

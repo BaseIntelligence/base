@@ -323,7 +323,10 @@ class AggregationService:
     ) -> FinalWeightVector:
         """Seal epoch from durable selected raw snapshots and publish one vector.
 
-        Missing expected active sources withhold the epoch without publishing.
+        Partial missing expected active sources withhold the epoch without
+        publishing. When *every* expected active source is missing or empty
+        (clean miner slate / zero scored miners), seal a chain-valid zero-miner
+        burn vector instead of withholding forever (VAL-MINERDY-005).
         """
 
         started = time.perf_counter()
@@ -463,21 +466,38 @@ class AggregationService:
                 source_digests.append(str(snap.payload_digest))
 
             if missing:
-                epoch_row.status = AggregationEpochStatus.WITHHELD
-                epoch_row.sealed_at = now
-                epoch_row.source_outcomes = outcomes
-                epoch_row.outcome_reason = (
-                    f"{REASON_WITHHELD}:{','.join(sorted(missing))}"
+                # Clean empty slate: every expected source missing/empty → seal
+                # zero-miner burn (uid0). Partial missing still withholds so a
+                # lagging challenge can catch up.
+                all_sources_absent = bool(active_set) and len(missing) == len(
+                    active_set
                 )
-                epoch_row.emission_shares = dict(shares)
-                epoch_row.emission_policy_version = EMISSION_POLICY_VERSION
-                epoch_row.source_outcome_policy_version = SOURCE_OUTCOME_POLICY_VERSION
-                await session.flush()
-                raise EpochWithheldError(
-                    int(epoch),
-                    reason=epoch_row.outcome_reason or REASON_WITHHELD,
-                    outcomes=outcomes,
+                if not all_sources_absent:
+                    epoch_row.status = AggregationEpochStatus.WITHHELD
+                    epoch_row.sealed_at = now
+                    epoch_row.source_outcomes = outcomes
+                    epoch_row.outcome_reason = (
+                        f"{REASON_WITHHELD}:{','.join(sorted(missing))}"
+                    )
+                    epoch_row.emission_shares = dict(shares)
+                    epoch_row.emission_policy_version = EMISSION_POLICY_VERSION
+                    epoch_row.source_outcome_policy_version = (
+                        SOURCE_OUTCOME_POLICY_VERSION
+                    )
+                    await session.flush()
+                    raise EpochWithheldError(
+                        int(epoch),
+                        reason=epoch_row.outcome_reason or REASON_WITHHELD,
+                        outcomes=outcomes,
+                    )
+                logger.info(
+                    "epoch %s sealing zero-miner burn: all active sources "
+                    "missing/empty (%s)",
+                    epoch,
+                    ",".join(sorted(missing)),
                 )
+                # Keep outcomes as missing/empty; challenge_results stays empty
+                # so aggregate_challenge_weights takes the zero-miner path.
 
             mapping = {str(hotkey): int(uid) for hotkey, uid in hotkey_to_uid.items()}
             final = aggregate_challenge_weights(
