@@ -1041,9 +1041,9 @@ async def test_legacy_terminal_bench_env_uses_locked_latest_miner_value(
             selected_tasks_json="[]",
         )
         session.add(job)
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=old_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=old_value)
         await session.flush()
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=latest_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=latest_value)
         await _replace_env_var(
             session,
             submission,
@@ -1078,7 +1078,7 @@ async def test_legacy_terminal_bench_env_uses_locked_latest_miner_value(
     assert result.status == "completed"
     assert executor.spec is not None
     env = executor.spec.env
-    assert env["TASK7_SENTINEL"] == latest_value
+    assert env["TASK7_SENTINEL_TOKEN"] == latest_value
     assert env["TASK7_OPERATOR_ENV"] == operator_value
     assert env["BASE_AGENT_PATH"] == "/workspace/agent"
     assert old_value not in json.dumps(env, sort_keys=True)
@@ -1130,7 +1130,7 @@ async def test_terminal_bench_runtime_redacts_miner_env_from_persisted_logs(
         )
         session.add(job)
         submission.latest_evaluation_job_id = job.id
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=raw_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=raw_value)
         await session.flush()
         await _lock_env_rows(session, submission)
         await session.commit()
@@ -1201,9 +1201,9 @@ async def test_durable_terminal_bench_env_uses_locked_latest_miner_value(
             selected_tasks_json="[]",
         )
         session.add(job)
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=old_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=old_value)
         await session.flush()
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=latest_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=latest_value)
         await session.flush()
         await _lock_env_rows(session, submission)
         await session.commit()
@@ -1225,7 +1225,7 @@ async def test_durable_terminal_bench_env_uses_locked_latest_miner_value(
     assert result.status == "completed"
     assert executor.spec is not None
     env = executor.spec.env
-    assert env["TASK7_SENTINEL"] == latest_value
+    assert env["TASK7_SENTINEL_TOKEN"] == latest_value
     assert old_value not in json.dumps(env, sort_keys=True)
 
 
@@ -1268,7 +1268,7 @@ async def test_terminal_bench_runtime_env_value_is_redacted_from_persisted_logs(
             selected_tasks_json="[]",
         )
         session.add(job)
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=raw_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=raw_value)
         await session.flush()
         await _lock_env_rows(session, submission)
         await session.commit()
@@ -1298,7 +1298,7 @@ async def test_terminal_bench_runtime_env_value_is_redacted_from_persisted_logs(
         events = (await session.execute(select(TaskLogEvent))).scalars().all()
 
     assert executor.spec is not None
-    assert executor.spec.env["TASK7_SENTINEL"] == raw_value
+    assert executor.spec.env["TASK7_SENTINEL_TOKEN"] == raw_value
     persisted = json.dumps(
         {
             "stdout": result.stdout,
@@ -1422,7 +1422,7 @@ async def test_terminal_bench_trial_artifacts_redact_miner_env_before_persistenc
             selected_tasks_json="[]",
         )
         session.add(job)
-        await _replace_env_var(session, submission, key="TASK7_SENTINEL", value=raw_value)
+        await _replace_env_var(session, submission, key="TASK7_SENTINEL_TOKEN", value=raw_value)
         await session.flush()
         await _lock_env_rows(session, submission)
         await session.commit()
