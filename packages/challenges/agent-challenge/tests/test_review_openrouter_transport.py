@@ -1122,7 +1122,7 @@ def test_runtime_failure_posts_mapped_reason_without_secrets() -> None:
     env = {
         "REVIEW_SESSION_TOKEN": token,
         "OPENROUTER_API_KEY": secret,
-        "REVIEW_API_BASE_URL": "https://review.example",
+        "REVIEW_API_BASE_URL": "https://chain.joinbase.ai/challenges/agent-challenge",
     }
     with (
         mock.patch.dict("os.environ", env, clear=False),
@@ -1183,7 +1183,7 @@ def test_runtime_failure_unknown_exception_stays_report_generation_failed() -> N
     env = {
         "REVIEW_SESSION_TOKEN": token,
         "OPENROUTER_API_KEY": secret,
-        "REVIEW_API_BASE_URL": "https://review.example",
+        "REVIEW_API_BASE_URL": "https://chain.joinbase.ai/challenges/agent-challenge",
     }
     with (
         mock.patch.dict("os.environ", env, clear=False),
@@ -1268,7 +1268,7 @@ def test_run_assignment_stamps_request_started_only_after_model_call_announce() 
         times["model_call_marked_at_ms"] = int(fake_time() * 1000)
         status_code, _resp, _ = fake_http(
             "POST",
-            "https://review.example/review/v1/assignments/ra-transport/model-call-started",
+            "https://chain.joinbase.ai/challenges/agent-challenge/review/v1/assignments/ra-transport/model-call-started",
             token="t",
             body=b"{}",
         )
@@ -1601,7 +1601,7 @@ def test_runtime_failure_after_announce_carries_planned_request_sha256() -> None
     env = {
         "REVIEW_SESSION_TOKEN": token,
         "OPENROUTER_API_KEY": secret,
-        "REVIEW_API_BASE_URL": "https://review.example",
+        "REVIEW_API_BASE_URL": "https://chain.joinbase.ai/challenges/agent-challenge",
     }
     with (
         mock.patch.dict("os.environ", env, clear=False),
@@ -1729,7 +1729,7 @@ def test_announce_sets_announced_plan_only_after_model_call_started_2xx() -> Non
     env = {
         "REVIEW_SESSION_TOKEN": token,
         "OPENROUTER_API_KEY": secret,
-        "REVIEW_API_BASE_URL": "https://review.example",
+        "REVIEW_API_BASE_URL": "https://chain.joinbase.ai/challenges/agent-challenge",
     }
     observed_announced: dict[str, str | None] = {"planned_request_sha256": "sentinel"}
 
@@ -1809,7 +1809,7 @@ def test_announce_sets_announced_plan_only_after_model_call_started_2xx() -> Non
     times_success["model_call_marked_at_ms"] = int(fixed_time() * 1000)
     status_code, _resp, _ = success_http(
         "POST",
-        f"https://review.example/review/v1/assignments/{assignment_id}/model-call-started",
+        f"https://chain.joinbase.ai/challenges/agent-challenge/review/v1/assignments/{assignment_id}/model-call-started",
         token=token,
         body=json.dumps(marker_ok).encode("utf-8"),
     )
@@ -2177,7 +2177,7 @@ def test_runtime_failure_maps_quote_and_report_residuals_without_secrets() -> No
         env = {
             "REVIEW_SESSION_TOKEN": "ra-fail-residual.signed-capability-token",
             "OPENROUTER_API_KEY": secret,
-            "REVIEW_API_BASE_URL": "https://review.example",
+            "REVIEW_API_BASE_URL": "https://chain.joinbase.ai/challenges/agent-challenge",
         }
         with (
             mock.patch.dict("os.environ", env, clear=False),

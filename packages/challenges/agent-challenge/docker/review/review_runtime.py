@@ -2,9 +2,9 @@
 
 Boot sequence (live + offline-testable seams):
 
-1. Read ``OPENROUTER_API_KEY`` / ``REVIEW_SESSION_TOKEN`` / ``REVIEW_API_BASE_URL``
-   injected only through Phala ``encrypted_env`` (base URL is required in
-   measured compose; runtime still tolerates an override flag for offline tests).
+1. Read ``OPENROUTER_API_KEY`` / ``REVIEW_SESSION_TOKEN`` (and optional
+   ``REVIEW_API_BASE_URL``) from Phala ``encrypted_env``. Production forces the
+   joinbase pin; non-joinbase values are refused unless ``CHALLENGE_ALLOW_DEV_URLS=1``.
 2. Bootstrap the assignment id from the capability token and fetch immutable
    assignment, artifact, and rules over authenticated HTTPS.
 3. Build exactly one planned OpenRouter body, announce their digest, exchange
@@ -35,7 +35,51 @@ from urllib.request import Request, urlopen
 REPORT_DATA_HEX_LENGTH = 128
 # Production Base master hosts AC under this public challenge base.
 # chain.platform.network is historically 502 and is not a valid review report target.
-DEFAULT_REVIEW_API_BASE_URL = "https://chain.joinbase.ai/challenges/agent-challenge"
+# Authority is hard-pinned; env cannot redirect the measured callback in prod.
+try:
+    from agent_challenge.review.urls import (  # noqa: E402
+        ALLOW_DEV_REVIEW_URLS_ENV as _ALLOW_DEV_REVIEW_URLS_ENV,
+    )
+    from agent_challenge.review.urls import (
+        DEFAULT_REVIEW_API_BASE_URL,
+        PINNED_REVIEW_API_BASE_URL,
+        ReviewApiBaseUrlError,
+        resolve_review_api_base_url,
+    )
+except ImportError:  # pragma: no cover - lean offline bootstrap without package
+    DEFAULT_REVIEW_API_BASE_URL = "https://chain.joinbase.ai/challenges/agent-challenge"
+    PINNED_REVIEW_API_BASE_URL = DEFAULT_REVIEW_API_BASE_URL
+    _ALLOW_DEV_REVIEW_URLS_ENV = "CHALLENGE_ALLOW_DEV_URLS"
+
+    class ReviewApiBaseUrlError(ValueError):
+        """Review callback base URL is not the production joinbase pin."""
+
+    def resolve_review_api_base_url(
+        *,
+        explicit: str | None = None,
+        environ: Mapping[str, str] | None = None,
+        allow_dev: bool | None = None,
+    ) -> str:
+        del allow_dev
+        env = os.environ if environ is None else environ
+        candidate = explicit if isinstance(explicit, str) and explicit.strip() else None
+        if candidate is None:
+            raw = env.get("REVIEW_API_BASE_URL") if hasattr(env, "get") else None
+            if isinstance(raw, str) and raw.strip():
+                candidate = raw
+        if candidate is None:
+            return PINNED_REVIEW_API_BASE_URL
+        normalized = candidate.strip().rstrip("/")
+        if normalized == PINNED_REVIEW_API_BASE_URL:
+            return PINNED_REVIEW_API_BASE_URL
+        flag = str(env.get(_ALLOW_DEV_REVIEW_URLS_ENV, "")).strip().lower()
+        if flag in {"1", "true", "yes", "on"} and normalized.startswith("https://"):
+            return normalized
+        raise ReviewApiBaseUrlError(
+            f"REVIEW_API_BASE_URL must be exactly {PINNED_REVIEW_API_BASE_URL} in production"
+        )
+
+
 _MAX_RESPONSE_BYTES = 12 * 1024 * 1024
 # dstack quote RPC on live TDX can exceed the SDK default of 3s; keep >= 60s.
 _DSTACK_QUOTE_TIMEOUT_SECONDS = 60.0
@@ -1568,8 +1612,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--api-base-url",
         default=None,
         help=(
-            "Override REVIEW_API_BASE_URL "
-            "(default: env or https://chain.joinbase.ai/challenges/agent-challenge)"
+            "Production pin is https://chain.joinbase.ai/challenges/agent-challenge; "
+            f"non-joinbase requires {_ALLOW_DEV_REVIEW_URLS_ENV}=1 (non-prod only)"
         ),
     )
     args = parser.parse_args(argv)
@@ -1580,11 +1624,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Default container boot: full assignment path.
         token = os.environ.get("REVIEW_SESSION_TOKEN", "")
         api_key = os.environ.get("OPENROUTER_API_KEY", "")
-        base = (
-            args.api_base_url
-            or os.environ.get("REVIEW_API_BASE_URL")
-            or DEFAULT_REVIEW_API_BASE_URL
-        )
+        try:
+            base = resolve_review_api_base_url(explicit=args.api_base_url)
+        except ReviewApiBaseUrlError as exc:
+            print(
+                json.dumps(
+                    {
+                        "error": "review_api_base_url_refused",
+                        "detail": str(exc),
+                        "pinned": PINNED_REVIEW_API_BASE_URL,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return 2
         if not token or not api_key:
             # Keep --help usable even without secrets when flags are incomplete.
             if (

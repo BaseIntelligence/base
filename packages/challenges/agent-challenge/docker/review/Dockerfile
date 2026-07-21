@@ -23,6 +23,7 @@ COPY src/agent_challenge/__init__.py /app/agent_challenge/__init__.py
 COPY src/agent_challenge/review/__init__.py /app/agent_challenge/review/__init__.py
 COPY src/agent_challenge/review/canonical.py /app/agent_challenge/review/canonical.py
 COPY src/agent_challenge/review/schemas.py /app/agent_challenge/review/schemas.py
+COPY src/agent_challenge/review/urls.py /app/agent_challenge/review/urls.py
 COPY src/agent_challenge/review/policy.py /app/agent_challenge/review/policy.py
 COPY src/agent_challenge/review/report.py /app/agent_challenge/review/report.py
 COPY src/agent_challenge/review/openrouter.py /app/agent_challenge/review/openrouter.py

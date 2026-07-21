@@ -23,6 +23,11 @@ from agent_challenge.review.deployment import (
     validate_review_deployed_acknowledgement,
 )
 from agent_challenge.review.schemas import validate_review_assignment
+from agent_challenge.review.urls import (
+    PINNED_REVIEW_API_BASE_URL,
+    ReviewApiBaseUrlError,
+    assert_pinned_review_api_base_url,
+)
 from agent_challenge.selfdeploy.measurements import (
     ProvisionOsIdentityError,
     verify_provision_os_identity,
@@ -217,10 +222,15 @@ def encrypt_review_secrets(
         raise ReviewDeploymentError("review encrypted_env values must be non-empty strings")
     if values["REVIEW_SESSION_TOKEN"] != plan.review_session_token:
         raise ReviewDeploymentError("review session token does not match signed prepare response")
-    base = values["REVIEW_API_BASE_URL"].strip().rstrip("/")
-    if not (base.startswith("https://") and len(base) >= 12):
-        raise ReviewDeploymentError("REVIEW_API_BASE_URL must be an https challenge base URL")
-    values["REVIEW_API_BASE_URL"] = base
+    # Hard-pin measured callback authority. Miner-supplied non-joinbase values
+    # fail closed; honest joinbase (with optional trailing slash) is accepted.
+    # Override authority only with CHALLENGE_ALLOW_DEV_URLS=1 (non-prod).
+    try:
+        values["REVIEW_API_BASE_URL"] = assert_pinned_review_api_base_url(
+            values["REVIEW_API_BASE_URL"]
+        )
+    except ReviewApiBaseUrlError as exc:
+        raise ReviewDeploymentError(str(exc)) from exc
     try:
         ciphertext = encrypt_env_vars_sync(
             [EnvVar(key=name, value=values[name]) for name in REVIEW_ALLOWED_ENVS],
@@ -405,6 +415,7 @@ __all__ = [
     "DEFAULT_OS_IMAGE",
     "DEFAULT_PHALA_APP_NONCE",
     "DEFAULT_REGION",
+    "PINNED_REVIEW_API_BASE_URL",
     "REVIEW_ALLOWED_ENVS",
     "EncryptedReviewSecrets",
     "HttpReviewPhalaDeployment",

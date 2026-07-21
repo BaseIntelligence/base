@@ -24,8 +24,9 @@ DEFAULT_REVIEW_APP_IDENTITY = "agent-challenge-review-v1"
 REVIEWER_SERVICE = "reviewer"
 DSTACK_QUOTE_SOCKET_PATH = "/var/run/dstack.sock"
 # Exactly the non-empty encrypted secret names measured into compose_hash.
-# REVIEW_API_BASE_URL is required so live TDX guests talk to joinbase (the
-# historical chain.platform.network default is 502 and cannot report).
+# REVIEW_API_BASE_URL remains listed so compose_hash identity is stable, but
+# encrypt/deploy + measured runtime force the joinbase pin (anti-cheat): miners
+# cannot change callback authority via this slot in production.
 REVIEW_ALLOWED_ENVS = (
     "OPENROUTER_API_KEY",
     "REVIEW_API_BASE_URL",
