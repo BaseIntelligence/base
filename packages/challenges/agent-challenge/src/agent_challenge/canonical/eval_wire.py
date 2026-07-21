@@ -15,6 +15,7 @@ import struct
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from agent_challenge.canonical.key_release_endpoint import parse_key_release_authority
 from agent_challenge.review.canonical import (
     CanonicalJsonError,
 )
@@ -458,6 +459,15 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
         or len(data["key_release_endpoint"]) > 16_384
     ):
         raise EvalWireError("key_release_endpoint must be a bounded non-empty string")
+    # VAL-ACLOCK-008/010: plan KR is validator RA-TLS / host:port authority only.
+    # Free HTTP(S) URLs (including measure-time compose pin placeholders) are not
+    # accepted as the signed plan trust root.
+    key_release_endpoint = data["key_release_endpoint"].strip()
+    if parse_key_release_authority(key_release_endpoint) is None:
+        raise EvalWireError(
+            "key_release_endpoint must be a validator RA-TLS/authority form "
+            "(host:port or ratls|tls|tcp://host:port); free HTTP(S) KR URLs are rejected"
+        )
     issued_at_ms = _integer(data["issued_at_ms"], "issued_at_ms")
     expires_at_ms = _integer(data["expires_at_ms"], "expires_at_ms")
     if expires_at_ms <= issued_at_ms:
@@ -482,7 +492,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
             "kms_public_key_sha256": kms_public_key_sha256,
             "measurement": app_measurement_valid,
         },
-        "key_release_endpoint": data["key_release_endpoint"],
+        "key_release_endpoint": key_release_endpoint,
         "result_endpoint": result_endpoint,
         "key_release_nonce": key_release_nonce,
         "score_nonce": score_nonce,

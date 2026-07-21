@@ -98,7 +98,7 @@ def _enable_phala_decrypt(monkeypatch, *, task_id: str) -> None:
     monkeypatch.setenv("CHALLENGE_ATTESTED_REVIEW_ENABLED", "1")
     plan = {
         "eval_run_id": "eval-run-001",
-        "key_release_endpoint": "https://validator.test:8700",
+        "key_release_endpoint": "validator.test:8701",
         "key_release_nonce": "key-nonce-001",
         "score_nonce": "score-nonce-001",
         "issued_at_ms": 0,

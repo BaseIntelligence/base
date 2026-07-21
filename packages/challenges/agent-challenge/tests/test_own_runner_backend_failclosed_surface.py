@@ -72,7 +72,7 @@ def _result_lines(out: str) -> list[dict]:
 def _live_like_plan() -> dict[str, Any]:
     return {
         "eval_run_id": "eval-run-live37",
-        "key_release_endpoint": "https://validator.test:8700",
+        "key_release_endpoint": "validator.test:8701",
         "key_release_nonce": "key-nonce-live37",
         "score_nonce": "score-nonce-live37",
         "issued_at_ms": 0,

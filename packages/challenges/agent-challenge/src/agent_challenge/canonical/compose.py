@@ -36,6 +36,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from agent_challenge.canonical.key_release_endpoint import (
+    DEFAULT_KEY_RELEASE_RA_TLS_PORT,
+    is_validator_key_release_authority,
+    parse_key_release_authority,
+    parse_raw_key_release_bake,
+)
 from agent_challenge.canonical.live_registry import LIVE_REGISTRY_ENV
 from agent_challenge.canonical.measurement import compose_hash, normalize_app_compose
 from agent_challenge.evaluation.own_runner.dood import (
@@ -53,7 +59,6 @@ from agent_challenge.keyrelease.client import (
 #: without importing the server module, which must stay out of the lean image).
 RA_TLS_HOST_ENV = "KEY_RELEASE_RA_TLS_HOST"
 RA_TLS_PORT_ENV = "KEY_RELEASE_RA_TLS_PORT"
-DEFAULT_KEY_RELEASE_RA_TLS_PORT = 8701
 
 #: Default in-CVM paths for raw RA-TLS client mTLS material.
 DEFAULT_KEY_RELEASE_TLS_CERT_PATH = "/run/secrets/ra_tls/client.crt"
@@ -119,8 +124,12 @@ ORCHESTRATOR_SERVICE = "orchestrator"
 #: VAL-ACAT-013: Base LLM gateway names (``BASE_GATEWAY_TOKEN``,
 #: ``BASE_LLM_GATEWAY_URL``, …) are intentionally **absent**. Production key-release
 #: identity is bound into static compose env as ``KEY_RELEASE_RA_TLS_HOST`` /
-#: ``KEY_RELEASE_RA_TLS_PORT`` plus the required client mTLS path names (no HTTP
-#: URL fallback in the measured app).
+#: ``KEY_RELEASE_RA_TLS_PORT`` plus the required client mTLS path names.
+#: VAL-ACLOCK-009: free ``CHALLENGE_PHALA_KEY_RELEASE_URL`` remains listed only so
+#: existing measure-time pin hashes stay byte-stable when the HTTPS placeholder is
+#: baked as static compose env. It is **not** a miner trust root: plan wire rejects
+#: free HTTP KR hosts, and :func:`encrypt_eval_secrets` refuses free URL values that
+#: are not the validator RA-TLS authority matching the signed plan.
 DEFAULT_ALLOWED_ENVS: tuple[str, ...] = (
     "CHALLENGE_PHALA_AGENT_HASH",
     "CHALLENGE_PHALA_ATTESTATION_ENABLED",
@@ -153,43 +162,15 @@ class ComposeGenerationError(ValueError):
 
 
 def _parse_raw_key_release_endpoint(endpoint: str) -> tuple[str, int] | None:
-    """Return ``(host, port)`` for production raw RA-TLS authority inputs.
+    """Return ``(host, port)`` for production raw RA-TLS bake into static compose env.
 
     Accepts ``host:8701``, ``ratls://host:port``, ``tls://host:port``, or
     ``tcp://host:port``. HTTP(S) URLs and non-raw authorities return ``None`` so
-    legacy offline helpers that still pass an HTTP key-release URL keep working
-    under the flag-off / non-production path.
+    the measure-time HTTPS pin placeholder can still land as a non-baked static
+    compose factor for offline hash matching (compose pin only — not plan trust).
     """
 
-    value = endpoint.strip()
-    if not value:
-        return None
-    scheme = ""
-    authority = value
-    if "://" in value:
-        scheme, authority = value.split("://", 1)
-        scheme = scheme.lower()
-        if scheme in {"http", "https"}:
-            return None
-        if scheme not in {"ratls", "tls", "tcp"}:
-            return None
-    if "/" in authority:
-        authority = authority.split("/", 1)[0]
-    if ":" not in authority:
-        return None
-    host, port_text = authority.rsplit(":", 1)
-    try:
-        port = int(port_text)
-    except ValueError:
-        return None
-    host = host.strip().strip("[]")
-    if not host or not 1 <= port <= 65535:
-        return None
-    # Authority without an explicit raw scheme counts as production only when
-    # targeting the enumarated RA-TLS listener port.
-    if not scheme and port != DEFAULT_KEY_RELEASE_RA_TLS_PORT:
-        return None
-    return host, port
+    return parse_raw_key_release_bake(endpoint)
 
 
 def assert_digest_pinned(image_ref: str, *, what: str = "image") -> str:
@@ -537,7 +518,9 @@ __all__ = [
     "build_orchestrator_service",
     "generate_app_compose",
     "golden_task_image_digests",
+    "is_validator_key_release_authority",
     "load_golden_manifest",
+    "parse_key_release_authority",
     "phala_pre_launch_script",
     "render_app_compose",
     "render_app_compose_bytes",

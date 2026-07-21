@@ -23,6 +23,8 @@ from agent_challenge.canonical.compose import (
     generate_app_compose,
     render_app_compose,
 )
+from agent_challenge.canonical.key_release_endpoint import parse_key_release_authority
+from agent_challenge.keyrelease.client import KEY_RELEASE_URL_ENV
 from agent_challenge.selfdeploy.measurements import (
     ProvisionOsIdentityError,
     verify_provision_os_identity,
@@ -285,6 +287,25 @@ def encrypt_eval_secrets(
             "Eval encrypted_env must not include Base LLM gateway secrets "
             "(BASE_GATEWAY_TOKEN / BASE_LLM_GATEWAY_URL / …)"
         )
+    # VAL-ACLOCK-009: free CHALLENGE_PHALA_KEY_RELEASE_URL is not a miner trust
+    # root. Prefer plan key_release_endpoint + KEY_RELEASE_RA_TLS_HOST/PORT.
+    # Name may remain in allowed_envs for measure-time pin hash stability, but
+    # any encrypted_env value must be the same RA-TLS authority as the signed
+    # plan (free HTTP(S) URLs always refuse).
+    if KEY_RELEASE_URL_ENV in secrets:
+        free_url = secrets[KEY_RELEASE_URL_ENV]
+        plan_endpoint = str(plan.plan.get("key_release_endpoint") or "").strip()
+        plan_auth = parse_key_release_authority(plan_endpoint)
+        free_auth = parse_key_release_authority(
+            free_url if isinstance(free_url, str) else ""
+        )
+        if plan_auth is None or free_auth is None or free_auth != plan_auth:
+            raise EvalDeploymentError(
+                "Eval encrypted_env CHALLENGE_PHALA_KEY_RELEASE_URL is not miner-"
+                "authoritative; value must match plan key_release_endpoint RA-TLS "
+                "authority (prefer KEY_RELEASE_RA_TLS_HOST/PORT). Free HTTP(S) KR "
+                "URLs are refused."
+            )
     env_keys = tuple(name for name in EVAL_ALLOWED_ENVS if name in secrets)
     values = {name: secrets[name] for name in env_keys}
     if any(not isinstance(value, str) or not value for value in values.values()):

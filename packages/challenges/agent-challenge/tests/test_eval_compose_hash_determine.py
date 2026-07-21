@@ -161,17 +161,22 @@ def test_build_eval_deployment_plan_matches_live_pin_with_raw_plan_endpoint():
     assert dep.plan["key_release_endpoint"] == LIVE_PLAN_KEY_RELEASE
 
 
-def test_build_eval_deployment_plan_still_matches_when_plan_endpoint_is_placeholder():
-    """When operator/plan already used the pin measure endpoint, still determine."""
+def test_signed_plan_rejects_measure_time_https_placeholder_as_endpoint():
+    """VAL-ACLOCK-008: measure-time HTTPS is compose-pin only, not plan trust root."""
 
-    prepare = _signed_prepare(
-        compose_hash=LIVE_PIN_COMPOSE_HASH,
-        image_ref=LIVE_PIN_IMAGE,
-        app_identity=eval_deploy.DEFAULT_EVAL_COMPOSE_NAME,
-        key_release_endpoint=eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER,
-    )
-    dep = eval_deploy.build_eval_deployment_plan(prepare)
-    assert dep.compose_hash == LIVE_PIN_COMPOSE_HASH
+    with pytest.raises(eval_wire.EvalWireError, match="key_release_endpoint"):
+        eval_wire.validate_eval_plan(
+            _signed_prepare(
+                compose_hash=LIVE_PIN_COMPOSE_HASH,
+                image_ref=LIVE_PIN_IMAGE,
+                app_identity=eval_deploy.DEFAULT_EVAL_COMPOSE_NAME,
+                # Intentionally build the raw mapping then swap to placeholder.
+                key_release_endpoint=LIVE_PLAN_KEY_RELEASE,
+            )["plan"]
+            | {
+                "key_release_endpoint": eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER,
+            }
+        )
 
 
 def test_build_eval_deployment_plan_matches_raw_baked_compose_when_pin_is_raw():

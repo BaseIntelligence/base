@@ -99,7 +99,7 @@ def _enable_phala_key_release(monkeypatch) -> None:
     monkeypatch.setenv(backend.PHALA_ATTESTATION_ENABLED_ENV, "1")
     plan = {
         "eval_run_id": "eval-run-001",
-        "key_release_endpoint": "https://validator.test:8700",
+        "key_release_endpoint": "validator.test:8701",
         "key_release_nonce": "key-nonce-001",
         "score_nonce": "score-nonce-001",
         "issued_at_ms": 0,
