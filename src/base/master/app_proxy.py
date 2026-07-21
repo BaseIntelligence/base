@@ -65,6 +65,10 @@ from base.master.validator_coordination import (
     build_validator_coordination_router,
     build_validator_health_lifespan,
 )
+from base.master.weights_sealer import (
+    MasterWeightsSealer,
+    build_master_weights_sealer_lifespan,
+)
 from base.master.worker_assignment import (
     WorkerAssignmentService,
     build_worker_assignment_router,
@@ -724,6 +728,8 @@ def create_proxy_app(
     orchestration_interval_seconds: float | None = None,
     registry_reconciler: MasterChallengeReconciler | None = None,
     registry_reconcile_interval_seconds: float | None = None,
+    weights_sealer: MasterWeightsSealer | None = None,
+    weights_sealer_interval_seconds: float | None = None,
     challenge_image_updater_settings: Settings | None = None,
     challenge_image_update_interval_seconds: float | None = None,
     challenge_watcher_settings: Settings | None = None,
@@ -758,6 +764,11 @@ def create_proxy_app(
             ),
             build_master_registry_reconcile_lifespan(
                 registry_reconciler, registry_reconcile_interval_seconds
+            ),
+            # Continuous in-process weight sealer (auto-weights always-200).
+            # Interval = master.epoch_interval_seconds; <=0 disables.
+            build_master_weights_sealer_lifespan(
+                weights_sealer, weights_sealer_interval_seconds
             ),
             build_challenge_image_update_lifespan(
                 challenge_image_updater_settings,

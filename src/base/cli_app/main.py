@@ -420,6 +420,16 @@ def _master_weight_service(
     metagraph_cache: MetagraphCache | None = None,
     session_factory: Any = None,
 ) -> MasterWeightService:
+    # Wire seal TTL + epoch cadence from Settings (not CLI-only defaults).
+    # Prefer master.weights_freshness_seconds when present; fall back to the
+    # historical validator freshness window / schema default so existing
+    # configs keep a sensible TTL.
+    freshness = int(
+        getattr(settings.master, "weights_freshness_seconds", 0)
+        or getattr(settings.validator, "weights_freshness_seconds", 0)
+        or 720
+    )
+    epoch_interval = int(getattr(settings.master, "epoch_interval_seconds", 360) or 360)
     return MasterWeightService(
         metagraph_cache=metagraph_cache or _master_compute_metagraph_cache(settings),
         challenge_client=ChallengeClient(
@@ -427,6 +437,8 @@ def _master_weight_service(
             retries=settings.master.challenge_retries,
         ),
         session_factory=session_factory,
+        freshness_seconds=freshness,
+        epoch_interval_seconds=epoch_interval,
     )
 
 
@@ -1075,6 +1087,15 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         metagraph_cache=runtime.metagraph_cache,
         session_factory=session_factory,
     )
+    from base.master.weights_sealer import MasterWeightsSealer
+
+    weights_sealer = MasterWeightsSealer(
+        weight_service=weight_service,
+        registry=registry,
+        netuid=int(settings.network.netuid),
+        chain_endpoint=str(settings.network.chain_endpoint or ""),
+        epoch_interval_seconds=settings.master.epoch_interval_seconds,
+    )
     raw_weight_ingress_service = RawWeightIngressService(
         session_factory,
         credential_store=ChallengeCredentialStore(registry),
@@ -1170,6 +1191,12 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         registry_reconciler=registry_reconciler,
         registry_reconcile_interval_seconds=(
             settings.master.registry_reconcile_interval_seconds
+        ),
+        # In-process continuous sealer: primary production freshness path.
+        # CLI `base master weights` is emergency/debug only.
+        weights_sealer=weights_sealer,
+        weights_sealer_interval_seconds=float(
+            settings.master.epoch_interval_seconds or 0
         ),
         # Challenge-image auto-roll (architecture.md sec 9.1) runs INSIDE the
         # proxy (which reaches the overlay registry DB + docker socket), not the
@@ -1447,6 +1474,14 @@ def master_weights(
         "wall-clock bucket from master.epoch_interval_seconds.",
     ),
 ):
+    """Emergency/debug manual seal of the master weight vector.
+
+    Production freshness is maintained by the in-process continuous sealer
+    inside ``base master proxy`` (lifespan on ``master.epoch_interval_seconds``).
+    Use this CLI only for emergency recovery or local debugging — do not rely
+    on ``--once`` / ``--loop`` for production ``GET /v1/weights/latest`` TTL.
+    """
+
     settings = load_settings(config)
     _configure_observability(settings)
     _run_startup_migrations(settings)

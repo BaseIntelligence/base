@@ -130,6 +130,18 @@ master. Challenges also expose public routes the proxy rewrites under
 
 ## Weights
 
+Production seal freshness is **in-process** on the master proxy: a continuous
+sealer lifespan ticks on `master.epoch_interval_seconds` (disable with `<=0`)
+and reseals the durable vector so `GET /v1/weights/latest` stays **200** without
+any operator CLI. Pure TTL expiry does not surface as 502 while the master is
+healthy (lazy seal-under-lock remains a safety net).
+
+The CLI `base master weights --once|--loop` is **emergency/debug only** and must
+not be required for production freshness. Master never `set_weights`; validators
+pull the sealed vector from `https://chain.joinbase.ai/v1/weights/latest`.
+
+## Weights (aggregation)
+
 Challenges export raw **hotkey** weights. Master aggregates, applies absolute
 emission shares, and serves the final vector. Validators fetch and call
 `set_weights`. Challenges never submit final UID vectors and never receive master

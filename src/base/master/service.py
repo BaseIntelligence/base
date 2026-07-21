@@ -6,6 +6,7 @@ GET ``/internal/v1/get_weights`` pull is not used for sealed aggregation.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Sequence
@@ -15,10 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from base.bittensor.metagraph_cache import MetagraphCache
 from base.challenge_sdk.roles import Capability, Role, role_contract
+from base.db.models import FinalWeightVector
 from base.master.aggregation import (
     AggregationService,
     EpochWithheldError,
-    VectorNotFoundError,
     fractions_from_percent,
 )
 from base.master.aggregator import aggregate_challenge_weights
@@ -79,6 +80,7 @@ class MasterWeightService:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         aggregation_service: AggregationService | None = None,
         freshness_seconds: int = MASTER_WEIGHTS_FRESHNESS_SECONDS,
+        epoch_interval_seconds: int = 360,
     ) -> None:
         self.metagraph_cache = metagraph_cache
         self.challenge_client = challenge_client or ChallengeClient()
@@ -92,7 +94,10 @@ class MasterWeightService:
             )
         else:
             self.aggregation = None
-        self.freshness_seconds = freshness_seconds
+        self.freshness_seconds = int(freshness_seconds)
+        self.epoch_interval_seconds = int(epoch_interval_seconds or 360)
+        # Serialize background sealer ticks + lazy seal-on-GET heal path.
+        self._seal_lock = asyncio.Lock()
 
     @role_contract(role=Role.MASTER, capability=Capability.MASTER_RAW_WEIGHT_INGRESS)
     async def collect_weights(
@@ -235,6 +240,124 @@ class MasterWeightService:
         )
         return self.aggregation.vector_to_response(vector)
 
+    def _aware(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    def _vector_is_expired(self, vector: FinalWeightVector, *, now: datetime) -> bool:
+        expires_at = getattr(vector, "expires_at", None)
+        if expires_at is None:
+            return True
+        return self._aware(expires_at) <= self._aware(now)
+
+    def resolve_epoch(
+        self,
+        *,
+        now: datetime | None = None,
+        epoch: int | None = None,
+        epoch_interval_seconds: int | float | None = None,
+    ) -> int:
+        """Wall-clock epoch bucket (same identity as CLI master weights)."""
+
+        if epoch is not None:
+            return int(epoch)
+        raw = (
+            epoch_interval_seconds
+            if epoch_interval_seconds is not None
+            else self.epoch_interval_seconds
+        )
+        interval = max(1, int(raw or 360))
+        clock = now if now is not None else datetime.now(UTC)
+        return int(self._aware(clock).timestamp()) // interval
+
+    async def _next_seal_epoch(
+        self,
+        *,
+        now: datetime,
+        epoch_interval_seconds: int | float | None = None,
+        force_new: bool = False,
+    ) -> int:
+        """Pick an openable epoch identity for a fresh seal.
+
+        Prefer the wall-clock bucket. When that bucket is already sealed (or
+        the latest sealed vector is expired in-bucket), advance past the last
+        sealed epoch so ``AggregationService.seal_epoch`` publishes a new TTL.
+        """
+
+        candidate = self.resolve_epoch(
+            now=now, epoch_interval_seconds=epoch_interval_seconds
+        )
+        if self.aggregation is None:
+            return candidate
+        latest = await self.aggregation.get_latest_vector()
+        if latest is None:
+            return candidate
+        last_epoch = int(getattr(latest, "epoch", 0) or 0)
+        expired = self._vector_is_expired(latest, now=now)
+        if force_new or expired or candidate <= last_epoch:
+            return max(candidate, last_epoch + 1)
+        return candidate
+
+    @role_contract(role=Role.MASTER, capability=Capability.MASTER_AGGREGATION)
+    async def seal_fresh_if_needed(
+        self,
+        challenges: Sequence[RegistryChallenge],
+        tokens: dict[str, str],
+        *,
+        netuid: int,
+        chain_endpoint: str = "",
+        now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
+        epoch_interval_seconds: int | float | None = None,
+        force: bool = False,
+    ) -> MasterWeightsResponse:
+        """Seal when missing/expired (or always when ``force``), under lock.
+
+        Background sealer uses ``force=True`` each tick so the durable TTL stays
+        ahead of serve validation. Lazy GET heal uses ``force=False`` and only
+        seals when there is no fresh vector. Zero-miner all-sources-missing seal
+        behavior is retained via :meth:`seal_epoch`.
+        """
+
+        del tokens  # durable seal path does not pull challenge tokens
+        if self.aggregation is None:
+            raise RuntimeError(
+                "seal_fresh_if_needed requires session_factory / AggregationService"
+            )
+        async with self._seal_lock:
+            now = now_fn()
+            latest = await self.aggregation.get_latest_vector()
+            if (
+                not force
+                and latest is not None
+                and not self._vector_is_expired(latest, now=now)
+            ):
+                return self.aggregation.vector_to_response(latest)
+            epoch = await self._next_seal_epoch(
+                now=now,
+                epoch_interval_seconds=epoch_interval_seconds,
+                force_new=force and latest is not None,
+            )
+            logger.info(
+                "auto-sealing master weights",
+                extra={
+                    "epoch": epoch,
+                    "force": force,
+                    "had_latest": latest is not None,
+                    "expired": (
+                        self._vector_is_expired(latest, now=now)
+                        if latest is not None
+                        else True
+                    ),
+                },
+            )
+            return await self.seal_epoch(
+                int(epoch),
+                challenges,
+                netuid=int(netuid),
+                chain_endpoint=chain_endpoint or "",
+            )
+
     @role_contract(role=Role.MASTER, capability=Capability.MASTER_VECTOR_READ)
     async def compute_latest_response(
         self,
@@ -247,17 +370,24 @@ class MasterWeightService:
     ) -> MasterWeightsResponse:
         """Serve the latest sealed vector from durable storage when available.
 
-        If durable storage is configured, this never recomputes or pulls
-        challenge get_weights. Without durable storage (unit tests), falls back
-        to an in-memory aggregate over injected challenge clients.
+        When durable storage is configured, expiry or a missing vector triggers
+        a lazy seal under lock (safety net for startup race / sealer lag) so
+        production never maps pure TTL expiry to HTTP 502. Without durable
+        storage (unit tests), falls back to an in-memory aggregate over injected
+        challenge clients.
         """
 
         if self.aggregation is not None:
-            vector = await self.aggregation.get_latest_vector()
-            if vector is None:
-                # No sealed vector yet — do not fabricate via pull.
-                raise VectorNotFoundError("latest")
-            return self.aggregation.vector_to_response(vector)
+            # Heal path: reseal under lock when missing or past expires_at.
+            # Never surface expiry alone as an unhandled serve failure.
+            return await self.seal_fresh_if_needed(
+                challenges,
+                tokens,
+                netuid=netuid,
+                chain_endpoint=chain_endpoint,
+                now_fn=now_fn,
+                force=False,
+            )
 
         # Legacy diagnostic path for unit tests without a session factory.
         computed_at = now_fn()

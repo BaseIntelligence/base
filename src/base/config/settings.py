@@ -52,7 +52,13 @@ class MasterSettings(BaseModel):
     admin_port: int = 8080
     proxy_host: str = "0.0.0.0"
     proxy_port: int = 8081
+    #: Continuous in-process weight sealer cadence (proxy lifespan). Same
+    #: wall-clock bucket identity used for durable seal epoch keys.
+    #: ``<=0`` disables the background sealer (lazy seal-on-GET still heals).
     epoch_interval_seconds: int = 360
+    #: Seal TTL written into durable FinalWeightVector.expires_at and checked on
+    #: serve. Wired into MasterWeightService from settings (not CLI-only).
+    weights_freshness_seconds: int = 720
     metagraph_cache_ttl_seconds: int = 300
     challenge_timeout_seconds: float = 10.0
     challenge_retries: int = 3

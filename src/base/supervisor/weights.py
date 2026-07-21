@@ -1,12 +1,16 @@
-"""Weights schedule port (plan Task 21) — compute-only `master weights --once`.
+"""Weights schedule port (plan Task 21) — compute-only emergency seal tick.
+
+Production freshness is owned by the **in-process continuous sealer** inside
+``base master proxy`` (lifespan on ``master.epoch_interval_seconds``). This
+supervisor schedule and the CLI ``base master weights --once|--loop`` are
+**emergency/debug only** and must not be the production dependency for
+``GET /v1/weights/latest`` TTL.
 
 Each tick performs ONE master weight epoch exactly as the CLI command
-``base master weights --once`` does (the scheduled weights job it
-replaces), by calling the SAME ``cli_app.main`` helpers, with no duplicated
-logic. The cycle: startup migrations (idempotent alembic upgrade, identical
-to every task invocation), registry/challenge-token reads, metagraph
-fetch (chain READ), per-challenge ``get_weights`` HTTP collection, then
-aggregation into the final UID vector.
+``base master weights --once`` does, by calling the SAME ``cli_app.main``
+helpers, with no duplicated logic. The cycle: startup migrations (idempotent
+alembic upgrade), registry/challenge-token reads, metagraph fetch (chain READ),
+then durable seal from raw_weight_snapshots into the final UID vector.
 
 ZERO on-chain effects — the master can never submit weights:
 
