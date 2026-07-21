@@ -4,13 +4,14 @@ Mine BASE in minutes. BASE is the multi-challenge coordination layer behind
 **[joinbase.ai](https://joinbase.ai)**. You pick a challenge, submit work signed with your
 Bittensor hotkey, and earn when that challenge exports a raw weight for your hotkey.
 
-**Day-1 target:** wallet ready → challenge chosen → first submission path understood in under
-15 minutes. Deep science, TEE self-deploy, and GPU worker ops stay in Concepts / How-to, not
-on the first page.
+**Day-1 target:** wallet ready → challenge chosen → first submission on
+**https://chain.joinbase.ai** in under 15 minutes. Deep science, Phala self-deploy, GPU
+workers, and local mission harnesses are **not** day-1 (see Concepts / How-to / advanced).
 
 | Page | What it covers |
 |------|----------------|
 | [Getting started](getting-started.md) | joinbase + chain URLs, wallet, pick a challenge, first submit |
+| [Challenges entry](../challenges.md) | Prism + AC, monorepo paths, master-embed, weight-only validators |
 | [Concepts](concepts.md) | Multi-challenge BASE, absolute **50/50** emission (Prism + Agent Challenge) |
 | [How-to](how-to.md) | Links into Prism and Agent Challenge miner guides |
 | [Prism miner hub](prism/README.md) | Unified Prism day-1 + lab path (monorepo) |
@@ -55,5 +56,7 @@ policy on seal). BASE never calls `set_weights`; independent validators fetch
 Full walkthrough: [Getting started](getting-started.md).
 
 Product source of truth for both challenges is this monorepo
-([SOURCE_OF_TRUTH.md](../SOURCE_OF_TRUTH.md)). Public slugs stay
-`/challenges/prism` and `/challenges/agent-challenge`.
+(`packages/challenges/{prism,agent-challenge}`; [SOURCE_OF_TRUTH.md](../SOURCE_OF_TRUTH.md)).
+Public slugs stay `/challenges/prism` and `/challenges/agent-challenge`. Production
+serves them from **master-embed** (localhost ASGI inside master); you do not run separate
+challenge containers to mine. Validators are **weight-only** against chain.joinbase.ai.

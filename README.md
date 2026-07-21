@@ -27,28 +27,30 @@
 
 ## Overview
 
-BASE is a **multi-challenge Bittensor subnet platform**: independent challenge subnets run under one
-validator network. BASE routes miner traffic to the right challenge, collects each challenge's raw
-weights, normalizes emissions, maps hotkeys to Bittensor UIDs, and publishes the final vector for
-validators to submit on-chain. Each challenge lives in its own repository and owns its submissions,
-scoring, state, and public miner experience; BASE is the orchestration layer that runs them as one
-subnet.
+BASE is a **multi-challenge Bittensor subnet platform**. Independent challenges (today **Prism** and
+**Agent Challenge**) run under one validator network. BASE routes miner traffic to the right
+challenge, collects each challenge's raw hotkey weights, normalizes emissions, maps hotkeys to
+Bittensor UIDs, and publishes the final vector for validators to submit on-chain.
 
-It runs as a single-host **Docker Compose** topology (Compose is the only supported operator path).
-A **master** application hosts the public proxy, validator coordination plane, aggregation, and
-digest-aware challenge watcher, with PostgreSQL as the durable control plane and one long-lived
-combined service per active challenge. The master coordinates and aggregates but **never submits**
-on-chain weights and **never launches** evaluator containers. Online **validators** use independent
-Compose projects, register with the master, pull assignments, report results, and submit the master's
-final vector with their own wallets.
+**Source layout (monorepo):** first-party challenge product sources live in this repository under
+`packages/challenges/{prism,agent-challenge}`. Public GHCR image **names** and public path prefixes
+(`/challenges/prism`, `/challenges/agent-challenge`) are unchanged. Standalone challenge remotes are
+historical / transition only, not the required shipping layout. See
+[docs/monorepo.md](docs/monorepo.md) and [docs/SOURCE_OF_TRUTH.md](docs/SOURCE_OF_TRUTH.md).
 
-**Monorepo source of truth:** first-party Prism and Agent Challenge product sources live in this
-repository under `packages/challenges/{prism,agent-challenge}`. Public GHCR names and challenge
-slugs (`/challenges/prism`, `/challenges/agent-challenge`) are unchanged. Miner day-1 docs are
-unified under [docs/miner/](docs/miner/README.md) (including
+**Runtime (master-embed):** supported install is single-host **Docker Compose** with
+**master + PostgreSQL only**. Prism and Agent Challenge run as **localhost ASGI processes inside the
+master container** (supervisor + httpx reverse proxy). There are **no** separate required
+`challenge-*` Compose app containers. The master coordinates and aggregates but **never submits**
+on-chain weights and **never launches** evaluator containers.
+
+**Validators (weight-only):** independent Compose projects point at
+`https://chain.joinbase.ai`, fetch `GET /v1/weights/latest`, and submit that vector with their own
+wallets. They do not host master, control-plane Postgres, or challenge writers.
+
+Miner day-1 docs: [docs/miner/](docs/miner/README.md) (including
 [prism](docs/miner/prism/README.md) and [agent-challenge](docs/miner/agent-challenge/README.md)).
-Layout and transition notes: [docs/monorepo.md](docs/monorepo.md),
-[docs/SOURCE_OF_TRUTH.md](docs/SOURCE_OF_TRUTH.md).
+Challenge / ops entry: [docs/challenges.md](docs/challenges.md).
 
 ### Public SDK release
 
@@ -60,54 +62,54 @@ Immutable Base Python package pin for consumers (including Prism):
 | Wheel | `https://github.com/BaseIntelligence/base/releases/download/v3.1.2/base-3.1.2-py3-none-any.whl` |
 | SHA-256 | `3a61c2d3a343ed6de55e80215486e3de0c9639276443d08f2ed316bc807f2ff0` |
 
-There is no LLM gateway in this release. Challenge admission and scoring are owned by each challenge
-service (Prism is deterministic; NO-TEE provider-trust path). Agent Challenge is gateway-free and
-mineable on the Compose master when attested flags and pins are healthy. Default emission shares are
-**50% Prism + 50% Agent Challenge** (absolute). Day-1 miner path: [docs/miner/getting-started.md](docs/miner/getting-started.md).
+There is no LLM gateway in this release. Challenge admission and scoring are owned by each embedded
+challenge package (Prism is deterministic; NO-TEE provider-trust path). Agent Challenge is
+gateway-free and mineable on the Compose master when attested flags and pins are healthy. Default
+emission shares are **50% Prism + 50% Agent Challenge** (absolute). Day-1 miner path:
+[docs/miner/getting-started.md](docs/miner/getting-started.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     U[Miners] --> P[Public proxy]
-    P --> CH[Challenge APIs]
-    CH --> AG[Weight aggregator]
+    P --> PR[Prism ASGI localhost]
+    P --> AC[Agent Challenge ASGI localhost]
+    PR --> AG[Weight aggregator]
+    AC --> AG
 
     subgraph MASTER [Master - Compose project]
         P
+        PR
+        AC
         CP[Coordination plane]
         AG
-        WTC[Digest-aware watcher]
         PG[(Control-plane Postgres)]
     end
 
-    CH -- raw-weight push --> AG
-    V[Validators - independent Compose] -- register / pull / result --> CP
-    V --> VB[Own broker + eval / verify]
-    AG --> W[GET /v1/weights/latest]
-    V -- fetch weights --> W
+    V[Validators - weight-only Compose] -- GET /v1/weights/latest --> AG
     V -- set_weights own hotkey --> BT[Bittensor]
 ```
 
 ## How It Works
 
-1. The master tracks active challenges and their emission shares, and **auto-deploys** their long-lived Compose services from the registry (a newly-registered ACTIVE challenge propagates with no manual step).
-2. Challenge services run isolated from the control plane and each other, each on its own `/data` volume.
-3. Miners reach a challenge through BASE's public proxy.
-4. Validators register, pull assignments from the coordination plane, execute or verify evaluation on their own side, and post results.
-5. Each challenge computes raw hotkey weights and **pushes** them to the master for aggregation.
-6. BASE normalizes challenge outputs, applies emission shares, and maps hotkeys to UIDs.
-7. Each validator fetches the final vector from the weights API and calls **`set_weights`** on-chain under its own hotkey (tests may use a fake chain). The master aggregates but **never submits on-chain**.
+1. Master Compose runs **one** application container (proxy + embedded Prism + embedded Agent Challenge) and **one** PostgreSQL container.
+2. Registry marks challenges ACTIVE with loopback `internal_base_url` (`127.0.0.1:18080` / `:18081`) and absolute emission shares (default **50% Prism + 50% Agent Challenge**).
+3. Miners reach challenges through BASE's public proxy on unchanged prefixes
+   `/challenges/prism` and `/challenges/agent-challenge` (and `/v1/challenges/...` bridges).
+4. Each challenge owns submissions/scoring/state, then **pushes** authenticated raw hotkey weights to the master.
+5. BASE normalizes challenge outputs, applies emission shares, maps hotkeys to UIDs, and seals a final vector.
+6. Each **weight-only** validator fetches `GET /v1/weights/latest` and calls **`set_weights`** under its own hotkey. The master aggregates but **never submits on-chain**.
 
-If a challenge fails, BASE isolates that challenge's contribution without taking down the subnet.
+If a challenge fails scoring for an epoch, BASE isolates that share (burn/uid0 policy) without taking down the subnet.
 
 ## Roles
 
 | Role | Responsibility |
 |------|----------------|
-| **Master** | Coordinates + aggregates; runs the proxy, coordination plane, broker, digest-aware watcher, and challenge services. Never executes evals or submits on-chain. |
-| **Validators** | Decentralized executors: register + heartbeat, pull assignments, run/verify on their own side, and submit on-chain weights under their own hotkey. |
-| **Challenge owners** | Own an independent repo, image, scoring logic, and state; push raw weights; expose the standard internal weight contract. |
+| **Master** | Coordinates + aggregates; public proxy; embeds challenge ASGI; seals weight vectors. Never executes miner evals as --rm jobs or submits on-chain. |
+| **Validators** | Weight-only by default: fetch master's vector and submit on-chain under their own hotkey. Do not host challenge writers. |
+| **Challenge packages** | Live in `packages/challenges/*` (monorepo); own scoring + state; push raw hotkey weights. |
 | **Workers** | Optional miner-funded GPU executors for Prism (Lium/Targon or local), carrying an `ExecutionProof`. |
 
 ## Miner-Funded GPU Worker Plane
@@ -153,7 +155,7 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 | Operators | <a href="docs/SOURCE_OF_TRUTH.md">Source of truth</a> | Standalone remote transition note |
 | Operators | <a href="docs/master/README.md">Foundation master guide</a> | Master reference notes |
 | Developers | <a href="docs/architecture.md">Architecture</a> | Control-plane vs challenge vs validator topology |
-| Developers | <a href="docs/challenges.md">Challenges</a> | The challenge model |
+| Miners + ops | <a href="docs/challenges.md">Challenges</a> | Miner+ops entry: monorepo packages, master-embed, joinbase, weight-only validators |
 | Developers | <a href="docs/challenge-integration.md">Challenge integration</a> | The API contract a challenge must expose |
 | Developers | <a href="docs/security.md">Security model</a> | Trust boundaries and secret handling |
 | Developers | <a href="docs/versioning.md">Versioning</a> | SemVer, Git tag, and GHCR tag policy |
@@ -165,16 +167,15 @@ See the <a href="docs/miner/worker-plane.md">miner worker deployment guide</a>.
 `deploy/compose/` (`install-master.sh`, `install-validator.sh`, `docker-compose.yml`,
 `docker-compose.validator.yml`).
 
-Install the master control plane (PostgreSQL + master application + one long-lived container per
-active challenge) with:
+Install the master control plane (PostgreSQL + master application with **embedded** Prism and Agent
+Challenge ASGI) with:
 
 ```bash
 ./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
 ```
 
-Install each **agent-only** independent validator with an explicit Base master URL (validators never
-run master, PostgreSQL, or challenge control-plane services; shipping Compose mounts host
-`docker.sock` for later challenges-on-validator prep):
+Install each **weight-only** independent validator with an explicit Base master URL (validators never
+run master, PostgreSQL, or challenge control-plane services):
 
 ```bash
 # Public network Base master API (authoritative shipping example)
@@ -198,18 +199,17 @@ do not document it as the shipping master URL.
 
 | Piece | Live production |
 |-------|-----------------|
-| Master runtime | Compose project **`base-master-prod`** on `86.38.238.235` (Swarm inactive after cutover) |
+| Master runtime | Compose project **`base-master-prod`**: **master + postgres only** (Swarm inactive) |
 | Public master API | **`https://chain.joinbase.ai` only** (`role=master`). Other historical hostnames are non-authoritative secondary. |
-| Example validator | **validator-5gzi**: agent-only Compose at `31.22.104.239`, `master_url=https://chain.joinbase.ai` |
-| Challenges | **Prism** healthy/active. **agent-challenge** registry-active; gateway-free image digests may start after allowlist pin (no LLM gateway on Compose). |
-| REAL-PROVIDER TEE (Lium/Targon) | **BLOCKED** |
-| On-chain weights | Validators call `set_weights` with their own wallets. Master and ops track do **not**. |
-| Public website | **https://joinbase.ai** (Vercel project `platform`, repo `echobt/frontend-platform-figma`) → API `https://chain.joinbase.ai` |
+| Example validator | Agent-only **weight-only** Compose, `master_url=https://chain.joinbase.ai` |
+| Challenges | **Prism + Agent Challenge** embedded in master (loopback ASGI). No separate `challenge-*` app containers required. |
+| On-chain weights | Validators call `set_weights` with their own wallets. Master never does. |
+| Public website | **https://joinbase.ai** → API `https://chain.joinbase.ai` |
 
-Typical master services: `base-master-validator`, `master-postgres`, and one `challenge-<slug>` per
-active challenge (for example `challenge-prism`). Validators are separate Compose projects with their
-own identity and wallet. The digest-aware watcher keeps challenge containers aligned with pinned
-image digests.
+Typical master services: `base-master-validator` and `master-postgres` only. Challenge packages are
+installed into the master image; public paths stay `/challenges/prism` and
+`/challenges/agent-challenge`. Validators are separate Compose projects with their own identity and
+wallet.
 
 ```bash
 curl -fsS http://127.0.0.1:3180/health
@@ -243,14 +243,16 @@ tokens, credentialed database URLs, registry credentials, or private keys.
 
 ```text
 platform/
-  src/base/         # CLI, APIs, orchestration, Bittensor wrappers
-  alembic/          # PostgreSQL migrations
-  config/           # YAML example configs
-  docker/           # Dockerfiles and OCI image assets
-  deploy/compose/   # Supported Compose installers and manifests
-  deploy/swarm/     # Historical Swarm installers (unsupported)
-  docs/             # Project, miner, validator, and challenge docs
-  tests/            # Unit / runtime validation tests
+  src/base/                              # CLI, APIs, orchestration, Bittensor wrappers
+  packages/challenges/prism/             # Prism challenge package (monorepo)
+  packages/challenges/agent-challenge/   # Agent Challenge package (monorepo)
+  alembic/                               # PostgreSQL migrations
+  config/                                # YAML example configs
+  docker/                                # Master / validator-runtime Dockerfiles + embed entrypoint
+  deploy/compose/                        # Supported Compose installers and manifests
+  deploy/swarm/                          # Historical Swarm installers (unsupported)
+  docs/                                  # Project, miner, validator, and challenge docs
+  tests/                                 # Unit / runtime validation tests
 ```
 
 ## License

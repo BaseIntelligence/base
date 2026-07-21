@@ -2,115 +2,174 @@
 
 ![BASE Banner](../assets/banner.jpg)
 
-## Model
+Simple miner + operator entry for shipping BASE.
 
-A challenge is a package (first-party: monorepo `packages/challenges/*`) and
-historically a standalone Docker image for emergency dual-run. It owns its logic,
-public routes, submissions, scoring data, database schema, and challenge-local
-files.
+## What ships today
 
-**Shipping master-embed topology:** Prism and agent-challenge run as **localhost
-uvicorn** processes inside the `base-master` container (supervisor entrypoint),
-not as separate Compose `challenge-*` services. Data lives under the master
-volume:
+| Challenge | Slug | Emission (default) | What miners build |
+|-----------|------|-------------------:|-------------------|
+| **Prism** | `prism` | **50%** absolute | Neural architecture + training packages |
+| **Agent Challenge** | `agent-challenge` | **50%** absolute | Software-engineering agents (Terminal-Bench) |
+
+Product sources live in this monorepo:
+
+| Package | Path |
+|---------|------|
+| Prism | `packages/challenges/prism` |
+| Agent Challenge | `packages/challenges/agent-challenge` |
+
+Public path prefixes are **unchanged**:
+
+- `/challenges/prism/...`
+- `/challenges/agent-challenge/...`
+- Bridges: `/v1/challenges/{slug}/...` where documented
+
+GHCR image **names** for emergency dual-run / historical pins are also unchanged
+(`ghcr.io/baseintelligence/prism`, `ghcr.io/baseintelligence/agent-challenge`, …).
+Standalone challenge remotes are transition-only; see
+[SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) and [monorepo.md](monorepo.md).
+
+## Public network (miners)
+
+| Surface | URL |
+|---------|-----|
+| Website / dashboard | https://joinbase.ai |
+| Master API | **https://chain.joinbase.ai** |
+| Health | `GET https://chain.joinbase.ai/health` → `role=master`, `ready=true` |
+| Registry | `GET https://chain.joinbase.ai/v1/registry` |
+| Prism OpenAPI / docs / leaderboard | `/challenges/prism/openapi.json`, `/docs`, `/leaderboard` |
+| AC OpenAPI / docs / leaderboard | `/challenges/agent-challenge/openapi.json`, `/docs`, `/leaderboard` |
+| Sealed weights (validators) | `GET https://chain.joinbase.ai/v1/weights/latest` |
+
+Private challenge `/health` and `/version` often return **403** through the public
+proxy by design. Prefer openapi / docs / leaderboard for miner readiness.
+
+Day-1 miner path (under 15 minutes): [miner hub](miner/README.md) →
+[getting started](miner/getting-started.md) → pick
+[Prism](miner/prism/getting-started.md) or
+[Agent Challenge](miner/agent-challenge/getting-started.md).
+
+## Master-embed topology (ops default)
+
+Shipping Compose is **master + PostgreSQL only**. Prism and Agent Challenge run as
+**localhost uvicorn** processes inside the `base-master` container (supervisor
+entrypoint), not as separate required `challenge-*` Compose services.
+
+| Process (inside master) | Bind |
+|-------------------------|------|
+| `base master proxy` | `0.0.0.0:8081` (host-published) |
+| Prism ASGI | `127.0.0.1:18080` |
+| Agent-challenge ASGI | `127.0.0.1:18081` |
+
+Data under the master volume (sole writer for challenge SQLite):
 
 - `/var/lib/base/challenges/prism`
 - `/var/lib/base/challenges/agent-challenge`
 
-Registry `internal_base_url` is loopback (`http://127.0.0.1:18080` /
-`http://127.0.0.1:18081`). The public proxy still rewrites and forwards
-`/challenges/{slug}/...` via httpx — **public path prefixes are unchanged**.
+Registry `internal_base_url` is loopback only. The public proxy still rewrites and
+forwards `/challenges/{slug}/...` via httpx — public prefixes stay the same.
 
-Emergency dual-run may still use a dedicated challenge container with a named
-`/data` volume and
-`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`; that path
-is operator-only, not the default install. Challenges never receive control-plane
-Postgres credentials. Master is the sole control-plane writer; challenge SQLite
-is not multi-writer across containers.
+There is **no LLM gateway** on the Compose master. Scoring and admission are
+challenge-owned. Base does not launch short-lived evaluator containers for these
+challenges as part of the shipping master lifecycle.
 
-There is **no LLM gateway**. Scoring and admission are challenge-owned. Base and
-Prism do not create short-lived evaluator containers for challenge evaluation;
-external TEE (agent-challenge Phala when enabled) or miner-funded workers are
-outside the master Compose service lifecycle.
+Emergency dual-run (proxy-only master + external `challenge-*` container) is
+**operator-only** (`BASE_MASTER_EMBED_CHALLENGES=0` + registry URL override). It is
+**not** the required production path.
 
-## Required API surface
+## Validators are weight-only
+
+Independent validator Compose projects:
+
+1. Point at **`https://chain.joinbase.ai`** (`--master-url`).
+2. Fetch **`GET /v1/weights/latest`**.
+3. Call **`set_weights`** with their own wallet when gated on.
+
+They do **not** host master, control-plane Postgres, or challenge writers. Master
+**never** constructs or invokes `set_weights`. Details:
+[validator guide](validator/README.md), [compose.md](compose.md).
+
+## Miner submit surfaces (chain.joinbase.ai)
+
+### Prism
+
+```http
+POST https://chain.joinbase.ai/v1/challenges/prism/submissions
+X-Hotkey: <ss58>
+X-Nonce: <unique>
+X-Timestamp: <unix-seconds>
+X-Signature: <sr25519 over challenge-canonical payload>
+Content-Type: application/zip
+```
+
+Pack/sign details: [Prism miner hub](miner/prism/README.md).
+
+### Agent Challenge
+
+Day-1 options: https://joinbase.ai dashboard, or signed upload:
+
+```http
+POST https://chain.joinbase.ai/v1/challenges/agent-challenge/submissions
+POST https://chain.joinbase.ai/challenges/agent-challenge/submissions
+```
+
+Guide: [Agent Challenge miner hub](miner/agent-challenge/README.md).
+Phala self-deploy / attestation is **advanced**, not day-1.
+
+## Required challenge API surface
 
 ```text
 GET /health
 GET /version
 ```
 
-Raw weight publication in the target path is an authenticated **push** from the
-challenge to the master (not a master-polled scrap of standalone weights alone).
-Challenges also expose challenge-local public routes the proxy rewrites under
-`/challenges/{slug}/...`.
-
-## Create a challenge
-
-```bash
-uv run base challenge create code-arena --out ../code-arena
-cd ../code-arena
-uv run --extra dev pytest
-```
-
-## Public routes
-
-Public routes are exposed through `/challenges/{slug}/...`. The master blocks
-`/internal/*`, `/health`, `/version`, Agent Challenge internal launch paths such
-as `POST /internal/v1/submissions/{submission_id}/launch`, and generic benchmark
-execution-shaped routes such as `/benchmark-executions` from the public proxy.
-
-## Lifecycle on Compose
-
-1. Register the challenge image and metadata with the master registry (immutable
-   digest pin for production).
-2. Activate the challenge. The master reconcile / adoption path installs a
-   long-lived Compose service for ACTIVE challenges only.
-3. The master-resident **digest-aware watcher** keeps that service aligned with
-   the approved pin (controlled pull, targeted recreate, health/version verify,
-   rollback and bounded backoff on failure). See [compose.md](compose.md).
-4. Deactivate stops and removes the managed container while keeping the named
-   volume for reactivation.
-5. Inactive, draft, and disabled challenges never start.
-
-## Proxy failure behavior
-
-The BASE proxy preserves challenge-origin non-2xx responses when the challenge
-answered safely. Transport failures, unreachable services, Compose service DNS
-failures on the private network, and connection timeouts become safe 502
-responses. Frontends should render unavailable copy and retry with backoff
-instead of showing raw text such as `BASE request failed with status 502`.
-
-Operator checklist for challenge 502s:
-
-1. Confirm ingress includes `/challenges` and routes it to the BASE master proxy.
-2. Confirm the slug maps to a running long-lived challenge service in the master
-   Compose project.
-3. Confirm challenge health (`/health`), Compose service name, connectivity on
-   the private `app` network, and the challenge listen port.
-4. Determine whether the response came from proxy transport handling or the
-   challenge origin. Only transport failures should be rewritten to 502.
-
-Agent Challenge env and public launch routes are public proxy routes, but BASE
-stores neither their request bodies nor per-submission env values. Allowed BASE
-paths are `GET/PUT /challenges/agent-challenge/submissions/{id}/env`,
-`POST /challenges/agent-challenge/submissions/{id}/env/confirm-empty`, and
-`POST /challenges/agent-challenge/submissions/{id}/launch`; the challenge-local
-paths are `GET/PUT /submissions/{id}/env`,
-`POST /submissions/{id}/env/confirm-empty`, and `POST /submissions/{id}/launch`.
-Only the signed miner headers `X-Hotkey`, `X-Signature`, `X-Nonce`, and
-`X-Timestamp` are preserved for those routes.
-`POST /internal/v1/submissions/{submission_id}/launch` is a bridge/internal API
-only, not a public miner API, and the proxy must not expose generic benchmark
-execution routes.
+Raw weight publication is an authenticated **push** from the challenge to the
+master. Challenges also expose public routes the proxy rewrites under
+`/challenges/{slug}/...`. Integration contract:
+[challenge-integration.md](challenge-integration.md).
 
 ## Weights
 
-Challenges export raw **hotkey** weights. The master aggregates and serves the
-final vector; validators fetch and call `set_weights`. Challenges never submit
-final UID vectors and never receive master database credentials.
+Challenges export raw **hotkey** weights. Master aggregates, applies absolute
+emission shares, and serves the final vector. Validators fetch and call
+`set_weights`. Challenges never submit final UID vectors and never receive master
+database credentials.
 
-## Agent Challenge Phala attestation notes
+## Create a new challenge package (developers)
 
-Private control-plane work (work units, fold, weights, bridge launch) stays on challenge-direct or master-internal channels, never on the public edge. Full attested mode evaluation is one miner-funded external eval (R=1) with **no** BASE validator multi-replica re-exec assignment for those units; cross-repo review→eval behavior is available after PR merge. See [Architecture: Agent Challenge Phala path](architecture.md#agent-challenge-phala-intel-tdx-path).
-5. If attested routes are enabled, confirm the client hit an allowlisted review/eval/status path (not a private result or capability route).
+```bash
+uv run base challenge create code-arena --out packages/challenges/code-arena
+cd packages/challenges/code-arena
+uv run --extra dev pytest
+```
+
+New packages still own scoring and state; shipping multi-challenge topology stays
+master-embed unless an operator deliberately enables dual-run.
+
+## Proxy notes (ops)
+
+The BASE proxy preserves challenge-origin non-2xx when the challenge answered
+safely. Transport failures become safe 502 responses.
+
+Checklist for challenge 502s:
+
+1. Confirm ingress routes `/challenges` to the BASE master proxy.
+2. Confirm the slug is ACTIVE and loopback ASGI is up inside master (`18080` /
+   `18081`) — or, for emergency dual-run only, that an external challenge service
+   matches `internal_base_url`.
+3. Prefer public openapi/docs/leaderboard over private `/health` through the edge.
+4. Distinguish proxy transport 502 from origin error bodies.
+
+Agent Challenge private control-plane work (work units, fold, weights, internal
+launch) stays challenge-direct or master-internal, never on the public edge.
+Attestation path notes:
+[Architecture: Agent Challenge Phala path](architecture.md#agent-challenge-phala-intel-tdx-path).
+
+## See also
+
+| Audience | Doc |
+|----------|-----|
+| Miners | [miner/README.md](miner/README.md) |
+| Validators | [validator/README.md](validator/README.md) |
+| Operators | [compose.md](compose.md), [deploy.md](deploy.md) |
+| Layout | [monorepo.md](monorepo.md), [architecture.md](architecture.md) |

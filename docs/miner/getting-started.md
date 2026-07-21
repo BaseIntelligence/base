@@ -91,8 +91,9 @@ Content-Type: application/zip
 ```
 
 Pack a seed and sign using the Prism miner guide (two-script `architecture.py` +
-`training.py` zip). Full day-1 detail lives in the **Prism** repository
-`docs/miner/` (see [How-to](how-to.md)).
+`training.py` zip). Full day-1 detail lives in this monorepo under
+[docs/miner/prism/](prism/README.md) (package sources:
+`packages/challenges/prism`). See [How-to](how-to.md).
 
 Unsigned or bad-sig requests should fail closed (**401/403/422**), never hang as **502**.
 
@@ -101,8 +102,8 @@ Unsigned or bad-sig requests should fail closed (**401/403/422**), never hang as
 Day-1 options:
 
 1. **Dashboard** on https://joinbase.ai (preferred when available), or
-2. **Script / ZIP** path documented in the agent-challenge repo (`docs/miner/`,
-   `scripts/submit_agent.py` when present).
+2. **Script / ZIP** path in this monorepo: [docs/miner/agent-challenge/](agent-challenge/README.md)
+   and `packages/challenges/agent-challenge/scripts/submit_agent.py` when present.
 
 Public create also exists as:
 
@@ -143,7 +144,8 @@ on the **next** seal.
 
 ## Next
 
+- [Challenges entry](../challenges.md) — monorepo + master-embed + joinbase surfaces  
 - [Concepts](concepts.md) — emission honesty and role split  
-- [How-to](how-to.md) — deep links into challenge repos  
+- [How-to](how-to.md) — monorepo Prism / Agent Challenge guides  
 - [Reference](reference.md) — route table  
 - [Troubleshooting](troubleshooting.md) — 401 / 429 / 502  

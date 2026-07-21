@@ -1,10 +1,15 @@
-# Local mission harness (cross-repo end-to-end)
+# Local mission harness (advanced / non-day-1)
+
+> **Not miner day-1.** Miners should start at [docs/miner/README.md](../miner/README.md) and
+> [docs/challenges.md](../challenges.md) against **https://chain.joinbase.ai**. This page is an
+> optional **local test/mission harness** for cross-area drills. Production shipping topology is
+> master-embed Compose + weight-only validators — not this multi-process mission launcher.
 
 A thin, config-driven launcher that stands up the **whole compute plane locally on loopback ports
 3100-3199 with no GPU** and runs six operator-observable drills (HTTP/CLI only). It is a
-test/mission harness, **not a production path**: it uses a static mock metagraph and the prism
-repo's own CPU re-exec seam, whereas production uses `base master proxy` with a real subtensor
-metagraph and the real GPU broker.
+test/mission harness, **not a production path**: it uses a static mock metagraph and Prism's
+CPU re-exec seam, whereas production uses `base master proxy` with a real subtensor
+metagraph and provider-backed paths as configured.
 
 ## What it stands up
 

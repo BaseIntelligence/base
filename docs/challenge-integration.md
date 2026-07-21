@@ -4,12 +4,12 @@
 
 ## Implement weights
 
-In the generated challenge repository, implement scoring that produces raw
-hotkey weights. The supported target path has the challenge **push** an
-authenticated raw-weight payload to the master (challenge-scoped credential,
-versioned epoch/revision, idempotent, replay-protected). The master normalizes
-returned values, so raw scores are acceptable as long as they are finite and
-non-negative.
+In the generated challenge package (prefer monorepo `packages/challenges/<slug>`),
+implement scoring that produces raw hotkey weights. The supported target path has
+the challenge **push** an authenticated raw-weight payload to the master
+(challenge-scoped credential, versioned epoch/revision, idempotent,
+replay-protected). The master normalizes returned values, so raw scores are
+acceptable as long as they are finite and non-negative.
 
 ```python
 async def get_weights() -> dict[str, float]:
@@ -22,16 +22,23 @@ PostgreSQL.
 ## Challenge database contract
 
 Generated challenges use the async SQLAlchemy SDK and read their runtime database
-URL from `CHALLENGE_DATABASE_URL`. The runtime is SQLite-backed; BASE points that
-URL at the SQLite file on the challenge `/data` **Compose volume**:
+URL from `CHALLENGE_DATABASE_URL`. The runtime is SQLite-backed.
+
+**Shipping master-embed** stores challenge SQLite under the master volume, for
+example:
+
+```text
+sqlite+aiosqlite:////var/lib/base/challenges/<slug>/challenge.sqlite3
+```
+
+Emergency dual-run / generated local runs may still use a dedicated `/data` path:
 
 ```text
 sqlite+aiosqlite:////data/challenge.sqlite3
 ```
 
-The same URL is used for local generated runs and the deployed long-lived
-Compose challenge service. There is no Postgres server per challenge; each
-challenge mounts its own `/data` volume for the SQLite file and artifacts.
+There is no Postgres server per challenge. Challenges never multi-write the same
+SQLite file across containers; master-embed is the sole writer topology.
 
 Challenges must never receive `BASE_DATABASE_URL`, master database URLs, or any
 central control-plane PostgreSQL credentials. The shared control-plane PostgreSQL
@@ -133,7 +140,7 @@ Integrator notes for challenges that participate in the Phala / attested topolog
 - **ExecutionProof.** Prefer the schema-closed Eval wire (`EvalExecutionProof`, tier `phala-tdx`) documented in [Architecture](architecture.md#executionproof-phala-tier-base-schema). Bound `vm_config` JSON encoding to **256 KiB**; quotes, event logs, and string fields have fixed ceilings in `src/base/schemas/worker.py`.
 - **R=1 full attested mode.** When the challenge exposes no assignable work units for a fully attested submission, BASE creates **zero** validator multi-replica work rows for that submission. Do not rely on BASE worker-plane R=2 reconciliation for that path; use challenge-owned miner-funded external eval and BASE shared proof helpers only where you integrate them.
 - **Flag off.** Leave BASE and challenge attestation flags off for the legacy R=1 `own_runner` / env-launch path. Mixed topologies are unsupported.
-- Challenge-owned review→eval and RA-TLS containers, images, and operator docs: **available after PR merge** in the agent-challenge repository.
+- Challenge-owned review→eval and RA-TLS containers, images, and operator docs: monorepo package `packages/challenges/agent-challenge` (and package miner docs under `docs/miner/agent-challenge/`).
 
 ## Build and publish
 

@@ -7,9 +7,10 @@ Short mental model. Details and edge cases stay in architecture and challenge do
 BASE is a **multi-challenge Bittensor subnet platform**:
 
 - One public **master** API: https://chain.joinbase.ai
-- Many **challenge** services (Prism, Agent Challenge, …), each with its own repo, image,
-  scoring, and SQLite `/data` volume
-- Independent **validators** that fetch the master’s final weight vector and call
+- First-party challenges (**Prism**, **Agent Challenge**) live as monorepo packages under
+  `packages/challenges/*` and run **embedded** as localhost ASGI inside the master container
+  (not separate required `challenge-*` miner containers)
+- Independent **weight-only validators** that fetch the master’s final weight vector and call
   `set_weights` under **their** wallets
 
 BASE does **not**:
@@ -24,7 +25,7 @@ BASE does **not**:
 Miner  --signed request-->  chain.joinbase.ai (BASE proxy / bridge)
                                 |
                                 v
-                         challenge-<slug> service
+              master-embed challenge ASGI (prism / agent-challenge)
                                 |
                      raw hotkey weights push
                                 v
@@ -33,7 +34,7 @@ Miner  --signed request-->  chain.joinbase.ai (BASE proxy / bridge)
                                 |
                      GET /v1/weights/latest
                                 v
-                         validators set_weights
+                    weight-only validators set_weights
 ```
 
 Public challenge paths look like:
@@ -74,9 +75,9 @@ curl -fsS https://chain.joinbase.ai/v1/registry
 
 | Layer | Owns |
 |-------|------|
-| **BASE** | Public entry, slug routing, bridges, registry, raw-weight ingress, aggregation, final vector read API |
-| **Challenge** | Artifact format, signatures, scoring, leaderboards, raw weight push |
-| **Validator** | Assignments / verify paths they own, on-chain `set_weights` |
+| **BASE** | Public entry, slug routing, bridges, registry, raw-weight ingress, aggregation, final vector read API; embeds challenge ASGI on the shipping master |
+| **Challenge package** | Artifact format, signatures, scoring, leaderboards, raw weight push (`packages/challenges/*`) |
+| **Validator** | Weight-only default: fetch vector + on-chain `set_weights` (no challenge writers) |
 | **Miner** | Wallet, challenge work product, signed submits, optional GPU workers (Prism) |
 
 ## Trust labels (honesty)
@@ -104,4 +105,4 @@ ops: [worker-plane.md](worker-plane.md). Flag-off networks keep legacy submit be
 - [Getting started](getting-started.md)
 - [../challenges.md](../challenges.md) — challenge lifecycle on Compose
 - [../architecture.md](../architecture.md) — full topology
-- Challenge-owned scoring docs in Prism and agent-challenge repositories
+- Challenge-owned scoring docs: [prism/](prism/README.md), [agent-challenge/](agent-challenge/README.md)
