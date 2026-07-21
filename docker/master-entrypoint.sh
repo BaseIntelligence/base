@@ -102,41 +102,75 @@ start_embedded_challenges() {
     "${CHALLENGE_SHARED_TOKEN_FILE:-${ac_token_default}}" \
     "${prism_token}")"
 
-  export PRISM_COMBINED_MODE="${PRISM_COMBINED_MODE:-true}"
-  export PRISM_SLUG="${PRISM_SLUG:-prism}"
-  export PRISM_DATABASE_URL="${PRISM_DATABASE_URL:-sqlite+aiosqlite:////var/lib/base/challenges/prism/prism.sqlite3}"
-  export PRISM_SHARED_TOKEN_FILE="${prism_token}"
-  export PRISM_MASTER_BASE_URL="${PRISM_MASTER_BASE_URL:-http://127.0.0.1:8081}"
-  export PRISM_RAW_WEIGHT_PUSH_ENABLED="${PRISM_RAW_WEIGHT_PUSH_ENABLED:-true}"
-  export PRISM_DOCKER_ENABLED="${PRISM_DOCKER_ENABLED:-false}"
-  export PRISM_WORKER_PLANE__ENABLED="${PRISM_WORKER_PLANE__ENABLED:-false}"
-  export PRISM_DOCKER_BACKEND="${PRISM_DOCKER_BACKEND:-cli}"
-  # Eval/static gates need writable non-noexec temp under the data volume.
-  export TMPDIR="${TMPDIR:-${PRISM_DATA_DIR}/tmp}"
-  export TEMP="${TEMP:-${TMPDIR}}"
-  export TMP="${TMP:-${TMPDIR}}"
+  # Shared non-challenge env for both children (do NOT export CHALLENGE_* or
+  # PRISM_* into this shell: base.challenge_sdk rejects foreign prefixes, and
+  # CHALLENGE_* leaked into Prism Settings previously raised
+  # "Unknown challenge configuration key: CHALLENGE_ARTIFACT_ROOT").
+  local tmpdir="${TMPDIR:-${PRISM_DATA_DIR}/tmp}"
+  local log_level="${BASE_MASTER_CHALLENGE_LOG_LEVEL:-info}"
+  local path_env="${PATH:-/usr/local/bin:/usr/bin:/bin}"
+  local home_env="${HOME:-/var/lib/base}"
+  local py_path="${PYTHONPATH:-}"
 
-  export CHALLENGE_COMBINED_WORKER="${CHALLENGE_COMBINED_WORKER:-true}"
-  export CHALLENGE_DATABASE_URL="${CHALLENGE_DATABASE_URL:-sqlite+aiosqlite:////var/lib/base/challenges/agent-challenge/agent-challenge.sqlite3}"
-  export CHALLENGE_DATA_DIR="${CHALLENGE_DATA_DIR:-${AC_DATA_DIR}}"
-  export CHALLENGE_ARTIFACT_ROOT="${CHALLENGE_ARTIFACT_ROOT:-${AC_DATA_DIR}/agents}"
-  export CHALLENGE_SHARED_TOKEN_FILE="${ac_token}"
-  export CHALLENGE_MASTER_BASE_URL="${CHALLENGE_MASTER_BASE_URL:-http://127.0.0.1:8081}"
-  export CHALLENGE_DOCKER_ENABLED="${CHALLENGE_DOCKER_ENABLED:-false}"
-  export CHALLENGE_DOCKER_BACKEND="${CHALLENGE_DOCKER_BACKEND:-cli}"
+  local -a prism_env=(
+    "PATH=${path_env}"
+    "HOME=${home_env}"
+    "PYTHONDONTWRITEBYTECODE=1"
+    "PYTHONUNBUFFERED=1"
+    "TMPDIR=${tmpdir}"
+    "TEMP=${tmpdir}"
+    "TMP=${tmpdir}"
+    "PRISM_COMBINED_MODE=${PRISM_COMBINED_MODE:-true}"
+    "PRISM_SLUG=${PRISM_SLUG:-prism}"
+    "PRISM_DATABASE_URL=${PRISM_DATABASE_URL:-sqlite+aiosqlite:////var/lib/base/challenges/prism/prism.sqlite3}"
+    "PRISM_SHARED_TOKEN_FILE=${prism_token}"
+    "PRISM_MASTER_BASE_URL=${PRISM_MASTER_BASE_URL:-http://127.0.0.1:8081}"
+    "PRISM_RAW_WEIGHT_PUSH_ENABLED=${PRISM_RAW_WEIGHT_PUSH_ENABLED:-true}"
+    "PRISM_DOCKER_ENABLED=${PRISM_DOCKER_ENABLED:-false}"
+    "PRISM_WORKER_PLANE__ENABLED=${PRISM_WORKER_PLANE__ENABLED:-false}"
+    "PRISM_DOCKER_BACKEND=${PRISM_DOCKER_BACKEND:-cli}"
+  )
+  if [[ -n "${py_path}" ]]; then
+    prism_env+=("PYTHONPATH=${py_path}")
+  fi
+
+  local -a ac_env=(
+    "PATH=${path_env}"
+    "HOME=${home_env}"
+    "PYTHONDONTWRITEBYTECODE=1"
+    "PYTHONUNBUFFERED=1"
+    "TMPDIR=${AC_DATA_DIR}/tmp"
+    "TEMP=${AC_DATA_DIR}/tmp"
+    "TMP=${AC_DATA_DIR}/tmp"
+    "CHALLENGE_COMBINED_WORKER=${CHALLENGE_COMBINED_WORKER:-true}"
+    "CHALLENGE_DATABASE_URL=${CHALLENGE_DATABASE_URL:-sqlite+aiosqlite:////var/lib/base/challenges/agent-challenge/agent-challenge.sqlite3}"
+    "CHALLENGE_DATA_DIR=${CHALLENGE_DATA_DIR:-${AC_DATA_DIR}}"
+    "CHALLENGE_ARTIFACT_ROOT=${CHALLENGE_ARTIFACT_ROOT:-${AC_DATA_DIR}/agents}"
+    "CHALLENGE_SHARED_TOKEN_FILE=${ac_token}"
+    "CHALLENGE_MASTER_BASE_URL=${CHALLENGE_MASTER_BASE_URL:-http://127.0.0.1:8081}"
+    "CHALLENGE_DOCKER_ENABLED=${CHALLENGE_DOCKER_ENABLED:-false}"
+    "CHALLENGE_DOCKER_BACKEND=${CHALLENGE_DOCKER_BACKEND:-cli}"
+  )
+  if [[ -n "${py_path}" ]]; then
+    ac_env+=("PYTHONPATH=${py_path}")
+  fi
 
   log "starting embedded prism on ${PRISM_HOST}:${PRISM_PORT}"
-  uvicorn prism_challenge.app:app \
-    --host "${PRISM_HOST}" \
-    --port "${PRISM_PORT}" \
-    --log-level "${BASE_MASTER_CHALLENGE_LOG_LEVEL:-info}" &
+  # env -i: isolate prefixes so Prism never sees CHALLENGE_* and AC never sees
+  # unrelated PRISM_* secrets as accidental Settings keys.
+  env -i "${prism_env[@]}" \
+    uvicorn prism_challenge.app:app \
+      --host "${PRISM_HOST}" \
+      --port "${PRISM_PORT}" \
+      --log-level "${log_level}" &
   CHILD_PIDS+=("$!")
 
   log "starting embedded agent-challenge on ${AC_HOST}:${AC_PORT}"
-  uvicorn agent_challenge.app:app \
-    --host "${AC_HOST}" \
-    --port "${AC_PORT}" \
-    --log-level "${BASE_MASTER_CHALLENGE_LOG_LEVEL:-info}" &
+  env -i "${ac_env[@]}" \
+    uvicorn agent_challenge.app:app \
+      --host "${AC_HOST}" \
+      --port "${AC_PORT}" \
+      --log-level "${log_level}" &
   CHILD_PIDS+=("$!")
 }
 

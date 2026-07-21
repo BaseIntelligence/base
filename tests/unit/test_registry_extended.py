@@ -126,7 +126,10 @@ def test_registry_view_filters_frontend_metadata() -> None:
         "evaluation_timeout_seconds": 1800,
         "rate_limit_label": "10 submissions/hour",
     }
-    assert public.internal_base_url == "http://challenge-agent-challenge:8000"
+    # First-party slug defaults to embedded localhost (VAL-MEMB-004); metadata
+    # internal_base_url is filtered from the public view and does not override
+    # the record field when ChallengeCreate.internal_base_url is omitted.
+    assert public.internal_base_url == "http://127.0.0.1:18081"
     assert public.public_proxy_base_path == "/challenges/agent-challenge"
     assert record.metadata["token"] == "challenge-token"
     assert record.metadata["nested"] == {"hide": "me"}

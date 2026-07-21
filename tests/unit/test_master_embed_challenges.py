@@ -124,6 +124,23 @@ def test_master_entrypoint_data_paths_and_shared_tokens() -> None:
     assert "http://127.0.0.1:8081" in text
 
 
+def test_master_entrypoint_isolates_challenge_env_prefixes() -> None:
+    """Prism must not inherit CHALLENGE_* exports (Settings unknown-key fail)."""
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    # Children started via env -i with per-process prefix arrays.
+    assert "env -i" in text
+    assert "prism_env" in text or "prism_env=" in text or "prism_env=(" in text
+    assert "ac_env" in text or "ac_env=(" in text
+    # Must not `export CHALLENGE_ARTIFACT_ROOT` into the supervisor shell
+    # before spawning Prism (the LIVE smoke regression).
+    exported_challenge = [
+        line
+        for line in text.splitlines()
+        if line.lstrip().startswith("export CHALLENGE_")
+    ]
+    assert exported_challenge == [], exported_challenge
+
+
 def test_master_entrypoint_dual_run_opt_out() -> None:
     """Compose challenge-* services remain optional during dual-run (M1)."""
     text = ENTRYPOINT.read_text(encoding="utf-8")

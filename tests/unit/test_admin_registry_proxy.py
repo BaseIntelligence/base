@@ -347,7 +347,8 @@ def test_admin_challenge_crud_and_registry_active_only() -> None:
     assert challenge["name"] == "Agent Challenge"
     assert challenge["description"] == "Build and evaluate coding agents."
     assert challenge["public_proxy_base_path"] == "/challenges/agent-challenge"
-    assert challenge["internal_base_url"] == "http://challenge-agent-challenge:8000"
+    # Master-embed default for first-party agent-challenge (VAL-MEMB-004).
+    assert challenge["internal_base_url"] == "http://127.0.0.1:18081"
     assert challenge["image"] == _PINNED_DEMO
     assert challenge["version"] == "1.0.0"
     assert challenge["emission_percent"] == "40.0"

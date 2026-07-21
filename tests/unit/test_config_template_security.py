@@ -220,8 +220,12 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
         "never run master" in validator_docs.lower()
         or "never run master" in compose_docs.lower()
     )
-    # Example yaml in ops docs can illustrate local smoke master_url (loopback).
-    assert "master_url: http://127.0.0.1:3180" in ops_validator_docs
+    # Local disposable-master smoke may use loopback in YAML or CLI form
+    # (weight-only install-validator uses --master-url).
+    assert (
+        "master_url: http://127.0.0.1:3180" in ops_validator_docs
+        or "--master-url http://127.0.0.1:3180" in ops_validator_docs
+    )
 
 
 def test_master_url_role_distinguished_from_registry_aliases() -> None:
