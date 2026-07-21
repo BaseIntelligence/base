@@ -23,6 +23,12 @@ Embedded challenges (no separate PRISM_IMAGE / challenge-* Compose service):
   Challenge ASGI is supervised inside the master image (master-entrypoint).
   Optional historical PRISM_IMAGE_* pins are ignored for topology (emergency
   dual-run only; not required).
+
+Monorepo SoT (challenge packages baked into base-master image):
+  packages/challenges/prism  packages/challenges/agent-challenge
+  Local image builds: docker build -f docker/Dockerfile.master .
+  Optional dual-run GHCR names: ghcr.io/baseintelligence/prism (+ agent-challenge)
+  buildx monorepo=. context — see docs/compose.md and docs/deploy.md
 EOF
 }
 

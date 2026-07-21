@@ -5,10 +5,10 @@
 ## Isolation Rules
 
 * The shared control-plane PostgreSQL is reachable only by the master process that owns the Compose project; its URL is provided as a file-backed secret (or explicitly documented env for non-production). Challenges never receive it.
-* Challenges never receive master, validator, or central control-plane PostgreSQL credentials. Each challenge gets only its own SQLite database on its `/data` Compose volume (`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`).
-* Validators never receive master DB credentials; each validator uses independent Compose project credentials and its own wallet when submitting on-chain.
+* Challenges never receive master, validator, or central control-plane PostgreSQL credentials. Shipping embed path stores each challenge SQLite under the master volume (`/var/lib/base/challenges/{prism,agent-challenge}`); emergency dual-run may still use a dedicated `/data` volume. Master is the sole writer; **no multi-writer SQLite** across containers.
+* Validators never receive master DB credentials; each validator uses independent Compose project credentials and its own wallet when submitting on-chain. Shipping validators are **weight-only** and never write submissions/leaderboards.
 * Internal challenge calls require per-challenge shared tokens mounted as secret files.
-* The public proxy strips sensitive headers and blocks internal challenge paths.
+* The public proxy strips sensitive headers and blocks internal challenge paths. Public prefixes `/challenges/prism` and `/challenges/agent-challenge` are unchanged.
 * Agent Challenge env and launch proxy routes preserve only `X-Hotkey`, `X-Signature`, `X-Nonce`, and `X-Timestamp` for signed miner actions.
 
 ## Production Policy Boundaries
@@ -24,14 +24,15 @@ The production boundary is stricter than local development:
 
 First-party deployments use Docker Compose on a single host:
 
-* Master project: `base-master-validator`, `master-postgres`, and one long-lived challenge service per ACTIVE challenge.
-* Networks: internal `db` (master + Postgres only), internal `app` (master + challenges), and a non-internal network solely so the master public API can bind a host port.
-* Challenges never join `db` and never receive the Docker socket. The master application may mount the Docker socket **read-only** solely to manage its own Compose project (watcher / adoption); challenge containers never receive it.
-* Validators run in **independent** Compose projects with their own networks, volumes, and identities.
-* Base and Prism do **not** create short-lived evaluator containers. Evaluation is external/long-lived (TEE or miner-funded workers) and is verified/ingested rather than lifecycle-managed as `--rm` jobs by the application.
+* Master project: `base-master-validator` + `master-postgres` only. Challenges are **embedded** as localhost ASGI inside the master image (`127.0.0.1:18080` Prism, `127.0.0.1:18081` agent-challenge). There is **no** shipping `challenge-*` Compose service.
+* Networks: internal `db` (master + Postgres only), internal `app` (available; challenges bind loopback inside master), and a non-internal network solely so the master public API can bind a host port.
+* Challenges never join `db` and never receive the Docker socket as separate peers. The master application may mount the Docker socket **read-only** solely to manage its own Compose project (watcher / adoption); embedded challenges have no separate socket mount.
+* Validators run in **independent** Compose projects with their own networks, volumes, and identities (weight-only default vs `https://chain.joinbase.ai`).
+* Master **never** constructs or invokes `set_weights`. Validators submit with their own wallets when gated.
+* Base and Prism do **not** create short-lived evaluator containers. Evaluation is external/long-lived (agent-challenge Phala TEE when enabled, or miner-funded workers) and is verified/ingested rather than lifecycle-managed as `--rm` jobs by the application. Prism product has no TEE package (provider trust + IMAGE_PIN).
 * Docker Swarm (`docker service`, `docker stack`, Swarm secrets, overlays, placement constraints, join tokens) is **not** a supported target for new installs.
 
-The control-plane database credential must never appear in stdout, stderr, rendered Compose manifests, docs evidence, or support logs. Challenge services receive only per-challenge runtime secrets. The `/data` volume is retained by default when a challenge is removed; manual deletion is an explicit, destructive purge.
+The control-plane database credential must never appear in stdout, stderr, rendered Compose manifests, docs evidence, or support logs. Challenges receive only per-challenge runtime secrets (file-backed tokens). Master volume challenge paths are retained by default with master backup/teardown; manual deletion is an explicit, destructive purge.
 
 ### Privileged and GPU evaluation
 

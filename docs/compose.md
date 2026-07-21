@@ -256,10 +256,12 @@ Operator scripts live next to the manifests (mode-aware, Compose-only, no Swarm)
 ./deploy/compose/backup-master.sh --project-name base-mission-master --output-dir ./backup-master
 ./deploy/compose/restore-master.sh --project-name base-mission-master --backup-dir ./backup-master
 
-# Challenge-owned SQLite volume (Prism long-lived data)
-./deploy/compose/backup-challenge.sh --project-name base-mission-master --service challenge-prism
+# Challenge-owned SQLite under master volume (embedded Prism data path)
+# Prefer backup-master.sh for control plane; backup-challenge defaults to master service:
+./deploy/compose/backup-challenge.sh --project-name base-mission-master
+# Emergency dual-run only: --service challenge-prism
 
-# Non-destructive teardown retains postgres/challenge volumes
+# Non-destructive teardown retains postgres + master data volumes
 ./deploy/compose/teardown-master.sh --project-name base-mission-master
 # Explicit data destruction of owned volumes only
 ./deploy/compose/teardown-master.sh --project-name base-mission-master --destroy-data

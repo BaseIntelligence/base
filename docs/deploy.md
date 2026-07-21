@@ -1,20 +1,22 @@
 # Deploy From Scratch
 
-Compose-only path for a fresh host: one master project (control plane + long-lived
-challenge services) and optional independent validator projects. Swarm is **not** a
-supported install destination.
+Compose-only path for a fresh host: one master project (control plane + **embedded**
+challenge ASGI inside the master image) and optional independent **weight-only**
+validator projects. Swarm is **not** a supported install destination.
 
 ## Quick start
 
 ```bash
-# 1. Master control plane + packaged challenge-prism
+# 1. Master control plane (embeds Prism + agent-challenge on localhost)
 ./deploy/compose/install-master.sh --project-name base-mission-master --port 3180
 
-# 2. Health / version
+# 2. Health / version / public challenge paths (unchanged prefixes)
 curl -fsS http://127.0.0.1:3180/health
 curl -fsS http://127.0.0.1:3180/version
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3180/challenges/prism/openapi.json
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3180/challenges/agent-challenge/openapi.json
 
-# 3. Independent agent-only validator (own project/identity; never runs master)
+# 3. Independent weight-only validator (own project/identity; never runs master)
 # Network shipping example:
 ./deploy/compose/install-validator.sh \
   --project-name base-validator-live \
@@ -24,24 +26,32 @@ curl -fsS http://127.0.0.1:3180/version
 ```
 
 Immutable image pins may be supplied via environment (`BASE_MASTER_IMAGE_*`,
-`PRISM_IMAGE_*`, `POSTGRES_IMAGE_*`, `BASE_VALIDATOR_IMAGE_*`). When unset, the
-install helpers resolve local mission image digests.
+`POSTGRES_IMAGE_*`, `BASE_VALIDATOR_IMAGE_*`). When unset, the install helpers resolve
+local mission image digests. **`PRISM_IMAGE_*` is not required** for master topology
+(challenges ship inside `base-master`); historical GHCR challenge names remain for
+emergency dual-run / rollback only.
 
 `--master-url` is the Base master coordination API pointer only. Validators do not
-host master, control-plane PostgreSQL, or challenge services. Shipping Compose
-binds host `docker.sock` into the agent for later challenges-on-validator prep.
+host master, control-plane PostgreSQL, or challenge services. Shipping default is
+weight-only (`challenge_execution_enabled: false`): `GET /v1/weights/latest` + own-wallet
+`set_weights` when gated. Host `docker.sock` on the agent is optional migration prep,
+not challenge control-plane.
 
 ## Topology
 
 | Compose project | Services |
 |-----------------|----------|
-| Master (`install-master.sh`) | `base-master-validator`, `master-postgres`, one long-lived `challenge-<slug>` per active challenge |
-| Validator (`install-validator.sh`) | one `validator` runtime with own identity/wallet |
+| Master (`install-master.sh`) | `base-master-validator` (proxy + embedded Prism `:18080` + AC `:18081`), `master-postgres` |
+| Validator (`install-validator.sh`) | one `validator` runtime (agent-only, weight-only) with own identity/wallet |
+
+There is **no** separate `challenge-prism` / `challenge-agent-challenge` Compose service
+in the shipping master project. Public path prefixes stay `/challenges/prism` and
+`/challenges/agent-challenge` on the proxy httpx path.
 
 Networks (master project):
 
 - `db` (internal): master + PostgreSQL only; no host `5432`.
-- `app` (internal): master + challenge services.
+- `app` (internal): available for attachments; challenges bind loopback inside master.
 - `public` (non-internal): master host port only (default `127.0.0.1:3180`).
 
 Secrets are host files mode `0600` bind-mounted read-only. Compose manifests never
@@ -53,27 +63,30 @@ embed secret values. Operator-local state lives under
 | Goal | Command / surface |
 |------|-------------------|
 | Master install | `./deploy/compose/install-master.sh` |
-| Validator install | `./deploy/compose/install-validator.sh` |
+| Validator install | `./deploy/compose/install-validator.sh` (default `--master-url https://chain.joinbase.ai`) |
 | Health | `GET /health`, `GET /ready`, `GET /version` on the master port |
 | Registry (public read) | `GET /v1/registry` |
+| Challenge public OpenAPI | `GET /challenges/prism/openapi.json`, `GET /challenges/agent-challenge/openapi.json` |
+| Weights | `GET /v1/weights/latest` (validators; master never `set_weights`) |
 | Challenge activate | `POST /v1/admin/challenges/{slug}/activate` with `X-Admin-Token` |
 | Challenge deactivate | `POST /v1/admin/challenges/{slug}/deactivate` |
 | Raw-weight / vector status | Master admin and unpublished weight routes (see API docs) |
-| Update / watcher | Master-resident challenge watcher (digest pin pull + recreate) |
+| Challenge roll | Rebuild/repin **master** image (embedded packages); watcher interval shipping default **0** |
 
 For deeper service cardinality, networking, and no-evaluator rules see
-[Compose-only deployment](compose.md).
+[Compose-only deployment](compose.md) and [Master install](master/README.md).
 
 ## Runtime behavior
 
-- The master reconcile loop adopts healthy challenge containers after restart
-  and installs services for newly ACTIVE registry challenges (project-scoped
-  Compose only; never `docker service` / Swarm).
-- Inactive, draft, and disabled challenges never start.
-- Deactivation stops and removes the managed long-lived container while keeping
-  the named state volume for reactivation.
-- Prism runs in combined mode (`PRISM_COMBINED_MODE=true`). Base and Prism never
-  launch evaluator containers.
+- Master entrypoint supervises proxy + localhost challenge uvicons; registry
+  `internal_base_url` seeds are `http://127.0.0.1:18080` / `:18081`.
+- Challenge watcher + registry reconcile shipping intervals are **0** (safe without
+  `challenge-*` containers). Emergency dual-run may raise intervals and restore an
+  external challenge service — not the default install path.
+- Master is sole writer (submissions/leaderboard/aggregation). Validators never write
+  those surfaces.
+- Prism runs in combined mode (`PRISM_COMBINED_MODE=true`) inside the master container.
+  Base and Prism never launch evaluator containers.
 
 ## Monorepo local image builds
 

@@ -4,26 +4,34 @@
 
 ## Model
 
-A challenge is an independent repository and Docker image. It owns its logic,
+A challenge is a package (first-party: monorepo `packages/challenges/*`) and
+historically a standalone Docker image for emergency dual-run. It owns its logic,
 public routes, submissions, scoring data, database schema, and challenge-local
 files.
 
-Challenge state is SQLite on the challenge named **Compose volume** mounted at
-`/data`. BASE injects
-`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3` and mounts
-`/data`. There is no Postgres server per challenge; the `/data` volume is the
-single home for the database, artifacts, analyzer output, and uploaded files.
+**Shipping master-embed topology:** Prism and agent-challenge run as **localhost
+uvicorn** processes inside the `base-master` container (supervisor entrypoint),
+not as separate Compose `challenge-*` services. Data lives under the master
+volume:
 
-In the supported Compose topology the challenge runs as a **long-lived service**
-in the master Compose project (`challenge-<slug>`), joined only to the private
-`app` network with the master — never to the master `db` network and never with
-control-plane Postgres credentials. The `/data` volume is retained by default
-when the service is stopped or removed.
+- `/var/lib/base/challenges/prism`
+- `/var/lib/base/challenges/agent-challenge`
+
+Registry `internal_base_url` is loopback (`http://127.0.0.1:18080` /
+`http://127.0.0.1:18081`). The public proxy still rewrites and forwards
+`/challenges/{slug}/...` via httpx — **public path prefixes are unchanged**.
+
+Emergency dual-run may still use a dedicated challenge container with a named
+`/data` volume and
+`CHALLENGE_DATABASE_URL=sqlite+aiosqlite:////data/challenge.sqlite3`; that path
+is operator-only, not the default install. Challenges never receive control-plane
+Postgres credentials. Master is the sole control-plane writer; challenge SQLite
+is not multi-writer across containers.
 
 There is **no LLM gateway**. Scoring and admission are challenge-owned. Base and
 Prism do not create short-lived evaluator containers for challenge evaluation;
-external TEE or miner-funded workers are outside the challenge Compose service
-lifecycle.
+external TEE (agent-challenge Phala when enabled) or miner-funded workers are
+outside the master Compose service lifecycle.
 
 ## Required API surface
 

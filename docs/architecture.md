@@ -13,24 +13,38 @@ use `install-swarm.sh`, `docker service`, or `docker stack` for greenfield insta
 
 ```mermaid
 flowchart LR
-    M[Miners] -->|submit| P["BASE master proxy"]
-    P --> C[Challenge service long-lived]
-    C -->|raw-weight push| G[Master aggregation]
-    V[Validators independent Compose] -->|register / pull / result| CP[Coordination plane]
-    G -->|GET /v1/weights/latest| V
+    M[Miners] -->|submit| P["BASE master proxy :8081"]
+    P -->|httpx /challenges/prism| PR["Prism ASGI 127.0.0.1:18080"]
+    P -->|httpx /challenges/agent-challenge| AC["AC ASGI 127.0.0.1:18081"]
+    PR -->|raw-weight push| G[Master aggregation]
+    AC -->|raw-weight push| G
+    V[Validators weight-only Compose] -->|GET /v1/weights/latest| G
     V -->|set_weights own wallet| BT[Bittensor]
 ```
 
-Miners reach challenges through the master public proxy. Each challenge owns scoring and
-state, then **pushes** authenticated raw hotkey weights to the master. The master
-persists snapshots, aggregates a final vector, and serves it. **Validators never compute
-canonical aggregation**; each independent validator fetches the master vector and submits
-it on-chain with its own wallet. The master **never** constructs or invokes `set_weights`.
+```text
+miners/FE → chain.joinbase.ai → base-master-validator:8081
+                                  ├─ /v1/weights/latest
+                                  ├─ /challenges/prism/* → 127.0.0.1:18080
+                                  └─ /challenges/agent-challenge/* → 127.0.0.1:18081
+
+validators (N) → GET weights only → set_weights
+```
+
+Miners reach challenges through the master public proxy on the **unchanged** public
+prefixes `/challenges/prism` and `/challenges/agent-challenge`. Challenges run as
+**localhost uvicorn processes inside the master container** (supervisor + httpx reverse
+proxy), not as separate Compose services. Each challenge owns scoring and state, then
+**pushes** authenticated raw hotkey weights to the master. The master persists snapshots,
+aggregates a final vector, and serves it. **Validators are weight-only by default**: they
+fetch `GET /v1/weights/latest` from `https://chain.joinbase.ai` and submit with their own
+wallet. They do **not** write submissions/leaderboards or host challenge control-plane.
+The master **never** constructs or invokes `set_weights`.
 
 There is **no LLM gateway** in the target path. Challenge admission and scoring belong to
-each challenge service (Prism is deterministic). Application code does **not** launch
-evaluator containers; external long-lived TEE evaluation is verified and ingested, not
-orchestrated as --rm jobs by Base or Prism.
+each embedded challenge ASGI (Prism is deterministic / provider-trust). Application code
+does **not** launch evaluator containers; external long-lived TEE evaluation (agent-challenge
+Phala path when enabled) is verified and ingested, not orchestrated as --rm jobs by Base.
 
 ## Master Compose project
 
@@ -39,22 +53,38 @@ The master project (`deploy/compose/docker-compose.yml`, installer
 
 | Service | Role |
 | --- | --- |
-| `base-master-validator` | Public proxy, coordination plane, raw-weight ingress, aggregation, health/version, **digest-aware challenge watcher** |
+| `base-master-validator` | Public proxy (`0.0.0.0:8081`), coordination, raw-weight ingress, aggregation, health/version; **embeds** Prism + agent-challenge ASGI via `docker/master-entrypoint.sh` |
 | `master-postgres` | Durable control-plane PostgreSQL (private network only) |
-| one `challenge-<slug>` | Long-lived combined challenge service per active challenge |
 
-Exact cardinality is one application container, one PostgreSQL container, and one
-long-lived container per active challenge. There is no gateway sidecar, no challenge
-PostgreSQL, no evaluator service, and no Swarm broker overlay in this topology.
+Exact cardinality is **one application container and one PostgreSQL container**. There is
+**no** `challenge-prism` / `challenge-agent-challenge` Compose service, no gateway sidecar,
+no challenge PostgreSQL, no evaluator service, and no Swarm broker overlay.
+
+| Process (inside master) | Bind | Notes |
+| --- | --- | --- |
+| `base master proxy` | `0.0.0.0:8081` | Public API + `/challenges/*` reverse proxy (httpx) |
+| Prism ASGI | `127.0.0.1:18080` | `uvicorn prism_challenge.app:app` |
+| Agent-challenge ASGI | `127.0.0.1:18081` | `uvicorn agent_challenge.app:app` |
+
+Registry seed / `default_internal_base_url` use loopback only:
+
+- Prism: `http://127.0.0.1:18080`
+- agent-challenge: `http://127.0.0.1:18081`
+
+Master is the **sole writer** of control-plane and challenge-facing aggregation surfaces.
+Challenge SQLite lives under the master volume
+(`/var/lib/base/challenges/{prism,agent-challenge}`); there is **no multi-writer SQLite**
+across containers. Shared tokens remain file-backed
+(`PRISM_SHARED_TOKEN_FILE`, `CHALLENGE_SHARED_TOKEN_FILE`).
 
 Master config and secrets are host files (mode `0600`, parent dirs `0700`) bind-mounted
 read-only. Compose manifests never embed secret values. The control-plane database URL is
-private to the master process and never reaches challenge containers.
+private to the master process.
 
 Networks:
 
 - `db` (internal): master + PostgreSQL only; no host publication of `5432`.
-- `app` (internal): master + challenge services.
+- `app` (internal): available for attachments; challenges bind loopback inside master (not separate Compose peers).
 - `public` (non-internal): master host API only (operators typically bind loopback in
   the `3100-3199` test range; production should put a reverse proxy in front).
 
@@ -62,37 +92,49 @@ Networks:
 
 Each validator is an **independent Compose project**
 (`deploy/compose/docker-compose.validator.yml`, installer
-`deploy/compose/install-validator.sh`). Validators register and heartbeat with the
-master, pull assignments, report results, fetch the final weight vector, and may submit
-on-chain with their own hotkey. They never receive master PostgreSQL credentials,
-challenge volumes, Docker socket access, aggregation controls, or challenge lifecycle
-operators. Teardown of one validator project does not affect another or the master.
+`deploy/compose/install-validator.sh`). Shipping default is **weight-only**:
+`--master-url https://chain.joinbase.ai`, `challenge_execution_enabled: false`, no
+assignment execute path against challenge writers. Validators fetch the final weight
+vector and may submit on-chain with their own hotkey when gated on. They never receive
+master PostgreSQL credentials, challenge volumes, aggregation controls, or challenge
+lifecycle operators. Host `docker.sock` on the agent (when mounted) is optional migration
+prep only — not a challenge control-plane. Teardown of one validator project does not
+affect another or the master.
 
-## Challenge isolation
+## Challenge isolation (embedded)
 
-Each active challenge is a **long-lived Compose service** with its own OCI image (digest
-pin), internal shared token, public routes behind the proxy, membership on the private
-`app` network only, and a named `/data` volume for SQLite and artifacts.
+Active challenges are **localhost ASGI processes inside the master image**, not separate
+Compose services. Each challenge package is installed into `base-master` from the monorepo
+(`packages/challenges/{prism,agent-challenge}`), shares file-backed tokens with the
+registry, exposes public routes only behind the proxy prefixes above, and stores SQLite /
+artifacts under `/var/lib/base/challenges/<slug>` on the master volume.
 
-Challenge state is SQLite on that volume
-(`sqlite+aiosqlite:////data/challenge.sqlite3`). BASE provisions no Postgres server per
-challenge; each challenge owns its `/data` volume and never receives a control-plane
-database credential. Volumes are retained when a challenge service is stopped or
-removed; purge is an explicit operator action on the named volume.
+Challenge state is SQLite on that path (not a second container volume pair). BASE
+provisions no Postgres server per challenge; each challenge never receives a
+control-plane database credential. Master volume retention follows the master backup /
+teardown scripts; purge is an explicit operator action.
 
-## Digest-aware auto-update (watcher)
+Emergency dual-run (proxy-only master + external `challenge-*` container) is
+**operator-only**: set `BASE_MASTER_EMBED_CHALLENGES=0`, override registry
+`internal_base_url`, and restore a challenge service file. It is **not** the shipping
+default.
 
-Auto-update of challenges is **not** Swarm service mutation of a mutable `latest` tag.
-It is the **master-resident Compose challenge watcher** running inside
-`base-master-validator`:
+## Challenge watcher / reconcile (shipping default off)
 
-1. Resolve an approved **immutable** image reference (`repository@sha256:<64 hex>`).
-2. Record current vs desired digest and durable rollout intent.
+With embedded challenges there is no separate challenge Compose service to pull or
+recreate. Shipping install sets watcher and registry reconcile intervals to **0** so
+master health does not depend on missing `challenge-*` services. Auto-update of the
+**master image** (which contains the challenge packages) is the primary roll path;
+historical GHCR challenge image names remain for emergency dual-run / rollback only.
+
+When re-enabled for emergency dual-run, the master-resident Compose watcher still:
+
+1. Resolves an approved **immutable** image reference (`repository@sha256:<64 hex>`).
+2. Records current vs desired digest and durable rollout intent.
 3. Controlled pull of the desired image.
 4. Targeted recreate of only the affected Compose service (project-scoped).
 5. Health and version verify.
-6. On failure, restore the previous digest with **bounded backoff**; durable state
-   survives master restart.
+6. On failure, restores the previous digest with **bounded backoff**.
 
 The watcher never creates evaluator containers, never calls `docker service` / Swarm
 APIs, and only mutates services inside the configured Compose project boundary.
