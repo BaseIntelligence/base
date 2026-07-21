@@ -25,10 +25,36 @@ If continuous attestation verification or the DCAP path is unavailable, results 
 
 ## Isolation (eval)
 
-Eval CVMs run measured workload with Docker-out-of-Docker style isolation for task trials. Task
-containers typically run without host network privileges unless a task policy opts in. Terminal-Bench
-trees for prepare-selected tasks are **baked** into the canonical image
-(`/opt/agent-challenge/task-cache`); eval time does not network-fetch dataset content.
+Eval CVMs run measured workload with Docker-out-of-Docker style isolation for task trials.
+Terminal-Bench 2.1 trees for prepare-selected tasks are **content-addressed** and **baked** into the
+canonical image (`/opt/agent-challenge/task-cache` + `golden/dataset-digest.json`). Eval time does
+**not** network-fetch task definitions; digest mismatch fails closed. Miners cannot supply an
+alternate task URL/git. `selected_tasks` on the immutable Eval plan is **validator-authored only**
+(prepare has no miner task body).
+
+### allow_internet product policy (retained with review residual)
+
+Frozen TB 2.1 task trees set `[environment].allow_internet = true` on the full 89-task bake (harbor
+parity for package installs / public data). **Product default:** retain task-authored
+`allow_internet` on scored runs (`retain_task_authored_with_review_risk`). Forcing global
+`--network none` would break legitimate TB tasks; it is therefore **not** the production default.
+
+Residual risk: a task container with egress can reach the public internet (and the agent may hold
+an OpenRouter key). That is **retained and documented as review-class residual**, not silent.
+Operators may opt into lab fail-closed isolation with
+`CHALLENGE_SCORED_TASK_NETWORK_RESTRICT=1` (breaks TB parity; non-default).
+
+Obvious cheat surfaces remain closed elsewhere: digest-gated local cache, no miner task URL, keys-
+only miner env, agent env allowlist `{OPENROUTER_API_KEY, LLM_COST_LIMIT}`, OpenRouter / review URL
+/ DOCKER_HOST harness pins, and review `.rules` anti-cheat.
+
+### Hardcoding answers vs harness pins
+
+- **Cheat:** miner branching on task id, hardcoding answers, reading hidden tests/oracles
+  (`.rules/hardcoding.md`, `.rules/anti-cheat.md`).
+- **Required anti-cheat (not cheat):** harness pins — dataset digest, baked task-cache, measured
+  OpenRouter origin, joinbase review callback URL, DOCKER_HOST unix-only, Base gateway forbid,
+  validator-only plan `selected_tasks` + KR RA-TLS authority. These pins must not be loosened.
 
 Review CVMs are a separate measured image: they call direct OpenRouter under the harness / `.rules`
 only as configured by validator-pinned composition, and must never receive golden task material or

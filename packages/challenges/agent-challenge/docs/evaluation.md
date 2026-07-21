@@ -150,9 +150,15 @@ uv run python scripts/populate_live_task_cache.py --fallback-only  # FALLBACK su
 
 Prepare/select draws from `TERMINAL_BENCH_2_1_FALLBACK_TASK_IDS` when residual count paths use that
 fallback list, so the baked cache **must** include at least those bare dirs. Incomplete bake surfaces
-as guest `TaskDefNotFoundError` at `preflight_tasks` (before key-release).
+as guest `TaskDefNotFoundError` at `preflight_tasks` (before key-release). Fallback IDs are a subset
+of the frozen 89-task digest set. Custom local cache paths remain digest-gated; there is no miner
+`task_url` / git field. Plan `selected_tasks` is produced only by validator `eval/prepare`.
 
-Contract tests: `tests/test_live_task_cache_prepare_complete.py`.
+Contract tests: `tests/test_live_task_cache_prepare_complete.py`,
+`tests/test_tbench_integrity_policy.py`.
+
+See also [Security](security.md) for `allow_internet` product policy (retain task-authored default;
+answer hardcoding remains cheat; harness pins required).
 
 ## Related
 

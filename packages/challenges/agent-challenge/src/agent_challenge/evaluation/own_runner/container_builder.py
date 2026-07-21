@@ -256,15 +256,20 @@ def resource_run_args(resources: ResourceLimits) -> list[str]:
 
 
 def network_arg(resources: ResourceLimits) -> str | None:
-    """Map ``allow_internet`` to a docker ``--network`` value (harbor parity).
+    """Map ``allow_internet`` to a docker ``--network`` value (product policy).
 
-    Returns ``"none"`` when internet is disallowed or unset (harbor's no-network
-    override / exec-bridge default isolation), or ``None`` to use the default
-    bridge network when ``allow_internet`` is ``True``.
+    Default production honors frozen task-authored ``allow_internet`` (harbor
+    parity). Ops may set ``CHALLENGE_SCORED_TASK_NETWORK_RESTRICT=1`` to force
+    ``network none`` on scored runs (lab fail-closed; see
+    :mod:`agent_challenge.evaluation.tbench_integrity`).
+
+    Returns ``"none"`` when internet is disallowed or unset, or ``None`` to use
+    the default bridge network when ``allow_internet`` is ``True`` under the
+    default retain policy.
     """
-    if resources.allow_internet:
-        return None
-    return "none"
+    from agent_challenge.evaluation.tbench_integrity import effective_network_arg
+
+    return effective_network_arg(resources, scored_run=True)
 
 
 # --------------------------------------------------------------------------- #
