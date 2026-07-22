@@ -1,215 +1,165 @@
-# Platform agent/developer notes
+# AGENTS.md — Base monorepo developer guide
 
-Operational invariants that are easy to regress on a manual edit and are
-enforced by tests. Keep this in sync with the code it references.
+Product repo: `/projects/platform-network/platform` (BaseIntelligence/base).
 
-## Eval job network isolation (base_jobs_internal)
+This file is the **product** developer guide. Keep it short. Do not turn it into a
+mission log, cutover diary, or Swarm novel.
 
-The agent-challenge runs miner eval jobs as short-lived Docker Swarm
-replicated-jobs dispatched by the broker (`base-docker-broker`). The miner's
-**untrusted agent code runs INSIDE that job container**, so whatever network the
-job joins, the miner code can reach. The job legitimately needs to reach exactly
-TWO swarm services by name:
+## What you are building
 
-- `challenge-agent-challenge:8000` — the agent-challenge API, for real-time trial
-  log streaming (`CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL` /
-  `AGENT_CHALLENGE_INTERNAL_BASE_URL`).
-- `base-master-proxy` — the master LLM gateway, for the agent's gated LLM calls
-  (`CHALLENGE_LLM_GATEWAY_BASE_URL`).
+BASE is a Bittensor subnet control plane:
 
-### The topology (baked into code; never needs a manual `docker service update`)
+- **Master** aggregates challenge weights, serves registry + sealed vectors, and
+  **never** calls on-chain `set_weights`.
+- **Prism** and **Agent Challenge** run **embedded** in the master container
+  (ASGI on localhost via supervisor + reverse proxy). Separate challenge Compose
+  services are not required.
+- **Validators** are weight-only clients of `https://chain.joinbase.ai`: they
+  `GET /v1/weights/latest` and submit that vector with their own wallet.
 
-- A dedicated overlay **`base_jobs_internal`** is created `--internal` (NO
-  internet egress) and `--attachable`
-  (`deploy/swarm/install-swarm.sh` `create_networks` /
-  `swarm_backend.DEFAULT_JOB_NETWORK`).
-- The eval **JOB** runs on `base_jobs_internal`
-  (`CHALLENGE_DOCKER_BROKER_NETWORK=base_jobs_internal`, set by
-  `cli_app/main.py::AGENT_CHALLENGE_JOB_NETWORK`, which reuses
-  `swarm_backend.DEFAULT_JOB_NETWORK` as the single source of truth).
-- The agent-challenge **API + worker** AND the **master proxy** are ATTACHED to
-  `base_jobs_internal` in ADDITION to `base_challenges`, so the job can resolve /
-  reach ONLY those by name.
+Public surfaces:
 
-### Why (security)
+| Surface | URL |
+|---------|-----|
+| API host | `https://chain.joinbase.ai` |
+| UI | `https://joinbase.ai` |
+| API shapes | OpenAPI in code (`/openapi.json`, `/challenges/{slug}/openapi.json`) |
 
-- The job reaches the API (logs) + proxy (LLM gateway), but **NOT**
-  `base-master-postgres` (postgres lives on `base_challenges`, which the job is
-  NOT on), and has **no direct internet** (the overlay is `--internal`). The
-  agent's LLM traffic therefore goes only through the master gateway.
-- Putting the job on `base_challenges` would work for DNS but would also expose
-  postgres:5432 to miner code — NOT acceptable. Putting it on the default bridge
-  fails DNS for swarm service names (the live breakage this fixes).
+**OpenAPI is API truth.** Do not invent long markdown API dumps.
 
-### Where it is wired
+## Layout
 
-| Concern | Code |
-|---------|------|
-| Job network constant | `src/base/cli_app/main.py::AGENT_CHALLENGE_JOB_NETWORK` (= `swarm_backend.DEFAULT_JOB_NETWORK` = `base_jobs_internal`) |
-| Multi-network service plan | `swarm_backend.SwarmServicePlan.extra_networks` → one `--network` per network in `build_service_create_argv` |
-| API/worker multi-home (dynamic) | `SwarmChallengeOrchestrator(job_network_slugs={"agent-challenge"})`; `_challenge_plan` sets `extra_networks` and `start_challenge` ensures the internal overlay exists |
-| API/worker multi-home (static) | `install-swarm.sh` `CHALLENGE_EXTRA_NETWORKS=("${NET_JOBS_INTERNAL}")` on the agent-challenge api + worker |
-| Proxy multi-home | `install-swarm.sh` `_deploy_master_service` adds a second `--network "${NET_JOBS_INTERNAL}"` for the proxy only |
-| Network creation | `install-swarm.sh` `create_networks` / `_create_overlay "${NET_JOBS_INTERNAL}" true` (internal) |
+```text
+src/base/                         # master, proxy, validator client, CLI
+packages/challenges/
+  prism/                          # import: prism_challenge
+  agent-challenge/                # import: agent_challenge
+deploy/compose/                   # supported install (master embed)
+tests/                            # unit + integration
+docs/                             # keep minimal (see Docs policy)
+```
 
-### Do NOT change
+Invariants that do not rename:
 
-- The broker (`base-docker-broker`) is **not** on `base_jobs_internal` — only the
-  proxy serves the gateway. Adding the broker would be unnecessary surface.
-- **terminal-bench TASK containers** (where `git clone` / installs happen) are
-  launched separately on the host docker daemon with per-task `allow_internet`
-  (default-bridge public egress). Their networking MUST stay unrestricted public
-  egress — this isolation is about the JOB orchestrator container ONLY.
-- prism services are **not** multi-homed onto `base_jobs_internal`: the prism eval
-  job is egress-locked by the broker pinning the JOB to the internal overlay
-  (`broker_egress_locked_slugs`), not by multi-homing the long-lived prism
-  service.
+- GHCR image **names**
+- Public paths `/challenges/prism` and `/challenges/agent-challenge`
+- Python packages `prism_challenge` and `agent_challenge`
 
-Tests: `tests/unit/test_swarm_backend.py` (multi-network argv + orchestrator
-multi-homing), `tests/unit/test_seed_docker_backend.py` (job network constant +
-LOG_STREAM host == service name), `tests/unit/test_client_service_cli_config.py`,
-`tests/unit/test_install_swarm_decentralized_deploy.py` (proxy + api/worker
-attach).
+This is a **uv workspace**. Root `pyproject.toml` / `uv.lock` own the workspace;
+challenge packages are members under `packages/challenges/*`.
 
-## Master registry-driven challenge deploy (reconciler)
+## Day-1 commands
 
-The master (`base master proxy`) runs a background **registry reconcile loop**
-that turns the challenge registry into running challenge services. This is what
-makes installing `base` (master) auto-deploy every ACTIVE challenge, and makes a
-newly-registered ACTIVE challenge propagate automatically with NO static
-per-challenge `docker service create` step. (Historically the master had no such
-loop: `SwarmChallengeOrchestrator` only did per-spec start/stop/restart, admin
-create just wrote a DB row, and the only reconcile was the legacy validator-side
-`NormalValidatorRunner.run_once`. The `install-swarm.sh` `deploy_challenges`
-default-path comment now reflects this real behavior.)
+```bash
+cd /projects/platform-network/platform
+uv sync
 
-### Behavior (idempotent, reconcile-to-registry)
+# unit smoke (prefer scoped first)
+UV_CACHE_DIR=/var/tmp/uv-cache uv run pytest -q --maxfail=5
 
-- Each pass reads `registry.list(active_only=True)` and calls
-  `orchestrator.start_challenge(spec)` for every ACTIVE challenge with no running
-  service. Start is invoked **exactly once per challenge** (the reconciler tracks
-  what it has deployed), and `start_challenge` is itself idempotent (it reuses an
-  existing service).
-- **Cross-restart self-heal:** the managed set the reconciler tears down from is
-  the challenge services ACTUALLY running (discovered from the backend via
-  `orchestrator.list_running_challenge_slugs()` — swarm services named
-  `challenge-<slug>` labelled `base.component=challenge`) **UNIONED** with this
-  process's in-memory `_deployed` set. So a service a PRIOR process created for a
-  challenge that is no longer ACTIVE is stopped even though this process never had
-  that slug in `_deployed` (closes the live-observed orphan gap where a
-  deactivated `challenge-regtest` kept running after a proxy restart). An ACTIVE
-  challenge whose service is already running is **adopted** (tracked, start NOT
-  called again — a healthy service is never recreated).
-- A challenge whose status is no longer ACTIVE (DRAFT / INACTIVE / DISABLED, or
-  removed from the registry) has its service **stopped** via
-  `orchestrator.stop_challenge(slug)` on the next pass.
-- DRAFT / INACTIVE / DISABLED challenges are **never** started (belt-and-suspenders:
-  the reconciler also re-filters to ACTIVE even if a registry ignores
-  `active_only`).
-- Each pass emits an INFO-level summary (`adopted`/`started`/`stopped` slugs) so
-  the loop's activity is observable in the proxy logs (it was previously silent
-  except on exceptions). A start/stop that raises is logged and retried next pass;
-  service discovery that raises degrades to the in-memory `_deployed` set; one
-  failure never aborts the whole pass or stops the loop.
+# lint
+uv run ruff check src packages/challenges
+```
 
-### Where it is wired
+Challenge package import smoke (root `uv run` alone may not put challenge packages
+on `PYTHONPATH`):
 
-| Concern | Code |
-|---------|------|
-| Reconciler + loop + lifespan | `src/base/master/orchestration.py::MasterChallengeReconciler` / `run_registry_reconcile_loop` / `build_master_registry_reconcile_lifespan` |
-| Shared spec builder (same shape as the legacy runner) | `src/base/master/docker_orchestrator.py::challenge_spec_from_registry` (also used by `validator/normal_runner.py`); emits `workload_class="service"` |
-| Cadence / opt-out | `MasterSettings.registry_reconcile_interval_seconds` (default `60.0`; `<=0` disables — default-on for the master) |
-| Wire-up | `master/app_proxy.py::create_proxy_app` (`registry_reconciler` + `registry_reconcile_interval_seconds`, composed via `_combine_lifespans`); constructed in `cli_app/main.py::master_proxy` from the same `orchestrator` the runtime controller uses |
+```bash
+uv run --package prism-challenge python -c "import prism_challenge"
+uv run --package agent-challenge python -c "import agent_challenge"
+```
 
-Tests: `tests/unit/test_master_registry_reconciler.py` (faked registry +
-orchestrator: start/idempotent/add/deactivate/remove/reactivate, non-ACTIVE never
-started, spec parity, start-failure retry, async registry, loop + lifespan,
-cross-restart self-heal of an orphaned service from an EMPTY in-memory set,
-adopt-not-restart of an already-running ACTIVE service, INFO summary log,
-discovery-failure degradation); orchestrator discovery accessor in
-`tests/unit/test_swarm_backend.py` + `tests/unit/test_docker_orchestrator_extended.py`.
+Scoped AC / sealer regression:
 
-### Challenge combined mode (single service = API + in-process worker; architecture.md sec 9.5)
+```bash
+UV_CACHE_DIR=/var/tmp/uv-cache uv run pytest \
+  packages/challenges/agent-challenge/tests \
+  -k "miner_env or residual or tree_sha or review_api or key_release" -q
 
-The reconciler deploys exactly ONE `challenge-<slug>` service per ACTIVE
-challenge, but both challenge images need TWO processes: the uvicorn API AND a
-worker loop that is the only eval-queue drainer. **Combined mode** collapses them
-so the API process ALSO runs the worker loop in-process; the single service both
-serves and drains. It is opt-in per challenge and default-OFF (the legacy
-`install-swarm.sh --static-challenges` two-service path is unchanged).
+UV_CACHE_DIR=/var/tmp/uv-cache uv run pytest tests/unit \
+  -k "sealer or aggregation or weights" -q
+```
 
-- The registry records the image's opt-in env var name in the **internal**
-  metadata field `combined_mode_env` (NOT public — not in
-  `PUBLIC_REGISTRY_METADATA_KEYS`). The seed sets it per slug: agent-challenge →
-  `CHALLENGE_COMBINED_WORKER`, prism → `PRISM_COMBINED_MODE`. The old
-  `metadata.worker_command` seeding is retired (and popped on re-seed).
-- **Both** single-service spec builders inject `env.setdefault(<combined_mode_env>,
-  "true")` and no longer read `worker_command`, so the single service runs the
-  image default CMD (uvicorn API) with the worker in-process:
-  `docker_orchestrator.challenge_spec_from_registry` (reconciler + `NormalValidatorRunner`)
-  and `cli_app/main.py::DockerRuntimeController._spec` (admin pull/restart/status).
-- The single service **must also carry the docker/broker URL + token env** the
-  worker needs (the seed already sets `*_DOCKER_BROKER_URL` + `*_DOCKER_BROKER_TOKEN_FILE`
-  for both slugs); prism additionally reads the LLM gateway token from
-  `/run/secrets/base_gateway_token` by config default. prism needs NO GPU pinning
-  (the worker orchestrates GPU work via the broker; host-side scoring is CPU-only).
-- `ChallengeSpec.worker_command` + the `swarm_backend`/`docker_orchestrator` command
-  plumbing are KEPT as a generic, slug-agnostic override seam (unused by the
-  registry path). `combined_mode_env_from_metadata()` reads/validates the name.
+## Runtime topology (production)
 
-Tests: `tests/unit/test_master_registry_reconciler.py` (combined-env injected +
-broker env + no `-worker` service), `tests/unit/test_docker_orchestrator_extended.py`
-(`combined_mode_env_from_metadata` validation + spec builder), `tests/unit/test_swarm_backend.py`
-(combined service renders `--env` with image default CMD), `tests/unit/test_client_service_cli_config.py`
-(seed sets `combined_mode_env` per slug, drops `worker_command`).
+Supported install is **Docker Compose master + PostgreSQL only**:
 
-## Per-validator on-chain weight submission (architecture.md sec 9.3)
+```text
+Master container
+  ├─ master proxy / API
+  ├─ continuous weights sealer (in-process)
+  ├─ Prism ASGI      :18080 (localhost)
+  └─ Agent Challenge :18081 (localhost)
+PostgreSQL (control-plane durability)
+```
 
-The weights model is **single master aggregation + per-validator submission**:
-the MASTER aggregates the canonical weight vector and serves it at
-`GET /v1/weights/latest`; **every validator fetches that SAME vector and commits
-it on-chain under its OWN wallet/hotkey.** Validators do NOT compute or aggregate
-their own vector - aggregation lives entirely on the master
-(`base.master.aggregator` / `MasterWeightService`). This is the legacy
-`submit_latest_weights` relay pattern, run per-validator instead of from a single
-global submitter.
+- Master embeds challenges; no separate required `challenge-*` Compose app
+  containers.
+- Continuous **in-process weight sealer** keeps `GET /v1/weights/latest` at 200.
+  CLI weights paths are emergency/debug only.
+- Validators: independent Compose projects → `chain.joinbase.ai`. They do not host
+  master Postgres or challenge writer DBs.
+- **Swarm is not** the supported shipping path. Compose embed is.
 
-### Behavior (per-validator, independent, idempotent, gated)
+## Hard invariants (never violate)
 
-- **Runs in the validator runtime.** `base validator agent`
-  (`cli_app/main.py::validator_agent` → `_run_validator_agent_runtime`) runs the
-  agent loop AND this node's OWN weight-submit loop concurrently, so every
-  validator node that runs the agent also submits its own weights. There is no
-  single global submitter assumption.
-- **Own keypair.** The submitter's `WeightSetter` is built lazily from THIS
-  node's wallet (`create_bittensor_submit_runtime(settings).weight_setter`), so
-  each validator commits under its own hotkey.
-- **No validator-side aggregation.** The vector always comes from the master via
-  `WeightsClient.fetch_latest()` (`/v1/weights/latest`); the validator submit
-  module imports NO `base.master.*` aggregation.
-- **Independent, no shared state.** Each `ValidatorWeightSubmitter` holds its own
-  in-memory idempotency marker; concurrent validators share nothing.
-- **Idempotent / crash-re-run safe.** The master stamps each computed vector with
-  `computed_at`; the submitter tracks the last vector it committed and re-running
-  over an unchanged vector is a no-op (`ALREADY_SUBMITTED`), so a running node
-  never re-commits the same vector. Across a crash/restart the on-chain
-  commit-reveal rate limit rejects a too-fast re-commit, surfaced as `REJECTED`
-  (logged, retried next tick, never a silent success, never double-counted).
-- **Gate-off no-op.** When `validator.submit_on_chain_enabled` is `False`
-  (default) the tick does NO fetch, NO submit-runtime construction (no live
-  `Subtensor`), and NO submission (`DISABLED`). Live enablement is human-gated.
+1. **No** master `set_weights`. **No** product path through `burn_weights_24h.py`
+   (leave that script untracked if present).
+2. **No** LLM Base gateway for Agent Challenge scoring.
+3. **Secrets hygiene:** names / digests / shas only in logs, docs, and evidence.
+   Never paste private keys, wallet mnemonics, API tokens, or full secret values.
+4. **AC miner env:** API keys / tokens only. Reject URL, proxy, and host-shaped
+   env keys.
+5. **AC review callback** hard-pinned to
+   `https://chain.joinbase.ai/challenges/agent-challenge`.
+6. **AGATE eval gate:** package LLM rules **residual** + `package_tree_sha` proof
+   **before** TEE auth; otherwise no eval / attestation.
+7. **Agent models:** no closed model catalog; **ban personal finetunes**.
+8. **Tbench 2.1 tasks:** baked image content + digest; no miner-supplied task URL.
+9. Do not wipe production Postgres / `KEY_FILE` / wallets unless a feature
+   explicitly requires it.
+10. Do not force-live Swarm mutate. Prefer Compose master-embed.
+11. GHCR names and public challenge slugs stay stable (mineable digests matter).
 
-### Where it is wired
+## Network surfaces (must stay green)
 
-| Concern | Code |
-|---------|------|
-| Per-validator submitter | `src/base/validator/weight_submitter.py::ValidatorWeightSubmitter` (+ `ValidatorSubmitOutcome`) |
-| Shared master-vector validation | `src/base/validator/weights_client.py::validate_master_weights_payload` (also used by the legacy `NormalValidatorRunner`) |
-| Runtime wire-up | `cli_app/main.py::_build_validator_weight_submitter` + `_run_validator_agent_runtime` (called by `validator_agent`) |
-| Gate | `ValidatorSettings.submit_on_chain_enabled` (default `False`) |
+| Path | Role |
+|------|------|
+| `GET /health` | master ready |
+| `GET /v1/registry` | challenges + emission |
+| `GET /v1/weights/latest` | sealed weight vector |
+| `GET /v1/validators/public` | validator directory |
+| `GET /challenges/{slug}/openapi.json` | challenge API schema |
+| `GET /challenges/{slug}/leaderboard` | challenge stats |
+| `POST /v1/challenges/{slug}/submissions` | signed submit bridge |
 
-Tests: `tests/unit/test_validator_weight_submitter.py` (fetch-master-vector +
-own-keypair submit, two independent submitters with their own hotkeys, idempotent
-re-run no-op, gate-off no-op, rejected-commit retry, no master-aggregation
-import); `tests/unit/test_validator_agent_cli_docs.py` (gate default off, gate-on
-enable, submit loop runs in the agent runtime).
+## Docs policy
+
+Keep shipping docs **minimal**:
+
+- short root `README.md`
+- miner getting-started
+- short validator / compose note
+- OpenAPI + code for everything else
+
+Do not reintroduce monorepo essays, SDK wheel SHA tables, or giant doc indexes in
+README. Mission diaries and validation logs belong in local untracked evidence,
+not in product docs.
+
+## Commits and hygiene
+
+- Author/committer identity: **echobt**
+  (`154886644+echobt@users.noreply.github.com`)
+- No force-push to protected tips
+- Leave `scripts/burn_weights_24h.py` untracked if present
+- Prefer targeted pytest + ruff on touched paths before commit
+- Frontend is out of this monorepo
+
+## When unsure
+
+1. Code + OpenAPI beat markdown essays.
+2. Compose master-embed + weight-only validators is the product topology.
+3. Continuous sealer owns healthy `/v1/weights/latest`; do not add master
+   on-chain weight submission.
+4. AC anti-cheat locks (env keys-only, review URL pin, residual + tree_sha) are
+   intentional fail-closed gates — do not "helpfully" loosen them.
