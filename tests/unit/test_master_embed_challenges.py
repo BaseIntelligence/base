@@ -16,8 +16,7 @@ DOCKERFILE_MASTER = REPO_ROOT / "docker/Dockerfile.master"
 ENTRYPOINT = REPO_ROOT / "docker/master-entrypoint.sh"
 COMPOSE_YML = REPO_ROOT / "deploy/compose/docker-compose.yml"
 DOCS_COMPOSE = REPO_ROOT / "docs/compose.md"
-DOCS_MASTER = REPO_ROOT / "docs/master/README.md"
-DOCS_MONOREPO = REPO_ROOT / "docs/monorepo.md"
+DOCS_VALIDATOR = REPO_ROOT / "docs/validator.md"
 APP_PROXY = REPO_ROOT / "src/base/master/app_proxy.py"
 
 
@@ -161,9 +160,9 @@ def test_master_entrypoint_runs_master_proxy_command() -> None:
 
 def test_docs_document_embed_ports() -> None:
     compose = DOCS_COMPOSE.read_text(encoding="utf-8")
-    master = DOCS_MASTER.read_text(encoding="utf-8")
-    monorepo = DOCS_MONOREPO.read_text(encoding="utf-8")
-    blob = "\n".join((compose, master, monorepo))
+    validator = DOCS_VALIDATOR.read_text(encoding="utf-8")
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    blob = "\n".join((compose, validator, agents))
     assert "18080" in blob
     assert "18081" in blob
     assert "127.0.0.1" in blob

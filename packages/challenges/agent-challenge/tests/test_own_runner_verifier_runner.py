@@ -4,7 +4,7 @@ Two layers:
 
 * **Pure scoring/mapping** (no docker): pin :func:`score_verifier_dir`,
   :func:`map_rewards_to_outcome`, and the command builders against the harbor
-  reward semantics (gate G2 / ``docs/reward-semantics.md``) and the legacy
+  reward semantics (gate G2 / ``challenge OpenAPI / package evaluation docs``) and the legacy
   outcome mapping (``runner.py:1399-1438``). These cover pass, fail, the three
   reward-error reason codes, json-over-txt precedence, multi-metric flat-mean
   scoring, and banker's-rounding ``resolved``.

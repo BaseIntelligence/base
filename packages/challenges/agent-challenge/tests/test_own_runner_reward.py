@@ -562,7 +562,7 @@ def test_derive_outcome_from_metrics_matches_result_data() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 13. Precision spec / comparator (docs/reward-semantics.md §6)
+# 13. Precision spec / comparator (challenge OpenAPI / package evaluation docs §6)
 # ---------------------------------------------------------------------------
 
 

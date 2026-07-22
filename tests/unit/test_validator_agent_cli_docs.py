@@ -22,7 +22,7 @@ from base.config.settings import Settings, ValidatorAgentSettings
 from base.validator.weight_submitter import ValidatorWeightSubmitter
 
 ROOT = Path(__file__).resolve().parents[2]
-OPERATIONS_DOC = ROOT / "docs" / "operations" / "validator.md"
+OPERATIONS_DOC = ROOT / "docs" / "validator.md"
 
 
 class _FakeKeypair:
@@ -176,7 +176,7 @@ async def test_run_validator_agent_runtime_runs_own_submit_loop() -> None:
 
 
 def test_operations_doc_documents_validator_agent() -> None:
-    ops = (ROOT / "docs" / "operations" / "validator.md").read_text(encoding="utf-8")
+    ops = OPERATIONS_DOC.read_text(encoding="utf-8")
     lowered = ops.lower()
     assert "validator" in lowered
     assert "compose" in lowered

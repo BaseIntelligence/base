@@ -1,12 +1,12 @@
-"""Validator operator docs after Compose cutover."""
+"""Validator operator docs after Compose cutover (minimal docs set)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VALIDATOR_GUIDE = ROOT / "docs" / "validator" / "README.md"
-VALIDATOR_OPS = ROOT / "docs" / "operations" / "validator.md"
+VALIDATOR_GUIDE = ROOT / "docs" / "validator.md"
+COMPOSE_GUIDE = ROOT / "docs" / "compose.md"
 COMPOSE_INSTALLER = ROOT / "deploy" / "compose" / "install-validator.sh"
 
 
@@ -15,7 +15,7 @@ def _read(path: Path) -> str:
 
 
 def test_validator_docs_are_compose_only_and_k8s_free() -> None:
-    for path in (VALIDATOR_GUIDE, VALIDATOR_OPS):
+    for path in (VALIDATOR_GUIDE, COMPOSE_GUIDE):
         text = _read(path)
         lowered = text.lower()
         assert "docker compose" in lowered or "compose" in lowered
@@ -25,19 +25,18 @@ def test_validator_docs_are_compose_only_and_k8s_free() -> None:
 
 def test_validator_docs_document_own_wallet_submission() -> None:
     guide = _read(VALIDATOR_GUIDE)
-    ops = _read(VALIDATOR_OPS)
-    blob = guide + "\n" + ops
+    compose = _read(COMPOSE_GUIDE)
+    blob = guide + "\n" + compose
     assert "set_weights" in blob or "weights" in blob.lower()
     assert "wallet" in blob.lower()
-    # Swarm service CLI is not the required path
-    assert "docker service ls" not in ops
+    assert "docker service ls" not in compose
     assert "docker service create" not in guide
 
 
 def test_validator_docs_document_weight_only_default() -> None:
     guide = _read(VALIDATOR_GUIDE)
-    ops = _read(VALIDATOR_OPS)
-    blob = guide + "\n" + ops
+    compose = _read(COMPOSE_GUIDE)
+    blob = guide + "\n" + compose
     assert "weight-only" in blob.lower()
     assert "https://chain.joinbase.ai" in blob
     assert "challenge_execution_enabled" in blob

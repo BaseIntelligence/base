@@ -23,7 +23,7 @@ ENV_EXAMPLE = REPO_ROOT / "deploy/compose/.env.example"
 INSTALL_MASTER = REPO_ROOT / "deploy/compose/install-master.sh"
 MASTER_COMPOSE_CFG = REPO_ROOT / "deploy/compose/config/master.compose.yaml"
 DOCS_COMPOSE = REPO_ROOT / "docs/compose.md"
-DOCS_MASTER = REPO_ROOT / "docs/master/README.md"
+DOCS_VALIDATOR = REPO_ROOT / "docs/validator.md"
 REGISTRY = REPO_ROOT / "src/base/master/registry.py"
 CLI_MAIN = REPO_ROOT / "src/base/cli_app/main.py"
 WATCHER = REPO_ROOT / "src/base/supervisor/challenge_watcher.py"
@@ -270,8 +270,8 @@ def test_install_does_not_require_prism_image() -> None:
 
 def test_docs_document_embed_tokens_and_no_prism_image_service() -> None:
     compose = DOCS_COMPOSE.read_text(encoding="utf-8")
-    master = DOCS_MASTER.read_text(encoding="utf-8")
-    blob = "\n".join((compose, master))
+    validator = DOCS_VALIDATOR.read_text(encoding="utf-8")
+    blob = "\n".join((compose, validator))
     assert "127.0.0.1:18080" in blob
     assert "127.0.0.1:18081" in blob
     assert "/var/lib/base/challenges" in blob

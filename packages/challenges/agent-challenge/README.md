@@ -2,15 +2,9 @@
 
 Import packages: **`agent_challenge`**, **`agent_challenge_runner`**
 
-> **Source of truth:** this tree inside **BaseIntelligence/base**. The historical
-> standalone remote `BaseIntelligence/agent-challenge` is a transition dual-source
-> / archive surface — prefer monorepo paths for product edits, images, and miner
-> docs ([docs/SOURCE_OF_TRUTH.md](../../../docs/SOURCE_OF_TRUTH.md),
-> [docs/miner/agent-challenge/](../../../docs/miner/agent-challenge/README.md)).
-
-Product sources live in this uv workspace member under the Base monorepo
-(`BaseIntelligence/base`). Shared contracts come from workspace **`base`**
-(`base.challenge_sdk`), not floating `git+base` HEAD.
+Product sources live at `packages/challenges/agent-challenge` in this uv workspace
+under **BaseIntelligence/base**. Shared contracts come from workspace **`base`**
+(`base.challenge_sdk`).
 
 ## Shared SDK
 
@@ -32,4 +26,15 @@ uv run --package agent-challenge python -c "import agent_challenge; import base.
 - Public slug: `/challenges/agent-challenge`
 - Python import: `agent_challenge`
 
-See [`docs/monorepo.md`](../../../docs/monorepo.md).
+## Miners / API
+
+Day-1: [docs/miner/getting-started.md](../../../docs/miner/getting-started.md)
+
+**API truth is OpenAPI**, not markdown dumps:
+
+- Live: `https://chain.joinbase.ai/challenges/agent-challenge/openapi.json`
+- Interactive docs: `https://chain.joinbase.ai/challenges/agent-challenge/docs`
+- In-process: challenge app `/openapi.json` and `/docs`
+
+Audience guides remain under `docs/miner/` and `docs/validator/` in this package
+for operator detail; shipping day-1 lives in the repo-root miner guide.

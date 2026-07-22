@@ -28,8 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "deploy" / "compose" / "docker-compose.validator.yml"
 INSTALL_VALIDATOR = ROOT / "deploy" / "compose" / "install-validator.sh"
 ENV_EXAMPLE = ROOT / "deploy" / "compose" / ".env.validator.example"
-VALIDATOR_GUIDE = ROOT / "docs" / "validator" / "README.md"
-VALIDATOR_OPS = ROOT / "docs" / "operations" / "validator.md"
+VALIDATOR_GUIDE = ROOT / "docs" / "validator.md"
+VALIDATOR_COMPOSE = ROOT / "docs" / "compose.md"
 VALIDATOR_EXAMPLE = ROOT / "config" / "validator.example.yaml"
 SETTINGS_PY = ROOT / "src" / "base" / "config" / "settings.py"
 CLI_MAIN = ROOT / "src" / "base" / "cli_app" / "main.py"
@@ -134,8 +134,8 @@ def test_env_example_weight_only_joinbase() -> None:
 
 def test_docs_weight_only_default_and_joinbase() -> None:
     guide = VALIDATOR_GUIDE.read_text(encoding="utf-8")
-    ops = VALIDATOR_OPS.read_text(encoding="utf-8")
-    blob = guide + "\n" + ops
+    compose = VALIDATOR_COMPOSE.read_text(encoding="utf-8")
+    blob = guide + "\n" + compose
     assert "weight-only" in blob.lower()
     assert "https://chain.joinbase.ai" in blob
     assert "/v1/weights/latest" in blob
@@ -306,7 +306,7 @@ def test_docs_note_optional_audit_reexec_non_write() -> None:
     blob = (
         VALIDATOR_GUIDE.read_text(encoding="utf-8")
         + "\n"
-        + VALIDATOR_OPS.read_text(encoding="utf-8")
+        + VALIDATOR_COMPOSE.read_text(encoding="utf-8")
     )
     assert "audit" in blob.lower()
     assert "non-write" in blob.lower() or "non write" in blob.lower()

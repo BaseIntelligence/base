@@ -94,7 +94,7 @@ the separated-log feature:
 - `test_stderr` — verifier test stderr.
 
 See the [A→Z submit walkthrough](../docs/miner/submit-agent.md) and the
-[Miner Guide](../docs/miner/README.md) for the full lifecycle and API contract.
+[Miner Guide](../docs/miner/README.md) (package-local; day-1: repo docs/miner/getting-started.md) for the full lifecycle and API contract.
 
 ## Files
 

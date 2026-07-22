@@ -1,27 +1,22 @@
 # First-party challenges (workspace members)
 
-In-tree challenge packages imported into the Base monorepo:
+In-tree challenge packages in the Base monorepo:
 
-| Path | Distribution name | Import package | Status |
-|------|-------------------|----------------|--------|
-| `prism/` | `prism-challenge` | `prism_challenge` | Imported (product sources) |
-| `agent-challenge/` | `agent-challenge` | `agent_challenge` (+ `agent_challenge_runner`) | Imported (product sources) |
+| Path | Distribution name | Import package |
+|------|-------------------|----------------|
+| `prism/` | `prism-challenge` | `prism_challenge` |
+| `agent-challenge/` | `agent-challenge` | `agent_challenge` (+ `agent_challenge_runner`) |
 
-These directories are **uv workspace members** from the repo-root `pyproject.toml`.
-Both depend on workspace `base` (shared `base.challenge_sdk`) instead of the
-legacy release wheel (Prism) or floating `git+base` (agent-challenge).
+uv workspace members from the repo-root `pyproject.toml`. Both depend on workspace
+`base` (`base.challenge_sdk`).
 
-Public contracts that must not change:
+Do not rename:
 
 - GHCR image names (`ghcr.io/baseintelligence/prism`, `…/prism-evaluator`,
   `…/agent-challenge`, `…/agent-challenge-terminal-bench-runner`)
 - Public master paths `/challenges/prism` and `/challenges/agent-challenge`
 - Python import names `prism_challenge` and `agent_challenge`
 
-Challenge images build from these package paths via root workflow
-[`.github/workflows/challenge-images.yml`](../../.github/workflows/challenge-images.yml)
-(BuildKit named context `monorepo=.` for workspace `base`). Nested
-`*/.github/workflows/ci.yml` files are historical leftovers from the standalone
-remotes and are **not** executed by GitHub (only repo-root workflows run).
-
-See [`docs/monorepo.md`](../../docs/monorepo.md).
+Images: [`.github/workflows/challenge-images.yml`](../../.github/workflows/challenge-images.yml)
+(BuildKit `monorepo=.`). Shipping day-1: [docs/miner/getting-started.md](../../docs/miner/getting-started.md).
+API truth: challenge `/openapi.json` (not markdown dumps).

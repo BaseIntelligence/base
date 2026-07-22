@@ -52,8 +52,7 @@ build-backend = "hatchling.build"
 packages = ["src/base"]
 
 # uv workspace: Base stays at repo root (src/base); first-party challenges live
-# under packages/challenges/* (imported product sources).
-# See docs/monorepo.md.
+# under packages/challenges/* (imported product sources). See AGENTS.md.
 [tool.uv.workspace]
 members = [
   "packages/challenges/prism",

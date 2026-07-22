@@ -40,4 +40,4 @@ uv run python scripts/pack_seed_family.py --family ds-moe-tiny-1m --output-dir d
 
 ## Submit
 
-See [docs/submissions.md](../../docs/submissions.md) and the [miner guide](../../docs/miner/README.md).
+See [docs/submissions.md](../../docs/api.md) and the [miner guide](../../../../docs/miner/getting-started.md).

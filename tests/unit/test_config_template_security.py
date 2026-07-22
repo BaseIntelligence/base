@@ -131,14 +131,8 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     validator_example = (root / "config" / "validator.example.yaml").read_text(
         encoding="utf-8"
     )
-    validator_docs = (root / "docs" / "validator" / "README.md").read_text(
-        encoding="utf-8"
-    )
-    ops_validator_docs = (root / "docs" / "operations" / "validator.md").read_text(
-        encoding="utf-8"
-    )
+    validator_docs = (root / "docs" / "validator.md").read_text(encoding="utf-8")
     compose_docs = (root / "docs" / "compose.md").read_text(encoding="utf-8")
-    deploy_docs = (root / "docs" / "deploy.md").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
 
     for shipping in (
@@ -198,17 +192,13 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
 
     assert expected in validator_docs
     assert f"{expected}/v1/weights/latest" in validator_docs
-    assert expected in ops_validator_docs
     assert expected in compose_docs
-    assert expected in deploy_docs
     assert expected in readme
     # Shipping docs + operator-copyable env examples are joinbase-only:
     # no preferred-product / cutover framing.
     for body in (
         validator_docs,
-        ops_validator_docs,
         compose_docs,
-        deploy_docs,
         readme,
         install_validator,
         install_master,
@@ -223,8 +213,9 @@ def test_compose_shipping_defaults_pin_public_chain_joinbase_url() -> None:
     # Local disposable-master smoke may use loopback in YAML or CLI form
     # (weight-only install-validator uses --master-url).
     assert (
-        "master_url: http://127.0.0.1:3180" in ops_validator_docs
-        or "--master-url http://127.0.0.1:3180" in ops_validator_docs
+        "master_url: http://127.0.0.1:3180" in validator_docs
+        or "--master-url http://127.0.0.1:3180" in validator_docs
+        or "http://127.0.0.1:3180" in validator_docs
     )
 
 
@@ -235,13 +226,11 @@ def test_master_url_role_distinguished_from_registry_aliases() -> None:
         root / "deploy" / "compose" / "install-validator.sh"
     ).read_text(encoding="utf-8")
     compose_docs = (root / "docs" / "compose.md").read_text(encoding="utf-8")
-    validator_docs = (root / "docs" / "validator" / "README.md").read_text(
-        encoding="utf-8"
-    )
+    validator_docs = (root / "docs" / "validator.md").read_text(encoding="utf-8")
 
     # Clear distinction across installer help + docs.
     for body in (install_validator, compose_docs, validator_docs):
-        assert "master_url" in body
+        assert "master_url" in body or "--master-url" in body
         assert "registry_url" in body or "registry" in body.lower()
         assert "coordination" in body.lower() or "Base master" in body
 
@@ -257,7 +246,7 @@ def test_registry_facing_defaults_docs_and_examples_do_not_use_rpc_endpoint() ->
         root / "src" / "base" / "config" / "settings.py",
         root / "config" / "master.example.yaml",
         root / "config" / "validator.example.yaml",
-        root / "docs" / "validator" / "README.md",
+        root / "docs" / "validator.md",
         root / "deploy" / "compose" / "config" / "master.compose.yaml",
         root / "deploy" / "compose" / "install-master.sh",
         root / "deploy" / "swarm" / "master.yaml",

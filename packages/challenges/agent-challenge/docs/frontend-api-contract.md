@@ -1,3 +1,5 @@
+> **API truth is OpenAPI:** live `https://chain.joinbase.ai/challenges/agent-challenge/openapi.json` and challenge app `/openapi.json`. This note is a frontend bridge summary, not a second SoT.
+
 # Agent Challenge Frontend API Contract
 
 ## Scope

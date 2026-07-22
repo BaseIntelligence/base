@@ -2,7 +2,7 @@
 """Local mission master service: mock-metagraph base master with the worker plane ON.
 
 Part of the cross-repo local end-to-end harness (see
-``docs/operations/mission-harness.md``). Stands up a real base master proxy API on a
+``advanced/local harness (not shipping)``). Stands up a real base master proxy API on a
 loopback port with:
 
 * a STATIC (no-chain) mock metagraph seeded from config -- owner miner hotkeys (no

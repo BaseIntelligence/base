@@ -92,10 +92,17 @@ def test_base_package_stays_at_src_base() -> None:
 
 
 def test_monorepo_adr_documents_layout_and_sdk_sharing() -> None:
-    text = (REPO_ROOT / "docs/monorepo.md").read_text(encoding="utf-8")
-    assert "src/base" in text
-    assert "packages/challenges/prism" in text
-    assert "packages/challenges/agent-challenge" in text
-    assert "workspace" in text.lower()
-    assert "challenge_sdk" in text
-    assert "base.challenge_sdk" in text
+    """Layout/SDK SoT is AGENTS + package READMEs (monorepo essay removed)."""
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    pkg_index = (REPO_ROOT / "packages/challenges/README.md").read_text(encoding="utf-8")
+    prism = (REPO_ROOT / "packages/challenges/prism/README.md").read_text(
+        encoding="utf-8"
+    )
+    blob = "\n".join((agents, pkg_index, prism))
+    assert "src/base" in blob
+    assert "packages/challenges/prism" in blob
+    assert "packages/challenges/agent-challenge" in blob
+    assert "workspace" in blob.lower()
+    assert "challenge_sdk" in blob
+    assert "base.challenge_sdk" in blob
+    assert not (REPO_ROOT / "docs/monorepo.md").exists()

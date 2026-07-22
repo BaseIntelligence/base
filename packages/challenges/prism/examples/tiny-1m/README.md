@@ -56,4 +56,4 @@ POST https://chain.joinbase.ai/v1/challenges/prism/submissions
 ```
 
 See [miner getting started](../../docs/miner/getting-started.md),
-[docs/submissions.md](../../docs/submissions.md), and the [miner hub](../../docs/miner/README.md).
+[docs/submissions.md](../../docs/api.md), and the [miner hub](../../../../docs/miner/getting-started.md).

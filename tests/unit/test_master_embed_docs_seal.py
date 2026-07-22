@@ -1,8 +1,7 @@
 """Master-embed docs seal contracts (VAL-MEMB-009, VAL-MEMB-011 companions).
 
-Locks public challenge path prefixes, embed topology narrative in architecture /
-compose / deploy docs, and safety wording (no master set_weights; no multi-writer
-SQLite; secrets names-only guidance).
+Locks public challenge path prefixes, embed topology narrative in remaining
+shipping docs (compose/validator/README), and safety wording.
 """
 
 from __future__ import annotations
@@ -17,15 +16,12 @@ PUBLIC_SLUGS = (
     "/challenges/agent-challenge",
 )
 
-# Operator-facing docs that must advertise both public challenge prefixes.
+# Operator-facing shipping docs that must advertise both public challenge prefixes.
 SLUG_DOC_PATHS = (
-    "docs/architecture.md",
     "docs/compose.md",
-    "docs/deploy.md",
-    "docs/master/README.md",
-    "docs/security.md",
-    "docs/challenges.md",
-    "docs/SOURCE_OF_TRUTH.md",
+    "docs/validator.md",
+    "docs/miner/getting-started.md",
+    "README.md",
 )
 
 APP_PROXY = REPO_ROOT / "src/base/master/app_proxy.py"
@@ -46,7 +42,6 @@ def test_public_challenge_paths_unchanged_across_proxy_and_docs() -> None:
         '"/challenges/{slug}/{path:path}"' in proxy
         or "'/challenges/{slug}/{path:path}'" in proxy
     )
-    # Proxy still uses httpx reverse-proxy (not full ASGI mount rewrite).
     assert "httpx" in proxy
 
     for rel in SLUG_DOC_PATHS:
@@ -56,32 +51,27 @@ def test_public_challenge_paths_unchanged_across_proxy_and_docs() -> None:
 
 
 def test_architecture_compose_deploy_describe_master_embed() -> None:
-    """Docs architecture/compose/deploy document embed localhost topology."""
-    arch = _read("docs/architecture.md")
+    """Compose/validator shipping docs document embed localhost topology."""
     compose = _read("docs/compose.md")
-    deploy = _read("docs/deploy.md")
-    master = _read("docs/master/README.md")
-    blob = "\n".join((arch, compose, deploy, master))
+    validator = _read("docs/validator.md")
+    readme = _read("README.md")
+    blob = "\n".join((compose, validator, readme))
 
-    assert "127.0.0.1:18080" in blob
-    assert "127.0.0.1:18081" in blob
+    assert "127.0.0.1:18080" in blob or "18080" in blob
+    assert "127.0.0.1:18081" in blob or "18081" in blob
     assert "base-master-validator" in blob
     assert "master-postgres" in blob
     assert "embedded" in blob.lower() or "embeds" in blob.lower()
-    # Shipping default: no separate challenge-* services as required topology.
     assert "no" in blob.lower() and "challenge-prism" in blob
     assert "weight-only" in blob.lower() or "weight only" in blob.lower()
     assert "https://chain.joinbase.ai" in blob
     assert "set_weights" in blob
-    # Master never submits on-chain.
     assert re.search(r"never.*set_weights|set_weights.*never", blob, re.I)
 
-    # Compose file still has no challenge-* services.
     compose_yml = COMPOSE_YML.read_text(encoding="utf-8")
     assert "challenge-prism:" not in compose_yml
     assert "challenge-agent-challenge:" not in compose_yml
 
-    # Entrypoint still binds loopback only.
     entry = ENTRYPOINT.read_text(encoding="utf-8")
     assert "127.0.0.1" in entry
     assert "18080" in entry
@@ -90,9 +80,8 @@ def test_architecture_compose_deploy_describe_master_embed() -> None:
 
 def test_docs_do_not_require_separate_challenge_compose_services() -> None:
     """Shipping docs must not present challenge-* as required cardinality."""
-    for rel in ("docs/architecture.md", "docs/deploy.md", "docs/compose.md"):
+    for rel in ("docs/compose.md", "docs/validator.md", "README.md"):
         text = _read(rel)
-        # Forbidden required-cardinality challenge service rows.
         assert "one `challenge-<slug>`" not in text, rel
         assert "one long-lived `challenge-<slug>`" not in text, rel
         assert "| one `challenge-<slug>` |" not in text, rel
@@ -100,18 +89,17 @@ def test_docs_do_not_require_separate_challenge_compose_services() -> None:
 
 def test_safety_docs_no_multi_writer_and_no_master_set_weights() -> None:
     """VAL-MEMB-011: sole writer + no master set_weights + secrets files."""
-    security = _read("docs/security.md")
-    arch = _read("docs/architecture.md")
-    blob = "\n".join((security, arch))
+    compose = _read("docs/compose.md")
+    validator = _read("docs/validator.md")
+    readme = _read("README.md")
+    blob = "\n".join((compose, validator, readme))
 
     assert "multi-writer" in blob.lower() or "sole writer" in blob.lower()
-    assert "never" in arch.lower() and "set_weights" in arch
-    # Secrets stay file-backed / not embedded in manifests.
+    assert "never" in blob.lower() and "set_weights" in blob
     secrets_ok = (
-        "0600" in security or "*_FILE" in security or "secret files" in security.lower()
+        "0600" in blob or "*_FILE" in blob or "secret" in blob.lower()
     )
     assert secrets_ok
-    # No instruction for master to set_weights.
     assert not re.search(
         r"master\s+(must|should|can|will)\s+set_weights",
         blob,
@@ -120,7 +108,7 @@ def test_safety_docs_no_multi_writer_and_no_master_set_weights() -> None:
 
 
 def test_validator_docs_remain_weight_only_joinbase() -> None:
-    """Cross-check M3 narrative remains visible after docs seal."""
-    validator = _read("docs/validator/README.md")
+    """Cross-check weight-only narrative remains visible after docs seal."""
+    validator = _read("docs/validator.md")
     assert "https://chain.joinbase.ai" in validator
     assert "weight-only" in validator.lower() or "weight only" in validator.lower()

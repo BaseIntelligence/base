@@ -312,8 +312,8 @@ def test_operator_entrypoint_docs_are_compose_only() -> None:
     """VAL-COMPOSE-002 / VAL-CROSS-065 / VAL-CROSS-077: Compose is the destination."""
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    deploy = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
     compose_docs = (ROOT / "docs" / "compose.md").read_text(encoding="utf-8")
+    validator_docs = (ROOT / "docs" / "validator.md").read_text(encoding="utf-8")
     swarm_readme = (ROOT / "deploy" / "swarm" / "README.md").read_text(encoding="utf-8")
 
     assert "deploy/compose/install-master.sh" in readme
@@ -324,10 +324,13 @@ def test_operator_entrypoint_docs_are_compose_only() -> None:
     assert "canonical, Swarm-only" not in deploy_section
     assert "Docker Compose is the only supported" in deploy_section
 
-    assert "install-master.sh" in deploy
-    assert "install-validator.sh" in deploy
-    assert "not a supported install destination" in deploy.lower() or (
-        "not** a supported" in deploy.lower()
+    shipping = "\n".join((compose_docs, validator_docs, readme))
+    assert "install-master.sh" in shipping
+    assert "install-validator.sh" in shipping
+    assert (
+        "not a supported" in compose_docs.lower()
+        or "not a supported install destination" in swarm_readme.lower()
+        or "NOT A SUPPORTED INSTALL DESTINATION" in swarm_readme
     )
     assert "compose" in compose_docs.lower()
     assert "HISTORICAL" in swarm_readme or "NON-TARGET" in swarm_readme

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local mission prism service: worker plane ON + admission gate + explicit CPU re-exec test mode.
 
-Part of the cross-repo local end-to-end harness (base docs/operations/mission-harness.md). Serves
+Part of the cross-repo local end-to-end harness (base advanced/local harness (not shipping)). Serves
 the real prism challenge API on a loopback port configured so that:
 
 * the worker plane is ON and the admission gate requires >=1 active worker for the submitting

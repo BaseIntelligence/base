@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local mission stub validator: audits disputed prism units by replaying the CPU re-exec.
 
-Part of the cross-repo local end-to-end harness (base docs/operations/mission-harness.md). Enrolls
+Part of the cross-repo local end-to-end harness (base advanced/local harness (not shipping)). Enrolls
 as a gpu-capable validator (its hotkey holds a validator permit in the mock metagraph). When the
 base master disputes a divergent unit it creates a validator-kind audit work unit
 (``<uid>:audit``); this agent pulls it, reads the audited submission from

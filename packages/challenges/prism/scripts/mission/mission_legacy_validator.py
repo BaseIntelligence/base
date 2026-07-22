@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local mission LEGACY validator: run an assigned prism PRIMARY unit via ``validator_dispatch``.
 
-Part of the cross-repo local end-to-end harness (base ``docs/operations/mission-harness.md``); used
+Part of the cross-repo local end-to-end harness (base ``advanced/local harness (not shipping)``); used
 by the flags-OFF legacy regression smoke (VAL-CROSS-006). Enrolls as a gpu-capable validator (its
 hotkey holds a validator permit in the mock metagraph). With the worker plane OFF the base master
 routes the single prism gpu work unit to this VALIDATOR (never a worker); the agent pulls it and

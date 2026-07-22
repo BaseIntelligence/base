@@ -13,7 +13,7 @@ spawned process by PID so nothing is left listening.
 
 Run: ``python scripts/mission/launch.py`` (all drills) or ``--only 1,4`` (a subset). Everything runs
 through the prism virtualenv with the current base source on ``PYTHONPATH`` (see
-``docs/operations/mission-harness.md`` in the base repo). NOT for production.
+``advanced/local harness (not shipping)`` in the base repo). NOT for production.
 """
 
 from __future__ import annotations

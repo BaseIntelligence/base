@@ -116,9 +116,18 @@ def test_challenge_images_workflow_build_uses_monorepo_build_context() -> None:
 
 
 def test_docs_monorepo_lists_challenge_image_ghcr_names() -> None:
-    text = (REPO_ROOT / "docs/monorepo.md").read_text(encoding="utf-8")
+    """GHCR names live in compose docs + package READMEs (essay removed)."""
+    text = "\n".join(
+        (REPO_ROOT / rel).read_text(encoding="utf-8")
+        for rel in (
+            "docs/compose.md",
+            "packages/challenges/README.md",
+            "packages/challenges/prism/README.md",
+            "packages/challenges/agent-challenge/README.md",
+        )
+    )
     for name in INVARIANT_GHCR_NAMES:
-        # ADR may list brace-expanded form; require each short name component.
         short = name.rsplit("/", 1)[-1]
         assert short in text, short
     assert "challenge-images" in text or "mono-ci-images" in text
+    assert not (REPO_ROOT / "docs/monorepo.md").exists()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Flags-OFF legacy regression smoke: gpu unit -> VALIDATOR -> validator_dispatch -> score.
 
-Part of the cross-repo local end-to-end harness (base ``docs/operations/mission-harness.md``);
+Part of the cross-repo local end-to-end harness (base ``advanced/local harness (not shipping)``);
 fulfils part (b) of VAL-CROSS-006. Stands up the SAME local mock-metagraph deployment as
 ``launch.py`` but with ALL new flags OFF:
 

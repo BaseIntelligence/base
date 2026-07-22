@@ -35,4 +35,4 @@ uv run python scripts/pack_seed_family.py --family deeploop-tiny-1m --output-dir
 
 ## Submit
 
-See [docs/submissions.md](../../docs/submissions.md) and the [miner guide](../../docs/miner/README.md).
+See [docs/submissions.md](../../docs/api.md) and the [miner guide](../../../../docs/miner/getting-started.md).

@@ -52,5 +52,5 @@ secondary. Miner return values and private manifests are ignored.
 ## Submit
 
 Submit as a `.zip` bundle of this directory through the public route (when enabled) or the BASE
-proxy. See [docs/submissions.md](../../docs/submissions.md) and the
-[miner guide](../../docs/miner/README.md#lab-seed-families).
+proxy. See [docs/submissions.md](../../docs/api.md) and the
+[miner guide](../../../../docs/miner/getting-started.md).

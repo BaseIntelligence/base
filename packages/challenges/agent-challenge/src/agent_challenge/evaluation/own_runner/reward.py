@@ -7,7 +7,7 @@ precedence) into a reward, aggregates it across metrics and trials (pass@k), and
 how agent-challenge maps that into ``{status, score, resolved, total,
 reason_code}``.
 
-Authoritative spec: ``/droid/platform-v10/docs/reward-semantics.md`` (GATE G2,
+Authoritative spec: ``/droid/platform-v10/challenge OpenAPI / package evaluation docs`` (GATE G2,
 PASS). Ground-truth fixtures executed against the real harbor wheel:
 ``.omo/evidence/task-2-reward-{semantics,edgecases}.txt``. Source mirrored:
 ``harbor/verifier/verifier.py``, ``harbor/metrics/{base,mean,max,min,sum}.py``,

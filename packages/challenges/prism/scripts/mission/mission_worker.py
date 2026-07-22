@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local mission worker agent: a base worker plane agent whose executor is the prism CPU re-exec.
 
-Part of the cross-repo local end-to-end harness (base docs/operations/mission-harness.md). Enrolls
+Part of the cross-repo local end-to-end harness (base advanced/local harness (not shipping)). Enrolls
 as a miner-funded GPU worker under a distinct owner (miner) hotkey, then for each assigned prism
 work unit runs the repo's OWN deterministic CPU re-exec (``evaluate_cpu_reexec``), normalizes the
 volatile timing fields so honest replicas of the same submission agree on one ``manifest_sha256``,
