@@ -231,9 +231,20 @@ def build_eval_agent_planned_request(
     and coherent digests. This constructor reuses the review planned schema when
     model matches REVIEW_MODEL; otherwise it builds the same closed key set and
     still pins origin/path/TLS via observed path checks.
+
+    VAL-AGATE-012/013: no closed agent model catalog; personal finetunes refuse.
     """
 
+    from agent_challenge.evaluation.llm_rules_residual import (
+        REFUSE_FINETUNE as _REFUSE_FT,
+    )
+    from agent_challenge.evaluation.llm_rules_residual import (
+        is_personal_finetune_model,
+    )
     from agent_challenge.review.schemas import REVIEW_MODEL
+
+    if is_personal_finetune_model(model):
+        raise EvalAgentLlmError(_REFUSE_FT, f"personal finetune model refused: {model!r}")
 
     if model == REVIEW_MODEL:
         return build_planned_openrouter_request(
@@ -501,6 +512,21 @@ def admit_eval_agent_llm_for_score(
             mode=llm_mode,
             runtime_kind=kind,
         )
+
+    # VAL-AGATE-013: personal finetunes refuse (no closed catalog of allowed models).
+    from agent_challenge.evaluation.llm_rules_residual import (
+        REFUSE_FINETUNE as _REFUSE_FT,
+    )
+    from agent_challenge.evaluation.llm_rules_residual import (
+        is_personal_finetune_model,
+    )
+
+    claimed_model = agent_or_materials.get("model")
+    if claimed_model is None and isinstance(agent_or_materials.get("planned"), Mapping):
+        claimed_model = agent_or_materials["planned"].get("model")
+    if is_personal_finetune_model(str(claimed_model) if claimed_model is not None else None):
+        return _refuse(_REFUSE_FT, mode=llm_mode, runtime_kind=kind)
+
     try:
         digests = require_eval_agent_or_digests(agent_or_materials)
     except EvalAgentLlmError as exc:

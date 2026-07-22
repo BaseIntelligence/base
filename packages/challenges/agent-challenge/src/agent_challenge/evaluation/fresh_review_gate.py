@@ -139,11 +139,24 @@ def admit_eval_cvm_fresh_review(
     db_received_at_ms: object | None = None,
     client_bag: Mapping[str, Any] | None = None,
     http_date_ms: object | None = None,
+    # AGATE package residual (VAL-AGATE-004..007). Production dual-flag callers
+    # (create_eval_run) set require_package_residual=True. Unit ACAT fixtures may
+    # leave it False; host-static allow alone is still never enough when required.
+    dual_flags_on: bool = True,
+    require_package_residual: bool = False,
+    expected_package_tree_sha: str | None = None,
+    package_residual: Mapping[str, Any] | None = None,
+    outcome: Mapping[str, Any] | None = None,
+    host_analyzer_allow: bool | None = None,
 ) -> EvalCvmFreshAdmission:
     """Admit Eval CVM launch only on fresh re-verified review materials.
 
     Cached ``verified_allow`` / ``review_allowed`` alone always fails closed when
     materials are missing or when re-verify does not produce ``allow``.
+
+    When ``require_package_residual`` is True (production dual-flag prepare), also
+    require bound measured package LLM-rules residual + rules digests
+    (VAL-AGATE-004..007). Host analyzer allow alone is never sufficient.
     """
 
     cached_allow = (
@@ -262,6 +275,34 @@ def admit_eval_cvm_fresh_review(
             report_data_hex=production.report_data_hex,
         )
 
+    # AGATE: measured package residual required before TEE-authable eval launch
+    # when production callers set require_package_residual=True.
+    if require_package_residual:
+        from agent_challenge.evaluation.llm_rules_residual import (
+            admit_package_residual_for_eval,
+        )
+
+        residual_decision = admit_package_residual_for_eval(
+            envelope=env if env is not None else envelope,
+            outcome=outcome,
+            residual=package_residual,
+            review_core=core if isinstance(core, Mapping) else None,
+            dual_flags_on=bool(dual_flags_on),
+            require_package_tree_sha=expected_package_tree_sha is not None,
+            expected_package_tree_sha=expected_package_tree_sha,
+            host_analyzer_allow=host_analyzer_allow,
+        )
+        if not residual_decision.admitted:
+            return EvalCvmFreshAdmission(
+                may_launch=False,
+                reason_code=residual_decision.reason_code,
+                review_digest=production.review_digest,
+                reverify_exercised=True,
+                production_status=production.status,
+                verdict=production.verdict,
+                report_data_hex=production.report_data_hex,
+            )
+
     # Bound times for evidence / operators (already re-verified inside admit).
     bound_issued: int | None = None
     bound_received: int | None = None
@@ -286,20 +327,31 @@ def admit_eval_cvm_fresh_review(
     )
 
 
-def admit_eval_cvm_launch_from_assignment(assignment: Any) -> EvalCvmFreshAdmission:
+def admit_eval_cvm_launch_from_assignment(
+    assignment: Any,
+    *,
+    dual_flags_on: bool = True,
+    require_package_residual: bool = False,
+    expected_package_tree_sha: str | None = None,
+    package_residual: Mapping[str, Any] | None = None,
+    host_analyzer_allow: bool | None = None,
+) -> EvalCvmFreshAdmission:
     """Eval-launch gate from a durable ReviewAssignment row (or duck-type).
 
     Loads receipted envelope materials and re-verifies; never trusts phase /
-    outcome JSON alone.
+    outcome JSON alone. Production dual-flag path also requires measured package
+    residual materials bound on the envelope/outcome (AGATE).
     """
 
     phase = getattr(assignment, "phase", None)
     outcome_json = getattr(assignment, "review_verification_outcome_json", None)
     outcome_status: str | None = None
+    outcome_bag: Mapping[str, Any] | None = None
     if isinstance(outcome_json, str) and outcome_json:
         try:
             parsed = json.loads(outcome_json)
             if isinstance(parsed, dict):
+                outcome_bag = parsed
                 status = parsed.get("status")
                 outcome_status = str(status) if isinstance(status, str) else None
         except (TypeError, ValueError):
@@ -315,6 +367,12 @@ def admit_eval_cvm_launch_from_assignment(assignment: Any) -> EvalCvmFreshAdmiss
         cached_phase=str(phase) if phase is not None else None,
         cached_outcome_status=outcome_status,
         cached_review_digest=str(review_digest) if isinstance(review_digest, str) else None,
+        dual_flags_on=dual_flags_on,
+        require_package_residual=require_package_residual,
+        expected_package_tree_sha=expected_package_tree_sha,
+        package_residual=package_residual,
+        outcome=outcome_bag,
+        host_analyzer_allow=host_analyzer_allow,
     )
 
 
@@ -328,6 +386,12 @@ def require_eval_cvm_fresh_review(
     cached_outcome_status: str | None = None,
     cached_review_digest: str | None = None,
     quote_reverify: Callable[[Mapping[str, Any]], bool] | None = None,
+    dual_flags_on: bool = True,
+    require_package_residual: bool = False,
+    expected_package_tree_sha: str | None = None,
+    package_residual: Mapping[str, Any] | None = None,
+    outcome: Mapping[str, Any] | None = None,
+    host_analyzer_allow: bool | None = None,
 ) -> EvalCvmFreshAdmission:
     """Fail closed on refuse; return admission when launch may proceed."""
 
@@ -340,6 +404,12 @@ def require_eval_cvm_fresh_review(
         cached_outcome_status=cached_outcome_status,
         cached_review_digest=cached_review_digest,
         quote_reverify=quote_reverify,
+        dual_flags_on=dual_flags_on,
+        require_package_residual=require_package_residual,
+        expected_package_tree_sha=expected_package_tree_sha,
+        package_residual=package_residual,
+        outcome=outcome,
+        host_analyzer_allow=host_analyzer_allow,
     )
     if not decision.may_launch:
         raise EvalCvmFreshReviewError(decision.reason_code)

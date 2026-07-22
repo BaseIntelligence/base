@@ -464,6 +464,8 @@ def _loaded_plan(run: EvalRun) -> dict[str, Any]:
 async def _authorized_review_digest(
     session: AsyncSession,
     submission: AgentSubmission,
+    *,
+    settings: ChallengeSettings | None = None,
 ) -> str:
     """Return review_digest only after **fresh re-verified** review admission.
 
@@ -472,6 +474,10 @@ async def _authorized_review_digest(
     assignment envelope must re-admit via
     :func:`agent_challenge.evaluation.fresh_review_gate.admit_eval_cvm_launch_from_assignment`
     (bound outcome + OR digests + report_data + ≤24h).
+
+    Production dual-flag path also requires measured package LLM-rules residual
+    bound into the authorizing envelope/outcome (VAL-AGATE-004..007). Host
+    analyzer allow alone is never sufficient for eval prepare.
     """
 
     assignment = await verified_review_assignment_for_submission(session, submission)
@@ -483,8 +489,28 @@ async def _authorized_review_digest(
         admit_eval_cvm_launch_from_assignment,
     )
 
+    dual_on = True
+    require_residual = True
+    expected_tree: str | None = getattr(submission, "package_tree_sha", None)
+    if isinstance(expected_tree, str):
+        expected_tree = expected_tree.strip() or None
+    else:
+        expected_tree = None
+    if settings is not None:
+        phala = bool(getattr(settings, "phala_attestation_enabled", True))
+        review = bool(getattr(settings, "attested_review_enabled", True))
+        dual_on = phala and review
+        # Residual is mandatory for production dual-flag prepare; flag-off still
+        # fails later emit gates but residual check runs when dual_on.
+        require_residual = dual_on
+
     try:
-        decision = admit_eval_cvm_launch_from_assignment(assignment)
+        decision = admit_eval_cvm_launch_from_assignment(
+            assignment,
+            dual_flags_on=dual_on,
+            require_package_residual=require_residual,
+            expected_package_tree_sha=expected_tree,
+        )
     except EvalCvmFreshReviewError as exc:
         raise EvalAuthorizationRequired(
             f"fresh review re-verify refused eval launch: {exc.code}"
@@ -602,7 +628,7 @@ async def create_eval_run(
     if locked_submission is None:
         raise EvalAuthorizationRequired("submission does not exist")
     submission = locked_submission
-    review_digest = await _authorized_review_digest(session, submission)
+    review_digest = await _authorized_review_digest(session, submission, settings=settings)
     current = await _latest_run(session, submission.id, lock=True)
     if current is not None:
         moment = _as_utc(now)
@@ -802,7 +828,7 @@ async def retry_eval_run(
     )
     if (attempt_count or 0) >= settings.eval_max_attempts:
         raise EvalAuthorizationConflict("Eval run retry limit reached")
-    review_digest = await _authorized_review_digest(session, submission)
+    review_digest = await _authorized_review_digest(session, submission, settings=settings)
     return await _issue_run(
         session,
         submission=submission,
