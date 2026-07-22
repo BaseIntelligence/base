@@ -544,13 +544,34 @@ def _emission_review_envelope() -> dict[str, Any]:
         decision=build_decision(verdict="allow"),
         times=_review_times(),
     )
-    return {
+    env = {
         "schema_version": 1,
         "domain": REVIEW_REPORT_DOMAIN,
         "review_digest": review_digest(core),
         "report_data_hex": review_report_data_hex(core),
         "review_core": core,
     }
+    # AGATE: dual-flag score path requires measured package residual + tree sha.
+    from agent_challenge.evaluation.llm_rules_residual import (
+        MEASURED_RESIDUAL_KIND,
+        bind_package_residual_into_review_materials,
+        build_package_residual_materials,
+    )
+
+    materials = build_package_residual_materials(
+        residual_verdict="allow",
+        rules_bundle_sha256="11" * 32,
+        rules_version="rules-v1",
+        rules_file_digests={".rules/acceptance.md": "22" * 32},
+        package_tree_sha="bb" * 32,
+        residual_kind=MEASURED_RESIDUAL_KIND,
+        rules_policy_text_sha256="33" * 32,
+        harness_kind="measured_review_cvm_script_zip",
+    )
+    return bind_package_residual_into_review_materials(
+        envelope=env,
+        materials=materials,
+    )["envelope"]
 
 
 def _emission_plan(*, authorizing_review_digest: str) -> dict[str, Any]:

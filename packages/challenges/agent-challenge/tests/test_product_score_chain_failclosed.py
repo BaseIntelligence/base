@@ -15,6 +15,11 @@ from typing import Any
 import pytest
 
 from agent_challenge.canonical import eval_wire as ew
+from agent_challenge.evaluation.llm_rules_residual import (
+    MEASURED_RESIDUAL_KIND,
+    bind_package_residual_into_review_materials,
+    build_package_residual_materials,
+)
 from agent_challenge.evaluation.score_chain_gate import (
     KEY_RELEASE_DOMAIN,
     REFUSE_AST_ONLY,
@@ -54,6 +59,8 @@ from agent_challenge.review.or_outcome_bind import (
     review_report_data_hex,
     sha256_hex,
 )
+
+PACKAGE_TREE_SHA = "bb" * 32
 
 T0 = 1_700_000_000_000
 MS_23H = FRESHNESS_WINDOW_MS - 60_000
@@ -158,18 +165,36 @@ def _review_envelope(
     received: int = T0 + MS_23H,
     mutilate: bool = False,
     domain: str = REVIEW_REPORT_DOMAIN,
+    include_package_residual: bool = True,
+    package_tree_sha: str = PACKAGE_TREE_SHA,
 ) -> dict[str, Any]:
     core = _review_core(verdict=verdict, issued=issued, received=received)
     rd = review_report_data_hex(core)
     if mutilate:
         rd = ("ff" * 32) + ("00" * 32)
-    return {
+    env: dict[str, Any] = {
         "schema_version": 1,
         "domain": domain,
         "review_digest": review_digest(core),
         "report_data_hex": rd,
         "review_core": core,
     }
+    if include_package_residual and verdict == "allow" and not mutilate:
+        materials = build_package_residual_materials(
+            residual_verdict="allow",
+            rules_bundle_sha256="11" * 32,
+            rules_version="rules-v1",
+            rules_file_digests={".rules/acceptance.md": "22" * 32},
+            package_tree_sha=package_tree_sha,
+            residual_kind=MEASURED_RESIDUAL_KIND,
+            rules_policy_text_sha256="33" * 32,
+            harness_kind="measured_review_cvm_script_zip",
+        )
+        env = bind_package_residual_into_review_materials(
+            envelope=env,
+            materials=materials,
+        )["envelope"]
+    return env
 
 
 def _os_image_hash() -> str:
@@ -197,7 +222,7 @@ def _plan(*, authorizing_review_digest: str | None = None) -> dict[str, Any]:
             "submission_version": 1,
             "authorizing_review_digest": review_d,
             "agent_hash": AGENT_HASH,
-            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "package_tree_sha": PACKAGE_TREE_SHA,
             "selected_tasks": [
                 {
                     "task_id": "task-a",
@@ -699,6 +724,7 @@ def test_verify_key_release_grant_rejects_colliding_score_nonce() -> None:
         "key_release_nonce": "nonce-shared",
         "score_nonce": "nonce-shared",
         "agent_hash": AGENT_HASH,
+        "package_tree_sha": PACKAGE_TREE_SHA,
     }
     grant = {
         "domain": KEY_RELEASE_DOMAIN,

@@ -39,10 +39,38 @@ from agent_challenge.evaluation.fresh_review_gate import (
 from agent_challenge.evaluation.fresh_review_gate import (
     admit_eval_cvm_fresh_review,
 )
+from agent_challenge.evaluation.llm_rules_residual import (
+    REFUSE_HOST_ONLY as PACKAGE_REFUSE_HOST_ONLY,
+)
+from agent_challenge.evaluation.llm_rules_residual import (
+    REFUSE_PACKAGE_TREE_MISSING as PACKAGE_REFUSE_TREE_MISSING,
+)
+from agent_challenge.evaluation.llm_rules_residual import (
+    REFUSE_RESIDUAL_FAIL as PACKAGE_REFUSE_RESIDUAL_FAIL,
+)
+from agent_challenge.evaluation.llm_rules_residual import (
+    REFUSE_RESIDUAL_MISSING as PACKAGE_REFUSE_RESIDUAL_MISSING,
+)
+from agent_challenge.evaluation.llm_rules_residual import (
+    REFUSE_RESIDUAL_UNBOUND as PACKAGE_REFUSE_RESIDUAL_UNBOUND,
+)
 from agent_challenge.review.or_outcome_bind import (
     REVIEW_REPORT_DOMAIN,
     ReviewOrOutcomeError,
     admit_production_from_bound_outcome,
+)
+
+# AGATE package residual refuse codes preserved through score admission.
+_PACKAGE_PROOF_REFUSE_CODES = frozenset(
+    {
+        PACKAGE_REFUSE_RESIDUAL_MISSING,
+        PACKAGE_REFUSE_RESIDUAL_FAIL,
+        PACKAGE_REFUSE_RESIDUAL_UNBOUND,
+        PACKAGE_REFUSE_HOST_ONLY,
+        PACKAGE_REFUSE_TREE_MISSING,
+        "package_residual_kind_invalid",
+        "rules_digests_missing",
+    }
 )
 
 # ---------------------------------------------------------------------------
@@ -65,6 +93,8 @@ REFUSE_REVIEW_STALE = "attestation_stale_over_24h"
 REFUSE_SCORE_DOMAIN = "score_refused_score_domain"
 REFUSE_PARTIAL_FORBIDDEN = "score_refused_partial_forbidden"
 REFUSE_MISSING_REVIEW = "review_attestation_missing"
+REFUSE_PACKAGE_TREE_MISSING = "score_refused_package_tree_sha_missing"
+REFUSE_PACKAGE_PROOF = "score_refused_package_proof"
 
 # Domains (byte-identical to eval_wire / keyrelease client)
 SCORE_DOMAIN = ew.SCORE_DOMAIN
@@ -248,6 +278,15 @@ def verify_key_release_grant(
     if not plan_eval_run_id or not plan_kr_nonce:
         return REFUSE_INCOMPLETE_CHAIN, None
 
+    # AGATE VAL-AGATE-009: KR grant path requires plan package_tree_sha proof.
+    plan_tree = eval_plan.get("package_tree_sha")
+    if not isinstance(plan_tree, str) or len(plan_tree.strip()) != 64:
+        return REFUSE_PACKAGE_TREE_MISSING, None
+    try:
+        int(plan_tree.strip(), 16)
+    except ValueError:
+        return REFUSE_PACKAGE_TREE_MISSING, None
+
     if grant is None:
         # Historic env-inject flag without admission-time materials → refuse.
         if key_granted_flag:
@@ -304,6 +343,12 @@ def verify_key_release_grant(
     plan_agent = eval_plan.get("agent_hash")
     if grant_agent is not None and plan_agent is not None and str(grant_agent) != str(plan_agent):
         return REFUSE_KEY_RELEASE_MISMATCH, None
+
+    # Optional package_tree_sha binding if grant carries it (AGATE proof chain).
+    grant_tree = grant.get("package_tree_sha")
+    if grant_tree is not None:
+        if str(grant_tree).strip().lower() != plan_tree.strip().lower():
+            return REFUSE_KEY_RELEASE_MISMATCH, None
 
     return None, expected
 
@@ -464,7 +509,25 @@ def admit_production_score_from_chain(
     _ = master_status_green
     _ = cached_score_ok
 
+    # AGATE: dual-flag production score requires plan package_tree_sha proof.
+    plan_tree_sha: str | None = None
+    raw_tree = eval_plan.get("package_tree_sha")
+    if isinstance(raw_tree, str) and raw_tree.strip():
+        plan_tree_sha = raw_tree.strip()
+    if dual_flags_on and (
+        plan_tree_sha is None
+        or len(plan_tree_sha) != 64
+        or any(c not in "0123456789abcdef" for c in plan_tree_sha.lower())
+    ):
+        return _refuse(
+            REFUSE_PACKAGE_TREE_MISSING,
+            reverify_exercised=False,
+            domains_checked=tuple(checked),
+        )
+
     # ----- 1) Review domain re-verify (times + 24h + OR + allow) -----
+    # AGATE VAL-AGATE-008/009/011: dual-flag production score also requires
+    # measured package residual allow + package_tree_sha match on the plan.
     checked.append(REVIEW_DOMAIN)
     review_decision = admit_eval_cvm_fresh_review(
         envelope=review_envelope,
@@ -473,9 +536,20 @@ def admit_production_score_from_chain(
         domain=review_domain,
         cached_outcome_status="verified_allow" if cached_review_allow else None,
         cached_phase="review_allowed" if cached_review_allow else None,
+        dual_flags_on=dual_flags_on,
+        require_package_residual=bool(dual_flags_on),
+        expected_package_tree_sha=plan_tree_sha if dual_flags_on else None,
     )
     if not review_decision.may_launch:
         code = review_decision.reason_code
+        # Preserve AGATE package residual refuse codes (no free score attestation).
+        if code in _PACKAGE_PROOF_REFUSE_CODES:
+            return _refuse(
+                code,
+                reverify_exercised=True,
+                domains_checked=tuple(checked),
+                review_digest=review_decision.review_digest,
+            )
         # AST-only consolation path: AST green + missing review materials.
         if offline_ast_pass and code in {
             REFUSE_MISSING_REVIEW,
@@ -747,6 +821,8 @@ __all__ = [
     "REFUSE_MISSING_REVIEW",
     "REFUSE_NONCE_REPLAY",
     "REFUSE_NONCE_STALE",
+    "REFUSE_PACKAGE_PROOF",
+    "REFUSE_PACKAGE_TREE_MISSING",
     "REFUSE_PARTIAL_FORBIDDEN",
     "REFUSE_REVIEW",
     "REFUSE_REVIEW_STALE",

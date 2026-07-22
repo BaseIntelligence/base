@@ -205,6 +205,27 @@ def _fresh_review_envelope(
         "report_data_hex": rd,
         "review_core": core,
     }
+    # AGATE: create_eval_run / score dual-flag path requires residual + tree sha.
+    from agent_challenge.evaluation.llm_rules_residual import (
+        MEASURED_RESIDUAL_KIND,
+        bind_package_residual_into_review_materials,
+        build_package_residual_materials,
+    )
+
+    materials = build_package_residual_materials(
+        residual_verdict="allow",
+        rules_bundle_sha256="11" * 32,
+        rules_version="rules-v1",
+        rules_file_digests={".rules/acceptance.md": "22" * 32},
+        package_tree_sha="bb" * 32,
+        residual_kind=MEASURED_RESIDUAL_KIND,
+        rules_policy_text_sha256="33" * 32,
+        harness_kind="measured_review_cvm_script_zip",
+    )
+    env = bind_package_residual_into_review_materials(
+        envelope=env,
+        materials=materials,
+    )["envelope"]
     return json.dumps(env, sort_keys=True, separators=(",", ":")), rd, digest, env
 
 
@@ -230,6 +251,7 @@ async def _authorized_submission(database_session) -> tuple[int, dict[str, Any]]
             artifact_uri=f"/tmp/agent-kr-{_SUBMISSION_SEQ}.zip",
             artifact_path=f"/tmp/agent-kr-{_SUBMISSION_SEQ}.zip",
             zip_sha256=hashlib.sha256(b"zip-" + salt).hexdigest(),
+            package_tree_sha="bb" * 32,
             zip_size_bytes=3,
             raw_status="review_allowed",
             status="queued",
@@ -268,9 +290,15 @@ async def _authorized_submission(database_session) -> tuple[int, dict[str, Any]]
             review_report_envelope_json=envelope_json,
             review_report_data_hex=report_data_hex,
             review_digest=digest,
-            review_verification_outcome_json=(
-                '{"status":"verified_allow","terminal":true,"retryable":false,'
-                '"nonce_consumed":true}'
+            review_verification_outcome_json=json.dumps(
+                {
+                    "status": "verified_allow",
+                    "terminal": True,
+                    "retryable": False,
+                    "nonce_consumed": True,
+                    "package_residual": env.get("package_residual"),
+                },
+                separators=(",", ":"),
             ),
         )
         session.add(assignment)
@@ -315,6 +343,7 @@ def test_build_key_release_grant_materials_closed_shape() -> None:
             "key_release_nonce": "kr-nonce-1",
             "score_nonce": "score-nonce-1",
             "agent_hash": "55" * 32,
+            "package_tree_sha": "bb" * 32,
         },
         key_granted_flag=True,
     )

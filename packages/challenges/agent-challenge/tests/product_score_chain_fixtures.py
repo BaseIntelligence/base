@@ -15,6 +15,11 @@ from typing import Any
 
 from agent_challenge.canonical import eval_wire as ew
 from agent_challenge.core.models import ReviewAssignment, ReviewSession
+from agent_challenge.evaluation.llm_rules_residual import (
+    MEASURED_RESIDUAL_KIND,
+    bind_package_residual_into_review_materials,
+    build_package_residual_materials,
+)
 from agent_challenge.evaluation.score_chain_gate import (
     KEY_RELEASE_DOMAIN,
     recompute_key_release_report_data_hex,
@@ -43,6 +48,10 @@ RESP = b'{"id":"gen-fx","model":"x-ai/grok-4.5","choices":[]}'
 RESP_SHA = sha256_hex(RESP)
 META = sha256_hex(b"meta-fx-chain")
 SPKI = "aa" * 32
+# Default package_tree_sha used across dual-flag score fixtures (AGATE).
+FIXTURE_PACKAGE_TREE_SHA = "bb" * 32
+FIXTURE_RULES_BUNDLE_SHA = "11" * 32
+FIXTURE_RULES_FILE_DIGESTS = {".rules/acceptance.md": "22" * 32}
 
 
 def _times(*, issued: int = T0, received: int = T0 + MS_23H) -> dict[str, int]:
@@ -60,14 +69,68 @@ def _times(*, issued: int = T0, received: int = T0 + MS_23H) -> dict[str, int]:
     }
 
 
+def build_fixture_package_residual(
+    *,
+    package_tree_sha: str = FIXTURE_PACKAGE_TREE_SHA,
+    residual_verdict: str = "allow",
+) -> dict[str, Any]:
+    """Measured package residual materials matching AGATE dual-flag score path."""
+
+    materials = build_package_residual_materials(
+        residual_verdict=residual_verdict,
+        rules_bundle_sha256=FIXTURE_RULES_BUNDLE_SHA,
+        rules_version="rules-v1",
+        rules_file_digests=dict(FIXTURE_RULES_FILE_DIGESTS),
+        package_tree_sha=package_tree_sha,
+        residual_kind=MEASURED_RESIDUAL_KIND,
+        rules_policy_text_sha256="33" * 32,
+        harness_kind="measured_review_cvm_script_zip",
+    )
+    return materials.as_dict()
+
+
+def bind_fixture_package_residual(
+    envelope: dict[str, Any],
+    *,
+    package_tree_sha: str = FIXTURE_PACKAGE_TREE_SHA,
+    residual_verdict: str = "allow",
+    include_residual: bool = True,
+) -> dict[str, Any]:
+    """Bind residual into a review envelope copy (or return unchanged)."""
+
+    if not include_residual:
+        return dict(envelope)
+    materials = build_package_residual_materials(
+        residual_verdict=residual_verdict,
+        rules_bundle_sha256=FIXTURE_RULES_BUNDLE_SHA,
+        rules_version="rules-v1",
+        rules_file_digests=dict(FIXTURE_RULES_FILE_DIGESTS),
+        package_tree_sha=package_tree_sha,
+        residual_kind=MEASURED_RESIDUAL_KIND,
+        rules_policy_text_sha256="33" * 32,
+        harness_kind="measured_review_cvm_script_zip",
+    )
+    bound = bind_package_residual_into_review_materials(
+        envelope=envelope,
+        materials=materials,
+    )
+    return bound["envelope"]
+
+
 def build_fixture_review_envelope(
     *,
     session_id: str = "rs-fx-chain",
     assignment_id: str = "ra-fx-chain",
     submission_id: str = "sub-fx-chain",
     review_nonce: str = "nonce-fx-review",
+    package_tree_sha: str = FIXTURE_PACKAGE_TREE_SHA,
+    include_package_residual: bool = True,
 ) -> dict[str, Any]:
-    """Closed valid allow envelope with bound times ≤24h and OR digests."""
+    """Closed valid allow envelope with bound times ≤24h and OR digests.
+
+    AGATE: also binds measured package residual + package_tree_sha by default so
+    dual-flag score admission (require_package_residual) remains green.
+    """
 
     planned = build_planned_openrouter_request(
         body_sha256=BODY_SHA,
@@ -99,9 +162,9 @@ def build_fixture_review_envelope(
     )
     rules = {
         "rules_version": "rules-v1",
-        "rules_bundle_sha256": "11" * 32,
+        "rules_bundle_sha256": FIXTURE_RULES_BUNDLE_SHA,
         "rules_files": [".rules/acceptance.md"],
-        "rules_file_digests": {".rules/acceptance.md": "22" * 32},
+        "rules_file_digests": dict(FIXTURE_RULES_FILE_DIGESTS),
         "rules_policy_text_sha256": "33" * 32,
     }
     core = build_review_core_minimal(
@@ -116,13 +179,18 @@ def build_fixture_review_envelope(
         decision=build_decision(verdict="allow"),
         times=_times(),
     )
-    return {
+    env = {
         "schema_version": 1,
         "domain": REVIEW_REPORT_DOMAIN,
         "review_digest": review_digest(core),
         "report_data_hex": review_report_data_hex(core),
         "review_core": core,
     }
+    return bind_fixture_package_residual(
+        env,
+        package_tree_sha=package_tree_sha,
+        include_residual=include_package_residual,
+    )
 
 
 def build_key_release_grant_for_plan(
@@ -205,13 +273,16 @@ async def seed_authorizing_review_assignment(
     )
     session.add(rs)
     await session.flush()
-    outcome = {
+    outcome: dict[str, Any] = {
         "status": "verified_allow",
         "reason_code": "review_verified",
         "terminal": True,
         "retryable": False,
         "nonce_consumed": True,
     }
+    residual = envelope.get("package_residual")
+    if isinstance(residual, dict):
+        outcome["package_residual"] = residual
     ra = ReviewAssignment(
         session_id=rs.id,
         assignment_id=f"ra-seed-{submission_id}",
@@ -254,6 +325,11 @@ __all__ = [
     "T0",
     "attach_key_release_grant",
     "bind_key_release_grant_on_run",
+    "FIXTURE_PACKAGE_TREE_SHA",
+    "FIXTURE_RULES_BUNDLE_SHA",
+    "FIXTURE_RULES_FILE_DIGESTS",
+    "bind_fixture_package_residual",
+    "build_fixture_package_residual",
     "build_fixture_review_envelope",
     "build_key_release_grant_for_plan",
     "rebind_plan_authorizing_digest",

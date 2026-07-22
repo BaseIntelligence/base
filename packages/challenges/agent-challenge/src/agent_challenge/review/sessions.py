@@ -177,15 +177,36 @@ async def create_review_session(
     artifact_sha256 = sha256(artifact_bytes).hexdigest()
     if submission.zip_sha256 and artifact_sha256 != submission.zip_sha256:
         raise ReviewConflict("committed artifact bytes do not match submission digest")
-    recomputed_tree_sha = compute_package_tree_sha_from_zip_bytes(artifact_bytes)
+    # AGATE package_tree_sha: recompute when artifact is a real ZIP. Bare unit
+    # fixtures (non-zip bytes) may omit tree sha; production submit already
+    # stamps tree from validated extract. When stored tree is present, ZIP
+    # recompute is mandatory and must match.
+    from agent_challenge.submissions.artifacts import ArtifactValidationError
+
     stored_tree_sha = getattr(submission, "package_tree_sha", None)
-    if isinstance(stored_tree_sha, str) and stored_tree_sha.strip():
-        package_tree_sha = stored_tree_sha.strip()
-        if package_tree_sha != recomputed_tree_sha:
+    stored = (
+        stored_tree_sha.strip()
+        if isinstance(stored_tree_sha, str) and stored_tree_sha.strip()
+        else None
+    )
+    recomputed_tree_sha: str | None = None
+    try:
+        recomputed_tree_sha = compute_package_tree_sha_from_zip_bytes(artifact_bytes)
+    except ArtifactValidationError:
+        if stored is not None:
+            raise ReviewConflict(
+                "committed package_tree_sha cannot be verified: artifact is not a zip"
+            ) from None
+        recomputed_tree_sha = None
+    if stored is not None:
+        package_tree_sha = stored
+        if recomputed_tree_sha is not None and package_tree_sha != recomputed_tree_sha:
             raise ReviewConflict("committed package_tree_sha does not match artifact tree")
-    else:
+    elif recomputed_tree_sha is not None:
         package_tree_sha = recomputed_tree_sha
         submission.package_tree_sha = package_tree_sha
+    else:
+        package_tree_sha = None
     max_files = int(getattr(settings, "review_max_rules_files", 128))
     max_rules_bytes = int(getattr(settings, "review_max_rules_bytes", 1_048_576))
     if len(rules_files) > max_files:
