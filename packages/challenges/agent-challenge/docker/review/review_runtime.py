@@ -1551,6 +1551,58 @@ def run_assignment(
                 vm_config=vm_config,
             ),
         )
+        # AGATE residual producer (guest path): attach package_residual bag next
+        # to the closed envelope for host durability. Host validate_review_envelope
+        # keeps exact keys; producer materials are also bound into durable outcome
+        # on submit_review_report from harness_identity + tree_sha. When guest can
+        # compute residual digests from loaded rules, include side-car residual for
+        # evidence continuity (host outcome path remains authoritative).
+        residual_side_car: dict[str, Any] | None = None
+        try:
+            from agent_challenge.evaluation.llm_rules_residual import (
+                residual_materials_from_rules_pack,
+            )
+            from agent_challenge.review.harness_entry import (
+                load_rules_pack_digests,
+                map_decision_verdict_to_residual_verdict,
+            )
+            from agent_challenge.submissions.artifacts import (
+                ArtifactValidationError,
+                compute_package_tree_sha_from_zip_bytes,
+            )
+
+            rules_files_map: dict[str, bytes] = {}
+            for item in rules_bundle.get("files", []):
+                if not isinstance(item, Mapping):
+                    continue
+                path = str(item.get("path") or "").strip()
+                if not path:
+                    continue
+                try:
+                    content = base64.b64decode(item["content_b64"], validate=True)
+                except Exception:
+                    continue
+                rules_files_map[path] = content
+            if rules_files_map:
+                pack = load_rules_pack_digests(files=rules_files_map)
+                tree_sha: str | None = None
+                try:
+                    tree_sha = compute_package_tree_sha_from_zip_bytes(artifact_bytes)
+                except ArtifactValidationError:
+                    tree_sha = None
+                residual_side_car = residual_materials_from_rules_pack(
+                    rules_version=pack.rules_version,
+                    rules_bundle_sha256=pack.bundle_sha256,
+                    rules_file_digests=dict(pack.file_digests),
+                    residual_verdict=map_decision_verdict_to_residual_verdict(
+                        str(policy.get("verdict") or "")
+                    ),
+                    package_tree_sha=tree_sha,
+                    rules_policy_text_sha256=pack.policy_text_sha256,
+                    harness_kind="measured_review_cvm_script_zip",
+                ).as_dict()
+        except Exception:
+            residual_side_car = None
 
         # API decoder key is transport_observation_b64; omit empty metadata_b64.
         evidence: dict[str, str] = {
@@ -1561,7 +1613,9 @@ def run_assignment(
         }
         if capture.metadata:
             evidence["metadata_b64"] = base64.b64encode(capture.metadata).decode("ascii")
-        submission = {"envelope": envelope, "evidence": evidence}
+        submission: dict[str, Any] = {"envelope": envelope, "evidence": evidence}
+        if residual_side_car is not None:
+            submission["package_residual"] = residual_side_car
         payload = json.dumps(submission, separators=(",", ":"), sort_keys=True).encode("utf-8")
         status_code, resp, _ = _http_json(
             "POST",

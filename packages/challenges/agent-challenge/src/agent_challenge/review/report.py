@@ -609,9 +609,54 @@ async def submit_review_report(
                 return existing
         raise ReviewReportConflict("review nonce is no longer active")
 
-    assignment.review_verification_outcome_json = canonical_json_v1(outcome.as_dict()).decode(
-        "utf-8"
+    # Durable outcome bag starts from closed verification fields.
+    outcome_bag: dict[str, Any] = dict(outcome.as_dict())
+    # AGATE residual producer: bind measured package residual into durable
+    # verification outcome materials so dual-flag prepare is not permanently
+    # fail-closed waiting for residual (envelope schema stays exact-key locked).
+    review_session = await session.get(
+        ReviewSession,
+        assignment.session_id,
+        with_for_update=True,
     )
+    if review_session is None:
+        raise ReviewReportConflict("review session does not exist")
+    decision_verdict: str | None = None
+    try:
+        core_map = envelope.get("review_core") if isinstance(envelope, Mapping) else None
+        if isinstance(core_map, Mapping):
+            dec = core_map.get("decision")
+            if isinstance(dec, Mapping):
+                raw_v = dec.get("verdict")
+                if isinstance(raw_v, str):
+                    decision_verdict = raw_v
+    except Exception:
+        decision_verdict = None
+    if decision_verdict is None:
+        # Fallback from outcome status when core decision missing (should not happen).
+        if outcome.status == "verified_allow":
+            decision_verdict = "allow"
+        elif outcome.status == "verified_reject":
+            decision_verdict = "reject"
+        elif outcome.status == "verified_escalate":
+            decision_verdict = "escalate"
+        else:
+            decision_verdict = "fail"
+    package_tree_sha = getattr(review_session, "package_tree_sha", None)
+    if isinstance(package_tree_sha, str):
+        package_tree_sha = package_tree_sha.strip() or None
+    else:
+        package_tree_sha = None
+    merged = merge_package_residual_into_outcome_dict(
+        outcome=outcome_bag,
+        harness_identity_json=getattr(review_session, "harness_identity_json", None),
+        package_tree_sha=package_tree_sha,
+        decision_verdict=decision_verdict,
+    )
+    if merged is not None:
+        outcome_bag = merged
+
+    assignment.review_verification_outcome_json = canonical_json_v1(outcome_bag).decode("utf-8")
     nonce.state = "consumed"
     nonce.consumed_at = _as_utc(now)
     assignment.capability_state = "revoked"
@@ -629,13 +674,6 @@ async def submit_review_report(
     assignment.review_public_projection_json = canonical_json_v1(
         _public_projection(envelope=envelope, outcome=outcome)
     ).decode("utf-8")
-    review_session = await session.get(
-        ReviewSession,
-        assignment.session_id,
-        with_for_update=True,
-    )
-    if review_session is None:
-        raise ReviewReportConflict("review session does not exist")
     if outcome.status == "verified_allow":
         if review_session.authorizing_assignment_id not in {None, assignment.assignment_id}:
             raise ReviewReportConflict("review authorizing assignment conflicts")
@@ -1540,6 +1578,44 @@ def _outcome_from_json(value: str) -> ReviewVerificationOutcome:
         raise ReviewReportConflict("stored review outcome is corrupt") from exc
 
 
+def merge_package_residual_into_outcome_dict(
+    *,
+    outcome: Mapping[str, Any],
+    harness_identity_json: str | bytes | Mapping[str, Any] | None,
+    package_tree_sha: str | None,
+    decision_verdict: str | None,
+) -> dict[str, Any] | None:
+    """Bind producer residual materials into a durable verification outcome bag.
+
+    Returns a new dict with ``package_residual`` set, or None when identity is
+    missing / residual cannot be produced (caller keeps outcome without residual
+    so dual-flag prepare remains fail-closed).
+    """
+
+    from agent_challenge.evaluation.llm_rules_residual import (
+        bind_package_residual_into_review_materials,
+    )
+    from agent_challenge.review.harness_entry import (
+        map_decision_verdict_to_residual_verdict,
+        produce_package_residual_from_identity_json,
+    )
+
+    residual_verdict = map_decision_verdict_to_residual_verdict(decision_verdict)
+    materials = produce_package_residual_from_identity_json(
+        harness_identity_json,
+        residual_verdict=residual_verdict,
+        package_tree_sha=package_tree_sha,
+    )
+    if materials is None:
+        return None
+    bound = bind_package_residual_into_review_materials(
+        outcome=dict(outcome),
+        materials=materials,
+    )
+    out = bound.get("outcome")
+    return dict(out) if isinstance(out, Mapping) else None
+
+
 def _as_utc(value: datetime) -> datetime:
     from datetime import UTC
 
@@ -1562,6 +1638,7 @@ __all__ = [
     "ReviewVerifierUnavailable",
     "build_review_envelope",
     "extract_bound_attestation_times",
+    "merge_package_residual_into_outcome_dict",
     "reverify_bound_attestation_times",
     "review_digest",
     "review_report_data_hex",

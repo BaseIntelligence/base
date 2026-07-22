@@ -453,6 +453,158 @@ def refuse_parity_harness_as_review(entry: str | Path | None = None) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# AGATE residual producer (measured LLM rules residual → durable materials)
+# ---------------------------------------------------------------------------
+
+
+def map_decision_verdict_to_residual_verdict(decision_verdict: str | None) -> str:
+    """Map review policy/decision verdict onto residual_verdict {allow,reject,fail}.
+
+    - allow → allow (prep may authorize when residual+tree bound)
+    - reject → reject (prepare stays refuse)
+    - escalate / other / missing → fail (prepare stays refuse)
+    """
+
+    text = str(decision_verdict or "").strip().lower()
+    if text in {"allow", "allowed", "accept", "accepted"}:
+        return "allow"
+    if text in {"reject", "rejected", "deny", "denied"}:
+        return "reject"
+    return "fail"
+
+
+def produce_package_residual_from_identity(
+    identity: ReviewSessionIdentity | Mapping[str, Any],
+    *,
+    residual_verdict: str,
+    package_tree_sha: str | None = None,
+    residual_kind: str | None = None,
+) -> Any:
+    """Build measured package residual materials from harness session identity.
+
+    Live harness_entry producer path: after rules residual (measured review
+    decision) completes, bind verdict + rules digests + package_tree_sha into
+    materials used by eval prepare / TEE auth.
+    """
+
+    from agent_challenge.evaluation.llm_rules_residual import (
+        MEASURED_RESIDUAL_KIND,
+        residual_materials_from_rules_pack,
+    )
+
+    if isinstance(identity, ReviewSessionIdentity):
+        rules_version = identity.rules_version
+        rules_bundle = identity.rules_bundle_sha256
+        file_digests = dict(identity.rules_file_digests)
+        policy_sha = identity.rules_policy_text_sha256
+        harness_kind = identity.harness_kind or PRODUCT_HARNESS_KIND
+    elif isinstance(identity, Mapping):
+        rules_version = str(identity.get("rules_version") or "").strip()
+        rules_bundle = str(identity.get("rules_bundle_sha256") or "").strip()
+        raw_digests = identity.get("rules_file_digests") or {}
+        if not isinstance(raw_digests, Mapping) or not raw_digests:
+            raise ProductHarnessAdmissionError(
+                REFUSE_MISSING_RULES,
+                "rules_file_digests required for residual producer",
+            )
+        file_digests = {str(k): str(v) for k, v in raw_digests.items()}
+        policy_raw = identity.get("rules_policy_text_sha256")
+        policy_sha = str(policy_raw).strip() if policy_raw is not None else None
+        harness_kind = str(identity.get("harness_kind") or PRODUCT_HARNESS_KIND)
+    else:
+        raise TypeError("identity must be ReviewSessionIdentity or mapping")
+
+    if not rules_version or not rules_bundle or not file_digests:
+        raise ProductHarnessAdmissionError(
+            REFUSE_MISSING_RULES,
+            "rules digests required for residual producer",
+        )
+
+    kind = residual_kind or MEASURED_RESIDUAL_KIND
+    return residual_materials_from_rules_pack(
+        rules_version=rules_version,
+        rules_bundle_sha256=rules_bundle,
+        rules_file_digests=file_digests,
+        residual_verdict=residual_verdict,
+        package_tree_sha=package_tree_sha,
+        rules_policy_text_sha256=policy_sha,
+        harness_kind=harness_kind,
+        residual_kind=kind,
+    )
+
+
+def bind_measured_residual_into_review_materials(
+    *,
+    identity: ReviewSessionIdentity | Mapping[str, Any],
+    residual_verdict: str,
+    package_tree_sha: str | None = None,
+    envelope: Mapping[str, Any] | None = None,
+    outcome: Mapping[str, Any] | None = None,
+    residual_kind: str | None = None,
+) -> dict[str, Any]:
+    """Produce residual from harness identity and bind into envelope and/or outcome.
+
+    Preference for durable host storage: bind onto **outcome** (verification
+    outcome JSON is not exact-key locked). Envelope may also carry residual when
+    callers want a full bound bag for unit/fixture paths; closed guest envelope
+    schema still validates exact keys without residual (host merge prefers
+    outcome).
+    """
+
+    from agent_challenge.evaluation.llm_rules_residual import (
+        bind_package_residual_into_review_materials,
+    )
+
+    materials = produce_package_residual_from_identity(
+        identity,
+        residual_verdict=residual_verdict,
+        package_tree_sha=package_tree_sha,
+        residual_kind=residual_kind,
+    )
+    return bind_package_residual_into_review_materials(
+        envelope=envelope,
+        outcome=outcome,
+        materials=materials,
+    )
+
+
+def produce_package_residual_from_identity_json(
+    identity_json: str | bytes | Mapping[str, Any] | None,
+    *,
+    residual_verdict: str,
+    package_tree_sha: str | None = None,
+) -> Any | None:
+    """Parse harness_identity_json and produce residual materials; None if absent."""
+
+    if identity_json is None:
+        return None
+    bag: Mapping[str, Any] | None
+    if isinstance(identity_json, Mapping):
+        bag = identity_json
+    elif isinstance(identity_json, (str, bytes)):
+        import json
+
+        try:
+            raw = identity_json if isinstance(identity_json, str) else identity_json.decode("utf-8")
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        bag = parsed
+    else:
+        return None
+    try:
+        return produce_package_residual_from_identity(
+            bag,
+            residual_verdict=residual_verdict,
+            package_tree_sha=package_tree_sha,
+        )
+    except (ProductHarnessAdmissionError, TypeError, ValueError):
+        return None
+
+
 __all__ = [
     "PARITY_HARNESS_KIND",
     "PRODUCT_ENTRY_SCRIPT_MARKERS",
@@ -470,12 +622,16 @@ __all__ = [
     "RulesPackDigest",
     "SESSION_IDENTITY_SCHEMA_V1",
     "admit_product_review_entry",
+    "bind_measured_residual_into_review_materials",
     "digest_agent_zip",
     "digest_entry_script",
     "inventory_product_vs_parity",
     "is_parity_harness_entry",
     "is_product_entry_script",
     "load_rules_pack_digests",
+    "map_decision_verdict_to_residual_verdict",
+    "produce_package_residual_from_identity",
+    "produce_package_residual_from_identity_json",
     "refuse_parity_harness_as_review",
     "require_rules_before_openrouter",
     "sha256_hex",
