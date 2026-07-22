@@ -1,7 +1,7 @@
 # Miner self-deploy (How-to advanced)
 
 > **Day-1 front door is not this page.** Upload first via the joinbase dashboard
-> and/or [`scripts/submit_agent.py`](../../scripts/submit_agent.py): see
+> and/or [`packages/challenges/agent-challenge/scripts/submit_agent.py`](../../../scripts/submit_agent.py): see
 > [Getting started](getting-started.md). Concepts for TEE trust:
 > [Attestation TEE](attestation-tee.md).
 
@@ -10,6 +10,21 @@ operate the attested review CVM and, after a verified allow, the attested eval C
 The validator/subnet keeps the trust root: measurement allowlist, golden
 key-release endpoint, and quote verification. Validators do **not** deploy your
 production scored jobs for you.
+
+### Agent-driven gate (required before eval)
+
+Eval is **agent-driven**. The product order is hard:
+
+1. **Package + LLM rules residual** — measured review under harness / `.rules` must **allow**.
+2. **`package_tree_sha` proof** — canonical folder-tree SHA of the extracted agent package,
+   stored with the submission and bound into the eval plan and review materials.
+3. **TEE auth** — fresh re-verified review allow whose authorizing materials bind residual +
+   tree SHA (dual flags ON). Host-static analyzer alone is **not** enough.
+4. **Only then** — `eval prepare` / deploy / key-release / trials / score attestation.
+
+If residual fails or tree SHA is missing/mismatched: prepare, KR, and score **refuse**.
+There is no closed agent-model catalog; personal finetunes are banned. Concepts:
+[Attestation TEE — agent-driven order](attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
 
 The mission is **CPU Intel TDX only** (no GPU) with a hard **$20** spend cap and a
 preference for the smallest CPU shape that works (`tdx.small`/`tdx.medium`). GPU
@@ -618,6 +633,6 @@ guardrails (smallest CPU shape, mandatory teardown to `total: 0`).
 
 The validator-operated trust root (measurement allowlist, golden key-release
 endpoint, and quote verification) is documented in
-[`docs/validator/self-deploy.md`](../validator/self-deploy.md). The validator/master
+[`docs/validator/self-deploy.md`](../../../packages/challenges/agent-challenge/docs/validator/self-deploy.md). The validator/master
 integration lives in the separate base repository
 ([`BaseIntelligence/base`](https://github.com/BaseIntelligence/base) (available after PR merge)).

@@ -129,6 +129,25 @@ eval (or the reverse) fails allowlist membership.
 | Golden | `agent_challenge.golden` | AES-256-GCM packaging for encrypted oracle material |
 | Worker | `agent-challenge-worker` | Recovery and analysis helpers; not production TEE job launcher |
 
+## Agent-driven order (package verify → tree SHA → TEE → eval)
+
+Production eval is **agent-driven**. Product spine:
+
+```text
+submit ZIP
+  → package_tree_sha (canonical folder-tree proof)
+  → measured LLM rules residual under harness / .rules
+  → bind (tree_sha, residual, rules digests) into review TEE materials
+  → fresh TEE re-verify allow
+  → ONLY THEN eval prepare / KR / score attestation
+```
+
+Without residual + `package_tree_sha`: no eval start, no free attestation. Host analyzer alone
+is insufficient for TEE auth under dual flags. Agent models: no closed catalog; ban personal
+finetunes only. Guest recomputes tree SHA before trials.
+
+Miner/validator narrative: [Attestation TEE](miner/attestation-tee.md), [Evaluation](evaluation.md).
+
 ## Separation of report_data domains
 
 Do not mix domains. Each quote binds a closed preimage with its own domain tag:

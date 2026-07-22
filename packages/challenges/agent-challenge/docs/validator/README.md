@@ -13,11 +13,20 @@ See [Operator self-deploy](self-deploy.md) for allowlist, KR 8701, and flags.
 ## Production scored path (attestation)
 
 When `phala_attestation_enabled` and `attested_review_enabled` are **both ON**, the scored path is
-**miner self-deploy** on Phala: attested review (measured OpenRouter under `.rules`), fresh
-re-verified allow, attested eval with GetTlsKey + raw RA-TLS golden key release, and direct
-RESULT admission with durable key-grant. Dual measurement allowlists pin review vs canonical
-images. Details: [Operator self-deploy](self-deploy.md), [Architecture](../architecture.md),
-[Evaluation](../evaluation.md).
+**miner self-deploy** on Phala. Evaluation is **agent-driven** in a fixed order:
+
+1. **Verify the package** with measured **agent LLM rules** residual under harness / `.rules`.
+2. **Prove the folder** with canonical **`package_tree_sha`** (tree content-addressed SHA).
+3. **TEE authorization** only after residual allow + tree SHA are bound into fresh review materials
+   (host-static analyzer alone is **not** enough).
+4. **Only then** attested eval with GetTlsKey + raw RA-TLS golden key release, and direct RESULT
+   admission with durable key-grant (guest rechecks `package_tree_sha` before trials).
+
+Without residual + tree SHA proof: **no eval prepare, no KR grant, no score attestation**.
+Agent models: **no closed catalog**; ban personal finetunes only. Dual measurement allowlists pin
+review vs canonical images. Details: [Operator self-deploy](self-deploy.md),
+[Architecture](../architecture.md), [Evaluation](../evaluation.md),
+[Attestation TEE (agent-driven order)](../miner/attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
 
 Historical sections below document shared surfaces (signing, public status, owner routes,
 BASE weight contract) and offline / compatibility Terminal-Bench helpers. **Do not** treat

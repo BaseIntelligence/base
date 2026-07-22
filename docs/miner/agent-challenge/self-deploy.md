@@ -11,6 +11,21 @@ The validator/subnet keeps the trust root: measurement allowlist, golden
 key-release endpoint, and quote verification. Validators do **not** deploy your
 production scored jobs for you.
 
+### Agent-driven gate (required before eval)
+
+Eval is **agent-driven**. The product order is hard:
+
+1. **Package + LLM rules residual** — measured review under harness / `.rules` must **allow**.
+2. **`package_tree_sha` proof** — canonical folder-tree SHA of the extracted agent package,
+   stored with the submission and bound into the eval plan and review materials.
+3. **TEE auth** — fresh re-verified review allow whose authorizing materials bind residual +
+   tree SHA (dual flags ON). Host-static analyzer alone is **not** enough.
+4. **Only then** — `eval prepare` / deploy / key-release / trials / score attestation.
+
+If residual fails or tree SHA is missing/mismatched: prepare, KR, and score **refuse**.
+There is no closed agent-model catalog; personal finetunes are banned. Concepts:
+[Attestation TEE — agent-driven order](attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
+
 The mission is **CPU Intel TDX only** (no GPU) with a hard **$20** spend cap and a
 preference for the smallest CPU shape that works (`tdx.small`/`tdx.medium`). GPU
 targets, over-cap shapes, and missing Phala credentials are refused **before** any

@@ -9,6 +9,37 @@ CPU Intel TDX CVMs. The validator host may have **no local TDX**; measurements a
 produced inside Phala guests and re-verified on the challenge service. Operational CLI steps are in
 [self-deploy](self-deploy.md). Residual risk is in [security](../security.md).
 
+## Agent-driven order (package verify → tree SHA → TEE → eval)
+
+Production evaluation is **agent-driven**. Trust is built in this **fixed order**. Skipping a step
+fail-closes: **no eval prepare, no key-release grant, no score attestation**.
+
+```text
+submit ZIP
+  → extract + validate package
+  → package_tree_sha = canonical folder-tree SHA (content-addressed proof)
+  → measured package residual: agent LLM rules under harness / .rules
+       FAIL  → stop (no TEE-authorized eval)
+       PASS  → bind (package_tree_sha, residual verdict, rules digests)
+  → TEE authorization: fresh re-verified review allow + quote materials
+       that bind tree SHA + residual digests
+  → ONLY THEN eval prepare / deploy / KR / trials / score attestation
+```
+
+| Step | What must hold | If missing |
+| --- | --- | --- |
+| 1. Package + LLM rules residual | Measured review residual **allow** under `.rules` (agent-driven; host-static analyzer alone is **not** enough for TEE auth) | No eval authorizable |
+| 2. Tree SHA proof | Durable `package_tree_sha` next to zip digest; bound into plan / review / guest | Mismatch or absent → refuse prepare / KR / score |
+| 3. TEE auth | Fresh residual allow + tree SHA in authorizing materials; dual flags ON | No eval start |
+| 4. Eval / attestation | Guest rechecks `package_tree_sha` before trials; KR + score require the same proof chain | No free attestation |
+
+**Model rule (agent path):** there is **no closed catalog** of allowed agent model IDs. The only
+product ban on agent models is **personal / custom finetunes**. The review judge pin
+(`REVIEW_MODEL`) stays separate.
+
+Host-only analyzer allow without measured residual + tree SHA is **insufficient** for
+`eval/prepare`, key release, or production score under dual attestation flags.
+
 ## What is measured
 
 A production app-compose plus OS image yield a canonical measurement record used on the allowlist:
@@ -169,6 +200,6 @@ list lifecycle status (FE STATUS badges prefer dual-flag).
 ## Related
 
 - [Self-deploy CLI](self-deploy.md)
-- [Operator surfaces](../validator/self-deploy.md)
+- [Operator surfaces](../../../packages/challenges/agent-challenge/docs/validator/self-deploy.md)
 - [Security residual risk](../security.md)
-- [Evaluation gate narrative](../evaluation.md)
+- [Evaluation gate narrative](../../../packages/challenges/agent-challenge/docs/evaluation.md)

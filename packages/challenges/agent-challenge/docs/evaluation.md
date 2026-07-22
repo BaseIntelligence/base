@@ -13,27 +13,53 @@ Production scoring requires:
 4. Attestation-only grading: measured OpenRouter under review `.rules`; **no** Base LLM gateway on the scored path
 5. Direct `POST /evaluation/v1/runs/{eval_run_id}/result` with score-domain attestation and durable key-grant
 
+### Agent-driven order (package verify → tree SHA → TEE → eval)
+
+Evaluation is **agent-driven**. Before any TEE-authorized eval or score attestation:
+
+1. **Verify the package** with measured **agent LLM rules** residual under harness / `.rules`.
+2. **Prove the folder** with canonical **`package_tree_sha`** (content-addressed tree SHA of the
+   extracted package), durable next to the ZIP digest and bound into plan / review materials.
+3. **TEE authorization** only after residual **allow** + matching `package_tree_sha` are bound into
+   fresh review / quote materials. Host-static analyzer alone is **insufficient**.
+4. **Only then** eval prepare / deploy / key-release / trials / score attestation.
+
+Without residual + tree SHA proof chain: **no eval prepare, no KR grant, no score attestation**.
+Agent models: **no closed catalog**; ban personal / custom finetunes only (review judge pin stays
+separate). Guest recomputes `package_tree_sha` before scored trials and refuse on mismatch.
+
 Validators do **not** deploy scored jobs for miners in production. Work-unit pull /
 `list_pending_work_units` style execution is legacy relative to the attested self-deploy path.
 
-See [architecture](architecture.md) and [miner self-deploy](miner/self-deploy.md).
+See [architecture](architecture.md), [miner self-deploy](miner/self-deploy.md), and
+[Attestation TEE](miner/attestation-tee.md).
 
 ## High-level lifecycle
 
 1. Miner signs and uploads an immutable ZIP (`POST /submissions`).
-2. Digest becomes the stable agent hash; AST and similarity analysis may run as service gates.
+2. Digest becomes the stable agent hash; service also records **`package_tree_sha`** (canonical
+   folder-tree SHA of the extracted package) as durable package proof next to the ZIP digest.
+   AST and similarity analysis may run as service gates (host-static alone never TEE-authorizes eval).
 3. Attested **review** session: miner prepare/deploy measured review image; CVM produces a
-   domain-separated review report (OpenRouter under harness / `.rules`).
-4. Validator re-verifies quote + review allowlist + review-domain `report_data` (bound times ≤24h).
+   domain-separated review report (OpenRouter under harness / `.rules`) and a measured
+   **LLM rules residual** for the package.
+4. Host binds residual verdict + rules digests + `package_tree_sha` into durable review outcome
+   materials. Validator re-verifies quote + review allowlist + review-domain `report_data`
+   (bound times ≤24h) **with residual + tree SHA present**.
 5. Verdict outcomes:
-   - `allow` unlocks eval prepare only while fresh re-verify materials still admit
+   - `allow` + residual allow + matching tree SHA unlocks eval prepare only while fresh
+     re-verify materials still admit
+   - residual fail / tree SHA mismatch ends eval eligibility (fail-closed)
    - `reject` ends eval eligibility
    - `escalate` pauses for signed owner review
 6. Miner **eval** prepare/deploy on the separate measured **canonical** image. Prepare admission
-   refuses cache-only DB `review_allowed` bits without re-running bound-outcome checks.
+   refuses cache-only DB `review_allowed` bits, missing residual, or missing/mismatched
+   `package_tree_sha` without re-running bound-outcome checks.
 7. Eval guest obtains dstack **GetTlsKey** client certs, then obtains golden AES-256 key only over
-   raw RA-TLS key-release (domain-separated, allowlist + mTLS).
-8. Trials run from baked live-task-cache; CVM emits attested result; challenge receipts body then verifies.
+   raw RA-TLS key-release (domain-separated, allowlist + mTLS). KR also requires the package
+   proof chain.
+8. Guest **rechecks `package_tree_sha`** against the plan before trials; trials run from baked
+   live-task-cache; CVM emits attested result; challenge receipts body then verifies.
 9. Accepted results may contribute to leaderboard and BASE raw weights.
 
 Public clients poll `GET /submissions/{id}/status` or SSE `GET /submissions/{id}/events`.
@@ -42,13 +68,14 @@ Public clients poll `GET /submissions/{id}/status` or SSE `GET /submissions/{id}
 
 | Stage | What must hold | Fail closed when |
 | --- | --- | --- |
-| Review prepare | Signed assignment; immutable ZIP digests | Signature / rate / capability failures |
+| Review prepare | Signed assignment; immutable ZIP digests + durable `package_tree_sha` | Signature / rate / capability failures |
 | Review deploy | Review allowlist compose_hash; Phala `encrypted_env` for OpenRouter + session | Missing encrypted_env, GPU shape, money cap |
-| Review result | Review-domain quote + allowlist + bound times | Stale >24h, wrong domain, measurement mismatch |
-| Eval prepare | Fresh re-verified allow materials (not DB phase alone) | `review_allow_required`, stale allow, cached-allow-only refuse |
+| Review result | Review-domain quote + allowlist + bound times + **LLM rules residual** + tree SHA bind | Stale >24h, wrong domain, measurement mismatch, residual missing/reject |
+| Eval prepare | Fresh re-verified allow + residual allow + plan `package_tree_sha` (not DB phase alone) | `review_allow_required`, stale allow, `package_residual_missing`, tree SHA absent/mismatch, cached-allow-only refuse |
 | Eval deploy | Canonical compose_hash + measurement; plan nonces | Plan/compose mismatch, OS pin drift |
-| Key release | Raw TCP TLS 1.3 + client cert + keyrelease-domain quote + allowlist | Deny returns no key; no L7 `/release` production path |
-| Score admit | Score-domain quote + event log + allowlist + durable key-grant + nonces | Missing key-grant or attestation materials write **no** score |
+| Key release | Raw TCP TLS 1.3 + client cert + keyrelease-domain quote + allowlist + package proof chain | Deny returns no key; no L7 `/release` production path |
+| Guest trials | Guest recomputes `package_tree_sha` matches plan | Tree SHA mismatch → no scored trials |
+| Score admit | Score-domain quote + event log + allowlist + durable key-grant + nonces + residual/tree proof | Missing key-grant, residual, tree SHA, or attestation materials write **no** score |
 
 ## Public phases (attested mode)
 

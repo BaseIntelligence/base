@@ -197,6 +197,36 @@ def test_task18_operational_lifecycle_contract_is_documented() -> None:
         assert term in docs
 
 
+def test_agate_agent_driven_order_is_documented() -> None:
+    """VAL-AGATE-015: miner/validator docs describe package+rules → tree SHA → TEE → eval."""
+    attestation = read(ROOT / "docs" / "miner" / "attestation-tee.md")
+    evaluation = read(ROOT / "docs" / "evaluation.md")
+    validator = read(VALIDATOR_README)
+    miner = read(MINER_README)
+    combined = "\n".join((attestation, evaluation, validator, miner))
+
+    required_terms = (
+        "agent-driven",
+        "package_tree_sha",
+        "LLM rules residual",
+        "tree SHA",
+        "TEE authorization",
+        "ONLY THEN",
+        "no closed catalog",
+        "personal finetunes",
+        "Host-static analyzer alone",
+        "no eval prepare",
+    )
+    for term in required_terms:
+        assert term in combined, f"missing AGATE docs term: {term}"
+
+    # Explicit order language on both miner and validator surfaces.
+    assert "package verify" in attestation.lower() or "Verify the package" in combined
+    assert "Only then" in combined or "ONLY THEN" in combined
+    assert "package_tree_sha" in attestation and "package_tree_sha" in evaluation
+    assert "package_tree_sha" in validator
+
+
 def test_repaired_lifecycle_status_contract_is_documented() -> None:
     docs = all_docs_text()
 

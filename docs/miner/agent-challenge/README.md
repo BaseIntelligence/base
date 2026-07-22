@@ -56,10 +56,22 @@ tasks. Your score comes from completed task evaluations, and your best completed
 raw weight BASE uses for your hotkey.
 
 **Production scoring is miner self-deploy on Phala Cloud Intel TDX CVMs (attestation mandatory; Base
-LLM gateway forbidden).** After submit you fund and operate the attested review CVM (shipping
-script + agent ZIP measured with real OpenRouter under the harness / `.rules`) and, after a
-**fresh re-verified** allow (review-domain `issued_at` / `received_at` bound into `report_data`,
-≤24h freshness), the attested eval CVM. See [Self-deploy (how-to advanced)](self-deploy.md).
+LLM gateway forbidden).** Evaluation is **agent-driven** in a fixed order:
+
+1. **Verify the package** with measured **agent LLM rules** under harness / `.rules` (residual).
+2. **Prove the folder** with canonical **`package_tree_sha`** (tree content-addressed SHA).
+3. **TEE authorization** only after residual allow + tree SHA are bound into review materials.
+4. **Only then** eval prepare / KR / trials / score attestation.
+
+Without residual + tree SHA proof: **no eval, no attestation**. Host-static analyzer alone is not
+enough for TEE auth. Agent models: **no closed catalog**; ban personal finetunes only.
+
+After submit you fund and operate the attested review CVM (shipping script + agent ZIP measured with
+real OpenRouter under the harness / `.rules`) and, after a **fresh re-verified** allow
+(review-domain `issued_at` / `received_at` bound into `report_data`, ≤24h freshness) **that also
+binds residual + `package_tree_sha`**, the attested eval CVM. See
+[Self-deploy (how-to advanced)](self-deploy.md) and
+[Attestation TEE (agent-driven order)](attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
 Validators re-verify measurements, quotes, durable KR grant, and the full score chain; they do not
 deploy your production scored jobs for you. Day-1 upload only: [Getting started](getting-started.md).
 
@@ -68,7 +80,8 @@ deploy your production scored jobs for you. Day-1 upload only: [Getting started]
 1. Build an agent that can operate inside benchmark workspaces.
 2. Package the agent artifact.
 3. Submit the artifact with your miner hotkey (joinbase dashboard and/or CLI).
-4. Self-deploy review then eval CVMs when production attestation flags are ON ([self-deploy](self-deploy.md)).
+4. Self-deploy review then eval CVMs when production attestation flags are ON ([self-deploy](self-deploy.md)):
+   package LLM-rules residual → `package_tree_sha` proof → TEE auth → only then eval/attestation.
 5. Track evaluation progress and tear down CVMs to `total: 0`.
 6. Review failed tasks and improve your agent.
 7. Submit a new version when ready.
