@@ -379,3 +379,101 @@ def test_fail_closed_without_residual_materials() -> None:
     )
     assert decision.may_launch is False
     assert decision.reason_code in {REFUSE_RESIDUAL_MISSING, "package_residual_missing"}
+
+
+# ---------------------------------------------------------------------------
+# Guest POST /report payload contract (extra=forbid)
+# --------------------------------------------------------------------------- #
+
+
+def _guest_shaped_report_payload(
+    *,
+    envelope: dict[str, Any] | None = None,
+    with_package_residual: bool = False,
+) -> dict[str, Any]:
+    """Mirror review_runtime submission builder shape for POST /report."""
+    env = envelope if envelope is not None else _envelope_without_residual(verdict="allow")
+    evidence = {
+        "planned_request_b64": "cGxhbm5lZA==",
+        "transport_observation_b64": "b2JzZXJ2ZWQ=",
+        "request_body_b64": "cmVxdWVzdA==",
+        "response_body_b64": "cmVzcG9uc2U=",
+    }
+    payload: dict[str, Any] = {"envelope": env, "evidence": evidence}
+    if with_package_residual:
+        # Deliberately forbidden top-level key (guest must never send this).
+        identity = _admit_identity()
+        residual = produce_package_residual_from_identity(
+            identity,
+            residual_verdict="allow",
+            package_tree_sha=TREE,
+        ).as_dict()
+        payload["package_residual"] = residual
+    return payload
+
+
+def test_guest_shaped_report_payload_is_envelope_and_evidence_only() -> None:
+    """Guest POST body must be envelope+evidence; residual is host-bound only."""
+    from pydantic import ValidationError
+
+    from agent_challenge.api.routes import ReviewReportSubmission
+
+    guest_payload = _guest_shaped_report_payload(with_package_residual=False)
+    assert set(guest_payload.keys()) == {"envelope", "evidence"}
+    assert "package_residual" not in guest_payload
+
+    accepted = ReviewReportSubmission.model_validate(guest_payload)
+    assert accepted.envelope == guest_payload["envelope"]
+    assert accepted.evidence == guest_payload["evidence"]
+
+    # Top-level package_residual is extra=forbid → ValidationError (live 422).
+    forbidden = _guest_shaped_report_payload(with_package_residual=True)
+    assert "package_residual" in forbidden
+    try:
+        ReviewReportSubmission.model_validate(forbidden)
+        raise AssertionError("expected ValidationError for top-level package_residual")
+    except ValidationError as exc:
+        err_text = str(exc)
+        assert "package_residual" in err_text
+        assert "extra" in err_text.lower() or "forbid" in err_text.lower()
+
+
+def test_host_bound_residual_still_admits_honest_allow_after_guest_schema_fix() -> None:
+    """After guest schema fix, host merge path still produces residual for allow."""
+    identity = _admit_identity()
+    identity_json = json.dumps(identity.as_dict(), sort_keys=True, separators=(",", ":"))
+    guest_payload = _guest_shaped_report_payload(with_package_residual=False)
+    from agent_challenge.api.routes import ReviewReportSubmission
+
+    # Guest payload validates (no residual on wire).
+    ReviewReportSubmission.model_validate(guest_payload)
+
+    base_outcome = {
+        "status": "verified_allow",
+        "terminal": True,
+        "retryable": False,
+        "reason_code": "review_verified",
+        "nonce_consumed": True,
+        "measurement_allowlisted": True,
+        "report_data_matched": True,
+        "verified_at_ms": T0,
+    }
+    merged = merge_package_residual_into_outcome_dict(
+        outcome=base_outcome,
+        harness_identity_json=identity_json,
+        package_tree_sha=TREE,
+        decision_verdict="allow",
+    )
+    assert merged is not None
+    assert "package_residual" in merged
+    assert merged["package_residual"]["residual_verdict"] == "allow"
+
+    decision = admit_eval_cvm_fresh_review(
+        envelope=guest_payload["envelope"],
+        dual_flags_on=True,
+        require_package_residual=True,
+        expected_package_tree_sha=TREE,
+        outcome=merged,
+    )
+    assert decision.may_launch is True
+    assert decision.verdict == "allow"
