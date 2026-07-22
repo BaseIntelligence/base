@@ -197,6 +197,7 @@ def _plan(*, authorizing_review_digest: str | None = None) -> dict[str, Any]:
             "submission_version": 1,
             "authorizing_review_digest": review_d,
             "agent_hash": AGENT_HASH,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-a",
@@ -656,6 +657,7 @@ def test_key_release_and_score_nonce_must_differ_in_plan_constructor() -> None:
                 "submission_version": 1,
                 "authorizing_review_digest": "66" * 32,
                 "agent_hash": AGENT_HASH,
+                "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "selected_tasks": [
                     {
                         "task_id": "task-a",

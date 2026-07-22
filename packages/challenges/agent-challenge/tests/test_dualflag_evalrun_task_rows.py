@@ -47,6 +47,7 @@ def _plan(*, eval_run_id: str, task_count: int = 3) -> dict[str, object]:
         "submission_version": 1,
         "authorizing_review_digest": REVIEW_DIGEST,
         "agent_hash": AGENT_HASH,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": task_id,

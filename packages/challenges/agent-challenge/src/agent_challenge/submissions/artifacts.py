@@ -49,25 +49,33 @@ class ZipArtifactManifest:
     artifact_reference: str
     extraction_root: str | None
     entries: tuple[ZipManifestEntry, ...]
+    package_tree_sha: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "zip_sha256": self.zip_sha256,
             "zip_size_bytes": self.zip_size_bytes,
             "artifact_reference": self.artifact_reference,
             "extraction_root": self.extraction_root,
             "entries": [entry.to_dict() for entry in self.entries],
         }
+        if self.package_tree_sha is not None:
+            payload["package_tree_sha"] = self.package_tree_sha
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ZipArtifactManifest:
         entries = tuple(ZipManifestEntry(**entry) for entry in data.get("entries", []))
+        package_tree_sha = data.get("package_tree_sha")
+        if package_tree_sha is not None:
+            package_tree_sha = str(package_tree_sha)
         return cls(
             zip_sha256=data["zip_sha256"],
             zip_size_bytes=int(data["zip_size_bytes"]),
             artifact_reference=data["artifact_reference"],
             extraction_root=data.get("extraction_root"),
             entries=entries,
+            package_tree_sha=package_tree_sha,
         )
 
     def to_json(self) -> str:
@@ -81,6 +89,7 @@ class ArtifactMetadata:
     artifact_path: str
     manifest: ZipArtifactManifest | None = None
     manifest_path: str | None = None
+    package_tree_sha: str | None = None
 
 
 class ArtifactValidationError(ValueError):
@@ -180,7 +189,88 @@ def store_zip_bytes(
         artifact_path=str(target_path),
         manifest=manifest,
         manifest_path=str(manifest_path),
+        package_tree_sha=manifest.package_tree_sha,
     )
+
+
+def compute_package_tree_sha_from_entries(
+    entries: list[tuple[str, bytes]] | tuple[tuple[str, bytes], ...],
+) -> str:
+    """Canonical content-addressed SHA-256 of a package tree.
+
+    Algorithm (AGATE package_tree_sha / VAL-AGATE-001):
+    1. Take each regular file as (normalized relative POSIX path, raw bytes).
+    2. Sort by relative path ascending (bytewise UTF-8 / POSIX path order).
+    3. For each path in order, hash:
+         SHA256( path_utf8 + b"\\0" + content_bytes )
+       and append that 32-byte digest to a running buffer.
+    4. Return hex(SHA256(concatenated leaf digests)).
+
+    Empty trees are refused (agent packages must include at least agent.py).
+    """
+
+    if not entries:
+        raise ArtifactValidationError("empty_package_tree", "package tree has no files")
+    normalized: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for relpath, content in entries:
+        path = str(relpath).replace("\\", "/").strip()
+        if not path or path.startswith("/") or ".." in PurePosixPath(path).parts:
+            raise ArtifactValidationError("unsafe_path", "package tree path is unsafe")
+        if path in seen:
+            raise ArtifactValidationError(
+                "duplicate_path",
+                "package tree contains duplicate normalized paths",
+            )
+        seen.add(path)
+        if not isinstance(content, (bytes, bytearray)):
+            raise ArtifactValidationError(
+                "invalid_package_entry",
+                "package tree entry content must be bytes",
+            )
+        normalized.append((path, bytes(content)))
+    normalized.sort(key=lambda item: item[0])
+    hasher = hashlib.sha256()
+    for relpath, content in normalized:
+        leaf = hashlib.sha256(relpath.encode("utf-8") + b"\0" + content).digest()
+        hasher.update(leaf)
+    return hasher.hexdigest()
+
+
+def compute_package_tree_sha_from_zip_bytes(zip_bytes: bytes) -> str:
+    """Compute package_tree_sha from ZIP member paths + contents (files only)."""
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            pairs: list[tuple[str, bytes]] = []
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                normalized_path = _normalized_member_path(member.filename)
+                with archive.open(member) as source:
+                    content = source.read()
+                pairs.append((normalized_path, content))
+            return compute_package_tree_sha_from_entries(pairs)
+    except zipfile.BadZipFile as exc:
+        raise ArtifactValidationError(
+            "invalid_zip",
+            "artifact zip must contain a zip",
+        ) from exc
+
+
+def package_tree_sha_from_directory(root: str | Path) -> str:
+    """Recompute package_tree_sha of an extracted package directory (guest path)."""
+
+    root_path = Path(root).expanduser().resolve(strict=True)
+    if not root_path.is_dir():
+        raise ArtifactValidationError("not_a_directory", "package root must be a directory")
+    pairs: list[tuple[str, bytes]] = []
+    for path in sorted(root_path.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(root_path).as_posix()
+        pairs.append((rel, path.read_bytes()))
+    return compute_package_tree_sha_from_entries(pairs)
 
 
 def build_zip_manifest(
@@ -195,6 +285,7 @@ def build_zip_manifest(
     if zip_sha256 is None:
         zip_sha256 = hashlib.sha256(zip_bytes).hexdigest()
     entries: list[ZipManifestEntry] = []
+    content_pairs: list[tuple[str, bytes]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
         for member in archive.infolist():
             normalized_path = _normalized_member_path(member.filename)
@@ -202,6 +293,7 @@ def build_zip_manifest(
                 continue
             with archive.open(member) as source:
                 content = source.read()
+            content_pairs.append((normalized_path, content))
             is_text = _is_probably_text(content)
             entries.append(
                 ZipManifestEntry(
@@ -218,12 +310,14 @@ def build_zip_manifest(
                 )
             )
         _validate_entrypoint(archive, entries)
+    package_tree_sha = compute_package_tree_sha_from_entries(content_pairs)
     return ZipArtifactManifest(
         zip_sha256=zip_sha256,
         zip_size_bytes=len(zip_bytes),
         artifact_reference=artifact_reference,
         extraction_root=extraction_root,
         entries=tuple(sorted(entries, key=lambda entry: entry.normalized_path)),
+        package_tree_sha=package_tree_sha,
     )
 
 

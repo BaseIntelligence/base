@@ -355,6 +355,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
             "submission_version",
             "authorizing_review_digest",
             "agent_hash",
+            "package_tree_sha",
             "selected_tasks",
             "k",
             "scoring_policy",
@@ -378,6 +379,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
     )
     review_digest = _sha256(data["authorizing_review_digest"], "authorizing_review_digest")
     agent_hash = _sha256(data["agent_hash"], "agent_hash")
+    package_tree_sha = _sha256(data["package_tree_sha"], "package_tree_sha")
     k = _integer(data["k"], "eval_plan.k", minimum=1)
     policy = _validate_scoring_policy(data["scoring_policy"])
     policy_digest = _sha256(data["scoring_policy_digest"], "scoring_policy_digest")
@@ -479,6 +481,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
         "submission_version": submission_version,
         "authorizing_review_digest": review_digest,
         "agent_hash": agent_hash,
+        "package_tree_sha": package_tree_sha,
         "selected_tasks": selected_tasks,
         "k": k,
         "scoring_policy": policy,

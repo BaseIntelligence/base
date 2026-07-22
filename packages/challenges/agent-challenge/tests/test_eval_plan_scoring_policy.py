@@ -77,6 +77,7 @@ def _plan(
         "submission_version": 1,
         "authorizing_review_digest": "2" * 64,
         "agent_hash": AGENT_HASH,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": task_id,

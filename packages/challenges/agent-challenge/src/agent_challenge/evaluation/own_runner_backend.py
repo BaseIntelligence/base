@@ -623,6 +623,108 @@ def assert_agent_artifact_matches_plan(
     return declared
 
 
+#: Env path for an already-extracted package tree (guest recompute target).
+AGENT_PACKAGE_ROOT_ENV = "CHALLENGE_PHALA_AGENT_PACKAGE_ROOT"
+AGENT_PACKAGE_ROOT_ENV_ALT = "CHALLENGE_AGENT_PACKAGE_ROOT"
+
+
+def package_tree_sha_from_directory(root: Path | str) -> str:
+    """Guest/host recompute of package_tree_sha over an extracted folder."""
+
+    from agent_challenge.submissions.artifacts import ArtifactValidationError
+    from agent_challenge.submissions.artifacts import (
+        package_tree_sha_from_directory as _sha_dir,
+    )
+
+    try:
+        return _sha_dir(root)
+    except ArtifactValidationError as exc:
+        raise ValueError(f"package_tree_sha recompute failed: {exc}") from exc
+
+
+def resolve_agent_package_root(*, artifact_path: Path | str | None = None) -> Path | None:
+    """Locate extracted package folder when present for tree-sha recompute."""
+
+    for env_name in (AGENT_PACKAGE_ROOT_ENV, AGENT_PACKAGE_ROOT_ENV_ALT):
+        raw = (os.environ.get(env_name) or "").strip()
+        if raw:
+            path = Path(raw)
+            if path.is_dir():
+                return path
+    for candidate in (
+        Path("/workspace/artifact/package"),
+        Path("/workspace/package"),
+        Path("/opt/agent-challenge/package"),
+    ):
+        if candidate.is_dir():
+            return candidate
+    if artifact_path is not None:
+        # Sibling extract directory used by analyzer / staging conventions.
+        sibling = Path(artifact_path).parent / "package"
+        if sibling.is_dir():
+            return sibling
+    return None
+
+
+def assert_package_tree_matches_plan(
+    *,
+    package_root: Path | str | None,
+    plan_package_tree_sha: str,
+    zip_path: Path | str | None = None,
+) -> str:
+    """Fail-closed guest check: recomputed package_tree_sha must equal plan.
+
+    Prefer an extracted package directory. When only the ZIP is available,
+    recompute from ZIP member paths+contents (same algorithm as submit).
+    Empty/missing plan binding refuses (VAL-AGATE-002 / 010).
+    """
+
+    expected = (plan_package_tree_sha or "").strip()
+    if not expected or len(expected) != 64:
+        raise ValueError(
+            "immutable Eval plan package_tree_sha is missing or invalid; "
+            "guest refuses scored trials without tree proof"
+        )
+    if package_root is not None:
+        actual = package_tree_sha_from_directory(package_root)
+        if actual != expected:
+            raise ValueError(
+                "package_tree_sha mismatch vs immutable Eval plan "
+                f"(expected {expected}, got {actual})"
+            )
+        return actual
+    if zip_path is not None:
+        from agent_challenge.submissions.artifacts import (
+            ArtifactValidationError,
+            compute_package_tree_sha_from_zip_bytes,
+        )
+
+        try:
+            actual = compute_package_tree_sha_from_zip_bytes(Path(zip_path).read_bytes())
+        except (OSError, ArtifactValidationError) as exc:
+            raise ValueError(f"package_tree_sha zip recompute failed: {exc}") from exc
+        if actual != expected:
+            raise ValueError(
+                "package_tree_sha mismatch vs immutable Eval plan "
+                f"(expected {expected}, got {actual})"
+            )
+        return actual
+    declared = (os.environ.get("CHALLENGE_PHALA_PACKAGE_TREE_SHA") or "").strip() or (
+        os.environ.get("CHALLENGE_AGENT_PACKAGE_TREE_SHA") or ""
+    ).strip()
+    if not declared:
+        raise ValueError(
+            "package root and agent zip are both unavailable; "
+            "cannot verify plan package_tree_sha before trials"
+        )
+    if declared != expected:
+        raise ValueError(
+            "declared package_tree_sha does not match immutable Eval plan "
+            f"(expected {expected}, got {declared})"
+        )
+    return declared
+
+
 def _redacting_trial_runner(
     inner: TrialRunner,
     redactor: LogRedactor,
@@ -1498,9 +1600,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             # agent_hash is the SHA-256 of the submitted ZIP (submission / review
             # identity). Never hash only the entry Python module here.
             try:
+                artifact_path = resolve_agent_artifact_path()
                 assert_agent_artifact_matches_plan(
-                    artifact_path=resolve_agent_artifact_path(),
+                    artifact_path=artifact_path,
                     plan_agent_hash=eval_plan["agent_hash"],
+                )
+                assert_package_tree_matches_plan(
+                    package_root=resolve_agent_package_root(artifact_path=artifact_path),
+                    plan_package_tree_sha=str(eval_plan.get("package_tree_sha") or ""),
+                    zip_path=artifact_path,
                 )
             except ValueError as exc:
                 _emit_guest_eval_fail(

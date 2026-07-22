@@ -130,6 +130,7 @@ def _set_eval_plan_env(monkeypatch) -> None:
         "submission_version": 1,
         "authorizing_review_digest": "1" * 64,
         "agent_hash": "f" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "hello-world",
@@ -173,6 +174,10 @@ def _set_eval_plan_env(monkeypatch) -> None:
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend.assert_agent_artifact_matches_plan",
         lambda **_: "f" * 64,
+    )
+    monkeypatch.setattr(
+        "agent_challenge.evaluation.own_runner_backend.assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend._preflight_eval_plan_tasks",

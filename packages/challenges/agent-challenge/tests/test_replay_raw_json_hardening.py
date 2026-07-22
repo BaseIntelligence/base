@@ -40,6 +40,7 @@ def _plan() -> dict:
         "submission_version": 1,
         "authorizing_review_digest": "2" * 64,
         "agent_hash": "3" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "task-a",

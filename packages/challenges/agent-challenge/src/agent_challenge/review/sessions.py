@@ -25,6 +25,7 @@ from agent_challenge.core.models import (
 )
 from agent_challenge.sdk.auth import load_internal_token
 from agent_challenge.sdk.config import ChallengeSettings
+from agent_challenge.submissions.artifacts import compute_package_tree_sha_from_zip_bytes
 from agent_challenge.submissions.state_machine import ensure_submission_status
 
 from .canonical import canonical_json_v1, parse_json_object
@@ -176,6 +177,15 @@ async def create_review_session(
     artifact_sha256 = sha256(artifact_bytes).hexdigest()
     if submission.zip_sha256 and artifact_sha256 != submission.zip_sha256:
         raise ReviewConflict("committed artifact bytes do not match submission digest")
+    recomputed_tree_sha = compute_package_tree_sha_from_zip_bytes(artifact_bytes)
+    stored_tree_sha = getattr(submission, "package_tree_sha", None)
+    if isinstance(stored_tree_sha, str) and stored_tree_sha.strip():
+        package_tree_sha = stored_tree_sha.strip()
+        if package_tree_sha != recomputed_tree_sha:
+            raise ReviewConflict("committed package_tree_sha does not match artifact tree")
+    else:
+        package_tree_sha = recomputed_tree_sha
+        submission.package_tree_sha = package_tree_sha
     max_files = int(getattr(settings, "review_max_rules_files", 128))
     max_rules_bytes = int(getattr(settings, "review_max_rules_bytes", 1_048_576))
     if len(rules_files) > max_files:
@@ -193,6 +203,7 @@ async def create_review_session(
         submission_id=submission.id,
         artifact_sha256=artifact_sha256,
         artifact_size_bytes=len(artifact_bytes),
+        package_tree_sha=package_tree_sha,
         manifest_sha256=manifest_digest,
         manifest_entries_sha256=entries_digest,
         harness_identity_json=identity_json,

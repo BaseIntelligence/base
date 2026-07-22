@@ -112,6 +112,7 @@ def _enable_phala_decrypt(monkeypatch, *, task_id: str) -> None:
         ],
         "k": 1,
         "agent_hash": "f" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     }
     monkeypatch.setattr(
         backend,
@@ -122,6 +123,11 @@ def _enable_phala_decrypt(monkeypatch, *, task_id: str) -> None:
         backend,
         "assert_agent_artifact_matches_plan",
         lambda **_: "f" * 64,
+    )
+    monkeypatch.setattr(
+        backend,
+        "assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(backend, "_preflight_eval_plan_tasks", lambda **_: {})
     monkeypatch.setattr(backend, "_emit_job_result", lambda *args, **kwargs: 0)

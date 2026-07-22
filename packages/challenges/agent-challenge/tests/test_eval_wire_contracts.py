@@ -253,6 +253,7 @@ def _eval_plan() -> dict[str, Any]:
         "submission_version": 1,
         "authorizing_review_digest": "1" * 64,
         "agent_hash": POSITIVE["binding"]["agent_hash"],
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": task_id,

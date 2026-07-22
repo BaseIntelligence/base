@@ -27,6 +27,7 @@ _AGENT_SUBMISSION_SQLITE_COLUMNS = {
     "is_latest_version": "BOOLEAN NOT NULL DEFAULT 0",
     "agent_name": "VARCHAR(128)",
     "zip_sha256": "VARCHAR(64)",
+    "package_tree_sha": "VARCHAR(64)",
     "zip_size_bytes": "INTEGER",
     "artifact_path": "TEXT",
     "latest_evaluation_job_id": "INTEGER REFERENCES evaluation_jobs(id)",
@@ -49,6 +50,7 @@ _AGENT_SUBMISSION_POSTGRESQL_COLUMNS = {
     "is_latest_version": "BOOLEAN NOT NULL DEFAULT FALSE",
     "agent_name": "VARCHAR(128)",
     "zip_sha256": "VARCHAR(64)",
+    "package_tree_sha": "VARCHAR(64)",
     "zip_size_bytes": "INTEGER",
     "artifact_path": "TEXT",
     "latest_evaluation_job_id": "INTEGER REFERENCES evaluation_jobs(id)",
@@ -105,12 +107,14 @@ _REVIEW_SESSION_SQLITE_COLUMNS = {
     "harness_identity_json": "TEXT",
     "harness_identity_sha256": "VARCHAR(64)",
     "submission_received_at_ms": "INTEGER",
+    "package_tree_sha": "VARCHAR(64)",
 }
 
 _REVIEW_SESSION_POSTGRESQL_COLUMNS = {
     "harness_identity_json": "TEXT",
     "harness_identity_sha256": "VARCHAR(64)",
     "submission_received_at_ms": "INTEGER",
+    "package_tree_sha": "VARCHAR(64)",
 }
 
 _EVALUATION_JOB_SQLITE_COLUMNS = {

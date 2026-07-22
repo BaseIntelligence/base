@@ -64,6 +64,7 @@ def _signed_prepare(
         "submission_version": 1,
         "authorizing_review_digest": "ab" * 32,
         "agent_hash": "cd" * 32,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "terminal-bench/financial-document-processor",

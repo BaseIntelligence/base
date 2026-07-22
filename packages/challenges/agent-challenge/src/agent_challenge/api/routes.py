@@ -390,6 +390,7 @@ class SubmissionResponse(BaseModel):
     display_name: str | None
     agent_hash: str
     zip_sha256: str
+    package_tree_sha: str | None = None
     family_id: str
     version_number: int
     version_label: str
@@ -6109,6 +6110,7 @@ async def _persist_submission(
         is_latest_version=True,
         status="received",
         zip_sha256=artifact.zip_sha256,
+        package_tree_sha=artifact.package_tree_sha,
         zip_size_bytes=artifact.zip_size_bytes,
         artifact_path=artifact.artifact_path,
         raw_status="received",
@@ -6146,6 +6148,8 @@ async def _persist_submission(
                         "content_type": "application/zip",
                         "manifest_path": artifact.manifest_path,
                         "manifest": artifact.manifest.to_dict(),
+                        "package_tree_sha": artifact.package_tree_sha,
+                        "zip_sha256": artifact.zip_sha256,
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -6248,6 +6252,7 @@ async def _persist_submission(
         display_name=family.display_name,
         agent_hash=submission.agent_hash,
         zip_sha256=artifact.zip_sha256,
+        package_tree_sha=artifact.package_tree_sha,
         family_id=family.public_family_id,
         version_number=version_number,
         version_label=submission.version_label or version_label(version_number),

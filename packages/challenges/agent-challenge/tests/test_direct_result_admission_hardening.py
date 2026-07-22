@@ -78,6 +78,7 @@ def _plan(*, eval_run_id: str = "eval-admission-1") -> dict[str, Any]:
             "submission_version": 1,
             "authorizing_review_digest": "66" * 32,
             "agent_hash": AGENT_HASH,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-a",

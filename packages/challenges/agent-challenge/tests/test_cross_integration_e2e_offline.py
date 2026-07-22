@@ -724,6 +724,7 @@ def test_positive_controls_release_and_verify():
             "submission_version": 1,
             "authorizing_review_digest": REVIEW_DIGEST,
             "agent_hash": "55" * 32,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-000",
@@ -1208,6 +1209,7 @@ def test_val_cross_009_genuine_but_non_allowlisted_measurement_rejected():
         "submission_version": 1,
         "authorizing_review_digest": REVIEW_DIGEST,
         "agent_hash": "55" * 32,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "task-000",
@@ -1486,6 +1488,7 @@ def test_val_cross_013_three_domain_non_substitutable_matrix():
             "submission_version": 1,
             "authorizing_review_digest": REVIEW_DIGEST,
             "agent_hash": "55" * 32,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-000",
@@ -1590,6 +1593,7 @@ def test_val_cross_015_tcb_and_key_provider_rejected_both():
             "submission_version": 1,
             "authorizing_review_digest": REVIEW_DIGEST,
             "agent_hash": "55" * 32,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-000",

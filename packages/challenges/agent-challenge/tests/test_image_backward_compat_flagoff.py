@@ -159,6 +159,7 @@ def _set_eval_plan_env(monkeypatch) -> None:
         "submission_version": 1,
         "authorizing_review_digest": "1" * 64,
         "agent_hash": AGENT_HASH,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "hello-world",

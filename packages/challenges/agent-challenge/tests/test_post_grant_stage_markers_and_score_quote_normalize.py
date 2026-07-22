@@ -331,6 +331,7 @@ def _set_happy_phala_env(monkeypatch, *, trials: int = 1) -> None:
         "submission_version": 1,
         "authorizing_review_digest": "1" * 64,
         "agent_hash": "f" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "hello-world",

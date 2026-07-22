@@ -1679,6 +1679,7 @@ async def test_frontend_dualflag_status_task_rows_from_evalrun_plan(
         "submission_version": 1,
         "authorizing_review_digest": "b" * 64,
         "agent_hash": "a" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": task_id,
@@ -1818,6 +1819,7 @@ async def test_frontend_dualflag_eval_prepared_task_rows_without_score_record(
         "submission_version": 1,
         "authorizing_review_digest": "b" * 64,
         "agent_hash": "a" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": task_id,

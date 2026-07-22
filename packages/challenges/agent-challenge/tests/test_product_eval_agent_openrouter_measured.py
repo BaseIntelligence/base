@@ -570,6 +570,7 @@ def _emission_plan(*, authorizing_review_digest: str) -> dict[str, Any]:
             "submission_version": 1,
             "authorizing_review_digest": authorizing_review_digest,
             "agent_hash": _AGENT_HASH,
+            "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "selected_tasks": [
                 {
                     "task_id": "task-a",

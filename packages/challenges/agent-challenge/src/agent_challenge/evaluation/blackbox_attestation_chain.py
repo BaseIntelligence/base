@@ -483,6 +483,7 @@ def build_fixture_eval_plan(
             "submission_version": 1,
             "authorizing_review_digest": authorizing_review_digest,
             "agent_hash": agent_hash,
+            "package_tree_sha": "b" * 64,
             "selected_tasks": [
                 {
                     "task_id": "task-a",

@@ -96,6 +96,7 @@ def _live_like_plan() -> dict[str, Any]:
         ],
         "k": 1,
         "agent_hash": "aa" * 32,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     }
 
 
@@ -119,6 +120,11 @@ def test_preflight_ok_marker_with_live_like_plan(monkeypatch, tmp_path, capsys) 
         backend,
         "assert_agent_artifact_matches_plan",
         lambda **_: plan["agent_hash"],
+    )
+    monkeypatch.setattr(
+        backend,
+        "assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(
         backend,
@@ -208,6 +214,11 @@ def test_quote_provider_bare_exception_maps_to_key_release_not_terminal(
     )
     monkeypatch.setattr(
         backend,
+        "assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
+    )
+    monkeypatch.setattr(
+        backend,
         "_preflight_eval_plan_tasks",
         lambda **_: {"hello-world": object()},
     )
@@ -273,6 +284,11 @@ def test_key_release_error_still_maps_via_reason_code(monkeypatch, tmp_path, cap
         backend,
         "assert_agent_artifact_matches_plan",
         lambda **_: plan["agent_hash"],
+    )
+    monkeypatch.setattr(
+        backend,
+        "assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(
         backend,

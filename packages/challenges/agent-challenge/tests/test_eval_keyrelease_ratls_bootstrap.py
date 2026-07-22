@@ -508,6 +508,7 @@ def _stub_eval_plan(**overrides: Any) -> dict[str, Any]:
         ],
         "k": 1,
         "agent_hash": "f" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "scoring_policy": {
             "schema_version": 1,
             "per_task_aggregation": "mean",

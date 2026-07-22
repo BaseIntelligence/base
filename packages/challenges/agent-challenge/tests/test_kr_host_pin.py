@@ -42,6 +42,7 @@ def _eval_plan(*, key_release_endpoint: str) -> dict[str, Any]:
         "submission_version": 1,
         "authorizing_review_digest": "1" * 64,
         "agent_hash": "a" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "task-a",

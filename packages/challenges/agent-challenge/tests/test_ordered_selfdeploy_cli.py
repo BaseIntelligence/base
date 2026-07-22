@@ -96,6 +96,7 @@ def _eval_plan() -> dict[str, object]:
         "submission_version": 1,
         "authorizing_review_digest": "d" * 64,
         "agent_hash": "e" * 64,
+        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "task-1",
