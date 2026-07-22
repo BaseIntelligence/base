@@ -1,4 +1,37 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Scoring and Rewards
+
+PRISM is a **research lab**. The emission path scores one thing: which package produces a **better
+model for us** after fair from-scratch learning — measured first by **held-out / generalization**,
+then by recomputed prequential **bits-per-byte**. The challenge owns every number.
+
+> **Surface honesty (locked).**
+>
+> | Surface | Role | Ranking |
+> | --- | --- | --- |
+> | **Emission crown** (this page: leaderboard → raw weights) | Subnet reward eligibility | **Held-out / generalization PRIMARY**, prequential bpb **SECONDARY** (Official-like invert) |
+> | **Official Comparison / multimetric.v1.1 / Complete View** | Published **scientific miner architecture grade** | Multi-axis vector + polar honesty; **not** the emission scalar in v1 |
+>
+> Do **not** claim multimetric / Complete View silently replaces emission. Prior LAB-GPU K=1 short-ctx
+> wins remain **provisional only**. Challenge-owned **`prism_train_series.v1`** is visibility + residual
+> densify for sample-eff/stability only — **never sole primary** over held-out/bpb. When an Official
+> grade pin **requires** the series and it is missing/corrupt, Official grade **fail-closes** (not
+> silent PASS); miner dashboards remain non-authoritative. Provider trust + **IMAGE_PIN** govern
+> worker integrity; **REAL-PROVIDER TEE** is **retired** for Prism product (historical tables may
+> still say BLOCKED; never a production scoring gate).
+```mermaid
+flowchart LR
+    Loss[Single-pass online loss stream] --> Bpb[Prequential bits-per-byte]
+    Loss --> Hold[Held-out generalization]
+    Hold --> Final[emission_rank / final_score]
+    Bpb --> Final
+    Gap[Train-vs-held-out gap - memorization penalty] --> Final
+    Anomaly[Step-0 smuggled-weights anomaly multiplier] --> Final
+    Final --> Board[Leaderboard ordered by emission rank DESC]
+```
 
 PRISM is a **research lab**. The emission path scores one thing: which package produces a **better
 model for us** after fair from-scratch learning — measured first by **held-out / generalization**,
@@ -35,8 +68,6 @@ For the **production leaderboard and raw-weight path**, the ranking primary is *
 generalization** quality the challenge computes itself on the secret `val` split after forced-init
 re-execution.
 
-Preferred primary form (higher better):
-
 ```text
 heldout_delta = bpb(random-init twin on val) - bpb(trained model on val)
 ```
@@ -65,11 +96,6 @@ exploration shapes only — not privileged emission families.
 
 ## Emission Secondary: Prequential Bits-Per-Byte
 
-During the re-execution, the challenge feeds the model fresh, single-pass batches from the locked train
-split and records its loss on each new batch **before** the optimizer updates on it. Single-pass data
-makes this online (predict-then-train) loss the prequential code-length by construction. The challenge
-integrates that code-length and normalizes it by the raw UTF-8 bytes covered:
-
 ```text
 bpb = (sum over consumed tokens of -log2 p(token)) / total_bytes_covered
 ```
@@ -90,33 +116,20 @@ Continuity transform (still used where products report a scalar display fold of 
 bpb_display = 1 / (1 + bpb)        # higher display = lower bpb; secondary only under emission rank
 ```
 
-## Compute Normalization, Not Wall-Clock
-
 The score is **compute-normalized**: normalized by tokens consumed (and optionally estimated FLOPs),
 never by wall-clock time. A faster GPU or more GPUs cannot buy a better score; wall-clock is only a
 safety cap. This keeps scores fair across the 1-to-8 GPU range even though the scored run uses one
 physical GPU.
 
-## Dual param ladder (explore → promote)
-
 Emission crowns respect the **GPU-limited small-first ladder**:
-
-| Stage | Cap | Crown role |
-| --- | ---: | --- |
-| Explore / provisional | **124M** | Qualifying scores may **provisional-crown** architecture or training pools |
-| Promote / final | **350M** | Same package/family pin re-eval **confirms or revokes** the provisional crown |
 
 Explore is the default thrash size. Durable supremacy requires promote confirmation; a failed or
 losing promote revokes the provisional crown so dead provisional winners do not keep emission weight.
-
-## Anti-Memorization Gap
 
 The challenge measures the train-vs-held-out gap (converged train bpb vs held-out val bpb on the same
 byte basis). An excessive gap flags memorization and multiplies a penalty into the emission score, so a
 memorizer ranks below an equivalent non-memorizing learner. The comparison is basis-consistent so a
 benign learner is not falsely flagged.
-
-## Anomaly Zeroing
 
 A step-0 / smuggled-weights anomaly (an impossibly low initial loss under forced random init) drives the
 anti-cheat multiplier to zero, so an anomalously good looking compression curve is zeroed rather than
@@ -148,8 +161,6 @@ instrumented) densifies sample-eff/stability residual and operator visibility. S
 sole-rank** mining packages over Official held-out or recomputed bpb axes, and must **not**
 substitute emission held-out primary.
 
-## Source Of Truth
-
 Every number above is recomputed by the challenge from the challenge-authored
 `prism_run_manifest.v2.json`. Miner-reported metrics and miner-written manifests are ignored. The legacy
 raw-loss term and the v1-NAS architecture/training ownership pools are retired from the score.
@@ -159,8 +170,6 @@ Miner self-reports remain non-authoritative on both the emission path and Offici
 labels are orthogonal to ranking; **REAL-PROVIDER TEE** is a retired product goal (historical
 non-claims only): see [Official Comparison](official-comparison.md) §17 train series telemetry,
 scorecard honesty, and [Security](security.md).
-
-## Reference Studies
 
 - **Prequential / online coding** — Dawid, 1984: score the integrated predict-then-train loss, not a
   final checkpoint.

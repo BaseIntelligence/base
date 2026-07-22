@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a product pin note, not a parallel route dump.
+
 # Prism Official Comparison Protocol v1
 
 **Version label:** `prism_official_compare.v1`  

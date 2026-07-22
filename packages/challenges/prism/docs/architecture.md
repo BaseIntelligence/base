@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Architecture
 
 PRISM is a BASE challenge service: a FastAPI application with SQLite state, internal BASE
@@ -28,6 +32,24 @@ flowchart LR
 
 ## Main Components
 
+PRISM pins the immutable Base SDK wheel **v3.1.2** (see the root README and `pyproject.toml`). There
+is **no LLM gateway** dependency, client, route, or admission path.
+
+```mermaid
+flowchart LR
+    Miner[Miner] --> Proxy[BASE Proxy]
+    Proxy --> Bridge[PRISM Bridge]
+    Bridge --> Queue[Worker Queue]
+    Queue --> Static[Static Gates - AST + Param Cap + Distributed Contract]
+    Static -->|reject| Rejected([rejected])
+    Static --> Admit[Deterministic Admission]
+    Admit --> Similarity[Source Similarity + Anti-Cheat]
+    Similarity -->|reject| Rejected
+    Similarity --> Reexec[Forced-Init Re-Execution]
+    Reexec --> Score[Prequential bpb + Held-out Delta]
+    Score --> Weights[Raw-Weight Push to BASE Master]
+```
+
 | Component | Responsibility |
 | --- | --- |
 | FastAPI app | Public and internal HTTP routes; optional **combined mode** drains the eval queue in-process |
@@ -43,8 +65,6 @@ flowchart LR
 | Scoring | Emission rank: held-out / generalization primary, prequential bpb secondary, anti-memorization gap |
 | Raw-weight push | Pushes authenticated raw hotkey weights to the BASE master for aggregation |
 
-## BASE Integration
-
 BASE owns miner-facing upload security (signatures, timestamps, nonces, hotkey identity) before
 forwarding a submission to `POST /internal/v1/bridge/submissions`. The bridge trusts only internal BASE
 authentication and the verified hotkey header; miner-supplied identity headers are not trusted.
@@ -57,15 +77,11 @@ https://github.com/BaseIntelligence/base/releases/download/v3.1.2/base-3.1.2-py3
 #sha256=3a61c2d3a343ed6de55e80215486e3de0c9639276443d08f2ed316bc807f2ff0
 ```
 
-## Compose Deployment Model
-
 Supported install is **Docker Compose only** (single host). In the master Compose project, PRISM runs
 as **one long-lived combined challenge service** (`combined_mode`): the API process also drains the
 eval queue in-process (no second app/DB, no Swarm, no application-launched ephemeral evaluator jobs).
 Challenge-owned state stays on the challenge volume. See the BASE operator Compose docs
 (`deploy/compose/*`) for install and the digest-aware watcher.
-
-## Execution Model
 
 PRISM never executes miner code in the API process without isolation. The worker runs static
 inspection and deterministic admission, then ships the project to an isolated container (or accepts a
@@ -87,12 +103,6 @@ admission and before any GPU work:
 2. Forced-seed `build_model` instantiation and the dual param ladder (124M explore / 350M promote).
 3. The multi-GPU static contract and single-node bound.
 4. Deterministic source similarity (exact duplicate and quarantine band → **rejected**, never held).
-
-Legacy local-CPU (except explicit test mode) and remote-Lium execution paths for the default scored
-mode are not the supported operator path. See [Submissions](submissions.md) for the two-script
-contract and [Scaling](scaling.md) for the multi-GPU rules.
-
-## Forced-Init Re-Execution (Anti-Cheat Core)
 
 The challenge harness drives every scored run; miner code only supplies the model and the loop body.
 
@@ -120,8 +130,6 @@ Legacy claim fields such as `tdx_quote_b64` / `gpu_eat_jwt`, if present on the w
 never elevate tier. **REAL-PROVIDER TEE** is a **retired** Prism product goal (historical lab tables
 may still record BLOCKED). See [Security](security.md).
 
-## State Model
-
 State lives in SQLite. Key tables include `miners`, `submissions`, `eval_jobs`, `gpu_leases`,
 `scores`, `submission_sources`, `epochs`, plus raw-weight push ledger state. TEE nonce / decision
 ledgers are not created by the current product path.
@@ -132,8 +140,6 @@ ledgers are not created by the current product path.
 - `scores` holds the challenge-computed prequential bits-per-byte `final_score` and its metrics.
 - Legacy LLM review / hold tables are not written by the admission path; forward migrations reject
   leftover held/quarantined rows without approving them.
-
-## Scoring Flow
 
 Once the re-execution produces a valid challenge-authored `prism_run_manifest.v2.json`, scoring derives
 everything from the challenge-owned capture:
@@ -155,8 +161,6 @@ smuggled-weights run. Worker-plane `skip_heldout` degrades without inventing hel
 advance emission crowns. The leaderboard orders by `final_score` with an earliest-commit-wins
 tie-break. PRISM pushes authenticated raw hotkey weights to the BASE master; validators fetch the
 master vector and call `set_weights` with their own wallets. PRISM never writes weights on-chain.
-
-## Failure Handling
 
 A submission ends `pending`, `running`, `completed`, `failed`, or `rejected`:
 

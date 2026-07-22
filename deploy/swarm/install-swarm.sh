@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# install-swarm.sh — single-node Docker Swarm bring-up of the BASE master
-# + both challenges (agent-challenge, PRISM) on the validator node.
+# install-swarm.sh — HISTORICAL / NON-SHIPPING Soft Swarm bring-up.
 #
 # ============================================================================
-# STATUS: DRAFT FOR HUMAN REVIEW. DO NOT EXECUTE BLINDLY.
+# STATUS: HISTORICAL · NOT A SUPPORTED INSTALL DESTINATION · DRY-RUN DEFAULT
 # ============================================================================
 #
-# This script brings the BASE master + both challenges up on a single-node
-# Docker Swarm (the manager node). Docker Swarm is the only backend — there is
-# no Kubernetes. It is meant to be reviewed and then executed STEP BY STEP by an
-# operator.
+# Docker Compose under deploy/compose/ is the ONLY supported shipping path
+# (master embed + weight-only validators). Do NOT use this script for greenfield
+# Base installs. Prefer:
+#   ./deploy/compose/install-master.sh
+#   ./deploy/compose/install-validator.sh
+#   docs/compose.md
+#
+# This historical script can still bring up a single-node Docker Swarm manager
+# with BASE master + challenges when an operator explicitly reviews and applies
+# it. Swarm is NOT the supported backend for new installs — Compose is. There is
+# no Kubernetes path. If you must use this script, review and execute STEP BY
+# STEP (default mode is dry-run).
 #
 # Adding workers: this script brings up only the single manager node. To attach
 # CPU/GPU worker nodes, mint a join token on the manager with

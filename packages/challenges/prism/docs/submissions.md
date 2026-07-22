@@ -1,4 +1,37 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Submission Format
+
+PRISM is a **research lab**: the **norm** is to try **new architectures**; the **goal** is to find
+**more performant** ones under fair challenge-owned re-exec. PRISM accepts a **two-script** bundle: a
+`.zip` archive (or directory snapshot) containing a model `architecture.py` and a training
+`training.py`. PRISM fixes the FineWeb-Edu dataset and the evaluation protocol, not the model search
+space beyond the Python contract, the AST sandbox, the **dual param ladder** (124M explore /
+350M promote), and the resource limits.
+
+The miner owns the model and the training loop. The challenge owns the dataset and the scoring: it
+re-executes `training.py` under a forced random init and a fixed seed, records the online loss stream
+itself, authors the run manifest, and ignores any value the miner reports.
+A single combined module no longer satisfies the contract.
+See [Architecture](architecture.md) and [Scoring](scoring.md) for the re-execution and scoring detail.
+For the architecture-agnostic **Official Comparison Protocol v1** (scientific multi-axis grade —
+held-out primary ranking, honest hooks table, GPU deferred without NVIDIA), multimetric scorecard
+annex **v1.1** (`scorecard_id=multimetric.v1.1`), Complete View, and challenge-owned train series
+**`prism_train_series.v1`**, see [Official Comparison](official-comparison.md). Multimetric /
+Complete View are **published research grade** and do **not** silently replace the emission crown
+(held-out primary + bpb secondary).
+## The Two-Script Contract
+
+A bundle must contain two **distinct** scripts.
+
+`architecture.py` exposes a factory that returns a `torch.nn.Module`:
+
+```python
+def build_model(ctx):
+    return MyModel(ctx.vocab_size)
+```
 
 PRISM is a **research lab**: the **norm** is to try **new architectures**; the **goal** is to find
 **more performant** ones under fair challenge-owned re-exec. PRISM accepts a **two-script** bundle: a
@@ -48,8 +81,6 @@ def train(ctx):
 tokenization, the multi-GPU strategy, and the loop. It reports progress only through the
 challenge-provided logging handle, never as the basis of the score.
 
-### Honest training hooks (challenge-owned score)
-
 | Hook | Required? | Authoritative for score? |
 | --- | --- | --- |
 | `build_model(ctx) → nn.Module` | Yes | Indirectly (must construct under forced seed / dual param ladder) |
@@ -85,8 +116,6 @@ Absent `prism.yaml`, PRISM uses the default entrypoints (`architecture.py`, `tra
 fallback. The two entrypoints must be distinct files: **the single-module re-export idiom no longer
 satisfies the contract**.
 
-## PrismContext
-
 Both scripts receive a `PrismContext`:
 
 | Field / method | Meaning |
@@ -117,8 +146,6 @@ Delivery is a read-only bind mount on the GPU node. The eval container runs with
 tokenizes raw text from `ctx.data_dir` with its own or a pre-staged reference tokenizer, failing closed
 if the locked data is missing rather than fabricating data.
 
-## Multi-GPU Contract
-
 The miner's `training.py` owns multi-GPU scaling. The harness launches
 `torchrun --standalone --nnodes=1 --nproc-per-node=<gpu_count>`, exposing `WORLD_SIZE`, `RANK`, and
 `LOCAL_RANK`. PRISM is **single-node** only: runs use 1-8 GPUs on one node, and the official scored run
@@ -132,14 +159,10 @@ single physical GPU with a static contract check and a **gloo** multi-rank test 
 CPU) asserting the loss decreases and parameters stay byte-identical across ranks. True 8-GPU scaling is
 an accepted, unverifiable limitation on a one-GPU node.
 
-## Artifact Manifest
-
 The runner writes a challenge-authored `prism_run_manifest.v2.json` from the captured loss stream: the
 prequential bits-per-byte score block, the held-out delta and anti-memorization gap, the compute block
 (leased `gpu_count`, world size, device, realized parameter count), the run provenance, and the byte
 coverage. Any miner-written manifest or reported metric is discarded.
-
-## Minimal Example (default exploration under 124M)
 
 ```text
 project.zip
@@ -165,8 +188,6 @@ Novel architectures beyond these seeds are first-class under the AST + ladder ca
 **Day-1 network submit** (production): pack a seed, sign with your hotkey, and
 `POST https://chain.joinbase.ai/v1/challenges/prism/submissions` with signature headers. Walkthrough:
 [Miner getting started](miner/getting-started.md).
-
-## ZIP Safety Rules
 
 ZIP submissions are extracted defensively: no path traversal, no symlinks, limited file count, limited
 total bytes, only approved text or code suffixes. Unsupported or unsafe archives are rejected before

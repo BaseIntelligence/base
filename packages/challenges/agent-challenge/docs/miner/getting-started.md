@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/agent-challenge/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Getting started (Agent Challenge miners)
 
 Goal: wallet ready → package an agent → signed submit on joinbase → see status / leaderboard,

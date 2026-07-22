@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Validator Guide
 
 ## Purpose
@@ -28,12 +32,33 @@ let validators submit the master-aggregated vector with their own wallets.
    similarity **reject** terminally; there is no held-for-review path and no LLM hard gate.
 6. The challenge re-executes `training.py` under a forced random init on the locked train split and
    captures the single-pass online loss itself (broker/container or worker-plane path).
+
+PRISM lets validators operate an "ability to learn" challenge for BASE: accept signed miner
+submissions, run the static sandbox and **deterministic admission**, re-execute the miner's training
+loop under a forced random init on locked data (or ingest an `ExternalResultEnvelope` when the worker
+plane is on), compute the prequential bits-per-byte score, push **raw weights** to the BASE master, and
+let validators submit the master-aggregated vector with their own wallets.
+
+- accept only signed submissions and enforce replay protection and size limits;
+- keep evaluation isolated from the host (broker-backed containers, `network=none`);
+- keep the locked `val`/`test` splits secret and never expose them to a miner script;
+- force the seed and deterministic flags so runs reproduce;
+- compute the score from the challenge-owned capture, never trusting miner-reported numbers;
+- protect shared BASE and broker tokens (there is **no** LLM gateway token);
+- monitor scoring, rejections, failures, and raw-weight push / exported inventory weights.
+
+1. A miner submits a signed two-script bundle; PRISM validates the hotkey, timestamp, nonce, and size.
+2. The bundle is resolved into the two-script contract and inspected by the AST sandbox.
+3. The forced-seed `build_model` instantiation enforces the dual param ladder (124M explore / 350M promote).
+4. The multi-GPU static contract and single-node bound are checked.
+5. **Deterministic admission** runs (source similarity + anti-cheat). Exact duplicates and quarantine-band
+   similarity **reject** terminally; there is no held-for-review path and no LLM hard gate.
+6. The challenge re-executes `training.py` under a forced random init on the locked train split and
+   captures the single-pass online loss itself (broker/container or worker-plane path).
 7. PRISM computes the prequential bits-per-byte score, the held-out delta tie-breaker, and the
    anti-memorization gap, and writes `prism_run_manifest.v2.json`.
 8. Scores persist; the leaderboard ranks by `final_score`; PRISM raw-weight push feeds master
    aggregation; on-chain `set_weights` remains validator-owned.
-
-## Runtime Configuration
 
 Settings use the `PRISM_` prefix (and compatible `CHALLENGE_` values where declared) to bootstrap the
 process and provide fallback defaults. Runtime policy is SQL-first, and official runtime config fails
@@ -42,8 +67,6 @@ closed when an active SQL value is invalid:
 ```text
 SQL active value → env/Pydantic default → schema default
 ```
-
-### SQL Runtime Config Keys
 
 | Key | Policy area |
 | --- | --- |
@@ -65,8 +88,6 @@ gateway/review configuration fails closed at load.
 Rows are audited (`config_key`, `value_json`, `schema_version`, `updated_by`, `updated_at`,
 `effective_from`, `enabled`); the active row per key is the newest enabled row whose `effective_from`
 has arrived.
-
-### Environment Settings
 
 | Setting | Purpose |
 | --- | --- |
@@ -105,10 +126,6 @@ retired local-CPU smoke mode is gone (except explicit CPU re-exec test mode). Of
 fixed `gpu_policy` profile: the max is 8 GPUs and the scored run uses 1 GPU
 (`torchrun --standalone --nnodes=1 --nproc-per-node=1`); PRISM is single-node only.
 
-## Routes
-
-Public miner surface and BASE contract:
-
 ```http
 POST /v1/submissions
 GET  /v1/submissions/{submission_id}
@@ -126,8 +143,6 @@ POST /internal/v1/work_units/result  # ExternalResultEnvelope only when worker p
 Production emissions flow as authenticated **raw-weight push** → master aggregation → validator
 `set_weights`. The architecture auto-report route is removed.
 
-## Review And Quarantine
-
 PRISM uses the static AST sandbox, the forced-seed parameter cap, the multi-GPU static contract, and
 **deterministic** similarity/anti-cheat checks. A reject from any static gate or the similarity band is
 terminal before any GPU work. A borderline duplicate is folded into a terminal rejection at ingress:
@@ -140,12 +155,8 @@ there is no operator hold-resolution surface and no LLM hard gate.
 - Do not treat inventory probes or opaque quote fields as elevated-tier proof.
 - **REAL-PROVIDER TEE** is retired as a Prism product goal (historical lab labels may still say BLOCKED).
 
-## Base SDK Pin
-
 PRISM installs Base **v3.1.2** from the public wheel pin in `pyproject.toml`. Keep installs locked to
 that immutable artifact; do not vendor a parallel SDK.
-
-## Checklists
 
 **Setup:** persistent SQLite storage; shared-token delivery via files or a secret manager; the broker,
 digest-pinned evaluator image, and read-only locked-data mounts; submission size and parameter limits;

@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Security Model
 
 PRISM evaluates untrusted miner code. It assumes submissions may be malicious and layers identity
@@ -28,7 +32,22 @@ Before any GPU work, PRISM runs the static gates over both scripts, in order:
 
 A rejection at any static gate is terminal before similarity admission and before any GPU work.
 
-## Deterministic Admission
+BASE handles miner-facing uploads, verifying hotkey identity, signatures, timestamps, nonces, request
+freshness, and challenge routing before forwarding the payload to `POST /internal/v1/bridge/submissions`;
+PRISM trusts the verified hotkey header only on authenticated internal requests. Internal endpoints
+require the shared BASE challenge token (`Authorization: Bearer <shared-token>`), read from
+`PRISM_SHARED_TOKEN`, `CHALLENGE_SHARED_TOKEN`, or a secret file (prefer secret files in production).
+
+1. **AST hard-blocks** over `architecture.py` and `training.py`: no `os`, `sys`, `subprocess`,
+   `socket`, network clients, `pickle`/`torch.load` of untrusted paths, `ctypes`, dynamic `importlib`,
+   `eval`/`exec`/`compile`, attribute escapes (`__globals__`, `__reduce__`, `__class__` walking), or
+   filesystem writes outside `artifacts_dir`.
+2. **Forced-seed parameter cap**: `build_model(ctx)` is instantiated under the forced seed in a bounded
+   child process and rejected if it exceeds the stage param cap (124M explore / 350M promote; realized first-forward shapes).
+3. **Multi-GPU static contract**: the training script must use the distributed primitives and a rank-0
+   write guard; a `gpu_count > 8` or multi-node request is rejected.
+
+A rejection at any static gate is terminal before similarity admission and before any GPU work.
 
 After static gates pass, PRISM applies challenge-owned deterministic checks only:
 
@@ -40,8 +59,6 @@ After static gates pass, PRISM applies challenge-owned deterministic checks only
 Legacy env keys or settings related to LLM review, gateway URL/token, architecture auto-report, or
 component-agent hold policies fail closed at configuration load. Unknown residual knobs are rejected
 rather than silently ignored when they map to removed surfaces.
-
-## Forced-Init Re-Execution (Anti-Cheat Core)
 
 The challenge re-executes the miner's `training.py` under a **forced random init** with a fixed,
 challenge-controlled seed and deterministic flags set **before** any miner code runs, feeds it fresh
@@ -56,8 +73,6 @@ the three cheat classes:
   reproducible within tolerance.
 - **No memorization** — the `val`/`test` splits are secret and **never exposed** to the miner script; an
   excessive train-vs-held-out gap penalizes the score.
-
-## External Result Envelope (Worker Plane)
 
 When the worker plane is enabled, Prism ingests reconciled external evaluation results **only** as the
 Base SDK `ExternalResultEnvelope` (api_version, assignment/challenge bindings, execution proof). Dual
@@ -83,20 +98,14 @@ history; do not implement or document a TEE production scoring gate as the live 
 non-empty `tdx_quote_b64` / `gpu_eat_jwt` fields never imply tier 2 by presence alone (max effective
 tier is 1 via image pin).
 
-## Locked Data, No Network
-
 The train split is mounted **read-only** at `ctx.data_dir` and is the only data the miner script sees;
 the `val`/`test` splits are secret. The eval container runs with `network=none`, `HF_HUB_OFFLINE=1`, and
 `HF_DATASETS_OFFLINE=1`, so there is **no network** during training and the miner cannot download data,
 tokenizers, or weights at runtime.
 
-## Duplicate Review
-
 An exact-source-hash duplicate is rejected, and a borderline-similarity quarantine is folded into a
 terminal rejection at ingress (there is no operator hold-resolution surface; the v1-NAS component-review,
 LLM review, and ownership machinery were decommissioned).
-
-## Execution Isolation
 
 PRISM never executes submitted code inside the API process without isolation. The scored run happens in
 a broker-backed container that is non-root, has a read-only rootfs except `artifacts_dir`, uses
@@ -106,18 +115,12 @@ Host-side static instantiation and held-out scoring run in bounded child process
 containers; evaluation is the long-lived challenge runtime (or external worker-plane GPUs on trusted
 providers when enabled).
 
-## ZIP Hardening
-
 ZIP extraction rejects symlinks, path traversal, unsafe paths, unsupported file types, and excessive
 file counts or bytes before code review begins.
-
-## Weights And Chain Boundary
 
 PRISM exposes `get_weights` for inventory/compatibility and pushes authenticated **raw** hotkey weights
 to the BASE master. The master aggregates the final vector; **validators** call `set_weights` with
 their own wallets. The challenge and master never write weights on-chain.
-
-## Reference Studies
 
 - **Supply-chain attacks** — Gu, Dolan-Gavitt, and Garg, 2017/2019 (*BadNets*): treat submitted code
   and artifacts as adversarial even when metrics look normal.
@@ -125,8 +128,6 @@ their own wallets. The challenge and master never write weights on-chain.
   `weights_only=True` from the challenge-recorded path only.
 - **Dataset provenance** — Penedo et al., 2024 (*The FineWeb Datasets*): pin the revision and shard
   hashes; keep held-out splits secret.
-
-## Operational Guidance
 
 - Use real secret files in production, not inline tokens.
 - Keep public submissions disabled when PRISM is deployed only behind BASE.

@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # PRISM Overview
 
 PRISM is a **research lab** machine-learning challenge for BASE Network. The **norm** is to try
@@ -28,6 +32,20 @@ It answers questions like:
 
 ## Small-first dual ladder (GPU-limited)
 
+PRISM is a **research lab** machine-learning challenge for BASE Network. The **norm** is to try
+**new architectures**. The **goal** is to find **more performant** architectures for our LLM
+target — generalization after from-scratch learning under fair challenge-owned re-execution
+(data, seed, metrics), not short-train compression alone and not paper claims.
+
+Bittensor miners submit a model and a training procedure as two executable Python scripts. PRISM
+competes them on locked FineWeb-Edu data with forced random initialization.
+
+PRISM does not ask miners to train a frontier model offline and dump weights. It asks: given a fixed
+dataset and a forced random initialization, which architecture and training recipe actually
+**learns a better model for us**? Production emission ranks that with held-out / generalization
+**primary** and prequential bits-per-byte **secondary**. Multimetric / Complete View publish the
+richer scientific vector without silently becoming the emission scalar.
+
 | Stage | Param cap | Role |
 | --- | ---: | --- |
 | Discover / provisional | **124M** (`124_000_000`) | Cheap continuous exploration; **may provisional-crown** emission |
@@ -36,8 +54,6 @@ It answers questions like:
 Default exploration shapes under 124M: [`examples/tiny-1m`](../examples/tiny-1m) and
 [`examples/mamba-tiny`](../examples/mamba-tiny). Novel `nn.Module` families under the AST sandbox
 remain expected, not second-class.
-
-## How It Works
 
 ```mermaid
 flowchart LR
@@ -62,15 +78,11 @@ flowchart LR
    Validators fetch the master vector and submit on-chain under their own wallets. Two-tier ownership
    defaults: architecture **0.50** / training **0.50**.
 
-## Who Owns What
-
 The **miner** owns the model and the training procedure, including multi-GPU scaling and novel
 architecture design. The **challenge** owns everything that keeps the comparison fair: the dataset
 and the secret `val`/`test` splits, the forced seed and deterministic flags, the data order and
 single-pass loss capture, and the scoring. Any metric the miner reports and any manifest it writes
 are ignored; scoring reads only the challenge-authored `prism_run_manifest.v2.json`.
-
-## Why It Is Cheat-Resistant
 
 - forced random init (fixed seed) makes smuggled pretrained weights inert;
 - single-pass, predict-then-train loss has no held-out leakage by construction;
@@ -94,8 +106,6 @@ penalized as memorization; step-0 anomaly zeroes cheats.
 Multimetric and Complete View are **research grade** visibility surfaces. They do **not** silently
 replace the emission scalar in volume-1. See [Scoring](scoring.md) and
 [Official Comparison](official-comparison.md).
-
-## Runtime Shape
 
 Deploy as a **long-lived Compose challenge service**. Preferred production layout is the BASE master
 Compose project with PRISM in **combined mode** (API + in-process queue drain) and digest-pinned

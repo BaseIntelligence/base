@@ -1,3 +1,5 @@
+> OpenAPI: https://chain.joinbase.ai/challenges/agent-challenge/openapi.json · Day-1: root docs/miner/getting-started.md
+
 # Validator / operator self-deploy surfaces
 
 Miners fund CVMs. **You** own the trust root: dual measurement allowlists, golden

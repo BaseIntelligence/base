@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Concepts (Prism miners)
 
 Short mental model. Day-1 submit stays on [Getting started](getting-started.md).
@@ -27,25 +31,35 @@ the emission scalar. Wall-clock **never** ranks emission.
 
 Deep dives:
 
+- [Scoring](../scoring.md) — emission metric
+
+Prism is a BASE **research lab** challenge on https://joinbase.ai:
+
+- **Norm:** try **new architectures** (`torch.nn.Module` under the AST sandbox).
+- **Goal:** find **more performant** learners for the locked FineWeb-Edu target under
+  fair **challenge-owned** re-execution.
+- You submit **two scripts** (`architecture.py` + `training.py`). The challenge owns
+  the dataset, forced random init, and the metric.
+
+You do not bring FineWeb weights or self-reported scores. Miner-written manifests are
+ignored.
+
+## Emission vs scientific surfaces
+
+| Surface | Role | Ranking |
+|---------|------|---------|
+| **Emission crown** (leaderboard → raw weights) | Subnet reward eligibility | **Held-out / generalization primary**, prequential bits-per-byte **secondary** |
+| **Official Comparison / multimetric / Complete View** | Published **scientific** research grade | Multi-axis (held-out, bpb, long-ctx, reasoning, polar honesty) |
+
+Multimetric scorecard `multimetric.v1.1` and Complete View do **not** silently replace
+the emission scalar. Wall-clock **never** ranks emission.
+
 - [Scoring](../scoring.md) — emission metric  
 - [Official Comparison](../official-comparison.md) — science grade  
-- [Overview](../overview.md) — lab identity  
-
-## Dual param ladder
-
-| Stage | Cap | Role |
-| --- | ---: | --- |
-| Explore / provisional | **124M** | Default continuous thrash; may provisional-crown |
-| Promote / final | **350M** | Confirm or revoke provisional crown on same pin |
+- [Overview](../overview.md) — lab identity
 
 Start under 124M (`examples/tiny-1m`, `examples/mamba-tiny`, other seed families). Promote
 only to confirm durable claims.
-
-## Deterministic admission (no LLM gateway)
-
-After static sandbox gates, Prism runs **deterministic** similarity / anti-cheat
-admission. There is **no** Base LLM gateway hard gate on Prism. Gateway language in
-older posts is obsolete.
 
 ## Provider trust and NO-TEE (Prism product)
 
@@ -61,8 +75,6 @@ finalize production scores.
 
 Agent Challenge Phala/KR attestation is a **different** challenge and is out of scope
 here.
-
-## How rewards leave Prism
 
 ```text
 You  --signed ZIP-->  chain.joinbase.ai bridge
@@ -83,12 +95,8 @@ You  --signed ZIP-->  chain.joinbase.ai bridge
 BASE never calls `set_weights` on the master. Missing or unscored challenges burn their
 absolute share (uid0 policy on seal).
 
-## Two-tier ownership inside Prism
-
 Architecture pool **0.50** / training-variant pool **0.50** of Prism’s emission slice
 (both use the emission rank metric). See [Scoring](../scoring.md).
-
-## Related
 
 - [Getting started](getting-started.md)
 - [Troubleshooting](troubleshooting.md)

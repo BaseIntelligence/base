@@ -15,7 +15,11 @@ dist/
 build/
 *.egg-info/
 
+# Local mission/ops noise (never ship)
 plan/
+evidence/
+**/evidence/
+scripts/burn_weights_24h.py
 
 .omo/
 *.env

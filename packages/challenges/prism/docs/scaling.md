@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a short product pin note, not a route dump.
+
 # Scaling Evaluation
 
 PRISM scores a single-GPU forced-init re-execution, but the contract is built to scale: the miner owns
@@ -28,20 +32,33 @@ exists). Requests above 8 GPUs or for multiple nodes are rejected.
 
 A correct `training.py` calls `init_process_group` (nccl on GPU) and `set_device(local_rank)`, wraps the
 model with DDP or FSDP and shards data per-rank, does rank-0-only writes, all-reduces metrics, tears the
+
+Both official modes use the challenge-authored `prism_run_manifest.v2.json` contract:
+
+| Mode | Purpose | Dataset target |
+| --- | --- | --- |
+| `gpu_proxy_eval` | Default official scored re-execution. | FineWeb-Edu `sample-10BT` locked shards. |
+| `full_scale_eval` | Larger official scored re-execution. | FineWeb-Edu `sample-10BT` then `sample-100BT` phases. |
+
+Both are score-eligible and run on the locked FineWeb-Edu data, mounted read-only, with `network=none`,
+`HF_HUB_OFFLINE=1`, and `HF_DATASETS_OFFLINE=1`, so there is no network during training. The retired
+local-CPU smoke mode no longer exists.
+
+The miner's `training.py` owns multi-GPU scaling. The harness launches
+`torchrun --standalone --nnodes=1 --nproc-per-node=<gpu_count>` and exposes `WORLD_SIZE`, `RANK`, and
+`LOCAL_RANK`. PRISM is **single-node** only: runs use 1-8 GPUs on one node, and the official scored run
+uses `torchrun --standalone --nnodes=1 --nproc-per-node=1` (the `nproc=1` path, since one physical GPU
+exists). Requests above 8 GPUs or for multiple nodes are rejected.
+
+A correct `training.py` calls `init_process_group` (nccl on GPU) and `set_device(local_rank)`, wraps the
+model with DDP or FSDP and shards data per-rank, does rank-0-only writes, all-reduces metrics, tears the
 process group down on exit, and also works at `world_size=1`.
-
-## Validating Multi-GPU On One GPU
-
-True 8-GPU scaling is an accepted, unverifiable limitation on a one-GPU node. Correctness is validated
-three ways:
 
 1. **Static contract** — the AST check verifies the distributed primitives and a rank-0 write guard and
    enforces the single-node bound.
 2. **gloo multi-rank test** — a CPU **gloo** run at world size 2 and 4 asserts the loss decreases and
    parameters stay byte-identical across ranks (DDP gradient-sync correctness).
 3. **Advisory NCCL `nproc=2`** — an indicative run time-sharing the single GPU, advisory only.
-
-## Compute Budget, Not Wall-Clock
 
 The score is compute-normalized by tokens (and optionally FLOPs), never wall-clock. Wall-clock is only a
 safety cap, enforced in layers:
@@ -53,23 +70,17 @@ safety cap, enforced in layers:
 A faster or larger GPU configuration does not change the ranking; it only changes how much of the budget
 the run can use.
 
-## Compute Block In The Manifest
-
 The challenge records a typed, observability-only compute block in `prism_run_manifest.v2.json`: the
 leased `gpu_count` (1 for the scored `nproc=1` path), the launch shape (`world_size`, `nproc_per_node`,
 `device`), and the realized parameter count of the trained model. It never affects scoring: the
 bits-per-byte `final_score` never reads `gpu_count`, so there is no GPU-count reward and no multi-GPU
 scaling bonus.
 
-## Reference Studies
-
 - **Loss vs compute** — Kaplan et al., 2020: compare comparable loss trajectories, not one checkpoint.
 - **Compute-optimal scaling** — Hoffmann et al., 2022: normalize by tokens/compute.
 - **Large-batch dynamics** — McCandlish et al., 2018: scaling the batch across ranks must preserve a
   stable, descending loss.
 - **Dataset provenance** — Penedo et al., 2024 (*The FineWeb Datasets*): freeze the revision and shards.
-
-## Scale-eval ladder (research multi-seed + densify)
 
 Architecture fair-eval at larger K / longer context uses the **Official Comparison** heldout-primary
 rank and host **Complete View** densify. Product helpers live in
@@ -110,8 +121,6 @@ phase-2 **sample-100BT** (100BT token target) without changing the emission rank
 missing it returns **`BLOCKED_with_reason`** (never invents READY scores). When locked mounts
 are present it may report **READY** for mode wiring only (`full_scale_train_executed=false`,
 `requires_100bt_spend=false`, `emission_changed=false`).
-
-Default path knobs (operator config / env):
 
 * train mount: `base_eval_train_data_dir` / `PRISM_BASE_EVAL_TRAIN_DATA_DIR` (default `/data/fineweb-edu/train`)
 * secret val (host scorer only): `base_eval_val_data_dir` / `PRISM_BASE_EVAL_VAL_DATA_DIR`

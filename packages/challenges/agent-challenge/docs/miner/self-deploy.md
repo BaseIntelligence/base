@@ -1,3 +1,5 @@
+> OpenAPI: https://chain.joinbase.ai/challenges/agent-challenge/openapi.json · Day-1: root docs/miner/getting-started.md
+
 # Miner self-deploy (How-to advanced)
 
 > **Day-1 front door is not this page.** Upload first via the joinbase dashboard

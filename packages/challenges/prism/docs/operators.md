@@ -1,3 +1,7 @@
+> **API truth is OpenAPI** (`https://chain.joinbase.ai/challenges/prism/openapi.json`, `/docs`).
+> Day-1 miners: repo-root [`docs/miner/getting-started.md`](../../../../docs/miner/getting-started.md).
+> This page is a product pin note, not a parallel route dump.
+
 # Operator Guide
 
 Local validation and production configuration for running PRISM as a BASE challenge under

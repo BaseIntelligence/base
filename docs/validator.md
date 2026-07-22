@@ -13,6 +13,9 @@ challenge ASGI processes (`/challenges/prism`, `/challenges/agent-challenge`).
 | Weights | `GET /v1/weights/latest` |
 | Registry | `GET /v1/registry` |
 | Health | `GET /health` → `role=master` |
+| Validators directory | `GET /v1/validators/public` |
+| Challenge board SVG | `GET /v1/challenges/dashboard.svg` |
+| Challenge leaderboards | `GET /challenges/{slug}/leaderboard` |
 
 `master_url` is the validator **coordination** root (Base master). Public
 `registry_url` / weights default to the same joinbase host unless overridden.
@@ -20,9 +23,32 @@ challenge ASGI processes (`/challenges/prism`, `/challenges/agent-challenge`).
 ```bash
 curl -fsS https://chain.joinbase.ai/health
 curl -fsS https://chain.joinbase.ai/v1/weights/latest
+curl -fsS https://chain.joinbase.ai/v1/registry
+curl -fsS https://chain.joinbase.ai/v1/validators/public
 ```
 
 Weights URL example: `https://chain.joinbase.ai/v1/weights/latest`.
+
+### Network stats (composed, not a single `/v1/stats`)
+
+There is **no** dedicated `/v1/stats` or `/v1/network` aggregate route. Production
+network visibility is **composed** from the live surfaces above plus per-challenge
+OpenAPI/leaderboard:
+
+| Need | Compose from |
+|------|----------------|
+| Master readiness | `GET /health` |
+| Active challenges + emission shares | `GET /v1/registry` |
+| Sealed UID vector | `GET /v1/weights/latest` |
+| Validator directory | `GET /v1/validators/public` |
+| Challenge ranks / scores | `GET /challenges/{slug}/leaderboard` |
+| Challenge schemas | `GET /challenges/{slug}/openapi.json` |
+| Compact board graphic | `GET /v1/challenges/dashboard.svg` |
+
+`/v1/challenges/dashboard.svg` is the only dedicated network board endpoint; it
+summarizes registry challenges (status + emission). Everything else is the
+canonical JSON APIs (OpenAPI truth). Silent 404 “stats” paths are intentionally
+absent, not advertised.
 
 ## Install (Compose)
 

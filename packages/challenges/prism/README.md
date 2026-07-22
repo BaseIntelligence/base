@@ -6,6 +6,18 @@ Product sources live at `packages/challenges/prism` in this uv workspace under
 **BaseIntelligence/base**. Shared contracts come from workspace **`base`**
 (`base.challenge_sdk`).
 
+## Product (v2)
+
+PRISM is a **research lab** for architecture discovery. The **norm** is to try
+**new architecture** families; the **goal** is more performant models under a dual
+ladder (**124**M explore provisional → **350**M promote confirm/revoke). Emission is
+**held-out** primary with **prequential** **bits-per-byte** secondary. Multimetric /
+Complete View is research grade, not silent emission. **two-script** contract:
+`architecture.py`/`build_model(ctx)` + `training.py`/`train(ctx)`. Default seeds:
+`transformer-tiny-1m`, `mamba-tiny-1m`. Ownership **0.50**/0.50. Data plane:
+**FineWeb-Edu** read-only. Challenge-owned re-execution for the **validator**.
+**deterministic** admission with the **LLM gateway** removed (no gateway path).
+
 ## Shared SDK
 
 ```python
@@ -29,6 +41,8 @@ uv run --package prism-challenge python -c "import prism_challenge; import base.
 ## Miners / API
 
 Day-1: [docs/miner/getting-started.md](../../../docs/miner/getting-started.md)
+
+Package miner notes: [docs/miner/getting-started.md](docs/miner/getting-started.md)
 
 **API truth is OpenAPI**, not markdown dumps:
 
