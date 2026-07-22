@@ -219,7 +219,11 @@ def test_agate_agent_driven_order_is_pinned_on_shipping_surfaces() -> None:
     )
     # Self-deploy still owns the ordered review→eval spine; package README owns product home.
     assert "self-deploy" in combined.lower()
-    assert "package_tree_sha" in combined or "tree sha" in combined.lower() or "tree_sha" in combined
+    assert (
+        "package_tree_sha" in combined
+        or "tree sha" in combined.lower()
+        or "tree_sha" in combined
+    )
     assert "review" in combined.lower() and "eval" in combined.lower()
     # Personal finetune ban + measured path stay product locks somewhere shipping.
     assert "finetune" in combined.lower() or "model" in combined.lower()

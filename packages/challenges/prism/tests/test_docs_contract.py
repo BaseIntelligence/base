@@ -105,7 +105,9 @@ def test_no_tee_provider_trust_pins_on_readme_and_config() -> None:
     readme = read_readme().lower()
     config_example = CONFIG_EXAMPLE.read_text(encoding="utf-8")
 
-    assert "provider" in readme and ("trust" in readme or "image_pin" in readme or "image pin" in readme)
+    assert "provider" in readme and (
+        "trust" in readme or "image_pin" in readme or "image pin" in readme
+    )
     assert "lium" in readme and "targon" in readme
     assert "pinned_image_digest" in config_example
     assert "\ntee:" not in config_example
