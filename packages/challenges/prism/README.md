@@ -17,6 +17,7 @@ Complete View is research grade, not silent emission. **two-script** contract:
 `transformer-tiny-1m`, `mamba-tiny-1m`. Ownership **0.50**/0.50. Data plane:
 **FineWeb-Edu** read-only. Challenge-owned re-execution for the **validator**.
 **deterministic** admission with the **LLM gateway** removed (no gateway path).
+Provider trust (Lium/Targon) + **IMAGE_PIN**; no production TEE verifier path.
 
 ## Shared SDK
 
@@ -42,10 +43,10 @@ uv run --package prism-challenge python -c "import prism_challenge; import base.
 
 Day-1: [docs/miner/getting-started.md](../../../docs/miner/getting-started.md)
 
-Package miner notes: [docs/miner/getting-started.md](docs/miner/getting-started.md)
-
 **API truth is OpenAPI**, not markdown dumps:
 
 - Live: `https://chain.joinbase.ai/challenges/prism/openapi.json`
 - Interactive docs: `https://chain.joinbase.ai/challenges/prism/docs`
 - In-process: challenge app `/openapi.json` and `/docs`
+
+Package docs tree: [docs/README.md](docs/README.md) (short pointer only).

@@ -3,9 +3,9 @@
 # Miner self-deploy (How-to advanced)
 
 > **Day-1 front door is not this page.** Upload first via the joinbase dashboard
-> and/or [`packages/challenges/agent-challenge/scripts/submit_agent.py`](../../../scripts/submit_agent.py): see
-> [Getting started](getting-started.md). Concepts for TEE trust:
-> [Attestation TEE](attestation-tee.md).
+> and/or [`packages/challenges/agent-challenge/scripts/submit_agent.py`](../../../scripts/submit_agent.py):
+> see monorepo-root [docs/miner/getting-started.md](../../../../../docs/miner/getting-started.md).
+> Package docs pointer: [docs/README.md](../README.md).
 
 **Production scoring is miner self-deploy on Phala Intel TDX CVMs.** You fund and
 operate the attested review CVM and, after a verified allow, the attested eval CVM.

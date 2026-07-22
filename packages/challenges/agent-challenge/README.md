@@ -36,5 +36,13 @@ Day-1: [docs/miner/getting-started.md](../../../docs/miner/getting-started.md)
 - Interactive docs: `https://chain.joinbase.ai/challenges/agent-challenge/docs`
 - In-process: challenge app `/openapi.json` and `/docs`
 
-Audience guides remain under `docs/miner/` and `docs/validator/` in this package
-for operator detail; shipping day-1 lives in the repo-root miner guide.
+Package docs tree: [docs/README.md](docs/README.md) (short pointer only).
+Self-deploy CLI accuracy fixtures remain under `docs/miner/self-deploy.md` and
+`docs/validator/self-deploy.md` for command/route pin tests.
+
+## Agent-driven eval gate (product pin)
+
+Scored path order: package + measured LLM rules residual → `package_tree_sha`
+proof → fresh TEE authorization → **ONLY THEN** eval prepare / KR / score.
+Host-static analyzer alone is not enough (**no eval prepare** without residual +
+tree SHA). **no closed catalog** of models; **personal finetunes** banned.
