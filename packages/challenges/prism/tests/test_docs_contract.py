@@ -104,7 +104,10 @@ def test_miner_day1_getting_started_joinbase_bridge() -> None:
     assert "transformer-tiny-1m" in day1
     assert "X-Hotkey" in day1 and "X-Signature" in day1
     assert "X-Nonce" in day1 and "X-Timestamp" in day1
-    assert "prism:{hotkey}:{nonce}:{timestamp:" in day1 or "prism:{hotkey}:{nonce}:{timestamp}" in day1
+    assert (
+        "prism:{hotkey}:{nonce}:{timestamp:" in day1
+        or "prism:{hotkey}:{nonce}:{timestamp}" in day1
+    )
 
     # Checklist present on day-1 page.
     assert "checklist" in getting_started.lower()

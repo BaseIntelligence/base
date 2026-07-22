@@ -277,7 +277,9 @@ async def test_expired_row_background_tick_then_200(
         second = await sealer.tick_once()
     assert second is not None
     assert getattr(second, "epoch", None) != first_epoch
-    assert second.expires_at > clock.now()
+    second_expires = getattr(second, "expires_at", None)
+    assert second_expires is not None
+    assert second_expires > clock.now()
 
 
 @pytest.mark.asyncio
