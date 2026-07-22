@@ -1,16 +1,19 @@
 #!/usr/bin/env python
 """Local mission worker agent: a base worker plane agent whose executor is the prism CPU re-exec.
 
-Part of the cross-repo local end-to-end harness (base advanced/local harness (not shipping)). Enrolls
-as a miner-funded GPU worker under a distinct owner (miner) hotkey, then for each assigned prism
-work unit runs the repo's OWN deterministic CPU re-exec (``evaluate_cpu_reexec``), normalizes the
-volatile timing fields so honest replicas of the same submission agree on one ``manifest_sha256``,
-signs a tier-0 ExecutionProof over ``sha256(manifest_sha256:unit_id)``, and posts it.
+Part of the cross-repo local end-to-end harness
+(base advanced/local harness (not shipping)). Enrolls as a miner-funded GPU
+worker under a distinct owner (miner) hotkey, then for each assigned prism
+work unit runs the repo's OWN deterministic CPU re-exec
+(``evaluate_cpu_reexec``), normalizes the volatile timing fields so honest
+replicas of the same submission agree on one ``manifest_sha256``, signs a
+tier-0 ExecutionProof over ``sha256(manifest_sha256:unit_id)``, and posts it.
 
-A worker may be configured with ``divergence_hotkey``: for a unit submitted by that hotkey it
-CORRUPTS its manifest (a distinct byte) so its hash diverges from the honest replica, which is how
-the divergence drill provokes a dispute + validator audit. CONFIG-DRIVEN (JSON path in ``argv[1]``
-/ ``$MISSION_WORKER_CONFIG``). NOT for production.
+A worker may be configured with ``divergence_hotkey``: for a unit submitted
+by that hotkey it CORRUPTS its manifest (a distinct byte) so its hash
+diverges from the honest replica, which is how the divergence drill
+provokes a dispute + validator audit. CONFIG-DRIVEN (JSON path in
+``argv[1]`` / ``$MISSION_WORKER_CONFIG``). NOT for production.
 """
 
 from __future__ import annotations

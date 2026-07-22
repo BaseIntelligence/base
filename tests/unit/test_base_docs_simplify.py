@@ -38,7 +38,7 @@ def test_readme_keeps_centered_banner() -> None:
 
 
 def test_readme_is_short_and_useful() -> None:
-    """VAL-CLEAN-004: README ≤80 lines, no monorepo essay / SDK wheel table / giant index."""
+    """VAL-CLEAN-004: README ≤80 lines, no monorepo essay / SDK tables."""
     readme = _read("README.md")
     lines = readme.splitlines()
     assert len(lines) <= 80, f"README has {len(lines)} lines (max 80)"
@@ -53,7 +53,8 @@ def test_readme_is_short_and_useful() -> None:
     # Forbidden sprawl markers.
     low = readme.lower()
     assert "sha-256" not in low
-    assert "3a61c2d3a343ed6de55e80215486e3de0c9639276443d08f2ed316bc807f2ff0" not in readme
+    _sdk_sha = "3a61c2d3a343ed6de55e80215486e3de0c9639276443d08f2ed316bc807f2ff0"
+    assert _sdk_sha not in readme
     assert "| Audience | Guide |" not in readme
     assert "docs/monorepo.md" not in readme
     assert "SOURCE_OF_TRUTH" not in readme
@@ -106,7 +107,7 @@ def test_api_truth_is_openapi_not_markdown_dumps() -> None:
 
 
 def test_miner_getting_started_joinbase_and_packages() -> None:
-    """Day-1 getting started points at joinbase + monorepo packages (not external repos)."""
+    """Day-1 getting started points at joinbase + monorepo packages."""
     gs = _read("docs/miner/getting-started.md")
     assert "https://chain.joinbase.ai" in gs
     assert "https://joinbase.ai" in gs
@@ -122,7 +123,13 @@ def test_miner_getting_started_joinbase_and_packages() -> None:
 
 def test_mission_harness_absent_from_shipping_docs() -> None:
     """Mission harness is not shipping day-1 material."""
-    for rel in ("README.md", "docs/miner/getting-started.md", "docs/validator.md", "docs/compose.md"):
+    shipping = (
+        "README.md",
+        "docs/miner/getting-started.md",
+        "docs/validator.md",
+        "docs/compose.md",
+    )
+    for rel in shipping:
         text = _read(rel)
         assert "mission-harness.md" not in text
         assert "operations/mission-harness" not in text
@@ -130,7 +137,13 @@ def test_mission_harness_absent_from_shipping_docs() -> None:
 
 def test_shipping_docs_no_required_separate_challenge_services_lead() -> None:
     """Deny required challenge-* service cardinality in remaining docs."""
-    for rel in ("docs/compose.md", "docs/validator.md", "README.md", "docs/miner/getting-started.md"):
+    shipping = (
+        "docs/compose.md",
+        "docs/validator.md",
+        "README.md",
+        "docs/miner/getting-started.md",
+    )
+    for rel in shipping:
         text = _read(rel)
         assert "one `challenge-<slug>`" not in text, rel
         assert "one long-lived `challenge-<slug>`" not in text, rel

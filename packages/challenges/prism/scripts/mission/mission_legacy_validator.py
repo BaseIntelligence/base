@@ -1,17 +1,21 @@
 #!/usr/bin/env python
 """Local mission LEGACY validator: run an assigned prism PRIMARY unit via ``validator_dispatch``.
 
-Part of the cross-repo local end-to-end harness (base ``advanced/local harness (not shipping)``); used
-by the flags-OFF legacy regression smoke (VAL-CROSS-006). Enrolls as a gpu-capable validator (its
-hotkey holds a validator permit in the mock metagraph). With the worker plane OFF the base master
-routes the single prism gpu work unit to this VALIDATOR (never a worker); the agent pulls it and
-runs the REAL prism ``validator_dispatch`` path (``dispatch_assignment`` ->
-``run_primary_execution_cycle``) on the deterministic CPU re-exec seam, finalizing the score in the
-SHARED prism database exactly as a pre-mission decentralized validator would.
+Part of the cross-repo local end-to-end harness
+(base ``advanced/local harness (not shipping)``); used by the flags-OFF
+legacy regression smoke (VAL-CROSS-006). Enrolls as a gpu-capable validator
+(its hotkey holds a validator permit in the mock metagraph). With the worker
+plane OFF the base master routes the single prism gpu work unit to this
+VALIDATOR (never a worker); the agent pulls it and runs the REAL prism
+``validator_dispatch`` path (``dispatch_assignment`` ->
+``run_primary_execution_cycle``) on the deterministic CPU re-exec seam,
+finalizing the score in the SHARED prism database exactly as a pre-mission
+decentralized validator would.
 
-The base master (mock metagraph) mints no scoped gateway token in this harness, so a no-op gateway
-token is injected here BEFORE dispatch (prism LLM review is disabled, so it is never used) purely to
-satisfy the primary-path gateway config; nothing is sent to any real gateway.
+The base master (mock metagraph) mints no scoped gateway token in this
+harness, so a no-op gateway token is injected here BEFORE dispatch
+(prism LLM review is disabled, so it is never used) purely to satisfy the
+primary-path gateway config; nothing is sent to any real gateway.
 
 CONFIG-DRIVEN (JSON path in ``argv[1]`` / ``$MISSION_LEGACY_VALIDATOR_CONFIG``). NOT for production.
 """

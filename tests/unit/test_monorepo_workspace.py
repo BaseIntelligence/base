@@ -94,7 +94,9 @@ def test_base_package_stays_at_src_base() -> None:
 def test_monorepo_adr_documents_layout_and_sdk_sharing() -> None:
     """Layout/SDK SoT is AGENTS + package READMEs (monorepo essay removed)."""
     agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    pkg_index = (REPO_ROOT / "packages/challenges/README.md").read_text(encoding="utf-8")
+    pkg_index = (REPO_ROOT / "packages/challenges/README.md").read_text(
+        encoding="utf-8"
+    )
     prism = (REPO_ROOT / "packages/challenges/prism/README.md").read_text(
         encoding="utf-8"
     )

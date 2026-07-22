@@ -90,7 +90,7 @@ def test_miner_docs_unified_under_base() -> None:
 
 
 def test_source_of_truth_is_package_and_agents_not_essay() -> None:
-    """VAL-MONO-013: SoT is monorepo packages + AGENTS; no docs/SOURCE_OF_TRUTH essay."""
+    """VAL-MONO-013: SoT is packages + AGENTS; no SOURCE_OF_TRUTH essay."""
     assert not (REPO_ROOT / "docs/SOURCE_OF_TRUTH.md").exists()
     assert not (REPO_ROOT / "docs/monorepo.md").exists()
 

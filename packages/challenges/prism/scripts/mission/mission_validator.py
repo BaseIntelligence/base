@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 """Local mission stub validator: audits disputed prism units by replaying the CPU re-exec.
 
-Part of the cross-repo local end-to-end harness (base advanced/local harness (not shipping)). Enrolls
-as a gpu-capable validator (its hotkey holds a validator permit in the mock metagraph). When the
-base master disputes a divergent unit it creates a validator-kind audit work unit
-(``<uid>:audit``); this agent pulls it, reads the audited submission from
-``assignment.payload["audit_of_work_unit_id"]``, replays the SAME deterministic CPU re-exec to
-obtain the AUTHORITATIVE ``manifest_sha256``, and posts it. The master's reconciliation then
-attributes a ``WorkerFault`` to every replica whose hash diverged from this authoritative one.
+Part of the cross-repo local end-to-end harness
+(base advanced/local harness (not shipping)). Enrolls as a gpu-capable
+validator (its hotkey holds a validator permit in the mock metagraph). When
+the base master disputes a divergent unit it creates a validator-kind audit
+work unit (``<uid>:audit``); this agent pulls it, reads the audited
+submission from ``assignment.payload["audit_of_work_unit_id"]``, replays the
+SAME deterministic CPU re-exec to obtain the AUTHORITATIVE
+``manifest_sha256``, and posts it. The master's reconciliation then
+attributes a ``WorkerFault`` to every replica whose hash diverged from this
+authoritative one.
 
-CONFIG-DRIVEN (JSON path in ``argv[1]`` / ``$MISSION_VALIDATOR_CONFIG``). NOT for production.
+CONFIG-DRIVEN (JSON path in ``argv[1]`` / ``$MISSION_VALIDATOR_CONFIG``).
+NOT for production.
 """
 
 from __future__ import annotations

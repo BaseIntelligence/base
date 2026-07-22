@@ -173,7 +173,14 @@ def _admin_client(registry: ChallengeRegistry, token: str = "admin-e2e") -> Test
 def test_operator_navigation_documents_compose_only_install_paths() -> None:
     """VAL-CROSS-077: fresh operators discover Compose install surfaces."""
 
-    for path in (COMPOSE_DOCS, VALIDATOR_DOCS, README, INSTALL_MASTER, INSTALL_VALIDATOR):
+    install_paths = (
+        COMPOSE_DOCS,
+        VALIDATOR_DOCS,
+        README,
+        INSTALL_MASTER,
+        INSTALL_VALIDATOR,
+    )
+    for path in install_paths:
         assert path.is_file(), path
     compose_docs = COMPOSE_DOCS.read_text(encoding="utf-8")
     validator_docs = VALIDATOR_DOCS.read_text(encoding="utf-8")
@@ -186,7 +193,10 @@ def test_operator_navigation_documents_compose_only_install_paths() -> None:
         )
         assert "Docker Compose" in blob or "docker compose" in blob or "Compose" in blob
     assert "install-master.sh" in compose_docs
-    assert "install-validator.sh" in compose_docs or "install-validator" in validator_docs
+    assert (
+        "install-validator.sh" in compose_docs
+        or "install-validator" in validator_docs
+    )
     # Historical Swarm remains labeled non-target; no ship-of-record path.
     assert "not a supported" in compose_docs.lower() or "HISTORICAL" in (
         ROOT / "deploy" / "swarm" / "README.md"
