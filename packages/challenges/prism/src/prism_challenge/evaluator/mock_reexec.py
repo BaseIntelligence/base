@@ -18,6 +18,7 @@ workspace + writable artifacts dir (never the secret val/test split), mirroring 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, MutableSequence
@@ -148,9 +149,13 @@ def run_cpu_reexec(
     )
     artifacts.mkdir(parents=True, exist_ok=True)
 
-    # Start from the spec env (gateway base URLs / determinism flags), then pin the local CPU
-    # single-process runtime. No provider key is injected here (the spec carries none).
-    env: dict[str, str] = {str(key): str(value) for key, value in spec.env.items()}
+    # Start from the host process environment so in-pod installs that rely on
+    # PYTHONPATH (Lium miner workers ship prism_challenge under /tmp/base-src)
+    # remain importable inside the sealed runner subprocess. Overlay the
+    # challenge-spec env, then pin the local CPU single-process runtime.
+    # No provider key is injected here (the spec carries none).
+    env: dict[str, str] = {str(k): str(v) for k, v in os.environ.items()}
+    env.update({str(key): str(value) for key, value in spec.env.items()})
     env.update(
         {
             "PRISM_PROJECT_ROOT": str(workspace / "project"),
