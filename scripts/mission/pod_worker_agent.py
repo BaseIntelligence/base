@@ -82,7 +82,6 @@ def _build_agent(config: dict[str, Any]) -> WorkerAgent:
         provider=str(config.get("provider", "lium")),
         provider_instance_ref=str(config["pod_id"]),
         capabilities=list(config.get("capabilities", ["gpu"])),
-        gateway_url=master_url,
         heartbeat_interval_seconds=int(config.get("heartbeat_interval_seconds", 5)),
         poll_interval_seconds=float(config.get("poll_interval_seconds", 2.0)),
     )
