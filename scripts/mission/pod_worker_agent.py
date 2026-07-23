@@ -1,21 +1,27 @@
 #!/usr/bin/env python
-"""In-pod worker agent runner for the live Lium end-to-end (VAL-CROSS-005).
+"""In-pod worker agent runner for live Lium miner attestation.
 
-Runs INSIDE a rented Lium pod (the worker image) and enrolls the miner-funded
-:class:`base.worker.runtime.WorkerAgent` with a LOCAL mission master reached over
-a reverse SSH tunnel (``master_url`` = ``http://127.0.0.1:<rport>``). It reuses the
-real worker plane end-to-end -- the worker keypair signs coordination requests +
-the ExecutionProof, the miner-signed binding (pre-signed on the host so the pod
-never holds the miner key) authenticates enrollment, and the CPU
-:class:`StubManifestExecutor` executes each pulled gpu unit into a deterministic
-manifest hash. Every emitted ExecutionProof carries the LIUM provider provenance
-(provider name + the REAL pod id + the pinned image digest), so the master records
-a proof that names the pod it ran in.
+Runs INSIDE a rented Lium pod and enrolls the miner-funded
+:class:`base.worker.runtime.WorkerAgent` against a public master
+(``master_url``). The miner-signed binding is pre-signed on the host so the
+pod never holds the miner private key. Every emitted ExecutionProof carries
+LIUM provider provenance (provider name + the REAL pod id + optional pinned
+image digest).
 
-CONFIG-DRIVEN (JSON path in ``argv[1]``). The signing keypair is provided by the
-Rust-backed ``bittensor_wallet`` (no torch), falling back to ``bittensor`` when
-present; both yield the same ss58 address + sr25519 signatures. NOT for
-production.
+By default this agent uses a Prism CPU-reexec full-envelope executor that
+returns ``{execution_proof, manifest_sha256, run_manifest}`` with a scoreable
+``prism_run_manifest.v2``. That satisfies Prism worker-plane finalization
+(``POST /internal/v1/work_units/result`` must include ``run_manifest``; without
+it Prism returns 422 ``manifest_missing``).
+
+Set ``executor_mode`` in the config JSON:
+
+- ``prism_cpu_reexec`` (default when prism_challenge is importable): full envelope
+- ``stub``: legacy proof-only path (tests / fallbacks; will 422 on Prism finalize)
+
+CONFIG-DRIVEN (JSON path in ``argv[1]``). Signing uses torch-free
+``bittensor_wallet`` when available. NOT for production image packaging alone;
+the live path still installs platform + prism_challenge in-pod.
 """
 
 from __future__ import annotations
@@ -48,6 +54,115 @@ def _load_config() -> dict[str, Any]:
     return json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 
 
+class PrismCpuReexecEnvelopeExecutor:
+    """AssignmentExecutor that posts a full Prism ExternalResultEnvelope body.
+
+    Mirrors ``packages/challenges/prism/scripts/mission/mission_worker.py``
+    ``CpuReexecWorkerExecutor``: run ``evaluate_cpu_reexec``, hash the normalized
+    ``prism_run_manifest.v2``, and return payload keys Prism ingestion needs:
+
+    - ``run_manifest``
+    - ``manifest_sha256``
+    - (optionally pre-built ``execution_proof``; ``WorkerProofExecutor`` fills it
+      when missing using worker provenance including real Lium ``pod_id``)
+    """
+
+    def __init__(self, settings: Any) -> None:
+        self._settings = settings
+
+    async def execute(self, context: Any, *, progress: Any) -> Any:
+        from base.validator.agent.executor import ExecutionResult
+        from base.worker.proof import MANIFEST_SHA256_PAYLOAD_KEY
+        from prism_challenge.evaluator.cpu_test_mode import evaluate_cpu_reexec
+
+        unit_id = context.assignment.work_unit_id
+        outcome = await asyncio.to_thread(
+            evaluate_cpu_reexec, self._settings, submission_id=unit_id
+        )
+        print(
+            f"[pod-agent] cpu_reexec unit={unit_id} "
+            f"schema={outcome.manifest.get('schema_version')} "
+            f"sha={outcome.manifest_sha256[:16]}…",
+            flush=True,
+        )
+        return ExecutionResult(
+            success=True,
+            payload={
+                MANIFEST_SHA256_PAYLOAD_KEY: outcome.manifest_sha256,
+                "run_manifest": outcome.manifest,
+            },
+        )
+
+
+def _prism_cpu_settings(config: dict[str, Any]) -> Any:
+    """Build PrismSettings for in-pod CPU reexec test mode."""
+    from prism_challenge.config import PrismSettings
+    from prism_challenge.evaluator.cpu_test_mode import configure_cpu_reexec_test_mode
+
+    artifact_root = Path(
+        str(config.get("artifact_root") or "/tmp/prism-pod-worker-artifacts")
+    )
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    train_data_dir = config.get("cpu_reexec_train_data_dir")
+    worker_plane: dict[str, Any] = {
+        "enabled": True,
+        "cpu_reexec_test_mode": True,
+        "cpu_reexec_sequence_length": int(config.get("cpu_reexec_sequence_length", 16)),
+        "cpu_reexec_step_budget": int(config.get("cpu_reexec_step_budget", 24)),
+        "cpu_reexec_vocab_size": int(config.get("cpu_reexec_vocab_size", 64)),
+        "cpu_reexec_seed": int(config.get("cpu_reexec_seed", 1234)),
+        "cpu_reexec_train_lines": int(config.get("cpu_reexec_train_lines", 64)),
+    }
+    if train_data_dir:
+        worker_plane["cpu_reexec_train_data_dir"] = str(train_data_dir)
+    token = str(config.get("prism_shared_token") or "pod-worker-local-token")
+    settings = PrismSettings(
+        database_url=f"sqlite+aiosqlite:///{artifact_root}/worker.sqlite3",
+        shared_token=token,
+        shared_token_file=None,
+        allow_insecure_signatures=True,
+        plagiarism_enabled=False,
+        distributed_contract_policy="off",
+        execution_backend="base_gpu",
+        docker_enabled=True,
+        docker_backend="broker",
+        docker_broker_url=str(
+            config.get("docker_broker_url") or "http://127.0.0.1:0"
+        ),
+        docker_broker_token=token,
+        base_eval_artifact_root=artifact_root,
+        worker_plane=worker_plane,
+    )
+    configure_cpu_reexec_test_mode(settings)
+    return settings
+
+
+def _resolve_inner_executor(config: dict[str, Any]) -> Any:
+    """Pick full-envelope Prism CPU reexec, or stub if forced / unavailable."""
+    mode = str(config.get("executor_mode") or "prism_cpu_reexec").strip().lower()
+    if mode in {"stub", "stub_manifest", "proof_only"}:
+        print("[pod-agent] executor_mode=stub (proof-only; Prism may 422)", flush=True)
+        return StubManifestExecutor()
+
+    try:
+        settings = _prism_cpu_settings(config)
+    except Exception as exc:  # noqa: BLE001 - fall back only when mode is auto
+        if mode in {"auto", ""}:
+            print(
+                f"[pod-agent] prism_cpu_reexec unavailable ({type(exc).__name__}: {exc}); "
+                "falling back to stub",
+                flush=True,
+            )
+            return StubManifestExecutor()
+        raise SystemExit(
+            f"prism_cpu_reexec executor required but setup failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    print("[pod-agent] executor_mode=prism_cpu_reexec (full envelope)", flush=True)
+    return PrismCpuReexecEnvelopeExecutor(settings)
+
+
 def _build_agent(config: dict[str, Any]) -> WorkerAgent:
     worker_keypair = Keypair.create_from_uri(config["worker_uri"])
     signer = KeypairRequestSigner(worker_keypair)
@@ -63,9 +178,10 @@ def _build_agent(config: dict[str, Any]) -> WorkerAgent:
         pod_id=str(config["pod_id"]),
         image_digest=config.get("image_digest"),
     )
-    executor = WorkerProofExecutor(
-        StubManifestExecutor(), signer=signer, provenance=provenance
-    )
+    inner = _resolve_inner_executor(config)
+    # WorkerProofExecutor adds execution_proof with real Lium pod_id provenance
+    # when the inner executor does not already attach one.
+    executor = WorkerProofExecutor(inner, signer=signer, provenance=provenance)
     master_url = str(config["master_url"])
     client = WorkerCoordinationClient(
         master_url,
