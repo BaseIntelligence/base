@@ -22,7 +22,11 @@ skip the gate without metadata.
 
 Set ``executor_mode`` in the config JSON:
 
+- ``prism_recipe_cuda`` / ``prism_gpu_short``: real torch CUDA train of
+  transformer-tiny-1m (~1e6 params, short token_budget) via prism_recipe.gpu_train;
+  full envelope + llm_gate. Prefer this for H200 / CUDA GPU score missions.
 - ``prism_cpu_reexec`` (default when prism_challenge is importable): full envelope
+  TinyLM cpu reexec (NOT the ~1M GPU path; yields ~1k params / ~360 tokens)
 - ``stub``: legacy proof-only path (tests / fallbacks; will 422 on Prism finalize)
 
 CONFIG-DRIVEN (JSON path in ``argv[1]``). Signing uses torch-free
@@ -213,6 +217,129 @@ class PrismCpuReexecEnvelopeExecutor:
         )
 
 
+class PrismRecipeCudaEnvelopeExecutor:
+    """Full-envelope executor: real torch CUDA short train of transformer-tiny-1m.
+
+    Distinct from :class:`PrismCpuReexecEnvelopeExecutor` (TinyLM emb=8 / ~1k
+    params). Requires ``prism_recipe`` with ``gpu_train`` and a CUDA device.
+    LLM gate runs first; scoreable ``prism_run_manifest.v2`` carries
+    ``compute.model_params`` ~1e6 and elevated ``tokens_consumed``.
+    """
+
+    def __init__(self, *, config: dict[str, Any] | None = None) -> None:
+        self._config = config or {}
+
+    def _run_gpu_train(self, unit_id: str) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
+        import os
+
+        from prism_challenge.proof import compute_manifest_sha256
+        from prism_recipe.gpu_train import run_gpu_short_train
+
+        # Gate is required on scoring path; run_gpu_short_train also gates unless skip env set.
+        # Prefer explicit agent-level gate so recipe_gate_block_on_fail is honored.
+        recipe_attestation = _run_recipe_llm_gate(self._config)
+
+        budget = int(
+            self._config.get("gpu_token_budget")
+            or os.environ.get("PRISM_RECIPE_TOKEN_BUDGET")
+            or 65_536
+        )
+        # Clamp short train: never multi-hour / 2.5B this path.
+        budget = max(1_024, min(budget, 200_000))
+        seq_len = int(self._config.get("gpu_seq_len") or 128)
+        batch_size = int(self._config.get("gpu_batch_size") or 8)
+        max_steps = int(self._config.get("gpu_max_steps") or 512)
+        require_cuda = str(self._config.get("require_cuda", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
+
+        # Gate already ran: inject pass GateResult into train so it does not double-call OpenRouter.
+        gate_obj = None
+        if recipe_attestation and isinstance(recipe_attestation.get("llm_gate"), dict):
+            from prism_recipe.llm_gate import GateResult
+
+            g = recipe_attestation["llm_gate"]
+            gate_obj = GateResult(
+                ok=bool(g.get("ok", True)),
+                reason=str(g.get("reason") or "agent_pre_gate"),
+                rules_digest=str(g.get("rules_digest") or ""),
+                model=str(g.get("model") or ""),
+                checked_at=str(g.get("checked_at") or ""),
+                decision=str(g.get("decision") or ("pass" if g.get("ok") else "fail")),
+                prompt_hash=str(g.get("prompt_hash") or ""),
+                reason_codes=tuple(g.get("reason_codes") or ()),
+            )
+
+        result = run_gpu_short_train(
+            submission_id=unit_id,
+            token_budget=budget,
+            gate=gate_obj,
+            skip_gate=gate_obj is not None,
+            seq_len=seq_len,
+            batch_size=batch_size,
+            max_steps=max_steps,
+            require_cuda=require_cuda,
+        )
+        if not result.ok or not result.run_manifest:
+            raise RuntimeError(
+                f"gpu_short_train_failed:{result.stage}:{result.message}"
+            )
+        manifest = result.run_manifest
+        # Fingerprint guards vs TinyLM cpu_reexec
+        params = int((manifest.get("compute") or {}).get("model_params") or 0)
+        tokens = int(
+            (manifest.get("metrics") or {}).get("tokens_consumed")
+            or (manifest.get("metrics") or {}).get("predicted_tokens")
+            or 0
+        )
+        if params < 100_000:
+            raise RuntimeError(f"gpu_train_params_too_small:{params}")
+        if tokens <= 360:
+            raise RuntimeError(f"gpu_train_tokens_not_elevated:{tokens}")
+        digest = compute_manifest_sha256(manifest)
+        print(
+            f"[pod-agent] gpu_short unit={unit_id} "
+            f"params={params} tokens={tokens} device={result.device} "
+            f"cuda={result.cuda_name} steps={result.steps} "
+            f"schema={manifest.get('schema_version')} sha={digest[:16]}…",
+            flush=True,
+        )
+        return manifest, digest, recipe_attestation
+
+    async def execute(self, context: Any, *, progress: Any) -> Any:
+        from base.validator.agent.executor import ExecutionResult
+        from base.worker.proof import MANIFEST_SHA256_PAYLOAD_KEY
+
+        unit_id = context.assignment.work_unit_id
+        manifest, digest, recipe_attestation = await asyncio.to_thread(
+            self._run_gpu_train, unit_id
+        )
+        payload: dict[str, Any] = {
+            MANIFEST_SHA256_PAYLOAD_KEY: digest,
+            "run_manifest": manifest,
+        }
+        compute = manifest.get("compute") if isinstance(manifest.get("compute"), dict) else {}
+        metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
+        meta_extra = {
+            "recipe_path": "prism-recipe+gpu_short_cuda",
+            "model_params": compute.get("model_params"),
+            "tokens_consumed": metrics.get("tokens_consumed")
+            or metrics.get("predicted_tokens"),
+            "device": compute.get("device"),
+            "cuda_device_name": compute.get("cuda_device_name"),
+            "not_tinylm_fingerprint": True,
+        }
+        if recipe_attestation:
+            payload["attestation"] = recipe_attestation
+            payload["metadata"] = {**meta_extra, **recipe_attestation}
+        else:
+            payload["metadata"] = meta_extra
+        return ExecutionResult(success=True, payload=payload)
+
+
 def _prism_cpu_settings(config: dict[str, Any]) -> Any:
     """Build PrismSettings for in-pod CPU reexec test mode."""
     from prism_challenge.config import PrismSettings
@@ -257,11 +384,34 @@ def _prism_cpu_settings(config: dict[str, Any]) -> Any:
 
 
 def _resolve_inner_executor(config: dict[str, Any]) -> Any:
-    """Pick full-envelope Prism CPU reexec, or stub if forced / unavailable."""
+    """Pick full-envelope GPU CUDA, Prism CPU reexec, or stub if forced / unavailable."""
     mode = str(config.get("executor_mode") or "prism_cpu_reexec").strip().lower()
     if mode in {"stub", "stub_manifest", "proof_only"}:
         print("[pod-agent] executor_mode=stub (proof-only; Prism may 422)", flush=True)
         return StubManifestExecutor()
+
+    if mode in {
+        "prism_recipe_cuda",
+        "prism_gpu_short",
+        "gpu_short",
+        "recipe_cuda",
+        "cuda",
+    }:
+        # Real CUDA ~1M short train — never fall back to TinyLM cpu_reexec.
+        try:
+            import torch  # noqa: F401
+            from prism_recipe.gpu_train import run_gpu_short_train  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"prism_recipe_cuda executor required but import failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        print(
+            "[pod-agent] executor_mode=prism_recipe_cuda "
+            "(real CUDA ~1M short train full envelope)",
+            flush=True,
+        )
+        return PrismRecipeCudaEnvelopeExecutor(config=config)
 
     try:
         settings = _prism_cpu_settings(config)
