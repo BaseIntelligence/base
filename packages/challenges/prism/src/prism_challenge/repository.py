@@ -622,6 +622,20 @@ class PrismRepository:
                 "af.display_name AS name, af.owner_hotkey AS owner_hotkey, "
                 "af.q_arch_best AS best_final_score, "
                 "af.canonical_submission_id AS best_submission_id, af.updated_at AS updated_at, "
+                # Inventory max (scores.final_score) across completed family members —
+                # distinct from emission crown q_arch_best, which skip_heldout leaves at 0.
+                "(SELECT sc.final_score FROM submissions s_inv "
+                "JOIN scores sc ON sc.submission_id=s_inv.id "
+                "WHERE s_inv.arch_hash=af.family_hash AND s_inv.status=? "
+                "AND sc.final_score IS NOT NULL "
+                "ORDER BY sc.final_score DESC, s_inv.created_at DESC, s_inv.id ASC LIMIT 1) "
+                "AS inventory_best_score, "
+                "(SELECT s_inv.id FROM submissions s_inv "
+                "JOIN scores sc ON sc.submission_id=s_inv.id "
+                "WHERE s_inv.arch_hash=af.family_hash AND s_inv.status=? "
+                "AND sc.final_score IS NOT NULL "
+                "ORDER BY sc.final_score DESC, s_inv.created_at DESC, s_inv.id ASC LIMIT 1) "
+                "AS inventory_best_submission_id, "
                 "(SELECT COUNT(*) FROM training_variants tv WHERE tv.architecture_id=af.id) "
                 "AS variant_count, "
                 "(SELECT COUNT(*) FROM submissions s WHERE s.arch_hash=af.family_hash) "
@@ -630,7 +644,12 @@ class PrismRepository:
                 "WHERE EXISTS (SELECT 1 FROM submissions s2 WHERE s2.arch_hash=af.family_hash "
                 "AND s2.epoch_id=? AND s2.status=?) "
                 "ORDER BY af.q_arch_best DESC, af.created_at ASC, af.id ASC",
-                (resolved_epoch, SubmissionStatus.COMPLETED.value),
+                (
+                    SubmissionStatus.COMPLETED.value,
+                    SubmissionStatus.COMPLETED.value,
+                    resolved_epoch,
+                    SubmissionStatus.COMPLETED.value,
+                ),
             )
         return resolved_epoch, [dict(row) for row in rows]
 
@@ -643,12 +662,30 @@ class PrismRepository:
                 "af.q_arch_best AS best_final_score, "
                 "af.canonical_submission_id AS best_submission_id, "
                 "af.created_at AS first_seen_at, af.updated_at AS updated_at, "
+                # Inventory max (scores.final_score) across completed family members —
+                # distinct from emission crown q_arch_best, which skip_heldout leaves at 0.
+                "(SELECT sc.final_score FROM submissions s_inv "
+                "JOIN scores sc ON sc.submission_id=s_inv.id "
+                "WHERE s_inv.arch_hash=af.family_hash AND s_inv.status=? "
+                "AND sc.final_score IS NOT NULL "
+                "ORDER BY sc.final_score DESC, s_inv.created_at DESC, s_inv.id ASC LIMIT 1) "
+                "AS inventory_best_score, "
+                "(SELECT s_inv.id FROM submissions s_inv "
+                "JOIN scores sc ON sc.submission_id=s_inv.id "
+                "WHERE s_inv.arch_hash=af.family_hash AND s_inv.status=? "
+                "AND sc.final_score IS NOT NULL "
+                "ORDER BY sc.final_score DESC, s_inv.created_at DESC, s_inv.id ASC LIMIT 1) "
+                "AS inventory_best_submission_id, "
                 "(SELECT COUNT(*) FROM training_variants tv WHERE tv.architecture_id=af.id) "
                 "AS variant_count, "
                 "(SELECT COUNT(*) FROM submissions s WHERE s.arch_hash=af.family_hash) "
                 "AS submission_count "
                 "FROM architecture_families af WHERE af.id=?",
-                (architecture_id,),
+                (
+                    SubmissionStatus.COMPLETED.value,
+                    SubmissionStatus.COMPLETED.value,
+                    architecture_id,
+                ),
             )
         row_list = list(rows)
         return dict(row_list[0]) if row_list else None
@@ -657,10 +694,14 @@ class PrismRepository:
         """Return the family's training variants, best first (current-best then score)."""
         async with self.database.connect() as conn:
             rows = await conn.execute_fetchall(
-                "SELECT id AS variant_id, training_hash, owner_hotkey, submission_id, "
-                "q_recipe AS final_score, metric_mean, metric_std, is_current_best, created_at "
-                "FROM training_variants WHERE architecture_id=? "
-                "ORDER BY is_current_best DESC, q_recipe DESC, created_at ASC, id ASC",
+                "SELECT tv.id AS variant_id, tv.training_hash, tv.owner_hotkey, tv.submission_id, "
+                "tv.q_recipe AS final_score, tv.metric_mean, tv.metric_std, tv.is_current_best, "
+                "tv.created_at, "
+                # Inventory from the linked submission's stored scores (not emission crown).
+                "(SELECT COALESCE(sc.final_score, sc.q_arch) FROM scores sc "
+                "WHERE sc.submission_id=tv.submission_id LIMIT 1) AS inventory_final_score "
+                "FROM training_variants tv WHERE tv.architecture_id=? "
+                "ORDER BY tv.is_current_best DESC, tv.q_recipe DESC, tv.created_at ASC, tv.id ASC",
                 (architecture_id,),
             )
         return [dict(row) for row in rows]

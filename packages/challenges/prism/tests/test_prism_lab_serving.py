@@ -328,6 +328,59 @@ async def test_get_architecture_detail_and_missing(tmp_path: Path) -> None:
     assert await repo.get_architecture("missing") is None
 
 
+
+async def test_architecture_inventory_best_distinct_from_zero_crown(tmp_path: Path) -> None:
+    """skip_heldout leaves q_arch_best=0 while scores.final_score is non-null — lab inventory fields."""
+    repo = await _make_repo(tmp_path)
+    async with repo.database.connect() as conn:
+        await _insert_family(
+            conn,
+            architecture_id="af-inv",
+            family_hash="hashInv",
+            owner_hotkey="hkInv",
+            canonical_submission_id="sub-crown",
+            q_arch_best=0.0,
+            display_name=None,
+        )
+        await _insert_submission(
+            conn, submission_id="sub-crown", hotkey="hkInv", epoch_id=200, arch_hash="hashInv",
+            created_at=EARLIER,
+        )
+        await _insert_score(conn, submission_id="sub-crown", final_score=0.157, metrics={})
+        await _insert_submission(
+            conn, submission_id="sub-h200", hotkey="hkInv", epoch_id=201, arch_hash="hashInv",
+            created_at=NOW,
+        )
+        await _insert_score(conn, submission_id="sub-h200", final_score=0.764, metrics={})
+        await _insert_variant(
+            conn,
+            variant_id="tv-inv",
+            architecture_id="af-inv",
+            training_hash="tInv",
+            owner_hotkey="hkInv",
+            submission_id="sub-crown",
+            q_recipe=0.0,
+            is_current_best=True,
+        )
+
+    detail = await repo.get_architecture("af-inv")
+    assert detail is not None
+    assert float(detail["best_final_score"]) == 0.0
+    assert detail["best_submission_id"] == "sub-crown"
+    assert float(detail["inventory_best_score"]) == 0.764
+    assert detail["inventory_best_submission_id"] == "sub-h200"
+
+    variants = await repo.list_training_variants("af-inv")
+    assert len(variants) == 1
+    assert float(variants[0]["final_score"]) == 0.0
+    assert float(variants[0]["inventory_final_score"]) == 0.157
+
+    _, rows = await repo.list_architectures(201)
+    match = next(r for r in rows if r["architecture_id"] == "af-inv")
+    assert float(match["inventory_best_score"]) == 0.764
+    assert match["inventory_best_submission_id"] == "sub-h200"
+
+
 async def test_list_training_variants_orders_best_first(tmp_path: Path) -> None:
     repo = await _make_repo(tmp_path)
     async with repo.database.connect() as conn:

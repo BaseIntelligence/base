@@ -139,8 +139,13 @@ class ArchitectureSummary(BaseModel):
     arch_hash: str
     name: str | None
     owner_hotkey: str
+    # Emission crown (held-out-primary q_arch_best). May stay 0 under skip_heldout.
     best_final_score: float
     best_submission_id: str
+    # Lab/inventory display: max scores.final_score in the family (includes
+    # worker-plane skip_heldout inventory that never advances the crown).
+    inventory_best_score: float | None = None
+    inventory_best_submission_id: str | None = None
     variant_count: int
     submission_count: int
     updated_at: datetime
@@ -156,8 +161,13 @@ class ArchitectureDetailResponse(BaseModel):
     arch_hash: str
     name: str | None
     owner_hotkey: str
+    # Emission crown (held-out-primary q_arch_best). May stay 0 under skip_heldout.
     best_final_score: float
     best_submission_id: str
+    # Lab/inventory display: max scores.final_score in the family (includes
+    # worker-plane skip_heldout inventory that never advances the crown).
+    inventory_best_score: float | None = None
+    inventory_best_submission_id: str | None = None
     variant_count: int
     submission_count: int
     first_seen_at: datetime
@@ -169,7 +179,10 @@ class TrainingVariantEntry(BaseModel):
     training_hash: str
     owner_hotkey: str
     submission_id: str
+    # Crown recipe scalar (q_recipe). May stay 0 under skip_heldout.
     final_score: float
+    # Inventory scalar from the linked submission's scores.final_score/q_arch.
+    inventory_final_score: float | None = None
     metric_mean: float
     metric_std: float
     is_current_best: bool

@@ -47,6 +47,23 @@ CURVE_MAX_POINTS = 500
 router = APIRouter(prefix="/v1")
 
 
+def _optional_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(cast(SupportsFloat, value))
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN → None
+
+
+def _optional_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def repo_from_request(request: Request) -> PrismRepository:
     return request.app.state.repository
 
@@ -208,6 +225,8 @@ async def list_architectures(
             owner_hotkey=str(row["owner_hotkey"]),
             best_final_score=float(cast(SupportsFloat, row["best_final_score"])),
             best_submission_id=str(row["best_submission_id"]),
+            inventory_best_score=_optional_float(row.get("inventory_best_score")),
+            inventory_best_submission_id=_optional_str(row.get("inventory_best_submission_id")),
             variant_count=int(cast(SupportsInt, row["variant_count"])),
             submission_count=int(cast(SupportsInt, row["submission_count"])),
             updated_at=datetime.fromisoformat(str(row["updated_at"])),
@@ -232,6 +251,8 @@ async def get_architecture(
         owner_hotkey=str(row["owner_hotkey"]),
         best_final_score=float(cast(SupportsFloat, row["best_final_score"])),
         best_submission_id=str(row["best_submission_id"]),
+        inventory_best_score=_optional_float(row.get("inventory_best_score")),
+        inventory_best_submission_id=_optional_str(row.get("inventory_best_submission_id")),
         variant_count=int(cast(SupportsInt, row["variant_count"])),
         submission_count=int(cast(SupportsInt, row["submission_count"])),
         first_seen_at=datetime.fromisoformat(str(row["first_seen_at"])),
@@ -255,6 +276,7 @@ async def list_architecture_variants(
             owner_hotkey=str(row["owner_hotkey"]),
             submission_id=str(row["submission_id"]),
             final_score=float(cast(SupportsFloat, row["final_score"])),
+            inventory_final_score=_optional_float(row.get("inventory_final_score")),
             metric_mean=float(cast(SupportsFloat, row["metric_mean"])),
             metric_std=float(cast(SupportsFloat, row["metric_std"])),
             is_current_best=bool(row["is_current_best"]),
