@@ -328,9 +328,10 @@ async def test_get_architecture_detail_and_missing(tmp_path: Path) -> None:
     assert await repo.get_architecture("missing") is None
 
 
-
-async def test_architecture_inventory_best_distinct_from_zero_crown(tmp_path: Path) -> None:
-    """skip_heldout leaves q_arch_best=0 while scores.final_score is non-null — lab inventory fields."""
+async def test_architecture_inventory_best_distinct_from_zero_crown(
+    tmp_path: Path,
+) -> None:
+    """skip_heldout: q_arch_best=0 while scores.final_score is set (lab inventory)."""
     repo = await _make_repo(tmp_path)
     async with repo.database.connect() as conn:
         await _insert_family(
@@ -343,12 +344,20 @@ async def test_architecture_inventory_best_distinct_from_zero_crown(tmp_path: Pa
             display_name=None,
         )
         await _insert_submission(
-            conn, submission_id="sub-crown", hotkey="hkInv", epoch_id=200, arch_hash="hashInv",
+            conn,
+            submission_id="sub-crown",
+            hotkey="hkInv",
+            epoch_id=200,
+            arch_hash="hashInv",
             created_at=EARLIER,
         )
         await _insert_score(conn, submission_id="sub-crown", final_score=0.157, metrics={})
         await _insert_submission(
-            conn, submission_id="sub-h200", hotkey="hkInv", epoch_id=201, arch_hash="hashInv",
+            conn,
+            submission_id="sub-h200",
+            hotkey="hkInv",
+            epoch_id=201,
+            arch_hash="hashInv",
             created_at=NOW,
         )
         await _insert_score(conn, submission_id="sub-h200", final_score=0.764, metrics={})
