@@ -286,16 +286,20 @@ jobs:
           cache-from: type=gha,scope=challenge-${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=challenge-${{ matrix.image }}
 
+  # GHCR packages prism/agent-challenge* are still Actions-linked to the
+  # standalone repos (image.source → BaseIntelligence/prism|agent-challenge).
+  # Monorepo GITHUB_TOKEN gets write_package denied on those names until org
+  # package "Manage Actions access" grants BaseIntelligence/base write.
+  # Auto-publish on main is therefore deferred; tags + explicit dispatch keep
+  # a manual publish path. docker-build remains the hard image gate on push.
   docker-publish:
     if: >-
       always() &&
-      github.event_name != 'pull_request' &&
+      needs.docker-build.result == 'success' &&
       (
-        github.ref == 'refs/heads/main' ||
         startsWith(github.ref, 'refs/tags/v') ||
         (github.event_name == 'workflow_dispatch' && inputs.confirm_publish == 'true')
-      ) &&
-      needs.docker-build.result == 'success'
+      )
     needs:
       - docker-build
       - monorepo-image-contract
