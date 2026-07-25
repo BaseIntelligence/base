@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DOCKERFILE_VALIDATOR = ROOT / "docker" / "Dockerfile.validator"
 DOCKERFILE_MASTER = ROOT / "docker" / "Dockerfile.master"
-VALIDATOR_DOCS = ROOT / "docs" / "operations" / "validator.md"
+VALIDATOR_DOCS = ROOT / "docs" / "validator.md"
 INSTALL_SWARM = ROOT / "deploy" / "swarm" / "install-swarm.sh"
 
 
@@ -70,7 +70,7 @@ def test_validator_image_cmd_runs_the_validator() -> None:
 
 
 def test_validator_agent_documented_on_ghcr_digest_pin_path() -> None:
-    ops = (ROOT / "docs" / "operations" / "validator.md").read_text(encoding="utf-8")
+    ops = VALIDATOR_DOCS.read_text(encoding="utf-8")
     lower = ops.lower()
     assert "compose" in lower
     # Image pin policy lives with installer/env; docs describe digest pins.

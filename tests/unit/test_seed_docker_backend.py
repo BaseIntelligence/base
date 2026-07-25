@@ -190,8 +190,13 @@ def test_agent_challenge_job_network_is_isolated_internal_overlay() -> None:
 
 
 def test_log_stream_host_matches_agent_challenge_service_name() -> None:
-    """CHALLENGE_TERMINAL_BENCH_LOG_STREAM_URL host MUST equal the agent-challenge
-    service name reachable on base_jobs_internal, else log streaming fails DNS."""
+    """Job-overlay log-stream host stays the challenge container DNS name.
+
+    Master-embed ``default_internal_base_url`` is loopback (127.0.0.1:18081) for
+    the in-process ASGI proxy. ``AGENT_CHALLENGE_INTERNAL_BASE_URL`` is the
+    residual job-overlay DNS name used when own_runner env is rewritten on the
+    isolated ``base_jobs_internal`` network — a different plane from embed.
+    """
     from urllib.parse import urlsplit
 
     from base.master.docker_orchestrator import ChallengeSpec
@@ -205,9 +210,10 @@ def test_log_stream_host_matches_agent_challenge_service_name() -> None:
 
     constant_host = urlsplit(cli_module.AGENT_CHALLENGE_INTERNAL_BASE_URL).hostname
     assert constant_host == service_name
-    assert (
-        constant_host == urlsplit(default_internal_base_url("agent-challenge")).hostname
-    )
+    # Embed plane (master → localhost ASGI), not job-overlay DNS.
+    embed_url = default_internal_base_url("agent-challenge")
+    assert embed_url == "http://127.0.0.1:18081"
+    assert urlsplit(embed_url).hostname == "127.0.0.1"
 
     registry = ChallengeRegistry()
     registry.create(_agent_challenge_create())

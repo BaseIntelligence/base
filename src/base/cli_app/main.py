@@ -757,9 +757,9 @@ AGENT_CHALLENGE_SUBMISSION_ENV_KEY_FILE = (
 #: ``deploy/swarm/acquire-agent-challenge-cache.sh``.
 AGENT_CHALLENGE_TASK_CACHE_DIR = "/opt/agent-challenge/task-cache"
 AGENT_CHALLENGE_GOLDEN_DIR = "/opt/agent-challenge/golden"
-#: Challenge API service DNS on the challenges overlay (matches
-#: ``default_internal_base_url("agent-challenge")``); own_runner jobs POST
-#: real-time trial logs here.
+#: Challenge API service DNS on the jobs overlay for residual own_runner
+#: dual-run paths. Distinct from embed ``default_internal_base_url``
+#: (``http://127.0.0.1:18081``) used by the master reverse-proxy plane.
 AGENT_CHALLENGE_INTERNAL_BASE_URL = "http://challenge-agent-challenge:8000"
 #: Overlay the DooD eval JOB attaches to (``CHALLENGE_DOCKER_BROKER_NETWORK``).
 #: This is the dedicated ISOLATED eval overlay (``base_jobs_internal``: created
