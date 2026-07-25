@@ -48,6 +48,8 @@ try:  # light, torch-free keypair (Rust wheel) preferred inside the pod
 except ImportError:  # pragma: no cover - host dry-run may only have full bittensor
     from bittensor import Keypair  # type: ignore[no-redef]
 
+from datetime import UTC
+
 from base.validator.agent import BrokerConfig
 from base.validator.agent.signing import KeypairRequestSigner
 from base.worker.coordination_client import WorkerCoordinationClient
@@ -75,7 +77,7 @@ def _run_recipe_llm_gate(config: dict[str, Any]) -> dict[str, Any] | None:
     can continue while still proving the rules files were loaded.
     """
     import os
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     enabled = str(config.get("recipe_gate") or "").strip().lower()
     if enabled in {"0", "false", "off", "no"}:
@@ -84,8 +86,8 @@ def _run_recipe_llm_gate(config: dict[str, Any]) -> dict[str, Any] | None:
     force = enabled in {"1", "true", "on", "yes", "required"}
     try:
         from prism_recipe.llm_gate import (  # type: ignore[import-not-found]
-            run_rules_gate,
             rules_digest,
+            run_rules_gate,
         )
         from prism_recipe.smoke_train import (  # type: ignore[import-not-found]
             read_sealed_sources,
@@ -114,7 +116,7 @@ def _run_recipe_llm_gate(config: dict[str, Any]) -> dict[str, Any] | None:
     }:
         # Smoke constraint only: load rules, hash them, mark ok with attested kind.
         digest = rules_digest()
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         gate_meta = {
             "llm_gate": {
                 "rules_digest": digest,
@@ -130,8 +132,7 @@ def _run_recipe_llm_gate(config: dict[str, Any]) -> dict[str, Any] | None:
             }
         }
         print(
-            f"[pod-agent] recipe gate deterministic fallback ok "
-            f"digest={digest[:16]}…",
+            f"[pod-agent] recipe gate deterministic fallback ok digest={digest[:16]}…",
             flush=True,
         )
         return gate_meta
@@ -179,16 +180,15 @@ class PrismCpuReexecEnvelopeExecutor:
         self._config = config or {}
 
     async def execute(self, context: Any, *, progress: Any) -> Any:
+        from prism_challenge.evaluator.cpu_test_mode import evaluate_cpu_reexec
+
         from base.validator.agent.executor import ExecutionResult
         from base.worker.proof import MANIFEST_SHA256_PAYLOAD_KEY
-        from prism_challenge.evaluator.cpu_test_mode import evaluate_cpu_reexec
 
         unit_id = context.assignment.work_unit_id
 
         # Recipe LLM gate first (before train/reexec) when enabled/available.
-        recipe_attestation = await asyncio.to_thread(
-            _run_recipe_llm_gate, self._config
-        )
+        recipe_attestation = await asyncio.to_thread(_run_recipe_llm_gate, self._config)
 
         outcome = await asyncio.to_thread(
             evaluate_cpu_reexec, self._settings, submission_id=unit_id
@@ -229,14 +229,17 @@ class PrismRecipeCudaEnvelopeExecutor:
     def __init__(self, *, config: dict[str, Any] | None = None) -> None:
         self._config = config or {}
 
-    def _run_gpu_train(self, unit_id: str) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
+    def _run_gpu_train(
+        self, unit_id: str
+    ) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
         import os
 
         from prism_challenge.proof import compute_manifest_sha256
         from prism_recipe.gpu_train import run_gpu_short_train
 
-        # Gate is required on scoring path; run_gpu_short_train also gates unless skip env set.
-        # Prefer explicit agent-level gate so recipe_gate_block_on_fail is honored.
+        # Gate required on scoring path; run_gpu_short_train also gates
+        # unless skip env set. Prefer agent-level gate so
+        # recipe_gate_block_on_fail is honored.
         recipe_attestation = _run_recipe_llm_gate(self._config)
 
         budget = int(
@@ -249,14 +252,12 @@ class PrismRecipeCudaEnvelopeExecutor:
         seq_len = int(self._config.get("gpu_seq_len") or 128)
         batch_size = int(self._config.get("gpu_batch_size") or 8)
         max_steps = int(self._config.get("gpu_max_steps") or 512)
-        require_cuda = str(self._config.get("require_cuda", "1")).strip().lower() not in {
-            "0",
-            "false",
-            "off",
-            "no",
-        }
+        require_cuda = str(
+            self._config.get("require_cuda", "1")
+        ).strip().lower() not in {"0", "false", "off", "no"}
 
-        # Gate already ran: inject pass GateResult into train so it does not double-call OpenRouter.
+        # Gate already ran: inject pass GateResult so train does not
+        # double-call OpenRouter.
         gate_obj = None
         if recipe_attestation and isinstance(recipe_attestation.get("llm_gate"), dict):
             from prism_recipe.llm_gate import GateResult
@@ -321,8 +322,10 @@ class PrismRecipeCudaEnvelopeExecutor:
             MANIFEST_SHA256_PAYLOAD_KEY: digest,
             "run_manifest": manifest,
         }
-        compute = manifest.get("compute") if isinstance(manifest.get("compute"), dict) else {}
-        metrics = manifest.get("metrics") if isinstance(manifest.get("metrics"), dict) else {}
+        raw_compute = manifest.get("compute")
+        compute = raw_compute if isinstance(raw_compute, dict) else {}
+        raw_metrics = manifest.get("metrics")
+        metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
         meta_extra = {
             "recipe_path": "prism-recipe+gpu_short_cuda",
             "model_params": compute.get("model_params"),
@@ -372,9 +375,7 @@ def _prism_cpu_settings(config: dict[str, Any]) -> Any:
         execution_backend="base_gpu",
         docker_enabled=True,
         docker_backend="broker",
-        docker_broker_url=str(
-            config.get("docker_broker_url") or "http://127.0.0.1:0"
-        ),
+        docker_broker_url=str(config.get("docker_broker_url") or "http://127.0.0.1:0"),
         docker_broker_token=token,
         base_eval_artifact_root=artifact_root,
         worker_plane=worker_plane,
@@ -384,7 +385,7 @@ def _prism_cpu_settings(config: dict[str, Any]) -> Any:
 
 
 def _resolve_inner_executor(config: dict[str, Any]) -> Any:
-    """Pick full-envelope GPU CUDA, Prism CPU reexec, or stub if forced / unavailable."""
+    """Pick GPU CUDA, Prism CPU reexec, or stub if forced / unavailable."""
     mode = str(config.get("executor_mode") or "prism_cpu_reexec").strip().lower()
     if mode in {"stub", "stub_manifest", "proof_only"}:
         print("[pod-agent] executor_mode=stub (proof-only; Prism may 422)", flush=True)
@@ -418,8 +419,8 @@ def _resolve_inner_executor(config: dict[str, Any]) -> Any:
     except Exception as exc:  # noqa: BLE001 - fall back only when mode is auto
         if mode in {"auto", ""}:
             print(
-                f"[pod-agent] prism_cpu_reexec unavailable ({type(exc).__name__}: {exc}); "
-                "falling back to stub",
+                f"[pod-agent] prism_cpu_reexec unavailable "
+                f"({type(exc).__name__}: {exc}); falling back to stub",
                 flush=True,
             )
             return StubManifestExecutor()
