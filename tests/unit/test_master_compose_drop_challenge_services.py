@@ -216,7 +216,9 @@ def test_watcher_interval_default_zero_in_compose_and_install() -> None:
     assert "challenge_watcher_interval_seconds: 0" in cfg
 
 
-def test_watcher_lifespan_disabled_when_interval_non_positive() -> None:
+def test_watcher_lifespan_disabled_when_interval_non_positive(
+    tmp_path: Path,
+) -> None:
     from base.config.settings import Settings
     from base.supervisor.challenge_watcher import build_challenge_watcher_lifespan
 
@@ -225,7 +227,15 @@ def test_watcher_lifespan_disabled_when_interval_non_positive() -> None:
     assert build_challenge_watcher_lifespan(settings, -1) is None
     assert build_challenge_watcher_lifespan(None, 60) is None
     # Positive interval still constructs a lifespan (emergency dual-run).
-    assert build_challenge_watcher_lifespan(settings, 60) is not None
+    # state_path must be writable (CI runners cannot mkdir /var/lib/base).
+    assert (
+        build_challenge_watcher_lifespan(
+            settings,
+            60,
+            state_path=tmp_path / "challenge-watcher-state.json",
+        )
+        is not None
+    )
 
 
 def test_watcher_source_skips_inspect_errors() -> None:
