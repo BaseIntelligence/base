@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 jobs:
-  # Cheap monorepo skeleton gate: workspace members + ADR present.
+  # Cheap monorepo skeleton gate: workspace members + lock + package trees.
   # Challenge image path-filter matrix: .github/workflows/challenge-images.yml
   monorepo-workspace:
     runs-on: ubuntu-latest
@@ -33,7 +33,11 @@ jobs:
       - name: Workspace members resolvable
         run: |
           set -euo pipefail
-          test -f docs/monorepo.md
+          # Workspace root + lock (not deleted essay docs).
+          test -f pyproject.toml
+          test -f uv.lock
+          test -f packages/challenges/prism/pyproject.toml
+          test -f packages/challenges/agent-challenge/pyproject.toml
           test -d packages/challenges/prism
           test -d packages/challenges/agent-challenge
           uv workspace list | tee /tmp/uv-workspace-list.txt
