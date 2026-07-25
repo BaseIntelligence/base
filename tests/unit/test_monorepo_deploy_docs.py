@@ -107,8 +107,7 @@ def test_source_of_truth_is_package_and_agents_not_essay() -> None:
     assert "BaseIntelligence/base" in agents or "base monorepo" in agents.lower()
     assert "packages/challenges/prism" in pkg_prism or "prism_challenge" in pkg_prism
     assert (
-        "packages/challenges/agent-challenge" in pkg_ac
-        or "agent_challenge" in pkg_ac
+        "packages/challenges/agent-challenge" in pkg_ac or "agent_challenge" in pkg_ac
     )
     for slug in PUBLIC_SLUGS:
         assert slug in pkg_prism or slug in pkg_ac or slug in root_readme

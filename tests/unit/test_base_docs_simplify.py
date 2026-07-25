@@ -66,10 +66,7 @@ def test_readme_is_short_and_useful() -> None:
 
 def test_docs_tree_is_thin() -> None:
     """VAL-CLEAN-005: only the thin shipping docs set remains under docs/."""
-    rels = {
-        p.relative_to(REPO_ROOT).as_posix()
-        for p in _shipping_docs()
-    }
+    rels = {p.relative_to(REPO_ROOT).as_posix() for p in _shipping_docs()}
     assert rels == ALLOWED_DOCS, f"unexpected docs tree: {sorted(rels)}"
 
     # Explicitly deleted essays / hubs must stay gone.

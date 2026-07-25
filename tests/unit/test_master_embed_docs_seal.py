@@ -96,9 +96,7 @@ def test_safety_docs_no_multi_writer_and_no_master_set_weights() -> None:
 
     assert "multi-writer" in blob.lower() or "sole writer" in blob.lower()
     assert "never" in blob.lower() and "set_weights" in blob
-    secrets_ok = (
-        "0600" in blob or "*_FILE" in blob or "secret" in blob.lower()
-    )
+    secrets_ok = "0600" in blob or "*_FILE" in blob or "secret" in blob.lower()
     assert secrets_ok
     assert not re.search(
         r"master\s+(must|should|can|will)\s+set_weights",

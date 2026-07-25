@@ -194,8 +194,7 @@ def test_operator_navigation_documents_compose_only_install_paths() -> None:
         assert "Docker Compose" in blob or "docker compose" in blob or "Compose" in blob
     assert "install-master.sh" in compose_docs
     assert (
-        "install-validator.sh" in compose_docs
-        or "install-validator" in validator_docs
+        "install-validator.sh" in compose_docs or "install-validator" in validator_docs
     )
     # Historical Swarm remains labeled non-target; no ship-of-record path.
     assert "not a supported" in compose_docs.lower() or "HISTORICAL" in (
