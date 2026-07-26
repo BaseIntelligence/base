@@ -7,7 +7,59 @@ instances that run worker agents, under mandatory cost guardrails.
 
 from __future__ import annotations
 
-from base.compute.lium import LIUM_API_BASE_URL, LiumClient, LiumError
+from base.compute.attestation_nonce import (
+    AttestationNonceService,
+    NonceBinding,
+    NonceConsumeHit,
+    NonceConsumeMiss,
+    NonceConsumeReason,
+    NonceRecord,
+    NonceSnapshot,
+)
+from base.compute.constation_corroboration import (
+    CorroborationOutcome,
+    evaluate_corroboration,
+)
+from base.compute.constation_custody import (
+    LiumKeyCustody,
+    generate_custody_master_key,
+)
+from base.compute.constation_poller import (
+    ContinuousConstationPoller,
+    PollerConfig,
+    PollerResult,
+)
+from base.compute.constation_runner import (
+    ConstationRunner,
+    ConstationRunRequest,
+)
+from base.compute.constation_types import (
+    ConstationFailCode,
+    ConstationRunRecord,
+    ConstationVerdict,
+    CorroborationStatus,
+    FaultClass,
+    PollSample,
+)
+from base.compute.digest_allowlist import (
+    AllowlistHit,
+    AllowlistMiss,
+    AllowlistMissReason,
+    DigestAllowlist,
+    DigestRecord,
+    ImageVariant,
+)
+from base.compute.lium import (
+    LIUM_API_BASE_URL,
+    LiumAuthError,
+    LiumClient,
+    LiumError,
+    LiumNotFoundError,
+    LiumPodRead,
+    LiumRateLimitError,
+    LiumTemplateDigestMismatchError,
+    LiumTemplateRead,
+)
 from base.compute.provider import (
     CostGuardrailError,
     Instance,
@@ -37,6 +89,19 @@ from base.compute.worker_deployment import (
 )
 
 __all__ = [
+    "AllowlistHit",
+    "AttestationNonceService",
+    "NonceBinding",
+    "NonceConsumeHit",
+    "NonceConsumeMiss",
+    "NonceConsumeReason",
+    "NonceRecord",
+    "NonceSnapshot",
+    "AllowlistMiss",
+    "AllowlistMissReason",
+    "DigestAllowlist",
+    "DigestRecord",
+    "ImageVariant",
     "LIUM_API_BASE_URL",
     "TARGON_API_BASE_URL",
     "WORKER_IMAGE",
@@ -50,6 +115,12 @@ __all__ = [
     "InsufficientCreditsError",
     "LiumClient",
     "LiumError",
+    "LiumTemplateRead",
+    "LiumTemplateDigestMismatchError",
+    "LiumRateLimitError",
+    "LiumPodRead",
+    "LiumNotFoundError",
+    "LiumAuthError",
     "Offer",
     "ProviderClient",
     "ProviderError",
@@ -61,4 +132,19 @@ __all__ = [
     "is_metachar_free",
     "is_pinned_digest",
     "pinned_image_reference",
+    "ConstationFailCode",
+    "ConstationRunRecord",
+    "ConstationRunRequest",
+    "ConstationRunner",
+    "ConstationVerdict",
+    "ContinuousConstationPoller",
+    "CorroborationOutcome",
+    "CorroborationStatus",
+    "FaultClass",
+    "LiumKeyCustody",
+    "PollSample",
+    "PollerConfig",
+    "PollerResult",
+    "evaluate_corroboration",
+    "generate_custody_master_key",
 ]
