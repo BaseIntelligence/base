@@ -841,3 +841,220 @@ def test_as_list_handles_unexpected_shapes() -> None:
     assert _as_list("nope", "executors") == []
     assert _as_list({"executors": "nope"}, "executors") == []
     assert _as_list([{"a": 1}, "skip"], "executors") == [{"a": 1}]
+
+
+# -- Todo 13: pod / template reads + typed auth errors -------------------------
+
+
+def _pod_detail(
+    *,
+    pod_id: str = "pod-1",
+    template_id: str = "tpl-1",
+    digest: str | None = "sha256:" + "a" * 64,
+) -> dict:
+    """Shape mirrors OpenAPI PodDetailResponse + nested TemplateBaseResponse."""
+    return {
+        "id": pod_id,
+        "status": "RUNNING",
+        "pod_name": "mission-pod",
+        "template": {
+            "id": template_id,
+            "name": "prism-worker",
+            "docker_image": "ghcr.io/base/worker",
+            "docker_image_tag": "v1",
+            "docker_image_digest": digest,
+        },
+    }
+
+
+@respx.mock
+async def test_get_pod_raw_returns_declared_digest_and_template_id() -> None:
+    digest = "sha256:" + "a" * 64
+    respx.get(f"{BASE}/pods/pod-1").mock(
+        return_value=httpx.Response(
+            200, json=_pod_detail(template_id="tpl-99", digest=digest)
+        )
+    )
+    from base.compute.lium import LiumPodRead
+
+    result = await LiumClient("k").get_pod_raw("pod-1")
+    assert isinstance(result, LiumPodRead)
+    assert result.pod_id == "pod-1"
+    assert result.template_id == "tpl-99"
+    assert result.docker_image_digest == digest
+    assert result.raw["id"] == "pod-1"
+    assert result.raw["template"]["id"] == "tpl-99"
+
+
+@respx.mock
+async def test_get_pod_raw_401_raises_lium_auth_error_not_none() -> None:
+    from base.compute.lium import LiumAuthError
+
+    respx.get(f"{BASE}/pods/pod-1").mock(return_value=httpx.Response(401))
+    with pytest.raises(LiumAuthError) as exc_info:
+        await LiumClient("revoked-key").get_pod_raw("pod-1")
+    assert exc_info.value.status_code == 401
+    assert exc_info.value is not None
+    assert not isinstance(exc_info.value, type(None))
+
+
+@respx.mock
+async def test_get_pod_raw_404_raises_lium_not_found() -> None:
+    from base.compute.lium import LiumNotFoundError
+
+    respx.get(f"{BASE}/pods/missing").mock(return_value=httpx.Response(404))
+    with pytest.raises(LiumNotFoundError) as exc_info:
+        await LiumClient("k").get_pod_raw("missing")
+    assert exc_info.value.status_code == 404
+
+
+@respx.mock
+async def test_get_pod_raw_429_raises_lium_rate_limit() -> None:
+    from base.compute.lium import LiumRateLimitError
+
+    respx.get(f"{BASE}/pods/pod-1").mock(return_value=httpx.Response(429))
+    with pytest.raises(LiumRateLimitError) as exc_info:
+        await LiumClient("k").get_pod_raw("pod-1")
+    assert exc_info.value.status_code == 429
+
+
+@respx.mock
+async def test_get_template_raw_returns_id_and_digest() -> None:
+    digest = "sha256:" + "b" * 64
+    respx.get(f"{BASE}/templates/tpl-7").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "tpl-7",
+                "name": "prism-worker",
+                "docker_image": "ghcr.io/base/worker",
+                "docker_image_tag": "v1",
+                "docker_image_digest": digest,
+            },
+        )
+    )
+    from base.compute.lium import LiumTemplateRead
+
+    result = await LiumClient("k").get_template_raw("tpl-7")
+    assert isinstance(result, LiumTemplateRead)
+    assert result.template_id == "tpl-7"
+    assert result.docker_image_digest == digest
+    assert result.name == "prism-worker"
+    assert result.raw["id"] == "tpl-7"
+
+
+@respx.mock
+async def test_get_template_raw_401_raises_lium_auth_error() -> None:
+    from base.compute.lium import LiumAuthError
+
+    respx.get(f"{BASE}/templates/tpl-7").mock(return_value=httpx.Response(401))
+    with pytest.raises(LiumAuthError) as exc_info:
+        await LiumClient("bad").get_template_raw("tpl-7")
+    assert exc_info.value.status_code == 401
+
+
+@respx.mock
+async def test_get_template_raw_404_raises_lium_not_found() -> None:
+    from base.compute.lium import LiumNotFoundError
+
+    respx.get(f"{BASE}/templates/nope").mock(return_value=httpx.Response(404))
+    with pytest.raises(LiumNotFoundError) as exc_info:
+        await LiumClient("k").get_template_raw("nope")
+    assert exc_info.value.status_code == 404
+
+
+# -- Todo 14: ensure_template digest-aware reuse (breaking) --------------------
+
+
+@respx.mock
+async def test_ensure_template_reuses_when_name_and_digest_match() -> None:
+    digest = "sha256:" + "c" * 64
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "tpl-same",
+                    "name": "prism-worker",
+                    "docker_image_digest": digest,
+                }
+            ],
+        )
+    )
+    post = respx.post(f"{BASE}/templates")
+    result = await LiumClient("k").ensure_template(
+        name="prism-worker",
+        docker_image="ghcr.io/base/worker",
+        docker_image_digest=digest,
+    )
+    assert result == "tpl-same"
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_ensure_template_rejects_same_name_different_digest() -> None:
+    from base.compute.lium import LiumTemplateDigestMismatchError
+
+    existing = "sha256:" + "d" * 64
+    requested = "sha256:" + "e" * 64
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "tpl-old",
+                    "name": "prism-worker",
+                    "docker_image_digest": existing,
+                }
+            ],
+        )
+    )
+    post = respx.post(f"{BASE}/templates")
+    with pytest.raises(LiumTemplateDigestMismatchError) as exc_info:
+        await LiumClient("k").ensure_template(
+            name="prism-worker",
+            docker_image="ghcr.io/base/worker",
+            docker_image_digest=requested,
+        )
+    assert post.call_count == 0
+    err = exc_info.value
+    assert err.template_id == "tpl-old"
+    assert err.existing_digest == existing
+    assert err.requested_digest == requested
+    # Must not silently return the stale template id.
+    assert "tpl-old" not in str(type(err))
+
+
+@respx.mock
+async def test_ensure_template_rejects_missing_existing_digest_when_pinned() -> None:
+    """Name hit without a stored digest must not satisfy a pinned request."""
+    from base.compute.lium import LiumTemplateDigestMismatchError
+
+    requested = "sha256:" + "f" * 64
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(
+            200, json=[{"id": "tpl-blind", "name": "prism-worker"}]
+        )
+    )
+    post = respx.post(f"{BASE}/templates")
+    with pytest.raises(LiumTemplateDigestMismatchError):
+        await LiumClient("k").ensure_template(
+            name="prism-worker",
+            docker_image="img",
+            docker_image_digest=requested,
+        )
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_ensure_template_reuses_when_neither_side_pins_digest() -> None:
+    """Legacy path: no digest on request and none on record still reuses by name."""
+    respx.get(f"{BASE}/templates").mock(
+        return_value=httpx.Response(200, json=[{"id": "tpl-9", "name": "prism-worker"}])
+    )
+    post = respx.post(f"{BASE}/templates")
+    result = await LiumClient("k").ensure_template(
+        name="prism-worker", docker_image="img"
+    )
+    assert result == "tpl-9"
+    assert post.call_count == 0

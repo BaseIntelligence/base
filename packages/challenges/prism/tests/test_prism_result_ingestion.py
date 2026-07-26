@@ -440,6 +440,7 @@ def _eval_job_count(db_path: Path, submission_id: str) -> int:
 
 
 async def test_ingestion_records_downgraded_effective_tier(tmp_path, monkeypatch) -> None:
+    """Claimed tier 2 never elevates; with valid constation, score writes at effective 0."""
     data_dir = _stage_train(tmp_path)
     monkeypatch.setattr(
         "prism_challenge.evaluator.container.DockerExecutor.run",
@@ -454,24 +455,31 @@ async def test_ingestion_records_downgraded_effective_tier(tmp_path, monkeypatch
 
     submission_id = await _seed(app)
     manifest = _manifest()
-    # A tier-1 claim whose image_digest does not match the pinned digest is
-    # unverifiable under SDK-strict proof shape -> effective tier 0.
+    # Claimed tier 2 (structured attestation shape) collapses to effective 0 even when
+    # constation_ok is True (auto-injected by conftest for legacy callers).
     proof = _proof_dict(
         signer,
         submission_id,
         manifest,
-        tier=1,
+        tier=2,
         image_digest="sha256:" + ("ab" * 32),
-        attestation=None,
+        attestation={
+            "version": 1,
+            "provider": "local_fixture",
+            "evidence_type": "prism.tee.v1",
+            "tdx_quote_b64": "QUOTE",
+            "gpu_eat_jwt": "JWT",
+        },
     )
     outcome = await ingest_work_unit_result(
         worker=app.state.worker,
         work_unit_id=submission_id,
         submission_ref="hk-owner",
         result=_result(proof, manifest),
-        pinned_image_digest="sha256:" + ("cd" * 32),
+        pinned_image_digest="sha256:" + ("ab" * 32),
     )
-    assert outcome.claimed_tier == 1
+    assert outcome.status == "accepted"
+    assert outcome.claimed_tier == 2
     assert outcome.effective_tier == 0
     assert outcome.tier_downgraded is True
 
@@ -484,7 +492,7 @@ async def test_ingestion_records_downgraded_effective_tier(tmp_path, monkeypatch
         ).fetchone()
     finally:
         conn.close()
-    assert row == (1, 0, 1)
+    assert row == (2, 0, 1)
 
 
 # --- HTTP route body contract + status codes (VAL-PRISM-017/018) ---------------------------------
