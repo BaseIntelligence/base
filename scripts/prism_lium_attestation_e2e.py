@@ -470,21 +470,37 @@ async def _ingest(
         "".join(_SHARD.format(i=i) for i in range(64)), encoding="utf-8"
     )
     db_path = tmp / f"{work_unit_id_marker}.sqlite3"
-    settings = PrismSettings(
-        database_url=f"sqlite+aiosqlite:///{db_path}",
-        shared_token="e2e-secret",
-        allow_insecure_signatures=True,
-        execution_backend="base_gpu",
-        docker_enabled=True,
-        docker_backend="broker",
-        docker_broker_url="http://base-docker-broker:8082",
-        docker_broker_token="secret",
-        sequence_length=16,
-        plagiarism_enabled=False,
-        distributed_contract_policy="off",
-        base_eval_artifact_root=tmp / "artifacts",
-        worker_plane=WorkerPlaneConfig(enabled=True, signing_key=WORKER_KEY),
-    )
+    # Harness-only env keys (PRISM_MISSION_CREDS, PRISM_ATTEST_E2E_TMP, …) are not
+    # PrismSettings fields. PrismSettings forbids unknown PRISM_* keys, so park them
+    # for the duration of settings construction + app init.
+    _harness_prism_env = {
+        k: os.environ.pop(k)
+        for k in list(os.environ)
+        if k.startswith("PRISM_")
+        and k
+        in {
+            "PRISM_MISSION_CREDS",
+            "PRISM_ATTEST_E2E_TMP",
+        }
+    }
+    try:
+        settings = PrismSettings(
+            database_url=f"sqlite+aiosqlite:///{db_path}",
+            shared_token="e2e-secret",
+            allow_insecure_signatures=True,
+            execution_backend="base_gpu",
+            docker_enabled=True,
+            docker_backend="broker",
+            docker_broker_url="http://base-docker-broker:8082",
+            docker_broker_token="secret",
+            sequence_length=16,
+            plagiarism_enabled=False,
+            distributed_contract_policy="off",
+            base_eval_artifact_root=tmp / "artifacts",
+            worker_plane=WorkerPlaneConfig(enabled=True, signing_key=WORKER_KEY),
+        )
+    finally:
+        os.environ.update(_harness_prism_env)
     # Patch docker executor the same way unit tests do.
     import prism_challenge.evaluator.container as container_mod
 
