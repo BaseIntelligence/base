@@ -65,8 +65,7 @@ def _require_full_git_sha(field_name: str, value: str) -> str:
     normalized = value.strip().lower()
     if not is_full_git_sha(normalized):
         raise ValueError(
-            f"{field_name} must be a full 40-char lowercase hex git SHA, "
-            f"got {value!r}"
+            f"{field_name} must be a full 40-char lowercase hex git SHA, got {value!r}"
         )
     return normalized
 
@@ -74,9 +73,7 @@ def _require_full_git_sha(field_name: str, value: str) -> str:
 def _require_image_digest(value: str) -> str:
     normalized = normalize_image_digest(value)
     if not is_image_digest(normalized):
-        raise ValueError(
-            f"digest must be sha256:<64 lowercase hex>, got {value!r}"
-        )
+        raise ValueError(f"digest must be sha256:<64 lowercase hex>, got {value!r}")
     return normalized
 
 
@@ -87,8 +84,7 @@ def _require_variant(value: ImageVariant | str) -> ImageVariant:
         return ImageVariant(str(value).strip().lower())
     except ValueError as exc:
         raise ValueError(
-            f"variant must be one of {[v.value for v in ImageVariant]}, "
-            f"got {value!r}"
+            f"variant must be one of {[v.value for v in ImageVariant]}, got {value!r}"
         ) from exc
 
 

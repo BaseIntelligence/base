@@ -463,6 +463,7 @@ def test_corroboration_module_never_claims_independent() -> None:
         text = (src / name).read_text(encoding="utf-8").lower()
         # Forbid positive claims of independence (negations like "not independent" ok)
         import re
+
         assert not re.search(r"(?<!not )(?<!never )independent verification", text)
         assert "independently verified" not in text
         assert "independent root of trust" not in text

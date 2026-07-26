@@ -1,6 +1,7 @@
 """Durable SQLAlchemy host for attestation nonces (mechanism 1 storage).
 
-Issue/consume *rules* match :class:`base.compute.attestation_nonce.AttestationNonceService`.
+Issue/consume *rules* match
+:class:`base.compute.attestation_nonce.AttestationNonceService`.
 Consume uses ``UPDATE … WHERE consumed_at IS NULL`` so multi-worker races still
 yield exactly one HIT (S4).
 """
@@ -36,7 +37,6 @@ def _as_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
-
 
 
 class DurableAttestationNonceService:

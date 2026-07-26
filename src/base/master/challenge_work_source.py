@@ -416,7 +416,8 @@ class HttpChallengeResultForwarder:
         self._timeout_seconds = timeout_seconds
         self._retries = retries
         self._transport = transport
-        # Optional async callable (work_unit_id) -> dict | None for constation_bundle attach.
+        # Optional async callable (work_unit_id) -> dict | None for
+        # constation_bundle attach.
         self._bundle_lookup = bundle_lookup
 
     async def forward_result(

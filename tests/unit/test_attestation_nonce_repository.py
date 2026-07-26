@@ -46,7 +46,9 @@ class _Clock:
 
 
 @pytest.fixture
-async def session_factory(tmp_path: Path) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+async def session_factory(
+    tmp_path: Path,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     db_path = tmp_path / "nonces.sqlite3"
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{db_path}",

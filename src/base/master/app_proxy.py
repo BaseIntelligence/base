@@ -1275,7 +1275,8 @@ def create_proxy_app(
     app.state.miner_upload_verifier = verifier
 
     # Internal constation infrastructure only (check_*/register/bundle/issue).
-    # Public challenge/answer product surface lives on Prism (proxy /challenges/prism/...).
+    # Public challenge/answer product surface lives on Prism
+    # (proxy /challenges/prism/...).
     if constation_router is not None:
         app.include_router(constation_router)
         app.state.constation_router = constation_router

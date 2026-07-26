@@ -156,7 +156,7 @@ _TINY_TRAIN = (
 )
 _SHARD = (
     '{{"id": "doc-{i}", "text": "the locked fineweb edu training sample '
-    'number {i} has enough bytes to cover several challenge instrument '
+    "number {i} has enough bytes to cover several challenge instrument "
     'batches deterministically"}}\n'
 )
 
@@ -669,9 +669,7 @@ async def run_honest(*, live: bool, tmp: Path) -> dict[str, Any]:
                 live_clock=False,
             )
 
-        assert record.ok is True, (
-            f"constation failed: {record.reason} {record.detail}"
-        )
+        assert record.ok is True, f"constation failed: {record.reason} {record.detail}"
         assert record.fault_class is None
         phases = set(sidecar.phases)
         assert "start" in phases and "end" in phases, sidecar.phases

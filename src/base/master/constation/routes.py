@@ -299,8 +299,8 @@ def build_constation_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="bundle not found")
         return blob
 
-    setattr(router, "_answers", answers)
-    setattr(router, "_bundle_store", store)
+    router._answers = answers
+    router._bundle_store = store
     return router
 
 

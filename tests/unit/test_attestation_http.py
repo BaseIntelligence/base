@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from base.attestation.payload import (
     AttestationPayload,
@@ -159,9 +159,7 @@ async def test_bundle_put_get(harness: dict[str, Any]) -> None:
         "/internal/v1/constation/bundle/wu-http", headers=headers, json=bundle
     )
     assert put.status_code == 200
-    got = await client.get(
-        "/internal/v1/constation/bundle/wu-http", headers=headers
-    )
+    got = await client.get("/internal/v1/constation/bundle/wu-http", headers=headers)
     assert got.status_code == 200
     assert got.json()["digest"] == DIGEST
 

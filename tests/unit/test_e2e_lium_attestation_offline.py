@@ -8,9 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parents[2] / "scripts" / "e2e_lium_attestation.py"
-)
+_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "e2e_lium_attestation.py"
 
 
 def _load_e2e_module():

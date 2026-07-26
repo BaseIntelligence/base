@@ -97,9 +97,7 @@ class LiumKeyCustody:
         try:
             await self.probe_fn(client)
         except LiumAuthError:
-            logger.warning(
-                "lium key probe rejected (401) for miner_hotkey=%s", hotkey
-            )
+            logger.warning("lium key probe rejected (401) for miner_hotkey=%s", hotkey)
             return ConstationVerdict(
                 ok=False,
                 reason=ConstationFailCode.LIUM_AUTH_REVOKED,

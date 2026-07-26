@@ -1310,9 +1310,7 @@ class AttestationNonce(Base):
     work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
     miner_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
     pod_id: Mapped[str] = mapped_column(Text, nullable=False)
-    issued_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

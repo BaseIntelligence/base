@@ -543,9 +543,7 @@ def _normalize_digest(value: Any) -> str | None:
     return _optional_str(value)
 
 
-def _digests_allow_reuse(
-    existing: str | None, requested: str | None
-) -> bool:
+def _digests_allow_reuse(existing: str | None, requested: str | None) -> bool:
     """Reuse only when digests agree, or neither side pins a digest.
 
     A requested pin against a missing or different stored digest is a hard

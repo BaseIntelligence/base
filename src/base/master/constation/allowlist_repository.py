@@ -121,14 +121,16 @@ class DigestAllowlistRepository:
         """Materialize a pure in-memory allowlist from durable tables."""
         async with self._session_scope(self._session_factory) as session:
             entries = (
-                await session.execute(select(ImageDigestAllowlistEntry))
-            ).scalars().all()
+                (await session.execute(select(ImageDigestAllowlistEntry)))
+                .scalars()
+                .all()
+            )
             denied_d = (
-                await session.execute(select(DeniedImageDigest))
-            ).scalars().all()
+                (await session.execute(select(DeniedImageDigest))).scalars().all()
+            )
             denied_c = (
-                await session.execute(select(DeniedImageCommit))
-            ).scalars().all()
+                (await session.execute(select(DeniedImageCommit))).scalars().all()
+            )
 
             allowlist = DigestAllowlist()
             for row in entries:

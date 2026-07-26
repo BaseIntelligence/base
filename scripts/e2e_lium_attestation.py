@@ -61,6 +61,27 @@ _PRISM_SRC = _BASE_ROOT / "packages" / "challenges" / "prism" / "src"
 if _PRISM_SRC.is_dir() and str(_PRISM_SRC) not in sys.path:
     sys.path.insert(0, str(_PRISM_SRC))
 
+from prism_challenge.app import create_app  # noqa: E402
+from prism_challenge.config import PrismSettings, WorkerPlaneConfig  # noqa: E402
+from prism_challenge.constation import (  # noqa: E402
+    ConstationBundle,
+    adapt_allowlist_lookup,
+    adapt_nonce_consume,
+    constation_ok,
+)
+from prism_challenge.evaluator.mock_reexec import cpu_reexec_run  # noqa: E402
+from prism_challenge.ingestion import ingest_work_unit_result  # noqa: E402
+from prism_challenge.models import SubmissionCreate  # noqa: E402
+from prism_challenge.proof import (  # noqa: E402
+    ATTESTATION_MODE_V1,
+    MANIFEST_PAYLOAD_KEY,
+    PROOF_PAYLOAD_KEY,
+    ProviderInfo,
+    build_execution_proof,
+    compute_manifest_sha256,
+    worker_signer_from_key,
+)
+
 from base.compute.attestation_nonce import (  # noqa: E402
     AttestationNonceService,
     NonceBinding,
@@ -84,26 +105,6 @@ from base.compute.digest_allowlist import (  # noqa: E402
     ImageVariant,
 )
 from base.compute.lium import LiumPodRead  # noqa: E402
-from prism_challenge.app import create_app  # noqa: E402
-from prism_challenge.config import PrismSettings, WorkerPlaneConfig  # noqa: E402
-from prism_challenge.constation import (  # noqa: E402
-    ConstationBundle,
-    adapt_allowlist_lookup,
-    adapt_nonce_consume,
-    constation_ok,
-)
-from prism_challenge.evaluator.mock_reexec import cpu_reexec_run  # noqa: E402
-from prism_challenge.ingestion import ingest_work_unit_result  # noqa: E402
-from prism_challenge.models import SubmissionCreate  # noqa: E402
-from prism_challenge.proof import (  # noqa: E402
-    ATTESTATION_MODE_V1,
-    MANIFEST_PAYLOAD_KEY,
-    PROOF_PAYLOAD_KEY,
-    ProviderInfo,
-    build_execution_proof,
-    compute_manifest_sha256,
-    worker_signer_from_key,
-)
 
 Mode = Literal["honest", "adversarial"]
 
@@ -159,7 +160,7 @@ def train(ctx):
 
 _SHARD_LINE = (
     '{{"id": "doc-{i}", "text": "the locked fineweb edu training sample number {i} '
-    'has enough bytes to cover several challenge instrument batches deterministically"}}\n'
+    'has enough bytes to cover several challenge instrument batches deterministically"}}\n'  # noqa: E501
 )
 
 
@@ -539,7 +540,9 @@ async def run_offline(mode: Mode) -> dict[str, Any]:
         "run_record_ok": bool(run_record.ok),
         "run_record_reason": str(run_record.reason.value),
         "run_record_fault_class": (
-            None if run_record.fault_class is None else str(run_record.fault_class.value)
+            None
+            if run_record.fault_class is None
+            else str(run_record.fault_class.value)
         ),
         "run_sample_count": len(run_record.samples),
         "constation_ok": bool(constation_result.ok),
@@ -563,7 +566,9 @@ def _assert_honest(bag: dict[str, Any]) -> list[str]:
     if not bag["constation_ok"]:
         errors.append(f"constation_ok expected True, reason={bag['constation_reason']}")
     if bag["ingest_status"] != "accepted":
-        errors.append(f"ingest status={bag['ingest_status']} reason={bag['ingest_reason']}")
+        errors.append(
+            f"ingest status={bag['ingest_status']} reason={bag['ingest_reason']}"
+        )
     if not bag["score_written"]:
         errors.append("score_written expected True")
     if bag["score_row"] is None:
@@ -572,7 +577,7 @@ def _assert_honest(bag: dict[str, Any]) -> list[str]:
         errors.append(f"effective_tier expected 1 got {bag['effective_tier']}")
     if bag["attestation_mode"] != ATTESTATION_MODE_V1:
         errors.append(
-            f"attestation_mode expected {ATTESTATION_MODE_V1!r} got {bag['attestation_mode']!r}"
+            f"attestation_mode expected {ATTESTATION_MODE_V1!r} got {bag['attestation_mode']!r}"  # noqa: E501
         )
     return errors
 
@@ -584,7 +589,7 @@ def _assert_adversarial(bag: dict[str, Any]) -> list[str]:
         errors.append("runner expected fail on mid-run digest swap")
     if bag["run_record_reason"] != ConstationFailCode.CORROBORATION_MISMATCH.value:
         errors.append(
-            f"runner reason expected corroboration_mismatch got {bag['run_record_reason']}"
+            f"runner reason expected corroboration_mismatch got {bag['run_record_reason']}"  # noqa: E501
         )
     if bag["run_record_fault_class"] != FaultClass.MINER.value:
         errors.append(
@@ -672,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         "--mode",
         choices=("honest", "adversarial"),
         required=True,
-        help="honest: matching digests → tier 1 + score; adversarial: mid-run swap → miner_fault",
+        help="honest: matching digests → tier 1 + score; adversarial: mid-run swap → miner_fault",  # noqa: E501
     )
     parser.add_argument(
         "--offline",

@@ -194,9 +194,7 @@ def canonical_payload_bytes(payload: AttestationPayload) -> bytes:
         },
         "variant": payload.variant,
     }
-    raw = json.dumps(
-        body, separators=(",", ":"), sort_keys=True, ensure_ascii=True
-    )
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True, ensure_ascii=True)
     return raw.encode("utf-8")
 
 

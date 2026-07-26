@@ -588,6 +588,7 @@ def _master_orchestration_driver(
             worker_service=worker_service,
             replication_factor=settings.compute.replication_factor,
         )
+
         def _bundle_lookup(work_unit_id: str):
             if bundle_store is None:
                 return None
