@@ -737,6 +737,7 @@ def create_proxy_app(
     identity_resolver: ValidatorIdentityResolver | None = None,
     allowed_cors_origins: list[str] | None = None,
     readiness_probes: Sequence[ReadinessProbe] = (),
+    constation_router: Any | None = None,
     agent_challenge_attested_routes_enabled: bool = False,
 ) -> FastAPI:
     """Create the public proxy FastAPI app.
@@ -1272,4 +1273,11 @@ def create_proxy_app(
 
     app.state.challenge_registry = challenge_registry
     app.state.miner_upload_verifier = verifier
+
+    # Internal constation infrastructure only (check_*/register/bundle/issue).
+    # Public challenge/answer product surface lives on Prism (proxy /challenges/prism/...).
+    if constation_router is not None:
+        app.include_router(constation_router)
+        app.state.constation_router = constation_router
+
     return app
