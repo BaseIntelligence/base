@@ -92,10 +92,10 @@ def require_execution_backend(
         return
     if backend == LIUM_EXECUTION_BACKEND:
         raise ValueError(
-            f"Unsupported execution backend: {backend}: "
-            "constation bundle required for lium"
+            f"Unsupported execution backend: {backend}: constation bundle required for lium"
         )
     raise ValueError(f"Unsupported execution backend: {backend}")
+
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +181,7 @@ class PrismWorker:
         checkpoint_publisher: CheckpointPublisher | None = None,
         constation_bundle: object | None = None,
     ) -> None:
-        require_execution_backend(
-            execution_backend, constation_bundle=constation_bundle
-        )
+        require_execution_backend(execution_backend, constation_bundle=constation_bundle)
         self.repository = repository
         self.ctx = ctx
         self.execution_backend = execution_backend

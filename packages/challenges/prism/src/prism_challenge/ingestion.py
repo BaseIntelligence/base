@@ -572,8 +572,6 @@ async def _reject_no_score(
     )
 
 
-
-
 __all__ = [
     "DEFAULT_MAX_CONSTATION_ATTEMPTS",
     "IngestionOutcome",

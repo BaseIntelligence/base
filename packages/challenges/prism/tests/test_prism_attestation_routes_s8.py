@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from prism_challenge.app import create_app
@@ -109,12 +108,8 @@ def test_s8_inprocess_register_check_and_nonce_consume(tmp_path: Path) -> None:
             "miner_hotkey": "hk-s8b",
             "pod_id": "pod-s8b",
         }
-        first = client.post(
-            "/internal/v1/constation/check_nonce", headers=headers, json=body
-        )
-        second = client.post(
-            "/internal/v1/constation/check_nonce", headers=headers, json=body
-        )
+        first = client.post("/internal/v1/constation/check_nonce", headers=headers, json=body)
+        second = client.post("/internal/v1/constation/check_nonce", headers=headers, json=body)
         assert first.json() == {"ok": True, "reason": "ok"}
         assert second.json()["ok"] is False
         assert second.json()["reason"] == "already_consumed"

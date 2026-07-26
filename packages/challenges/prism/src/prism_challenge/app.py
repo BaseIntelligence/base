@@ -39,7 +39,6 @@ from .routes import router
 from .weights import get_weights
 
 
-
 def _constation_ingest_kwargs(
     app_settings: PrismSettings,
     result_payload: object,
@@ -103,6 +102,7 @@ def _constation_ingest_kwargs(
     # constation_ok fails without elevating (checkers required → fail closed).
     return {"constation_bundle": bundle}
 
+
 def _test_constation_kwargs(app_settings: PrismSettings, result_payload: object) -> dict:
     """Supply a valid constation bundle only under allow_insecure_signatures (unit tests).
 
@@ -144,7 +144,6 @@ def _test_constation_kwargs(app_settings: PrismSettings, result_payload: object)
         "check_nonce": _ok,
         "verify_constation_signature": lambda _s: _ok(),
     }
-
 
 
 def create_app(

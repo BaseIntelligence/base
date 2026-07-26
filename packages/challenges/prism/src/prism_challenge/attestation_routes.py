@@ -36,7 +36,7 @@ from base.compute.digest_allowlist import (
     DigestRecord,
     ImageVariant,
 )
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from .auth import authenticate_internal
@@ -135,9 +135,7 @@ def ensure_default_constation_services(app: Any, *, ttl: timedelta | None = None
     if getattr(state, "digest_allowlist", None) is None:
         state.digest_allowlist = DigestAllowlist()
     if getattr(state, "attestation_nonce_service", None) is None:
-        state.attestation_nonce_service = AttestationNonceService(
-            ttl=ttl or timedelta(hours=2)
-        )
+        state.attestation_nonce_service = AttestationNonceService(ttl=ttl or timedelta(hours=2))
     if getattr(state, "attestation_answers", None) is None:
         state.attestation_answers = []
 
@@ -224,11 +222,7 @@ def build_attestation_public_router() -> APIRouter:
     ) -> dict[str, Any]:
         settings = getattr(request.app.state, "settings", None)
         base_url = getattr(settings, "constation_base_url", None) if settings else None
-        token = (
-            getattr(settings, "constation_internal_token", None) or ""
-            if settings
-            else ""
-        )
+        token = getattr(settings, "constation_internal_token", None) or "" if settings else ""
         phase_key = phase.strip().lower()
         if phase_key in {"random", "mid"}:
             phase_key = "interval"
@@ -325,9 +319,7 @@ def build_attestation_internal_router() -> APIRouter:
         "/internal/v1/constation/register_digest",
         dependencies=[Depends(authenticate_internal)],
     )
-    async def register_digest(
-        request: Request, body: RegisterDigestBody
-    ) -> dict[str, str]:
+    async def register_digest(request: Request, body: RegisterDigestBody) -> dict[str, str]:
         ensure_default_constation_services(request.app)
         allowlist: DigestAllowlist = request.app.state.digest_allowlist
         record = DigestRecord(
@@ -343,9 +335,7 @@ def build_attestation_internal_router() -> APIRouter:
         "/internal/v1/constation/check_allowlist",
         dependencies=[Depends(authenticate_internal)],
     )
-    async def check_allowlist(
-        request: Request, body: CheckAllowlistBody
-    ) -> dict[str, Any]:
+    async def check_allowlist(request: Request, body: CheckAllowlistBody) -> dict[str, Any]:
         checkers = make_inprocess_checkers(request.app)
         outcome = checkers["check_allowlist"](
             digest=body.digest,
@@ -373,9 +363,7 @@ def build_attestation_internal_router() -> APIRouter:
         "/internal/v1/constation/verify_attestation",
         dependencies=[Depends(authenticate_internal)],
     )
-    async def verify_attestation(
-        request: Request, body: VerifyAttestationBody
-    ) -> dict[str, Any]:
+    async def verify_attestation(request: Request, body: VerifyAttestationBody) -> dict[str, Any]:
         if body.key_hex:
             request.app.state.attestation_verify_key = bytes.fromhex(body.key_hex)
         checkers = make_inprocess_checkers(request.app)

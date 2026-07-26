@@ -217,10 +217,9 @@ def test_s3_missing_bundle_fail_closed_via_http(tmp_path: Path, monkeypatch) -> 
         assert code in {
             "miner_fault:missing_constation_bundle",
             "constation_rejected",
-        } or (
-            isinstance(detail, dict)
-            and "missing_constation" in str(detail.get("code", ""))
-        ), detail
+        } or (isinstance(detail, dict) and "missing_constation" in str(detail.get("code", ""))), (
+            detail
+        )
 
         db_path = tmp_path / "coord.sqlite3"
         conn = sqlite3.connect(db_path)

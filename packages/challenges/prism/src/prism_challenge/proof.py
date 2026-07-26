@@ -186,12 +186,7 @@ def has_attestation(attestation: Any) -> bool:
         return False
     tdx = attestation.get("tdx_quote_b64")
     gpu = attestation.get("gpu_eat_jwt")
-    return (
-        isinstance(tdx, str)
-        and bool(tdx.strip())
-        and isinstance(gpu, str)
-        and bool(gpu.strip())
-    )
+    return isinstance(tdx, str) and bool(tdx.strip()) and isinstance(gpu, str) and bool(gpu.strip())
 
 
 def has_structured_attestation_claim(attestation: Any) -> bool:
@@ -226,9 +221,7 @@ def normalize_attestation_mode(mode: str | None) -> str:
             f"attestation_mode {value!r} is forbidden (no TEE / no independent Lium claim)"
         )
     if value != ATTESTATION_MODE_V1:
-        raise ValueError(
-            f"attestation_mode must be {ATTESTATION_MODE_V1!r}, got {value!r}"
-        )
+        raise ValueError(f"attestation_mode must be {ATTESTATION_MODE_V1!r}, got {value!r}")
     return ATTESTATION_MODE_V1
 
 

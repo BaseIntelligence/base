@@ -242,12 +242,7 @@ async def test_pin_mismatch_without_constation_writes_no_final_score(
 
     from prism_challenge.proof import ExecutionProof
 
-    assert (
-        effective_tier(
-            ExecutionProof.model_validate(proof), pinned_image_digest=PINNED
-        )
-        == 0
-    )
+    assert effective_tier(ExecutionProof.model_validate(proof), pinned_image_digest=PINNED) == 0
 
     outcome = await ingest_work_unit_result(
         worker=app.state.worker,

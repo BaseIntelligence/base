@@ -119,8 +119,8 @@ def _auto_constation_for_legacy_ingestion(
     if "prod_constation" in modname or request.node.get_closest_marker("no_auto_constation"):
         return
 
-    from prism_challenge.constation import CheckOutcome, ConstationBundle
     import prism_challenge.ingestion as ingestion_mod
+    from prism_challenge.constation import CheckOutcome, ConstationBundle
 
     original = ingestion_mod.ingest_work_unit_result
 

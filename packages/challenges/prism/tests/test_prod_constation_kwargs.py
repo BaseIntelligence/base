@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from prism_challenge.app import _constation_ingest_kwargs, _test_constation_kwargs
+from prism_challenge.app import _constation_ingest_kwargs
 from prism_challenge.config import PrismSettings
 from prism_challenge.constation import ConstationBundle, constation_bundle_to_dict
 
@@ -44,9 +44,7 @@ def test_prod_with_bundle_and_checkers() -> None:
         constation_base_url="http://base.test",
         constation_internal_token="tok",
     )
-    kwargs = _constation_ingest_kwargs(
-        settings, {"constation_bundle": _bundle_dict()}
-    )
+    kwargs = _constation_ingest_kwargs(settings, {"constation_bundle": _bundle_dict()})
     assert "constation_bundle" in kwargs
     assert kwargs["check_allowlist"] is not None
     assert kwargs["check_nonce"] is not None

@@ -74,8 +74,22 @@ def test_tier1_claim_requires_constation_ok() -> None:
     assert effective_tier(matching, pinned_image_digest=PINNED) == 0
     assert effective_tier(mismatched, pinned_image_digest=PINNED) == 0
     # constation_ok is the sole elevation predicate.
-    assert effective_tier(matching, pinned_image_digest=PINNED, constation_ok_result=True) == 1
-    assert is_tier_downgraded(matching, pinned_image_digest=PINNED, constation_ok_result=True) is False
+    assert (
+        effective_tier(
+            matching,
+            pinned_image_digest=PINNED,
+            constation_ok_result=True,
+        )
+        == 1
+    )
+    assert (
+        is_tier_downgraded(
+            matching,
+            pinned_image_digest=PINNED,
+            constation_ok_result=True,
+        )
+        is False
+    )
     assert effective_tier(matching, constation_ok_result=False) == 0
     # Digest mismatch is irrelevant when constation_ok is True (digest already gated upstream).
     assert effective_tier(mismatched, constation_ok_result=True) == 1
@@ -127,13 +141,13 @@ def test_sampling_statistics_follow_effective_not_claimed_tier() -> None:
     # Unverified tier-2 claims are sampled at tier-0 rate (fail-closed TEE).
     assert abs(_sampled_fraction(sampler, opaque_t2, n) - 0.10) < _bound(0.10)
     # Honest tier-1 + constation_ok are sampled at their tier-1 rate.
-    assert abs(
-        _sampled_fraction(sampler, honest_t1, n, constation_ok_result=True) - 0.05
-    ) < _bound(0.05)
-    # Without constation_ok, tier-1 claims are effective 0.
-    assert abs(_sampled_fraction(sampler, honest_t1, n, constation_ok_result=False) - 0.10) < _bound(
-        0.10
+    assert abs(_sampled_fraction(sampler, honest_t1, n, constation_ok_result=True) - 0.05) < _bound(
+        0.05
     )
+    # Without constation_ok, tier-1 claims are effective 0.
+    assert abs(
+        _sampled_fraction(sampler, honest_t1, n, constation_ok_result=False) - 0.10
+    ) < _bound(0.10)
     # Unverifiable claims are sampled at the EFFECTIVE (tier-0) rate, NOT the claimed rate.
     assert abs(_sampled_fraction(sampler, fake_t2, n) - 0.10) < _bound(0.10)
     assert abs(_sampled_fraction(sampler, fake_t1, n) - 0.10) < _bound(0.10)

@@ -116,9 +116,7 @@ def evaluate_break_glass(
     entry = _entry(request, fault_reason, admitted=True, detail="infra_fault_admitted")
     if audit_log is not None:
         audit_log.append(entry)
-    return BreakGlassDecision(
-        admitted=True, reason="breakglass_admitted", audit_entry=entry
-    )
+    return BreakGlassDecision(admitted=True, reason="breakglass_admitted", audit_entry=entry)
 
 
 def _entry(

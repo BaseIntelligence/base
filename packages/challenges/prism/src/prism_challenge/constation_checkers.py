@@ -73,9 +73,7 @@ class BaseHttpConstationClient:
     def _post_outcome(self, path: str, body: dict[str, Any]) -> CheckOutcome:
         url = f"{self._base_url}{path}"
         try:
-            with httpx.Client(
-                timeout=self._timeout_s, transport=self._transport
-            ) as client:
+            with httpx.Client(timeout=self._timeout_s, transport=self._transport) as client:
                 response = client.post(url, json=body, headers=self._headers())
                 response.raise_for_status()
                 data = response.json()

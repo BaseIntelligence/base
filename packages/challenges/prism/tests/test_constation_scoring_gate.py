@@ -1,4 +1,4 @@
-"""Wave 4 todos 20–23: attestation_mode, effective_tier via constation_ok, fail-closed, break-glass."""
+"""Wave 4 todos 20–23: attestation_mode, effective_tier, fail-closed, break-glass."""
 
 from __future__ import annotations
 
@@ -338,7 +338,12 @@ def test_constation_result_object_drives_tier() -> None:
         worker_signature=WorkerSignature(worker_pubkey="wk", sig="0xab"),
     )
     allow, nonce, sig = _ok_checkers()
-    ok = constation_ok(_constation_bundle(), check_allowlist=allow, check_nonce=nonce, verify_signature=sig)
+    ok = constation_ok(
+        _constation_bundle(),
+        check_allowlist=allow,
+        check_nonce=nonce,
+        verify_signature=sig,
+    )
     assert ok.ok is True
     assert effective_tier(proof, constation_ok_result=ok) == 1
 
@@ -512,9 +517,7 @@ async def test_infra_fault_constation_unavailable_no_score(
 
 
 @pytest.mark.asyncio
-async def test_revoked_digest_no_score(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_revoked_digest_no_score(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data_dir = _stage_train(tmp_path)
     monkeypatch.setattr(
         "prism_challenge.evaluator.container.DockerExecutor.run",
@@ -562,17 +565,13 @@ def test_breakglass_admits_infra_fault_only() -> None:
         work_unit_id="wu-1",
         fault_code="infra_fault:constation_unavailable",
     )
-    ok = evaluate_break_glass(
-        req, fault_reason="infra_fault:constation_unavailable", audit_log=log
-    )
+    ok = evaluate_break_glass(req, fault_reason="infra_fault:constation_unavailable", audit_log=log)
     assert ok.admitted is True
     assert log.entries and log.entries[0]["admitted"] is True
     assert log.entries[0]["operator_id"] == "ops-alice"
 
     log2 = BreakGlassAuditLog()
-    bad = evaluate_break_glass(
-        req, fault_reason="miner_fault:replayed_nonce", audit_log=log2
-    )
+    bad = evaluate_break_glass(req, fault_reason="miner_fault:replayed_nonce", audit_log=log2)
     assert bad.admitted is False
     assert bad.reason == "breakglass_refused_miner_fault"
     assert log2.entries and log2.entries[0]["admitted"] is False

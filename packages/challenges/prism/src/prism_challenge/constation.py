@@ -217,9 +217,7 @@ def constation_ok(
         variant=bundle.variant,
     )
     if not allow.ok:
-        mapped = _ALLOWLIST_MAP.get(
-            allow.reason, ConstationFailReason.ALLOWLIST_FAILED
-        )
+        mapped = _ALLOWLIST_MAP.get(allow.reason, ConstationFailReason.ALLOWLIST_FAILED)
         return ConstationResult(ok=False, reason=mapped, detail=allow.reason)
 
     nonce = check_nonce(
@@ -318,7 +316,6 @@ def adapt_attestation_verify(verify_result: object) -> CheckOutcome:
     return CheckOutcome(ok=ok, reason=str(reason))
 
 
-
 # --- Fault attribution (todo 22) ---------------------------------------------------------------
 
 #: ConstationFailReason values that are miner-attributable.
@@ -394,7 +391,6 @@ def infra_fault_reason(code: str) -> str:
     return f"infra_fault:{bare}"
 
 
-
 def constation_bundle_to_dict(bundle: ConstationBundle) -> dict[str, object]:
     """Serialize a :class:`ConstationBundle` for wire / result payload embedding."""
     return {
@@ -411,9 +407,7 @@ def constation_bundle_to_dict(bundle: ConstationBundle) -> dict[str, object]:
         "reported_sealed_manifest_hashes": dict(bundle.reported_sealed_manifest_hashes),
         "lium_declared_digest": bundle.lium_declared_digest,
         "constation_gap_budget_seconds": float(bundle.constation_gap_budget_seconds),
-        "constation_observed_max_gap_seconds": float(
-            bundle.constation_observed_max_gap_seconds
-        ),
+        "constation_observed_max_gap_seconds": float(bundle.constation_observed_max_gap_seconds),
     }
 
 
@@ -460,11 +454,8 @@ def constation_bundle_from_dict(raw: object) -> ConstationBundle:
         reported_sealed_manifest_hashes={str(k): str(v) for k, v in rep.items()},
         lium_declared_digest=lium,
         constation_gap_budget_seconds=float(raw["constation_gap_budget_seconds"]),
-        constation_observed_max_gap_seconds=float(
-            raw["constation_observed_max_gap_seconds"]
-        ),
+        constation_observed_max_gap_seconds=float(raw["constation_observed_max_gap_seconds"]),
     )
-
 
 
 __all__ = [

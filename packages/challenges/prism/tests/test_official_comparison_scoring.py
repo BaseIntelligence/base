@@ -153,9 +153,7 @@ def test_official_primary_heldout_overrides_worse_train_bpb() -> None:
     assert result.winner == "a"
     assert result.reason == "primary_heldout"
     # Emission path is now Official-like too (VAL-RESLAB-006): held-out primary wins scalar rank.
-    score_generalizer = score_prequential_bpb(
-        _challenge_manifest(bpb=1.80, heldout_delta=1.20)
-    )
+    score_generalizer = score_prequential_bpb(_challenge_manifest(bpb=1.80, heldout_delta=1.20))
     score_compressor = score_prequential_bpb(_challenge_manifest(bpb=1.00, heldout_delta=0.10))
     assert score_generalizer.final_score > score_compressor.final_score
 
