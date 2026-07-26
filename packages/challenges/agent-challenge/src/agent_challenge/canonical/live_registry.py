@@ -4,11 +4,14 @@ The frozen golden manifest (``golden/dataset-digest.json``) pins each
 Terminal-Bench task by a *bare content digest* (``harbor_registry_ref =
 "sha256:<64hex>"``) with NO repository, so an in-CVM DooD orchestrator cannot
 ``docker pull`` it. For a live smoke E2E a small deterministic subset of task
-images is published to the miner's public Docker Hub namespace as pullable,
-digest-pinned refs and recorded in a SEPARATE side manifest
+images is published to the org GHCR namespace (``ghcr.io/baseintelligence/…``)
+as pullable, digest-pinned refs and recorded in a SEPARATE side manifest
 (``golden/live-registry-refs.json``). That side manifest never touches
 ``dataset-digest.json`` -- the frozen content digests and the canonical
 measurement stay byte-identical.
+
+D6: shipping live refs MUST be GHCR. ``docker.io`` and the retired
+``mathiiss`` namespace are rejected fail-closed at parse time.
 
 Resolution is **opt-in and fail-closed**: with no live manifest configured
 (no explicit path, no env var) callers get NO live refs and fall back to the
@@ -50,6 +53,9 @@ DEFAULT_LIVE_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "golden" / LI
 # and an un-namespaced ``name@sha256`` so only a real registry ref is accepted.
 _PULLABLE_REF_RE = re.compile(r"^(?=[^@]*/)[A-Za-z0-9][\w.\-/:]*@sha256:[0-9a-f]{64}$")
 
+#: Shipping live-registry refs must live under this registry host prefix (D6).
+LIVE_REGISTRY_HOST_PREFIX = "ghcr.io/"
+
 
 class LiveRegistryError(ValueError):
     """The live-registry side manifest is missing, malformed, or not pullable."""
@@ -83,6 +89,32 @@ def assert_pullable_ref(ref: Any, *, what: str = "registry ref") -> str:
     return ref  # type: ignore[return-value]
 
 
+def assert_live_registry_ref(ref: Any, *, what: str = "registry ref") -> str:
+    """Return ``ref`` if it is a GHCR digest-pinned shipping ref (D6), else raise.
+
+    Builds on :func:`assert_pullable_ref`, then rejects ``docker.io``, the
+    retired ``mathiiss`` namespace, and any non-GHCR host so live smoke never
+    pins a Hub image again.
+    """
+
+    pinned = assert_pullable_ref(ref, what=what)
+    lowered = pinned.lower()
+    if "mathiiss" in lowered:
+        raise LiveRegistryError(
+            f"{what} must not use the retired mathiiss namespace (D6), got {pinned!r}"
+        )
+    if lowered.startswith("docker.io/") or lowered.startswith("index.docker.io/"):
+        raise LiveRegistryError(
+            f"{what} must not use docker.io (D6 — GHCR only), got {pinned!r}"
+        )
+    if not lowered.startswith(LIVE_REGISTRY_HOST_PREFIX):
+        raise LiveRegistryError(
+            f"{what} must be a GHCR digest-pinned ref "
+            f"({LIVE_REGISTRY_HOST_PREFIX}…@sha256:<64hex>), got {pinned!r}"
+        )
+    return pinned
+
+
 @dataclass(frozen=True)
 class LiveRegistry:
     """Parsed live-registry side manifest.
@@ -111,7 +143,7 @@ class LiveRegistry:
 
 
 def _ref_from_entry(task_id: str, entry: Any) -> str:
-    """Extract + validate the pullable ref from a manifest task entry."""
+    """Extract + validate the pullable GHCR ref from a manifest task entry."""
 
     if isinstance(entry, str):
         ref = entry
@@ -119,15 +151,16 @@ def _ref_from_entry(task_id: str, entry: Any) -> str:
         ref = entry.get("registry_ref")
     else:
         raise LiveRegistryError(f"live-registry task {task_id!r} is not a string or mapping")
-    return assert_pullable_ref(ref, what=f"live-registry ref for task {task_id!r}")
+    return assert_live_registry_ref(ref, what=f"live-registry ref for task {task_id!r}")
 
 
 def parse_live_registry(data: Mapping[str, Any]) -> LiveRegistry:
     """Parse + validate a live-registry side-manifest document.
 
-    Every task ref must be a pullable ``repo@sha256`` ref (a bare content digest
-    or floating tag is rejected). ``orchestrator_image``, when present, must be
-    pullable too. Task keys are normalized to their bare name.
+    Every task ref must be a GHCR pullable ``repo@sha256`` ref (a bare content
+    digest, floating tag, ``docker.io``, or retired ``mathiiss`` namespace is
+    rejected). ``orchestrator_image``, when present, must be GHCR-pullable too.
+    Task keys are normalized to their bare name.
     """
 
     if not isinstance(data, Mapping):
@@ -143,7 +176,7 @@ def parse_live_registry(data: Mapping[str, Any]) -> LiveRegistry:
 
     orchestrator = data.get("orchestrator_image")
     if orchestrator is not None:
-        orchestrator = assert_pullable_ref(orchestrator, what="orchestrator_image")
+        orchestrator = assert_live_registry_ref(orchestrator, what="orchestrator_image")
 
     return LiveRegistry(orchestrator_image=orchestrator, task_refs=task_refs, raw=dict(data))
 
@@ -203,9 +236,11 @@ __all__ = [
     "DEFAULT_LIVE_REGISTRY_PATH",
     "LIVE_REGISTRY_ENV",
     "LIVE_REGISTRY_FILENAME",
+    "LIVE_REGISTRY_HOST_PREFIX",
     "LIVE_REGISTRY_SCHEMA",
     "LiveRegistry",
     "LiveRegistryError",
+    "assert_live_registry_ref",
     "assert_pullable_ref",
     "is_pullable_ref",
     "load_live_registry",

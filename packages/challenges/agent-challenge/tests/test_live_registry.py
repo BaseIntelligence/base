@@ -4,7 +4,7 @@ The frozen golden manifest (``golden/dataset-digest.json``) pins each
 Terminal-Bench task by a *bare content digest* (``harbor_registry_ref =
 "sha256:<64hex>"``) with NO repository, so an in-CVM DooD orchestrator cannot
 ``docker pull`` it. For a live smoke E2E a small deterministic subset of task
-images is published to a pullable, digest-pinned registry ref and recorded in a
+images is published to a pullable, digest-pinned GHCR ref and recorded in a
 SEPARATE side manifest (``golden/live-registry-refs.json``) so the frozen
 content digests / canonical measurement stay byte-identical.
 
@@ -13,6 +13,8 @@ These tests pin:
     offline/flag-off behavior is byte-identical);
   * every published ref is repository-qualified AND digest-pinned (a bare
     ``sha256:...`` content digest or a floating tag is rejected);
+  * D6: live-registry parse rejects Hub registry hosts and the retired personal
+    namespace; shipped golden is GHCR-only;
   * the shipped side manifest is a strict subset of the frozen golden tasks and
     never mutates ``dataset-digest.json``.
 """
@@ -36,7 +38,12 @@ LIVE_MANIFEST = GOLDEN_DIR / lr.LIVE_REGISTRY_FILENAME
 FROZEN_CANONICAL_CONTENT_DIGEST = "8da006d76bcf59c2af3f36ed4420192d3930bda43683f32d80013a6ee5e7e02d"
 FROZEN_TASK_COUNT = 89
 
-_GOOD_REF = "docker.io/mathiiss/agent-challenge-tb21-x@sha256:" + ("a" * 64)
+_GOOD_REF = "ghcr.io/baseintelligence/agent-challenge-tb21-x@sha256:" + ("a" * 64)
+
+# Forbidden shipping hosts/namespaces (D6). Kept as test inputs only.
+_HUB_REF = "docker.io/library/x@sha256:" + ("a" * 64)
+_RETIRED_NS_REF = "docker.io/mathiiss/agent-challenge-tb21-x@sha256:" + ("a" * 64)
+_OTHER_REG_REF = "quay.io/example/x@sha256:" + ("a" * 64)
 
 
 # --------------------------------------------------------------------------- #
@@ -45,14 +52,15 @@ _GOOD_REF = "docker.io/mathiiss/agent-challenge-tb21-x@sha256:" + ("a" * 64)
 def test_pullable_ref_accepts_repo_digest():
     assert lr.is_pullable_ref(_GOOD_REF)
     assert lr.assert_pullable_ref(_GOOD_REF) == _GOOD_REF
+    assert lr.assert_live_registry_ref(_GOOD_REF) == _GOOD_REF
 
 
 @pytest.mark.parametrize(
     "bad",
     [
         "sha256:" + ("a" * 64),  # bare content digest (the golden behavior) - not pullable
-        "docker.io/mathiiss/x:latest",  # floating tag, not digest-pinned
-        "docker.io/mathiiss/x@sha256:" + ("a" * 63),  # short digest
+        "ghcr.io/baseintelligence/x:latest",  # floating tag, not digest-pinned
+        "ghcr.io/baseintelligence/x@sha256:" + ("a" * 63),  # short digest
         "plainname@sha256:" + ("a" * 64),  # no repository/namespace ('/')
         "",
         123,
@@ -104,6 +112,25 @@ def test_parse_rejects_bare_digest_ref():
         lr.parse_live_registry({"tasks": {"foo": {"registry_ref": "sha256:" + "a" * 64}}})
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _HUB_REF,
+        _RETIRED_NS_REF,
+        _OTHER_REG_REF,
+        "ghcr.io/mathiiss/x@sha256:" + ("a" * 64),
+    ],
+)
+def test_live_registry_ref_rejects_non_ghcr_shipping_hosts(bad):
+    """D6: live shipping refs must be ghcr.io and must not use retired namespaces."""
+    with pytest.raises(lr.LiveRegistryError):
+        lr.assert_live_registry_ref(bad)
+    with pytest.raises(lr.LiveRegistryError):
+        lr.parse_live_registry({"tasks": {"foo": {"registry_ref": bad}}})
+    with pytest.raises(lr.LiveRegistryError):
+        lr.parse_live_registry({"tasks": {}, "orchestrator_image": bad})
+
+
 # --------------------------------------------------------------------------- #
 # task_id resolution (bare + dataset-prefixed)
 # --------------------------------------------------------------------------- #
@@ -128,15 +155,30 @@ def test_shipped_live_manifest_is_valid_and_pullable():
     reg = lr.load_live_registry(LIVE_MANIFEST)
     assert reg.task_refs, "shipped live manifest has no task refs"
     for task_id, ref in reg.task_refs.items():
-        assert lr.is_pullable_ref(ref), (task_id, ref)
+        assert lr.assert_live_registry_ref(ref) == ref, (task_id, ref)
 
 
 def test_shipped_orchestrator_image_is_digest_pinned():
     reg = lr.load_live_registry(LIVE_MANIFEST)
     assert reg.orchestrator_image is not None
-    assert lr.is_pullable_ref(reg.orchestrator_image)
+    assert lr.assert_live_registry_ref(reg.orchestrator_image) == reg.orchestrator_image
     # The deploy path's digest-pin guard accepts it (no bare tag).
     assert c.assert_digest_pinned(reg.orchestrator_image) == reg.orchestrator_image
+    assert reg.orchestrator_image.startswith("ghcr.io/baseintelligence/agent-challenge-canonical@sha256:")
+    digest = reg.orchestrator_image.rsplit("@", 1)[-1]
+    assert digest.startswith("sha256:") and len(digest) == len("sha256:") + 64
+
+
+def test_shipped_live_manifest_has_no_hub_or_retired_namespace():
+    """Golden live-registry product pin must not mention Hub host or retired ns."""
+    text = LIVE_MANIFEST.read_text(encoding="utf-8")
+    assert "docker.io" not in text
+    assert "mathiiss" not in text
+    live = json.loads(text)
+    assert live["namespace"] == "ghcr.io/baseintelligence"
+    assert live["orchestrator_image"].startswith("ghcr.io/baseintelligence/")
+    for task_id, entry in live["tasks"].items():
+        assert entry["registry_ref"].startswith("ghcr.io/baseintelligence/"), task_id
 
 
 def test_shipped_live_subset_is_subset_of_golden_and_small():

@@ -23,7 +23,7 @@ def test_build_default_preparer_threads_live_refs_to_builder(monkeypatch):
 
     monkeypatch.setattr(backend, "TaskContainerBuilder", _SpyBuilder)
 
-    ref = "docker.io/mathiiss/agent-challenge-tb21-foo@sha256:" + ("a" * 64)
+    ref = "ghcr.io/baseintelligence/agent-challenge-tb21-foo@sha256:" + ("a" * 64)
     backend._build_default_preparer(
         task_ids=[],
         cache_root=backend.DEFAULT_CACHE_ROOT,
@@ -60,7 +60,7 @@ def test_build_default_preparer_defaults_to_no_live_refs(monkeypatch):
 
 
 def test_main_resolves_live_refs_from_env(monkeypatch, tmp_path):
-    ref = "docker.io/mathiiss/agent-challenge-tb21-foo@sha256:" + ("b" * 64)
+    ref = "ghcr.io/baseintelligence/agent-challenge-tb21-foo@sha256:" + ("b" * 64)
     manifest = tmp_path / "live-registry-refs.json"
     manifest.write_text(json.dumps({"tasks": {"foo": {"registry_ref": ref}}}), encoding="utf-8")
 

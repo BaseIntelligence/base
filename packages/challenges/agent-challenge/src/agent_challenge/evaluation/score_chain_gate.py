@@ -409,6 +409,11 @@ def admit_production_score_from_chain(
     review_report_data_hex: str | None = None,
     review_domain: str | None = None,
     cached_review_allow: bool = False,
+    # AGATE: residual is bound on review verification outcome (and optionally
+    # envelope). Score admission must pass outcome so package_residual_missing
+    # is not raised when residual lives only on the outcome bag.
+    review_outcome: Mapping[str, Any] | None = None,
+    package_residual: Mapping[str, Any] | None = None,
     # Key-release leg (RA-TLS)
     key_release_grant: Mapping[str, Any] | None = None,
     key_granted_flag: bool = False,
@@ -539,6 +544,8 @@ def admit_production_score_from_chain(
         dual_flags_on=dual_flags_on,
         require_package_residual=bool(dual_flags_on),
         expected_package_tree_sha=plan_tree_sha if dual_flags_on else None,
+        outcome=review_outcome,
+        package_residual=package_residual,
     )
     if not review_decision.may_launch:
         code = review_decision.reason_code
@@ -713,6 +720,8 @@ def admit_production_score_for_eval_result(
     settings_dual_flags_on: bool,
     eval_plan: Mapping[str, Any],
     review_envelope: Mapping[str, Any] | str | bytes | None,
+    review_outcome: Mapping[str, Any] | None = None,
+    package_residual: Mapping[str, Any] | None = None,
     key_release_grant: Mapping[str, Any] | None,
     key_granted_flag: bool,
     score_binding: Mapping[str, Any] | None,
@@ -756,6 +765,8 @@ def admit_production_score_for_eval_result(
     return admit_production_score_from_chain(
         dual_flags_on=settings_dual_flags_on,
         review_envelope=review_envelope,
+        review_outcome=review_outcome,
+        package_residual=package_residual,
         key_release_grant=key_release_grant,
         key_granted_flag=key_granted_flag,
         eval_plan=eval_plan,

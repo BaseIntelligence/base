@@ -26,15 +26,17 @@ from agent_challenge.review import compose as review_compose
 from agent_challenge.selfdeploy import eval as eval_deploy
 
 #: Digest-pinned canonical image used by the live 3-task terminal_bench smoke.
+#: T2: GHCR path + T1 local buildx manifest digest (OPS_REQUIRED: swap to first
+#: published GHCR digest from agent-recipe publish-eval-image.yml).
 LIVE_SMOKE_EVAL_IMAGE = (
-    "docker.io/mathiiss/agent-challenge-canonical@sha256:"
-    "02331f0909f617e333f113be376d353770a673669946bcddaac3c53cbde7c9d8"
+    "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:"
+    "ea399cee1b3c9015024918a6070901e6b7b4bee432c8afe1e7dd40a95547e0bc"
 )
 LIVE_SMOKE_APP_IDENTITY = "agent-challenge-eval-v1"
 LIVE_SMOKE_KEY_RELEASE = "ratls://84.32.70.61:8701"
 
 #: Synthetic review image pin (disjoint service inventory only).
-REVIEW_IMAGE = "docker.io/mathiiss/agent-challenge-review@sha256:" + ("c" * 64)
+REVIEW_IMAGE = "ghcr.io/baseintelligence/agent-challenge-review@sha256:" + ("c" * 64)
 
 #: Live residual local hash (pre-envelope, no guest golden/task bind mounts)
 #: for the smoke inputs above.
@@ -42,8 +44,8 @@ REVIEW_IMAGE = "docker.io/mathiiss/agent-challenge-review@sha256:" + ("c" * 64)
 # list includes the validator server-CA injection names (RA_TLS_SERVER_CA_*). Updated
 # when FAIL-CLOSED server-CA wiring lands so the discriminator still proves the
 # envelope factors (not allowed_envs) are what Phala provision rewrites.
-# Residual pre-envelope hash after RA-TLS server-CA + OPENROUTER_API_KEY allowed_envs lands.
-LIVE_RESIDUAL_NO_ENVELOPE_HASH = "5e33c9be56dc518070045596f1c6d7b31c2d73f7508056f7db726f3ccd6179a3"
+# Residual pre-envelope hash after D6 GHCR-only orchestrator pin (T2).
+LIVE_RESIDUAL_NO_ENVELOPE_HASH = "a4131e778128f5d22052efcab71ed2fdb6d7d5446c5f8141511ed153087a7364"
 
 
 def _live_smoke_compose() -> dict:
@@ -129,7 +131,6 @@ def test_build_eval_deployment_plan_accepts_parity_compose_identity():
         "submission_version": 1,
         "authorizing_review_digest": "ab" * 32,
         "agent_hash": "cd" * 32,
-        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "selected_tasks": [
             {
                 "task_id": "adaptive-rejection-sampler",
@@ -148,6 +149,7 @@ def test_build_eval_deployment_plan_accepts_parity_compose_identity():
             },
         ],
         "k": 1,
+        "n_concurrent": 4,
         "scoring_policy": policy,
         "scoring_policy_digest": eval_wire.scoring_policy_digest(policy),
         "eval_app": {

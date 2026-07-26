@@ -686,6 +686,18 @@ async def _load_review_envelope_for_run(
 ) -> Mapping[str, Any] | str | None:
     """Load receipted review-domain envelope for score-chain re-verify."""
 
+    materials = await _load_review_materials_for_run(session, run)
+    if materials is None:
+        return None
+    return materials.get("envelope")
+
+
+async def _load_review_materials_for_run(
+    session: AsyncSession,
+    run: EvalRun,
+) -> dict[str, Any] | None:
+    """Load envelope + verification outcome (package residual) for score chain."""
+
     submission = await session.scalar(
         select(AgentSubmission).where(AgentSubmission.id == run.submission_id)
     )
@@ -703,9 +715,32 @@ async def _load_review_envelope_for_run(
     ):
         return None
     envelope = assignment.review_report_envelope_json
+    outcome_raw = assignment.review_verification_outcome_json
+    outcome: Mapping[str, Any] | None = None
+    if isinstance(outcome_raw, str) and outcome_raw.strip():
+        try:
+            import json as _json
+
+            parsed = _json.loads(outcome_raw)
+            if isinstance(parsed, dict):
+                outcome = parsed
+        except (TypeError, ValueError):
+            outcome = None
+    elif isinstance(outcome_raw, dict):
+        outcome = outcome_raw
+    residual = None
+    if isinstance(outcome, Mapping):
+        pr = outcome.get("package_residual")
+        if isinstance(pr, dict):
+            residual = pr
+    env_out: Mapping[str, Any] | str | None = None
     if isinstance(envelope, str) and envelope:
-        return envelope
-    return None
+        env_out = envelope
+    elif isinstance(envelope, dict):
+        env_out = envelope
+    if env_out is None and residual is None and outcome is None:
+        return None
+    return {"envelope": env_out, "outcome": outcome, "package_residual": residual}
 
 
 async def _run_gate_with_deadline(
@@ -719,6 +754,8 @@ async def _run_gate_with_deadline(
     deadline_seconds: float,
     dual_flags_on: bool = False,
     review_envelope: Mapping[str, Any] | str | bytes | None = None,
+    review_outcome: Mapping[str, Any] | None = None,
+    package_residual: Mapping[str, Any] | None = None,
     key_release_grant: Mapping[str, Any] | None = None,
     agent_llm_kwargs: Mapping[str, Any] | None = None,
     settings: ChallengeSettings | None = None,
@@ -756,6 +793,8 @@ async def _run_gate_with_deadline(
                 settings_dual_flags_on=True,
                 eval_plan=plan,
                 review_envelope=review_envelope,
+                review_outcome=review_outcome,
+                package_residual=package_residual,
                 key_release_grant=key_release_grant,
                 key_granted_flag=key_granted,
                 score_binding=binding,
@@ -892,8 +931,14 @@ async def process_direct_eval_result(
     review_envelope: Mapping[str, Any] | str | None = None
     key_release_grant: Mapping[str, Any] | None = None
     agent_llm_kwargs: dict[str, Any] | None = None
+    review_outcome: Mapping[str, Any] | None = None
+    package_residual: Mapping[str, Any] | None = None
     if dual_flags_on:
-        review_envelope = await _load_review_envelope_for_run(session, current)
+        materials = await _load_review_materials_for_run(session, current)
+        if materials is not None:
+            review_envelope = materials.get("envelope")  # type: ignore[assignment]
+            review_outcome = materials.get("outcome")  # type: ignore[assignment]
+            package_residual = materials.get("package_residual")  # type: ignore[assignment]
         key_release_grant = _key_release_grant_from_result(
             plan=plan,
             validated=validated,
@@ -931,6 +976,8 @@ async def process_direct_eval_result(
                 deadline_seconds=settings.eval_result_verifier_deadline_seconds,
                 dual_flags_on=dual_flags_on,
                 review_envelope=review_envelope,
+                review_outcome=review_outcome,
+                package_residual=package_residual,
                 key_release_grant=key_release_grant,
                 agent_llm_kwargs=agent_llm_kwargs,
                 settings=settings,
