@@ -385,7 +385,9 @@ def test_run_concurrent_loader_probe_engine_api(
             return 200, [
                 {
                     "Id": "sha256:orch",
-                    "RepoTags": ["docker.io/mathiiss/agent-challenge-canonical@sha256:deadbeef"],
+                    "RepoTags": [
+                        "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:deadbeef"
+                    ],
                 }
             ]
         if method == "POST" and path.startswith("/containers/create"):

@@ -17,31 +17,34 @@ from agent_challenge.canonical import build as cbuild
 
 def test_repository_of_strips_tag_keeps_namespace():
     assert (
-        cbuild.repository_of("docker.io/mathiiss/agent-challenge-canonical:live")
-        == "docker.io/mathiiss/agent-challenge-canonical"
+        cbuild.repository_of("ghcr.io/baseintelligence/agent-challenge-canonical:live")
+        == "ghcr.io/baseintelligence/agent-challenge-canonical"
     )
     # No tag -> unchanged.
     assert (
-        cbuild.repository_of("docker.io/mathiiss/agent-challenge-canonical")
-        == "docker.io/mathiiss/agent-challenge-canonical"
+        cbuild.repository_of("ghcr.io/baseintelligence/agent-challenge-canonical")
+        == "ghcr.io/baseintelligence/agent-challenge-canonical"
     )
     # A digest ref -> the repository component only.
-    assert cbuild.repository_of("docker.io/mathiiss/x@sha256:" + "a" * 64) == "docker.io/mathiiss/x"
+    assert (
+        cbuild.repository_of("ghcr.io/baseintelligence/x@sha256:" + "a" * 64)
+        == "ghcr.io/baseintelligence/x"
+    )
 
 
 def test_pushed_image_ref_is_repo_at_digest():
     pushed = cbuild.PushedImage(
-        repository="docker.io/mathiiss/agent-challenge-canonical",
+        repository="ghcr.io/baseintelligence/agent-challenge-canonical",
         digest="sha256:" + "a" * 64,
     )
-    assert pushed.ref == "docker.io/mathiiss/agent-challenge-canonical@sha256:" + "a" * 64
+    assert pushed.ref == "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:" + "a" * 64
     # It is digest-pinned per the compose guard (no bare tag).
     assert cbuild.DIGEST_PIN_RE.search(pushed.ref)
 
 
 def test_build_push_argv_is_reproducible_registry_push():
     argv = cbuild.build_push_argv(
-        image_name="docker.io/mathiiss/agent-challenge-canonical:live",
+        image_name="ghcr.io/baseintelligence/agent-challenge-canonical:live",
         dockerfile="/repo/docker/canonical/Dockerfile",
         context="/repo",
         metadata_path="/tmp/meta.json",
@@ -56,7 +59,7 @@ def test_build_push_argv_is_reproducible_registry_push():
     # Registry push with reproducible layer-timestamp rewrite.
     out = argv[argv.index("--output") + 1]
     assert "type=image" in out
-    assert "name=docker.io/mathiiss/agent-challenge-canonical:live" in out
+    assert "name=ghcr.io/baseintelligence/agent-challenge-canonical:live" in out
     assert "push=true" in out
     assert "rewrite-timestamp=true" in out
 
@@ -70,7 +73,7 @@ def test_build_and_push_image_returns_pullable_digest(tmp_path):
         meta_path = argv[meta_idx + 1]
         with open(meta_path, "w", encoding="utf-8") as fh:
             json.dump(
-                {"containerimage.digest": digest, "image.name": "docker.io/mathiiss/x:live"},
+                {"containerimage.digest": digest, "image.name": "ghcr.io/baseintelligence/x:live"},
                 fh,
             )
 
@@ -82,12 +85,12 @@ def test_build_and_push_image_returns_pullable_digest(tmp_path):
         return _P()
 
     pushed = cbuild.build_and_push_image(
-        image_name="docker.io/mathiiss/x:live",
+        image_name="ghcr.io/baseintelligence/x:live",
         runner=fake_runner,
         context=str(tmp_path),
         dockerfile=str(cbuild.CANONICAL_DOCKERFILE),
     )
-    assert pushed.ref == "docker.io/mathiiss/x@" + digest
+    assert pushed.ref == "ghcr.io/baseintelligence/x@" + digest
     assert cbuild.assert_pullable(pushed.ref) == pushed.ref
 
 
@@ -106,7 +109,7 @@ def test_build_and_push_image_raises_on_missing_digest(tmp_path):
 
     with pytest.raises(RuntimeError):
         cbuild.build_and_push_image(
-            image_name="docker.io/mathiiss/x:live",
+            image_name="ghcr.io/baseintelligence/x:live",
             runner=fake_runner,
             context=str(tmp_path),
         )
@@ -123,7 +126,7 @@ def test_build_and_push_image_raises_on_build_failure(tmp_path):
 
     with pytest.raises(RuntimeError, match="push"):
         cbuild.build_and_push_image(
-            image_name="docker.io/mathiiss/x:live",
+            image_name="ghcr.io/baseintelligence/x:live",
             runner=fake_runner,
             context=str(tmp_path),
         )

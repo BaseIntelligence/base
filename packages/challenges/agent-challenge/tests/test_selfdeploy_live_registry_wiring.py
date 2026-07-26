@@ -16,7 +16,7 @@ from agent_challenge.canonical import compose as c
 from agent_challenge.canonical import live_registry as lr
 from agent_challenge.selfdeploy import plan as p
 
-PULLABLE = "docker.io/mathiiss/agent-challenge-canonical@sha256:" + ("a" * 64)
+PULLABLE = "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:" + ("a" * 64)
 KEY_URL = "https://validator.example/key-release"
 
 

@@ -507,8 +507,8 @@ def _stub_eval_plan(**overrides: Any) -> dict[str, Any]:
             },
         ],
         "k": 1,
+        "n_concurrent": 4,
         "agent_hash": "f" * 64,
-        "package_tree_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "scoring_policy": {
             "schema_version": 1,
             "per_task_aggregation": "mean",
@@ -516,7 +516,7 @@ def _stub_eval_plan(**overrides: Any) -> dict[str, Any]:
         },
         "eval_app": {
             "app_identity": "agent-challenge-eval-v1",
-            "image_ref": "docker.io/mathiiss/agent-challenge-canonical@sha256:" + "d" * 64,
+            "image_ref": "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:" + "d" * 64,
             "compose_hash": "e" * 64,
             "measurement": {
                 "mrtd": "1" * 96,

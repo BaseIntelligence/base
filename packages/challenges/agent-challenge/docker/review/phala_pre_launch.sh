@@ -59,7 +59,7 @@ echo "Starting login process..."
 # Check if Docker credentials exist
 if [[ -n "$DSTACK_DOCKER_USERNAME" && -n "$DSTACK_DOCKER_PASSWORD" ]]; then
     echo "Docker credentials found"
-    DOCKER_REGISTRY_TARGET="${DSTACK_DOCKER_REGISTRY:-docker.io}"
+    DOCKER_REGISTRY_TARGET="${DSTACK_DOCKER_REGISTRY:-ghcr.io}"
     echo "Target Docker registry: $DOCKER_REGISTRY_TARGET"
 
     # Check if already logged in

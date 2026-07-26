@@ -20,7 +20,7 @@ from pathlib import Path
 from agent_challenge.evaluation.own_runner import container_builder as cb
 from agent_challenge.evaluation.own_runner.taskdefs import ParsedTask, parse_task
 
-_LIVE_REF = "docker.io/mathiiss/agent-challenge-tb21-foo@sha256:" + ("a" * 64)
+_LIVE_REF = "ghcr.io/baseintelligence/agent-challenge-tb21-foo@sha256:" + ("a" * 64)
 
 
 def _write_task(root: Path, *, docker_image: str | None) -> ParsedTask:
