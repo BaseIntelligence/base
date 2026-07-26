@@ -114,9 +114,7 @@ def test_probe_default_settings_paths_honest_when_absent() -> None:
     assert d["emission_changed"] is False
     if d["status"] == "BLOCKED":
         assert d["reasons"]
-        assert "BLOCKED_with_reason" in d["status_label"] or d["status_label"].startswith(
-            "BLOCKED"
-        )
+        assert "BLOCKED_with_reason" in d["status_label"] or d["status_label"].startswith("BLOCKED")
     # Never invent scores / never claim full 100BT train ran.
     assert d.get("full_scale_train_executed") is False
     assert "invented_metrics" not in d or d.get("invented_metrics") is False

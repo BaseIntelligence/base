@@ -518,9 +518,7 @@ def probe_full_scale_readiness(
     reasons: list[str] = []
     checks: dict[str, bool] = {}
 
-    ok_train, reason_train = _path_ready(
-        train_p, label="train", require_manifest=require_manifest
-    )
+    ok_train, reason_train = _path_ready(train_p, label="train", require_manifest=require_manifest)
     checks["train_mount"] = ok_train
     if reason_train:
         reasons.append(reason_train)

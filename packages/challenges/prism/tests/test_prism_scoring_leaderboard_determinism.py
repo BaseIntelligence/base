@@ -68,12 +68,8 @@ def test_scoring_leaderboard_orders_by_emission_rank_even_against_commit_time() 
     # score committed earlier: the primary axis is emission final_score, not commit time.
     from prism_challenge.evaluator.scoring import heldout_to_primary_score
 
-    worse_early = _row(
-        "worse-heldout", heldout_to_primary_score(0.1), "2024-01-01T00:00:00+00:00"
-    )
-    better_late = _row(
-        "better-heldout", heldout_to_primary_score(1.0), "2024-01-02T00:00:00+00:00"
-    )
+    worse_early = _row("worse-heldout", heldout_to_primary_score(0.1), "2024-01-01T00:00:00+00:00")
+    better_late = _row("better-heldout", heldout_to_primary_score(1.0), "2024-01-02T00:00:00+00:00")
     ranked = rank_leaderboard([worse_early, better_late])
     assert [r.submission_id for r in ranked] == ["better-heldout", "worse-heldout"]
 

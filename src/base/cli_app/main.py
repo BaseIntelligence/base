@@ -549,6 +549,7 @@ def _master_orchestration_driver(
     *,
     worker_service: WorkerCoordinationService | None = None,
     worker_assignment_service: WorkerAssignmentService | None = None,
+    bundle_store: Any | None = None,
 ) -> MasterOrchestrationDriver:
     """Build the live master orchestration driver (architecture.md sec 4).
 
@@ -587,12 +588,19 @@ def _master_orchestration_driver(
             worker_service=worker_service,
             replication_factor=settings.compute.replication_factor,
         )
+
+        def _bundle_lookup(work_unit_id: str):
+            if bundle_store is None:
+                return None
+            return bundle_store.get(work_unit_id)
+
         worker_reconciler = WorkerReconciliationService(
             session_factory,
             result_forwarder=HttpChallengeResultForwarder(
                 registry,
                 timeout_seconds=settings.master.challenge_timeout_seconds,
                 retries=settings.master.challenge_retries,
+                bundle_lookup=_bundle_lookup if bundle_store is not None else None,
             ),
         )
     return MasterOrchestrationDriver(
@@ -1136,6 +1144,34 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     # Live autonomy: the orchestration driver bridges challenge pending work into
     # work_assignments, runs balanced assignment + the full reassignment pass,
     # and folds retry-exhausted units, all on a Settings-driven interval.
+    from datetime import timedelta
+
+    from base.master.constation.allowlist_repository import DigestAllowlistRepository
+    from base.master.constation.bundle_store import ConstationBundleStore
+    from base.master.constation.nonce_repository import DurableAttestationNonceService
+    from base.master.constation.routes import build_constation_router
+
+    constation_bundle_store = ConstationBundleStore()
+    constation_allowlist_repo = DigestAllowlistRepository(session_factory)
+    constation_nonce_service = DurableAttestationNonceService(
+        session_factory, ttl=timedelta(hours=2)
+    )
+    # Internal token for master constation check_*/issue/register/bundle.
+    # Reuse admin token when present so ops and prism can share one secret.
+    constation_internal_token = (
+        read_secret(
+            getattr(settings.security, "admin_token", None),
+            getattr(settings.security, "admin_token_file", None),
+        )
+        or "constation-internal"
+    )
+    constation_router = build_constation_router(
+        allowlist_repo=constation_allowlist_repo,
+        nonce_service=constation_nonce_service,
+        bundle_store=constation_bundle_store,
+        internal_token=str(constation_internal_token),
+    )
+
     orchestration_driver = _master_orchestration_driver(
         settings,
         session_factory,
@@ -1143,6 +1179,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         validator_service,
         worker_service=worker_service,
         worker_assignment_service=worker_assignment_service,
+        bundle_store=constation_bundle_store,
     )
     # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
     # master reconcile loop turns every ACTIVE registry challenge into a running
@@ -1217,6 +1254,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         agent_challenge_attested_routes_enabled=(
             settings.master.agent_challenge_attested_routes_enabled
         ),
+        constation_router=constation_router,
     )
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")

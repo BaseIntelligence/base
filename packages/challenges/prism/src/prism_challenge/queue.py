@@ -56,7 +56,46 @@ DEFAULT_REVIEW_RULES = (
 CONTAINER_EXECUTION_BACKENDS = frozenset(
     {"base_container", "base_gpu", "container_gpu", "docker_gpu"}
 )
+#: Always-on backends (no constation bundle required at worker construction).
 SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
+#: Lium is gated: permitted only when a full constation bundle is present (todo 19).
+LIUM_EXECUTION_BACKEND = "lium"
+GATED_EXECUTION_BACKENDS = frozenset({LIUM_EXECUTION_BACKEND})
+
+
+def is_execution_backend_supported(
+    backend: str,
+    *,
+    constation_bundle: object | None = None,
+) -> bool:
+    """Whether ``backend`` may be used under the current constation gate.
+
+    Container backends (``base_gpu``, …) are always allowed. ``lium`` is allowed
+    **only** when a full constation bundle object is supplied — bare Lium without
+    a bundle stays rejected. This does not evaluate ``constation_ok``; that is the
+    ingestion elevation path (todos 21–22).
+    """
+    if backend in SUPPORTED_EXECUTION_BACKENDS:
+        return True
+    if backend == LIUM_EXECUTION_BACKEND:
+        return constation_bundle is not None
+    return False
+
+
+def require_execution_backend(
+    backend: str,
+    *,
+    constation_bundle: object | None = None,
+) -> None:
+    """Raise ``ValueError`` when ``backend`` is not permitted under the gate."""
+    if is_execution_backend_supported(backend, constation_bundle=constation_bundle):
+        return
+    if backend == LIUM_EXECUTION_BACKEND:
+        raise ValueError(
+            f"Unsupported execution backend: {backend}: constation bundle required for lium"
+        )
+    raise ValueError(f"Unsupported execution backend: {backend}")
+
 
 logger = logging.getLogger(__name__)
 
@@ -140,15 +179,16 @@ class PrismWorker:
         settings: PrismSettings | None = None,
         evaluator_factory: EvaluatorFactory | None = None,
         checkpoint_publisher: CheckpointPublisher | None = None,
+        constation_bundle: object | None = None,
     ) -> None:
-        if execution_backend not in SUPPORTED_EXECUTION_BACKENDS:
-            raise ValueError(f"Unsupported execution backend: {execution_backend}")
+        require_execution_backend(execution_backend, constation_bundle=constation_bundle)
         self.repository = repository
         self.ctx = ctx
         self.execution_backend = execution_backend
         self.settings = settings or PrismSettings()
         self._evaluator_factory = evaluator_factory or _default_evaluator_factory
         self._checkpoint_publisher = checkpoint_publisher
+        self._constation_bundle = constation_bundle
 
     async def process_next(self) -> str | None:
         submission = await self.repository.claim_next()
@@ -262,7 +302,10 @@ class PrismWorker:
         repeated (the honest run is deterministic, so an honest worker's hash reproduces). Returns
         ``None`` on any replay failure, resolving the audit inconclusive rather than confirming it.
         """
-        if self.execution_backend not in CONTAINER_EXECUTION_BACKENDS:
+        # Lium runs are miner-side; validator audit replay uses the same container path.
+        if self.execution_backend not in CONTAINER_EXECUTION_BACKENDS and (
+            self.execution_backend != LIUM_EXECUTION_BACKEND
+        ):
             return None
         submission = await self.repository.submission_execution_row(submission_id)
         if submission is None:
@@ -351,7 +394,10 @@ class PrismWorker:
         metadata = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
         hotkey = str(submission.get("hotkey") or "")
         code_hash = str(submission.get("code_hash") or sha256(code.encode()).hexdigest())
-        if self.execution_backend in CONTAINER_EXECUTION_BACKENDS:
+        if (
+            self.execution_backend in CONTAINER_EXECUTION_BACKENDS
+            or self.execution_backend == LIUM_EXECUTION_BACKEND
+        ):
             return await self._process_container(
                 submission_id,
                 code,

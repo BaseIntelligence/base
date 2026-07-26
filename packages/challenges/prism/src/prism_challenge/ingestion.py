@@ -35,12 +35,35 @@ from typing import Any
 
 from .audit import AuditSampler, effective_tier
 from .auth import verify_hotkey_signature
+from .breakglass import (
+    BreakGlassAuditLog,
+    BreakGlassRequest,
+    evaluate_break_glass,
+    fault_class_of,
+)
+from .constation import (
+    INFRA_FAULT_CONSTATION_UNAVAILABLE,
+    INFRA_FAULT_RETRY_EXHAUSTED,
+    AllowlistChecker,
+    ConstationBundle,
+    ConstationResult,
+    NonceChecker,
+    classify_constation_fault,
+    constation_ok,
+    infra_fault_reason,
+    miner_fault_reason,
+)
+from .constation import (
+    SignatureVerifier as ConstationSignatureVerifier,
+)
 from .plausibility import check_manifest_plausibility
 from .proof import (
+    ATTESTATION_MODE_V1,
     EXECUTION_PROOF_VERSION,
     MANIFEST_PAYLOAD_KEY,
     PROOF_PAYLOAD_KEY,
     ExecutionProof,
+    attestation_mode_of,
     compute_manifest_sha256,
     verify_execution_proof,
 )
@@ -50,6 +73,9 @@ logger = logging.getLogger(__name__)
 
 #: A verified 64-char lowercase-hex manifest digest (VAL-PRISM-018).
 _MANIFEST_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: Bounded retry before discarding an infra-fault run (todo 22).
+DEFAULT_MAX_CONSTATION_ATTEMPTS = 3
 
 SignatureVerifier = Callable[[str, bytes, str], bool]
 
@@ -100,7 +126,7 @@ class ResultIngestionError(Exception):
 class IngestionOutcome:
     """The observable outcome of ingesting one forwarded result."""
 
-    status: str  # "accepted" | "conflict"
+    status: str  # "accepted" | "conflict" | "rejected"
     work_unit_id: str
     submission_id: str
     claimed_tier: int
@@ -112,6 +138,9 @@ class IngestionOutcome:
     audit_sampled: bool | None = None
     audit_unit_id: str | None = None
     reason: str | None = None
+    attestation_mode: str | None = None
+    break_glass_admitted: bool = False
+    score_written: bool = False
 
     def to_response(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -124,6 +153,8 @@ class IngestionOutcome:
             "idempotent": self.idempotent,
             "finalized": self.finalized,
             "submission_status": self.submission_status,
+            "score_written": self.score_written,
+            "break_glass_admitted": self.break_glass_admitted,
         }
         if self.audit_sampled is not None:
             payload["audit_sampled"] = self.audit_sampled
@@ -131,6 +162,8 @@ class IngestionOutcome:
             payload["audit_unit_id"] = self.audit_unit_id
         if self.reason is not None:
             payload["reason"] = self.reason
+        if self.attestation_mode is not None:
+            payload["attestation_mode"] = self.attestation_mode
         return payload
 
 
@@ -204,22 +237,33 @@ async def ingest_work_unit_result(
     pinned_image_digest: str | None = None,
     audit_sampler: AuditSampler | None = None,
     verify: SignatureVerifier = verify_hotkey_signature,
+    constation_bundle: ConstationBundle | None = None,
+    check_allowlist: AllowlistChecker | None = None,
+    check_nonce: NonceChecker | None = None,
+    verify_constation_signature: ConstationSignatureVerifier | None = None,
+    constation_infra_fault: str | None = None,
+    constation_attempt: int = 1,
+    max_constation_attempts: int = DEFAULT_MAX_CONSTATION_ATTEMPTS,
+    break_glass: BreakGlassRequest | None = None,
+    break_glass_audit_log: BreakGlassAuditLog | None = None,
 ) -> IngestionOutcome:
-    """Verify a forwarded worker result and finalize the submission idempotently.
+    """Verify a forwarded worker result and finalize under strict fail-closed constation (P1).
 
     ``work_unit_id`` is prism's stable unit id (``== submission_id``). Verification (shape ->
     integrity) runs BEFORE any scoring; a rejected result raises :class:`ResultIngestionError` and
-    leaves the submission untouched (eligible for retry). A verified first delivery is then run
-    through the plausibility gate (architecture.md 3.5; VAL-PRISM-009): an implausible manifest
-    raises :class:`~prism_challenge.plausibility.PlausibilityError` (a reason DISTINCT from the
-    proof-verification reasons) and is never scored, while a plausible manifest passes through
-    UNCHANGED and finalizes via the CAS-guarded worker path. A duplicate is an idempotent no-op and
-    a conflicting redelivery for an already-accepted unit is refused so the stored score/leaderboard
-    is never mutated.
+    leaves the submission untouched (eligible for retry).
 
-    Effective tier uses IMAGE_PIN only (max tier 1). Claimed attestation fields never elevate and
-    never block score finalization (Prism has no TEE-required scoring path).
+    **P1 fail-closed (todo 22):** no valid constation bundle ⇒ **no** ``final_score`` row is
+    written at all. Failures carry ``miner_fault:*`` or ``infra_fault:*`` reason codes.
+    Infra-fault runs may be admitted only via an audited operator break-glass (todo 23);
+    miner-fault runs can never be override-admitted. Bounded retry applies to infra faults
+    before discard.
+
+    Effective tier is granted only via ``constation_ok`` (M14 / todo 21); max tier is 1.
+    Claimed attestation / TEE fields never elevate. Self-reported ``PRISM_IMAGE_DIGEST`` is
+    telemetry only.
     """
+    del submission_ref  # reserved for future cross-checks
 
     if not isinstance(result, Mapping):
         raise ResultIngestionError("result_malformed", "result must be an object")
@@ -229,15 +273,11 @@ async def ingest_work_unit_result(
     manifest = raw_manifest if isinstance(raw_manifest, Mapping) else None
     verify_proof_integrity(proof, unit_id=work_unit_id, manifest=manifest, verify=verify)
 
-    tier = effective_tier(proof, pinned_image_digest=pinned_image_digest)
     claimed_tier = int(proof.tier)
-    downgraded = claimed_tier != tier
     submission_id = work_unit_id
-    # Replication at acceptance (R=1 degraded or R=2 reconciled), forwarded by base for
-    # observability. It never affects audit eligibility: R=1 results are audited at their
-    # effective-tier rate exactly like R=2 ones (VAL-PRISM-026).
     replication = _as_int(result.get("replication"), 2)
     repository = worker.repository
+    att_mode = attestation_mode_of(proof) or ATTESTATION_MODE_V1
 
     existing = await repository.get_work_unit_result(work_unit_id)
     if existing is not None:
@@ -248,11 +288,13 @@ async def ingest_work_unit_result(
                 work_unit_id=work_unit_id,
                 submission_id=submission_id,
                 claimed_tier=_as_int(existing.get("claimed_tier"), claimed_tier),
-                effective_tier=_as_int(existing.get("effective_tier"), tier),
-                tier_downgraded=bool(existing.get("tier_downgraded", downgraded)),
+                effective_tier=_as_int(existing.get("effective_tier"), 0),
+                tier_downgraded=bool(existing.get("tier_downgraded", True)),
                 idempotent=True,
                 finalized=False,
                 submission_status=await repository.submission_status(submission_id),
+                attestation_mode=att_mode,
+                score_written=True,
             )
         logger.warning(
             "rejecting conflicting result delivery for finalized work unit %s "
@@ -266,13 +308,80 @@ async def ingest_work_unit_result(
             work_unit_id=work_unit_id,
             submission_id=submission_id,
             claimed_tier=claimed_tier,
-            effective_tier=tier,
-            tier_downgraded=downgraded,
+            effective_tier=0,
+            tier_downgraded=True,
             idempotent=False,
             finalized=False,
             submission_status=await repository.submission_status(submission_id),
             reason="manifest_conflict",
+            attestation_mode=att_mode,
+            score_written=True,
         )
+
+    # --- Constation gate (P1) -----------------------------------------------------------------
+    gate = _evaluate_constation_gate(
+        bundle=constation_bundle,
+        check_allowlist=check_allowlist,
+        check_nonce=check_nonce,
+        verify_constation_signature=verify_constation_signature,
+        constation_infra_fault=constation_infra_fault,
+        constation_attempt=constation_attempt,
+        max_constation_attempts=max_constation_attempts,
+    )
+    break_glass_admitted = False
+    if not gate.admit:
+        if gate.retryable:
+            raise ResultIngestionError(
+                gate.reason or "infra_fault:constation_retry",
+                gate.message or "constation infra fault; retryable",
+            )
+        # Optional break-glass for infra_fault only.
+        if break_glass is not None and fault_class_of(gate.reason or "") == "infra_fault":
+            decision = evaluate_break_glass(
+                break_glass,
+                fault_reason=gate.reason or infra_fault_reason(INFRA_FAULT_CONSTATION_UNAVAILABLE),
+                audit_log=break_glass_audit_log,
+            )
+            if decision.admitted:
+                break_glass_admitted = True
+                logger.warning(
+                    "break-glass admitted infra-fault run %s by operator %s",
+                    work_unit_id,
+                    break_glass.operator_id,
+                )
+            else:
+                return await _reject_no_score(
+                    work_unit_id=work_unit_id,
+                    submission_id=submission_id,
+                    claimed_tier=claimed_tier,
+                    reason=gate.reason or miner_fault_reason("missing_constation_bundle"),
+                    attestation_mode=att_mode,
+                    repository=repository,
+                )
+        else:
+            if break_glass is not None and fault_class_of(gate.reason or "") == "miner_fault":
+                # Explicit refuse path for attempted miner_fault override (todo 23).
+                evaluate_break_glass(
+                    break_glass,
+                    fault_reason=gate.reason or miner_fault_reason("unknown"),
+                    audit_log=break_glass_audit_log,
+                )
+            return await _reject_no_score(
+                work_unit_id=work_unit_id,
+                submission_id=submission_id,
+                claimed_tier=claimed_tier,
+                reason=gate.reason or miner_fault_reason("missing_constation_bundle"),
+                attestation_mode=att_mode,
+                repository=repository,
+            )
+
+    # Break-glass admits a score at tier 0 only — elevation still requires real constation_ok.
+    tier = effective_tier(
+        proof,
+        pinned_image_digest=pinned_image_digest,
+        constation_ok_result=bool(gate.constation_ok) and not break_glass_admitted,
+    )
+    downgraded = claimed_tier != tier
 
     if downgraded:
         logger.warning(
@@ -289,8 +398,6 @@ async def ingest_work_unit_result(
         )
 
     if worker.settings.worker_plane.enabled:
-        # Worker plane: finalize from the forwarded, verified+reconciled manifest WITHOUT
-        # re-executing the evaluator (the heavy GPU work already ran on the miner-funded worker).
         if manifest is None:
             raise ResultIngestionError(
                 "manifest_missing",
@@ -302,15 +409,11 @@ async def ingest_work_unit_result(
                 dict(manifest),
             )
         except WorkerFinalizationError as exc:
-            # An internal/transient derivation failure is NOT a clean finalize: nothing is recorded
-            # (so a redelivery is genuinely retried, not idempotent-skipped) and the submission was
-            # reverted to pending. Surface it with a distinct, retryable reason.
             raise ResultIngestionError(
                 "finalization_failed",
                 f"worker-plane finalization failed transiently and is retryable: {exc}",
             ) from exc
     else:
-        # Flag OFF: legacy in-process re-execution finalization, byte-for-byte unchanged.
         result_id = await worker.process_submission(submission_id)
     submission_status = await repository.submission_status(submission_id)
     await repository.record_work_unit_result(
@@ -326,10 +429,6 @@ async def ingest_work_unit_result(
     audit_unit_id: str | None = None
     if audit_sampler is not None:
         audit_sampled = audit_sampler.should_sample(work_unit_id=work_unit_id, effective_tier=tier)
-        # A sampled accepted result gets a validator audit unit on the existing dispatch path with a
-        # DISTINCT id; the audited submission is NOT reverted to pending (VAL-PRISM-012). R=1
-        # (replication-degraded) results are sampled and audited at their effective-tier rate just
-        # like R=2-reconciled ones -- they are never exempted (VAL-PRISM-026).
         if audit_sampled:
             audit_unit_id = await repository.create_audit_unit(
                 submission_id=submission_id,
@@ -350,10 +449,131 @@ async def ingest_work_unit_result(
         submission_status=submission_status,
         audit_sampled=audit_sampled,
         audit_unit_id=audit_unit_id,
+        attestation_mode=att_mode,
+        break_glass_admitted=break_glass_admitted,
+        score_written=result_id is not None,
+        reason=gate.reason if break_glass_admitted else None,
+    )
+
+
+@dataclass(frozen=True)
+class _ConstationGate:
+    admit: bool
+    constation_ok: bool
+    reason: str | None = None
+    message: str | None = None
+    retryable: bool = False
+
+
+def _evaluate_constation_gate(
+    *,
+    bundle: ConstationBundle | None,
+    check_allowlist: AllowlistChecker | None,
+    check_nonce: NonceChecker | None,
+    verify_constation_signature: ConstationSignatureVerifier | None,
+    constation_infra_fault: str | None,
+    constation_attempt: int,
+    max_constation_attempts: int,
+) -> _ConstationGate:
+    """Decide whether scoring may proceed under P1 fail-closed policy."""
+    if constation_infra_fault:
+        reason = infra_fault_reason(constation_infra_fault)
+        if constation_attempt < max_constation_attempts:
+            return _ConstationGate(
+                admit=False,
+                constation_ok=False,
+                reason=reason,
+                message=f"infra fault attempt {constation_attempt}/{max_constation_attempts}",
+                retryable=True,
+            )
+        return _ConstationGate(
+            admit=False,
+            constation_ok=False,
+            reason=infra_fault_reason(INFRA_FAULT_RETRY_EXHAUSTED)
+            if constation_attempt >= max_constation_attempts
+            else reason,
+            message="infra fault retry budget exhausted; no score",
+            retryable=False,
+        )
+
+    if bundle is None:
+        return _ConstationGate(
+            admit=False,
+            constation_ok=False,
+            reason=miner_fault_reason("missing_constation_bundle"),
+            message="no constation bundle; no score (P1)",
+        )
+
+    if check_allowlist is None or check_nonce is None or verify_constation_signature is None:
+        # Bundle present but checkers unavailable → infra (cannot evaluate).
+        reason = infra_fault_reason(INFRA_FAULT_CONSTATION_UNAVAILABLE)
+        if constation_attempt < max_constation_attempts:
+            return _ConstationGate(
+                admit=False,
+                constation_ok=False,
+                reason=reason,
+                message="constation checkers unavailable; retryable",
+                retryable=True,
+            )
+        return _ConstationGate(
+            admit=False,
+            constation_ok=False,
+            reason=infra_fault_reason(INFRA_FAULT_RETRY_EXHAUSTED),
+            message="constation checkers unavailable; retries exhausted",
+        )
+
+    result: ConstationResult = constation_ok(
+        bundle,
+        check_allowlist=check_allowlist,
+        check_nonce=check_nonce,
+        verify_signature=verify_constation_signature,
+    )
+    if result.ok:
+        return _ConstationGate(admit=True, constation_ok=True, reason="ok")
+
+    fault = classify_constation_fault(result)
+    return _ConstationGate(
+        admit=False,
+        constation_ok=False,
+        reason=fault,
+        message=f"constation_ok failed: {result.reason.value}",
+    )
+
+
+async def _reject_no_score(
+    *,
+    work_unit_id: str,
+    submission_id: str,
+    claimed_tier: int,
+    reason: str,
+    attestation_mode: str,
+    repository: Any,
+) -> IngestionOutcome:
+    """Return a rejected outcome without writing a score row (P1)."""
+    logger.warning(
+        "fail-closed: refusing score for work unit %s reason=%s",
+        work_unit_id,
+        reason,
+    )
+    status = await repository.submission_status(submission_id)
+    return IngestionOutcome(
+        status="rejected",
+        work_unit_id=work_unit_id,
+        submission_id=submission_id,
+        claimed_tier=claimed_tier,
+        effective_tier=0,
+        tier_downgraded=claimed_tier != 0,
+        idempotent=False,
+        finalized=False,
+        submission_status=status,
+        reason=reason,
+        attestation_mode=attestation_mode,
+        score_written=False,
     )
 
 
 __all__ = [
+    "DEFAULT_MAX_CONSTATION_ATTEMPTS",
     "IngestionOutcome",
     "ResultIngestionError",
     "ingest_work_unit_result",

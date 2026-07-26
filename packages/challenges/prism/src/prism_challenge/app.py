@@ -39,6 +39,113 @@ from .routes import router
 from .weights import get_weights
 
 
+def _constation_ingest_kwargs(
+    app_settings: PrismSettings,
+    result_payload: object,
+    *,
+    app: FastAPI | None = None,
+) -> dict:
+    """Resolve constation kwargs for ingest: prod wire OR insecure test seam.
+
+    Production: deserialize ``result.constation_bundle`` and attach checkers.
+    Preference:
+      1) BASE HTTP when ``constation_base_url`` + token (durable master SoT)
+      2) in-process app.state services (same issuer as local challenge routes)
+    Missing bundle returns {} so ingest fail-closes (P1). Never auto-injects
+    synthetic bundles in prod.
+    """
+    if getattr(app_settings, "allow_insecure_signatures", False):
+        return _test_constation_kwargs(app_settings, result_payload)
+
+    if not isinstance(result_payload, dict):
+        return {}
+    raw_bundle = result_payload.get("constation_bundle")
+    if raw_bundle is None:
+        return {}
+
+    from .constation import constation_bundle_from_dict
+
+    try:
+        bundle = constation_bundle_from_dict(raw_bundle)
+    except (TypeError, ValueError):
+        # Malformed embedded bundle — leave to gate as missing/invalid.
+        return {}
+
+    base_url = getattr(app_settings, "constation_base_url", None)
+    token = getattr(app_settings, "constation_internal_token", None) or ""
+    if base_url and token:
+        from .constation_checkers import BaseHttpConstationClient
+
+        client = BaseHttpConstationClient(base_url=str(base_url), token=str(token))
+        return {
+            "constation_bundle": bundle,
+            "check_allowlist": client.check_allowlist,
+            "check_nonce": client.check_nonce,
+            "verify_constation_signature": client.verify_signature,
+        }
+
+    if app is not None:
+        from .attestation_routes import make_inprocess_checkers
+
+        try:
+            checkers = make_inprocess_checkers(app)
+            return {
+                "constation_bundle": bundle,
+                "check_allowlist": checkers["check_allowlist"],
+                "check_nonce": checkers["check_nonce"],
+                "verify_constation_signature": checkers["verify_constation_signature"],
+            }
+        except Exception:
+            pass
+
+    # Bundle present but checkers not configured: still pass bundle so
+    # constation_ok fails without elevating (checkers required → fail closed).
+    return {"constation_bundle": bundle}
+
+
+def _test_constation_kwargs(app_settings: PrismSettings, result_payload: object) -> dict:
+    """Supply a valid constation bundle only under allow_insecure_signatures (unit tests).
+
+    Production (allow_insecure_signatures=False) never auto-injects — missing bundle
+    fail-closes with no score (P1 / todo 22). Result payloads may still carry an
+    explicit constation block later; this helper is the test seam only.
+    """
+    if not getattr(app_settings, "allow_insecure_signatures", False):
+        return {}
+    # If the payload already embeds constation markers, do not override.
+    if isinstance(result_payload, dict) and result_payload.get("constation_bundle") is not None:
+        return {}
+    from .constation import CheckOutcome, ConstationBundle
+
+    def _ok(**_k: object) -> CheckOutcome:
+        return CheckOutcome(ok=True, reason="ok")
+
+    man = {"route-test-harness.py": "a" * 64}
+    digest = "sha256:" + ("11" * 32)
+    bundle = ConstationBundle(
+        commit_sha="a" * 40,
+        tree_sha="b" * 40,
+        variant="cuda",
+        digest=digest,
+        work_unit_id="route-wu",
+        miner_hotkey="route-hk",
+        pod_id="route-pod",
+        nonce="route-nonce",
+        signed_attestation={"route": True},
+        expected_sealed_manifest_hashes=dict(man),
+        reported_sealed_manifest_hashes=dict(man),
+        lium_declared_digest=digest,
+        constation_gap_budget_seconds=30.0,
+        constation_observed_max_gap_seconds=1.0,
+    )
+    return {
+        "constation_bundle": bundle,
+        "check_allowlist": _ok,
+        "check_nonce": _ok,
+        "verify_constation_signature": lambda _s: _ok(),
+    }
+
+
 def create_app(
     app_settings: PrismSettings | None = None,
     *,
@@ -146,6 +253,15 @@ def create_app(
     app.state.worker = worker
     app.state.checkpoint_publisher = publisher
     app.state.checkpoint_intake = checkpoint_intake
+
+    # Attestation constation hosts (public challenge via routes; internal check/*).
+    from .attestation_routes import (
+        build_attestation_internal_router,
+        ensure_default_constation_services,
+    )
+
+    ensure_default_constation_services(app)
+    app.include_router(build_attestation_internal_router())
 
     @app.post("/internal/v1/worker/process-next", dependencies=[Depends(authenticate_internal)])
     async def process_next() -> dict[str, str | None]:
@@ -320,6 +436,7 @@ def create_app(
                 result=result_payload,
                 pinned_image_digest=app_settings.worker_plane.pinned_image_digest,
                 audit_sampler=sampler,
+                **_constation_ingest_kwargs(app_settings, result_payload, app=request.app),
             )
         except ResultIngestionError as exc:
             # A transient finalization failure is retryable -> 503 so the forwarder retries; the
@@ -342,6 +459,15 @@ def create_app(
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 {"code": outcome.reason, "detail": "conflicting result for finalized unit"},
+            )
+        if outcome.status == "rejected":
+            # P1 fail-closed: no score written; surface the miner/infra fault code.
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                {
+                    "code": outcome.reason or "constation_rejected",
+                    "detail": "constation gate refused score",
+                },
             )
         return outcome.to_response()
 

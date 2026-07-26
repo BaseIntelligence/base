@@ -6,8 +6,8 @@ proof's CLAIMED tier onto the EFFECTIVE tier the audit scheduler actually consum
 
 * claimed tier >= 2 -> effective 0 always (Prism no longer elevates via TEE; claim/attestation
   fields may remain on the wire for compatibility but never authorize tier 2);
-* claimed tier 1 -> effective 1 iff the proof's ``image_digest`` equals the configured pinned
-  evaluator/worker digest AND provider pod binding is present, else effective 0 (IMAGE_PIN);
+* claimed tier 1 -> effective 1 iff ``constation_ok`` is True (M14 sole elevation predicate),
+  else effective 0. Self-reported image digests and pin match alone never elevate;
 * claimed tier 0 (or any unknown tier) -> effective 0.
 
 Max effective tier is **1**. :class:`AuditSampler` then samples finalized results at the per-tier
@@ -64,39 +64,58 @@ def effective_tier(
     proof: ExecutionProof,
     *,
     pinned_image_digest: str | None = None,
+    constation_ok_result: bool | object | None = None,
 ) -> int:
-    """Return the VERIFIED tier for ``proof`` (never higher than image-pin verifiable backing).
+    """Return the VERIFIED tier for ``proof`` (never higher than constation-backed tier 1).
 
-    Claimed tier never controls elevation. Max effective tier is 1 (IMAGE_PIN match + pod binding).
-    Claimed tier 2 / attestation fields never elevate — Prism has no TEE verifier path.
+    **M14 — sole elevation path.** Tier 1 is granted only when ``constation_ok_result``
+    is truthy (a ``True`` bool or a result object whose ``ok`` attribute is True).
+    Self-reported ``PRISM_IMAGE_DIGEST`` / ``pinned_image_digest`` match alone never
+    elevates (todo 20/21). Claimed tier never controls elevation. Max effective tier is 1.
+    Claimed tier >= 2 always collapses to 0 (Prism has no TEE verifier path).
+
+    ``pinned_image_digest`` is retained for call-site compatibility and telemetry correlation
+    only; it is not an elevation predicate.
     """
+    del pinned_image_digest  # telemetry / compat only — never elevates
 
     claimed = int(getattr(proof, "tier", 0) or 0)
 
-    # Any claim of tier 2+ without a TEE product path downgrades to 0 (never silent tier-2,
-    # never fall through to tier-1 unless the independent pin policy below applies — and
-    # claimed>=2 intentionally does NOT fall through: pin match alone cannot re-elevate a
-    # hardware-attestation claim).
+    # Claimed tier 2+ never elevates and never falls through to tier 1.
     if claimed >= 2:
         return 0
 
     if claimed == 1:
-        provider = proof.provider
-        matches_digest = bool(pinned_image_digest) and proof.image_digest == pinned_image_digest
-        has_pod = provider is not None and bool(provider.pod_id)
-        return 1 if matches_digest and has_pod else 0
+        return 1 if _constation_truthy(constation_ok_result) else 0
 
     return 0
+
+
+def _constation_truthy(constation_ok_result: bool | object | None) -> bool:
+    """Interpret bool or ConstationResult-like object as the elevation predicate."""
+    if constation_ok_result is None or constation_ok_result is False:
+        return False
+    if constation_ok_result is True:
+        return True
+    ok_attr = getattr(constation_ok_result, "ok", None)
+    if ok_attr is not None:
+        return bool(ok_attr)
+    return bool(constation_ok_result)
 
 
 def is_tier_downgraded(
     proof: ExecutionProof,
     *,
     pinned_image_digest: str | None = None,
+    constation_ok_result: bool | object | None = None,
 ) -> bool:
     """Whether ``proof``'s claimed tier is higher than its verified effective tier."""
 
-    return int(proof.tier) != effective_tier(proof, pinned_image_digest=pinned_image_digest)
+    return int(proof.tier) != effective_tier(
+        proof,
+        pinned_image_digest=pinned_image_digest,
+        constation_ok_result=constation_ok_result,
+    )
 
 
 @dataclass(frozen=True)
@@ -155,10 +174,15 @@ class AuditSampler:
         work_unit_id: str,
         proof: ExecutionProof,
         pinned_image_digest: str | None = None,
+        constation_ok_result: bool | object | None = None,
     ) -> AuditDecision:
         """Verify ``proof``'s tier and decide whether it is sampled at its EFFECTIVE rate."""
 
-        tier = effective_tier(proof, pinned_image_digest=pinned_image_digest)
+        tier = effective_tier(
+            proof,
+            pinned_image_digest=pinned_image_digest,
+            constation_ok_result=constation_ok_result,
+        )
         return AuditDecision(
             work_unit_id=work_unit_id,
             claimed_tier=int(proof.tier),

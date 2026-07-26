@@ -16,6 +16,7 @@ from fastapi import (
 from pydantic import ValidationError
 
 from .admission import enforce_admission
+from .attestation_routes import build_attestation_public_router
 from .auth import authenticate_miner
 from .evaluator.train_series import downsample_train_series_for_api
 from .models import (
@@ -45,6 +46,10 @@ logger = logging.getLogger(__name__)
 CURVE_MAX_POINTS = 500
 
 router = APIRouter(prefix="/v1")
+
+# Public attestation challenge/answer (published via BASE proxy as
+# /challenges/prism/v1/attestation/*). Lives on the challenge app, not master.
+router.include_router(build_attestation_public_router())
 
 
 def _optional_float(value: object | None) -> float | None:

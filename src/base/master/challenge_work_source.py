@@ -410,11 +410,15 @@ class HttpChallengeResultForwarder:
         timeout_seconds: float = 10.0,
         retries: int = 3,
         transport: httpx.AsyncBaseTransport | None = None,
+        bundle_lookup: Any | None = None,
     ) -> None:
         self._registry = registry
         self._timeout_seconds = timeout_seconds
         self._retries = retries
         self._transport = transport
+        # Optional async callable (work_unit_id) -> dict | None for
+        # constation_bundle attach.
+        self._bundle_lookup = bundle_lookup
 
     async def forward_result(
         self,
@@ -437,6 +441,12 @@ class HttpChallengeResultForwarder:
             "Accept": "application/json",
         }
         payload = dict(result_payload or {})
+        if "constation_bundle" not in payload and self._bundle_lookup is not None:
+            looked = self._bundle_lookup(work_unit_id)
+            if hasattr(looked, "__await__"):
+                looked = await looked
+            if isinstance(looked, dict):
+                payload["constation_bundle"] = looked
         proof = payload.get("execution_proof")
         if not isinstance(proof, dict):
             # Fail closed before any network POST: dual/legacy reduced bodies
