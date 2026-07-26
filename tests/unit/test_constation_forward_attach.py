@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -12,6 +15,32 @@ from base.validator.agent.signing import KeypairRequestSigner
 from base.worker.proof import build_execution_proof
 
 MANIFEST = "a" * 64
+
+
+@contextmanager
+def _preserved_logging_levels() -> Iterator[None]:
+    """Restore every logger's level/disabled flag and the global disable knob.
+
+    Importing bittensor forces every already-created logger to CRITICAL. This
+    file sorts before the validator tests that assert on captured records, so
+    leaking that would empty their caplog only in the full alphabetical run.
+    """
+    manager = logging.root.manager
+    prev_disable = manager.disable
+    prev_root_level = logging.getLogger().level
+    prev_levels = [
+        (obj, obj.level, obj.disabled)
+        for obj in list(manager.loggerDict.values())
+        if isinstance(obj, logging.Logger)
+    ]
+    try:
+        yield
+    finally:
+        for logger, level, disabled in prev_levels:
+            logger.setLevel(level)
+            logger.disabled = disabled
+        logging.getLogger().setLevel(prev_root_level)
+        manager.disable = prev_disable
 
 
 class _Reg:
@@ -37,12 +66,13 @@ class _CaptureTransport(httpx.AsyncBaseTransport):
 
 
 def _minimal_proof() -> dict[str, Any]:
-    import bittensor as bt
+    with _preserved_logging_levels():
+        import bittensor as bt
 
-    signer = KeypairRequestSigner(bt.Keypair.create_from_uri("//WorkerAlice"))
-    proof = build_execution_proof(
-        signer=signer, manifest_sha256=MANIFEST, unit_id="wu-1"
-    )
+        signer = KeypairRequestSigner(bt.Keypair.create_from_uri("//WorkerAlice"))
+        proof = build_execution_proof(
+            signer=signer, manifest_sha256=MANIFEST, unit_id="wu-1"
+        )
     return proof.model_dump(mode="json")
 
 

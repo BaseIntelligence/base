@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "e2e_lium_attestation.py"
+
+
+@contextmanager
+def _preserved_process_state() -> Iterator[None]:
+    """Undo sys.path/sys.modules insertions and logger-level changes.
+
+    Loading the script inserts sibling package roots into ``sys.path`` and
+    imports ``prism_challenge`` (which pulls in bittensor, forcing every
+    already-created logger to CRITICAL). Left in place, the prism dispatch
+    adapter stops looking unavailable and later caplog assertions go empty --
+    failures that only surface in the full alphabetical run.
+    """
+    manager = logging.root.manager
+    prev_path = list(sys.path)
+    prev_modules = set(sys.modules)
+    prev_disable = manager.disable
+    prev_root_level = logging.getLogger().level
+    prev_levels = [
+        (obj, obj.level, obj.disabled)
+        for obj in list(manager.loggerDict.values())
+        if isinstance(obj, logging.Logger)
+    ]
+    try:
+        yield
+    finally:
+        for logger, level, disabled in prev_levels:
+            logger.setLevel(level)
+            logger.disabled = disabled
+        logging.getLogger().setLevel(prev_root_level)
+        manager.disable = prev_disable
+        for name in set(sys.modules) - prev_modules:
+            sys.modules.pop(name, None)
+        sys.path[:] = prev_path
 
 
 def _load_e2e_module():
@@ -23,7 +59,8 @@ def _load_e2e_module():
 
 @pytest.fixture(scope="module")
 def e2e():
-    return _load_e2e_module()
+    with _preserved_process_state():
+        yield _load_e2e_module()
 
 
 @pytest.mark.asyncio
