@@ -164,7 +164,9 @@ def test_shipped_orchestrator_image_is_digest_pinned():
     assert lr.assert_live_registry_ref(reg.orchestrator_image) == reg.orchestrator_image
     # The deploy path's digest-pin guard accepts it (no bare tag).
     assert c.assert_digest_pinned(reg.orchestrator_image) == reg.orchestrator_image
-    assert reg.orchestrator_image.startswith("ghcr.io/baseintelligence/agent-challenge-canonical@sha256:")
+    assert reg.orchestrator_image.startswith(
+        "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:"
+    )
     digest = reg.orchestrator_image.rsplit("@", 1)[-1]
     assert digest.startswith("sha256:") and len(digest) == len("sha256:") + 64
 

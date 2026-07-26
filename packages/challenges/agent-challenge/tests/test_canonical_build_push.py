@@ -26,7 +26,10 @@ def test_repository_of_strips_tag_keeps_namespace():
         == "ghcr.io/baseintelligence/agent-challenge-canonical"
     )
     # A digest ref -> the repository component only.
-    assert cbuild.repository_of("ghcr.io/baseintelligence/x@sha256:" + "a" * 64) == "ghcr.io/baseintelligence/x"
+    assert (
+        cbuild.repository_of("ghcr.io/baseintelligence/x@sha256:" + "a" * 64)
+        == "ghcr.io/baseintelligence/x"
+    )
 
 
 def test_pushed_image_ref_is_repo_at_digest():
