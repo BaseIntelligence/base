@@ -350,6 +350,77 @@ def _obtain_review_prepare_with_token(
     return retried
 
 
+def _eval_token_present(prepare_response: Mapping[str, Any] | None) -> bool:
+    """True when prepare/retry still delivers the one-shot EVAL_RUN_TOKEN.
+
+    Accepted shape matches ``eval.build_eval_deployment_plan``:
+    ``secret_delivery == {"env_key", "token"}`` with a non-empty token string.
+    Does not relax that contract — only decides whether recovery is needed.
+    """
+
+    if not isinstance(prepare_response, Mapping):
+        return False
+    delivery = prepare_response.get("secret_delivery")
+    if not isinstance(delivery, Mapping) or set(delivery) != {"env_key", "token"}:
+        return False
+    token = delivery.get("token")
+    return isinstance(token, str) and bool(token)
+
+
+def _eval_run_id_from_prepare(prepare_response: Mapping[str, Any]) -> str | None:
+    """Extract current eval_run_id from a prepare wrapper without requiring a token."""
+
+    plan = prepare_response.get("plan")
+    if isinstance(plan, Mapping):
+        run_id = plan.get("eval_run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    return None
+
+
+def _obtain_eval_prepare_with_token(
+    client: SelfDeployRouteClient,
+    submission_id: int,
+) -> dict[str, Any]:
+    """Return a prepare/retry response that still delivers EVAL_RUN_TOKEN.
+
+    Product residual timeline (live production, submission 3):
+    - ``EVAL_RUN_TOKEN`` is delivered once per attempt. Standalone
+      ``eval prepare`` or ``eval retry`` permanently spends it.
+    - ``eval deploy`` previously called ``eval_prepare`` raw; when
+      ``secret_delivery`` was null, ``build_eval_deployment_plan`` hard-failed
+      with "first Eval prepare must deliver exactly one EVAL_RUN_TOKEN
+      capability". Attempts 1 and 2 both stuck; lifecycle unrecoverable
+      from the CLI.
+    - Mirror review: prepare → if token-less, resolve ``eval_run_id``,
+      ``eval_cancel`` then ``eval_retry``, return the response that carries
+      the token. Never cancel when the token was already delivered. Never
+      fabricate, cache, or persist a token offline.
+    """
+
+    response = client.eval_prepare(submission_id)
+    if _eval_token_present(response):
+        return response
+    run_id = _eval_run_id_from_prepare(response)
+    if not run_id:
+        raise RouteClientError("eval run has no current eval_run_id to refresh capability")
+    # Sticky token-less after prior prepare/retry consumer: cancel+retry for a
+    # fresh attempt that redelivers EVAL_RUN_TOKEN. Prefer not cancelling when
+    # prepare already carried the capability (handled above).
+    try:
+        client.eval_cancel(submission_id, run_id)
+    except RouteClientError:
+        # Terminal / already cancelled: still try retry against that id.
+        pass
+    retried = client.eval_retry(submission_id, run_id)
+    if not _eval_token_present(retried):
+        raise RouteClientError(
+            "eval run token unavailable after prepare and retry; "
+            "capability may be spent or run not retryable"
+        )
+    return retried
+
+
 def _review_allowlist_verdict(plan: review_deploy.ReviewDeploymentPlan) -> str:
     """Compute a verified review-domain allowlist verdict or explicit UNKNOWN."""
 
@@ -716,7 +787,8 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     "Eval deploy does not accept persisted prepare capabilities; "
                     "run it with signed production route credentials"
                 )
-            raw = _route_client(args).eval_prepare(args.submission_id)
+            client = _route_client(args)
+            raw = _obtain_eval_prepare_with_token(client, args.submission_id)
             plan = eval_deploy.build_eval_deployment_plan(raw)
             if plan.instance_type != args.eval_instance_type:
                 raise RouteClientError(
