@@ -260,8 +260,12 @@ def test_cli_stage_defaults_and_disk_flags():
         [
             "review",
             "deploy",
+            "--base-url",
+            "https://example.test",
             "--submission-id",
             "1",
+            "--hotkey",
+            "5FakeHotkey",
             "--auto-sign",
             "--dry-run",
         ]
@@ -275,8 +279,12 @@ def test_cli_stage_defaults_and_disk_flags():
         [
             "eval",
             "deploy",
+            "--base-url",
+            "https://example.test",
             "--submission-id",
             "1",
+            "--hotkey",
+            "5FakeHotkey",
             "--dry-run",
             "--eval-disk-size-gb",
             "200",

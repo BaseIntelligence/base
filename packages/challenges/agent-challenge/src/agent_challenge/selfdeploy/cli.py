@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -49,11 +50,31 @@ from agent_challenge.selfdeploy.plan import (
     write_prepared,
 )
 from agent_challenge.selfdeploy.shapes import (
+    DEFAULT_EVAL_DISK_SIZE_GB,
+    DEFAULT_EVAL_INSTANCE_TYPE,
     DEFAULT_MAX_RUNTIME_HOURS,
     DEFAULT_MONEY_CAP_USD,
     DEFAULT_OS_IMAGE,
+    DEFAULT_REVIEW_DISK_SIZE_GB,
+    DEFAULT_REVIEW_INSTANCE_TYPE,
     ShapeError,
+    validate_disk_size,
 )
+
+
+def _with_disk_size(plan: Any, disk_size_gb: int) -> Any:
+    """Attach validated disk size to a deployment plan (dataclass or test double)."""
+
+    try:
+        return replace(plan, disk_size_gb=disk_size_gb)
+    except TypeError:
+        # Offline tests inject SimpleNamespace plan doubles.
+        try:
+            plan.disk_size_gb = disk_size_gb
+        except Exception:
+            pass
+        return plan
+
 
 PROG = "agent-challenge-selfdeploy"
 
@@ -437,12 +458,21 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
                 raise RouteClientError(
                     "review deployment shape differs from the validator-issued assignment"
                 )
+            review_disk = validate_disk_size(
+                getattr(args, "review_disk_size_gb", DEFAULT_REVIEW_DISK_SIZE_GB)
+            )
+            eval_disk = validate_disk_size(
+                getattr(args, "eval_disk_size_gb", DEFAULT_EVAL_DISK_SIZE_GB)
+            )
+            plan = _with_disk_size(plan, review_disk)
             lifecycle.validate_lifecycle_budget(
                 review_instance_type=plan.instance_type,
                 eval_instance_type=args.eval_instance_type,
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
                 money_cap_usd=args.money_cap_usd,
+                review_disk_size_gb=review_disk,
+                eval_disk_size_gb=eval_disk,
             )
             key = os.environ.get(args.openrouter_key_env, "")
             if not args.dry_run and not key:
@@ -511,6 +541,7 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
         RouteClientError,
         CredentialError,
         lifecycle.LifecycleBudgetError,
+        ShapeError,
         review_deploy.ReviewDeploymentError,
         PhalaApiError,
     ) as exc:
@@ -603,12 +634,21 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                 raise RouteClientError(
                     "Eval deployment shape differs from the validator-issued plan"
                 )
+            review_disk = validate_disk_size(
+                getattr(args, "review_disk_size_gb", DEFAULT_REVIEW_DISK_SIZE_GB)
+            )
+            eval_disk = validate_disk_size(
+                getattr(args, "eval_disk_size_gb", DEFAULT_EVAL_DISK_SIZE_GB)
+            )
+            plan = _with_disk_size(plan, eval_disk)
             lifecycle.validate_lifecycle_budget(
                 review_instance_type=args.review_instance_type,
                 eval_instance_type=plan.instance_type,
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
                 money_cap_usd=args.money_cap_usd,
+                review_disk_size_gb=review_disk,
+                eval_disk_size_gb=eval_disk,
             )
             values = {
                 "EVAL_RUN_TOKEN": plan.eval_run_token,
@@ -724,6 +764,7 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
         RouteClientError,
         CredentialError,
         lifecycle.LifecycleBudgetError,
+        ShapeError,
         eval_deploy.EvalDeploymentError,
         PhalaApiError,
     ) as exc:
@@ -927,8 +968,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="environment variable holding the user key",
     )
     review_deploy.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
-    review_deploy.add_argument("--review-instance-type", default="tdx.small")
-    review_deploy.add_argument("--eval-instance-type", default="tdx.small")
+    review_deploy.add_argument(
+        "--review-instance-type",
+        default=DEFAULT_REVIEW_INSTANCE_TYPE,
+        help=f"review CVM shape (default: {DEFAULT_REVIEW_INSTANCE_TYPE})",
+    )
+    review_deploy.add_argument(
+        "--eval-instance-type",
+        default=DEFAULT_EVAL_INSTANCE_TYPE,
+        help=f"eval CVM shape used for combined budget (default: {DEFAULT_EVAL_INSTANCE_TYPE})",
+    )
+    review_deploy.add_argument(
+        "--review-disk-size-gb",
+        type=int,
+        default=DEFAULT_REVIEW_DISK_SIZE_GB,
+        help=f"review disk size GB (default: {DEFAULT_REVIEW_DISK_SIZE_GB})",
+    )
+    review_deploy.add_argument(
+        "--eval-disk-size-gb",
+        type=int,
+        default=DEFAULT_EVAL_DISK_SIZE_GB,
+        help=f"eval disk size GB for combined budget (default: {DEFAULT_EVAL_DISK_SIZE_GB})",
+    )
     review_deploy.add_argument("--review-runtime-hours", type=float, default=6.0)
     review_deploy.add_argument("--eval-runtime-hours", type=float, default=6.0)
     review_deploy.add_argument("--money-cap-usd", type=float, default=20.0)
@@ -997,8 +1058,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_deploy_parser.add_argument("--llm-cost-limit-env", default="LLM_COST_LIMIT")
     eval_deploy_parser.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
-    eval_deploy_parser.add_argument("--review-instance-type", default="tdx.small")
-    eval_deploy_parser.add_argument("--eval-instance-type", default="tdx.small")
+    eval_deploy_parser.add_argument(
+        "--review-instance-type",
+        default=DEFAULT_REVIEW_INSTANCE_TYPE,
+        help=f"review CVM shape used for combined budget (default: {DEFAULT_REVIEW_INSTANCE_TYPE})",
+    )
+    eval_deploy_parser.add_argument(
+        "--eval-instance-type",
+        default=DEFAULT_EVAL_INSTANCE_TYPE,
+        help=f"eval CVM shape (default: {DEFAULT_EVAL_INSTANCE_TYPE})",
+    )
+    eval_deploy_parser.add_argument(
+        "--review-disk-size-gb",
+        type=int,
+        default=DEFAULT_REVIEW_DISK_SIZE_GB,
+        help=f"review disk size GB for combined budget (default: {DEFAULT_REVIEW_DISK_SIZE_GB})",
+    )
+    eval_deploy_parser.add_argument(
+        "--eval-disk-size-gb",
+        type=int,
+        default=DEFAULT_EVAL_DISK_SIZE_GB,
+        help=f"eval disk size GB (default: {DEFAULT_EVAL_DISK_SIZE_GB})",
+    )
     eval_deploy_parser.add_argument("--review-runtime-hours", type=float, default=6.0)
     eval_deploy_parser.add_argument("--eval-runtime-hours", type=float, default=6.0)
     eval_deploy_parser.add_argument("--money-cap-usd", type=float, default=20.0)
