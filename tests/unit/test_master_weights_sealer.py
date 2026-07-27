@@ -320,10 +320,14 @@ async def test_zero_miner_empty_slate_still_seals(
 async def test_concurrent_get_seal_race_safe(
     session_factory: async_sessionmaker,
 ) -> None:
+    # MasterWeightsResponse.expires_at is validated against wall-clock now()
+    # (not FakeClock). freshness_seconds=1 flakes under concurrent DB load on
+    # CI when seal latency > 1s. Keep TTL large vs wall time, expire via clock.
     clock = FakeClock()
+    freshness = 120
     service = _service(
         session_factory,
-        freshness_seconds=1,
+        freshness_seconds=freshness,
         epoch_interval_seconds=60,
         clock=clock,
     )
@@ -350,7 +354,7 @@ async def test_concurrent_get_seal_race_safe(
     assert all(r.uids == [0] and r.weights == [1.0] for r in results)
 
     # Expire + concurrent heal reseals once.
-    clock.advance(5)
+    clock.advance(freshness + 5)
     healed = await asyncio.gather(*[one_get() for _ in range(6)])
     healed_ids = {r.vector_id for r in healed}
     assert len(healed_ids) == 1
