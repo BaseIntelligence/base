@@ -212,10 +212,15 @@ def _run_teardown_command(args: argparse.Namespace) -> tuple[dict[str, Any], int
 
     phala_base = getattr(args, "phala_api", None) or DEFAULT_PHALA_API
     try:
+        # Refuse missing identity before constructing a credentialed client.
+        explicit = (getattr(args, "cvm_id", None) or "").strip()
+        app_id = (getattr(args, "app_id", None) or "").strip()
+        if not explicit and not app_id:
+            raise RouteClientError("teardown requires --cvm-id or --app-id")
         client = PhalaCloudClient(base_url=str(phala_base))
         cvm_id = resolve_teardown_cvm_id(
-            cvm_id=getattr(args, "cvm_id", None),
-            app_id=getattr(args, "app_id", None),
+            cvm_id=explicit or None,
+            app_id=app_id or None,
             client=client,
         )
         outcome = default_phala_teardown(cvm_id, client=client)
