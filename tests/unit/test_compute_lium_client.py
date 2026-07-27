@@ -199,6 +199,30 @@ async def test_provision_sends_termination_hours_and_ssh_key() -> None:
 
 
 @respx.mock
+async def test_provision_rents_full_offer_gpu_count_not_spec_minimum() -> None:
+    """Lium rejects partial GPU rents on non-splittable executors.
+
+    Live API evidence (2026-07): POST .../rent with gpu_count=1 on an 8-GPU
+    machine returns HTTP 400 "Provider doesn't allow GPU splitting.".
+    ``InstanceSpec.gpu_count`` is a minimum-need filter; the rent body must
+    request the selected offering's full gpu_count (or omit the field).
+    """
+    routes = _mock_happy_path()
+    multi = Offer(
+        id="exec-1",
+        gpu_type="RTX A4000",
+        gpu_count=8,
+        price_per_hour=0.12,
+    )
+    await LiumClient("k").provision(_spec(gpu_count=1), offer=multi)
+    body = json.loads(routes["rent"].calls.last.request.content)
+    assert body.get("gpu_count") != 1
+    assert body.get("gpu_count") in (8, None)
+    if "gpu_count" in body:
+        assert body["gpu_count"] == multi.gpu_count
+
+
+@respx.mock
 async def test_provision_rejects_overpriced_offer_without_rent() -> None:
     rent = respx.post(f"{BASE}/executors/exec-1/rent")
     client = LiumClient("k")

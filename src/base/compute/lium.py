@@ -175,12 +175,18 @@ class LiumClient:
             )
         template_id = await self._resolve_template(spec)
 
+        # InstanceSpec.gpu_count is a minimum-need filter for offer selection.
+        # Sending it as the rent gpu_count requests a *partial* split; Lium
+        # returns HTTP 400 "Provider doesn't allow GPU splitting" on most
+        # multi-GPU executors. Rent the full selected offer capacity instead
+        # (omit the field only when the offer itself has no gpu_count).
         rent_body: dict[str, Any] = {
             "pod_name": spec.name,
             "user_public_key": list(spec.ssh_public_keys),
             "termination_hours": int(lifetime),
-            "gpu_count": spec.gpu_count,
         }
+        if selected.gpu_count and selected.gpu_count > 0:
+            rent_body["gpu_count"] = selected.gpu_count
         if template_id is not None:
             rent_body["template_id"] = template_id
         if spec.dockerfile_content is not None:
