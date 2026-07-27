@@ -32,6 +32,11 @@ AC_PORT="${BASE_MASTER_AC_PORT:-18081}"
 PRISM_DATA_DIR="${BASE_MASTER_PRISM_DATA_DIR:-/var/lib/base/challenges/prism}"
 AC_DATA_DIR="${BASE_MASTER_AC_DATA_DIR:-/var/lib/base/challenges/agent-challenge}"
 
+# Operator-supplied overrides merged into the isolated child environments.
+# Defaults live beside each challenge's data so they survive image rebuilds.
+PRISM_ENV_FILE="${BASE_MASTER_PRISM_ENV_FILE:-${PRISM_DATA_DIR}/embed.env}"
+AC_ENV_FILE="${BASE_MASTER_AC_ENV_FILE:-${AC_DATA_DIR}/embed.env}"
+
 # Child PIDs for cleanup (proxy is usually the last foreground wait target).
 CHILD_PIDS=()
 
@@ -54,6 +59,80 @@ embed_truthy() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Merge operator-supplied KEY=VALUE lines into an isolated child environment.
+#
+# Embedded challenges start under `env -i` so Prism never sees CHALLENGE_* and
+# agent-challenge never sees PRISM_*. That isolation is deliberate, but it also
+# dropped every operator setting -- including the Phala attestation switches
+# (CHALLENGE_PHALA_ATTESTATION_ENABLED / CHALLENGE_ATTESTED_REVIEW_ENABLED) and
+# the eval/review app identities -- because the built-in list was hardcoded with
+# no extension point. This is that extension point: allowlisted keys from the
+# file are appended AFTER the defaults, so the file wins.
+#
+# Values are never logged (secrets hygiene); only key names are.
+load_challenge_env_file() {
+  local -n _target_env="$1"
+  local env_file="$2"
+  shift 2
+  local -a allowed_prefixes=("$@")
+
+  if [[ -z "${env_file}" ]]; then
+    return 0
+  fi
+  if [[ ! -e "${env_file}" ]]; then
+    log "no env file at ${env_file}; using built-in defaults only"
+    return 0
+  fi
+  if [[ ! -r "${env_file}" ]]; then
+    log "ERROR: env file ${env_file} exists but is not readable"
+    return 1
+  fi
+
+  local line key value prefix allowed
+  local -a accepted=()
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Trim surrounding whitespace.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ -z "${line}" || "${line}" == '#'* ]]; then
+      continue
+    fi
+    line="${line#export }"
+    if [[ "${line}" != *=* ]]; then
+      continue
+    fi
+    key="${line%%=*}"
+    value="${line#*=}"
+    if [[ ! "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      continue
+    fi
+    # Strip one layer of matching quotes around the value.
+    if [[ "${value}" == \"*\" && "${#value}" -ge 2 ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "${value}" == \'*\' && "${#value}" -ge 2 ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    allowed=0
+    for prefix in "${allowed_prefixes[@]}"; do
+      if [[ "${key}" == "${prefix}"* ]]; then
+        allowed=1
+        break
+      fi
+    done
+    if (( ! allowed )); then
+      continue
+    fi
+    _target_env+=("${key}=${value}")
+    accepted+=("${key}")
+  done < "${env_file}"
+
+  if (( ${#accepted[@]} )); then
+    log "loaded ${#accepted[@]} override(s) from ${env_file}: ${accepted[*]}"
+  else
+    log "no applicable overrides in ${env_file}"
+  fi
 }
 
 prepare_challenge_dirs() {
@@ -154,6 +233,13 @@ start_embedded_challenges() {
   if [[ -n "${py_path}" ]]; then
     ac_env+=("PYTHONPATH=${py_path}")
   fi
+
+  # Operator overrides win over the defaults above. Prefixes stay disjoint per
+  # challenge so the env -i isolation is preserved.
+  load_challenge_env_file prism_env "${PRISM_ENV_FILE}" \
+    PRISM_ PHALA_ DSTACK_ OPENROUTER_API_KEY
+  load_challenge_env_file ac_env "${AC_ENV_FILE}" \
+    CHALLENGE_ BASE_CHALLENGE_ PHALA_ DSTACK_ OPENROUTER_API_KEY
 
   log "starting embedded prism on ${PRISM_HOST}:${PRISM_PORT}"
   # env -i: isolate prefixes so Prism never sees CHALLENGE_* and AC never sees
