@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from hashlib import sha256
 
 import pytest
 
@@ -124,9 +124,7 @@ def test_adjudicator_copy_rejects_via_llm() -> None:
 
 
 def test_adjudicator_novel_allows_via_llm() -> None:
-    client = _FakeClient(
-        _tool_payload(plagiarized=False, reason="independent design")
-    )
+    client = _FakeClient(_tool_payload(plagiarized=False, reason="independent design"))
     result = adjudicate_plagiarism(
         current_code="novel arch",
         candidate_code=ARCH_A,
@@ -164,9 +162,7 @@ def test_adjudicator_fail_closed_on_provider_error() -> None:
         comparison_report={},
         deterministic_reason="borderline",
         deterministic_outcome="quarantine",
-        config=PlagiarismLlmConfig(
-            enabled=True, required=True, api_key="sk-test", max_retries=0
-        ),
+        config=PlagiarismLlmConfig(enabled=True, required=True, api_key="sk-test", max_retries=0),
         client=client,
     )
     assert result.plagiarized is True
@@ -249,14 +245,8 @@ async def test_worker_quarantine_defers_to_llm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from prism_challenge.db import Database
-    from prism_challenge.queue import ComponentReview, PrismWorker
+    from prism_challenge.queue import PrismWorker
     from prism_challenge.repository import PrismRepository
-    from prism_challenge.evaluator.components import (
-        PrismComponentFingerprints,
-        PrismProjectComponents,
-    )
-    from prism_challenge.evaluator.component_signatures import ComponentSemanticSignature
-    from prism_challenge.evaluator.interface import PrismContext
 
     calls: list[str] = []
 
@@ -289,16 +279,7 @@ async def test_worker_quarantine_defers_to_llm(
     await db.init()
     repo = PrismRepository(db, epoch_seconds=settings.epoch_seconds)
 
-    # Minimal context dummy
-    ctx = PrismContext(
-        submission_id="s",
-        hotkey="hk",
-        artifacts_dir=tmp_path / "art",
-        train_data_dir=tmp_path / "train",
-        vocab_size=64,
-        sequence_length=16,
-        seed=1,
-    ) if False else None
+    # PrismContext import retained for type surface; process path uses bare worker.
 
     # PrismContext construction may need many fields - avoid process path and call review only.
     # Build worker with a bare context via object.__new__ if needed.

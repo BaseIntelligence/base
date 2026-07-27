@@ -19,10 +19,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -406,9 +407,7 @@ def config_from_settings(settings: Any) -> PlagiarismLlmConfig:
     return PlagiarismLlmConfig(
         enabled=bool(getattr(settings, "plagiarism_llm_enabled", True)),
         required=bool(getattr(settings, "plagiarism_llm_required", True)),
-        base_url=str(
-            getattr(settings, "openrouter_base_url", None) or DEFAULT_OPENROUTER_BASE_URL
-        ),
+        base_url=str(getattr(settings, "openrouter_base_url", None) or DEFAULT_OPENROUTER_BASE_URL),
         model=str(getattr(settings, "openrouter_model", None) or DEFAULT_OPENROUTER_MODEL),
         api_key=getattr(settings, "openrouter_api_key", None),
         api_key_file=getattr(settings, "openrouter_api_key_file", None)
@@ -416,6 +415,8 @@ def config_from_settings(settings: Any) -> PlagiarismLlmConfig:
         timeout_seconds=float(getattr(settings, "plagiarism_llm_timeout_seconds", 90.0) or 90.0),
         temperature=float(getattr(settings, "plagiarism_llm_temperature", 0.0) or 0.0),
         max_tokens=int(getattr(settings, "plagiarism_llm_max_tokens", 800) or 800),
-        max_source_chars=int(getattr(settings, "plagiarism_llm_max_source_chars", 60_000) or 60_000),
+        max_source_chars=int(
+            getattr(settings, "plagiarism_llm_max_source_chars", 60_000) or 60_000
+        ),
         max_retries=int(getattr(settings, "plagiarism_llm_max_retries", 1) or 1),
     )

@@ -14,10 +14,6 @@ from base.challenge_sdk.executor import DockerExecutor, DockerLimits, DockerMoun
 from .config import PrismSettings
 from .db import dumps
 from .evaluator import source_similarity
-from .evaluator.plagiarism_adjudicator import (
-    adjudicate_plagiarism,
-    config_from_settings as plagiarism_llm_config_from_settings,
-)
 from .evaluator.anti_cheat import evaluate_anti_cheat
 from .evaluator.checkpoint_publisher import CheckpointPublisher
 from .evaluator.component_signatures import (
@@ -38,6 +34,12 @@ from .evaluator.distributed_contract import (
 )
 from .evaluator.interface import DEFAULT_TRAINING_ENTRYPOINT, PrismContext
 from .evaluator.modes import execution_mode_from_value
+from .evaluator.plagiarism_adjudicator import (
+    adjudicate_plagiarism,
+)
+from .evaluator.plagiarism_adjudicator import (
+    config_from_settings as plagiarism_llm_config_from_settings,
+)
 from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import SandboxViolation, inspect_code
 from .evaluator.scoring import ScoreValidationError, score_prequential_bpb
