@@ -209,6 +209,22 @@ SCHEMA = (
     "worker_pubkey TEXT, audited_manifest_sha256 TEXT NOT NULL,"
     "replay_manifest_sha256 TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL);"
     "CREATE INDEX IF NOT EXISTS idx_worker_faults_submission ON worker_faults(submission_id);"
+    "CREATE TABLE IF NOT EXISTS telemetry_sessions ("
+    "id TEXT PRIMARY KEY, eval_job_id TEXT, work_unit_id TEXT,"
+    "instance_id TEXT NOT NULL, hotkey_ss58 TEXT NOT NULL, nonce TEXT NOT NULL,"
+    "created_at TEXT NOT NULL, expires_at TEXT);"
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_job "
+    "ON telemetry_sessions(eval_job_id);"
+    "CREATE TABLE IF NOT EXISTS execution_events ("
+    "id TEXT PRIMARY KEY, eval_job_id TEXT, work_unit_id TEXT,"
+    "task_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,"
+    "payload TEXT NOT NULL, session_id TEXT NOT NULL, hotkey_ss58 TEXT NOT NULL,"
+    "created_at TEXT NOT NULL,"
+    "UNIQUE(eval_job_id, task_id, sequence));"
+    "CREATE INDEX IF NOT EXISTS idx_execution_events_job "
+    "ON execution_events(eval_job_id, sequence);"
+    "CREATE INDEX IF NOT EXISTS idx_execution_events_session "
+    "ON execution_events(session_id);"
 )
 
 
@@ -225,7 +241,7 @@ REQUIRED_TABLES = frozenset(
 
 # Declared SQLite runtime policy used on every real connection
 # (VAL-WEIGHT-092 / VAL-GATE-043).
-PRISM_SCHEMA_REVISION = "prism-schema.v4"
+PRISM_SCHEMA_REVISION = "prism-schema.v5"
 PRISM_BUSY_TIMEOUT_MS = 5_000
 SQLITE_CONNECTION_PRAGMAS: tuple[str, ...] = (
     "PRAGMA foreign_keys=ON;",
@@ -497,6 +513,24 @@ async def _run_migrations(conn: aiosqlite.Connection) -> None:
             "autosplit_allowed": "INTEGER NOT NULL DEFAULT 0",
             "official_fixed_profile": "INTEGER NOT NULL DEFAULT 1",
         },
+    )
+    await conn.executescript(
+        "CREATE TABLE IF NOT EXISTS telemetry_sessions ("
+        "id TEXT PRIMARY KEY, eval_job_id TEXT, work_unit_id TEXT,"
+        "instance_id TEXT NOT NULL, hotkey_ss58 TEXT NOT NULL, nonce TEXT NOT NULL,"
+        "created_at TEXT NOT NULL, expires_at TEXT);"
+        "CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_job "
+        "ON telemetry_sessions(eval_job_id);"
+        "CREATE TABLE IF NOT EXISTS execution_events ("
+        "id TEXT PRIMARY KEY, eval_job_id TEXT, work_unit_id TEXT,"
+        "task_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,"
+        "payload TEXT NOT NULL, session_id TEXT NOT NULL, hotkey_ss58 TEXT NOT NULL,"
+        "created_at TEXT NOT NULL,"
+        "UNIQUE(eval_job_id, task_id, sequence));"
+        "CREATE INDEX IF NOT EXISTS idx_execution_events_job "
+        "ON execution_events(eval_job_id, sequence);"
+        "CREATE INDEX IF NOT EXISTS idx_execution_events_session "
+        "ON execution_events(session_id);"
     )
 
 
