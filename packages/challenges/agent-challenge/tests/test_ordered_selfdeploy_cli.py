@@ -214,18 +214,24 @@ def test_eval_encrypted_env_contains_only_scoped_capabilities_and_is_transmitted
 
 
 def test_lifecycle_budget_counts_review_and_eval_together():
+    # Compute + default stage disks (20 GB each here) over 100h.
+    # CPU: 0.058 * 200 = 11.6; disk: 0.000139 * 20 * 200 = 0.556 → 12.156
     estimate = lifecycle.projected_lifecycle_cost_usd(
         review_instance_type="tdx.small",
         eval_instance_type="tdx.small",
         review_runtime_hours=100,
         eval_runtime_hours=100,
+        review_disk_size_gb=20,
+        eval_disk_size_gb=20,
     )
-    assert estimate == pytest.approx(11.6)
+    assert estimate == pytest.approx(12.156)
     with pytest.raises(lifecycle.LifecycleBudgetError):
         lifecycle.validate_lifecycle_budget(
             review_instance_type="tdx.small",
             eval_instance_type="tdx.xlarge",
             review_runtime_hours=100,
             eval_runtime_hours=100,
+            review_disk_size_gb=20,
+            eval_disk_size_gb=100,
             money_cap_usd=20,
         )
