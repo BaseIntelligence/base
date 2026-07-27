@@ -464,7 +464,7 @@ class PrismSettings(ChallengeSettings):
         validation_alias=AliasChoices("PRISM_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"),
     )
     openrouter_model: str = Field(
-        default="openai/gpt-4o",
+        default="x-ai/grok-4.5",
         validation_alias=AliasChoices("PRISM_OPENROUTER_MODEL", "OPENROUTER_MODEL"),
     )
     docker_enabled: bool = Field(

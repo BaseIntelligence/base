@@ -29,7 +29,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o"
+DEFAULT_OPENROUTER_MODEL = "x-ai/grok-4.5"
 
 SYSTEM_PROMPT = (
     "You are the SOLE plagiarism adjudicator for the Prism ML subnet. "
