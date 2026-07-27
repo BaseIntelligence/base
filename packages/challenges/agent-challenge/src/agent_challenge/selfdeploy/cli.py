@@ -738,6 +738,7 @@ _REDACTED_CAPABILITY_KEYS = frozenset(
         "token",
         "OPENROUTER_API_KEY",
         "EVAL_RUN_TOKEN",
+        "RUNNER_HOTKEY_MNEMONIC",
         "REVIEW_SESSION_TOKEN",
         "BASE_GATEWAY_TOKEN",  # residual key name only; not product eval secret
         "golden_plaintext",

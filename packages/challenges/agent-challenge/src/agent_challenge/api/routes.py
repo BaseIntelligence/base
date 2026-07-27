@@ -77,6 +77,12 @@ from ..evaluation.direct_result import (
     process_direct_eval_result,
     validate_result_bounds,
 )
+from ..evaluation.execution_pool import list_live_execution_units
+from ..evaluation.progress import (
+    MAX_PROGRESS_BODY_BYTES,
+    EvalProgressError,
+    process_eval_progress,
+)
 from ..evaluation.replay_audit import (
     REPLAY_AUDIT_LABEL,
     AggregationSpec,
@@ -101,6 +107,12 @@ from ..evaluation.task_events import (
     record_task_event,
     redact_secrets,
     redact_task_event_message,
+)
+from ..evaluation.telemetry_session import (
+    TELEMETRY_SESSION_HEADER,
+    TelemetrySessionError,
+    open_telemetry_session,
+    require_telemetry_session,
 )
 from ..evaluation.terminal_bench import TERMINAL_BENCH_EVALUATOR
 from ..evaluation.validator_executor import (
@@ -1851,6 +1863,215 @@ async def receive_direct_eval_result(
         status_code=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
         content=receipt,
     )
+
+
+@router.post(
+    "/evaluation/v1/runs/{eval_run_id}/telemetry-session",
+)
+async def open_eval_telemetry_session(
+    eval_run_id: str,
+    http_request: Request,
+    session: DatabaseSession,
+    authorization: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    """Open a hotkey-attested telemetry session for mid-run progress posts.
+
+    Auth mirrors the final result route (Bearer EVAL_RUN_TOKEN). Body carries
+    hotkey_ss58 + signature only — never a mnemonic. Progress POSTs must present
+    the issued session id via X-Telemetry-Session.
+    """
+
+    if not settings.attested_review_enabled or not settings.phala_attestation_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "attested_eval_disabled"},
+        )
+    prefix = "Bearer "
+    token = (
+        authorization[len(prefix) :]
+        if isinstance(authorization, str) and authorization.startswith(prefix)
+        else None
+    )
+    content_type = http_request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "telemetry_session_media_invalid"},
+        )
+    run = await session.scalar(select(EvalRun).where(EvalRun.eval_run_id == eval_run_id))
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "eval_run_unknown"},
+        )
+    if not authenticate_eval_token(run, token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "invalid_eval_token"},
+        )
+    body = await _read_bounded_result_body(
+        http_request,
+        max_bytes=MAX_PROGRESS_BODY_BYTES,
+    )
+    try:
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TelemetrySessionError(
+                "telemetry session body is not valid JSON",
+                code="invalid_telemetry_session",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise TelemetrySessionError(
+                "telemetry session body must be a JSON object",
+                code="invalid_telemetry_session",
+            )
+        opened = open_telemetry_session(
+            eval_run_id=eval_run_id,
+            eval_run_phase=run.phase,
+            body=parsed,
+        )
+    except TelemetrySessionError as exc:
+        if exc.code == "eval_run_terminal":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from exc
+        if exc.code in {
+            "invalid_telemetry_signature",
+            "invalid_telemetry_session",
+            "telemetry_signature_invalid",
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": exc.code},
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code},
+        ) from exc
+    return JSONResponse(status_code=status.HTTP_200_OK, content=opened)
+
+
+@router.post(
+    "/evaluation/v1/runs/{eval_run_id}/progress",
+)
+async def receive_eval_progress(
+    eval_run_id: str,
+    http_request: Request,
+    session: DatabaseSession,
+    authorization: Annotated[str | None, Header()] = None,
+    x_telemetry_session: Annotated[str | None, Header(alias="X-Telemetry-Session")] = None,
+) -> JSONResponse:
+    """Receive one mid-run task progress event from the canonical Eval CVM.
+
+    Auth: Bearer EVAL_RUN_TOKEN (same as result) plus X-Telemetry-Session from a
+    prior telemetry-session open. Events land in TaskLogEvent for the SSE feed.
+    This route never mutates scores — POST .../result remains the only score path.
+    """
+
+    if not settings.attested_review_enabled or not settings.phala_attestation_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "attested_eval_disabled"},
+        )
+    prefix = "Bearer "
+    token = (
+        authorization[len(prefix) :]
+        if isinstance(authorization, str) and authorization.startswith(prefix)
+        else None
+    )
+    content_type = http_request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "progress_media_invalid"},
+        )
+    run = await session.scalar(
+        select(EvalRun).where(EvalRun.eval_run_id == eval_run_id).with_for_update()
+    )
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "eval_run_unknown"},
+        )
+    if not authenticate_eval_token(run, token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "invalid_eval_token"},
+        )
+    # Prefer explicit Header param; fall back to raw header for alias robustness.
+    session_header = x_telemetry_session or http_request.headers.get(TELEMETRY_SESSION_HEADER)
+    try:
+        require_telemetry_session(session_header, eval_run_id=eval_run_id)
+    except TelemetrySessionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": exc.code},
+        ) from exc
+    body = await _read_bounded_result_body(
+        http_request,
+        max_bytes=MAX_PROGRESS_BODY_BYTES,
+    )
+    try:
+        # Progress is observability-only (optional float progress). Do not use
+        # parse_json_object / canonical_json_v1 which forbid floats — the final
+        # result route remains the only canonical attested body path.
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EvalProgressError(
+                "progress body is not valid JSON",
+                code="progress_invalid",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise EvalProgressError(
+                "progress body must be a JSON object",
+                code="progress_invalid",
+            )
+        request_body = parsed
+        if request_body.get("eval_run_id") != eval_run_id:
+            raise EvalProgressError(
+                "progress run does not match route",
+                code="progress_run_mismatch",
+            )
+        receipt, created = await process_eval_progress(
+            session,
+            run=run,
+            progress_request=request_body,
+        )
+        await session.commit()
+    except EvalProgressError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code},
+        ) from exc
+    except ValueError as exc:
+        await session.rollback()
+        code = exc.code if isinstance(exc, EvalProgressError) else "progress_invalid"
+        if code == "result_too_large":
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail={"code": code},
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": code},
+        ) from exc
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
+        content=receipt,
+    )
+
+
+@public_route(tags=["execution"])
+@router.get("/v1/execution-pool/live")
+async def execution_pool_live(session: DatabaseSession) -> dict[str, list[dict[str, object]]]:
+    """In-flight EvalRun units with latest TaskLogEvent. Empty pool is honest []."""
+
+    units = await list_live_execution_units(session)
+    return {"units": units}
 
 
 @router.post("/submissions/{submission_id}/review/deployed")
