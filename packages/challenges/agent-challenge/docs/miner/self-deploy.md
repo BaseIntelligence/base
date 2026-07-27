@@ -29,7 +29,7 @@ There is no closed agent-model catalog; personal finetunes are banned. Concepts:
 [Attestation TEE — agent-driven order](attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
 
 The mission is **CPU Intel TDX only** (no GPU) with a hard **$20** spend cap and a
-preference for the smallest CPU shape that works (`tdx.small`/`tdx.medium`). GPU
+per-stage CPU sizing (review `tdx.small` / 20 GB disk; eval `tdx.xlarge` / 100 GB disk so four concurrent Terminal-Bench tasks fit). GPU
 targets, over-cap shapes, and missing Phala credentials are refused **before** any
 Phala call.
 
@@ -126,7 +126,9 @@ python -m agent_challenge.selfdeploy review deploy \
     --openrouter-key-env OPENROUTER_API_KEY \
     --phala-api https://cloud-api.phala.com/api/v1 \
     --review-instance-type tdx.small \
-    --eval-instance-type tdx.small \
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
     --review-runtime-hours 6 \
     --eval-runtime-hours 6 \
     --money-cap-usd 20
@@ -145,7 +147,9 @@ python -m agent_challenge.selfdeploy review deploy \
     --openrouter-key-env OPENROUTER_API_KEY \
     --phala-api https://cloud-api.phala.com/api/v1 \
     --review-instance-type tdx.small \
-    --eval-instance-type tdx.small \
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
     --review-runtime-hours 6 \
     --eval-runtime-hours 6 \
     --money-cap-usd 20
@@ -329,7 +333,9 @@ python -m agent_challenge.selfdeploy eval deploy \
     --auto-sign \
     --llm-cost-limit-env LLM_COST_LIMIT \
     --phala-api https://cloud-api.phala.com/api/v1 \
-    --eval-instance-type tdx.small \
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
     --money-cap-usd 20
 ```
 
@@ -538,7 +544,7 @@ python -m agent_challenge.selfdeploy verdict \
 ### `deploy`
 
 Deploy a CPU-only, miner-funded CVM. Absent `--instance-type`, the smallest CPU
-shape (`tdx.small`) is chosen. A GPU instance type or GPU OS image is refused, and
+shape is stage-specific (review `tdx.small`, eval `tdx.xlarge`). A GPU instance type or GPU OS image is refused, and
 a shape whose projected cost would breach the money cap is refused, both before
 any provisioning. Use `--dry-run` to print the full plan (compose, image digest,
 instance type, region, key-release endpoint, projected cost) and make zero
@@ -613,7 +619,7 @@ python -m agent_challenge.selfdeploy teardown --cvm-id cvm-1
 
 Every CVM you deploy is **miner-funded** and must be deleted when you are done.
 The total mission spend cap is **$20**; always use the smallest CPU shape that
-works (`tdx.small`/`tdx.medium`) and never deploy a GPU CVM. Review and eval
+is stage-sized (review `tdx.small`/20 GB; eval `tdx.xlarge`/100 GB) and never deploy a GPU CVM. Disk is billed separately (~$0.000139/GB/hour) and is included in the projected $20 cap. Review and eval
 spend are projected together before either create.
 
 The `teardown` subcommand runs `phala cvms delete <id> -f` for you, but you can

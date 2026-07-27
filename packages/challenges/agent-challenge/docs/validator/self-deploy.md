@@ -274,7 +274,7 @@ emitter.
 
 Any review or eval CVM created for live verification is miner-funded and subject
 to the cumulative review+eval money cap of **$20**. Prefer the smallest CPU shape
-(`tdx.small` / `tdx.medium`) and never a GPU shape. Miners must delete every
+(review `tdx.small`/20 GB disk; eval `tdx.xlarge`/100 GB disk) and never a GPU shape. Disk billing (~$0.000139/GB/hour) is included in the shared $20 projection. Miners must delete every
 attributable CVM after success, reject, expiry, provider failure, quote failure,
 cancellation, interruption, or result failure. Confirm none remain:
 
