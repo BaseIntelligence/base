@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, SupportsFloat, SupportsInt, cast
+from typing import Annotated, Any, SupportsFloat, SupportsInt, cast
 
 from base.challenge_sdk.roles import public_route
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -17,7 +18,13 @@ from pydantic import ValidationError
 
 from .admission import enforce_admission
 from .attestation_routes import build_attestation_public_router
-from .auth import authenticate_miner
+from .auth import (
+    authenticate_internal,
+    authenticate_miner,
+    canonical_submission_message,
+    verify_dev_signature,
+    verify_hotkey_signature,
+)
 from .evaluator.train_series import downsample_train_series_for_api
 from .models import (
     ArchitectureDetailResponse,
@@ -44,6 +51,20 @@ from .repository import PrismRepository, epoch_id_for
 logger = logging.getLogger(__name__)
 
 CURVE_MAX_POINTS = 500
+
+# First-class score fields must never be accepted as event attributes (trust boundary).
+_SCORE_FIELD_NAMES = frozenset(
+    {
+        "score",
+        "final_score",
+        "q_arch",
+        "q_recipe",
+        "anti_cheat_multiplier",
+        "diversity_bonus",
+        "penalty",
+        "effective_tier",
+    }
+)
 
 router = APIRouter(prefix="/v1")
 
@@ -383,3 +404,210 @@ def _opt_int(value: Any) -> int | None:
     if isinstance(value, float):
         return int(value)
     return None
+
+
+def _verify_telemetry_hotkey_signature(
+    request: Request,
+    *,
+    hotkey: str,
+    nonce: str,
+    timestamp: str,
+    signature: str,
+    body: bytes,
+) -> None:
+    app_settings = request.app.state.settings
+    try:
+        ts = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid timestamp") from exc
+    if abs(int(datetime.now(UTC).timestamp()) - ts) > app_settings.signature_ttl_seconds:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "stale signature")
+    message = canonical_submission_message(
+        hotkey=hotkey, nonce=nonce, timestamp=timestamp, body=body
+    )
+    valid = verify_hotkey_signature(hotkey, message, signature)
+    if not valid and app_settings.allow_insecure_signatures:
+        valid = verify_dev_signature(app_settings.internal_token(), message, signature)
+    if not valid:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid signature")
+
+
+@public_route(tags=["execution"])
+@router.post("/execution/telemetry-session")
+async def open_telemetry_session(
+    request: Request,
+    _: None = Depends(authenticate_internal),
+    repository: PrismRepository = Depends(repo_from_request),
+    x_hotkey: Annotated[str | None, Header()] = None,
+    x_signature: Annotated[str | None, Header()] = None,
+    x_nonce: Annotated[str | None, Header()] = None,
+    x_timestamp: Annotated[str | None, Header()] = None,
+) -> dict[str, str]:
+    """Open a hotkey-signed telemetry session. Mnemonic is never accepted or returned."""
+
+    body = await request.body()
+    try:
+        import json
+
+        payload = json.loads(body.decode("utf-8") if body else "{}")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid json") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body must be object")
+
+    # Reject secret material if present as first-class fields (optional hard reject).
+    for banned in ("mnemonic", "wallet_seed", "private_key", "seed"):
+        if banned in payload:
+            # Strip path: ignore banned keys rather than echo; still open session.
+            payload = {
+                k: v
+                for k, v in payload.items()
+                if k not in {"mnemonic", "wallet_seed", "private_key", "seed"}
+            }
+            break
+
+    hotkey = str(payload.get("hotkey_ss58") or x_hotkey or "").strip()
+    nonce = str(payload.get("nonce") or x_nonce or "").strip()
+    timestamp = str(x_timestamp or payload.get("timestamp") or "").strip()
+    signature = str(x_signature or "").strip()
+    if not hotkey or not nonce or not timestamp or not signature:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "hotkey signature required")
+    if x_hotkey is not None and x_hotkey != hotkey:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "hotkey mismatch")
+    _verify_telemetry_hotkey_signature(
+        request,
+        hotkey=hotkey,
+        nonce=nonce,
+        timestamp=timestamp,
+        signature=signature,
+        body=body,
+    )
+
+    eval_job_id = payload.get("eval_job_id")
+    work_unit_id = payload.get("work_unit_id")
+    if eval_job_id is not None:
+        eval_job_id = str(eval_job_id)
+    if work_unit_id is not None:
+        work_unit_id = str(work_unit_id)
+    if not eval_job_id and not work_unit_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "eval_job_id or work_unit_id required",
+        )
+    instance_id = str(payload.get("instance_id") or "").strip()
+    if not instance_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "instance_id required")
+
+    session = await repository.create_telemetry_session(
+        eval_job_id=eval_job_id,
+        work_unit_id=work_unit_id,
+        instance_id=instance_id,
+        hotkey_ss58=hotkey,
+        nonce=nonce,
+    )
+    return session
+
+
+@public_route(tags=["execution"])
+@router.post("/execution/events")
+async def ingest_execution_events(
+    request: Request,
+    _: None = Depends(authenticate_internal),
+    repository: PrismRepository = Depends(repo_from_request),
+    x_telemetry_session: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """Ingest session-gated execution events. Never scores; never elevates tier."""
+
+    body = await request.body()
+    try:
+        import json
+
+        payload = json.loads(body.decode("utf-8") if body else "{}")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid json") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body must be object")
+
+    session_id = str(x_telemetry_session or payload.get("session_id") or "").strip() or None
+    if not session_id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "telemetry session required")
+    session = await repository.get_telemetry_session(session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid telemetry session")
+
+    events = payload.get("events")
+    if not isinstance(events, list) or not events:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "events required")
+
+    inserted = 0
+    duplicates = 0
+    for raw_event in events:
+        if not isinstance(raw_event, dict):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "event must be object")
+        # Reject first-class score fields (trust boundary).
+        if _SCORE_FIELD_NAMES.intersection(raw_event):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "score fields are not allowed on execution events",
+            )
+        try:
+            sequence = int(raw_event["sequence"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "sequence required") from exc
+        task_id = str(raw_event.get("task_id") or "").strip()
+        event_type = str(raw_event.get("event_type") or "").strip()
+        if not task_id or not event_type:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "task_id and event_type required"
+            )
+        eval_job_id = raw_event.get("eval_job_id")
+        work_unit_id = raw_event.get("work_unit_id")
+        if eval_job_id is not None:
+            eval_job_id = str(eval_job_id)
+        else:
+            eval_job_id = (
+                str(session["eval_job_id"]) if session.get("eval_job_id") is not None else None
+            )
+        if work_unit_id is not None:
+            work_unit_id = str(work_unit_id)
+        else:
+            work_unit_id = (
+                str(session["work_unit_id"]) if session.get("work_unit_id") is not None else None
+            )
+        event_payload: dict[str, Any] = {}
+        if "message" in raw_event:
+            event_payload["message"] = raw_event["message"]
+        if "progress" in raw_event:
+            event_payload["progress"] = raw_event["progress"]
+        # metadata is observability-only; never promoted to score columns
+        if isinstance(raw_event.get("metadata"), dict):
+            event_payload["metadata"] = raw_event["metadata"]
+        try:
+            result = await repository.append_execution_event(
+                session_id=session_id,
+                hotkey_ss58=str(session["hotkey_ss58"]),
+                eval_job_id=eval_job_id,
+                work_unit_id=work_unit_id,
+                task_id=task_id,
+                sequence=sequence,
+                event_type=event_type,
+                payload=event_payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        if result == "inserted":
+            inserted += 1
+        else:
+            duplicates += 1
+    return {"accepted": inserted + duplicates, "inserted": inserted, "duplicates": duplicates}
+
+
+@public_route(tags=["execution"])
+@router.get("/execution-pool/live")
+async def execution_pool_live(
+    repository: PrismRepository = Depends(repo_from_request),
+) -> dict[str, list[dict[str, Any]]]:
+    """In-flight RUNNING jobs with latest event. Empty pool is honest empty list."""
+
+    jobs = await repository.list_live_execution_pool()
+    return {"jobs": jobs}

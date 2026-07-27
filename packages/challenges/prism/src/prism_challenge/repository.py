@@ -1527,6 +1527,149 @@ class PrismRepository:
             ),
         )
 
+    async def create_telemetry_session(
+        self,
+        *,
+        eval_job_id: str | None,
+        work_unit_id: str | None,
+        instance_id: str,
+        hotkey_ss58: str,
+        nonce: str,
+    ) -> dict[str, str]:
+        """Open an attested telemetry session bound to hotkey_ss58 (never stores mnemonic)."""
+
+        session_id = str(uuid4())
+        created = now_iso()
+        async with self.database.connect() as conn:
+            await conn.execute(
+                "INSERT INTO telemetry_sessions("
+                "id, eval_job_id, work_unit_id, instance_id, hotkey_ss58, nonce, "
+                "created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    eval_job_id,
+                    work_unit_id,
+                    instance_id,
+                    hotkey_ss58,
+                    nonce,
+                    created,
+                    None,
+                ),
+            )
+        return {
+            "session_id": session_id,
+            "hotkey_ss58": hotkey_ss58,
+            "instance_id": instance_id,
+        }
+
+    async def get_telemetry_session(self, session_id: str) -> dict[str, object] | None:
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT id, eval_job_id, work_unit_id, instance_id, hotkey_ss58, nonce, "
+                "created_at, expires_at FROM telemetry_sessions WHERE id=?",
+                (session_id,),
+            )
+        return dict(list(rows)[0]) if rows else None
+
+    async def append_execution_event(
+        self,
+        *,
+        session_id: str,
+        hotkey_ss58: str,
+        eval_job_id: str | None,
+        work_unit_id: str | None,
+        task_id: str,
+        sequence: int,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """Append one execution event with monotone sequence + idempotent (job, task, seq).
+
+        Never writes scores or elevates trust tier. Raises ValueError on sequence regression.
+        Returns \"inserted\" | \"duplicate\".
+        """
+
+        if sequence < 1:
+            raise ValueError("execution_event_sequence_invalid")
+        async with self.database.connect() as conn:
+            existing = await conn.execute_fetchall(
+                "SELECT id FROM execution_events "
+                "WHERE eval_job_id IS ? AND task_id=? AND sequence=?",
+                (eval_job_id, task_id, sequence),
+            )
+            if existing:
+                return "duplicate"
+            max_rows = await conn.execute_fetchall(
+                "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_events "
+                "WHERE eval_job_id IS ? AND task_id=?",
+                (eval_job_id, task_id),
+            )
+            max_seq = int(list(max_rows)[0]["sequence"])
+            if sequence <= max_seq:
+                raise ValueError("execution_event_sequence_regress")
+            event_id = str(uuid4())
+            await conn.execute(
+                "INSERT INTO execution_events("
+                "id, eval_job_id, work_unit_id, task_id, sequence, event_type, payload, "
+                "session_id, hotkey_ss58, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id,
+                    eval_job_id,
+                    work_unit_id,
+                    task_id,
+                    sequence,
+                    event_type,
+                    dumps(payload),
+                    session_id,
+                    hotkey_ss58,
+                    now_iso(),
+                ),
+            )
+            return "inserted"
+
+    async def list_live_execution_pool(self) -> list[dict[str, Any]]:
+        """RUNNING eval jobs with each job's latest execution event (observability only)."""
+
+        async with self.database.connect() as conn:
+            job_rows = await conn.execute_fetchall(
+                "SELECT id, submission_id, level, status, created_at, updated_at "
+                "FROM eval_jobs WHERE status='running' ORDER BY updated_at DESC, id"
+            )
+            jobs: list[dict[str, Any]] = []
+            for row in job_rows:
+                job = dict(row)
+                job_id = str(job["id"])
+                event_rows = await conn.execute_fetchall(
+                    "SELECT id, eval_job_id, work_unit_id, task_id, sequence, event_type, "
+                    "payload, session_id, hotkey_ss58, created_at FROM execution_events "
+                    "WHERE eval_job_id=? ORDER BY sequence DESC LIMIT 1",
+                    (job_id,),
+                )
+                latest: dict[str, Any] | None = None
+                if event_rows:
+                    event = dict(list(event_rows)[0])
+                    payload = loads(str(event.get("payload") or "{}"))
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    latest = {
+                        "event_type": str(event["event_type"]),
+                        "sequence": int(cast(SupportsInt, event["sequence"])),
+                        "task_id": str(event["task_id"]),
+                        "message": payload.get("message"),
+                        "progress": payload.get("progress"),
+                        "created_at": str(event["created_at"]),
+                    }
+                jobs.append(
+                    {
+                        "eval_job_id": job_id,
+                        "submission_id": str(job["submission_id"]),
+                        "status": str(job["status"]),
+                        "level": str(job["level"]),
+                        "latest_event": latest,
+                    }
+                )
+            return jobs
+
 
 def _validate_evidence(items: Any) -> list[dict[str, Any]]:
     if not items:

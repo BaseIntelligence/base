@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
@@ -387,6 +388,30 @@ def _is_agent_challenge_review_capability_route(method: str, path: str) -> bool:
     return False
 
 
+def _is_agent_challenge_eval_capability_route(method: str, path: str) -> bool:
+    """True for eval-run Bearer capability POSTs (progress/session/result).
+
+    The measured eval guest posts telemetry and terminal results to
+    ``/evaluation/v1/runs/{run_id}/{action}`` with
+    ``Authorization: Bearer <EVAL_RUN_TOKEN>``. Same Authorization-preserve
+    contract as the review capability table; exact path shapes only.
+    """
+
+    normalized = normpath(f"/{path.lstrip('/')}")
+    parts = [part for part in normalized.split("/") if part]
+    normalized_method = method.upper()
+    canonical_path = f"/{path}"
+    if path.startswith("/") or canonical_path != normalized:
+        return False
+
+    # POST /evaluation/v1/runs/{run_id}/{action}
+    if normalized_method != "POST" or len(parts) != 5:
+        return False
+    if parts[0] != "evaluation" or parts[1] != "v1" or parts[2] != "runs":
+        return False
+    return parts[4] in {"progress", "telemetry-session", "result"}
+
+
 def _is_agent_challenge_signed_route(
     slug: str,
     method: str,
@@ -458,6 +483,10 @@ def _is_agent_challenge_enabled_mode_allowed_route(
     if _is_agent_challenge_review_capability_route(method, path):
         return True
 
+    # Eval-run guest capability POSTs (progress / telemetry-session / result).
+    if _is_agent_challenge_eval_capability_route(method, path):
+        return True
+
     if (
         len(parts) == 3
         and parts[0] == "submissions"
@@ -480,6 +509,31 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         len(parts) == 2
         and parts[0] == "benchmarks"
         and parts[1] == "tasks"
+        and normalized_method == "GET"
+    ):
+        return True
+    # Public task-events (snapshot + SSE stream) — unauthenticated reads.
+    if (
+        len(parts) == 3
+        and parts[0] == "submissions"
+        and parts[2] == "task-events"
+        and normalized_method == "GET"
+    ):
+        return True
+    if (
+        len(parts) == 4
+        and parts[0] == "submissions"
+        and parts[2] == "task-events"
+        and parts[3] == "stream"
+        and normalized_method == "GET"
+    ):
+        return True
+    # Public live execution pool (tamper-evidence telemetry only).
+    if (
+        len(parts) == 3
+        and parts[0] == "v1"
+        and parts[1] == "execution-pool"
+        and parts[2] == "live"
         and normalized_method == "GET"
     ):
         return True
@@ -611,6 +665,98 @@ def _target_url(base_url: str, path: str, query: str) -> str:
     if query:
         url = f"{url}?{query}"
     return url
+
+
+# Trust boundary: pool telemetry is tamper-evidence only — never scoring.
+_POOL_SCORE_LIKE_KEYS = frozenset(
+    {
+        "score",
+        "scores",
+        "weight",
+        "weights",
+        "emission",
+        "emission_percent",
+        "raw_score",
+        "final_score",
+        "normalized_score",
+        "incentive",
+    }
+)
+
+
+def _strip_pool_score_fields(payload: Any) -> Any:
+    """Recursively drop score/weight/emission keys from pool payloads."""
+
+    if isinstance(payload, dict):
+        return {
+            key: _strip_pool_score_fields(value)
+            for key, value in payload.items()
+            if str(key).lower() not in _POOL_SCORE_LIKE_KEYS
+        }
+    if isinstance(payload, list):
+        return [_strip_pool_score_fields(item) for item in payload]
+    return payload
+
+
+def _pool_units_from_upstream_body(body: Any) -> list[Any]:
+    """Extract executing units from a challenge live-pool response body.
+
+    Preference order (first present list wins):
+    - ``units`` — Agent Challenge / generic shape
+    - ``executing`` — alternate AC-style key
+    - ``jobs`` — Prism ``GET /v1/execution-pool/live`` shape
+    """
+
+    if not isinstance(body, dict):
+        return []
+    for key in ("units", "executing", "jobs"):
+        value = body.get(key)
+        if isinstance(value, list):
+            stripped = _strip_pool_score_fields(value)
+            return stripped if isinstance(stripped, list) else []
+    return []
+
+
+async def _fetch_challenge_execution_pool(
+    client: httpx.AsyncClient,
+    *,
+    internal_base_url: str,
+) -> dict[str, Any]:
+    """Fetch one challenge live pool; never raises — returns units or error."""
+
+    url = _target_url(internal_base_url, "/v1/execution-pool/live", "")
+    try:
+        response = await client.get(url)
+    except httpx.HTTPError as exc:
+        return {
+            "units": [],
+            "error": {
+                "code": "upstream_unreachable",
+                "message": f"{type(exc).__name__}: {exc}",
+            },
+        }
+
+    if response.status_code != 200:
+        return {
+            "units": [],
+            "error": {
+                "code": "upstream_http_error",
+                "message": f"HTTP {response.status_code}",
+            },
+        }
+
+    try:
+        body = response.json()
+    except ValueError:
+        return {
+            "units": [],
+            "error": {
+                "code": "upstream_invalid_json",
+                "message": "live pool response was not JSON",
+            },
+        }
+
+    return {"units": _pool_units_from_upstream_body(body)}
 
 
 def _challenge_token_provider(registry: Any) -> ChallengeTokenProvider:
@@ -1037,9 +1183,15 @@ def create_proxy_app(
             ),
             preserve_review_capability_authorization=(
                 slug == "agent-challenge"
-                and _is_agent_challenge_review_capability_route(
-                    request.method,
-                    path,
+                and (
+                    _is_agent_challenge_review_capability_route(
+                        request.method,
+                        path,
+                    )
+                    or _is_agent_challenge_eval_capability_route(
+                        request.method,
+                        path,
+                    )
                 )
             ),
             strip_attested_trust_headers=(
@@ -1161,6 +1313,41 @@ def create_proxy_app(
         challenge_name: str, submission_id: str, request: Request
     ) -> Response:
         return await bridge_status(challenge_name, submission_id, request)
+
+    @app.get("/v1/pools/executing")
+    async def pools_executing() -> JSONResponse:
+        """Fan out to embedded challenges' live execution pools.
+
+        Keyed by challenge slug. Partial upstream failure yields HTTP 200 with
+        an error object for that slug (no fabricated units, never 500). Pool
+        payloads are tamper-evidence only — score-like fields are stripped.
+        """
+
+        challenges = await _resolve_value(challenge_registry.list(active_only=True))
+        # Direct loopback httpx (not client_factory) so unit tests can mock
+        # each challenge internal_base_url via respx without the unused factory.
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=False,
+        ) as pool_client:
+            entries = await asyncio.gather(
+                *(
+                    _fetch_challenge_execution_pool(
+                        pool_client,
+                        internal_base_url=record.internal_base_url,
+                    )
+                    for record in challenges
+                )
+            )
+
+        by_slug: dict[str, Any] = {}
+        for record, entry in zip(challenges, entries, strict=True):
+            by_slug[record.slug] = _strip_pool_score_fields(entry)
+
+        return JSONResponse(
+            content={"challenges": by_slug},
+            status_code=status.HTTP_200_OK,
+        )
 
     @app.api_route(
         "/challenges/{slug}",

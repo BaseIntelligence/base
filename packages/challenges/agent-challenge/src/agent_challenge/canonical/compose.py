@@ -148,9 +148,34 @@ DEFAULT_ALLOWED_ENVS: tuple[str, ...] = (
     KEY_RELEASE_TLS_CA_ENV,
     "LLM_COST_LIMIT",
     "EVAL_RUN_TOKEN",
+    # Mid-run progress reporter (observability only; never score-bearing).
+    "EVAL_PROGRESS_BASE_URL",
+    "EVAL_RUN_ID",
+    "EVAL_SUBMISSION_ID",
+    # Local CVM signing secret name only — value never leaves the guest / never hits master APIs.
+    "RUNNER_HOTKEY_MNEMONIC",
     # Measured OpenRouter (eval agent inside measured CVM only when product allows).
     # Never Base gateway; keys stay miner/session encrypted_env on attested guests.
     "OPENROUTER_API_KEY",
+)
+
+
+#: Env names that may appear in encrypted_env / runner config but are NOT part of
+#: the measured compose_hash pin (``04011776…``). Progress/telemetry is optional
+#: observability injected at deploy; baking the names into allowed_envs would
+#: rotate every historical pin. ``encrypt_eval_secrets`` still accepts these via
+#: ``DEFAULT_ALLOWED_ENVS``; compose generation for eval pins uses
+#: :data:`MEASURED_ALLOWED_ENVS`.
+PROGRESS_OPTIONAL_ENVS: tuple[str, ...] = (
+    "EVAL_PROGRESS_BASE_URL",
+    "EVAL_RUN_ID",
+    "EVAL_SUBMISSION_ID",
+    "RUNNER_HOTKEY_MNEMONIC",
+)
+
+#: Pin-stable allowlist used when rendering measured app-compose bytes.
+MEASURED_ALLOWED_ENVS: tuple[str, ...] = tuple(
+    name for name in DEFAULT_ALLOWED_ENVS if name not in set(PROGRESS_OPTIONAL_ENVS)
 )
 
 _DIGEST_PIN_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -355,7 +380,7 @@ def generate_app_compose(
     orchestrator_image: str,
     name: str = DEFAULT_APP_NAME,
     command: Sequence[str] | None = None,
-    allowed_envs: Sequence[str] = DEFAULT_ALLOWED_ENVS,
+    allowed_envs: Sequence[str] = MEASURED_ALLOWED_ENVS,
     key_release_url: str | None = None,
     attestation_enabled: bool = True,
     job_dir: str = DEFAULT_JOB_DIR,
@@ -496,6 +521,8 @@ __all__ = [
     "APP_COMPOSE_MANIFEST_VERSION",
     "APP_COMPOSE_RUNNER",
     "DEFAULT_ALLOWED_ENVS",
+    "MEASURED_ALLOWED_ENVS",
+    "PROGRESS_OPTIONAL_ENVS",
     "DEFAULT_APP_NAME",
     "DEFAULT_CACHE_ROOT",
     "DEFAULT_DIGEST_MANIFEST",

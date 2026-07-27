@@ -950,6 +950,113 @@ def validate_eval_receipt(value: Any) -> dict[str, Any]:
     }
 
 
+# Mid-run progress (observability only — never carries score material).
+EVAL_PROGRESS_PHASES = frozenset(
+    {"assigned", "starting", "waiting", "running", "completed", "failed"}
+)
+EVAL_PROGRESS_EVENT_TYPES = frozenset({"task.status", "task.progress"})
+_PROGRESS_FORBIDDEN_FIELDS = frozenset(
+    {
+        "score",
+        "score_record",
+        "scores_digest",
+        "execution_proof",
+        "agent_hash",
+        "canonical_score_record",
+        "passed_tasks",
+        "total_tasks",
+    }
+)
+_PROGRESS_REQUIRED_FIELDS = (
+    "schema_version",
+    "eval_run_id",
+    "submission_id",
+    "task_id",
+    "sequence",
+    "status",
+)
+_PROGRESS_OPTIONAL_FIELDS = frozenset({"event_type", "progress", "message"})
+
+
+def validate_eval_progress_request(value: Any) -> dict[str, Any]:
+    """Validate a mid-run Eval progress event (schema-closed, score-free)."""
+
+    if not isinstance(value, Mapping):
+        raise EvalWireError("eval_progress_request must be an object")
+    keys = set(value)
+    forbidden = sorted(keys & _PROGRESS_FORBIDDEN_FIELDS)
+    if forbidden:
+        raise EvalWireError(f"eval_progress_request forbids score fields: {forbidden}")
+    missing = [name for name in _PROGRESS_REQUIRED_FIELDS if name not in keys]
+    unknown = sorted(keys - set(_PROGRESS_REQUIRED_FIELDS) - _PROGRESS_OPTIONAL_FIELDS)
+    if missing or unknown:
+        raise EvalWireError(
+            f"eval_progress_request has invalid fields: missing={missing}, unknown={unknown}"
+        )
+    if value["schema_version"] != 1:
+        raise EvalWireError("eval_progress_request schema_version must be 1")
+    status = value["status"]
+    if not isinstance(status, str) or status not in EVAL_PROGRESS_PHASES:
+        raise EvalWireError("eval_progress_request status is not a safe task phase")
+    event_type = value.get("event_type", "task.status")
+    if not isinstance(event_type, str) or event_type not in EVAL_PROGRESS_EVENT_TYPES:
+        raise EvalWireError("eval_progress_request event_type is invalid")
+    progress = value.get("progress", None)
+    if progress is not None:
+        if isinstance(progress, bool) or not isinstance(progress, (int, float)):
+            raise EvalWireError("eval_progress_request progress must be a number or null")
+        progress_f = float(progress)
+        if not math.isfinite(progress_f) or progress_f < 0.0 or progress_f > 1.0:
+            raise EvalWireError("eval_progress_request progress must be finite in [0, 1]")
+        progress = progress_f
+    message = value.get("message", None)
+    if message is not None:
+        if not isinstance(message, str):
+            raise EvalWireError("eval_progress_request message must be a string or null")
+        if len(message.encode("utf-8")) > EVAL_MAX_STRING_BYTES:
+            raise EvalWireError("eval_progress_request message exceeds its string bound")
+    return {
+        "schema_version": 1,
+        "eval_run_id": _id(value["eval_run_id"], "eval_run_id"),
+        "submission_id": _id(value["submission_id"], "submission_id"),
+        "task_id": _id(value["task_id"], "task_id"),
+        "sequence": _integer(value["sequence"], "sequence", minimum=1),
+        "status": status,
+        "event_type": event_type,
+        "progress": progress,
+        "message": message,
+    }
+
+
+def validate_eval_progress_receipt(value: Any) -> dict[str, Any]:
+    """Validate the closed receipt returned by the progress ingest route."""
+
+    data = _object(
+        value,
+        "eval_progress_receipt",
+        (
+            "schema_version",
+            "eval_run_id",
+            "task_id",
+            "sequence",
+            "event_id",
+            "created",
+        ),
+    )
+    if data["schema_version"] != 1:
+        raise EvalWireError("eval_progress_receipt schema_version must be 1")
+    if not isinstance(data["created"], bool):
+        raise EvalWireError("eval_progress_receipt.created must be boolean")
+    return {
+        "schema_version": 1,
+        "eval_run_id": _id(data["eval_run_id"], "eval_run_id"),
+        "task_id": _id(data["task_id"], "task_id"),
+        "sequence": _integer(data["sequence"], "sequence", minimum=1),
+        "event_id": _integer(data["event_id"], "event_id", minimum=1),
+        "created": data["created"],
+    }
+
+
 __all__ = [
     "EVAL_MAX_EVENT_LOG_BYTES",
     "EVAL_MAX_EVENT_LOG_ENTRIES",
@@ -980,8 +1087,12 @@ __all__ = [
     "validate_eval_execution_proof",
     "validate_eval_plan",
     "validate_eval_phala_attestation",
+    "validate_eval_progress_receipt",
+    "validate_eval_progress_request",
     "validate_eval_receipt",
     "validate_eval_result_request",
+    "EVAL_PROGRESS_EVENT_TYPES",
+    "EVAL_PROGRESS_PHASES",
     "validate_score_binding",
     "validate_scoring_policy",
 ]

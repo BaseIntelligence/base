@@ -505,7 +505,6 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("GET", "/internal/v1/reviews/session-1/report"),
         ("GET", "/internal/v1/reviews/session-1/evidence/object-1"),
         ("POST", "/internal/v1/reviews/session-1/approvals"),
-        ("POST", "/evaluation/v1/runs/run-1/result"),
         ("GET", "/key-release/nonce"),
         ("POST", "/key-release/release"),
         ("GET", "/keyrelease/nonce"),
@@ -996,3 +995,407 @@ def test_public_review_tee_get_strips_trust_headers() -> None:
     assert "x-allowlist-digest" not in headers
     assert "x-measurement-mrtd" not in headers
     assert "x-review-verified" not in headers
+
+
+# ---------------------------------------------------------------------------
+# Realtime eval telemetry capability + public pool/SSE reads (attested allowlist)
+# ---------------------------------------------------------------------------
+
+
+_EVAL_CAPABILITY_POST_ROUTES = (
+    (
+        "POST",
+        "/challenges/agent-challenge/evaluation/v1/runs/run-1/progress",
+        "/evaluation/v1/runs/run-1/progress",
+    ),
+    (
+        "POST",
+        "/challenges/agent-challenge/evaluation/v1/runs/run-1/telemetry-session",
+        "/evaluation/v1/runs/run-1/telemetry-session",
+    ),
+    (
+        "POST",
+        "/challenges/agent-challenge/evaluation/v1/runs/run-1/result",
+        "/evaluation/v1/runs/run-1/result",
+    ),
+)
+
+_PUBLIC_POOL_SSE_GET_ROUTES = (
+    (
+        "GET",
+        "/challenges/agent-challenge/submissions/sub-1/task-events",
+        "/submissions/sub-1/task-events",
+    ),
+    (
+        "GET",
+        "/challenges/agent-challenge/submissions/sub-1/task-events/stream",
+        "/submissions/sub-1/task-events/stream",
+    ),
+    (
+        "GET",
+        "/challenges/agent-challenge/v1/execution-pool/live",
+        "/v1/execution-pool/live",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    _EVAL_CAPABILITY_POST_ROUTES,
+)
+def test_eval_capability_routes_allowed_when_attested_flag_on(
+    method: str,
+    path: str,
+    upstream_path: str,
+) -> None:
+    """Eval-run Bearer capability POSTs must be allowlisted under attested mode."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.request(
+        method,
+        path,
+        content=b'{"schema_version":1,"marker":true}',
+        headers={
+            "Authorization": "Bearer eval_run_token.deadbeef",
+            "Content-Type": "application/json",
+            "X-Telemetry-Session": "sess-1",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    _EVAL_CAPABILITY_POST_ROUTES,
+)
+def test_eval_capability_routes_preserve_authorization_and_strip_trust(
+    method: str,
+    path: str,
+    upstream_path: str,
+) -> None:
+    """Mirror review-capability: forward Authorization; strip client trust headers."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.request(
+        method,
+        path,
+        content=b'{"schema_version":1}',
+        headers={
+            "Authorization": "Bearer eval_run_token.deadbeef",
+            "Proxy-Authorization": "Basic should-still-strip",
+            "X-Admin-Token": "should-strip",
+            "X-Base-Admin-Token": "should-strip",
+            "X-Base-Internal-Token": "should-strip",
+            "X-Internal-Authorization": "should-strip",
+            "X-Base-Verified-Hotkey": "should-strip",
+            "X-Base-Verified-Future": "should-strip",
+            "X-Base-Request-Hash": "should-strip",
+            "X-Trust-Level": "should-strip",
+            "X-Trusted-Proxy": "should-strip",
+            "X-Base-Trust-Result": "should-strip",
+            "X-RA-TLS-Peer-Key": "should-strip",
+            "X-RATLS-Peer-Certificate": "should-strip",
+            "X-Review-Verified": "true",
+            "X-Attestation-Verified": "true",
+            "X-Allowlist-Digest": "should-strip",
+            "X-Measurement-MRTD": "should-strip",
+            "Forwarded": "for=caller",
+            "X-Forwarded-For": "198.51.100.7",
+            "X-Real-IP": "198.51.100.8",
+            "X-Public-Header": "preserved",
+            "X-Telemetry-Session": "sess-capability-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+    headers: httpx.Headers = captured["headers"]
+    assert headers["authorization"] == "Bearer eval_run_token.deadbeef"
+    assert headers["x-public-header"] == "preserved"
+    assert headers.get("x-telemetry-session") == "sess-capability-1"
+    assert "proxy-authorization" not in headers
+    assert "x-admin-token" not in headers
+    assert "x-base-admin-token" not in headers
+    assert "x-base-internal-token" not in headers
+    assert "x-internal-authorization" not in headers
+    assert "x-base-verified-hotkey" not in headers
+    assert "x-base-verified-future" not in headers
+    assert "x-base-request-hash" not in headers
+    assert "x-trust-level" not in headers
+    assert "x-trusted-proxy" not in headers
+    assert "x-base-trust-result" not in headers
+    assert "x-ra-tls-peer-key" not in headers
+    assert "x-ratls-peer-certificate" not in headers
+    assert "x-review-verified" not in headers
+    assert "x-attestation-verified" not in headers
+    assert "x-allowlist-digest" not in headers
+    assert "x-measurement-mrtd" not in headers
+    assert "forwarded" not in headers
+    assert "x-forwarded-for" not in headers
+    assert "x-real-ip" not in headers
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    _PUBLIC_POOL_SSE_GET_ROUTES,
+)
+def test_public_pool_and_task_event_reads_allowed_when_attested_flag_on(
+    method: str,
+    path: str,
+    upstream_path: str,
+) -> None:
+    """Public pool live + task-events (incl. SSE stream) must be allowlisted."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(
+            200,
+            content=b'{"schema_version":1,"units":[]}',
+            headers={"content-type": "application/json"},
+        )
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.request(
+        method,
+        path,
+        headers={
+            "Authorization": "Bearer should-not-forward-on-public-read",
+            "X-Allowlist-Digest": "caller-allowlist",
+            "X-Base-Verified-Hotkey": "forged",
+            "X-Attestation-Verified": "true",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-public-header"] == "preserved"
+    assert headers.get_list("x-base-proxy") == ["true"]
+    assert headers.get_list("x-base-challenge-slug") == ["agent-challenge"]
+    # Public reads are not capability routes — Authorization stays stripped.
+    assert "authorization" not in headers
+    assert "x-allowlist-digest" not in headers
+    assert "x-base-verified-hotkey" not in headers
+    assert "x-attestation-verified" not in headers
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    (
+        ("GET", "/challenges/agent-challenge/internal/v1/reviews/session-1/report"),
+        ("POST", "/challenges/agent-challenge/internal/v1/eval/runs/run-1/progress"),
+        ("GET", "/challenges/agent-challenge/internal/v1/execution-pool/live"),
+        ("POST", "/challenges/agent-challenge/internal/v1/anything"),
+    ),
+)
+def test_attested_mode_denies_internal_v1_paths_not_proxied(
+    method: str,
+    path: str,
+) -> None:
+    """Any /internal/v1/... under agent-challenge stays fail-closed (not proxied)."""
+
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request.url.path)
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.request(
+        method,
+        path,
+        content=b'{"forged":true}' if method == "POST" else None,
+        headers={
+            "Authorization": "Bearer caller-capability",
+            "X-Base-Internal-Token": "forged-internal",
+            "X-Attestation-Verified": "true",
+            "X-Base-Verified-Hotkey": "forged",
+        },
+    )
+
+    assert response.status_code == 404
+    assert upstream_calls == []
+
+
+def test_attested_mode_denies_arbitrary_non_allowlisted_ac_path() -> None:
+    """Arbitrary non-allowlisted AC path is local 404 (fail-closed)."""
+
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request.url.path)
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.get(
+        "/challenges/agent-challenge/telemetry/v1/debug/dump",
+        headers={"Authorization": "Bearer caller-capability"},
+    )
+
+    assert response.status_code == 404
+    assert upstream_calls == []
+
+
+def test_eval_capability_allowlist_helper_accepts_exact_shapes() -> None:
+    """Direct allowlist helper pins exact evaluation/v1/runs/{id}/{action} shapes."""
+
+    for action in ("progress", "telemetry-session", "result"):
+        path = f"evaluation/v1/runs/run-42/{action}"
+        assert (
+            _is_agent_challenge_enabled_mode_allowed_route(
+                "agent-challenge",
+                "POST",
+                path,
+            )
+            is True
+        )
+
+
+def test_public_pool_sse_allowlist_helper_accepts_exact_shapes() -> None:
+    """Direct allowlist helper pins task-events + execution-pool/live GETs."""
+
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "GET",
+            "submissions/sub-9/task-events",
+        )
+        is True
+    )
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "GET",
+            "submissions/sub-9/task-events/stream",
+        )
+        is True
+    )
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "GET",
+            "v1/execution-pool/live",
+        )
+        is True
+    )
+
+
+def test_review_capability_still_preserves_authorization_adjacent_regression() -> None:
+    """Adjacent: measured-review guest Bearer semantics unchanged by eval telemetry."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        return httpx.Response(200, json={"ok": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.get(
+        "/challenges/agent-challenge/review/v1/assignments/assignment-1/artifact",
+        headers={
+            "Authorization": "Bearer ra_assignment-1.deadbeef",
+            "Proxy-Authorization": "Basic should-still-strip",
+            "X-Admin-Token": "should-strip",
+            "X-Base-Verified-Hotkey": "should-strip",
+            "X-Public-Header": "preserved",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/review/v1/assignments/assignment-1/artifact"
+    headers: httpx.Headers = captured["headers"]
+    assert headers["authorization"] == "Bearer ra_assignment-1.deadbeef"
+    assert headers["x-public-header"] == "preserved"
+    assert "proxy-authorization" not in headers
+    assert "x-admin-token" not in headers
+    assert "x-base-verified-hotkey" not in headers
+
+
+def test_validator_assignment_progress_not_confused_with_eval_telemetry() -> None:
+    """Adjacent: master POST /v1/assignments/{id}/progress is not eval telemetry.
+
+    Validator lease heartbeat (assignment_coordination) must remain a distinct
+    master route — never treated as an agent-challenge evaluation capability
+    path and never allowlisted as challenge-local telemetry.
+    """
+
+    # Challenge-local lookalike must stay denied under attested mode.
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "POST",
+            "v1/assignments/asg-1/progress",
+        )
+        is False
+    )
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "POST",
+            "assignments/asg-1/progress",
+        )
+        is False
+    )
+
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(f"{request.method} {request.url.path}")
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+
+    # Challenge-prefixed lookalike is fail-closed (not proxied as eval telemetry).
+    challenge_lookalike = client.post(
+        "/challenges/agent-challenge/v1/assignments/asg-1/progress",
+        content=b'{"checkpoint_ref":"x"}',
+        headers={"Authorization": "Bearer eval_run_token.deadbeef"},
+    )
+    assert challenge_lookalike.status_code == 404
+    assert upstream_calls == []
+
+    # Master validator lease path is NOT the challenge proxy surface. Without
+    # assignment_coordination_service the route is absent (404) — never forwarded
+    # upstream as agent-challenge evaluation progress.
+    master_progress = client.post(
+        "/v1/assignments/asg-1/progress",
+        content=b'{"checkpoint_ref":"x","meta":{}}',
+        headers={
+            "Authorization": "Bearer should-not-become-eval-capability",
+            "Content-Type": "application/json",
+        },
+    )
+    assert master_progress.status_code == 404
+    assert upstream_calls == []
+    # Must not be rewritten into evaluation/v1/runs/... either.
+    assert b"evaluation" not in master_progress.content.lower()

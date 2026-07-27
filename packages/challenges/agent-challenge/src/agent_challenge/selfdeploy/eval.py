@@ -20,6 +20,7 @@ from dstack_sdk import EnvVar, encrypt_env_vars_sync
 from agent_challenge.canonical import eval_wire
 from agent_challenge.canonical.compose import (
     DEFAULT_ALLOWED_ENVS,
+    MEASURED_ALLOWED_ENVS,
     generate_app_compose,
     render_app_compose,
 )
@@ -41,7 +42,7 @@ from agent_challenge.selfdeploy.shapes import (
 
 #: Capacity-safe default (bare ``us-west`` → ERR-02-002 No teepod found).
 DEFAULT_REGION = "us-west-1"
-EVAL_ALLOWED_ENVS: tuple[str, ...] = DEFAULT_ALLOWED_ENVS
+EVAL_ALLOWED_ENVS: tuple[str, ...] = MEASURED_ALLOWED_ENVS
 # VAL-ACAT-013: production eval encrypted_env must NOT require Base LLM gateway
 # secrets. Gateway routing is removed; only eval-run capability + attestation
 # plan bindings (and optional cost limit) are required.
@@ -271,7 +272,11 @@ def encrypt_eval_secrets(
 ) -> EncryptedEvalSecrets:
     """Encrypt the Eval run token and attestation plan bindings (no Base gateway)."""
 
-    if not set(secrets) <= set(EVAL_ALLOWED_ENVS) or not EVAL_REQUIRED_SECRET_ENVS <= set(secrets):
+    # Encrypt allowlist is the full DEFAULT_ALLOWED_ENVS (includes optional
+    # progress/telemetry names). Measured compose generation stays on
+    # EVAL_ALLOWED_ENVS / MEASURED_ALLOWED_ENVS so historical pins remain stable.
+    allowed = set(DEFAULT_ALLOWED_ENVS)
+    if not set(secrets) <= allowed or not EVAL_REQUIRED_SECRET_ENVS <= set(secrets):
         raise EvalDeploymentError(
             "Eval encrypted_env names must be scoped allowed names with the required run "
             "and attestation plan capabilities (Base LLM gateway secrets are not allowed)"
@@ -296,9 +301,7 @@ def encrypt_eval_secrets(
         free_url = secrets[KEY_RELEASE_URL_ENV]
         plan_endpoint = str(plan.plan.get("key_release_endpoint") or "").strip()
         plan_auth = parse_key_release_authority(plan_endpoint)
-        free_auth = parse_key_release_authority(
-            free_url if isinstance(free_url, str) else ""
-        )
+        free_auth = parse_key_release_authority(free_url if isinstance(free_url, str) else "")
         if plan_auth is None or free_auth is None or free_auth != plan_auth:
             raise EvalDeploymentError(
                 "Eval encrypted_env CHALLENGE_PHALA_KEY_RELEASE_URL is not miner-"
@@ -306,7 +309,7 @@ def encrypt_eval_secrets(
                 "authority (prefer KEY_RELEASE_RA_TLS_HOST/PORT). Free HTTP(S) KR "
                 "URLs are refused."
             )
-    env_keys = tuple(name for name in EVAL_ALLOWED_ENVS if name in secrets)
+    env_keys = tuple(name for name in DEFAULT_ALLOWED_ENVS if name in secrets)
     values = {name: secrets[name] for name in env_keys}
     if any(not isinstance(value, str) or not value for value in values.values()):
         raise EvalDeploymentError("Eval encrypted_env values must be non-empty strings")
@@ -345,7 +348,7 @@ class HttpEvalPhalaDeployment:
             encrypted.eval_run_id != plan.eval_run_id
             or encrypted.app_identity != plan.app_identity
             or encrypted.kms_public_key_sha256 != plan.kms_public_key_sha256
-            or not set(encrypted.env_keys) <= set(EVAL_ALLOWED_ENVS)
+            or not set(encrypted.env_keys) <= set(DEFAULT_ALLOWED_ENVS)
             or not encrypted.ciphertext
         ):
             raise EvalDeploymentError("Eval encrypted_env is not bound to this run")
@@ -455,6 +458,24 @@ class EvalPhalaDeployment(HttpEvalPhalaDeployment):
         raise AssertionError(f"unexpected Phala API path {path}")
 
 
+def build_eval_progress_env(
+    *,
+    base_url: str,
+    eval_run_id: str,
+    submission_id: str,
+    eval_run_token: str,
+) -> dict[str, str]:
+    """Bind progress-reporter env from plan ids + run token (no mnemonic)."""
+
+    cleaned = base_url.strip().rstrip("/")
+    return {
+        "EVAL_PROGRESS_BASE_URL": cleaned,
+        "EVAL_RUN_ID": eval_run_id,
+        "EVAL_SUBMISSION_ID": str(submission_id),
+        "EVAL_RUN_TOKEN": eval_run_token,
+    }
+
+
 __all__ = [
     "DEFAULT_EVAL_COMPOSE_NAME",
     "DEFAULT_EVAL_PHALA_APP_NONCE",
@@ -469,5 +490,6 @@ __all__ = [
     "EvalPhalaDeployment",
     "HttpEvalPhalaDeployment",
     "build_eval_deployment_plan",
+    "build_eval_progress_env",
     "encrypt_eval_secrets",
 ]
