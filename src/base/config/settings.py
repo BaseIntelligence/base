@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -270,6 +271,52 @@ class DockerSettings(BaseModel):
 class SecuritySettings(BaseModel):
     admin_token: str | None = None
     admin_token_file: str | None = None
+
+
+class ConstationSettings(BaseModel):
+    """Production constation orchestration (miner Lium key + sidecar attest).
+
+    Fail-closed: ``enabled`` defaults False until ops turns the plane on.
+    Fernet custody / attestation secrets may be supplied inline or via ``*_file``
+    paths (file contents are read lazily by consumers, not here).
+    Env nesting: ``BASE_CONSTATION__<FIELD>`` (see ``loader._apply_env``).
+    """
+
+    enabled: bool = False
+    custody_master_key: str | None = None
+    custody_master_key_file: Path | None = None
+    attestation_verify_key_hex: str | None = None
+    attestation_build_secret: str | None = None
+    attestation_build_secret_file: Path | None = None
+    gap_budget_seconds: float = 30.0
+    duration_seconds: float = 300.0
+    min_interval_seconds: float = 5.0
+    max_interval_seconds: float = 20.0
+    max_polls: int = 200
+    poll_timeout_seconds: float = 15.0
+    sidecar_scheme: str = "http"
+    sidecar_internal_port: int = 8787
+    custody_persist: bool = True
+
+    @model_validator(mode="after")
+    def validate_constation_bounds(self) -> ConstationSettings:
+        if self.gap_budget_seconds <= 0:
+            raise ValueError("gap_budget_seconds must be positive")
+        if self.duration_seconds <= 0:
+            raise ValueError("duration_seconds must be positive")
+        if self.min_interval_seconds <= 0:
+            raise ValueError("min_interval_seconds must be positive")
+        if self.max_interval_seconds < self.min_interval_seconds:
+            raise ValueError("max_interval_seconds must be >= min_interval_seconds")
+        if self.max_polls <= 0:
+            raise ValueError("max_polls must be positive")
+        if self.poll_timeout_seconds <= 0:
+            raise ValueError("poll_timeout_seconds must be positive")
+        if not 1 <= self.sidecar_internal_port <= 65535:
+            raise ValueError("sidecar_internal_port must be in 1..65535")
+        if self.sidecar_scheme not in {"http", "https"}:
+            raise ValueError("sidecar_scheme must be 'http' or 'https'")
+        return self
 
 
 class ComputeSettings(BaseModel):
@@ -546,6 +593,7 @@ class Settings(BaseModel):
     docker: DockerSettings = Field(default_factory=DockerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
+    constation: ConstationSettings = Field(default_factory=ConstationSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)

@@ -183,16 +183,27 @@ class PhaseSidecar:
 @dataclass
 class ScriptedLium:
     digests: list[str | None]
+    miner_hotkey: str = HOTKEY
+    status: str = "RUNNING"
     calls: int = 0
 
     async def get_pod_raw(self, pod_id: str) -> LiumPodRead:
         self.calls += 1
         idx = min(self.calls - 1, len(self.digests) - 1)
+        digest = self.digests[idx]
         return LiumPodRead(
             pod_id=pod_id,
             template_id="tmpl-fixture",
-            docker_image_digest=self.digests[idx],
-            raw={},
+            docker_image_digest=digest,
+            raw={
+                "id": pod_id,
+                "status": self.status,
+                "executor": {
+                    "miner_hotkey": self.miner_hotkey,
+                    "executor_ip_address": "10.0.0.1",
+                },
+                "template": {"docker_image_digest": digest},
+            },
         )
 
     async def balance(self) -> float:
@@ -264,6 +275,7 @@ def _register_allowlist(allowlist: DigestAllowlist, digest: str) -> None:
             tree_sha=TREE,
             variant=ImageVariant.CUDA,
             digest=digest,
+            sealed_manifest_hashes=dict(SEALED),
         )
     )
 
@@ -447,7 +459,7 @@ async def _run_constation(
             work_unit_id=work_unit_id,
             pod_id=pod_id,
             duration_seconds=duration,
-            expected_sidecar_digest=sidecar.digest,
+            required_digest=sidecar.digest,
         )
     )
 

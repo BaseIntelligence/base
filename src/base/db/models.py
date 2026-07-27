@@ -1260,6 +1260,12 @@ class ImageDigestAllowlistEntry(Base, TimestampMixin):
     tree_sha: Mapped[str] = mapped_column(Text, nullable=False)
     variant: Mapped[str] = mapped_column(Text, nullable=False)
     digest: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed_manifest_hashes: Mapped[dict[str, str]] = mapped_column(
+        JSON,
+        nullable=False,
+        server_default="{}",
+        default=dict,
+    )
 
 
 class DeniedImageDigest(Base):

@@ -96,6 +96,7 @@ async def test_register_and_check_allowlist(harness: dict[str, Any]) -> None:
             "tree_sha": TREE,
             "variant": "cuda",
             "digest": DIGEST,
+            "sealed_manifest_hashes": dict(MANIFEST),
         },
     )
     assert reg.status_code == 200, reg.text
@@ -214,3 +215,305 @@ async def test_verify_attestation_ok(harness: dict[str, Any]) -> None:
     )
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_register_digest_http_rejects_empty_sealed_manifest(
+    harness: dict[str, Any],
+) -> None:
+    """Given empty sealed hashes, When POST register_digest, Then 4xx not 500."""
+    client = harness["client"]
+    headers = harness["headers"]
+    reg = await client.post(
+        "/internal/v1/constation/register_digest",
+        headers=headers,
+        json={
+            "commit_sha": COMMIT,
+            "tree_sha": TREE,
+            "variant": "cuda",
+            "digest": DIGEST,
+            "sealed_manifest_hashes": {},
+        },
+    )
+    assert 400 <= reg.status_code < 500, reg.text
+    assert reg.status_code != 500
+
+
+# ---------------------------------------------------------------------------
+# T6b register_miner_key
+# ---------------------------------------------------------------------------
+
+
+class _FakePodBinding:
+    """Minimal stand-in for MinerPodBinding.register (HTTP layer only)."""
+
+    def __init__(
+        self,
+        *,
+        verdict: object | None = None,
+        raise_value_error: str | None = None,
+    ) -> None:
+        from base.compute.constation_types import ConstationFailCode, ConstationVerdict
+
+        self.calls: list[dict[str, str]] = []
+        self._raise = raise_value_error
+        self._verdict = (
+            verdict
+            if verdict is not None
+            else ConstationVerdict(ok=True, reason=ConstationFailCode.OK)
+        )
+
+    async def register(
+        self,
+        *,
+        miner_hotkey: str,
+        api_key: str,
+        instance_id: str,
+    ) -> object:
+        self.calls.append(
+            {
+                "miner_hotkey": miner_hotkey,
+                "api_key": api_key,
+                "instance_id": instance_id,
+            }
+        )
+        if self._raise is not None:
+            raise ValueError(self._raise)
+        return self._verdict
+
+
+@pytest.fixture
+async def register_miner_harness(
+    tmp_path: Path,
+) -> AsyncIterator[dict[str, Any]]:
+    from fastapi import FastAPI
+
+    from base.master.constation.routes import build_constation_router
+
+    db_path = tmp_path / "register_miner_http.sqlite3"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    allowlist_repo = DigestAllowlistRepository(factory)
+    nonce_svc = DurableAttestationNonceService(factory, ttl=timedelta(hours=1))
+    fake = _FakePodBinding()
+    app = FastAPI()
+    router = build_constation_router(
+        allowlist_repo=allowlist_repo,
+        nonce_service=nonce_svc,
+        internal_token=TOKEN,
+        pod_binding=fake,  # type: ignore[arg-type]
+    )
+    app.include_router(router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield {
+            "client": client,
+            "headers": {"Authorization": f"Bearer {TOKEN}"},
+            "binding": fake,
+            "app": app,
+            "allowlist_repo": allowlist_repo,
+            "nonce_svc": nonce_svc,
+        }
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_register_miner_key_ok(
+    register_miner_harness: dict[str, Any],
+) -> None:
+    """Given valid body + binding ok, When POST, Then 200 registered."""
+    client: AsyncClient = register_miner_harness["client"]
+    headers = register_miner_harness["headers"]
+    binding: _FakePodBinding = register_miner_harness["binding"]
+    secret = "lium-http-test-key-NEVER-ECHO"
+
+    r = await client.post(
+        "/internal/v1/constation/register_miner_key",
+        headers=headers,
+        json={
+            "miner_hotkey": "hk-miner-1",
+            "api_key": secret,
+            "instance_id": "pod-xyz",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body == {"status": "registered"}
+    assert "api_key" not in body
+    assert secret not in r.text
+    assert binding.calls == [
+        {
+            "miner_hotkey": "hk-miner-1",
+            "api_key": secret,
+            "instance_id": "pod-xyz",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_register_miner_key_verdict_fail_is_422(
+    tmp_path: Path,
+) -> None:
+    """Given fail verdict, When POST, Then 422 with fail code not 500."""
+    from fastapi import FastAPI
+
+    from base.compute.constation_types import ConstationFailCode, ConstationVerdict
+    from base.master.constation.routes import build_constation_router
+
+    db_path = tmp_path / "register_miner_fail.sqlite3"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    fake = _FakePodBinding(
+        verdict=ConstationVerdict(
+            ok=False,
+            reason=ConstationFailCode.LIUM_AUTH_REVOKED,
+            detail="probe_401",
+        )
+    )
+    app = FastAPI()
+    app.include_router(
+        build_constation_router(
+            allowlist_repo=DigestAllowlistRepository(factory),
+            nonce_service=DurableAttestationNonceService(
+                factory, ttl=timedelta(hours=1)
+            ),
+            internal_token=TOKEN,
+            pod_binding=fake,  # type: ignore[arg-type]
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/internal/v1/constation/register_miner_key",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "miner_hotkey": "hk-1",
+                "api_key": "bad-key-secret",
+                "instance_id": "pod-1",
+            },
+        )
+    await engine.dispose()
+    assert r.status_code == 422, r.text
+    assert r.status_code != 500
+    detail = r.json()["detail"]
+    assert "lium_auth_revoked" in str(detail)
+    assert "bad-key-secret" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_register_miner_key_without_binding_is_503(
+    tmp_path: Path,
+) -> None:
+    """Given pod_binding=None, When POST register_miner_key, Then 503."""
+    from fastapi import FastAPI
+
+    from base.master.constation.routes import build_constation_router
+
+    db_path = tmp_path / "register_miner_503.sqlite3"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(
+        build_constation_router(
+            allowlist_repo=DigestAllowlistRepository(factory),
+            nonce_service=DurableAttestationNonceService(
+                factory, ttl=timedelta(hours=1)
+            ),
+            internal_token=TOKEN,
+            pod_binding=None,
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/internal/v1/constation/register_miner_key",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "miner_hotkey": "hk-1",
+                "api_key": "k",
+                "instance_id": "pod-1",
+            },
+        )
+    await engine.dispose()
+    assert r.status_code == 503, r.text
+
+
+@pytest.mark.asyncio
+async def test_register_miner_key_requires_internal_auth(
+    register_miner_harness: dict[str, Any],
+) -> None:
+    """Given no bearer, When POST register_miner_key, Then 401."""
+    client: AsyncClient = register_miner_harness["client"]
+    r = await client.post(
+        "/internal/v1/constation/register_miner_key",
+        json={
+            "miner_hotkey": "hk-1",
+            "api_key": "k",
+            "instance_id": "pod-1",
+        },
+    )
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_register_miner_key_value_error_is_422(
+    tmp_path: Path,
+) -> None:
+    """Given binding raises ValueError, When POST, Then 422 not 500."""
+    from fastapi import FastAPI
+
+    from base.master.constation.routes import build_constation_router
+
+    db_path = tmp_path / "register_miner_ve.sqlite3"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    fake = _FakePodBinding(raise_value_error="miner_hotkey must be a non-empty string")
+    app = FastAPI()
+    app.include_router(
+        build_constation_router(
+            allowlist_repo=DigestAllowlistRepository(factory),
+            nonce_service=DurableAttestationNonceService(
+                factory, ttl=timedelta(hours=1)
+            ),
+            internal_token=TOKEN,
+            pod_binding=fake,  # type: ignore[arg-type]
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/internal/v1/constation/register_miner_key",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "miner_hotkey": "   ",
+                "api_key": "k",
+                "instance_id": "pod-1",
+            },
+        )
+    await engine.dispose()
+    assert r.status_code == 422, r.text
+    assert r.status_code != 500

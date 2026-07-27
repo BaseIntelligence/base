@@ -137,7 +137,19 @@ async def test_prism_adapter_passes_broker_and_payload() -> None:
     assert sent["payload"]["gateway_token"] == "scoped-token"
 
 
-async def test_prism_adapter_unavailable_raises() -> None:
+async def test_prism_adapter_unavailable_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Monorepo workspace always has prism_challenge importable; simulate the
+    # lazy-import failure path the adapter documents for standalone installs.
+    import base.validator.agent.adapters.prism as prism_adapter
+
+    def _boom() -> object:
+        raise AssignmentExecutionError(
+            "prism dispatch adapter is unavailable: simulated"
+        )
+
+    monkeypatch.setattr(prism_adapter, "_load_dispatch", _boom)
     adapter = PrismCycleExecutor()
     with pytest.raises(AssignmentExecutionError) as excinfo:
         await adapter.execute(
