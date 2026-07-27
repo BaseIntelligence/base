@@ -38,6 +38,7 @@ from agent_challenge.selfdeploy.phala import (
     DEFAULT_PHALA_API,
     PhalaApiError,
     PhalaCloudClient,
+    resolve_cvm_id_from_list,
 )
 from agent_challenge.selfdeploy.plan import (
     CredentialError,
@@ -143,22 +144,104 @@ def _bounded_text(value: str | None, *, limit: int = _TEARDOWN_DIAGNOSTIC_LIMIT)
     return text[: limit - 3] + "..."
 
 
-def default_phala_teardown(cvm_id: str) -> dict[str, Any]:  # pragma: no cover
-    """Delete a CVM via ``phala cvms delete <id> -f`` (idempotent; live, M6).
+def default_phala_teardown(
+    cvm_id: str,
+    *,
+    client: PhalaCloudClient | None = None,
+) -> dict[str, Any]:
+    """Delete a CVM via Phala Cloud HTTP ``DELETE /cvms/{id}`` (idempotent).
 
-    Always returns a structured result with ``ok``/``returncode`` so callers can
-    fail non-zero when deletion does not succeed. Stdout/stderr are bounded.
+    Uses :class:`PhalaCloudClient` — never shells out to a ``phala`` binary
+    (the binary is not present on production validator containers). 204 and
+    404 from the API are success. Always returns a structured result with
+    ``ok``/``returncode`` so callers can fail non-zero when deletion fails.
     """
 
-    proc = subprocess.run(["phala", "cvms", "delete", cvm_id, "-f"], capture_output=True, text=True)
-    ok = proc.returncode == 0
+    try:
+        api = client if client is not None else PhalaCloudClient()
+        api.delete_cvm(cvm_id)
+    except (PhalaApiError, CredentialError) as exc:
+        return {
+            "returncode": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "error": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001 - surface unexpected transport failures
+        return {
+            "returncode": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "error": f"teardown failed: {exc.__class__.__name__}",
+        }
     return {
-        "returncode": proc.returncode,
-        "ok": ok,
-        "stdout": _bounded_text(proc.stdout),
-        "stderr": _bounded_text(proc.stderr),
-        "error": None if ok else "phala cvms delete failed",
+        "returncode": 0,
+        "ok": True,
+        "stdout": "",
+        "stderr": "",
+        "error": None,
     }
+
+
+def resolve_teardown_cvm_id(
+    *,
+    cvm_id: str | None,
+    app_id: str | None,
+    client: PhalaCloudClient | None = None,
+) -> str:
+    """Resolve the CVM id for teardown: explicit id, else unique app_id match."""
+
+    explicit = (cvm_id or "").strip()
+    if explicit:
+        return explicit
+    identity = (app_id or "").strip()
+    if not identity:
+        raise RouteClientError("teardown requires --cvm-id or --app-id")
+    api = client if client is not None else PhalaCloudClient()
+    listing = api.get("/cvms")
+    resolved = resolve_cvm_id_from_list(listing, app_id=identity, require_unique=True)
+    if not resolved:
+        raise RouteClientError(f"no CVM found for app_id {identity!r}")
+    return resolved
+
+
+def _run_teardown_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    """Resolve CVM identity and tear down via HTTP (review/eval/top-level)."""
+
+    phala_base = getattr(args, "phala_api", None) or DEFAULT_PHALA_API
+    try:
+        client = PhalaCloudClient(base_url=str(phala_base))
+        cvm_id = resolve_teardown_cvm_id(
+            cvm_id=getattr(args, "cvm_id", None),
+            app_id=getattr(args, "app_id", None),
+            client=client,
+        )
+        outcome = default_phala_teardown(cvm_id, client=client)
+    except (RouteClientError, CredentialError, PhalaApiError) as exc:
+        # Fail closed with a structured payload when identity cannot be resolved.
+        missing = (getattr(args, "cvm_id", None) or getattr(args, "app_id", None) or "")
+        return (
+            {
+                "torn_down": missing or None,
+                "ok": False,
+                "diagnostics": {
+                    "returncode": 1,
+                    "error": str(exc),
+                    "stdout": "",
+                    "stderr": "",
+                },
+                "result": {
+                    "returncode": 1,
+                    "error": str(exc),
+                    "stdout": "",
+                    "stderr": "",
+                },
+            },
+            2 if isinstance(exc, RouteClientError) else 1,
+        )
+    return _teardown_payload(cvm_id, outcome)
 
 
 def _teardown_payload(cvm_id: str, result: Any) -> tuple[dict[str, Any], int]:
@@ -428,7 +511,7 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
             _print(_redact_capabilities(payload))
             return 0
         if args.review_command == "teardown":
-            payload, code = _teardown_payload(args.cvm_id, default_phala_teardown(args.cvm_id))
+            payload, code = _run_teardown_command(args)
             _print(payload)
             return code
         if args.review_command == "deploy":
@@ -619,7 +702,7 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
             )
             return 0
         if args.eval_command == "teardown":
-            payload, code = _teardown_payload(args.cvm_id, default_phala_teardown(args.cvm_id))
+            payload, code = _run_teardown_command(args)
             _print(payload)
             return code
         if args.eval_command == "deploy":
@@ -942,7 +1025,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete a deployed CVM (idempotent)",
         description="Delete the CVM so no resource is left running (phala cvms delete -f).",
     )
-    tear.add_argument("--cvm-id", required=True, help="the CVM id to delete")
+    tear.add_argument(
+        "--cvm-id",
+        default=None,
+        help="the CVM id to delete (optional if --app-id is set)",
+    )
+    tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM id via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
 
     # Ordered production lifecycle.  The older top-level helpers remain as
     # compatibility shims for offline callers, but all new spend-capable work
@@ -1024,7 +1116,17 @@ def build_parser() -> argparse.ArgumentParser:
                 ),
             )
     review_tear = review_sub.add_parser("teardown", help="delete the review CVM")
-    review_tear.add_argument("--cvm-id", required=True)
+    review_tear.add_argument(
+        "--cvm-id",
+        default=None,
+        help="CVM id (optional if --app-id is set)",
+    )
+    review_tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
+    review_tear.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
 
     evaluation = sub.add_parser(
         "eval",
@@ -1120,7 +1222,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     eval_tear = eval_sub.add_parser("teardown", help="delete the Eval CVM")
-    eval_tear.add_argument("--cvm-id", required=True)
+    eval_tear.add_argument(
+        "--cvm-id",
+        default=None,
+        help="CVM id (optional if --app-id is set)",
+    )
+    eval_tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
+    eval_tear.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
 
     return parser
 
@@ -1318,8 +1430,20 @@ def _cmd_result(args: argparse.Namespace) -> int:
 
 
 def _cmd_teardown(args: argparse.Namespace, *, teardowner: Teardowner) -> int:
-    outcome = teardowner(args.cvm_id)
-    payload, code = _teardown_payload(args.cvm_id, outcome)
+    # Injected teardowner (tests) still receives an explicit cvm id only.
+    if teardowner is not default_phala_teardown:
+        cvm_id = (getattr(args, "cvm_id", None) or "").strip()
+        if not cvm_id:
+            print(
+                "error: teardown requires --cvm-id when using a custom teardowner",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = teardowner(cvm_id)
+        payload, code = _teardown_payload(cvm_id, outcome)
+        _print(payload)
+        return code
+    payload, code = _run_teardown_command(args)
     _print(payload)
     return code
 
@@ -1365,6 +1489,7 @@ __all__ = [
     "build_parser",
     "default_phala_deployer",
     "default_phala_teardown",
+    "resolve_teardown_cvm_id",
     "main",
 ]
 
