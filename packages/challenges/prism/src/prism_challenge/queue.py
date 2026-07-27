@@ -14,6 +14,10 @@ from base.challenge_sdk.executor import DockerExecutor, DockerLimits, DockerMoun
 from .config import PrismSettings
 from .db import dumps
 from .evaluator import source_similarity
+from .evaluator.plagiarism_adjudicator import (
+    adjudicate_plagiarism,
+    config_from_settings as plagiarism_llm_config_from_settings,
+)
 from .evaluator.anti_cheat import evaluate_anti_cheat
 from .evaluator.checkpoint_publisher import CheckpointPublisher
 from .evaluator.component_signatures import (
@@ -440,8 +444,9 @@ class PrismWorker:
             await self._reject_submission(submission_id, str(exc))
             return submission_id
 
-        # Deterministic similarity/admission runs only AFTER the static gates have passed.
-        # LLM hard-gate approval is removed: no gateway/provider call, no held quarantine.
+        # Similarity/admission runs only AFTER the static gates have passed.
+        # Deterministic gravity ranker + OpenRouter plagiarism adjudicator (not the removed
+        # safety hard-gate / mermaid gateway path).
         try:
             review = await self._review_static_submission(
                 submission_id=submission_id,
@@ -778,7 +783,8 @@ class PrismWorker:
         code_hash: str,
     ) -> StaticReviewOutcome:
         # Invoked ONLY after the static AST sandbox / param-cap / distributed-contract gates have
-        # passed. Deterministic similarity replaces the removed LLM hard-gate and quarantine hold.
+        # passed. Deterministic ranker selects the closest prior; OpenRouter LLM is the sole
+        # verdict authority on borderline/attach pairs (exact hash still hard-rejects).
         await self.repository.store_source_snapshot(
             submission_id=submission_id,
             hotkey=hotkey,
@@ -801,26 +807,104 @@ class PrismWorker:
             top_k=self.settings.plagiarism_top_k,
         )
         if duplicate.candidate is not None:
-            # Borderline duplicate formerly became HELD/quarantine. After gateway removal that
-            # band is terminally rejected (never held) so no submission needs LLM review.
-            rejected = duplicate.rejected or duplicate.held
-            violations = ["duplicate_similarity"] if rejected else []
-            await self.repository.store_plagiarism_review(
-                submission_id=submission_id,
-                candidate_submission_id=duplicate.candidate.submission_id,
-                similarity=float(duplicate.report["source_similarity"]),
-                verdict=rejected,
-                reason=duplicate.reason,
-                violations=violations,
-                report=duplicate.report,
-            )
-            if rejected:
+            # Dual-gate plagiarism:
+            # 1) exact source-hash => hard reject (unambiguous clone, no LLM).
+            # 2) quarantine (borderline scores) or attach (identical architecture graph)
+            #    => ONLY the OpenRouter LLM adjudicator may allow or reject.
+            # 3) allow band below thresholds with a candidate present => pass through.
+            report = dict(duplicate.report)
+            cand = duplicate.candidate
+            if duplicate.rejected and duplicate.outcome == "reject":
+                violations = ["duplicate_similarity", "exact_source_hash"]
+                await self.repository.store_plagiarism_review(
+                    submission_id=submission_id,
+                    candidate_submission_id=cand.submission_id,
+                    similarity=float(report.get("source_similarity") or cand.score),
+                    verdict=True,
+                    reason=duplicate.reason,
+                    violations=violations,
+                    report=report,
+                )
                 return StaticReviewOutcome(
                     code_for_eval,
                     True,
                     reason=duplicate.reason,
                     violations=tuple(violations),
                 )
+
+            needs_llm = duplicate.outcome in {"quarantine", "attach"} or duplicate.held
+            if needs_llm:
+                pair_report = source_similarity.build_pair_report(snapshot, cand.snapshot)
+                pair_report.update(
+                    {
+                        "deterministic_outcome": duplicate.outcome,
+                        "deterministic_reason": duplicate.reason,
+                        "source_similarity": report.get("source_similarity", cand.score),
+                        "graph_similarity": cand.graph_similarity,
+                        "candidate_submission_id": cand.submission_id,
+                        "candidate_hotkey": cand.hotkey,
+                    }
+                )
+                current_code = snapshot.combined_python(
+                    max_chars=int(getattr(self.settings, "plagiarism_llm_max_source_chars", 60_000))
+                )
+                candidate_code = cand.snapshot.combined_python(
+                    max_chars=int(getattr(self.settings, "plagiarism_llm_max_source_chars", 60_000))
+                )
+                llm_cfg = plagiarism_llm_config_from_settings(self.settings)
+                adjudication = adjudicate_plagiarism(
+                    current_code=current_code,
+                    candidate_code=candidate_code,
+                    comparison_report=pair_report,
+                    deterministic_reason=duplicate.reason,
+                    deterministic_outcome=duplicate.outcome,
+                    candidate_submission_id=cand.submission_id,
+                    config=llm_cfg,
+                )
+                report["llm_adjudication"] = {
+                    "plagiarized": adjudication.plagiarized,
+                    "reason": adjudication.reason,
+                    "confidence": adjudication.confidence,
+                    "violations": list(adjudication.violations),
+                    "used_llm": adjudication.used_llm,
+                    "model": adjudication.model,
+                }
+                violations = list(adjudication.violations) or (
+                    ["llm_plagiarism"] if adjudication.plagiarized else []
+                )
+                reason = (
+                    f"llm_plagiarism: {adjudication.reason}"
+                    if adjudication.plagiarized
+                    else f"llm_allow: {adjudication.reason}"
+                )
+                await self.repository.store_plagiarism_review(
+                    submission_id=submission_id,
+                    candidate_submission_id=cand.submission_id,
+                    similarity=float(report.get("source_similarity") or cand.score),
+                    verdict=bool(adjudication.plagiarized),
+                    reason=reason,
+                    violations=violations,
+                    report=report,
+                )
+                if adjudication.plagiarized:
+                    return StaticReviewOutcome(
+                        code_for_eval,
+                        True,
+                        reason=reason,
+                        violations=tuple(violations),
+                    )
+                return StaticReviewOutcome(code_for_eval, False)
+
+            # Candidate present but below borderline thresholds -> allow.
+            await self.repository.store_plagiarism_review(
+                submission_id=submission_id,
+                candidate_submission_id=cand.submission_id,
+                similarity=float(report.get("source_similarity") or cand.score or 0.0),
+                verdict=False,
+                reason=duplicate.reason,
+                violations=[],
+                report=report,
+            )
             return StaticReviewOutcome(code_for_eval, False)
 
         return StaticReviewOutcome(code_for_eval, False)

@@ -15,11 +15,13 @@ from prism_challenge.evaluator import source_similarity
 from prism_challenge.models import SubmissionStatus
 
 
-def test_llm_review_and_report_modules_absent() -> None:
+def test_legacy_gateway_review_module_absent_adjudicator_present() -> None:
+    """Legacy safety hard-gate module stays gone; dual-gate adjudicator is first-class."""
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("prism_challenge.evaluator.llm_review")
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("prism_challenge.evaluator.architecture_report")
+    importlib.import_module("prism_challenge.evaluator.plagiarism_adjudicator")
 
 
 def test_langchain_openai_not_installed() -> None:
@@ -42,6 +44,9 @@ def test_clean_deterministic_config_loads(monkeypatch: pytest.MonkeyPatch) -> No
     PrismSettings(database_path="/tmp/prism-absence.sqlite3", shared_token="test-token")
     assert "llm_gateway_url" not in PrismSettings.model_fields
     assert "llm_review_enabled" not in PrismSettings.model_fields
+    # Dual-gate OpenRouter plagiarism adjudicator IS supported.
+    assert "plagiarism_llm_enabled" in PrismSettings.model_fields
+    assert "openrouter_api_key_file" in PrismSettings.model_fields
     # VAL-GATE-007: nondeterministic component-agent knobs are gone.
     for field_name in (
         "component_agent_enabled",
