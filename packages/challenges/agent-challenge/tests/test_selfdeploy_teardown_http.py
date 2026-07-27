@@ -26,7 +26,6 @@ from agent_challenge.selfdeploy.phala import (
     PhalaCloudClient,
     resolve_cvm_id_from_list,
 )
-from agent_challenge.selfdeploy.plan import CredentialError
 
 
 class _FakeResponse:
@@ -131,8 +130,14 @@ def test_resolve_cvm_id_require_unique_returns_single_match() -> None:
     assert resolve_cvm_id_from_list(listing, app_id="target-app", require_unique=True) == "77"
 
 
-def test_default_phala_teardown_uses_http_delete_not_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli.subprocess, "run", MagicMock(side_effect=AssertionError("no subprocess")))
+def test_default_phala_teardown_uses_http_delete_not_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        MagicMock(side_effect=AssertionError("no subprocess")),
+    )
     deleted: list[str] = []
 
     class _Client:
@@ -207,8 +212,11 @@ def test_cli_teardown_refuses_ambiguous_app_id(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli, "PhalaCloudClient", _Client)
     monkeypatch.setenv("PHALA_CLOUD_API_KEY", "k" * 32)
     args = SimpleNamespace(review_command="teardown", cvm_id=None, app_id="dup", phala_api=None)
+    capture: list = []
+    monkeypatch.setattr(cli, "_print", lambda payload: capture.append(payload))
     code = cli._ordered_review_command(args)
-    assert code == 2
+    assert code != 0
+    assert capture and "multiple" in str(capture[0].get("diagnostics", {}).get("error", "")).lower()
 
 
 def test_cli_teardown_requires_cvm_id_or_app_id() -> None:
@@ -217,8 +225,8 @@ def test_cli_teardown_requires_cvm_id_or_app_id() -> None:
     args = parser.parse_args(["teardown"])
     assert getattr(args, "cvm_id", None) in (None, "")
     # Runtime path
-    from io import StringIO
     import sys
+    from io import StringIO
 
     buf = StringIO()
     old = sys.stderr
