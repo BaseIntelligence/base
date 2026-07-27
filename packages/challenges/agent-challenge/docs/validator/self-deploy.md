@@ -279,7 +279,7 @@ attributable CVM after success, reject, expiry, provider failure, quote failure,
 cancellation, interruption, or result failure. Confirm none remain:
 
 ```bash
-phala cvms delete <id> -f
+HTTP `DELETE /cvms/{id}` (or manual `phala cvms delete <id> -f`)
 phala cvms list
 ```
 

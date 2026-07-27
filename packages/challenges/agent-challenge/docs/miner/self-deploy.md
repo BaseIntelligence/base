@@ -283,6 +283,11 @@ python -m agent_challenge.selfdeploy review retry \
 
 ### `review teardown`
 
+Deletes the review CVM via the Phala Cloud HTTP API (`DELETE /cvms/{id}`).
+No external `phala` CLI binary is required. Pass `--cvm-id` from the deploy
+output, or `--app-id` (the plan `app_identity`) to resolve a unique match from
+`GET /cvms`. Ambiguous matches are refused.
+
 Delete the review CVM after allow, reject, expiry, cancellation, provider
 failure, verification failure, or interruption. The CLI uses the exact
 `phala cvms delete <id> -f` operation. If deletion fails, the command exits
@@ -291,6 +296,8 @@ logs).
 
 ```bash
 python -m agent_challenge.selfdeploy review teardown --cvm-id review-cvm-1
+# or, when the deploy output was lost but app_identity is known:
+python -m agent_challenge.selfdeploy review teardown --app-id <app_identity>
 ```
 
 ### `eval prepare`
@@ -622,7 +629,8 @@ The total mission spend cap is **$20**; always use the smallest CPU shape that
 is stage-sized (review `tdx.small`/20 GB; eval `tdx.xlarge`/100 GB) and never deploy a GPU CVM. Disk is billed separately (~$0.000139/GB/hour) and is included in the projected $20 cap. Review and eval
 spend are projected together before either create.
 
-The `teardown` subcommand runs `phala cvms delete <id> -f` for you, but you can
+The `teardown` subcommand issues `DELETE /cvms/{id}` through the Phala Cloud
+HTTP client (no `phala` binary required). For manual verification you can still
 also delete and confirm directly with the `phala` CLI:
 
 ```
