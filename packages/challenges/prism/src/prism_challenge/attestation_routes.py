@@ -61,6 +61,7 @@ class RegisterDigestBody(BaseModel):
     tree_sha: str
     variant: str
     digest: str
+    sealed_manifest_hashes: dict[str, str]
 
 
 class CheckAllowlistBody(BaseModel):
@@ -322,12 +323,19 @@ def build_attestation_internal_router() -> APIRouter:
     async def register_digest(request: Request, body: RegisterDigestBody) -> dict[str, str]:
         ensure_default_constation_services(request.app)
         allowlist: DigestAllowlist = request.app.state.digest_allowlist
-        record = DigestRecord(
-            commit_sha=body.commit_sha,
-            tree_sha=body.tree_sha,
-            variant=ImageVariant(body.variant.strip().lower()),
-            digest=body.digest,
-        )
+        try:
+            record = DigestRecord(
+                commit_sha=body.commit_sha,
+                tree_sha=body.tree_sha,
+                variant=ImageVariant(body.variant.strip().lower()),
+                digest=body.digest,
+                sealed_manifest_hashes=body.sealed_manifest_hashes,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
         allowlist.register(record)
         return {"status": "registered", "digest": record.digest}
 

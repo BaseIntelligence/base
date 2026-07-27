@@ -119,6 +119,18 @@ class LiumKeyCustody:
         logger.info("lium key registered (encrypted) for miner_hotkey=%s", hotkey)
         return ConstationVerdict(ok=True, reason=ConstationFailCode.OK)
 
+    def store_probed_key(self, *, miner_hotkey: str, api_key: str) -> None:
+        """Encrypt-at-rest after the caller has already validated the key.
+
+        No network I/O. Used by pod binding after probe + assert_pod_bound so a
+        failed bind never leaves a half-registered key.
+        """
+        hotkey = _require_nonblank("miner_hotkey", miner_hotkey)
+        key = _require_nonblank("api_key", api_key)
+        token = self._fernet.encrypt(key.encode("utf-8"))
+        self._by_hotkey[hotkey] = token
+        logger.info("lium key stored (encrypted) for miner_hotkey=%s", hotkey)
+
     def unlock_api_key(self, miner_hotkey: str) -> str:
         """Decrypt the stored key for in-process use. Raises if missing/corrupt."""
         hotkey = _require_nonblank("miner_hotkey", miner_hotkey)

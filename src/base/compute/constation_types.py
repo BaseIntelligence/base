@@ -33,6 +33,13 @@ class ConstationFailCode(StrEnum):
     KEY_NOT_REGISTERED = "key_not_registered"
     SIDECAR_ATTEST_FAILED = "sidecar_attest_failed"
     RUN_INCOMPLETE = "run_incomplete"
+    REQUIRED_DIGEST_MISMATCH = "required_digest_mismatch"
+    LIUM_DIGEST_ABSENT = "lium_digest_absent"
+    SIDECAR_PORT_UNPUBLISHED = "sidecar_port_unpublished"
+    POD_HOTKEY_MISMATCH = "pod_hotkey_mismatch"
+    POD_NOT_RUNNING = "pod_not_running"
+    SIDECAR_RESPONSE_INVALID = "sidecar_response_invalid"
+    BUNDLE_INCOMPLETE = "bundle_incomplete"
 
 
 class CorroborationStatus(StrEnum):
@@ -57,6 +64,13 @@ _FAULT_BY_CODE: Final[dict[ConstationFailCode, FaultClass | None]] = {
     ConstationFailCode.KEY_NOT_REGISTERED: FaultClass.MINER,
     ConstationFailCode.SIDECAR_ATTEST_FAILED: FaultClass.MINER,
     ConstationFailCode.RUN_INCOMPLETE: FaultClass.INFRA,
+    ConstationFailCode.REQUIRED_DIGEST_MISMATCH: FaultClass.MINER,
+    ConstationFailCode.LIUM_DIGEST_ABSENT: FaultClass.MINER,
+    ConstationFailCode.SIDECAR_PORT_UNPUBLISHED: FaultClass.MINER,
+    ConstationFailCode.POD_HOTKEY_MISMATCH: FaultClass.MINER,
+    ConstationFailCode.POD_NOT_RUNNING: FaultClass.MINER,
+    ConstationFailCode.SIDECAR_RESPONSE_INVALID: FaultClass.MINER,
+    ConstationFailCode.BUNDLE_INCOMPLETE: FaultClass.INFRA,
 }
 
 

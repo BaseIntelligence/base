@@ -122,6 +122,22 @@ class ChallengeResultForwarder(Protocol):
     ) -> None: ...
 
 
+class ConstationPreForwardHook(Protocol):
+    """Optional pre-forward hook (e.g. production constation orchestrator).
+
+    Invoked in :meth:`WorkerReconciliationService._forward` before
+    ``forward_result`` when identity metadata may be available on the unit.
+    """
+
+    async def __call__(
+        self,
+        *,
+        work_unit_id: str,
+        miner_hotkey: str,
+        metadata: Mapping[str, Any],
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class ReconciliationPassResult:
     """Observable outcome of one reconciliation pass.
@@ -150,11 +166,13 @@ class WorkerReconciliationService:
         result_forwarder: ChallengeResultForwarder | None = None,
         required_capability: str = CAPABILITY_GPU,
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
+        constation_hook: ConstationPreForwardHook | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._result_forwarder = result_forwarder
         self._required_capability = required_capability
         self._now_fn = now_fn
+        self._constation_hook = constation_hook
 
     def transaction(self) -> AbstractAsyncContextManager[AsyncSession]:
         """Open a single committed transaction over the control-plane DB."""
@@ -381,6 +399,19 @@ class WorkerReconciliationService:
         return audit_id
 
     async def _forward(self, primary: WorkAssignment, winner: WorkerAssignment) -> bool:
+        if self._constation_hook is not None:
+            try:
+                await self._constation_hook(
+                    work_unit_id=primary.work_unit_id,
+                    miner_hotkey=str(winner.miner_hotkey or ""),
+                    metadata=dict(primary.payload or {}),
+                )
+            except Exception:
+                logger.exception(
+                    "constation pre-forward hook failed for unit %s "
+                    "(forward continues)",
+                    primary.work_unit_id,
+                )
         if self._result_forwarder is None:
             return True
         try:
@@ -405,6 +436,7 @@ __all__ = [
     "AUDIT_WORK_UNIT_SUFFIX",
     "RECONCILE_DEGRADED_PAYLOAD_KEY",
     "ChallengeResultForwarder",
+    "ConstationPreForwardHook",
     "ReconciliationPassResult",
     "WorkerReconciliationService",
     "audit_work_unit_id",

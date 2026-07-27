@@ -550,6 +550,7 @@ def _master_orchestration_driver(
     worker_service: WorkerCoordinationService | None = None,
     worker_assignment_service: WorkerAssignmentService | None = None,
     bundle_store: Any | None = None,
+    constation_hook: Any | None = None,
 ) -> MasterOrchestrationDriver:
     """Build the live master orchestration driver (architecture.md sec 4).
 
@@ -602,6 +603,7 @@ def _master_orchestration_driver(
                 retries=settings.master.challenge_retries,
                 bundle_lookup=_bundle_lookup if bundle_store is not None else None,
             ),
+            constation_hook=constation_hook,
         )
     return MasterOrchestrationDriver(
         assignment_service=assignment_service,
@@ -1147,7 +1149,12 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     from datetime import timedelta
 
     from base.master.constation.allowlist_repository import DigestAllowlistRepository
+    from base.master.constation.attestation_keys import load_attestation_verify_key
     from base.master.constation.bundle_store import ConstationBundleStore
+    from base.master.constation.custody_keys import (
+        build_constation_runtime,
+        make_constation_pre_forward_hook,
+    )
     from base.master.constation.nonce_repository import DurableAttestationNonceService
     from base.master.constation.routes import build_constation_router
 
@@ -1155,6 +1162,19 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
     constation_allowlist_repo = DigestAllowlistRepository(session_factory)
     constation_nonce_service = DurableAttestationNonceService(
         session_factory, ttl=timedelta(hours=2)
+    )
+    # Custody + MinerPodBinding + ProductionConstationOrchestrator when enabled
+    # and custody master key is present (fail-closed otherwise; master still boots).
+    constation_runtime = build_constation_runtime(
+        settings,
+        nonce_service=constation_nonce_service,
+        bundle_store=constation_bundle_store,
+    )
+    constation_pod_binding = constation_runtime.pod_binding
+    constation_orchestrator = constation_runtime.orchestrator
+    constation_hook = make_constation_pre_forward_hook(
+        constation_orchestrator,
+        duration_seconds=float(settings.constation.duration_seconds),
     )
     # Internal token for master constation check_*/issue/register/bundle.
     # Reuse admin token when present so ops and prism can share one secret.
@@ -1170,6 +1190,8 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         nonce_service=constation_nonce_service,
         bundle_store=constation_bundle_store,
         internal_token=str(constation_internal_token),
+        attestation_verify_key=load_attestation_verify_key(settings),
+        pod_binding=constation_pod_binding,
     )
 
     orchestration_driver = _master_orchestration_driver(
@@ -1180,6 +1202,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_service=worker_service,
         worker_assignment_service=worker_assignment_service,
         bundle_store=constation_bundle_store,
+        constation_hook=constation_hook,
     )
     # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
     # master reconcile loop turns every ACTIVE registry challenge into a running
@@ -1256,6 +1279,11 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         ),
         constation_router=constation_router,
     )
+    # Expose constation services for worker-path / ops reachability (optional).
+    if constation_pod_binding is not None:
+        proxy.state.constation_pod_binding = constation_pod_binding
+    if constation_orchestrator is not None:
+        proxy.state.constation_orchestrator = constation_orchestrator
     endpoint = f"{settings.master.proxy_host}:{settings.master.proxy_port}"
     typer.echo(f"Starting proxy API on {endpoint}")
     uvicorn.run(proxy, host=settings.master.proxy_host, port=settings.master.proxy_port)

@@ -76,6 +76,7 @@ class DigestAllowlistRepository:
                     tree_sha=row.tree_sha,
                     variant=row.variant,
                     digest=row.digest,
+                    sealed_manifest_hashes=dict(row.sealed_manifest_hashes or {}),
                 )
                 if bound != record:
                     raise ValueError(
@@ -92,6 +93,7 @@ class DigestAllowlistRepository:
                     tree_sha=record.tree_sha,
                     variant=record.variant.value,
                     digest=record.digest,
+                    sealed_manifest_hashes=dict(record.sealed_manifest_hashes),
                 )
             )
 
@@ -140,6 +142,7 @@ class DigestAllowlistRepository:
                         tree_sha=row.tree_sha,
                         variant=ImageVariant(row.variant),
                         digest=row.digest,
+                        sealed_manifest_hashes=dict(row.sealed_manifest_hashes or {}),
                     )
                 )
             for row in denied_d:

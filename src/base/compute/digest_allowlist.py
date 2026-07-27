@@ -24,10 +24,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 _FULL_GIT_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HEX64_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ImageVariant(StrEnum):
@@ -88,18 +90,48 @@ def _require_variant(value: ImageVariant | str) -> ImageVariant:
         ) from exc
 
 
+def _require_sealed_manifest_hashes(
+    value: Mapping[str, str],
+) -> Mapping[str, str]:
+    """Validate path → 64-hex lowercase sealed hashes; reject empty maps."""
+    if not isinstance(value, Mapping):
+        raise ValueError("sealed_manifest_hashes must be a mapping")
+    if not value:
+        raise ValueError("sealed_manifest_hashes must be non-empty")
+    out: dict[str, str] = {}
+    for raw_path, raw_hash in value.items():
+        path = str(raw_path).strip()
+        if not path:
+            raise ValueError(
+                "sealed_manifest_hashes path keys must be non-blank strings"
+            )
+        digest = str(raw_hash).strip().lower()
+        if not _HEX64_RE.fullmatch(digest):
+            raise ValueError(
+                f"sealed_manifest_hashes[{path!r}] must be 64-char lowercase hex, "
+                f"got {raw_hash!r}"
+            )
+        if path in out:
+            raise ValueError(f"duplicate sealed_manifest_hashes path: {path!r}")
+        out[path] = digest
+    return MappingProxyType(out)
+
+
 @dataclass(frozen=True, slots=True)
 class DigestRecord:
     """One BASE-produced image binding.
 
     Keyed conceptually as ``(commit_sha, tree_sha, variant, digest)``. A given
-    digest maps to exactly one binding.
+    digest maps to exactly one binding. ``sealed_manifest_hashes`` is the
+    build-time sealed surface (path → 64-hex SHA-256) prism compares as
+    ``expected_sealed_manifest_hashes``; must be non-empty at registration.
     """
 
     commit_sha: str
     tree_sha: str
     variant: ImageVariant
     digest: str
+    sealed_manifest_hashes: Mapping[str, str]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -110,6 +142,11 @@ class DigestRecord:
         )
         object.__setattr__(self, "variant", _require_variant(self.variant))
         object.__setattr__(self, "digest", _require_image_digest(self.digest))
+        object.__setattr__(
+            self,
+            "sealed_manifest_hashes",
+            _require_sealed_manifest_hashes(self.sealed_manifest_hashes),
+        )
 
 
 @dataclass(frozen=True, slots=True)

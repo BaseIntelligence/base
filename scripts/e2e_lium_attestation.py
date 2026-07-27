@@ -208,7 +208,15 @@ class ScriptedLium:
             pod_id=pod_id,
             template_id="tmpl-e2e-1",
             docker_image_digest=digest,
-            raw={"id": pod_id, "template": {"docker_image_digest": digest}},
+            raw={
+                "id": pod_id,
+                "status": "RUNNING",
+                "executor": {
+                    "miner_hotkey": HOTKEY,
+                    "executor_ip_address": "10.0.0.1",
+                },
+                "template": {"docker_image_digest": digest},
+            },
         )
 
     async def balance(self) -> float:
@@ -374,6 +382,7 @@ async def _run_constation_runner(*, adversarial: bool) -> Any:
             work_unit_id="wu-placeholder",  # overwritten after submission seed
             pod_id=POD_ID,
             duration_seconds=10.0 if not adversarial else 10.0,
+            required_digest=DIGEST_HONEST,
         )
     )
 
@@ -386,14 +395,14 @@ async def run_offline(mode: Mode) -> dict[str, Any]:
 
     # --- 1. Allowlist: BASE-produced digest registration (submission identity) ---
     allowlist = DigestAllowlist()
-    allowlist.register(
-        DigestRecord(
-            commit_sha=COMMIT_SHA,
-            tree_sha=TREE_SHA,
-            variant=VARIANT,
-            digest=DIGEST_HONEST,
-        )
+    honest_record = DigestRecord(
+        commit_sha=COMMIT_SHA,
+        tree_sha=TREE_SHA,
+        variant=VARIANT,
+        digest=DIGEST_HONEST,
+        sealed_manifest_hashes=dict(SEALED_MANIFEST),
     )
+    allowlist.register(honest_record)
 
     # --- 2. Continuous constation runner/poller (fixture Lium, real runner) ---
     # First pass uses placeholder work_unit; we re-bind nonce to real submission id.
@@ -467,7 +476,7 @@ async def run_offline(mode: Mode) -> dict[str, Any]:
         pod_id=POD_ID,
         nonce=issued.nonce,
         signed_attestation={"sig": "fixture-ok"},
-        expected_sealed_manifest_hashes=dict(SEALED_MANIFEST),
+        expected_sealed_manifest_hashes=dict(honest_record.sealed_manifest_hashes),
         reported_sealed_manifest_hashes=dict(SEALED_MANIFEST),
         lium_declared_digest=lium_for_bundle,
         constation_gap_budget_seconds=gap_budget,
@@ -584,12 +593,12 @@ def _assert_honest(bag: dict[str, Any]) -> list[str]:
 
 def _assert_adversarial(bag: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    # Runner must fail closed on mid-run swap (corroboration mismatch).
+    # Runner must fail closed on mid-run swap (triangle: sidecar != required).
     if bag["run_record_ok"]:
         errors.append("runner expected fail on mid-run digest swap")
-    if bag["run_record_reason"] != ConstationFailCode.CORROBORATION_MISMATCH.value:
+    if bag["run_record_reason"] != ConstationFailCode.REQUIRED_DIGEST_MISMATCH.value:
         errors.append(
-            f"runner reason expected corroboration_mismatch got {bag['run_record_reason']}"  # noqa: E501
+            f"runner reason expected required_digest_mismatch got {bag['run_record_reason']}"  # noqa: E501
         )
     if bag["run_record_fault_class"] != FaultClass.MINER.value:
         errors.append(

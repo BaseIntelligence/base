@@ -36,12 +36,19 @@ def _record(
     tree_sha: str = TREE_A,
     variant: ImageVariant = ImageVariant.CUDA,
     digest: str = DIGEST_CUDA,
+    sealed_manifest_hashes: dict[str, str] | None = None,
 ) -> DigestRecord:
+    hashes = (
+        sealed_manifest_hashes
+        if sealed_manifest_hashes is not None
+        else {"default.py": "e" * 64}
+    )
     return DigestRecord(
         commit_sha=commit_sha,
         tree_sha=tree_sha,
         variant=variant,
         digest=digest,
+        sealed_manifest_hashes=hashes,
     )
 
 
@@ -295,3 +302,65 @@ def test_alembic_migration_0017_is_chained_from_watcher_state() -> None:
     assert "image_digest_allowlist" in text
     assert "denied_image_digests" in text
     assert "denied_image_commits" in text
+
+
+SEALED_HASHES = {"harness.py": "a" * 64, "runner.py": "b" * 64}
+
+
+def test_register_digest_rejects_empty_sealed_manifest() -> None:
+    """Given empty sealed hashes, When building DigestRecord, Then ValueError."""
+    with pytest.raises(ValueError, match="sealed_manifest_hashes"):
+        DigestRecord(
+            commit_sha=COMMIT_A,
+            tree_sha=TREE_A,
+            variant=ImageVariant.CUDA,
+            digest=DIGEST_CUDA,
+            sealed_manifest_hashes={},
+        )
+
+
+def test_register_digest_rejects_non_hex_hash_value() -> None:
+    """Given non-64-hex hash, When building DigestRecord, Then ValueError."""
+    with pytest.raises(ValueError, match="sealed_manifest_hashes"):
+        DigestRecord(
+            commit_sha=COMMIT_A,
+            tree_sha=TREE_A,
+            variant=ImageVariant.CUDA,
+            digest=DIGEST_CUDA,
+            sealed_manifest_hashes={"harness.py": "not-a-hex-digest"},
+        )
+
+
+def test_register_digest_rejects_blank_path_key() -> None:
+    """Given a blank path key, When constructing DigestRecord, Then ValueError."""
+    with pytest.raises(ValueError, match="sealed_manifest_hashes"):
+        DigestRecord(
+            commit_sha=COMMIT_A,
+            tree_sha=TREE_A,
+            variant=ImageVariant.CUDA,
+            digest=DIGEST_CUDA,
+            sealed_manifest_hashes={"   ": "c" * 64},
+        )
+
+
+def test_allowlist_lookup_hit_returns_sealed_hashes() -> None:
+    """Given registered sealed hashes, When lookup hits, Then exact map is exposed."""
+    registry = DigestAllowlist()
+    record = DigestRecord(
+        commit_sha=COMMIT_A,
+        tree_sha=TREE_A,
+        variant=ImageVariant.CUDA,
+        digest=DIGEST_CUDA,
+        sealed_manifest_hashes=SEALED_HASHES,
+    )
+    registry.register(record)
+
+    result = registry.lookup(
+        digest=DIGEST_CUDA,
+        commit_sha=COMMIT_A,
+        tree_sha=TREE_A,
+        variant=ImageVariant.CUDA,
+    )
+
+    assert isinstance(result, AllowlistHit)
+    assert dict(result.record.sealed_manifest_hashes) == SEALED_HASHES

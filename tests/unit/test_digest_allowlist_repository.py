@@ -39,12 +39,19 @@ def _record(
     tree_sha: str = TREE_A,
     variant: ImageVariant = ImageVariant.CUDA,
     digest: str = DIGEST_CUDA,
+    sealed_manifest_hashes: dict[str, str] | None = None,
 ) -> DigestRecord:
+    hashes = (
+        sealed_manifest_hashes
+        if sealed_manifest_hashes is not None
+        else {"default.py": "e" * 64}
+    )
     return DigestRecord(
         commit_sha=commit_sha,
         tree_sha=tree_sha,
         variant=variant,
         digest=digest,
+        sealed_manifest_hashes=hashes,
     )
 
 
@@ -192,3 +199,24 @@ async def test_identical_reregister_is_noop(
             select(func.count()).select_from(ImageDigestAllowlistEntry)
         )
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_allowlist_repository_roundtrips_sealed_hashes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given sealed hashes, When load_allowlist, Then they round-trip."""
+    sealed = {"harness.py": "a" * 64, "lib/mod.py": "b" * 64}
+    repo = DigestAllowlistRepository(session_factory)
+    record = _record(sealed_manifest_hashes=sealed)
+    await repo.register(record)
+
+    allowlist = await DigestAllowlistRepository(session_factory).load_allowlist()
+    result = allowlist.lookup(
+        digest=DIGEST_CUDA,
+        commit_sha=COMMIT_A,
+        tree_sha=TREE_A,
+        variant=ImageVariant.CUDA,
+    )
+    assert isinstance(result, AllowlistHit)
+    assert dict(result.record.sealed_manifest_hashes) == sealed

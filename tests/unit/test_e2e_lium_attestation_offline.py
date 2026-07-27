@@ -81,7 +81,7 @@ async def test_offline_adversarial_midrun_swap_no_score_miner_fault(e2e) -> None
     errors = e2e._assert_adversarial(bag)
     assert not errors, errors
     assert bag["run_record_ok"] is False
-    assert bag["run_record_reason"] == "corroboration_mismatch"
+    assert bag["run_record_reason"] == "required_digest_mismatch"
     assert bag["constation_ok"] is False
     assert bag["score_written"] is False
     assert bag["score_row"] is None
