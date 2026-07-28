@@ -6,7 +6,7 @@ persistence boundary over image_digest_allowlist and deny tables.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -42,6 +42,21 @@ def _normalize_commit(value: str) -> str:
             f"commit_sha must be a full 40-char lowercase hex git SHA, got {value!r}"
         )
     return commit
+
+
+def constation_identity_payload(record: DigestRecord) -> dict[str, object]:
+    """Map a pin to the five keys the pre-forward hook requires.
+
+    Omits ``pod_id`` / ``instance_id``: the orchestrator resolves the miner pod
+    from ``MinerPodBinding`` via the winning worker's hotkey at run time.
+    """
+    return {
+        "required_digest": record.digest,
+        "commit_sha": record.commit_sha,
+        "tree_sha": record.tree_sha,
+        "variant": record.variant.value,
+        "sealed_manifest_hashes": dict(record.sealed_manifest_hashes),
+    }
 
 
 class DigestAllowlistRepository:
@@ -151,5 +166,81 @@ class DigestAllowlistRepository:
                 allowlist.revoke_commit(row.commit_sha)
             return allowlist
 
+    async def get_active_pin(
+        self,
+        *,
+        variant: ImageVariant | str,
+    ) -> DigestRecord | None:
+        """Return the sole non-revoked pin for ``variant``, else None.
 
-__all__ = ["DigestAllowlistRepository"]
+        Fail-closed and deterministic:
+        - zero non-revoked candidates → ``None``
+        - two or more non-revoked candidates → ``None`` (never pick silently)
+        - exactly one → that ``DigestRecord``
+
+        Revocation respects both digest and commit deny tables. Rows that
+        cannot form a valid ``DigestRecord`` (e.g. empty sealed hashes) are
+        skipped rather than raised into the dispatch path.
+        """
+        try:
+            wanted = (
+                variant
+                if isinstance(variant, ImageVariant)
+                else ImageVariant(str(variant).strip().lower())
+            )
+        except ValueError:
+            return None
+
+        async with self._session_scope(self._session_factory) as session:
+            entries = (
+                (
+                    await session.execute(
+                        select(ImageDigestAllowlistEntry).where(
+                            ImageDigestAllowlistEntry.variant == wanted.value
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not entries:
+                return None
+            denied_digests = {
+                row.digest
+                for row in (await session.execute(select(DeniedImageDigest)))
+                .scalars()
+                .all()
+            }
+            denied_commits = {
+                row.commit_sha
+                for row in (await session.execute(select(DeniedImageCommit)))
+                .scalars()
+                .all()
+            }
+
+            candidates: list[DigestRecord] = []
+            for row in entries:
+                if row.digest in denied_digests or row.commit_sha in denied_commits:
+                    continue
+                sealed: Mapping[str, str] = dict(row.sealed_manifest_hashes or {})
+                if not sealed:
+                    continue
+                try:
+                    candidates.append(
+                        DigestRecord(
+                            commit_sha=row.commit_sha,
+                            tree_sha=row.tree_sha,
+                            variant=ImageVariant(row.variant),
+                            digest=row.digest,
+                            sealed_manifest_hashes=sealed,
+                        )
+                    )
+                except ValueError:
+                    continue
+
+            if len(candidates) != 1:
+                return None
+            return candidates[0]
+
+
+__all__ = ["DigestAllowlistRepository", "constation_identity_payload"]

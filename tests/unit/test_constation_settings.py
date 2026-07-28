@@ -15,6 +15,7 @@ def test_constation_settings_defaults() -> None:
     assert settings.gap_budget_seconds == 30.0
     assert settings.sidecar_internal_port == 8787
     assert settings.sidecar_scheme == "http"
+    assert settings.prism_dispatch_variant == "cuda"
 
 
 def test_constation_settings_requires_positive_gap() -> None:
@@ -45,3 +46,18 @@ def test_constation_settings_attached_to_root() -> None:
     root = Settings()
     assert isinstance(root.constation, ConstationSettings)
     assert root.constation.enabled is False
+
+
+def test_constation_settings_prism_dispatch_variant_cpu() -> None:
+    settings = ConstationSettings(prism_dispatch_variant="CPU")
+    assert settings.prism_dispatch_variant == "cpu"
+
+
+def test_constation_settings_prism_dispatch_variant_empty_disables() -> None:
+    settings = ConstationSettings(prism_dispatch_variant="  ")
+    assert settings.prism_dispatch_variant == ""
+
+
+def test_constation_settings_rejects_unknown_prism_dispatch_variant() -> None:
+    with pytest.raises(ValidationError):
+        ConstationSettings(prism_dispatch_variant="rocm")

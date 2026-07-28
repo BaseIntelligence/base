@@ -33,6 +33,7 @@ from base.compute import (
     LiumClient,
     TargonClient,
 )
+from base.compute.lium_training_wiring import try_build_lium_capacity_scheduler
 from base.compute.worker_deployment import WORKER_TEMPLATE_NAME
 from base.config import load_settings
 from base.config.policy import production_policy_enabled_for_settings
@@ -551,6 +552,7 @@ def _master_orchestration_driver(
     worker_assignment_service: WorkerAssignmentService | None = None,
     bundle_store: Any | None = None,
     constation_hook: Any | None = None,
+    constation_pin_source: Any | None = None,
 ) -> MasterOrchestrationDriver:
     """Build the live master orchestration driver (architecture.md sec 4).
 
@@ -605,6 +607,9 @@ def _master_orchestration_driver(
             ),
             constation_hook=constation_hook,
         )
+    # Master-owned Lium capacity admission (optional). Default off; when
+    # lium_training.enabled, Prism GPU bridge enqueues leases and run_once ticks.
+    lium_scheduler = try_build_lium_capacity_scheduler(settings)
     return MasterOrchestrationDriver(
         assignment_service=assignment_service,
         validator_service=validator_service,
@@ -631,6 +636,11 @@ def _master_orchestration_driver(
         worker_assignment_engine=worker_engine,
         worker_reconciler=worker_reconciler,
         seed=settings.master.orchestration_seed,
+        constation_pin_source=constation_pin_source,
+        prism_dispatch_variant=str(
+            getattr(settings.constation, "prism_dispatch_variant", "cuda") or ""
+        ),
+        lium_scheduler=lium_scheduler,
     )
 
 
@@ -1203,6 +1213,7 @@ def master_proxy(config: Path = typer.Option(Path("config/master.example.yaml"))
         worker_assignment_service=worker_assignment_service,
         bundle_store=constation_bundle_store,
         constation_hook=constation_hook,
+        constation_pin_source=constation_allowlist_repo,
     )
     # Registry-driven challenge deploy (architecture.md sec 4 + sec 9.2): the
     # master reconcile loop turns every ACTIVE registry challenge into a running

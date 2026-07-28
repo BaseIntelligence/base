@@ -136,7 +136,8 @@ def test_hf_publisher_construction_is_lazy(monkeypatch):
     assert publisher.repo_id == "org/repo"
 
 
-def test_hf_publisher_publish_uses_injected_api(tmp_path):
+def test_hf_publisher_publish_uses_injected_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISM_CHECKPOINT_UPLOAD_ENABLED", "true")
     upload, _ = _persisted_upload(tmp_path)
 
     class _FakeHfApi:
@@ -182,3 +183,66 @@ def test_huggingface_hub_is_declared_dependency():
         dep.split(">=")[0].split("==")[0].strip().replace("-", "_") == "huggingface_hub"
         for dep in deps
     )
+
+
+# --- VAL-PRISM-HF-PUBLIC: mandated public Hub repo for trained Prism models -----------------
+
+MANDATED_CHECKPOINT_REPO_ID = "BaseIntelligence/top-prism-architecture"
+
+
+def test_default_checkpoint_repo_id_is_mandated_public_hub_repo(monkeypatch):
+    """Single exported default must match the user-mandated public HF repo (exact casing)."""
+    monkeypatch.delenv("PRISM_CHECKPOINT_REPO_ID", raising=False)
+    monkeypatch.delenv("PRISM_HF_CHECKPOINT_REPO_ID", raising=False)
+    assert DEFAULT_CHECKPOINT_REPO_ID == MANDATED_CHECKPOINT_REPO_ID
+    assert PrismSettings().checkpoint_repo_id == MANDATED_CHECKPOINT_REPO_ID
+    assert MockCheckpointPublisher().repo_id == MANDATED_CHECKPOINT_REPO_ID
+    assert HuggingFaceCheckpointPublisher().repo_id == MANDATED_CHECKPOINT_REPO_ID
+
+
+def test_checkpoint_repo_id_env_alias_overrides_default(monkeypatch):
+    monkeypatch.setenv("PRISM_CHECKPOINT_REPO_ID", "org/override-checkpoints")
+    assert PrismSettings().checkpoint_repo_id == "org/override-checkpoints"
+
+
+def test_hf_publisher_create_repo_is_public(tmp_path, monkeypatch):
+    """Fresh environments must create a PUBLIC model repo (private=False)."""
+    monkeypatch.setenv("PRISM_CHECKPOINT_UPLOAD_ENABLED", "true")
+    upload, _ = _persisted_upload(tmp_path)
+
+    class _FakeHfApi:
+        def __init__(self) -> None:
+            self.create_repo_kwargs: list[dict] = []
+
+        def create_repo(self, **kwargs):
+            self.create_repo_kwargs.append(kwargs)
+
+        def upload_file(self, **kwargs):
+            return None
+
+    api = _FakeHfApi()
+    publisher = HuggingFaceCheckpointPublisher(repo_id=DEFAULT_CHECKPOINT_REPO_ID, api=api)
+    publisher.publish(upload)
+
+    assert len(api.create_repo_kwargs) == 1
+    created = api.create_repo_kwargs[0]
+    assert created["repo_id"] == DEFAULT_CHECKPOINT_REPO_ID
+    assert created["repo_type"] == "model"
+    assert created["exist_ok"] is True
+    assert created["private"] is False
+
+
+def test_checkpoint_publisher_module_imports_offline_without_hf_token(monkeypatch):
+    """Lazy huggingface_hub import: module + construction stay offline-safe with no token."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("PRISM_HF_TOKEN", raising=False)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    import importlib
+
+    import prism_challenge.evaluator.checkpoint_publisher as pub
+
+    importlib.reload(pub)
+    assert pub.DEFAULT_CHECKPOINT_REPO_ID == MANDATED_CHECKPOINT_REPO_ID
+    constructed = pub.HuggingFaceCheckpointPublisher()
+    assert constructed.repo_id == MANDATED_CHECKPOINT_REPO_ID
+    # publish without injected api would try lazy import; construction alone must not.

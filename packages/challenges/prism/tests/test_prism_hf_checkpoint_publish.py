@@ -389,3 +389,130 @@ async def test_push_client_ineligible_hotkey_raises_403(tmp_path):
     assert excinfo.value.status_code == 403
     assert mock.call_count == 0
     assert await app.state.repository.latest_checkpoint_ref("sub-bad") is None
+
+
+# --- Publish observability + fail-closed success (HF configured requires checkpoint_ref) ------
+
+
+class _FailingPublisher:
+    """Publisher that always raises (simulates HF Hub failure; no network)."""
+
+    repo_id = "BaseIntelligence/top-prism-architecture"
+
+    def publish(self, upload):  # noqa: ANN001
+        raise RuntimeError("simulated hub upload failure")
+
+    def download(self, checkpoint_ref: str, dest_dir: Path) -> Path:
+        raise NotImplementedError
+
+
+def test_publish_failure_records_no_checkpoint_ref_and_exposes_last_error(tmp_path):
+    """Failing publisher: no ref persisted; last_error is set on intake."""
+    from prism_challenge.evaluator.checkpoint_intake import CheckpointIntakeService
+
+    failing = _FailingPublisher()
+    with TestClient(create_app(_settings(tmp_path), checkpoint_publisher=failing)) as client:  # type: ignore[arg-type]
+        body = _upload_body(submission_id="sub-fail-pub")
+        response = client.post(
+            "/internal/v1/checkpoints", content=body, headers=_dev_headers("secret", body)
+        )
+        assert response.status_code >= 400, response.text
+        intake = client.app.state.checkpoint_intake
+        assert isinstance(intake, CheckpointIntakeService)
+        assert intake.last_error is not None
+        assert "simulated hub upload failure" in intake.last_error
+
+    assert _recorded_checkpoint_ref(tmp_path, "sub-fail-pub") is None
+
+
+def test_publish_success_exposes_status_and_checkpoint_ref(tmp_path):
+    """Mock publish success: status=success and checkpoint_ref observable."""
+    mock = MockCheckpointPublisher()
+    with TestClient(create_app(_settings(tmp_path), checkpoint_publisher=mock)) as client:
+        body = _upload_body(submission_id="sub-ok-obs")
+        response = client.post(
+            "/internal/v1/checkpoints", content=body, headers=_dev_headers("secret", body)
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["checkpoint_ref"].startswith(mock.repo_id + "@")
+        assert data.get("status") == "success"
+        intake = client.app.state.checkpoint_intake
+        assert intake.last_error is None
+        assert intake.last_status == "success"
+        assert intake.last_checkpoint_ref == data["checkpoint_ref"]
+
+    assert _recorded_checkpoint_ref(tmp_path, "sub-ok-obs") == data["checkpoint_ref"]
+
+
+def test_training_publish_complete_fail_closed_when_hf_configured():
+    """When HF token is configured, completion without checkpoint_ref is incomplete."""
+    from prism_challenge.evaluator.checkpoint_intake import is_training_publish_complete
+
+    assert is_training_publish_complete(hf_token_configured=True, checkpoint_ref=None) is False
+    assert (
+        is_training_publish_complete(
+            hf_token_configured=True,
+            checkpoint_ref="BaseIntelligence/top-prism-architecture@rev1",
+        )
+        is True
+    )
+
+
+def test_training_publish_complete_allows_missing_ref_when_hf_disabled():
+    """When HF is disabled/dev mock path, missing checkpoint_ref is not a hard incomplete."""
+    from prism_challenge.evaluator.checkpoint_intake import is_training_publish_complete
+
+    assert is_training_publish_complete(hf_token_configured=False, checkpoint_ref=None) is True
+
+
+def test_mock_publisher_path_still_works_offline(tmp_path, monkeypatch):
+    """Dev mock path remains offline-safe and still records a checkpoint_ref."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    mock = MockCheckpointPublisher()
+    with TestClient(create_app(_settings(tmp_path), checkpoint_publisher=mock)) as client:
+        body = _upload_body(submission_id="sub-mock-offline")
+        response = client.post(
+            "/internal/v1/checkpoints", content=body, headers=_dev_headers("secret", body)
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["checkpoint_ref"]
+    assert mock.call_count == 1
+    assert _recorded_checkpoint_ref(tmp_path, "sub-mock-offline") is not None
+
+
+def test_publish_success_and_failure_emit_structured_log_fields(tmp_path, caplog):
+    """Structured logs on success/failure include repo_id + submission_id and never tokens."""
+    import logging
+
+    mock = MockCheckpointPublisher()
+    with caplog.at_level(logging.INFO, logger="prism_challenge.evaluator.checkpoint_intake"):
+        with TestClient(create_app(_settings(tmp_path), checkpoint_publisher=mock)) as client:
+            body = _upload_body(submission_id="sub-log-ok")
+            ok = client.post(
+                "/internal/v1/checkpoints", content=body, headers=_dev_headers("secret", body)
+            )
+            assert ok.status_code == 200, ok.text
+
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "sub-log-ok" in joined
+    assert mock.repo_id in joined or "checkpoint publish" in joined.lower()
+    assert "secret" not in joined  # shared_token must never appear
+
+    failing = _FailingPublisher()
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="prism_challenge.evaluator.checkpoint_intake"):
+        with TestClient(create_app(_settings(tmp_path), checkpoint_publisher=failing)) as client:  # type: ignore[arg-type]
+            body = _upload_body(submission_id="sub-log-fail")
+            bad = client.post(
+                "/internal/v1/checkpoints",
+                content=body,
+                headers=_dev_headers("secret", body, nonce="ckpt-nonce-fail-log"),
+            )
+            assert bad.status_code >= 400, bad.text
+
+    fail_joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "sub-log-fail" in fail_joined
+    assert "secret" not in fail_joined

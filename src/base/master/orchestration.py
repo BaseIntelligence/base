@@ -36,6 +36,7 @@ from typing import Any, Protocol
 from fastapi import FastAPI
 
 from base.challenge_sdk.roles import Capability, Role, activate_role, role_contract
+from base.compute.digest_allowlist import DigestRecord
 from base.master.agent_challenge_compat import (
     decide_agent_challenge_activation,
     is_agent_challenge_slug,
@@ -44,6 +45,7 @@ from base.master.assignment import (
     AGENT_CHALLENGE_SLUG,
     AssignmentService,
 )
+from base.master.constation.allowlist_repository import constation_identity_payload
 from base.master.docker_orchestrator import (
     ChallengeSpec,
     challenge_spec_from_registry,
@@ -127,6 +129,24 @@ class ChallengeFoldTrigger(Protocol):
     ) -> None: ...
 
 
+class ConstationPinSource(Protocol):
+    """Resolve the active image-attestation pin for Prism dispatch stamping."""
+
+    async def get_active_pin(self, *, variant: str) -> DigestRecord | None: ...
+
+
+class LiumCapacityAdmission(Protocol):
+    """Minimal surface for master-owned Lium capacity admission.
+
+    Real type: :class:`base.compute.lium_capacity.LiumCapacityScheduler`.
+    Tests inject a Fake that records ``enqueue`` / ``tick``.
+    """
+
+    def enqueue(self, *, submission_id: str, job_id: str) -> object: ...
+
+    async def tick(self) -> object: ...
+
+
 @dataclass(frozen=True)
 class OrchestrationPassResult:
     """Observable outcome of one orchestration pass."""
@@ -161,6 +181,9 @@ class MasterOrchestrationDriver:
         worker_assignment_engine: WorkerAssignmentEngine | None = None,
         worker_reconciler: WorkerReconciliationService | None = None,
         seed: int | None = None,
+        constation_pin_source: ConstationPinSource | None = None,
+        prism_dispatch_variant: str = "cuda",
+        lium_scheduler: LiumCapacityAdmission | None = None,
     ) -> None:
         self._assignment_service = assignment_service
         self._validator_service = validator_service
@@ -171,6 +194,9 @@ class MasterOrchestrationDriver:
         self._worker_assignment_engine = worker_assignment_engine
         self._worker_reconciler = worker_reconciler
         self._seed = seed
+        self._constation_pin_source = constation_pin_source
+        self._prism_dispatch_variant = (prism_dispatch_variant or "").strip().lower()
+        self._lium_scheduler = lium_scheduler
 
     async def bridge_pending_work(self) -> dict[str, list[str]]:
         """Create ``work_assignments`` rows from challenge pending work units.
@@ -201,6 +227,7 @@ class MasterOrchestrationDriver:
                 payload = dict(work.payload)
                 if work.job_id is not None:
                     payload[PAYLOAD_JOB_ID_KEY] = work.job_id
+                payload = await self._stamp_constation_identity(payload)
                 work_unit_id = await self._assignment_service.create_prism_work_unit(
                     submission_id=work.submission_id,
                     submission_ref=work.submission_ref,
@@ -209,7 +236,60 @@ class MasterOrchestrationDriver:
                     challenge_slug=work.challenge_slug,
                 )
                 bridged.setdefault(work.challenge_slug, []).append(work_unit_id)
+                self._admit_lium_capacity(work)
         return bridged
+
+    def _admit_lium_capacity(self, work: ChallengePendingWork) -> None:
+        """Enqueue Prism GPU work onto the Lium capacity scheduler when wired.
+
+        No-op when ``lium_scheduler`` is absent (default / plane off). Enqueue
+        is idempotent on ``submission_id`` and never fails the job for capacity;
+        a background :meth:`tick` (see :meth:`run_once`) admits FIFO.
+        ``job_id`` falls back to ``submission_id`` when the prism descriptor
+        omits it (common for prism pending-work units).
+        """
+        scheduler = self._lium_scheduler
+        if scheduler is None:
+            return
+        job_id = work.job_id if work.job_id else work.submission_id
+        try:
+            scheduler.enqueue(
+                submission_id=str(work.submission_id),
+                job_id=str(job_id),
+            )
+        except Exception:
+            logger.exception(
+                "lium capacity enqueue failed for submission_id=%s; "
+                "prism work unit remains bridged (capacity is wait, not fail)",
+                work.submission_id,
+            )
+
+    async def _stamp_constation_identity(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge active constation pin into Prism primary payload (fail-closed).
+
+        Single stamp site for primary ``work_assignments.payload``. Missing pin,
+        empty variant, absent source, or lookup errors leave payload unchanged
+        so dispatch never blocks on unconfigured constation.
+        """
+        source = self._constation_pin_source
+        variant = self._prism_dispatch_variant
+        if source is None or not variant:
+            return payload
+        try:
+            pin = await source.get_active_pin(variant=variant)
+        except Exception:
+            logger.exception(
+                "constation active pin lookup failed; prism dispatch continues "
+                "without identity stamp"
+            )
+            return payload
+        if pin is None:
+            return payload
+        stamped = dict(payload)
+        stamped.update(constation_identity_payload(pin))
+        return stamped
 
     async def bridge_replay_requests(self) -> list[str]:
         """Materialize only sampled labelled replay requests as assignments."""
@@ -288,6 +368,7 @@ class MasterOrchestrationDriver:
             reconciliation = await self._worker_reconciler.reconcile_once()
         folded = await self._fold_failed()
         await self.forward_replay_results()
+        await self._tick_lium_capacity()
         if replayed:
             bridged.setdefault(AGENT_CHALLENGE_SLUG, []).extend(replayed)
         return OrchestrationPassResult(
@@ -297,6 +378,22 @@ class MasterOrchestrationDriver:
             worker=worker,
             reconciliation=reconciliation,
         )
+
+    async def _tick_lium_capacity(self) -> None:
+        """Advance Lium FIFO admission once per orchestration pass.
+
+        Failures are logged; capacity never aborts the master pass. Residual:
+        if the driver is constructed without a scheduler, ops can still call
+        :func:`base.compute.lium_training_wiring.run_lium_capacity_tick` from
+        a dedicated loop later.
+        """
+        scheduler = self._lium_scheduler
+        if scheduler is None:
+            return
+        try:
+            await scheduler.tick()
+        except Exception:
+            logger.exception("lium capacity tick failed; will retry next pass")
 
     async def _fold_failed(self) -> list[str]:
         """Durably fold every still-failed, unfolded agent-challenge unit.

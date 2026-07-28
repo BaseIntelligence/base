@@ -257,3 +257,33 @@ async def test_reconciliation_without_hook_still_forwards() -> None:
     )
     assert ok is True
     assert len(forwarder.calls) == 1
+
+
+def test_main_passes_constation_pin_source_into_orchestration_driver() -> None:
+    """Given main.py call site, When AST-inspected, Then pin source is wired."""
+    import base.cli_app.main as main_mod
+
+    source = inspect.getsource(main_mod)
+    tree = ast.parse(source)
+    hits: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if name != "_master_orchestration_driver":
+            continue
+        hits.append(node)
+    assert hits, "_master_orchestration_driver call missing from main"
+    for call in hits:
+        kw_names = {kw.arg for kw in call.keywords if kw.arg is not None}
+        assert "constation_pin_source" in kw_names, (
+            "_master_orchestration_driver must receive constation_pin_source= "
+            f"(got keywords {sorted(kw_names)})"
+        )

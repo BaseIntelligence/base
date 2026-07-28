@@ -10,6 +10,8 @@ from base.challenge_sdk.config import ChallengeSettings
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import SettingsConfigDict
 
+from .evaluator.checkpoint_publisher import DEFAULT_CHECKPOINT_REPO_ID
+
 _DATA_TMP_ARTIFACT_ROOT = Path("/data/tmp/prism-eval-artifacts")
 _TMP_ARTIFACT_ROOT = Path("/tmp/prism-eval-artifacts")
 
@@ -397,7 +399,7 @@ class PrismSettings(ChallengeSettings):
         ),
     )
     checkpoint_repo_id: str = Field(
-        default="baseintelligence/prism-checkpoints",
+        default=DEFAULT_CHECKPOINT_REPO_ID,
         validation_alias=AliasChoices("PRISM_CHECKPOINT_REPO_ID", "PRISM_HF_CHECKPOINT_REPO_ID"),
     )
     subnet_rules_json: str | None = None
@@ -455,9 +457,7 @@ class PrismSettings(ChallengeSettings):
     openrouter_api_key_file: str | None = Field(
         default="/run/secrets/openrouter_api_key",
         repr=False,
-        validation_alias=AliasChoices(
-            "PRISM_OPENROUTER_API_KEY_FILE", "OPENROUTER_API_KEY_FILE"
-        ),
+        validation_alias=AliasChoices("PRISM_OPENROUTER_API_KEY_FILE", "OPENROUTER_API_KEY_FILE"),
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",

@@ -181,7 +181,9 @@ def test_max_code_bytes_holds_five_mib_zip_base64() -> None:
 
 
 def test_example_config_parses_with_nas_defaults() -> None:
-    payload = yaml.safe_load(Path("config.example.yaml").read_text(encoding="utf-8"))
+    payload = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "config.example.yaml").read_text(encoding="utf-8")
+    )
 
     settings = PrismSettings(**payload)
 
@@ -198,7 +200,25 @@ def test_example_config_parses_with_nas_defaults() -> None:
     assert settings.shared_token is None
     assert settings.docker_broker_token is None
     assert not hasattr(settings, "llm_gateway_token")
-    assert not hasattr(settings, "openrouter_api_key")
+    # openrouter_* fields exist for plagiarism LLM but example yaml must not ship secrets
+    assert settings.openrouter_api_key is None
     assert "shared_token" not in payload
     assert "openrouter_api_key" not in payload
     assert "docker_broker_token" not in payload
+
+
+def test_checkpoint_repo_id_defaults_to_mandated_public_hub_repo(monkeypatch) -> None:
+    monkeypatch.delenv("PRISM_CHECKPOINT_REPO_ID", raising=False)
+    monkeypatch.delenv("PRISM_HF_CHECKPOINT_REPO_ID", raising=False)
+    from prism_challenge.evaluator.checkpoint_publisher import DEFAULT_CHECKPOINT_REPO_ID
+
+    assert DEFAULT_CHECKPOINT_REPO_ID == "BaseIntelligence/top-prism-architecture"
+    assert PrismSettings().checkpoint_repo_id == DEFAULT_CHECKPOINT_REPO_ID
+
+
+def test_checkpoint_repo_id_accepts_prism_and_hf_env_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("PRISM_CHECKPOINT_REPO_ID", "alias-org/from-prism")
+    assert PrismSettings().checkpoint_repo_id == "alias-org/from-prism"
+    monkeypatch.delenv("PRISM_CHECKPOINT_REPO_ID", raising=False)
+    monkeypatch.setenv("PRISM_HF_CHECKPOINT_REPO_ID", "alias-org/from-hf")
+    assert PrismSettings().checkpoint_repo_id == "alias-org/from-hf"

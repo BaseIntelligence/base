@@ -220,3 +220,103 @@ async def test_allowlist_repository_roundtrips_sealed_hashes(
     )
     assert isinstance(result, AllowlistHit)
     assert dict(result.record.sealed_manifest_hashes) == sealed
+
+
+@pytest.mark.asyncio
+async def test_get_active_pin_returns_single_non_revoked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given exactly one non-revoked pin for variant, When get_active_pin, Then it."""
+    repo = DigestAllowlistRepository(session_factory)
+    sealed = {"default.py": "e" * 64}
+    record = _record(sealed_manifest_hashes=sealed)
+    await repo.register(record)
+
+    pin = await repo.get_active_pin(variant=ImageVariant.CUDA)
+    assert pin == record
+    assert dict(pin.sealed_manifest_hashes) == sealed
+
+
+@pytest.mark.asyncio
+async def test_get_active_pin_zero_candidates_returns_none(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given no pins for variant, When get_active_pin, Then None (fail-closed)."""
+    repo = DigestAllowlistRepository(session_factory)
+    await repo.register(_record(variant=ImageVariant.CPU, digest=DIGEST_CPU))
+
+    assert await repo.get_active_pin(variant=ImageVariant.CUDA) is None
+    assert await repo.get_active_pin(variant="cuda") is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_pin_ambiguous_multiple_returns_none(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given two non-revoked pins for same variant, When get_active_pin, Then None.
+
+    Deterministic fail-closed: never silently pick newest/random among several.
+    """
+    repo = DigestAllowlistRepository(session_factory)
+    await repo.register(_record(digest=DIGEST_CUDA))
+    await repo.register(
+        _record(
+            commit_sha=COMMIT_B,
+            tree_sha=TREE_B,
+            digest=DIGEST_OTHER,
+            variant=ImageVariant.CUDA,
+        )
+    )
+
+    assert await repo.get_active_pin(variant=ImageVariant.CUDA) is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_pin_skips_revoked_digest(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given sole pin revoked by digest, When get_active_pin, Then None."""
+    repo = DigestAllowlistRepository(session_factory)
+    await repo.register(_record())
+    await repo.revoke_digest(DIGEST_CUDA)
+
+    assert await repo.get_active_pin(variant=ImageVariant.CUDA) is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_pin_skips_revoked_commit_leaves_other(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Given two pins, one commit revoked, When get_active_pin, Then the other."""
+    repo = DigestAllowlistRepository(session_factory)
+    kept = _record(
+        commit_sha=COMMIT_B,
+        tree_sha=TREE_B,
+        digest=DIGEST_OTHER,
+        variant=ImageVariant.CUDA,
+    )
+    await repo.register(_record())  # COMMIT_A / DIGEST_CUDA
+    await repo.register(kept)
+    await repo.revoke_commit(COMMIT_A)
+
+    pin = await repo.get_active_pin(variant=ImageVariant.CUDA)
+    assert pin == kept
+
+
+def test_constation_identity_payload_has_hook_keys() -> None:
+    """Given DigestRecord, When identity payload, Then five hook keys present."""
+    from base.master.constation.allowlist_repository import (
+        constation_identity_payload,
+    )
+
+    sealed = {"a.py": "f" * 64}
+    record = _record(sealed_manifest_hashes=sealed)
+    payload = constation_identity_payload(record)
+    assert payload["required_digest"] == DIGEST_CUDA
+    assert payload["commit_sha"] == COMMIT_A
+    assert payload["tree_sha"] == TREE_A
+    assert payload["variant"] == "cuda"
+    assert payload["sealed_manifest_hashes"] == sealed
+    # Must not invent pod/instance identity at stamp time.
+    assert "pod_id" not in payload
+    assert "instance_id" not in payload
