@@ -13,10 +13,12 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from sqlalchemy import select
 
+from base.compute.digest_allowlist import DigestRecord, ImageVariant
 from base.db import (
     Base,
     Validator,
@@ -27,6 +29,11 @@ from base.db import (
 )
 from base.db.models import WorkAssignment, WorkAssignmentStatus
 from base.master.assignment import AssignmentService
+from base.master.constation.allowlist_repository import (
+    DigestAllowlistRepository,
+    constation_identity_payload,
+)
+from base.master.constation.custody_keys import make_constation_pre_forward_hook
 from base.master.orchestration import (
     WORK_UNIT_MAX_ATTEMPTS_REASON,
     ChallengePendingWork,
@@ -575,3 +582,234 @@ def test_lifespan_is_none_when_disabled() -> None:
     dummy = object()
     assert build_master_orchestration_lifespan(dummy, 0) is None  # type: ignore[arg-type]
     assert build_master_orchestration_lifespan(dummy, None) is None  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# Constation identity stamp on Prism primary payload at bridge
+# --------------------------------------------------------------------------- #
+
+
+class _FixedPinSource:
+    """Pin source returning a fixed record (or None / raising)."""
+
+    def __init__(
+        self,
+        pin: DigestRecord | None = None,
+        *,
+        raises: bool = False,
+    ) -> None:
+        self.pin = pin
+        self.raises = raises
+        self.calls: list[str] = []
+
+    async def get_active_pin(self, *, variant: str) -> DigestRecord | None:
+        self.calls.append(variant)
+        if self.raises:
+            raise RuntimeError("pin store unavailable")
+        return self.pin
+
+
+def _cuda_pin() -> DigestRecord:
+    return DigestRecord(
+        commit_sha="a" * 40,
+        tree_sha="b" * 40,
+        variant=ImageVariant.CUDA,
+        digest="sha256:" + ("c" * 64),
+        sealed_manifest_hashes={"harness.py": "d" * 64},
+    )
+
+
+async def test_bridge_stamps_constation_identity_on_prism_payload() -> None:
+    """S1: active pin → primary payload carries the five hook identity keys."""
+    engine, factory = await _setup()
+    try:
+        pin = _cuda_pin()
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=_FixedPinSource(pin),
+            prism_dispatch_variant="cuda",
+        )
+        await driver.bridge_pending_work()
+        rows = await _rows(factory)
+        assert len(rows) == 1
+        payload = dict(rows[0].payload or {})
+        expected = constation_identity_payload(pin)
+        for key, value in expected.items():
+            assert payload[key] == value
+        assert "pod_id" not in payload
+        assert "instance_id" not in payload
+    finally:
+        await engine.dispose()
+
+
+async def test_bridge_no_active_pin_leaves_payload_unstamped() -> None:
+    """S2: zero pin → dispatch succeeds, payload has no identity keys."""
+    engine, factory = await _setup()
+    try:
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=_FixedPinSource(None),
+            prism_dispatch_variant="cuda",
+        )
+        await driver.bridge_pending_work()
+        payload = dict((await _rows(factory))[0].payload or {})
+        for key in (
+            "required_digest",
+            "commit_sha",
+            "tree_sha",
+            "variant",
+            "sealed_manifest_hashes",
+        ):
+            assert key not in payload
+    finally:
+        await engine.dispose()
+
+
+async def test_bridge_pin_lookup_error_does_not_block_dispatch() -> None:
+    """S2b: pin source raises → unit still created, no identity stamp."""
+    engine, factory = await _setup()
+    try:
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=_FixedPinSource(raises=True),
+            prism_dispatch_variant="cuda",
+        )
+        bridged = await driver.bridge_pending_work()
+        assert bridged["prism"] == ["psub-1"]
+        payload = dict((await _rows(factory))[0].payload or {})
+        assert "required_digest" not in payload
+    finally:
+        await engine.dispose()
+
+
+async def test_bridge_constation_identity_coexists_with_replication_degraded() -> None:
+    """S5: stamped identity keys survive worker_replication_degraded marker."""
+    engine, factory = await _setup()
+    try:
+        pin = _cuda_pin()
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=_FixedPinSource(pin),
+            prism_dispatch_variant="cuda",
+        )
+        await driver.bridge_pending_work()
+        async with session_scope(factory) as session:
+            row = (
+                await session.execute(
+                    select(WorkAssignment).where(
+                        WorkAssignment.work_unit_id == "psub-1"
+                    )
+                )
+            ).scalar_one()
+            payload = dict(row.payload or {})
+            payload["worker_replication_degraded"] = 1
+            row.payload = payload
+        rows = await _rows(factory)
+        payload = dict(rows[0].payload or {})
+        assert payload["worker_replication_degraded"] == 1
+        assert payload["required_digest"] == pin.digest
+        assert payload["commit_sha"] == pin.commit_sha
+        assert payload["tree_sha"] == pin.tree_sha
+        assert payload["variant"] == "cuda"
+        assert payload["sealed_manifest_hashes"] == dict(pin.sealed_manifest_hashes)
+    finally:
+        await engine.dispose()
+
+
+async def test_stamped_payload_drives_pre_forward_hook_past_incomplete_identity() -> (
+    None
+):
+    """S6: stamped payload makes hook invoke orchestrator (not incomplete skip)."""
+    pin = _cuda_pin()
+    identity = constation_identity_payload(pin)
+    # Simulate degraded marker coexistence on the primary payload.
+    metadata = {**identity, "worker_replication_degraded": 1}
+    seen: list[object] = []
+
+    class _Orch:
+        async def run(self, request: object) -> None:
+            seen.append(request)
+
+    from base.master.constation.orchestrator import ProductionConstationOrchestrator
+
+    hook = make_constation_pre_forward_hook(
+        cast(ProductionConstationOrchestrator, _Orch()),
+        duration_seconds=12.0,
+    )
+    assert hook is not None
+    await hook(work_unit_id="wu-1", miner_hotkey="hk", metadata=metadata)
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.required_digest == pin.digest
+    assert req.commit_sha == pin.commit_sha
+    assert req.tree_sha == pin.tree_sha
+    assert req.variant == "cuda"
+    assert dict(req.sealed_manifest_hashes) == dict(pin.sealed_manifest_hashes)
+
+
+async def test_bridge_empty_variant_skips_pin_lookup() -> None:
+    """Empty prism_dispatch_variant disables stamping without calling the source."""
+    engine, factory = await _setup()
+    try:
+        pin_source = _FixedPinSource(_cuda_pin())
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=pin_source,
+            prism_dispatch_variant="",
+        )
+        await driver.bridge_pending_work()
+        assert pin_source.calls == []
+        payload = dict((await _rows(factory))[0].payload or {})
+        assert "required_digest" not in payload
+    finally:
+        await engine.dispose()
+
+
+async def test_bridge_real_repo_active_pin_stamps_payload() -> None:
+    """Integration of get_active_pin + bridge stamp via real SQLite repo."""
+    engine, factory = await _setup()
+    try:
+        pin = _cuda_pin()
+        repo = DigestAllowlistRepository(factory)
+        await repo.register(pin)
+        service = AssignmentService(factory, now_fn=lambda: NOW)
+        validators = ValidatorCoordinationService(factory, now_fn=lambda: NOW)
+        source = FakeWorkSource(works=[_prism_work()])
+        driver = MasterOrchestrationDriver(
+            assignment_service=service,
+            validator_service=validators,
+            work_source=source,
+            constation_pin_source=repo,
+            prism_dispatch_variant="cuda",
+        )
+        await driver.bridge_pending_work()
+        payload = dict((await _rows(factory))[0].payload or {})
+        assert payload["required_digest"] == pin.digest
+        assert payload["sealed_manifest_hashes"] == dict(pin.sealed_manifest_hashes)
+    finally:
+        await engine.dispose()
