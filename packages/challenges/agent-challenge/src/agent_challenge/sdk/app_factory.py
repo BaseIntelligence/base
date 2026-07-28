@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from time import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 GetWeightsFn = Callable[[], Awaitable[dict[str, float]]]
 WorkerMain = Callable[[], Awaitable[None]]
+BackgroundTaskFactory = Callable[[FastAPI], Coroutine[Any, Any, None]]
 
 
 def _handle_worker_task_done(task: asyncio.Task[None]) -> None:
@@ -42,6 +44,18 @@ def _handle_worker_task_done(task: asyncio.Task[None]) -> None:
     signal.raise_signal(signal.SIGTERM)
 
 
+def _log_unexpected_background_exit(task: asyncio.Task[None]) -> None:
+    """Log unexpected exit of a non-worker background task (e.g. raw-weight push)."""
+
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.critical("background task exited unexpectedly", exc_info=exc)
+    else:
+        logger.critical("background task exited unexpectedly without error")
+
+
 def create_challenge_app(
     *,
     settings: ChallengeSettings,
@@ -50,6 +64,7 @@ def create_challenge_app(
     get_weights_fn: GetWeightsFn,
     challenge_internal_router: APIRouter | None = None,
     worker_main: WorkerMain | None = None,
+    background_tasks: Sequence[BackgroundTaskFactory] = (),
 ) -> FastAPI:
     """Create a complete FastAPI challenge app with standard BASE routes."""
 
@@ -67,14 +82,27 @@ def create_challenge_app(
         settings.require_dcap_qvl_binary_for_production()
         await database.init()
         worker_task: asyncio.Task[None] | None = None
+        bg_tasks: list[asyncio.Task[None]] = []
         if worker_main is not None:
             worker_task = asyncio.create_task(worker_main(), name="combined-worker-loop")
             worker_task.add_done_callback(_handle_worker_task_done)
+        bg_tasks = [
+            asyncio.create_task(factory(app), name=_background_task_name(factory))
+            for factory in background_tasks
+        ]
+        app.state.challenge_background_tasks = tuple(bg_tasks)
+        for task in bg_tasks:
+            task.add_done_callback(_log_unexpected_background_exit)
         try:
             yield
         finally:
+            for task in bg_tasks:
+                task.cancel()
             if worker_task is not None:
                 worker_task.cancel()
+            if bg_tasks:
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
+            if worker_task is not None:
                 try:
                     await worker_task
                 except asyncio.CancelledError:
@@ -82,6 +110,7 @@ def create_challenge_app(
                 except Exception:
                     # Already surfaced by the done-callback; keep shutdown clean.
                     logger.exception("combined-mode worker loop crashed during shutdown")
+            app.state.challenge_background_tasks = ()
             await database.close()
 
     app = FastAPI(title=settings.name, version=settings.version, lifespan=lifespan)
@@ -122,3 +151,12 @@ def create_challenge_app(
     app.include_router(internal_router)
     app.include_router(public_router)
     return app
+
+
+def _background_task_name(factory: BackgroundTaskFactory) -> str:
+    """Prefer an explicit loop name when the factory coroutine is named."""
+
+    name = getattr(factory, "__name__", "") or ""
+    if name == "_run_raw_weight_push":
+        return "raw-weight-push-loop"
+    return "challenge-background-task"

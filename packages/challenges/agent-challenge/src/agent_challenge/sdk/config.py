@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_SECRET_REDACTION = "<redacted>"
@@ -43,7 +43,11 @@ SECRET_FIELD_NAMES = frozenset(
 class ChallengeSettings(BaseSettings):
     """Runtime settings for the Agent Challenge service."""
 
-    model_config = SettingsConfigDict(env_prefix="CHALLENGE_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="CHALLENGE_",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     slug: str = "agent-challenge"
     name: str = "Agent Challenge"
@@ -78,6 +82,22 @@ class ChallengeSettings(BaseSettings):
     # background asyncio task (all-in-one "combined" service). Default false
     # preserves the separate ``agent-challenge-worker`` sidecar deployment.
     combined_worker: bool = False
+    # Authenticated raw-weight push to master (winner-take-all map).
+    # When enabled and master_base_url + shared token are set, the API lifespan
+    # runs run_raw_weight_push_loop against the shared Database ledger.
+    raw_weight_push_enabled: bool = True
+    master_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CHALLENGE_MASTER_BASE_URL",
+            "MASTER_BASE_URL",
+        ),
+    )
+    raw_weight_push_interval_seconds: float = Field(default=30.0, ge=0.1)
+    raw_weight_push_freshness_seconds: int = Field(default=300, ge=30)
+    raw_weight_push_timeout_seconds: float = Field(default=10.0, gt=0.0)
+    # Epoch bucket size for push revision identity (seconds).
+    epoch_seconds: int = Field(default=3600, ge=1)
 
     # Root stdlib logging level applied at every process entrypoint (the API app
     # import and the worker ``main()``). Uvicorn installs no root handler, so
@@ -717,6 +737,18 @@ class ChallengeSettings(BaseSettings):
                 if secret:
                     return secret
         raise ValueError("review evidence encryption key is not configured")
+
+    def internal_token(self) -> str | None:
+        """Challenge shared bearer used for master internal routes (push auth)."""
+
+        if self.shared_token:
+            return self.shared_token
+        if self.shared_token_file:
+            path = Path(self.shared_token_file)
+            if path.is_file():
+                token = path.read_text(encoding="utf-8").strip()
+                return token or None
+        return None
 
 
 def effective_evaluation_task_count(value: int) -> int:

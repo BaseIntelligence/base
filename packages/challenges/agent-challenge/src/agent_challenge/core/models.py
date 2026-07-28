@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from agent_challenge.evaluation.raw_weight_push import RawWeightPushLedger as RawWeightPushLedger
 from agent_challenge.sdk.config import ChallengeSettings
 
 from .db import Base
