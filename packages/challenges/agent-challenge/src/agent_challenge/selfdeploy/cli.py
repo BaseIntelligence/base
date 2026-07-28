@@ -52,10 +52,12 @@ from agent_challenge.selfdeploy.plan import (
 )
 from agent_challenge.selfdeploy.shapes import (
     DEFAULT_EVAL_DISK_SIZE_GB,
+    DEFAULT_EVAL_INSTANCE_TYPE,
     DEFAULT_MAX_RUNTIME_HOURS,
     DEFAULT_MONEY_CAP_USD,
     DEFAULT_OS_IMAGE,
     DEFAULT_REVIEW_DISK_SIZE_GB,
+    DEFAULT_REVIEW_INSTANCE_TYPE,
     ShapeError,
     validate_disk_size,
 )
@@ -321,10 +323,13 @@ def _assert_eval_deploy_shape_and_measurement_pin(
     Shape check needs the built plan, so it runs after prepare has spent the
     one-shot EVAL_RUN_TOKEN delivery. Next deploy recovers via
     ``_obtain_eval_prepare_with_token`` cancel+retry when prepare is sticky-null.
+
+    When the operator omits ``--eval-instance-type``, bind to the plan shape.
+    An explicit operator choice that disagrees with the plan still fails closed.
     """
 
     requested = str(getattr(args, "eval_instance_type", "") or "").strip()
-    if plan.instance_type != requested:
+    if requested and plan.instance_type != requested:
         plan_vm_shape = plan.measurement.get("vm_shape")
         plan_vm = (
             str(plan_vm_shape).replace("-", ".")
@@ -717,7 +722,8 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
             client = _route_client(args)
             response = _obtain_review_prepare_with_token(client, args.submission_id)
             plan = review_deploy.build_review_deployment_plan(response)
-            if plan.instance_type != args.review_instance_type:
+            requested_review = str(getattr(args, "review_instance_type", "") or "").strip()
+            if requested_review and plan.instance_type != requested_review:
                 raise RouteClientError(
                     "review deployment shape differs from the validator-issued assignment"
                 )
@@ -730,7 +736,10 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
             plan = _with_disk_size(plan, review_disk)
             lifecycle.validate_lifecycle_budget(
                 review_instance_type=plan.instance_type,
-                eval_instance_type=args.eval_instance_type,
+                eval_instance_type=(
+                    str(getattr(args, "eval_instance_type", "") or "").strip()
+                    or DEFAULT_EVAL_INSTANCE_TYPE
+                ),
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
                 money_cap_usd=args.money_cap_usd,
@@ -905,7 +914,10 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
             )
             plan = _with_disk_size(plan, eval_disk)
             lifecycle.validate_lifecycle_budget(
-                review_instance_type=args.review_instance_type,
+                review_instance_type=(
+                    str(getattr(args, "review_instance_type", "") or "").strip()
+                    or DEFAULT_REVIEW_INSTANCE_TYPE
+                ),
                 eval_instance_type=plan.instance_type,
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
@@ -1275,8 +1287,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="environment variable holding the user key",
     )
     review_deploy.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
-    review_deploy.add_argument("--review-instance-type", default="tdx.small")
-    review_deploy.add_argument("--eval-instance-type", default="tdx.small")
+    review_deploy.add_argument("--review-instance-type", default=None)
+    review_deploy.add_argument("--eval-instance-type", default=None)
     review_deploy.add_argument("--review-runtime-hours", type=float, default=6.0)
     review_deploy.add_argument("--eval-runtime-hours", type=float, default=6.0)
     review_deploy.add_argument("--money-cap-usd", type=float, default=20.0)
@@ -1362,8 +1374,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_deploy_parser.add_argument("--llm-cost-limit-env", default="LLM_COST_LIMIT")
     eval_deploy_parser.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
-    eval_deploy_parser.add_argument("--review-instance-type", default="tdx.small")
-    eval_deploy_parser.add_argument("--eval-instance-type", default="tdx.small")
+    eval_deploy_parser.add_argument("--review-instance-type", default=None)
+    eval_deploy_parser.add_argument("--eval-instance-type", default=None)
     eval_deploy_parser.add_argument("--review-runtime-hours", type=float, default=6.0)
     eval_deploy_parser.add_argument("--eval-runtime-hours", type=float, default=6.0)
     eval_deploy_parser.add_argument("--money-cap-usd", type=float, default=20.0)

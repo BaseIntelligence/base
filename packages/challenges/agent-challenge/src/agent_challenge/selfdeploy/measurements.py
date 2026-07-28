@@ -249,6 +249,35 @@ def measurements_agree(
     )
 
 
+#: Hex prefix length for operator-facing digest snippets (never full digests).
+_DIGEST_PREFIX_LEN = 16
+
+
+def format_eval_shape_mismatch_error(
+    *,
+    plan_instance_type: str,
+    requested_instance_type: str,
+    plan_vm_shape: str,
+    plan_rtmr0: str | None,
+) -> str:
+    """Single-line operator message for eval CLI vs plan shape mismatch.
+
+    Never includes a full measurement digest. When ``plan_rtmr0`` is present,
+    only a short truncated prefix is appended (same 16-hex + ellipsis convention
+    used elsewhere in the challenge package).
+    """
+
+    message = (
+        f"eval instance type mismatch: requested {requested_instance_type!r}, "
+        f"plan has {plan_instance_type!r} (vm_shape={plan_vm_shape!r}); "
+        f"pass --eval-instance-type {plan_instance_type}"
+    )
+    if isinstance(plan_rtmr0, str) and plan_rtmr0.strip():
+        prefix = plan_rtmr0.strip().lower()[:_DIGEST_PREFIX_LEN]
+        message = f"{message}; plan_rtmr0_prefix={prefix}…"
+    return message
+
+
 __all__ = [
     "AllowlistVerdict",
     "MeasurementError",
@@ -256,6 +285,7 @@ __all__ = [
     "allowlist_verdict",
     "canonical_measurement_subset",
     "domain_allowlist_verdict",
+    "format_eval_shape_mismatch_error",
     "load_allowlist_entries",
     "measurement_uses_product_os_identity",
     "measurements_agree",
