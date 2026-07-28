@@ -65,6 +65,13 @@ def create_challenge_app(
         # Dual-flag production also needs dcap-qvl on PATH (baked into runtime
         # image). Binary presence only; no PCS network / secret / trust-root invent.
         settings.require_dcap_qvl_binary_for_production()
+        # Temporary NO_PHALA host mode: loud banner so nobody mistakes an
+        # unattested validator for an attested one. Contradiction with attestation
+        # flags is already fail-closed at ChallengeSettings construction.
+        if getattr(settings, "no_phala", False):
+            from agent_challenge.evaluation.no_phala import log_no_phala_startup_banner
+
+            log_no_phala_startup_banner()
         await database.init()
         worker_task: asyncio.Task[None] | None = None
         if worker_main is not None:
@@ -88,18 +95,33 @@ def create_challenge_app(
 
     @app.get("/health", response_model=HealthResponse, include_in_schema=False)
     async def health() -> HealthResponse:
-        return HealthResponse(slug=settings.slug, version=settings.version)
+        from agent_challenge.evaluation.no_phala import health_fields
+
+        mode = health_fields(no_phala=bool(getattr(settings, "no_phala", False)))
+        return HealthResponse(
+            slug=settings.slug,
+            version=settings.version,
+            no_phala=mode["no_phala"],
+            attestation_mode=mode["attestation_mode"],
+        )
 
     @app.get("/version", response_model=VersionResponse, include_in_schema=False)
     async def version() -> VersionResponse:
+        from agent_challenge.evaluation.no_phala import health_fields
+
         capabilities = ["get_weights", "proxy_routes", "sqlite", "swe_forge"]
         if settings.docker_enabled:
             capabilities.append("docker_executor")
+        if getattr(settings, "no_phala", False):
+            capabilities.append("no_phala_host")
+        mode = health_fields(no_phala=bool(getattr(settings, "no_phala", False)))
         return VersionResponse(
             api_version=settings.api_version,
             challenge_version=settings.version,
             sdk_version=settings.sdk_version,
             capabilities=capabilities,
+            no_phala=mode["no_phala"],
+            attestation_mode=mode["attestation_mode"],
         )
 
     internal_router = APIRouter(

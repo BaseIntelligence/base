@@ -152,6 +152,13 @@ class ChallengeSettings(BaseSettings):
     # legacy intake and gateway-review path byte-for-byte. Production full
     # attested deployments enable both this and ``phala_attestation_enabled``.
     attested_review_enabled: bool = False
+    # Temporary host-local unattested execution (NO_PHALA). Opt-in, default OFF.
+    # When true the master runs jobs via own_runner on the host instead of Phala
+    # CVMs. Results are explicitly marked unattested. Mutually exclusive with
+    # both attestation flags above (fail closed at settings construction).
+    # Env precedence: CHALLENGE_NO_PHALA if set, else plain NO_PHALA, else false.
+    # Never inferred from a missing Phala API key. See docs/no-phala-mode.md.
+    no_phala: bool = False
     review_assignment_ttl_seconds: int = 1800
     review_operator_approval_ttl_seconds: int = 300
     review_https_connect_timeout_seconds: float = 10.0
@@ -369,6 +376,37 @@ class ChallengeSettings(BaseSettings):
                 "attested_review_enabled and phala_attestation_enabled must both be "
                 "enabled for full attested mode or both be disabled for legacy mode"
             )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_and_validate_no_phala(self) -> ChallengeSettings:
+        """Apply plain NO_PHALA env + fail closed on attestation contradiction.
+
+        Precedence:
+        1. ``CHALLENGE_NO_PHALA`` if present in the process environment
+        2. else plain ``NO_PHALA`` if present
+        3. else the field default (False)
+
+        Never infers the mode from a missing Phala API key or failed Phala call.
+        """
+
+        import os
+
+        from agent_challenge.evaluation.no_phala import (
+            assert_no_phala_compatible,
+            resolve_no_phala_from_environ,
+        )
+
+        # Re-resolve so plain NO_PHALA is honored when the prefixed var is unset.
+        # When CHALLENGE_NO_PHALA is set, pydantic already populated ``no_phala``;
+        # resolve_no_phala_from_environ applies the same precedence.
+        if "CHALLENGE_NO_PHALA" in os.environ or "NO_PHALA" in os.environ:
+            self.no_phala = resolve_no_phala_from_environ()
+        assert_no_phala_compatible(
+            no_phala=bool(self.no_phala),
+            phala_attestation_enabled=bool(self.phala_attestation_enabled),
+            attested_review_enabled=bool(self.attested_review_enabled),
+        )
         return self
 
     def require_eval_result_signer_for_production(self) -> None:

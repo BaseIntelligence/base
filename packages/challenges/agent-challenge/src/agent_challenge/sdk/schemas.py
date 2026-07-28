@@ -13,6 +13,10 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     slug: str
     version: str
+    #: True when temporary host-local unattested (NO_PHALA) mode is active.
+    no_phala: bool = False
+    #: ``no_phala_host`` when NO_PHALA is on, else ``standard``.
+    attestation_mode: str = "standard"
 
 
 class VersionResponse(BaseModel):
@@ -22,6 +26,9 @@ class VersionResponse(BaseModel):
     challenge_version: str
     sdk_version: str
     capabilities: list[str] = Field(default_factory=list)
+    #: Mirrors health so operators can confirm mode without a separate probe.
+    no_phala: bool = False
+    attestation_mode: str = "standard"
 
 
 class WeightsResponse(BaseModel):

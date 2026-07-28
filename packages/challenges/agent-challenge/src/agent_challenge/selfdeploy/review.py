@@ -267,6 +267,10 @@ class HttpReviewPhalaDeployment:
     ) -> dict[str, str]:
         """Provision exact compose identity then create with ciphertext only."""
 
+        from agent_challenge.evaluation.no_phala import refuse_phala_client
+
+        refuse_phala_client("HttpReviewPhalaDeployment.deploy")
+
         if (
             encrypted.assignment_id != plan.assignment["assignment_core"]["assignment_id"]
             or encrypted.app_identity != plan.app_identity
