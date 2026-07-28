@@ -733,7 +733,28 @@ if [[ "${ONLY_EVAL}" != "1" ]]; then
         >"${RUN_DIR}/review-result-a${attempt}-${i}.json" 2>"${RUN_DIR}/review-result-a${attempt}-${i}.err"
       set -e
       phase="$(extract_phase "${RUN_DIR}/review-result-a${attempt}-${i}.json" review)"
-      log "review poll a${attempt}/${i}: phase=${phase:-unknown}"
+      # Live Phala CVM status — guest exit / vanish leaves phase stuck at review_cvm_running.
+      set +e
+      phala_get_cvms >"${RUN_DIR}/cvms-during-review-a${attempt}-${i}.json" 2>/dev/null
+      cvm_stat="$(python3 -c "import json;d=json.load(open('${RUN_DIR}/cvms-during-review-a${attempt}-${i}.json')); items=d.get('items') or [];
+cid='${REV_CVM}';
+hit=[x for x in items if cid and (x.get('id')==cid or x.get('cvm_id')==cid or x.get('vm_uuid')==cid)];
+print((hit[0].get('status') if hit else 'MISSING') if cid else 'no_id')" 2>/dev/null || echo unknown)"
+      set -e
+      log "review poll a${attempt}/${i}: phase=${phase:-unknown} cvm=${cvm_stat}"
+      # CVM vanished while still non-terminal → treat as retryable infrastructure failure
+      if [[ -n "${REV_CVM}" && "${cvm_stat}" == "MISSING" ]]; then
+        case "${phase}" in
+          review_allowed|review_rejected|review_escalated|review_error|review_expired|review_cancelled) ;;
+          *)
+            log "review CVM ${REV_CVM} MISSING while phase=${phase:-unknown} — retryable"
+            terminal_phase="review_error"
+            reason_code="cvm_missing"
+            retryable="true"
+            break
+            ;;
+        esac
+      fi
       case "${phase}" in
         review_allowed)
           allowed=1
@@ -787,7 +808,7 @@ PY
     if [[ -z "${terminal_phase}" ]]; then
       die "review_allowed not reached (no terminal) attempt=${attempt}"
     fi
-    # Only retry review_error when API marks retryable (e.g. policy_output_malformed)
+    # Retry review_error when API marks retryable OR CVM vanished mid-flight
     if [[ "${terminal_phase}" == "review_error" && "${retryable}" == "true" && "${attempt}" -lt "${REVIEW_ATTEMPTS}" ]]; then
       log "retryable review_error (${reason_code:-unknown}) — will redeploy attempt $((attempt+1))"
       sleep 5
@@ -853,6 +874,19 @@ hit=[x for x in items if cid and (x.get('id')==cid or x.get('cvm_id')==cid or x.
 print((hit[0].get('status') if hit else 'MISSING') if cid else 'no_id', 'count='+str(d.get('count',-1)))" 2>/dev/null || echo unknown)"
   set -e
   log "eval poll ${i}: phase=${phase:-unknown} cvm=${cvm_stat}"
+  # CVM vanished while still prepared → guest died without posting result (KR deny, crash, etc.)
+  if [[ -n "${EVAL_CVM}" && "${cvm_stat}" == MISSING* ]]; then
+    case "${phase}" in
+      eval_accepted|eval_rejected|eval_error|eval_expired|eval_cancelled) ;;
+      *)
+        if [[ -f "${WORK_DIR}/kr.log" ]]; then
+          cp -f "${WORK_DIR}/kr.log" "${RUN_DIR}/kr-final.log" 2>/dev/null || true
+          log "KR log tail: $(tail -8 "${WORK_DIR}/kr.log" | tr '\n' ' ' | head -c 500)"
+        fi
+        die "eval CVM ${EVAL_CVM} MISSING while phase=${phase:-unknown} (guest exited without result)"
+        ;;
+    esac
+  fi
   # KR log tail when still prepared (detect dials).
   if [[ "${phase}" == "eval_prepared" && -f "${WORK_DIR}/kr.log" ]]; then
     tail -5 "${WORK_DIR}/kr.log" >"${RUN_DIR}/kr-tail-${i}.txt" 2>/dev/null || true

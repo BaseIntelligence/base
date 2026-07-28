@@ -13,6 +13,10 @@ flags ON, and fail-closed measurement allowlists. Isolated from production
 - OpenRouter key for review (`OPENROUTER_API_KEY` or OpenCode auth.json)
 - Public HTTPS reachability for CVM callbacks (script starts `cloudflared` tunnel)
 - Host key-release RA-TLS on `0.0.0.0:8701` (script can start a staging KR)
+- Dstack **client-trust** = **KMS root CA only** at
+  `scripts/staging/config/dstack-client-trust.crt`. Guest App CA rotates per CVM —
+  do not pin App CA. Staging server CA is separate (verifies KR listener).
+  Wrong client-trust → `TLSV1_ALERT_UNKNOWN_CA` / `DECRYPT_ERROR`, zero grants.
 - `dcap-qvl` on PATH or baked into the runtime image
 
 **Do not** point this stack at production master. **Do not** leave CVMs running.
@@ -101,4 +105,6 @@ non-joinbase callback bases work. Production pins stay joinbase.
 
 - Miner self-deploy: [`miner/self-deploy.md`](miner/self-deploy.md)
 - Validator surfaces: [`validator/self-deploy.md`](validator/self-deploy.md)
+- **Prod eval compose upgrade (artifact-aware pin):** [`prod-compose-upgrade.md`](prod-compose-upgrade.md)
+  — blocking prerequisite for `guest_artifact_proof` on joinbase; documentation only, no prod execution.
 - OpenAPI: challenge `/openapi.json` (local or production)

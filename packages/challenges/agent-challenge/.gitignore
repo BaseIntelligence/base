@@ -68,3 +68,10 @@ scripts/staging/config/review_evidence_encryption_key
 scripts/staging/config/challenge.env
 scripts/staging/config/kr/
 scripts/staging/config/kr-server-ca.crt
+
+
+# Staging harvested public certs (runtime-local; see scripts/staging/.gitignore)
+scripts/staging/config/dstack-client-trust.crt
+scripts/staging/config/*.crt
+!scripts/staging/config/*.crt.example
+!scripts/staging/config/*.example

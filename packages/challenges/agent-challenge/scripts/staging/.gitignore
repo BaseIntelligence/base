@@ -11,6 +11,12 @@ config/challenge.env
 config/kr/
 config/kr-server-ca.crt
 
+# Harvested / generated public certs (not private keys, but runtime-local;
+# never commit — see dstack-client-trust.crt.example for the placeholder)
+config/dstack-client-trust.crt
+config/*.crt
+!config/*.crt.example
+
 # Throwaway credentials that may land under work/ or config/
 *.mnemonic
 *.token
