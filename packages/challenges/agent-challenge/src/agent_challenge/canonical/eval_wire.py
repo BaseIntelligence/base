@@ -347,31 +347,38 @@ def scoring_policy_digest(value: Any) -> str:
 def validate_eval_plan(value: Any) -> dict[str, Any]:
     """Validate the immutable Eval plan v1 consumed by the image and endpoint."""
 
-    data = _object(
-        value,
-        "eval_plan",
-        (
-            "schema_version",
-            "eval_run_id",
-            "submission_id",
-            "submission_version",
-            "authorizing_review_digest",
-            "agent_hash",
-            "package_tree_sha",
-            "selected_tasks",
-            "k",
-            "scoring_policy",
-            "scoring_policy_digest",
-            "eval_app",
-            "key_release_endpoint",
-            "result_endpoint",
-            "key_release_nonce",
-            "score_nonce",
-            "run_token_sha256",
-            "issued_at_ms",
-            "expires_at_ms",
-        ),
+    if not isinstance(value, Mapping):
+        raise EvalWireError("eval_plan must be an object")
+    required = (
+        "schema_version",
+        "eval_run_id",
+        "submission_id",
+        "submission_version",
+        "authorizing_review_digest",
+        "agent_hash",
+        "package_tree_sha",
+        "selected_tasks",
+        "k",
+        "scoring_policy",
+        "scoring_policy_digest",
+        "eval_app",
+        "key_release_endpoint",
+        "result_endpoint",
+        "key_release_nonce",
+        "score_nonce",
+        "run_token_sha256",
+        "issued_at_ms",
+        "expires_at_ms",
     )
+    optional = frozenset({"n_concurrent"})
+    keys = set(value)
+    missing = [name for name in required if name not in keys]
+    unknown = sorted(keys - set(required) - optional)
+    if missing or unknown:
+        raise EvalWireError(
+            f"eval_plan has invalid fields: missing={missing}, unknown={unknown}"
+        )
+    data = dict(value)
     if data["schema_version"] != 1:
         raise EvalWireError("eval_plan schema_version must be 1")
     eval_run_id = _id(data["eval_run_id"], "eval_plan.eval_run_id")
@@ -383,6 +390,15 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
     agent_hash = _sha256(data["agent_hash"], "agent_hash")
     package_tree_sha = _sha256(data["package_tree_sha"], "package_tree_sha")
     k = _integer(data["k"], "eval_plan.k", minimum=1)
+    # Must stay aligned with sdk.config.MAX_EVALUATION_TASKS_PER_JOB (lean-image safe).
+    # Optional on the wire for stored pre-concurrency plans; default 1. New plans
+    # from authorization always emit an explicit bound value.
+    if "n_concurrent" in data:
+        n_concurrent = _integer(
+            data["n_concurrent"], "eval_plan.n_concurrent", minimum=1, maximum=30
+        )
+    else:
+        n_concurrent = 1
     policy = _validate_scoring_policy(data["scoring_policy"])
     policy_digest = _sha256(data["scoring_policy_digest"], "scoring_policy_digest")
     if policy_digest != scoring_policy_digest(policy):
@@ -517,6 +533,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
         "package_tree_sha": package_tree_sha,
         "selected_tasks": selected_tasks,
         "k": k,
+        "n_concurrent": n_concurrent,
         "scoring_policy": policy,
         "scoring_policy_digest": policy_digest,
         "eval_app": eval_app_out,
@@ -844,25 +861,34 @@ def validate_eval_phala_attestation(value: Any) -> dict[str, Any]:
 
 
 def validate_eval_execution_proof(value: Any) -> dict[str, Any]:
-    data = _object(
-        value,
-        "execution_proof",
-        (
-            "version",
-            "tier",
-            "manifest_sha256",
-            "image_digest",
-            "provider",
-            "worker_signature",
-            "attestation",
-        ),
+    """Validate execution_proof; optional ``hydration_digest`` (T4 Phase H)."""
+
+    if not isinstance(value, Mapping):
+        raise EvalWireError("execution_proof must be an object")
+    required = (
+        "version",
+        "tier",
+        "manifest_sha256",
+        "image_digest",
+        "provider",
+        "worker_signature",
+        "attestation",
     )
+    optional = frozenset({"hydration_digest"})
+    keys = set(value)
+    missing = [name for name in required if name not in keys]
+    unknown = sorted(keys - set(required) - optional)
+    if missing or unknown:
+        raise EvalWireError(
+            f"execution_proof has invalid fields: missing={missing}, unknown={unknown}"
+        )
+    data = dict(value)
     if data["version"] != 1 or data["tier"] != "phala-tdx" or data["provider"] is not None:
         raise EvalWireError("execution_proof has invalid fixed fields")
     signature = _object(data["worker_signature"], "worker_signature", ("worker_pubkey", "sig"))
     if signature["worker_pubkey"] != "" or signature["sig"] != "":
         raise EvalWireError("Eval wire accepts only the empty worker signature placeholder")
-    return {
+    result: dict[str, Any] = {
         "version": 1,
         "tier": "phala-tdx",
         "manifest_sha256": _sha256(data["manifest_sha256"], "manifest_sha256"),
@@ -871,6 +897,11 @@ def validate_eval_execution_proof(value: Any) -> dict[str, Any]:
         "worker_signature": {"worker_pubkey": "", "sig": ""},
         "attestation": validate_eval_phala_attestation(data["attestation"]),
     }
+    if "hydration_digest" in data:
+        result["hydration_digest"] = _sha256(
+            data["hydration_digest"], "execution_proof.hydration_digest"
+        )
+    return result
 
 
 def parse_eval_execution_proof_json(data: bytes | str) -> dict[str, Any]:
@@ -1033,6 +1064,115 @@ def validate_eval_receipt(value: Any) -> dict[str, Any]:
         "received_at_ms": _integer(data["received_at_ms"], "received_at_ms"),
     }
 
+# Mid-run progress (observability only — never carries score material).
+EVAL_PROGRESS_PHASES = frozenset(
+    {"assigned", "starting", "waiting", "running", "completed", "failed"}
+)
+EVAL_PROGRESS_EVENT_TYPES = frozenset({"task.status", "task.progress"})
+_PROGRESS_FORBIDDEN_FIELDS = frozenset(
+    {
+        "score",
+        "score_record",
+        "scores_digest",
+        "execution_proof",
+        "agent_hash",
+        "canonical_score_record",
+        "passed_tasks",
+        "total_tasks",
+    }
+)
+_PROGRESS_REQUIRED_FIELDS = (
+    "schema_version",
+    "eval_run_id",
+    "submission_id",
+    "task_id",
+    "sequence",
+    "status",
+)
+_PROGRESS_OPTIONAL_FIELDS = frozenset({"event_type", "progress", "message"})
+
+
+def validate_eval_progress_request(value: Any) -> dict[str, Any]:
+    """Validate a mid-run Eval progress event (schema-closed, score-free)."""
+
+    if not isinstance(value, Mapping):
+        raise EvalWireError("eval_progress_request must be an object")
+    keys = set(value)
+    forbidden = sorted(keys & _PROGRESS_FORBIDDEN_FIELDS)
+    if forbidden:
+        raise EvalWireError(
+            f"eval_progress_request forbids score fields: {forbidden}"
+        )
+    missing = [name for name in _PROGRESS_REQUIRED_FIELDS if name not in keys]
+    unknown = sorted(keys - set(_PROGRESS_REQUIRED_FIELDS) - _PROGRESS_OPTIONAL_FIELDS)
+    if missing or unknown:
+        raise EvalWireError(
+            f"eval_progress_request has invalid fields: missing={missing}, unknown={unknown}"
+        )
+    if value["schema_version"] != 1:
+        raise EvalWireError("eval_progress_request schema_version must be 1")
+    status = value["status"]
+    if not isinstance(status, str) or status not in EVAL_PROGRESS_PHASES:
+        raise EvalWireError("eval_progress_request status is not a safe task phase")
+    event_type = value.get("event_type", "task.status")
+    if not isinstance(event_type, str) or event_type not in EVAL_PROGRESS_EVENT_TYPES:
+        raise EvalWireError("eval_progress_request event_type is invalid")
+    progress = value.get("progress", None)
+    if progress is not None:
+        if isinstance(progress, bool) or not isinstance(progress, (int, float)):
+            raise EvalWireError("eval_progress_request progress must be a number or null")
+        progress_f = float(progress)
+        if not math.isfinite(progress_f) or progress_f < 0.0 or progress_f > 1.0:
+            raise EvalWireError("eval_progress_request progress must be finite in [0, 1]")
+        progress = progress_f
+    message = value.get("message", None)
+    if message is not None:
+        if not isinstance(message, str):
+            raise EvalWireError("eval_progress_request message must be a string or null")
+        if len(message.encode("utf-8")) > EVAL_MAX_STRING_BYTES:
+            raise EvalWireError("eval_progress_request message exceeds its string bound")
+    return {
+        "schema_version": 1,
+        "eval_run_id": _id(value["eval_run_id"], "eval_run_id"),
+        "submission_id": _id(value["submission_id"], "submission_id"),
+        "task_id": _id(value["task_id"], "task_id"),
+        "sequence": _integer(value["sequence"], "sequence", minimum=1),
+        "status": status,
+        "event_type": event_type,
+        "progress": progress,
+        "message": message,
+    }
+
+
+def validate_eval_progress_receipt(value: Any) -> dict[str, Any]:
+    """Validate the closed receipt returned by the progress ingest route."""
+
+    data = _object(
+        value,
+        "eval_progress_receipt",
+        (
+            "schema_version",
+            "eval_run_id",
+            "task_id",
+            "sequence",
+            "event_id",
+            "created",
+        ),
+    )
+    if data["schema_version"] != 1:
+        raise EvalWireError("eval_progress_receipt schema_version must be 1")
+    if not isinstance(data["created"], bool):
+        raise EvalWireError("eval_progress_receipt.created must be boolean")
+    return {
+        "schema_version": 1,
+        "eval_run_id": _id(data["eval_run_id"], "eval_run_id"),
+        "task_id": _id(data["task_id"], "task_id"),
+        "sequence": _integer(data["sequence"], "sequence", minimum=1),
+        "event_id": _integer(data["event_id"], "event_id", minimum=1),
+        "created": data["created"],
+    }
+
+
 
 __all__ = [
     "EVAL_MAX_EVENT_LOG_BYTES",
@@ -1066,7 +1206,11 @@ __all__ = [
     "validate_eval_plan",
     "validate_eval_phala_attestation",
     "validate_eval_receipt",
-    "validate_eval_result_request",
+    "validate_eval_progress_receipt",
+"validate_eval_progress_request",
+"EVAL_PROGRESS_EVENT_TYPES",
+"EVAL_PROGRESS_PHASES",
+"validate_eval_result_request",
     "validate_score_binding",
     "validate_scoring_policy",
 ]

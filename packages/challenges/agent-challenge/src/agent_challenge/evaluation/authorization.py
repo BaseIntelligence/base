@@ -26,7 +26,7 @@ from agent_challenge.evaluation.plan_scoring import (
 )
 from agent_challenge.review.authorization import verified_review_assignment_for_submission
 from agent_challenge.review.canonical import canonical_json_v1
-from agent_challenge.sdk.config import ChallengeSettings
+from agent_challenge.sdk.config import ChallengeSettings, effective_evaluation_concurrency
 
 _ACTIVE_PHASES = frozenset({"eval_prepared", "eval_running", "eval_verifying"})
 _RETRYABLE_PHASES = frozenset({"eval_cancelled", "eval_expired", "eval_error"})
@@ -74,6 +74,35 @@ class CreatedEvalRun:
     run: EvalRun
     plan: dict[str, Any]
     token: str | None
+
+
+def resolve_plan_n_concurrent(
+    requested: int | None,
+    *,
+    settings: ChallengeSettings,
+) -> int:
+    """Resolve miner-chosen concurrency for the immutable Eval plan.
+
+    Bounds are ``[1, effective_evaluation_concurrency(settings.evaluation_concurrency)]``.
+    Omitted request defaults to the effective configured ceiling. Out-of-bounds
+    values are rejected (never silently clamped) so the signed plan cannot hide
+    a miner request the validator did not accept.
+    """
+
+    max_allowed = effective_evaluation_concurrency(settings.evaluation_concurrency)
+    if requested is None:
+        return max_allowed
+    if isinstance(requested, bool) or not isinstance(requested, int):
+        raise EvalAuthorizationConflict(
+            "n_concurrent must be an integer",
+            code="eval_n_concurrent_out_of_bounds",
+        )
+    if requested < 1 or requested > max_allowed:
+        raise EvalAuthorizationConflict(
+            f"n_concurrent must be between 1 and {max_allowed} (inclusive)",
+            code="eval_n_concurrent_out_of_bounds",
+        )
+    return requested
 
 
 def _as_utc(value: datetime | None) -> datetime:
@@ -174,13 +203,18 @@ def _nonce() -> str:
 
 
 def _dataset_digest_manifest_path() -> Any:
-    """Return the frozen on-disk ``dataset-digest.json`` path for task config digests."""
+    """Return the frozen on-disk ``dataset-digest.json`` path for task config digests.
+
+    Uses :func:`resolve_dataset_digest_path` so site-packages installs resolve
+    ``/app/golden/dataset-digest.json`` (or settings/env) instead of a missing
+    ``Path(__file__).parents[3]/golden/…`` under the Python prefix.
+    """
 
     from pathlib import Path
 
-    from agent_challenge.evaluation.benchmarks import TERMINAL_BENCH_2_1_DIGEST_PATH
+    from agent_challenge.evaluation.benchmarks import resolve_dataset_digest_path
 
-    return Path(TERMINAL_BENCH_2_1_DIGEST_PATH)
+    return Path(resolve_dataset_digest_path())
 
 
 _CACHED_DATASET_DIGEST: dict[str, Any] | None = None
@@ -365,6 +399,7 @@ def _build_plan(
     score_nonce: str,
     token_sha256: str,
     now: datetime,
+    n_concurrent: int | None = None,
 ) -> dict[str, Any]:
     try:
         policy = scoring_policy_from_settings(settings)
@@ -414,6 +449,7 @@ def _build_plan(
         "package_tree_sha": package_tree_sha.strip(),
         "selected_tasks": selected_tasks,
         "k": settings.eval_k,
+        "n_concurrent": resolve_plan_n_concurrent(n_concurrent, settings=settings),
         "scoring_policy": policy,
         "scoring_policy_digest": eval_wire.scoring_policy_digest(policy),
         "eval_app": _eval_app(settings),
@@ -535,6 +571,7 @@ async def _issue_run(
     settings: ChallengeSettings,
     now: datetime,
     prior_run: EvalRun | None = None,
+    n_concurrent: int | None = None,
 ) -> CreatedEvalRun:
     existing = await session.scalar(
         select(EvalRun)
@@ -569,6 +606,7 @@ async def _issue_run(
         score_nonce=_nonce(),
         token_sha256=token_digest,
         now=now,
+        n_concurrent=n_concurrent,
     )
     plan_json = canonical_eval_plan_json(plan)
     plan_digest = sha256(plan_json.encode("utf-8")).hexdigest()
@@ -619,6 +657,7 @@ async def create_eval_run(
     *,
     settings: ChallengeSettings,
     now: datetime | None = None,
+    n_concurrent: int | None = None,
 ) -> CreatedEvalRun:
     """Authorize one immutable run, or return the current run without a token."""
 
@@ -638,6 +677,25 @@ async def create_eval_run(
                 "current Eval run requires signed retry",
                 code="eval_prepare_conflict",
             )
+        # Active run: idempotent prepare returns current plan (no new token).
+        if current.phase in _ACTIVE_PHASES:
+            plan = _loaded_plan(current)
+            return CreatedEvalRun(run=current, plan=plan, token=None)
+        # Terminal non-retryable (eval_rejected / eval_accepted / invalid legacy
+        # plan under evolved wire): issue a fresh run so miners can recover from
+        # score-refuse / schema upgrades without a new submission version.
+        if current.phase in {"eval_rejected", "eval_accepted"} or not bool(
+            getattr(current, "retryable", False)
+        ):
+            return await _issue_run(
+                session,
+                submission=submission,
+                review_digest=review_digest,
+                settings=settings,
+                now=moment,
+                prior_run=current,
+                n_concurrent=n_concurrent,
+            )
         plan = _loaded_plan(current)
         return CreatedEvalRun(run=current, plan=plan, token=None)
     return await _issue_run(
@@ -647,6 +705,7 @@ async def create_eval_run(
         settings=settings,
         now=_as_utc(now),
         prior_run=current,
+        n_concurrent=n_concurrent,
     )
 
 
@@ -1670,6 +1729,7 @@ __all__ = [
     "receipt_eval_result",
     "receipt_eval_key_release",
     "register_eval_key_release",
+    "resolve_plan_n_concurrent",
     "release_eval_resource",
     "reserve_eval_resource",
     "retry_eval_run",

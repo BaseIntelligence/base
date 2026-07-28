@@ -543,8 +543,8 @@ class ChallengeSettings(BaseSettings):
     @field_validator("eval_max_attempts")
     @classmethod
     def validate_eval_max_attempts(cls, value: int) -> int:
-        if value < 1 or value > 16:
-            raise ValueError("eval_max_attempts must be between 1 and 16")
+        if value < 1 or value > 256:
+            raise ValueError("eval_max_attempts must be between 1 and 256")
         return value
 
     @field_validator("eval_result_max_submissions_per_run_per_minute")
