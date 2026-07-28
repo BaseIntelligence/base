@@ -21,7 +21,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .checkpoints import resolve_checkpoint_artifact_path
 
-DEFAULT_CHECKPOINT_REPO_ID = "baseintelligence/prism-checkpoints"
+DEFAULT_CHECKPOINT_REPO_ID = "BaseIntelligence/top-prism-architecture"
 
 
 @dataclass(frozen=True)
@@ -115,6 +115,55 @@ class MockCheckpointPublisher:
         return len(self.uploads)
 
 
+
+
+@dataclass
+class DisabledCheckpointPublisher:
+    """No-op publisher: Prism HF checkpoint upload is intentionally OFF on this host.
+
+    publish() records the call but never contacts HuggingFace. download() raises so
+    resume-from-public-checkpoint is unavailable while upload is disabled.
+    """
+
+    repo_id: str = DEFAULT_CHECKPOINT_REPO_ID
+    uploads: list = field(default_factory=list)
+    published: list = field(default_factory=list)
+
+    def publish(self, upload: CheckpointUpload) -> PublishedCheckpoint:
+        self.uploads.append(upload)
+        result = PublishedCheckpoint(
+            checkpoint_ref=checkpoint_ref_for(self.repo_id, upload.revision),
+            repo_id=self.repo_id,
+            revision=upload.revision,
+            files=tuple(upload.files),
+        )
+        self.published.append(result)
+        return result
+
+    def download(self, checkpoint_ref: str, dest_dir: Path) -> Path:
+        raise RuntimeError(
+            "prism_checkpoint_upload_disabled: download unavailable while "
+            "PRISM_CHECKPOINT_UPLOAD_ENABLED is false"
+        )
+
+
+def publisher_from_env(
+    *,
+    repo_id: str | None = None,
+    token: str | None = None,
+) -> CheckpointPublisher:
+    """Return HF publisher only when upload is explicitly enabled; else disabled no-op."""
+    import os
+
+    enabled = (os.environ.get("PRISM_CHECKPOINT_UPLOAD_ENABLED") or "false").strip().lower()
+    if enabled in ("1", "true", "yes", "on"):
+        return HuggingFaceCheckpointPublisher(
+            repo_id=repo_id or DEFAULT_CHECKPOINT_REPO_ID,
+            token=token,
+        )
+    return DisabledCheckpointPublisher(repo_id=repo_id or DEFAULT_CHECKPOINT_REPO_ID)
+
+
 class HuggingFaceCheckpointPublisher:
     """Deploy-time publisher backed by ``huggingface_hub`` (imported lazily; mocked in tests).
 
@@ -143,9 +192,16 @@ class HuggingFaceCheckpointPublisher:
         return self._api
 
     def publish(self, upload: CheckpointUpload) -> PublishedCheckpoint:
+        import os
+        enabled = (os.environ.get("PRISM_CHECKPOINT_UPLOAD_ENABLED") or "false").strip().lower()
+        if enabled not in ("1", "true", "yes", "on"):
+            raise RuntimeError(
+                "prism_checkpoint_upload_disabled: refusing HuggingFace upload "
+                "(set PRISM_CHECKPOINT_UPLOAD_ENABLED=true to re-enable)"
+            )
         files = _read_checkpoint_files(upload)
         api = self._hf_api()
-        api.create_repo(repo_id=self.repo_id, repo_type="model", exist_ok=True, private=True)
+        api.create_repo(repo_id=self.repo_id, repo_type="model", exist_ok=True, private=False)
         for name in files:
             source = resolve_checkpoint_artifact_path(upload.checkpoint_dir, name)
             api.upload_file(

@@ -21,7 +21,11 @@ from .coordination import (
     work_unit_to_payload,
 )
 from .db import Database
-from .evaluator.checkpoint_intake import CheckpointIntakeError, CheckpointIntakeService
+from .evaluator.checkpoint_intake import (
+    CheckpointIntakeError,
+    CheckpointIntakeService,
+    CheckpointPublishError,
+)
 from .evaluator.checkpoint_publisher import (
     CheckpointPublisher,
     HuggingFaceCheckpointPublisher,
@@ -292,7 +296,20 @@ def create_app(
             )
         except CheckpointIntakeError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        except CheckpointPublishError as exc:
+            # Publisher failed: no checkpoint_ref recorded; surface last_error without tokens.
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "status": "failed",
+                    "error": str(exc),
+                    "submission_id": exc.submission_id,
+                    "repo_id": exc.repo_id,
+                    "checkpoint_ref": None,
+                },
+            ) from exc
         return {
+            "status": "success",
             "checkpoint_ref": published.checkpoint_ref,
             "repo_id": published.repo_id,
             "revision": published.revision,
