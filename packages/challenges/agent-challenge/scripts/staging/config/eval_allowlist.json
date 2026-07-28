@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "mrtd": "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077",
+      "rtmr0": "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96",
+      "rtmr1": "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c",
+      "rtmr2": "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858",
+      "os_image_hash": "5c6d8f757e3adb0563efc809710076a631442db3b4de02ad32d33fe1994721e0",
+      "compose_hash": "0647b4d9b1e3d458b7910638ee187c968835840fe2e65f1f332dbe69c518dfd9",
+      "key_provider": "phala"
+    }
+  ]
+}

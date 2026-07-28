@@ -59,3 +59,12 @@ secrets/
 
 # Local documentation evidence (never publish)
 .docs-evidence/
+
+# Local AC staging secrets / runtime (see scripts/staging/.gitignore)
+scripts/staging/data/
+scripts/staging/work/
+scripts/staging/config/challenge_token
+scripts/staging/config/review_evidence_encryption_key
+scripts/staging/config/challenge.env
+scripts/staging/config/kr/
+scripts/staging/config/kr-server-ca.crt
