@@ -229,6 +229,11 @@ class PhalaCloudClient:
         opener=urlopen,
         timeout: float = 30.0,
     ) -> None:
+        # Temporary NO_PHALA mode: refuse the entire Phala client so no CVM
+        # provision/create/list call can slip through while host-local mode is on.
+        from agent_challenge.evaluation.no_phala import refuse_phala_client
+
+        refuse_phala_client("PhalaCloudClient")
         self._api_key = (
             api_key if api_key is not None else os.environ.get(PHALA_API_KEY_ENV, "")
         ).strip()

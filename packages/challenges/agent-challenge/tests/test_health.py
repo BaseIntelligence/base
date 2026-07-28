@@ -9,6 +9,8 @@ async def test_health(client):
         "status": "ok",
         "slug": "agent-challenge",
         "version": "1.0.1",
+        "no_phala": False,
+        "attestation_mode": "standard",
     }
 
 

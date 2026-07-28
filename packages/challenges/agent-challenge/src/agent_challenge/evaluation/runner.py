@@ -659,13 +659,26 @@ async def run_evaluation_job(
         if internal_tb_flow or (
             job.verdict == "valid" and any(task.benchmark == "terminal_bench" for task in tasks)
         ):
+            completion_meta: dict[str, object] = {"job_id": job.job_id, "score": score}
+            # Surface host-trust provenance on the status event when NO_PHALA is
+            # active so scores/weights cannot be mistaken for TEE-attested later.
+            from agent_challenge.evaluation.no_phala import (
+                ATTESTATION_STATUS_UNATTESTED,
+                EXECUTION_MODE_NO_PHALA_HOST,
+                is_no_phala_enabled,
+            )
+
+            if is_no_phala_enabled():
+                completion_meta["attested"] = False
+                completion_meta["attestation_status"] = ATTESTATION_STATUS_UNATTESTED
+                completion_meta["execution_mode"] = EXECUTION_MODE_NO_PHALA_HOST
             await _set_submission_status(
                 session,
                 submission,
                 "tb_completed",
                 actor="evaluation",
                 reason="evaluation_job_completed",
-                metadata={"job_id": job.job_id, "score": score},
+                metadata=completion_meta,
             )
     except Exception as exc:
         job.passed_tasks = passed
@@ -1383,38 +1396,53 @@ async def _run_terminal_bench_task_durable(
                 # is held across the container execution await below.
                 await session.commit()
             with _evaluation_workspace(submission, isolate=True) as agent_workspace:
-                spec = DockerRunSpec(
-                    image=runner_image,
-                    command=(
-                        "bash",
-                        "-lc",
-                        _terminal_bench_script(job, task, plan=plan, backend=execution_backend),
-                    ),
-                    mounts=(
-                        DockerMount(
-                            source=agent_workspace,
-                            target="/workspace/agent",
-                            read_only=False,
+                from agent_challenge.evaluation.no_phala import is_no_phala_enabled as _np
+
+                if _np() and settings.docker_backend in {"cli", "docker"}:
+                    run = await asyncio.to_thread(
+                        _run_no_phala_host_terminal_bench,
+                        job=job,
+                        task=task,
+                        plan=plan,
+                        agent_workspace=agent_workspace,
+                        miner_env=miner_env,
+                        gateway=gateway,
+                        execution_backend=execution_backend,
+                        timeout_seconds=settings.evaluation_timeout_seconds,
+                    )
+                else:
+                    spec = DockerRunSpec(
+                        image=runner_image,
+                        command=(
+                            "bash",
+                            "-lc",
+                            _terminal_bench_script(job, task, plan=plan, backend=execution_backend),
                         ),
-                        DockerMount(
-                            source=plan.jobs_dir,
-                            target=str(plan.jobs_dir),
-                            read_only=False,
+                        mounts=(
+                            DockerMount(
+                                source=agent_workspace,
+                                target="/workspace/agent",
+                                read_only=False,
+                            ),
+                            DockerMount(
+                                source=plan.jobs_dir,
+                                target=str(plan.jobs_dir),
+                                read_only=False,
+                            ),
                         ),
-                    ),
-                    workdir="/workspace",
-                    env={
-                        **_terminal_bench_env(miner_env, gateway),
-                        **_terminal_bench_stream_env(plan.attempt_id),
-                    },
-                    labels=_labels(job, submission, task),
-                    limits=_terminal_bench_limits(),
-                )
-                run = await asyncio.to_thread(
-                    executor.run,
-                    spec,
-                    timeout_seconds=settings.evaluation_timeout_seconds,
-                )
+                        workdir="/workspace",
+                        env={
+                            **_terminal_bench_env(miner_env, gateway),
+                            **_terminal_bench_stream_env(plan.attempt_id),
+                        },
+                        labels=_labels(job, submission, task),
+                        limits=_terminal_bench_limits(),
+                    )
+                    run = await asyncio.to_thread(
+                        executor.run,
+                        spec,
+                        timeout_seconds=settings.evaluation_timeout_seconds,
+                    )
     except Exception as exc:
         # The attempt was committed ``running`` before the container await, so a
         # failure here (executor/broker error, ``database is locked``, unexpected
@@ -1982,6 +2010,106 @@ set +e
 {command}
 exit $?
 """.strip()
+
+
+
+def _run_no_phala_host_terminal_bench(
+    *,
+    job: EvaluationJob,
+    task: BenchmarkTask,
+    plan: TerminalBenchAttemptPlan,
+    agent_workspace: Path,
+    miner_env: Mapping[str, str] | None,
+    gateway: GatewayExecutionConfig | None,
+    execution_backend: str,
+    timeout_seconds: int,
+) -> DockerRunResult:
+    """NO_PHALA host-local path: run own_runner in this process namespace.
+
+    Avoids nested harbor-runner DooD under master embed (container bind paths are
+    not host paths for ``docker -v``). The validator already has docker.sock and
+    task images; own_runner spawns sibling task containers directly.
+    """
+    import subprocess
+
+    from agent_challenge.evaluation.no_phala import is_no_phala_enabled
+
+    if not is_no_phala_enabled():
+        raise RuntimeError("no_phala host runner invoked while NO_PHALA is off")
+    if execution_backend != "own_runner":
+        raise ValueError(f"unsupported backend for no_phala host path: {execution_backend}")
+
+    task_id = str(task.metadata.get("task_id") or task.task_id)
+    bare = task_id.rsplit("/", 1)[-1]
+    cache_root = Path(
+        settings.own_runner_cache_root
+        or "/app/packages/challenges/agent-challenge/docker/canonical/live-task-cache"
+    )
+    digest = Path(
+        settings.own_runner_digest_manifest or "/app/golden/dataset-digest.json"
+    )
+    plan.jobs_dir.mkdir(parents=True, exist_ok=True)
+    plan.job_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "python",
+        "-m",
+        "agent_challenge.evaluation.own_runner_backend",
+        "run",
+        "--job-dir",
+        str(plan.job_dir),
+        "--job-name",
+        plan.job_name,
+        "--jobs-dir",
+        str(plan.jobs_dir),
+        "--n-concurrent",
+        str(max(1, int(settings.harbor_n_concurrent or 1))),
+        "--agent-import-path",
+        settings.harbor_agent_import_path,
+        "--n-attempts",
+        "1",
+        "--task",
+        bare,
+        "--cache-root",
+        str(cache_root),
+        "--digest-manifest",
+        str(digest),
+    ]
+    env = {
+        **dict(os.environ),
+        **_terminal_bench_env(miner_env, gateway),
+        "PYTHONPATH": f"{agent_workspace}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"),
+        "DOCKER_HOST": os.environ.get("DOCKER_HOST") or "unix:///var/run/docker.sock",
+        "BASE_AGENT_PATH": str(agent_workspace),
+    }
+    if env["PYTHONPATH"].endswith(":"):
+        env["PYTHONPATH"] = env["PYTHONPATH"][:-1]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(agent_workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
+        )
+        return DockerRunResult(
+            container_name=f"no-phala-host-{plan.job_name}"[:120],
+            stdout=proc.stdout or "",
+            stderr=proc.stderr or "",
+            returncode=proc.returncode,
+            timed_out=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return DockerRunResult(
+            container_name=f"no-phala-host-{plan.job_name}"[:120],
+            stdout=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
+            stderr=(exc.stderr or "") if isinstance(exc.stderr, str) else "timed_out",
+            returncode=124,
+            timed_out=True,
+        )
 
 
 def _terminal_bench_script(

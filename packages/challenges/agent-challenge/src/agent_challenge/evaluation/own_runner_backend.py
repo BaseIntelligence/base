@@ -623,6 +623,42 @@ def assert_agent_artifact_matches_plan(
     return declared
 
 
+def _maybe_no_phala_artifact_proof() -> dict[str, str | bool] | None:
+    """Build guest_artifact_proof for NO_PHALA host runs when ZIP is available.
+
+    Returns None when the artifact path is missing (caller still marks
+    unattested without the triple). When the path is present, enforces
+    expected == download == executed against the plan/declared agent hash.
+    """
+
+    from agent_challenge.evaluation.no_phala import (
+        ArtifactProvenanceError,
+        build_guest_artifact_proof,
+    )
+
+    artifact_path = resolve_agent_artifact_path()
+    if artifact_path is None or not Path(artifact_path).is_file():
+        return None
+    try:
+        executed = agent_artifact_sha256(artifact_path)
+    except ValueError:
+        return None
+    expected = (os.environ.get(PHALA_AGENT_HASH_ENV) or "").strip().lower()
+    if not expected:
+        # No plan hash declared — use the executed digest as the expected pin
+        # so provenance still records download==executed for the host ZIP.
+        expected = executed
+    download = executed  # host-local: download path is the same file we execute
+    try:
+        return build_guest_artifact_proof(
+            expected_hash=expected,
+            download_hash=download,
+            executed_hash=executed,
+        )
+    except ArtifactProvenanceError:
+        raise
+
+
 #: Env path for an already-extracted package tree (guest recompute target).
 AGENT_PACKAGE_ROOT_ENV = "CHALLENGE_PHALA_AGENT_PACKAGE_ROOT"
 AGENT_PACKAGE_ROOT_ENV_ALT = "CHALLENGE_AGENT_PACKAGE_ROOT"
@@ -1168,6 +1204,17 @@ def _emit_job_result(
                 task_id: list(scores)
                 for task_id, scores in collect_trial_scores(result.trial_outcomes).items()
             }
+        # Temporary NO_PHALA host mode: mark the legacy line unattested and
+        # attach guest_artifact_proof when the agent ZIP provenance is known.
+        # Attested path below is untouched when NO_PHALA is off.
+        from agent_challenge.evaluation.no_phala import (
+            is_no_phala_enabled,
+            mark_result_unattested,
+        )
+
+        if is_no_phala_enabled():
+            artifact_proof = _maybe_no_phala_artifact_proof()
+            payload = mark_result_unattested(payload, artifact_proof=artifact_proof)
         emit_benchmark_result_line(payload)
         return 0
 

@@ -196,6 +196,8 @@ class Database:
         """Create all challenge-owned tables."""
 
         import_module("agent_challenge.core.models")
+        # Register raw-weight push ledger on shared Base metadata for create_all.
+        import_module("agent_challenge.evaluation.raw_weight_push")
         async with self.engine.begin() as connection:
             backend_name = self.engine.url.get_backend_name()
             is_sqlite = backend_name.startswith("sqlite")

@@ -65,6 +65,11 @@ async def initialized_database():
 @pytest.fixture(autouse=True)
 async def clean_database(initialized_database):
     async with database.engine.begin() as connection:
+        # Optional table (registered when raw_weight_push is imported).
+        try:
+            await connection.exec_driver_sql("DELETE FROM raw_weight_push_ledger")
+        except Exception:
+            pass  # table created on first Database.init after raw_weight_push import
         await connection.execute(delete(ReviewOperatorApproval))
         await connection.execute(delete(ReviewNonce))
         await connection.execute(delete(ReviewEvidenceObject))

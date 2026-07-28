@@ -348,6 +348,9 @@ class HttpEvalPhalaDeployment:
         plan: EvalDeploymentPlan,
         encrypted: EncryptedEvalSecrets,
     ) -> dict[str, str]:
+        from agent_challenge.evaluation.no_phala import refuse_phala_client
+
+        refuse_phala_client("HttpEvalPhalaDeployment.deploy")
         if (
             encrypted.eval_run_id != plan.eval_run_id
             or encrypted.app_identity != plan.app_identity

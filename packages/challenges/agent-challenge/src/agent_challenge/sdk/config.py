@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_SECRET_REDACTION = "<redacted>"
@@ -32,6 +32,7 @@ SECRET_FIELD_NAMES = frozenset(
         "docker_broker_token",
         "llm_gateway_token",
         "agent_gateway_token",
+        "openrouter_api_key",
         "submission_env_encryption_key_file",
         "review_evidence_encryption_key",
         "review_evidence_encryption_key_file",
@@ -43,7 +44,11 @@ SECRET_FIELD_NAMES = frozenset(
 class ChallengeSettings(BaseSettings):
     """Runtime settings for the Agent Challenge service."""
 
-    model_config = SettingsConfigDict(env_prefix="CHALLENGE_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="CHALLENGE_",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     slug: str = "agent-challenge"
     name: str = "Agent Challenge"
@@ -78,6 +83,23 @@ class ChallengeSettings(BaseSettings):
     # background asyncio task (all-in-one "combined" service). Default false
     # preserves the separate ``agent-challenge-worker`` sidecar deployment.
     combined_worker: bool = False
+    # Authenticated raw-weight push to master (winner-take-all map).
+    # When enabled and master_base_url + shared token are set, the API lifespan
+    # runs run_raw_weight_push_loop against the shared Database ledger.
+    raw_weight_push_enabled: bool = True
+    master_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CHALLENGE_MASTER_BASE_URL",
+            "MASTER_BASE_URL",
+        ),
+    )
+    raw_weight_push_interval_seconds: float = Field(default=30.0, ge=0.1)
+    raw_weight_push_freshness_seconds: int = Field(default=300, ge=30)
+    raw_weight_push_timeout_seconds: float = Field(default=10.0, gt=0.0)
+    # Epoch bucket size for push revision identity (seconds).
+    epoch_seconds: int = Field(default=360, ge=1)
+
 
     # Root stdlib logging level applied at every process entrypoint (the API app
     # import and the worker ``main()``). Uvicorn installs no root handler, so
@@ -152,6 +174,13 @@ class ChallengeSettings(BaseSettings):
     # legacy intake and gateway-review path byte-for-byte. Production full
     # attested deployments enable both this and ``phala_attestation_enabled``.
     attested_review_enabled: bool = False
+    # Temporary host-local unattested execution (NO_PHALA). Opt-in, default OFF.
+    # When true the master runs jobs via own_runner on the host instead of Phala
+    # CVMs. Results are explicitly marked unattested. Mutually exclusive with
+    # both attestation flags above (fail closed at settings construction).
+    # Env precedence: CHALLENGE_NO_PHALA if set, else plain NO_PHALA, else false.
+    # Never inferred from a missing Phala API key. See docs/no-phala-mode.md.
+    no_phala: bool = False
     review_assignment_ttl_seconds: int = 1800
     review_operator_approval_ttl_seconds: int = 300
     review_https_connect_timeout_seconds: float = 10.0
@@ -327,6 +356,29 @@ class ChallengeSettings(BaseSettings):
     # only this dedicated token is ever placed into the agent container env.
     agent_gateway_token: str | None = Field(default=None, repr=False)
     agent_gateway_token_file: str | None = Field(default=None, repr=False)
+    # Analyzer LLM provider selection for NO_PHALA host-local mode only.
+    # When NO_PHALA is off the gateway provider is always used (this field is
+    # ignored). Under NO_PHALA, default is ``openrouter`` (Grok via OpenRouter);
+    # set ``gateway`` to force the BASE LLM gateway path instead.
+    # Env: CHALLENGE_LLM_PROVIDER
+    llm_provider: str | None = None
+    # Model id for the OpenRouter analyzer path (ignored by gateway provider).
+    # Env: CHALLENGE_LLM_MODEL
+    llm_model: str = "x-ai/grok-4.5"
+    # OpenRouter API key for NO_PHALA analyzer LLM review. Never logged.
+    # Env: CHALLENGE_OPENROUTER_API_KEY (also accepts plain OPENROUTER_API_KEY
+    # via resolve_openrouter_api_key fallback + opencode auth.json).
+    openrouter_api_key: str | None = Field(default=None, repr=False)
+    # Optional USD spend ceiling for OpenRouter analyzer calls; fail closed when
+    # exceeded. Env: CHALLENGE_LLM_COST_LIMIT / CHALLENGE_LLM_COST_LIMIT_USD
+    llm_cost_limit_usd: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "llm_cost_limit_usd",
+            "LLM_COST_LIMIT",
+            "llm_cost_limit",
+        ),
+    )
     # Per-attempt read-leg budget. Held under the analysis lease: this value ×
     # llm_reviewer_max_attempts must stay below DEFAULT_ANALYSIS_LEASE_SECONDS
     # (900s); 240 × 3 = 720s < 900s.
@@ -369,6 +421,37 @@ class ChallengeSettings(BaseSettings):
                 "attested_review_enabled and phala_attestation_enabled must both be "
                 "enabled for full attested mode or both be disabled for legacy mode"
             )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_and_validate_no_phala(self) -> ChallengeSettings:
+        """Apply plain NO_PHALA env + fail closed on attestation contradiction.
+
+        Precedence:
+        1. ``CHALLENGE_NO_PHALA`` if present in the process environment
+        2. else plain ``NO_PHALA`` if present
+        3. else the field default (False)
+
+        Never infers the mode from a missing Phala API key or failed Phala call.
+        """
+
+        import os
+
+        from agent_challenge.evaluation.no_phala import (
+            assert_no_phala_compatible,
+            resolve_no_phala_from_environ,
+        )
+
+        # Re-resolve so plain NO_PHALA is honored when the prefixed var is unset.
+        # When CHALLENGE_NO_PHALA is set, pydantic already populated ``no_phala``;
+        # resolve_no_phala_from_environ applies the same precedence.
+        if "CHALLENGE_NO_PHALA" in os.environ or "NO_PHALA" in os.environ:
+            self.no_phala = resolve_no_phala_from_environ()
+        assert_no_phala_compatible(
+            no_phala=bool(self.no_phala),
+            phala_attestation_enabled=bool(self.phala_attestation_enabled),
+            attested_review_enabled=bool(self.attested_review_enabled),
+        )
         return self
 
     def require_eval_result_signer_for_production(self) -> None:

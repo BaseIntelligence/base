@@ -157,6 +157,10 @@ def _deploy_args(**overrides: Any) -> SimpleNamespace:
         token_output=None,
         emit_run_token=False,
         output=None,
+        openrouter_key_env="OPENROUTER_API_KEY",
+        review_disk_size_gb=40,
+        eval_disk_size_gb=40,
+        expected_measurement=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -541,3 +545,61 @@ def test_redact_capabilities_still_strips_token_key() -> None:
     dumped = json.dumps(redacted)
     assert RUN_TOKEN not in dumped
     assert redacted["secret_delivery"] == {"env_key": "EVAL_RUN_TOKEN"}
+
+
+# --------------------------------------------------------------------------- #
+# S9 — optional measured OPENROUTER + progress env on eval deploy
+# --------------------------------------------------------------------------- #
+
+
+def test_eval_deploy_injects_openrouter_and_progress_env_when_key_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given OPENROUTER_API_KEY in env, When eval deploy succeeds,
+    Then encrypted_env secrets include OPENROUTER_API_KEY + progress bindings
+    (never Base gateway). Guest never posts; host needs OR for agent LLM.
+    """
+
+    captured: list[dict[str, str]] = []
+    printed = _wire_successful_deploy(monkeypatch, captured_secrets=captured)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-eval-only")
+    args = _deploy_args(
+        emit_run_token=True,
+        openrouter_key_env="OPENROUTER_API_KEY",
+        base_url="https://challenge.example/challenges/agent-challenge/",
+    )
+    assert cli._ordered_eval_command(args) == 0, printed
+    assert captured, printed
+    secrets = captured[0]
+    assert secrets["EVAL_RUN_TOKEN"] == RUN_TOKEN
+    assert secrets["OPENROUTER_API_KEY"] == "sk-or-test-eval-only"
+    assert secrets["EVAL_PROGRESS_BASE_URL"] == (
+        "https://challenge.example/challenges/agent-challenge"
+    )
+    assert secrets["EVAL_RUN_ID"] == EVAL_RUN_ID
+    assert secrets["EVAL_SUBMISSION_ID"] == "1"
+    # Never Base gateway
+    assert "BASE_GATEWAY_TOKEN" not in secrets
+    assert "BASE_LLM_GATEWAY_URL" not in secrets
+
+
+def test_eval_deploy_omits_openrouter_when_key_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given no OpenRouter key, When eval deploy succeeds,
+    Then OPENROUTER_API_KEY is absent (tools-only path) but progress still binds.
+    """
+
+    captured: list[dict[str, str]] = []
+    printed = _wire_successful_deploy(monkeypatch, captured_secrets=captured)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    args = _deploy_args(
+        emit_run_token=True,
+        openrouter_key_env="OPENROUTER_API_KEY",
+        base_url="https://challenge.example",
+    )
+    assert cli._ordered_eval_command(args) == 0, printed
+    secrets = captured[0]
+    assert "OPENROUTER_API_KEY" not in secrets
+    assert secrets["EVAL_PROGRESS_BASE_URL"] == "https://challenge.example"
+    assert secrets["EVAL_RUN_TOKEN"] == RUN_TOKEN
