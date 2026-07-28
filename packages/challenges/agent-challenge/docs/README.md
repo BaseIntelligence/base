@@ -10,6 +10,7 @@ inside the package.
 | Interactive API | `https://chain.joinbase.ai/challenges/agent-challenge/docs` |
 | Package product pin | [`../README.md`](../README.md) |
 | Self-deploy CLI accuracy fixtures | [`miner/self-deploy.md`](miner/self-deploy.md), [`validator/self-deploy.md`](validator/self-deploy.md) |
+| Local staging (real Phala) | [`staging.md`](staging.md) — `scripts/staging/run_staging.sh` |
 
 **API truth is OpenAPI** (and the in-process challenge app `/openapi.json`).
 Audience essays (lifecycle dumps, route catalogs, architecture novels) were
