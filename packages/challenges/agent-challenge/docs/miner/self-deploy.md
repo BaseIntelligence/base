@@ -332,6 +332,20 @@ spend projection counts both the review and eval stage shapes against the shared
 money cap. Signing again accepts either `--auto-sign` or explicit `--signature`
 + `--nonce` (+ optional `--timestamp`).
 
+**Host posts the result — the guest only emits.** The measured guest orchestrator
+emits the attested envelope on stdout (a line prefixed `BASE_BENCHMARK_RESULT=`)
+and exits. It never calls `eval result`. The miner host must scrape that line
+and post the exact bytes with the one-time `EVAL_RUN_TOKEN`.
+
+**Live deploy refuses to run without a token handoff.** Pass at least one of:
+
+- `--token-output PATH` (primary) — writes the token with mode `0600`
+- `--emit-run-token` — adds `eval_run_token` to success stdout JSON
+
+Validate the handoff destination **before** prepare spends the single delivery.
+Success stdout always includes `eval_run_id`. The token never appears in
+`--output` plan JSON, redacted prepare/status output, logs, or exception text.
+
 ```bash
 python -m agent_challenge.selfdeploy eval deploy \
     --base-url https://<challenge-host> \
@@ -343,8 +357,22 @@ python -m agent_challenge.selfdeploy eval deploy \
     --eval-instance-type tdx.xlarge \
     --review-disk-size-gb 20 \
     --eval-disk-size-gb 100 \
-    --money-cap-usd 20
+    --money-cap-usd 20 \
+    --token-output ~/.cache/agent-challenge/eval-run.token
 ```
+
+Capture `eval_run_id` from deploy stdout (and keep the `0600` token file for
+`eval result`). Optional: `--expected-measurement PATH` compares plan `rtmr0`
+to a local pin JSON before Phala create (mismatch prints truncated prefixes only).
+
+**Shape / measurement-pin footgun.** `--eval-instance-type` must match the
+validator-issued plan `vm_shape` / `instance_type`. A shape change also requires
+a matching `rtmr0` pin on the validator allowlist and a re-prepare. A stale pin
+surfaces only as a generic key-release denial deep in the TEE flow — the CLI
+now aborts before Phala create and names both shapes plus `vm_shape` /
+`instance_type` / `rtmr0`. Prepare already spent the one-shot token on that
+abort path; re-run `eval deploy` (cancel+retry recovery) or explicit
+`eval cancel` + `eval retry` to re-prepare.
 
 Use `--dry-run` to validate the signed plan and show only safe names, digests,
 measurement metadata, and cost. Without a validator eval allowlist the dry-run
@@ -361,6 +389,42 @@ python -m agent_challenge.selfdeploy eval deploy \
 
 A post-create failure deletes the attributable eval CVM before the command
 returns.
+
+### Host post path after eval CVM finishes
+
+1. Wait for the guest to finish. Scrape guest stdout for the line prefixed
+   `BASE_BENCHMARK_RESULT=` and write the **exact** payload bytes after the
+   prefix into a file (production envelopes are on the order of ~18KB — do not
+   pretty-print or re-encode).
+2. Source the one-time token from the `0600` file without echoing it (no
+   `set -x`):
+
+```bash
+export EVAL_RUN_TOKEN="$(cat ~/.cache/agent-challenge/eval-run.token)"
+# never: echo "$EVAL_RUN_TOKEN" or set -x while the token is in the environment
+```
+
+3. Post with the deploy `eval_run_id`:
+
+```bash
+python -m agent_challenge.selfdeploy eval result \
+    --base-url https://<challenge-host> \
+    --run-id <eval_run_id_from_deploy_stdout> \
+    --result ./eval-result.json \
+    --token-env EVAL_RUN_TOKEN
+```
+
+4. Tear down the eval CVM:
+
+```bash
+python -m agent_challenge.selfdeploy eval teardown --cvm-id <cvm-id>
+# or, when only app_identity is known:
+python -m agent_challenge.selfdeploy eval teardown --app-id <app_identity>
+```
+
+Invariant: `EVAL_RUN_TOKEN` never belongs in plan JSON, compose, ordinary logs,
+or committed files — only the `0600` handoff file and/or one-shot stdout when
+`--emit-run-token` is set.
 
 ### `eval result`
 
