@@ -10,6 +10,8 @@ from base.challenge_sdk.config import ChallengeSettings
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import SettingsConfigDict
 
+from .evaluator.checkpoint_publisher import DEFAULT_CHECKPOINT_REPO_ID
+
 _DATA_TMP_ARTIFACT_ROOT = Path("/data/tmp/prism-eval-artifacts")
 _TMP_ARTIFACT_ROOT = Path("/tmp/prism-eval-artifacts")
 
@@ -397,7 +399,7 @@ class PrismSettings(ChallengeSettings):
         ),
     )
     checkpoint_repo_id: str = Field(
-        default="baseintelligence/prism-checkpoints",
+        default=DEFAULT_CHECKPOINT_REPO_ID,
         validation_alias=AliasChoices("PRISM_CHECKPOINT_REPO_ID", "PRISM_HF_CHECKPOINT_REPO_ID"),
     )
     subnet_rules_json: str | None = None
@@ -411,6 +413,62 @@ class PrismSettings(ChallengeSettings):
     plagiarism_sandbox_timeout_seconds: int = 30
     plagiarism_storage_max_files: int = 200
     plagiarism_storage_max_bytes: int = 2_000_000
+    # Dual-gate plagiarism adjudicator (deterministic ranker -> OpenRouter sole verdict).
+    # Not the removed legacy LLM safety hard-gate / gateway path.
+    plagiarism_llm_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_ENABLED"),
+    )
+    plagiarism_llm_required: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_REQUIRED"),
+    )
+    plagiarism_llm_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0.0,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_TIMEOUT_SECONDS"),
+    )
+    plagiarism_llm_temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_TEMPERATURE"),
+    )
+    plagiarism_llm_max_tokens: int = Field(
+        default=800,
+        ge=64,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_MAX_TOKENS"),
+    )
+    plagiarism_llm_max_retries: int = Field(
+        default=1,
+        ge=0,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_MAX_RETRIES"),
+    )
+    plagiarism_llm_max_source_chars: int = Field(
+        default=60_000,
+        ge=1_000,
+        validation_alias=AliasChoices("PRISM_PLAGIARISM_LLM_MAX_SOURCE_CHARS"),
+    )
+    openrouter_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("PRISM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    )
+    openrouter_api_key_file: str | None = Field(
+        default="/run/secrets/openrouter_api_key",
+        repr=False,
+        validation_alias=AliasChoices(
+            "PRISM_OPENROUTER_API_KEY_FILE", "OPENROUTER_API_KEY_FILE"
+        ),
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        validation_alias=AliasChoices("PRISM_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"),
+    )
+    openrouter_model: str = Field(
+        default="x-ai/grok-4.5",
+        validation_alias=AliasChoices("PRISM_OPENROUTER_MODEL", "OPENROUTER_MODEL"),
+    )
     docker_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("PRISM_DOCKER_ENABLED", "CHALLENGE_DOCKER_ENABLED"),
