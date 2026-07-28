@@ -89,35 +89,112 @@ load_openrouter_key(){
 }
 
 phala_get_cvms(){
-  python3 - <<'PY'
-import json,os,urllib.request
-req=urllib.request.Request("https://cloud-api.phala.com/api/v1/cvms",headers={"X-API-Key":os.environ["PHALA_CLOUD_API_KEY"],"User-Agent":"phala-cloud-cli/1.1.19","Accept":"application/json"})
-with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read())
-items=data if isinstance(data,list) else (data.get("items") or data.get("data") or data.get("cvms") or [])
-slim=[]
-ids=[]
-for i in items:
-  if not isinstance(i,dict):
-    continue
-  api_id=str(i.get("id") or i.get("cvm_id") or "")
-  if api_id:
-    ids.append(api_id)
-  slim.append({
-    "id": api_id,
-    "cvm_id": str(i.get("cvm_id") or "") or None,
-    "vm_uuid": str(i.get("vm_uuid") or "") or None,
-    "name": i.get("name"),
-    "app_id": i.get("app_id"),
-    "status": i.get("status"),
-  })
-print(json.dumps({"count":len(ids),"ids":ids,"items":slim}))
+  # CLI-authoritative list: GET /cvms/paginated + X-Phala-Version 2026-06-23.
+  # Unknown shapes exit non-zero — NEVER degrade to count 0.
+  PYTHONPATH="${PKG_DIR}/src${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+import json, os, sys, urllib.request
+from agent_challenge.selfdeploy.cvm_list import (
+    CLI_PHALA_API_VERSION,
+    CLI_PHALA_USER_AGENT,
+    CvmListParseError,
+    parse_cvms_list_response,
+)
+
+key = os.environ.get("PHALA_CLOUD_API_KEY", "").strip()
+if not key:
+    print("PHALA_CLOUD_API_KEY missing", file=sys.stderr)
+    raise SystemExit(2)
+
+headers = {
+    "X-API-Key": key,
+    "User-Agent": CLI_PHALA_USER_AGENT,
+    "Accept": "application/json",
+    "X-Phala-Version": CLI_PHALA_API_VERSION,
+}
+page = 1
+page_size = 50
+all_items = []
+reported_total = None
+while True:
+    url = (
+        "https://cloud-api.phala.com/api/v1/cvms/paginated"
+        f"?page={page}&page_size={page_size}"
+    )
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read())
+    except Exception as exc:
+        print(f"phala_get_cvms HTTP failure: {type(exc).__name__}", file=sys.stderr)
+        raise SystemExit(3) from exc
+    try:
+        snap = parse_cvms_list_response(data)
+    except CvmListParseError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(4) from exc
+    if reported_total is None:
+        reported_total = snap.total
+    elif snap.total != reported_total:
+        print(
+            "unrecognized CVM list shape: total changed across pages "
+            f"({reported_total} -> {snap.total})",
+            file=sys.stderr,
+        )
+        raise SystemExit(4)
+    all_items.extend(dict(x) for x in snap.items)
+    if reported_total <= len(all_items):
+        break
+    if not snap.items:
+        print(
+            "unrecognized CVM list shape: empty page before total "
+            f"(have={len(all_items)} total={reported_total})",
+            file=sys.stderr,
+        )
+        raise SystemExit(4)
+    page += 1
+    if page > 100:
+        print(
+            "unrecognized CVM list shape: pagination exceeded page cap",
+            file=sys.stderr,
+        )
+        raise SystemExit(4)
+
+if len(all_items) != reported_total:
+    print(
+        "unrecognized CVM list shape: collected "
+        f"{len(all_items)} != total {reported_total}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+
+slim = []
+ids = []
+for i in all_items:
+    api_id = str(i.get("id") or i.get("cvm_id") or "")
+    if api_id:
+        ids.append(api_id)
+    slim.append({
+        "id": api_id,
+        "cvm_id": str(i.get("cvm_id") or "") or None,
+        "vm_uuid": str(i.get("vm_uuid") or "") or None,
+        "name": i.get("name"),
+        "app_id": i.get("app_id"),
+        "status": i.get("status"),
+    })
+print(json.dumps({
+    "count": reported_total,
+    "ids": ids,
+    "items": slim,
+    "indeterminate": False,
+}))
 PY
 }
+
 phala_delete_cvm(){
   local id="$1"; [[ -z "$id" ]] && return 0
   # Hard guard: refuse any id not owned (track may hold vm_uuid; resolve via listing).
   local listing
-  listing="$(phala_get_cvms || echo '{"count":0,"ids":[],"items":[]}')"
+  listing="$(phala_get_cvms)" || { log "FATAL: cannot list CVMs for owned-delete guard"; return 3; }
   if ! python3 "${SCRIPT_DIR}/cvm_teardown_policy.py" \
       --owned-file "${CVM_TRACK}" --owned-file "${OWNED_CVMS_FILE}" \
       --account-ids-json "${listing}" \
@@ -257,9 +334,14 @@ plan_owned_teardown(){
 
 teardown_cvms(){
   # SAFETY: delete ONLY CVMs this staging run/work dir owns. Never account-sweep.
+  # Indeterminate list (parse/HTTP failure) is FAILURE — never success.
   load_phala_key
   local listing account_json plan will_delete id
-  listing="$(phala_get_cvms || echo '{"count":-1,"ids":[]}')"
+  if ! listing="$(phala_get_cvms)"; then
+    log "FATAL: teardown cannot determine CVM count (list failed)"
+    echo '{"count":-1,"ids":[],"indeterminate":true}' | tee "${RUN_DIR}/cvms-before-teardown.json" >/dev/null
+    return 1
+  fi
   echo "${listing}" | tee "${RUN_DIR}/cvms-before-teardown.json" >/dev/null
   account_json="${listing}"
   plan="$(plan_owned_teardown "${account_json}")"
@@ -297,10 +379,19 @@ teardown_cvms(){
     done <"${OWNED_CVMS_FILE}" >"${tmp_owned}" || true
     mv -f "${tmp_owned}" "${OWNED_CVMS_FILE}"
   fi
-  listing="$(phala_get_cvms || echo '{"count":-1,"ids":[]}')"
+  if ! listing="$(phala_get_cvms)"; then
+    log "FATAL: post-teardown CVM list failed — count indeterminate (not success)"
+    echo '{"count":-1,"ids":[],"indeterminate":true}' | tee "${RUN_DIR}/cvms-final.json"
+    return 1
+  fi
   echo "${listing}" | tee "${RUN_DIR}/cvms-final.json"
-  local owned_left cnt
+  local owned_left cnt indeterminate
   cnt="$(python3 -c "import json;print(json.load(open('${RUN_DIR}/cvms-final.json')).get('count',-1))")"
+  indeterminate="$(python3 -c "import json;print(bool(json.load(open('${RUN_DIR}/cvms-final.json')).get('indeterminate')))")"
+  if [[ "${cnt}" == "-1" || "${indeterminate}" == "True" ]]; then
+    log "FATAL: CVM count indeterminate after teardown (count=${cnt})"
+    return 1
+  fi
   owned_left="$(python3 -c "
 import json
 from pathlib import Path
@@ -334,12 +425,40 @@ for e in ents: e.setdefault("key_provider","phala")
 p.write_text(json.dumps({"entries": ents}, indent=2)+"\n")
 PY
   cp -f "${KR_DIR}/ca.crt" "${CONFIG_DIR}/kr-server-ca.crt"
-  [[ -f "${KR_DIR}/client-trust.crt" ]] || cp -f "${KR_DIR}/ca.crt" "${KR_DIR}/client-trust.crt"
+  # Client-trust must be the dstack KMS root CA only (NOT staging server CA, NOT
+  # per-app App CA). Server CA verifies the KR listener; client-trust verifies
+  # guest mTLS certs from GetTlsKey. App CA rotates per CVM — pin only KMS root.
+  # Wrong wiring → TLSV1_ALERT_UNKNOWN_CA / DECRYPT_ERROR.
+  if [[ -f "${CONFIG_DIR}/dstack-client-trust.crt" ]]; then
+    cp -f "${CONFIG_DIR}/dstack-client-trust.crt" "${KR_DIR}/client-trust.crt"
+  elif [[ -f "${KR_DIR}/dstack-client-trust.crt" ]]; then
+    cp -f "${KR_DIR}/dstack-client-trust.crt" "${KR_DIR}/client-trust.crt"
+  fi
+  if [[ ! -f "${KR_DIR}/client-trust.crt" ]]; then
+    die "missing dstack KMS client-trust CA (${CONFIG_DIR}/dstack-client-trust.crt); harvest KMS root from guest ra_tls_public_fullchain export (last cert), never use server ca.crt or per-app App CA"
+  fi
+  # Refuse accidental server-CA copy (CN=ac-staging-kr-ca) as client-trust.
+  if openssl x509 -in "${KR_DIR}/client-trust.crt" -noout -subject 2>/dev/null | grep -q 'ac-staging-kr-ca'; then
+    die "client-trust.crt looks like staging server CA (ac-staging-kr-ca); need dstack KMS root CA"
+  fi
+  # Prefer subject containing KMS CA (soft check).
+  if ! openssl x509 -in "${KR_DIR}/client-trust.crt" -noout -subject 2>/dev/null | grep -qi 'KMS'; then
+    log "WARN: client-trust subject is not Dstack KMS CA — mTLS may fail"
+  fi
 }
 
 start_kr(){
   ensure_kr_materials
-  if ss -lntp 2>/dev/null | grep -q ':8701'; then log "KR already listening on :8701"; return 0; fi
+  # Always (re)start so client-trust CA reloads; stale KR with server-CA trust
+  # rejects real dstack guest certs (TLSV1_ALERT_UNKNOWN_CA).
+  if ss -lntp 2>/dev/null | grep -q ':8701'; then
+    log "stopping existing KR on :8701 to reload client-trust"
+    stop_kr
+    if ss -lntp 2>/dev/null | grep -q ':8701'; then
+      fuser -k 8701/tcp 2>/dev/null || true
+      sleep 1
+    fi
+  fi
   log "starting staging key-release RA-TLS on 0.0.0.0:8701"
   local kr_log="${WORK_DIR}/kr.log" kr_pid="${WORK_DIR}/kr.pid"
   (
@@ -351,7 +470,17 @@ start_kr(){
     export KEY_RELEASE_RA_TLS_CA_FILE="${KR_DIR}/client-trust.crt"
     export CHALLENGE_KEY_RELEASE_ALLOWLIST_FILE="${KR_DIR}/eval-allowlist.json"
     export CHALLENGE_GOLDEN_KEY_FILE="${KR_DIR}/golden.key"
-    export CHALLENGE_DATABASE_URL="sqlite+aiosqlite:///${WORK_DIR}/kr.sqlite3"
+    # MUST share the AC staging SQLite — KR looks up eval_run_id in this DB.
+    # Separate kr.sqlite3 caused eval_run_unknown (guest TLS OK, ledger empty).
+    local ac_db="${AC_STAGING_DB:-/var/lib/docker/volumes/ac-staging-data/_data/agent-challenge.sqlite3}"
+    if [[ ! -f "${ac_db}" ]]; then
+      die "AC staging DB missing at ${ac_db}; start compose before KR so volume exists"
+    fi
+    # Ensure host KR can open the container-owned sqlite (uid 10001).
+    chmod a+rw "${ac_db}" 2>/dev/null || true
+    chmod a+rwx "$(dirname "${ac_db}")" 2>/dev/null || true
+    export CHALLENGE_DATABASE_URL="sqlite+aiosqlite:///${ac_db}"
+    log "KR database=${ac_db}"
     export CHALLENGE_KEY_RELEASE_ACCEPTABLE_TCB=UpToDate
     export CHALLENGE_KEY_RELEASE_NONCE_TTL_SECONDS=300
     exec env PYTHONUNBUFFERED=1 UV_CACHE_DIR=/var/tmp/uv-cache uv run --package agent-challenge python -u -m agent_challenge.keyrelease.server
@@ -398,9 +527,9 @@ if [[ "${DOWN_ONLY}" == "1" ]]; then
 fi
 
 load_phala_key; load_openrouter_key
-pre="$(phala_get_cvms)"
+pre="$(phala_get_cvms)" || die "cannot list CVMs before staging (fail-loud; never assume 0)"
 echo "${pre}" | tee "${RUN_DIR}/cvms-before.json" >/dev/null
-pre_cnt="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("count",0))' "${RUN_DIR}/cvms-before.json")"
+pre_cnt="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c=d.get("count",-1); assert isinstance(c,int) and c>=0, "indeterminate"; print(c)' "${RUN_DIR}/cvms-before.json")"
 if [[ "${pre_cnt}" != "0" ]]; then
   log "WARNING: ${pre_cnt} CVMs already live on account — NOT sweeping (owned-only policy)."
   log "WARNING: foreign/prod CVMs will be left alone. Use --down after a prior staging run to clear owned ids in work/owned_cvms.txt."
@@ -416,6 +545,14 @@ log "miner zip ok hash=${zip_hash}"
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then log "building runtime image"; ${COMPOSE} build agent-challenge; fi
 chmod a+r "${CONFIG_DIR}/challenge_token" "${CONFIG_DIR}/review_evidence_encryption_key" 2>/dev/null || true
+# Full e2e needs a clean SQLite volume so pinned miner zip is not blocked by
+# duplicate_code_hash from a prior unclean kill. Keep volume only for --eval-only
+# (reuses --submission-id) or when SUBMISSION_ID was pre-supplied.
+if [[ "${ONLY_EVAL}" != "1" && -z "${SUBMISSION_ID}" ]]; then
+  log "fresh staging DB: compose down -v (wipe ac-staging-data)"
+  ${COMPOSE} down -v --remove-orphans 2>/dev/null || ${COMPOSE} down --remove-orphans || true
+  docker volume rm -f ac-staging-data 2>/dev/null || true
+fi
 log "compose up"; ${COMPOSE} up -d agent-challenge
 
 log "waiting /health on ${LOOPBACK_BASE}"
@@ -518,8 +655,32 @@ if [[ "${ONLY_EVAL}" != "1" ]]; then
     >"${RUN_DIR}/submit.txt" 2>&1
   sub_ec=$?; set -e
   cat "${RUN_DIR}/submit.txt"
-  [[ "${sub_ec}" == "0" ]] || die "submit failed ec=${sub_ec}"
-  SUBMISSION_ID="$(RUN_DIR="${RUN_DIR}" python3 - <<'PY'
+  if [[ "${sub_ec}" != "0" ]]; then
+    # Resilience: if volume wipe failed and hash collides, reuse existing submission.
+    if grep -q 'duplicate_code_hash' "${RUN_DIR}/submit.txt" 2>/dev/null; then
+      log "duplicate_code_hash — resolving existing submission by agent_hash=${zip_hash}"
+      SUBMISSION_ID="$(LOOPBACK_BASE="${LOOPBACK_BASE}" ZIP_HASH="${zip_hash}" python3 - <<'PY'
+import json, os, urllib.request
+base=os.environ["LOOPBACK_BASE"].rstrip("/")
+want=os.environ["ZIP_HASH"].lower()
+with urllib.request.urlopen(base+"/submissions", timeout=30) as r:
+    items=json.loads(r.read())
+sid=""
+for it in items if isinstance(items, list) else []:
+    ah=str(it.get("agent_hash") or it.get("zip_sha256") or "").lower()
+    if ah==want or ah.replace("sha256:","")==want:
+        sid=str(it.get("id") or ""); break
+if not sid:
+    raise SystemExit("duplicate_code_hash but no matching submission in GET /submissions")
+print(sid)
+PY
+)"
+      log "reusing submission_id=${SUBMISSION_ID}"
+    else
+      die "submit failed ec=${sub_ec}"
+    fi
+  else
+    SUBMISSION_ID="$(RUN_DIR="${RUN_DIR}" python3 - <<'PY'
 import os, re
 text=open(os.environ["RUN_DIR"]+"/submit.txt").read()
 for pat in [r'"submission_id"\s*:\s*(\d+)', r'submission_id=(\d+)']:
@@ -528,42 +689,113 @@ for pat in [r'"submission_id"\s*:\s*(\d+)', r'submission_id=(\d+)']:
 else: raise SystemExit('no submission id')
 PY
 )"
+  fi
   log "submission_id=${SUBMISSION_ID}"; echo "${SUBMISSION_ID}" >"${RUN_DIR}/submission_id.txt"
 fi
 [[ -n "${SUBMISSION_ID}" ]] || die "submission id required"
 
 if [[ "${ONLY_EVAL}" != "1" ]]; then
-  log "review deploy (real Phala CVM tdx.small ${RUNTIME_H}h cap \$${MONEY_CAP})"
-  set +e
-  uvrun python -m agent_challenge.selfdeploy review deploy \
-    --base-url "${PUBLIC_BASE}" --submission-id "${SUBMISSION_ID}" --hotkey "${HOTKEY}" --auto-sign \
-    --openrouter-key-env OPENROUTER_API_KEY \
-    --review-runtime-hours "${RUNTIME_H}" --eval-runtime-hours "${RUNTIME_H}" --money-cap-usd "${MONEY_CAP}" \
-    >"${RUN_DIR}/review-deploy.json" 2>"${RUN_DIR}/review-deploy.err"
-  rev_ec=$?; set -e
-  cat "${RUN_DIR}/review-deploy.json" || true; cat "${RUN_DIR}/review-deploy.err" || true
-  REV_CVM="$(extract_json_field "${RUN_DIR}/review-deploy.json" cvm_id)"
-  [[ -n "${REV_CVM}" ]] || REV_CVM="$(extract_json_field "${RUN_DIR}/review-deploy.err" cvm_id)"
-  if [[ -n "${REV_CVM}" ]]; then track_cvm "${REV_CVM}"; log "review_cvm_id=${REV_CVM}"; echo "${REV_CVM}" >"${RUN_DIR}/review_cvm_id.txt"; fi
-  [[ "${rev_ec}" == "0" ]] || die "review deploy failed ec=${rev_ec}"
-
-  log "polling review result → review_allowed"
+  # OpenRouter policy tool output is occasionally malformed (retryable).
+  # Loop: deploy → poll history → on retryable review_error teardown + redeploy.
+  REVIEW_ATTEMPTS="${REVIEW_ATTEMPTS:-5}"
   allowed=0
-  for i in $(seq 1 90); do
+  REV_CVM=""
+  for attempt in $(seq 1 "${REVIEW_ATTEMPTS}"); do
+    log "review attempt ${attempt}/${REVIEW_ATTEMPTS}: deploy (real Phala CVM tdx.small ${RUNTIME_H}h cap \$${MONEY_CAP})"
     set +e
-    uvrun python -m agent_challenge.selfdeploy review result \
-      --base-url "${LOOPBACK_BASE}" --submission-id "${SUBMISSION_ID}" --hotkey "${HOTKEY}" --auto-sign \
-      >"${RUN_DIR}/review-result-${i}.json" 2>/dev/null
-    set -e
-    phase="$(extract_phase "${RUN_DIR}/review-result-${i}.json" review)"
-    log "review poll ${i}: phase=${phase:-unknown}"
-    case "${phase}" in
-      review_allowed) allowed=1; cp -f "${RUN_DIR}/review-result-${i}.json" "${RUN_DIR}/review-allowed.json"; break ;;
-      review_rejected|review_escalated|review_error|review_expired|review_cancelled) die "review terminal phase=${phase}" ;;
-    esac
-    sleep 20
+    uvrun python -m agent_challenge.selfdeploy review deploy \
+      --base-url "${PUBLIC_BASE}" --submission-id "${SUBMISSION_ID}" --hotkey "${HOTKEY}" --auto-sign \
+      --openrouter-key-env OPENROUTER_API_KEY \
+      --review-runtime-hours "${RUNTIME_H}" --eval-runtime-hours "${RUNTIME_H}" --money-cap-usd "${MONEY_CAP}" \
+      >"${RUN_DIR}/review-deploy-${attempt}.json" 2>"${RUN_DIR}/review-deploy-${attempt}.err"
+    rev_ec=$?; set -e
+    cat "${RUN_DIR}/review-deploy-${attempt}.json" || true
+    cat "${RUN_DIR}/review-deploy-${attempt}.err" || true
+    cp -f "${RUN_DIR}/review-deploy-${attempt}.json" "${RUN_DIR}/review-deploy.json" 2>/dev/null || true
+    REV_CVM="$(extract_json_field "${RUN_DIR}/review-deploy-${attempt}.json" cvm_id)"
+    [[ -n "${REV_CVM}" ]] || REV_CVM="$(extract_json_field "${RUN_DIR}/review-deploy-${attempt}.err" cvm_id)"
+    if [[ -n "${REV_CVM}" ]]; then
+      track_cvm "${REV_CVM}"
+      log "review_cvm_id=${REV_CVM}"
+      echo "${REV_CVM}" >"${RUN_DIR}/review_cvm_id.txt"
+    fi
+    [[ "${rev_ec}" == "0" ]] || die "review deploy failed ec=${rev_ec} attempt=${attempt}"
+
+    log "polling review history → review_allowed (attempt ${attempt})"
+    terminal_phase=""
+    reason_code=""
+    retryable="false"
+    for i in $(seq 1 90); do
+      set +e
+      # history returns phase for all terminal states; result 404s until public projection exists
+      uvrun python -m agent_challenge.selfdeploy review history \
+        --base-url "${LOOPBACK_BASE}" --submission-id "${SUBMISSION_ID}" --hotkey "${HOTKEY}" --auto-sign \
+        >"${RUN_DIR}/review-result-a${attempt}-${i}.json" 2>"${RUN_DIR}/review-result-a${attempt}-${i}.err"
+      set -e
+      phase="$(extract_phase "${RUN_DIR}/review-result-a${attempt}-${i}.json" review)"
+      log "review poll a${attempt}/${i}: phase=${phase:-unknown}"
+      case "${phase}" in
+        review_allowed)
+          allowed=1
+          cp -f "${RUN_DIR}/review-result-a${attempt}-${i}.json" "${RUN_DIR}/review-allowed.json"
+          break
+          ;;
+        review_rejected|review_escalated|review_error|review_expired|review_cancelled)
+          terminal_phase="${phase}"
+          cp -f "${RUN_DIR}/review-result-a${attempt}-${i}.json" "${RUN_DIR}/review-terminal.json"
+          # Extract reason_code + retryable from latest history item
+          eval "$(python3 - <<PY
+import json
+from pathlib import Path
+p=Path("${RUN_DIR}/review-result-a${attempt}-${i}.json")
+try:
+  o=json.loads(p.read_text())
+except Exception:
+  o={}
+items=o.get("items") if isinstance(o,dict) else None
+it=items[0] if isinstance(items,list) and items else {}
+rc=str(it.get("reason_code") or "") if isinstance(it,dict) else ""
+rt=it.get("retryable") if isinstance(it,dict) else False
+print(f'reason_code={rc!r}')
+print(f'retryable={"true" if rt else "false"!r}')
+PY
+)"
+          log "review terminal phase=${terminal_phase} reason_code=${reason_code:-?} retryable=${retryable}"
+          log "review terminal detail: $(head -c 400 "${RUN_DIR}/review-result-a${attempt}-${i}.json" 2>/dev/null || true)"
+          break
+          ;;
+      esac
+      sleep 20
+    done
+
+    if [[ "${allowed}" == "1" ]]; then
+      break
+    fi
+
+    # Teardown this attempt's CVM before retry/fail
+    if [[ -n "${REV_CVM}" ]]; then
+      log "teardown review CVM ${REV_CVM} (attempt ${attempt})"
+      uvrun python -m agent_challenge.selfdeploy review teardown --cvm-id "${REV_CVM}" \
+        >"${RUN_DIR}/review-teardown-a${attempt}.json" 2>&1 || phala_delete_cvm "${REV_CVM}" || true
+      grep -vxF "${REV_CVM}" "${CVM_TRACK}" >"${CVM_TRACK}.tmp" 2>/dev/null || true
+      mv "${CVM_TRACK}.tmp" "${CVM_TRACK}" 2>/dev/null || true
+      grep -vxF "${REV_CVM}" "${OWNED_CVMS_FILE}" >"${OWNED_CVMS_FILE}.tmp" 2>/dev/null || true
+      mv "${OWNED_CVMS_FILE}.tmp" "${OWNED_CVMS_FILE}" 2>/dev/null || true
+      REV_CVM=""
+    fi
+
+    if [[ -z "${terminal_phase}" ]]; then
+      die "review_allowed not reached (no terminal) attempt=${attempt}"
+    fi
+    # Only retry review_error when API marks retryable (e.g. policy_output_malformed)
+    if [[ "${terminal_phase}" == "review_error" && "${retryable}" == "true" && "${attempt}" -lt "${REVIEW_ATTEMPTS}" ]]; then
+      log "retryable review_error (${reason_code:-unknown}) — will redeploy attempt $((attempt+1))"
+      sleep 5
+      continue
+    fi
+    die "review terminal phase=${terminal_phase} reason_code=${reason_code:-?} retryable=${retryable} attempt=${attempt}"
   done
-  [[ "${allowed}" == "1" ]] || die "review_allowed not reached"
+  [[ "${allowed}" == "1" ]] || die "review_allowed not reached after ${REVIEW_ATTEMPTS} attempts"
   log "review_allowed OK"
   if [[ -n "${REV_CVM}" ]]; then
     log "teardown review CVM ${REV_CVM}"
@@ -611,7 +843,20 @@ for i in $(seq 1 120); do
     >"${RUN_DIR}/eval-status-${i}.json" 2>/dev/null
   set -e
   phase="$(extract_phase "${RUN_DIR}/eval-status-${i}.json" eval)"
-  log "eval poll ${i}: phase=${phase:-unknown}"
+  # Live Phala CVM status (catches guest exit / vanish while still eval_prepared).
+  set +e
+  phala_get_cvms >"${RUN_DIR}/cvms-during-eval-${i}.json" 2>/dev/null
+  cvm_stat="$(python3 -c "import json;d=json.load(open('${RUN_DIR}/cvms-during-eval-${i}.json')); items=d.get('items') or [];
+ids=set(d.get('ids') or []);
+cid='${EVAL_CVM}';
+hit=[x for x in items if cid and (x.get('id')==cid or x.get('cvm_id')==cid or x.get('vm_uuid')==cid)];
+print((hit[0].get('status') if hit else 'MISSING') if cid else 'no_id', 'count='+str(d.get('count',-1)))" 2>/dev/null || echo unknown)"
+  set -e
+  log "eval poll ${i}: phase=${phase:-unknown} cvm=${cvm_stat}"
+  # KR log tail when still prepared (detect dials).
+  if [[ "${phase}" == "eval_prepared" && -f "${WORK_DIR}/kr.log" ]]; then
+    tail -5 "${WORK_DIR}/kr.log" >"${RUN_DIR}/kr-tail-${i}.txt" 2>/dev/null || true
+  fi
   set +e; curl -sf "${LOOPBACK_BASE}/submissions/${SUBMISSION_ID}/status" >"${RUN_DIR}/submission-status-${i}.json" 2>/dev/null; set -e
   if extract_guest_proof "${RUN_DIR}/eval-status-${i}.json" >"${RUN_DIR}/proof-try.txt" 2>/dev/null; then
     cp -f "${RUN_DIR}/eval-status-${i}.json" "${RUN_DIR}/result-envelope.json"

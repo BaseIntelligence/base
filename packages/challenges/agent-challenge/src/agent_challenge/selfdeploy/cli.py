@@ -199,7 +199,9 @@ def resolve_teardown_cvm_id(
     if not identity:
         raise RouteClientError("teardown requires --cvm-id or --app-id")
     api = client if client is not None else PhalaCloudClient()
-    listing = api.get("/cvms")
+    # CLI-authoritative paginated list (fail-loud on unknown shape).
+    snapshot = api.list_cvms()
+    listing = {"items": [dict(x) for x in snapshot.items], "total": snapshot.total}
     resolved = resolve_cvm_id_from_list(listing, app_id=identity, require_unique=True)
     if not resolved:
         raise RouteClientError(f"no CVM found for app_id {identity!r}")

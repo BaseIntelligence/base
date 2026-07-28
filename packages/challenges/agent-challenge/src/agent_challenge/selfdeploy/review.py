@@ -378,16 +378,28 @@ class HttpReviewPhalaDeployment:
             return extract_cvm_id_from_create_response(created)
         except ValueError:
             pass
+        list_cvms = getattr(self._api, "list_cvms", None)
         getter = getattr(self._api, "get", None)
-        if not callable(getter):
-            raise ReviewDeploymentError("Phala create response does not identify the review CVM")
         try:
-            listing = getter("/cvms")
+            if callable(list_cvms):
+                snap = list_cvms()
+                listing = {
+                    "items": [dict(x) for x in snap.items],
+                    "total": int(snap.total),
+                }
+            elif callable(getter):
+                listing = getter("/cvms")
+            else:
+                raise ReviewDeploymentError(
+                    "Phala create response does not identify the review CVM"
+                )
+        except ReviewDeploymentError:
+            raise
         except Exception as exc:
             raise ReviewDeploymentError(
                 "Phala create response does not identify the review CVM"
             ) from exc
-        if not isinstance(listing, Mapping):
+        if not isinstance(listing, (Mapping, list)):
             raise ReviewDeploymentError("Phala create response does not identify the review CVM")
         resolved = resolve_cvm_id_from_list(listing, app_id=discovered_app_id)
         if resolved is None:

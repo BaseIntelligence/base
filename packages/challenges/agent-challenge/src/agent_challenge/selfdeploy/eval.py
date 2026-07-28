@@ -635,14 +635,22 @@ class HttpEvalPhalaDeployment:
             cvm_id = extract_cvm_id_from_create_response(created)
         except ValueError:
             cvm_id = None
+            list_cvms = getattr(self._api, "list_cvms", None)
             getter = getattr(self._api, "get", None)
-            if callable(getter):
-                try:
+            listing = None
+            try:
+                if callable(list_cvms):
+                    snap = list_cvms()
+                    listing = {
+                        "items": [dict(x) for x in snap.items],
+                        "total": int(snap.total),
+                    }
+                elif callable(getter):
                     listing = getter("/cvms")
-                except Exception:
-                    listing = None
-                if isinstance(listing, Mapping):
-                    cvm_id = resolve_cvm_id_from_list(listing, app_id=identity.app_id)
+            except Exception:
+                listing = None
+            if isinstance(listing, (Mapping, list)):
+                cvm_id = resolve_cvm_id_from_list(listing, app_id=identity.app_id)
         if not isinstance(cvm_id, str) or not cvm_id:
             raise EvalDeploymentError("Phala create response does not identify the Eval CVM")
         try:

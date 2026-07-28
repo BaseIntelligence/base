@@ -146,7 +146,7 @@ def test_phala_client_sends_cli_equivalent_user_agent(monkeypatch: pytest.Monkey
 
     headers = {k.lower(): v for k, v in opener.requests[0].header_items()}
     assert headers.get("user-agent") == DEFAULT_PHALA_USER_AGENT
-    assert DEFAULT_PHALA_USER_AGENT.startswith("phala-cli/")
+    assert DEFAULT_PHALA_USER_AGENT.startswith(("phala-cloud-cli/", "phala-cli/"))
     # Keep auth contract: X-API-Key, never Bearer; no Python-urllib bare agent.
     assert headers.get("x-api-key") == "phak_test_key"
     assert "authorization" not in headers

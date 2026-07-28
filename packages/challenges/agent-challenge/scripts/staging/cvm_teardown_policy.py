@@ -11,6 +11,51 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
+
+
+def parse_account_cvms_payload(raw: Any) -> tuple[list[str], list[dict]]:
+    """Parse account listing JSON. Fail loud on unrecognized shapes.
+
+    Returns (account_ids, account_items). Never treats unknown envelopes as empty.
+    """
+    # Prefer package parser when importable (same process as selfdeploy).
+    try:
+        from agent_challenge.selfdeploy.cvm_list import (  # type: ignore
+            CvmListParseError,
+            parse_cvms_list_response,
+        )
+    except ImportError:
+        parse_cvms_list_response = None  # type: ignore
+        CvmListParseError = ValueError  # type: ignore
+
+    if parse_cvms_list_response is not None:
+        try:
+            snap = parse_cvms_list_response(raw)
+        except CvmListParseError as exc:
+            raise SystemExit(str(exc)) from exc
+        items = [dict(x) for x in snap.items]
+        ids = list(snap.ids)
+        return ids, items
+
+    # Minimal fallback (should not run under package tests).
+    if isinstance(raw, list):
+        if raw and isinstance(raw[0], dict):
+            items = [x for x in raw if isinstance(x, dict)]
+            ids = [str(x.get("id") or x.get("cvm_id") or "") for x in items]
+            return [i for i in ids if i], items
+        return [str(x) for x in raw], []
+    if isinstance(raw, dict):
+        for key in ("items", "data", "cvms"):
+            if isinstance(raw.get(key), list):
+                items = [x for x in raw[key] if isinstance(x, dict)]
+                ids = [str(x.get("id") or x.get("cvm_id") or "") for x in items]
+                return [i for i in ids if i], items
+        if isinstance(raw.get("ids"), list):
+            return [str(x) for x in raw["ids"]], []
+    raise SystemExit(
+        f"unrecognized CVM list shape in account-ids-json: {type(raw).__name__}"
+    )
 
 
 def normalize_cvm_id(raw: str) -> str:
@@ -213,35 +258,27 @@ def main(argv: list[str] | None = None) -> int:
     account_ids: list[str] = []
     account_items: list[dict] = []
     if args.account_ids_json:
-        raw = json.loads(args.account_ids_json)
-        if isinstance(raw, list):
-            if raw and isinstance(raw[0], dict):
-                account_items = [x for x in raw if isinstance(x, dict)]
-                account_ids = [
-                    str(x.get("id") or x.get("cvm_id") or "")
-                    for x in account_items
-                    if isinstance(x, dict)
-                ]
-                account_ids = [i for i in account_ids if i]
-            else:
-                account_ids = [str(x) for x in raw]
-        elif isinstance(raw, dict):
-            if isinstance(raw.get("items"), list):
-                account_items = [x for x in raw["items"] if isinstance(x, dict)]
-            elif isinstance(raw.get("data"), list):
-                account_items = [x for x in raw["data"] if isinstance(x, dict)]
-            elif isinstance(raw.get("cvms"), list):
-                account_items = [x for x in raw["cvms"] if isinstance(x, dict)]
-            if account_items:
-                account_ids = [
-                    str(x.get("id") or x.get("cvm_id") or "")
-                    for x in account_items
-                ]
-                account_ids = [i for i in account_ids if i]
-            else:
-                account_ids = [str(x) for x in (raw.get("ids") or [])]
+        try:
+            raw = json.loads(args.account_ids_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"account-ids-json is not valid JSON: {exc}") from exc
+        # Known slim helpers: {"ids":[...]} and/or {"count","ids","items"}.
+        if isinstance(raw, dict) and isinstance(raw.get("ids"), list) and (
+            "items" not in raw or isinstance(raw.get("items"), list)
+        ):
+            account_items = [
+                x for x in (raw.get("items") or []) if isinstance(x, dict)
+            ]
+            account_ids = [str(x) for x in raw["ids"] if str(x).strip()]
+            cnt = raw.get("count")
+            if isinstance(cnt, int) and cnt >= 0 and cnt != len(account_ids):
+                raise SystemExit(
+                    f"unrecognized CVM list shape: count={cnt} != len(ids)={len(account_ids)}"
+                )
+            if not account_items and account_ids:
+                account_items = [{"id": i} for i in account_ids]
         else:
-            raise SystemExit("account-ids-json must be a list or object with ids/items")
+            account_ids, account_items = parse_account_cvms_payload(raw)
 
     if args.account_sweep:
         print(
