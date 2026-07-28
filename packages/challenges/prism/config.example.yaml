@@ -32,6 +32,8 @@ fineweb_sample_count: 128
 # base_eval_train_data_dir: /data/fineweb-edu/train
 # base_eval_val_data_dir: /data/fineweb-edu/val
 # Phase-2 sample-100BT root is the sibling .../fineweb-edu/sample-100BT unless overridden.
+# Compute backend for PrismWorker. Default base_gpu. lium is allowed bare (T14 master-owned / unattested compute; not TEE).
+# Override: PRISM_EXECUTION_BACKEND=lium
 execution_backend: base_gpu
 prism_role: challenge
 public_submissions_enabled: true
