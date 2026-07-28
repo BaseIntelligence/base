@@ -1,16 +1,25 @@
-"""Lium execution backend is gated on a full constation bundle (todo 19).
+"""Execution-backend gate: bare ``lium`` is allowed (T14 unattested / master-owned).
 
-Renamed from the misleading test_lium_client.py (which tested no client).
+Container backends stay always-on. ``constation_bundle`` remains an API-compat
+kwarg but does **not** gate Lium selection. ``constation_ok`` score elevation is
+a separate ingestion path; constation modules are not deleted.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
+from prism_challenge.config import PrismSettings
 from prism_challenge.constation import ConstationBundle
+from prism_challenge.evaluator.interface import PrismContext
 from prism_challenge.queue import (
+    GATED_EXECUTION_BACKENDS,
     LIUM_EXECUTION_BACKEND,
     SUPPORTED_EXECUTION_BACKENDS,
+    PrismWorker,
     is_execution_backend_supported,
     require_execution_backend,
 )
@@ -42,19 +51,37 @@ def test_base_gpu_always_supported_without_bundle() -> None:
     require_execution_backend("base_gpu")  # no raise
 
 
-def test_lium_without_bundle_rejected() -> None:
-    assert is_execution_backend_supported(LIUM_EXECUTION_BACKEND) is False
-    assert is_execution_backend_supported(LIUM_EXECUTION_BACKEND, constation_bundle=None) is False
-    with pytest.raises(ValueError, match="constation bundle required for lium"):
-        require_execution_backend(LIUM_EXECUTION_BACKEND)
-    with pytest.raises(ValueError, match="constation bundle required for lium"):
-        require_execution_backend("lium", constation_bundle=None)
+def test_lium_without_bundle_accepted_unattested() -> None:
+    """T14: bare ``lium`` is a supported compute backend (no constation required)."""
+    assert LIUM_EXECUTION_BACKEND in SUPPORTED_EXECUTION_BACKENDS
+    assert LIUM_EXECUTION_BACKEND not in GATED_EXECUTION_BACKENDS
+    assert is_execution_backend_supported(LIUM_EXECUTION_BACKEND) is True
+    assert (
+        is_execution_backend_supported(LIUM_EXECUTION_BACKEND, constation_bundle=None)
+        is True
+    )
+    require_execution_backend(LIUM_EXECUTION_BACKEND)  # no raise
+    require_execution_backend("lium", constation_bundle=None)  # no raise
 
 
-def test_lium_with_full_bundle_accepted() -> None:
+def test_lium_with_full_bundle_still_accepted() -> None:
+    """Bundle remains optional API-compat; still accepted when supplied."""
     bundle = _bundle()
     assert is_execution_backend_supported("lium", constation_bundle=bundle) is True
     require_execution_backend("lium", constation_bundle=bundle)  # no raise
+
+
+def test_prism_worker_constructs_with_bare_lium() -> None:
+    """PrismWorker(execution_backend=lium) constructs without constation_bundle."""
+    repo = SimpleNamespace(claim_next=AsyncMock(return_value=None))
+    worker = PrismWorker(
+        repository=repo,  # type: ignore[arg-type]
+        ctx=PrismContext(),
+        execution_backend="lium",
+        settings=PrismSettings(docker_enabled=False, plagiarism_enabled=False),
+    )
+    assert worker.execution_backend == "lium"
+    assert worker._constation_bundle is None  # noqa: SLF001
 
 
 def test_remote_provider_and_local_cpu_still_rejected() -> None:
