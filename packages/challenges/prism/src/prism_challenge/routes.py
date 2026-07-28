@@ -46,6 +46,12 @@ CURVE_MAX_POINTS = 500
 
 router = APIRouter(prefix="/v1")
 
+# Public attestation challenge/answer (published via BASE proxy as
+# /challenges/prism/v1/attestation/*). Lives on the challenge app, not master.
+from .attestation_routes import build_attestation_public_router
+
+router.include_router(build_attestation_public_router())
+
 
 def _optional_float(value: object | None) -> float | None:
     if value is None:

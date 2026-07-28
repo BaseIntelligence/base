@@ -302,6 +302,9 @@ class PrismSettings(ChallengeSettings):
         validation_alias=AliasChoices("PRISM_SHARED_TOKEN_FILE", "CHALLENGE_SHARED_TOKEN_FILE"),
     )
     allow_insecure_signatures: bool = False
+    # Production constation: BASE checkers host for allowlist/nonce/sig.
+    constation_base_url: str | None = None
+    constation_internal_token: str | None = Field(default=None, repr=False)
     signature_ttl_seconds: int = 300
     epoch_seconds: int = 21_600
     max_code_bytes: int = 7_500_000
