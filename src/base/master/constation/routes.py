@@ -8,6 +8,7 @@ Internal (prism re-verify / ops):
   POST /internal/v1/constation/check_allowlist
   POST /internal/v1/constation/check_nonce
   POST /internal/v1/constation/register_digest
+  POST /internal/v1/constation/register_miner_key
   POST /internal/v1/constation/verify_attestation
   PUT  /internal/v1/constation/bundle/{work_unit_id}
   GET  /internal/v1/constation/bundle/{work_unit_id}
@@ -32,6 +33,7 @@ from base.compute.digest_allowlist import AllowlistHit, DigestRecord, ImageVaria
 from base.master.constation.allowlist_repository import DigestAllowlistRepository
 from base.master.constation.bundle_store import ConstationBundleStore
 from base.master.constation.nonce_repository import DurableAttestationNonceService
+from base.master.constation.pod_binding import MinerPodBinding
 
 
 class RegisterDigestBody(BaseModel):
@@ -39,6 +41,7 @@ class RegisterDigestBody(BaseModel):
     tree_sha: str
     variant: str
     digest: str
+    sealed_manifest_hashes: dict[str, str]
 
 
 class CheckAllowlistBody(BaseModel):
@@ -65,6 +68,12 @@ class IssueNonceBody(BaseModel):
 class VerifyAttestationBody(BaseModel):
     signed: dict[str, Any]
     key_hex: str | None = None
+
+
+class RegisterMinerKeyBody(BaseModel):
+    miner_hotkey: str
+    api_key: str
+    instance_id: str
 
 
 class AnswerBody(BaseModel):
@@ -121,6 +130,7 @@ def build_constation_router(
     internal_token: str | None = None,
     attestation_verify_key: bytes | None = None,
     default_binding: NonceBinding | None = None,
+    pod_binding: MinerPodBinding | None = None,
 ) -> APIRouter:
     """Build router; require Bearer when ``internal_token`` is set."""
     store = bundle_store or ConstationBundleStore()
@@ -213,14 +223,50 @@ def build_constation_router(
         dependencies=[Depends(require_internal)],
     )
     async def register_digest(body: RegisterDigestBody) -> dict[str, str]:
-        record = DigestRecord(
-            commit_sha=body.commit_sha,
-            tree_sha=body.tree_sha,
-            variant=ImageVariant(body.variant.strip().lower()),
-            digest=body.digest,
-        )
-        await allowlist_repo.register(record)
+        try:
+            record = DigestRecord(
+                commit_sha=body.commit_sha,
+                tree_sha=body.tree_sha,
+                variant=ImageVariant(body.variant.strip().lower()),
+                digest=body.digest,
+                sealed_manifest_hashes=body.sealed_manifest_hashes,
+            )
+            await allowlist_repo.register(record)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
         return {"status": "registered", "digest": record.digest}
+
+    @router.post(
+        "/internal/v1/constation/register_miner_key",
+        dependencies=[Depends(require_internal)],
+    )
+    async def register_miner_key(body: RegisterMinerKeyBody) -> dict[str, str]:
+        """Bind miner Lium API key + instance_id after probe/pod checks."""
+        if pod_binding is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="miner pod binding not configured",
+            )
+        try:
+            verdict = await pod_binding.register(
+                miner_hotkey=body.miner_hotkey,
+                api_key=body.api_key,
+                instance_id=body.instance_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        if not verdict.ok:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=verdict.reason.value,
+            )
+        return {"status": "registered"}
 
     @router.post(
         "/internal/v1/constation/check_allowlist",
@@ -299,8 +345,8 @@ def build_constation_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="bundle not found")
         return blob
 
-    setattr(router, "_answers", answers)
-    setattr(router, "_bundle_store", store)
+    router._answers = answers  # type: ignore[attr-defined]
+    router._bundle_store = store  # type: ignore[attr-defined]
     return router
 
 
@@ -312,6 +358,7 @@ def create_constation_test_app(
     default_binding: NonceBinding | None = None,
     attestation_verify_key: bytes | None = None,
     bundle_store: ConstationBundleStore | None = None,
+    pod_binding: MinerPodBinding | None = None,
 ) -> Any:
     """Minimal FastAPI app hosting only the constation router (unit tests)."""
     from fastapi import FastAPI
@@ -324,6 +371,7 @@ def create_constation_test_app(
         internal_token=internal_token,
         default_binding=default_binding,
         attestation_verify_key=attestation_verify_key,
+        pod_binding=pod_binding,
     )
     app.include_router(router)
     app.state.constation_router = router
