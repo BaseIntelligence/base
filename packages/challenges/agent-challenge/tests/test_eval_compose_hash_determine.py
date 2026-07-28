@@ -229,3 +229,60 @@ def test_build_eval_deployment_plan_fails_closed_on_unknown_compose_hash():
     )
     with pytest.raises(eval_deploy.EvalDeploymentError, match="compose hash mismatches"):
         eval_deploy.build_eval_deployment_plan(prepare)
+
+
+#: Live production pin (2026-07-26 T8 / joinbase): eval image bf598… measured
+#: *before* CHALLENGE_PHALA_EVAL_ARTIFACT_{URL,TOKEN} entered DEFAULT_ALLOWED_ENVS.
+#: Observed on prepare for submission 11 (2026-07-28).
+PROD_DAF0_COMPOSE_HASH = (
+    "daf0f2090c02546c694bc7dc49516fd2629f4b8f9dd89e9bc2ed5c4156b662df"
+)
+PROD_DAF0_IMAGE = (
+    "ghcr.io/baseintelligence/agent-challenge-eval@sha256:"
+    "bf598fb8a3391fdbbef9b03184727a1615810a2cb31367e6d6d6b5c2a711d6e4"
+)
+
+
+def test_pre_artifact_allowed_envs_reproduces_prod_daf0_pin():
+    """Generator with pre-artifact allowed_envs + measure-time KR must yield daf0."""
+
+    pre_artifact = tuple(
+        name
+        for name in eval_deploy.EVAL_ALLOWED_ENVS
+        if name
+        not in {
+            eval_deploy.EVAL_ARTIFACT_URL_ENV,
+            eval_deploy.EVAL_ARTIFACT_TOKEN_ENV,
+        }
+    )
+    compose = generate_app_compose(
+        orchestrator_image=PROD_DAF0_IMAGE,
+        name=eval_deploy.DEFAULT_EVAL_COMPOSE_NAME,
+        key_release_url=eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER,
+        allowed_envs=pre_artifact,
+    )
+    assert app_compose_hash(compose) == PROD_DAF0_COMPOSE_HASH
+    assert eval_deploy.EVAL_ARTIFACT_URL_ENV not in compose["allowed_envs"]
+    assert eval_deploy.EVAL_ARTIFACT_TOKEN_ENV not in compose["allowed_envs"]
+
+
+def test_build_eval_deployment_plan_matches_prod_daf0_pin():
+    """Live joinbase prepare compose_hash daf0 must determine without inventing bytes."""
+
+    prepare = _signed_prepare(
+        compose_hash=PROD_DAF0_COMPOSE_HASH,
+        image_ref=PROD_DAF0_IMAGE,
+        app_identity="bb35a8f627f0f8c991aa85c15742d352e658e0f7",
+        key_release_endpoint=LIVE_PLAN_KEY_RELEASE,
+    )
+    dep = eval_deploy.build_eval_deployment_plan(prepare)
+    assert dep.compose_hash == PROD_DAF0_COMPOSE_HASH
+    assert dep.compose_name == eval_deploy.DEFAULT_EVAL_COMPOSE_NAME
+    assert (
+        eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER
+        in dep.compose["docker_compose_file"]
+    )
+    # Historical pin: artifact delivery names are absent from measured allowed_envs.
+    allowed = set(dep.compose["allowed_envs"])
+    assert eval_deploy.EVAL_ARTIFACT_URL_ENV not in allowed
+    assert eval_deploy.EVAL_ARTIFACT_TOKEN_ENV not in allowed

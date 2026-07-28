@@ -221,17 +221,19 @@ def build_eval_deployment_plan(
         "/opt/agent-challenge/golden/live-registry-refs.json",
     )
     # Prefer plan endpoint, then measure-time placeholder used for the live
-    # joinbase pin ``04011776…`` (tee-pin-pack / eval residual after KR).
+    # joinbase pin ``04011776…`` (tee-pin-pack / eval residual after KR), then
+    # ``None`` for pins measured with no key_release_url baked into compose
+    # (staging / default generator → ``0647b4d9…``). Guest still resolves the
+    # real endpoint from the signed plan at runtime.
     plan_endpoint = str(plan.get("key_release_endpoint") or "").strip() or None
     key_release_candidates: list[str | None] = []
     for candidate_url in (
         plan_endpoint,
         MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER,
+        None,
     ):
-        if candidate_url and candidate_url not in key_release_candidates:
+        if candidate_url not in key_release_candidates:
             key_release_candidates.append(candidate_url)
-    if not key_release_candidates:
-        key_release_candidates.append(None)
     compose = None
     compose_text = ""
     compose_hash = ""
@@ -256,23 +258,51 @@ def build_eval_deployment_plan(
     # Also try signed identity as compose name for moniker-only legacy pins.
     if compose_name != app_identity and app_identity:
         name_candidates = (compose_name, app_identity)
+    # allowed_envs candidates (order matters — prefer current full set first):
+    # 1) current EVAL_ALLOWED_ENVS (includes artifact URL/token)
+    # 2) pre-artifact set — live joinbase pin daf0f209… was measured before
+    #    CHALLENGE_PHALA_EVAL_ARTIFACT_{URL,TOKEN} entered DEFAULT_ALLOWED_ENVS
+    #    (T8 / 2026-07-26). Searching this set is hash-determine only; never
+    #    invent compose bytes. When matched, encrypted_env must not inject
+    #    names absent from the measured allowed_envs list.
+    allowed_envs_candidates: list[tuple[str, ...]] = [
+        tuple(sorted(allowed)),
+        tuple(
+            sorted(
+                name
+                for name in allowed
+                if name not in {EVAL_ARTIFACT_URL_ENV, EVAL_ARTIFACT_TOKEN_ENV}
+            )
+        ),
+    ]
+    # De-dupe while preserving order (full set may equal pre-artifact if names drop).
+    seen_allowed: set[tuple[str, ...]] = set()
+    unique_allowed_candidates: list[tuple[str, ...]] = []
+    for cand in allowed_envs_candidates:
+        if cand in seen_allowed:
+            continue
+        seen_allowed.add(cand)
+        unique_allowed_candidates.append(cand)
     for live_path in live_registry_candidates:
         for name in name_candidates:
             for key_release_url in key_release_candidates:
-                candidate = generate_app_compose(
-                    orchestrator_image=app["image_ref"],
-                    name=name,
-                    key_release_url=key_release_url,
-                    allowed_envs=tuple(sorted(allowed)),
-                    live_registry_manifest_path=live_path,
-                )
-                candidate_text = render_app_compose(candidate)
-                candidate_hash = sha256(candidate_text.encode("utf-8")).hexdigest()
-                if candidate_hash == app["compose_hash"]:
-                    compose = candidate
-                    compose_text = candidate_text
-                    compose_hash = candidate_hash
-                    compose_name = name
+                for allowed_envs in unique_allowed_candidates:
+                    candidate = generate_app_compose(
+                        orchestrator_image=app["image_ref"],
+                        name=name,
+                        key_release_url=key_release_url,
+                        allowed_envs=allowed_envs,
+                        live_registry_manifest_path=live_path,
+                    )
+                    candidate_text = render_app_compose(candidate)
+                    candidate_hash = sha256(candidate_text.encode("utf-8")).hexdigest()
+                    if candidate_hash == app["compose_hash"]:
+                        compose = candidate
+                        compose_text = candidate_text
+                        compose_hash = candidate_hash
+                        compose_name = name
+                        break
+                if compose is not None:
                     break
             if compose is not None:
                 break
@@ -395,11 +425,7 @@ def encrypt_eval_secrets(
     re-seal after discovery.
     """
 
-    if not set(secrets) <= set(EVAL_ALLOWED_ENVS) or not EVAL_REQUIRED_SECRET_ENVS <= set(secrets):
-        raise EvalDeploymentError(
-            "Eval encrypted_env names must be scoped allowed names with the required run "
-            "and attestation plan capabilities (Base LLM gateway secrets are not allowed)"
-        )
+    # Reject gateway secrets on the caller map before compose scoping (VAL-ACAT-013).
     forbidden_gateway = {
         "BASE_GATEWAY_TOKEN",
         "BASE_LLM_GATEWAY_URL",
@@ -411,13 +437,44 @@ def encrypt_eval_secrets(
             "Eval encrypted_env must not include Base LLM gateway secrets "
             "(BASE_GATEWAY_TOKEN / BASE_LLM_GATEWAY_URL / …)"
         )
+    # Measured compose allowed_envs is the Phala injection allowlist. Secrets
+    # outside that list cannot be delivered (and would change compose_hash if
+    # forced into the measured document). Scope required names to the intersection.
+    compose_allowed = {
+        str(name)
+        for name in (plan.compose.get("allowed_envs") or ())
+        if isinstance(name, str) and name and "=" not in name
+    }
+    if not compose_allowed:
+        compose_allowed = set(EVAL_ALLOWED_ENVS)
+    if not compose_allowed <= set(EVAL_ALLOWED_ENVS):
+        raise EvalDeploymentError(
+            "Eval compose allowed_envs contains names outside EVAL_ALLOWED_ENVS"
+        )
+    # Drop secrets the measured compose cannot accept (e.g. artifact grant on
+    # pre-artifact pins such as daf0f209…). Never invent alternate delivery.
+    scoped_secrets = {
+        name: value
+        for name, value in secrets.items()
+        if name in compose_allowed
+    }
+    required = frozenset(
+        name for name in EVAL_REQUIRED_SECRET_ENVS if name in compose_allowed
+    )
+    # Always require run token + attestation plan + cost limit when present in
+    # the product required set and the compose allowlist.
+    if not set(scoped_secrets) <= set(EVAL_ALLOWED_ENVS) or not required <= set(scoped_secrets):
+        raise EvalDeploymentError(
+            "Eval encrypted_env names must be scoped allowed names with the required run "
+            "and attestation plan capabilities (Base LLM gateway secrets are not allowed)"
+        )
     # VAL-ACLOCK-009: free CHALLENGE_PHALA_KEY_RELEASE_URL is not a miner trust
     # root. Prefer plan key_release_endpoint + KEY_RELEASE_RA_TLS_HOST/PORT.
     # Name may remain in allowed_envs for measure-time pin hash stability, but
     # any encrypted_env value must be the same RA-TLS authority as the signed
     # plan (free HTTP(S) URLs always refuse).
-    if KEY_RELEASE_URL_ENV in secrets:
-        free_url = secrets[KEY_RELEASE_URL_ENV]
+    if KEY_RELEASE_URL_ENV in scoped_secrets:
+        free_url = scoped_secrets[KEY_RELEASE_URL_ENV]
         plan_endpoint = str(plan.plan.get("key_release_endpoint") or "").strip()
         plan_auth = parse_key_release_authority(plan_endpoint)
         free_auth = parse_key_release_authority(free_url if isinstance(free_url, str) else "")
@@ -428,19 +485,27 @@ def encrypt_eval_secrets(
                 "authority (prefer KEY_RELEASE_RA_TLS_HOST/PORT). Free HTTP(S) KR "
                 "URLs are refused."
             )
-    # Artifact delivery: HTTPS-only URL; token is a non-empty grant string.
-    # Never include the token value in exception messages.
-    artifact_url = _require_https_artifact_url(secrets[EVAL_ARTIFACT_URL_ENV])
-    artifact_token = secrets[EVAL_ARTIFACT_TOKEN_ENV]
-    if not isinstance(artifact_token, str) or not artifact_token.strip():
-        raise EvalDeploymentError("Eval artifact grant token must be a non-empty string")
-    expected_suffix = f"/eval/v1/runs/{plan.eval_run_id}/artifact"
-    if not artifact_url.endswith(expected_suffix):
-        raise EvalDeploymentError("Eval artifact URL is not bound to this eval_run_id")
+    # Artifact delivery: only when the measured compose lists the names.
+    # Pre-artifact pins (daf0f209…) omit them — guest cannot receive the grant.
+    has_artifact_url = EVAL_ARTIFACT_URL_ENV in scoped_secrets
+    has_artifact_token = EVAL_ARTIFACT_TOKEN_ENV in scoped_secrets
+    if has_artifact_url or has_artifact_token:
+        if not has_artifact_url or not has_artifact_token:
+            raise EvalDeploymentError(
+                "Eval artifact grant requires both URL and token when either is present"
+            )
+        artifact_url = _require_https_artifact_url(scoped_secrets[EVAL_ARTIFACT_URL_ENV])
+        artifact_token = scoped_secrets[EVAL_ARTIFACT_TOKEN_ENV]
+        if not isinstance(artifact_token, str) or not artifact_token.strip():
+            raise EvalDeploymentError("Eval artifact grant token must be a non-empty string")
+        expected_suffix = f"/eval/v1/runs/{plan.eval_run_id}/artifact"
+        if not artifact_url.endswith(expected_suffix):
+            raise EvalDeploymentError("Eval artifact URL is not bound to this eval_run_id")
+        scoped_secrets = dict(scoped_secrets)
+        scoped_secrets[EVAL_ARTIFACT_URL_ENV] = artifact_url
 
-    env_keys = tuple(name for name in EVAL_ALLOWED_ENVS if name in secrets)
-    values = {name: secrets[name] for name in env_keys}
-    values[EVAL_ARTIFACT_URL_ENV] = artifact_url
+    env_keys = tuple(name for name in EVAL_ALLOWED_ENVS if name in scoped_secrets)
+    values = {name: scoped_secrets[name] for name in env_keys}
     if any(not isinstance(value, str) or not value for value in values.values()):
         raise EvalDeploymentError("Eval encrypted_env values must be non-empty strings")
     if values["EVAL_RUN_TOKEN"] != plan.eval_run_token:
