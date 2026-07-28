@@ -35,33 +35,107 @@ def load_owned_ids(*paths: Path) -> list[str]:
     return out
 
 
+def account_item_identifiers(item: dict) -> set[str]:
+    """All identifiers that may appear in deploy acks or GET /cvms rows."""
+    out: set[str] = set()
+    for key in ("id", "cvm_id", "vm_uuid", "uuid", "instance_id"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            out.add(val.strip())
+    return out
+
+
+def resolve_delete_ids(
+    *,
+    owned_ids: list[str],
+    account_items: list[dict] | None = None,
+    account_ids: list[str] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Map owned track entries to API delete targets.
+
+    Deploy acks often record vm_uuid (UUID) while GET /cvms returns id=cvm_*.
+    Returns (api_ids_to_delete, unresolved_owned, foreign_account_api_ids).
+    """
+    owned = [normalize_cvm_id(i) for i in owned_ids if normalize_cvm_id(i)]
+    owned_set = set(owned)
+
+    items = list(account_items or [])
+    if not items and account_ids:
+        # ids-only fallback: treat each string as an API id with no alias map
+        items = [{"id": normalize_cvm_id(i)} for i in account_ids if normalize_cvm_id(i)]
+
+    api_ids: list[str] = []
+    seen_api: set[str] = set()
+    matched_owned: set[str] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        idents = account_item_identifiers(item)
+        if not idents & owned_set:
+            continue
+        api_id = ""
+        for key in ("id", "cvm_id"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                api_id = val.strip()
+                break
+        if not api_id:
+            # last resort: any owned ident that looks like cvm_*
+            for ident in sorted(idents):
+                if ident.startswith("cvm_"):
+                    api_id = ident
+                    break
+        if not api_id:
+            # still owned — try deleting by the owned uuid itself
+            for ident in sorted(idents & owned_set):
+                api_id = ident
+                break
+        if api_id and api_id not in seen_api:
+            seen_api.add(api_id)
+            api_ids.append(api_id)
+        matched_owned |= idents & owned_set
+
+    # Owned ids that never appeared on the account listing: still attempt delete
+    # by the tracked token (selfdeploy teardown may accept uuid).
+    unresolved = [o for o in owned if o not in matched_owned]
+    for o in unresolved:
+        if o not in seen_api:
+            seen_api.add(o)
+            api_ids.append(o)
+
+    all_account_api = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("id", "cvm_id"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                all_account_api.append(val.strip())
+                break
+    foreign = [i for i in all_account_api if i not in seen_api]
+    return api_ids, unresolved, foreign
+
+
 def select_teardown_ids(
     *,
     owned_ids: list[str],
     account_ids: list[str] | None = None,
+    account_items: list[dict] | None = None,
     account_sweep: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Return (to_delete, rejected_foreign).
+    """Return (to_delete_api_ids, rejected_foreign_api_ids).
 
-    Default: delete only owned_ids. Foreign account ids are never selected.
-    When account_sweep=True, account_ids not already owned are still rejected
-    from the automatic path — the caller must pass them as owned first. This
-    keeps "ownership" as the sole delete criterion even under the opt-in flag.
-    The account_sweep flag only controls whether missing ownership is a hard
-    error vs a loud warning when the operator intended a full account clean;
-    it does NOT expand the delete set beyond owned_ids.
+    Default: delete only CVMs owned by track entries (matched via id/cvm_id/vm_uuid).
+    Foreign account CVMs are never selected. account_sweep does not expand the set.
     """
-    del account_ids, account_sweep  # ownership is the only delete criterion
-    owned = [normalize_cvm_id(i) for i in owned_ids if normalize_cvm_id(i)]
-    # Dedup preserve order
-    seen: set[str] = set()
-    to_delete: list[str] = []
-    for cid in owned:
-        if cid in seen:
-            continue
-        seen.add(cid)
-        to_delete.append(cid)
-    return to_delete, []
+    del account_sweep
+    to_delete, _unresolved, foreign = resolve_delete_ids(
+        owned_ids=owned_ids,
+        account_items=account_items,
+        account_ids=account_ids,
+    )
+    return to_delete, foreign
 
 
 def assert_id_owned(cvm_id: str, owned_ids: list[str]) -> None:
@@ -81,23 +155,24 @@ def plan_teardown(
     *,
     owned_paths: list[Path],
     account_ids: list[str] | None = None,
+    account_items: list[dict] | None = None,
     account_sweep: bool = False,
 ) -> dict[str, object]:
     owned = load_owned_ids(*owned_paths)
     account = [normalize_cvm_id(i) for i in (account_ids or []) if normalize_cvm_id(i)]
-    to_delete, rejected = select_teardown_ids(
+    to_delete, foreign = select_teardown_ids(
         owned_ids=owned,
         account_ids=account,
+        account_items=account_items,
         account_sweep=account_sweep,
     )
-    foreign_on_account = [i for i in account if i not in set(to_delete)]
     return {
         "owned_ids": owned,
         "account_ids": account,
         "account_sweep": account_sweep,
         "will_delete": to_delete,
-        "will_not_delete_foreign": foreign_on_account,
-        "rejected": rejected,
+        "will_not_delete_foreign": foreign,
+        "rejected": [],
     }
 
 
@@ -115,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--account-ids-json",
         default="",
-        help='Optional JSON list or {"ids":[...]} of account CVM ids (for reporting only).',
+        help='Optional JSON list, {"ids":[...]}, or full GET /cvms payload with items.',
     )
     parser.add_argument(
         "--account-sweep",
@@ -136,14 +211,37 @@ def main(argv: list[str] | None = None) -> int:
 
     owned_paths = [Path(p) for p in args.owned_files]
     account_ids: list[str] = []
+    account_items: list[dict] = []
     if args.account_ids_json:
         raw = json.loads(args.account_ids_json)
         if isinstance(raw, list):
-            account_ids = [str(x) for x in raw]
+            if raw and isinstance(raw[0], dict):
+                account_items = [x for x in raw if isinstance(x, dict)]
+                account_ids = [
+                    str(x.get("id") or x.get("cvm_id") or "")
+                    for x in account_items
+                    if isinstance(x, dict)
+                ]
+                account_ids = [i for i in account_ids if i]
+            else:
+                account_ids = [str(x) for x in raw]
         elif isinstance(raw, dict):
-            account_ids = [str(x) for x in (raw.get("ids") or [])]
+            if isinstance(raw.get("items"), list):
+                account_items = [x for x in raw["items"] if isinstance(x, dict)]
+            elif isinstance(raw.get("data"), list):
+                account_items = [x for x in raw["data"] if isinstance(x, dict)]
+            elif isinstance(raw.get("cvms"), list):
+                account_items = [x for x in raw["cvms"] if isinstance(x, dict)]
+            if account_items:
+                account_ids = [
+                    str(x.get("id") or x.get("cvm_id") or "")
+                    for x in account_items
+                ]
+                account_ids = [i for i in account_ids if i]
+            else:
+                account_ids = [str(x) for x in (raw.get("ids") or [])]
         else:
-            raise SystemExit("account-ids-json must be a list or object with ids")
+            raise SystemExit("account-ids-json must be a list or object with ids/items")
 
     if args.account_sweep:
         print(
@@ -155,16 +253,26 @@ def main(argv: list[str] | None = None) -> int:
     plan = plan_teardown(
         owned_paths=owned_paths,
         account_ids=account_ids,
+        account_items=account_items or None,
         account_sweep=args.account_sweep,
     )
 
     if args.check_id:
-        assert_id_owned(args.check_id, list(plan["owned_ids"]))  # type: ignore[arg-type]
-        print(json.dumps({"ok": True, "id": normalize_cvm_id(args.check_id)}))
+        # Allow delete if id is owned OR resolves as the API id of an owned vm_uuid.
+        cid = normalize_cvm_id(args.check_id)
+        owned_list = list(plan["owned_ids"])  # type: ignore[arg-type]
+        if cid in {normalize_cvm_id(i) for i in owned_list}:
+            print(json.dumps({"ok": True, "id": cid}))
+            return 0
+        will = set(plan.get("will_delete") or [])  # type: ignore[arg-type]
+        if cid in will:
+            print(json.dumps({"ok": True, "id": cid, "resolved_from_owned": True}))
+            return 0
+        assert_id_owned(cid, owned_list)
+        print(json.dumps({"ok": True, "id": cid}))
         return 0
 
     print(json.dumps(plan, indent=2, sort_keys=True))
-    # dry-run is the only mode of this helper
     _ = args.dry_run
     return 0
 

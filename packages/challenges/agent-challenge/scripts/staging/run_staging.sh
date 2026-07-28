@@ -94,14 +94,33 @@ import json,os,urllib.request
 req=urllib.request.Request("https://cloud-api.phala.com/api/v1/cvms",headers={"X-API-Key":os.environ["PHALA_CLOUD_API_KEY"],"User-Agent":"phala-cloud-cli/1.1.19","Accept":"application/json"})
 with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read())
 items=data if isinstance(data,list) else (data.get("items") or data.get("data") or data.get("cvms") or [])
-print(json.dumps({"count":len(items),"ids":[str(i.get("id") or i.get("cvm_id") or "") for i in items if isinstance(i,dict)]}))
+slim=[]
+ids=[]
+for i in items:
+  if not isinstance(i,dict):
+    continue
+  api_id=str(i.get("id") or i.get("cvm_id") or "")
+  if api_id:
+    ids.append(api_id)
+  slim.append({
+    "id": api_id,
+    "cvm_id": str(i.get("cvm_id") or "") or None,
+    "vm_uuid": str(i.get("vm_uuid") or "") or None,
+    "name": i.get("name"),
+    "app_id": i.get("app_id"),
+    "status": i.get("status"),
+  })
+print(json.dumps({"count":len(ids),"ids":ids,"items":slim}))
 PY
 }
 phala_delete_cvm(){
   local id="$1"; [[ -z "$id" ]] && return 0
-  # Hard guard: refuse any id not in the owned track for this run/work dir.
+  # Hard guard: refuse any id not owned (track may hold vm_uuid; resolve via listing).
+  local listing
+  listing="$(phala_get_cvms || echo '{"count":0,"ids":[],"items":[]}')"
   if ! python3 "${SCRIPT_DIR}/cvm_teardown_policy.py" \
       --owned-file "${CVM_TRACK}" --owned-file "${OWNED_CVMS_FILE}" \
+      --account-ids-json "${listing}" \
       --check-id "${id}" >/dev/null; then
     log "REFUSED delete of non-owned CVM id=${id}"
     return 2

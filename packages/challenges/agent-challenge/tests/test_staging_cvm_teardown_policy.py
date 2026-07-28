@@ -77,6 +77,29 @@ class TestSelectTeardownIds:
         )
         assert to_delete == ["cvm_a", "cvm_b", "cvm_c"]
 
+    def test_vm_uuid_owned_resolves_to_api_cvm_id(self, policy) -> None:
+        """Deploy acks track vm_uuid; GET /cvms returns id=cvm_* — must resolve."""
+        owned = ["a9fdcfb7-1af3-4cc1-b75c-9bb2de4997b0"]
+        items = [
+            {
+                "id": "cvm_den0mXwY",
+                "vm_uuid": "a9fdcfb7-1af3-4cc1-b75c-9bb2de4997b0",
+                "name": "agent-challenge-canonical",
+            },
+            {
+                "id": "cvm_foreign_prod",
+                "vm_uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "name": "prod-eval",
+            },
+        ]
+        to_delete, foreign = policy.select_teardown_ids(
+            owned_ids=owned,
+            account_items=items,
+        )
+        assert to_delete == ["cvm_den0mXwY"]
+        assert "cvm_foreign_prod" in foreign
+        assert "cvm_foreign_prod" not in to_delete
+
 
 class TestAssertIdOwned:
     def test_foreign_id_refused(self, policy) -> None:
@@ -103,6 +126,23 @@ class TestPlanAndCli:
         assert plan["will_delete"] == ["cvm_owned_1", "cvm_owned_2"]
         assert "cvm_foreign_prod" in plan["will_not_delete_foreign"]
         assert "cvm_foreign_prod" not in plan["will_delete"]
+
+    def test_plan_resolves_uuid_via_items_payload(self, policy, tmp_path: Path) -> None:
+        track = tmp_path / "cvms.txt"
+        track.write_text("a9fdcfb7-1af3-4cc1-b75c-9bb2de4997b0\n", encoding="utf-8")
+        items = [
+            {
+                "id": "cvm_den0mXwY",
+                "vm_uuid": "a9fdcfb7-1af3-4cc1-b75c-9bb2de4997b0",
+            },
+            {"id": "cvm_prod_submission_11", "vm_uuid": "ffff-ffff"},
+        ]
+        plan = policy.plan_teardown(
+            owned_paths=[track],
+            account_items=items,
+        )
+        assert plan["will_delete"] == ["cvm_den0mXwY"]
+        assert "cvm_prod_submission_11" in plan["will_not_delete_foreign"]
 
     def test_cli_dry_run_never_lists_foreign(
         self, tmp_path: Path
