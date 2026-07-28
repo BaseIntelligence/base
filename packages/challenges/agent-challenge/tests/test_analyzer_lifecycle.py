@@ -657,54 +657,59 @@ async def test_standby_requeue_backoff_bounded_before_final_escalate(
     assert standby_runs == 1
 
 
-async def test_missing_gateway_token_standby_does_not_tight_loop(
+async def test_missing_gateway_token_gateway_free_allows_without_tight_loop(
     client,
     database_session,
     monkeypatch,
     signed_submission_override,
     tmp_path,
 ):
+    """VAL-ACAT gateway-free: missing Base LLM gateway must not park llm_standby.
+
+    Prod hotpatch replaces missing_llm_gateway_token standby with the
+    gateway-free attested reviewer so host analyzer completes AST+similarity
+    and allows; measured Phala/OpenRouter remains the real LLM gate.
+    """
     configure_master(monkeypatch, tmp_path)
-    # No gateway token/base URL configured: the configured reviewer cannot reach
-    # the master gateway, so the submission parks in llm_standby.
     monkeypatch.setattr("agent_challenge.analyzer.lifecycle.settings.llm_gateway_base_url", None)
     monkeypatch.setattr("agent_challenge.analyzer.lifecycle.settings.llm_gateway_token", None)
     await submit_agent(client, {"agent.py": "def solve(value):\n    return value + 1\n"})
 
     first_iteration = await run_worker_once(worker_id="analysis-worker")
     async with database_session() as session:
-        first_event_count = await session.scalar(select(func.count(SubmissionStatusEvent.id)))
         first_analysis_count = await session.scalar(select(func.count(AnalysisRun.id)))
 
     second_iteration = await run_worker_once(worker_id="analysis-worker")
 
     assert first_iteration.analysis_summary is not None
-    assert first_iteration.analysis_summary.verdict == "standby"
-    assert first_iteration.analysis_summary.status == "llm_standby"
+    assert first_iteration.analysis_summary.verdict == "allow"
+    # Second pass must not re-analyze a terminal allow (no tight loop).
     assert second_iteration.analysis_summary is None
     async with database_session() as session:
         submission = await session.scalar(select(AgentSubmission))
-        event_count = await session.scalar(select(func.count(SubmissionStatusEvent.id)))
         analysis_count = await session.scalar(select(func.count(AnalysisRun.id)))
-        latest_event = await session.scalar(
-            select(SubmissionStatusEvent).order_by(SubmissionStatusEvent.sequence.desc())
+        standby_runs = await session.scalar(
+            select(func.count(AnalysisRun.id)).where(AnalysisRun.status == "llm_standby")
         )
 
     assert submission is not None
-    assert submission.raw_status == "llm_standby"
+    assert submission.raw_status != "llm_standby"
     assert analysis_count == first_analysis_count == 1
-    assert event_count == first_event_count
-    assert latest_event is not None
-    assert latest_event.reason == "missing_llm_gateway_token"
+    assert standby_runs == 0
 
 
-async def test_llm_standby_requeues_when_gateway_token_becomes_available(
+async def test_gateway_free_path_does_not_require_gateway_token_requeue(
     client,
     database_session,
     monkeypatch,
     signed_submission_override,
     tmp_path,
 ):
+    """Gateway-free product mode completes on the first pass without a token.
+
+    Legacy standby→requeue when a gateway token appears is obsolete: Base
+    /llm/v1 is removed and must not be restored.
+    """
     configure_master(monkeypatch, tmp_path)
     monkeypatch.setattr("agent_challenge.analyzer.lifecycle.settings.llm_gateway_base_url", None)
     monkeypatch.setattr("agent_challenge.analyzer.lifecycle.settings.llm_gateway_token", None)
@@ -712,8 +717,10 @@ async def test_llm_standby_requeues_when_gateway_token_becomes_available(
 
     first_iteration = await run_worker_once(worker_id="analysis-worker")
     assert first_iteration.analysis_summary is not None
-    assert first_iteration.analysis_summary.verdict == "standby"
+    assert first_iteration.analysis_summary.verdict == "allow"
 
+    # Even if a gateway token appears later, the submission is already past
+    # analysis — worker must not invent a second analysis cycle.
     monkeypatch.setattr(
         "agent_challenge.analyzer.lifecycle.settings.llm_gateway_base_url",
         "http://master:19080",
@@ -722,41 +729,20 @@ async def test_llm_standby_requeues_when_gateway_token_becomes_available(
         "agent_challenge.analyzer.lifecycle.settings.llm_gateway_token",
         "scoped-token",
     )
-    monkeypatch.setattr(
-        "agent_challenge.analyzer.lifecycle.build_configured_lifecycle_reviewer",
-        lambda: StaticReviewer("allow"),
-    )
     second_iteration = await run_worker_once(worker_id="analysis-worker")
+    assert second_iteration.analysis_summary is None
 
-    assert second_iteration.analysis_summary is not None
-    assert second_iteration.analysis_summary.verdict == "allow"
     async with database_session() as session:
         submission = await session.scalar(select(AgentSubmission))
         analysis_count = await session.scalar(select(func.count(AnalysisRun.id)))
-        events = (
-            (
-                await session.execute(
-                    select(SubmissionStatusEvent.to_status).order_by(SubmissionStatusEvent.sequence)
-                )
-            )
-            .scalars()
-            .all()
+        standby_runs = await session.scalar(
+            select(func.count(AnalysisRun.id)).where(AnalysisRun.status == "llm_standby")
         )
 
     assert submission is not None
-    assert submission.raw_status == "tb_completed"
-    assert analysis_count == 2
-    assert events[-9:] == [
-        "llm_standby",
-        "analysis_queued",
-        "ast_running",
-        "llm_running",
-        "analysis_allowed",
-        "waiting_miner_env",
-        "tb_queued",
-        "tb_running",
-        "tb_completed",
-    ]
+    assert submission.raw_status != "llm_standby"
+    assert analysis_count == 1
+    assert standby_runs == 0
 
 
 @pytest.mark.parametrize(
