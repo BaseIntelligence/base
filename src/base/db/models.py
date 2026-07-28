@@ -1230,3 +1230,92 @@ class ChallengeWatcherState(Base, TimestampMixin):
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
+
+
+class ImageDigestAllowlistEntry(Base, TimestampMixin):
+    """One BASE-produced image digest binding for prism miner builds.
+
+    Durable form of :class:`base.compute.digest_allowlist.DigestRecord`.
+    Lookup rules live in the pure allowlist module; this table is storage only.
+    A digest maps to exactly one ``(commit_sha, tree_sha, variant)`` binding.
+    """
+
+    __tablename__ = "image_digest_allowlist"
+    __table_args__ = (
+        UniqueConstraint("digest", name="uq_image_digest_allowlist_digest"),
+        UniqueConstraint(
+            "commit_sha",
+            "tree_sha",
+            "variant",
+            name="uq_image_digest_allowlist_commit_tree_variant",
+        ),
+        Index("ix_image_digest_allowlist_commit_sha", "commit_sha"),
+        Index("ix_image_digest_allowlist_variant", "variant"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    tree_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    variant: Mapped[str] = mapped_column(Text, nullable=False)
+    digest: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class DeniedImageDigest(Base):
+    """Revoked image digest (post-hoc denylist)."""
+
+    __tablename__ = "denied_image_digests"
+
+    digest: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class DeniedImageCommit(Base):
+    """Revoked git commit SHA — all digests for this commit miss as revoked."""
+
+    __tablename__ = "denied_image_commits"
+
+    commit_sha: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class AttestationNonce(Base):
+    """BASE-issued single-use attestation nonce (prism-lium mechanism 1).
+
+    Durable form of :class:`base.compute.attestation_nonce.NonceRecord`.
+    Issue/consume rules live in the pure module; this table is storage only.
+    Freshness uses ``issued_at`` / ``consumed_at`` / ``expires_at`` from BASE
+    clocks only — never a guest timestamp.
+    """
+
+    __tablename__ = "attestation_nonces"
+    __table_args__ = (
+        Index("ix_attestation_nonces_work_unit_id", "work_unit_id"),
+        Index("ix_attestation_nonces_miner_hotkey", "miner_hotkey"),
+        Index("ix_attestation_nonces_expires_at", "expires_at"),
+    )
+
+    nonce: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    work_unit_id: Mapped[str] = mapped_column(Text, nullable=False)
+    miner_hotkey: Mapped[str] = mapped_column(Text, nullable=False)
+    pod_id: Mapped[str] = mapped_column(Text, nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
