@@ -307,6 +307,29 @@ def test_non_dry_run_without_handoff_flags_fails_closed(
     assert RUN_TOKEN not in err
 
 
+def test_non_dry_run_without_handoff_flags_never_spends_prepare_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given non-dry-run deploy with neither flag, When invoked,
+    Then eval_prepare is never called so the one-shot delivery is not spent.
+
+    Argument validation must precede remote state mutation: prepare consumes the
+    single EVAL_RUN_TOKEN delivery, so gating after it would strand the miner in
+    exactly the unrecoverable state this handoff exists to prevent.
+    """
+
+    fake_client = MagicMock()
+    fake_client.eval_prepare.return_value = _eval_prepare_wrapper()
+    monkeypatch.setattr(cli, "_route_client", lambda _args: fake_client)
+    monkeypatch.setenv("LLM_COST_LIMIT", "1.00")
+
+    args = _deploy_args(dry_run=False, token_output=None, emit_run_token=False)
+    code = cli._ordered_eval_command(args)
+
+    assert code == 2
+    fake_client.eval_prepare.assert_not_called()
+
+
 # --------------------------------------------------------------------------- #
 # S4 — dry-run without flags still OK, no raw token
 # --------------------------------------------------------------------------- #

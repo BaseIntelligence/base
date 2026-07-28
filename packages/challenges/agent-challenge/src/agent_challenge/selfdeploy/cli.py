@@ -787,6 +787,11 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     "Eval deploy does not accept persisted prepare capabilities; "
                     "run it with signed production route credentials"
                 )
+            # Validate the handoff destination BEFORE any remote mutation: the
+            # prepare below spends the single EVAL_RUN_TOKEN delivery, and the
+            # guest never posts, so gating later would strand the miner with a
+            # burnt token and no way to call eval result.
+            _require_eval_run_token_handoff(args)
             client = _route_client(args)
             raw = _obtain_eval_prepare_with_token(client, args.submission_id)
             plan = eval_deploy.build_eval_deployment_plan(raw)
@@ -810,9 +815,6 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                 review_disk_size_gb=review_disk,
                 eval_disk_size_gb=eval_disk,
             )
-            # Live deploy must hand the one-shot token to the miner before any
-            # Phala spend — prepare/status redact it and the guest never posts.
-            _require_eval_run_token_handoff(args)
             values = {
                 "EVAL_RUN_TOKEN": plan.eval_run_token,
                 "LLM_COST_LIMIT": os.environ.get(args.llm_cost_limit_env, "") or "0",
