@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -47,6 +48,10 @@ _US_WEST_ALIASES = frozenset({"us-west", "us_west", "uswest"})
 
 #: Allowed GET paths for safe read helpers (list/details — never secrets).
 _ALLOWED_GET_PATHS = frozenset({"/cvms"})
+
+#: Allowed DELETE path shape: /cvms/{id} only (no nested paths).
+_ALLOWED_DELETE_PATH_RE = re.compile(r"^/cvms/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_CVM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 #: Create-response keys that may identify a CVM (ordered preference).
 #: ``app_id`` is intentionally excluded: it names the app pin, not the CVM.
@@ -101,12 +106,14 @@ def resolve_cvm_id_from_list(
     listing: Mapping[str, Any] | Sequence[Any],
     *,
     app_id: str,
+    require_unique: bool = False,
 ) -> str | None:
     """Locate a CVM id in a GET /cvms listing by exact app_id match.
 
     Returns None when listing is empty/mismatched rather than inventing an id.
-    Prefer a single exact app_id match; on multi-match take the first ordered
-    entry that identifies a CVM. Secret bodies are never logged.
+    When ``require_unique`` is False (deploy create fallback), the first ordered
+    match wins. When True (teardown resolution), multiple matches raise
+    :class:`PhalaApiError` so callers never guess. Secret bodies are never logged.
     """
 
     if not isinstance(app_id, str) or not app_id.strip():
@@ -127,6 +134,7 @@ def resolve_cvm_id_from_list(
     else:
         return None
 
+    matches: list[str] = []
     for item in items:
         if not isinstance(item, Mapping):
             continue
@@ -134,10 +142,16 @@ def resolve_cvm_id_from_list(
         if not isinstance(item_app, str) or item_app != target:
             continue
         try:
-            return extract_cvm_id_from_create_response(item)
+            matches.append(extract_cvm_id_from_create_response(item))
         except ValueError:
             continue
-    return None
+    if not matches:
+        return None
+    if require_unique and len(matches) > 1:
+        raise PhalaApiError(
+            f"multiple CVMs match app_id ({len(matches)}); pass --cvm-id explicitly"
+        )
+    return matches[0]
 
 
 def normalize_phala_region(region: str | None) -> str:
@@ -302,6 +316,32 @@ class PhalaCloudClient:
             method="POST",
         )
         return self._open(request)
+
+    def delete_cvm(self, cvm_id: str) -> None:
+        """DELETE ``/cvms/{id}``. 204 and 404 are success (idempotent teardown)."""
+
+        cid = (cvm_id or "").strip()
+        if not cid or not _CVM_ID_RE.fullmatch(cid):
+            raise PhalaApiError("invalid CVM id for Phala delete")
+        path = f"/cvms/{cid}"
+        if not _ALLOWED_DELETE_PATH_RE.fullmatch(path):
+            raise PhalaApiError("unsupported Phala mutation route")
+        request = Request(
+            f"{self._base_url}{path}",
+            headers=self._base_headers(content_type=False),
+            method="DELETE",
+        )
+        try:
+            response = self._opener(request, timeout=self._timeout)
+            # Drain body; 204 is empty. Never log response content.
+            _ = response.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                return
+            raise PhalaApiError(f"Phala delete returned HTTP {exc.code}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise PhalaApiError("Phala delete endpoint is unreachable") from exc
+
 
 
 __all__ = [
