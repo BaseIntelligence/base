@@ -43,9 +43,11 @@ from agent_challenge.selfdeploy.provision_identity import (
     parse_discovered_identity,
 )
 from agent_challenge.selfdeploy.shapes import (
+    DEFAULT_EVAL_DISK_SIZE_GB,
     DEFAULT_INSTANCE_TYPE,
     DEFAULT_OS_IMAGE,
     validate_cpu_only,
+    validate_disk_size,
 )
 
 #: Capacity-safe default (bare ``us-west`` → ERR-02-002 No teepod found).
@@ -122,6 +124,7 @@ class EvalDeploymentPlan:
     compose_name: str = DEFAULT_EVAL_COMPOSE_NAME
     #: Deprecated unused field; deploy never emits provision nonce.
     phala_app_nonce: int | None = None
+    disk_size_gb: int = DEFAULT_EVAL_DISK_SIZE_GB
 
 
 @dataclass(frozen=True)
@@ -298,6 +301,7 @@ def build_eval_deployment_plan(
         os_image=DEFAULT_OS_IMAGE,
         compose_name=compose_name,
         phala_app_nonce=phala_app_nonce,
+        disk_size_gb=DEFAULT_EVAL_DISK_SIZE_GB,
     )
 
 
@@ -510,6 +514,8 @@ class HttpEvalPhalaDeployment:
             "compose_file": plan.compose,
             "env_keys": env_keys,
             "image": plan.os_image,
+            # Sibling of compose_file — never mutate plan.compose.
+            "disk_size": validate_disk_size(plan.disk_size_gb),
         }
         if plan.app_identity and not _APP_ID_HEX40_RE.fullmatch(plan.app_identity.lower()):
             provision_request["app_id"] = plan.app_identity

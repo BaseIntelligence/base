@@ -43,7 +43,9 @@ from agent_challenge.selfdeploy.provision_identity import (
 from agent_challenge.selfdeploy.shapes import (
     DEFAULT_INSTANCE_TYPE,
     DEFAULT_OS_IMAGE,
+    DEFAULT_REVIEW_DISK_SIZE_GB,
     validate_cpu_only,
+    validate_disk_size,
 )
 
 #: Capacity-safe default (bare ``us-west`` → ERR-02-002 No teepod found).
@@ -85,6 +87,7 @@ class ReviewDeploymentPlan:
     #: Deprecated unused field retained so hand-built plans cannot smuggle a
     #: provision ``nonce``. Deploy never emits nonce; discovery omits app_id.
     phala_app_nonce: int | None = None
+    disk_size_gb: int = DEFAULT_REVIEW_DISK_SIZE_GB
 
 
 @dataclass(frozen=True)
@@ -214,6 +217,7 @@ def build_review_deployment_plan(prepare_response: Mapping[str, Any]) -> ReviewD
         os_image=DEFAULT_OS_IMAGE,
         compose_name=compose_name,
         phala_app_nonce=phala_app_nonce,
+        disk_size_gb=DEFAULT_REVIEW_DISK_SIZE_GB,
     )
 
 
@@ -301,6 +305,7 @@ class HttpReviewPhalaDeployment:
             "compose_file": plan.compose,
             "env_keys": env_keys,
             "image": plan.os_image,
+            "disk_size": validate_disk_size(plan.disk_size_gb),
         }
         # Phala contract: either (no nonce, no app_id) for discovery, or
         # (app_id alone) for legacy moniker. Never send nonce without app_id

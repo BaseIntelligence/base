@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from agent_challenge.selfdeploy.phala import (
     DEFAULT_PHALA_API,
     PhalaApiError,
     PhalaCloudClient,
+    resolve_cvm_id_from_list,
 )
 from agent_challenge.selfdeploy.plan import (
     CredentialError,
@@ -49,10 +51,13 @@ from agent_challenge.selfdeploy.plan import (
     write_prepared,
 )
 from agent_challenge.selfdeploy.shapes import (
+    DEFAULT_EVAL_DISK_SIZE_GB,
     DEFAULT_MAX_RUNTIME_HOURS,
     DEFAULT_MONEY_CAP_USD,
     DEFAULT_OS_IMAGE,
+    DEFAULT_REVIEW_DISK_SIZE_GB,
     ShapeError,
+    validate_disk_size,
 )
 
 PROG = "agent-challenge-selfdeploy"
@@ -122,23 +127,302 @@ def _bounded_text(value: str | None, *, limit: int = _TEARDOWN_DIAGNOSTIC_LIMIT)
     return text[: limit - 3] + "..."
 
 
-def default_phala_teardown(cvm_id: str) -> dict[str, Any]:  # pragma: no cover
-    """Delete a CVM via ``phala cvms delete <id> -f`` (idempotent; live, M6).
+def default_phala_teardown(
+    cvm_id: str,
+    *,
+    client: PhalaCloudClient | None = None,
+) -> dict[str, Any]:
+    """Delete a CVM via Phala Cloud HTTP ``DELETE /cvms/{id}`` (idempotent).
 
-    Always returns a structured result with ``ok``/``returncode`` so callers can
-    fail non-zero when deletion does not succeed. Stdout/stderr are bounded.
+    Uses :class:`PhalaCloudClient` — never shells out to a ``phala`` binary
+    (the binary is not present on production validator containers). 204 and
+    404 from the API are success. Always returns a structured result with
+    ``ok``/``returncode`` so callers can fail non-zero when deletion fails.
     """
 
-    proc = subprocess.run(["phala", "cvms", "delete", cvm_id, "-f"], capture_output=True, text=True)
-    ok = proc.returncode == 0
+    try:
+        api = client if client is not None else PhalaCloudClient()
+        api.delete_cvm(cvm_id)
+    except (PhalaApiError, CredentialError) as exc:
+        return {
+            "returncode": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "error": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001 - surface unexpected transport failures
+        return {
+            "returncode": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "error": f"teardown failed: {exc.__class__.__name__}",
+        }
     return {
-        "returncode": proc.returncode,
-        "ok": ok,
-        "stdout": _bounded_text(proc.stdout),
-        "stderr": _bounded_text(proc.stderr),
-        "error": None if ok else "phala cvms delete failed",
+        "returncode": 0,
+        "ok": True,
+        "stdout": "",
+        "stderr": "",
+        "error": None,
     }
 
+
+
+def _with_disk_size(plan: Any, disk_size_gb: int) -> Any:
+    """Attach validated disk size to a deployment plan (dataclass or test double)."""
+
+    try:
+        return replace(plan, disk_size_gb=disk_size_gb)
+    except TypeError:
+        # Offline tests inject SimpleNamespace plan doubles.
+        try:
+            plan.disk_size_gb = disk_size_gb
+        except Exception:
+            pass
+        return plan
+
+def resolve_teardown_cvm_id(
+    *,
+    cvm_id: str | None,
+    app_id: str | None,
+    client: PhalaCloudClient | None = None,
+) -> str:
+    """Resolve the CVM id for teardown: explicit id, else unique app_id match."""
+
+    explicit = (cvm_id or "").strip()
+    if explicit:
+        return explicit
+    identity = (app_id or "").strip()
+    if not identity:
+        raise RouteClientError("teardown requires --cvm-id or --app-id")
+    api = client if client is not None else PhalaCloudClient()
+    listing = api.get("/cvms")
+    resolved = resolve_cvm_id_from_list(listing, app_id=identity, require_unique=True)
+    if not resolved:
+        raise RouteClientError(f"no CVM found for app_id {identity!r}")
+    return resolved
+
+def _run_teardown_command(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    """Resolve CVM identity and tear down via HTTP (review/eval/top-level)."""
+
+    phala_base = getattr(args, "phala_api", None) or DEFAULT_PHALA_API
+    try:
+        # Refuse missing identity before constructing a credentialed client.
+        explicit = (getattr(args, "cvm_id", None) or "").strip()
+        app_id = (getattr(args, "app_id", None) or "").strip()
+        if not explicit and not app_id:
+            raise RouteClientError("teardown requires --cvm-id or --app-id")
+        client = PhalaCloudClient(base_url=str(phala_base))
+        cvm_id = resolve_teardown_cvm_id(
+            cvm_id=explicit or None,
+            app_id=app_id or None,
+            client=client,
+        )
+        outcome = default_phala_teardown(cvm_id, client=client)
+    except (RouteClientError, CredentialError, PhalaApiError) as exc:
+        # Fail closed with a structured payload when identity cannot be resolved.
+        missing = getattr(args, "cvm_id", None) or getattr(args, "app_id", None) or ""
+        return (
+            {
+                "torn_down": missing or None,
+                "ok": False,
+                "diagnostics": {
+                    "returncode": 1,
+                    "error": str(exc),
+                    "stdout": "",
+                    "stderr": "",
+                },
+                "result": {
+                    "returncode": 1,
+                    "error": str(exc),
+                    "stdout": "",
+                    "stderr": "",
+                },
+            },
+            2 if isinstance(exc, RouteClientError) else 1,
+        )
+    return _teardown_payload(cvm_id, outcome)
+
+def _eval_token_present(prepare_response: Mapping[str, Any] | None) -> bool:
+    """True when prepare/retry still delivers the one-shot EVAL_RUN_TOKEN.
+
+    Accepted shape matches ``eval.build_eval_deployment_plan``:
+    ``secret_delivery == {"env_key", "token"}`` with a non-empty token string.
+    Does not relax that contract — only decides whether recovery is needed.
+    """
+
+    if not isinstance(prepare_response, Mapping):
+        return False
+    delivery = prepare_response.get("secret_delivery")
+    if not isinstance(delivery, Mapping) or set(delivery) != {"env_key", "token"}:
+        return False
+    token = delivery.get("token")
+    return isinstance(token, str) and bool(token)
+
+def _eval_run_id_from_prepare(prepare_response: Mapping[str, Any]) -> str | None:
+    """Extract current eval_run_id from a prepare wrapper without requiring a token."""
+
+    plan = prepare_response.get("plan")
+    if isinstance(plan, Mapping):
+        run_id = plan.get("eval_run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    return None
+
+def _obtain_eval_prepare_with_token(
+    client: SelfDeployRouteClient,
+    submission_id: int,
+) -> dict[str, Any]:
+    """Return a prepare/retry response that still delivers EVAL_RUN_TOKEN.
+
+    Product residual timeline (live production, submission 3):
+    - ``EVAL_RUN_TOKEN`` is delivered once per attempt. Standalone
+      ``eval prepare`` or ``eval retry`` permanently spends it.
+    - ``eval deploy`` previously called ``eval_prepare`` raw; when
+      ``secret_delivery`` was null, ``build_eval_deployment_plan`` hard-failed
+      with "first Eval prepare must deliver exactly one EVAL_RUN_TOKEN
+      capability". Attempts 1 and 2 both stuck; lifecycle unrecoverable
+      from the CLI.
+    - Mirror review: prepare → if token-less, resolve ``eval_run_id``,
+      ``eval_cancel`` then ``eval_retry``, return the response that carries
+      the token. Never cancel when the token was already delivered. Never
+      fabricate, cache, or persist a token offline.
+    """
+
+    response = client.eval_prepare(submission_id)
+    if _eval_token_present(response):
+        return response
+    run_id = _eval_run_id_from_prepare(response)
+    if not run_id:
+        raise RouteClientError("eval run has no current eval_run_id to refresh capability")
+    # Sticky token-less after prior prepare/retry consumer: cancel+retry for a
+    # fresh attempt that redelivers EVAL_RUN_TOKEN. Prefer not cancelling when
+    # prepare already carried the capability (handled above).
+    try:
+        client.eval_cancel(submission_id, run_id)
+    except RouteClientError:
+        # Terminal / already cancelled: still try retry against that id.
+        pass
+    retried = client.eval_retry(submission_id, run_id)
+    if not _eval_token_present(retried):
+        raise RouteClientError(
+            "eval run token unavailable after prepare and retry; "
+            "capability may be spent or run not retryable"
+        )
+    return retried
+
+def _assert_eval_deploy_shape_and_measurement_pin(
+    plan: eval_deploy.EvalDeploymentPlan,
+    args: argparse.Namespace,
+) -> None:
+    """Fail closed before Phala create on shape or optional rtmr0 pin mismatch.
+
+    Shape check needs the built plan, so it runs after prepare has spent the
+    one-shot EVAL_RUN_TOKEN delivery. Next deploy recovers via
+    ``_obtain_eval_prepare_with_token`` cancel+retry when prepare is sticky-null.
+    """
+
+    requested = str(getattr(args, "eval_instance_type", "") or "").strip()
+    if plan.instance_type != requested:
+        plan_vm_shape = plan.measurement.get("vm_shape")
+        plan_vm = (
+            str(plan_vm_shape).replace("-", ".")
+            if isinstance(plan_vm_shape, str) and plan_vm_shape
+            else plan.instance_type
+        )
+        plan_rtmr0 = plan.measurement.get("rtmr0")
+        raise RouteClientError(
+            measure.format_eval_shape_mismatch_error(
+                plan_instance_type=plan.instance_type,
+                requested_instance_type=requested,
+                plan_vm_shape=plan_vm,
+                plan_rtmr0=plan_rtmr0 if isinstance(plan_rtmr0, str) else None,
+            )
+        )
+    expected_path = getattr(args, "expected_measurement", None)
+    if isinstance(expected_path, str) and expected_path.strip():
+        try:
+            expected = measure.load_expected_measurement_mapping(expected_path.strip())
+            pin_error = measure.compare_plan_rtmr0_to_expected(plan.measurement, expected)
+        except measure.MeasurementError as exc:
+            raise RouteClientError(str(exc)) from exc
+        if pin_error is not None:
+            raise RouteClientError(pin_error)
+
+def _require_eval_run_token_handoff(args: argparse.Namespace) -> None:
+    """Fail closed on live eval deploy unless the miner can recover the token.
+
+    ``EVAL_RUN_TOKEN`` is a one-shot capability. prepare/status redact it, and
+    the guest only emits the attested envelope — the host must post via
+    ``eval result``. Without an explicit handoff at deploy time the miner has
+    no path to submit. Dry-run skips this gate (no spend, no post).
+    """
+
+    if getattr(args, "dry_run", False):
+        return
+    token_output = getattr(args, "token_output", None)
+    emit_run_token = bool(getattr(args, "emit_run_token", False))
+    if token_output or emit_run_token:
+        return
+    raise RouteClientError(
+        "eval deploy requires --token-output PATH and/or --emit-run-token so the "
+        "miner can later call eval result with EVAL_RUN_TOKEN; the one-time token "
+        "is not recoverable from prepare/status output"
+    )
+
+def _write_eval_run_token_file(path: str, token: str) -> None:
+    """Write the one-time run token to PATH with mode 0o600 (create securely)."""
+
+    # O_CREAT|O_WRONLY|O_TRUNC with mode 0o600 — never create world-readable then chmod.
+    fd = os.open(
+        path,
+        os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            fd = -1  # fdopen owns it
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+def _hand_off_eval_run_token(
+    args: argparse.Namespace,
+    *,
+    eval_run_id: str,
+    eval_run_token: str,
+    acknowledgement: Mapping[str, Any] | None,
+    encrypted_env_names: Sequence[str],
+) -> dict[str, Any]:
+    """Build deploy-success payload and optionally surface the run token once.
+
+    The token is never written to ``--output`` and never passes through
+    ``_redact_capabilities``. ``eval_run_id`` is always present for
+    ``eval result --run-id``.
+    """
+
+    token_output = getattr(args, "token_output", None)
+    if isinstance(token_output, str) and token_output:
+        _write_eval_run_token_file(token_output, eval_run_token)
+    payload: dict[str, Any] = {
+        "stage": "eval_deployed",
+        "eval_run_id": eval_run_id,
+        "acknowledgement": acknowledgement,
+        "encrypted_env_names": list(encrypted_env_names),
+    }
+    if bool(getattr(args, "emit_run_token", False)):
+        payload["eval_run_token"] = eval_run_token
+    output_path = getattr(args, "output", None)
+    if isinstance(output_path, str) and output_path:
+        # Persisted plan/metadata must never carry the one-time token.
+        safe = {key: value for key, value in payload.items() if key != "eval_run_token"}
+        Path(output_path).write_text(
+            json.dumps(safe, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    return payload
 
 def _teardown_payload(cvm_id: str, result: Any) -> tuple[dict[str, Any], int]:
     """Project teardown outcome as a miner-facing payload and exit code."""
@@ -407,7 +691,7 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
             _print(_redact_capabilities(payload))
             return 0
         if args.review_command == "teardown":
-            payload, code = _teardown_payload(args.cvm_id, default_phala_teardown(args.cvm_id))
+            payload, code = _run_teardown_command(args)
             _print(payload)
             return code
         if args.review_command == "deploy":
@@ -437,12 +721,21 @@ def _ordered_review_command(args: argparse.Namespace) -> int:
                 raise RouteClientError(
                     "review deployment shape differs from the validator-issued assignment"
                 )
+            review_disk = validate_disk_size(
+                getattr(args, "review_disk_size_gb", DEFAULT_REVIEW_DISK_SIZE_GB)
+            )
+            eval_disk = validate_disk_size(
+                getattr(args, "eval_disk_size_gb", DEFAULT_EVAL_DISK_SIZE_GB)
+            )
+            plan = _with_disk_size(plan, review_disk)
             lifecycle.validate_lifecycle_budget(
                 review_instance_type=plan.instance_type,
                 eval_instance_type=args.eval_instance_type,
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
                 money_cap_usd=args.money_cap_usd,
+                review_disk_size_gb=review_disk,
+                eval_disk_size_gb=eval_disk,
             )
             key = os.environ.get(args.openrouter_key_env, "")
             if not args.dry_run and not key:
@@ -588,7 +881,7 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
             )
             return 0
         if args.eval_command == "teardown":
-            payload, code = _teardown_payload(args.cvm_id, default_phala_teardown(args.cvm_id))
+            payload, code = _run_teardown_command(args)
             _print(payload)
             return code
         if args.eval_command == "deploy":
@@ -597,18 +890,28 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     "Eval deploy does not accept persisted prepare capabilities; "
                     "run it with signed production route credentials"
                 )
-            raw = _route_client(args).eval_prepare(args.submission_id)
+            # Validate the handoff destination BEFORE any remote mutation: the
+            # prepare below spends the single EVAL_RUN_TOKEN delivery.
+            _require_eval_run_token_handoff(args)
+            client = _route_client(args)
+            raw = _obtain_eval_prepare_with_token(client, args.submission_id)
             plan = eval_deploy.build_eval_deployment_plan(raw)
-            if plan.instance_type != args.eval_instance_type:
-                raise RouteClientError(
-                    "Eval deployment shape differs from the validator-issued plan"
-                )
+            _assert_eval_deploy_shape_and_measurement_pin(plan, args)
+            review_disk = validate_disk_size(
+                getattr(args, "review_disk_size_gb", DEFAULT_REVIEW_DISK_SIZE_GB)
+            )
+            eval_disk = validate_disk_size(
+                getattr(args, "eval_disk_size_gb", DEFAULT_EVAL_DISK_SIZE_GB)
+            )
+            plan = _with_disk_size(plan, eval_disk)
             lifecycle.validate_lifecycle_budget(
                 review_instance_type=args.review_instance_type,
                 eval_instance_type=plan.instance_type,
                 review_runtime_hours=args.review_runtime_hours,
                 eval_runtime_hours=args.eval_runtime_hours,
                 money_cap_usd=args.money_cap_usd,
+                review_disk_size_gb=review_disk,
+                eval_disk_size_gb=eval_disk,
             )
             values = {
                 "EVAL_RUN_TOKEN": plan.eval_run_token,
@@ -718,11 +1021,13 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     )
                     raise
                 _print(
-                    {
-                        "stage": "eval_deployed",
-                        "acknowledgement": acknowledgement,
-                        "encrypted_env_names": list(encrypted.env_keys),
-                    }
+                    _hand_off_eval_run_token(
+                        args,
+                        eval_run_id=plan.eval_run_id,
+                        eval_run_token=plan.eval_run_token,
+                        acknowledgement=acknowledgement,
+                        encrypted_env_names=encrypted.env_keys,
+                    )
                 )
                 return 0
             _print(
@@ -939,7 +1244,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete a deployed CVM (idempotent)",
         description="Delete the CVM so no resource is left running (phala cvms delete -f).",
     )
-    tear.add_argument("--cvm-id", required=True, help="the CVM id to delete")
+    tear.add_argument("--cvm-id", default=None, help="CVM id to delete")
+    tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM id via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
 
     # Ordered production lifecycle.  The older top-level helpers remain as
     # compatibility shims for offline callers, but all new spend-capable work
@@ -971,6 +1281,18 @@ def build_parser() -> argparse.ArgumentParser:
     review_deploy.add_argument("--eval-runtime-hours", type=float, default=6.0)
     review_deploy.add_argument("--money-cap-usd", type=float, default=20.0)
     review_deploy.add_argument(
+        "--review-disk-size-gb",
+        type=int,
+        default=DEFAULT_REVIEW_DISK_SIZE_GB,
+        help=f"review disk size GB (default: {DEFAULT_REVIEW_DISK_SIZE_GB})",
+    )
+    review_deploy.add_argument(
+        "--eval-disk-size-gb",
+        type=int,
+        default=DEFAULT_EVAL_DISK_SIZE_GB,
+        help=f"eval disk size GB for combined budget (default: {DEFAULT_EVAL_DISK_SIZE_GB})",
+    )
+    review_deploy.add_argument(
         "--dry-run",
         action="store_true",
         help="validate and print safe deployment metadata without provisioning",
@@ -1001,7 +1323,12 @@ def build_parser() -> argparse.ArgumentParser:
                 ),
             )
     review_tear = review_sub.add_parser("teardown", help="delete the review CVM")
-    review_tear.add_argument("--cvm-id", required=True)
+    review_tear.add_argument("--cvm-id", default=None, help="CVM id to delete")
+    review_tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM id via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
 
     evaluation = sub.add_parser(
         "eval",
@@ -1041,6 +1368,44 @@ def build_parser() -> argparse.ArgumentParser:
     eval_deploy_parser.add_argument("--eval-runtime-hours", type=float, default=6.0)
     eval_deploy_parser.add_argument("--money-cap-usd", type=float, default=20.0)
     eval_deploy_parser.add_argument(
+        "--review-disk-size-gb",
+        type=int,
+        default=DEFAULT_REVIEW_DISK_SIZE_GB,
+        help=f"review disk size GB for combined budget (default: {DEFAULT_REVIEW_DISK_SIZE_GB})",
+    )
+    eval_deploy_parser.add_argument(
+        "--eval-disk-size-gb",
+        type=int,
+        default=DEFAULT_EVAL_DISK_SIZE_GB,
+        help=f"eval disk size GB (default: {DEFAULT_EVAL_DISK_SIZE_GB})",
+    )
+    eval_deploy_parser.add_argument(
+        "--expected-measurement",
+        default=None,
+        metavar="PATH",
+        help=(
+            "optional JSON measurement pin; when present, plan rtmr0 must match "
+            "before Phala create (truncated prefix on mismatch; never logs full digests)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
+        "--emit-run-token",
+        action="store_true",
+        help=(
+            "include eval_run_token in deploy success JSON on stdout "
+            "(required for eval result unless --token-output)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
+        "--token-output",
+        default=None,
+        metavar="PATH",
+        help=(
+            "write the one-time EVAL_RUN_TOKEN to PATH with mode 0600 "
+            "(required for eval result unless --emit-run-token)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="validate and print safe deployment metadata without provisioning",
@@ -1077,7 +1442,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     eval_tear = eval_sub.add_parser("teardown", help="delete the Eval CVM")
-    eval_tear.add_argument("--cvm-id", required=True)
+    eval_tear.add_argument("--cvm-id", default=None, help="CVM id to delete")
+    eval_tear.add_argument(
+        "--app-id",
+        default=None,
+        help="resolve CVM id via GET /cvms exact app_id match when --cvm-id is omitted",
+    )
 
     return parser
 
@@ -1275,8 +1645,20 @@ def _cmd_result(args: argparse.Namespace) -> int:
 
 
 def _cmd_teardown(args: argparse.Namespace, *, teardowner: Teardowner) -> int:
-    outcome = teardowner(args.cvm_id)
-    payload, code = _teardown_payload(args.cvm_id, outcome)
+    # Injected teardowner (tests) still receives an explicit cvm id only.
+    if teardowner is not default_phala_teardown:
+        cvm_id = (getattr(args, "cvm_id", None) or "").strip()
+        if not cvm_id:
+            print(
+                "error: teardown requires --cvm-id when using a custom teardowner",
+                file=sys.stderr,
+            )
+            return 2
+        outcome = teardowner(cvm_id)
+        payload, code = _teardown_payload(cvm_id, outcome)
+        _print(payload)
+        return code
+    payload, code = _run_teardown_command(args)
     _print(payload)
     return code
 
