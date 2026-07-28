@@ -11,6 +11,13 @@ contract with the cost guardrails baked in:
 * :meth:`LiumClient.terminate` is idempotent (a ``404`` delete is success) and
   :meth:`LiumClient.verify_terminated` reflects real pod absence via ``GET /pods``.
 
+Prism training lock (``training_gpu_lock=True`` /
+:meth:`LiumClient.for_prism_training`):
+fail-closed to natively 1-GPU :data:`LIUM_TRAINING_GPU_TYPE` offers only. Live API
+evidence (2026-07): POST .../rent with ``gpu_count=1`` on an 8-GPU machine returns
+HTTP 400 "Provider doesn't allow GPU splitting." — multi-GPU hosts are refused
+before rent rather than rented in full.
+
 The API key lives only in the request header; it is never logged, embedded in an
 error message, or exposed via ``repr``.
 """
@@ -18,9 +25,10 @@ error message, or exposed via ``repr``.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -37,6 +45,56 @@ logger = logging.getLogger(__name__)
 
 LIUM_API_BASE_URL = "https://lium.io/api"
 _DEFAULT_SSH_KEY_NAME = "prism-mission-worker"
+
+# Canonical display name for the only GPU type Prism training may rent.
+LIUM_TRAINING_GPU_TYPE: Final[str] = (
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+)
+_TRAINING_GPU_REQUIRED_TOKENS: Final[frozenset[str]] = frozenset(
+    {"rtx", "pro", "6000", "blackwell"}
+)
+_LEADING_GPU_NOISE_TOKENS: Final[frozenset[str]] = frozenset({"nvidia", "gpu"})
+_NON_ALNUM_RUN: Final[re.Pattern[str]] = re.compile(r"[-_]+")
+_WHITESPACE_RUN: Final[re.Pattern[str]] = re.compile(r"\s+")
+
+
+def normalize_gpu_type(value: str | None) -> str:
+    """Normalize a provider GPU type string for token matching.
+
+    Lowercase; replace runs of ``-``/``_`` with a space; collapse whitespace;
+    strip; drop leading tokens in {nvidia, gpu}.
+    """
+    if value is None:
+        return ""
+    text = str(value).lower()
+    text = _NON_ALNUM_RUN.sub(" ", text)
+    text = _WHITESPACE_RUN.sub(" ", text).strip()
+    if not text:
+        return ""
+    tokens = text.split(" ")
+    while tokens and tokens[0] in _LEADING_GPU_NOISE_TOKENS:
+        tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+def is_allowed_lium_training_gpu(offer: Offer) -> bool:
+    """Return True iff ``offer`` is a natively 1-GPU PRO 6000 Blackwell Server.
+
+    Fail-closed: empty/unparseable gpu_type, bare "Blackwell", H100, RTX 5090,
+    and any ``gpu_count != 1`` (including 8-GPU PRO 6000 hosts) are rejected.
+    """
+    if offer.gpu_count != 1:
+        return False
+    raw = offer.gpu_type
+    if raw is None or not str(raw).strip():
+        return False
+    normalized = normalize_gpu_type(str(raw))
+    if not normalized:
+        return False
+    tokens = set(normalized.split(" "))
+    if not _TRAINING_GPU_REQUIRED_TOKENS.issubset(tokens):
+        return False
+    return "server" in tokens
 
 
 class LiumError(ProviderError):
@@ -115,11 +173,31 @@ class LiumClient:
         base_url: str = LIUM_API_BASE_URL,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_seconds: float = 30.0,
+        training_gpu_lock: bool = False,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._transport = transport
         self._timeout = timeout_seconds
+        self._training_gpu_lock = training_gpu_lock
+
+    @classmethod
+    def for_prism_training(
+        cls,
+        api_key: str,
+        *,
+        base_url: str = LIUM_API_BASE_URL,
+        transport: httpx.AsyncBaseTransport | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> LiumClient:
+        """Build a client locked to 1× RTX PRO 6000 Blackwell Server Edition."""
+        return cls(
+            api_key,
+            base_url=base_url,
+            transport=transport,
+            timeout_seconds=timeout_seconds,
+            training_gpu_lock=True,
+        )
 
     def __repr__(self) -> str:
         return f"LiumClient(base_url={self._base_url!r})"
@@ -139,6 +217,8 @@ class LiumClient:
                 max_price_per_hour is not None
                 and offer.price_per_hour > max_price_per_hour
             ):
+                continue
+            if self._training_gpu_lock and not is_allowed_lium_training_gpu(offer):
                 continue
             offers.append(offer)
         return offers
@@ -165,6 +245,11 @@ class LiumClient:
             )
         if not spec.ssh_public_keys:
             raise LiumError("Lium rent requires at least one SSH public key")
+        if self._training_gpu_lock and spec.gpu_count != 1:
+            raise CostGuardrailError(
+                "Prism training lock requires InstanceSpec.gpu_count == 1 "
+                f"(got {spec.gpu_count}); maximum 1 GPU per instance"
+            )
 
         selected = await self._resolve_offer(spec, offer)
 
@@ -175,12 +260,20 @@ class LiumClient:
             )
         template_id = await self._resolve_template(spec)
 
+        # Unlocked path: InstanceSpec.gpu_count is a minimum-need filter; Lium
+        # returns HTTP 400 "Provider doesn't allow GPU splitting" on partial
+        # rents, so rent the full selected offer capacity.
+        # Locked Prism training path: only natively 1-GPU allowed offers reach
+        # here, so the rent body always requests gpu_count=1.
         rent_body: dict[str, Any] = {
             "pod_name": spec.name,
             "user_public_key": list(spec.ssh_public_keys),
             "termination_hours": int(lifetime),
-            "gpu_count": spec.gpu_count,
         }
+        if self._training_gpu_lock:
+            rent_body["gpu_count"] = 1
+        elif selected.gpu_count and selected.gpu_count > 0:
+            rent_body["gpu_count"] = selected.gpu_count
         if template_id is not None:
             rent_body["template_id"] = template_id
         if spec.dockerfile_content is not None:
@@ -402,13 +495,36 @@ class LiumClient:
                     f"offer {offer.id} at {offer.price_per_hour}/hr exceeds "
                     f"max_price_per_hour {spec.max_price_per_hour}"
                 )
+            self._assert_training_gpu_offer(offer)
             return offer
         offers = await self.list_offers(max_price_per_hour=spec.max_price_per_hour)
         if not offers:
+            if self._training_gpu_lock:
+                raise CostGuardrailError(
+                    "no Lium offer available within max_price_per_hour bound for "
+                    f"{LIUM_TRAINING_GPU_TYPE} with gpu_count=1; wait for new inventory"
+                )
             raise CostGuardrailError(
                 "no Lium offer available within max_price_per_hour bound"
             )
-        return min(offers, key=lambda candidate: candidate.price_per_hour)
+        selected = min(offers, key=lambda candidate: candidate.price_per_hour)
+        self._assert_training_gpu_offer(selected)
+        return selected
+
+    def _assert_training_gpu_offer(self, offer: Offer) -> None:
+        if not self._training_gpu_lock:
+            return
+        if offer.gpu_count != 1:
+            raise CostGuardrailError(
+                f"offer {offer.id} has gpu_count={offer.gpu_count}; Prism training "
+                "lock requires exactly 1 GPU per instance"
+            )
+        if not is_allowed_lium_training_gpu(offer):
+            raise CostGuardrailError(
+                f"offer {offer.id} gpu_type={offer.gpu_type!r} is not allowed; "
+                f"Prism training lock requires {LIUM_TRAINING_GPU_TYPE} "
+                "with gpu_count=1"
+            )
 
     async def _resolve_template(self, spec: InstanceSpec) -> str | None:
         if spec.template_ref is not None:
@@ -543,9 +659,7 @@ def _normalize_digest(value: Any) -> str | None:
     return _optional_str(value)
 
 
-def _digests_allow_reuse(
-    existing: str | None, requested: str | None
-) -> bool:
+def _digests_allow_reuse(existing: str | None, requested: str | None) -> bool:
     """Reuse only when digests agree, or neither side pins a digest.
 
     A requested pin against a missing or different stored digest is a hard
