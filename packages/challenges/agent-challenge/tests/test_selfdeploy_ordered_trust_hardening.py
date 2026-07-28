@@ -701,6 +701,11 @@ def test_eval_post_create_failure_deletes_attributable_cvm(monkeypatch):
         money_cap_usd=20.0,
         dry_run=False,
         token_env="EVAL_RUN_TOKEN",
+        emit_run_token=True,
+        token_output=None,
+        review_disk_size_gb=20,
+        eval_disk_size_gb=100,
+        expected_measurement=None,
     )
     code = cli._ordered_eval_command(args)
     assert code == 2

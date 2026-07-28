@@ -26,12 +26,12 @@ from agent_challenge.canonical.compose import (
 )
 from agent_challenge.selfdeploy import eval as eval_deploy
 
-#: MEASUREMENT IMPACT (2026-07-28): adding CHALLENGE_PHALA_EVAL_ARTIFACT_{URL,TOKEN}
+#: MEASUREMENT IMPACT (2026-07-28): EVAL_PROGRESS_* + DSTACK_DOCKER_* + ARTIFACT envs
 #: to DEFAULT_ALLOWED_ENVS changed the measured compose_hash. Previous production
 #: pin was 0401177601f46160c8127c007019401c1a7e6fb3cf8a0850c54a0b96fbbe67d2 — that
 #: live residual / tee-pin-pack value is now STALE and must be re-measured by ops
 #: before the next production eval pin cut. This constant tracks the generator.
-LIVE_PIN_COMPOSE_HASH = "cdfb15af3180ae60514363af2f680cd53f1464050bc749d066260c05a73840d7"
+LIVE_PIN_COMPOSE_HASH = "9a550b2dc0f06797976194bd4b53b8d7bfc8630f6390689f51b0bfebd36de622"
 LIVE_PIN_IMAGE = (
     "ghcr.io/baseintelligence/agent-challenge-canonical@sha256:"
     "753e2296635bcd3a30703dc706509f0f8c0e7dd2f82bef730ad7f1cc9443933c"

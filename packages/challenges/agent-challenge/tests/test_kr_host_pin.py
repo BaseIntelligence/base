@@ -290,6 +290,7 @@ def test_validate_eval_plan_fixture_baseline_still_closed() -> None:
     assert ew.validate_eval_plan(plan) == {
         **plan,
         "key_release_endpoint": "keyrelease.example:8701",
+        "n_concurrent": 1,
     }
     crossed = copy.deepcopy(plan)
     crossed["score_nonce"] = crossed["key_release_nonce"]

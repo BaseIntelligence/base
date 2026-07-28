@@ -389,13 +389,14 @@ def test_review_deployment_encrypts_and_transmits_only_exact_secret_names() -> N
     acknowledgement = deployment.deploy(plan, encrypted)
     assert deployment.provision_requests == [
         {
-            "app_id": "agent-challenge-review-v1",
             "name": "agent-challenge-review-v1",
             "instance_type": "tdx.small",
             "region": "us-west-1",
             "compose_file": plan.compose,
             "env_keys": ["OPENROUTER_API_KEY", "REVIEW_API_BASE_URL", "REVIEW_SESSION_TOKEN"],
             "image": "dstack-0.5.9",
+            "disk_size": 20,
+            "app_id": "agent-challenge-review-v1",
         }
     ]
     create_request = deployment.create_requests[0]

@@ -183,12 +183,12 @@ def test_teardown_and_cap_guidance_present_with_valid_commands():
 
 
 def test_documented_teardown_command_matches_the_cli_implementation():
-    # The documented teardown command form must match what the CLI actually runs.
+    # CLI teardown uses Phala Cloud HTTP DELETE (no phala binary on validators).
     import inspect
 
     source = inspect.getsource(cli.default_phala_teardown)
-    assert '"phala", "cvms", "delete"' in source
-    assert '"-f"' in source
+    assert "delete_cvm" in source
+    assert "PhalaCloudClient" in source
 
 
 def test_documented_phala_commands_are_valid_when_cli_available():

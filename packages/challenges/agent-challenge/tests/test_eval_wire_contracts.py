@@ -297,7 +297,7 @@ def _eval_plan() -> dict[str, Any]:
 
 def test_eval_plan_is_closed_and_requires_distinct_purpose_nonces() -> None:
     plan = _eval_plan()
-    assert ew.validate_eval_plan(plan) == plan
+    assert ew.validate_eval_plan(plan) == {**plan, "n_concurrent": 1}
 
     crossed = copy.deepcopy(plan)
     crossed["score_nonce"] = crossed["key_release_nonce"]
