@@ -3,6 +3,12 @@
 Every test mocks Lium HTTP via respx; no credentials and no real network are
 required. These pin the provider contract assertions VAL-PROV-001/003/004/005/
 011/017/018 plus secret hygiene for the Lium client.
+
+Live API evidence (2026-07): POST .../rent with gpu_count=1 on an 8-GPU machine
+returns HTTP 400 "Provider doesn't allow GPU splitting.". Prism training therefore
+fail-closes to natively 1-GPU RTX PRO 6000 Blackwell Server Edition offers only
+(via ``LiumClient(training_gpu_lock=True)`` / ``for_prism_training``); multi-GPU
+hosts are refused before any rent call rather than rented in full.
 """
 
 from __future__ import annotations
@@ -23,12 +29,15 @@ from base.compute import (
     Offer,
 )
 from base.compute.lium import (
-    _as_list,
-    _extract_gpu_count,
-    _extract_gpu_type,
-    _extract_price,
-    _parse_instance,
+    LIUM_TRAINING_GPU_TYPE,
+_as_list,
+_extract_gpu_count,
+_extract_gpu_type,
+_extract_price,
+_parse_instance,
     _parse_offer,
+    is_allowed_lium_training_gpu,
+    normalize_gpu_type,
 )
 
 BASE = "https://lium.io/api"
@@ -98,6 +107,120 @@ async def test_list_offers_skips_offers_without_price() -> None:
     payload = [{"id": "x", "machine_name": "H100", "gpu_count": 1}]
     respx.get(f"{BASE}/executors").mock(return_value=httpx.Response(200, json=payload))
     assert await LiumClient("k").list_offers() == []
+
+
+def test_normalize_gpu_type_collapses_noise() -> None:
+    assert (
+        normalize_gpu_type("NVIDIA_RTX-PRO--6000__Blackwell  Server Edition")
+        == "rtx pro 6000 blackwell server edition"
+    )
+    assert normalize_gpu_type("gpu-NVIDIA-RTX_PRO_6000_Blackwell_Server") == (
+        "rtx pro 6000 blackwell server"
+    )
+    assert normalize_gpu_type(None) == ""
+    assert normalize_gpu_type("") == ""
+
+
+def test_is_allowed_lium_training_gpu_predicate() -> None:
+    ok = Offer(
+        id="1",
+        gpu_type=LIUM_TRAINING_GPU_TYPE,
+        gpu_count=1,
+        price_per_hour=1.29,
+    )
+    assert is_allowed_lium_training_gpu(ok) is True
+    assert (
+        is_allowed_lium_training_gpu(
+            Offer(id="2", gpu_type="Blackwell", gpu_count=1, price_per_hour=1.0)
+        )
+        is False
+    )
+    assert (
+        is_allowed_lium_training_gpu(
+            Offer(id="3", gpu_type="H100", gpu_count=1, price_per_hour=2.0)
+        )
+        is False
+    )
+    assert (
+        is_allowed_lium_training_gpu(
+            Offer(
+                id="4",
+                gpu_type=LIUM_TRAINING_GPU_TYPE,
+                gpu_count=8,
+                price_per_hour=0.89,
+            )
+        )
+        is False
+    )
+    assert (
+        is_allowed_lium_training_gpu(
+            Offer(id="5", gpu_type="", gpu_count=1, price_per_hour=1.0)
+        )
+        is False
+    )
+
+
+@respx.mock
+async def test_list_offers_keeps_only_rtx_pro_6000_blackwell_1gpu() -> None:
+    payload = [
+        {
+            "id": "h100",
+            "machine_name": "H100",
+            "gpu_count": 1,
+            "price_per_gpu": 2.0,
+        },
+        {
+            "id": "bw8",
+            "machine_name": LIUM_TRAINING_GPU_TYPE,
+            "gpu_count": 8,
+            "price_per_gpu": 0.89,
+        },
+        {
+            "id": "bw1",
+            "machine_name": LIUM_TRAINING_GPU_TYPE,
+            "gpu_count": 1,
+            "price_per_gpu": 1.29,
+        },
+        {
+            "id": "empty",
+            "machine_name": "",
+            "gpu_count": 1,
+            "price_per_gpu": 0.5,
+        },
+        {
+            "id": "rtx5090",
+            "machine_name": "RTX 5090",
+            "gpu_count": 1,
+            "price_per_gpu": 0.95,
+        },
+    ]
+    respx.get(f"{BASE}/executors").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    offers = await LiumClient("k", training_gpu_lock=True).list_offers()
+    assert [o.id for o in offers] == ["bw1"]
+    assert offers[0].gpu_count == 1
+    assert is_allowed_lium_training_gpu(offers[0]) is True
+
+
+@respx.mock
+async def test_list_offers_rejects_unparseable_gpu_type() -> None:
+    payload = [
+        {"id": "none", "gpu_type": None, "gpu_count": 1, "price_per_hour": 1.0},
+        {"id": "blank", "gpu_type": "   ", "gpu_count": 1, "price_per_hour": 1.0},
+        {
+            "id": "ok",
+            "gpu_type": LIUM_TRAINING_GPU_TYPE,
+            "gpu_count": 1,
+            "price_per_hour": 1.29,
+        },
+    ]
+    respx.get(f"{BASE}/executors").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    offers = await LiumClient("k", training_gpu_lock=True).list_offers()
+    assert [o.id for o in offers] == ["ok"]
+
 
 
 # -- VAL-PROV-003 -------------------------------------------------------------
@@ -199,27 +322,59 @@ async def test_provision_sends_termination_hours_and_ssh_key() -> None:
 
 
 @respx.mock
-async def test_provision_rents_full_offer_gpu_count_not_spec_minimum() -> None:
-    """Lium rejects partial GPU rents on non-splittable executors.
+async def test_provision_refuses_multi_gpu_offer() -> None:
+    """Locked training path refuses multi-GPU offers before rent.
 
     Live API evidence (2026-07): POST .../rent with gpu_count=1 on an 8-GPU
-    machine returns HTTP 400 "Provider doesn't allow GPU splitting.".
-    ``InstanceSpec.gpu_count`` is a minimum-need filter; the rent body must
-    request the selected offering's full gpu_count (or omit the field).
+    machine returns HTTP 400 "Provider doesn't allow GPU splitting.". Because
+    the provider will not split, an 8-GPU PRO 6000 Blackwell host cannot satisfy
+    the 1-GPU lock — refuse with CostGuardrailError and never call rent
+    (replaces the former contract that rented the offer's full gpu_count).
     """
-    routes = _mock_happy_path()
+    rent = respx.post(f"{BASE}/executors/exec-1/rent")
     multi = Offer(
         id="exec-1",
-        gpu_type="RTX A4000",
+        gpu_type=LIUM_TRAINING_GPU_TYPE,
         gpu_count=8,
-        price_per_hour=0.12,
+        price_per_hour=0.89,
     )
-    await LiumClient("k").provision(_spec(gpu_count=1), offer=multi)
+    client = LiumClient("k", training_gpu_lock=True)
+    with pytest.raises(CostGuardrailError):
+        await client.provision(_spec(gpu_count=1), offer=multi)
+    assert rent.call_count == 0
+
+
+@respx.mock
+async def test_provision_refuses_non_blackwell_offer() -> None:
+    rent = respx.post(f"{BASE}/executors/exec-1/rent")
+    bad = Offer(
+        id="exec-1",
+        gpu_type="RTX 5090",
+        gpu_count=1,
+        price_per_hour=0.95,
+    )
+    client = LiumClient("k", training_gpu_lock=True)
+    with pytest.raises(CostGuardrailError):
+        await client.provision(_spec(gpu_count=1), offer=bad)
+    assert rent.call_count == 0
+
+
+@respx.mock
+async def test_provision_rent_body_gpu_count_is_one() -> None:
+    routes = _mock_happy_path()
+    allowed = Offer(
+        id="exec-1",
+        gpu_type=LIUM_TRAINING_GPU_TYPE,
+        gpu_count=1,
+        price_per_hour=1.29,
+    )
+    await LiumClient("k", training_gpu_lock=True).provision(
+        _spec(gpu_count=1), offer=allowed
+    )
     body = json.loads(routes["rent"].calls.last.request.content)
-    assert body.get("gpu_count") != 1
-    assert body.get("gpu_count") in (8, None)
-    if "gpu_count" in body:
-        assert body["gpu_count"] == multi.gpu_count
+    assert body["gpu_count"] == 1
+
+
 
 
 @respx.mock
