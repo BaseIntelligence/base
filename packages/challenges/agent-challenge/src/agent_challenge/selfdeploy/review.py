@@ -39,7 +39,9 @@ from agent_challenge.selfdeploy.phala import (
 from agent_challenge.selfdeploy.shapes import (
     DEFAULT_INSTANCE_TYPE,
     DEFAULT_OS_IMAGE,
+    DEFAULT_REVIEW_DISK_SIZE_GB,
     validate_cpu_only,
+    validate_disk_size,
 )
 
 #: Capacity-safe default (bare ``us-west`` → ERR-02-002 No teepod found).
@@ -78,6 +80,7 @@ class ReviewDeploymentPlan:
     instance_type: str = DEFAULT_INSTANCE_TYPE
     region: str = DEFAULT_REGION
     os_image: str = DEFAULT_OS_IMAGE
+    disk_size_gb: int = DEFAULT_REVIEW_DISK_SIZE_GB
     #: Stable moniker measured into app-compose ``name`` (compose_hash binding).
     #: Distinct from :attr:`app_identity` when the latter is a Phala 40-hex app_id.
     compose_name: str = DEFAULT_REVIEW_APP_IDENTITY
@@ -206,6 +209,7 @@ def build_review_deployment_plan(prepare_response: Mapping[str, Any]) -> ReviewD
         os_image=DEFAULT_OS_IMAGE,
         compose_name=compose_name,
         phala_app_nonce=phala_app_nonce,
+        disk_size_gb=DEFAULT_REVIEW_DISK_SIZE_GB,
     )
 
 
@@ -283,6 +287,8 @@ class HttpReviewPhalaDeployment:
             "compose_file": plan.compose,
             "env_keys": list(encrypted.env_keys),
             "image": plan.os_image,
+            # Sibling of compose_file — never mutate plan.compose.
+            "disk_size": validate_disk_size(plan.disk_size_gb),
         }
         if plan.phala_app_nonce is not None:
             provision_request["nonce"] = plan.phala_app_nonce

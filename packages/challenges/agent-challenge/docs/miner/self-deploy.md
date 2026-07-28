@@ -29,7 +29,7 @@ There is no closed agent-model catalog; personal finetunes are banned. Concepts:
 [Attestation TEE — agent-driven order](attestation-tee.md#agent-driven-order-package-verify--tree-sha--tee--eval).
 
 The mission is **CPU Intel TDX only** (no GPU) with a hard **$20** spend cap and a
-preference for the smallest CPU shape that works (`tdx.small`/`tdx.medium`). GPU
+per-stage CPU sizing (review `tdx.small` / 20 GB disk; eval `tdx.xlarge` / 100 GB disk so four concurrent Terminal-Bench tasks fit). GPU
 targets, over-cap shapes, and missing Phala credentials are refused **before** any
 Phala call.
 
@@ -126,7 +126,9 @@ python -m agent_challenge.selfdeploy review deploy \
     --openrouter-key-env OPENROUTER_API_KEY \
     --phala-api https://cloud-api.phala.com/api/v1 \
     --review-instance-type tdx.small \
-    --eval-instance-type tdx.small \
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
     --review-runtime-hours 6 \
     --eval-runtime-hours 6 \
     --money-cap-usd 20
@@ -145,7 +147,9 @@ python -m agent_challenge.selfdeploy review deploy \
     --openrouter-key-env OPENROUTER_API_KEY \
     --phala-api https://cloud-api.phala.com/api/v1 \
     --review-instance-type tdx.small \
-    --eval-instance-type tdx.small \
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
     --review-runtime-hours 6 \
     --eval-runtime-hours 6 \
     --money-cap-usd 20
@@ -279,6 +283,11 @@ python -m agent_challenge.selfdeploy review retry \
 
 ### `review teardown`
 
+Deletes the review CVM via the Phala Cloud HTTP API (`DELETE /cvms/{id}`).
+No external `phala` CLI binary is required. Pass `--cvm-id` from the deploy
+output, or `--app-id` (the plan `app_identity`) to resolve a unique match from
+`GET /cvms`. Ambiguous matches are refused.
+
 Delete the review CVM after allow, reject, expiry, cancellation, provider
 failure, verification failure, or interruption. The CLI uses the exact
 `phala cvms delete <id> -f` operation. If deletion fails, the command exits
@@ -287,6 +296,8 @@ logs).
 
 ```bash
 python -m agent_challenge.selfdeploy review teardown --cvm-id review-cvm-1
+# or, when the deploy output was lost but app_identity is known:
+python -m agent_challenge.selfdeploy review teardown --app-id <app_identity>
 ```
 
 ### `eval prepare`
@@ -321,6 +332,20 @@ spend projection counts both the review and eval stage shapes against the shared
 money cap. Signing again accepts either `--auto-sign` or explicit `--signature`
 + `--nonce` (+ optional `--timestamp`).
 
+**Host posts the result — the guest only emits.** The measured guest orchestrator
+emits the attested envelope on stdout (a line prefixed `BASE_BENCHMARK_RESULT=`)
+and exits. It never calls `eval result`. The miner host must scrape that line
+and post the exact bytes with the one-time `EVAL_RUN_TOKEN`.
+
+**Live deploy refuses to run without a token handoff.** Pass at least one of:
+
+- `--token-output PATH` (primary) — writes the token with mode `0600`
+- `--emit-run-token` — adds `eval_run_token` to success stdout JSON
+
+Validate the handoff destination **before** prepare spends the single delivery.
+Success stdout always includes `eval_run_id`. The token never appears in
+`--output` plan JSON, redacted prepare/status output, logs, or exception text.
+
 ```bash
 python -m agent_challenge.selfdeploy eval deploy \
     --base-url https://<challenge-host> \
@@ -329,9 +354,25 @@ python -m agent_challenge.selfdeploy eval deploy \
     --auto-sign \
     --llm-cost-limit-env LLM_COST_LIMIT \
     --phala-api https://cloud-api.phala.com/api/v1 \
-    --eval-instance-type tdx.small \
-    --money-cap-usd 20
+    --eval-instance-type tdx.xlarge \
+    --review-disk-size-gb 20 \
+    --eval-disk-size-gb 100 \
+    --money-cap-usd 20 \
+    --token-output ~/.cache/agent-challenge/eval-run.token
 ```
+
+Capture `eval_run_id` from deploy stdout (and keep the `0600` token file for
+`eval result`). Optional: `--expected-measurement PATH` compares plan `rtmr0`
+to a local pin JSON before Phala create (mismatch prints truncated prefixes only).
+
+**Shape / measurement-pin footgun.** `--eval-instance-type` must match the
+validator-issued plan `vm_shape` / `instance_type`. A shape change also requires
+a matching `rtmr0` pin on the validator allowlist and a re-prepare. A stale pin
+surfaces only as a generic key-release denial deep in the TEE flow — the CLI
+now aborts before Phala create and names both shapes plus `vm_shape` /
+`instance_type` / `rtmr0`. Prepare already spent the one-shot token on that
+abort path; re-run `eval deploy` (cancel+retry recovery) or explicit
+`eval cancel` + `eval retry` to re-prepare.
 
 Use `--dry-run` to validate the signed plan and show only safe names, digests,
 measurement metadata, and cost. Without a validator eval allowlist the dry-run
@@ -348,6 +389,42 @@ python -m agent_challenge.selfdeploy eval deploy \
 
 A post-create failure deletes the attributable eval CVM before the command
 returns.
+
+### Host post path after eval CVM finishes
+
+1. Wait for the guest to finish. Scrape guest stdout for the line prefixed
+   `BASE_BENCHMARK_RESULT=` and write the **exact** payload bytes after the
+   prefix into a file (production envelopes are on the order of ~18KB — do not
+   pretty-print or re-encode).
+2. Source the one-time token from the `0600` file without echoing it (no
+   `set -x`):
+
+```bash
+export EVAL_RUN_TOKEN="$(cat ~/.cache/agent-challenge/eval-run.token)"
+# never: echo "$EVAL_RUN_TOKEN" or set -x while the token is in the environment
+```
+
+3. Post with the deploy `eval_run_id`:
+
+```bash
+python -m agent_challenge.selfdeploy eval result \
+    --base-url https://<challenge-host> \
+    --run-id <eval_run_id_from_deploy_stdout> \
+    --result ./eval-result.json \
+    --token-env EVAL_RUN_TOKEN
+```
+
+4. Tear down the eval CVM:
+
+```bash
+python -m agent_challenge.selfdeploy eval teardown --cvm-id <cvm-id>
+# or, when only app_identity is known:
+python -m agent_challenge.selfdeploy eval teardown --app-id <app_identity>
+```
+
+Invariant: `EVAL_RUN_TOKEN` never belongs in plan JSON, compose, ordinary logs,
+or committed files — only the `0600` handoff file and/or one-shot stdout when
+`--emit-run-token` is set.
 
 ### `eval result`
 
@@ -538,7 +615,7 @@ python -m agent_challenge.selfdeploy verdict \
 ### `deploy`
 
 Deploy a CPU-only, miner-funded CVM. Absent `--instance-type`, the smallest CPU
-shape (`tdx.small`) is chosen. A GPU instance type or GPU OS image is refused, and
+shape is stage-specific (review `tdx.small`, eval `tdx.xlarge`). A GPU instance type or GPU OS image is refused, and
 a shape whose projected cost would breach the money cap is refused, both before
 any provisioning. Use `--dry-run` to print the full plan (compose, image digest,
 instance type, region, key-release endpoint, projected cost) and make zero
@@ -613,10 +690,11 @@ python -m agent_challenge.selfdeploy teardown --cvm-id cvm-1
 
 Every CVM you deploy is **miner-funded** and must be deleted when you are done.
 The total mission spend cap is **$20**; always use the smallest CPU shape that
-works (`tdx.small`/`tdx.medium`) and never deploy a GPU CVM. Review and eval
+is stage-sized (review `tdx.small`/20 GB; eval `tdx.xlarge`/100 GB) and never deploy a GPU CVM. Disk is billed separately (~$0.000139/GB/hour) and is included in the projected $20 cap. Review and eval
 spend are projected together before either create.
 
-The `teardown` subcommand runs `phala cvms delete <id> -f` for you, but you can
+The `teardown` subcommand issues `DELETE /cvms/{id}` through the Phala Cloud
+HTTP client (no `phala` binary required). For manual verification you can still
 also delete and confirm directly with the `phala` CLI:
 
 ```

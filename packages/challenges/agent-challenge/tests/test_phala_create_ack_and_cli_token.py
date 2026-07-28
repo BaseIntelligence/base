@@ -7,6 +7,8 @@
    closed product_create_response_missing_cvm_id_field.
 3. CLI review deploy consumes a review_retry one-time token path without
    fail-closing solely because prepare already delivered (null re-prepare).
+4. CLI eval deploy recovers EVAL_RUN_TOKEN via cancel+retry when prepare
+   returns token-less secret_delivery (production residual: submission 3).
 
 Never invent TEE measurements. Secrets never appear in errors or logs.
 """
@@ -21,6 +23,7 @@ from urllib.request import Request
 
 import pytest
 
+from agent_challenge.canonical import eval_wire
 from agent_challenge.review.canonical import canonical_sha256
 from agent_challenge.review.compose import (
     generate_review_app_compose,
@@ -28,7 +31,9 @@ from agent_challenge.review.compose import (
 )
 from agent_challenge.review.schemas import ReviewInputConfig, build_review_assignment
 from agent_challenge.selfdeploy import cli
+from agent_challenge.selfdeploy import eval as eval_deploy
 from agent_challenge.selfdeploy import review as review_mod
+from agent_challenge.selfdeploy.client import RouteClientError
 from agent_challenge.selfdeploy.phala import (
     DEFAULT_PHALA_USER_AGENT,
     PhalaCloudClient,
@@ -460,7 +465,7 @@ def test_cli_review_deploy_uses_retry_when_prepare_token_already_delivered(
         money_cap_usd=20.0,
         openrouter_key_env="OPENROUTER_API_KEY",
         phala_api=None,
-        base_url="https://challenge.example",
+        base_url="https://chain.joinbase.ai/challenges/agent-challenge",
         hotkey="hk",
         timestamp=None,
     )
@@ -535,7 +540,7 @@ def test_cli_review_deploy_uses_prepare_token_when_fresh(
         money_cap_usd=20.0,
         openrouter_key_env="OPENROUTER_API_KEY",
         phala_api=None,
-        base_url="https://challenge.example",
+        base_url="https://chain.joinbase.ai/challenges/agent-challenge",
         hotkey="hk",
         timestamp=None,
     )
@@ -660,3 +665,154 @@ def test_obtain_review_prepare_only_cancel_retries_when_token_null_and_terminal(
     assert out["review_session_token"] == retry_token
     fake_client.review_cancel.assert_called_once_with(7, "assignment-1")
     fake_client.review_retry.assert_called_once()
+
+
+def _eval_prepare_wrapper(*, token: str | None, eval_run_id: str = "eval-1") -> dict[str, Any]:
+    """Minimal signed-shape Eval prepare wrapper for CLI recovery unit tests."""
+
+    import hashlib
+
+    from agent_challenge.canonical.compose import (
+        generate_app_compose,
+        render_app_compose,
+    )
+
+    eval_image = "registry.example/eval@sha256:" + "b" * 64
+    policy = {
+        "schema_version": 1,
+        "per_task_aggregation": "mean",
+        "keep_policy": "off",
+        "drop_lowest_n": 0,
+        "threshold_f64be": None,
+    }
+    compose = generate_app_compose(
+        orchestrator_image=eval_image,
+        name="eval-v1",
+        key_release_url="validator.example:8701",
+        allowed_envs=eval_deploy.EVAL_ALLOWED_ENVS,
+    )
+    compose_hash = hashlib.sha256(render_app_compose(compose).encode()).hexdigest()
+    run_token = token if isinstance(token, str) and token else "placeholder-token"
+    plan = {
+        "schema_version": 1,
+        "eval_run_id": eval_run_id,
+        "submission_id": "1",
+        "submission_version": 1,
+        "authorizing_review_digest": "d" * 64,
+        "agent_hash": "e" * 64,
+        "package_tree_sha": "b" * 64,
+        "selected_tasks": [
+            {
+                "task_id": "task-1",
+                "image_ref": "registry.example/task@sha256:" + "f" * 64,
+                "task_config_sha256": "1" * 64,
+            }
+        ],
+        "k": 1,
+        "scoring_policy": policy,
+        "scoring_policy_digest": eval_wire.scoring_policy_digest(policy),
+        "eval_app": {
+            "image_ref": eval_image,
+            "compose_hash": compose_hash,
+            "app_identity": "eval-v1",
+            "kms_key_algorithm": "x25519",
+            "kms_public_key_hex": PUBLIC_KEY,
+            "kms_public_key_sha256": hashlib.sha256(bytes.fromhex(PUBLIC_KEY)).hexdigest(),
+            "measurement": MEASUREMENT,
+        },
+        "key_release_endpoint": "validator.example:8701",
+        "result_endpoint": f"/evaluation/v1/runs/{eval_run_id}/result",
+        "key_release_nonce": "key-release-nonce",
+        "score_nonce": "score-nonce",
+        "run_token_sha256": hashlib.sha256(run_token.encode()).hexdigest(),
+        "issued_at_ms": 1,
+        "expires_at_ms": 2,
+    }
+    validated = eval_wire.validate_eval_plan(plan)
+    delivery: dict[str, str] | None
+    if isinstance(token, str) and token:
+        delivery = {"env_key": "EVAL_RUN_TOKEN", "token": token}
+    else:
+        delivery = None
+    return {
+        "schema_version": 1,
+        "plan": validated,
+        "plan_sha256": hashlib.sha256(eval_wire.canonical_json_v1(validated)).hexdigest(),
+        "secret_delivery": delivery,
+    }
+
+
+def test_eval_token_present_requires_exact_env_key_token_shape() -> None:
+    """Presence predicate matches eval.py secret_delivery contract; no relaxation."""
+
+    assert cli._eval_token_present(None) is False
+    assert cli._eval_token_present({}) is False
+    assert cli._eval_token_present({"secret_delivery": None}) is False
+    assert cli._eval_token_present({"secret_delivery": {"env_key": "EVAL_RUN_TOKEN"}}) is False
+    assert (
+        cli._eval_token_present(
+            {"secret_delivery": {"env_key": "EVAL_RUN_TOKEN", "token": "", "extra": 1}}
+        )
+        is False
+    )
+    assert (
+        cli._eval_token_present(
+            {"secret_delivery": {"env_key": "EVAL_RUN_TOKEN", "token": "run-tok"}}
+        )
+        is True
+    )
+    # Validation shape in build_eval_deployment_plan remains fail-closed.
+    bare = _eval_prepare_wrapper(token=None)
+    with pytest.raises(eval_deploy.EvalDeploymentError, match="EVAL_RUN_TOKEN capability"):
+        eval_deploy.build_eval_deployment_plan(bare)
+
+
+def test_obtain_eval_prepare_returns_first_prepare_when_token_present() -> None:
+    """Token already delivered on prepare → never cancel or retry."""
+
+    fresh = _eval_prepare_wrapper(token="eval-fresh-token", eval_run_id="eval-run-a")
+    fake_client = MagicMock()
+    fake_client.eval_prepare.return_value = fresh
+    out = cli._obtain_eval_prepare_with_token(fake_client, 3)
+    assert out is fresh
+    assert out["secret_delivery"]["token"] == "eval-fresh-token"
+    fake_client.eval_prepare.assert_called_once_with(3)
+    fake_client.eval_cancel.assert_not_called()
+    fake_client.eval_retry.assert_not_called()
+
+
+def test_obtain_eval_prepare_cancel_retries_when_token_absent() -> None:
+    """Spent one-shot token: prepare token-less → cancel+retry recovers capability.
+
+    Production residual (submission 3): standalone ``eval prepare`` or
+    ``eval retry`` spends EVAL_RUN_TOKEN; subsequent ``eval deploy`` saw
+    secret_delivery=None and hard-failed with no recovery path.
+    """
+
+    spent = _eval_prepare_wrapper(token=None, eval_run_id="eval-run-1")
+    recovered_token = "eval-retry-token-fresh"
+    recovered = _eval_prepare_wrapper(token=recovered_token, eval_run_id="eval-run-2")
+    fake_client = MagicMock()
+    fake_client.eval_prepare.return_value = spent
+    fake_client.eval_cancel.return_value = {"phase": "eval_cancelled"}
+    fake_client.eval_retry.return_value = recovered
+    out = cli._obtain_eval_prepare_with_token(fake_client, 3)
+    assert out["secret_delivery"]["token"] == recovered_token
+    fake_client.eval_prepare.assert_called_once_with(3)
+    fake_client.eval_cancel.assert_called_once_with(3, "eval-run-1")
+    fake_client.eval_retry.assert_called_once_with(3, "eval-run-1")
+
+
+def test_obtain_eval_prepare_raises_when_token_still_absent_after_retry() -> None:
+    """Sticky token-less after cancel+retry → typed RouteClientError."""
+
+    spent = _eval_prepare_wrapper(token=None, eval_run_id="eval-run-stuck")
+    still_spent = _eval_prepare_wrapper(token=None, eval_run_id="eval-run-stuck")
+    fake_client = MagicMock()
+    fake_client.eval_prepare.return_value = spent
+    fake_client.eval_cancel.return_value = {"phase": "eval_cancelled"}
+    fake_client.eval_retry.return_value = still_spent
+    with pytest.raises(RouteClientError, match="eval run token unavailable"):
+        cli._obtain_eval_prepare_with_token(fake_client, 3)
+    fake_client.eval_cancel.assert_called_once_with(3, "eval-run-stuck")
+    fake_client.eval_retry.assert_called_once_with(3, "eval-run-stuck")

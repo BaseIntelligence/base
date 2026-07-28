@@ -548,6 +548,8 @@ def test_review_post_create_failure_deletes_attributable_cvm(monkeypatch):
     fake_client.review_deployed.side_effect = cli.RouteClientError("signed ack failed")
     monkeypatch.setattr(cli, "_route_client", lambda _args: fake_client)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
+    # Offline test double uses a non-joinbase base_url; allow pin override.
+    monkeypatch.setenv("CHALLENGE_ALLOW_DEV_URLS", "1")
 
     deleted: list[str] = []
 
@@ -685,6 +687,10 @@ def test_eval_post_create_failure_deletes_attributable_cvm(monkeypatch):
         money_cap_usd=20.0,
         dry_run=False,
         token_env="EVAL_RUN_TOKEN",
+        # Live deploy requires an explicit one-time token handoff path.
+        emit_run_token=True,
+        token_output=None,
+        output=None,
     )
     code = cli._ordered_eval_command(args)
     assert code == 2
