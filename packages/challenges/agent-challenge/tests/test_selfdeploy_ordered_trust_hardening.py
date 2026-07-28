@@ -687,6 +687,10 @@ def test_eval_post_create_failure_deletes_attributable_cvm(monkeypatch):
         money_cap_usd=20.0,
         dry_run=False,
         token_env="EVAL_RUN_TOKEN",
+        # Live deploy requires an explicit one-time token handoff path.
+        emit_run_token=True,
+        token_output=None,
+        output=None,
     )
     code = cli._ordered_eval_command(args)
     assert code == 2

@@ -670,12 +670,12 @@ def test_obtain_review_prepare_only_cancel_retries_when_token_null_and_terminal(
 def _eval_prepare_wrapper(*, token: str | None, eval_run_id: str = "eval-1") -> dict[str, Any]:
     """Minimal signed-shape Eval prepare wrapper for CLI recovery unit tests."""
 
+    import hashlib
+
     from agent_challenge.canonical.compose import (
         generate_app_compose,
         render_app_compose,
     )
-
-    import hashlib
 
     eval_image = "registry.example/eval@sha256:" + "b" * 64
     policy = {
@@ -748,9 +748,7 @@ def test_eval_token_present_requires_exact_env_key_token_shape() -> None:
     assert cli._eval_token_present(None) is False
     assert cli._eval_token_present({}) is False
     assert cli._eval_token_present({"secret_delivery": None}) is False
-    assert (
-        cli._eval_token_present({"secret_delivery": {"env_key": "EVAL_RUN_TOKEN"}}) is False
-    )
+    assert cli._eval_token_present({"secret_delivery": {"env_key": "EVAL_RUN_TOKEN"}}) is False
     assert (
         cli._eval_token_present(
             {"secret_delivery": {"env_key": "EVAL_RUN_TOKEN", "token": "", "extra": 1}}
@@ -818,4 +816,3 @@ def test_obtain_eval_prepare_raises_when_token_still_absent_after_retry() -> Non
         cli._obtain_eval_prepare_with_token(fake_client, 3)
     fake_client.eval_cancel.assert_called_once_with(3, "eval-run-stuck")
     fake_client.eval_retry.assert_called_once_with(3, "eval-run-stuck")
-

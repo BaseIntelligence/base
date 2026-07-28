@@ -226,7 +226,7 @@ def _run_teardown_command(args: argparse.Namespace) -> tuple[dict[str, Any], int
         outcome = default_phala_teardown(cvm_id, client=client)
     except (RouteClientError, CredentialError, PhalaApiError) as exc:
         # Fail closed with a structured payload when identity cannot be resolved.
-        missing = (getattr(args, "cvm_id", None) or getattr(args, "app_id", None) or "")
+        missing = getattr(args, "cvm_id", None) or getattr(args, "app_id", None) or ""
         return (
             {
                 "torn_down": missing or None,
@@ -810,6 +810,9 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                 review_disk_size_gb=review_disk,
                 eval_disk_size_gb=eval_disk,
             )
+            # Live deploy must hand the one-shot token to the miner before any
+            # Phala spend — prepare/status redact it and the guest never posts.
+            _require_eval_run_token_handoff(args)
             values = {
                 "EVAL_RUN_TOKEN": plan.eval_run_token,
                 "LLM_COST_LIMIT": os.environ.get(args.llm_cost_limit_env, "") or "0",
@@ -898,11 +901,13 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     )
                     raise
                 _print(
-                    {
-                        "stage": "eval_deployed",
-                        "acknowledgement": acknowledgement,
-                        "encrypted_env_names": list(encrypted.env_keys),
-                    }
+                    _hand_off_eval_run_token(
+                        args,
+                        eval_run_id=plan.eval_run_id,
+                        eval_run_token=plan.eval_run_token,
+                        acknowledgement=acknowledgement,
+                        encrypted_env_names=encrypted.env_keys,
+                    )
                 )
                 return 0
             _print(
@@ -967,6 +972,83 @@ def _redact_capabilities(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_capabilities(item) for item in value]
     return value
+
+
+def _require_eval_run_token_handoff(args: argparse.Namespace) -> None:
+    """Fail closed on live eval deploy unless the miner can recover the token.
+
+    ``EVAL_RUN_TOKEN`` is a one-shot capability. prepare/status redact it, and
+    the guest only emits the attested envelope — the host must post via
+    ``eval result``. Without an explicit handoff at deploy time the miner has
+    no path to submit. Dry-run skips this gate (no spend, no post).
+    """
+
+    if getattr(args, "dry_run", False):
+        return
+    token_output = getattr(args, "token_output", None)
+    emit_run_token = bool(getattr(args, "emit_run_token", False))
+    if token_output or emit_run_token:
+        return
+    raise RouteClientError(
+        "eval deploy requires --token-output PATH and/or --emit-run-token so the "
+        "miner can later call eval result with EVAL_RUN_TOKEN; the one-time token "
+        "is not recoverable from prepare/status output"
+    )
+
+
+def _write_eval_run_token_file(path: str, token: str) -> None:
+    """Write the one-time run token to PATH with mode 0o600 (create securely)."""
+
+    # O_CREAT|O_WRONLY|O_TRUNC with mode 0o600 — never create world-readable then chmod.
+    fd = os.open(
+        path,
+        os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            fd = -1  # fdopen owns it
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _hand_off_eval_run_token(
+    args: argparse.Namespace,
+    *,
+    eval_run_id: str,
+    eval_run_token: str,
+    acknowledgement: Mapping[str, Any] | None,
+    encrypted_env_names: Sequence[str],
+) -> dict[str, Any]:
+    """Build deploy-success payload and optionally surface the run token once.
+
+    The token is never written to ``--output`` and never passes through
+    ``_redact_capabilities``. ``eval_run_id`` is always present for
+    ``eval result --run-id``.
+    """
+
+    token_output = getattr(args, "token_output", None)
+    if isinstance(token_output, str) and token_output:
+        _write_eval_run_token_file(token_output, eval_run_token)
+    payload: dict[str, Any] = {
+        "stage": "eval_deployed",
+        "eval_run_id": eval_run_id,
+        "acknowledgement": acknowledgement,
+        "encrypted_env_names": list(encrypted_env_names),
+    }
+    if bool(getattr(args, "emit_run_token", False)):
+        payload["eval_run_token"] = eval_run_token
+    output_path = getattr(args, "output", None)
+    if isinstance(output_path, str) and output_path:
+        # Persisted plan/metadata must never carry the one-time token.
+        safe = {key: value for key, value in payload.items() if key != "eval_run_token"}
+        Path(output_path).write_text(
+            json.dumps(safe, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -1266,6 +1348,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="validate and print safe deployment metadata without provisioning",
+    )
+    eval_deploy_parser.add_argument(
+        "--token-output",
+        default=None,
+        metavar="PATH",
+        help=(
+            "write the one-time EVAL_RUN_TOKEN to PATH with mode 0600 "
+            "(required for eval result unless --emit-run-token)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
+        "--emit-run-token",
+        action="store_true",
+        help=(
+            "include eval_run_token in deploy success JSON on stdout "
+            "(required for eval result unless --token-output)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
+        "--output",
+        default=None,
+        help="write safe deploy metadata JSON (never includes EVAL_RUN_TOKEN)",
     )
     eval_result_parser = eval_sub.add_parser(
         "result",
