@@ -297,6 +297,13 @@ class ConstationSettings(BaseModel):
     sidecar_scheme: str = "http"
     sidecar_internal_port: int = 8787
     custody_persist: bool = True
+    #: Image variant used when stamping constation identity onto Prism
+    #: ``work_assignments.payload`` at dispatch. Must be a known
+    #: ``ImageVariant`` value (``cpu`` / ``cuda``). Empty string disables
+    #: stamping (dispatch still succeeds; pre-forward hook skips).
+    #: Default ``cuda`` matches Prism GPU work units without changing
+    #: behavior when no active pin is registered.
+    prism_dispatch_variant: str = "cuda"
 
     @model_validator(mode="after")
     def validate_constation_bounds(self) -> ConstationSettings:
@@ -316,6 +323,57 @@ class ConstationSettings(BaseModel):
             raise ValueError("sidecar_internal_port must be in 1..65535")
         if self.sidecar_scheme not in {"http", "https"}:
             raise ValueError("sidecar_scheme must be 'http' or 'https'")
+        variant = self.prism_dispatch_variant.strip().lower()
+        if variant and variant not in {"cpu", "cuda"}:
+            raise ValueError(
+                "prism_dispatch_variant must be 'cpu', 'cuda', or empty "
+                f"(got {self.prism_dispatch_variant!r})"
+            )
+        # Normalize once so consumers see a stable value.
+        object.__setattr__(self, "prism_dispatch_variant", variant)
+        return self
+
+
+class LiumTrainingSettings(BaseModel):
+    """Master-owned Prism Lium training spend/lifetime/concurrency guards.
+
+    Fail-closed: ``enabled`` defaults False until ops turns the plane on.
+    Provider secrets may be supplied inline (``api_key``) or via ``api_key_file``
+    (file contents are read lazily by consumers, not here).
+    Env nesting: ``BASE_LIUM_TRAINING__<FIELD>`` (see ``loader._apply_env``).
+
+    ``daily_spend_ceiling_usd`` blocks NEW admissions only: jobs stay queued
+    with reason ``spend_ceiling`` and must never terminal-fail for capacity.
+    """
+
+    enabled: bool = False
+    api_key: str | None = None
+    api_key_file: Path | None = None
+    max_price_per_hour: float = 1.50
+    max_lifetime_hours: float = 4.0
+    concurrency_cap: int = 3
+    daily_spend_ceiling_usd: float = 50.0
+    queue_poll_seconds: int = 30
+    max_queue_age_hours: float = 48.0
+    pod_name_prefix: str = "prism-train-"
+    ssh_public_key_file: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_lium_training_bounds(self) -> LiumTrainingSettings:
+        if self.max_price_per_hour <= 0:
+            raise ValueError("max_price_per_hour must be positive")
+        if self.max_lifetime_hours < 1:
+            raise ValueError("max_lifetime_hours must be >= 1")
+        if self.concurrency_cap < 1:
+            raise ValueError("concurrency_cap must be >= 1")
+        if self.daily_spend_ceiling_usd <= 0:
+            raise ValueError("daily_spend_ceiling_usd must be positive")
+        if self.queue_poll_seconds <= 0:
+            raise ValueError("queue_poll_seconds must be positive")
+        if self.max_queue_age_hours <= 0:
+            raise ValueError("max_queue_age_hours must be positive")
+        if not self.pod_name_prefix.strip():
+            raise ValueError("pod_name_prefix must be non-empty")
         return self
 
 
@@ -594,6 +652,7 @@ class Settings(BaseModel):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
     constation: ConstationSettings = Field(default_factory=ConstationSettings)
+    lium_training: LiumTrainingSettings = Field(default_factory=LiumTrainingSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
