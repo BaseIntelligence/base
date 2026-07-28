@@ -14,6 +14,10 @@ from base.challenge_sdk.executor import DockerExecutor, DockerLimits, DockerMoun
 from .config import PrismSettings
 from .db import dumps
 from .evaluator import source_similarity
+from .evaluator.plagiarism_adjudicator import (
+    adjudicate_plagiarism,
+    config_from_settings as plagiarism_llm_config_from_settings,
+)
 from .evaluator.anti_cheat import evaluate_anti_cheat
 from .evaluator.checkpoint_publisher import CheckpointPublisher
 from .evaluator.component_signatures import (
@@ -34,12 +38,6 @@ from .evaluator.distributed_contract import (
 )
 from .evaluator.interface import DEFAULT_TRAINING_ENTRYPOINT, PrismContext
 from .evaluator.modes import execution_mode_from_value
-from .evaluator.plagiarism_adjudicator import (
-    adjudicate_plagiarism,
-)
-from .evaluator.plagiarism_adjudicator import (
-    config_from_settings as plagiarism_llm_config_from_settings,
-)
 from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import SandboxViolation, inspect_code
 from .evaluator.scoring import ScoreValidationError, score_prequential_bpb
@@ -197,6 +195,16 @@ class PrismWorker:
         self._constation_bundle = constation_bundle
 
     async def process_next(self) -> str | None:
+        # Worker-plane ownership (VAL-PRISM-037 / product policy): when the plane is ON,
+        # miner-funded workers run GPU/container eval. The master-embedded Prism challenge
+        # must NEVER claim or Docker-evaluate submissions here — claim races remove units
+        # from list_pending_prism_work_units and breaks Lium assignment. Finalization is
+        # finalize_worker_result only. cpu_reexec_test_mode keeps the intentional local path.
+        if (
+            self.settings.worker_plane.enabled
+            and not self.settings.worker_plane.cpu_reexec_test_mode
+        ):
+            return None
         submission = await self.repository.claim_next()
         if submission is None:
             return None
@@ -426,6 +434,15 @@ class PrismWorker:
         *,
         resume_checkpoint_ref: str | None = None,
     ) -> str:
+        # Master + worker-plane: GPU/container eval is worker-owned. Never Docker here.
+        if (
+            self.settings.worker_plane.enabled
+            and not self.settings.worker_plane.cpu_reexec_test_mode
+        ):
+            raise RuntimeError(
+                "worker_plane_enabled: master container eval disabled; "
+                "Lium/miners own GPU execution (process_next no-op)"
+            )
         # Static gates run FIRST: a sandbox / param-cap / distributed-contract rejection precedes
         # and SKIPS the LLM review entirely -- no llm_reviews/llm_review_events row and no GPU
         # work for a statically-rejected bundle (VAL-LLM-020, VAL-CONTRACT-018).
