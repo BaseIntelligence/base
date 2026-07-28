@@ -558,6 +558,14 @@ def _result_request(
                 },
             },
         },
+        "guest_artifact_proof": {
+            "schema_version": 1,
+            "expected_hash": agent,
+            "download_hash": agent,
+            "executed_hash": agent,
+            "byte_size": 32,
+            "match": True,
+        },
     }
 
 

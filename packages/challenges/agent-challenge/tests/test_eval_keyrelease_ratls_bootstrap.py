@@ -56,6 +56,24 @@ from agent_challenge.review.canonical import canonical_json_v1
 # --------------------------------------------------------------------------- #
 
 
+
+def _fake_assert_agent_sets_evidence(**_kwargs):
+    from agent_challenge.canonical import eval_wire as _ew
+    from agent_challenge.evaluation import own_runner_backend as orb
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        prove_guest_artifact_execution,
+    )
+
+    payload = b"phala-own-runner-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+    orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    return evidence.executed_hash
+
+
 def _rsa_key(size: int = 2048):
     return rsa.generate_private_key(public_exponent=65537, key_size=size)
 
@@ -549,7 +567,12 @@ def test_backend_uses_plan_tasks_when_cli_omits_task(monkeypatch, tmp_path, caps
         "_resolve_phala_binding_from_env",
         lambda: {"eval_plan": plan, "rtmr3": "d" * 96},
     )
-    monkeypatch.setattr(backend, "assert_agent_artifact_matches_plan", lambda **_: "f" * 64)
+    monkeypatch.setattr(
+        backend,
+        "assert_agent_artifact_matches_plan",
+        _fake_assert_agent_sets_evidence,
+    )
+    monkeypatch.setattr(backend, "assert_package_tree_matches_plan", lambda **_: "b" * 64)
     monkeypatch.setattr(backend, "_preflight_eval_plan_tasks", lambda **_: {})
 
     acquired: dict[str, Any] = {}

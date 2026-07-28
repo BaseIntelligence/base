@@ -75,10 +75,18 @@ def report_data(
 ) -> bytes:
     """The 32-byte ``report_data`` digest binding a Phala run (architecture sec 6).
 
-    Legacy callers retain the original v1 binding with ``validator_nonce``.
-    Schema-version-2 Eval callers instead supply the paired ``eval_run_id`` and
-    ``score_nonce``.  That strict boundary uses the closed object mandated by
-    architecture §6.2 and is byte-identical to BASE's ``phala_report_data``.
+    **Production path (schema-v2 score binding):** supply paired ``eval_run_id``
+    and ``score_nonce``.  That closed object is mandated by architecture §6.2
+    and is byte-identical to BASE's ``phala_report_data``.  The production
+    verification path hard-rejects anything else when attestation is enabled
+    (reason code ``legacy_report_data_rejected``).
+
+    **Legacy / archival / unit-only path (NON-PRODUCTION):** supply
+    ``validator_nonce`` alone.  Kept solely so existing golden-vector and
+    archival unit tests can recompute historical digests.  Do **not** use this
+    branch to admit production scores — the attested production gate requires
+    the schema-v2 score binding inside report_data (outer wire
+    ``score_record.schema_version`` may still be 1; do not conflate them).
     """
 
     supplied_tasks = list(task_ids)
@@ -107,6 +115,9 @@ def report_data(
             raise ValueError(str(exc)) from exc
         return hashlib.sha256(canonical_json_v1(binding)).digest()
 
+    # --- NON-PRODUCTION legacy constructor (archival / unit golden vectors) ---
+    # Production verification hard-rejects this preimage with
+    # ``legacy_report_data_rejected`` when phala_attestation_enabled is true.
     if validator_nonce is None:
         raise ValueError("validator_nonce is required for legacy report_data bindings")
     preimage = {

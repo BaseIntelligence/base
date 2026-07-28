@@ -35,6 +35,9 @@ from agent_challenge.canonical.measurement import (
     CANONICAL_MEASUREMENT_FIELDS,
     CanonicalMeasurement,
 )
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.orchestrator import JobResult, TrialOutcome
 from agent_challenge.evaluation.own_runner.result_schema import (
     REQUIRED_FIELDS,
@@ -89,6 +92,35 @@ class _FakeQuoteResponse:
             {"vcpu": 1, "memory_mb": 2048, "os_image_hash": MEASUREMENT["os_image_hash"]}
         )
         self.report_data = ""
+
+
+
+
+def _fake_assert_agent_sets_evidence(**_kwargs):
+    from agent_challenge.canonical import eval_wire as _ew
+    from agent_challenge.evaluation import own_runner_backend as orb
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        prove_guest_artifact_execution,
+    )
+
+    payload = b"phala-own-runner-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+    orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    return evidence.executed_hash
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _make_spy_provider() -> tuple[type, dict[str, int]]:
@@ -202,7 +234,11 @@ def _set_eval_plan_env(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend.assert_agent_artifact_matches_plan",
-        lambda **_: AGENT_HASH,
+        _fake_assert_agent_sets_evidence,
+    )
+    monkeypatch.setattr(
+        "agent_challenge.evaluation.own_runner_backend.assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend._preflight_eval_plan_tasks",
@@ -361,6 +397,7 @@ def _emit_attested_line() -> str:
         quote_provider=spy(),
         manifest_sha256="1" * 64,
         vm_config={"vcpu": 1},
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
 
 

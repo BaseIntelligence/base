@@ -95,6 +95,10 @@ REFUSE_PARTIAL_FORBIDDEN = "score_refused_partial_forbidden"
 REFUSE_MISSING_REVIEW = "review_attestation_missing"
 REFUSE_PACKAGE_TREE_MISSING = "score_refused_package_tree_sha_missing"
 REFUSE_PACKAGE_PROOF = "score_refused_package_proof"
+# Production hard-reject: report_data only validates under legacy validator_nonce
+# construction.  Gates the SCORE BINDING (schema_version: 2), not outer
+# score_record.schema_version (which may remain 1).
+REFUSE_LEGACY_REPORT_DATA = "legacy_report_data_rejected"
 
 # Domains (byte-identical to eval_wire / keyrelease client)
 SCORE_DOMAIN = ew.SCORE_DOMAIN
@@ -360,7 +364,12 @@ def verify_score_domain_binding(
     eval_plan: Mapping[str, Any],
     scores_digest: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Re-verify score-domain report_data binding (domain separation enforced)."""
+    """Re-verify score-domain report_data binding (domain separation enforced).
+
+    Production requires the schema-v2 score binding.  A reported report_data that
+    only matches the legacy validator_nonce construction is refused with
+    :data:`REFUSE_LEGACY_REPORT_DATA` (fail-closed; never a warning).
+    """
 
     if score_binding is None:
         return REFUSE_INCOMPLETE_CHAIN, None
@@ -370,6 +379,20 @@ def verify_score_domain_binding(
         if str(domain) in {KEY_RELEASE_DOMAIN, REVIEW_DOMAIN}:
             return REFUSE_DOMAIN_CONFUSION, None
         return REFUSE_SCORE_DOMAIN, None
+
+    # Explicit schema-v2 requirement on the score binding object.
+    # Outer score_record.schema_version may remain 1; this is the binding only.
+    schema_version = score_binding.get("schema_version")
+    if schema_version is not None:
+        try:
+            schema_int = int(schema_version)
+        except (TypeError, ValueError):
+            # Non-coercible version: structurally invalid binding, not "legacy".
+            # Must return a refuse code — never escape as an exception, which
+            # would surface as a 500 and erase the code from the evidence trail.
+            return REFUSE_SCORE_DOMAIN, None
+        if schema_int != 2:
+            return REFUSE_LEGACY_REPORT_DATA, None
 
     # Must equal plan identity.
     for field in ("eval_run_id", "score_nonce", "agent_hash"):
@@ -395,9 +418,88 @@ def verify_score_domain_binding(
         if not isinstance(reported_report_data_hex, str):
             return REFUSE_TAMPERED, None
         if reported_report_data_hex.lower() != expected_hex:
+            # Detect legacy validator_nonce report_data (production hard-reject).
+            legacy_code = _legacy_report_data_refuse_code(
+                reported_report_data_hex=reported_report_data_hex,
+                score_binding=score_binding,
+                eval_plan=eval_plan,
+                scores_digest=scores_digest,
+            )
+            if legacy_code is not None:
+                return legacy_code, None
             return REFUSE_TAMPERED, None
 
     return None, expected_hex
+
+
+def _legacy_report_data_refuse_code(
+    *,
+    reported_report_data_hex: str,
+    score_binding: Mapping[str, Any],
+    eval_plan: Mapping[str, Any],
+    scores_digest: str | None,
+) -> str | None:
+    """Return REFUSE_LEGACY_REPORT_DATA when reported hex matches legacy only."""
+
+    from agent_challenge.canonical import report_data as rd
+
+    measurement = score_binding.get("canonical_measurement")
+    if not isinstance(measurement, Mapping):
+        app = eval_plan.get("eval_app")
+        if isinstance(app, Mapping):
+            meas = app.get("measurement")
+            compose = app.get("compose_hash")
+            if isinstance(meas, Mapping) and isinstance(compose, str):
+                measurement = {
+                    "mrtd": meas.get("mrtd"),
+                    "rtmr0": meas.get("rtmr0"),
+                    "rtmr1": meas.get("rtmr1"),
+                    "rtmr2": meas.get("rtmr2"),
+                    "compose_hash": compose,
+                    "os_image_hash": meas.get("os_image_hash"),
+                }
+    if not isinstance(measurement, Mapping):
+        return None
+
+    agent_hash = str(score_binding.get("agent_hash") or eval_plan.get("agent_hash") or "")
+    digest = str(scores_digest or score_binding.get("scores_digest") or "")
+    raw_tasks = score_binding.get("task_ids")
+    if isinstance(raw_tasks, Sequence) and not isinstance(raw_tasks, (str, bytes)):
+        task_ids = [str(t) for t in raw_tasks]
+    else:
+        selected = eval_plan.get("selected_tasks")
+        if isinstance(selected, Sequence):
+            task_ids = [
+                str(t["task_id"]) for t in selected if isinstance(t, Mapping) and "task_id" in t
+            ]
+        else:
+            task_ids = []
+    if not agent_hash or not digest or not task_ids:
+        return None
+
+    candidates: list[str] = []
+    kr = eval_plan.get("key_release_nonce")
+    if isinstance(kr, str) and kr:
+        candidates.append(kr)
+    sn = eval_plan.get("score_nonce") or score_binding.get("score_nonce")
+    if isinstance(sn, str) and sn and sn not in candidates:
+        candidates.append(sn)
+
+    reported = reported_report_data_hex.lower()
+    for nonce in candidates:
+        try:
+            legacy_hex = rd.report_data_hex(
+                canonical_measurement=measurement,
+                agent_hash=agent_hash,
+                task_ids=task_ids,
+                scores_digest=digest,
+                validator_nonce=nonce,
+            )
+        except (TypeError, ValueError):
+            continue
+        if reported == legacy_hex.lower():
+            return REFUSE_LEGACY_REPORT_DATA
+    return None
 
 
 def admit_production_score_from_chain(
@@ -828,6 +930,7 @@ __all__ = [
     "REFUSE_INCOMPLETE_CHAIN",
     "REFUSE_KEY_RELEASE_DOMAIN",
     "REFUSE_KEY_RELEASE_MISMATCH",
+    "REFUSE_LEGACY_REPORT_DATA",
     "REFUSE_MISSING_KEY_RELEASE",
     "REFUSE_MISSING_REVIEW",
     "REFUSE_NONCE_REPLAY",

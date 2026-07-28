@@ -38,6 +38,9 @@ from agent_challenge.evaluation.attestation import (
     AttestationOutcome,
     ResultMeasurementAllowlist,
 )
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.keyrelease.quote import (
     StaticQuoteVerifier,
     build_rtmr3_event_log,
@@ -57,6 +60,17 @@ COMPOSE_HASH = "ab" * 32
 OS_IMAGE_HASH = os_image_hash_from_registers(REGS["mrtd"], REGS["rtmr1"], REGS["rtmr2"])
 AGENT_HASH = "55" * 32
 LIVE_KEY_PROVIDER_JSON = b'{"name":"kms","id":"kms-live-score-1"}'
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _plan(*, key_provider: str = "phala") -> dict[str, Any]:
@@ -182,6 +196,14 @@ def _request(
                     "os_image_hash": OS_IMAGE_HASH,
                 },
             },
+        },
+        "guest_artifact_proof": {
+            "schema_version": 1,
+            "expected_hash": AGENT_HASH,
+            "download_hash": AGENT_HASH,
+            "executed_hash": AGENT_HASH,
+            "byte_size": 32,
+            "match": True,
         },
     }
 
@@ -355,6 +377,7 @@ def test_schema_v2_emit_bytes_equal_canonical_json_v1_of_validated() -> None:
         quote_provider=provider,
         manifest_sha256="cc" * 32,
         stream=buf,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     assert line.startswith(ar.RESULT_LINE_PREFIX)
     body = line[len(ar.RESULT_LINE_PREFIX) :].encode("utf-8")
@@ -414,5 +437,6 @@ def test_schema_v2_emit_stream_output_matches_return_line() -> None:
         quote_provider=_QuoteProvider(quote, event_log),
         manifest_sha256="cc" * 32,
         stream=buf,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     assert buf.getvalue() == line + "\n"

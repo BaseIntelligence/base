@@ -24,6 +24,7 @@ import pytest
 
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import report_data as rd
+from agent_challenge.evaluation.guest_execution_evidence import prove_guest_artifact_execution
 from agent_challenge.evaluation.own_runner.result_schema import (
     RESULT_LINE_PREFIX,
     validate_benchmark_result,
@@ -87,6 +88,16 @@ def _benchmark_result(status="completed", score=0.5, resolved=1, total=2):
     }
 
 
+
+def _guest_evidence(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+
 def _emit_kwargs(**overrides):
     base = dict(
         benchmark_result=_benchmark_result(),
@@ -98,6 +109,7 @@ def _emit_kwargs(**overrides):
         validator_nonce=NONCE,
         quote_provider=FakeQuoteProvider(),
         manifest_sha256=MANIFEST,
+        guest_artifact_evidence=_guest_evidence(),
         unit_id=UNIT_ID,
         vm_config=dict(FAKE_VM_CONFIG),
     )

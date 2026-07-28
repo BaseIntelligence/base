@@ -51,9 +51,14 @@ from agent_challenge.evaluation.authorization import (
 from agent_challenge.evaluation.benchmarks import BenchmarkTask
 from agent_challenge.evaluation.eval_agent_llm import MODE_MEASURED_OPENROUTER
 from agent_challenge.evaluation.plan_scoring import (
+    GUEST_ARTIFACT_PROOF_AGENT_HASH_MISMATCH,
+    GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+    GUEST_ARTIFACT_PROOF_MISSING,
+    CanonicalPlanScoringError,
     canonical_eval_plan_json,
     persist_direct_eval_result,
     persist_direct_eval_result_from_plan,
+    require_host_guest_artifact_proof,
 )
 from agent_challenge.evaluation.score_chain_gate import (
     REFUSE_INCOMPLETE_CHAIN,
@@ -893,7 +898,37 @@ async def process_direct_eval_result(
                 "Eval result body is not canonical",
                 code="result_noncanonical",
             )
-    except (eval_wire.EvalWireError, ValueError, KeyError, TypeError) as exc:
+        # Host enforcement before receipt: success path must carry a guest
+        # dual-hash proof bound to the immutable plan agent_hash. Distinct
+        # codes keep reject-as-invalid distinguishable from score-0 burns.
+        try:
+            guest_proof = require_host_guest_artifact_proof(
+                validated,
+                expected_agent_hash=plan["agent_hash"],
+            )
+        except CanonicalPlanScoringError as exc:
+            code = exc.reason_code or "result_invalid"
+            if code not in {
+                GUEST_ARTIFACT_PROOF_MISSING,
+                GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+                GUEST_ARTIFACT_PROOF_AGENT_HASH_MISMATCH,
+            }:
+                code = "result_invalid"
+            raise DirectEvalResultError(str(exc), code=code) from exc
+        validated = {**validated, "guest_artifact_proof": guest_proof}
+    except DirectEvalResultError:
+        raise
+    except eval_wire.EvalWireError as exc:
+        message = str(exc).lower()
+        if "guest_artifact_proof" in message:
+            code = GUEST_ARTIFACT_PROOF_HASH_MISMATCH
+            if "missing" in message:
+                code = GUEST_ARTIFACT_PROOF_MISSING
+            raise DirectEvalResultError(str(exc), code=code) from exc
+        raise DirectEvalResultError(
+            "Eval result schema or plan mismatch", code="result_invalid"
+        ) from exc
+    except (ValueError, KeyError, TypeError) as exc:
         raise DirectEvalResultError(
             "Eval result schema or plan mismatch", code="result_invalid"
         ) from exc

@@ -48,6 +48,18 @@ MEASUREMENT = {
 AGENT_HASH = "1" * 64
 
 
+def _guest_proof(*, agent_hash: str = AGENT_HASH) -> dict:
+    """Matching host guest_artifact_proof for plan agent_hash."""
+    return {
+        "schema_version": 1,
+        "expected_hash": agent_hash,
+        "download_hash": agent_hash,
+        "executed_hash": agent_hash,
+        "byte_size": 32,
+        "match": True,
+    }
+
+
 def _policy(
     *,
     per_task_aggregation: str = "mean",
@@ -352,6 +364,7 @@ def test_direct_result_validation_reconstructs_every_binding_from_plan() -> None
                 },
             },
         },
+        "guest_artifact_proof": _guest_proof(),
     }
 
     assert validate_eval_result_from_plan(plan, request)["score_record"] == record
@@ -412,6 +425,7 @@ async def test_direct_result_persistence_uses_the_persisted_plan(
                 },
             },
         },
+        "guest_artifact_proof": _guest_proof(),
     }
     async with database_session() as session:
         job_id = await _seed_plan_job(session, plan=plan, scores=[1.0, 0.0, 1.0], tmp_path=tmp_path)

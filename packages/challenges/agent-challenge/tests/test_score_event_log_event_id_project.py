@@ -30,6 +30,9 @@ import pytest
 
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import eval_wire as ew
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.keyrelease.quote import (
     APP_IMR,
     COMPOSE_HASH_EVENT,
@@ -48,6 +51,18 @@ MEASUREMENT = {
     "compose_hash": "c" * 64,
     "os_image_hash": "e" * 64,
 }
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _identity_event_log() -> tuple[list[dict[str, Any]], str]:
@@ -303,6 +318,7 @@ def test_schema_v2_emit_with_live_shaped_empty_event_log(monkeypatch) -> None:
         score_record=record,
         image_digest="registry.example/eval@sha256:" + "d" * 64,
         vm_config=None,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     payload = json.loads(line.split("=", 1)[1])
     assert ew.validate_eval_result_request(payload) == payload
@@ -369,7 +385,8 @@ def test_schema_v2_emit_fails_closed_imr3_runtime_empty_event() -> None:
             score_record=record,
             image_digest="registry.example/eval@sha256:" + "d" * 64,
             vm_config=None,
-        )
+        guest_artifact_evidence=_guest_evidence_for_emit(),
+    )
 
 
 def test_project_preserves_rtmr3_for_identity_only_log() -> None:

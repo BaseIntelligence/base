@@ -29,6 +29,9 @@ import pytest
 
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import eval_wire as ew
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.keyrelease.quote import (
     COMPOSE_HASH_EVENT,
     KEY_PROVIDER_EVENT,
@@ -54,6 +57,18 @@ DSTACK_VM_CONFIG_RAW: dict[str, Any] = {
     "num_gpus": 0,
     "hugepages": False,
 }
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _identity_event_log() -> tuple[list[dict[str, Any]], str]:
@@ -275,6 +290,7 @@ def test_schema_v2_emit_with_dstack_shaped_quote_vm_config(monkeypatch) -> None:
         image_digest="registry.example/eval@sha256:" + "d" * 64,
         # Critical: no schema-shaped env override — force quote.vm_config path.
         vm_config=None,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     payload = json.loads(line.split("=", 1)[1])
     assert ew.validate_eval_result_request(payload) == payload
@@ -343,4 +359,5 @@ def test_schema_v2_emit_fails_closed_when_vm_config_missing_cpu() -> None:
             score_record=record,
             image_digest="registry.example/eval@sha256:" + "d" * 64,
             vm_config=None,
-        )
+        guest_artifact_evidence=_guest_evidence_for_emit(),
+    )

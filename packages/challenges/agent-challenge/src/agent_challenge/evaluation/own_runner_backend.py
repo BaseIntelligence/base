@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -545,6 +546,10 @@ def _agent_source_sha256(agent_import_path: str) -> str:
 AGENT_ARTIFACT_PATH_ENV = "CHALLENGE_PHALA_AGENT_ARTIFACT"
 #: Alternate artifact path env (legacy workspace mount).
 AGENT_ARTIFACT_PATH_ENV_ALT = "CHALLENGE_AGENT_ARTIFACT"
+#: Last structured guest execution evidence from :func:`assert_agent_artifact_matches_plan`.
+#: Populated only after a successful dual-hash prove; ``None`` until then / on failure.
+#: Exported for a later attestation-envelope fold (do not treat as a trust input).
+LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE: Any | None = None
 
 
 def agent_artifact_sha256(artifact_path: Path | str) -> str:
@@ -568,7 +573,6 @@ def resolve_agent_artifact_path() -> Path | None:
         raw = (os.environ.get(env_name) or "").strip()
         if raw:
             return Path(raw)
-    plan_hash_env = (os.environ.get(PHALA_AGENT_HASH_ENV) or "").strip()
     # Common mount from the broker: workspace still carries the original ZIP.
     for candidate in (
         Path("/workspace/artifact/agent.zip"),
@@ -577,10 +581,6 @@ def resolve_agent_artifact_path() -> Path | None:
     ):
         if candidate.is_file():
             return candidate
-    # When only the declared plan hash is available (miner injected digest only),
-    # identity is checked by equality against that declared hash env.
-    if plan_hash_env:
-        return None
     return None
 
 
@@ -588,39 +588,59 @@ def assert_agent_artifact_matches_plan(
     *,
     artifact_path: Path | str | None,
     plan_agent_hash: str,
-    declared_agent_hash: str | None = None,
+    download_bytes: bytes | None = None,
 ) -> str:
-    """Ensure plan ``agent_hash`` matches submitted ZIP (or declared ZIP digest).
+    """Ensure plan ``agent_hash`` matches submitted ZIP bytes on disk.
 
-    Prefers hashing the exact CVM-local artifact bytes. When the artifact is not
-    present on disk, requires a declared ``CHALLENGE_PHALA_AGENT_HASH`` that
-    equals the plan (the digest the miner/validator already bound to the ZIP).
-    Never uses the entry-module source as artifact identity.
+    Requires hashing the exact CVM-local artifact bytes. Never accepts a
+    declared or environment-supplied digest as proof of identity — that path
+    was a tautology (host injects plan hash, guest echoes it). When bytes are
+    unavailable the guest fails closed.
+
+    Also builds guest ``GuestArtifactExecutionEvidence`` via dual guest-side
+    SHA-256 (download observation + executed observation).
+    The evidence is stored on :data:`LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE` for
+    a later attestation-envelope fold. Optional ``download_bytes`` is the raw
+    buffer observed at fetch time; when omitted the path is dual-read.
     """
 
-    expected = plan_agent_hash
-    if artifact_path is not None:
-        actual = agent_artifact_sha256(artifact_path)
-        if actual != expected:
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        evidence_from_download_and_path,
+        prove_guest_artifact_execution_from_path,
+    )
+
+    global LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE
+    LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = None
+
+    expected = (plan_agent_hash or "").strip()
+    if not expected:
+        raise ValueError(
+            "immutable Eval plan agent_hash is missing; guest cannot verify artifact identity"
+        )
+    if artifact_path is None and download_bytes is None:
+        raise ValueError(
+            "agent artifact bytes unavailable; guest cannot verify plan agent_hash "
+            "(refusing environment/declared digest echo)"
+        )
+    if download_bytes is not None:
+        if artifact_path is None:
             raise ValueError(
-                "agent artifact does not match immutable Eval plan agent_hash "
-                f"(expected {expected}, got {actual})"
+                "agent artifact path unavailable for execution hash; "
+                "guest cannot verify plan agent_hash"
             )
-        return actual
-    declared = (declared_agent_hash or "").strip() or (
-        os.environ.get(PHALA_AGENT_HASH_ENV) or ""
-    ).strip()
-    if not declared:
-        raise ValueError(
-            "agent artifact path and CHALLENGE_PHALA_AGENT_HASH are both missing; "
-            "cannot verify plan agent_hash domain"
+        evidence = evidence_from_download_and_path(
+            plan_agent_hash=expected,
+            download_bytes=download_bytes,
+            executed_artifact_path=artifact_path,
         )
-    if declared != expected:
-        raise ValueError(
-            "declared agent_hash does not match immutable Eval plan agent_hash "
-            f"(expected {expected}, got {declared})"
+    else:
+        evidence = prove_guest_artifact_execution_from_path(
+            plan_agent_hash=expected,
+            artifact_path=artifact_path,  # type: ignore[arg-type]
         )
-    return declared
+    LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    # Both hashes equal expected when match=True (prove_* already fail-closed).
+    return evidence.executed_hash
 
 
 #: Env path for an already-extracted package tree (guest recompute target).
@@ -676,7 +696,9 @@ def assert_package_tree_matches_plan(
 
     Prefer an extracted package directory. When only the ZIP is available,
     recompute from ZIP member paths+contents (same algorithm as submit).
-    Empty/missing plan binding refuses (VAL-AGATE-002 / 010).
+    Empty/missing plan binding refuses (VAL-AGATE-002 / 010). Never accepts a
+    declared or environment-supplied digest as proof — that path was a
+    tautology. When neither package root nor ZIP bytes are available, raise.
     """
 
     expected = (plan_package_tree_sha or "").strip()
@@ -687,7 +709,7 @@ def assert_package_tree_matches_plan(
         )
     if package_root is not None:
         actual = package_tree_sha_from_directory(package_root)
-        if actual != expected:
+        if not _digest_hex_equal(actual, expected):
             raise ValueError(
                 "package_tree_sha mismatch vs immutable Eval plan "
                 f"(expected {expected}, got {actual})"
@@ -703,26 +725,29 @@ def assert_package_tree_matches_plan(
             actual = compute_package_tree_sha_from_zip_bytes(Path(zip_path).read_bytes())
         except (OSError, ArtifactValidationError) as exc:
             raise ValueError(f"package_tree_sha zip recompute failed: {exc}") from exc
-        if actual != expected:
+        if not _digest_hex_equal(actual, expected):
             raise ValueError(
                 "package_tree_sha mismatch vs immutable Eval plan "
                 f"(expected {expected}, got {actual})"
             )
         return actual
-    declared = (os.environ.get("CHALLENGE_PHALA_PACKAGE_TREE_SHA") or "").strip() or (
-        os.environ.get("CHALLENGE_AGENT_PACKAGE_TREE_SHA") or ""
-    ).strip()
-    if not declared:
-        raise ValueError(
-            "package root and agent zip are both unavailable; "
-            "cannot verify plan package_tree_sha before trials"
-        )
-    if declared != expected:
-        raise ValueError(
-            "declared package_tree_sha does not match immutable Eval plan "
-            f"(expected {expected}, got {declared})"
-        )
-    return declared
+    raise ValueError(
+        "package root and agent zip are both unavailable; "
+        "guest cannot verify plan package_tree_sha "
+        "(refusing environment/declared digest echo)"
+    )
+
+
+def _digest_hex_equal(actual: str, expected: str) -> bool:
+    """Constant-time hex digest compare (length mismatch => unequal)."""
+
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+    actual_b = actual.encode("utf-8")
+    expected_b = expected.encode("utf-8")
+    if len(actual_b) != len(expected_b):
+        return False
+    return hmac.compare_digest(actual_b, expected_b)
 
 
 def _redacting_trial_runner(
@@ -1210,6 +1235,7 @@ def _emit_job_result(
                 quote_provider=DstackQuoteProvider(binding["dstack_endpoint"]),
                 manifest_sha256=manifest_sha256,
                 vm_config=binding["vm_config"],
+                guest_artifact_evidence=LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE,
             )
             attested = True
             _emit_guest_eval_stage("score_quote_ok")
@@ -1601,10 +1627,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             # identity). Never hash only the entry Python module here.
             try:
                 artifact_path = resolve_agent_artifact_path()
+                # Dual guest-side hash: download observation + executed observation.
+                # Never echo a host-supplied digest; prove_* recomputes from bytes.
                 assert_agent_artifact_matches_plan(
                     artifact_path=artifact_path,
                     plan_agent_hash=eval_plan["agent_hash"],
                 )
+                # Structured evidence is on LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE
+                # (executed_hash hex is the assert return; envelope fold uses the object).
+                if LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE is not None:
+                    ev = LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE
+                    _emit_guest_eval_stage(
+                        "agent_identity_ok",
+                        expected_hash=ev.expected_hash,
+                        download_hash=ev.download_hash,
+                        executed_hash=ev.executed_hash,
+                        byte_size=ev.byte_size,
+                        match=ev.match,
+                    )
                 assert_package_tree_matches_plan(
                     package_root=resolve_agent_package_root(artifact_path=artifact_path),
                     plan_package_tree_sha=str(eval_plan.get("package_tree_sha") or ""),

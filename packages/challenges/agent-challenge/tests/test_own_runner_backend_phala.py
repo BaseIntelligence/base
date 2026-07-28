@@ -20,6 +20,9 @@ import pytest
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import eval_wire as ew
 from agent_challenge.evaluation import own_runner_backend as backend
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.orchestrator import JobResult, TrialOutcome
 from agent_challenge.evaluation.own_runner.result_schema import (
     RESULT_LINE_PREFIX,
@@ -63,6 +66,18 @@ class _FakeQuoteResponse:
             {"vcpu": 1, "memory_mb": 2048, "os_image_hash": MEASUREMENT["os_image_hash"]}
         )
         self.report_data = ""
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _fake_provider_factory(quote: str = FAKE_QUOTE, *, raises: Exception | None = None):
@@ -171,9 +186,25 @@ def _set_eval_plan_env(monkeypatch) -> None:
         "agent_challenge.evaluation.own_runner_backend._acquire_golden_key_if_required",
         lambda **_: None,
     )
+    def _fake_assert_agent(**_kwargs):
+        from agent_challenge.canonical import eval_wire as _ew
+        from agent_challenge.evaluation import own_runner_backend as orb
+        from agent_challenge.evaluation.guest_execution_evidence import (
+            prove_guest_artifact_execution,
+        )
+
+        payload = b"phala-own-runner-agent-zip"
+        evidence = prove_guest_artifact_execution(
+            plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+            download_bytes=payload,
+            executed_bytes=payload,
+        )
+        orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+        return evidence.executed_hash
+
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend.assert_agent_artifact_matches_plan",
-        lambda **_: "f" * 64,
+        _fake_assert_agent,
     )
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend.assert_package_tree_matches_plan",

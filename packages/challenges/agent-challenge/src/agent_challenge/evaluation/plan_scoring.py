@@ -16,9 +16,30 @@ from typing import Any
 from agent_challenge.canonical import eval_wire as ew
 from agent_challenge.core.models import EvaluationJob
 
+#: Stable refuse code when production attestation sees a legacy validator_nonce
+#: report_data preimage instead of the schema-v2 score binding.
+#: Note: this gates the SCORE BINDING inside report_data (schema_version: 2),
+#: not the outer wire score_record.schema_version (which may remain 1).
+LEGACY_REPORT_DATA_REJECTED = "legacy_report_data_rejected"
+
+#: Host refuse codes for guest dual-hash execution proof (success path).
+#: Distinct from score-0 burns and generic attestation_verification_failed.
+GUEST_ARTIFACT_PROOF_MISSING = "guest_artifact_proof_missing"
+GUEST_ARTIFACT_PROOF_HASH_MISMATCH = "guest_artifact_proof_hash_mismatch"
+GUEST_ARTIFACT_PROOF_AGENT_HASH_MISMATCH = "guest_artifact_proof_agent_hash_mismatch"
+
 
 class CanonicalPlanScoringError(ValueError):
-    """Raised when immutable plan-backed scoring cannot be reconstructed."""
+    """Raised when immutable plan-backed scoring cannot be reconstructed.
+
+    ``reason_code`` is a stable machine-readable code when the failure is a
+    known production refuse (e.g. ``legacy_report_data_rejected``).  Callers
+    that only inspect the exception message remain compatible.
+    """
+
+    def __init__(self, message: str, *, reason_code: str | None = None) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True)
@@ -169,6 +190,138 @@ def scoring_policy_from_settings(settings: Any) -> dict[str, Any]:
         ) from exc
 
 
+def require_schema_v2_score_report_data(
+    *,
+    reported_report_data: str,
+    canonical_measurement: Mapping[str, Any],
+    agent_hash: str,
+    task_ids: Sequence[str],
+    scores_digest: str,
+    eval_run_id: str,
+    score_nonce: str,
+    key_release_nonce: str | None = None,
+    phala_attestation_enabled: bool = True,
+) -> str:
+    """Require schema-v2 score-binding ``report_data`` on the production path.
+
+    When ``phala_attestation_enabled`` is true, a ``report_data`` that only
+    validates under the legacy ``validator_nonce`` construction is fail-closed
+    rejected with :data:`LEGACY_REPORT_DATA_REJECTED`.  There is no warning or
+    downgrade-and-accept path.
+
+    Naming subtlety: the outer wire ``score_record.schema_version`` may remain
+    1; this function gates the SCORE BINDING hashed into TDX ``report_data``
+    (``schema_version: 2`` via :func:`eval_wire.build_score_binding`).
+    """
+
+    from agent_challenge.canonical import report_data as rd
+
+    if not isinstance(reported_report_data, str) or not reported_report_data:
+        raise CanonicalPlanScoringError(
+            "result report_data does not match immutable Eval plan",
+            reason_code="result_report_data_mismatch",
+        )
+
+    expected_binding = ew.build_score_binding(
+        canonical_measurement=canonical_measurement,
+        agent_hash=agent_hash,
+        eval_run_id=eval_run_id,
+        score_nonce=score_nonce,
+        scores_digest=scores_digest,
+        task_ids=list(task_ids),
+    )
+    expected_hex = ew.score_report_data_hex(expected_binding)
+    reported = reported_report_data.lower()
+    if reported == expected_hex.lower():
+        return expected_hex
+
+    if phala_attestation_enabled:
+        # Detect legacy validator_nonce constructions that production must never
+        # accept.  The live bug bound key_release_nonce (and sometimes score_nonce)
+        # as validator_nonce; check both candidates.
+        legacy_nonces: list[str] = []
+        if isinstance(key_release_nonce, str) and key_release_nonce:
+            legacy_nonces.append(key_release_nonce)
+        if isinstance(score_nonce, str) and score_nonce and score_nonce not in legacy_nonces:
+            legacy_nonces.append(score_nonce)
+        for nonce in legacy_nonces:
+            try:
+                legacy_hex = rd.report_data_hex(
+                    canonical_measurement=canonical_measurement,
+                    agent_hash=agent_hash,
+                    task_ids=list(task_ids),
+                    scores_digest=scores_digest,
+                    validator_nonce=nonce,
+                )
+            except (TypeError, ValueError):
+                continue
+            if reported == legacy_hex.lower():
+                raise CanonicalPlanScoringError(
+                    "legacy validator_nonce report_data rejected; "
+                    "production requires schema-v2 score binding",
+                    reason_code=LEGACY_REPORT_DATA_REJECTED,
+                )
+
+    raise CanonicalPlanScoringError(
+        "result report_data does not match immutable Eval plan",
+        reason_code="result_report_data_mismatch",
+    )
+
+
+def require_host_guest_artifact_proof(
+    result_request: Mapping[str, Any],
+    *,
+    expected_agent_hash: str,
+) -> dict[str, Any]:
+    """Require and bind guest_artifact_proof to the submission agent hash.
+
+    Success/completed Eval results must carry a dual-hash proof that the guest
+    executed the same artifact the host already knows (plan/submission
+    ``agent_hash``). Fail-closed with greppable reason codes — never a silent
+    score-0 that looks like a legitimate bad run.
+
+    Wire-level ``validate_eval_result_request`` keeps the field optional for
+    legacy stored bodies; this host policy is the scoring/admission chokepoint.
+    """
+
+    if not isinstance(result_request, Mapping):
+        raise CanonicalPlanScoringError(
+            "success Eval result requires guest_artifact_proof; result request is not an object",
+            reason_code=GUEST_ARTIFACT_PROOF_MISSING,
+        )
+    if "guest_artifact_proof" not in result_request:
+        raise CanonicalPlanScoringError(
+            "success Eval result requires guest_artifact_proof"
+            " (missing on host admission/scoring path)",
+            reason_code=GUEST_ARTIFACT_PROOF_MISSING,
+        )
+    try:
+        proof = ew.validate_guest_artifact_proof(result_request["guest_artifact_proof"])
+    except ew.EvalWireError as exc:
+        raise CanonicalPlanScoringError(
+            f"guest_artifact_proof rejected: {exc}",
+            reason_code=GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+        ) from exc
+
+    expected = str(expected_agent_hash).lower()
+    expected_hash = str(proof["expected_hash"]).lower()
+    download_hash = str(proof["download_hash"]).lower()
+    executed_hash = str(proof["executed_hash"]).lower()
+    if not (expected_hash == download_hash == executed_hash):
+        raise CanonicalPlanScoringError(
+            "guest_artifact_proof hashes must be equal"
+            " (expected_hash == download_hash == executed_hash)",
+            reason_code=GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+        )
+    if expected_hash != expected:
+        raise CanonicalPlanScoringError(
+            "guest_artifact_proof does not match submission agent_hash"
+            " (proof describes a different artifact than the immutable plan)",
+            reason_code=GUEST_ARTIFACT_PROOF_AGENT_HASH_MISMATCH,
+        )
+    return proof
+
+
 def validate_eval_result_from_plan(
     eval_plan: Mapping[str, Any],
     result_request: Mapping[str, Any],
@@ -178,14 +331,30 @@ def validate_eval_result_from_plan(
     This does not verify the TDX quote.  It establishes the deterministic
     contract the direct endpoint supplies to its quote verifier: run identity,
     submission/agent identity, selected set, ordered trial record, plan policy,
-    expected image/measurement, and report-data binding are all reconstructed
-    from the same persisted plan bytes.
+    expected image/measurement, guest artifact execution proof, and report-data
+    binding are all reconstructed from the same persisted plan bytes.
+
+    Production always requires the schema-v2 score binding inside report_data
+    (see :func:`require_schema_v2_score_report_data`).  Outer wire
+    ``score_record.schema_version`` may remain 1.
     """
 
     plan = _validated_plan(eval_plan)
     try:
         request = ew.validate_eval_result_request(result_request)
     except ew.EvalWireError as exc:
+        message = str(exc)
+        lower = message.lower()
+        if "guest_artifact_proof" in lower:
+            if "match" in lower or "hash" in lower or "equal" in lower:
+                raise CanonicalPlanScoringError(
+                    f"invalid Eval result request: {exc}",
+                    reason_code=GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+                ) from exc
+            raise CanonicalPlanScoringError(
+                f"invalid Eval result request: {exc}",
+                reason_code=GUEST_ARTIFACT_PROOF_HASH_MISMATCH,
+            ) from exc
         raise CanonicalPlanScoringError(f"invalid Eval result request: {exc}") from exc
     if request["eval_run_id"] != plan["eval_run_id"]:
         raise CanonicalPlanScoringError("result eval_run_id does not match immutable Eval plan")
@@ -193,6 +362,12 @@ def validate_eval_result_from_plan(
         raise CanonicalPlanScoringError("result submission_id does not match immutable Eval plan")
     if request["agent_hash"] != plan["agent_hash"]:
         raise CanonicalPlanScoringError("result agent_hash does not match immutable Eval plan")
+    # Host enforcement: success path must prove the guest executed the submitted
+    # artifact (plan agent_hash). Wire keeps the field optional for legacy bodies.
+    guest_proof = require_host_guest_artifact_proof(
+        request,
+        expected_agent_hash=plan["agent_hash"],
+    )
     record = _validated_record(plan, request["score_record"])
     proof = request["execution_proof"]
     if proof["image_digest"] != plan["eval_app"]["image_ref"]:
@@ -209,17 +384,23 @@ def validate_eval_result_from_plan(
         field: proof["attestation"]["measurement"][field] for field in expected_measurement
     } != expected_measurement:
         raise CanonicalPlanScoringError("result measurement does not match immutable Eval plan")
-    expected_binding = ew.build_score_binding(
+    task_ids = [task["task_id"] for task in plan["selected_tasks"]]
+    # Production path: require schema-v2 score binding; hard-reject legacy
+    # validator_nonce report_data with LEGACY_REPORT_DATA_REJECTED.
+    require_schema_v2_score_report_data(
+        reported_report_data=str(proof["attestation"]["report_data"]),
         canonical_measurement=expected_measurement,
         agent_hash=plan["agent_hash"],
+        task_ids=task_ids,
+        scores_digest=request["scores_digest"],
         eval_run_id=plan["eval_run_id"],
         score_nonce=plan["score_nonce"],
-        scores_digest=request["scores_digest"],
-        task_ids=[task["task_id"] for task in plan["selected_tasks"]],
+        key_release_nonce=plan.get("key_release_nonce")
+        if isinstance(plan.get("key_release_nonce"), str)
+        else None,
+        phala_attestation_enabled=True,
     )
-    if proof["attestation"]["report_data"] != ew.score_report_data_hex(expected_binding):
-        raise CanonicalPlanScoringError("result report_data does not match immutable Eval plan")
-    return {**request, "score_record": record}
+    return {**request, "score_record": record, "guest_artifact_proof": guest_proof}
 
 
 def persist_direct_eval_result(
@@ -408,6 +589,10 @@ def plan_backed_job_is_consistent(job: EvaluationJob) -> bool:
 
 
 __all__ = [
+    "GUEST_ARTIFACT_PROOF_AGENT_HASH_MISMATCH",
+    "GUEST_ARTIFACT_PROOF_HASH_MISMATCH",
+    "GUEST_ARTIFACT_PROOF_MISSING",
+    "LEGACY_REPORT_DATA_REJECTED",
     "CanonicalPlanScoringError",
     "PlanFinalScore",
     "aggregate_trial_scores_from_eval_plan",
@@ -422,6 +607,8 @@ __all__ = [
     "persist_eval_plan",
     "plan_backed_job_is_consistent",
     "replay_score_from_eval_plan",
+    "require_host_guest_artifact_proof",
+    "require_schema_v2_score_report_data",
     "scoring_policy_from_settings",
     "validate_eval_result_from_plan",
     "validate_score_record_from_eval_plan",

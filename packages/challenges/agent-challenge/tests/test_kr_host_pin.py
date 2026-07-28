@@ -208,6 +208,11 @@ def test_encrypt_eval_secrets_refuses_legacy_free_http_key_release_url() -> None
         "CHALLENGE_PHALA_EVAL_PLAN": "{}",
         "EVAL_RUN_TOKEN": dep.eval_run_token,
         "LLM_COST_LIMIT": "1.0",
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_URL": (
+            f"https://chain.joinbase.ai/challenges/agent-challenge"
+            f"/eval/v1/runs/{dep.eval_run_id}/artifact"
+        ),
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN": "v1.test.grant.placeholder",
         KEY_RELEASE_URL_ENV: "https://evil.example/key-release",
     }
     with pytest.raises(EvalDeploymentError, match="KEY_RELEASE|key_release|not miner"):
@@ -223,6 +228,11 @@ def test_encrypt_eval_secrets_refuses_free_url_mismatching_plan_authority() -> N
         "CHALLENGE_PHALA_EVAL_PLAN": "{}",
         "EVAL_RUN_TOKEN": dep.eval_run_token,
         "LLM_COST_LIMIT": "1.0",
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_URL": (
+            f"https://chain.joinbase.ai/challenges/agent-challenge"
+            f"/eval/v1/runs/{dep.eval_run_id}/artifact"
+        ),
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN": "v1.test.grant.placeholder",
         KEY_RELEASE_URL_ENV: "evil.example:8701",
     }
     with pytest.raises(EvalDeploymentError, match="KEY_RELEASE|key_release|not miner"):
@@ -243,6 +253,11 @@ def test_encrypt_eval_secrets_honest_path_without_free_kr_url() -> None:
         "CHALLENGE_PHALA_EVAL_PLAN": '{"k":1}',
         "EVAL_RUN_TOKEN": dep.eval_run_token,
         "LLM_COST_LIMIT": "2.5",
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_URL": (
+            f"https://chain.joinbase.ai/challenges/agent-challenge"
+            f"/eval/v1/runs/{dep.eval_run_id}/artifact"
+        ),
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN": "v1.test.grant.placeholder",
         "OPENROUTER_API_KEY": "sk-or-v1-test-not-real",
         "CHALLENGE_PHALA_RA_TLS_SERVER_CA_PEM": (
             "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
@@ -257,9 +272,7 @@ def test_encrypt_eval_secrets_honest_path_without_free_kr_url() -> None:
 def test_measure_time_placeholder_not_accepted_as_signed_plan_endpoint() -> None:
     """Measure-time HTTPS placeholder is for compose pin only, not plan trust root."""
 
-    plan = _eval_plan(
-        key_release_endpoint=eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER
-    )
+    plan = _eval_plan(key_release_endpoint=eval_deploy.MEASURE_TIME_EVAL_KEY_RELEASE_PLACEHOLDER)
     with pytest.raises(ew.EvalWireError, match="key_release_endpoint"):
         ew.validate_eval_plan(plan)
 

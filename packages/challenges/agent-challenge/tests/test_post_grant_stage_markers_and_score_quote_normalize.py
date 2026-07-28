@@ -27,6 +27,9 @@ import pytest
 
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import eval_wire as ew
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.orchestrator import JobResult, TrialOutcome
 from agent_challenge.evaluation.own_runner.result_schema import (
     RESULT_LINE_PREFIX,
@@ -48,6 +51,34 @@ from agent_challenge.keyrelease.quote import (
     runtime_event_digest,
 )
 
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+
+def _fake_assert_agent_sets_evidence(**_kwargs):
+    from agent_challenge.canonical import eval_wire as _ew
+    from agent_challenge.evaluation import own_runner_backend as orb
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        prove_guest_artifact_execution,
+    )
+
+    payload = b"phala-own-runner-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+    orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    return evidence.executed_hash
+
+
 ATTESTED_REVIEW_ENABLED_ENV = "CHALLENGE_ATTESTED_REVIEW_ENABLED"
 
 MEASUREMENT = {
@@ -58,6 +89,9 @@ MEASUREMENT = {
     "compose_hash": "c" * 64,
     "os_image_hash": "e" * 64,
 }
+
+
+
 
 
 def _identity_events_empty_digests() -> tuple[list[dict[str, Any]], str]:
@@ -238,6 +272,7 @@ def test_score_path_schema_v2_emit_with_empty_imr3_event_log(monkeypatch) -> Non
             "memory_mb": 2048,
             "os_image_hash": MEASUREMENT["os_image_hash"],
         },
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     payload = json.loads(line.split("=", 1)[1])
     assert ew.validate_eval_result_request(payload) == payload
@@ -370,7 +405,11 @@ def _set_happy_phala_env(monkeypatch, *, trials: int = 1) -> None:
     monkeypatch.setenv(PHALA_EVAL_PLAN_ENV, json.dumps(plan))
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend.assert_agent_artifact_matches_plan",
-        lambda **_: "f" * 64,
+        _fake_assert_agent_sets_evidence,
+    )
+    monkeypatch.setattr(
+        "agent_challenge.evaluation.own_runner_backend.assert_package_tree_matches_plan",
+        lambda **_: "b" * 64,
     )
     monkeypatch.setattr(
         "agent_challenge.evaluation.own_runner_backend._preflight_eval_plan_tasks",

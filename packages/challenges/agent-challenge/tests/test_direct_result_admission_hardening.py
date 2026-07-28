@@ -62,6 +62,18 @@ OS_IMAGE_HASH = os_image_hash_from_registers(REGS["mrtd"], REGS["rtmr1"], REGS["
 AGENT_HASH = "55" * 32
 
 
+def _guest_proof(*, agent_hash: str = AGENT_HASH) -> dict:
+    """Matching host guest_artifact_proof for plan agent_hash."""
+    return {
+        "schema_version": 1,
+        "expected_hash": agent_hash,
+        "download_hash": agent_hash,
+        "executed_hash": agent_hash,
+        "byte_size": 32,
+        "match": True,
+    }
+
+
 def _plan(*, eval_run_id: str = "eval-admission-1") -> dict[str, Any]:
     policy = {
         "schema_version": 1,
@@ -258,6 +270,7 @@ def _request(plan: dict[str, Any]) -> dict[str, Any]:
                 },
             },
         },
+        "guest_artifact_proof": _guest_proof(),
     }
 
 

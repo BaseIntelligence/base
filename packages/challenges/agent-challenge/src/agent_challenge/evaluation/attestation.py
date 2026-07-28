@@ -361,9 +361,17 @@ class AttestationGate:
             ):
                 return AttestationDecision.of(AttestationOutcome.VERIFICATION_FAILED)
         try:
-            from agent_challenge.evaluation.plan_scoring import validate_eval_result_from_plan
+            from agent_challenge.evaluation.plan_scoring import (
+                CanonicalPlanScoringError,
+                validate_eval_result_from_plan,
+            )
 
             request = validate_eval_result_from_plan(eval_plan, result_request)
+        except CanonicalPlanScoringError as exc:
+            return AttestationDecision(
+                outcome=AttestationOutcome.VERIFICATION_FAILED,
+                reason=exc.reason_code or "attestation_verification_failed",
+            )
         except (ValueError, KeyError, TypeError):
             return AttestationDecision.of(AttestationOutcome.VERIFICATION_FAILED)
 

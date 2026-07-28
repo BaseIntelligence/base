@@ -283,18 +283,26 @@ def test_shared_result_request_binds_agent_hash_and_proof() -> None:
     assert ew.agent_artifact_sha256_hex(zip_bytes) == validated["agent_hash"]
 
 
-def test_plan_agent_hash_domain_is_submission_zip_hash() -> None:
+def test_plan_agent_hash_domain_is_submission_zip_hash(tmp_path: Path) -> None:
     """Plan-bound agent_hash is the same SHA-256 domain as submitted ZIP bytes."""
 
     zip_bytes = b"PK submission-zip-domain"
     digest = hashlib.sha256(zip_bytes).hexdigest()
     assert ew.agent_artifact_sha256_hex(zip_bytes) == digest
-    # Declared env/path mismatch is fail-closed before quotation.
-    with pytest.raises(ValueError, match="agent_hash"):
+    # Real on-disk ZIP is required; declared/env digests are not accepted.
+    zip_path = tmp_path / "agent.zip"
+    zip_path.write_bytes(zip_bytes)
+    assert (
+        backend.assert_agent_artifact_matches_plan(
+            artifact_path=zip_path,
+            plan_agent_hash=digest,
+        )
+        == digest
+    )
+    with pytest.raises(ValueError, match=r"cannot verify|unavailable|artifact"):
         backend.assert_agent_artifact_matches_plan(
             artifact_path=None,
             plan_agent_hash=digest,
-            declared_agent_hash="0" * 64,
         )
 
 

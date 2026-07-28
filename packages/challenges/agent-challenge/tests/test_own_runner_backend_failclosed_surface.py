@@ -34,6 +34,23 @@ from agent_challenge.keyrelease.client import (
 )
 
 
+def _fake_assert_agent_sets_evidence(**_kwargs):
+    from agent_challenge.canonical import eval_wire as _ew
+    from agent_challenge.evaluation import own_runner_backend as orb
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        prove_guest_artifact_execution,
+    )
+
+    payload = b"phala-own-runner-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+    orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    return evidence.executed_hash
+
+
 def _canned_result() -> JobResult:
     return JobResult(
         status="completed",
@@ -119,7 +136,7 @@ def test_preflight_ok_marker_with_live_like_plan(monkeypatch, tmp_path, capsys) 
     monkeypatch.setattr(
         backend,
         "assert_agent_artifact_matches_plan",
-        lambda **_: plan["agent_hash"],
+        _fake_assert_agent_sets_evidence,
     )
     monkeypatch.setattr(
         backend,
@@ -205,12 +222,12 @@ def test_quote_provider_bare_exception_maps_to_key_release_not_terminal(
 ) -> None:
     """quote_provider raising plain Exception must surface phala_key_release_failed."""
 
-    plan = _enable_phala(monkeypatch)
+    _enable_phala(monkeypatch)
     monkeypatch.setenv(KEY_RELEASE_URL_ENV, "https://validator.test:8700")
     monkeypatch.setattr(
         backend,
         "assert_agent_artifact_matches_plan",
-        lambda **_: plan["agent_hash"],
+        _fake_assert_agent_sets_evidence,
     )
     monkeypatch.setattr(
         backend,
@@ -278,12 +295,12 @@ def test_quote_provider_bare_exception_maps_to_key_release_not_terminal(
 
 
 def test_key_release_error_still_maps_via_reason_code(monkeypatch, tmp_path, capsys) -> None:
-    plan = _enable_phala(monkeypatch)
+    _enable_phala(monkeypatch)
     monkeypatch.setenv(KEY_RELEASE_URL_ENV, "https://validator.test:8700")
     monkeypatch.setattr(
         backend,
         "assert_agent_artifact_matches_plan",
-        lambda **_: plan["agent_hash"],
+        _fake_assert_agent_sets_evidence,
     )
     monkeypatch.setattr(
         backend,

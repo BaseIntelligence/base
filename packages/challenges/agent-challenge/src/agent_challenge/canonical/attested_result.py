@@ -66,6 +66,8 @@ EXECUTION_PROOF_VERSION = 1
 EXECUTION_PROOF_RESULT_KEY = "execution_proof"
 #: Additive key carrying the sec-6 ``report_data`` preimage (verifier-checkable).
 ATTESTATION_BINDING_RESULT_KEY = "attestation_binding"
+#: Additive key on the schema-v2 Eval result request carrying guest dual-hash proof.
+GUEST_ARTIFACT_PROOF_RESULT_KEY = "guest_artifact_proof"
 
 #: Reason code emitted on the fail-closed path when a genuine quote cannot be
 #: produced (see :mod:`agent_challenge.evaluation.own_runner.reason_codes`).
@@ -766,6 +768,52 @@ def validate_execution_proof_envelope(payload: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Extended result assembly + emission
 # --------------------------------------------------------------------------- #
+
+
+def build_guest_artifact_proof(evidence: Any) -> dict[str, Any]:
+    """Fold :class:`GuestArtifactExecutionEvidence` into the envelope proof section.
+
+    Returns the public field dict (hashes/sizes only). Does not re-hash bytes —
+    the guest evidence module owns hashing.
+    """
+
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        GuestArtifactExecutionEvidence,
+    )
+
+    if not isinstance(evidence, GuestArtifactExecutionEvidence):
+        raise TypeError("evidence must be GuestArtifactExecutionEvidence")
+    return dict(evidence.to_dict())
+
+
+def require_guest_artifact_proof_for_success(evidence: Any) -> dict[str, Any]:
+    """Fail closed unless ``evidence`` is present and ``match is True``.
+
+    Success-attested envelopes must never omit the proof or carry ``match=False``.
+    Upstream prove_* already hard-fails on mismatch; this guards the emit path.
+    """
+
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        GuestArtifactExecutionEvidence,
+    )
+
+    if evidence is None:
+        raise AttestationEmissionError(
+            "guest_artifact_proof is required for a success attested result "
+            "(missing guest execution evidence)"
+        )
+    if not isinstance(evidence, GuestArtifactExecutionEvidence):
+        raise AttestationEmissionError(
+            "guest_artifact_proof is required for a success attested result "
+            "(invalid guest execution evidence type)"
+        )
+    if evidence.match is not True:
+        raise AttestationEmissionError(
+            "guest_artifact_proof.match is false; refusing success attested result"
+        )
+    return build_guest_artifact_proof(evidence)
+
+
 def build_attested_benchmark_result(
     *,
     benchmark_result: Mapping[str, Any],
@@ -808,6 +856,7 @@ def emit_attested_benchmark_result(
     vm_config: Mapping[str, Any] | None = None,
     unit_id: str = "",
     stream: IO[str] | None = None,
+    guest_artifact_evidence: Any | None = None,
 ) -> str:
     """Emit an attested ``BASE_BENCHMARK_RESULT=`` line for a completed run.
 
@@ -837,6 +886,7 @@ def emit_attested_benchmark_result(
             image_digest=str(image_digest),
             vm_config=vm_config,
             stream=stream,
+            guest_artifact_evidence=guest_artifact_evidence,
         )
 
     if validator_nonce is None:
@@ -880,6 +930,12 @@ def emit_attested_benchmark_result(
         execution_proof=envelope,
         attestation_binding=binding,
     )
+    # Legacy additive path: proof rides the same BASE_BENCHMARK_RESULT object
+    # (additionalProperties allowed) so it is inside the emitted JSON line.
+    status = benchmark_result.get("status") if isinstance(benchmark_result, Mapping) else None
+    if status == "completed" or guest_artifact_evidence is not None:
+        proof = require_guest_artifact_proof_for_success(guest_artifact_evidence)
+        extended[GUEST_ARTIFACT_PROOF_RESULT_KEY] = proof
     return emit_benchmark_result_line(extended, stream=stream)
 
 
@@ -898,6 +954,7 @@ def _emit_schema_v2_eval_result(
     image_digest: str,
     vm_config: Mapping[str, Any] | None,
     stream: IO[str] | None,
+    guest_artifact_evidence: Any | None = None,
 ) -> str:
     """Emit the schema-closed Eval result request v1 on the sole result line."""
 
@@ -965,6 +1022,9 @@ def _emit_schema_v2_eval_result(
                 "attestation": attestation,
             }
         )
+        # Fail closed: success attested body must carry match=True guest proof
+        # inside the canonical_json_v1 covered region.
+        proof = require_guest_artifact_proof_for_success(guest_artifact_evidence)
         request = ew.validate_eval_result_request(
             {
                 "schema_version": 1,
@@ -974,6 +1034,7 @@ def _emit_schema_v2_eval_result(
                 "score_record": score_record,
                 "scores_digest": score_digest,
                 "execution_proof": execution_proof,
+                GUEST_ARTIFACT_PROOF_RESULT_KEY: proof,
             }
         )
     except (ew.EvalWireError, ValueError, TypeError) as exc:
@@ -999,6 +1060,7 @@ def emit_attested_eval_result_from_plan(
     manifest_sha256: str,
     vm_config: Mapping[str, Any] | None = None,
     stream: IO[str] | None = None,
+    guest_artifact_evidence: Any | None = None,
 ) -> str:
     """Emit a strict Eval result using only immutable plan-derived bindings."""
 
@@ -1048,6 +1110,7 @@ def emit_attested_eval_result_from_plan(
         image_digest=plan["eval_app"]["image_ref"],
         vm_config=vm_config,
         stream=stream,
+        guest_artifact_evidence=guest_artifact_evidence,
     )
 
 
@@ -1094,6 +1157,7 @@ def emit_attested_or_failclosed(
     vm_config: Mapping[str, Any] | None = None,
     unit_id: str = "",
     stream: IO[str] | None = None,
+    guest_artifact_evidence: Any | None = None,
 ) -> tuple[str, bool]:
     """Emit the attested line, or a fail-closed line if no genuine quote exists.
 
@@ -1123,6 +1187,7 @@ def emit_attested_or_failclosed(
             vm_config=vm_config,
             unit_id=unit_id,
             stream=stream,
+            guest_artifact_evidence=guest_artifact_evidence,
         )
         return line, True
     except AttestationEmissionError:
@@ -1142,6 +1207,7 @@ def _result_total(benchmark_result: Mapping[str, Any], task_ids: Iterable[str]) 
 
 __all__ = [
     "ATTESTATION_BINDING_RESULT_KEY",
+    "GUEST_ARTIFACT_PROOF_RESULT_KEY",
     "ATTESTATION_REQUIRED_FIELDS",
     "AttestationEmissionError",
     "DstackQuoteProvider",
@@ -1155,6 +1221,8 @@ __all__ = [
     "QuoteProvider",
     "QuoteResult",
     "build_attestation_binding",
+    "build_guest_artifact_proof",
+    "require_guest_artifact_proof_for_success",
     "build_attested_benchmark_result",
     "build_execution_proof_envelope",
     "build_measurement",

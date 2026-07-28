@@ -45,6 +45,8 @@ _F64_RE = re.compile(r"^[0-9a-f]{16}$")
 _EVEN_HEX_RE = re.compile(r"^(?:[0-9a-f]{2})*$")
 _NONEMPTY_EVEN_HEX_RE = re.compile(r"^(?:[0-9a-f]{2})+$")
 _IMAGE_RE = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+#: Phala CREATE-style app_id (advisory pin on the wire — optional).
+_APP_ID_HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 
 _MEASUREMENT_FIELDS = (
     "mrtd",
@@ -404,19 +406,27 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
                 ),
             }
         )
-    app = _object(
-        data["eval_app"],
-        "eval_app",
-        (
-            "image_ref",
-            "compose_hash",
-            "app_identity",
-            "kms_key_algorithm",
-            "kms_public_key_hex",
-            "kms_public_key_sha256",
-            "measurement",
-        ),
+    # eval_app.app_identity is OPTIONAL when used as a 40-hex Phala advisory pin.
+    # Non-hex monikers remain the compose-name seed and must still validate via _id
+    # when present. Missing app_identity is valid (compose uses the product default).
+    _eval_app_required = (
+        "image_ref",
+        "compose_hash",
+        "kms_key_algorithm",
+        "kms_public_key_hex",
+        "kms_public_key_sha256",
+        "measurement",
     )
+    if not isinstance(data["eval_app"], Mapping):
+        raise EvalWireError("eval_app must be an object")
+    app_actual = set(data["eval_app"])
+    app_required = set(_eval_app_required)
+    app_optional = {"app_identity"}
+    if not app_required <= app_actual or not app_actual <= app_required | app_optional:
+        missing = sorted(app_required - app_actual)
+        unknown = sorted(app_actual - app_required - app_optional)
+        raise EvalWireError(f"eval_app has invalid fields: missing={missing}, unknown={unknown}")
+    app = dict(data["eval_app"])
     app_measurement = _object(
         app["measurement"],
         "eval_app.measurement",
@@ -474,6 +484,29 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
     expires_at_ms = _integer(data["expires_at_ms"], "expires_at_ms")
     if expires_at_ms <= issued_at_ms:
         raise EvalWireError("eval_plan expiry must be after issue time")
+    eval_app_out: dict[str, Any] = {
+        "image_ref": _image(app["image_ref"], "eval_app.image_ref"),
+        "compose_hash": _sha256(app["compose_hash"], "eval_app.compose_hash"),
+        "kms_key_algorithm": kms_key_algorithm,
+        "kms_public_key_hex": kms_public_key_hex,
+        "kms_public_key_sha256": kms_public_key_sha256,
+        "measurement": app_measurement_valid,
+    }
+    if "app_identity" in app:
+        raw_identity = app["app_identity"]
+        if (
+            isinstance(raw_identity, str)
+            and raw_identity
+            and _APP_ID_HEX40_RE.fullmatch(raw_identity.lower())
+        ):
+            # Advisory Phala pin — normalize, never required for trust.
+            eval_app_out["app_identity"] = raw_identity.lower()
+        elif isinstance(raw_identity, str) and not raw_identity:
+            # Empty string ≡ absent (optional pin omitted).
+            pass
+        else:
+            # Non-hex moniker seeds compose name / compose_hash — keep required shape.
+            eval_app_out["app_identity"] = _id(raw_identity, "eval_app.app_identity")
     return {
         "schema_version": 1,
         "eval_run_id": eval_run_id,
@@ -486,15 +519,7 @@ def validate_eval_plan(value: Any) -> dict[str, Any]:
         "k": k,
         "scoring_policy": policy,
         "scoring_policy_digest": policy_digest,
-        "eval_app": {
-            "image_ref": _image(app["image_ref"], "eval_app.image_ref"),
-            "compose_hash": _sha256(app["compose_hash"], "eval_app.compose_hash"),
-            "app_identity": _id(app["app_identity"], "eval_app.app_identity"),
-            "kms_key_algorithm": kms_key_algorithm,
-            "kms_public_key_hex": kms_public_key_hex,
-            "kms_public_key_sha256": kms_public_key_sha256,
-            "measurement": app_measurement_valid,
-        },
+        "eval_app": eval_app_out,
         "key_release_endpoint": key_release_endpoint,
         "result_endpoint": result_endpoint,
         "key_release_nonce": key_release_nonce,
@@ -874,20 +899,76 @@ def parse_eval_execution_proof_json(data: bytes | str) -> dict[str, Any]:
     return validate_eval_execution_proof(parsed)
 
 
-def validate_eval_result_request(value: Any) -> dict[str, Any]:
+def validate_guest_artifact_proof(value: Any) -> dict[str, Any]:
+    """Validate the optional guest dual-hash proof section (schema_version 1).
+
+    Fail-closed on ``match is not True`` so a success-shaped result cannot carry
+    a false proof on the wire. Hashes and sizes only — no tokens/URLs.
+    """
+
     data = _object(
         value,
-        "eval_result_request",
+        "guest_artifact_proof",
         (
             "schema_version",
-            "eval_run_id",
-            "submission_id",
-            "agent_hash",
-            "score_record",
-            "scores_digest",
-            "execution_proof",
+            "expected_hash",
+            "download_hash",
+            "executed_hash",
+            "byte_size",
+            "match",
         ),
     )
+    if data["schema_version"] != 1:
+        raise EvalWireError("guest_artifact_proof schema_version must be 1")
+    if data["match"] is not True:
+        raise EvalWireError("guest_artifact_proof.match must be true")
+    byte_size = _integer(data["byte_size"], "guest_artifact_proof.byte_size", minimum=1)
+    expected_hash = _sha256(data["expected_hash"], "guest_artifact_proof.expected_hash")
+    download_hash = _sha256(data["download_hash"], "guest_artifact_proof.download_hash")
+    executed_hash = _sha256(data["executed_hash"], "guest_artifact_proof.executed_hash")
+    if not (expected_hash == download_hash == executed_hash):
+        raise EvalWireError(
+            "guest_artifact_proof hashes must be equal "
+            "(expected_hash == download_hash == executed_hash)"
+        )
+    return {
+        "schema_version": 1,
+        "expected_hash": expected_hash,
+        "download_hash": download_hash,
+        "executed_hash": executed_hash,
+        "byte_size": byte_size,
+        "match": True,
+    }
+
+
+def validate_eval_result_request(value: Any) -> dict[str, Any]:
+    """Validate the closed Eval result request; ``guest_artifact_proof`` is optional.
+
+    Required fields stay schema-closed. When ``guest_artifact_proof`` is present it
+    is structure-validated and retained so ``canonical_json_v1`` covers it. Older
+    envelopes without the field still validate (forward-compatible optional).
+    """
+
+    if not isinstance(value, Mapping):
+        raise EvalWireError("eval_result_request must be an object")
+    required = {
+        "schema_version",
+        "eval_run_id",
+        "submission_id",
+        "agent_hash",
+        "score_record",
+        "scores_digest",
+        "execution_proof",
+    }
+    optional = {"guest_artifact_proof"}
+    actual = set(value)
+    if not required <= actual or not actual <= required | optional:
+        missing = sorted(required - actual)
+        unknown = sorted(actual - required - optional)
+        raise EvalWireError(
+            f"eval_result_request has invalid fields: missing={missing}, unknown={unknown}"
+        )
+    data = dict(value)
     if data["schema_version"] != 1:
         raise EvalWireError("eval_result_request schema_version must be 1")
     score_record = _public_score_record(_score_record_shape(data["score_record"]))
@@ -896,7 +977,7 @@ def validate_eval_result_request(value: Any) -> dict[str, Any]:
         raise EvalWireError("scores_digest does not match score_record")
     if score_record["eval_run_id"] != _id(data["eval_run_id"], "eval_run_id"):
         raise EvalWireError("score_record eval_run_id does not match result request")
-    return {
+    result: dict[str, Any] = {
         "schema_version": 1,
         "eval_run_id": data["eval_run_id"],
         "submission_id": _id(data["submission_id"], "submission_id"),
@@ -905,6 +986,9 @@ def validate_eval_result_request(value: Any) -> dict[str, Any]:
         "scores_digest": digest,
         "execution_proof": validate_eval_execution_proof(data["execution_proof"]),
     }
+    if "guest_artifact_proof" in data:
+        result["guest_artifact_proof"] = validate_guest_artifact_proof(data["guest_artifact_proof"])
+    return result
 
 
 def validate_eval_receipt(value: Any) -> dict[str, Any]:
@@ -978,6 +1062,7 @@ __all__ = [
     "task_config_sha256_from_content_digest",
     "validate_canonical_score_record",
     "validate_eval_execution_proof",
+    "validate_guest_artifact_proof",
     "validate_eval_plan",
     "validate_eval_phala_attestation",
     "validate_eval_receipt",

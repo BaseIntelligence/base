@@ -36,6 +36,24 @@ from agent_challenge.keyrelease.client import KEY_RELEASE_URL_ENV
 GOLDEN_MARKER = "harbor-independence/" + "oracle-golden"
 
 
+
+def _fake_assert_agent_sets_evidence(**_kwargs):
+    from agent_challenge.canonical import eval_wire as _ew
+    from agent_challenge.evaluation import own_runner_backend as orb
+    from agent_challenge.evaluation.guest_execution_evidence import (
+        prove_guest_artifact_execution,
+    )
+
+    payload = b"phala-own-runner-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=_ew.agent_artifact_sha256_hex(payload),
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
+    orb.LAST_GUEST_ARTIFACT_EXECUTION_EVIDENCE = evidence
+    return evidence.executed_hash
+
+
 def _canned_result() -> JobResult:
     return JobResult(
         status="completed",
@@ -122,7 +140,7 @@ def _enable_phala_decrypt(monkeypatch, *, task_id: str) -> None:
     monkeypatch.setattr(
         backend,
         "assert_agent_artifact_matches_plan",
-        lambda **_: "f" * 64,
+        _fake_assert_agent_sets_evidence,
     )
     monkeypatch.setattr(
         backend,

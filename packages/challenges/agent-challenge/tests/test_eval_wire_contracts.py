@@ -13,6 +13,9 @@ import pytest
 from agent_challenge.canonical import attested_result as ar
 from agent_challenge.canonical import eval_wire as ew
 from agent_challenge.canonical import report_data as rd
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 
 VECTOR_PATH = Path(__file__).with_name("eval_execution_proof_v2_vectors.json")
 VECTORS: dict[str, Any] = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
@@ -360,6 +363,12 @@ def test_attested_image_emits_exact_eval_result_request_with_v2_binding() -> Non
         },
     )
     provider = _QuoteProvider()
+    zip_bytes = b"eval-wire-contract-agent-zip"
+    evidence = prove_guest_artifact_execution(
+        plan_agent_hash=ew.agent_artifact_sha256_hex(zip_bytes),
+        download_bytes=zip_bytes,
+        executed_bytes=zip_bytes,
+    )
     line = ar.emit_attested_benchmark_result(
         benchmark_result={
             "status": "completed",
@@ -380,6 +389,7 @@ def test_attested_image_emits_exact_eval_result_request_with_v2_binding() -> Non
         score_nonce=binding["score_nonce"],
         score_record=record,
         image_digest="registry.example/eval@sha256:" + "d" * 64,
+        guest_artifact_evidence=evidence,
     )
     payload = json.loads(line.split("=", 1)[1])
 
@@ -391,7 +401,9 @@ def test_attested_image_emits_exact_eval_result_request_with_v2_binding() -> Non
         "score_record",
         "scores_digest",
         "execution_proof",
+        "guest_artifact_proof",
     }
+    assert payload["guest_artifact_proof"] == evidence.to_dict()
     assert ew.validate_eval_result_request(payload) == payload
     assert payload["execution_proof"]["worker_signature"] == {"worker_pubkey": "", "sig": ""}
     report_data = payload["execution_proof"]["attestation"]["report_data"]
