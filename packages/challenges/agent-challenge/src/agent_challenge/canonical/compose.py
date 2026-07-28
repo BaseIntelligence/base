@@ -134,6 +134,10 @@ DEFAULT_ALLOWED_ENVS: tuple[str, ...] = (
     "CHALLENGE_PHALA_AGENT_HASH",
     "CHALLENGE_PHALA_ATTESTATION_ENABLED",
     "CHALLENGE_PHALA_CANONICAL_MEASUREMENT",
+    # Guest artifact import (evaluation/artifact_import.py): HTTPS ZIP URL +
+    # short-lived bearer grant. Values only via encrypted_env at eval deploy.
+    "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN",
+    "CHALLENGE_PHALA_EVAL_ARTIFACT_URL",
     "CHALLENGE_PHALA_EVAL_PLAN",
     "CHALLENGE_PHALA_KEY_RELEASE_URL",
     "CHALLENGE_PHALA_RA_TLS_SERVER_CA_PEM",
