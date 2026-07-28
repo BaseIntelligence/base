@@ -8,6 +8,7 @@ helpers, internal routes, or BASE bridge aliases.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import time
@@ -88,6 +89,31 @@ def sign_request_identity(
     return SignedIdentity(hotkey=hotkey, signature=encoded, nonce=nonce, timestamp=timestamp)
 
 
+def _is_loopback_host(host: str | None) -> bool:
+    """True when *host* is an explicit loopback name or address."""
+
+    if host is None:
+        return False
+    normalized = host.strip().lower().strip("[]")
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _allow_insecure_loopback() -> bool:
+    return os.environ.get("SELFDEPLOY_ALLOW_INSECURE_LOOPBACK", "").strip() == "1"
+
+
+def _validate_challenge_base_url(base: str) -> None:
+    """Require https://, or http:// only for loopback with explicit env opt-in."""
+
+    if base.startswith("https://"):
+        return
+    if base.startswith("http://") and _allow_insecure_loopback():
+        host = urlsplit(base).hostname
+        if _is_loopback_host(host):
+            return
+    raise RouteClientError("challenge endpoint must use https://")
+
+
 class SelfDeployRouteClient:
     """HTTP client restricted to the ordered production route contract."""
 
@@ -101,8 +127,7 @@ class SelfDeployRouteClient:
         timeout: float = 30.0,
     ) -> None:
         base = base_url.strip().rstrip("/")
-        if not base.startswith("https://"):
-            raise RouteClientError("challenge endpoint must use https://")
+        _validate_challenge_base_url(base)
         self._base_url = base
         self._identity = identity
         self._auto_sign = auto_sign

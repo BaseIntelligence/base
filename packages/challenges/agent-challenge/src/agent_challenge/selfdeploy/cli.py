@@ -36,6 +36,7 @@ from agent_challenge.selfdeploy import run as run_mod
 from agent_challenge.selfdeploy.client import RouteClientError, SelfDeployRouteClient
 from agent_challenge.selfdeploy.phala import (
     DEFAULT_PHALA_API,
+    CvmListParseError,
     PhalaApiError,
     PhalaCloudClient,
     resolve_cvm_id_from_list,
@@ -200,7 +201,14 @@ def resolve_teardown_cvm_id(
     if not identity:
         raise RouteClientError("teardown requires --cvm-id or --app-id")
     api = client if client is not None else PhalaCloudClient()
-    listing = api.get("/cvms")
+    try:
+        snapshot = api.list_cvms()
+    except CvmListParseError as exc:
+        raise RouteClientError(
+            f"teardown cannot determine CVM inventory: {exc}"
+        ) from exc
+    # Re-use list parser path with the known-good snapshot envelope.
+    listing = {"items": list(snapshot.items), "total": snapshot.total}
     resolved = resolve_cvm_id_from_list(listing, app_id=identity, require_unique=True)
     if not resolved:
         raise RouteClientError(f"no CVM found for app_id {identity!r}")

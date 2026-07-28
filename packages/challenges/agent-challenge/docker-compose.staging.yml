@@ -1,0 +1,71 @@
+# Local Agent Challenge staging stack — isolated from prod.
+# Host port 18082 (prod embed uses 18081 inside master). Named volume + project
+# prefix keep DB/artifacts off any prod path.
+#
+# Build from monorepo root:
+#   docker compose -f packages/challenges/agent-challenge/docker-compose.staging.yml build
+# Or use scripts/staging/run_staging.sh (preferred).
+
+name: ac-staging
+
+services:
+  agent-challenge:
+    image: ghcr.io/baseintelligence/agent-challenge:staging-local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      additional_contexts:
+        monorepo: ../../..
+    container_name: ac-staging-validator
+    restart: "no"
+    ports:
+      - "127.0.0.1:18082:8000"
+    volumes:
+      - ac_staging_data:/data
+      - ./scripts/staging/config/review_evidence_encryption_key:/run/secrets/base/review_evidence_encryption_key:ro
+      - ./scripts/staging/config/challenge_token:/run/secrets/base/challenge_token:ro
+      # Frozen Terminal-Bench 2.1 digest (eval/prepare fails closed without this).
+      - ./golden:/app/golden:ro
+      - ./golden:/opt/agent-challenge/golden:ro
+      # dcap-qvl is baked into the runtime image; host bind is optional fallback
+      - /root/.cargo/bin/dcap-qvl:/usr/local/bin/dcap-qvl:ro
+    env_file:
+      - ./scripts/staging/config/challenge.env
+    environment:
+      CHALLENGE_DATABASE_URL: sqlite+aiosqlite:////data/agent-challenge.sqlite3
+      CHALLENGE_DATA_DIR: /data
+      CHALLENGE_ARTIFACT_ROOT: /data/agents
+      CHALLENGE_SHARED_TOKEN_FILE: /run/secrets/base/challenge_token
+      CHALLENGE_REVIEW_EVIDENCE_ENCRYPTION_KEY_FILE: /run/secrets/base/review_evidence_encryption_key
+      CHALLENGE_COMBINED_WORKER: "true"
+      CHALLENGE_DOCKER_ENABLED: "false"
+      CHALLENGE_RAW_WEIGHT_PUSH_ENABLED: "false"
+      CHALLENGE_PHALA_ATTESTATION_ENABLED: "true"
+      CHALLENGE_ATTESTED_REVIEW_ENABLED: "true"
+      # Prod path: terminal-bench + frozen digest (default package backend is swe_forge).
+      CHALLENGE_BENCHMARK_BACKEND: terminal_bench
+      CHALLENGE_TERMINAL_BENCH_EXECUTION_BACKEND: own_runner
+      CHALLENGE_OWN_RUNNER_DIGEST_MANIFEST: /app/golden/dataset-digest.json
+      # Eval result signer — substrate dev URI (local only; never production wallet)
+      CHALLENGE_EVAL_RESULT_SIGNER_URI: "//Alice"
+      CHALLENGE_LOG_LEVEL: INFO
+      # Shortest viable eval for spend control (still real tasks)
+      CHALLENGE_EVALUATION_TASK_COUNT: "1"
+      CHALLENGE_EVAL_K: "1"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  ac_staging_data:
+    name: ac-staging-data

@@ -4,7 +4,7 @@ Covers:
   * DELETE /cvms/{id} allowlisted on PhalaCloudClient
   * 204 success, 404 idempotent success, other status → PhalaApiError
   * default_phala_teardown never shells out to a ``phala`` binary
-  * optional --cvm-id resolved via GET /cvms + unique app_id match
+  * optional --cvm-id resolved via list_cvms (paginated) + unique app_id match
   * ambiguous multi-match refused
 """
 
@@ -21,6 +21,7 @@ from urllib.request import Request
 import pytest
 
 from agent_challenge.selfdeploy import cli
+from agent_challenge.selfdeploy.cvm_list import CvmListSnapshot
 from agent_challenge.selfdeploy.phala import (
     PhalaApiError,
     PhalaCloudClient,
@@ -170,9 +171,11 @@ def test_cli_teardown_resolves_cvm_id_from_app_id(monkeypatch: pytest.MonkeyPatc
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
-        def get(self, path: str) -> dict[str, Any]:
-            assert path == "/cvms"
-            return listing
+        def list_cvms(self, *, page_size: int = 50) -> CvmListSnapshot:
+            assert page_size >= 1
+            items = tuple(listing["items"])
+            ids = tuple(str(i["id"]) for i in items)
+            return CvmListSnapshot(items=items, total=len(items), ids=ids, source_shape="test")
 
         def delete_cvm(self, cvm_id: str) -> None:
             deleted.append(cvm_id)
@@ -203,8 +206,12 @@ def test_cli_teardown_refuses_ambiguous_app_id(monkeypatch: pytest.MonkeyPatch) 
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
-        def get(self, path: str) -> dict[str, Any]:
-            return listing
+        def list_cvms(self, *, page_size: int = 50) -> CvmListSnapshot:
+            items = tuple(listing["items"])
+            ids = tuple(str(i["id"]) for i in items)
+            return CvmListSnapshot(
+                items=items, total=len(items), ids=ids, source_shape="test"
+            )
 
         def delete_cvm(self, cvm_id: str) -> None:  # pragma: no cover
             raise AssertionError(f"must not delete on ambiguity: {cvm_id}")

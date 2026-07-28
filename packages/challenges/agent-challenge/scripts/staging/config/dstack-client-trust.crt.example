@@ -1,0 +1,24 @@
+# PLACEHOLDER — not a real certificate.
+#
+# Staging needs the Dstack **KMS root CA** (public cert only) as
+# `dstack-client-trust.crt` so the host key-release RA-TLS listener can verify
+# guest mTLS client certs.
+#
+# How to obtain (public material only):
+#   1. From a measured guest, export the RA-TLS full chain
+#      (e.g. ra_tls_public_fullchain / equivalent dstack export).
+#   2. Take the **last** cert in the chain — that is the KMS root.
+#   3. `openssl x509 -in … -noout -subject` should show something like
+#      `O = Dstack, CN = Dstack KMS CA`.
+#
+# Do NOT use:
+#   - staging KR server CA (`kr-server-ca.crt` / CN=ac-staging-kr-ca)
+#   - per-CVM App CA (rotates every guest)
+#   - any private key
+#
+# Copy this file to `dstack-client-trust.crt` and replace the PEM body below.
+# The real file is gitignored (see scripts/staging/.gitignore).
+#
+-----BEGIN CERTIFICATE-----
+REPLACE_WITH_BASE64_DER_OF_DSTACK_KMS_ROOT_CA_PUBLIC_CERT_ONLY
+-----END CERTIFICATE-----

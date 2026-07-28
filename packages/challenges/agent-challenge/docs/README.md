@@ -10,6 +10,8 @@ inside the package.
 | Interactive API | `https://chain.joinbase.ai/challenges/agent-challenge/docs` |
 | Package product pin | [`../README.md`](../README.md) |
 | Self-deploy CLI accuracy fixtures | [`miner/self-deploy.md`](miner/self-deploy.md), [`validator/self-deploy.md`](validator/self-deploy.md) |
+| Local staging loop | [`staging.md`](staging.md) |
+| Prod compose pin upgrade | [`prod-compose-upgrade.md`](prod-compose-upgrade.md) |
 
 **API truth is OpenAPI** (and the in-process challenge app `/openapi.json`).
 Audience essays (lifecycle dumps, route catalogs, architecture novels) were

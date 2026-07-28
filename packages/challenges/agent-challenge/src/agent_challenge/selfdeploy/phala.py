@@ -4,9 +4,11 @@ Auth matches the official Phala CLI (``phala`` node package):
 
 * Header ``X-API-Key: <key>`` — **not** ``Authorization: Bearer``
   (Bearer returns HTTP 401 Invalid/expired token for Cloud API keys).
-* Header ``X-Phala-Version: 2026-01-21`` — API version pin used by CLI.
-* Header ``User-Agent: phala-cli/<version>`` — Cloudflare 1010 blocks bare
+* Header ``X-Phala-Version: 2026-06-23`` — API version pin used by CLI.
+* Header ``User-Agent: phala-cloud-cli/<version>`` — Cloudflare 1010 blocks bare
   Python-urllib agents; product sends the CLI-equivalent string.
+* CVM listing uses ``GET /cvms/paginated`` (CLI authority). Unknown response
+  shapes raise; they never degrade to an empty list / count 0.
 
 Region selection must not hard-fail with ERR-02-002 (``No teepod found``)
 on bare alias ``us-west`` when inventory capacity is only under ``us-west-1``.
@@ -27,16 +29,23 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from agent_challenge.selfdeploy.cvm_list import (
+    CLI_PHALA_API_VERSION,
+    CLI_PHALA_USER_AGENT,
+    CvmListParseError,
+    CvmListSnapshot,
+    parse_cvms_list_response,
+    resolve_cvm_id_from_snapshot,
+)
 from agent_challenge.selfdeploy.plan import PHALA_API_KEY_ENV, CredentialError
 
 DEFAULT_PHALA_API = "https://cloud-api.phala.com/api/v1"
 
-#: API version header accepted by cloud-api.phala.com (matches `phala` CLI `Lo`).
-DEFAULT_PHALA_API_VERSION = "2026-01-21"
+#: API version header accepted by cloud-api.phala.com (matches `phala` CLI).
+DEFAULT_PHALA_API_VERSION = CLI_PHALA_API_VERSION  # 2026-06-23
 
-#: CLI-equivalent User-Agent (see `phala` package ``phala-cli/${version}``).
-#: urllib without UA is blocked by Cloudflare with error 1010.
-DEFAULT_PHALA_USER_AGENT = "phala-cli/1.1.19"
+#: CLI-equivalent User-Agent (phala-cloud-cli; CF 1010 without it).
+DEFAULT_PHALA_USER_AGENT = CLI_PHALA_USER_AGENT  # phala-cloud-cli/1.1.19
 
 #: Preferred default region when caller omits one or alias maps to empty capacity.
 #: Live inventory teepods (prod5/prod9) live under US-WEST-1; bare "us-west"
@@ -47,7 +56,7 @@ PREFERRED_PHALA_REGION = "us-west-1"
 _US_WEST_ALIASES = frozenset({"us-west", "us_west", "uswest"})
 
 #: Allowed GET paths for safe read helpers (list/details — never secrets).
-_ALLOWED_GET_PATHS = frozenset({"/cvms"})
+_ALLOWED_GET_PATHS = frozenset({"/cvms", "/cvms/paginated"})
 
 #: Allowed DELETE path shape: /cvms/{id} only (no nested paths).
 _ALLOWED_DELETE_PATH_RE = re.compile(r"^/cvms/[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -110,48 +119,24 @@ def resolve_cvm_id_from_list(
 ) -> str | None:
     """Locate a CVM id in a GET /cvms listing by exact app_id match.
 
-    Returns None when listing is empty/mismatched rather than inventing an id.
-    When ``require_unique`` is False (deploy create fallback), the first ordered
-    match wins. When True (teardown resolution), multiple matches raise
-    :class:`PhalaApiError` so callers never guess. Secret bodies are never logged.
+    Parses via :func:`parse_cvms_list_response` so unknown envelopes raise
+    (:class:`CvmListParseError`) instead of silently matching nothing.
+    Returns None when the listing is a known-empty/mismatched set.
+    When ``require_unique`` is True (teardown), multiple matches raise.
+    Secret bodies are never logged.
     """
 
-    if not isinstance(app_id, str) or not app_id.strip():
-        return None
-    target = app_id.strip()
-    items: Sequence[Any]
-    if isinstance(listing, Mapping):
-        for key in ("items", "cvms", "data"):
-            candidate = listing.get(key)
-            if isinstance(candidate, list):
-                items = candidate
-                break
-        else:
-            # Some envelopes return the list as a bare mapping without items.
-            items = []
-    elif isinstance(listing, Sequence) and not isinstance(listing, (str, bytes)):
-        items = listing
-    else:
-        return None
-
-    matches: list[str] = []
-    for item in items:
-        if not isinstance(item, Mapping):
-            continue
-        item_app = item.get("app_id")
-        if not isinstance(item_app, str) or item_app != target:
-            continue
-        try:
-            matches.append(extract_cvm_id_from_create_response(item))
-        except ValueError:
-            continue
-    if not matches:
-        return None
-    if require_unique and len(matches) > 1:
-        raise PhalaApiError(
-            f"multiple CVMs match app_id ({len(matches)}); pass --cvm-id explicitly"
+    snapshot = parse_cvms_list_response(listing)
+    try:
+        return resolve_cvm_id_from_snapshot(
+            snapshot, app_id=app_id, require_unique=require_unique
         )
-    return matches[0]
+    except CvmListParseError as exc:
+        msg = str(exc)
+        if "multiple CVMs match app_id" in msg:
+            raise PhalaApiError(msg) from None
+        raise
+
 
 
 def normalize_phala_region(region: str | None) -> str:
@@ -259,15 +244,18 @@ class PhalaCloudClient:
         return headers
 
     def _decode_json_object(self, body: bytes) -> dict[str, Any]:
-        if len(body) > 2 * 1024 * 1024:
-            raise PhalaApiError("Phala provisioning response exceeded the bounded size")
-        try:
-            decoded = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise PhalaApiError("Phala provisioning returned malformed JSON") from exc
+        decoded = self._decode_json_any(body)
         if not isinstance(decoded, dict):
             raise PhalaApiError("Phala provisioning returned a non-object response")
         return decoded
+
+    def _decode_json_any(self, body: bytes) -> Any:
+        if len(body) > 2 * 1024 * 1024:
+            raise PhalaApiError("Phala provisioning response exceeded the bounded size")
+        try:
+            return json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PhalaApiError("Phala provisioning returned malformed JSON") from exc
 
     def _open(self, request: Request) -> dict[str, Any]:
         try:
@@ -279,17 +267,84 @@ class PhalaCloudClient:
             raise PhalaApiError("Phala provisioning endpoint is unreachable") from exc
         return self._decode_json_object(body)
 
-    def get(self, path: str) -> dict[str, Any]:
-        """GET a allowlisted read route (currently ``/cvms`` list only)."""
+    def _open_any(self, request: Request) -> Any:
+        try:
+            response = self._opener(request, timeout=self._timeout)
+            body = response.read()
+        except HTTPError as exc:
+            raise PhalaApiError(f"Phala provisioning returned HTTP {exc.code}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise PhalaApiError("Phala provisioning endpoint is unreachable") from exc
+        return self._decode_json_any(body)
 
-        if path not in _ALLOWED_GET_PATHS:
+    def get(self, path: str) -> dict[str, Any] | list[Any]:
+        """GET an allowlisted read route (``/cvms`` or ``/cvms/paginated``)."""
+
+        base_path = path.split("?", 1)[0]
+        if base_path not in _ALLOWED_GET_PATHS:
             raise PhalaApiError("unsupported Phala read route")
         request = Request(
             f"{self._base_url}{path}",
             headers=self._base_headers(content_type=False),
             method="GET",
         )
-        return self._open(request)
+        return self._open_any(request)
+
+    def list_cvms(self, *, page_size: int = 50) -> CvmListSnapshot:
+        """List account CVMs via CLI-authoritative ``GET /cvms/paginated``.
+
+        Paginates until all pages are collected. Unknown response shapes raise
+        :class:`CvmListParseError` (never under-report as total=0).
+        """
+
+        if page_size < 1 or page_size > 200:
+            raise PhalaApiError("invalid CVM list page_size")
+        page = 1
+        all_items: list[Mapping[str, Any]] = []
+        reported_total: int | None = None
+        while True:
+            path = f"/cvms/paginated?page={page}&page_size={page_size}"
+            raw = self.get(path)
+            snap = parse_cvms_list_response(raw)
+            if reported_total is None:
+                reported_total = snap.total
+            elif snap.total != reported_total:
+                raise CvmListParseError(
+                    "unrecognized CVM list shape: total changed across pages "
+                    f"({reported_total} -> {snap.total})"
+                )
+            all_items.extend(snap.items)
+            if reported_total <= len(all_items):
+                break
+            if not snap.items:
+                raise CvmListParseError(
+                    "unrecognized CVM list shape: empty page before total reached "
+                    f"(have={len(all_items)} total={reported_total})"
+                )
+            page += 1
+            if page > 100:
+                raise CvmListParseError(
+                    "unrecognized CVM list shape: pagination exceeded page cap"
+                )
+        combined = parse_cvms_list_response(list(all_items))
+        if reported_total is not None and combined.total != reported_total:
+            if len(all_items) != reported_total:
+                raise CvmListParseError(
+                    "unrecognized CVM list shape: collected items "
+                    f"{len(all_items)} != total {reported_total}"
+                )
+            return CvmListSnapshot(
+                items=combined.items,
+                total=reported_total,
+                ids=combined.ids,
+                source_shape="paginated-merged",
+            )
+        return CvmListSnapshot(
+            items=combined.items,
+            total=reported_total if reported_total is not None else combined.total,
+            ids=combined.ids,
+            source_shape="paginated-merged",
+        )
 
     def post(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         if path not in {"/cvms/provision", "/cvms"}:
@@ -349,10 +404,13 @@ __all__ = [
     "DEFAULT_PHALA_API_VERSION",
     "DEFAULT_PHALA_USER_AGENT",
     "PREFERRED_PHALA_REGION",
+    "CvmListParseError",
+    "CvmListSnapshot",
     "PhalaApiError",
     "PhalaCloudClient",
     "extract_cvm_id_from_create_response",
     "normalize_phala_region",
+    "parse_cvms_list_response",
     "resolve_cvm_id_from_list",
     "select_phala_region",
 ]

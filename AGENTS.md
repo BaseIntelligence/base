@@ -80,6 +80,23 @@ UV_CACHE_DIR=/var/tmp/uv-cache uv run pytest tests/unit \
   -k "sealer or aggregation or weights" -q
 ```
 
+## Agent Challenge local staging (before live/prod)
+
+Prefer the isolated AC staging loop before production-facing gate changes:
+
+```bash
+packages/challenges/agent-challenge/scripts/staging/run_staging.sh
+```
+
+Details: [`packages/challenges/agent-challenge/docs/staging.md`](packages/challenges/agent-challenge/docs/staging.md)
+(host loopback `127.0.0.1:18082`, project `ac-staging`; not master embed `:18081`).
+
+- **One command** above is the iteration loop. Driving the **prod** validator over SSH is a last resort and must never be the day-to-day loop.
+- Any keypair works for local submit/sign: AC verifies signatures only (no metagraph membership check).
+- CVMs are **real** Phala TDX machines (billable). Staging tears down **only CVMs this run owns** (`work/owned_cvms.txt` + per-run track). It never account-sweeps foreign/prod CVMs. Always tear down owned CVMs before you leave.
+
+Real Phala TDX CVMs + dual attestation flags; always tear down to a verified CVM count of 0 via paginated list (never trust bare `GET /cvms` empty arrays).
+
 ## Runtime topology (production)
 
 Supported install is **Docker Compose master + PostgreSQL only**:
