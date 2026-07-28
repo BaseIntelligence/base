@@ -235,6 +235,126 @@ def domain_allowlist_verdict(
     return allowlist_verdict(measurement, source)
 
 
+def short_measurement_hex_prefix(value: object, *, length: int = 12) -> str | None:
+    """Return a truncated lowercase hex prefix for operator diagnostics.
+
+    Never returns the full digest when the source is longer than ``length``.
+    Rejects non-hex input so callers never echo secrets as opaque blobs.
+    """
+
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower()
+    if cleaned.startswith("0x"):
+        cleaned = cleaned[2:]
+    if not cleaned or any(ch not in "0123456789abcdef" for ch in cleaned):
+        return None
+    if length < 1:
+        return None
+    return cleaned[:length]
+
+
+def format_eval_shape_mismatch_error(
+    *,
+    plan_instance_type: str,
+    requested_instance_type: str,
+    plan_vm_shape: str | None = None,
+    plan_rtmr0: str | None = None,
+) -> str:
+    """Loud, operator-facing message for plan vs CLI eval shape mismatch.
+
+    Names ``vm_shape`` / ``instance_type``, both shapes, the rtmr0 allowlist
+    footgun, and that prepare already spent the one-shot token so a re-prepare
+    (next deploy cancel+retry) is required. Truncates any plan rtmr0 prefix.
+    """
+
+    plan_shape = (plan_vm_shape or plan_instance_type or "").strip() or plan_instance_type
+    requested = (requested_instance_type or "").strip() or requested_instance_type
+    prefix = short_measurement_hex_prefix(plan_rtmr0) if plan_rtmr0 else None
+    rtmr_note = (
+        f" Plan measurement rtmr0 prefix={prefix} (truncated; full value never logged)."
+        if prefix
+        else ""
+    )
+    return (
+        "Eval deployment shape mismatch: validator-issued plan has "
+        f"vm_shape/instance_type={plan_shape!r} but CLI --eval-instance-type="
+        f"{requested!r}. A shape change requires a matching measurement pin "
+        "(rtmr0) on the validator allowlist and a re-prepare; a stale rtmr0 pin "
+        "surfaces only as a generic key-release denial deep in the TEE flow — "
+        "not as a clear shape error. This abort is before Phala create (no spend). "
+        "The one-time EVAL_RUN_TOKEN delivery was already consumed by prepare; "
+        "re-run eval deploy (or eval cancel + retry) to re-prepare a fresh attempt."
+        f"{rtmr_note}"
+    )
+
+
+def format_rtmr0_pin_mismatch_error(
+    *,
+    plan_rtmr0: str,
+    expected_rtmr0: str,
+) -> str:
+    """Loud message when plan rtmr0 disagrees with --expected-measurement."""
+
+    plan_prefix = short_measurement_hex_prefix(plan_rtmr0) or "?"
+    expected_prefix = short_measurement_hex_prefix(expected_rtmr0) or "?"
+    return (
+        "Eval measurement pin mismatch on field rtmr0: "
+        f"plan prefix={plan_prefix} vs --expected-measurement prefix={expected_prefix} "
+        "(truncated; full digests never logged). A stale rtmr0 pin on the validator "
+        "allowlist surfaces only as a generic key-release denial. Aborting before "
+        "Phala create (no spend). Re-prepare after the allowlist pin matches the "
+        "deployed shape."
+    )
+
+
+def load_expected_measurement_mapping(path: str | Path) -> dict[str, Any]:
+    """Load a miner-supplied expected measurement JSON object from PATH."""
+
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MeasurementError(f"expected measurement file could not be read: {path}") from exc
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MeasurementError("expected measurement file is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise MeasurementError("expected measurement file must contain a JSON object")
+    return parsed
+
+
+def compare_plan_rtmr0_to_expected(
+    plan_measurement: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> str | None:
+    """Return a loud error string when plan rtmr0 disagrees with expected, else None.
+
+    When ``expected`` has no ``rtmr0`` field the check is a no-op (optional pin).
+    """
+
+    expected_rtmr0 = expected.get("rtmr0")
+    if expected_rtmr0 is None:
+        return None
+    if not isinstance(expected_rtmr0, str) or not expected_rtmr0.strip():
+        raise MeasurementError("expected measurement rtmr0 must be a non-empty string")
+    plan_rtmr0 = plan_measurement.get("rtmr0")
+    if not isinstance(plan_rtmr0, str) or not plan_rtmr0.strip():
+        raise MeasurementError("plan measurement is missing rtmr0 for pin comparison")
+    plan_norm = plan_rtmr0.strip().lower()
+    expected_norm = expected_rtmr0.strip().lower()
+    if plan_norm.startswith("0x"):
+        plan_norm = plan_norm[2:]
+    if expected_norm.startswith("0x"):
+        expected_norm = expected_norm[2:]
+    if plan_norm == expected_norm:
+        return None
+    return format_rtmr0_pin_mismatch_error(
+        plan_rtmr0=plan_rtmr0,
+        expected_rtmr0=expected_rtmr0,
+    )
+
+
 def measurements_agree(
     miner_measurement: Mapping[str, Any],
     validator_entry: Mapping[str, Any],
@@ -255,11 +375,16 @@ __all__ = [
     "ProvisionOsIdentityError",
     "allowlist_verdict",
     "canonical_measurement_subset",
+    "compare_plan_rtmr0_to_expected",
     "domain_allowlist_verdict",
+    "format_eval_shape_mismatch_error",
+    "format_rtmr0_pin_mismatch_error",
     "load_allowlist_entries",
+    "load_expected_measurement_mapping",
     "measurement_uses_product_os_identity",
     "measurements_agree",
     "product_os_image_hash",
     "reproduce_measurement",
+    "short_measurement_hex_prefix",
     "verify_provision_os_identity",
 ]

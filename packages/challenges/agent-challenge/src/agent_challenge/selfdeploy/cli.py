@@ -795,10 +795,7 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
             client = _route_client(args)
             raw = _obtain_eval_prepare_with_token(client, args.submission_id)
             plan = eval_deploy.build_eval_deployment_plan(raw)
-            if plan.instance_type != args.eval_instance_type:
-                raise RouteClientError(
-                    "Eval deployment shape differs from the validator-issued plan"
-                )
+            _assert_eval_deploy_shape_and_measurement_pin(plan, args)
             review_disk = validate_disk_size(
                 getattr(args, "review_disk_size_gb", DEFAULT_REVIEW_DISK_SIZE_GB)
             )
@@ -974,6 +971,45 @@ def _redact_capabilities(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_capabilities(item) for item in value]
     return value
+
+
+def _assert_eval_deploy_shape_and_measurement_pin(
+    plan: eval_deploy.EvalDeploymentPlan,
+    args: argparse.Namespace,
+) -> None:
+    """Fail closed before Phala create on shape or optional rtmr0 pin mismatch.
+
+    Shape check needs the built plan, so it runs after prepare has spent the
+    one-shot EVAL_RUN_TOKEN delivery. Next deploy recovers via
+    ``_obtain_eval_prepare_with_token`` cancel+retry when prepare is sticky-null.
+    """
+
+    requested = str(getattr(args, "eval_instance_type", "") or "").strip()
+    if plan.instance_type != requested:
+        plan_vm_shape = plan.measurement.get("vm_shape")
+        plan_vm = (
+            str(plan_vm_shape).replace("-", ".")
+            if isinstance(plan_vm_shape, str) and plan_vm_shape
+            else plan.instance_type
+        )
+        plan_rtmr0 = plan.measurement.get("rtmr0")
+        raise RouteClientError(
+            measure.format_eval_shape_mismatch_error(
+                plan_instance_type=plan.instance_type,
+                requested_instance_type=requested,
+                plan_vm_shape=plan_vm,
+                plan_rtmr0=plan_rtmr0 if isinstance(plan_rtmr0, str) else None,
+            )
+        )
+    expected_path = getattr(args, "expected_measurement", None)
+    if isinstance(expected_path, str) and expected_path.strip():
+        try:
+            expected = measure.load_expected_measurement_mapping(expected_path.strip())
+            pin_error = measure.compare_plan_rtmr0_to_expected(plan.measurement, expected)
+        except measure.MeasurementError as exc:
+            raise RouteClientError(str(exc)) from exc
+        if pin_error is not None:
+            raise RouteClientError(pin_error)
 
 
 def _require_eval_run_token_handoff(args: argparse.Namespace) -> None:
@@ -1366,6 +1402,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "include eval_run_token in deploy success JSON on stdout "
             "(required for eval result unless --token-output)"
+        ),
+    )
+    eval_deploy_parser.add_argument(
+        "--expected-measurement",
+        default=None,
+        metavar="PATH",
+        help=(
+            "optional JSON measurement pin; when present, plan rtmr0 must match "
+            "before Phala create (truncated prefix on mismatch; never logs full digests)"
         ),
     )
     eval_deploy_parser.add_argument(
