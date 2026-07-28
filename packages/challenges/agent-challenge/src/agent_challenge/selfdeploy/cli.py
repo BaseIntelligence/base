@@ -681,6 +681,26 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     "(set CHALLENGE_PHALA_RA_TLS_SERVER_CA_PEM or "
                     "CHALLENGE_PHALA_RA_TLS_SERVER_CA_FILE / KEY_RELEASE_SERVER_CA_FILE)"
                 )
+            # Guest artifact import: HTTPS ZIP location + short-lived bearer grant.
+            # Mint with the internal shared token (same secret the download route
+            # verifies). Values only — never printed or logged.
+            if not args.dry_run:
+                grant_secret = _load_eval_artifact_grant_secret()
+                if not grant_secret:
+                    raise RouteClientError(
+                        "Eval artifact grant secret is required before deployment "
+                        "(set CHALLENGE_SHARED_TOKEN or CHALLENGE_SHARED_TOKEN_FILE)"
+                    )
+                try:
+                    values.update(
+                        eval_deploy.build_eval_artifact_env_values(
+                            plan,
+                            secret=grant_secret,
+                            api_base_url=str(args.base_url),
+                        )
+                    )
+                except eval_deploy.EvalDeploymentError as exc:
+                    raise RouteClientError(str(exc)) from exc
             encrypted = eval_deploy.encrypt_eval_secrets(plan, values) if not args.dry_run else None
             if not args.dry_run:
                 assert encrypted is not None
@@ -740,6 +760,7 @@ _REDACTED_CAPABILITY_KEYS = frozenset(
         "EVAL_RUN_TOKEN",
         "REVIEW_SESSION_TOKEN",
         "BASE_GATEWAY_TOKEN",  # residual key name only; not product eval secret
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN",
         "golden_plaintext",
         "golden_key",
         "raw_response",
@@ -747,6 +768,23 @@ _REDACTED_CAPABILITY_KEYS = frozenset(
         "unrestricted_source",
     }
 )
+
+
+def _load_eval_artifact_grant_secret() -> str | None:
+    """Load the internal shared token used to mint eval artifact grants.
+
+    Same secret the download route verifies via ``load_internal_token``. Never
+    log or print the returned value.
+    """
+
+    inline = (os.environ.get("CHALLENGE_SHARED_TOKEN") or "").strip()
+    if inline:
+        return inline
+    path = (os.environ.get("CHALLENGE_SHARED_TOKEN_FILE") or "").strip()
+    if path and Path(path).is_file():
+        text = Path(path).read_text(encoding="utf-8").strip()
+        return text or None
+    return None
 
 
 def _redact_capabilities(value: Any) -> Any:

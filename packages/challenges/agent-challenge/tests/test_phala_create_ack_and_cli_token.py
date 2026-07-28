@@ -54,6 +54,7 @@ MEASUREMENT = {
     "key_provider": "phala",
     "vm_shape": "tdx.small",
 }
+DISCOVERED_APP_ID = "1850aa11" + ("cd" * 16)
 TOKEN = "review-token-sentinel-create-ack"
 
 
@@ -218,7 +219,7 @@ def test_review_deploy_accepts_numeric_create_id() -> None:
     _assignment, plan, encrypted = _assignment_and_plan()
     deployment = ReviewPhalaDeployment(
         provision_response={
-            "app_id": plan.app_identity,
+            "app_id": DISCOVERED_APP_ID,
             "compose_hash": plan.compose_hash,
             "app_env_encrypt_pubkey": PUBLIC_KEY,
             "os_image_hash": MEASUREMENT["os_image_hash"],
@@ -228,7 +229,7 @@ def test_review_deploy_accepts_numeric_create_id() -> None:
             "id": 9175,
             "name": plan.compose_name,
             "status": "starting",
-            "app_id": plan.app_identity,
+            "app_id": DISCOVERED_APP_ID,
             "created_at": "2026-07-15T00:00:00Z",
         },
     )
@@ -250,7 +251,7 @@ def test_review_deploy_list_fallback_by_app_id_when_create_lacks_id() -> None:
             if path == "/cvms/provision":
                 self.provision_requests.append(dict(payload))
                 return {
-                    "app_id": plan.app_identity,
+                    "app_id": DISCOVERED_APP_ID,
                     "compose_hash": plan.compose_hash,
                     "app_env_encrypt_pubkey": PUBLIC_KEY,
                     "os_image_hash": MEASUREMENT["os_image_hash"],
@@ -259,7 +260,7 @@ def test_review_deploy_list_fallback_by_app_id_when_create_lacks_id() -> None:
                 self.create_requests.append(dict(payload))
                 # Residual shape: create 200 but no usable id field.
                 return {
-                    "app_id": plan.app_identity,
+                    "app_id": DISCOVERED_APP_ID,
                     "status": "processing",
                     "name": plan.compose_name,
                 }
@@ -272,7 +273,7 @@ def test_review_deploy_list_fallback_by_app_id_when_create_lacks_id() -> None:
                 "items": [
                     {
                         "id": 5511,
-                        "app_id": plan.app_identity,
+                        "app_id": DISCOVERED_APP_ID,
                         "status": "starting",
                         "name": plan.compose_name,
                     }
@@ -292,12 +293,12 @@ def test_review_deploy_still_fail_closed_when_list_has_no_matching_cvm() -> None
         def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
             if path == "/cvms/provision":
                 return {
-                    "app_id": plan.app_identity,
+                    "app_id": DISCOVERED_APP_ID,
                     "compose_hash": plan.compose_hash,
                     "app_env_encrypt_pubkey": PUBLIC_KEY,
                     "os_image_hash": MEASUREMENT["os_image_hash"],
                 }
-            return {"app_id": plan.app_identity, "status": "processing"}
+            return {"app_id": DISCOVERED_APP_ID, "status": "processing"}
 
         def get(self, path: str) -> dict[str, Any]:  # noqa: ARG002
             return {"items": [{"id": 1, "app_id": "someone-else", "status": "running"}]}

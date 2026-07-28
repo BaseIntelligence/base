@@ -31,6 +31,9 @@ from agent_challenge.canonical.compose import (
     generate_app_compose,
     render_app_compose,
 )
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.result_schema import build_benchmark_result
 from agent_challenge.keyrelease.client import (
     KEY_RELEASE_TLS_CA_ENV,
@@ -64,6 +67,18 @@ MEASUREMENT = {
     "key_provider": "validator-kms",
     "vm_shape": "tdx-small",
 }
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _canonical_from_measurement(measurement: dict[str, str], compose_hash: str) -> dict[str, str]:
@@ -333,6 +348,7 @@ def _attested_stdout() -> str:
         quote_provider=_FakeProvider(),
         manifest_sha256="m" * 64,
         stream=buffer,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     return buffer.getvalue()
 
@@ -501,7 +517,7 @@ def test_review_deploy_ack_uses_exact_nested_schema():
     )
     deployment = review_deploy.ReviewPhalaDeployment(
         provision_response={
-            "app_id": plan.app_identity,
+            "app_id": "1850aa11" + ("cd" * 16),
             "compose_hash": plan.compose_hash,
             "app_env_encrypt_pubkey": plan.kms_public_key_hex,
             "os_image_hash": plan.measurement["os_image_hash"],

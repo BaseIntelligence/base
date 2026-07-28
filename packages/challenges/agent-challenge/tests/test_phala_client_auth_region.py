@@ -245,26 +245,30 @@ def test_review_provision_sends_image_and_accepts_matching_os_hash() -> None:
         os_image=DEFAULT_OS_IMAGE,
     )
 
-    HttpReviewPhalaDeployment._verify_provision_response(
+    discovered = "1850aa11" + ("cd" * 16)
+    # Different app_id from assignment pin is OK (handle discovery).
+    identity = HttpReviewPhalaDeployment._verify_provision_response(
         plan,
         {
-            "app_id": plan.app_identity,
+            "app_id": discovered,
             "compose_hash": plan.compose_hash,
             "app_env_encrypt_pubkey": plan.kms_public_key_hex,
             "os_image_hash": measurement["os_image_hash"],
         },
     )
+    assert identity.app_id == discovered
     with pytest.raises(ReviewDeploymentError, match="os_image_hash"):
         HttpReviewPhalaDeployment._verify_provision_response(
             plan,
             {
-                "app_id": plan.app_identity,
+                "app_id": discovered,
                 "compose_hash": plan.compose_hash,
                 "app_env_encrypt_pubkey": plan.kms_public_key_hex,
                 "os_image_hash": "de" + "9" * 62,  # live-auto dev mismatch
             },
         )
-    with pytest.raises(ReviewDeploymentError, match="app identity"):
+    # Malformed (non-40-hex) app_id still fails closed.
+    with pytest.raises(ReviewDeploymentError, match="app_id"):
         HttpReviewPhalaDeployment._verify_provision_response(
             plan,
             {

@@ -19,6 +19,9 @@ import json
 from contextlib import redirect_stderr, redirect_stdout
 
 from agent_challenge.canonical.attested_result import emit_attested_benchmark_result
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.result_schema import build_benchmark_result
 from agent_challenge.keyrelease.client import KEY_RELEASE_FAILED_REASON
 from agent_challenge.keyrelease.nonce import NonceState
@@ -28,6 +31,18 @@ from agent_challenge.selfdeploy import result as result_mod
 # A sentinel that stands in for any secret/golden material. It never appears in
 # the surfaced envelope, so it must never appear in any surfaced verdict either.
 GOLDEN_SENTINEL = "GOLDEN-PLAINTEXT-SENTINEL-do-not-leak"
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _measurement() -> dict:
@@ -70,6 +85,7 @@ def _attested_stdout(scores=None) -> str:
         quote_provider=_FakeProvider(),
         manifest_sha256="m" * 64,
         stream=buffer,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     return buffer.getvalue()
 

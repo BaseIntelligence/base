@@ -28,13 +28,17 @@ from agent_challenge.review.urls import (
     ReviewApiBaseUrlError,
     assert_pinned_review_api_base_url,
 )
-from agent_challenge.selfdeploy.measurements import (
-    ProvisionOsIdentityError,
-    verify_provision_os_identity,
-)
 from agent_challenge.selfdeploy.phala import (
     extract_cvm_id_from_create_response,
     resolve_cvm_id_from_list,
+)
+from agent_challenge.selfdeploy.provision_identity import (
+    DiscoveredPhalaAppIdentity,
+    ProvisionIdentityError,
+    assert_provision_trust_anchors,
+    env_keys_from_allowed,
+    optional_verify_env_encrypt_pubkey,
+    parse_discovered_identity,
 )
 from agent_challenge.selfdeploy.shapes import (
     DEFAULT_INSTANCE_TYPE,
@@ -45,15 +49,12 @@ from agent_challenge.selfdeploy.shapes import (
 #: Capacity-safe default (bare ``us-west`` → ERR-02-002 No teepod found).
 DEFAULT_REGION = "us-west-1"
 
-#: Phala KMS uses a 40-hex deterministic app_id when ``nonce`` is supplied.
-#: Product pins that hex as assignment ``app_identity`` (same string as create
-#: receipt app_id). Never invent moniker→hex melt mapping: compose ``name`` stays
-#: the product moniker for stable compose_hash, while provision ``app_id`` is the
-#: pinned hex. Random moniker-only provision mints unstable hex + KMS pub each call.
+#: Phala CREATE-style app_id is a 40-hex handle minted by Phala at provision.
+#: Assignment may carry a 40-hex string as an *advisory* pin only — never assert
+#: it against the provision response and never send it (or a nonce) on the
+#: discovery provision request. Non-hex moniker still feeds compose name and
+#: may be sent as app_id alone (legal offline combo).
 _APP_ID_HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
-
-#: Default provision nonce for deterministic Phala app_id (PHALA KMS only).
-DEFAULT_PHALA_APP_NONCE = 0
 
 
 class ReviewDeploymentError(ReviewAcknowledgementError):
@@ -81,14 +82,19 @@ class ReviewDeploymentPlan:
     #: Stable moniker measured into app-compose ``name`` (compose_hash binding).
     #: Distinct from :attr:`app_identity` when the latter is a Phala 40-hex app_id.
     compose_name: str = DEFAULT_REVIEW_APP_IDENTITY
-    #: Nonce for deterministic Phala app_id when app_identity is 40-hex.
-    #: None when identity is moniker-only (tests/legacy offline).
+    #: Deprecated unused field retained so hand-built plans cannot smuggle a
+    #: provision ``nonce``. Deploy never emits nonce; discovery omits app_id.
     phala_app_nonce: int | None = None
 
 
 @dataclass(frozen=True)
 class EncryptedReviewSecrets:
-    """Ciphertext-only secret delivery payload for the Phala create request."""
+    """Validated review secrets; ciphertext may be plan-key or discovered-key.
+
+    ``secret_values`` holds validated plaintext so deploy can re-encrypt to the
+    provision-discovered env-encrypt pubkey (assignment KMS pin is not the
+    trust anchor for encryption). Never appears in repr.
+    """
 
     ciphertext: str
     env_keys: tuple[str, ...]
@@ -96,6 +102,7 @@ class EncryptedReviewSecrets:
     app_identity: str
     kms_public_key_sha256: str
     measurement_allowlist_sha256: str
+    secret_values: Mapping[str, str] = field(default_factory=dict, repr=False)
 
 
 class PhalaPost(Protocol):
@@ -158,16 +165,17 @@ def build_review_deployment_plan(prepare_response: Mapping[str, Any]) -> ReviewD
         ) from exc
 
     # Compose ``name`` does NOT flip to Phala's 40-hex app_id: changing it would
-    # rehash compose_hash. Production pins keep product moniker for compose bytes
-    # and pin the Phala deterministic hex as app_identity for provision/create.
+    # rehash compose_hash. 40-hex app_identity is an advisory Phala pin only;
+    # moniker app_identity still feeds compose name (compose_hash binding).
     app_identity = str(review_app["app_identity"])
     compose_name = DEFAULT_REVIEW_APP_IDENTITY
     if _APP_ID_HEX40_RE.fullmatch(app_identity.lower()):
         app_identity = app_identity.lower()
-        phala_app_nonce: int | None = DEFAULT_PHALA_APP_NONCE
+        # Discovery path: Phala mints app_id; do not pre-bind a nonce.
+        phala_app_nonce: int | None = None
     else:
         # Legacy moniker-only identity (unit/offline tests): compose name binds
-        # the signed moniker and provision uses moniker without nonce.
+        # the signed moniker. Provision may advertise moniker as app_id alone.
         compose_name = app_identity
         phala_app_nonce = None
 
@@ -212,8 +220,15 @@ def build_review_deployment_plan(prepare_response: Mapping[str, Any]) -> ReviewD
 def encrypt_review_secrets(
     plan: ReviewDeploymentPlan,
     secrets: Mapping[str, str],
+    *,
+    env_encrypt_pubkey: str | None = None,
+    app_identity: str | None = None,
 ) -> EncryptedReviewSecrets:
-    """Encrypt the allowed non-empty review secrets only to the signed X25519 key."""
+    """Validate allowed secrets and encrypt to the given (or plan) X25519 key.
+
+    Deploy re-invokes this after provision discovery with the discovered pubkey
+    and app_id. Offline unit tests may call it with the plan key alone.
+    """
 
     if set(secrets) != set(REVIEW_ALLOWED_ENVS):
         raise ReviewDeploymentError("review encrypted_env names must be exactly the allowed names")
@@ -231,10 +246,12 @@ def encrypt_review_secrets(
         )
     except ReviewApiBaseUrlError as exc:
         raise ReviewDeploymentError(str(exc)) from exc
+    pubkey = env_encrypt_pubkey if env_encrypt_pubkey is not None else plan.kms_public_key_hex
+    bound_app_id = app_identity if app_identity is not None else plan.app_identity
     try:
         ciphertext = encrypt_env_vars_sync(
             [EnvVar(key=name, value=values[name]) for name in REVIEW_ALLOWED_ENVS],
-            plan.kms_public_key_hex,
+            pubkey,
         )
     except Exception as exc:
         raise ReviewDeploymentError("review encrypted_env encryption failed") from exc
@@ -244,9 +261,10 @@ def encrypt_review_secrets(
         ciphertext=ciphertext,
         env_keys=REVIEW_ALLOWED_ENVS,
         assignment_id=plan.assignment["assignment_core"]["assignment_id"],
-        app_identity=plan.app_identity,
+        app_identity=bound_app_id,
         kms_public_key_sha256=plan.kms_public_key_sha256,
         measurement_allowlist_sha256=plan.measurement_allowlist_sha256,
+        secret_values=dict(values),
     )
 
 
@@ -261,41 +279,62 @@ class HttpReviewPhalaDeployment:
         plan: ReviewDeploymentPlan,
         encrypted: EncryptedReviewSecrets,
     ) -> dict[str, str]:
-        """Provision exact compose identity then create with ciphertext only."""
+        """Provision (names only) → discover app_id → encrypt → create."""
 
         if (
             encrypted.assignment_id != plan.assignment["assignment_core"]["assignment_id"]
-            or encrypted.app_identity != plan.app_identity
             or encrypted.kms_public_key_sha256 != plan.kms_public_key_sha256
             or encrypted.measurement_allowlist_sha256 != plan.measurement_allowlist_sha256
             or encrypted.env_keys != REVIEW_ALLOWED_ENVS
-            or not encrypted.ciphertext
+            or not encrypted.secret_values
         ):
             raise ReviewDeploymentError("review encrypted_env is not bound to this assignment")
+
+        env_keys = env_keys_from_allowed(REVIEW_ALLOWED_ENVS)
         provision_request: dict[str, Any] = {
-            # Phala identity: when pin is a 40-hex deterministic app_id, send it
-            # with the matching nonce for stable KMS pubkey. Compose name stays
-            # the product moniker so offline compose_hash matches live.
-            "app_id": plan.app_identity,
+            # Compose name stays the product moniker so offline compose_hash
+            # matches live. app_id is discovered from the response — do not
+            # require the assignment pin here.
             "name": plan.compose_name,
             "instance_type": plan.instance_type,
             "region": plan.region,
             "compose_file": plan.compose,
-            "env_keys": list(encrypted.env_keys),
+            "env_keys": env_keys,
             "image": plan.os_image,
         }
-        if plan.phala_app_nonce is not None:
-            provision_request["nonce"] = plan.phala_app_nonce
+        # Phala contract: either (no nonce, no app_id) for discovery, or
+        # (app_id alone) for legacy moniker. Never send nonce without app_id
+        # (live HTTP 422). Never send nonce at all on this path — Phala mints.
+        if plan.app_identity and not _APP_ID_HEX40_RE.fullmatch(plan.app_identity.lower()):
+            provision_request["app_id"] = plan.app_identity
+        # plan.phala_app_nonce is intentionally ignored (cannot force illegal shape).
+
         provision = self._api.post("/cvms/provision", provision_request)
-        self._verify_provision_response(plan, provision)
+        identity = self._verify_provision_response(plan, provision)
+
+        sealed = encrypt_review_secrets(
+            plan,
+            encrypted.secret_values,
+            env_encrypt_pubkey=identity.app_env_encrypt_pubkey,
+            app_identity=identity.app_id,
+        )
+        # Pin site 2: ciphertext binding uses the *discovered* app_id.
+        if (
+            sealed.app_identity != identity.app_id
+            or sealed.assignment_id != plan.assignment["assignment_core"]["assignment_id"]
+            or sealed.env_keys != REVIEW_ALLOWED_ENVS
+            or not sealed.ciphertext
+        ):
+            raise ReviewDeploymentError("review encrypted_env is not bound to this assignment")
+
         create_request = {
-            "app_id": plan.app_identity,
+            "app_id": identity.app_id,
             "compose_hash": plan.compose_hash,
-            "encrypted_env": encrypted.ciphertext,
-            "env_keys": list(encrypted.env_keys),
+            "encrypted_env": sealed.ciphertext,
+            "env_keys": list(sealed.env_keys),
         }
         created = self._api.post("/cvms", create_request)
-        cvm_id = self._resolve_created_cvm_id(plan, created)
+        cvm_id = self._resolve_created_cvm_id(identity.app_id, created)
         request_id = created.get("request_id")
         if not isinstance(request_id, str) or not request_id:
             # Numeric create id also serves as request identity when API
@@ -310,6 +349,7 @@ class HttpReviewPhalaDeployment:
             request_id=request_id,
             receipt_sha256=sha256(repr(sorted(created.items())).encode("utf-8")).hexdigest(),
             created_at_ms=created_at_ms,
+            app_id=identity.app_id,
         )
         try:
             validate_review_deployed_acknowledgement(plan.assignment, acknowledgement)
@@ -319,14 +359,14 @@ class HttpReviewPhalaDeployment:
 
     def _resolve_created_cvm_id(
         self,
-        plan: ReviewDeploymentPlan,
+        discovered_app_id: str,
         created: Mapping[str, Any],
     ) -> str:
         """Map create response (or safe app_id list fallback) to a CVM id string.
 
-        Live Phala create schema returns numeric ``id`` plus ``app_id`` (app pin).
+        Live Phala create schema returns numeric ``id`` plus ``app_id`` (handle).
         Fail closed only when neither create fields nor GET ``/cvms`` listing by
-        ``app_id`` identify a CVM. Never invent measurements or ids.
+        discovered ``app_id`` identify a CVM. Never invent measurements or ids.
         """
 
         try:
@@ -344,7 +384,7 @@ class HttpReviewPhalaDeployment:
             ) from exc
         if not isinstance(listing, Mapping):
             raise ReviewDeploymentError("Phala create response does not identify the review CVM")
-        resolved = resolve_cvm_id_from_list(listing, app_id=plan.app_identity)
+        resolved = resolve_cvm_id_from_list(listing, app_id=discovered_app_id)
         if resolved is None:
             raise ReviewDeploymentError("Phala create response does not identify the review CVM")
         return resolved
@@ -353,27 +393,35 @@ class HttpReviewPhalaDeployment:
     def _verify_provision_response(
         plan: ReviewDeploymentPlan,
         provision: Mapping[str, Any],
-    ) -> None:
-        if provision.get("compose_hash") != plan.compose_hash:
-            raise ReviewDeploymentError("Phala provision compose hash mismatches signed assignment")
-        # Honest identity check: compare to the pin, never invent moniker melt.
-        # Production pins MUST be the real Phala 40-hex app_id so equality holds.
-        # Moniker-only offline fixtures still pass equality against moniker responses.
-        provision_app = provision.get("app_id")
-        if not isinstance(provision_app, str) or provision_app != plan.app_identity:
-            raise ReviewDeploymentError("Phala provision app identity mismatches signed assignment")
-        if provision.get("app_env_encrypt_pubkey") != plan.kms_public_key_hex:
-            raise ReviewDeploymentError("Phala provision key mismatches signed assignment")
+    ) -> DiscoveredPhalaAppIdentity:
+        """Hard-check compose_hash + OS; discover app_id (never pin-assert)."""
+
         try:
-            verify_provision_os_identity(
-                measurement=plan.measurement,
-                provision_os=provision.get("os_image_hash"),
-                mismatch_message=(
-                    "Phala provision os_image_hash mismatches signed assignment measurement"
-                ),
+            assert_provision_trust_anchors(
+                plan_compose_hash=plan.compose_hash,
+                plan_measurement=plan.measurement,
+                provision=provision,
             )
-        except ProvisionOsIdentityError as exc:
+        except ProvisionIdentityError as exc:
+            msg = str(exc)
+            if "compose_hash" in msg and "os_image" not in msg:
+                raise ReviewDeploymentError(
+                    "Phala provision compose hash mismatches signed assignment"
+                ) from exc
+            # Preserve catalog / dstack_mr_image detail; only rewrite plain OS mismatch.
+            if "dstack_mr_image" in msg or "catalog" in msg:
+                raise ReviewDeploymentError(msg) from exc
+            if "os_image_hash" in msg or "measurement" in msg:
+                raise ReviewDeploymentError(
+                    "Phala provision os_image_hash mismatches signed assignment measurement"
+                ) from exc
+            raise ReviewDeploymentError(msg) from exc
+        try:
+            identity = parse_discovered_identity(provision)
+            optional_verify_env_encrypt_pubkey(identity)
+        except ProvisionIdentityError as exc:
             raise ReviewDeploymentError(str(exc)) from exc
+        return identity
 
 
 class ReviewPhalaDeployment(HttpReviewPhalaDeployment):
@@ -413,7 +461,6 @@ class ReviewPhalaDeployment(HttpReviewPhalaDeployment):
 
 __all__ = [
     "DEFAULT_OS_IMAGE",
-    "DEFAULT_PHALA_APP_NONCE",
     "DEFAULT_REGION",
     "PINNED_REVIEW_API_BASE_URL",
     "REVIEW_ALLOWED_ENVS",

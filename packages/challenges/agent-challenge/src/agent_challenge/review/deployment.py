@@ -272,10 +272,9 @@ def validate_review_deployed_acknowledgement(
         raise ReviewDeploymentError(
             "review deployed acknowledgement receipt cvm_id mismatches top-level cvm_id"
         )
-    if receipt["app_id"] != review_app["app_identity"]:
-        raise ReviewDeploymentError(
-            "review deployed acknowledgement receipt app_id mismatches assignment"
-        )
+    # app_id is a Phala deployment handle discovered at provision time, not a
+    # trust pin against assignment.app_identity. Presence/shape already checked
+    # via _require_id above; compose_hash + KMS digest remain the trust anchors.
 
     compose_identity = acknowledgement["compose_identity"]
     if (
@@ -319,21 +318,27 @@ def build_review_deployed_acknowledgement(
     request_id: str,
     receipt_sha256: str,
     created_at_ms: int,
+    app_id: str | None = None,
 ) -> dict[str, Any]:
-    """Emit the exact nested Review deployed acknowledgement v1 object."""
+    """Emit the exact nested Review deployed acknowledgement v1 object.
+
+    ``app_id`` is the Phala handle discovered from provision/create. When
+    omitted (legacy offline callers), fall back to assignment app_identity.
+    """
 
     try:
         validate_review_assignment(assignment)
     except AssignmentSchemaError as exc:
         raise ReviewDeploymentError("stored review assignment is invalid") from exc
     review_app = assignment["assignment_core"]["review_app"]
+    receipt_app_id = app_id if app_id is not None else str(review_app["app_identity"])
     acknowledgement = {
         "schema_version": REVIEW_DEPLOYED_ACK_SCHEMA_VERSION,
         "assignment_id": assignment["assignment_core"]["assignment_id"],
         "cvm_id": cvm_id,
         "phala_create_receipt": {
             "request_id": request_id,
-            "app_id": review_app["app_identity"],
+            "app_id": receipt_app_id,
             "cvm_id": cvm_id,
             "receipt_sha256": receipt_sha256,
             "created_at_ms": created_at_ms,

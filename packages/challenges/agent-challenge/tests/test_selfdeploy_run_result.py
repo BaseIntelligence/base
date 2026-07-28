@@ -19,6 +19,9 @@ import json
 from contextlib import redirect_stderr, redirect_stdout
 
 from agent_challenge.canonical.attested_result import emit_attested_benchmark_result
+from agent_challenge.evaluation.guest_execution_evidence import (
+    prove_guest_artifact_execution,
+)
 from agent_challenge.evaluation.own_runner.result_schema import build_benchmark_result
 from agent_challenge.keyrelease.client import KEY_RELEASE_FAILED_REASON
 from agent_challenge.selfdeploy import cli
@@ -29,6 +32,18 @@ URL = "https://validator.example/keyrelease"
 
 # A definitely-closed local port (fail fast, no external network, no spend).
 UNREACHABLE_URL = "http://127.0.0.1:9/"
+
+
+
+def _guest_evidence_for_emit(payload: bytes = b"test-agent-zip-bytes"):
+    from agent_challenge.canonical import eval_wire as _ew
+
+    digest = _ew.agent_artifact_sha256_hex(payload)
+    return prove_guest_artifact_execution(
+        plan_agent_hash=digest,
+        download_bytes=payload,
+        executed_bytes=payload,
+    )
 
 
 def _failclosed_line(reason: str = KEY_RELEASE_FAILED_REASON) -> str:
@@ -83,6 +98,7 @@ def _attested_stdout(scores=None) -> str:
         quote_provider=_FakeProvider(),
         manifest_sha256="m" * 64,
         stream=buffer,
+        guest_artifact_evidence=_guest_evidence_for_emit(),
     )
     return buffer.getvalue()
 

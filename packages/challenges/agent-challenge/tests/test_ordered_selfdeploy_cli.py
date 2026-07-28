@@ -171,6 +171,11 @@ def test_eval_encrypted_env_contains_only_scoped_capabilities_and_is_transmitted
             "secret_delivery": {"env_key": "EVAL_RUN_TOKEN", "token": token},
         },
     )
+    artifact_env = eval_deploy.build_eval_artifact_env_values(
+        plan,
+        secret="test-shared-token",
+        api_base_url="https://chain.joinbase.ai/challenges/agent-challenge",
+    )
     encrypted = eval_deploy.encrypt_eval_secrets(
         plan,
         {
@@ -190,6 +195,7 @@ def test_eval_encrypted_env_contains_only_scoped_capabilities_and_is_transmitted
                 }
             ),
             "CHALLENGE_PHALA_VALIDATOR_NONCE": plan.plan["score_nonce"],
+            **artifact_env,
         },
     )
     assert encrypted.ciphertext
@@ -199,6 +205,8 @@ def test_eval_encrypted_env_contains_only_scoped_capabilities_and_is_transmitted
         "CHALLENGE_PHALA_ATTESTATION_ENABLED",
         "CHALLENGE_PHALA_AGENT_HASH",
         "CHALLENGE_PHALA_CANONICAL_MEASUREMENT",
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_TOKEN",
+        "CHALLENGE_PHALA_EVAL_ARTIFACT_URL",
         "CHALLENGE_PHALA_EVAL_PLAN",
         "CHALLENGE_PHALA_VALIDATOR_NONCE",
         "LLM_COST_LIMIT",
