@@ -98,7 +98,7 @@ class ChallengeSettings(BaseSettings):
     raw_weight_push_freshness_seconds: int = Field(default=300, ge=30)
     raw_weight_push_timeout_seconds: float = Field(default=10.0, gt=0.0)
     # Epoch bucket size for push revision identity (seconds).
-    epoch_seconds: int = Field(default=3600, ge=1)
+    epoch_seconds: int = Field(default=360, ge=1)
 
 
     # Root stdlib logging level applied at every process entrypoint (the API app

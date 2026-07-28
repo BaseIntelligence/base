@@ -636,8 +636,29 @@ def maybe_build_push_client_from_settings(
         )
         token = str(shared) if shared else None
     if not token:
+        # Production mounts the challenge token via shared_token_file; auth
+        # already resolves that path — reuse the same loader so raw-weight push
+        # does not silently skip when only the file is configured.
+        try:
+            from agent_challenge.sdk.auth import load_internal_token
+
+            loaded = load_internal_token(settings)
+            token = str(loaded) if loaded else None
+        except Exception:
+            token = None
+    if not token:
+        token_file = getattr(settings, "shared_token_file", None)
+        if token_file:
+            from pathlib import Path as _Path
+
+            try:
+                raw = _Path(str(token_file)).expanduser().read_text(encoding="utf-8").strip()
+            except OSError:
+                raw = ""
+            token = raw or None
+    if not token:
         return None
-    epoch_seconds = int(getattr(settings, "epoch_seconds", 3600) or 3600)
+    epoch_seconds = int(getattr(settings, "epoch_seconds", 360) or 360)
     interval_hint = float(getattr(settings, "raw_weight_push_interval_seconds", 30.0))
     slug = str(
         getattr(settings, "slug", None)

@@ -191,3 +191,29 @@ def test_raw_weight_push_interval_rejects_below_minimum() -> None:
             shared_token_file=None,
             raw_weight_push_interval_seconds=0.05,
         )
+
+
+def test_maybe_build_push_client_loads_token_from_shared_token_file(
+    tmp_path: Path,
+) -> None:
+    """File-backed challenge token alone is enough to construct the push client."""
+
+    token_path = tmp_path / "challenge_token"
+    token_path.write_text("file-backed-ac-token-value", encoding="utf-8")
+    settings = ChallengeSettings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'ac-push-file-token.sqlite3'}",
+        shared_token=None,
+        shared_token_file=str(token_path),
+        raw_weight_push_enabled=True,
+        master_base_url="http://master.test",
+        epoch_seconds=360,
+    )
+    db = Database(settings.database_url)
+    client = push_module.maybe_build_push_client_from_settings(
+        settings=settings,
+        database=db,
+    )
+    assert client is not None
+    assert client.shared_token == "file-backed-ac-token-value"
+    assert client.master_base_url == "http://master.test"
+    assert client.challenge_slug == "agent-challenge"
