@@ -30,11 +30,11 @@ from base.compute import (
 )
 from base.compute.lium import (
     LIUM_TRAINING_GPU_TYPE,
-_as_list,
-_extract_gpu_count,
-_extract_gpu_type,
-_extract_price,
-_parse_instance,
+    _as_list,
+    _extract_gpu_count,
+    _extract_gpu_type,
+    _extract_price,
+    _parse_instance,
     _parse_offer,
     is_allowed_lium_training_gpu,
     normalize_gpu_type,
@@ -194,9 +194,7 @@ async def test_list_offers_keeps_only_rtx_pro_6000_blackwell_1gpu() -> None:
             "price_per_gpu": 0.95,
         },
     ]
-    respx.get(f"{BASE}/executors").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+    respx.get(f"{BASE}/executors").mock(return_value=httpx.Response(200, json=payload))
     offers = await LiumClient("k", training_gpu_lock=True).list_offers()
     assert [o.id for o in offers] == ["bw1"]
     assert offers[0].gpu_count == 1
@@ -215,12 +213,9 @@ async def test_list_offers_rejects_unparseable_gpu_type() -> None:
             "price_per_hour": 1.29,
         },
     ]
-    respx.get(f"{BASE}/executors").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+    respx.get(f"{BASE}/executors").mock(return_value=httpx.Response(200, json=payload))
     offers = await LiumClient("k", training_gpu_lock=True).list_offers()
     assert [o.id for o in offers] == ["ok"]
-
 
 
 # -- VAL-PROV-003 -------------------------------------------------------------
@@ -373,8 +368,6 @@ async def test_provision_rent_body_gpu_count_is_one() -> None:
     )
     body = json.loads(routes["rent"].calls.last.request.content)
     assert body["gpu_count"] == 1
-
-
 
 
 @respx.mock

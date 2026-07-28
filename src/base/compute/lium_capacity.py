@@ -354,6 +354,8 @@ class LiumCapacityScheduler:
                 self._store.put(active)
                 return active
 
+        if orphan_pod_id is None:
+            return None
         try:
             await client.terminate(orphan_pod_id)
         except Exception:  # noqa: BLE001 - cancel race must not raise

@@ -34,6 +34,7 @@ from base.master.constation.allowlist_repository import (
     constation_identity_payload,
 )
 from base.master.constation.custody_keys import make_constation_pre_forward_hook
+from base.master.constation.orchestrator import ConstationOrchestrationRequest
 from base.master.orchestration import (
     WORK_UNIT_MAX_ATTEMPTS_REASON,
     ChallengePendingWork,
@@ -759,7 +760,7 @@ async def test_stamped_payload_drives_pre_forward_hook_past_incomplete_identity(
     assert hook is not None
     await hook(work_unit_id="wu-1", miner_hotkey="hk", metadata=metadata)
     assert len(seen) == 1
-    req = seen[0]
+    req = cast(ConstationOrchestrationRequest, seen[0])
     assert req.required_digest == pin.digest
     assert req.commit_sha == pin.commit_sha
     assert req.tree_sha == pin.tree_sha

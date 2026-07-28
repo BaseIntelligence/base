@@ -98,9 +98,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _SHELL_METACHAR_RE = re.compile(r"""[\s;|&$`<>(){}[\]!*?\\'"]""")
 
 # https git host path: owner/repo with optional .git, no query/fragment/userinfo.
-_HTTPS_GIT_PATH_RE = re.compile(
-    r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?/?$"
-)
+_HTTPS_GIT_PATH_RE = re.compile(r"^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?/?$")
 
 _PYPROJECT_NAME = "pyproject.toml"
 
@@ -132,9 +130,7 @@ def validate_commit_sha(sha: str) -> str:
         raise PodBootError("commit SHA contains invalid or injection characters")
     normalized = sha.lower()
     if not _COMMIT_SHA_RE.fullmatch(normalized):
-        raise PodBootError(
-            "commit SHA must be 7–40 lowercase hex digits (full 40-char preferred)"
-        )
+        raise PodBootError("commit SHA must be 7–40 lowercase hex digits (full 40-char preferred)")
     return normalized
 
 
@@ -215,9 +211,7 @@ def _is_obvious_secret_name(name: str) -> bool:
         upper.endswith("_TOKEN") or upper.endswith("_KEY") or "TOKEN" in upper
     ):
         return True
-    if upper.startswith("LIUM_") and (
-        "KEY" in upper or "TOKEN" in upper or "SECRET" in upper
-    ):
+    if upper.startswith("LIUM_") and ("KEY" in upper or "TOKEN" in upper or "SECRET" in upper):
         return True
     return False
 

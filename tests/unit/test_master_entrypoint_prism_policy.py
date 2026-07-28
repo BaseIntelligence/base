@@ -17,7 +17,10 @@ ENTRYPOINT = REPO_ROOT / "docker/master-entrypoint.sh"
 def test_entrypoint_embeds_worker_plane_prod_defaults() -> None:
     """Given entrypoint script, When read, Then worker-plane prod defaults present."""
     text = ENTRYPOINT.read_text(encoding="utf-8")
-    assert "PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE=${PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE:-false}" in text
+    assert (
+        "PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE=${PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE:-false}"
+        in text
+    )
     assert (
         "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER="
         "${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-true}"

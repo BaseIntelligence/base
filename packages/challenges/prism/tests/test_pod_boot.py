@@ -92,10 +92,7 @@ def test_validate_commit_sha_rejects_spaces_and_shell_metachar() -> None:
 
 def test_validate_repo_url_accepts_https_git_shape() -> None:
     assert validate_repo_url(HTTPS_REPO) == HTTPS_REPO
-    assert (
-        validate_repo_url("https://gitlab.com/org/name")
-        == "https://gitlab.com/org/name"
-    )
+    assert validate_repo_url("https://gitlab.com/org/name") == "https://gitlab.com/org/name"
 
 
 @pytest.mark.parametrize(
@@ -211,10 +208,7 @@ def test_build_boot_env_emits_only_non_secret_prism_keys() -> None:
     )
     assert env["PRISM_REPO_URL"] == HTTPS_REPO
     assert env["PRISM_COMMIT_SHA"] == FULL_SHA
-    assert (
-        env["PRISM_MASTER_CHECKPOINT_URL"]
-        == "https://chain.joinbase.ai/internal/v1/checkpoints"
-    )
+    assert env["PRISM_MASTER_CHECKPOINT_URL"] == "https://chain.joinbase.ai/internal/v1/checkpoints"
     assert env["PRISM_SUBMISSION_ID"] == "sub-123"
     assert env["PRISM_ATTEMPT"] == "1"
     # No secrets

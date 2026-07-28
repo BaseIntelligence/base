@@ -106,7 +106,6 @@ def test_build_lium_capacity_scheduler_disabled_fail_closed() -> None:
         build_lium_capacity_scheduler(settings)
 
 
-
 def test_try_build_lium_capacity_scheduler_disabled_returns_none() -> None:
     """Given enabled=False, When try_build, Then None (no raise)."""
     settings = Settings(lium_training=LiumTrainingSettings(enabled=False))

@@ -14,10 +14,6 @@ from base.challenge_sdk.executor import DockerExecutor, DockerLimits, DockerMoun
 from .config import PrismSettings
 from .db import dumps
 from .evaluator import source_similarity
-from .evaluator.plagiarism_adjudicator import (
-    adjudicate_plagiarism,
-    config_from_settings as plagiarism_llm_config_from_settings,
-)
 from .evaluator.anti_cheat import evaluate_anti_cheat
 from .evaluator.checkpoint_publisher import CheckpointPublisher
 from .evaluator.component_signatures import (
@@ -38,6 +34,12 @@ from .evaluator.distributed_contract import (
 )
 from .evaluator.interface import DEFAULT_TRAINING_ENTRYPOINT, PrismContext
 from .evaluator.modes import execution_mode_from_value
+from .evaluator.plagiarism_adjudicator import (
+    adjudicate_plagiarism,
+)
+from .evaluator.plagiarism_adjudicator import (
+    config_from_settings as plagiarism_llm_config_from_settings,
+)
 from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import SandboxViolation, inspect_code
 from .evaluator.scoring import ScoreValidationError, score_prequential_bpb
@@ -60,11 +62,14 @@ DEFAULT_REVIEW_RULES = (
 CONTAINER_EXECUTION_BACKENDS = frozenset(
     {"base_container", "base_gpu", "container_gpu", "docker_gpu"}
 )
-#: Always-on backends (no constation bundle required at worker construction).
-SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
-#: Lium is gated: permitted only when a full constation bundle is present (todo 19).
+#: Lium compute backend (master-owned training pods or worker label). Not TEE.
 LIUM_EXECUTION_BACKEND = "lium"
-GATED_EXECUTION_BACKENDS = frozenset({LIUM_EXECUTION_BACKEND})
+#: Always-on backends at worker construction. Lium is compute-only (T14): no
+#: constation bundle required to select the backend. ``constation_ok`` score
+#: elevation remains a separate ingestion path; constation modules are not deleted.
+SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS | {LIUM_EXECUTION_BACKEND}
+#: Historical name kept for importers. Empty: no backend is constation-gated.
+GATED_EXECUTION_BACKENDS: frozenset[str] = frozenset()
 
 
 def is_execution_backend_supported(
@@ -72,18 +77,14 @@ def is_execution_backend_supported(
     *,
     constation_bundle: object | None = None,
 ) -> bool:
-    """Whether ``backend`` may be used under the current constation gate.
+    """Whether ``backend`` may be used for Prism worker construction.
 
-    Container backends (``base_gpu``, …) are always allowed. ``lium`` is allowed
-    **only** when a full constation bundle object is supplied — bare Lium without
-    a bundle stays rejected. This does not evaluate ``constation_ok``; that is the
-    ingestion elevation path (todos 21–22).
+    Container backends and ``lium`` are always allowed. ``constation_bundle`` is
+    accepted for API compatibility but does **not** gate Lium (T14 unattested /
+    master-owned path). This does not evaluate ``constation_ok``.
     """
-    if backend in SUPPORTED_EXECUTION_BACKENDS:
-        return True
-    if backend == LIUM_EXECUTION_BACKEND:
-        return constation_bundle is not None
-    return False
+    del constation_bundle  # API compat; not a dispatch gate
+    return backend in SUPPORTED_EXECUTION_BACKENDS
 
 
 def require_execution_backend(
@@ -91,13 +92,9 @@ def require_execution_backend(
     *,
     constation_bundle: object | None = None,
 ) -> None:
-    """Raise ``ValueError`` when ``backend`` is not permitted under the gate."""
+    """Raise ``ValueError`` when ``backend`` is not a supported execution backend."""
     if is_execution_backend_supported(backend, constation_bundle=constation_bundle):
         return
-    if backend == LIUM_EXECUTION_BACKEND:
-        raise ValueError(
-            f"Unsupported execution backend: {backend}: constation bundle required for lium"
-        )
     raise ValueError(f"Unsupported execution backend: {backend}")
 
 

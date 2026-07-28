@@ -86,11 +86,7 @@ async def test_orchestration_enqueues_lium_lease_when_scheduler_present() -> Non
         assert scheduler.enqueue_calls == [("psub-lium-1", "job-lium-1")]
 
         async with factory() as session:
-            rows = list(
-                (
-                    await session.execute(select(WorkAssignment))
-                ).scalars().all()
-            )
+            rows = list((await session.execute(select(WorkAssignment))).scalars().all())
         assert len(rows) == 1
         assert rows[0].required_capability == "gpu"
     finally:
@@ -113,11 +109,7 @@ async def test_orchestration_skips_lium_when_scheduler_none() -> None:
         bridged = await driver.bridge_pending_work()
         assert bridged["prism"] == ["psub-lium-1"]
         async with factory() as session:
-            rows = list(
-                (
-                    await session.execute(select(WorkAssignment))
-                ).scalars().all()
-            )
+            rows = list((await session.execute(select(WorkAssignment))).scalars().all())
         assert len(rows) == 1
         assert rows[0].work_unit_id == "psub-lium-1"
     finally:

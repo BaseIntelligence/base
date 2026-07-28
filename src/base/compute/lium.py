@@ -47,9 +47,7 @@ LIUM_API_BASE_URL = "https://lium.io/api"
 _DEFAULT_SSH_KEY_NAME = "prism-mission-worker"
 
 # Canonical display name for the only GPU type Prism training may rent.
-LIUM_TRAINING_GPU_TYPE: Final[str] = (
-    "NVIDIA RTX PRO 6000 Blackwell Server Edition"
-)
+LIUM_TRAINING_GPU_TYPE: Final[str] = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 _TRAINING_GPU_REQUIRED_TOKENS: Final[frozenset[str]] = frozenset(
     {"rtx", "pro", "6000", "blackwell"}
 )

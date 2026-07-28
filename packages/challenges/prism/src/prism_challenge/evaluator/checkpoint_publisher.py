@@ -115,8 +115,6 @@ class MockCheckpointPublisher:
         return len(self.uploads)
 
 
-
-
 @dataclass
 class DisabledCheckpointPublisher:
     """No-op publisher: Prism HF checkpoint upload is intentionally OFF on this host.
@@ -193,6 +191,7 @@ class HuggingFaceCheckpointPublisher:
 
     def publish(self, upload: CheckpointUpload) -> PublishedCheckpoint:
         import os
+
         enabled = (os.environ.get("PRISM_CHECKPOINT_UPLOAD_ENABLED") or "false").strip().lower()
         if enabled not in ("1", "true", "yes", "on"):
             raise RuntimeError(

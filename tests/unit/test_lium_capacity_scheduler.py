@@ -238,9 +238,7 @@ async def test_tick_admits_up_to_offer_count_and_cap() -> None:
     assert len(admitted) == 2  # only 2 offers
     assert all(lease.state is LeaseState.ACTIVE for lease in admitted)
     queued = [
-        lease
-        for lease in sched.store.list_all()
-        if lease.state is LeaseState.QUEUED
+        lease for lease in sched.store.list_all() if lease.state is LeaseState.QUEUED
     ]
     assert len(queued) == 2
     assert {lease.submission_id for lease in queued} == {"sub-2", "sub-3"}

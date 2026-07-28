@@ -78,8 +78,6 @@ def test_hf_publish_refuses_when_upload_disabled(monkeypatch, tmp_path: Path) ->
         def upload_file(self, **kwargs):  # noqa: ANN003
             raise AssertionError("must not call HF when upload disabled")
 
-    publisher = HuggingFaceCheckpointPublisher(
-        repo_id=DEFAULT_CHECKPOINT_REPO_ID, api=_BoomApi()
-    )
+    publisher = HuggingFaceCheckpointPublisher(repo_id=DEFAULT_CHECKPOINT_REPO_ID, api=_BoomApi())
     with pytest.raises(RuntimeError, match="prism_checkpoint_upload_disabled"):
         publisher.publish(upload)

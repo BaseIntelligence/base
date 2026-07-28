@@ -457,9 +457,7 @@ class PrismSettings(ChallengeSettings):
     openrouter_api_key_file: str | None = Field(
         default="/run/secrets/openrouter_api_key",
         repr=False,
-        validation_alias=AliasChoices(
-            "PRISM_OPENROUTER_API_KEY_FILE", "OPENROUTER_API_KEY_FILE"
-        ),
+        validation_alias=AliasChoices("PRISM_OPENROUTER_API_KEY_FILE", "OPENROUTER_API_KEY_FILE"),
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",

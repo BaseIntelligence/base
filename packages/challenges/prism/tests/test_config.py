@@ -181,7 +181,9 @@ def test_max_code_bytes_holds_five_mib_zip_base64() -> None:
 
 
 def test_example_config_parses_with_nas_defaults() -> None:
-    payload = yaml.safe_load((Path(__file__).resolve().parent.parent / "config.example.yaml").read_text(encoding="utf-8"))
+    payload = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "config.example.yaml").read_text(encoding="utf-8")
+    )
 
     settings = PrismSettings(**payload)
 
@@ -220,4 +222,3 @@ def test_checkpoint_repo_id_accepts_prism_and_hf_env_aliases(monkeypatch) -> Non
     monkeypatch.delenv("PRISM_CHECKPOINT_REPO_ID", raising=False)
     monkeypatch.setenv("PRISM_HF_CHECKPOINT_REPO_ID", "alias-org/from-hf")
     assert PrismSettings().checkpoint_repo_id == "alias-org/from-hf"
-

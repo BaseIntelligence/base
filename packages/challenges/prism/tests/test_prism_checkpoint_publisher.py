@@ -246,4 +246,3 @@ def test_checkpoint_publisher_module_imports_offline_without_hf_token(monkeypatc
     constructed = pub.HuggingFaceCheckpointPublisher()
     assert constructed.repo_id == MANDATED_CHECKPOINT_REPO_ID
     # publish without injected api would try lazy import; construction alone must not.
-
