@@ -29,11 +29,11 @@ from agent_challenge.analyzer.llm_reviewer import (
     LlmReviewProvider,
     SubmitVerdictArgs,
 )
+
 try:
     from agent_challenge.analyzer.llm_reviewer import build_llm_verdict_row
 except ImportError:  # pragma: no cover - version skew
     build_llm_verdict_row = None  # type: ignore[assignment,misc]
-from agent_challenge.core.models import LlmVerdict as _CoreLlmVerdict
 from agent_challenge.analyzer.similarity import (
     ALGORITHM_VERSION,
     persist_same_challenge_similarity_matches,
@@ -46,6 +46,7 @@ from agent_challenge.core.models import (
     EvaluationJob,
     SubmissionArtifact,
 )
+from agent_challenge.core.models import LlmVerdict as _CoreLlmVerdict
 from agent_challenge.evaluation.runner import (
     enqueue_evaluation_job_for_submission,
     ensure_miner_env_ready_for_evaluation,
