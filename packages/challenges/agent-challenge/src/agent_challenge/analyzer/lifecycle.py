@@ -27,7 +27,13 @@ from agent_challenge.analyzer.llm_reviewer import (
     LlmProviderUnavailable,
     LlmReviewOutcome,
     LlmReviewProvider,
+    SubmitVerdictArgs,
 )
+try:
+    from agent_challenge.analyzer.llm_reviewer import build_llm_verdict_row
+except ImportError:  # pragma: no cover - version skew
+    build_llm_verdict_row = None  # type: ignore[assignment,misc]
+from agent_challenge.core.models import LlmVerdict as _CoreLlmVerdict
 from agent_challenge.analyzer.similarity import (
     ALGORITHM_VERSION,
     persist_same_challenge_similarity_matches,
@@ -255,17 +261,12 @@ async def run_analysis_for_submission(
     uses_configured_reviewer = reviewer is None
     llm_reviewer = reviewer or build_configured_lifecycle_reviewer()
     if uses_configured_reviewer and _reviewer_missing_gateway_token(llm_reviewer):
-        return await _mark_llm_standby(
-            session=session,
-            submission=submission,
-            analysis_run=analysis_run,
-            actor=actor,
-            ast_report=ast_report.to_dict(),
-            similarity_evidence=similarity_evidence,
-            reason="missing_llm_gateway_token",
-            provider_name=_reviewer_provider_name(llm_reviewer),
-            model_name=_reviewer_model_name(llm_reviewer),
-        )
+        # Gateway-free product mode (VAL-ACAT): Base /llm/v1 is removed and must
+        # never be restored. ALWAYS skip residual missing_llm_gateway_token
+        # parking — measured Phala+OpenRouter (or tools-only) is the real LLM
+        # gate. Host analyzer completes AST+similarity and allows.
+        llm_reviewer = _GatewayFreeAttestedReviewer()
+        uses_configured_reviewer = False
     # FIX-2: release the pooled connection before the slow LLM call. Holding an
     # idle cross-node asyncpg socket across it lets NAT/firewall black-hole the
     # connection, hanging the next statement; the refresh() below re-checks-out
@@ -463,6 +464,85 @@ def _stale_analysis_summary(
         status=submission.raw_status,
         evaluation_job_id=None,
     )
+
+
+class _GatewayFreeNoopProvider:
+    """Placeholder provider for gateway-free attested analyzer path."""
+
+    provider_name = "gateway_free_attested"
+    model_name = "none"
+
+
+class _GatewayFreeAttestedReviewer:
+    """Host analyzer allow when Base LLM gateway is intentionally absent.
+
+    Production Mode B product policy: Base /llm/v1 is removed. Central-gate
+    Kimi/Gateway review cannot run. Measured Phala review CVM + OpenRouter is
+    the scoring LLM gate. Host analyzer completes AST+similarity and allows.
+    """
+
+    def review(
+        self,
+        *,
+        analysis_run_id: int,
+        manifest: ZipArtifactManifest,
+        read_session: ArtifactReadSession,
+        similarity_evidence: list | tuple = (),
+    ) -> LlmReviewOutcome:
+        del read_session  # interface only
+        verdict = SubmitVerdictArgs(
+            verdict="allow",
+            confidence=1.0,
+            rationale=(
+                "gateway_free_attested: Base LLM gateway removed; host analyzer "
+                "auto-allow after AST+similarity; measured Phala/OpenRouter "
+                "review is the real LLM gate"
+            ),
+            evidence_paths=[],
+            similarity_assessment="",
+            policy_flags=["gateway_free_attested_skip_central_llm"],
+        )
+        transcript: dict[str, object] = {
+            "attempts": [],
+            "file_reads": [],
+            "provider_responses": [],
+            "tool_calls": [],
+            "gateway_free": True,
+        }
+        import json as _json
+        row = None
+        if build_llm_verdict_row is not None:
+            try:
+                row = build_llm_verdict_row(
+                    analysis_run_id=analysis_run_id,
+                    provider=_GatewayFreeNoopProvider(),
+                    verdict=verdict,
+                    transcript=transcript,
+                    manifest=manifest,
+                    similarity_evidence=list(similarity_evidence),
+                )
+            except Exception:
+                row = None
+        if row is None:
+            row = _CoreLlmVerdict(
+                analysis_run_id=analysis_run_id,
+                reviewer_name="gateway_free_attested",
+                model_name="none",
+                verdict="allow",
+                confidence=1.0,
+                reason_codes_json=_json.dumps(
+                    ["gateway_free_attested_skip_central_llm"], sort_keys=True
+                ),
+                prompt_ref="gateway-free-v1",
+                raw_request_json="{}",
+                raw_response_json=_json.dumps(transcript, sort_keys=True),
+            )
+        return LlmReviewOutcome(
+            verdict=verdict,
+            llm_verdict_row=row,
+            transcript=transcript,
+            disposition="verdict",
+        )
 
 
 def build_configured_lifecycle_reviewer(

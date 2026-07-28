@@ -24,9 +24,11 @@ DEFAULT_REVIEW_APP_IDENTITY = "agent-challenge-review-v1"
 REVIEWER_SERVICE = "reviewer"
 DSTACK_QUOTE_SOCKET_PATH = "/var/run/dstack.sock"
 # Exactly the non-empty encrypted secret names measured into compose_hash.
-# REVIEW_API_BASE_URL remains listed so compose_hash identity is stable, but
-# encrypt/deploy + measured runtime force the joinbase pin (anti-cheat): miners
-# cannot change callback authority via this slot in production.
+# REVIEW_API_BASE_URL is required so live TDX guests talk to joinbase (the
+# historical chain.platform.network default is 502 and cannot report).
+# Review image is PUBLIC on GHCR: no DSTACK_DOCKER_* pull creds are measured.
+# ``docker login`` private GHCR images (compose_manifest.docker_config is
+# stripped by Cloud and never reaches the guest).
 REVIEW_ALLOWED_ENVS = (
     "OPENROUTER_API_KEY",
     "REVIEW_API_BASE_URL",
@@ -36,7 +38,21 @@ REVIEW_ALLOWED_ENVS = (
 # devices, network, namespaces, secrets, mounts, ports, etc.) reject.
 REVIEWER_SERVICE_KEYS = frozenset({"image", "restart", "environment", "volumes"})
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# Site-packages layout breaks parents[3] (repo root). Prefer monorepo package
+# path used by the master image for docker/ + .rules assets.
+_here = Path(__file__).resolve()
+_monorepo = Path("/app/packages/challenges/agent-challenge")
+if _monorepo.is_dir() and (_monorepo / "docker" / "review" / "phala_pre_launch.sh").is_file():
+    REPO_ROOT = _monorepo
+elif "site-packages" in str(_here):
+    # fall back: walk up for a tree that still vendors docker/review
+    REPO_ROOT = _here.parents[1]  # .../agent_challenge package dir (may lack docker/)
+    for cand in (_here.parents[i] for i in range(1, min(6, len(_here.parents)))):
+        if (cand / "docker" / "review" / "phala_pre_launch.sh").is_file():
+            REPO_ROOT = cand
+            break
+else:
+    REPO_ROOT = _here.parents[3]
 REVIEW_DOCKERFILE = REPO_ROOT / "docker" / "review" / "Dockerfile"
 REVIEW_REQUIREMENTS = REPO_ROOT / "docker" / "review" / "requirements.txt"
 EVAL_DOCKERFILE = REPO_ROOT / "docker" / "canonical" / "Dockerfile"
