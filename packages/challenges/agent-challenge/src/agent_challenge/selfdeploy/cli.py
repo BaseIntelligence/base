@@ -883,6 +883,22 @@ def _ordered_eval_command(args: argparse.Namespace) -> int:
                     "(set CHALLENGE_PHALA_RA_TLS_SERVER_CA_PEM or "
                     "CHALLENGE_PHALA_RA_TLS_SERVER_CA_FILE / KEY_RELEASE_SERVER_CA_FILE)"
                 )
+            # Optional measured OpenRouter for the in-CVM agent LLM (tools-only if unset).
+            # Never Base gateway. Host still must scrape BASE_BENCHMARK_RESULT= and
+            # POST eval result — guest never HTTP-posts the score envelope.
+            or_env = getattr(args, "openrouter_key_env", None) or "OPENROUTER_API_KEY"
+            or_key = (os.environ.get(or_env) or "").strip()
+            if or_key:
+                values["OPENROUTER_API_KEY"] = or_key
+            # Optional mid-run progress reporter bindings (observability only).
+            values.update(
+                eval_deploy.build_eval_progress_env(
+                    base_url=str(args.base_url),
+                    eval_run_id=plan.eval_run_id,
+                    submission_id=str(args.submission_id),
+                    eval_run_token=plan.eval_run_token,
+                )
+            )
             encrypted = eval_deploy.encrypt_eval_secrets(plan, values) if not args.dry_run else None
             if not args.dry_run:
                 assert encrypted is not None
@@ -1357,6 +1373,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     eval_deploy_parser.add_argument("--llm-cost-limit-env", default="LLM_COST_LIMIT")
+    eval_deploy_parser.add_argument(
+        "--openrouter-key-env",
+        default="OPENROUTER_API_KEY",
+        help=(
+            "optional env var holding measured OpenRouter key for in-CVM agent LLM "
+            "(tools-only if unset; never Base gateway)"
+        ),
+    )
     eval_deploy_parser.add_argument("--phala-api", default=None, help="Phala Cloud API base URL")
     eval_deploy_parser.add_argument(
         "--review-instance-type",

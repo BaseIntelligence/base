@@ -69,8 +69,16 @@ Operator override file (loaded by master entrypoint):
 ```bash
 # /var/lib/base/challenges/agent-challenge/embed.env
 NO_PHALA=true
+CHALLENGE_NO_PHALA=true
 CHALLENGE_PHALA_ATTESTATION_ENABLED=false
 CHALLENGE_ATTESTED_REVIEW_ENABLED=false
+# Analyzer LLM review via OpenRouter (NO_PHALA only; gateway path unchanged when off)
+CHALLENGE_LLM_PROVIDER=openrouter
+CHALLENGE_LLM_MODEL=x-ai/grok-4.5
+# Never commit this key. Prefer env injection / secret file over embed.env on shared hosts.
+CHALLENGE_OPENROUTER_API_KEY=…
+# Optional USD ceiling for analyzer OpenRouter spend (fail closed when exceeded)
+# CHALLENGE_LLM_COST_LIMIT_USD=2.0
 ```
 
 Master runs:
@@ -80,6 +88,24 @@ uvicorn agent_challenge.app:app --host 127.0.0.1 --port 18081
 ```
 
 Restart the master (or AC child) after editing `embed.env`.
+
+### Analyzer LLM provider (NO_PHALA)
+
+| Variable | Role |
+|----------|------|
+| `CHALLENGE_LLM_PROVIDER` | `openrouter` (default under NO_PHALA) or `gateway` |
+| `CHALLENGE_LLM_MODEL` | OpenRouter model id (default `x-ai/grok-4.5`) |
+| `CHALLENGE_OPENROUTER_API_KEY` | OpenRouter bearer key (never log/commit) |
+| `OPENROUTER_API_KEY` | Fallback env if challenge-prefixed key unset |
+| `CHALLENGE_LLM_COST_LIMIT_USD` | Optional spend ceiling; fail closed when exceeded |
+
+Key resolution order for OpenRouter: explicit settings field →
+`CHALLENGE_OPENROUTER_API_KEY` → `OPENROUTER_API_KEY` →
+`~/.local/share/opencode/auth.json` (`openrouter.key`) → small
+`~/.factory/*.json` configs.
+
+When `NO_PHALA` is **off**, the analyzer always uses the BASE LLM gateway
+(`CHALLENGE_LLM_GATEWAY_*`); OpenRouter settings are ignored.
 
 ## Disable
 
@@ -118,6 +144,8 @@ Via master proxy (if embedded):
 | `src/agent_challenge/selfdeploy/phala.py` | `PhalaCloudClient` refuse |
 | `src/agent_challenge/selfdeploy/eval.py` / `review.py` | deploy refuse |
 | `src/agent_challenge/evaluation/own_runner_backend.py` | Mark unattested on legacy emit when mode on |
+| `src/agent_challenge/analyzer/openrouter_review_provider.py` | OpenRouter analyzer provider + key resolve (NO_PHALA only) |
+| `src/agent_challenge/analyzer/lifecycle.py` | Provider selection under NO_PHALA |
 
 The **attested** emit branch in `own_runner_backend._emit_job_result` is not
 modified when NO_PHALA is off.
@@ -143,7 +171,7 @@ Requirements on the master process:
 | Mode | `NO_PHALA=true` or `CHALLENGE_NO_PHALA=true` |
 | Attestation off | `CHALLENGE_PHALA_ATTESTATION_ENABLED=false`, `CHALLENGE_ATTESTED_REVIEW_ENABLED=false` |
 | Worker | `CHALLENGE_COMBINED_WORKER=true` **or** run `agent-challenge-worker` |
-| LLM review | gateway base URL + token (else `llm_standby`) |
+| LLM review | OpenRouter key + `CHALLENGE_LLM_PROVIDER=openrouter` (default under NO_PHALA); or gateway base URL + token if provider forced to `gateway` |
 | Benchmark | Docker + own_runner task cache |
 | Weight push | `CHALLENGE_MASTER_BASE_URL` + shared token (optional loop) |
 

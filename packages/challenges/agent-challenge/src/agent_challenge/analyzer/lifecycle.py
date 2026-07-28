@@ -28,6 +28,11 @@ from agent_challenge.analyzer.llm_reviewer import (
     LlmReviewOutcome,
     LlmReviewProvider,
 )
+from agent_challenge.analyzer.openrouter_review_provider import (
+    OpenRouterReviewProvider,
+    resolve_openrouter_api_key,
+    use_openrouter_review_provider,
+)
 from agent_challenge.analyzer.similarity import (
     ALGORITHM_VERSION,
     persist_same_challenge_similarity_matches,
@@ -468,16 +473,33 @@ def _stale_analysis_summary(
 def build_configured_lifecycle_reviewer(
     provider: LlmReviewProvider | None = None,
 ) -> KimiLlmReviewer:
+    resolved = provider or _build_configured_review_provider()
+    expected_model = settings.llm_reviewer_expected_model
+    if getattr(resolved, "provider_name", None) == "openrouter":
+        # Pin telemetry expectation to the OpenRouter model the operator set.
+        expected_model = getattr(resolved, "model_name", None) or settings.llm_model
     return KimiLlmReviewer(
-        provider=provider or _build_configured_review_provider(),
+        provider=resolved,
         max_attempts=settings.llm_reviewer_max_attempts,
         timeout_seconds=settings.llm_reviewer_timeout_seconds,
-        expected_model=settings.llm_reviewer_expected_model,
+        expected_model=expected_model,
         prompt_cache_enabled=settings.llm_reviewer_prompt_cache_enabled,
     )
 
 
-def _build_configured_review_provider() -> GatewayReviewProvider:
+def _build_configured_review_provider() -> LlmReviewProvider:
+    """Build gateway (default) or OpenRouter (NO_PHALA only) review provider."""
+
+    if use_openrouter_review_provider(
+        no_phala=bool(settings.no_phala),
+        llm_provider=settings.llm_provider,
+    ):
+        api_key = resolve_openrouter_api_key(explicit=settings.openrouter_api_key)
+        return OpenRouterReviewProvider(
+            api_key=api_key,
+            model_name=settings.llm_model or "x-ai/grok-4.5",
+            cost_limit_usd=settings.llm_cost_limit_usd,
+        )
     base_url = settings.llm_gateway_base_url or ""
     return GatewayReviewProvider(
         gateway_token=settings.llm_gateway_token,
@@ -677,6 +699,11 @@ def _llm_standby_reason(
     uses_configured_reviewer: bool,
 ) -> str:
     if uses_configured_reviewer and not _llm_provider_ready():
+        if use_openrouter_review_provider(
+            no_phala=bool(settings.no_phala),
+            llm_provider=settings.llm_provider,
+        ):
+            return "missing_openrouter_api_key"
         return "missing_llm_gateway_token"
     if isinstance(exc, LlmProviderRateLimited):
         return "llm_provider_rate_limited"
@@ -704,6 +731,11 @@ def _llm_standby_metadata(
 
 
 def _llm_provider_ready() -> bool:
+    if use_openrouter_review_provider(
+        no_phala=bool(settings.no_phala),
+        llm_provider=settings.llm_provider,
+    ):
+        return bool(resolve_openrouter_api_key(explicit=settings.openrouter_api_key))
     return bool(settings.llm_gateway_base_url and settings.llm_gateway_token)
 
 

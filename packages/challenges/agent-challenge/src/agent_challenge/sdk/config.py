@@ -32,6 +32,7 @@ SECRET_FIELD_NAMES = frozenset(
         "docker_broker_token",
         "llm_gateway_token",
         "agent_gateway_token",
+        "openrouter_api_key",
         "submission_env_encryption_key_file",
         "review_evidence_encryption_key",
         "review_evidence_encryption_key_file",
@@ -355,6 +356,29 @@ class ChallengeSettings(BaseSettings):
     # only this dedicated token is ever placed into the agent container env.
     agent_gateway_token: str | None = Field(default=None, repr=False)
     agent_gateway_token_file: str | None = Field(default=None, repr=False)
+    # Analyzer LLM provider selection for NO_PHALA host-local mode only.
+    # When NO_PHALA is off the gateway provider is always used (this field is
+    # ignored). Under NO_PHALA, default is ``openrouter`` (Grok via OpenRouter);
+    # set ``gateway`` to force the BASE LLM gateway path instead.
+    # Env: CHALLENGE_LLM_PROVIDER
+    llm_provider: str | None = None
+    # Model id for the OpenRouter analyzer path (ignored by gateway provider).
+    # Env: CHALLENGE_LLM_MODEL
+    llm_model: str = "x-ai/grok-4.5"
+    # OpenRouter API key for NO_PHALA analyzer LLM review. Never logged.
+    # Env: CHALLENGE_OPENROUTER_API_KEY (also accepts plain OPENROUTER_API_KEY
+    # via resolve_openrouter_api_key fallback + opencode auth.json).
+    openrouter_api_key: str | None = Field(default=None, repr=False)
+    # Optional USD spend ceiling for OpenRouter analyzer calls; fail closed when
+    # exceeded. Env: CHALLENGE_LLM_COST_LIMIT / CHALLENGE_LLM_COST_LIMIT_USD
+    llm_cost_limit_usd: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "llm_cost_limit_usd",
+            "LLM_COST_LIMIT",
+            "llm_cost_limit",
+        ),
+    )
     # Per-attempt read-leg budget. Held under the analysis lease: this value ×
     # llm_reviewer_max_attempts must stay below DEFAULT_ANALYSIS_LEASE_SECONDS
     # (900s); 240 × 3 = 720s < 900s.
