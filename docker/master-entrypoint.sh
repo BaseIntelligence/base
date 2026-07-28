@@ -208,7 +208,24 @@ start_embedded_challenges() {
     "PRISM_DOCKER_ENABLED=${PRISM_DOCKER_ENABLED:-false}"
     "PRISM_WORKER_PLANE__ENABLED=${PRISM_WORKER_PLANE__ENABLED:-false}"
     "PRISM_DOCKER_BACKEND=${PRISM_DOCKER_BACKEND:-cli}"
+    # HOTPATCH allowlist: OpenRouter plagiarism + worker plane.
+# PROD POLICY: Prism eval never runs on master — CPU_REEXEC must stay false;
+# miners supply Lium pods; admission_requires_worker must stay true.
+    "PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE=${PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE:-false}"
+    "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-true}"
+    "PRISM_WORKER_PLANE__MASTER_BASE_URL=${PRISM_WORKER_PLANE__MASTER_BASE_URL:-http://127.0.0.1:8081}"
+    "PRISM_PLAGIARISM_LLM_ENABLED=${PRISM_PLAGIARISM_LLM_ENABLED:-false}"
+    "PRISM_PLAGIARISM_LLM_REQUIRED=${PRISM_PLAGIARISM_LLM_REQUIRED:-false}"
+    "PRISM_OPENROUTER_API_KEY_FILE=${PRISM_OPENROUTER_API_KEY_FILE:-/run/secrets/openrouter_api_key}"
+    "PRISM_OPENROUTER_BASE_URL=${PRISM_OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}"
+    "PRISM_OPENROUTER_MODEL=${PRISM_OPENROUTER_MODEL:-x-ai/grok-4.5}"
+    "PRISM_ALLOW_INSECURE_SIGNATURES=${PRISM_ALLOW_INSECURE_SIGNATURES:-false}"
+    "PRISM_CONSTATION_BASE_URL=${PRISM_CONSTATION_BASE_URL:-http://127.0.0.1:8081}"
   )
+  # Optional constation token only when parent set it (avoid empty unknown noise)
+  if [[ -n "${PRISM_CONSTATION_INTERNAL_TOKEN:-}" ]]; then
+    prism_env+=("PRISM_CONSTATION_INTERNAL_TOKEN=${PRISM_CONSTATION_INTERNAL_TOKEN}")
+  fi
   if [[ -n "${py_path}" ]]; then
     prism_env+=("PYTHONPATH=${py_path}")
   fi
