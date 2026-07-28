@@ -121,3 +121,39 @@ Via master proxy (if embedded):
 
 The **attested** emit branch in `own_runner_backend._emit_job_result` is not
 modified when NO_PHALA is off.
+
+
+## Full offline pipeline (master host)
+
+With `NO_PHALA=true` and both attestation flags **off**, submit uses the
+pre-Phala analysis chain (not Phala review CVMs):
+
+```text
+submit → analysis_queued → AST + LLM review → analysis_allowed
+      → waiting_miner_env (until env confirm / PUT)
+      → tb_queued → tb_running (own_runner on host Docker)
+      → tb_completed → EvaluationJob.score
+      → get_weights → authenticated raw-weight push (when master_base_url set)
+```
+
+Requirements on the master process:
+
+| Need | Env / setting |
+|------|----------------|
+| Mode | `NO_PHALA=true` or `CHALLENGE_NO_PHALA=true` |
+| Attestation off | `CHALLENGE_PHALA_ATTESTATION_ENABLED=false`, `CHALLENGE_ATTESTED_REVIEW_ENABLED=false` |
+| Worker | `CHALLENGE_COMBINED_WORKER=true` **or** run `agent-challenge-worker` |
+| LLM review | gateway base URL + token (else `llm_standby`) |
+| Benchmark | Docker + own_runner task cache |
+| Weight push | `CHALLENGE_MASTER_BASE_URL` + shared token (optional loop) |
+
+**embed.env note:** master entrypoint only forwards keys matching
+`CHALLENGE_` / `PHALA_` / … prefixes. Prefer `CHALLENGE_NO_PHALA=true` in
+`/var/lib/base/challenges/agent-challenge/embed.env` so the child sees it.
+
+Unattested provenance is visible on:
+
+- result envelopes (`attested:false`, `attestation_status:unattested`, `execution_mode:no_phala_host`)
+- `tb_completed` status-event metadata (same fields)
+- CRITICAL log on every raw-weight push while the mode is on
+- `/health` → `no_phala:true`, `attestation_mode:no_phala_host`

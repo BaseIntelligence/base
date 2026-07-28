@@ -659,13 +659,26 @@ async def run_evaluation_job(
         if internal_tb_flow or (
             job.verdict == "valid" and any(task.benchmark == "terminal_bench" for task in tasks)
         ):
+            completion_meta: dict[str, object] = {"job_id": job.job_id, "score": score}
+            # Surface host-trust provenance on the status event when NO_PHALA is
+            # active so scores/weights cannot be mistaken for TEE-attested later.
+            from agent_challenge.evaluation.no_phala import (
+                ATTESTATION_STATUS_UNATTESTED,
+                EXECUTION_MODE_NO_PHALA_HOST,
+                is_no_phala_enabled,
+            )
+
+            if is_no_phala_enabled():
+                completion_meta["attested"] = False
+                completion_meta["attestation_status"] = ATTESTATION_STATUS_UNATTESTED
+                completion_meta["execution_mode"] = EXECUTION_MODE_NO_PHALA_HOST
             await _set_submission_status(
                 session,
                 submission,
                 "tb_completed",
                 actor="evaluation",
                 reason="evaluation_job_completed",
-                metadata={"job_id": job.job_id, "score": score},
+                metadata=completion_meta,
             )
     except Exception as exc:
         job.passed_tasks = passed
