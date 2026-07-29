@@ -6,6 +6,4 @@ from agent_challenge.selfdeploy import SelfDeployRemovedError
 
 
 def __getattr__(name: str):  # noqa: ANN001
-    raise SelfDeployRemovedError(
-        f"selfdeploy.lifecycle.{name} removed with Phala TEE (T40)"
-    )
+    raise SelfDeployRemovedError(f"selfdeploy.lifecycle.{name} removed with Phala TEE (T40)")

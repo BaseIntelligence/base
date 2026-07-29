@@ -243,9 +243,7 @@ async def test_no_phala_analysis_allow_enqueues_tb_job(
 
     _enable_no_phala(monkeypatch)
     configure_master(monkeypatch, tmp_path)
-    response = await submit_agent(
-        client, {"agent.py": "def solve(value):\n    return value + 1\n"}
-    )
+    response = await submit_agent(client, {"agent.py": "def solve(value):\n    return value + 1\n"})
     assert response.status_code in {200, 201}, response.text
 
     async with database_session() as session:

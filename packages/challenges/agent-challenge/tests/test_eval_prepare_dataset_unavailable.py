@@ -105,7 +105,6 @@ def test_task_config_digest_propagates_missing_file_as_dataset_unavailable(
     assert excinfo.value.code == "eval_dataset_unavailable"
 
 
-
 def test_unavailable_detail_code_prefers_explicit_code() -> None:
     exc = EvalAuthorizationUnavailable(
         "frozen dataset digest is unavailable",

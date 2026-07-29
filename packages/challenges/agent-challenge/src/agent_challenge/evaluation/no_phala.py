@@ -268,9 +268,7 @@ def health_fields(*, no_phala: bool) -> dict[str, Any]:
 
     return {
         "no_phala": bool(no_phala),
-        "attestation_mode": (
-            EXECUTION_MODE_NO_PHALA_HOST if no_phala else "standard"
-        ),
+        "attestation_mode": (EXECUTION_MODE_NO_PHALA_HOST if no_phala else "standard"),
     }
 
 

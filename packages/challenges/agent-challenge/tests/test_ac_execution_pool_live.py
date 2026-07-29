@@ -219,9 +219,7 @@ async def test_execution_pool_live_shows_running_eval_with_latest_event(
 ) -> None:
     """In-flight eval_running appears with latest progress event; observability only."""
 
-    live = await _seed_run(
-        database_session, eval_run_id="eval-pool-live", phase="eval_running"
-    )
+    live = await _seed_run(database_session, eval_run_id="eval-pool-live", phase="eval_running")
     await _seed_progress_event(
         database_session,
         submission_id=live.submission_id,
@@ -300,9 +298,7 @@ async def test_execution_pool_live_excludes_completed_eval(client, database_sess
     assert response.status_code == 200, response.text
     body = response.json()
     units = body["units"]
-    ids = {
-        str(item.get("unit_id") or item.get("eval_run_id") or "") for item in units
-    }
+    ids = {str(item.get("unit_id") or item.get("eval_run_id") or "") for item in units}
     assert live.eval_run_id in ids
     assert done.eval_run_id not in ids
     assert "finished-should-be-hidden" not in json.dumps(body)
@@ -310,9 +306,7 @@ async def test_execution_pool_live_excludes_completed_eval(client, database_sess
 
 
 @pytest.mark.asyncio
-async def test_execution_pool_live_never_exposes_score_fields(
-    client, database_session
-) -> None:
+async def test_execution_pool_live_never_exposes_score_fields(client, database_session) -> None:
     """Even when EvalRun.score is set on a non-terminal row, pool omits score keys."""
 
     run = await _seed_run(
@@ -333,8 +327,7 @@ async def test_execution_pool_live_never_exposes_score_fields(
     assert response.status_code == 200, response.text
     body = response.json()
     assert any(
-        str(u.get("unit_id") or u.get("eval_run_id")) == run.eval_run_id
-        for u in body["units"]
+        str(u.get("unit_id") or u.get("eval_run_id")) == run.eval_run_id for u in body["units"]
     )
     _assert_no_score_keys(body)
     blob = response.text.lower()

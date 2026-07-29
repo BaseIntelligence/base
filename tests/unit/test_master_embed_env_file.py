@@ -93,7 +93,7 @@ def _run_entrypoint(tmp_path: Path, ac_env_file_body: str | None) -> dict[str, s
     return dumps
 
 
-def test_ac_env_file_supplies_host_trust_settings_to_isolated_child(tmp_path: Path) -> None:
+def test_ac_env_file_supplies_host_trust_settings(tmp_path: Path) -> None:
     """Operator embed.env must reach the agent-challenge child under env -i."""
 
     dumps = _run_entrypoint(

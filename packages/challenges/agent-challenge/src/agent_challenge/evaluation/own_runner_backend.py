@@ -43,6 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from agent_challenge.canonical.attested_result import AttestationEmissionError
 from agent_challenge.canonical.live_registry import resolve_live_registry_refs
 from agent_challenge.evaluation.gateway import (
     BASE_LLM_GATEWAY_URL_ENV,
@@ -233,8 +234,6 @@ def _phala_attestation_enabled(*_a, **_k) -> bool:
     """T40: Phala attestation permanently disabled."""
 
     return False
-
-
 
 
 def _sanitize_guest_detail(detail: str, *, limit: int = 160) -> str:
@@ -1113,7 +1112,7 @@ def _resolve_phala_binding_from_env() -> dict[str, Any]:
     result rather than an attestation bound to bogus inputs.
     """
 
-    # T40: AttestationEmissionError defined locally; attested_result module removed
+    # T40: AttestationEmissionError from canonical.attested_result (Phala removed)
 
     def _require(env_name: str) -> str:
         value = (os.environ.get(env_name) or "").strip()
@@ -1149,7 +1148,7 @@ def _resolve_phala_binding_from_env() -> dict[str, Any]:
 def _parse_phala_vm_config_env() -> dict[str, Any] | None:
     """Parse the optional evidence-only VM config without accepting extra trust."""
 
-    # T40: AttestationEmissionError defined locally; attested_result module removed
+    # T40: AttestationEmissionError from canonical.attested_result (Phala removed)
 
     vm_config: dict[str, Any] | None = None
     raw_vm_config = (os.environ.get(PHALA_VM_CONFIG_ENV) or "").strip()

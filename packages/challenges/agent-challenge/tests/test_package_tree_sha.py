@@ -198,7 +198,7 @@ def test_build_plan_binds_submission_package_tree_sha() -> None:
 
     src = Path(auth.__file__).read_text(encoding="utf-8")
     assert "package_tree_sha" in src
-    assert 'plan = {' in src or "plan =" in src
+    assert "plan = {" in src or "plan =" in src
 
 
 def test_review_materials_bind_package_tree_sha() -> None:

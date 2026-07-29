@@ -269,12 +269,7 @@ def test_terminal_bench_env_still_blocks_control_path_overrides() -> None:
 def test_prior_review_joinbase_pin_constant_still_present() -> None:
     from pathlib import Path
 
-    runtime = (
-        Path(__file__).resolve().parents[1]
-        / "docker"
-        / "review"
-        / "review_runtime.py"
-    )
+    runtime = Path(__file__).resolve().parents[1] / "docker" / "review" / "review_runtime.py"
     text = runtime.read_text(encoding="utf-8")
     assert re.search(r"chain\.joinbase\.ai/challenges/agent-challenge", text)
 

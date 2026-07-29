@@ -395,8 +395,7 @@ def _build_plan(
     # Legacy prepare without no_phala still requires a configured endpoint string
     # (keyrelease package itself is untouched; score path no longer requires grant).
     no_phala = bool(
-        getattr(settings, "no_phala", False)
-        or getattr(settings, "unattested_execution", False)
+        getattr(settings, "no_phala", False) or getattr(settings, "unattested_execution", False)
     )
     if not isinstance(key_release_endpoint, str) or not key_release_endpoint.strip():
         if no_phala:
@@ -509,10 +508,6 @@ async def _authorized_review_digest(
         phala = bool(getattr(settings, "phala_attestation_enabled", False))
         review = bool(getattr(settings, "attested_review_enabled", False))
         dual_on = phala and review
-        no_phala = bool(
-            getattr(settings, "no_phala", False)
-            or getattr(settings, "unattested_execution", False)
-        )
         # Host-trust: residual optional at prepare (software policy when present).
         # dual_on is always False after T40 settings force-off.
         require_residual = bool(dual_on)

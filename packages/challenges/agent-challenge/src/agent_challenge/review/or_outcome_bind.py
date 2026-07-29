@@ -167,7 +167,6 @@ def admit_measured_review_cvm(*args, **kwargs):
     return type("Decision", (), {"admitted": False, "reason_code": "measured_review_cvm_removed"})()
 
 
-
 def build_planned_openrouter_request(
     *,
     body_sha256: str,

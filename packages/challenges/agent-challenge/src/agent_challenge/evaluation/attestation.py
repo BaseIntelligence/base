@@ -8,12 +8,13 @@ verification.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Mapping
+from enum import StrEnum
+from typing import Any
 
 
-class AttestationOutcome(str, Enum):
+class AttestationOutcome(StrEnum):
     """Admission outcome labels (host-trust; names kept for wire/DB compat)."""
 
     VERIFIED = "verified"

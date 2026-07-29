@@ -100,7 +100,6 @@ class ChallengeSettings(BaseSettings):
     # Epoch bucket size for push revision identity (seconds).
     epoch_seconds: int = Field(default=360, ge=1)
 
-
     # Root stdlib logging level applied at every process entrypoint (the API app
     # import and the worker ``main()``). Uvicorn installs no root handler, so
     # without an explicit configuration the worker service emits ZERO logs and

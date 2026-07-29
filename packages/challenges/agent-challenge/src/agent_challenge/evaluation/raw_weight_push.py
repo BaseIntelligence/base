@@ -130,9 +130,7 @@ class RawWeightPushStore:
     async def init(self) -> None:
         async with self.database.engine.begin() as connection:
             await connection.run_sync(
-                lambda sync_conn: RawWeightPushLedger.__table__.create(
-                    sync_conn, checkfirst=True
-                )
+                lambda sync_conn: RawWeightPushLedger.__table__.create(sync_conn, checkfirst=True)
             )
 
     async def _get_row(self, session: Any) -> RawWeightPushLedger | None:
@@ -387,9 +385,7 @@ class RawWeightPushClient:
             # Positive hotkey weights only when synthesizing from get_weights;
             # explicit zero maps (caller-supplied zeros) are preserved as zero-contribution.
             if weights is not None:
-                cleaned = {
-                    str(hotkey): float(value) for hotkey, value in resolved_weights.items()
-                }
+                cleaned = {str(hotkey): float(value) for hotkey, value in resolved_weights.items()}
             else:
                 cleaned = {
                     str(hotkey): float(value)
@@ -586,7 +582,6 @@ async def run_raw_weight_push_loop(
                 raise
             logger.exception("raw weight push loop iteration failed")
         await asyncio.sleep(max(float(interval_seconds), 0.1))
-
 
 
 def _log_unattested_weight_push_if_no_phala(weights: Mapping[str, float]) -> None:
