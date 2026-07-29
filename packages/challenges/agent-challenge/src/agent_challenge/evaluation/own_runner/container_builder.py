@@ -89,12 +89,14 @@ MAIN_IMAGE_PREFIX = "hb__"
 
 # --------------------------------------------------------------------------- #
 # Container hardening posture (isolation invariant, architecture sec 4 C2).
-# Every task container the in-CVM orchestrator launches carries the same
-# hardened posture the current own_runner job container uses (runner.py's broker
-# ``DockerLimits``): read-only rootfs, all capabilities dropped, no privilege
-# escalation, a bounded pids limit, and a writable ``tmpfs`` for ``/tmp`` only.
-# The agent workspace target is a writable (non-tmpfs) volume so the read-only
-# rootfs does not block the agent's own workspace or workspace staging.
+# Task containers drop all capabilities, block privilege escalation, bound
+# pids, and keep a writable ``tmpfs`` for ``/tmp`` plus a workspace volume.
+#
+# IMPORTANT: task containers must NOT use ``--read-only`` rootfs. That posture
+# belongs on the DooD *job* client (``runner._terminal_bench_broker_limits``),
+# not on the agent/verifier guest. Harbor paths (``/tests``, ``/logs/verifier``,
+# ``/solution``, ``/app``) and apt-based ``test.sh`` scripts require a writable
+# rootfs; RO caused production ``mkdir -p /tests`` → "Read-only file system".
 # --------------------------------------------------------------------------- #
 #: Bounded max process count per task container (matches the broker posture).
 TASK_PIDS_LIMIT = 512
@@ -296,14 +298,16 @@ class ReadOnlyMount:
 def hardening_run_args() -> list[str]:
     """Return the hardened-posture ``docker run`` flags for a task container.
 
-    Read-only rootfs, ``cap-drop ALL``, ``no-new-privileges``, a bounded
-    ``pids-limit``, and a writable ``tmpfs`` for ``/tmp`` only. The agent
-    workspace target (:data:`AGENT_WORKSPACE_TARGET`) is a writable anonymous
-    volume (not a tmpfs) so the read-only rootfs does not block the agent's own
-    workspace or ``docker cp`` staging into it.
+    ``cap-drop ALL``, ``no-new-privileges``, a bounded ``pids-limit``, a
+    writable ``tmpfs`` for ``/tmp``, and a writable anonymous volume at the
+    agent workspace target (:data:`AGENT_WORKSPACE_TARGET`).
+
+    Deliberately omits ``--read-only``: the guest must write harbor paths
+    (``/tests``, ``/logs/verifier``, ``/solution``, ``/app``) and run package
+    installs inside ``test.sh``. RO rootfs is reserved for the outer DooD job
+    container, not the task guest.
     """
     return [
-        "--read-only",
         "--cap-drop",
         TASK_CAP_DROP,
         "--security-opt",
@@ -723,9 +727,9 @@ class TaskContainerBuilder:
             "-w",
             workdir,
         ]
-        # Hardened, isolated posture on every task container (architecture sec 4
-        # C2): read-only rootfs + cap-drop ALL + no-new-privileges + bounded pids
-        # + tmpfs /tmp only + a writable workspace volume.
+        # Hardened posture on every task container (architecture sec 4 C2):
+        # cap-drop ALL + no-new-privileges + bounded pids + tmpfs /tmp +
+        # writable workspace volume. Rootfs stays writable (harbor paths).
         argv += hardening_run_args()
         # Golden dataset / task cache mounted read-only so task code can read but
         # never mutate it.
