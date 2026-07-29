@@ -579,6 +579,10 @@ def own_runner_command_args(
         "--agent-import-path",
         settings.harbor_agent_import_path,
     ]
+    if settings.own_runner_cache_root:
+        args.extend(["--cache-root", settings.own_runner_cache_root])
+    if settings.own_runner_digest_manifest:
+        args.extend(["--digest-manifest", settings.own_runner_digest_manifest])
     if settings.harbor_model:
         args.extend(["--model", settings.harbor_model])
     return args
