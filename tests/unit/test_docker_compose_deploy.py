@@ -270,8 +270,11 @@ def test_master_validator_tmp_tmpfs_is_sticky_world_writable(tmp_path: Path) -> 
     for mount in master.get("volumes") or []:
         if not isinstance(mount, dict) or mount.get("target") != "/tmp":
             continue
-        tmpfs = mount.get("tmpfs") if isinstance(mount.get("tmpfs"), dict) else {}
-        mode = tmpfs.get("mode", mount.get("mode"))
+        raw_tmpfs = mount.get("tmpfs")
+        tmpfs_opts: dict[str, Any] = (
+            raw_tmpfs if isinstance(raw_tmpfs, dict) else {}
+        )
+        mode = tmpfs_opts.get("mode", mount.get("mode"))
         if mode is None:
             continue
         if int(mode) == 0o1777:  # 1023 decimal
