@@ -8,7 +8,7 @@ orchestrator MUST preserve on every Terminal-Bench task container it launches vi
   (VAL-ORCH-013 / VAL-ORCH-015);
 * the golden dataset + task cache is bind-mounted read-only into every task
   container, and writes to it fail (VAL-ORCH-016);
-* hardened posture: ``cap-drop ALL``, ``no-new-privileges``, a bounded
+* hardened posture: ``no-new-privileges``, a bounded
   ``pids-limit``, writable ``tmpfs`` for ``/tmp``, and a writable workspace
   volume — rootfs stays writable for harbor ``/tests`` + ``/logs`` (VAL-ORCH-023);
 * a task requesting a GPU is rejected and never launched on the CPU-only CVM
@@ -209,7 +209,7 @@ def test_golden_cache_mount_is_readonly_in_real_container(tmp_path: Path) -> Non
 def test_hardening_flags_present_in_launch_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     argv = _single_run_argv(monkeypatch, resources=ResourceLimits())
     assert "--read-only" not in argv  # task guest rootfs must stay writable
-    assert _has_consecutive(argv, ("--cap-drop", "ALL"))
+    assert "--cap-drop" not in argv  # task guests need apt/chmod (prod hotpatch)
     assert _has_consecutive(argv, ("--security-opt", "no-new-privileges"))
     assert _has_consecutive(argv, ("--pids-limit", str(TASK_PIDS_LIMIT)))
 
@@ -226,7 +226,7 @@ def test_tmpfs_is_tmp_only(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_hardening_run_args_shape() -> None:
     args = hardening_run_args()
     assert "--read-only" not in args
-    assert "--cap-drop" in args and args[args.index("--cap-drop") + 1] == "ALL"
+    assert "--cap-drop" not in args  # deliberate: TB guests need capabilities for apt/chmod
     assert "--security-opt" in args
     assert args[args.index("--security-opt") + 1] == "no-new-privileges"
     assert "--pids-limit" in args
@@ -256,7 +256,7 @@ def test_task_container_hardened_in_real_daemon(tmp_path: Path) -> None:
         assert posture.returncode == 0
         out = posture.stdout
         assert out.startswith("false ")  # writable rootfs (harbor paths)
-        assert "[ALL]" in out  # cap-drop ALL
+        assert "[ALL]" not in out  # cap-drop ALL omitted for task guests
         assert str(TASK_PIDS_LIMIT) in out  # bounded pids
         assert "no-new-privileges" in out
         assert "false" in out.split()[-1].lower() or out.rstrip().endswith("false")
@@ -279,14 +279,13 @@ def test_task_container_hardened_in_real_daemon(tmp_path: Path) -> None:
         env.remove()
 
 
-
 # --------------------------------------------------------------------------- #
 # Harbor verifier/agent paths must be writable on task containers
 # --------------------------------------------------------------------------- #
 # Production crash (2026-07-29): upload_tests did `docker exec -u root … mkdir -p
 # /tests` and failed with "Read-only file system" because task containers
 # incorrectly inherited the *job*-container RO posture. Task containers must
-# keep cap-drop / nnp / pids hardening but leave the rootfs writable so harbor
+# keep nnp / pids hardening (no cap-drop ALL) but leave the rootfs writable so harbor
 # paths (/tests, /logs/verifier, /solution, /app) and apt-based test.sh work.
 
 
@@ -297,7 +296,7 @@ def test_hardening_run_args_does_not_force_readonly_rootfs() -> None:
         "task containers must not use --read-only; that blocks harbor "
         "mkdir /tests and apt-based verifiers (Read-only file system)"
     )
-    assert _has_consecutive(args, ("--cap-drop", "ALL"))
+    assert "--cap-drop" not in args
     assert _has_consecutive(args, ("--security-opt", "no-new-privileges"))
     assert _has_consecutive(args, ("--pids-limit", str(TASK_PIDS_LIMIT)))
 
@@ -340,7 +339,7 @@ def test_task_container_allows_harbor_verifier_paths() -> None:
             f"stdout={write.stdout!r} stderr={write.stderr!r}"
         )
         assert "ok" in write.stdout
-        # Hardening that must remain: cap-drop ALL + nnp + pids + not privileged.
+        # Hardening that must remain: nnp + pids + not privileged (no cap-drop ALL).
         posture = subprocess.run(
             [
                 "docker",
@@ -357,7 +356,7 @@ def test_task_container_allows_harbor_verifier_paths() -> None:
         assert posture.returncode == 0
         out = posture.stdout.strip()
         assert out.startswith("false "), f"expected writable rootfs, got {out!r}"
-        assert "[ALL]" in out
+        assert "[ALL]" not in out
         assert str(TASK_PIDS_LIMIT) in out
         assert "no-new-privileges" in out
         assert out.endswith(" false") or out.rstrip().endswith("false")
