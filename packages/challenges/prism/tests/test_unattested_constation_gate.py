@@ -167,9 +167,7 @@ def test_resolve_no_phala_alias_true() -> None:
 
 def test_resolve_canonical_false_explicit() -> None:
     assert (
-        resolve_unattested_execution_from_environ(
-            {CHALLENGE_UNATTESTED_EXECUTION_ENV: "false"}
-        )
+        resolve_unattested_execution_from_environ({CHALLENGE_UNATTESTED_EXECUTION_ENV: "false"})
         is False
     )
 

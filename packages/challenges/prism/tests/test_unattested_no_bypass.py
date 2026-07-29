@@ -508,9 +508,7 @@ def test_http_flag_on_still_rejects_missing_proof(
             result={"executed": 1, MANIFEST_PAYLOAD_KEY: _manifest()},
         )
         # Envelope requires proof: ExecutionProof — fails closed before ingest.
-        code = _assert_not_missing_bundle_bypass(
-            resp, expected_code="result_envelope_invalid"
-        )
+        code = _assert_not_missing_bundle_bypass(resp, expected_code="result_envelope_invalid")
         assert code == "result_envelope_invalid"
         assert _score_row(tmp_path / "coord.sqlite3", sid) is None
 

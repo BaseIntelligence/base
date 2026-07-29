@@ -145,6 +145,7 @@ def _clear_unattested_env(monkeypatch: pytest.MonkeyPatch) -> None:
         if key.startswith("CHALLENGE_") and key not in known:
             monkeypatch.delenv(key, raising=False)
 
+
 # --- Unit: mark_result_unattested (agent-challenge pattern) ---------------------
 
 
