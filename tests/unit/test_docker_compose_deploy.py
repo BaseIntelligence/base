@@ -271,9 +271,7 @@ def test_master_validator_tmp_tmpfs_is_sticky_world_writable(tmp_path: Path) -> 
         if not isinstance(mount, dict) or mount.get("target") != "/tmp":
             continue
         raw_tmpfs = mount.get("tmpfs")
-        tmpfs_opts: dict[str, Any] = (
-            raw_tmpfs if isinstance(raw_tmpfs, dict) else {}
-        )
+        tmpfs_opts: dict[str, Any] = raw_tmpfs if isinstance(raw_tmpfs, dict) else {}
         mode = tmpfs_opts.get("mode", mount.get("mode"))
         if mode is None:
             continue
