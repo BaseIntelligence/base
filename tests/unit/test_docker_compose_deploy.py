@@ -238,6 +238,58 @@ def test_volumes_are_isolated_and_named(tmp_path: Path) -> None:
     assert "/var/lib/base" in master_mounts
 
 
+def test_master_validator_tmp_tmpfs_is_sticky_world_writable(tmp_path: Path) -> None:
+    """Master validator /tmp must be mode 0o1777 (sticky + world-writable).
+
+    Compose long-syntax ``tmpfs.mode: 1777`` is parsed as *decimal* 1777
+    (= octal 3361), which yields ``d-wxrwS--t`` and blocks uid 1000 writes.
+    Short syntax ``tmpfs: ["/tmp:size=256m,mode=1777"]`` keeps octal 1777.
+    """
+
+    source = MASTER_COMPOSE.read_text(encoding="utf-8")
+    # Long-syntax decimal footgun must not remain for the /tmp mount.
+    assert not re.search(
+        r"type:\s*tmpfs[\s\S]*?target:\s*/tmp[\s\S]*?mode:\s*1777",
+        source,
+    ), "long-syntax tmpfs.mode: 1777 is a decimal footgun (becomes 3361)"
+
+    rendered = _render_master(tmp_path)
+    master = rendered["services"]["base-master-validator"]
+
+    # Prefer top-level short-syntax tmpfs list (compose JSON may keep the string).
+    top_tmpfs = master.get("tmpfs") or []
+    short_ok = any(
+        isinstance(entry, str)
+        and entry.split(":", 1)[0] == "/tmp"
+        and "mode=1777" in entry.replace(" ", "")
+        for entry in top_tmpfs
+    )
+
+    # Or a rendered mount with numeric mode 1023 == 0o1777.
+    numeric_ok = False
+    for mount in master.get("volumes") or []:
+        if not isinstance(mount, dict) or mount.get("target") != "/tmp":
+            continue
+        tmpfs = mount.get("tmpfs") if isinstance(mount.get("tmpfs"), dict) else {}
+        mode = tmpfs.get("mode", mount.get("mode"))
+        if mode is None:
+            continue
+        if int(mode) == 0o1777:  # 1023 decimal
+            numeric_ok = True
+            break
+
+    tmp_mounts = [
+        m
+        for m in (master.get("volumes") or [])
+        if isinstance(m, dict) and m.get("target") == "/tmp"
+    ]
+    assert short_ok or numeric_ok, (
+        "master validator /tmp tmpfs must be sticky world-writable "
+        "(short syntax mode=1777 or rendered mode 1023/0o1777); "
+        f"got tmpfs={top_tmpfs!r} volumes={tmp_mounts!r}"
+    )
+
+
 def test_secrets_are_file_mounted_not_inline(tmp_path: Path) -> None:
     rendered = _render_master(tmp_path)
     blob = json.dumps(rendered)
