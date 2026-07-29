@@ -40,7 +40,9 @@ import asyncio
 import contextlib
 import importlib
 import inspect
-from collections.abc import Awaitable, Callable
+import os
+import tempfile
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,92 @@ AGENT_CRASH_REASON_CODE = "harbor_trial_failed"
 #: The whole ``setup``+``run`` exceeded the wall-clock budget. Maps to harbor's
 #: agent-timeout code -- kept distinct from per-command crashes.
 AGENT_TIMEOUT_REASON_CODE = "harbor_agent_timeout_error"
+
+#: Maximum characters of captured construction output appended to an error.
+CAPTURED_OUTPUT_LIMIT = 600
+
+
+@contextlib.contextmanager
+def _capture_process_output() -> Iterator[Callable[[], str]]:
+    """Capture fd 1/2 for the duration of the block, then replay them.
+
+    A miner constructor typically shells out (``pip install ...``). The child
+    writes to the *inherited* file descriptors, so Python-level redirection
+    never sees it and ``CalledProcessError`` keeps only argv + exit status —
+    the actual reason ("Directory is not installable", a resolver conflict, a
+    missing wheel) is lost from the trial record. Capturing at the fd level is
+    the only way to keep it.
+
+    Each stream is replayed to its original descriptor on exit so the runner's
+    own logs stay byte-complete; the returned callable yields the captured text
+    and is only meaningful after the block has exited.
+    """
+
+    captured: dict[str, str] = {"text": ""}
+
+    def read() -> str:
+        return captured["text"]
+
+    saved: dict[int, int] = {}
+    buffers: dict[int, Any] = {}
+    try:
+        for fd in (1, 2):
+            handle = tempfile.TemporaryFile()
+            saved[fd] = os.dup(fd)
+            os.dup2(handle.fileno(), fd)
+            buffers[fd] = handle
+    except OSError:
+        # Never let observability break execution: restore and run uncaptured.
+        for fd, original in saved.items():
+            with contextlib.suppress(OSError):
+                os.dup2(original, fd)
+                os.close(original)
+        for handle in buffers.values():
+            with contextlib.suppress(OSError):
+                handle.close()
+        yield read
+        return
+
+    try:
+        yield read
+    finally:
+        chunks: list[str] = []
+        for fd in (1, 2):
+            data = b""
+            handle = buffers.get(fd)
+            if handle is not None:
+                try:
+                    handle.flush()
+                    handle.seek(0)
+                    data = handle.read()
+                except OSError:
+                    data = b""
+            original = saved.get(fd)
+            if original is not None:
+                with contextlib.suppress(OSError):
+                    os.dup2(original, fd)
+                    os.close(original)
+            if data:
+                with contextlib.suppress(OSError):
+                    os.write(fd, data)
+                chunks.append(data.decode("utf-8", "replace"))
+            if handle is not None:
+                with contextlib.suppress(OSError):
+                    handle.close()
+        captured["text"] = "".join(chunks)
+
+
+def _captured_detail(text: str) -> str:
+    """Render captured output as a single-line suffix for an error message."""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    joined = " / ".join(lines)
+    if len(joined) > CAPTURED_OUTPUT_LIMIT:
+        joined = joined[-CAPTURED_OUTPUT_LIMIT:]
+        joined = f"…{joined}"
+    return f" | output: {joined}"
 
 
 class AgentLoadError(Exception):
@@ -246,24 +334,41 @@ class AgentDriver:
         session: TmuxSession | None = None
         try:
             # 1. Load + construct the agent. Any failure here is the
-            #    submission's fault -> submission_code_failed.
-            try:
-                agent_cls = self._agent_class or load_agent_class(self._import_path)
-                init_kwargs = dict(self._extra_init_kwargs)
-                if resolved_agent_env:
-                    init_kwargs.setdefault("extra_env", dict(resolved_agent_env))
-                agent = agent_cls(
-                    logs_dir=Path(logs_dir) if logs_dir is not None else None,
-                    model_name=model_name,
-                    **init_kwargs,
+            #    submission's fault -> submission_code_failed. Construction is
+            #    wrapped in an fd-level capture because miner constructors shell
+            #    out, and the child's diagnostics would otherwise never reach
+            #    the trial record.
+            load_error: AgentLoadError | None = None
+            construction_error: Exception | None = None
+            with _capture_process_output() as captured_output:
+                try:
+                    agent_cls = self._agent_class or load_agent_class(self._import_path)
+                    init_kwargs = dict(self._extra_init_kwargs)
+                    if resolved_agent_env:
+                        init_kwargs.setdefault("extra_env", dict(resolved_agent_env))
+                    agent = agent_cls(
+                        logs_dir=Path(logs_dir) if logs_dir is not None else None,
+                        model_name=model_name,
+                        **init_kwargs,
+                    )
+                except AgentLoadError as exc:
+                    load_error = exc
+                except Exception as exc:
+                    construction_error = exc
+            if load_error is not None:
+                return AgentRunResult(
+                    status="failed",
+                    reason_code=load_error.reason_code,
+                    error=f"{load_error}{_captured_detail(captured_output())}",
                 )
-            except AgentLoadError as exc:
-                return AgentRunResult(status="failed", reason_code=exc.reason_code, error=str(exc))
-            except Exception as exc:
+            if construction_error is not None:
                 return AgentRunResult(
                     status="failed",
                     reason_code=AGENT_LOAD_FAILED_REASON_CODE,
-                    error=f"agent construction failed: {exc}",
+                    error=(
+                        f"agent construction failed: {construction_error}"
+                        f"{_captured_detail(captured_output())}"
+                    ),
                 )
 
             agent_info = self._safe_agent_info(agent)
