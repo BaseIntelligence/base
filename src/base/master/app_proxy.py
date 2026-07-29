@@ -510,11 +510,12 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         and normalized_method == "GET"
     ):
         return True
+    # Public benchmark metadata + task catalog (FE hits bare /benchmarks).
     if (
-        len(parts) == 2
+        parts
         and parts[0] == "benchmarks"
-        and parts[1] == "tasks"
         and normalized_method == "GET"
+        and (len(parts) == 1 or (len(parts) == 2 and parts[1] == "tasks"))
     ):
         return True
     # Public task-events (snapshot + SSE stream) — unauthenticated reads.

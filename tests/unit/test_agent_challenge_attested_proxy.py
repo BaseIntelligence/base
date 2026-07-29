@@ -600,6 +600,11 @@ def test_attested_private_neighbors_and_aliases_are_local_404(
             "/challenges/agent-challenge/benchmarks/tasks",
             "/benchmarks/tasks",
         ),
+        (
+            "GET",
+            "/challenges/agent-challenge/benchmarks",
+            "/benchmarks",
+        ),
     ),
 )
 def test_attested_public_status_and_benchmark_routes_remain_forwardable(
@@ -1426,6 +1431,8 @@ _FE_PUBLIC_GET_PATHS = (
         "agents/ed7e204a0123456789abcdef0123456789abcdef0123456789abcdef01234567"
         "/source/download"
     ),
+    "benchmarks",
+    "benchmarks/tasks",
 )
 
 
@@ -1480,6 +1487,8 @@ def test_legacy_flag_off_does_not_block_frontend_public_reads(path: str) -> None
         "agents/abc123/evaluation",
         "agents/abc123/source",
         "agents/abc123/source/download",
+        "benchmarks",
+        "benchmarks/tasks",
     ),
 )
 def test_attested_proxy_forwards_frontend_public_gets(path: str) -> None:
