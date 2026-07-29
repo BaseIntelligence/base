@@ -1559,4 +1559,3 @@ def test_enabled_mode_still_denies_non_frontend_neighbors(
     )
     assert response.status_code == 404
     assert upstream_calls == []
-
