@@ -134,9 +134,9 @@ COPY golden/dataset-digest.json ./golden/dataset-digest.json
 
 RUN pip install --no-cache-dir .
 
-# Pre-bake the toolchain a submitted agent needs so its install resolves fully
-# offline. Runner jobs run on an egress-free network, so own_runner installs the
-# agent with `--no-index --no-build-isolation` (see runner._own_runner_script).
+# Pre-bake common PEP 517 build backends and agent runtime deps so installs
+# are faster and more reliable. own_runner still resolves remaining agent
+# deps from PyPI (see runner._own_runner_script).
 RUN pip install --no-cache-dir \
         "setuptools>=61" \
         "wheel>=0.40" \

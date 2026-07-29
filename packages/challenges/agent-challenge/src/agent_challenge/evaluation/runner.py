@@ -2000,14 +2000,11 @@ def _own_runner_script(
     # (no inner dockerd). The default socket path needs no DOCKER_HOST, but we
     # set it explicitly so a custom broker socket path still resolves.
     #
-    # Offline agent install: runner jobs are attached to an egress-free network
-    # (a security boundary for untrusted agent code), so the install must resolve
-    # entirely from packages pre-baked into the runner image. --no-build-isolation
-    # reuses those baked PEP 517 build backends instead of fetching them into a
-    # fresh isolated build env (the setuptools>=61 fetch that previously failed
-    # every install), and --no-index keeps a missing/exotic dep failing fast
-    # instead of hanging on unreachable pypi retries. `|| true` preserves the
-    # best-effort behaviour so a partially-satisfiable agent still attempts to run.
+    # Agent dependency install: resolves from PyPI on the host-local evaluation
+    # path (CHALLENGE_NO_PHALA / unattested), which has egress. The egress-free
+    # --internal overlay applies only to the broker/Swarm job path, not here.
+    # Network-sane retries/timeouts; `|| true` keeps best-effort behaviour so a
+    # partially-satisfiable agent still attempts to run.
     return f"""
 set -u
 cd /workspace/agent
@@ -2016,7 +2013,7 @@ export DOCKER_HOST="${{DOCKER_HOST:-unix:///var/run/docker.sock}}"
 {replay_env}
 TMO="timeout -k 10 -s KILL 600"
 PIP="python -m pip install --no-input --disable-pip-version-check"
-PIP="$PIP --no-index --no-build-isolation --retries 0 --default-timeout 15"
+PIP="$PIP --retries 3 --default-timeout 30"
 if [ -f requirements.txt ]; then $TMO $PIP -r requirements.txt || true; fi
 if [ -f pyproject.toml ]; then $TMO $PIP -e . || true; fi
 mkdir -p {output_dir}
