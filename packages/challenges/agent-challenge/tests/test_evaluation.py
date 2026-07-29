@@ -2332,6 +2332,77 @@ def test_own_runner_script_pip_installs_are_offline_and_hang_proofed():
     assert "--no-build-isolation" in pip_flag_line
 
 
+def test_own_runner_command_args_wires_cache_root_and_digest_manifest():
+    """In-process own_runner argv must carry broker-mounted cache/golden paths.
+
+    Parity with runner._terminal_bench_script(backend="own_runner"): without these
+    flags the spawned backend falls back to broken defaults because pydantic-settings
+    does not export CHALLENGE_* into the subprocess environment.
+    """
+    from agent_challenge.evaluation.terminal_bench import own_runner_command_args
+
+    task = BenchmarkTask(
+        task_id="terminal-bench/hello-world",
+        docker_image="example/image:latest",
+        benchmark="terminal_bench",
+        metadata={"task_id": "terminal-bench/hello-world"},
+    )
+    args = own_runner_command_args(
+        job_name="job-cache",
+        jobs_dir=Path("/tmp/jobs"),
+        job_dir=Path("/tmp/job"),
+        task=task,
+    )
+
+    assert ["--cache-root", "/opt/agent-challenge/task-cache"] == _adjacent_flag_pair(
+        args, "--cache-root"
+    )
+    assert [
+        "--digest-manifest",
+        "/opt/agent-challenge/golden/dataset-digest.json",
+    ] == _adjacent_flag_pair(args, "--digest-manifest")
+
+
+def test_own_runner_command_args_cache_wiring_honours_settings_overrides(monkeypatch):
+    from agent_challenge.evaluation.terminal_bench import own_runner_command_args
+
+    monkeypatch.setattr(
+        "agent_challenge.evaluation.terminal_bench.settings.own_runner_cache_root",
+        "/custom/cache",
+    )
+    monkeypatch.setattr(
+        "agent_challenge.evaluation.terminal_bench.settings.own_runner_digest_manifest",
+        "/custom/golden/digest.json",
+    )
+    task = BenchmarkTask(
+        task_id="terminal-bench/hello-world",
+        docker_image="example/image:latest",
+        benchmark="terminal_bench",
+        metadata={"task_id": "terminal-bench/hello-world"},
+    )
+    args = own_runner_command_args(
+        job_name="job-cache-override",
+        jobs_dir=Path("/tmp/jobs"),
+        job_dir=Path("/tmp/job"),
+        task=task,
+    )
+
+    assert ["--cache-root", "/custom/cache"] == _adjacent_flag_pair(args, "--cache-root")
+    assert ["--digest-manifest", "/custom/golden/digest.json"] == _adjacent_flag_pair(
+        args, "--digest-manifest"
+    )
+
+
+def _adjacent_flag_pair(args: list[str], flag: str) -> list[str]:
+    try:
+        index = args.index(flag)
+    except ValueError:
+        pytest.fail(f"missing flag {flag!r} in argv: {args}")
+    if index + 1 >= len(args):
+        pytest.fail(f"flag {flag!r} has no value in argv: {args}")
+    return [args[index], args[index + 1]]
+
+
 def _zip_bytes(entries: dict[str, str]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
