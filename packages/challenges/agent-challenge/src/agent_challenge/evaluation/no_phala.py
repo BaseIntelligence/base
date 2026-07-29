@@ -1,4 +1,4 @@
-"""Temporary NO_PHALA host-execution mode (opt-in, unattested, removable).
+"""Host-trust unattested execution mode (product path after T40 Phala delete).
 
 When ``NO_PHALA`` / ``CHALLENGE_NO_PHALA`` is active the master validator runs
 benchmark/eval jobs on the host via the existing own_runner local Docker path
@@ -6,9 +6,9 @@ instead of provisioning Phala CVMs. There is **no TEE, no TDX quote, and no
 attestation**. Results are explicitly marked unattested and cannot be forged
 into an attested envelope from this path.
 
-This module is the single branch point for the temporary mode so it can be
-deleted cleanly when Phala is re-enabled. Do not scatter NO_PHALA conditionals
-elsewhere beyond thin call-sites into this module.
+Phala TEE is removed from the product path. This module is the honesty
+branch for host-trust runs. Never claim TEE / tamper-proof / independent
+verification from this path.
 
 Precedence for the env switch (see :func:`resolve_no_phala_from_environ`):
 
@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 CHALLENGE_NO_PHALA_ENV: Final = "CHALLENGE_NO_PHALA"
 #: Operator-facing plain env accepted on the master host.
 NO_PHALA_ENV: Final = "NO_PHALA"
+#: Canonical unattested-execution env (T40 product name).
+CHALLENGE_UNATTESTED_EXECUTION_ENV: Final = "CHALLENGE_UNATTESTED_EXECUTION"
 
 _TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
 _FALSY: Final = frozenset({"0", "false", "no", "off", ""})
@@ -98,14 +100,18 @@ def _parse_bool_env(raw: str | None) -> bool | None:
 def resolve_no_phala_from_environ(
     environ: Mapping[str, str] | None = None,
 ) -> bool:
-    """Resolve NO_PHALA from env with documented precedence.
+    """Resolve unattested/NO_PHALA from env with documented precedence.
 
-    1. ``CHALLENGE_NO_PHALA`` if present in the environment
-    2. else ``NO_PHALA`` if present
-    3. else ``False`` (default OFF — never inferred from missing keys)
+    1. ``CHALLENGE_UNATTESTED_EXECUTION`` if present
+    2. else ``CHALLENGE_NO_PHALA`` if present
+    3. else ``NO_PHALA`` if present
+    4. else ``False`` (default OFF — never inferred from missing keys)
     """
 
     env = os.environ if environ is None else environ
+    if CHALLENGE_UNATTESTED_EXECUTION_ENV in env:
+        parsed = _parse_bool_env(env.get(CHALLENGE_UNATTESTED_EXECUTION_ENV))
+        return bool(parsed)
     if CHALLENGE_NO_PHALA_ENV in env:
         parsed = _parse_bool_env(env.get(CHALLENGE_NO_PHALA_ENV))
         return bool(parsed)
@@ -113,6 +119,24 @@ def resolve_no_phala_from_environ(
         parsed = _parse_bool_env(env.get(NO_PHALA_ENV))
         return bool(parsed)
     return False
+
+
+def resolve_unattested_execution_from_environ(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Alias of :func:`resolve_no_phala_from_environ` (T40 product name)."""
+
+    return resolve_no_phala_from_environ(environ)
+
+
+def is_unattested_execution_enabled(
+    *,
+    settings_flag: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Alias of :func:`is_no_phala_enabled` (T40 product name)."""
+
+    return is_no_phala_enabled(settings_flag=settings_flag, environ=environ)
 
 
 def is_no_phala_enabled(
@@ -268,6 +292,8 @@ __all__ = [
     "build_guest_artifact_proof",
     "health_fields",
     "is_no_phala_enabled",
+    "is_unattested_execution_enabled",
+    "resolve_unattested_execution_from_environ",
     "log_no_phala_startup_banner",
     "mark_result_unattested",
     "refuse_phala_client",

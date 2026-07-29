@@ -72,7 +72,7 @@ class MasterSettings(BaseModel):
     upload_extra_registered_hotkeys: list[str] = Field(default_factory=list)
     # Opt-in canonical Agent Challenge review/eval proxy topology. OFF preserves
     # the legacy signed submission/env/launch proxy behavior byte-for-byte.
-    agent_challenge_attested_routes_enabled: bool = False
+    agent_challenge_attested_routes_enabled: bool = False  # T40: Phala routes removed; keep False
     # Validator coordination plane (architecture.md sec 4). The proxy serves the
     # hotkey-signed register/heartbeat/pull/progress/result routes, returns
     # ``validator_heartbeat_interval_seconds`` to validators, marks a validator

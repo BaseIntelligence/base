@@ -1,3 +1,7 @@
+> **T40 product path:** Phala TEE dual flags and CVM attestation are **removed**.
+> This document describes the **host-trust unattested** product mode.
+> Never claim TEE, tamper-proof execution, or independent verification.
+
 # NO_PHALA mode (temporary host-local unattested execution)
 
 **Status:** temporary operator escape hatch while Phala CVMs are disabled.

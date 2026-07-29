@@ -53,12 +53,12 @@ challenge:
   # path byte-identically (R=1, epsilon=0 harbor scoring, no dstack access). This
   # is the validator-config view of the in-image gate; its env var
   # CHALLENGE_PHALA_ATTESTATION_ENABLED is the same switch the image reads.
-  phala_attestation_enabled: false
+  phala_attestation_enabled: false  # REMOVED (T40) — must stay false; host-trust only
   # Attested review is a separate explicit switch. Production full-attested
   # mode enables this together with phala_attestation_enabled; mixed/single-
   # sided settings fail closed at startup. Default OFF keeps legacy status and
   # gateway-backed review byte-identical (no review field / no review session).
-  attested_review_enabled: false
+  attested_review_enabled: false  # REMOVED (T40) — must stay false; host-trust only
   # Normative review TTLs, response caps, mutation rates, and resource limits.
   # Declarations mirror validation-contract resource limits; defaults are the
   # documented hard maxima. Routes/lifecycle code must read these keys.

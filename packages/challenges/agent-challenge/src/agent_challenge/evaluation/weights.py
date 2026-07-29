@@ -244,7 +244,9 @@ def _weights_from_direct_population(
 async def get_weights() -> dict[str, float]:
     """Return raw miner weights for the BASE master to normalize."""
 
-    require_attestation = settings.phala_attestation_enabled
+    # T40: Phala dual flags removed — never gate weights on TEE verified.
+    # Host-trust eligibility = completed + plan-backed + task thresholds.
+    require_attestation = False
     required_task_count = effective_evaluation_task_count(settings.evaluation_task_count)
     async with database.session() as session:
         rows = (await session.execute(scoring_evaluation_jobs_statement())).scalars().all()

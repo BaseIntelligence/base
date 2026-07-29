@@ -161,65 +161,11 @@ def assert_no_base_openrouter_keys(env: Mapping[str, str] | None) -> None:
             )
 
 
-def admit_measured_review_cvm(
-    *,
-    runtime_kind: str,
-    measurement: Mapping[str, str] | ReviewMeasurementRecord | None,
-    allowlist: Sequence[Mapping[str, str]] | None,
-    base_env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Production judge-path runtime admission."""
+def admit_measured_review_cvm(*args, **kwargs):
+    """Removed with Phala measured review CVM (T40). Always refuses."""
 
-    assert_no_base_openrouter_keys(base_env)
+    return type("Decision", (), {"admitted": False, "reason_code": "measured_review_cvm_removed"})()
 
-    kind = (runtime_kind or "").strip()
-    if kind == BASE_MASTER_KIND:
-        raise ReviewOrOutcomeError(
-            REFUSE_BASE_MASTER_OR,
-            "OpenRouter judgment must not run on Base master",
-        )
-    if kind != MEASURED_CVM_KIND:
-        raise ReviewOrOutcomeError(
-            REFUSE_UNMEASURED_REVIEW,
-            f"runtime_kind {kind!r} is not measured review CVM",
-        )
-    if measurement is None:
-        raise ReviewOrOutcomeError(
-            REFUSE_MEASUREMENT_UNALLOWLISTED,
-            "review CVM measurement is required",
-        )
-    if isinstance(measurement, ReviewMeasurementRecord):
-        candidate = measurement.as_closed()
-    else:
-        candidate = {
-            "compose_hash": str(measurement.get("compose_hash", "")),
-            "os_image_hash": str(measurement.get("os_image_hash", "")),
-            "mrtd": str(measurement.get("mrtd", "")),
-            "key_provider": str(measurement.get("key_provider", "")),
-            "vm_shape": str(measurement.get("vm_shape", "")),
-        }
-    if not allowlist:
-        raise ReviewOrOutcomeError(
-            REFUSE_MEASUREMENT_UNALLOWLISTED,
-            "empty measurement allowlist matches nothing",
-        )
-    normalized = [{k: str(v) for k, v in entry.items()} for entry in allowlist]
-    if candidate not in normalized:
-        raise ReviewOrOutcomeError(
-            REFUSE_MEASUREMENT_UNALLOWLISTED,
-            "review measurement is not on the production allowlist",
-        )
-    return {
-        "runtime_kind": MEASURED_CVM_KIND,
-        "measurement": candidate,
-        "measurement_allowlisted": True,
-        "openrouter_allowed_from": "review_cvm_guest",
-    }
-
-
-# ---------------------------------------------------------------------------
-# VAL-ACAT-004 — planned + observed OpenRouter digests
-# ---------------------------------------------------------------------------
 
 
 def build_planned_openrouter_request(

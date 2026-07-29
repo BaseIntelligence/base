@@ -391,13 +391,21 @@ def _build_plan(
     issued_at_ms = _milliseconds(now)
     expires_at_ms = _milliseconds(now + timedelta(seconds=settings.eval_run_ttl_seconds))
     key_release_endpoint = settings.eval_key_release_endpoint
+    # T40: KR endpoint optional under unattested/no_phala host-trust path only.
+    # Legacy prepare without no_phala still requires a configured endpoint string
+    # (keyrelease package itself is untouched; score path no longer requires grant).
+    no_phala = bool(
+        getattr(settings, "no_phala", False)
+        or getattr(settings, "unattested_execution", False)
+    )
     if not isinstance(key_release_endpoint, str) or not key_release_endpoint.strip():
-        # Empty endpoint used to residual as bare wire 500 via validate_eval_plan;
-        # surface a closed unavailable code instead.
-        raise EvalAuthorizationUnavailable(
-            "validator Eval key release endpoint is unavailable",
-            code="eval_key_release_endpoint_unavailable",
-        )
+        if no_phala:
+            key_release_endpoint = ""
+        else:
+            raise EvalAuthorizationUnavailable(
+                "validator Eval key release endpoint is unavailable",
+                code="eval_key_release_endpoint_unavailable",
+            )
     package_tree_sha = getattr(submission, "package_tree_sha", None)
     if not isinstance(package_tree_sha, str) or not package_tree_sha.strip():
         raise EvalAuthorizationUnavailable(
@@ -489,20 +497,25 @@ async def _authorized_review_digest(
         admit_eval_cvm_launch_from_assignment,
     )
 
-    dual_on = True
-    require_residual = True
+    # T40: dual TEE flags permanently off. Defaults are host-trust.
+    dual_on = False
+    require_residual = False
     expected_tree: str | None = getattr(submission, "package_tree_sha", None)
     if isinstance(expected_tree, str):
         expected_tree = expected_tree.strip() or None
     else:
         expected_tree = None
     if settings is not None:
-        phala = bool(getattr(settings, "phala_attestation_enabled", True))
-        review = bool(getattr(settings, "attested_review_enabled", True))
+        phala = bool(getattr(settings, "phala_attestation_enabled", False))
+        review = bool(getattr(settings, "attested_review_enabled", False))
         dual_on = phala and review
-        # Residual is mandatory for production dual-flag prepare; flag-off still
-        # fails later emit gates but residual check runs when dual_on.
-        require_residual = dual_on
+        no_phala = bool(
+            getattr(settings, "no_phala", False)
+            or getattr(settings, "unattested_execution", False)
+        )
+        # Host-trust: residual optional at prepare (software policy when present).
+        # dual_on is always False after T40 settings force-off.
+        require_residual = bool(dual_on)
 
     try:
         decision = admit_eval_cvm_launch_from_assignment(

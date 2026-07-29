@@ -460,9 +460,14 @@ def admit_production_score_from_chain(
     if prior_reverify_failed:
         return _refuse(REFUSE_STICKY, reverify_exercised=True, sticky=True)
 
-    # Flag-off / legacy paths cannot emit **production** scores (VAL-ACAT-018/054).
-    if not dual_flags_on:
-        # Even with perfect metrics/AST, not production emission ingredients.
+    # T40: dual TEE flags removed. Host-trust production scores use the
+    # software policy legs below (package_tree_sha, residual-as-policy,
+    # AST-only refuse, sticky refuse) without KR grant or TDX measurement.
+    # Never mint TEE-attested scores from this path.
+    host_trust = not dual_flags_on
+    if dual_flags_on:
+        # Defensive: dual-on is rejected at settings construction; refuse if
+        # a caller still passes True.
         return _refuse(
             REFUSE_FLAGS_OFF,
             reverify_exercised=False,
@@ -519,7 +524,8 @@ def admit_production_score_from_chain(
     raw_tree = eval_plan.get("package_tree_sha")
     if isinstance(raw_tree, str) and raw_tree.strip():
         plan_tree_sha = raw_tree.strip()
-    if dual_flags_on and (
+    # KEEP package_tree_sha under host-trust (T39 G-PTS-PLAN / G-SCORE-CHAIN).
+    if (
         plan_tree_sha is None
         or len(plan_tree_sha) != 64
         or any(c not in "0123456789abcdef" for c in plan_tree_sha.lower())
@@ -542,8 +548,10 @@ def admit_production_score_from_chain(
         cached_outcome_status="verified_allow" if cached_review_allow else None,
         cached_phase="review_allowed" if cached_review_allow else None,
         dual_flags_on=dual_flags_on,
-        require_package_residual=bool(dual_flags_on),
-        expected_package_tree_sha=plan_tree_sha if dual_flags_on else None,
+        # Host-trust: residual optional at score if missing materials; when
+        # present, host kinds admitted via residual gate rewire.
+        require_package_residual=False if host_trust else bool(dual_flags_on),
+        expected_package_tree_sha=plan_tree_sha,
         outcome=review_outcome,
         package_residual=package_residual,
     )
@@ -612,53 +620,71 @@ def admit_production_score_from_chain(
             review_digest=review_decision.review_digest,
         )
 
-    # ----- 2) Key-release RA-TLS re-check at admission (VAL-ACAT-036/037) -----
+    # ----- 2) Key-release RA-TLS (REMOVED under host-trust / T40) -----
+    # KR exists to release secrets into measured CVM. Host-trust scores must
+    # not require KR. keyrelease/ package sources are untouched.
     checked.append(KEY_RELEASE_DOMAIN)
-    kr_err, kr_hex = verify_key_release_grant(
-        grant=key_release_grant,
-        eval_plan=eval_plan,
-        key_granted_flag=key_granted_flag,
-    )
-    if kr_err is not None:
-        if offline_ast_pass and kr_err in {
-            REFUSE_MISSING_KEY_RELEASE,
-            REFUSE_INCOMPLETE_CHAIN,
-        }:
+    kr_hex = None
+    if not host_trust:
+        kr_err, kr_hex = verify_key_release_grant(
+            grant=key_release_grant,
+            eval_plan=eval_plan,
+            key_granted_flag=key_granted_flag,
+        )
+        if kr_err is not None:
+            if offline_ast_pass and kr_err in {
+                REFUSE_MISSING_KEY_RELEASE,
+                REFUSE_INCOMPLETE_CHAIN,
+            }:
+                return _refuse(
+                    REFUSE_AST_ONLY,
+                    reverify_exercised=True,
+                    domains_checked=tuple(checked),
+                    review_digest=review_decision.review_digest,
+                )
             return _refuse(
-                REFUSE_AST_ONLY,
+                kr_err,
                 reverify_exercised=True,
                 domains_checked=tuple(checked),
                 review_digest=review_decision.review_digest,
             )
-        return _refuse(
-            kr_err,
-            reverify_exercised=True,
-            domains_checked=tuple(checked),
-            review_digest=review_decision.review_digest,
-        )
+    else:
+        checked.append("key_release_skipped_host_trust")
 
-    # ----- 3) Score-domain binding re-verify -----
+    # ----- 3) Score-domain binding (host-trust: plan/score nonce only) -----
     checked.append(SCORE_DOMAIN)
-    score_err, score_rd = verify_score_domain_binding(
-        score_binding=score_binding,
-        reported_report_data_hex=score_report_data_hex,
-        eval_plan=eval_plan,
-        scores_digest=scores_digest,
-    )
-    if score_err is not None:
-        if offline_ast_pass and score_err == REFUSE_INCOMPLETE_CHAIN:
+    if host_trust:
+        # Skip TDX score-domain measurement re-verify; keep plan presence.
+        if eval_plan is None:
             return _refuse(
-                REFUSE_AST_ONLY,
+                REFUSE_INCOMPLETE_CHAIN,
                 reverify_exercised=True,
                 domains_checked=tuple(checked),
                 review_digest=review_decision.review_digest,
             )
-        return _refuse(
-            score_err,
-            reverify_exercised=True,
-            domains_checked=tuple(checked),
-            review_digest=review_decision.review_digest,
+        score_rd = None
+        checked.append("score_domain_host_trust_plan_only")
+    else:
+        score_err, score_rd = verify_score_domain_binding(
+            score_binding=score_binding,
+            reported_report_data_hex=score_report_data_hex,
+            eval_plan=eval_plan,
+            scores_digest=scores_digest,
         )
+        if score_err is not None:
+            if offline_ast_pass and score_err == REFUSE_INCOMPLETE_CHAIN:
+                return _refuse(
+                    REFUSE_AST_ONLY,
+                    reverify_exercised=True,
+                    domains_checked=tuple(checked),
+                    review_digest=review_decision.review_digest,
+                )
+            return _refuse(
+                score_err,
+                reverify_exercised=True,
+                domains_checked=tuple(checked),
+                review_digest=review_decision.review_digest,
+            )
 
     # ----- 4) Score nonce freshness / single-use (VAL-ACAT-017/033) -----
     state = (score_nonce_state or "unknown").strip().lower()

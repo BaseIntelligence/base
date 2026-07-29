@@ -1,4 +1,4 @@
-"""AGATE measured LLM rules residual gate (package verify before TEE auth).
+"""AGATE LLM rules residual gate (package policy before eval under host-trust).
 
 Product spine (mission AGATE / VAL-AGATE-004..007 + 012/013):
 
@@ -393,14 +393,10 @@ def admit_package_residual_for_eval(
     - package_tree_sha required/match when configured
     """
 
-    if not dual_flags_on:
-        # Residual gate is a production dual-flag requirement; flag-off is not
-        # TEE-authable production emit (other gates already refuse). Treat as
-        # residual missing for prepare-style callers that still invoke this.
-        return PackageResidualAdmission(
-            admitted=False,
-            reason_code=REFUSE_RESIDUAL_MISSING,
-        )
+    # T40: dual TEE flags removed. Host-trust residual policy admits host
+    # residual kinds (host_analyzer_static / unmeasured_host_python) when
+    # dual_flags_on is False. Measured kinds still admitted if present.
+    host_trust = not dual_flags_on
 
     try:
         materials = extract_package_residual(
@@ -413,8 +409,8 @@ def admit_package_residual_for_eval(
         return PackageResidualAdmission(admitted=False, reason_code=exc.code)
 
     if materials is None:
-        # Host analyzer allow alone never unlocks TEE auth.
-        if host_analyzer_allow is True:
+        # Host analyzer allow alone is insufficient without a residual bag.
+        if host_analyzer_allow is True and not host_trust:
             return PackageResidualAdmission(
                 admitted=False,
                 reason_code=REFUSE_HOST_ONLY,
@@ -425,17 +421,29 @@ def admit_package_residual_for_eval(
         )
 
     if is_host_only_residual(materials.residual_kind):
-        return PackageResidualAdmission(
-            admitted=False,
-            reason_code=REFUSE_HOST_ONLY,
-            residual_verdict=materials.residual_verdict,
-            residual_kind=materials.residual_kind,
-            residual_digest=materials.residual_digest,
-            rules_bundle_sha256=materials.rules_bundle_sha256,
-            package_tree_sha=materials.package_tree_sha,
-        )
-
-    if not is_measured_residual_kind(materials.residual_kind):
+        if not host_trust:
+            return PackageResidualAdmission(
+                admitted=False,
+                reason_code=REFUSE_HOST_ONLY,
+                residual_verdict=materials.residual_verdict,
+                residual_kind=materials.residual_kind,
+                residual_digest=materials.residual_digest,
+                rules_bundle_sha256=materials.rules_bundle_sha256,
+                package_tree_sha=materials.package_tree_sha,
+            )
+        # Host-trust: fall through to verdict/tree checks below.
+    elif not is_measured_residual_kind(materials.residual_kind):
+        if not host_trust:
+            return PackageResidualAdmission(
+                admitted=False,
+                reason_code=REFUSE_RESIDUAL_KIND,
+                residual_verdict=materials.residual_verdict,
+                residual_kind=materials.residual_kind,
+                residual_digest=materials.residual_digest,
+                rules_bundle_sha256=materials.rules_bundle_sha256,
+                package_tree_sha=materials.package_tree_sha,
+            )
+        # Host-trust: unknown kinds still refuse (policy integrity).
         return PackageResidualAdmission(
             admitted=False,
             reason_code=REFUSE_RESIDUAL_KIND,
@@ -509,10 +517,14 @@ def host_analyzer_alone_insufficient(
 ) -> bool:
     """VAL-AGATE-007: host allow without measured residual is insufficient."""
 
-    if not dual_flags_on:
-        return True
     if not host_analyzer_allow:
         return True
+    # Under host-trust (dual off), host residual bag can be sufficient; bare
+    # host_analyzer_allow without residual materials is still insufficient.
+    if not dual_flags_on:
+        if residual is None:
+            return True
+        # fall through to admit check with dual_flags_on=False (host kinds OK)
     bag: Mapping[str, Any] | None
     if isinstance(residual, PackageResidualMaterials):
         bag = residual.as_dict()
@@ -520,7 +532,7 @@ def host_analyzer_alone_insufficient(
         bag = residual
     decision = admit_package_residual_for_eval(
         residual=bag,
-        dual_flags_on=True,
+        dual_flags_on=dual_flags_on,
         host_analyzer_allow=host_analyzer_allow,
         require_package_tree_sha=False,
     )
