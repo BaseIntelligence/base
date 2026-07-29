@@ -47,7 +47,11 @@ def _write_exec(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run_entrypoint(tmp_path: Path, ac_env_file_body: str | None) -> dict[str, str]:
+def _run_entrypoint(
+    tmp_path: Path,
+    ac_env_file_body: str | None,
+    prism_env_file_body: str | None = None,
+) -> dict[str, str]:
     """Run the entrypoint with stubbed uvicorn/python; return child env dumps."""
 
     bin_dir = tmp_path / "bin"
@@ -67,6 +71,8 @@ def _run_entrypoint(tmp_path: Path, ac_env_file_body: str | None) -> dict[str, s
 
     if ac_env_file_body is not None:
         (ac_dir / "embed.env").write_text(ac_env_file_body, encoding="utf-8")
+    if prism_env_file_body is not None:
+        (prism_dir / "embed.env").write_text(prism_env_file_body, encoding="utf-8")
 
     env = {
         "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
@@ -172,3 +178,59 @@ def test_env_file_ignores_comments_blanks_and_malformed_keys(tmp_path: Path) -> 
     assert "CHALLENGE_EVAL_APP_IDENTITY=app-id" in ac_env
     assert "RANDOM_UNRELATED" not in ac_env
     assert "not-a-valid-key" not in ac_env
+
+
+def test_prism_env_file_forwards_unattested_flags(tmp_path: Path) -> None:
+    """Prism embed.env must forward unattested / NO_PHALA flags under env -i."""
+
+    dumps = _run_entrypoint(
+        tmp_path,
+        ac_env_file_body=None,
+        prism_env_file_body="\n".join(
+            [
+                "# prism host-trust / unattested (T19-T22)",
+                "CHALLENGE_UNATTESTED_EXECUTION=true",
+                "CHALLENGE_NO_PHALA=true",
+                "NO_PHALA=true",
+                "PRISM_RAW_WEIGHT_PUSH_ENABLED=true",
+                "RANDOM_LEAK=nope",
+                "",
+            ]
+        ),
+    )
+
+    prism_env = dumps["prism"]
+    assert "CHALLENGE_UNATTESTED_EXECUTION=true" in prism_env
+    assert "CHALLENGE_NO_PHALA=true" in prism_env
+    assert "NO_PHALA=true" in prism_env
+    assert "PRISM_RAW_WEIGHT_PUSH_ENABLED=true" in prism_env
+    assert "RANDOM_LEAK" not in prism_env
+
+
+def test_prism_admission_requires_worker_defaults_false(tmp_path: Path) -> None:
+    """Built-in default for admission_requires_worker is false (unattested path)."""
+
+    dumps = _run_entrypoint(tmp_path, ac_env_file_body=None)
+    assert (
+        "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=false" in dumps["prism"]
+    )
+
+
+def test_prism_unattested_flags_do_not_leak_into_ac(tmp_path: Path) -> None:
+    """Prism-only unattested keys must not appear in the AC child env."""
+
+    dumps = _run_entrypoint(
+        tmp_path,
+        ac_env_file_body=None,
+        prism_env_file_body=(
+            "CHALLENGE_UNATTESTED_EXECUTION=true\n"
+            "CHALLENGE_NO_PHALA=true\n"
+            "NO_PHALA=true\n"
+        ),
+    )
+    ac_env = dumps["ac"]
+    assert "CHALLENGE_UNATTESTED_EXECUTION" not in ac_env
+    # AC may still get CHALLENGE_* from its own defaults/file — but not from prism file.
+    # NO_PHALA from prism file must not leak:
+    assert "NO_PHALA=true" not in ac_env
+

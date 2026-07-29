@@ -210,9 +210,9 @@ start_embedded_challenges() {
     "PRISM_DOCKER_BACKEND=${PRISM_DOCKER_BACKEND:-cli}"
     # HOTPATCH allowlist: OpenRouter plagiarism + worker plane.
 # PROD POLICY: Prism eval never runs on master — CPU_REEXEC must stay false;
-# miners supply Lium pods; admission_requires_worker must stay true.
+# miners supply Lium pods; admission_requires_worker default false (unattested/host path).
     "PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE=${PRISM_WORKER_PLANE__CPU_REEXEC_TEST_MODE:-false}"
-    "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-true}"
+    "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-false}"
     "PRISM_WORKER_PLANE__MASTER_BASE_URL=${PRISM_WORKER_PLANE__MASTER_BASE_URL:-http://127.0.0.1:8081}"
     "PRISM_PLAGIARISM_LLM_ENABLED=${PRISM_PLAGIARISM_LLM_ENABLED:-false}"
     "PRISM_PLAGIARISM_LLM_REQUIRED=${PRISM_PLAGIARISM_LLM_REQUIRED:-false}"
@@ -254,7 +254,8 @@ start_embedded_challenges() {
   # Operator overrides win over the defaults above. Prefixes stay disjoint per
   # challenge so the env -i isolation is preserved.
   load_challenge_env_file prism_env "${PRISM_ENV_FILE}" \
-    PRISM_ PHALA_ DSTACK_ OPENROUTER_API_KEY
+    PRISM_ PHALA_ DSTACK_ OPENROUTER_API_KEY \
+    CHALLENGE_UNATTESTED_EXECUTION CHALLENGE_NO_PHALA NO_PHALA
   load_challenge_env_file ac_env "${AC_ENV_FILE}" \
     CHALLENGE_ BASE_CHALLENGE_ PHALA_ DSTACK_ OPENROUTER_API_KEY
 
