@@ -240,10 +240,29 @@ def _validate_evaluation_enqueue_status(
         if confirmed_miner_env:
             return
         raise ValueError("submission is waiting for miner environment confirmation")
-    if submission.raw_status in {"queued", "tb_queued", "tb_running", "tb_failed_retryable"}:
+    if submission.raw_status in {
+        "queued",
+        "tb_queued",
+        "tb_running",
+        "tb_failed_retryable",
+        # Operator / owner re-eval of terminal submissions.
+        # create_evaluation_job maps internal terminals → tb_queued and
+        # public terminals → queued. Must be explicit — never fail-open.
+        "tb_completed",
+        "tb_failed_final",
+        "completed",
+        "valid",
+        "invalid",
+        "suspicious",
+        "error",
+        "overridden_valid",
+        "overridden_invalid",
+        "evaluating",
+    }:
         return
     if submission.raw_status == "analysis_allowed":
         raise ValueError("submission is waiting for miner environment confirmation")
+    raise ValueError(f"submission status {submission.raw_status!r} cannot enqueue evaluation")
 
 
 async def create_evaluation_job(

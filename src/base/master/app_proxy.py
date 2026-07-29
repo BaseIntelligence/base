@@ -425,11 +425,11 @@ def _is_agent_challenge_signed_route(
     ``X-Timestamp``) must survive the generic ``/challenges/{slug}`` passthrough
     so the challenge can verify them.
 
-    Full attested mode uses the exact review/eval allowlist (plus signed
-    ``POST /submissions``). Legacy mode keeps env/launch signed surfaces, and
-    also preserves the same exact review/eval signed row so dual-flag AC
-    prepare/deploy cannot residual as HTTP 401 when the Base allowlist flag
-    is not yet flipped.
+    Exact review/eval signed rows, public ``POST /submissions``, and miner
+    env/launch surfaces always need signature headers — independent of the
+    attested-routes allowlist flag. Env/launch must stay signed under full
+    attested mode so miners can attach OPENROUTER_API_KEY (or confirm-empty)
+    without residual HTTP 401 after the allowlist admits the path.
     """
 
     if slug != "agent-challenge":
@@ -440,10 +440,10 @@ def _is_agent_challenge_signed_route(
     if _is_agent_challenge_exact_review_eval_signed_route(method, path):
         return True
 
-    if not attested_routes_enabled:
-        return _is_agent_challenge_env_route(slug, method, path)
-
-    return False
+    # Miner env/launch: same flag-independence. Feeds enabled-mode allowlist
+    # via signed_route(..., attested=True) and preserve_miner_signature_headers.
+    _ = attested_routes_enabled
+    return _is_agent_challenge_env_route(slug, method, path)
 
 
 def _is_agent_challenge_enabled_mode_allowed_route(

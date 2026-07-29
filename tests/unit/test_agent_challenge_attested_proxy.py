@@ -492,10 +492,14 @@ def test_attested_private_routes_reject_agent_challenge_name_aliases(
         ("POST", "/submissions/sub-1/eval/status"),
         ("POST", "/submissions/sub-1/eval/result"),
         ("POST", "/submissions/sub-1/eval/key-release"),
-        ("GET", "/submissions/sub-1/env"),
-        ("PUT", "/submissions/sub-1/env"),
-        ("POST", "/submissions/sub-1/env/confirm-empty"),
-        ("POST", "/submissions/sub-1/launch"),
+        # Miner env/launch shapes are allowlisted + signature-preserved (FIX G).
+        # Wrong methods on those shapes stay denied.
+        ("DELETE", "/submissions/sub-1/env"),
+        ("POST", "/submissions/sub-1/env"),
+        ("PUT", "/submissions/sub-1/env/confirm-empty"),
+        ("GET", "/submissions/sub-1/env/confirm-empty"),
+        ("GET", "/submissions/sub-1/launch"),
+        ("PUT", "/submissions/sub-1/launch"),
         # review/v1 guest capability table is allowlisted + Authorization preserved
         # (see test_review_capability_routes_preserve_authorization_bearer). Neighbor
         # aliases and unconstrained assignment paths remain blocked below.
@@ -826,6 +830,120 @@ def test_flag_off_still_preserves_miner_signature_headers_on_review_history() ->
     assert headers["x-timestamp"] == "1700000001"
     # Authorization remains stripped on signed miner routes (Bearer is guest).
     assert "authorization" not in headers
+
+
+@pytest.mark.parametrize("attested_routes_enabled", [True, False])
+@pytest.mark.parametrize(
+    ("method", "path", "upstream_path"),
+    (
+        (
+            "GET",
+            "/challenges/agent-challenge/submissions/13/env",
+            "/submissions/13/env",
+        ),
+        (
+            "PUT",
+            "/challenges/agent-challenge/submissions/13/env",
+            "/submissions/13/env",
+        ),
+        (
+            "POST",
+            "/challenges/agent-challenge/submissions/13/env/confirm-empty",
+            "/submissions/13/env/confirm-empty",
+        ),
+        (
+            "POST",
+            "/challenges/agent-challenge/submissions/13/launch",
+            "/submissions/13/launch",
+        ),
+    ),
+)
+def test_miner_env_launch_routes_allowed_and_preserve_signature_headers(
+    attested_routes_enabled: bool,
+    method: str,
+    path: str,
+    upstream_path: str,
+) -> None:
+    """FIX G: env/launch must work under attested allowlist AND keep miner sig headers.
+
+    Prod sets agent_challenge_attested_routes_enabled=true. Without these shapes in
+    the enabled-mode allowlist the public edge returns local 404 Proxy path not found.
+    Even after allowlisting, signed PUT/POST would residual 401 if X-Hotkey/X-Signature
+    were stripped. Both flag states must forward + preserve the four miner headers.
+    """
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["headers"] = request.headers
+        captured["body"] = await request.aread()
+        return httpx.Response(
+            200,
+            content=b'{"ok":true,"env":"forwarded"}',
+            headers={"content-type": "application/json"},
+        )
+
+    client = _proxy_client(handler, attested_routes_enabled=attested_routes_enabled)
+    request_body = b'{"OPENROUTER_API_KEY":"sk-test"}' if method == "PUT" else b""
+    response = client.request(
+        method,
+        path,
+        content=request_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hotkey": "5D7D4EGayNMinerHotkeyExampleForTestOnly",
+            "X-Signature": "0x" + ("ef" * 32),
+            "X-Nonce": "fresh-nonce-miner-env",
+            "X-Timestamp": "1700000013",
+            "Authorization": "Bearer should-not-forward",
+            "X-Base-Verified-Hotkey": "forged",
+            "X-Allowlist-Digest": "caller-allowlist",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "env": "forwarded"}
+    assert captured["method"] == method
+    assert captured["path"] == upstream_path
+    if method == "PUT":
+        assert captured["body"] == request_body
+    headers: httpx.Headers = captured["headers"]
+    assert headers["x-hotkey"] == "5D7D4EGayNMinerHotkeyExampleForTestOnly"
+    assert headers["x-signature"].startswith("0x")
+    assert headers["x-nonce"] == "fresh-nonce-miner-env"
+    assert headers["x-timestamp"] == "1700000013"
+    assert "authorization" not in headers
+    if attested_routes_enabled:
+        assert "x-base-verified-hotkey" not in headers
+        assert "x-allowlist-digest" not in headers
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    (
+        ("GET", "submissions/13/env"),
+        ("PUT", "submissions/13/env"),
+        ("POST", "submissions/13/env/confirm-empty"),
+        ("POST", "submissions/13/launch"),
+    ),
+)
+def test_enabled_mode_allowlist_accepts_miner_env_launch_shapes(
+    method: str,
+    path: str,
+) -> None:
+    assert _is_agent_challenge_enabled_mode_allowed_route(
+        "agent-challenge",
+        method,
+        path,
+    )
+    assert not _is_blocked_agent_challenge_proxy_path(
+        "agent-challenge",
+        method,
+        path,
+        attested_routes_enabled=True,
+    )
 
 
 def test_forged_trust_headers_do_not_elevate_private_routes() -> None:

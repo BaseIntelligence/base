@@ -387,21 +387,27 @@ async def test_worker_allow_with_confirmed_empty_env_enqueues_one_evaluation_and
     assert job_count == 1
 
 
-async def test_create_submission_marks_env_confirmed_empty_and_auto_enqueues_on_allow(
+async def test_create_submission_starts_unconfirmed_and_parks_on_allow_without_env(
     client,
     database_session,
     monkeypatch,
     signed_submission_override,
     tmp_path,
 ):
+    """FIX E: new submissions must not pre-confirm empty env.
+
+    Hardcoding env_confirmed_empty=True at create made waiting_miner_env
+    unreachable — analysis allow always auto-enqueued credential-less eval.
+    Miners attach OPENROUTER_API_KEY via PUT /env or call confirm-empty first.
+    """
     configure_master(monkeypatch, tmp_path)
     await submit_agent(client, {"agent.py": "def solve(value):\n    return value + 1\n"})
 
     async with database_session() as session:
         submission = await session.scalar(select(AgentSubmission))
         assert submission is not None
-        assert submission.env_confirmed_empty is True
-        assert submission.env_confirmed_empty_at is not None
+        assert submission.env_confirmed_empty is False
+        assert submission.env_confirmed_empty_at is None
         summary = await run_next_analysis(
             session,
             lease_owner="analysis-worker",
@@ -411,16 +417,16 @@ async def test_create_submission_marks_env_confirmed_empty_and_auto_enqueues_on_
 
     assert summary is not None
     assert summary.verdict == "allow"
-    assert summary.evaluation_job_id is not None
+    assert summary.evaluation_job_id is None
     async with database_session() as session:
         submission = await session.scalar(select(AgentSubmission))
         job_count = await session.scalar(select(func.count(EvaluationJob.id)))
 
     assert submission is not None
-    assert submission.raw_status == "tb_queued"
-    assert submission.env_locked_at is not None
-    assert submission.latest_evaluation_job_id is not None
-    assert job_count == 1
+    assert submission.raw_status == "waiting_miner_env"
+    assert submission.env_locked_at is None
+    assert submission.latest_evaluation_job_id is None
+    assert job_count == 0
 
 
 async def test_analysis_commits_before_llm_call_to_release_connection(
@@ -744,18 +750,15 @@ async def test_llm_standby_requeues_when_gateway_token_becomes_available(
         )
 
     assert submission is not None
-    assert submission.raw_status == "tb_completed"
+    assert submission.raw_status == "waiting_miner_env"
     assert analysis_count == 2
-    assert events[-9:] == [
+    assert events[-6:] == [
         "llm_standby",
         "analysis_queued",
         "ast_running",
         "llm_running",
         "analysis_allowed",
         "waiting_miner_env",
-        "tb_queued",
-        "tb_running",
-        "tb_completed",
     ]
 
 
@@ -1027,15 +1030,15 @@ async def test_gate_clean_submission_allows_and_records_ast_and_rules(
 
     assert summary is not None
     assert summary.verdict == "allow"
-    assert summary.evaluation_job_id is not None
+    assert summary.evaluation_job_id is None
     async with database_session() as session:
         submission = await session.scalar(select(AgentSubmission))
         job_count = await session.scalar(select(func.count(EvaluationJob.id)))
         analysis_run = await session.scalar(select(AnalysisRun))
 
     assert submission is not None
-    assert submission.raw_status == "tb_queued"
-    assert job_count == 1
+    assert submission.raw_status == "waiting_miner_env"
+    assert job_count == 0
     report = json.loads(analysis_run.report_json)
     assert report["ast"]["verdict"] == "clean"
     assert report["ast"]["verdict_reason"]
