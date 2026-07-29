@@ -25,6 +25,7 @@ from agent_challenge.evaluation.benchmarks import (
     benchmark_tasks_from_json,
     benchmark_tasks_to_json,
 )
+from agent_challenge.evaluation.runner import _validate_evaluation_enqueue_status
 from agent_challenge.evaluation.worker import run_worker_once
 from agent_challenge.models import (
     AgentSubmission,
@@ -232,6 +233,8 @@ async def test_run_evaluation_job_scores_all_tasks(database_session, monkeypatch
             name="agent-a",
             agent_hash="abc123",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -316,6 +319,8 @@ async def test_create_evaluation_job_selects_at_most_twenty_tasks(
             name="agent-max-twenty",
             agent_hash="max-twenty-selection",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -366,6 +371,113 @@ async def test_create_terminal_bench_evaluation_job_selects_at_most_twenty_tasks
     assert len(selected_tasks) == 20
     assert job.total_tasks == 20
     assert {task.benchmark for task in selected_tasks} == {"terminal_bench"}
+
+
+def _enqueue_status_submission(
+    raw_status: str,
+    *,
+    env_confirmed_empty: bool = False,
+    env_locked_at: datetime | None = None,
+    env_compatibility_reason: str | None = None,
+) -> AgentSubmission:
+    return AgentSubmission(
+        miner_hotkey="hotkey-enqueue-gate",
+        name="agent-enqueue-gate",
+        agent_hash=f"enqueue-{raw_status}",
+        artifact_uri="/tmp/agent-enqueue-gate",
+        raw_status=raw_status,
+        effective_status=raw_status,
+        env_confirmed_empty=env_confirmed_empty,
+        env_locked_at=env_locked_at,
+        env_compatibility_reason=env_compatibility_reason,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_status",
+    (
+        "queued",
+        "tb_queued",
+        "tb_running",
+        "tb_failed_retryable",
+        "tb_completed",
+        "tb_failed_final",
+        "completed",
+        "valid",
+        "invalid",
+        "suspicious",
+        "error",
+        "overridden_valid",
+        "overridden_invalid",
+        "evaluating",
+    ),
+)
+def test_validate_evaluation_enqueue_status_allows_known_ready_statuses(
+    raw_status: str,
+) -> None:
+    """FIX F: allowlist includes in-flight TB statuses and terminal re-eval."""
+    _validate_evaluation_enqueue_status(
+        _enqueue_status_submission(raw_status),
+        confirmed_miner_env=False,
+    )
+
+
+def test_validate_evaluation_enqueue_status_allows_waiting_when_confirmed() -> None:
+    _validate_evaluation_enqueue_status(
+        _enqueue_status_submission("waiting_miner_env"),
+        confirmed_miner_env=True,
+    )
+
+
+def test_validate_evaluation_enqueue_status_allows_legacy_analysis_allowed() -> None:
+    locked_at = datetime.now(UTC)
+    _validate_evaluation_enqueue_status(
+        _enqueue_status_submission(
+            "analysis_allowed",
+            env_confirmed_empty=True,
+            env_locked_at=locked_at,
+            env_compatibility_reason="pre_env_gate_analysis_allowed",
+        ),
+        confirmed_miner_env=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_status",
+    (
+        "received",
+        "analysis_queued",
+        "analysis_rejected",
+        "cancelled",
+        "admin_paused",
+        "review_running",
+    ),
+)
+def test_validate_evaluation_enqueue_status_rejects_invalid_statuses(
+    raw_status: str,
+) -> None:
+    """FIX F: statuses outside the allowlist must raise, not fail-open."""
+    with pytest.raises(ValueError, match="cannot enqueue evaluation"):
+        _validate_evaluation_enqueue_status(
+            _enqueue_status_submission(raw_status),
+            confirmed_miner_env=False,
+        )
+
+
+def test_validate_evaluation_enqueue_status_rejects_unconfirmed_waiting() -> None:
+    with pytest.raises(ValueError, match="waiting for miner environment"):
+        _validate_evaluation_enqueue_status(
+            _enqueue_status_submission("waiting_miner_env"),
+            confirmed_miner_env=False,
+        )
+
+
+def test_validate_evaluation_enqueue_status_rejects_non_legacy_analysis_allowed() -> None:
+    with pytest.raises(ValueError, match="waiting for miner environment"):
+        _validate_evaluation_enqueue_status(
+            _enqueue_status_submission("analysis_allowed"),
+            confirmed_miner_env=False,
+        )
 
 
 @pytest.mark.parametrize("raw_status", ["tb_completed", "tb_failed_final"])
@@ -502,6 +614,8 @@ async def test_run_evaluation_job_records_failed_task_events(
             name="agent-a",
             agent_hash="failed-task-events",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -561,6 +675,8 @@ async def test_run_evaluation_job_records_terminal_event_after_log_cap(
             name="agent-a",
             agent_hash="log-cap-terminal-event",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -615,6 +731,8 @@ async def test_run_evaluation_job_persists_failure(database_session, monkeypatch
             name="agent-a",
             agent_hash="def456",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -657,6 +775,8 @@ async def test_run_evaluation_job_fails_closed_when_analyzer_container_fails(
             name="agent-a",
             agent_hash="containerfail",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -707,6 +827,8 @@ async def test_run_evaluation_job_runs_terminal_bench_task(database_session, mon
             name="agent-a",
             agent_hash="ghi789",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -811,6 +933,8 @@ async def test_run_evaluation_job_frees_write_lock_and_commits_running_lease(
             name="agent-lockprobe-swe",
             agent_hash="lockprobe-swe",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -913,6 +1037,8 @@ async def test_run_evaluation_job_commits_terminal_bench_attempt_before_containe
             name="agent-attempt-commit",
             agent_hash="attempt-commit-hash",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -959,6 +1085,8 @@ async def test_run_evaluation_job_skips_already_persisted_task_result(
             name="agent-idempotent",
             agent_hash="idempotent-hash",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -2053,6 +2181,8 @@ async def test_base_sdk_retry_requeues_then_final_fails_at_worker_cap(
             name="platform-sdk-retry-agent",
             agent_hash="platform-sdk-retry-hash",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -2142,6 +2272,8 @@ async def test_run_evaluation_job_passes_configured_reviewer_to_analyzer(
             name="agent-a",
             agent_hash="reviewer123",
             artifact_uri=str(agent_dir),
+            raw_status="queued",
+            effective_status="queued",
         )
         session.add(submission)
         await session.flush()
@@ -2188,6 +2320,8 @@ async def test_terminal_bench_mounts_extracted_zip_workspace(
             name="agent-a",
             agent_hash="zip789",
             artifact_uri=str(agent_zip),
+            raw_status="queued",
+            effective_status="queued",
             artifact_path=str(agent_zip),
         )
         session.add(submission)
