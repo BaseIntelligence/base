@@ -211,9 +211,7 @@ def test_prism_admission_requires_worker_defaults_false(tmp_path: Path) -> None:
     """Built-in default for admission_requires_worker is false (unattested path)."""
 
     dumps = _run_entrypoint(tmp_path, ac_env_file_body=None)
-    assert (
-        "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=false" in dumps["prism"]
-    )
+    assert "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER=false" in dumps["prism"]
 
 
 def test_prism_unattested_flags_do_not_leak_into_ac(tmp_path: Path) -> None:
@@ -233,4 +231,3 @@ def test_prism_unattested_flags_do_not_leak_into_ac(tmp_path: Path) -> None:
     # AC may still get CHALLENGE_* from its own defaults/file — but not from prism file.
     # NO_PHALA from prism file must not leak:
     assert "NO_PHALA=true" not in ac_env
-

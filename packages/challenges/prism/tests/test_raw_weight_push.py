@@ -364,4 +364,3 @@ async def test_maybe_build_push_client_advances_past_ledger_epoch(
     assert client is not None
     assert client.epoch_fn is not None
     assert client.epoch_fn() == last_epoch + 1
-

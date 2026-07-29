@@ -644,6 +644,7 @@ def maybe_build_push_client_from_settings(
 
     def _epoch() -> int:
         import sqlite3
+
         wall = int(datetime.now(UTC).timestamp()) // max(int(master_epoch_seconds), 1)
         last = None
         try:

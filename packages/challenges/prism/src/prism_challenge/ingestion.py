@@ -517,8 +517,7 @@ def _evaluate_constation_gate(
                 constation_ok=False,
                 reason="unattested:missing_constation_bundle",
                 message=(
-                    "unattested execution: scoring without constation bundle; "
-                    "not TEE/verified"
+                    "unattested execution: scoring without constation bundle; not TEE/verified"
                 ),
             )
         return _ConstationGate(
