@@ -72,6 +72,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY pyproject.toml README.md ./
 COPY .rules ./.rules
 COPY src ./src
+# hatch force-include maps golden/dataset-digest.json into the wheel; without
+# this COPY, ``pip install .`` fails: Forced include not found: /app/golden/...
+COPY golden/dataset-digest.json ./golden/dataset-digest.json
 # Phala Cloud pre-launch helper is measured into review/eval app-compose.
 # Offline compose generators resolve REPO_ROOT=/app (PYTHONPATH=/app/src), so
 # the shipping runtime image must package the vendor script at this exact path
@@ -126,6 +129,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY pyproject.toml README.md ./
 COPY .rules ./.rules
 COPY src ./src
+# Same force-include requirement as the runtime stage (see comment above).
+COPY golden/dataset-digest.json ./golden/dataset-digest.json
 
 RUN pip install --no-cache-dir .
 

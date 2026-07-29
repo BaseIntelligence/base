@@ -167,3 +167,46 @@ def test_default_digest_not_site_packages_grandparent_shape(
             f"default resolved to site-packages overshoot path: {resolved}"
         )
     assert resolved.is_file()
+
+
+
+def test_package_dockerfile_copies_force_include_digest_before_pip_install() -> None:
+    """hatch force-include needs golden/dataset-digest.json in the image build context.
+
+    CI failed with:
+      FileNotFoundError: Forced include not found: /app/golden/dataset-digest.json
+    when Dockerfile only COPYed src/ + pyproject and then ran ``pip install .``.
+    Both runtime and terminal-bench-runner stages must COPY the file first.
+    """
+    dockerfile = (_PKG_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    pyproject = (_PKG_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"golden/dataset-digest.json"' in pyproject or (
+        "golden/dataset-digest.json" in pyproject
+    ), "pyproject must force-include golden/dataset-digest.json"
+    # Exact path used by hatch force-include source key.
+    copy_line = "COPY golden/dataset-digest.json"
+    assert copy_line in dockerfile, (
+        "Dockerfile must COPY golden/dataset-digest.json so hatch force-include "
+        "finds /app/golden/dataset-digest.json during pip install ."
+    )
+    assert dockerfile.count(copy_line) >= 2, (
+        "both runtime and terminal-bench-runner stages need the golden COPY "
+        f"(found {dockerfile.count(copy_line)})"
+    )
+    # Each pip install of the package must be preceded by the golden COPY in-file order.
+    install_marker = "RUN pip install --no-cache-dir ."
+    positions = []
+    start = 0
+    while True:
+        idx = dockerfile.find(install_marker, start)
+        if idx < 0:
+            break
+        positions.append(idx)
+        start = idx + len(install_marker)
+    assert positions, "expected at least one package pip install in Dockerfile"
+    for idx in positions:
+        preceding = dockerfile[:idx]
+        assert copy_line in preceding, (
+            "COPY golden/dataset-digest.json must appear before each "
+            "RUN pip install --no-cache-dir ."
+        )
