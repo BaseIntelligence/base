@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from base.config.settings import MasterSettings
 from base.master.app_proxy import (
     _is_agent_challenge_enabled_mode_allowed_route,
+    _is_blocked_agent_challenge_proxy_path,
     create_proxy_app,
 )
 from base.master.registry import ChallengeRegistry
@@ -1399,3 +1400,163 @@ def test_validator_assignment_progress_not_confused_with_eval_telemetry() -> Non
     assert upstream_calls == []
     # Must not be rewritten into evaluation/v1/runs/... either.
     assert b"evaluation" not in master_progress.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# T12: FE public reads must stay reachable in both attested-flag states
+# ---------------------------------------------------------------------------
+
+
+# Public FE catalog + by-hash surfaces the joinbase UI hits (base.ts paths).
+_FE_PUBLIC_GET_PATHS = (
+    "submissions",
+    "submissions/count",
+    "submissions/42",
+    "submissions/sub-1",
+    "submissions/42/versions",
+    "submissions/42/status",
+    "submissions/42/events",
+    "submissions/42/task-events",
+    "submissions/42/task-events/stream",
+    # T9 may add hash lookup under /submissions/by-hash/{hash}; allow prefix now.
+    "submissions/by-hash/ed7e204a0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+    "agents/ed7e204a0123456789abcdef0123456789abcdef0123456789abcdef01234567/evaluation",
+    "agents/ed7e204a0123456789abcdef0123456789abcdef0123456789abcdef01234567/source",
+    (
+        "agents/ed7e204a0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        "/source/download"
+    ),
+)
+
+
+@pytest.mark.parametrize("path", _FE_PUBLIC_GET_PATHS)
+def test_enabled_mode_allowlist_allows_frontend_public_reads(path: str) -> None:
+    """T12/S1: attested ON allowlists FE list/detail/events/task-events/by-hash."""
+
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            "GET",
+            path,
+        )
+        is True
+    )
+    assert (
+        _is_blocked_agent_challenge_proxy_path(
+            "agent-challenge",
+            "GET",
+            path,
+            attested_routes_enabled=True,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("path", _FE_PUBLIC_GET_PATHS)
+def test_legacy_flag_off_does_not_block_frontend_public_reads(path: str) -> None:
+    """T12/S3: attested OFF keeps legacy open (no allowlist block) for FE paths."""
+
+    assert (
+        _is_blocked_agent_challenge_proxy_path(
+            "agent-challenge",
+            "GET",
+            path,
+            attested_routes_enabled=False,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "submissions",
+        "submissions/count",
+        "submissions/42",
+        "submissions/42/events",
+        "submissions/42/task-events",
+        "submissions/42/task-events/stream",
+        "submissions/by-hash/abc123",
+        "agents/abc123/evaluation",
+        "agents/abc123/source",
+        "agents/abc123/source/download",
+    ),
+)
+def test_attested_proxy_forwards_frontend_public_gets(path: str) -> None:
+    """T12/S1 surface: attested ON proxies FE GETs upstream (not local 404)."""
+
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["method"] = request.method
+        return httpx.Response(200, json={"ok": True, "path": path})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.get(
+        f"/challenges/agent-challenge/{path}",
+        headers={"X-Public-Header": "preserved"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["method"] == "GET"
+    assert captured["path"] == f"/{path}"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    (
+        ("GET", "key-release/nonce"),
+        ("POST", "key-release/release"),
+        ("GET", "internal/v1/reviews/session-1/report"),
+        ("GET", "submissions/42/evidence/object-1"),
+        ("GET", "evidence/object-1"),
+        ("GET", "owner/submissions/42/revalidate"),
+        ("POST", "submissions/42/status"),
+        ("DELETE", "submissions/42"),
+        ("GET", "submissions/42/status/extra"),
+        ("GET", "agents/abc/source/download/extra"),
+        ("POST", "agents/abc/evaluation"),
+        ("GET", "agents/abc/secrets"),
+    ),
+)
+def test_enabled_mode_still_denies_non_frontend_neighbors(
+    method: str,
+    path: str,
+) -> None:
+    """T12/S2: allowlist widen must not open key-release/internal/evidence/neighbors."""
+
+    assert (
+        _is_agent_challenge_enabled_mode_allowed_route(
+            "agent-challenge",
+            method,
+            path,
+        )
+        is False
+    )
+    assert (
+        _is_blocked_agent_challenge_proxy_path(
+            "agent-challenge",
+            method,
+            path,
+            attested_routes_enabled=True,
+        )
+        is True
+    )
+
+    upstream_calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(f"{request.method} {request.url.path}")
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _proxy_client(handler, attested_routes_enabled=True)
+    response = client.request(
+        method,
+        f"/challenges/agent-challenge/{path}",
+        content=b"{}" if method != "GET" else None,
+        headers={"Authorization": "Bearer should-not-matter"},
+    )
+    assert response.status_code == 404
+    assert upstream_calls == []
+

@@ -458,6 +458,11 @@ def _is_agent_challenge_enabled_mode_allowed_route(
     metadata surfaces may reach agent-challenge. Capability, assignment,
     evidence, key-release, direct-result, results, and every other neighbor are
     denied locally before any upstream call.
+
+    Frontend public reads (list/detail/count/versions, events, task-events,
+    agent-by-hash evaluation/source) stay allowlisted so joinbase UI works
+    whether ``agent_challenge_attested_routes_enabled`` is on or off. Optional
+    ``GET /submissions/by-hash/{hash}`` is reserved for T9 hash lookup.
     """
 
     if slug != "agent-challenge":
@@ -526,6 +531,40 @@ def _is_agent_challenge_enabled_mode_allowed_route(
         and parts[2] == "task-events"
         and parts[3] == "stream"
         and normalized_method == "GET"
+    ):
+        return True
+    # Public FE catalog + detail (joinbase list/detail/count/versions).
+    # Exact shapes only — never owner/internal/evidence neighbors.
+    if normalized_method == "GET" and parts and parts[0] == "submissions":
+        if len(parts) == 1:
+            # GET /submissions
+            return True
+        if len(parts) == 2 and parts[1] == "count":
+            # GET /submissions/count
+            return True
+        if len(parts) >= 3 and parts[1] == "by-hash":
+            # GET /submissions/by-hash/{hash}[+...] — T9 hash lookup prefix
+            return True
+        if len(parts) == 2:
+            # GET /submissions/{id}
+            return True
+        if len(parts) == 3 and parts[2] == "versions":
+            # GET /submissions/{id}/versions
+            return True
+    # Public agent-by-hash FE surfaces (evaluation + redacted source).
+    if (
+        normalized_method == "GET"
+        and len(parts) == 3
+        and parts[0] == "agents"
+        and parts[2] in {"evaluation", "source"}
+    ):
+        return True
+    if (
+        normalized_method == "GET"
+        and len(parts) == 4
+        and parts[0] == "agents"
+        and parts[2] == "source"
+        and parts[3] == "download"
     ):
         return True
     # Public live execution pool (tamper-evidence telemetry only).
