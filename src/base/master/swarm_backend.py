@@ -1606,15 +1606,50 @@ def _readonly_mount_arg(source: str, target: str) -> str:
     return f"type={mount_type},source={source},destination={target},readonly"
 
 
+#: tmpfs options Docker Swarm already applies by default, so honouring them
+#: needs no translation. ``noexec`` belongs here because tmpfs is noexec unless
+#: told otherwise -- which is exactly why ``exec`` below cannot be dropped.
+_SWARM_TMPFS_DEFAULT_OPTIONS = frozenset({"rw", "noexec", "nosuid", "nodev"})
+
+
 def _tmpfs_mount_arg(value: str) -> str:
+    """Translate a ``docker run`` tmpfs spec into a Swarm ``--mount`` argument.
+
+    Swarm's ``--mount type=tmpfs`` expresses only ``tmpfs-size`` and
+    ``tmpfs-mode`` (verified against Docker 29.2.1: a bare ``exec`` is rejected
+    as a non key=value field, and ``tmpfs-options`` is an unknown option). Any
+    option that cannot be translated is refused rather than dropped: a silently
+    discarded ``exec`` yields a noexec ``/tmp``, so anything installed there
+    loads no shared object and the failure surfaces far from its cause.
+    """
+
     path, separator, options = value.partition(":")
     if not path.startswith("/"):
         raise DockerOrchestrationError(f"tmpfs mount must be absolute: {path}")
     arg = f"type=tmpfs,destination={path}"
-    if separator:
-        for option in options.split(","):
-            if option.startswith("size="):
-                arg += f",tmpfs-size={option.removeprefix('size=')}"
+    if not separator:
+        return arg
+    for raw_option in options.split(","):
+        option = raw_option.strip()
+        if not option or option in _SWARM_TMPFS_DEFAULT_OPTIONS:
+            continue
+        if option.startswith("size="):
+            arg += f",tmpfs-size={option.removeprefix('size=')}"
+        elif option.startswith("mode="):
+            arg += f",tmpfs-mode={option.removeprefix('mode=')}"
+        elif option == "exec":
+            raise DockerOrchestrationError(
+                f"tmpfs mount {path} requests exec, which Docker Swarm cannot "
+                "express: --mount type=tmpfs supports only tmpfs-size and "
+                "tmpfs-mode. Dropping the flag would mount the path noexec and "
+                "break loading anything installed there. Run this workload on "
+                "the broker backend instead."
+            )
+        else:
+            raise DockerOrchestrationError(
+                f"tmpfs mount {path} carries option {option!r} that Docker "
+                "Swarm cannot express; refusing rather than dropping it."
+            )
     return arg
 
 
