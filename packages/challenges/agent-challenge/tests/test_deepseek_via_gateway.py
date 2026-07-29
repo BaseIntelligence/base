@@ -173,7 +173,14 @@ async def test_deepseek_no_longer_routes_through_master_gateway(
     assert "BASE_LLM_GATEWAY_URL" not in env
     assert "BASE_GATEWAY_TOKEN" not in env
     assert "DEEPSEEK_API_KEY" not in env
-    assert "LLM_MODEL" not in env
+    # VAL-LLM-MODEL: LLM_MODEL is no longer gateway-derived. It is supplied
+    # from measured platform settings because the packaged agent fails closed
+    # without a concrete model id, so its presence is NOT gateway injection.
+    # Assert it carries the settings value and that nothing from the residual
+    # gateway (base_url / token) leaks into the job env.
+    assert env.get("LLM_MODEL") == "x-ai/grok-4.5"
+    assert "master-gateway.test" not in str(env)
+    assert "scoped-assignment-token" not in str(env)
     serialized = json.dumps(env, sort_keys=True)
     assert "api.deepseek.com" not in serialized
 

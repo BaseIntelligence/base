@@ -1631,6 +1631,14 @@ def _terminal_bench_env(
         "BASE_BENCHMARK_DATASET": settings.terminal_bench_dataset,
         **TERMINAL_BENCH_WRITABLE_ENV,
     }
+    # VAL-LLM-MODEL: the packaged agent fails closed without a concrete model id
+    # ("A concrete model id is required: set LLM_MODEL"). The platform holds it
+    # as CHALLENGE_LLM_MODEL, which the agent never reads, so publish it under
+    # the name the agent expects. A miner-supplied LLM_MODEL overrides this in
+    # the sanitized merge below. Left unset when the operator blanks it, so the
+    # agent still fails loudly rather than running an unmeasured default.
+    if settings.llm_model:
+        env["LLM_MODEL"] = settings.llm_model
     for name in settings.harbor_forward_env_vars:
         value = os.environ.get(name)
         if value and name not in TERMINAL_BENCH_CONTROL_ENV_KEYS:

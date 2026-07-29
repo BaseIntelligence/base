@@ -66,6 +66,9 @@ __all__ = [
 AGENT_ENV_ALLOWLIST: frozenset[str] = frozenset(
     {
         "LLM_COST_LIMIT",
+        # VAL-LLM-MODEL: the packaged agent fails closed without a concrete
+        # model id ("set LLM_MODEL"). Not secret-shaped, never a URL/host.
+        "LLM_MODEL",
         "OPENROUTER_API_KEY",
     }
 )
