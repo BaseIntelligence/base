@@ -259,3 +259,108 @@ def test_maybe_build_push_client_requires_master_and_token(database: Database) -
     )
     assert client is not None
     assert client.master_base_url == "http://master.test"
+
+
+def test_maybe_build_push_client_uses_master_epoch_interval(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seal identity uses master 360s interval, not challenge scoring epoch."""
+
+    class _Settings:
+        raw_weight_push_enabled = True
+        master_base_url = "http://master.test"
+        worker_plane = type("WP", (), {"master_base_url": None})()
+        slug = SLUG
+        epoch_seconds = 21600  # challenge scoring — must NOT drive seal epoch
+        architecture_reward_weight = 0.5
+        training_reward_weight = 0.5
+        raw_weight_push_interval_seconds = 5.0
+        raw_weight_master_epoch_seconds = 360
+
+        def internal_token(self) -> str:
+            return TOKEN
+
+    monkeypatch.delenv("PRISM_RAW_WEIGHT_MASTER_EPOCH_SECONDS", raising=False)
+    monkeypatch.delenv("BASE_MASTER__EPOCH_INTERVAL_SECONDS", raising=False)
+
+    fixed_now = datetime(2026, 7, 29, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "prism_challenge.raw_weight_push.datetime",
+        type(
+            "DT",
+            (),
+            {
+                "now": staticmethod(lambda tz=None: fixed_now),
+                "UTC": UTC,
+            },
+        ),
+    )
+
+    client = maybe_build_push_client_from_settings(
+        settings=_Settings(), database=database, repository=object()
+    )
+    assert client is not None
+    assert client.epoch_fn is not None
+    expected = int(fixed_now.timestamp()) // 360
+    # Challenge 21600-scale would be far smaller — prove we use 360.
+    challenge_scale = int(fixed_now.timestamp()) // 21600
+    assert expected != challenge_scale
+    assert client.epoch_fn() == expected
+
+
+@pytest.mark.asyncio
+async def test_maybe_build_push_client_advances_past_ledger_epoch(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When sealer force-advances ahead of wall clock, push past last ack."""
+
+    class _Settings:
+        raw_weight_push_enabled = True
+        master_base_url = "http://master.test"
+        worker_plane = type("WP", (), {"master_base_url": None})()
+        slug = SLUG
+        epoch_seconds = 21600
+        architecture_reward_weight = 0.5
+        training_reward_weight = 0.5
+        raw_weight_push_interval_seconds = 5.0
+        raw_weight_master_epoch_seconds = 360
+
+        def internal_token(self) -> str:
+            return TOKEN
+
+    monkeypatch.delenv("PRISM_RAW_WEIGHT_MASTER_EPOCH_SECONDS", raising=False)
+    monkeypatch.delenv("BASE_MASTER__EPOCH_INTERVAL_SECONDS", raising=False)
+
+    fixed_now = datetime(2026, 7, 29, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "prism_challenge.raw_weight_push.datetime",
+        type(
+            "DT",
+            (),
+            {
+                "now": staticmethod(lambda tz=None: fixed_now),
+                "UTC": UTC,
+            },
+        ),
+    )
+
+    store = RawWeightPushStore(database, challenge_slug=SLUG)
+    await store.init()
+    wall = int(fixed_now.timestamp()) // 360
+    last_epoch = wall + 50
+    await store.acknowledge(
+        epoch=last_epoch,
+        revision=1,
+        payload_digest="a" * 64,
+        snapshot_id="snap-ledger",
+        canonical_payload="{}",
+        nonce="n-ledger",
+        acknowledged_at=fixed_now.isoformat(),
+    )
+
+    client = maybe_build_push_client_from_settings(
+        settings=_Settings(), database=database, repository=object()
+    )
+    assert client is not None
+    assert client.epoch_fn is not None
+    assert client.epoch_fn() == last_epoch + 1

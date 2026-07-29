@@ -68,6 +68,10 @@ from .proof import (
     verify_execution_proof,
 )
 from .queue import PrismWorker, WorkerFinalizationError
+from .unattested_execution import (
+    is_unattested_execution_enabled,
+    mark_result_unattested,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +168,13 @@ class IngestionOutcome:
             payload["reason"] = self.reason
         if self.attestation_mode is not None:
             payload["attestation_mode"] = self.attestation_mode
+        # T21: when unattested mode is on, force the unforgeable honesty mark.
+        # Miner-supplied attested:true / verified status cannot appear here.
+        if is_unattested_execution_enabled():
+            marked = mark_result_unattested(payload)
+            payload["attested"] = marked["attested"]
+            payload["attestation_status"] = marked["attestation_status"]
+            payload["execution_mode"] = marked["execution_mode"]
         return payload
 
 
@@ -497,6 +508,18 @@ def _evaluate_constation_gate(
         )
 
     if bundle is None:
+        # T20: narrow unattested path — admit scoring without a constation
+        # bundle ONLY when the explicit flag is on. constation_ok stays False
+        # so elevation still requires a real bundle + six-check path.
+        if is_unattested_execution_enabled():
+            return _ConstationGate(
+                admit=True,
+                constation_ok=False,
+                reason="unattested:missing_constation_bundle",
+                message=(
+                    "unattested execution: scoring without constation bundle; not TEE/verified"
+                ),
+            )
         return _ConstationGate(
             admit=False,
             constation_ok=False,
