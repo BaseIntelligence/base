@@ -289,6 +289,7 @@ async def test_frontend_submission_status_and_evaluation_routes_are_public_safe(
             "updated_at": status_payload["evaluation"]["task_rows"][0]["updated_at"],
             "attempt": None,
             "has_result": True,
+            "passed": True,
         },
         {
             "task_id": "task-beta",
@@ -299,6 +300,7 @@ async def test_frontend_submission_status_and_evaluation_routes_are_public_safe(
             "updated_at": status_payload["evaluation"]["task_rows"][1]["updated_at"],
             "attempt": None,
             "has_result": True,
+            "passed": False,
         },
     ]
     assert status_payload["evaluation"]["task_phases"] == []
@@ -372,6 +374,7 @@ async def test_frontend_submission_status_and_evaluation_routes_are_public_safe(
             "docker_image": "baseintelligence/swe-forge:task-alpha",
             "status": "passed",
             "score": 1.0,
+            "passed": True,
             "returncode": 0,
             "duration_seconds": 12.5,
             "failure_reason": None,
@@ -382,6 +385,7 @@ async def test_frontend_submission_status_and_evaluation_routes_are_public_safe(
             "docker_image": "baseintelligence/swe-forge:task-beta",
             "status": "failed",
             "score": 0.0,
+            "passed": False,
             "returncode": 1,
             "duration_seconds": 8.25,
             "failure_reason": "task log with Bearer [REDACTED] and [REDACTED_SECRET]",
@@ -586,6 +590,7 @@ async def test_platform_sdk_frontend_status_evaluation_and_events_are_public_saf
                 "docker_image": "baseintelligence/public-runner:task8",
                 "status": case["task_result_status"],
                 "score": case["score"],
+                "passed": case["score"] >= 1.0,
                 "returncode": case["returncode"],
                 "duration_seconds": 3.5,
                 "failure_reason": None
@@ -706,6 +711,7 @@ async def test_frontend_task_rows_include_queued_phase_result_and_redacted_selec
             "updated_at": status_rows[0]["updated_at"],
             "attempt": None,
             "has_result": False,
+            "passed": None,
         },
         {
             "task_id": "safe-task-beta",
@@ -716,6 +722,7 @@ async def test_frontend_task_rows_include_queued_phase_result_and_redacted_selec
             "updated_at": status_rows[1]["updated_at"],
             "attempt": None,
             "has_result": False,
+            "passed": None,
         },
     ]
     assert all(
@@ -729,6 +736,7 @@ async def test_frontend_task_rows_include_queued_phase_result_and_redacted_selec
             "updated_at",
             "attempt",
             "has_result",
+            "passed",
         }
         for row in status_rows
     )
@@ -790,6 +798,7 @@ async def test_frontend_task_rows_include_queued_phase_result_and_redacted_selec
             "updated_at": status_rows[0]["updated_at"],
             "attempt": 2,
             "has_result": False,
+            "passed": None,
         },
         {
             "task_id": "safe-task-beta",
@@ -800,6 +809,7 @@ async def test_frontend_task_rows_include_queued_phase_result_and_redacted_selec
             "updated_at": status_rows[1]["updated_at"],
             "attempt": None,
             "has_result": True,
+            "passed": True,
         },
     ]
     _assert_platform_sdk_public_payload_is_redacted(
@@ -911,6 +921,7 @@ async def test_platform_sdk_evaluation_exposes_running_task_phase_before_results
         "updated_at": evaluation_payload["task_rows"][0]["updated_at"],
         "attempt": 2,
         "has_result": False,
+        "passed": None,
     }
     assert status_payload["evaluation"]["task_phases"] == [expected_phase]
     assert status_payload["evaluation"]["task_rows"] == [

@@ -463,6 +463,7 @@ class TaskResultResponse(BaseModel):
     docker_image: str
     status: str
     score: float
+    passed: bool
     returncode: int
     duration_seconds: float
     failure_reason: str | None = None
@@ -486,6 +487,7 @@ class TaskRowResponse(BaseModel):
     updated_at: datetime | None
     attempt: int | None
     has_result: bool = False
+    passed: bool | None = None
 
 
 class EvaluationResponse(BaseModel):
@@ -5021,6 +5023,8 @@ def _public_task_event_metadata(metadata: Mapping[str, object]) -> dict[str, obj
         if _is_sensitive_task_event_metadata_key(key):
             continue
         public[str(key)] = _public_task_event_metadata_value(value)
+    if "passed" not in public and "score" in public:
+        public["passed"] = _score_is_passed(public["score"])
     return public
 
 
@@ -5483,6 +5487,10 @@ def _task_rows_from_eval_run(run: EvalRun) -> list[TaskRowResponse]:
         else:
             has_result = True
             phase = "completed" if outcome.get("passed") else "failed"
+        row_passed: bool | None = None
+        if outcome is not None:
+            raw_passed = outcome.get("passed")
+            row_passed = raw_passed if isinstance(raw_passed, bool) else None
         rows.append(
             TaskRowResponse(
                 task_id=task_id,
@@ -5493,6 +5501,7 @@ def _task_rows_from_eval_run(run: EvalRun) -> list[TaskRowResponse]:
                 updated_at=run.updated_at or run.created_at or run.issued_at,
                 attempt=run.attempt if has_result else None,
                 has_result=has_result,
+                passed=row_passed,
             )
         )
     return rows
@@ -5602,10 +5611,14 @@ def _task_rows_response(
                 updated_at=result.created_at,
                 attempt=None,
                 has_result=True,
+                passed=_score_is_passed(result.score),
             )
             ordered_task_ids.append(result.task_id)
             continue
-        update: dict[str, object] = {"has_result": True}
+        update: dict[str, object] = {
+            "has_result": True,
+            "passed": _score_is_passed(result.score),
+        }
         if row.phase == "assigned":
             update["phase"] = result_phase
             update["status"] = result_phase
@@ -6183,6 +6196,7 @@ def _task_result_response(result: TaskResult) -> TaskResultResponse:
         docker_image=result.docker_image,
         status=result.status,
         score=result.score,
+        passed=_score_is_passed(result.score),
         returncode=result.returncode,
         duration_seconds=result.duration_seconds,
         failure_reason=_task_result_failure_reason(result),
