@@ -426,7 +426,7 @@ class RawWeightPushClient:
                 if epoch is not None
                 else int(self.epoch_fn())
                 if self.epoch_fn is not None
-                else int(now.timestamp()) // 3600
+                else int(now.timestamp()) // 360
             )
             revision = (
                 int(force_revision)
@@ -625,14 +625,43 @@ def maybe_build_push_client_from_settings(
         token = str(shared) if shared else None
     if not token:
         return None
+    # Challenge scoring epoch (architecture crowns) stays on settings.epoch_seconds.
     epoch_seconds = int(getattr(settings, "epoch_seconds", 3600) or 3600)
+    # Master weight-seal identity uses BASE_MASTER epoch interval (default 360s),
+    # NOT the challenge scoring epoch. Wall-clock can lag force-advanced open
+    # epochs, so advance past last acknowledged push when behind.
+    master_epoch_seconds = int(
+        getattr(settings, "raw_weight_master_epoch_seconds", 0)
+        or __import__("os").environ.get("PRISM_RAW_WEIGHT_MASTER_EPOCH_SECONDS", 0)
+        or __import__("os").environ.get("BASE_MASTER__EPOCH_INTERVAL_SECONDS", 0)
+        or 360
+    )
     # VAL-RESLAB-008: raw_weight_push settings defaults match get_weights 0.50/0.50.
     arch = float(getattr(settings, "architecture_reward_weight", 0.50))
     train = float(getattr(settings, "training_reward_weight", 0.50))
     interval_hint = float(getattr(settings, "raw_weight_push_interval_seconds", 30.0))
+    db_path = str(getattr(database, "path", "") or "")
 
     def _epoch() -> int:
-        return int(datetime.now(UTC).timestamp()) // max(epoch_seconds, 1)
+        import sqlite3
+        wall = int(datetime.now(UTC).timestamp()) // max(int(master_epoch_seconds), 1)
+        last = None
+        try:
+            if db_path:
+                con = sqlite3.connect(db_path)
+                try:
+                    row = con.execute(
+                        "SELECT last_epoch FROM raw_weight_push_ledger WHERE id = 1"
+                    ).fetchone()
+                    if row and row[0] is not None:
+                        last = int(row[0])
+                finally:
+                    con.close()
+        except Exception:
+            last = None
+        if last is not None and wall <= last:
+            return last + 1
+        return wall
 
     client = RawWeightPushClient(
         database=database,
