@@ -2,7 +2,7 @@
 
 PROD POLICY baked into docker/master-entrypoint.sh:
 - CPU_REEXEC_TEST_MODE defaults false (eval never on master)
-- ADMISSION_REQUIRES_WORKER defaults true
+- ADMISSION_REQUIRES_WORKER defaults false
 - plagiarism LLM defaults off until secrets present
 """
 
@@ -23,7 +23,7 @@ def test_entrypoint_embeds_worker_plane_prod_defaults() -> None:
     )
     assert (
         "PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER="
-        "${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-true}"
+        "${PRISM_WORKER_PLANE__ADMISSION_REQUIRES_WORKER:-false}"
     ) in text
     assert "PRISM_WORKER_PLANE__MASTER_BASE_URL=" in text
     assert "PRISM_PLAGIARISM_LLM_ENABLED=${PRISM_PLAGIARISM_LLM_ENABLED:-false}" in text
