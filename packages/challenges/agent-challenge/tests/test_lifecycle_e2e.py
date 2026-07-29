@@ -189,6 +189,11 @@ async def test_signed_allow_lifecycle_recovers_terminal_bench_and_scores_weight(
 
     reviewer = StaticReviewer("allow")
     async with database_session() as session:
+        submission = await session.get(AgentSubmission, submission_id)
+        assert submission is not None
+        # E2E full TB path: miner already confirmed empty env (FIX E default is unconfirmed).
+        submission.env_confirmed_empty = True
+        await session.flush()
         summary = await run_analysis_for_submission(
             session,
             submission_id,
@@ -590,6 +595,11 @@ async def _submit_and_analyze(client, database_session, *, reviewer: StaticRevie
     assert response.status_code == 201
     submission_id = response.json()["submission_id"]
     async with database_session() as session:
+        submission = await session.get(AgentSubmission, submission_id)
+        assert submission is not None
+        # E2E full TB path: miner already confirmed empty env (FIX E default is unconfirmed).
+        submission.env_confirmed_empty = True
+        await session.flush()
         await run_analysis_for_submission(
             session,
             submission_id,
