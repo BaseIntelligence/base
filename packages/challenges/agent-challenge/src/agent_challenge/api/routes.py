@@ -70,7 +70,10 @@ from ..evaluation.authorization import (
     load_eval_run_plan,
     retry_eval_run,
 )
-from ..evaluation.benchmarks import load_benchmark_tasks
+from ..evaluation.benchmarks import (
+    TERMINAL_BENCH_2_1_FALLBACK_TASK_IDS,
+    load_benchmark_tasks,
+)
 from ..evaluation.direct_result import (
     DirectEvalResultError,
     authenticate_eval_token,
@@ -5041,6 +5044,42 @@ def _is_sensitive_task_event_metadata_key(key: str) -> bool:
     )
 
 
+# Whole-segment secret markers (not substrings of longer words like "tokens").
+_PUBLIC_SECRET_SEGMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?:"
+    r"(?:[A-Za-z0-9_.]+[-_.])*(?:secret|raw-ref|broker-ref|pod-)[A-Za-z0-9_.-]*"
+    r"|"
+    r"(?:[A-Za-z0-9_.]+[-_.])*token(?:[-_.][A-Za-z0-9_.]+)*"
+    r")"
+    r"(?![A-Za-z0-9_.-])",
+    flags=re.IGNORECASE,
+)
+
+
+def _terminal_bench_task_id_shield_pattern() -> re.Pattern[str]:
+    """Compile alternation of known TB task ids (full + bare), longest first."""
+
+    parts: list[str] = []
+    for task_id in TERMINAL_BENCH_2_1_FALLBACK_TASK_IDS:
+        bare = task_id.removeprefix("terminal-bench/")
+        parts.append(re.escape(task_id))
+        parts.append(re.escape(bare))
+    parts.sort(key=len, reverse=True)
+    return re.compile("|".join(parts))
+
+
+_TERMINAL_BENCH_TASK_ID_SHIELD_RE = _terminal_bench_task_id_shield_pattern()
+
+
+def _score_is_passed(score: object) -> bool:
+    """Same pass rule as passed_tasks aggregation: score >= 1.0."""
+
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        return False
+    return float(score) >= 1.0
+
+
 def _public_task_event_text(value: str) -> str:
     sanitized = PRIVATE_PATH_RE.sub("[REDACTED_PATH]", redact_task_event_message(value))
     sanitized = re.sub(r"\b(?:platform_sdk|base_sdk)\b", "base", sanitized, flags=re.IGNORECASE)
@@ -5050,12 +5089,22 @@ def _public_task_event_text(value: str) -> str:
         sanitized,
         flags=re.IGNORECASE,
     )
-    return re.sub(
-        r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*(?:secret|token|raw-ref|broker-ref|pod-)[A-Za-z0-9_.-]*(?![A-Za-z0-9_.-])",
-        "[REDACTED_SECRET]",
-        sanitized,
-        flags=re.IGNORECASE,
-    )
+    # Shield known Terminal-Bench task identifiers so a future regex change cannot
+    # swallow legitimate ids that happen to contain "token" (e.g. count-dataset-tokens).
+    shields: list[str] = []
+
+    def _shield(match: re.Match[str]) -> str:
+        shields.append(match.group(0))
+        return f"\x00TBSAFE{len(shields) - 1}\x00"
+
+    sanitized = _TERMINAL_BENCH_TASK_ID_SHIELD_RE.sub(_shield, sanitized)
+    # Segment-boundary redaction: match secret/token/raw-ref/broker-ref/pod- as
+    # whole hyphen/underscore/dot-delimited segments, not as substrings of a
+    # longer word (``tokens`` must not match ``token``).
+    sanitized = _PUBLIC_SECRET_SEGMENT_RE.sub("[REDACTED_SECRET]", sanitized)
+    for index, original in enumerate(shields):
+        sanitized = sanitized.replace(f"\x00TBSAFE{index}\x00", original)
+    return sanitized
 
 
 async def _submission_task_event_stream(
