@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -27,7 +26,6 @@ from agent_challenge.evaluation.no_phala import (
     EXECUTION_MODE_NO_PHALA_HOST,
     NO_PHALA_ENV,
     ArtifactProvenanceError,
-    NoPhalaModeError,
     assert_envelope_not_attested,
     assert_no_phala_compatible,
     build_guest_artifact_proof,
@@ -154,7 +152,12 @@ def test_contradiction_both_attestation_on_and_no_phala() -> None:
 
 def test_settings_contradiction_both_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(NO_PHALA_ENV, "true")
-    with pytest.raises(ValueError, match="NO_PHALA"):
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        (ValueError, ValidationError),
+        match="Phala TEE dual flags|NO_PHALA|unattested",
+    ):
         ChallengeSettings(
             phala_attestation_enabled=True,
             attested_review_enabled=True,
@@ -167,34 +170,27 @@ def test_settings_contradiction_both_on(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_phala_client_refused_when_no_phala(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(NO_PHALA_ENV, "true")
-    monkeypatch.setenv("PHALA_API_KEY", "test-key-not-a-secret-for-unit")
-    from agent_challenge.selfdeploy.phala import PhalaCloudClient
+    """T40: Phala selfdeploy module removed entirely."""
 
-    with pytest.raises(NoPhalaModeError, match="NO_PHALA"):
-        PhalaCloudClient(api_key="test-key-not-a-secret-for-unit")
+    monkeypatch.setenv(NO_PHALA_ENV, "true")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("agent_challenge.selfdeploy.phala")
 
 
 def test_eval_deploy_refused_when_no_phala(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(NO_PHALA_ENV, "true")
-    from agent_challenge.selfdeploy.eval import HttpEvalPhalaDeployment
+    """T40: Phala selfdeploy module removed entirely."""
 
-    api = MagicMock()
-    dep = HttpEvalPhalaDeployment(api)
-    with pytest.raises(NoPhalaModeError):
-        dep.deploy(MagicMock(), MagicMock())
-    api.post.assert_not_called()
+    monkeypatch.setenv(NO_PHALA_ENV, "true")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("agent_challenge.selfdeploy.eval")
 
 
 def test_review_deploy_refused_when_no_phala(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(NO_PHALA_ENV, "true")
-    from agent_challenge.selfdeploy.review import HttpReviewPhalaDeployment
+    """T40: Phala selfdeploy module removed entirely."""
 
-    api = MagicMock()
-    dep = HttpReviewPhalaDeployment(api)
-    with pytest.raises(NoPhalaModeError):
-        dep.deploy(MagicMock(), MagicMock())
-    api.post.assert_not_called()
+    monkeypatch.setenv(NO_PHALA_ENV, "true")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("agent_challenge.selfdeploy.review")
 
 
 def test_mode_on_emit_marks_unattested(
@@ -268,9 +264,7 @@ def test_mark_ignores_caller_attested_true_kw() -> None:
 
 def test_artifact_proof_enforces_triple_match() -> None:
     h = "ab" * 32
-    proof = build_guest_artifact_proof(
-        expected_hash=h, download_hash=h, executed_hash=h
-    )
+    proof = build_guest_artifact_proof(expected_hash=h, download_hash=h, executed_hash=h)
     assert proof["match"] is True
     with pytest.raises(ArtifactProvenanceError, match="mismatch"):
         build_guest_artifact_proof(

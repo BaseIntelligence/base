@@ -101,9 +101,7 @@ def test_openrouter_provider_parses_tool_calls(monkeypatch: pytest.MonkeyPatch) 
         captured["json"] = json
         return Response()
 
-    monkeypatch.setattr(
-        "agent_challenge.analyzer.openrouter_review_provider.httpx.post", fake_post
-    )
+    monkeypatch.setattr("agent_challenge.analyzer.openrouter_review_provider.httpx.post", fake_post)
     provider = OpenRouterReviewProvider(api_key="sk-test", model_name=DEFAULT_OPENROUTER_MODEL)
     response = provider.complete(
         messages=[{"role": "user", "content": "hi"}],
@@ -157,9 +155,7 @@ def test_openrouter_provider_rate_limit_and_timeout(monkeypatch: pytest.MonkeyPa
     def boom(*a, **k):
         raise httpx.ReadTimeout("slow")
 
-    monkeypatch.setattr(
-        "agent_challenge.analyzer.openrouter_review_provider.httpx.post", boom
-    )
+    monkeypatch.setattr("agent_challenge.analyzer.openrouter_review_provider.httpx.post", boom)
     with pytest.raises(LlmProviderTimeout):
         provider.complete(messages=[], tools=[], tool_choice="auto", timeout_seconds=1)
 

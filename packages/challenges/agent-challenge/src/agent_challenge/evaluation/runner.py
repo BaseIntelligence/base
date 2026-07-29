@@ -2012,7 +2012,6 @@ exit $?
 """.strip()
 
 
-
 def _run_no_phala_host_terminal_bench(
     *,
     job: EvaluationJob,
@@ -2045,9 +2044,7 @@ def _run_no_phala_host_terminal_bench(
         settings.own_runner_cache_root
         or "/app/packages/challenges/agent-challenge/docker/canonical/live-task-cache"
     )
-    digest = Path(
-        settings.own_runner_digest_manifest or "/app/golden/dataset-digest.json"
-    )
+    digest = Path(settings.own_runner_digest_manifest or "/app/golden/dataset-digest.json")
     plan.jobs_dir.mkdir(parents=True, exist_ok=True)
     plan.job_dir.mkdir(parents=True, exist_ok=True)
 

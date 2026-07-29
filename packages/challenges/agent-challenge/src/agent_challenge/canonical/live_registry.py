@@ -104,9 +104,7 @@ def assert_live_registry_ref(ref: Any, *, what: str = "registry ref") -> str:
             f"{what} must not use the retired mathiiss namespace (D6), got {pinned!r}"
         )
     if lowered.startswith("docker.io/") or lowered.startswith("index.docker.io/"):
-        raise LiveRegistryError(
-            f"{what} must not use docker.io (D6 — GHCR only), got {pinned!r}"
-        )
+        raise LiveRegistryError(f"{what} must not use docker.io (D6 — GHCR only), got {pinned!r}")
     if not lowered.startswith(LIVE_REGISTRY_HOST_PREFIX):
         raise LiveRegistryError(
             f"{what} must be a GHCR digest-pinned ref "

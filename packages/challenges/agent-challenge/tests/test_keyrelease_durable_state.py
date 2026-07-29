@@ -93,9 +93,11 @@ MEASUREMENT = {
 
 
 def _settings() -> ChallengeSettings:
+    # T40/T41: dual flags permanently OFF; KR durable-state tests exercise
+    # keyrelease package mechanics under host-trust settings construction.
     return ChallengeSettings(
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
+        attested_review_enabled=False,
+        phala_attestation_enabled=False,
         eval_app_image_ref="registry.example/eval@sha256:" + "a" * 64,
         eval_app_compose_hash=COMPOSE_HASH,
         eval_app_identity="agent-challenge-eval-v1",
@@ -233,6 +235,8 @@ async def _authorized_submission(database_session) -> int:
             artifact_path=f"/tmp/agent-{_SUBMISSION_SEQ}.zip",
             zip_sha256=hashlib.sha256(b"zip-" + salt).hexdigest(),
             zip_size_bytes=3,
+            # T41: plan bind requires package_tree_sha under host-trust KEEP gate.
+            package_tree_sha=hashlib.sha256(b"tree-" + salt).hexdigest(),
             raw_status="review_allowed",
             status="queued",
             effective_status="queued",

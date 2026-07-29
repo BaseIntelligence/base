@@ -143,9 +143,7 @@ def assert_selected_task_ids_in_frozen(task_ids: Iterable[str]) -> None:
         if task_id not in frozen and bare_task_name(task_id) not in frozen
     ]
     if unknown:
-        raise TbenchIntegrityError(
-            f"selected task ids not in frozen digest set: {unknown}"
-        )
+        raise TbenchIntegrityError(f"selected task ids not in frozen digest set: {unknown}")
 
 
 # --------------------------------------------------------------------------- #
@@ -169,9 +167,7 @@ def assert_no_miner_task_source_fields(mapping: Mapping[str, Any] | None) -> Non
 
     hits = forbidden_task_source_keys_present(mapping)
     if hits:
-        raise TbenchIntegrityError(
-            f"miner/plan must not supply alternate task sources: {hits}"
-        )
+        raise TbenchIntegrityError(f"miner/plan must not supply alternate task sources: {hits}")
 
 
 def selected_task_item_allowed_keys() -> frozenset[str]:
@@ -183,9 +179,7 @@ def selected_task_item_allowed_keys() -> frozenset[str]:
 # --------------------------------------------------------------------------- #
 # No network fetch at eval (module / loader contract)
 # --------------------------------------------------------------------------- #
-_TASKDEFS_MODULE_PATH = (
-    Path(__file__).resolve().parent / "own_runner" / "taskdefs.py"
-)
+_TASKDEFS_MODULE_PATH = Path(__file__).resolve().parent / "own_runner" / "taskdefs.py"
 
 # Tokens that would indicate a network client in the task-def loader.
 _NETWORK_CLIENT_MARKERS: Final[tuple[str, ...]] = (

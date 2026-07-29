@@ -112,8 +112,9 @@ PostgreSQL (control-plane durability)
    env keys.
 5. **AC review callback** hard-pinned to
    `https://chain.joinbase.ai/challenges/agent-challenge`.
-6. **AGATE eval gate:** package LLM rules **residual** + `package_tree_sha` proof
-   **before** TEE auth; otherwise no eval / attestation.
+6. **AGATE eval gate (host-trust):** package LLM rules **residual** (host kinds
+   admitted) + `package_tree_sha` proof **before** eval under host-trust;
+   never claim TEE / independent attestation. Phala dual flags are removed.
 7. **Agent models:** no closed model catalog; **ban personal finetunes**.
 8. **Tbench 2.1 tasks:** baked image content + digest; no miner-supplied task URL.
 9. Do not wipe production Postgres / `KEY_FILE` / wallets unless a feature

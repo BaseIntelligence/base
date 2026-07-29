@@ -100,7 +100,6 @@ class ChallengeSettings(BaseSettings):
     # Epoch bucket size for push revision identity (seconds).
     epoch_seconds: int = Field(default=360, ge=1)
 
-
     # Root stdlib logging level applied at every process entrypoint (the API app
     # import and the worker ``main()``). Uvicorn installs no root handler, so
     # without an explicit configuration the worker service emits ZERO logs and
@@ -161,25 +160,15 @@ class ChallengeSettings(BaseSettings):
     # Empty => streaming disabled (job_dir files + finalize still capture logs).
     terminal_bench_log_stream_url: str | None = None
     terminal_bench_log_stream_timeout_seconds: float = 5.0
-    # Phala TEE attested-result emission (architecture.md sec 8). Opt-in and OFF
-    # by default: flag off reproduces today's validator-run own_runner behavior
-    # byte-identically (R=1, epsilon=0 harbor scoring, no dstack access at all).
-    # This is the validator-config view of the in-image emission gate -- the
-    # field's env var (``CHALLENGE_PHALA_ATTESTATION_ENABLED``) is exactly the
-    # switch ``own_runner_backend`` reads inside the canonical CVM image, so a
-    # config-off deployment gates the image off.
+    # REMOVED product path (T40): Phala TEE dual flags. Always False; enabling
+    # either raises at settings construction. Kept as fields so old env/YAML
+    # keys fail closed rather than silently enabling dead code.
     phala_attestation_enabled: bool = False
-    # Attested review is deliberately a separate explicit switch while its
-    # companion eval lifecycle lands. It defaults off, preserving the complete
-    # legacy intake and gateway-review path byte-for-byte. Production full
-    # attested deployments enable both this and ``phala_attestation_enabled``.
     attested_review_enabled: bool = False
-    # Temporary host-local unattested execution (NO_PHALA). Opt-in, default OFF.
-    # When true the master runs jobs via own_runner on the host instead of Phala
-    # CVMs. Results are explicitly marked unattested. Mutually exclusive with
-    # both attestation flags above (fail closed at settings construction).
-    # Env precedence: CHALLENGE_NO_PHALA if set, else plain NO_PHALA, else false.
-    # Never inferred from a missing Phala API key. See docs/no-phala-mode.md.
+    # Product path: host-trust unattested execution (NO_PHALA). Opt-in, default OFF.
+    # When true the master runs jobs via own_runner on the host. Results are
+    # explicitly marked unattested (never TEE). Env: CHALLENGE_UNATTESTED_EXECUTION
+    # / CHALLENGE_NO_PHALA / NO_PHALA. See docs/no-phala-mode.md and host-trust.md.
     no_phala: bool = False
     review_assignment_ttl_seconds: int = 1800
     review_operator_approval_ttl_seconds: int = 300
@@ -414,13 +403,22 @@ class ChallengeSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_attested_topology(self) -> ChallengeSettings:
-        """Reject review-only and eval-only production configurations."""
+        """Phala TEE dual flags are removed (T40). Force both permanently OFF.
 
-        if self.attested_review_enabled != self.phala_attestation_enabled:
+        Product path is unattested/host-trust only (``no_phala`` /
+        ``CHALLENGE_UNATTESTED_EXECUTION``). Reject any attempt to enable TEE
+        dual flags so configs cannot re-open AttestationGate / KR score legs.
+        """
+
+        if self.attested_review_enabled or self.phala_attestation_enabled:
             raise ValueError(
-                "attested_review_enabled and phala_attestation_enabled must both be "
-                "enabled for full attested mode or both be disabled for legacy mode"
+                "Phala TEE dual flags are removed: phala_attestation_enabled and "
+                "attested_review_enabled must both be false. Use unattested/"
+                "host-trust mode (no_phala / CHALLENGE_UNATTESTED_EXECUTION) only."
             )
+        # Belt-and-suspenders: never leave True even if a subclass mutates.
+        object.__setattr__(self, "phala_attestation_enabled", False)
+        object.__setattr__(self, "attested_review_enabled", False)
         return self
 
     @model_validator(mode="after")
@@ -445,7 +443,11 @@ class ChallengeSettings(BaseSettings):
         # Re-resolve so plain NO_PHALA is honored when the prefixed var is unset.
         # When CHALLENGE_NO_PHALA is set, pydantic already populated ``no_phala``;
         # resolve_no_phala_from_environ applies the same precedence.
-        if "CHALLENGE_NO_PHALA" in os.environ or "NO_PHALA" in os.environ:
+        if (
+            "CHALLENGE_UNATTESTED_EXECUTION" in os.environ
+            or "CHALLENGE_NO_PHALA" in os.environ
+            or "NO_PHALA" in os.environ
+        ):
             self.no_phala = resolve_no_phala_from_environ()
         assert_no_phala_compatible(
             no_phala=bool(self.no_phala),
@@ -453,6 +455,12 @@ class ChallengeSettings(BaseSettings):
             attested_review_enabled=bool(self.attested_review_enabled),
         )
         return self
+
+    @property
+    def unattested_execution(self) -> bool:
+        """Canonical alias for host-trust unattested mode (``no_phala``)."""
+
+        return bool(self.no_phala)
 
     def require_eval_result_signer_for_production(self) -> None:
         """Fail closed for production full-attested mode without an endpoint signer.

@@ -1,3 +1,5 @@
+> **T40/T41 product path:** Phala TEE dual flags and CVM attestation are **removed**. Host-trust / unattested only. Do not treat historical Phala CVM / TEE sections below as a shipping product path.
+
 > OpenAPI: https://chain.joinbase.ai/challenges/agent-challenge/openapi.json · Day-1: root docs/miner/getting-started.md
 
 # Validator / operator self-deploy surfaces

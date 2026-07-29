@@ -3,14 +3,16 @@
 ``docker/master-entrypoint.sh`` launches each embedded challenge under
 ``env -i`` so Prism never inherits ``CHALLENGE_*`` and agent-challenge never
 inherits ``PRISM_*``. That isolation is deliberate, but it also dropped every
-operator-supplied setting -- notably the Phala attestation switches
-(``CHALLENGE_PHALA_ATTESTATION_ENABLED``, ``CHALLENGE_ATTESTED_REVIEW_ENABLED``)
-and ``PHALA_CLOUD_API_KEY`` -- because the allowlist was hardcoded with no
+operator-supplied setting because the allowlist was hardcoded with no
 extension point.
 
 These tests lock the supported extension point: a per-challenge env file whose
 keys are merged into the isolated child environment, without breaking
 cross-challenge isolation.
+
+T40/T41: product path is host-trust / unattested only. Dual Phala flags must
+not be true in templates; tests use host-trust keys (NO_PHALA / UNATTESTED /
+DOCKER_BACKEND) to prove the merge mechanism.
 """
 
 from __future__ import annotations
@@ -91,17 +93,17 @@ def _run_entrypoint(tmp_path: Path, ac_env_file_body: str | None) -> dict[str, s
     return dumps
 
 
-def test_ac_env_file_supplies_phala_settings_to_isolated_child(tmp_path: Path) -> None:
+def test_ac_env_file_supplies_host_trust_settings(tmp_path: Path) -> None:
     """Operator embed.env must reach the agent-challenge child under env -i."""
 
     dumps = _run_entrypoint(
         tmp_path,
         "\n".join(
             [
-                "# durable AC embed overrides",
-                "CHALLENGE_PHALA_ATTESTATION_ENABLED=true",
-                "CHALLENGE_ATTESTED_REVIEW_ENABLED=true",
-                "PHALA_CLOUD_API_KEY=phala-secret",
+                "# durable AC embed overrides (host-trust / T40)",
+                "CHALLENGE_NO_PHALA=true",
+                "CHALLENGE_UNATTESTED_EXECUTION=true",
+                "CHALLENGE_DOCKER_BACKEND=broker",
                 "BASE_CHALLENGE_SLUG=agent-challenge",
                 "",
             ]
@@ -109,9 +111,9 @@ def test_ac_env_file_supplies_phala_settings_to_isolated_child(tmp_path: Path) -
     )
 
     ac_env = dumps["ac"]
-    assert "CHALLENGE_PHALA_ATTESTATION_ENABLED=true" in ac_env
-    assert "CHALLENGE_ATTESTED_REVIEW_ENABLED=true" in ac_env
-    assert "PHALA_CLOUD_API_KEY=phala-secret" in ac_env
+    assert "CHALLENGE_NO_PHALA=true" in ac_env
+    assert "CHALLENGE_UNATTESTED_EXECUTION=true" in ac_env
+    assert "CHALLENGE_DOCKER_BACKEND=broker" in ac_env
     assert "BASE_CHALLENGE_SLUG=agent-challenge" in ac_env
 
 
@@ -120,12 +122,12 @@ def test_ac_env_file_does_not_leak_into_prism_child(tmp_path: Path) -> None:
 
     dumps = _run_entrypoint(
         tmp_path,
-        "CHALLENGE_PHALA_ATTESTATION_ENABLED=true\nPHALA_CLOUD_API_KEY=phala-secret\n",
+        "CHALLENGE_NO_PHALA=true\nCHALLENGE_DOCKER_BACKEND=broker\n",
     )
 
     prism_env = dumps["prism"]
-    assert "CHALLENGE_PHALA_ATTESTATION_ENABLED" not in prism_env
-    assert "PHALA_CLOUD_API_KEY" not in prism_env
+    assert "CHALLENGE_NO_PHALA" not in prism_env
+    assert "CHALLENGE_DOCKER_BACKEND=broker" not in prism_env
 
 
 def test_ac_env_file_overrides_builtin_default(tmp_path: Path) -> None:
@@ -143,7 +145,7 @@ def test_missing_env_file_is_not_fatal(tmp_path: Path) -> None:
     dumps = _run_entrypoint(tmp_path, None)
 
     assert "CHALLENGE_DOCKER_ENABLED=false" in dumps["ac"]
-    assert "PHALA_CLOUD_API_KEY" not in dumps["ac"]
+    assert "CHALLENGE_NO_PHALA" not in dumps["ac"]
 
 
 def test_env_file_ignores_comments_blanks_and_malformed_keys(tmp_path: Path) -> None:

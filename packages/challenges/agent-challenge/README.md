@@ -42,7 +42,12 @@ Self-deploy CLI accuracy fixtures remain under `docs/miner/self-deploy.md` and
 
 ## Agent-driven eval gate (product pin)
 
-Scored path order: package + measured LLM rules residual → `package_tree_sha`
-proof → fresh TEE authorization → **ONLY THEN** eval prepare / KR / score.
-Host-static analyzer alone is not enough (**no eval prepare** without residual +
-tree SHA). **no closed catalog** of models; **personal finetunes** banned.
+**Host-trust only (T40):** Phala TEE dual flags and CVM attestation are removed.
+Never claim TEE, tamper-proof execution, or independent hardware verification.
+
+Scored path order: package + host LLM rules residual → `package_tree_sha`
+proof → host-trust eval prepare / score. Residual + tree SHA still required
+before eval under host-trust. **no closed catalog** of models; **personal
+finetunes** banned.
+
+See [docs/host-trust.md](docs/host-trust.md) and [docs/no-phala-mode.md](docs/no-phala-mode.md).

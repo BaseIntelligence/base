@@ -18,9 +18,7 @@ from agent_challenge.core.models import EvalRun, TaskLogEvent
 
 # Keep in lockstep with evaluation.authorization._ACTIVE_PHASES and
 # evaluation.telemetry_session._ACTIVE_EVAL_PHASES.
-ACTIVE_EVAL_PHASES: frozenset[str] = frozenset(
-    {"eval_prepared", "eval_running", "eval_verifying"}
-)
+ACTIVE_EVAL_PHASES: frozenset[str] = frozenset({"eval_prepared", "eval_running", "eval_verifying"})
 
 _SCORE_FIELD_NAMES: frozenset[str] = frozenset(
     {
@@ -64,11 +62,7 @@ def _latest_event_payload(event: TaskLogEvent) -> dict[str, Any]:
     meta = _metadata_dict(event.metadata_json)
     phase = event.status or meta.get("phase")
     client_sequence = meta.get("client_sequence")
-    sequence = (
-        int(client_sequence)
-        if isinstance(client_sequence, int)
-        else int(event.sequence)
-    )
+    sequence = int(client_sequence) if isinstance(client_sequence, int) else int(event.sequence)
     payload: dict[str, Any] = {
         "event_type": event.event_type,
         "sequence": sequence,
@@ -81,9 +75,7 @@ def _latest_event_payload(event: TaskLogEvent) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
-def _unit_from_run(
-    run: EvalRun, *, latest_event: Mapping[str, Any] | None
-) -> dict[str, Any]:
+def _unit_from_run(run: EvalRun, *, latest_event: Mapping[str, Any] | None) -> dict[str, Any]:
     unit: dict[str, Any] = {
         "unit_id": run.eval_run_id,
         "eval_run_id": run.eval_run_id,
@@ -141,10 +133,7 @@ async def list_live_execution_units(session: AsyncSession) -> list[dict[str, Any
         session,
         submission_ids=[run.submission_id for run in runs],
     )
-    return [
-        _unit_from_run(run, latest_event=latest_by_run.get(run.eval_run_id))
-        for run in runs
-    ]
+    return [_unit_from_run(run, latest_event=latest_by_run.get(run.eval_run_id)) for run in runs]
 
 
 __all__ = [
