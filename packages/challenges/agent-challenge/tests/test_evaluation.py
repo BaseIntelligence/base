@@ -2428,18 +2428,15 @@ def test_own_runner_script_cache_wiring_honours_settings_overrides(monkeypatch):
     assert "--digest-manifest /custom/golden/digest.json" in script
 
 
-def test_own_runner_script_pip_installs_are_offline_and_hang_proofed():
-    """Runner jobs run on an egress-free network, so the agent install must
-    resolve entirely from packages pre-baked into the runner image and must fail
-    fast rather than hang on unreachable pypi.
+def test_own_runner_script_pip_installs_use_pypi_with_sane_retries():
+    """Agent install resolves from PyPI with network-sane pip flags.
 
-    Regression (score-0.0 bug): every terminal-bench task scored 0.0 because the
-    agent install reached out to pypi and failed/hung. The fix installs with
-    ``--no-build-isolation`` (reuse the pre-baked PEP 517 build backends instead
-    of fetching setuptools>=61 into a fresh isolated build env) and ``--no-index``
-    (a missing/exotic dep fails immediately instead of retrying pypi for ~150s).
-    Both installs stay wrapped in a hard ``timeout -k 10 -s KILL`` safety net and
-    keep ``|| true`` so a partially-satisfiable agent still attempts to run.
+    Host-local evaluation has egress to PyPI; ``--no-index`` was blocking real
+    agent deps (e.g. litellm>=1.55.0) with an instant empty-index failure.
+    The install keeps ``--no-input`` / ``--disable-pip-version-check``, uses
+    retries/timeouts suitable for network installs, stays wrapped in a hard
+    ``timeout -k 10 -s KILL`` safety net, and keeps ``|| true`` so a
+    partially-satisfiable agent still attempts to run.
     """
 
     job = EvaluationJob(job_id="job-hangproof", selected_tasks_json="[]")
@@ -2454,16 +2451,18 @@ def test_own_runner_script_pip_installs_are_offline_and_hang_proofed():
 
     assert 'TMO="timeout -k 10 -s KILL 600"' in script
     assert "python -m pip install --no-input --disable-pip-version-check" in script
-    # Offline-first: no isolated build env, no pypi index, fail fast.
-    assert "--no-build-isolation" in script
-    assert "--no-index" in script
-    assert "--retries 0 --default-timeout 15" in script
-    # Both install paths carry the offline flags and stay best-effort.
+    # PyPI-reachable install: no offline-only flags; network-sane retries.
+    assert "--no-index" not in script
+    assert "--no-build-isolation" not in script
+    assert "--retries 3 --default-timeout 30" in script
+    # Both install paths stay best-effort under the hard timeout.
     assert "$TMO $PIP -r requirements.txt || true" in script
     assert "$TMO $PIP -e . || true" in script
     pip_flag_line = next(line for line in script.splitlines() if line.startswith('PIP="$PIP'))
-    assert "--no-index" in pip_flag_line
-    assert "--no-build-isolation" in pip_flag_line
+    assert "--no-index" not in pip_flag_line
+    assert "--no-build-isolation" not in pip_flag_line
+    assert "--retries 3" in pip_flag_line
+    assert "--default-timeout 30" in pip_flag_line
 
 
 def test_own_runner_command_args_wires_cache_root_and_digest_manifest():
