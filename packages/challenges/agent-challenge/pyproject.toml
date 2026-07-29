@@ -26,6 +26,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_challenge", "src/agent_challenge_runner"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"golden/dataset-digest.json" = "agent_challenge/golden/dataset-digest.json"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 

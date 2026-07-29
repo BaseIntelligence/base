@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.resources
 import importlib.util
 import json
 import os
@@ -963,16 +964,49 @@ def _build_default_preparer(
     return _preparer
 
 
+def _default_digest_manifest_path() -> Path:
+    """Layout-independent default for frozen ``dataset-digest.json``.
+
+    Prefer the packaged resource shipped in the wheel under
+    ``agent_challenge/golden/``; otherwise walk ancestors of this file for the
+    first existing ``golden/dataset-digest.json`` (source checkout). When nothing
+    exists, return the best candidate path so :func:`load_dataset_digest` raises
+    its normal error — never a fixed ``parents[N]``-only walk.
+    """
+    packaged_candidate: Path | None = None
+    try:
+        resource = importlib.resources.files("agent_challenge.golden").joinpath(
+            "dataset-digest.json"
+        )
+        packaged_candidate = Path(str(resource))
+        if packaged_candidate.is_file():
+            return packaged_candidate
+    except (ModuleNotFoundError, TypeError, OSError, ValueError):
+        packaged_candidate = None
+
+    here = Path(__file__).resolve()
+    fallback = packaged_candidate
+    for parent in here.parents:
+        candidate = parent / "golden" / "dataset-digest.json"
+        if candidate.is_file():
+            return candidate
+        if fallback is None and parent.name in {"agent-challenge", "agent_challenge"}:
+            fallback = candidate
+
+    if fallback is not None:
+        return fallback
+    # Last resort: first ancestor candidate (may not exist; caller raises).
+    return next(iter(here.parents)) / "golden" / "dataset-digest.json"
+
+
 def _resolve_manifest_path(path: Path | str | None) -> Path:
-    """Resolve the frozen digest-manifest path (explicit -> env -> repo default)."""
+    """Resolve the frozen digest-manifest path (explicit -> env -> packaged/repo default)."""
     if path is not None:
         return Path(path)
     env = os.environ.get(DIGEST_MANIFEST_ENV)
     if env:
         return Path(env)
-    # Repo default: ``<repo>/golden/dataset-digest.json`` relative to this file
-    # (src/agent_challenge/evaluation/own_runner_backend.py).
-    return Path(__file__).resolve().parents[3] / "golden" / "dataset-digest.json"
+    return _default_digest_manifest_path()
 
 
 def _resolve_cache_root(path: Path | str | None) -> Path:
