@@ -48,16 +48,11 @@ challenge:
   # prebuilt runner image's native Docker environment inside a privileged Docker-in-Docker
   # runner launched as a BASE broker job, without Daytona credentials.
   terminal_bench_execution_backend: own_runner
-  # Phala TEE attested-result emission (architecture sec 8). Opt-in and OFF by
-  # default: with the flag off the canonical image runs the legacy own_runner
-  # path byte-identically (R=1, epsilon=0 harbor scoring, no dstack access). This
-  # is the validator-config view of the in-image gate; its env var
-  # CHALLENGE_PHALA_ATTESTATION_ENABLED is the same switch the image reads.
+  # REMOVED product path (T40): Phala TEE dual flags. Both MUST stay false.
+  # ChallengeSettings rejects any true value. Product path is unattested /
+  # host-trust only (CHALLENGE_NO_PHALA / CHALLENGE_UNATTESTED_EXECUTION).
+  # Do not re-enable; there is no TEE product path.
   phala_attestation_enabled: false  # REMOVED (T40) — must stay false; host-trust only
-  # Attested review is a separate explicit switch. Production full-attested
-  # mode enables this together with phala_attestation_enabled; mixed/single-
-  # sided settings fail closed at startup. Default OFF keeps legacy status and
-  # gateway-backed review byte-identical (no review field / no review session).
   attested_review_enabled: false  # REMOVED (T40) — must stay false; host-trust only
   # Normative review TTLs, response caps, mutation rates, and resource limits.
   # Declarations mirror validation-contract resource limits; defaults are the
@@ -119,13 +114,10 @@ challenge:
   keep_good_tasks_policy: "off"
   keep_good_tasks_drop_lowest: 0
   keep_good_tasks_threshold: 0.0
-  # Low-rate replay-audit sampler (architecture sec 4 C6 / sec 8, defense-in-depth).
-  # Tier-driven replay fractions over the ATTESTED submission population: a VERIFIED
-  # Phala-tdx attestation is high-trust and audited at the low "attested" rate; an
-  # unverifiable/failed attestation is low-trust and audited at the higher
-  # "unverified" rate (higher trust => strictly lower rate). A rate of 0 disables
-  # auditing for that tier. The sampler only runs when phala_attestation_enabled is
-  # on, so flag-off scoring/weights stay byte-identical to legacy. Both rates [0,1].
+  # Low-rate replay-audit sampler (defense-in-depth). Under host-trust (T40) the
+  # sampler stays inert because phala_attestation_enabled is permanently false.
+  # Rates retained for config compatibility only — not a TEE product path.
+  # Both rates [0,1].
   replay_audit_attested_rate: 0.02
   replay_audit_unverified_rate: 0.10
   # Deterministic sampler seed: the same seed reproduces the identical sampled

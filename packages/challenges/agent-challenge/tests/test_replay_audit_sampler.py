@@ -220,14 +220,24 @@ def test_from_settings_is_inert_when_flag_off() -> None:
 
 
 def test_from_settings_enables_sampler_when_flag_on() -> None:
+    # T40/T41: dual flags permanently rejected. from_settings never enables
+    # the Phala-gated sampler; host-trust keeps it inert.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Phala TEE dual flags"):
+        ChallengeSettings(
+            attested_review_enabled=True,
+            phala_attestation_enabled=True,
+        )
+
     settings = ChallengeSettings(
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
+        attested_review_enabled=False,
+        phala_attestation_enabled=False,
     )
     sampler = replay_audit_sampler_from_settings(settings)
 
-    assert sampler.enabled is True
-    assert len(sampler.sample(_attested_population(5000))) > 0
+    assert sampler.enabled is False
+    assert sampler.sample(_attested_population(5000)) == []
 
 
 # --------------------------------------------------------------------------- #

@@ -350,36 +350,23 @@ def test_store_path_crypto_unwrap_maps_to_review_report_error() -> None:
 
 
 def test_require_review_evidence_encryption_fail_closed_when_attested() -> None:
+    """T40/T41: dual flags permanently rejected; host-trust skips encryption gate."""
+    from pydantic import ValidationError
+
     from agent_challenge.sdk.config import ChallengeSettings
 
-    settings = ChallengeSettings(
-        database_url="sqlite+aiosqlite:///:memory:",
-        shared_token="test-shared-token-not-evidence",
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
-        review_evidence_encryption_key=None,
-        review_evidence_encryption_key_file=None,
-        eval_result_signer_mnemonic="test mnemonic phrase for offline only",
-    )
-    with pytest.raises(ValueError, match="review evidence encryption key"):
-        settings.require_review_evidence_encryption_for_production()
-    try:
-        settings.require_review_evidence_encryption_for_production()
-    except ValueError as exc:
-        msg = str(exc).lower()
-        assert "sk-or" not in msg
-        assert "test-shared" not in msg
+    with pytest.raises(ValidationError, match="Phala TEE dual flags"):
+        ChallengeSettings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            shared_token="test-shared-token-not-evidence",
+            attested_review_enabled=True,
+            phala_attestation_enabled=True,
+            review_evidence_encryption_key=None,
+            review_evidence_encryption_key_file=None,
+            eval_result_signer_mnemonic="test mnemonic phrase for offline only",
+        )
 
-    ok = ChallengeSettings(
-        database_url="sqlite+aiosqlite:///:memory:",
-        shared_token="test-shared-token-not-evidence",
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
-        review_evidence_encryption_key="dedicated-evidence-key-material",
-        eval_result_signer_mnemonic="test mnemonic phrase for offline only",
-    )
-    ok.require_review_evidence_encryption_for_production()  # no raise
-
+    # Host-trust product path: dual flags off → encryption gate is a no-op.
     legacy = ChallengeSettings(
         database_url="sqlite+aiosqlite:///:memory:",
         shared_token="test-shared-token-not-evidence",

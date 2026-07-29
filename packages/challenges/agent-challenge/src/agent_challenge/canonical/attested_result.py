@@ -9,6 +9,10 @@ class AttestationEmissionError(RuntimeError):
     """TEE attested emission is unavailable after Phala removal."""
 
 
+# Stable result-line key retained so host-trust tests can assert absence.
+EXECUTION_PROOF_RESULT_KEY = "execution_proof"
+
+
 class DstackQuoteProvider:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         raise AttestationEmissionError("DstackQuoteProvider removed with Phala TEE (T40)")
@@ -34,6 +38,7 @@ def build_phala_attestation(*args: Any, **kwargs: Any) -> Any:
 
 __all__ = [
     "AttestationEmissionError",
+    "EXECUTION_PROOF_RESULT_KEY",
     "DstackQuoteProvider",
     "build_phala_attestation",
     "emit_attested_eval_result_from_plan",

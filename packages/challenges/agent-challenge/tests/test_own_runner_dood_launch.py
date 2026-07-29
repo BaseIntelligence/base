@@ -244,13 +244,18 @@ def test_socket_mount_specs_no_false_positive_on_prefix_lookalikes() -> None:
 
 
 def test_socket_path_constants_are_single_sourced() -> None:
-    # DOCKER_SOCKET_PATH / DSTACK_SOCKET_PATH must be single-sourced: the compose
-    # generator imports the exact dood constants (same object identity), so the
-    # two definitions can never silently diverge.
-    from agent_challenge.canonical import compose as compose_mod
+    # T40 removed agent_challenge.canonical.compose (Phala CVM compose).
+    # Socket paths remain single-sourced from own_runner.dood and re-exported
+    # via own_runner package — pin stable values + package re-export identity.
+    from agent_challenge.evaluation import own_runner as own_runner_pkg
+    from agent_challenge.evaluation.own_runner import dood as dood_mod
 
-    assert compose_mod.DOCKER_SOCKET_PATH is DOCKER_SOCKET_PATH
-    assert compose_mod.DSTACK_SOCKET_PATH is DSTACK_SOCKET_PATH
+    assert DOCKER_SOCKET_PATH == "/var/run/docker.sock"
+    assert DSTACK_SOCKET_PATH == "/var/run/dstack.sock"
+    assert dood_mod.DOCKER_SOCKET_PATH is DOCKER_SOCKET_PATH
+    assert dood_mod.DSTACK_SOCKET_PATH is DSTACK_SOCKET_PATH
+    assert own_runner_pkg.DOCKER_SOCKET_PATH is DOCKER_SOCKET_PATH
+    assert own_runner_pkg.DSTACK_SOCKET_PATH is DSTACK_SOCKET_PATH
 
 
 def test_socket_mount_specs_empty_for_a_clean_task_launch() -> None:

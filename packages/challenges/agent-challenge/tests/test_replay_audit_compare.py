@@ -381,9 +381,11 @@ def test_run_replay_audit_is_inert_when_sampler_disabled() -> None:
 
 
 def test_replay_audit_from_settings_wires_sampler_spec_and_tolerance() -> None:
+    # T40/T41: dual flags permanently OFF — sampler stays inert; aggregation
+    # wiring still comes from host-trust settings.
     settings = ChallengeSettings(
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
+        attested_review_enabled=False,
+        phala_attestation_enabled=False,
         per_task_aggregation="best-of-k",
         keep_good_tasks_policy="drop-lowest-n",
         keep_good_tasks_drop_lowest=2,
@@ -395,18 +397,40 @@ def test_replay_audit_from_settings_wires_sampler_spec_and_tolerance() -> None:
     assert audit.spec.per_task_aggregation == "best-of-k"
     assert audit.spec.keep_policy == "drop-lowest-n"
     assert audit.spec.drop_lowest_n == 2
-    assert audit.sampler.enabled is True
+    assert audit.sampler.enabled is False
 
 
 def test_replay_audit_run_flags_beyond_tolerance_end_to_end() -> None:
+    # T40/T41: dual flags cannot be enabled. Construct host-trust settings and
+    # drive the audit with an explicitly enabled sampler (unit path) so the
+    # beyond-tolerance flagging contract stays covered without Phala.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Phala TEE dual flags"):
+        ChallengeSettings(
+            attested_review_enabled=True,
+            phala_attestation_enabled=True,
+        )
+
     settings = ChallengeSettings(
-        attested_review_enabled=True,
-        phala_attestation_enabled=True,
+        attested_review_enabled=False,
+        phala_attestation_enabled=False,
         replay_audit_attested_rate=1.0,
         replay_audit_unverified_rate=0.0,
         replay_audit_tolerance=0.2,
     )
-    audit = ReplayAudit.from_settings(settings)
+    # from_settings keeps sampler off under host-trust; build an enabled
+    # sampler explicitly for the tolerance contract (frozen dataclass).
+    audit = ReplayAudit(
+        sampler=ReplayAuditSampler(
+            attested_rate=1.0,
+            unverified_rate=0.0,
+            seed=settings.replay_audit_seed,
+            enabled=True,
+        ),
+        spec=AggregationSpec.from_settings(settings),
+        tolerance=settings.replay_audit_tolerance,
+    )
     broker = RecordingBroker([0.1, 0.1])
     candidates = [AuditCandidate("sub-1", attested_score=0.9, n_attempts=1)]
 
