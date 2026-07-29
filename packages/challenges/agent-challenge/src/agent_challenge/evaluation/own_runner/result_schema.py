@@ -38,8 +38,8 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
-from typing import IO, Any
+from collections.abc import Mapping, Sequence
+from typing import IO, Any, Protocol
 
 # The prefix the runner scans for (runner.py:1499). Must be byte-identical.
 RESULT_LINE_PREFIX = "BASE_BENCHMARK_RESULT="
@@ -197,6 +197,204 @@ def _as_int(value: Any) -> Any:
 
 
 # --------------------------------------------------------------------------- #
+# Trial failure diagnostics (additive observability on the result line)        #
+# --------------------------------------------------------------------------- #
+
+
+class _TrialDiagnosticSource(Protocol):
+    """Minimal trial-outcome surface consumed by :func:`build_trial_diagnostics`."""
+
+    task_name: str
+    trial_name: str
+    status: str
+    errored: bool
+    reason_code: str | None
+    error_text: str | None
+
+
+class _TextRedactor(Protocol):
+    """Narrow redaction seam (satisfied by :class:`~.redaction.LogRedactor`)."""
+
+    def redact(self, text: str | None) -> str | None: ...
+
+
+#: Marker ``reason_code`` on the final entry when failed trials exceed ``limit``.
+DIAGNOSTICS_TRUNCATED_REASON = "diagnostics_truncated"
+
+#: Explicit suffix appended when an individual ``error_text`` is length-capped.
+ERROR_TEXT_TRUNCATION_MARKER = "\u2026[truncated]"
+
+
+def _truncate_error_text(text: str | None, max_error_chars: int) -> str | None:
+    """Cap ``text`` at ``max_error_chars`` and append an explicit ellipsis marker."""
+
+    if text is None:
+        return None
+    if max_error_chars < 0:
+        raise ValueError("max_error_chars must be >= 0")
+    if len(text) <= max_error_chars:
+        return text
+    return text[:max_error_chars] + ERROR_TEXT_TRUNCATION_MARKER
+
+
+def build_trial_diagnostics(
+    outcomes: Sequence[Any],
+    *,
+    limit: int = 20,
+    max_error_chars: int = 2000,
+    redactor: _TextRedactor | None = None,
+) -> list[dict[str, Any]]:
+    """Project failed/errored trial outcomes into additive diagnostics dicts.
+
+    Production Terminal-Bench crashes currently surface only the opaque
+    ``harbor_trial_failed`` reason code. This helper lifts the per-trial
+    ``error_text`` (and identity fields) into a compact list that can ride on
+    the ``BASE_BENCHMARK_RESULT`` line under the additive ``trial_diagnostics``
+    key without touching the five core contract fields.
+
+    Inclusion rule
+    --------------
+    A trial is included iff ``errored is True`` OR ``status == "failed"``.
+    Successful trials are omitted so a fully green job stays free of noise.
+
+    Ordering + cap
+    --------------
+    Input order is preserved (deterministic). At most ``limit`` real entries are
+    kept. When more failed trials exist, a final marker entry is appended with
+    ``reason_code="diagnostics_truncated"`` and an ``error_text`` that records how
+    many additional failures were omitted (so the list length is ``limit + 1``
+    when truncated).
+
+    Redaction
+    ---------
+    ``error_text`` may carry gateway tokens or miner env values. When a
+    ``redactor`` is supplied (typically :class:`LogRedactor`), every emitted
+    ``error_text`` is passed through ``redactor.redact`` before truncation.
+    Callers MUST supply an active redactor whenever secrets may still be present.
+
+    Parameters
+    ----------
+    outcomes :
+        Trial outcomes (duck-typed; :class:`TrialOutcome` satisfies the protocol).
+    limit :
+        Max real (non-marker) diagnostic entries. Must be >= 0.
+    max_error_chars :
+        Per-entry cap on ``error_text`` length before the ellipsis marker.
+    redactor :
+        Optional text redactor (``LogRedactor`` or any object with ``redact``).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Each entry has keys ``task_name``, ``trial_name``, ``status``,
+        ``errored``, ``reason_code``, ``error_text``. Empty when no
+        failed/errored trials.
+    """
+
+    if limit < 0:
+        raise ValueError("limit must be >= 0")
+
+    selected: list[Any] = [
+        outcome
+        for outcome in outcomes
+        if bool(getattr(outcome, "errored", False))
+        or getattr(outcome, "status", None) == "failed"
+    ]
+    if not selected:
+        return []
+
+    omitted = max(0, len(selected) - limit)
+    kept = selected[:limit]
+    entries: list[dict[str, Any]] = []
+    for outcome in kept:
+        raw_error = getattr(outcome, "error_text", None)
+        if redactor is not None:
+            raw_error = redactor.redact(raw_error)
+        entries.append(
+            {
+                "task_name": outcome.task_name,
+                "trial_name": outcome.trial_name,
+                "status": outcome.status,
+                "errored": bool(outcome.errored),
+                "reason_code": outcome.reason_code,
+                "error_text": _truncate_error_text(raw_error, max_error_chars),
+            }
+        )
+
+    if omitted:
+        entries.append(
+            {
+                "task_name": "__truncated__",
+                "trial_name": "__truncated__",
+                "status": "failed",
+                "errored": True,
+                "reason_code": DIAGNOSTICS_TRUNCATED_REASON,
+                "error_text": f"+{omitted} more failed trial(s) omitted",
+            }
+        )
+    return entries
+
+
+def collapse_error_text_to_single_line(text: str | None) -> str:
+    """Collapse newlines/CRs in ``text`` so a stderr diagnostic stays one line."""
+
+    if not text:
+        return ""
+    return " ".join(text.replace("\r", "\n").splitlines())
+
+
+def format_trial_diagnostic_stderr_line(entry: Mapping[str, Any]) -> str:
+    """Format one flat ``key=value`` stderr diagnostic for a failed trial.
+
+    Shape mirrors ``agent_challenge_reason_code=...`` breadcrumbs elsewhere::
+
+        agent_challenge_trial_diagnostic task=<t> trial=<n> reason=<c> error=<e>
+
+    Newlines inside ``error`` are collapsed so the whole diagnostic is one line.
+    """
+
+    task = entry.get("task_name") or ""
+    trial = entry.get("trial_name") or ""
+    reason = entry.get("reason_code")
+    reason_s = "" if reason is None else str(reason)
+    raw_error = entry.get("error_text")
+    error = collapse_error_text_to_single_line(
+        raw_error if isinstance(raw_error, str) else None
+    )
+    return (
+        f"agent_challenge_trial_diagnostic task={task} trial={trial} "
+        f"reason={reason_s} error={error}"
+    )
+
+
+def emit_trial_diagnostic_stderr_lines(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    stream: IO[str] | None = None,
+) -> list[str]:
+    """Print one stderr diagnostic per real (non-truncation-marker) entry.
+
+    Truncation marker entries (``reason_code == diagnostics_truncated``) are
+    skipped so operators only see concrete per-trial failures on stderr. Returns
+    the lines that were written.
+    """
+
+    target = stream if stream is not None else sys.stderr
+    written: list[str] = []
+    for entry in entries:
+        if entry.get("reason_code") == DIAGNOSTICS_TRUNCATED_REASON:
+            continue
+        line = format_trial_diagnostic_stderr_line(entry)
+        target.write(line + "\n")
+        written.append(line)
+    try:
+        target.flush()
+    except Exception:  # noqa: BLE001 - best-effort flush only
+        pass
+    return written
+
+
+# --------------------------------------------------------------------------- #
 # Harbor outcome derivation (reproduces runner.py:1410-1437 byte-for-byte)     #
 # --------------------------------------------------------------------------- #
 def derive_benchmark_result_from_stats(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -267,13 +465,19 @@ def emit_benchmark_result_line(payload: Mapping[str, Any], *, stream: IO[str] | 
 
 __all__ = [
     "BENCHMARK_RESULT_SCHEMA",
+    "DIAGNOSTICS_TRUNCATED_REASON",
+    "ERROR_TEXT_TRUNCATION_MARKER",
     "REQUIRED_FIELDS",
     "RESULT_LINE_PREFIX",
     "STATUS_VALUES",
     "ResultSchemaError",
     "build_benchmark_result",
+    "build_trial_diagnostics",
+    "collapse_error_text_to_single_line",
     "derive_benchmark_result_from_stats",
     "emit_benchmark_result_line",
+    "emit_trial_diagnostic_stderr_lines",
     "format_benchmark_result_line",
+    "format_trial_diagnostic_stderr_line",
     "validate_benchmark_result",
 ]
