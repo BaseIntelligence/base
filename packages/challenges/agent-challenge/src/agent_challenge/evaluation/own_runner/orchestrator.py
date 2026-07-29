@@ -43,7 +43,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_challenge.evaluation.own_runner.driver import AgentDriver
+from agent_challenge.evaluation.own_runner.driver import (
+    AGENT_LOAD_FAILED_REASON_CODE,
+    AgentDriver,
+)
 from agent_challenge.evaluation.own_runner.reason_codes import (
     REASON_CODES,
     is_known_reason_code,
@@ -104,6 +107,17 @@ TRIAL_TIMEOUT_REASON_CODE = "harbor_agent_timeout_error"
 #: score) WITHOUT wedging ``asyncio.gather`` -- the job still aggregates and
 #: finalizes with its sibling trials intact.
 TRIAL_CRASH_REASON_CODE = "harbor_trial_failed"
+
+#: How many construction failures confirm a broken submission package.
+#:
+#: Agent construction (unpack + install + import + instantiate) is
+#: task-independent: a ZIP missing its manifest, or importing a module it never
+#: shipped, breaks identically on every task. Re-running all 30 tasks to
+#: relearn that one fact burns hours of wall clock and real LLM budget, so the
+#: job stops once this many trials have failed that way. The threshold is >1 so
+#: a single transient fault (a flaky package index during ``pip install``)
+#: cannot abort an otherwise healthy job.
+CONSTRUCTION_FAILURE_ABORT_THRESHOLD = 2
 
 # Fail fast at import if the taxonomy ever drops a code we emit.
 assert TRIAL_TIMEOUT_REASON_CODE in REASON_CODES
@@ -443,9 +457,11 @@ class TrialJobOrchestrator:
         state_lock = asyncio.Lock()
         in_flight = 0
         peak = 0
+        construction_failures = 0
+        short_circuit = False
 
         async def execute(trial_id: TrialId) -> TrialOutcome:
-            nonlocal in_flight, peak
+            nonlocal in_flight, peak, construction_failures, short_circuit
             # Resume: a persisted result means this trial is already done -- load
             # it WITHOUT acquiring the semaphore (it never re-runs, never counts
             # toward in-flight, never double-counts).
@@ -453,11 +469,24 @@ class TrialJobOrchestrator:
             if persisted is not None:
                 return persisted
 
+            task = task_lookup[trial_id.task_name]
+
+            # Fail-fast: once enough trials have proven the submission's agent
+            # cannot be constructed, the remaining trials would burn budget to
+            # reproduce the same packaging error. Resolve them immediately as
+            # explicit, self-describing failures instead of running them.
+            async with state_lock:
+                aborted = short_circuit
+            if aborted:
+                outcome = self._short_circuited_outcome(trial_id, task)
+                self._persist_trial(trial_id, outcome)
+                await self._notify_trial_listener(trial_id, outcome)
+                return outcome
+
             async with semaphore:
                 async with state_lock:
                     in_flight += 1
                     peak = max(peak, in_flight)
-                task = task_lookup[trial_id.task_name]
                 try:
                     # Backstop: bound the whole trial (prepare + drive + verify +
                     # teardown) so one stalled sub-step can never wedge
@@ -481,6 +510,13 @@ class TrialJobOrchestrator:
                 finally:
                     async with state_lock:
                         in_flight -= 1
+                # Count construction failures so a broken package trips the
+                # fail-fast gate above for every trial not yet started.
+                if outcome.reason_code == AGENT_LOAD_FAILED_REASON_CODE:
+                    async with state_lock:
+                        construction_failures += 1
+                        if construction_failures >= CONSTRUCTION_FAILURE_ABORT_THRESHOLD:
+                            short_circuit = True
                 # Persist immediately so a later crash cannot lose a finished
                 # trial (and a resume skips it).
                 self._persist_trial(trial_id, outcome)
@@ -539,6 +575,34 @@ class TrialJobOrchestrator:
             model_name=self._config.model_name,
             source=task.source,
             error_text=f"trial crashed: {type(exc).__name__}: {exc}",
+        )
+
+    def _short_circuited_outcome(self, trial_id: TrialId, task: TaskSpec) -> TrialOutcome:
+        """Failed outcome for a trial never run because the package is broken.
+
+        Mirrors :meth:`_timed_out_outcome` (``status="failed"``, ``errored=True``,
+        ``rewards=None``) so the job still aggregates every planned trial and the
+        totals stay honest -- the task was planned, scored 0, and says exactly
+        why it never executed.
+        """
+
+        return TrialOutcome(
+            task_name=trial_id.task_name,
+            trial_name=trial_id.trial_name,
+            status="failed",
+            rewards=None,
+            reason_code=AGENT_LOAD_FAILED_REASON_CODE,
+            errored=True,
+            agent_name=self._config.agent_name,
+            model_name=self._config.model_name,
+            source=task.source,
+            error_text=(
+                "short-circuit: agent construction failed on "
+                f"{CONSTRUCTION_FAILURE_ABORT_THRESHOLD} earlier trials, so this "
+                "trial was not run. Agent construction is task-independent -- fix "
+                "the submission package (installable project + importable modules) "
+                "and resubmit."
+            ),
         )
 
     # -- lock / persistence ------------------------------------------------

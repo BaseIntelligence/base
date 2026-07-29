@@ -100,7 +100,9 @@ from agent_challenge.evaluation.own_runner.residual_orch_probes import (
 )
 from agent_challenge.evaluation.own_runner.result_schema import (
     build_benchmark_result,
+    build_trial_diagnostics,
     emit_benchmark_result_line,
+    emit_trial_diagnostic_stderr_lines,
 )
 from agent_challenge.evaluation.own_runner.taskdefs import (
     DATASET_ID,
@@ -1214,6 +1216,32 @@ def _derive_manifest_sha256(*, agent_hash: str, task_ids: Sequence[str], compose
     return hashlib.sha256(descriptor.encode()).hexdigest()
 
 
+
+def _emit_time_log_redactor() -> LogRedactor:
+    """Build a defense-in-depth redactor from process-env secret values.
+
+    Trial outcomes are already redacted before they reach :class:`JobResult`, but
+    emit-time diagnostics re-apply redaction so a secret that only appears in the
+    process environment (or slipped past the trial wrapper) never rides out on
+    the ``BASE_BENCHMARK_RESULT`` line or the stderr diagnostic breadcrumbs.
+    """
+
+    miner_values: list[str] = []
+    for key in (
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "HF_API_TOKEN",
+    ):
+        value = os.environ.get(key)
+        if value:
+            miner_values.append(value)
+    return LogRedactor(
+        gateway_token=os.environ.get(GATEWAY_TOKEN_ENV),
+        miner_env_values=miner_values,
+    )
+
+
 def _emit_job_result(
     result: JobResult,
     task_ids: Sequence[str],
@@ -1239,6 +1267,18 @@ def _emit_job_result(
                 task_id: list(scores)
                 for task_id, scores in collect_trial_scores(result.trial_outcomes).items()
             }
+        # Additive per-trial failure diagnostics so production crashes are not
+        # opaque ``harbor_trial_failed`` shells. Omitted entirely when every
+        # trial succeeded so a green job's result line stays byte-identical.
+        # ``getattr`` keeps lightweight test doubles (SimpleNamespace without
+        # trial_outcomes) working the same as a real JobResult with [].
+        diagnostics = build_trial_diagnostics(
+            getattr(result, "trial_outcomes", None) or (),
+            redactor=_emit_time_log_redactor(),
+        )
+        if diagnostics:
+            payload["trial_diagnostics"] = diagnostics
+            emit_trial_diagnostic_stderr_lines(diagnostics)
         # Temporary NO_PHALA host mode: mark the legacy line unattested and
         # attach guest_artifact_proof when the agent ZIP provenance is known.
         # Attested path below is untouched when NO_PHALA is off.

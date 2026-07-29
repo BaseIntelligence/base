@@ -1601,7 +1601,7 @@ def _terminal_bench_broker_limits() -> DockerLimits:
         network=os.environ.get("CHALLENGE_DOCKER_BROKER_NETWORK", "default"),
         read_only=True,
         user=settings.docker_user,
-        tmpfs=("/tmp:rw,nosuid,size=2g",),
+        tmpfs=("/tmp:rw,nosuid,exec,size=2g",),
         ulimits=("nofile=1024:1024",),
         cap_drop=("ALL",),
         security_opt=("no-new-privileges",),

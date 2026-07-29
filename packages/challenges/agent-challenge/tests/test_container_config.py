@@ -240,3 +240,22 @@ def _job() -> EvaluationJob:
         status="queued",
         selected_tasks_json="[]",
     )
+
+
+def test_terminal_bench_broker_tmpfs_allows_exec() -> None:
+    """Miner agents pip-install into /tmp because the rootfs is read-only.
+
+    Docker's ``--tmpfs`` defaults to ``noexec``, so native wheels (tiktoken,
+    pydantic-core, numpy) fail to load with "failed to map segment from shared
+    object" and every such submission scores 0 for an infrastructure reason.
+    The analyzer container keeps ``noexec`` on purpose; this runner cannot.
+    """
+    from agent_challenge.evaluation.runner import _terminal_bench_broker_limits
+
+    limits = _terminal_bench_broker_limits()
+    tmp_mounts = [m for m in limits.tmpfs if m.startswith("/tmp:")]
+    assert tmp_mounts, "the runner must expose a writable /tmp tmpfs"
+    options = tmp_mounts[0].split(":", 1)[1].split(",")
+    assert "exec" in options, f"/tmp must be executable, got {tmp_mounts[0]}"
+    assert "noexec" not in options, f"/tmp must not be noexec, got {tmp_mounts[0]}"
+    assert "nosuid" in options, "nosuid hardening must be preserved"

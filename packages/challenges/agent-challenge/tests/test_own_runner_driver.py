@@ -731,3 +731,38 @@ async def test_drive_end_to_end_against_real_container() -> None:
         text=True,
     )
     assert inspect.returncode != 0, "driver must remove the container on exit"
+
+
+class FdWritingFailingAgent:
+    """Agent whose constructor fails after a subprocess wrote to fd 2.
+
+    Mirrors production: the miner's ``__init__`` shells out to pip, pip prints
+    the real reason on fd 2, and ``CalledProcessError.__str__`` keeps only the
+    argv and exit status. The reason must not be lost.
+    """
+
+    def __init__(self, logs_dir=None, model_name=None, **kwargs) -> None:
+        os.write(2, b"ERROR: Directory '/workspace/agent' is not installable.\n")
+        raise subprocess.CalledProcessError(
+            1, ["python", "-m", "pip", "install", "/workspace/agent"]
+        )
+
+    @staticmethod
+    def name() -> str:
+        return "fd-writing-failing-agent"
+
+
+async def test_construction_failure_reports_the_captured_fd_output() -> None:
+    """The operator must see WHY construction failed, not just which argv."""
+    driver = AgentDriver(agent_class=FdWritingFailingAgent)
+    result = await driver.drive(
+        environment=_tmux_present_env(),
+        instruction="do the thing",
+        start_session=False,
+    )
+    assert result.status == "failed"
+    assert result.reason_code == "harbor_submission_code_failed"
+    assert "agent construction failed" in result.error
+    assert "is not installable" in result.error, (
+        f"captured fd output must reach error_text, got: {result.error!r}"
+    )
