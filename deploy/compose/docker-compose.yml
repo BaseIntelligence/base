@@ -122,11 +122,12 @@ services:
       - type: volume
         source: master-state
         target: /var/lib/base
-      - type: tmpfs
-        target: /tmp
-        tmpfs:
-          size: 268435456
-          mode: 1777
+    # SHORT syntax required: mode=1777 is OCTAL here (sticky + world-writable).
+    # Long-syntax ``tmpfs.mode: 1777`` is DECIMAL 1777 (= octal 3361) and yields
+    # d-wxrwS--t, so uid 1000 cannot write /tmp (TB docker build fails).
+    # Match docker-compose.validator.yml: ``/tmp:size=256m,mode=1777``.
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     networks:
       - db
       - app

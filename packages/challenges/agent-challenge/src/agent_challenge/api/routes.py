@@ -70,7 +70,10 @@ from ..evaluation.authorization import (
     load_eval_run_plan,
     retry_eval_run,
 )
-from ..evaluation.benchmarks import load_benchmark_tasks
+from ..evaluation.benchmarks import (
+    TERMINAL_BENCH_2_1_FALLBACK_TASK_IDS,
+    load_benchmark_tasks,
+)
 from ..evaluation.direct_result import (
     DirectEvalResultError,
     authenticate_eval_token,
@@ -460,6 +463,7 @@ class TaskResultResponse(BaseModel):
     docker_image: str
     status: str
     score: float
+    passed: bool
     returncode: int
     duration_seconds: float
     failure_reason: str | None = None
@@ -483,6 +487,7 @@ class TaskRowResponse(BaseModel):
     updated_at: datetime | None
     attempt: int | None
     has_result: bool = False
+    passed: bool | None = None
 
 
 class EvaluationResponse(BaseModel):
@@ -5018,6 +5023,8 @@ def _public_task_event_metadata(metadata: Mapping[str, object]) -> dict[str, obj
         if _is_sensitive_task_event_metadata_key(key):
             continue
         public[str(key)] = _public_task_event_metadata_value(value)
+    if "passed" not in public and "score" in public:
+        public["passed"] = _score_is_passed(public["score"])
     return public
 
 
@@ -5041,6 +5048,42 @@ def _is_sensitive_task_event_metadata_key(key: str) -> bool:
     )
 
 
+# Whole-segment secret markers (not substrings of longer words like "tokens").
+_PUBLIC_SECRET_SEGMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?:"
+    r"(?:[A-Za-z0-9_.]+[-_.])*(?:secret|raw-ref|broker-ref|pod-)[A-Za-z0-9_.-]*"
+    r"|"
+    r"(?:[A-Za-z0-9_.]+[-_.])*token(?:[-_.][A-Za-z0-9_.]+)*"
+    r")"
+    r"(?![A-Za-z0-9_.-])",
+    flags=re.IGNORECASE,
+)
+
+
+def _terminal_bench_task_id_shield_pattern() -> re.Pattern[str]:
+    """Compile alternation of known TB task ids (full + bare), longest first."""
+
+    parts: list[str] = []
+    for task_id in TERMINAL_BENCH_2_1_FALLBACK_TASK_IDS:
+        bare = task_id.removeprefix("terminal-bench/")
+        parts.append(re.escape(task_id))
+        parts.append(re.escape(bare))
+    parts.sort(key=len, reverse=True)
+    return re.compile("|".join(parts))
+
+
+_TERMINAL_BENCH_TASK_ID_SHIELD_RE = _terminal_bench_task_id_shield_pattern()
+
+
+def _score_is_passed(score: object) -> bool:
+    """Same pass rule as passed_tasks aggregation: score >= 1.0."""
+
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        return False
+    return float(score) >= 1.0
+
+
 def _public_task_event_text(value: str) -> str:
     sanitized = PRIVATE_PATH_RE.sub("[REDACTED_PATH]", redact_task_event_message(value))
     sanitized = re.sub(r"\b(?:platform_sdk|base_sdk)\b", "base", sanitized, flags=re.IGNORECASE)
@@ -5050,12 +5093,22 @@ def _public_task_event_text(value: str) -> str:
         sanitized,
         flags=re.IGNORECASE,
     )
-    return re.sub(
-        r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*(?:secret|token|raw-ref|broker-ref|pod-)[A-Za-z0-9_.-]*(?![A-Za-z0-9_.-])",
-        "[REDACTED_SECRET]",
-        sanitized,
-        flags=re.IGNORECASE,
-    )
+    # Shield known Terminal-Bench task identifiers so a future regex change cannot
+    # swallow legitimate ids that happen to contain "token" (e.g. count-dataset-tokens).
+    shields: list[str] = []
+
+    def _shield(match: re.Match[str]) -> str:
+        shields.append(match.group(0))
+        return f"\x00TBSAFE{len(shields) - 1}\x00"
+
+    sanitized = _TERMINAL_BENCH_TASK_ID_SHIELD_RE.sub(_shield, sanitized)
+    # Segment-boundary redaction: match secret/token/raw-ref/broker-ref/pod- as
+    # whole hyphen/underscore/dot-delimited segments, not as substrings of a
+    # longer word (``tokens`` must not match ``token``).
+    sanitized = _PUBLIC_SECRET_SEGMENT_RE.sub("[REDACTED_SECRET]", sanitized)
+    for index, original in enumerate(shields):
+        sanitized = sanitized.replace(f"\x00TBSAFE{index}\x00", original)
+    return sanitized
 
 
 async def _submission_task_event_stream(
@@ -5434,6 +5487,10 @@ def _task_rows_from_eval_run(run: EvalRun) -> list[TaskRowResponse]:
         else:
             has_result = True
             phase = "completed" if outcome.get("passed") else "failed"
+        row_passed: bool | None = None
+        if outcome is not None:
+            raw_passed = outcome.get("passed")
+            row_passed = raw_passed if isinstance(raw_passed, bool) else None
         rows.append(
             TaskRowResponse(
                 task_id=task_id,
@@ -5444,6 +5501,7 @@ def _task_rows_from_eval_run(run: EvalRun) -> list[TaskRowResponse]:
                 updated_at=run.updated_at or run.created_at or run.issued_at,
                 attempt=run.attempt if has_result else None,
                 has_result=has_result,
+                passed=row_passed,
             )
         )
     return rows
@@ -5553,10 +5611,14 @@ def _task_rows_response(
                 updated_at=result.created_at,
                 attempt=None,
                 has_result=True,
+                passed=_score_is_passed(result.score),
             )
             ordered_task_ids.append(result.task_id)
             continue
-        update: dict[str, object] = {"has_result": True}
+        update: dict[str, object] = {
+            "has_result": True,
+            "passed": _score_is_passed(result.score),
+        }
         if row.phase == "assigned":
             update["phase"] = result_phase
             update["status"] = result_phase
@@ -6134,6 +6196,7 @@ def _task_result_response(result: TaskResult) -> TaskResultResponse:
         docker_image=result.docker_image,
         status=result.status,
         score=result.score,
+        passed=_score_is_passed(result.score),
         returncode=result.returncode,
         duration_seconds=result.duration_seconds,
         failure_reason=_task_result_failure_reason(result),

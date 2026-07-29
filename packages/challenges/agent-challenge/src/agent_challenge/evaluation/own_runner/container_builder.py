@@ -100,7 +100,8 @@ MAIN_IMAGE_PREFIX = "hb__"
 # --------------------------------------------------------------------------- #
 #: Bounded max process count per task container (matches the broker posture).
 TASK_PIDS_LIMIT = 512
-#: Capabilities dropped from every task container.
+#: Legacy constant; task guests no longer pass --cap-drop (apt/chmod need caps).
+#: Kept so importers/tests that reference the name do not break on import.
 TASK_CAP_DROP = "ALL"
 #: ``no-new-privileges`` security option (blocks privilege escalation).
 TASK_SECURITY_OPT = "no-new-privileges"
@@ -298,18 +299,21 @@ class ReadOnlyMount:
 def hardening_run_args() -> list[str]:
     """Return the hardened-posture ``docker run`` flags for a task container.
 
-    ``cap-drop ALL``, ``no-new-privileges``, a bounded ``pids-limit``, a
-    writable ``tmpfs`` for ``/tmp``, and a writable anonymous volume at the
-    agent workspace target (:data:`AGENT_WORKSPACE_TARGET`).
+    ``no-new-privileges``, a bounded ``pids-limit``, a writable ``tmpfs`` for
+    ``/tmp``, and a writable anonymous volume at the agent workspace target
+    (:data:`AGENT_WORKSPACE_TARGET`).
 
     Deliberately omits ``--read-only``: the guest must write harbor paths
     (``/tests``, ``/logs/verifier``, ``/solution``, ``/app``) and run package
     installs inside ``test.sh``. RO rootfs is reserved for the outer DooD job
     container, not the task guest.
+
+    Deliberately omits ``--cap-drop ALL``: Terminal-Bench task guests need
+    capabilities for ``apt``/``chmod`` inside verifiers. This matches the prod
+    hotpatch trade-off (isolation reduced only for own_runner *task* guests;
+    the master compose service still uses ``cap_drop: ALL``).
     """
     return [
-        "--cap-drop",
-        TASK_CAP_DROP,
         "--security-opt",
         TASK_SECURITY_OPT,
         "--pids-limit",
@@ -728,8 +732,8 @@ class TaskContainerBuilder:
             workdir,
         ]
         # Hardened posture on every task container (architecture sec 4 C2):
-        # cap-drop ALL + no-new-privileges + bounded pids + tmpfs /tmp +
-        # writable workspace volume. Rootfs stays writable (harbor paths).
+        # no-new-privileges + bounded pids + tmpfs /tmp + writable workspace
+        # volume. Rootfs stays writable (harbor paths). No cap-drop ALL (TB).
         argv += hardening_run_args()
         # Golden dataset / task cache mounted read-only so task code can read but
         # never mutate it.
