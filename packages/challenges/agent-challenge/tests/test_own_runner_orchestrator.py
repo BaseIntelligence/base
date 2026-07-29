@@ -963,3 +963,49 @@ async def test_orchestrator_docker_oracle_passk(tmp_path: Path) -> None:
     assert result.resolved == 2
     assert result.total == 2
     assert result.pass_at_k == {"agent__adhoc": {2: 1.0}}
+
+
+# ===========================================================================
+# Fail-fast: a submission whose agent cannot even be constructed
+# ===========================================================================
+
+
+async def test_construction_failures_short_circuit_the_remaining_trials(
+    tmp_path: Path,
+) -> None:
+    """A package that cannot construct fails identically on every task.
+
+    Agent construction is task-independent: a ZIP missing its manifest or its
+    imported modules breaks the same way for all 30 tasks. Running them all
+    burns hours of LLM budget to relearn one fact, so the job must stop after a
+    small confirmation threshold and mark the rest explicitly.
+    """
+    attempted: list[str] = []
+
+    async def _run(trial_id: TrialId, task: TaskSpec) -> TrialOutcome:
+        attempted.append(trial_id.trial_name)
+        return TrialOutcome(
+            task_name=trial_id.task_name,
+            trial_name=trial_id.trial_name,
+            status="failed",
+            rewards=None,
+            reason_code="harbor_submission_code_failed",
+            errored=True,
+            error_text="agent construction failed: no pyproject.toml",
+        )
+
+    tasks = [TaskSpec(f"task-{i}") for i in range(10)]
+    orch = TrialJobOrchestrator(
+        config=JobConfig(n_attempts=1, n_concurrent=1),
+        job_dir=tmp_path / "job",
+        trial_runner=_run,
+    )
+    result = await orch.run(tasks)
+
+    assert len(attempted) <= 2, f"must stop early, ran {len(attempted)} trials"
+    # Every task still accounted for, and the skipped ones say why.
+    assert result.n_total_trials == 10
+    assert result.score == 0.0
+    skipped = [o for o in result.trial_outcomes if "short-circuit" in (o.error_text or "")]
+    assert len(skipped) == 10 - len(attempted)
+    assert all(o.reason_code == "harbor_submission_code_failed" for o in skipped)
