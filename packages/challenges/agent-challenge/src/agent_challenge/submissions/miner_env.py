@@ -46,6 +46,10 @@ MINER_ENV_PRODUCT_ALLOWLIST: Final[frozenset[str]] = frozenset(
     {
         "OPENROUTER_API_KEY",
         "LLM_COST_LIMIT",
+        # VAL-LLM-MODEL: a miner may bring their own key *and* their own model
+        # id. Not a URL/host/proxy name, and URL-shaped values stay rejected by
+        # ``looks_like_url_value``, so this opens no endpoint-injection hole.
+        "LLM_MODEL",
         "EVAL_RUN_TOKEN",
         "REVIEW_SESSION_TOKEN",
     }

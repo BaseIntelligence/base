@@ -195,10 +195,14 @@ async def test_worker_broker_path_scrubs_token_and_signature_metadata_and_keeps_
         "hello-world",
     ]
     benchmark_spec = executor.specs[1]
+    # VAL-LLM-MODEL: the measured model id now ships in the job env (the packaged
+    # agent fails closed without a concrete LLM_MODEL). It is a plain model name,
+    # not a secret -- the assert_no_untrusted_secret guards below still apply.
     assert benchmark_spec.env == {
         "BASE_AGENT_PATH": "/workspace/agent",
         "BASE_BENCHMARK_DATASET": "terminal-bench/terminal-bench-2-1",
         "HOME": "/tmp",
+        "LLM_MODEL": "x-ai/grok-4.5",
         "XDG_CACHE_HOME": "/tmp/.cache",
     }
     assert_no_untrusted_secret(

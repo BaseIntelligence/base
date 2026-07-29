@@ -163,8 +163,13 @@ def test_terminal_bench_env_ignores_miner_base_log_stream_override() -> None:
 # --------------------------------------------------------------------------- #
 # VAL-ACLOCK-005 / 006 — agent sandbox allowlist + chokepoint
 # --------------------------------------------------------------------------- #
-def test_agent_env_allowlist_exactly_or_key_and_cost_limit() -> None:
-    assert AGENT_ENV_ALLOWLIST == frozenset({"OPENROUTER_API_KEY", "LLM_COST_LIMIT"})
+def test_agent_env_allowlist_exactly_key_cost_limit_and_model() -> None:
+    # VAL-LLM-MODEL: LLM_MODEL joins the sandbox allowlist because the packaged
+    # agent fails closed without a concrete model id. The exact pin is
+    # deliberate: nothing else enters this set without an explicit decision.
+    assert AGENT_ENV_ALLOWLIST == frozenset(
+        {"OPENROUTER_API_KEY", "LLM_COST_LIMIT", "LLM_MODEL"}
+    )
 
 
 def test_filter_agent_env_strips_url_proxy_and_extra_secrets() -> None:

@@ -108,7 +108,12 @@ def test_allowlist_excludes_base_gateway_vars() -> None:
     assert "BASE_LLM_GATEWAY_URL" not in AGENT_ENV_ALLOWLIST
     assert "BASE_GATEWAY_TOKEN" not in AGENT_ENV_ALLOWLIST
     assert "LLM_COST_LIMIT" in AGENT_ENV_ALLOWLIST
-    assert AGENT_ENV_ALLOWLIST == frozenset({"LLM_COST_LIMIT", "OPENROUTER_API_KEY"})
+    # VAL-LLM-MODEL: the packaged agent fails closed without a concrete model
+    # id, so LLM_MODEL is admitted alongside the key and cost limit. The
+    # gateway/URL/host/proxy exclusions above remain the invariant.
+    assert AGENT_ENV_ALLOWLIST == frozenset(
+        {"LLM_COST_LIMIT", "LLM_MODEL", "OPENROUTER_API_KEY"}
+    )
 
 
 def test_harness_control_keys_are_not_secrets() -> None:
