@@ -8,9 +8,9 @@ orchestrator MUST preserve on every Terminal-Bench task container it launches vi
   (VAL-ORCH-013 / VAL-ORCH-015);
 * the golden dataset + task cache is bind-mounted read-only into every task
   container, and writes to it fail (VAL-ORCH-016);
-* hardened posture: read-only rootfs, ``cap-drop ALL``, ``no-new-privileges``, a
-  bounded ``pids-limit``, and a writable ``tmpfs`` for ``/tmp`` only
-  (VAL-ORCH-023);
+* hardened posture: ``cap-drop ALL``, ``no-new-privileges``, a bounded
+  ``pids-limit``, writable ``tmpfs`` for ``/tmp``, and a writable workspace
+  volume — rootfs stays writable for harbor ``/tests`` + ``/logs`` (VAL-ORCH-023);
 * a task requesting a GPU is rejected and never launched on the CPU-only CVM
   (VAL-ORCH-024).
 
@@ -208,7 +208,7 @@ def test_golden_cache_mount_is_readonly_in_real_container(tmp_path: Path) -> Non
 # --------------------------------------------------------------------------- #
 def test_hardening_flags_present_in_launch_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     argv = _single_run_argv(monkeypatch, resources=ResourceLimits())
-    assert "--read-only" in argv
+    assert "--read-only" not in argv  # task guest rootfs must stay writable
     assert _has_consecutive(argv, ("--cap-drop", "ALL"))
     assert _has_consecutive(argv, ("--security-opt", "no-new-privileges"))
     assert _has_consecutive(argv, ("--pids-limit", str(TASK_PIDS_LIMIT)))
@@ -225,13 +225,12 @@ def test_tmpfs_is_tmp_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_hardening_run_args_shape() -> None:
     args = hardening_run_args()
-    assert "--read-only" in args
+    assert "--read-only" not in args
     assert "--cap-drop" in args and args[args.index("--cap-drop") + 1] == "ALL"
     assert "--security-opt" in args
     assert args[args.index("--security-opt") + 1] == "no-new-privileges"
     assert "--pids-limit" in args
-    # the agent workspace target is writable (so the read-only rootfs does not
-    # block the agent's own workspace) without being a tmpfs.
+    # workspace volume remains for agent staging (not a tmpfs).
     assert _has_consecutive(args, ("-v", AGENT_WORKSPACE_TARGET))
 
 
@@ -247,7 +246,8 @@ def test_task_container_hardened_in_real_daemon(tmp_path: Path) -> None:
                 "inspect",
                 "-f",
                 "{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} "
-                "{{.HostConfig.PidsLimit}} {{.HostConfig.SecurityOpt}}",
+                "{{.HostConfig.PidsLimit}} {{.HostConfig.SecurityOpt}} "
+                "{{.HostConfig.Privileged}}",
                 name,
             ],
             capture_output=True,
@@ -255,24 +255,112 @@ def test_task_container_hardened_in_real_daemon(tmp_path: Path) -> None:
         )
         assert posture.returncode == 0
         out = posture.stdout
-        assert out.startswith("true ")  # read-only rootfs
+        assert out.startswith("false ")  # writable rootfs (harbor paths)
         assert "[ALL]" in out  # cap-drop ALL
         assert str(TASK_PIDS_LIMIT) in out  # bounded pids
         assert "no-new-privileges" in out
-        # rootfs is read-only, but /tmp is a writable tmpfs.
-        blocked = subprocess.run(
-            ["docker", "exec", name, "sh", "-c", "echo x > /root_probe"],
-            capture_output=True,
-            text=True,
-        )
-        assert blocked.returncode != 0
-        ok = subprocess.run(
+        assert "false" in out.split()[-1].lower() or out.rstrip().endswith("false")
+        # /tmp remains a writable tmpfs; rootfs itself is also writable.
+        ok_tmp = subprocess.run(
             ["docker", "exec", name, "sh", "-c", "echo x > /tmp/ok && echo OK"],
             capture_output=True,
             text=True,
         )
-        assert ok.returncode == 0
-        assert "OK" in ok.stdout
+        assert ok_tmp.returncode == 0
+        assert "OK" in ok_tmp.stdout
+        ok_root = subprocess.run(
+            ["docker", "exec", name, "sh", "-c", "echo x > /root_probe && echo OK"],
+            capture_output=True,
+            text=True,
+        )
+        assert ok_root.returncode == 0
+        assert "OK" in ok_root.stdout
+    finally:
+        env.remove()
+
+
+
+# --------------------------------------------------------------------------- #
+# Harbor verifier/agent paths must be writable on task containers
+# --------------------------------------------------------------------------- #
+# Production crash (2026-07-29): upload_tests did `docker exec -u root … mkdir -p
+# /tests` and failed with "Read-only file system" because task containers
+# incorrectly inherited the *job*-container RO posture. Task containers must
+# keep cap-drop / nnp / pids hardening but leave the rootfs writable so harbor
+# paths (/tests, /logs/verifier, /solution, /app) and apt-based test.sh work.
+
+
+def test_hardening_run_args_does_not_force_readonly_rootfs() -> None:
+    """Task containers are not the DooD job client — rootfs must stay writable."""
+    args = hardening_run_args()
+    assert "--read-only" not in args, (
+        "task containers must not use --read-only; that blocks harbor "
+        "mkdir /tests and apt-based verifiers (Read-only file system)"
+    )
+    assert _has_consecutive(args, ("--cap-drop", "ALL"))
+    assert _has_consecutive(args, ("--security-opt", "no-new-privileges"))
+    assert _has_consecutive(args, ("--pids-limit", str(TASK_PIDS_LIMIT)))
+
+
+@_docker
+def test_task_container_allows_harbor_verifier_paths() -> None:
+    """Live: mkdir -p /tests and /logs/verifier succeed under production hardening."""
+    builder = TaskContainerBuilder()
+    name = f"own-runner-harbor-paths-{uuid.uuid4().hex[:10]}"
+    env = builder.run_container(_IMAGE, resources=ResourceLimits(), container_name=name)
+    try:
+        for path in ("/tests", "/logs/verifier", "/solution", "/app"):
+            proc = subprocess.run(
+                ["docker", "exec", "-u", "root", name, "mkdir", "-p", path],
+                capture_output=True,
+                text=True,
+            )
+            assert proc.returncode == 0, (
+                f"mkdir -p {path} failed rc={proc.returncode} "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
+        write = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                name,
+                "sh",
+                "-c",
+                "echo 1 > /logs/verifier/reward.txt && "
+                "echo hi > /app/run.py && "
+                "echo ok > /tests/probe && cat /tests/probe",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert write.returncode == 0, (
+            f"harbor path writes failed rc={write.returncode} "
+            f"stdout={write.stdout!r} stderr={write.stderr!r}"
+        )
+        assert "ok" in write.stdout
+        # Hardening that must remain: cap-drop ALL + nnp + pids + not privileged.
+        posture = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} "
+                "{{.HostConfig.PidsLimit}} {{json .HostConfig.SecurityOpt}} "
+                "{{.HostConfig.Privileged}}",
+                name,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert posture.returncode == 0
+        out = posture.stdout.strip()
+        assert out.startswith("false "), f"expected writable rootfs, got {out!r}"
+        assert "[ALL]" in out
+        assert str(TASK_PIDS_LIMIT) in out
+        assert "no-new-privileges" in out
+        assert out.endswith(" false") or out.rstrip().endswith("false")
     finally:
         env.remove()
 

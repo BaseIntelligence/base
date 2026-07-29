@@ -234,8 +234,15 @@ def score_verifier_dir(
 # ---------------------------------------------------------------------------
 # Container plumbing (docker cp, mirroring harbor upload_dir / download_dir)
 # ---------------------------------------------------------------------------
-def _docker_cp(argv: list[str], *, timeout: float | None = None) -> None:
-    subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout)
+def _docker_cp(
+    argv: list[str],
+    *,
+    timeout: float | None = None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    subprocess.run(
+        argv, check=True, capture_output=True, text=True, timeout=timeout, env=env
+    )
 
 
 def upload_tests(
@@ -256,6 +263,7 @@ def upload_tests(
     """
 
     src = str(tests_source_dir).rstrip("/")
+    daemon_env = environment._daemon_env()
     subprocess.run(
         [
             environment.docker_bin,
@@ -271,10 +279,12 @@ def upload_tests(
         capture_output=True,
         text=True,
         timeout=timeout_sec,
+        env=daemon_env,
     )
     _docker_cp(
         [environment.docker_bin, "cp", f"{src}/.", f"{environment.container_name}:{TESTS_DIR}"],
         timeout=timeout_sec,
+        env=daemon_env,
     )
 
 
@@ -304,6 +314,7 @@ def collect_verifier_dir(
             str(dest_dir),
         ],
         timeout=timeout_sec,
+        env=environment._daemon_env(),
     )
 
 
