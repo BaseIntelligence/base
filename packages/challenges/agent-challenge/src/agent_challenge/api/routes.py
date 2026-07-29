@@ -5049,16 +5049,38 @@ def _is_sensitive_task_event_metadata_key(key: str) -> bool:
 
 
 # Whole-segment secret markers (not substrings of longer words like "tokens").
-_PUBLIC_SECRET_SEGMENT_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])"
-    r"(?:"
-    r"(?:[A-Za-z0-9_.]+[-_.])*(?:secret|raw-ref|broker-ref|pod-)[A-Za-z0-9_.-]*"
-    r"|"
-    r"(?:[A-Za-z0-9_.]+[-_.])*token(?:[-_.][A-Za-z0-9_.]+)*"
-    r")"
-    r"(?![A-Za-z0-9_.-])",
+#
+# Redaction is a single linear pass: grab each delimited word, then decide with
+# two bounded checks. The previous single-regex form nested
+# ``(?:[A-Za-z0-9_.]+[-_.])*`` over a class that also contains the separators
+# ``_`` and ``.``, so every dotted/underscored run that never reached
+# ``secret``/``token`` had exponentially many ways to split: 37 chars took 23ms,
+# 61 chars took 91s. pip output has exactly that shape, and the endpoint that
+# replays it is public, so a single log line pinned the event loop at 100% CPU
+# and starved every evaluation running on the validator.
+_PUBLIC_SECRET_WORD_RE = re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+(?![A-Za-z0-9_.-])")
+_PUBLIC_SECRET_MARKER_RE = re.compile(
+    r"(?:^|[-_.])(?:secret|raw-ref|broker-ref|pod-)",
     flags=re.IGNORECASE,
 )
+_PUBLIC_TOKEN_SEGMENT_RE = re.compile(
+    r"(?:^|[-_.])token(?:[-_.]|$)",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_public_secret_segments(value: str) -> str:
+    """Redact whole words that carry a secret marker on a segment boundary."""
+
+    def _replace(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if _PUBLIC_SECRET_MARKER_RE.search(word):
+            return "[REDACTED_SECRET]"
+        if _PUBLIC_TOKEN_SEGMENT_RE.search(word):
+            return "[REDACTED_SECRET]"
+        return word
+
+    return _PUBLIC_SECRET_WORD_RE.sub(_replace, value)
 
 
 def _terminal_bench_task_id_shield_pattern() -> re.Pattern[str]:
@@ -5105,7 +5127,7 @@ def _public_task_event_text(value: str) -> str:
     # Segment-boundary redaction: match secret/token/raw-ref/broker-ref/pod- as
     # whole hyphen/underscore/dot-delimited segments, not as substrings of a
     # longer word (``tokens`` must not match ``token``).
-    sanitized = _PUBLIC_SECRET_SEGMENT_RE.sub("[REDACTED_SECRET]", sanitized)
+    sanitized = _redact_public_secret_segments(sanitized)
     for index, original in enumerate(shields):
         sanitized = sanitized.replace(f"\x00TBSAFE{index}\x00", original)
     return sanitized
