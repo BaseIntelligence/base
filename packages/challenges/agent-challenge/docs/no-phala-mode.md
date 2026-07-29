@@ -1,20 +1,27 @@
-> **T40 product path:** Phala TEE dual flags and CVM attestation are **removed**.
-> This document describes the **host-trust unattested** product mode.
-> Never claim TEE, tamper-proof execution, or independent verification.
+# NO_PHALA / host-trust mode (current production product path)
 
-# NO_PHALA mode (temporary host-local unattested execution)
-
-**Status:** temporary operator escape hatch while Phala CVMs are disabled.
-Safe to remove: one module (`evaluation/no_phala.py`) plus thin call-sites.
+> **Current production product path.** Phala TEE dual flags and CVM attestation are
+> **not** used for live scoring. Agent Challenge production runs **host-trust
+> unattested** execution on the challenge host (broker / own_runner).
+>
+> Never claim TEE, tamper-proof execution, or independent hardware verification
+> for scores produced in this mode.
+>
+> Miner day-1: signed ZIP on [joinbase.ai](https://joinbase.ai). Walkthrough:
+> [agent-challenge miner getting-started](https://github.com/BaseIntelligence/agent-challenge/blob/main/docs/miner/getting-started.md).
+> Canonical short pin: [host-trust.md](host-trust.md).
 
 ## What it does
 
-When `NO_PHALA=true` (or `CHALLENGE_NO_PHALA=true`) on the **master** validator:
+When `NO_PHALA=true` (or `CHALLENGE_NO_PHALA=true`) on the **master** / embedded
+Agent Challenge process:
 
-1. Benchmark/eval jobs run **on the master host** via the existing
-   `own_runner` local Docker path (`evaluation/own_runner_backend.py`).
-2. **No** Phala Cloud client call is made. `PhalaCloudClient` construction and
-   eval/review `deploy()` refuse with `NoPhalaModeError`.
+1. Benchmark/eval jobs run **on the challenge host** via the existing
+   `own_runner` local Docker path (`evaluation/own_runner_backend.py`) and/or
+   broker backend wiring used in production.
+2. **No** Phala Cloud client call is made for production scoring. `PhalaCloudClient`
+   construction and eval/review `deploy()` refuse with `NoPhalaModeError` when
+   the mode is active.
 3. Result envelopes are **explicitly marked unattested**:
    - `attested: false` (hard-coded; cannot be set true by the runner path)
    - `attestation_status: "unattested"`
@@ -23,11 +30,13 @@ When `NO_PHALA=true` (or `CHALLENGE_NO_PHALA=true`) on the **master** validator:
 4. When the miner ZIP is available on disk, `guest_artifact_proof` records
    `expected_hash == download_hash == executed_hash` (SHA-256 of ZIP bytes).
    Mismatch fails closed.
+5. Integrity still uses `package_tree_sha` + AGATE residual (host residual kinds)
+   where configured. That is **host-trust integrity**, not TEE attestation.
 
 ## What it does **NOT** prove
 
-| Claim | NO_PHALA |
-|-------|----------|
+| Claim | Host-trust / NO_PHALA |
+|-------|------------------------|
 | TEE / Intel TDX isolation | **No** |
 | TDX quote / DCAP verification | **No** |
 | RTMR / compose_hash / KMS digest bind | **No** |
@@ -35,7 +44,8 @@ When `NO_PHALA=true` (or `CHALLENGE_NO_PHALA=true`) on the **master** validator:
 | That the host was not tampered with | **No** |
 
 Scores produced in this mode are **host-trust only**. Do not treat them as
-attested TEE results for production weight decisions that require attestation.
+attested TEE results. UI honesty may show **Unattested · Host trust**. STATUS on
+joinbase is the submission **lifecycle**, not a TEE badge.
 
 ## Env vars and precedence
 
@@ -43,12 +53,13 @@ attested TEE results for production weight decisions that require attestation.
 |----------|------|
 | `CHALLENGE_NO_PHALA` | Challenge-prefix form (pydantic-settings field `no_phala`) |
 | `NO_PHALA` | Plain operator form on the master host |
+| `CHALLENGE_UNATTESTED_EXECUTION` | Related unattested product switch (see settings / host-trust.md) |
 
 **Precedence:**
 
 1. If `CHALLENGE_NO_PHALA` is **set** in the environment → use it.
 2. Else if `NO_PHALA` is **set** → use it.
-3. Else → **off** (default).
+3. Else → **off** (default in code; production operators set it **on**).
 
 Truthy tokens: `1`, `true`, `yes`, `on` (case-insensitive).  
 Falsy tokens: `0`, `false`, `no`, `off`, empty.
@@ -64,7 +75,7 @@ If `NO_PHALA` is on **and** either of:
 
 …settings construction raises. Attested TEE path and host-local unattested
 path are mutually exclusive. Turn attestation flags **off** before enabling
-NO_PHALA.
+NO_PHALA. Production scoring uses the unattested path with attestation flags off.
 
 ## Enable on master
 
@@ -109,9 +120,10 @@ Key resolution order for OpenRouter: explicit settings field →
 `~/.factory/*.json` configs.
 
 When `NO_PHALA` is **off**, the analyzer always uses the BASE LLM gateway
-(`CHALLENGE_LLM_GATEWAY_*`); OpenRouter settings are ignored.
+(`CHALLENGE_LLM_GATEWAY_*`); OpenRouter settings are ignored. Production product
+path keeps NO_PHALA **on**.
 
-## Disable
+## Disable (leaves production host-trust path)
 
 ```bash
 # embed.env — remove NO_PHALA or set:
@@ -119,7 +131,8 @@ NO_PHALA=false
 # unset CHALLENGE_NO_PHALA if present
 ```
 
-Restart. Attested path is unchanged when NO_PHALA is off.
+Restart. Only do this for local experiments that intentionally leave host-trust
+production mode. Do not re-enable Phala dual flags for “current prod” docs.
 
 ## Confirm live mode
 
@@ -135,9 +148,9 @@ curl -sS http://127.0.0.1:18081/version
 Startup logs a multi-line `CRITICAL` banner when the mode is active.
 
 Via master proxy (if embedded):  
-`GET /challenges/agent-challenge/health` — same fields.
+`GET /challenges/agent-challenge/health` — same fields (may be blocked on public proxy).
 
-## Code map (for removal)
+## Code map (for operators)
 
 | Path | Role |
 |------|------|
@@ -154,18 +167,26 @@ Via master proxy (if embedded):
 The **attested** emit branch in `own_runner_backend._emit_job_result` is not
 modified when NO_PHALA is off.
 
-
-## Full offline pipeline (master host)
+## Full host-trust pipeline (production)
 
 With `NO_PHALA=true` and both attestation flags **off**, submit uses the
-pre-Phala analysis chain (not Phala review CVMs):
+host-trust analysis chain (not Phala review CVMs):
 
 ```text
 submit → analysis_queued → AST + LLM review → analysis_allowed
       → waiting_miner_env (until env confirm / PUT)
-      → tb_queued → tb_running (own_runner on host Docker)
+      → tb_queued → tb_running (own_runner / broker on host)
       → tb_completed → EvaluationJob.score
       → get_weights → authenticated raw-weight push (when master_base_url set)
+```
+
+Miner-facing CLI (agent-challenge repo):
+
+```bash
+python scripts/submit_agent.py build --agent-dir ./my-agent --out ./agent.zip
+python scripts/submit_agent.py submit \
+  --api-base https://chain.joinbase.ai/challenges/agent-challenge \
+  --zip ./agent.zip --name "my-agent" --confirm-empty --watch
 ```
 
 Requirements on the master process:
@@ -176,7 +197,7 @@ Requirements on the master process:
 | Attestation off | `CHALLENGE_PHALA_ATTESTATION_ENABLED=false`, `CHALLENGE_ATTESTED_REVIEW_ENABLED=false` |
 | Worker | `CHALLENGE_COMBINED_WORKER=true` **or** run `agent-challenge-worker` |
 | LLM review | OpenRouter key + `CHALLENGE_LLM_PROVIDER=openrouter` (default under NO_PHALA); or gateway base URL + token if provider forced to `gateway` |
-| Benchmark | Docker + own_runner task cache |
+| Benchmark | Docker + own_runner task cache / broker |
 | Weight push | `CHALLENGE_MASTER_BASE_URL` + shared token (optional loop) |
 
 **embed.env note:** master entrypoint only forwards keys matching
@@ -189,3 +210,4 @@ Unattested provenance is visible on:
 - `tb_completed` status-event metadata (same fields)
 - CRITICAL log on every raw-weight push while the mode is on
 - `/health` → `no_phala:true`, `attestation_mode:no_phala_host`
+- joinbase UI honesty: **Unattested · Host trust**; STATUS = lifecycle
