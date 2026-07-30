@@ -2,7 +2,7 @@
 //!
 //! Routes:
 //! - `GET /healthz` / `GET /readyz`
-//! - `GET /v1/capacity` — effective `max_concurrency` + current load
+//! - `GET /v1/capacity` — effective `max_concurrency` (clamped `1..=5`) + current load
 //! - `POST /v1/task` — accept signed [`TaskDescriptorV1`] envelope (auth default ON)
 //! - `GET /v1/task/{id}` — status; when terminal, [`TaskResultV1`] (patch + receipt)
 //!
@@ -12,8 +12,10 @@
 //! nonce and TTL shorter than one epoch. Health/ready/capacity stay open.
 //!
 //! # Concurrency (todo 19)
-//! Capacity is advertised only. Over-capacity dispatch is still accepted until the
-//! semaphore clamp lands.
+//! Miner-declared `max_concurrency` is clamped to `1..=5` via [`clamp_concurrency`].
+//! Accept acquires a semaphore permit; over-capacity returns **HTTP 503** with code
+//! `capacity_exhausted` (retryable; never unbounded-queued). Capacity reports the
+//! effective clamped max and occupied slot count.
 
 #![forbid(unsafe_code)]
 
@@ -31,7 +33,10 @@ pub use receipt_key::{
     load_or_generate, load_required, receipt_sk_path_from_env, ReceiptKey, ReceiptKeyError,
     DEFAULT_RECEIPT_SK_PATH, RECEIPT_SK_FILE_ENV,
 };
-pub use store::{RunnerConfig, RunnerState, TaskLifecycle};
+pub use store::{
+    clamp_concurrency, CapacityExhausted, RunnerConfig, RunnerState, TaskLifecycle,
+    MAX_CONCURRENCY_BOUND, MIN_CONCURRENCY,
+};
 
 use axum::Router;
 
@@ -57,6 +62,7 @@ mod tests {
     use http_body_util::BodyExt;
     use schnorrkel::MiniSecretKey;
     use serde_json::{json, Value};
+    use std::time::Duration;
     use tower::ServiceExt;
 
     fn mini_pair(seed: u8) -> ([u8; KEY_LEN], [u8; KEY_LEN]) {
@@ -84,6 +90,7 @@ mod tests {
             auth_enabled: true,
             trusted_challenge_pubkey: Some(pk),
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            stub_hold: Duration::ZERO,
         })
     }
 
@@ -98,6 +105,7 @@ mod tests {
             trusted_challenge_pubkey: Some(pk),
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
             receipt_key: Some(receipt),
+            stub_hold: Duration::ZERO,
         })
     }
 
@@ -108,6 +116,18 @@ mod tests {
             auth_enabled: false,
             trusted_challenge_pubkey: None,
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            stub_hold: Duration::ZERO,
+        })
+    }
+
+    fn open_state_hold(max: u32, hold: Duration) -> RunnerState {
+        RunnerState::new(RunnerConfig {
+            max_concurrency: max,
+            receipt_key: Some(test_receipt_key()),
+            auth_enabled: false,
+            trusted_challenge_pubkey: None,
+            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            stub_hold: hold,
         })
     }
 
@@ -118,6 +138,7 @@ mod tests {
             auth_enabled: false,
             trusted_challenge_pubkey: None,
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            stub_hold: Duration::ZERO,
         })
     }
 
@@ -150,6 +171,124 @@ mod tests {
             .expect("body")
             .to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
+    }
+
+    async fn post_plain(
+        state: &RunnerState,
+        desc: &TaskDescriptorV1,
+    ) -> axum::response::Response {
+        let body = serde_json::to_vec(desc).expect("ser");
+        app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("req"),
+            )
+            .await
+            .expect("oneshot")
+    }
+
+    /// S3 — clamp edges: 0→1, 1→1, 5→5, 6→5, 9999→5.
+    #[test]
+    fn clamp_concurrency_bounds_1_to_5() {
+        assert_eq!(clamp_concurrency(0), 1);
+        assert_eq!(clamp_concurrency(1), 1);
+        assert_eq!(clamp_concurrency(3), 3);
+        assert_eq!(clamp_concurrency(5), 5);
+        assert_eq!(clamp_concurrency(6), 5);
+        assert_eq!(clamp_concurrency(9999), 5);
+        assert_eq!(MIN_CONCURRENCY, 1);
+        assert_eq!(MAX_CONCURRENCY_BOUND, 5);
+    }
+
+    /// S2 — capacity reports effective clamp for 0 and 9999 (no panic).
+    #[tokio::test]
+    async fn capacity_reports_clamped_effective_max() {
+        let zero = open_state(0);
+        let cap0 = zero.capacity_async().await;
+        assert_eq!(cap0.max_concurrency, 1);
+        assert_eq!(cap0.current_load, 0);
+        assert_eq!(zero.effective_max_concurrency(), 1);
+
+        let huge = open_state(9999);
+        let cap_h = huge.capacity_async().await;
+        assert_eq!(cap_h.max_concurrency, 5);
+        assert_eq!(cap_h.current_load, 0);
+        assert_eq!(huge.effective_max_concurrency(), 5);
+
+        let app0 = app(open_state(0));
+        let res = app0
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capacity")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["max_concurrency"], 1);
+
+        let app_h = app(open_state(9999));
+        let res = app_h
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capacity")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = body_json(res).await;
+        assert_eq!(v["max_concurrency"], 5);
+    }
+
+    /// S1 — max=2: two accepted while held; third 503 capacity_exhausted; after free, next 202.
+    #[tokio::test]
+    async fn over_capacity_refused_then_succeeds_when_slot_frees() {
+        let state = open_state_hold(2, Duration::from_millis(400));
+        let before = state.task_count().await;
+
+        let r1 = post_plain(&state, &sample_desc()).await;
+        assert_eq!(r1.status(), StatusCode::ACCEPTED, "first must accept");
+        let r2 = post_plain(&state, &sample_desc()).await;
+        assert_eq!(r2.status(), StatusCode::ACCEPTED, "second must accept");
+
+        // Brief yield so both hold permits and bump load.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let cap = state.capacity_async().await;
+        assert_eq!(cap.max_concurrency, 2);
+        assert_eq!(cap.current_load, 2, "both slots occupied");
+
+        let r3 = post_plain(&state, &sample_desc()).await;
+        assert_eq!(
+            r3.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "third must be refused while full"
+        );
+        let v3 = body_json(r3).await;
+        assert_eq!(v3["code"], "capacity_exhausted");
+        assert!(v3.get("error").is_some());
+        // No unbounded queue: refused request must not create a task.
+        assert_eq!(state.task_count().await, before + 2);
+
+        // Wait for holds to finish and slots to free.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let cap_after = state.capacity_async().await;
+        assert_eq!(cap_after.current_load, 0, "slots freed after completion");
+
+        let r4 = post_plain(&state, &sample_desc()).await;
+        assert_eq!(
+            r4.status(),
+            StatusCode::ACCEPTED,
+            "dispatch succeeds once a slot frees"
+        );
+        assert_eq!(state.task_count().await, before + 3);
     }
 
     /// S4 — GET /healthz → 200 ok (unauthenticated).
@@ -188,7 +327,7 @@ mod tests {
         assert_eq!(body_text(res).await, "ready");
     }
 
-    /// S1 — capacity reflects configured max_concurrency and zero load.
+    /// Capacity reflects configured max_concurrency (within clamp) and zero load.
     #[tokio::test]
     async fn capacity_reports_configured_max_and_zero_load() {
         let (_sk, pk) = mini_pair(1);
@@ -208,7 +347,7 @@ mod tests {
         assert_eq!(v["current_load"], 0);
     }
 
-    /// S3 — unknown task id → 404 typed body (not 500).
+    /// Unknown task id → 404 typed body (not 500).
     #[tokio::test]
     async fn unknown_task_returns_404_typed() {
         let (_sk, pk) = mini_pair(1);
@@ -228,7 +367,7 @@ mod tests {
         assert_eq!(v["code"], "task_not_found");
     }
 
-    /// S5 — malformed JSON body → 401 when auth on (unsigned / unparseable envelope).
+    /// Malformed JSON body → 401 when auth on (unsigned / unparseable envelope).
     #[tokio::test]
     async fn post_task_malformed_json_returns_401_when_auth_on() {
         let (_sk, pk) = mini_pair(1);
@@ -254,7 +393,7 @@ mod tests {
         assert!(v.get("error").is_some(), "typed error: {v}");
     }
 
-    /// S2 — unsigned bare descriptor → 401, no task created.
+    /// Unsigned bare descriptor → 401, no task created.
     #[tokio::test]
     async fn post_unsigned_descriptor_returns_401() {
         let (_sk, pk) = mini_pair(2);
@@ -278,7 +417,7 @@ mod tests {
         assert_eq!(state.task_count().await, 0);
     }
 
-    /// S1 — signed dispatch → 202 + poll completion.
+    /// Signed dispatch → 202 + poll completion.
     #[tokio::test]
     async fn post_signed_and_poll_task_to_completion() {
         let (sk, pk) = mini_pair(3);
@@ -375,7 +514,7 @@ mod tests {
         .expect("WORK_RECEIPT verify");
     }
 
-    /// S3 — replay identical signed body → second 401 nonce_replay; one task only.
+    /// Replay identical signed body → second 401 nonce_replay; one task only.
     #[tokio::test]
     async fn post_replay_nonce_rejected() {
         let (sk, pk) = mini_pair(4);
@@ -421,7 +560,7 @@ mod tests {
         assert_eq!(state.task_count().await, 1);
     }
 
-    /// S4 — foreign signer → 401, no task.
+    /// Foreign signer → 401, no task.
     #[tokio::test]
     async fn post_foreign_key_rejected() {
         let (_sk_trust, pk_trust) = mini_pair(5);
@@ -460,7 +599,7 @@ mod tests {
         assert_eq!(crate_name(), "agent-runner");
     }
 
-    /// Capacity current_load bumps while a task is running (best-effort race window).
+    /// Capacity current_load starts at zero for a fresh store.
     #[tokio::test]
     async fn capacity_load_non_negative() {
         let state = open_state(2);
@@ -535,5 +674,55 @@ mod tests {
         assert_eq!(result["status"], "failed");
         let sig = result["receipt_sig_hex"].as_str().unwrap_or("x");
         assert!(sig.is_empty() || sig != &"00".repeat(64));
+    }
+
+    /// Signed over-capacity still returns 503 (auth ok, slots full).
+    #[tokio::test]
+    async fn signed_dispatch_over_capacity_returns_503() {
+        let (sk, pk) = mini_pair(7);
+        let state = RunnerState::new(RunnerConfig {
+            max_concurrency: 1,
+            auth_enabled: true,
+            trusted_challenge_pubkey: Some(pk),
+            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            receipt_key: Some(test_receipt_key()),
+            stub_hold: Duration::from_millis(300),
+        });
+        let now = unix_now_ms();
+        let env1 = sign_dispatch_request(&sk, &pk, sample_desc(), [0x41; KEY_LEN], now + 60_000)
+            .expect("sign1");
+        let env2 = sign_dispatch_request(&sk, &pk, sample_desc(), [0x42; KEY_LEN], now + 60_000)
+            .expect("sign2");
+
+        let r1 = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&env1).unwrap()))
+                    .expect("req"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(r1.status(), StatusCode::ACCEPTED);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let r2 = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&env2).unwrap()))
+                    .expect("req"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(r2.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let v = body_json(r2).await;
+        assert_eq!(v["code"], "capacity_exhausted");
+        assert_eq!(state.task_count().await, 1);
     }
 }

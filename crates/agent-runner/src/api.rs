@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 use crate::auth::{unix_now_ms, DispatchAuthError, SignedDispatchRequest};
-use crate::store::{RunnerState, TaskLifecycle};
+use crate::store::{CapacityExhausted, RunnerState, TaskLifecycle};
 
 /// `GET /v1/capacity` body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapacityResponse {
-    /// Effective configured max concurrency (advertisement only until todo 19).
+    /// Effective max concurrency after clamp to `1..=5`.
     pub max_concurrency: u32,
-    /// Tasks currently in `running` lifecycle.
+    /// Occupied concurrency slots (accepted tasks not yet finished).
     pub current_load: u32,
 }
 
@@ -70,6 +70,19 @@ impl ApiError {
             status: StatusCode::UNAUTHORIZED,
             code: err.code(),
             message: err.to_string(),
+        }
+    }
+
+    /// Over-capacity: HTTP 503 + `capacity_exhausted` (retryable).
+    ///
+    /// Chosen over 429 because AGENT_CHALLENGE §4.4 maps "503 exhausted" to
+    /// `Timeout` (retryable hop outcome). This is slot exhaustion, not rate limiting.
+    fn capacity_exhausted() -> Self {
+        let _ = CapacityExhausted;
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "capacity_exhausted",
+            message: "runner at max concurrency; retry when a slot frees".into(),
         }
     }
 }
@@ -154,7 +167,13 @@ async fn post_task(
             ),
         ));
     }
-    let task_id = st.accept_task(descriptor).await;
+    let task_id = st.accept_task(descriptor).await.map_err(|_: CapacityExhausted| {
+        tracing::info!(
+            event = "runner_capacity_exhausted",
+            "dispatch refused: concurrency slots full"
+        );
+        ApiError::capacity_exhausted()
+    })?;
     tracing::info!(event = "runner_task_accepted", %task_id, "task accepted");
     Ok((
         StatusCode::ACCEPTED,

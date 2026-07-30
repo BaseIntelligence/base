@@ -10,7 +10,7 @@ use agent_dispatch::{
 };
 use crypto::{MemoryNonceStore, KEY_LEN};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::api::CapacityResponse;
@@ -20,10 +20,24 @@ use crate::auth::{
 };
 use crate::receipt_key::ReceiptKey;
 
+/// Inclusive lower bound for miner-declared concurrency (deepagent `--n-concurrent`).
+pub const MIN_CONCURRENCY: u32 = 1;
+/// Inclusive upper bound for miner-declared concurrency.
+pub const MAX_CONCURRENCY_BOUND: u32 = 5;
+
+/// Clamp a miner-declared concurrency into the upstream eval window `1..=5`.
+///
+/// Values below the floor (including `0`) become [`MIN_CONCURRENCY`]. Values above
+/// the ceiling become [`MAX_CONCURRENCY_BOUND`].
+#[must_use]
+pub fn clamp_concurrency(n: u32) -> u32 {
+    n.clamp(MIN_CONCURRENCY, MAX_CONCURRENCY_BOUND)
+}
+
 /// Runner process configuration (env-driven at the binary boundary).
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
-    /// Advertised max concurrent tasks (todo 19 will clamp/enforce).
+    /// Miner-declared max concurrent tasks (clamped to `1..=5` at construction).
     pub max_concurrency: u32,
     /// When true (default), `POST /v1/task` requires a signed dispatch envelope.
     pub auth_enabled: bool,
@@ -33,6 +47,8 @@ pub struct RunnerConfig {
     pub dispatch_nonce_ttl: Duration,
     /// CVM-local work-receipt key. Required to complete tasks with a real sig.
     pub receipt_key: Option<ReceiptKey>,
+    /// Artificial hold before stub completion (tests / load simulation). Zero in production.
+    pub stub_hold: Duration,
 }
 
 impl Default for RunnerConfig {
@@ -43,6 +59,7 @@ impl Default for RunnerConfig {
             trusted_challenge_pubkey: None,
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
             receipt_key: None,
+            stub_hold: Duration::ZERO,
         }
     }
 }
@@ -71,29 +88,49 @@ struct TaskRecord {
 #[derive(Clone)]
 pub struct RunnerState {
     config: RunnerConfig,
+    /// Effective concurrency after [`clamp_concurrency`].
+    effective_max: u32,
+    /// Permits = effective max; acquired at accept, released when the task finishes.
+    slots: Arc<Semaphore>,
     inner: Arc<Mutex<StoreInner>>,
 }
 
 struct StoreInner {
     tasks: HashMap<String, TaskRecord>,
-    /// Tasks currently in [`TaskLifecycle::Running`].
+    /// Occupied concurrency slots (accepted and not yet finished).
     running: u32,
     /// Single-use dispatch nonces (todo 18).
     dispatch_nonces: MemoryNonceStore,
 }
 
+/// Accept refused because every concurrency slot is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacityExhausted;
+
 impl RunnerState {
     /// New empty store with the given configuration.
+    ///
+    /// `max_concurrency` is clamped to `1..=5`. The semaphore is sized to the
+    /// **effective** value so capacity advertisement matches enforcement.
     #[must_use]
     pub fn new(config: RunnerConfig) -> Self {
+        let effective_max = clamp_concurrency(config.max_concurrency);
         Self {
             config,
+            effective_max,
+            slots: Arc::new(Semaphore::new(effective_max as usize)),
             inner: Arc::new(Mutex::new(StoreInner {
                 tasks: HashMap::new(),
                 running: 0,
                 dispatch_nonces: MemoryNonceStore::new(),
             })),
         }
+    }
+
+    /// Effective max concurrency after clamp (`1..=5`).
+    #[must_use]
+    pub fn effective_max_concurrency(&self) -> u32 {
+        self.effective_max
     }
 
     /// Whether dispatch auth is enforced.
@@ -144,7 +181,7 @@ impl RunnerState {
             .map(|g| g.running)
             .unwrap_or(0);
         CapacityResponse {
-            max_concurrency: self.config.max_concurrency,
+            max_concurrency: self.effective_max,
             current_load: load,
         }
     }
@@ -153,13 +190,29 @@ impl RunnerState {
     pub async fn capacity_async(&self) -> CapacityResponse {
         let g = self.inner.lock().await;
         CapacityResponse {
-            max_concurrency: self.config.max_concurrency,
+            max_concurrency: self.effective_max,
             current_load: g.running,
         }
     }
 
-    /// Enqueue descriptor, spawn stub executor, return assigned task id.
-    pub async fn accept_task(&self, descriptor: TaskDescriptorV1) -> String {
+    /// Try to accept a descriptor under the concurrency semaphore.
+    ///
+    /// Acquires a permit **before** inserting the task. On exhaustion returns
+    /// [`CapacityExhausted`] without creating a task or queueing it.
+    ///
+    /// # Errors
+    ///
+    /// [`CapacityExhausted`] when all slots are held.
+    pub async fn accept_task(
+        &self,
+        descriptor: TaskDescriptorV1,
+    ) -> Result<String, CapacityExhausted> {
+        let permit = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| CapacityExhausted)?;
+
         let task_id = Uuid::new_v4().to_string();
         {
             let mut g = self.inner.lock().await;
@@ -170,13 +223,14 @@ impl RunnerState {
                     result: None,
                 },
             );
+            g.running = g.running.saturating_add(1);
         }
         let state = self.clone();
         let id = task_id.clone();
         tokio::spawn(async move {
-            state.run_stub(id, descriptor).await;
+            state.run_stub(id, descriptor, permit).await;
         });
-        task_id
+        Ok(task_id)
     }
 
     /// Lookup task view fields.
@@ -190,16 +244,24 @@ impl RunnerState {
             .map(|r| (r.lifecycle, r.result.clone()))
     }
 
-    async fn run_stub(&self, task_id: String, descriptor: TaskDescriptorV1) {
+    async fn run_stub(
+        &self,
+        task_id: String,
+        descriptor: TaskDescriptorV1,
+        permit: OwnedSemaphorePermit,
+    ) {
         {
             let mut g = self.inner.lock().await;
             if let Some(rec) = g.tasks.get_mut(&task_id) {
                 rec.lifecycle = TaskLifecycle::Running;
-                g.running = g.running.saturating_add(1);
             }
         }
 
-        tokio::task::yield_now().await;
+        if !self.config.stub_hold.is_zero() {
+            tokio::time::sleep(self.config.stub_hold).await;
+        } else {
+            tokio::task::yield_now().await;
+        }
 
         let (lifecycle, result) = match build_signed_result(&self.config, &descriptor) {
             Ok(result) => (TaskLifecycle::Completed, result),
@@ -214,18 +276,15 @@ impl RunnerState {
             }
         };
 
-        let mut g = self.inner.lock().await;
-        let was_running = g
-            .tasks
-            .get(&task_id)
-            .is_some_and(|r| r.lifecycle == TaskLifecycle::Running);
-        if was_running {
+        {
+            let mut g = self.inner.lock().await;
             g.running = g.running.saturating_sub(1);
+            if let Some(rec) = g.tasks.get_mut(&task_id) {
+                rec.lifecycle = lifecycle;
+                rec.result = Some(result);
+            }
         }
-        if let Some(rec) = g.tasks.get_mut(&task_id) {
-            rec.lifecycle = lifecycle;
-            rec.result = Some(result);
-        }
+        drop(permit);
     }
 }
 

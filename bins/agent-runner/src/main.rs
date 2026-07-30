@@ -2,7 +2,8 @@
 //!
 //! Loads the CVM-local work-receipt key from `GBASE_RECEIPT_SK_FILE` (mode 0600
 //! mount). Dispatch auth (todo 18) is on by default when a trusted challenge
-//! pubkey is configured.
+//! pubkey is configured. Concurrency is clamped to 1..=5 and enforced with a
+//! semaphore (todo 19).
 
 #![forbid(unsafe_code)]
 
@@ -12,8 +13,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use agent_runner::{
-    app, load_or_generate, load_required, receipt_sk_path_from_env, RunnerConfig, RunnerState,
-    DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH, RECEIPT_SK_FILE_ENV,
+    app, clamp_concurrency, load_or_generate, load_required, receipt_sk_path_from_env,
+    RunnerConfig, RunnerState, DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH,
+    RECEIPT_SK_FILE_ENV,
 };
 use clap::Parser;
 use crypto::KEY_LEN;
@@ -29,7 +31,7 @@ struct Cli {
     /// Bind address (compose publishes agent:8080).
     #[arg(long, env = "GBASE_RUNNER_BIND", default_value = "0.0.0.0:8080")]
     bind: SocketAddr,
-    /// Advertised max concurrency (enforcement is todo 19).
+    /// Miner-declared max concurrency (clamped to 1..=5 at runtime).
     #[arg(long, env = "GBASE_MAX_CONCURRENCY", default_value_t = 1)]
     max_concurrency: u32,
     /// Path to the CVM-local receipt mini-secret (mode 0600 file).
@@ -106,12 +108,15 @@ async fn serve(cli: Cli) -> Result<(), String> {
         );
     }
 
+    let declared = cli.max_concurrency;
+    let effective = clamp_concurrency(declared);
     let state = RunnerState::new(RunnerConfig {
-        max_concurrency: cli.max_concurrency,
+        max_concurrency: declared,
         auth_enabled,
         trusted_challenge_pubkey: trusted,
         dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
         receipt_key: Some(key),
+        stub_hold: Duration::ZERO,
     });
     let router = app(state);
     let listener = TcpListener::bind(cli.bind)
@@ -121,7 +126,8 @@ async fn serve(cli: Cli) -> Result<(), String> {
     tracing::info!(
         event = "agent_runner_listening",
         %actual,
-        max_concurrency = cli.max_concurrency,
+        declared_max_concurrency = declared,
+        effective_max_concurrency = effective,
         receipt_public_key_hex = %public_hex,
         auth_enabled,
         "agent-runner HTTP surface"
