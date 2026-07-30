@@ -1,6 +1,6 @@
 [package]
 name = "agent-dispatch"
-description = "Orchestrator↔runner task-dispatch wire types and traits (skeleton; protocol lands later)"
+description = "Orchestrator↔runner JSON wire types and domain-separated signed work receipts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,17 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+crypto = { path = "../crypto" }
+hex = "0.4"
+parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
 
 [lints]
 workspace = true

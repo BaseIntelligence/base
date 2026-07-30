@@ -54,9 +54,13 @@ pub mod domain {
     pub const ATTEST: DomainTag = DomainTag::new(b"gbase-attest-v1");
     /// Owner-signed trust-root bodies.
     pub const TRUST_ROOT: DomainTag = DomainTag::new(b"gbase-trustroot-v1");
+    /// CVM-local agent work receipt (orchestrator verifies; not D10).
+    pub const WORK_RECEIPT: DomainTag = DomainTag::new(b"gbase-agent-work-receipt-v1");
 
     /// All canonical tags (stable order for tests / enumeration).
-    pub const ALL: [DomainTag; 6] = [BUNDLE, RAW_WEIGHT, DISSENT, ROOT, ATTEST, TRUST_ROOT];
+    pub const ALL: [DomainTag; 7] = [
+        BUNDLE, RAW_WEIGHT, DISSENT, ROOT, ATTEST, TRUST_ROOT, WORK_RECEIPT,
+    ];
 }
 
 /// A length-known const domain tag used in signature preimages.
@@ -482,7 +486,7 @@ mod tests {
                 std::str::from_utf8(label)
             );
         }
-        assert_eq!(labels.len(), 6);
+        assert_eq!(labels.len(), 7);
 
         assert_eq!(domain::BUNDLE.as_bytes(), b"gbase-bundle-v1");
         assert_eq!(domain::RAW_WEIGHT.as_bytes(), b"gbase-rawweight-v1");
@@ -490,6 +494,10 @@ mod tests {
         assert_eq!(domain::ROOT.as_bytes(), b"gbase-root-v1");
         assert_eq!(domain::ATTEST.as_bytes(), b"gbase-attest-v1");
         assert_eq!(domain::TRUST_ROOT.as_bytes(), b"gbase-trustroot-v1");
+        assert_eq!(
+            domain::WORK_RECEIPT.as_bytes(),
+            b"gbase-agent-work-receipt-v1"
+        );
     }
 
     /// S6b — different payloads under same domain do not verify.
