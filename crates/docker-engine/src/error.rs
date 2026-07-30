@@ -19,4 +19,18 @@ pub enum DockerError {
     /// JSON decode failure.
     #[error("docker API JSON: {0}")]
     Json(String),
+    /// One-shot run exceeded wall-clock timeout (container stopped and removed).
+    #[error("docker run timed out after {timeout_sec}s")]
+    Timeout {
+        /// Configured timeout in whole seconds.
+        timeout_sec: u64,
+    },
+    /// Owned-run name rejected (must use the verifier prefix).
+    #[error("container name must start with `{required_prefix}`: {name}")]
+    BadName {
+        /// Rejected container name.
+        name: String,
+        /// Required name prefix.
+        required_prefix: String,
+    },
 }

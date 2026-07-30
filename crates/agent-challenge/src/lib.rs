@@ -12,6 +12,7 @@ mod keys;
 mod score;
 mod submit;
 mod task_gen;
+mod verify;
 
 pub use challenge::{
     correct_http200, correct_http200_fixture, silence_is_bug_leaf, AgentV1Challenge,
@@ -38,3 +39,8 @@ pub use bundle::{
     ScoreOrAbsence,
 };
 pub use crypto::{KEY_LEN, SIGNATURE_LEN};
+
+pub use verify::{
+    map_docker_timeout, reward_from_json_bytes, HarborVerifier, HarborVerifierConfig, Reward,
+    Verifier, VerifyError, ZeroReason, DEFAULT_VERIFIER_TIMEOUT_SEC,
+};

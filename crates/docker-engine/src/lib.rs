@@ -21,7 +21,10 @@ pub use api::DockerApi;
 pub use client::AllowlistClient;
 pub use error::DockerError;
 pub use mock::MockDocker;
-pub use types::{ContainerSummary, RunResult};
+pub use types::{ContainerSummary, RunResult, RunSpec};
+
+/// Required name prefix for owned verifier / one-shot runs.
+pub const OWNED_NAME_PREFIX: &str = "gbase-verify-";
 
 /// Crate identity for smoke / wiring checks.
 #[must_use]

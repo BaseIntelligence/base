@@ -16,9 +16,11 @@ dependencies = [
 name = "agent-challenge"
 version = "0.1.0"
 dependencies = [
+ "agent-pack",
  "bundle",
  "chain",
  "crypto",
+ "docker-engine",
  "hex",
  "parity-scale-codec",
  "rand_core 0.6.4",
@@ -27,6 +29,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

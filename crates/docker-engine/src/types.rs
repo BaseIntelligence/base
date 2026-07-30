@@ -25,3 +25,27 @@ pub struct RunResult {
     /// Combined stdout/stderr log text.
     pub logs: String,
 }
+
+/// Owned one-shot container run (verifier / agent runner).
+///
+/// Names must start with [`crate::OWNED_NAME_PREFIX`]. Image should be
+/// digest-pinned (`repo@sha256:…`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSpec {
+    /// Container name (must start with owned prefix).
+    pub name: String,
+    /// Image reference, preferably `name@sha256:…`.
+    pub image: String,
+    /// Entrypoint command.
+    pub cmd: Vec<String>,
+    /// Bind mounts `host:container[:ro]`.
+    pub binds: Vec<String>,
+    /// Environment `KEY=VALUE` entries.
+    pub env: Vec<String>,
+    /// Disable networking inside the container.
+    pub network_disabled: bool,
+    /// Working directory inside the container.
+    pub working_dir: Option<String>,
+    /// Wall-clock timeout; on expiry → stop/rm + [`crate::DockerError::Timeout`].
+    pub timeout_sec: Option<u64>,
+}

@@ -13,6 +13,8 @@ bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
 trustroot = { path = "../trustroot" }
+agent-pack = { path = "../agent-pack" }
+docker-engine = { path = "../docker-engine" }
 hex = "0.4"
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -26,9 +28,12 @@ tracing = "0.1"
 [dev-dependencies]
 bundle = { path = "../bundle" }
 crypto = { path = "../crypto" }
+agent-pack = { path = "../agent-pack" }
+docker-engine = { path = "../docker-engine" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "sync"] }
 wiremock = "0.6"
 
