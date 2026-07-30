@@ -1,17 +1,24 @@
-//! Fixture-driven offline tests F1–F11 (`AGENT_CHALLENGE` §5.5–§5.7).
+//! Fixture-driven offline tests F1–F11 v2 successors (`AGENT_CHALLENGE` scoring_version = 2).
+//!
+//! Each F1–F11 case is a named v2 successor of the retired v1 echo fixtures.
+//! Digests match `tests/fixtures/v2_*.hex` (pack-fixture-001 + FIXTURE_MODEL_PATCH).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use agent_challenge::{
-    answer_digest, score_from_outcome, task_blob, task_id, AttestationStatus, CallOutcome,
-    NoScoreReasonCode, ScoreInputs, ScoreOrAbsence, SCORE_MAX, SCORING_VERSION,
+    answer_digest, answer_digest_v2, score_from_outcome, task_blob, task_id, task_blob_v2,
+    task_id_v2, AttestationStatus, CallOutcome, NoScoreReasonCode, ScoreInputs, ScoreOrAbsence,
+    FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID, SCORE_MAX, SCORING_VERSION,
 };
 
-const F1_TASK_ID: &str = "4a590b2abf87da6bccd97d8fbe5d2e774bdbda3ad421119688010537be2b31ec";
-const F1_TASK_BLOB: &str = "8c5430ceb95b9e422026baf2eaddb4c9c723923c6353164fe9b0905a47f9a29f";
-const F1_ANSWER: &str = "83180b08e05630496531a158d174ce69ba857d854d8692087947706c159a487c";
-const F11_TASK_ID: &str = "d954306fba3943a86bb69aedfd08f2bca850eb2adabaaf5efe2ad2728dbf3412";
-const F11_ANSWER: &str = "05157d001bb1ec9ef5acc7140d0221141d2fbc14a830ce32893793f30470c0aa";
+/// F1 v2 successor — miner 0x11 task_id golden.
+const F1_V2_TASK_ID: &str = "b1c18e56abe993e20e8dadcb72c7a7cadee8975e5741d15d1acb37f5ea367644";
+/// F1 v2 successor — task_blob golden.
+const F1_V2_TASK_BLOB: &str = "c563caca4fa3a7c5e834a88b0dae9eb1ef87f90fcddc9973e38d2730b347c441";
+/// F1/F11 v2 successor — answer_digest_v2(model.patch) golden (patch-only preimage).
+const F1_V2_ANSWER: &str = "703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d";
+/// F11 v2 successor — miner 0x22 task_id golden.
+const F11_V2_TASK_ID: &str = "b99762643336fbf7abeb2c07085ff3d64ee1fd8d1c98b149c57a36ec0396228f";
 
 fn miner11() -> [u8; 32] {
     [0x11u8; 32]
@@ -21,14 +28,15 @@ fn miner22() -> [u8; 32] {
     [0x22u8; 32]
 }
 
-fn correct_inputs(miner: [u8; 32], duration_ms: u64, att: AttestationStatus) -> ScoreInputs {
-    let tid = task_id(1, 7, &miner);
-    let blob = task_blob(&tid, SCORING_VERSION);
-    let ans = answer_digest(&blob);
+fn correct_inputs_v2(miner: [u8; 32], duration_ms: u64, att: AttestationStatus) -> ScoreInputs {
+    let tid = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
+    let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
     ScoreInputs {
         netuid: 1,
         epoch: 7,
         miner_hotkey: miner,
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
         attestation: att,
         duration_ms,
         outcome: CallOutcome::Http200 {
@@ -42,32 +50,48 @@ fn correct_inputs(miner: [u8; 32], duration_ms: u64, att: AttestationStatus) -> 
 }
 
 #[test]
-fn f1_digests_and_score_max() {
+fn f1_v2_digests_and_score_max() {
     let m = miner11();
-    let tid = task_id(1, 7, &m);
-    let blob = task_blob(&tid, SCORING_VERSION);
-    let ans = answer_digest(&blob);
-    assert_eq!(hex::encode(tid), F1_TASK_ID);
-    assert_eq!(hex::encode(blob), F1_TASK_BLOB);
-    assert_eq!(hex::encode(ans), F1_ANSWER);
+    let tid = task_id_v2(1, 7, &m, FIXTURE_PACK_ID, SCORING_VERSION);
+    let blob = task_blob_v2(&tid, SCORING_VERSION, FIXTURE_PACK_ID);
+    let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
+    assert_eq!(hex::encode(tid), F1_V2_TASK_ID);
     assert_eq!(
-        score_from_outcome(&correct_inputs(m, 2000, AttestationStatus::Verified)),
+        hex::encode(tid),
+        include_str!("fixtures/v2_task_id_a.hex").trim()
+    );
+    assert_eq!(hex::encode(blob), F1_V2_TASK_BLOB);
+    assert_eq!(
+        hex::encode(blob),
+        include_str!("fixtures/v2_task_blob_a.hex").trim()
+    );
+    assert_eq!(hex::encode(ans), F1_V2_ANSWER);
+    assert_eq!(
+        hex::encode(ans),
+        include_str!("fixtures/v2_answer_digest_a.hex").trim()
+    );
+    assert_eq!(
+        score_from_outcome(&correct_inputs_v2(m, 2000, AttestationStatus::Verified)),
         ScoreOrAbsence::Score { value: SCORE_MAX }
     );
 }
 
 #[test]
-fn f2_duration_zero_score_max() {
+fn f2_v2_duration_zero_score_max() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 0, AttestationStatus::Verified)),
+        score_from_outcome(&correct_inputs_v2(
+            miner11(),
+            0,
+            AttestationStatus::Verified
+        )),
         ScoreOrAbsence::Score { value: SCORE_MAX }
     );
 }
 
 #[test]
-fn f3_duration_6000_half() {
+fn f3_v2_duration_6000_half() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             6000,
             AttestationStatus::Verified
@@ -77,9 +101,9 @@ fn f3_duration_6000_half() {
 }
 
 #[test]
-fn f4_duration_hard_score_zero() {
+fn f4_v2_duration_hard_score_zero() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_000,
             AttestationStatus::Verified
@@ -89,9 +113,9 @@ fn f4_duration_hard_score_zero() {
 }
 
 #[test]
-fn f5_duration_over_hard_timeout() {
+fn f5_v2_duration_over_hard_timeout() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_001,
             AttestationStatus::Verified
@@ -103,8 +127,8 @@ fn f5_duration_over_hard_timeout() {
 }
 
 #[test]
-fn f6_wrong_answer_score_zero() {
-    let mut inp = correct_inputs(miner11(), 2000, AttestationStatus::Verified);
+fn f6_v2_wrong_answer_score_zero() {
+    let mut inp = correct_inputs_v2(miner11(), 2000, AttestationStatus::Verified);
     if let CallOutcome::Http200 {
         ref mut answer_digest,
         ..
@@ -116,9 +140,13 @@ fn f6_wrong_answer_score_zero() {
 }
 
 #[test]
-fn f7_parked_attestation() {
+fn f7_v2_parked_attestation() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 2000, AttestationStatus::Parked)),
+        score_from_outcome(&correct_inputs_v2(
+            miner11(),
+            2000,
+            AttestationStatus::Parked
+        )),
         ScoreOrAbsence::NoScore {
             reason: NoScoreReasonCode::AttestationNotVerified
         }
@@ -126,9 +154,13 @@ fn f7_parked_attestation() {
 }
 
 #[test]
-fn f8_missing_attestation() {
+fn f8_v2_missing_attestation() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 2000, AttestationStatus::Missing)),
+        score_from_outcome(&correct_inputs_v2(
+            miner11(),
+            2000,
+            AttestationStatus::Missing
+        )),
         ScoreOrAbsence::NoScore {
             reason: NoScoreReasonCode::AttestationNotVerified
         }
@@ -136,9 +168,9 @@ fn f8_missing_attestation() {
 }
 
 #[test]
-fn f9_rejected_attestation() {
+fn f9_v2_rejected_attestation() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             2000,
             AttestationStatus::Rejected
@@ -150,11 +182,13 @@ fn f9_rejected_attestation() {
 }
 
 #[test]
-fn f10_schema_invalid_response() {
+fn f10_v2_schema_invalid_response() {
     let inp = ScoreInputs {
         netuid: 1,
         epoch: 7,
         miner_hotkey: miner11(),
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
         attestation: AttestationStatus::Verified,
         duration_ms: 50,
         outcome: CallOutcome::InvalidResponse,
@@ -168,42 +202,47 @@ fn f10_schema_invalid_response() {
 }
 
 #[test]
-fn f11_second_miner_digests_and_score() {
+fn f11_v2_second_miner_digests_and_score() {
     let m = miner22();
-    let tid = task_id(1, 7, &m);
-    let blob = task_blob(&tid, SCORING_VERSION);
-    let ans = answer_digest(&blob);
-    assert_eq!(hex::encode(tid), F11_TASK_ID);
-    assert_eq!(hex::encode(ans), F11_ANSWER);
+    let tid = task_id_v2(1, 7, &m, FIXTURE_PACK_ID, SCORING_VERSION);
+    let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
+    assert_eq!(hex::encode(tid), F11_V2_TASK_ID);
     assert_eq!(
-        score_from_outcome(&correct_inputs(m, 2000, AttestationStatus::Verified)),
+        hex::encode(tid),
+        include_str!("fixtures/v2_task_id_b.hex").trim()
+    );
+    // Same patch → same answer_digest_v2 regardless of miner.
+    assert_eq!(hex::encode(ans), F1_V2_ANSWER);
+    assert_eq!(
+        score_from_outcome(&correct_inputs_v2(m, 2000, AttestationStatus::Verified)),
         ScoreOrAbsence::Score { value: SCORE_MAX }
     );
 }
 
 #[test]
-fn reference_assertions_section_5_7() {
-    // assert score(F1) == Score(1_000_000)
+fn reference_assertions_section_5_7_v2() {
+    assert_eq!(SCORING_VERSION, 2);
+    // assert score(F1_v2) == Score(1_000_000)
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             2000,
             AttestationStatus::Verified
         )),
         ScoreOrAbsence::Score { value: 1_000_000 }
     );
-    // assert score(F3) == Score(500_000)
+    // assert score(F3_v2) == Score(500_000)
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             6000,
             AttestationStatus::Verified
         )),
         ScoreOrAbsence::Score { value: 500_000 }
     );
-    // assert score(F5) == NoScore(Timeout)
+    // assert score(F5_v2) == NoScore(Timeout)
     assert_eq!(
-        score_from_outcome(&correct_inputs(
+        score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_001,
             AttestationStatus::Verified
@@ -212,19 +251,52 @@ fn reference_assertions_section_5_7() {
             reason: NoScoreReasonCode::Timeout
         }
     );
-    // assert score(F7) == NoScore(AttestationNotVerified)
+    // assert score(F7_v2) == NoScore(AttestationNotVerified)
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 2000, AttestationStatus::Parked)),
+        score_from_outcome(&correct_inputs_v2(
+            miner11(),
+            2000,
+            AttestationStatus::Parked
+        )),
         ScoreOrAbsence::NoScore {
             reason: NoScoreReasonCode::AttestationNotVerified
         }
     );
-    assert_eq!(hex::encode(task_id(1, 7, &miner11())), F1_TASK_ID);
     assert_eq!(
-        hex::encode(answer_digest(&task_blob(
-            &task_id(1, 7, &miner11()),
-            SCORING_VERSION
-        ))),
-        F1_ANSWER
+        hex::encode(task_id_v2(1, 7, &miner11(), FIXTURE_PACK_ID, SCORING_VERSION)),
+        F1_V2_TASK_ID
+    );
+    assert_eq!(
+        hex::encode(answer_digest_v2(FIXTURE_MODEL_PATCH)),
+        F1_V2_ANSWER
+    );
+}
+
+/// Retired v1 echo fixture must not validate under live scoring_version 2.
+#[test]
+fn f_echo_retired_v1_answer_does_not_validate() {
+    let m = miner11();
+    let tid_v2 = task_id_v2(1, 7, &m, FIXTURE_PACK_ID, SCORING_VERSION);
+    let echo = answer_digest(&task_blob(&task_id(1, 7, &m), 1));
+    let inp = ScoreInputs {
+        netuid: 1,
+        epoch: 7,
+        miner_hotkey: m,
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+        attestation: AttestationStatus::Verified,
+        duration_ms: 2000,
+        outcome: CallOutcome::Http200 {
+            challenge_id: "agent-v1".into(),
+            epoch: 7,
+            task_id: tid_v2,
+            answer_digest: echo,
+            agent_version: "1".into(),
+        },
+    };
+    assert_eq!(
+        score_from_outcome(&inp),
+        ScoreOrAbsence::Score { value: 0 },
+        "v1 echo answer must not earn credit under scoring_version 2"
     );
 }

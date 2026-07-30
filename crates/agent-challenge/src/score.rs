@@ -1,9 +1,12 @@
 //! Pure integer scoring rule (`AGENT_CHALLENGE` §5.4).
+//!
+//! Live path uses pack-bound v2 task identity and `answer_digest_v2(model.patch)`.
+//! The v1 echo answer (`gbase-agent-answer-v1` ‖ task_blob) is retired.
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use crypto::KEY_LEN;
 
-use crate::task_gen::{answer_digest, task_blob, task_id, CHALLENGE_ID, SCORING_VERSION};
+use crate::task_gen::{answer_digest_v2, task_id_v2, CHALLENGE_ID, SCORING_VERSION};
 
 /// Maximum score value.
 pub const SCORE_MAX: u64 = 1_000_000;
@@ -39,6 +42,10 @@ pub struct ScoreInputs {
     pub epoch: u64,
     /// Miner hotkey.
     pub miner_hotkey: [u8; KEY_LEN],
+    /// Pack id bound into v2 task identity (UTF-8 bytes).
+    pub pack_id: Vec<u8>,
+    /// Oracle / fixture expected `model.patch` for [`answer_digest_v2`].
+    pub expected_model_patch: Vec<u8>,
     /// Attestation status this epoch.
     pub attestation: AttestationStatus,
     /// Challenge-side wall time of the successful attempt, or time to final failure.
@@ -58,7 +65,7 @@ pub enum CallOutcome {
         epoch: u64,
         /// Response `task_id` (32 bytes).
         task_id: [u8; 32],
-        /// Response `answer_digest` (32 bytes).
+        /// Response `answer_digest` (32 bytes) — must equal `answer_digest_v2(model.patch)`.
         answer_digest: [u8; 32],
         /// Response `agent_version`.
         agent_version: String,
@@ -109,9 +116,14 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
             answer_digest: resp_answer,
             agent_version,
         } => {
-            let expected_tid = task_id(input.netuid, input.epoch, &input.miner_hotkey);
-            let expected_blob = task_blob(&expected_tid, SCORING_VERSION);
-            let expected_answer = answer_digest(&expected_blob);
+            let expected_tid = task_id_v2(
+                input.netuid,
+                input.epoch,
+                &input.miner_hotkey,
+                &input.pack_id,
+                SCORING_VERSION,
+            );
+            let expected_answer = answer_digest_v2(&input.expected_model_patch);
 
             if challenge_id != CHALLENGE_ID
                 || *epoch != input.epoch
@@ -164,17 +176,21 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::task_gen::{answer_digest, task_blob, task_id, SCORING_VERSION};
+    use crate::task_gen::{
+        answer_digest, answer_digest_v2, task_blob, task_id, task_id_v2, FIXTURE_MODEL_PATCH,
+        FIXTURE_PACK_ID, SCORING_VERSION,
+    };
 
     fn base_ok(duration_ms: u64) -> ScoreInputs {
         let miner = [0x11u8; 32];
-        let tid = task_id(1, 7, &miner);
-        let blob = task_blob(&tid, SCORING_VERSION);
-        let ans = answer_digest(&blob);
+        let tid = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
+        let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
         ScoreInputs {
             netuid: 1,
             epoch: 7,
             miner_hotkey: miner,
+            pack_id: FIXTURE_PACK_ID.to_vec(),
+            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
             attestation: AttestationStatus::Verified,
             duration_ms,
             outcome: CallOutcome::Http200 {
@@ -188,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn f1_score_max_at_soft() {
+    fn f1_v2_score_max_at_soft() {
         assert_eq!(
             score_from_outcome(&base_ok(2000)),
             ScoreOrAbsence::Score { value: SCORE_MAX }
@@ -196,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn f2_score_max_at_zero() {
+    fn f2_v2_score_max_at_zero() {
         assert_eq!(
             score_from_outcome(&base_ok(0)),
             ScoreOrAbsence::Score { value: SCORE_MAX }
@@ -204,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn f3_midpoint_half() {
+    fn f3_v2_midpoint_half() {
         assert_eq!(
             score_from_outcome(&base_ok(6000)),
             ScoreOrAbsence::Score { value: 500_000 }
@@ -212,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn f4_hard_boundary_zero_score() {
+    fn f4_v2_hard_boundary_zero_score() {
         assert_eq!(
             score_from_outcome(&base_ok(10_000)),
             ScoreOrAbsence::Score { value: 0 }
@@ -220,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn f5_over_hard_timeout() {
+    fn f5_v2_over_hard_timeout() {
         assert_eq!(
             score_from_outcome(&base_ok(10_001)),
             ScoreOrAbsence::NoScore {
@@ -230,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn f6_wrong_answer_score_zero() {
+    fn f6_v2_wrong_answer_score_zero() {
         let mut inp = base_ok(2000);
         if let CallOutcome::Http200 {
             ref mut answer_digest,
@@ -243,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn f7_parked() {
+    fn f7_v2_parked() {
         let mut inp = base_ok(2000);
         inp.attestation = AttestationStatus::Parked;
         assert_eq!(
@@ -255,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn f8_missing() {
+    fn f8_v2_missing() {
         let mut inp = base_ok(2000);
         inp.attestation = AttestationStatus::Missing;
         assert_eq!(
@@ -267,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn f9_rejected() {
+    fn f9_v2_rejected() {
         let mut inp = base_ok(2000);
         inp.attestation = AttestationStatus::Rejected;
         assert_eq!(
@@ -279,11 +295,13 @@ mod tests {
     }
 
     #[test]
-    fn f10_schema_fail() {
+    fn f10_v2_schema_fail() {
         let inp = ScoreInputs {
             netuid: 1,
             epoch: 7,
             miner_hotkey: [0x11u8; 32],
+            pack_id: FIXTURE_PACK_ID.to_vec(),
+            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
             attestation: AttestationStatus::Verified,
             duration_ms: 100,
             outcome: CallOutcome::InvalidResponse,
@@ -297,15 +315,16 @@ mod tests {
     }
 
     #[test]
-    fn f11_second_miner() {
+    fn f11_v2_second_miner() {
         let miner = [0x22u8; 32];
-        let tid = task_id(1, 7, &miner);
-        let blob = task_blob(&tid, SCORING_VERSION);
-        let ans = answer_digest(&blob);
+        let tid = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
+        let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
         let inp = ScoreInputs {
             netuid: 1,
             epoch: 7,
             miner_hotkey: miner,
+            pack_id: FIXTURE_PACK_ID.to_vec(),
+            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
             attestation: AttestationStatus::Verified,
             duration_ms: 2000,
             outcome: CallOutcome::Http200 {
@@ -328,6 +347,67 @@ mod tests {
         assert_eq!(
             score_latency(3000),
             ScoreOrAbsence::Score { value: 875_000 }
+        );
+    }
+
+    /// Retired v1 echo answer must not receive full credit under scoring_version 2.
+    #[test]
+    fn v1_echo_answer_no_longer_validates() {
+        let miner = [0x11u8; 32];
+        let tid_v2 = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
+        // Historical echo: sha256(gbase-agent-answer-v1 ‖ task_blob_v1)
+        let tid_v1 = task_id(1, 7, &miner);
+        let echo_ans = answer_digest(&task_blob(&tid_v1, 1));
+        let inp = ScoreInputs {
+            netuid: 1,
+            epoch: 7,
+            miner_hotkey: miner,
+            pack_id: FIXTURE_PACK_ID.to_vec(),
+            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+            attestation: AttestationStatus::Verified,
+            duration_ms: 2000,
+            outcome: CallOutcome::Http200 {
+                challenge_id: CHALLENGE_ID.to_owned(),
+                epoch: 7,
+                task_id: tid_v2,
+                answer_digest: echo_ans,
+                agent_version: "1".into(),
+            },
+        };
+        assert_eq!(
+            score_from_outcome(&inp),
+            ScoreOrAbsence::Score { value: 0 },
+            "v1 echo digest must not validate as a correct v2 model.patch answer"
+        );
+    }
+
+    /// Full v1 identity (v1 task_id + echo answer) is InvalidResponse under v2.
+    #[test]
+    fn v1_task_id_and_echo_rejected_as_invalid_response() {
+        let miner = [0x11u8; 32];
+        let tid_v1 = task_id(1, 7, &miner);
+        let echo_ans = answer_digest(&task_blob(&tid_v1, 1));
+        let inp = ScoreInputs {
+            netuid: 1,
+            epoch: 7,
+            miner_hotkey: miner,
+            pack_id: FIXTURE_PACK_ID.to_vec(),
+            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+            attestation: AttestationStatus::Verified,
+            duration_ms: 2000,
+            outcome: CallOutcome::Http200 {
+                challenge_id: CHALLENGE_ID.to_owned(),
+                epoch: 7,
+                task_id: tid_v1,
+                answer_digest: echo_ans,
+                agent_version: "1".into(),
+            },
+        };
+        assert_eq!(
+            score_from_outcome(&inp),
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::InvalidResponse
+            }
         );
     }
 }

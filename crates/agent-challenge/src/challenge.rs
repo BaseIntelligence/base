@@ -14,7 +14,8 @@ use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 use crate::score::{score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs};
 use crate::submit::{GatewayClient, SubmitError, SubmitOutcome};
 use crate::task_gen::{
-    answer_digest, task_blob, task_id, CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION,
+    answer_digest_v2, task_id_v2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH,
+    FIXTURE_PACK_ID, SCORING_VERSION,
 };
 
 /// Miner hotkey type alias.
@@ -31,6 +32,8 @@ pub struct EpochCtx {
     pub metagraph: Metagraph,
     /// Local owner-signed challenges body (for policy + public key).
     pub challenges: ChallengesBody,
+    /// Pack id selected for this miner/epoch (bound into v2 task identity).
+    pub pack_id: Vec<u8>,
 }
 
 /// Look up attestation status for a miner this epoch.
@@ -65,6 +68,8 @@ pub enum MinerCallOutcome {
         duration_ms: u64,
         /// Terminal call outcome.
         outcome: CallOutcome,
+        /// Oracle / fixture expected `model.patch` for v2 answer check.
+        expected_model_patch: Vec<u8>,
     },
 }
 
@@ -193,12 +198,15 @@ impl Challenge for AgentV1Challenge {
             MinerCallOutcome::Observed {
                 duration_ms,
                 outcome,
+                expected_model_patch,
             } => {
                 let attestation = attest.status(ctx.netuid, ctx.epoch, &miner);
                 let inputs = ScoreInputs {
                     netuid: ctx.netuid,
                     epoch: ctx.epoch,
                     miner_hotkey: miner,
+                    pack_id: ctx.pack_id.clone(),
+                    expected_model_patch: expected_model_patch.clone(),
                     attestation,
                     duration_ms: *duration_ms,
                     outcome: outcome.clone(),
@@ -222,6 +230,7 @@ impl Challenge for AgentV1Challenge {
                 MinerCallOutcome::Observed {
                     duration_ms: 0,
                     outcome: CallOutcome::ChallengeInternal,
+                    expected_model_patch: Vec::new(),
                 },
             );
             let soa = self.score_one(ctx, *h, &call, attest);
@@ -257,12 +266,17 @@ impl Challenge for AgentV1Challenge {
     }
 }
 
-/// Build a correct `Http200` outcome for fixtures.
+/// Build a correct `Http200` outcome for fixtures (v2 pack-bound identity + model.patch digest).
 #[must_use]
-pub fn correct_http200(netuid: u16, epoch: u64, miner: &Hotkey) -> CallOutcome {
-    let tid = task_id(netuid, epoch, miner);
-    let blob = task_blob(&tid, SCORING_VERSION);
-    let ans = answer_digest(&blob);
+pub fn correct_http200(
+    netuid: u16,
+    epoch: u64,
+    miner: &Hotkey,
+    pack_id: &[u8],
+    model_patch: &[u8],
+) -> CallOutcome {
+    let tid = task_id_v2(netuid, epoch, miner, pack_id, SCORING_VERSION);
+    let ans = answer_digest_v2(model_patch);
     CallOutcome::Http200 {
         challenge_id: CHALLENGE_ID.to_owned(),
         epoch,
@@ -270,6 +284,12 @@ pub fn correct_http200(netuid: u16, epoch: u64, miner: &Hotkey) -> CallOutcome {
         answer_digest: ans,
         agent_version: "1".into(),
     }
+}
+
+/// Fixture helper: correct HTTP 200 with default pack/patch placeholders.
+#[must_use]
+pub fn correct_http200_fixture(netuid: u16, epoch: u64, miner: &Hotkey) -> CallOutcome {
+    correct_http200(netuid, epoch, miner, FIXTURE_PACK_ID, FIXTURE_MODEL_PATCH)
 }
 
 /// Helper: `NoScore` reason for missing call coverage (D24).
@@ -316,6 +336,7 @@ mod tests {
                     policy: ParticipantPolicy::AllMetagraphHotkeys,
                 }],
             },
+            pack_id: FIXTURE_PACK_ID.to_vec(),
         }
     }
 
@@ -332,7 +353,8 @@ mod tests {
             m1,
             MinerCallOutcome::Observed {
                 duration_ms: 2000,
-                outcome: correct_http200(1, 7, &m1),
+                outcome: correct_http200_fixture(1, 7, &m1),
+                expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
             },
         );
         let attest = MapAttestationLookup {
@@ -379,7 +401,8 @@ mod tests {
             outsider,
             MinerCallOutcome::Observed {
                 duration_ms: 0,
-                outcome: correct_http200(1, 7, &outsider),
+                outcome: correct_http200_fixture(1, 7, &outsider),
+                expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
             },
         );
         let attest = MapAttestationLookup {
@@ -390,5 +413,11 @@ mod tests {
         assert_eq!(scores.len(), 1);
         assert!(scores.contains_key(&m1));
         assert!(!scores.contains_key(&outsider));
+    }
+
+    #[test]
+    fn scoring_version_is_two() {
+        assert_eq!(AgentV1Challenge::new().scoring_version(), 2);
+        assert_eq!(SCORING_VERSION, 2);
     }
 }

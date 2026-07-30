@@ -1,7 +1,9 @@
-//! `agent-v1` challenge service (`docs/AGENT_CHALLENGE.md`, `scoring_version` = 1).
+//! `agent-v1` challenge service (`docs/AGENT_CHALLENGE.md`, `scoring_version` = 2).
 //!
 //! Pure offline scoring, D24 participant coverage (`NoScore` never silence),
 //! sr25519 leaf signing under `gbase-rawweight-v1`, and gateway POST with retry.
+//!
+//! Live task identity uses pack-bound v2 formulas (`task_id_v2`, `answer_digest_v2`).
 
 #![forbid(unsafe_code)]
 
@@ -12,8 +14,9 @@ mod submit;
 mod task_gen;
 
 pub use challenge::{
-    correct_http200, silence_is_bug_leaf, AgentV1Challenge, AttestationLookup, Challenge,
-    ChallengeError, EpochCtx, Hotkey, MapAttestationLookup, MinerCallOutcome,
+    correct_http200, correct_http200_fixture, silence_is_bug_leaf, AgentV1Challenge,
+    AttestationLookup, Challenge, ChallengeError, EpochCtx, Hotkey, MapAttestationLookup,
+    MinerCallOutcome,
 };
 pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use score::{
@@ -26,8 +29,8 @@ pub use submit::{
 };
 pub use task_gen::{
     answer_digest, answer_digest_v2, task_blob, task_blob_v2, task_id, task_id_v2,
-    ANSWER_DOMAIN_V2, CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION, SCORING_VERSION_V2,
-    TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
+    ANSWER_DOMAIN_V2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID,
+    SCORING_VERSION, SCORING_VERSION_V2, TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
 };
 
 pub use bundle::{

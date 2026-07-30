@@ -48,10 +48,15 @@ use sha2::{Digest, Sha256};
 pub const CHALLENGE_ID: &str = "agent-v1";
 /// UTF-8 bytes of [`CHALLENGE_ID`].
 pub const CHALLENGE_ID_BYTES: &[u8] = b"agent-v1";
-/// `challenge_scoring_version` for the v1 formulas in this crate.
-pub const SCORING_VERSION: u16 = 1;
-/// Scoring version bound into v2 pack-aware formulas (not live-bumped yet).
-pub const SCORING_VERSION_V2: u16 = 2;
+/// Live `challenge_scoring_version` for agent-v1 (pack-bound v2 formulas).
+pub const SCORING_VERSION: u16 = 2;
+/// Alias kept for call sites that name the v2 constant explicitly.
+pub const SCORING_VERSION_V2: u16 = SCORING_VERSION;
+
+/// Placeholder pack id for unit fixtures until the orchestrator selects packs.
+pub const FIXTURE_PACK_ID: &[u8] = b"pack-fixture-001";
+/// Placeholder model.patch bytes for unit fixtures (matches v2 golden vectors).
+pub const FIXTURE_MODEL_PATCH: &[u8] = b"diff --git a/x b/x\n+hello\n";
 
 const TASK_ID_DOMAIN: &[u8] = b"gbase-agent-task-id-v1";
 const TASK_BLOB_DOMAIN: &[u8] = b"gbase-agent-task-blob-v1";
@@ -171,7 +176,8 @@ mod tests {
             hex::encode(tid),
             "4a590b2abf87da6bccd97d8fbe5d2e774bdbda3ad421119688010537be2b31ec"
         );
-        let blob = task_blob(&tid, SCORING_VERSION);
+        // Historical v1 goldens lock scoring_version = 1 (not live SCORING_VERSION).
+        let blob = task_blob(&tid, 1);
         assert_eq!(
             hex::encode(blob),
             "8c5430ceb95b9e422026baf2eaddb4c9c723923c6353164fe9b0905a47f9a29f"
@@ -191,7 +197,7 @@ mod tests {
             hex::encode(tid),
             "d954306fba3943a86bb69aedfd08f2bca850eb2adabaaf5efe2ad2728dbf3412"
         );
-        let blob = task_blob(&tid, SCORING_VERSION);
+        let blob = task_blob(&tid, 1);
         let ans = answer_digest(&blob);
         assert_eq!(
             hex::encode(ans),
