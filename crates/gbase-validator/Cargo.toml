@@ -10,11 +10,12 @@ publish = false
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
-gbase-attest-policy = { path = "../gbase-attest-policy" }
+gbase-attest-http = { path = "../gbase-attest-http" }
 gbase-aggregate = { path = "../gbase-aggregate" }
 gbase-bundle = { path = "../gbase-bundle" }
 gbase-chain = { path = "../gbase-chain" }
 gbase-config = { path = "../gbase-config" }
+gbase-crosscheck = { path = "../gbase-crosscheck" }
 gbase-crypto = { path = "../gbase-crypto" }
 gbase-telemetry = { path = "../gbase-telemetry" }
 gbase-trustroot = { path = "../gbase-trustroot" }
@@ -30,7 +31,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 gbase-attest-parse = { path = "../gbase-attest-parse" }
-gbase-attest-policy = { path = "../gbase-attest-policy" }
+gbase-attest-http = { path = "../gbase-attest-http" }
 gbase-attest-replay = { path = "../gbase-attest-replay" }
 gbase-crypto = { path = "../gbase-crypto" }
 gbase-trustroot = { path = "../gbase-trustroot" }

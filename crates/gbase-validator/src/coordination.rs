@@ -133,6 +133,12 @@ impl CoordinationClient {
         self.base_url.is_some()
     }
 
+    /// Shared HTTP client for peer fetches (not gateway-allowlisted).
+    #[must_use]
+    pub fn http_client(&self) -> &Client {
+        &self.http
+    }
+
     /// GET an allowlisted path. Refuses master-only paths before any network I/O.
     ///
     /// # Errors

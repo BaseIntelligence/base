@@ -66,6 +66,22 @@ pub enum NoSubmissionReason {
         /// Epoch the caller bound the fetch to.
         expected: u64,
     },
+    /// Peer root sample below `min_peer_sample` while other validators exist (D26).
+    PeerSampleInsufficient {
+        /// Verified agreeing peer statements collected.
+        reachable: usize,
+        /// Configured minimum sample size.
+        required: u32,
+    },
+    /// Verified peers disagree on the merkle root for this epoch (class B hook).
+    PeerRootDisagreement {
+        /// Epoch under check.
+        epoch: u64,
+        /// This validator's candidate root.
+        candidate: [u8; 32],
+        /// Number of verified peer statements retained as evidence.
+        sample_len: usize,
+    },
 }
 
 impl std::fmt::Display for NoSubmissionReason {
@@ -92,6 +108,22 @@ impl std::fmt::Display for NoSubmissionReason {
             Self::PeerEpochMismatch { got, expected } => {
                 write!(f, "peer bundle epoch {got} != expected {expected}")
             }
+            Self::PeerSampleInsufficient {
+                reachable,
+                required,
+            } => write!(
+                f,
+                "peer sample insufficient: reachable={reachable} required={required} (Degraded)"
+            ),
+            Self::PeerRootDisagreement {
+                epoch,
+                candidate,
+                sample_len,
+            } => write!(
+                f,
+                "peer root disagreement epoch={epoch} sample_len={sample_len} candidate={}",
+                hex::encode(candidate)
+            ),
         }
     }
 }
@@ -508,6 +540,73 @@ async fn fetch_from_peers<C: ChainClient>(
             detail: last_detail,
         },
     }
+}
+
+
+/// Fetch + compare (with mirror) then peer-root cross-check (task 31).
+///
+/// On `Match` / `VectorMismatch`: record local root, sample peers, gate fail-closed.
+/// Returns gated [`ComparisonOutcome`] plus raw [`crate::crosscheck::CrossCheckOutcome`].
+#[allow(clippy::too_many_arguments)]
+pub async fn fetch_compare_and_crosscheck<C: ChainClient>(
+    client: &CoordinationClient,
+    epoch: u64,
+    chain: &C,
+    trust: &LocalTrustRoot,
+    store: &SharedMirrorStore,
+    peers: &PeerBook,
+    expected: Option<ExpectedBundle>,
+    run: &crate::crosscheck::CrossCheckRun<'_>,
+) -> (ComparisonOutcome, crate::crosscheck::CrossCheckOutcome) {
+    let comparison =
+        fetch_and_compare_with_mirror(client, epoch, chain, trust, store, peers, expected).await;
+
+    let Some((cand_epoch, cand_root)) = crate::crosscheck::candidate_from_comparison(&comparison)
+    else {
+        return (
+            comparison,
+            crate::crosscheck::CrossCheckOutcome::Failed {
+                epoch,
+                kind: crate::crosscheck::CrossCheckFailKind::InsufficientPeers {
+                    reachable: 0,
+                    required: run.cfg.min_peer_sample,
+                    others_on_metagraph: 0,
+                },
+                statements: vec![],
+            },
+        );
+    };
+
+    if let (Some(secret), Some(hk)) = (run.signing_secret, run.own_hotkey_pk) {
+        if let Err(e) =
+            crate::crosscheck::record_local_root(run.root_store, secret, hk, cand_epoch, cand_root)
+        {
+            tracing::warn!(error = %e, "failed to sign local root statement");
+        }
+    }
+
+    let discovered = peers.discover_from_chain(chain).unwrap_or_default();
+    let peer_refs: Vec<gbase_crosscheck::PeerRef> = discovered
+        .into_iter()
+        .map(|p| gbase_crosscheck::PeerRef {
+            hotkey: p.hotkey,
+            base_url: p.base_url,
+        })
+        .collect();
+
+    let cross = crate::crosscheck::crosscheck_peer_roots(
+        client.http_client(),
+        chain,
+        &peer_refs,
+        run.root_store,
+        run.cfg,
+        cand_epoch,
+        cand_root,
+    )
+    .await;
+
+    let gated = crate::crosscheck::apply_crosscheck_gate(comparison, &cross);
+    (gated, cross)
 }
 
 #[cfg(test)]

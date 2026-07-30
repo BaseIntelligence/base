@@ -1286,6 +1286,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbase-attest-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "gbase-attest-policy",
+ "gbase-crypto",
+ "gbase-trustroot",
+ "hex",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "gbase-attest-parse"
 version = "0.1.0"
 dependencies = [
@@ -1360,6 +1374,24 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "toml",
+]
+
+[[package]]
+name = "gbase-crosscheck"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "gbase-chain",
+ "gbase-config",
+ "gbase-crypto",
+ "hex",
+ "parity-scale-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1537,12 +1569,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "gbase-aggregate",
+ "gbase-attest-http",
  "gbase-attest-parse",
- "gbase-attest-policy",
  "gbase-attest-replay",
  "gbase-bundle",
  "gbase-chain",
  "gbase-config",
+ "gbase-crosscheck",
  "gbase-crypto",
  "gbase-telemetry",
  "gbase-trustroot",

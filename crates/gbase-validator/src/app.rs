@@ -1,4 +1,4 @@
-//! Validator HTTP app: telemetry router + mirror routes + graceful shutdown.
+//! Validator HTTP app: telemetry + mirror + consensus root + graceful shutdown.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -13,6 +13,7 @@ use tokio::sync::watch;
 use crate::coordination::CoordinationClient;
 use crate::epoch::{epoch_from_block, EpochSnapshot};
 use crate::error::ValidatorError;
+use crate::crosscheck::{consensus_root_router, RootStatementStore, SharedRootStore};
 use crate::mirror::{mirror_router, MemoryMirrorStore, SharedMirrorStore};
 use crate::peers::PeerBook;
 use crate::registration::RegistrationStub;
@@ -32,6 +33,14 @@ pub struct ValidatorRuntime {
     pub peers: PeerBook,
     /// Optional pre-built mirror store (tests share stores across validators).
     pub mirror: Option<SharedMirrorStore>,
+    /// Optional pre-built root-statement store (task 31).
+    pub root_store: Option<SharedRootStore>,
+    /// Optional 32-byte mini-secret for signing local root statements.
+    pub root_signing_secret: Option<[u8; 32]>,
+    /// This validator's hotkey (excluded from peer sample).
+    pub own_hotkey: Option<Vec<u8>>,
+    /// Minimum agreeing peer sample (D26); default from config.
+    pub min_peer_sample: u32,
 }
 
 impl Default for ValidatorRuntime {
@@ -43,6 +52,10 @@ impl Default for ValidatorRuntime {
             registration: RegistrationStub::new(),
             peers: PeerBook::new(),
             mirror: None,
+            root_store: None,
+            root_signing_secret: None,
+            own_hotkey: None,
+            min_peer_sample: gbase_config::DEFAULT_MIN_PEER_SAMPLE,
         }
     }
 }
@@ -87,7 +100,7 @@ pub fn build_health_router(checks: Vec<ReadyCheck>) -> Result<Router, ValidatorE
         .build()?)
 }
 
-/// Running validator handle (bound port + shutdown + mirror).
+/// Running validator handle (bound port + shutdown + mirror + root store).
 pub struct RunningValidator {
     /// Bound local address.
     pub addr: SocketAddr,
@@ -99,8 +112,16 @@ pub struct RunningValidator {
     pub coordination: Arc<CoordinationClient>,
     /// Verified-bundle mirror store served at `/v1/bundle/root/{root}`.
     pub mirror: SharedMirrorStore,
+    /// Signed peer-root statements (local serve + evidence).
+    pub root_store: SharedRootStore,
     /// Peer book used for outbound peer fetch.
     pub peers: PeerBook,
+    /// Optional mini-secret for signing local roots.
+    pub root_signing_secret: Option<[u8; 32]>,
+    /// Own hotkey (sample exclusion).
+    pub own_hotkey: Option<Vec<u8>>,
+    /// Minimum peer sample (D26).
+    pub min_peer_sample: u32,
     /// Epoch length.
     pub epoch_length: u64,
     /// Chain tip reader for epoch snapshots.
@@ -138,7 +159,7 @@ impl RunningValidator {
     }
 }
 
-/// Spawn the health + mirror server with graceful shutdown.
+/// Spawn the health + mirror + consensus-root server with graceful shutdown.
 ///
 /// # Errors
 ///
@@ -166,12 +187,21 @@ where
         .mirror
         .clone()
         .unwrap_or_else(MemoryMirrorStore::shared);
+    let root_store = runtime
+        .root_store
+        .clone()
+        .unwrap_or_else(RootStatementStore::shared);
     let peers = runtime.peers.clone();
+    let root_signing_secret = runtime.root_signing_secret;
+    let own_hotkey = runtime.own_hotkey.clone();
+    let min_peer_sample = runtime.min_peer_sample;
 
     let mut checks = vec![chain_ready_check(Arc::clone(&chain), "chain"), db_check];
     checks.extend(extra_checks);
 
-    let app = build_health_router(checks)?.merge(mirror_router(Arc::clone(&mirror)));
+    let app = build_health_router(checks)?
+        .merge(mirror_router(Arc::clone(&mirror)))
+        .merge(consensus_root_router(Arc::clone(&root_store)));
     let listener = TcpListener::bind(runtime.listen_addr)
         .await
         .map_err(|e| ValidatorError::Serve(format!("bind: {e}")))?;
@@ -204,6 +234,7 @@ where
         registered = runtime.registration.status().registered,
         has_gateway = coordination.has_gateway(),
         peer_count = peers.all().len(),
+        min_peer_sample,
         "gbase-validator listening"
     );
 
@@ -213,7 +244,11 @@ where
         join,
         coordination,
         mirror,
+        root_store,
         peers,
+        root_signing_secret,
+        own_hotkey,
+        min_peer_sample,
         epoch_length: runtime.epoch_length,
         tip,
     })
