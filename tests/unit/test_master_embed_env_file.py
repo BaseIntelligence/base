@@ -231,3 +231,34 @@ def test_prism_unattested_flags_do_not_leak_into_ac(tmp_path: Path) -> None:
     # AC may still get CHALLENGE_* from its own defaults/file — but not from prism file.
     # NO_PHALA from prism file must not leak:
     assert "NO_PHALA=true" not in ac_env
+
+
+def test_ac_submission_env_encryption_key_file_default(tmp_path: Path) -> None:
+    """AC child must get the git-tracked submission-env key path by default.
+
+    Compose mounts the Fernet key at /run/secrets/base/submission_env_encryption_key;
+    env -i strips parent environment, so the path must be baked into ac_env.
+    """
+
+    dumps = _run_entrypoint(tmp_path, ac_env_file_body=None)
+    assert (
+        "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE="
+        "/run/secrets/base/submission_env_encryption_key"
+    ) in dumps["ac"]
+
+
+def test_ac_submission_env_encryption_key_file_override(tmp_path: Path) -> None:
+    """Operator embed.env must still win over the submission-env key default."""
+
+    dumps = _run_entrypoint(
+        tmp_path,
+        "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE=/custom/operator/key\n",
+    )
+    assert (
+        "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE=/custom/operator/key"
+        in dumps["ac"]
+    )
+    assert (
+        "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE="
+        "/run/secrets/base/submission_env_encryption_key"
+    ) not in dumps["ac"]

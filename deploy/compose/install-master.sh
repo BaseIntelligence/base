@@ -80,9 +80,22 @@ _random_token() {
   fi
 }
 
+_random_fernet_key() {
+  # Fernet key = urlsafe-base64 of 32 random bytes (44 chars, may end with =).
+  # Do NOT reuse _random_token (hex); cryptography.Fernet rejects non-Fernet keys.
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode(), end="")'
+  else
+    head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n'
+  fi
+}
+
 ADMIN_TOKEN_FILE="${SECRETS_DIR}/admin_token"
 POSTGRES_PASSWORD_FILE="${SECRETS_DIR}/postgres_password"
 PRISM_TOKEN_FILE="${SECRETS_DIR}/prism_shared_token"
+SUBMISSION_ENV_KEY_FILE="${SECRETS_DIR}/submission_env_encryption_key"
 MASTER_CONFIG="${CONFIG_DIR}/master.yaml"
 
 if [[ ! -f "${ADMIN_TOKEN_FILE}" ]]; then
@@ -97,12 +110,17 @@ if [[ ! -f "${PRISM_TOKEN_FILE}" ]]; then
   umask 077
   _random_token >"${PRISM_TOKEN_FILE}"
 fi
-# Host parent dirs stay 0700. Application secrets (admin/prism) are owned by the
-# non-root container uid (1000) with mode 0600. PostgreSQL's official image runs
-# as its own user and only needs the password file mount, so that one file is
-# mode 0640 (no world read) rather than 0600-as-uid-1000 which it cannot open.
-chown 1000:1000 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}" 2>/dev/null || true
-chmod 600 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}"
+if [[ ! -f "${SUBMISSION_ENV_KEY_FILE}" ]]; then
+  umask 077
+  _random_fernet_key >"${SUBMISSION_ENV_KEY_FILE}"
+fi
+# Host parent dirs stay 0700. Application secrets (admin/prism/submission-env) are
+# owned by the non-root container uid (1000) with mode 0600. PostgreSQL's official
+# image runs as its own user and only needs the password file mount, so that one
+# file is mode 0640 (no world read) rather than 0600-as-uid-1000 which it cannot open.
+chown 1000:1000 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}" \
+  "${SUBMISSION_ENV_KEY_FILE}" 2>/dev/null || true
+chmod 600 "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}" "${SUBMISSION_ENV_KEY_FILE}"
 chmod 640 "${POSTGRES_PASSWORD_FILE}"
 
 # Resolve local image digests when operator pins are not provided.
@@ -264,8 +282,9 @@ EOF
 # Master config embeds the private-network DB URL; keep 0600 and uid 1000.
 # Re-assert admin/prism modes after config write. Postgres password stays 0640.
 chown 1000:1000 "${MASTER_CONFIG}" "${ADMIN_TOKEN_FILE}" \
-  "${PRISM_TOKEN_FILE}" 2>/dev/null || true
-chmod 600 "${MASTER_CONFIG}" "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}"
+  "${PRISM_TOKEN_FILE}" "${SUBMISSION_ENV_KEY_FILE}" 2>/dev/null || true
+chmod 600 "${MASTER_CONFIG}" "${ADMIN_TOKEN_FILE}" "${PRISM_TOKEN_FILE}" \
+  "${SUBMISSION_ENV_KEY_FILE}"
 chmod 640 "${POSTGRES_PASSWORD_FILE}"
 unset PG_PASSWORD
 
@@ -276,6 +295,7 @@ export BASE_MASTER_CONFIG="${MASTER_CONFIG}"
 export BASE_ADMIN_TOKEN_FILE="${ADMIN_TOKEN_FILE}"
 export BASE_POSTGRES_PASSWORD_FILE="${POSTGRES_PASSWORD_FILE}"
 export PRISM_SHARED_TOKEN_FILE="${PRISM_TOKEN_FILE}"
+export CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE="${SUBMISSION_ENV_KEY_FILE}"
 export BASE_MASTER_HOST_PORT="${HOST_PORT}"
 export BASE_DOCKER_GID="${DOCKER_GID}"
 export BASE_COMPOSE_FILE="${COMPOSE_FILE}"
@@ -298,6 +318,7 @@ BASE_MASTER_CONFIG=${MASTER_CONFIG}
 BASE_ADMIN_TOKEN_FILE=${ADMIN_TOKEN_FILE}
 BASE_POSTGRES_PASSWORD_FILE=${POSTGRES_PASSWORD_FILE}
 PRISM_SHARED_TOKEN_FILE=${PRISM_TOKEN_FILE}
+CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE=${SUBMISSION_ENV_KEY_FILE}
 BASE_MASTER_HOST_PORT=${HOST_PORT}
 BASE_DOCKER_GID=${DOCKER_GID}
 BASE_COMPOSE_FILE=${COMPOSE_FILE}

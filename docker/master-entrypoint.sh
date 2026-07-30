@@ -246,6 +246,7 @@ start_embedded_challenges() {
     "CHALLENGE_MASTER_BASE_URL=${CHALLENGE_MASTER_BASE_URL:-http://127.0.0.1:8081}"
     "CHALLENGE_DOCKER_ENABLED=${CHALLENGE_DOCKER_ENABLED:-false}"
     "CHALLENGE_DOCKER_BACKEND=${CHALLENGE_DOCKER_BACKEND:-cli}"
+    "CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE=${CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE:-/run/secrets/base/submission_env_encryption_key}"
   )
   if [[ -n "${py_path}" ]]; then
     ac_env+=("PYTHONPATH=${py_path}")

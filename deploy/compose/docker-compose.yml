@@ -105,6 +105,10 @@ services:
         source: ${PRISM_SHARED_TOKEN_FILE:?set the prism shared token file}
         target: /run/secrets/prism_shared_token
         read_only: true
+      - type: bind
+        source: ${CHALLENGE_SUBMISSION_ENV_ENCRYPTION_KEY_FILE:?set the submission env encryption key file}
+        target: /run/secrets/base/submission_env_encryption_key
+        read_only: true
       # Compose file + sealed install env + docker.sock for optional operator
       # tooling. Challenge ASGI is embedded; watcher interval defaults to 0.
       - type: bind
