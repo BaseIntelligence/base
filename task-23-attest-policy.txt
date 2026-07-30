@@ -1,0 +1,111 @@
+=== task-23 gbase-attest-policy evidence ===
+date: 2026-07-30T03:03:38Z
+crate: crates/gbase-attest-policy
+branch: reborn
+HEAD_before: 2019dcf6e321fd8e5c893e439241a12765a255cc
+
+=== cargo test -p gbase-attest-policy ===
+   Compiling gbase-attest-policy v0.1.0 (/root/gbase/crates/gbase-attest-policy)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/gbase_attest_policy-130eb32937dd7578)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/policy_matrix.rs (target/debug/deps/policy_matrix-1f019b28317ad5b5)
+
+running 21 tests
+test s12_tcb_table_mapping ... ok
+test s0_happy_verified_grants_credit ... ok
+test s11_parked_no_credit_no_carry_forward ... ok
+test s10_out_of_date_park ... ok
+test s14_measurement_not_allowlisted_reject ... ok
+test s15_quote_crypto_invalid_reject ... ok
+test s16_unknown_nonce_reject ... ok
+test s17_sw_hardening_accept ... ok
+test s13_report_data_field_sensitivity ... ok
+test s19_mr_config_id_matches_compose_hash ... ok
+test s1_empty_allowlist_fail_closed ... ok
+test s18_full_pipeline_park_clears_credit_path ... ok
+test s20_replay_compose_hash_ok ... ok
+test s2_wrong_nonce_reject ... ok
+test s4_different_epoch_reject ... ok
+test s3_replayed_nonce_reject ... ok
+test s5_different_validator_hotkey_reject ... ok
+test s6_miner_a_relays_b_reject ... ok
+test s7_pcs_timeout_park ... ok
+test s8_expired_collateral_park ... ok
+test s9_revoked_reject ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gbase_attest_policy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== cargo clippy -D warnings ===
+    Checking gbase-attest-policy v0.1.0 (/root/gbase/crates/gbase-attest-policy)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+
+=== deny.toml dcap-qvl ban ===
+    # Attestation: dcap-qvl < 0.6.1 lacks required TDX/quote APIs used by gbase-attest-policy.
+    { crate = "dcap-qvl@<0.6.1", reason = "gbase-attest-policy requires dcap-qvl >= 0.6.1 (task 23)" },
+]
+allow = []
+
+=== Cargo.toml optional dcap-qvl ===
+dcap = ["dep:dcap-qvl"]
+
+[dependencies]
+gbase-crypto = { path = "../gbase-crypto" }
+gbase-trustroot = { path = "../gbase-trustroot" }
+gbase-attest-parse = { path = "../gbase-attest-parse" }
+--
+dcap-qvl = { version = "0.6.1", optional = true }
+
+[dev-dependencies]
+# none beyond std
+
+[lints]
+
+=== VERIFY mapping ===
+S1 empty allowlist fail-closed: s1_empty_allowlist_fail_closed
+S2 wrong nonce Reject: s2_wrong_nonce_reject
+S3 replayed nonce Reject: s3_replayed_nonce_reject
+S4 different epoch Reject: s4_different_epoch_reject
+S5 different validator hotkey Reject: s5_different_validator_hotkey_reject
+S6 miner A relays B Reject: s6_miner_a_relays_b_reject
+S7 PCS timeout Park: s7_pcs_timeout_park
+S8 expired collateral Park: s8_expired_collateral_park
+S9 Revoked Reject: s9_revoked_reject
+S10 OutOfDate Park: s10_out_of_date_park
+S11 parked no credit no carry-forward: s11_parked_no_credit_no_carry_forward + s18_full_pipeline_park_clears_credit_path
+S12 TCB table: s12_tcb_table_mapping
+S13 D10 field sensitivity: s13_report_data_field_sensitivity
+S14 measurement not allowlisted: s14_measurement_not_allowlisted_reject
+S15 crypto invalid Reject: s15_quote_crypto_invalid_reject
+S16 unknown nonce Reject: s16_unknown_nonce_reject
+S17 SWHardeningNeeded Accept: s17_sw_hardening_accept
+S18 park clears credit path: s18_full_pipeline_park_clears_credit_path
+S19 mr_config_id glue: s19_mr_config_id_matches_compose_hash
+S20 replay glue: s20_replay_compose_hash_ok
+cargo deny bans dcap-qvl <0.6.1: deny.toml entry present; no dcap-qvl in default graph (optional feature)
+
+=== design notes ===
+D10: report_data = SHA512(scale(gbase-attest-v1)||scale(u16 netuid)||scale(u64 epoch)||scale([u8;32] miner)||scale(nonce)||scale(validator))
+D13: Park grants no credit; AttestCreditBook keys by (netuid,epoch,miner) — never falls back to prior epoch
+QuoteVerifier trait + MockQuoteVerifier for unit tests; dcap feature + dcap-qvl 0.6.1 for tasks 35/38
+
+=== LOC (non-blank non-//) ===
+34 crates/gbase-attest-policy/src/credit.rs
+6 crates/gbase-attest-policy/src/error.rs
+25 crates/gbase-attest-policy/src/glue.rs
+61 crates/gbase-attest-policy/src/lib.rs
+83 crates/gbase-attest-policy/src/policy.rs
+40 crates/gbase-attest-policy/src/report_data.rs
+36 crates/gbase-attest-policy/src/tcb.rs
+38 crates/gbase-attest-policy/src/verifier.rs
