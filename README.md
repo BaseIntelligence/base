@@ -38,9 +38,30 @@ Env knobs: `GBASE_GATEWAY_LISTEN`, `GBASE_GATEWAY_HOTKEY`,
 `GBASE_GATEWAY_FAIL_THRESHOLD` (default 3), `GBASE_GATEWAY_COOLDOWN_SECS` (default 30),
 `GBASE_GATEWAY_TLS*` (stub until task 42).
 
-Compose (task 40): the gateway service MUST use Docker Compose profile **`master`**
+Compose: see [`docker-compose.yml`](./docker-compose.yml) and [`deploy/README.md`](./deploy/README.md).
+The gateway service MUST use Docker Compose profile **`master`**
 so a default `docker compose up` does **not** start the gateway; operators run
 `docker compose --profile master up` on the owner host only.
+
+## Compose stack
+
+Host control plane (task 40):
+
+| Service | Profile | Notes |
+|---------|---------|--------|
+| postgres | default | Postgres 16, volume + healthcheck, digest-pinned |
+| validator | default | multi-stage `deploy/Dockerfile` target `validator` |
+| updater | default | digest-pinned rollouts via socket-proxy |
+| socket-proxy | default | **only** mount of `/var/run/docker.sock` |
+| gateway | **`master`** | owner host only |
+
+```bash
+./deploy/scripts/materialize-env.sh   # age-decrypt or copy examples → deploy/env/*.env (0600)
+docker compose up -d                  # 4 services, no gateway
+docker compose --profile master up -d # 5 services including gateway
+```
+
+Secrets are age-decrypted env files at mode 0600 — never baked into images or cloud-init.
 
 ## License
 

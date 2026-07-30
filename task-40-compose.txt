@@ -1,0 +1,147 @@
+# task-40-compose evidence
+date: 2026-07-30T03:01:08Z
+branch: reborn
+
+=== S1 docker compose config --quiet ===
+exit=0
+
+=== S4 grep -c ':latest' docker-compose.yml ===
+count=0
+
+=== S5 grep -c '/var/run/docker.sock' docker-compose.yml ===
+count=1
+context:
+134-      ALLOW_RESTARTS: "0"
+135-      AUTH: "0"
+136-      BUILD: "0"
+137-      COMMIT: "0"
+138-      CONFIGS: "0"
+139-      DISTRIBUTION: "0"
+140-      EVENTS: "1"
+141-      EXEC: "0"
+142-      INFO: "0"
+143-      NETWORKS: "0"
+144-      NODES: "0"
+145-      PLUGINS: "0"
+146-      SERVICES: "0"
+147-      SESSION: "0"
+148-      SWARM: "0"
+149-      SYSTEM: "0"
+150-      TASKS: "0"
+151-      SECRETS: "0"
+152-      VOLUMES: "0"
+153-    volumes:
+154:      - /var/run/docker.sock:/var/run/docker.sock:ro
+sock_service=socket-proxy OK
+
+=== S2 up -d without profile (already running) ===
+services: postgres socket-proxy updater validator
+count=4
+gateway_absent=OK
+SERVICE        STATUS
+postgres       Up About a minute (healthy)
+socket-proxy   Up About a minute
+updater        Restarting (0) 12 seconds ago
+validator      Up About a minute (healthy)
+
+=== S3 --profile master up -d ===
+services: gateway postgres socket-proxy updater validator
+count=5
+gateway_present=OK
+SERVICE        STATUS
+gateway        Restarting (1) 1 second ago
+postgres       Up About a minute (healthy)
+socket-proxy   Up About a minute
+updater        Restarting (0) 17 seconds ago
+validator      Up About a minute (healthy)
+
+=== Manual surface: validator health ===
+{"timestamp":"2026-07-30T03:01:18.112864Z","level":"INFO","fields":{"message":"relation \"_sqlx_migrations\" already exists, skipping"},"target":"sqlx::postgres::notice"}
+{"timestamp":"2026-07-30T03:01:18.115449Z","level":"WARN","fields":{"message":"coordination tick failed (non-fatal for skeleton)","error":"gateway transport: error sending request for url (http://gateway:8080/v1/weights/latest)"},"target":"gbase_validator::app"}
+/var/run/postgresql:5432 - accepting connections
+--- validator logs ---
+validator-1  | {"timestamp":"2026-07-30T03:00:01.057586Z","level":"WARN","fields":{"message":"coordination tick failed (non-fatal for skeleton)","error":"gateway transport: error sending request for url (http://gateway:8080/v1/weights/latest)"},"target":"gbase_validator::app"}
+validator-1  | {"timestamp":"2026-07-30T03:00:01.058512Z","level":"INFO","fields":{"message":"gbase-validator listening","addr":"0.0.0.0:8080","registered":false,"has_gateway":true},"target":"gbase_validator::app"}
+validator-1  | {"timestamp":"2026-07-30T03:00:01.058529Z","level":"INFO","fields":{"message":"gbase-validator ready","addr":"0.0.0.0:8080"},"target":"gbase_validator"}
+--- updater logs ---
+updater-1  | {"timestamp":"2026-07-30T03:00:02.768477Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:05.684916Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:06.558266Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:07.408524Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:08.575184Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:10.563919Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:14.171389Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:20.957880Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:00:34.206856Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:00.206901Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+--- gateway logs ---
+gateway-1  | {"timestamp":"2026-07-30T03:01:12.898201Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+gateway-1  | {"timestamp":"2026-07-30T03:01:13.107060Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+gateway-1  | {"timestamp":"2026-07-30T03:01:13.418110Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+gateway-1  | {"timestamp":"2026-07-30T03:01:13.922309Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+gateway-1  | {"timestamp":"2026-07-30T03:01:14.833111Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | {"timestamp":"2026-07-30T03:01:16.530388Z","level":"ERROR","fields":{"message":"gateway startup failed","event":"gateway_fatal","fatal":true,"error":"chain error: chain client not implemented: subnet_owner_hotkey"},"target":"gbase_gateway"}
+gateway-1  | gbase-gateway error: chain error: chain client not implemented: subnet_owner_hotkey
+--- socket-proxy logs ---
+socket-proxy-1  | ::ffff:192.168.0.5:36032 [30/Jul/2026:03:00:20.735] dockerfrontend dockerbackend/dockersocket 0/0/0/221/221 404 311 - - ---- 1/1/0/0/0 0/0 "POST /images/create?fromImage=gbase-validator%40sha256%3A0000000000000000000000000000000000000000000000000000000000000001 HTTP/1.1"
+socket-proxy-1  | ::ffff:192.168.0.5:43796 [30/Jul/2026:03:00:33.861] dockerfrontend dockerbackend/dockersocket 0/0/0/55/55 200 93653 - - ---- 1/1/0/0/0 0/0 "GET /containers/json?all=true HTTP/1.1"
+socket-proxy-1  | ::ffff:192.168.0.5:43796 [30/Jul/2026:03:00:33.919] dockerfrontend dockerbackend/dockersocket 0/0/0/287/287 404 311 - - ---- 1/1/0/0/0 0/0 "POST /images/create?fromImage=gbase-validator%40sha256%3A0000000000000000000000000000000000000000000000000000000000000001 HTTP/1.1"
+socket-proxy-1  | ::ffff:192.168.0.5:54898 [30/Jul/2026:03:00:59.904] dockerfrontend dockerbackend/dockersocket 0/0/0/62/62 200 93661 - - ---- 1/1/0/0/0 0/0 "GET /containers/json?all=true HTTP/1.1"
+socket-proxy-1  | ::ffff:192.168.0.5:54898 [30/Jul/2026:03:00:59.969] dockerfrontend dockerbackend/dockersocket 0/0/0/237/237 404 311 - - ---- 1/1/0/0/0 0/0 "POST /images/create?fromImage=gbase-validator%40sha256%3A0000000000000000000000000000000000000000000000000000000000000001 HTTP/1.1"
+
+=== Image pins ===
+    image: postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    image: gbase-validator:0.1.0
+    image: gbase-gateway:0.1.0
+    image: gbase-updater:0.1.0
+    image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+
+=== env file modes ===
+-rw------- 1 root root 381 Jul 30 02:56 deploy/env/gateway.env
+-rw------- 1 root root 194 Jul 30 02:56 deploy/env/postgres.env
+-rw------- 1 root root 284 Jul 30 03:00 deploy/env/updater.env
+-rw------- 1 root root 259 Jul 30 02:56 deploy/env/validator.env
+
+=== files ===
+deploy/Dockerfile
+deploy/env/gateway.env
+deploy/env/gateway.env.example
+deploy/env/postgres.env
+deploy/env/postgres.env.example
+deploy/env/updater.env
+deploy/env/updater.env.example
+deploy/env/validator.env
+deploy/env/validator.env.example
+deploy/README.md
+deploy/scripts/materialize-env.sh
+-rw-r--r-- 1 root root 4438 Jul 30 03:00 docker-compose.yml
+-rw-r--r-- 1 root root 1030 Jul 30 02:56 .env.example
+
+ALL SCENARIOS PASS
+
+=== validator HTTP surface (compose network) ===
+ok
+
+{"status":"ok","checks":[{"name":"chain","ok":true},{"name":"db","ok":true}]}
+=== updater after local digest pin ===
+updater-1  | {"timestamp":"2026-07-30T03:01:35.029468Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:35.479023Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:36.067824Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:36.835061Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:37.986316Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:39.927112Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:43.539111Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+updater-1  | {"timestamp":"2026-07-30T03:01:50.304524Z","level":"INFO","fields":{"message":"tick complete","outcome":"PullFailed { reason: \"docker API error: HTTP 404 Not Found: {\\\"message\\\":\\\"pull access denied for gbase-validator, repository does not exist or may require 'docker login'\\\"}\\n\" }","phase":"backoff"},"target":"gbase_updater"}
+
+=== final ps ===
+SERVICE        STATUS
+gateway        Restarting (1) 15 seconds ago
+postgres       Up About a minute (healthy)
+socket-proxy   Up About a minute
+updater        Restarting (0) 4 seconds ago
+validator      Up About a minute (healthy)

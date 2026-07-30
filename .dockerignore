@@ -1,0 +1,12 @@
+.git
+**/target/debug
+**/target/tmp
+**/*.rs.bk
+.env
+deploy/env/*.env
+**/*secret*
+**/*.age
+**/*.key
+**/*mnemonic*
+task-*.txt
+.omo

@@ -34,3 +34,7 @@ tmp/
 .cache/
 coverage/
 lcov.info
+
+# Materialized local env (age-decrypted or copied examples); keep *.env.example
+deploy/env/*.env
+!deploy/env/*.env.example

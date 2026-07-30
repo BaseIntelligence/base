@@ -1,0 +1,165 @@
+# gbase control-plane stack (task 40)
+#
+# Default: postgres + validator + updater + socket-proxy (4 services).
+# Master/owner host only:
+#   docker compose --profile master up -d
+# brings gateway as the 5th service (D3).
+#
+# External images are digest-pinned (no floating tags).
+# docker.sock is mounted ONLY on socket-proxy.
+# Secrets: age-decrypted env files mode 0600 under deploy/env/ (never baked into images).
+
+name: gbase
+
+services:
+  postgres:
+    image: postgres@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    restart: unless-stopped
+    env_file:
+      - path: ./deploy/env/postgres.env
+        required: true
+    volumes:
+      - gbase-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - gbase
+    # No host ports by default — apps reach postgres on the compose network.
+
+  validator:
+    image: gbase-validator:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: validator
+      args:
+        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ./deploy/env/validator.env
+        required: true
+    environment:
+      GBASE_ROLE: validator
+      GBASE_LISTEN: 0.0.0.0:8080
+      # Optional co-located gateway (only present under profile master)
+      GBASE_GATEWAY_ENDPOINT: ${GBASE_GATEWAY_ENDPOINT:-http://gateway:8080}
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8080/healthz || exit 0",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    networks:
+      - gbase
+    # No docker.sock — updater talks via socket-proxy only.
+
+  gateway:
+    profiles: ["master"]
+    image: gbase-gateway:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: gateway
+      args:
+        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ./deploy/env/gateway.env
+        required: true
+    environment:
+      GBASE_ROLE: gateway
+      GBASE_GATEWAY_LISTEN: 0.0.0.0:8080
+    expose:
+      - "8080"
+    networks:
+      - gbase
+
+  updater:
+    image: gbase-updater:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: updater
+      args:
+        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      socket-proxy:
+        condition: service_started
+      validator:
+        condition: service_started
+    env_file:
+      - path: ./deploy/env/updater.env
+        required: true
+    environment:
+      GBASE_UPDATER_PROXY_URL: http://socket-proxy:2375
+      GBASE_UPDATER_COMPOSE_PROJECT: gbase
+      GBASE_UPDATER_SERVICE_NAME: validator
+      GBASE_UPDATER_HEALTH_URL: http://validator:8080/readyz
+      GBASE_UPDATER_STATE_DIR: /var/lib/gbase-updater
+      GBASE_UPDATER_SELF_NAME: gbase-updater-1
+    volumes:
+      - gbase-updater-state:/var/lib/gbase-updater
+    networks:
+      - gbase
+    # Talks to Docker Engine only through socket-proxy (allowlisted).
+
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    restart: unless-stopped
+    environment:
+      # gbase-updater allowlist: CONTAINERS + IMAGES + POST only (D14 / task 39)
+      CONTAINERS: "1"
+      IMAGES: "1"
+      POST: "1"
+      # Everything else denied (explicit zeros for clarity)
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      ALLOW_RESTARTS: "0"
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      EVENTS: "1"
+      EXEC: "0"
+      INFO: "0"
+      NETWORKS: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      SECRETS: "0"
+      VOLUMES: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - gbase
+    # Bound only on the internal network — never publish 2375 to the host.
+
+volumes:
+  gbase-pgdata:
+  gbase-updater-state:
+
+networks:
+  gbase:
+    driver: bridge
