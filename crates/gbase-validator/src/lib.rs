@@ -129,6 +129,8 @@ mod mirror_peer_tests;
 mod crosscheck_tests;
 #[cfg(test)]
 mod policy_tests;
+#[cfg(test)]
+mod adversarial_tests;
 
 pub use attest::{
     attest_router, spawn_attest_server, AttestState, NonceRequest, NonceResponse, SubmitRequest,

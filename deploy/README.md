@@ -48,3 +48,36 @@ age -r "$RECIPIENT" -o deploy/env/postgres.env.age deploy/env/postgres.env
 export AGE_IDENTITY=/etc/gbase/age-identity.txt
 ./deploy/scripts/materialize-env.sh
 ```
+
+## Infrastructure (DigitalOcean)
+
+Terraform lives in [`terraform/`](./terraform/): two `s-8vcpu-16gb-amd` droplets
+(`gbase-staging`, `gbase-prod`) in `nyc3` plus a firewall (SSH from operator IP
+only; 80/443 open). Cloud-init installs Docker + Compose only.
+
+Age delivery helpers:
+
+```bash
+# Encrypt (operator machine; recipient = age public key)
+./deploy/scripts/age-encrypt-env.sh \
+  --recipient "$(age-keygen -y /path/to/age-identity.txt)" \
+  --src-dir deploy/env \
+  --out-dir /tmp/gbase-env-age
+
+# After OOB identity install on the droplet:
+./deploy/scripts/age-push-env.sh --host root@DROPLET_IP --age-dir /tmp/gbase-env-age --materialize
+```
+
+See [`terraform/README.md`](./terraform/README.md) for apply steps and R11 notes.
+
+## Test-only: evil-gateway profile (task 48)
+
+**Never enable in production.** Adversarial staging harness:
+
+```bash
+docker compose --profile evil-gateway config --services   # must list evil-gateway
+docker compose --profile master config --services         # must NOT list evil-gateway
+./deploy/scripts/assert-evil-gateway-not-default.sh
+```
+
+Offline proofs (no live TAO): `cargo test -p gbase-validator a48_`

@@ -90,6 +90,41 @@ services:
     networks:
       - gbase
 
+  # ---------------------------------------------------------------------------
+  # TEST-ONLY adversarial gateway (task 48). NEVER on default or master path.
+  # Enable explicitly:
+  #   docker compose --profile evil-gateway up -d evil-gateway
+  # Do NOT use in production. Staging offline proofs live in
+  # crates/gbase-validator/src/adversarial_tests.rs (FakeChain / wiremock).
+  # ---------------------------------------------------------------------------
+  evil-gateway:
+    profiles: ["evil-gateway"]
+    image: gbase-gateway:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: gateway
+      args:
+        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+    # Test harness — no auto-restart loop that could look like prod.
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ./deploy/env/gateway.env
+        required: false
+    environment:
+      GBASE_ROLE: gateway
+      GBASE_GATEWAY_LISTEN: 0.0.0.0:8080
+      # Marker so operators never confuse with prod gateway (master profile).
+      GBASE_EVIL_GATEWAY: "1"
+      GBASE_EVIL_SCENARIO: ${GBASE_EVIL_SCENARIO:-inconsistent-vector}
+    expose:
+      - "8080"
+    networks:
+      - gbase
+
   updater:
     image: gbase-updater:0.1.0
     build:
