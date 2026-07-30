@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo — commit Cargo.lock once a binary/workspace exists; ignore until then is N/A
+# (lockfile will be tracked when workspace is added)
+
+# Secrets & keys (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.age
+*.key
+**/wallets/
+**/coldkey*
+**/hotkey*
+**/*secret*
+**/*mnemonic*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Local / ops noise
+*.log
+tmp/
+.cache/
+coverage/
+lcov.info
