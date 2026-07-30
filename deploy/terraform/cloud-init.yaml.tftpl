@@ -1,0 +1,64 @@
+#cloud-config
+# Install Docker Engine + Compose plugin ONLY.
+# DO user-data is readable via the metadata service - never put secrets here.
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - age
+
+groups:
+  - docker
+
+users:
+  - default
+  - name: gbase
+    groups: [docker, sudo]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    lock_passwd: true
+
+write_files:
+  - path: /etc/gbase/README
+    permissions: "0644"
+    content: |
+      gbase host bootstrap (cloud-init)
+      - Docker + compose installed; no app secrets on this path.
+      - Place age identity at /etc/gbase/age-identity.txt (mode 600) out of band.
+      - Copy *.env.age under /opt/gbase/deploy/env/ then run materialize-env.sh.
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "50m",
+          "max-file": "5"
+        }
+      }
+  - path: /usr/local/sbin/gbase-install-docker.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      . /etc/os-release
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+      apt-get update -y
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+      usermod -aG docker gbase || true
+      mkdir -p /opt/gbase /etc/gbase
+      chmod 0755 /opt/gbase /etc/gbase
+      touch /var/lib/cloud/instance/gbase-docker-ready
+
+runcmd:
+  - [/usr/local/sbin/gbase-install-docker.sh]
+
+final_message: "gbase cloud-init complete: docker+compose only, zero secrets"

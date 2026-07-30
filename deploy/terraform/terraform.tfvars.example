@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+# Never put DIGITALOCEAN_TOKEN or private keys in this file.
+
+project_name = "gbase"
+region       = "nyc1"  # nyc3 has no s-8vcpu-16gb* on this account; nyc1 is NY metro
+# Plan text said s-8vcpu-16gb ($96). Current DO catalog offers s-8vcpu-16gb-amd
+# (8 vCPU / 16 GB Basic AMD). Override only if a cheaper equivalent appears.
+droplet_size = "s-8vcpu-16gb-amd"
+image        = "ubuntu-24-04-x64"
+
+# From: doctl compute ssh-key list
+ssh_key_ids = [00000000]
+
+# Operator public IPv4 as /32 (detect: curl -4 -sS ifconfig.me)
+operator_ipv4_cidrs = ["203.0.113.10/32"]
+
+tags = [
+  "team:cortex",
+]
+
+environments = {
+  staging = { name = "gbase-staging" }
+  prod    = { name = "gbase-prod" }
+}

@@ -52,7 +52,7 @@ export AGE_IDENTITY=/etc/gbase/age-identity.txt
 ## Infrastructure (DigitalOcean)
 
 Terraform lives in [`terraform/`](./terraform/): two `s-8vcpu-16gb-amd` droplets
-(`gbase-staging`, `gbase-prod`) in `nyc3` plus a firewall (SSH from operator IP
+(`gbase-staging`, `gbase-prod`) in `nyc1` (nyc3 has no 8vCPU/16GB slug on this account) plus a firewall (SSH from operator IP
 only; 80/443 open). Cloud-init installs Docker + Compose only.
 
 Age delivery helpers:

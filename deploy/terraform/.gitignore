@@ -1,0 +1,18 @@
+# Local Terraform state and lock — never commit (may hold resource metadata).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+.terraform.tfstate.lock.info
+
+# Keep the example committed.
+!terraform.tfvars.example

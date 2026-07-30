@@ -38,3 +38,11 @@ lcov.info
 # Materialized local env (age-decrypted or copied examples); keep *.env.example
 deploy/env/*.env
 !deploy/env/*.env.example
+
+# Terraform local state / vars (deploy/terraform also has its own .gitignore)
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/terraform.tfvars
+deploy/terraform/*.auto.tfvars
+deploy/terraform/tfplan
