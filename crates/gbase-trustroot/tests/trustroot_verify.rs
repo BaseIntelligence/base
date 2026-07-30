@@ -318,14 +318,28 @@ fn s9_repo_config_loads_when_present() {
         ch.primary().unwrap().body.challenges[0].emission_share_bps,
         BPS_DENOM
     );
-    assert!(ms.primary().unwrap().body.entries.is_empty());
+    // Task 35: allowlist frozen from real Phala fixtures (one entry).
+    let entries = &ms.primary().unwrap().body.entries;
+    assert_eq!(entries.len(), 1, "measurements allowlist must contain real CVM entry");
+    let e = &entries[0];
+    assert!(ms.allows_quote(
+        &e.mr_td,
+        &e.rtmr0,
+        &e.rtmr1,
+        &e.rtmr2,
+        &e.rtmr3,
+        &e.compose_hash
+    ));
+    // Mutated measurement must not match.
+    let mut bad_td = e.mr_td;
+    bad_td[0] ^= 0xff;
     assert!(!ms.allows_quote(
-        &[0u8; 48],
-        &[0u8; 48],
-        &[0u8; 48],
-        &[0u8; 48],
-        &[0u8; 48],
-        &[0u8; 32]
+        &bad_td,
+        &e.rtmr0,
+        &e.rtmr1,
+        &e.rtmr2,
+        &e.rtmr3,
+        &e.compose_hash
     ));
 }
 

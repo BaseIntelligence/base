@@ -9,7 +9,7 @@ Offline, operator-only. Never commit secrets. Prefer `/root/.gbase-secrets/` (mo
 | `config/owner.pubkey` | 32-byte owner public key (hex). **Throwaway for tests** — not the production `gbase-owner` coldkey mnemonic. |
 | `config/challenges.toml` | Challenge id, public key, emission bps (sum = 10000), participant policy. |
 | `config/challenges.toml.sig` | Detached sr25519 signature under `gbase-trustroot-v1`. |
-| `config/measurements.toml` | Measurement allowlist; **starts empty (fail-closed)**. |
+| `config/measurements.toml` | Measurement allowlist (real Phala fixtures, task 35); empty = fail-closed. |
 | `config/measurements.toml.sig` | Detached owner signature. |
 
 ## Secret layout (never git)
@@ -74,5 +74,5 @@ Publish `v(n+1)` beside `v(n)` (directory of versioned TOML files). Loaders acce
 
 - Missing TOML or `.sig` → error
 - Signature not under `owner.pubkey` → `NonOwner`
-- Empty `measurements` → every quote rejected
+- Empty `measurements` → every quote rejected (pre-task-35 bootstrap)
 - No HTTP: this crate never fetches trust roots over the network
