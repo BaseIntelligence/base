@@ -37,6 +37,10 @@ jobs:
             image_suffix: gateway
           - target: updater
             image_suffix: updater
+          - target: agent-challenge
+            image_suffix: agent-challenge
+          - target: gbase-agent
+            image_suffix: gbase-agent
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,7 +134,8 @@ jobs:
               assert d["digest"].startswith("sha256:") and len(d["digest"]) == 71
               assert "@sha256:" in d["image"]
               images[d["service"]] = d
-          assert set(images) >= {"validator", "gateway", "updater"}, images.keys()
+          expected = {"validator", "gateway", "updater", "agent-challenge", "gbase-agent"}
+          assert set(images) == expected, (set(images), expected)
           out = {
               "commit_sha": os.environ.get("GITHUB_SHA", ""),
               "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
