@@ -1,0 +1,49 @@
+# cargo-deny configuration for gbase.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained crates are warned; ignore only with a dated justification.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Known-bad / abandoned crates we never want in the graph.
+deny = [
+    { crate = "openssl-sys", reason = "prefer rustls; avoid openssl sys linkage in core" },
+    { crate = "chrono", reason = "prefer time crate; chrono has a history of soundness issues" },
+]
+allow = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git deps (e.g. bittensor-core) will be allow-listed when task 7/13 lands.
+allow-git = []
