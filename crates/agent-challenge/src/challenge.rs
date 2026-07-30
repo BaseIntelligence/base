@@ -2,10 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bundle::{
-    expected_participants, make_signed_leaf, metagraph_rows_from_chain, LeafV1, NoScoreReasonCode,
-    ScoreOrAbsence,
-};
+use bundle::{make_signed_leaf, LeafV1, NoScoreReasonCode, ScoreOrAbsence};
 use chain::Metagraph;
 use crypto::KEY_LEN;
 use thiserror::Error;
@@ -30,7 +27,9 @@ pub struct EpochCtx {
     pub netuid: u16,
     /// Epoch index.
     pub epoch: u64,
-    /// Metagraph at the epoch's `block_hash` (for participant derivation).
+    /// Hash of `block_B` — E is sealed at this pin (I7). Never a moving tip.
+    pub block_hash: [u8; 32],
+    /// Metagraph snapshot from `metagraph_at(block_hash)`.
     pub metagraph: Metagraph,
     /// Local owner-signed challenges body (for policy + public key).
     pub challenges: ChallengesBody,
@@ -183,9 +182,13 @@ impl Challenge for AgentV1Challenge {
 
     fn expected_set(&self, ctx: &EpochCtx) -> Result<BTreeSet<Hotkey>, ChallengeError> {
         let policy = Self::policy(&ctx.challenges)?;
-        let rows = metagraph_rows_from_chain(&ctx.metagraph.hotkeys, None)
-            .map_err(|e| ChallengeError::Metagraph(e.to_string()))?;
-        Ok(expected_participants(policy, &rows))
+        let sealed = crate::expected_set::expected_set_from_pinned_metagraph(
+            policy,
+            crate::expected_set::PinnedBlockHash::new(ctx.block_hash),
+            &ctx.metagraph,
+        )
+        .map_err(|e| ChallengeError::Metagraph(e.to_string()))?;
+        Ok(sealed.hotkeys())
     }
 
     fn score_one(
@@ -351,6 +354,12 @@ mod tests {
         EpochCtx {
             netuid: 1,
             epoch: 7,
+            block_hash: {
+                let mut h = [0u8; 32];
+                h[0] = 0xB0;
+                h[1] = 0xB1;
+                h
+            },
             metagraph: Metagraph {
                 netuid: 1,
                 hotkeys,
