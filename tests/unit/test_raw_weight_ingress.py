@@ -798,3 +798,50 @@ async def test_freshness_detail_distinct_from_schema(
     assert r.status_code == 422
     assert r.json()["detail"] == "snapshot outside freshness window"
     assert r.json()["detail"] != "invalid raw weight payload"
+
+
+@pytest.mark.asyncio
+async def test_target_epoch_is_one_past_highest_sealed(harness: dict[str, Any]) -> None:
+    """Master-authoritative next unsealed epoch: COALESCE(MAX(sealed),0)+1."""
+
+    client = harness["client"]
+    service: RawWeightIngressService = harness["service"]
+    path = "/internal/v1/aggregation/target-epoch"
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-Base-Challenge-Slug": SLUG,
+        "Accept": "application/json",
+    }
+
+    empty = await client.get(path, headers=headers)
+    assert empty.status_code == 200, empty.text
+    body = empty.json()
+    assert body["target_epoch"] == 1
+    assert body["highest_sealed_epoch"] is None
+
+    caps = (Capability.MASTER_RAW_WEIGHT_INGRESS,)
+    with activate_role(Role.MASTER, capabilities=caps):
+        await service.seal_epoch(4959497)
+        await service.seal_epoch(4959495)
+
+    sealed = await client.get(path, headers=headers)
+    assert sealed.status_code == 200, sealed.text
+    body = sealed.json()
+    assert body["highest_sealed_epoch"] == 4959497
+    assert body["target_epoch"] == 4959498
+    assert body["max_future_epoch_ahead"] == 2
+
+
+@pytest.mark.asyncio
+async def test_target_epoch_requires_challenge_bearer(harness: dict[str, Any]) -> None:
+    client = harness["client"]
+    path = "/internal/v1/aggregation/target-epoch"
+    assert (await client.get(path)).status_code == 401
+    bad = await client.get(
+        path,
+        headers={
+            "Authorization": "Bearer wrong-token",
+            "X-Base-Challenge-Slug": SLUG,
+        },
+    )
+    assert bad.status_code == 401

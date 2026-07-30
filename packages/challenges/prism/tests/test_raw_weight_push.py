@@ -502,3 +502,166 @@ async def test_all_zero_weights_skipped_locally(database: Database) -> None:
     assert result.status in {"skipped_empty", "skipped_zero"}
     assert transport.requests == []
     await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successful_push_writes_ack_cursor_fields(database: Database) -> None:
+    clock = FakeClock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 100,
+                    "highest_sealed_epoch": 99,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-ack-fields",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=None,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={HOTKEY: 1.0})
+    assert result.status == "acknowledged"
+    cursor = await client.store.get_cursor()
+    assert cursor is not None
+    assert cursor.epoch == 100
+    assert cursor.snapshot_id == "snap-ack-fields"
+    assert cursor.acknowledged_at is not None
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sealed_epoch_409_advances_via_master_target(database: Database) -> None:
+    clock = FakeClock()
+    post_epochs: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 50,
+                    "highest_sealed_epoch": 49,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        post_epochs.append(parsed.epoch)
+        if parsed.epoch < 50:
+            return httpx.Response(
+                409, json={"detail": "epoch is sealed; revision rejected"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": f"snap-{parsed.epoch}",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=lambda: 49,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={HOTKEY: 1.0})
+    assert result.status == "acknowledged"
+    assert result.epoch == 50
+    assert post_epochs.count(49) <= 1
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_epoch_source_prefers_master_over_local_clock(database: Database) -> None:
+    clock = FakeClock()
+    posted: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 9001,
+                    "highest_sealed_epoch": 9000,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        posted.append(parsed.epoch)
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-master-epoch",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=lambda: 1,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={HOTKEY: 1.0})
+    assert result.status == "acknowledged"
+    assert posted == [9001]
+    await http.aclose()

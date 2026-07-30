@@ -116,6 +116,15 @@ def _log_rejection(
     )
 
 
+@dataclass(frozen=True)
+class TargetEpochInfo:
+    """Next unsealed aggregation epoch clients should target for raw-weight push."""
+
+    target_epoch: int
+    highest_sealed_epoch: int | None
+    max_future_epoch_ahead: int
+
+
 class RawWeightAuthError(PermissionError):
     """Missing, malformed, or unknown challenge credential (HTTP 401)."""
 
@@ -405,6 +414,51 @@ class RawWeightIngressService:
             await session.flush()
             await session.refresh(row)
             return row
+
+    async def get_target_epoch(self) -> TargetEpochInfo:
+        """Return the next unsealed aggregation epoch (max sealed + 1).
+
+        Matches the production hotpatch semantic:
+        ``COALESCE(MAX(sealed epoch), 0) + 1`` from ``aggregation_epochs``.
+        Challenge clients must use this rather than a local wall-clock guess so
+        pushes land on an epoch master will still accept.
+        """
+
+        async with session_scope(self._session_factory) as session:
+            highest_sealed = (
+                await session.execute(
+                    select(AggregationEpoch.epoch)
+                    .where(AggregationEpoch.status == AggregationEpochStatus.SEALED)
+                    .order_by(AggregationEpoch.epoch.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        highest = int(highest_sealed) if highest_sealed is not None else None
+        target = (highest if highest is not None else 0) + 1
+        return TargetEpochInfo(
+            target_epoch=target,
+            highest_sealed_epoch=highest,
+            max_future_epoch_ahead=int(self.max_future_epoch_ahead),
+        )
+
+    async def authorize_challenge_bearer(
+        self,
+        *,
+        authorization: str | None,
+        challenge_slug: str | None,
+    ) -> None:
+        """Accept a bearer token bound to a known challenge slug (read paths)."""
+
+        if not challenge_slug:
+            raise RawWeightAuthError(UNAUTHORIZED_DETAIL)
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise RawWeightAuthError(UNAUTHORIZED_DETAIL)
+        token = authorization.split(" ", 1)[1].strip()
+        if not token:
+            raise RawWeightAuthError(UNAUTHORIZED_DETAIL)
+        expected = await self._credentials.token_for(str(challenge_slug))
+        if expected is None or not hmac.compare_digest(token, expected):
+            raise RawWeightAuthError(UNAUTHORIZED_DETAIL)
 
     def _validate_content_type(self, content_type: str | None) -> None:
         if content_type is None:
@@ -1043,6 +1097,37 @@ def build_raw_weight_ingress_router(
             idempotent=outcome.idempotent,
         )
 
+    @router.get(
+        "/internal/v1/aggregation/target-epoch",
+        responses={
+            401: {"description": "unauthorized"},
+        },
+    )
+    async def get_aggregation_target_epoch(
+        authorization: str | None = Header(default=None),
+        x_base_challenge_slug: str | None = Header(
+            default=None, alias="X-Base-Challenge-Slug"
+        ),
+    ) -> dict[str, Any]:
+        """Read-only next unsealed epoch for challenge raw-weight push clients."""
+
+        try:
+            await service.authorize_challenge_bearer(
+                authorization=authorization,
+                challenge_slug=x_base_challenge_slug,
+            )
+        except RawWeightAuthError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=UNAUTHORIZED_DETAIL,
+            ) from exc
+        info = await service.get_target_epoch()
+        return {
+            "target_epoch": info.target_epoch,
+            "highest_sealed_epoch": info.highest_sealed_epoch,
+            "max_future_epoch_ahead": info.max_future_epoch_ahead,
+        }
+
     return router
 
 
@@ -1054,6 +1139,7 @@ __all__ = [
     "DEFAULT_MAX_WEIGHT_KEYS",
     "ZERO_WEIGHT_DETAIL",
     "PushOutcome",
+    "TargetEpochInfo",
     "RAW_WEIGHT_FRESHNESS_POLICY_VERSION",
     "RawWeightAuthError",
     "RawWeightConflictError",

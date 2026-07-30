@@ -133,6 +133,31 @@ def _is_all_zero_weights(weights: Mapping[str, float]) -> bool:
 
 NON_RETRYABLE_PUSH_STATUSES = frozenset({409, 413, 415, 422})
 
+MAX_IDENTITY_ADVANCES = 5
+
+
+def _is_epoch_advance_detail(detail: str) -> bool:
+    """True when a 409 detail means the client must change epoch/revision identity."""
+
+    text = (detail or "").lower()
+    if not text:
+        return True
+    return any(
+        token in text
+        for token in (
+            "sealed",
+            "stale",
+            "conflicting raw weight payload",
+            "conflict",
+        )
+    )
+
+
+def _is_revision_conflict_detail(detail: str) -> bool:
+    text = (detail or "").lower()
+    return "conflicting raw weight payload" in text or text == "conflict"
+
+
 RAW_WEIGHT_PUSH_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS raw_weight_push_ledger ("
     "id INTEGER PRIMARY KEY CHECK (id = 1),"
@@ -428,6 +453,45 @@ class RawWeightPushClient:
             and bool(ack.snapshot_id)
         )
 
+    async def _fetch_master_target_epoch(self, *, client: httpx.AsyncClient) -> int | None:
+        """Ask master for the next unsealed aggregation epoch (authoritative)."""
+
+        path = "/internal/v1/aggregation/target-epoch"
+        url = f"{self.master_base_url}{path}"
+        headers = {
+            "Authorization": f"Bearer {self.shared_token}",
+            "X-Base-Challenge-Slug": self.challenge_slug,
+            "Accept": "application/json",
+        }
+        try:
+            response = await client.get(url, headers=headers)
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            if not isinstance(data, dict) or "target_epoch" not in data:
+                return None
+            return int(data["target_epoch"])
+        except Exception:  # noqa: BLE001 - transport, mock, or schema failures fall back
+            return None
+
+    async def _resolve_target_epoch(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        explicit: int | None,
+        now: datetime,
+    ) -> int:
+        """Prefer master target-epoch; fall back to epoch_fn / wall bucket only if needed."""
+
+        if explicit is not None:
+            return int(explicit)
+        master_target = await self._fetch_master_target_epoch(client=client)
+        if master_target is not None:
+            return int(master_target)
+        if self.epoch_fn is not None:
+            return int(self.epoch_fn())
+        return int(now.timestamp()) // 360
+
     @role_contract(role=Role.CHALLENGE, capability=Capability.CHALLENGE_RAW_WEIGHT_PUSH)
     async def push_once(
         self,
@@ -436,8 +500,14 @@ class RawWeightPushClient:
         epoch: int | None = None,
         force_revision: int | None = None,
         reuse_pending: bool = True,
+        _advance_depth: int = 0,
     ) -> PushAttemptResult:
-        """Push one snapshot. Cursor advances only on exact durable acknowledgement."""
+        """Push one snapshot. Cursor advances only on exact durable acknowledgement.
+
+        On 409 sealed/stale/conflict, clears pending and retries with an advanced
+        epoch/revision identity (bounded) so a sealed wall-clock bucket cannot
+        loop forever.
+        """
 
         await self.store.init()
         now = self._now_fn()
@@ -445,206 +515,238 @@ class RawWeightPushClient:
         pending = await self.store.get_pending() if reuse_pending else None
         payload: RawWeightPushRequest | None = None
         raw_bytes: bytes | None = None
+        cleaned_for_retry: dict[str, float] | None = None
 
-        if pending is not None:
-            # Retry exact previous bytes after timeout/restart (no new revision).
-            try:
-                pending_bytes = str(pending["canonical_payload"]).encode("utf-8")
-                payload = RawWeightPushRequest.model_validate_json(pending_bytes)
-                raw_bytes = payload.canonical_bytes()
-                if not _pending_still_fresh(payload, now=now):
-                    logger.info(
-                        "raw weight pending expired; rebuilding",
-                        extra={
-                            "epoch": payload.epoch,
-                            "revision": payload.revision,
-                            "digest": payload.payload_digest[:12],
-                        },
-                    )
-                    await self.store.clear_pending()
+        http = self._http
+        owns_client = http is None
+        if owns_client:
+            http = httpx.AsyncClient(timeout=self.timeout_seconds)
+        assert http is not None
+
+        try:
+            if pending is not None:
+                # Retry exact previous bytes after timeout/restart (no new revision).
+                try:
+                    pending_bytes = str(pending["canonical_payload"]).encode("utf-8")
+                    payload = RawWeightPushRequest.model_validate_json(pending_bytes)
+                    raw_bytes = payload.canonical_bytes()
+                    if not _pending_still_fresh(payload, now=now):
+                        logger.info(
+                            "raw weight pending expired; rebuilding",
+                            extra={
+                                "epoch": payload.epoch,
+                                "revision": payload.revision,
+                                "digest": payload.payload_digest[:12],
+                            },
+                        )
+                        await self.store.clear_pending()
+                        pending = None
+                        payload = None
+                        raw_bytes = None
+                except Exception:  # noqa: BLE001 - corrupt pending is rebuilt
                     pending = None
                     payload = None
                     raw_bytes = None
-            except Exception:  # noqa: BLE001 - corrupt pending is rebuilt
-                pending = None
-                payload = None
-                raw_bytes = None
 
-        if payload is None or raw_bytes is None:
-            resolved_weights = (
-                dict(weights)
-                if weights is not None
-                else dict(await self.weights_fn())
-                if self.weights_fn is not None
-                else {}
-            )
-            # Positive hotkey weights only when synthesizing from get_weights;
-            # explicit zero maps (caller-supplied zeros) are preserved as zero-contribution.
-            if weights is not None:
-                cleaned = {str(hotkey): float(value) for hotkey, value in resolved_weights.items()}
-            else:
-                cleaned = {
-                    str(hotkey): float(value)
-                    for hotkey, value in resolved_weights.items()
-                    if float(value) > 0.0
-                }
-            if not cleaned:
+            if payload is None or raw_bytes is None:
+                resolved_weights = (
+                    dict(weights)
+                    if weights is not None
+                    else dict(await self.weights_fn())
+                    if self.weights_fn is not None
+                    else {}
+                )
+                # Positive hotkey weights only when synthesizing from get_weights;
+                # explicit zero maps (caller-supplied zeros) are preserved as zero-contribution.
+                if weights is not None:
+                    cleaned = {
+                        str(hotkey): float(value) for hotkey, value in resolved_weights.items()
+                    }
+                else:
+                    cleaned = {
+                        str(hotkey): float(value)
+                        for hotkey, value in resolved_weights.items()
+                        if float(value) > 0.0
+                    }
+                if not cleaned:
+                    return PushAttemptResult(
+                        status="skipped_empty",
+                        epoch=0,
+                        revision=0,
+                        payload_digest="",
+                        snapshot_id=None,
+                        cursor_advanced=False,
+                        error="empty weights",
+                    )
+                if _is_all_zero_weights(cleaned):
+                    return PushAttemptResult(
+                        status="skipped_zero",
+                        epoch=0,
+                        revision=0,
+                        payload_digest="",
+                        snapshot_id=None,
+                        cursor_advanced=False,
+                        error="all-zero weight map",
+                    )
+                cleaned_for_retry = dict(cleaned)
+                resolved_epoch = await self._resolve_target_epoch(
+                    client=http, explicit=epoch, now=now
+                )
+                revision = (
+                    int(force_revision)
+                    if force_revision is not None
+                    else self._next_revision(cursor, resolved_epoch)
+                )
+                nonce = f"prism-{uuid.uuid4().hex}"
+                payload, raw_bytes = self._build_payload(
+                    weights=cleaned,
+                    epoch=resolved_epoch,
+                    revision=revision,
+                    nonce=nonce,
+                    now=now,
+                )
+                await self.store.record_pending(
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                    canonical_payload=raw_bytes.decode("utf-8"),
+                    nonce=payload.nonce,
+                    attempted_at=now.isoformat(),
+                )
+
+            path = self._path_for()
+            url = f"{self.master_base_url}{path}"
+            headers = self._headers(path=path, body=raw_bytes, timestamp=int(now.timestamp()))
+            try:
+                response = await http.post(url, content=raw_bytes, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                # Never log Authorization / token material — digest prefix only.
+                logger.info(
+                    "raw weight push transport failure",
+                    extra={
+                        "epoch": payload.epoch,
+                        "revision": payload.revision,
+                        "digest": payload.payload_digest[:12],
+                    },
+                )
                 return PushAttemptResult(
-                    status="skipped_empty",
-                    epoch=0,
-                    revision=0,
-                    payload_digest="",
+                    status="transport_error",
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
                     snapshot_id=None,
                     cursor_advanced=False,
-                    error="empty weights",
+                    error=str(exc),
                 )
-            if _is_all_zero_weights(cleaned):
+
+            if response.status_code >= 500:
                 return PushAttemptResult(
-                    status="skipped_zero",
-                    epoch=0,
-                    revision=0,
-                    payload_digest="",
+                    status="server_error",
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
                     snapshot_id=None,
                     cursor_advanced=False,
-                    error="all-zero weight map",
+                    error=f"status={response.status_code}",
                 )
-            resolved_epoch = (
-                int(epoch)
-                if epoch is not None
-                else int(self.epoch_fn())
-                if self.epoch_fn is not None
-                else int(now.timestamp()) // 360
-            )
-            revision = (
-                int(force_revision)
-                if force_revision is not None
-                else self._next_revision(cursor, resolved_epoch)
-            )
-            nonce = f"prism-{uuid.uuid4().hex}"
-            payload, raw_bytes = self._build_payload(
-                weights=cleaned,
-                epoch=resolved_epoch,
-                revision=revision,
-                nonce=nonce,
-                now=now,
-            )
-            await self.store.record_pending(
+            if response.status_code not in {200, 201}:
+                detail = _safe_response_detail(response)
+                logger.info(
+                    "raw weight push rejected",
+                    extra={
+                        "status": response.status_code,
+                        "detail": detail,
+                        "epoch": payload.epoch,
+                        "revision": payload.revision,
+                        "digest": payload.payload_digest[:12],
+                    },
+                )
+                if response.status_code in NON_RETRYABLE_PUSH_STATUSES:
+                    await self.store.clear_pending()
+                err = f"status={response.status_code}"
+                if detail:
+                    err = f"{err} detail={detail}"
+                # Bounded advance: sealed/stale/conflict must not retry same identity.
+                if (
+                    response.status_code == 409
+                    and _is_epoch_advance_detail(detail)
+                    and _advance_depth < MAX_IDENTITY_ADVANCES
+                ):
+                    if _is_revision_conflict_detail(detail):
+                        next_epoch: int | None = payload.epoch
+                        next_revision = payload.revision + 1
+                    else:
+                        # Sealed/stale: re-query master; fall back to epoch+1.
+                        master_next = await self._fetch_master_target_epoch(client=http)
+                        if master_next is not None and int(master_next) > payload.epoch:
+                            next_epoch = int(master_next)
+                        else:
+                            next_epoch = payload.epoch + 1
+                        next_revision = 1
+                    retry_weights = (
+                        cleaned_for_retry
+                        if cleaned_for_retry is not None
+                        else dict(payload.weights)
+                    )
+                    return await self.push_once(
+                        weights=retry_weights,
+                        epoch=next_epoch,
+                        force_revision=next_revision,
+                        reuse_pending=False,
+                        _advance_depth=_advance_depth + 1,
+                    )
+                return PushAttemptResult(
+                    status="rejected",
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                    snapshot_id=None,
+                    cursor_advanced=False,
+                    error=err,
+                )
+            try:
+                ack = RawWeightPushAcknowledgement.model_validate(response.json())
+            except Exception as exc:  # noqa: BLE001
+                return PushAttemptResult(
+                    status="malformed_ack",
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                    snapshot_id=None,
+                    cursor_advanced=False,
+                    error=str(exc),
+                )
+            if not self._ack_matches(ack, payload=payload):
+                return PushAttemptResult(
+                    status="ack_mismatch",
+                    epoch=payload.epoch,
+                    revision=payload.revision,
+                    payload_digest=payload.payload_digest,
+                    snapshot_id=ack.snapshot_id if hasattr(ack, "snapshot_id") else None,
+                    cursor_advanced=False,
+                    error="acknowledgement identity mismatch",
+                )
+            ack_time = self._now_fn().isoformat()
+            await self.store.acknowledge(
                 epoch=payload.epoch,
                 revision=payload.revision,
                 payload_digest=payload.payload_digest,
+                snapshot_id=ack.snapshot_id,
                 canonical_payload=raw_bytes.decode("utf-8"),
                 nonce=payload.nonce,
-                attempted_at=now.isoformat(),
-            )
-
-        path = self._path_for()
-        url = f"{self.master_base_url}{path}"
-        headers = self._headers(path=path, body=raw_bytes, timestamp=int(now.timestamp()))
-        client = self._http
-        owns_client = client is None
-        if owns_client:
-            client = httpx.AsyncClient(timeout=self.timeout_seconds)
-        assert client is not None
-        try:
-            response = await client.post(url, content=raw_bytes, headers=headers)
-        except (httpx.TimeoutException, httpx.TransportError) as exc:
-            logger.info(
-                "raw weight push transport failure",
-                extra={
-                    "epoch": payload.epoch,
-                    "revision": payload.revision,
-                    "digest": payload.payload_digest[:12],
-                },
+                acknowledged_at=ack_time,
             )
             return PushAttemptResult(
-                status="transport_error",
+                status="acknowledged",
                 epoch=payload.epoch,
                 revision=payload.revision,
                 payload_digest=payload.payload_digest,
-                snapshot_id=None,
-                cursor_advanced=False,
-                error=str(exc),
+                snapshot_id=ack.snapshot_id,
+                cursor_advanced=True,
             )
         finally:
             if owns_client:
-                await client.aclose()
-
-        if response.status_code >= 500:
-            return PushAttemptResult(
-                status="server_error",
-                epoch=payload.epoch,
-                revision=payload.revision,
-                payload_digest=payload.payload_digest,
-                snapshot_id=None,
-                cursor_advanced=False,
-                error=f"status={response.status_code}",
-            )
-        if response.status_code not in {200, 201}:
-            detail = _safe_response_detail(response)
-            logger.info(
-                "raw weight push rejected",
-                extra={
-                    "status": response.status_code,
-                    "detail": detail,
-                    "epoch": payload.epoch,
-                    "revision": payload.revision,
-                    "digest": payload.payload_digest[:12],
-                },
-            )
-            if response.status_code in NON_RETRYABLE_PUSH_STATUSES:
-                await self.store.clear_pending()
-            err = f"status={response.status_code}"
-            if detail:
-                err = f"{err} detail={detail}"
-            return PushAttemptResult(
-                status="rejected",
-                epoch=payload.epoch,
-                revision=payload.revision,
-                payload_digest=payload.payload_digest,
-                snapshot_id=None,
-                cursor_advanced=False,
-                error=err,
-            )
-        try:
-            ack = RawWeightPushAcknowledgement.model_validate(response.json())
-        except Exception as exc:  # noqa: BLE001
-            return PushAttemptResult(
-                status="malformed_ack",
-                epoch=payload.epoch,
-                revision=payload.revision,
-                payload_digest=payload.payload_digest,
-                snapshot_id=None,
-                cursor_advanced=False,
-                error=str(exc),
-            )
-        if not self._ack_matches(ack, payload=payload):
-            return PushAttemptResult(
-                status="ack_mismatch",
-                epoch=payload.epoch,
-                revision=payload.revision,
-                payload_digest=payload.payload_digest,
-                snapshot_id=ack.snapshot_id if hasattr(ack, "snapshot_id") else None,
-                cursor_advanced=False,
-                error="acknowledgement identity mismatch",
-            )
-        ack_time = self._now_fn().isoformat()
-        await self.store.acknowledge(
-            epoch=payload.epoch,
-            revision=payload.revision,
-            payload_digest=payload.payload_digest,
-            snapshot_id=ack.snapshot_id,
-            canonical_payload=raw_bytes.decode("utf-8"),
-            nonce=payload.nonce,
-            acknowledged_at=ack_time,
-        )
-        return PushAttemptResult(
-            status="acknowledged",
-            epoch=payload.epoch,
-            revision=payload.revision,
-            payload_digest=payload.payload_digest,
-            snapshot_id=ack.snapshot_id,
-            cursor_advanced=True,
-        )
+                await http.aclose()
 
 
 def build_weights_loader(
@@ -730,9 +832,9 @@ def maybe_build_push_client_from_settings(
         return None
     # Challenge scoring epoch (architecture crowns) stays on settings.epoch_seconds.
     epoch_seconds = int(getattr(settings, "epoch_seconds", 3600) or 3600)
-    # Master weight-seal identity uses BASE_MASTER epoch interval (default 360s),
-    # NOT the challenge scoring epoch. Wall-clock can lag force-advanced open
-    # epochs, so advance past last acknowledged push when behind.
+    # Fallback only when master target-epoch is unreachable. push_once prefers
+    # GET /internal/v1/aggregation/target-epoch (max sealed + 1). Wall-clock can
+    # lag force-advanced seals; ledger last_epoch+1 is a secondary catch-up.
     master_epoch_seconds = int(
         getattr(settings, "raw_weight_master_epoch_seconds", 0)
         or __import__("os").environ.get("PRISM_RAW_WEIGHT_MASTER_EPOCH_SECONDS", 0)
