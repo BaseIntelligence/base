@@ -709,3 +709,92 @@ async def test_slug_body_route_mismatch_forbidden(harness: dict[str, Any]) -> No
     headers = _signed_headers(path=path, body=body, token=TOKEN, slug=SLUG, clock=clock)
     r = await client.post(path, content=body, headers=headers)
     assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rejection_details_are_attributable(harness: dict[str, Any]) -> None:
+    """Each rejection reason surfaces its own detail string."""
+
+    client = harness["client"]
+    clock = harness["clock"]
+    path = f"/internal/v1/challenges/{SLUG}/raw-weights"
+
+    # Freshness
+    past = clock.now() - timedelta(hours=1)
+    body = _build_body(
+        clock=clock,
+        nonce="attr-fresh",
+        computed_at=past,
+        expires_at=past + timedelta(minutes=1),
+    )
+    r = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "snapshot outside freshness window"
+
+    # Digest mismatch
+    body = _build_body(clock=clock, nonce="attr-digest", bad_digest="a" * 64)
+    r = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "payload_digest mismatch"
+
+    # Schema field failure includes field path (not bare generic only)
+    bad = json.loads(_build_body(clock=clock, nonce="attr-schema").decode())
+    bad["weights"] = {"not-a-hotkey!!!": 1.0}
+    bad.pop("payload_digest", None)
+    bad["payload_digest"] = RawWeightPushRequest.compute_digest(bad)
+    raw = json.dumps(bad, sort_keys=True, separators=(",", ":")).encode()
+    r = await client.post(
+        path, content=raw, headers=_signed_headers(path=path, body=raw, clock=clock)
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "invalid raw weight payload" in detail
+    assert "weights" in detail
+
+
+@pytest.mark.asyncio
+async def test_all_zero_weight_map_rejected(harness: dict[str, Any]) -> None:
+    """All-zero maps must not enter aggregation."""
+
+    client = harness["client"]
+    clock = harness["clock"]
+    session_factory = harness["session_factory"]
+    path = f"/internal/v1/challenges/{SLUG}/raw-weights"
+    # Validator-shaped hotkey with weight 0.0 only — must fail closed.
+    body = _build_body(
+        clock=clock,
+        nonce="zero-1",
+        weights={"5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At": 0.0},
+    )
+    r = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r.status_code == 422
+    assert "all-zero" in r.json()["detail"]
+    assert await _count_snapshots(session_factory) == 0
+
+
+@pytest.mark.asyncio
+async def test_freshness_detail_distinct_from_schema(
+    harness: dict[str, Any],
+) -> None:
+    client = harness["client"]
+    clock = harness["clock"]
+    path = f"/internal/v1/challenges/{SLUG}/raw-weights"
+    past = clock.now() - timedelta(hours=2)
+    body = _build_body(
+        clock=clock,
+        nonce="fresh-detail",
+        computed_at=past,
+        expires_at=past + timedelta(seconds=30),
+    )
+    r = await client.post(
+        path, content=body, headers=_signed_headers(path=path, body=body, clock=clock)
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"] == "snapshot outside freshness window"
+    assert r.json()["detail"] != "invalid raw weight payload"
