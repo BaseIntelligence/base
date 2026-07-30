@@ -4,7 +4,7 @@ version = 1
 introduced_epoch = 0
 
 [[challenges]]
-id = "dummy"
+id = "agent-v1"
 public_key = "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
 emission_share_bps = 10000
 policy = "all_metagraph_hotkeys"

@@ -1,0 +1,61 @@
+# task-36 gbase-agent-challenge
+date: 2026-07-30T03:26:29Z
+branch: reborn
+crate: crates/gbase-agent-challenge + bins/gbase-agent-challenge
+
+## Surface
+- Challenge trait + AgentV1Challenge (score_epoch full E cover, D24 NoScore never silence)
+- Pure scoring SCORE_MAX=1e6 SOFT_MS=2000 HARD_MS=10000 integer lattice
+- task_id/task_blob/answer_digest pinned F1/F11 digests
+- sign via gbase_bundle::make_signed_leaf domain gbase-rawweight-v1
+- GatewayClient POST /v1/weights/raw: 5xx retry, 409=AlreadyPresent idempotent
+- GBASE_CHALLENGE_SK_FILE load; identity prints pubkey
+- healthz/readyz on :8090
+- config/challenges.toml id=agent-v1 pubkey=f2e4965a... re-signed
+
+## VERIFY scenarios
+S1 F1-F11 offline fixtures PASS (12 integration + unit score tests)
+S2 wiremock well-formed signed POST → 202 PASS
+S3 5xx retried then 202 PASS
+S4 retry after 202 → 409 AlreadyPresent no duplicate PASS
+S5 D24 missing call → signed NoScore(ChallengeInternal) never silence PASS
+S6 pubkey from challenge-dummy.sk matches challenges.toml agent-v1 PASS
+S7 binary identity + healthz 200 + readyz 200 PASS
+
+## cargo test -p gbase-agent-challenge --all-targets
+test score::tests::f6_wrong_answer_score_zero ... ok
+test score::tests::f7_parked ... ok
+test score::tests::f8_missing ... ok
+test score::tests::f9_rejected ... ok
+test score::tests::latency_integer_only_no_float ... ok
+test task_gen::tests::f11_pinned_digests ... ok
+test task_gen::tests::f1_pinned_digests ... ok
+test challenge::tests::d24_missing_call_emits_noscore_not_silence ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 12 tests
+test f10_schema_invalid_response ... ok
+test f11_second_miner_digests_and_score ... ok
+test f2_duration_zero_score_max ... ok
+test f1_digests_and_score_max ... ok
+test f3_duration_6000_half ... ok
+test f7_parked_attestation ... ok
+test f5_duration_over_hard_timeout ... ok
+test f4_duration_hard_score_zero ... ok
+test f6_wrong_answer_score_zero ... ok
+test f8_missing_attestation ... ok
+test f9_rejected_attestation ... ok
+test reference_assertions_section_5_7 ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 5 tests
+test committed_dummy_secret_pubkey_matches_challenges_toml_entry ... ok
+test well_formed_signed_submission_posts_202 ... ok
+test retry_after_202_does_not_duplicate ... ok
+test noscore_leaf_posts_and_pubkey_matches_secret ... ok
+test five_xx_is_retried_then_succeeds ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+## Manual QA
+identity public_key=f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45
+curl healthz → ok http=200
+curl readyz → ready http=200
+PUBKEY_MATCH challenges.toml

@@ -1244,6 +1244,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbase-agent-challenge"
+version = "0.1.0"
+dependencies = [
+ "gbase-bundle",
+ "gbase-chain",
+ "gbase-crypto",
+ "gbase-trustroot",
+ "hex",
+ "parity-scale-codec",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "schnorrkel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "gbase-agent-challenge-bin"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "gbase-agent-challenge",
+ "gbase-telemetry",
+ "gbase-trustroot",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gbase-aggregate"
 version = "0.1.0"
 dependencies = [
@@ -1354,9 +1389,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "gbase-aggregate",
+ "gbase-bundle",
  "gbase-chain",
  "gbase-config",
  "gbase-crypto",
+ "gbase-merkle",
  "gbase-telemetry",
  "gbase-trustroot",
  "hex",
