@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage Rust build for gbase service binaries (validator | gateway | updater).
+# Multi-stage Rust build for gbase service binaries
 #
 # Source build (default, CI/prod):
 #   docker build -f deploy/Dockerfile --target validator -t validator:0.1.0 .
@@ -24,7 +24,7 @@ RUN rustup toolchain install 1.96.0 --profile minimal \
 WORKDIR /src
 
 # -----------------------------------------------------------------------------
-# Source builder — compiles all three service bins once
+# Source builder — compiles all service bins once
 # -----------------------------------------------------------------------------
 FROM rust-base AS source-builder
 COPY Cargo.toml Cargo.lock rust-toolchain.toml clippy.toml ./
@@ -37,13 +37,19 @@ RUN cargo build --release \
       -p validator-bin \
       -p gateway-bin \
       -p updater-bin \
+      -p agent-challenge-bin \
+      -p agent-runner-bin \
     && strip target/release/validator \
               target/release/gateway \
               target/release/updater \
+              target/release/agent-challenge \
+              target/release/agent-runner \
     && mkdir -p /out \
     && cp target/release/validator \
           target/release/gateway \
-          target/release/updater /out/
+          target/release/updater \
+          target/release/agent-challenge \
+          target/release/agent-runner /out/
 
 # -----------------------------------------------------------------------------
 # Prebuilt path — copy host target/release artifacts (local verify only)
@@ -54,9 +60,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /out
 COPY target/release/validator \
-     target/release/gateway \
-     target/release/updater \
-     /out/
+target/release/gateway \
+target/release/updater \
+target/release/agent-challenge \
+target/release/agent-runner \
+/out/
 
 # -----------------------------------------------------------------------------
 # Select artifact source
@@ -89,3 +97,12 @@ ENTRYPOINT ["/usr/local/bin/gateway"]
 FROM runtime-base AS updater
 COPY --from=artifacts --chown=gbase:gbase /out/updater /usr/local/bin/updater
 ENTRYPOINT ["/usr/local/bin/updater"]
+
+FROM runtime-base AS agent-challenge
+COPY --from=artifacts --chown=gbase:gbase /out/agent-challenge /usr/local/bin/agent-challenge
+ENTRYPOINT ["/usr/local/bin/agent-challenge"]
+
+# Miner runner binary (agent-runner) published as image target gbase-agent.
+FROM runtime-base AS gbase-agent
+COPY --from=artifacts --chown=gbase:gbase /out/agent-runner /usr/local/bin/agent-runner
+ENTRYPOINT ["/usr/local/bin/agent-runner"]
