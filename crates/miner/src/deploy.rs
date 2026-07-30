@@ -42,6 +42,8 @@ pub struct DeployParams {
     pub launch_token_hash: String,
     /// Subnet netuid.
     pub netuid: u16,
+    /// Work-receipt public key (64 lowercase hex) published in measured compose.
+    pub receipt_public_key_hex: String,
     /// Deploy vs dry-run.
     pub mode: DeployMode,
     /// Optional path to write `app-compose.json`.
@@ -59,6 +61,8 @@ impl Default for DeployParams {
             // Deterministic empty-token hash placeholder for offline dry-runs.
             launch_token_hash: empty_launch_token_hash_hex(),
             netuid: 1,
+            // Deterministic placeholder pubkey for offline dry-runs (not a real sk).
+            receipt_public_key_hex: "11".repeat(32),
             mode: DeployMode::NoDeploy,
             out_compose: None,
             phala_bin: PathBuf::from("phala"),
@@ -86,6 +90,9 @@ pub enum DeployError {
     /// Launch token hash is not 64 lowercase hex chars.
     #[error("launch_token_hash must be 64 lowercase hex chars")]
     BadLaunchTokenHash,
+    /// Receipt public key is not 64 lowercase hex chars.
+    #[error("receipt_public_key_hex must be 64 lowercase hex chars")]
+    BadReceiptPublicKey,
     /// Compose JSON hashing failed.
     #[error(transparent)]
     ComposeHash(#[from] ComposeHashError),
@@ -155,12 +162,16 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
     if !is_hex64_lower(&params.launch_token_hash) {
         return Err(DeployError::BadLaunchTokenHash);
     }
+    if !is_hex64_lower(&params.receipt_public_key_hex) {
+        return Err(DeployError::BadReceiptPublicKey);
+    }
 
     let yaml = docker_compose_yaml(&ComposeTemplateInput {
         agent_image: &params.agent_image,
         attest_helper_image: &params.attest_helper_image,
         launch_token_hash: &params.launch_token_hash,
         netuid: params.netuid,
+        receipt_public_key_hex: &params.receipt_public_key_hex,
     });
 
     // Field set mirrors dstack/Phala app-compose v2 (see real fixture layout).
@@ -169,7 +180,9 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
         "allowed_envs": [
             "GBASE_NETUID",
             "GBASE_MINER_HOTKEY_FILE",
-            "GBASE_LAUNCH_TOKEN_HASH"
+            "GBASE_LAUNCH_TOKEN_HASH",
+            "GBASE_RECEIPT_SK_FILE",
+            "GBASE_RECEIPT_PUBLIC_KEY"
         ],
         "docker_compose_file": yaml,
         "features": ["kms", "tproxy-net"],

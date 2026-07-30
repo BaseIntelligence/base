@@ -138,3 +138,73 @@ fn rejects_latest_tag_on_agent_image() {
         "unexpected err: {msg}"
     );
 }
+
+#[test]
+fn receipt_public_key_published_and_stable_across_renders() {
+    let pk = "ab".repeat(32);
+    let params = DeployParams {
+        receipt_public_key_hex: pk.clone(),
+        ..DeployParams::default()
+    };
+    let a = deploy_or_dry_run(&params).expect("a");
+    let b = deploy_or_dry_run(&params).expect("b");
+    assert_eq!(a.compose_hash_hex, b.compose_hash_hex, "stable compose-hash");
+    let yaml = docker_compose_from_app_compose_json(&a.app_compose_json).expect("yaml");
+    assert!(
+        yaml.contains(&format!("GBASE_RECEIPT_PUBLIC_KEY: \"{pk}\"")),
+        "pubkey published in compose env:
+{yaml}"
+    );
+    assert!(yaml.contains("target: /run/gbase/receipt_sk"));
+    assert!(yaml.contains("GBASE_RECEIPT_SK_FILE:"));
+    // Public key printed surface for challenge pin
+    assert!(a.app_compose_json.contains(&pk) || yaml.contains(&pk));
+}
+
+#[test]
+fn receipt_private_key_never_leaks_into_compose_or_env() {
+    // Use a distinctive secret-looking blob that must never appear.
+    let sk_hex = "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef";
+    let pk = "cd".repeat(32);
+    let params = DeployParams {
+        receipt_public_key_hex: pk,
+        ..DeployParams::default()
+    };
+    let result = deploy_or_dry_run(&params).expect("render");
+    let yaml = docker_compose_from_app_compose_json(&result.app_compose_json).expect("yaml");
+    let full = format!("{}\n{}", result.app_compose_json, yaml);
+    assert!(
+        !full.contains(sk_hex),
+        "private key material must not appear in compose"
+    );
+    assert!(
+        !full.to_ascii_lowercase().contains("begin private"),
+        "no PEM private markers"
+    );
+    // Env must not carry a secret-looking _SK value (only the path).
+    assert!(environment_block_has_no_secrets(&yaml), "env secrets leaked:
+{yaml}");
+    // Path only — not raw key bytes
+    for line in yaml.lines() {
+        if line.contains("GBASE_RECEIPT_SK_FILE") {
+            assert!(
+                line.contains("/run/gbase/receipt_sk"),
+                "sk env must be path only: {line}"
+            );
+            assert!(
+                !line.to_ascii_lowercase().contains("deadbeef"),
+                "sk env leaked key: {line}"
+            );
+        }
+    }
+    // allowed_envs lists path + pubkey names only
+    let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
+    let names: Vec<&str> = doc["allowed_envs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(names.contains(&"GBASE_RECEIPT_SK_FILE"));
+    assert!(names.contains(&"GBASE_RECEIPT_PUBLIC_KEY"));
+}

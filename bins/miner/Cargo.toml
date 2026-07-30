@@ -14,6 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
+crypto = { path = "../../crates/crypto" }
+hex = "0.4"
 miner = { path = "../../crates/miner" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

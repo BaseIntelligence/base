@@ -61,17 +61,24 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 continue;
             }
             let key_upper = key.to_ascii_uppercase();
+            let measured_public_key_name = key == "GBASE_RECEIPT_PUBLIC_KEY";
             if key_upper.contains("SECRET")
                 || key_upper.contains("PRIVATE")
                 || key_upper.ends_with("_SK")
-                || key_upper.ends_with("_KEY") && !key_upper.ends_with("_FILE")
+                || (key_upper.ends_with("_KEY")
+                    && !key_upper.ends_with("_FILE")
+                    && !measured_public_key_name)
                 || key_upper.contains("PASSWORD")
                 || key_upper.contains("TOKEN") && !key_upper.ends_with("_HASH")
             {
                 return false;
             }
-            // Reject raw 64-byte hex that is NOT the known launch-token hash field
-            if key != "GBASE_LAUNCH_TOKEN_HASH"
+            // Reject raw 64-byte hex that is NOT a known measured public field
+            let measured_public_hex = matches!(
+                key,
+                "GBASE_LAUNCH_TOKEN_HASH" | "GBASE_RECEIPT_PUBLIC_KEY"
+            );
+            if !measured_public_hex
                 && value.len() == 64
                 && value.chars().all(|c| c.is_ascii_hexdigit())
                 && !value.starts_with('/')

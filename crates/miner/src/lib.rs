@@ -28,5 +28,5 @@ pub use deploy::{
 pub use inspect::{docker_compose_from_app_compose_json, environment_block_has_no_secrets};
 pub use template::{
     docker_compose_yaml, ComposeTemplateInput, AGENT_PORT, AGENT_SERVICE, ATTEST_HELPER_PORT,
-    ATTEST_HELPER_SERVICE, HOTKEY_FILE_IN_CVM, LAUNCH_TOKEN_FILE_IN_CVM, RUN_GBASE_DIR,
+    ATTEST_HELPER_SERVICE, HOTKEY_FILE_IN_CVM, LAUNCH_TOKEN_FILE_IN_CVM, RECEIPT_SK_FILE_IN_CVM, RUN_GBASE_DIR,
 };

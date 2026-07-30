@@ -111,6 +111,16 @@ mod tests {
         })
     }
 
+    fn open_state_no_receipt(max: u32) -> RunnerState {
+        RunnerState::new(RunnerConfig {
+            max_concurrency: max,
+            receipt_key: None,
+            auth_enabled: false,
+            trusted_challenge_pubkey: None,
+            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+        })
+    }
+
     fn sample_desc() -> TaskDescriptorV1 {
         TaskDescriptorV1::new(
             "agent-v1",
@@ -347,7 +357,7 @@ mod tests {
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&hex::decode(sig_hex).unwrap());
         let mut hk = [0u8; 32];
-        hk.copy_from_slice(&hex::decode("aa" * 32).unwrap());
+        hk.copy_from_slice(&hex::decode("aa".repeat(32)).unwrap());
         agent_dispatch::verify_work_receipt(
             &receipt_pk,
             &agent_dispatch::SignedWorkReceiptV1 {

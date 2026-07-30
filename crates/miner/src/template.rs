@@ -14,6 +14,8 @@ pub const RUN_GBASE_DIR: &str = "/run/gbase";
 pub const HOTKEY_FILE_IN_CVM: &str = "/run/gbase/miner_hotkey";
 /// Optional raw launch-token file path (hash is what is measured).
 pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/gbase/launch_token";
+/// CVM-local work-receipt mini-secret path (never the challenge sk).
+pub const RECEIPT_SK_FILE_IN_CVM: &str = "/run/gbase/receipt_sk";
 
 /// Inputs that shape the measured docker-compose YAML string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,8 @@ pub struct ComposeTemplateInput<'a> {
     pub launch_token_hash: &'a str,
     /// Subnet netuid written as a non-secret env value.
     pub netuid: u16,
+    /// Work-receipt public key as 64 lowercase hex chars (measured; not secret).
+    pub receipt_public_key_hex: &'a str,
 }
 
 /// Render the docker-compose YAML embedded in `app-compose.json`.
@@ -33,7 +37,7 @@ pub struct ComposeTemplateInput<'a> {
 /// Contract:
 /// - services `agent` (:8080 public) and `attest-helper` (127.0.0.1:8081)
 /// - digest-pinned images only (caller must not pass `:latest`)
-/// - `environment:` holds only non-secret config + launch-token **hash**
+/// - `environment:` holds only non-secret config + launch-token **hash** + receipt **pubkey**
 /// - secrets are bind-mounted files under `/run/gbase/`
 #[must_use]
 pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
@@ -42,6 +46,7 @@ pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
         r#"# gbase miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=1)
 # Secrets: file mounts under {run_dir} only. Never put secret values in environment.
 # LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.
+# Work-receipt: private key file-mounted; public key published for challenge pin (D19).
 services:
   {agent}:
     image: {agent_image}
@@ -52,6 +57,8 @@ services:
       GBASE_NETUID: "{netuid}"
       GBASE_MINER_HOTKEY_FILE: "{hotkey_file}"
       GBASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
+      GBASE_RECEIPT_SK_FILE: "{receipt_sk_file}"
+      GBASE_RECEIPT_PUBLIC_KEY: "{receipt_pk}"
     volumes:
       - type: bind
         source: miner_hotkey
@@ -60,6 +67,10 @@ services:
       - type: bind
         source: launch_token
         target: {launch_token_file}
+        read_only: true
+      - type: bind
+        source: receipt_sk
+        target: {receipt_sk_file}
         read_only: true
   {attest}:
     image: {attest_image}
@@ -88,6 +99,8 @@ services:
         hotkey_file = HOTKEY_FILE_IN_CVM,
         launch_hash = input.launch_token_hash,
         launch_token_file = LAUNCH_TOKEN_FILE_IN_CVM,
+        receipt_sk_file = RECEIPT_SK_FILE_IN_CVM,
+        receipt_pk = input.receipt_public_key_hex,
         attest = ATTEST_HELPER_SERVICE,
         attest_image = input.attest_helper_image,
         attest_port = ATTEST_HELPER_PORT,

@@ -1,27 +1,29 @@
 //! `agent-runner` — miner CVM HTTP task API (`agent:8080`).
 //!
 //! Loads the CVM-local work-receipt key from `GBASE_RECEIPT_SK_FILE` (mode 0600
-//! mount). Dispatch auth (todo 18) is **on by default**. Capacity is advertised
-//! only until todo 19.
+//! mount). Dispatch auth (todo 18) is on by default when a trusted challenge
+//! pubkey is configured.
 
 #![forbid(unsafe_code)]
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use agent_runner::{
     app, load_or_generate, load_required, receipt_sk_path_from_env, RunnerConfig, RunnerState,
     DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH, RECEIPT_SK_FILE_ENV,
 };
 use clap::Parser;
+use crypto::KEY_LEN;
 use tokio::net::TcpListener;
 
 /// Miner agent-runner CLI.
 #[derive(Debug, Parser)]
 #[command(
     name = "agent-runner",
-    about = "Miner CVM agent task API (capacity + authenticated dispatch + work-receipt signing)"
+    about = "Miner CVM agent task API (capacity + dispatch + work-receipt signing)"
 )]
 struct Cli {
     /// Bind address (compose publishes agent:8080).
@@ -36,12 +38,12 @@ struct Cli {
     /// When set, generate the receipt key if the file is missing (local/dev only).
     #[arg(long, env = "GBASE_RECEIPT_SK_GENERATE", default_value_t = false)]
     receipt_sk_generate: bool,
-    /// Challenge hotkey (32-byte pubkey as 64 hex chars). Required when auth is on.
-    #[arg(long, env = "GBASE_CHALLENGE_PUBKEY_HEX")]
-    challenge_pubkey_hex: Option<String>,
-    /// Enforce signed dispatch (default true). Set `false` only for local dev.
-    #[arg(long, env = "GBASE_DISPATCH_AUTH", default_value_t = true)]
-    dispatch_auth: bool,
+    /// Disable dispatch auth (local/dev only). Default: auth on when pubkey set.
+    #[arg(long, env = "GBASE_DISPATCH_AUTH_DISABLE", default_value_t = false)]
+    dispatch_auth_disable: bool,
+    /// Trusted challenge public key (64 hex) for dispatch auth.
+    #[arg(long, env = "GBASE_TRUSTED_CHALLENGE_PUBKEY")]
+    trusted_challenge_pubkey: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -64,6 +66,16 @@ fn run(cli: Cli) -> Result<(), String> {
     rt.block_on(serve(cli))
 }
 
+fn parse_pubkey_hex(s: &str) -> Result<[u8; KEY_LEN], String> {
+    let bytes = hex::decode(s.trim()).map_err(|e| format!("trusted pubkey hex: {e}"))?;
+    if bytes.len() != KEY_LEN {
+        return Err(format!("trusted pubkey must be {KEY_LEN} bytes"));
+    }
+    let mut out = [0u8; KEY_LEN];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
 async fn serve(cli: Cli) -> Result<(), String> {
     let path = if cli.receipt_sk_file.as_os_str().is_empty() {
         receipt_sk_path_from_env()
@@ -82,22 +94,24 @@ async fn serve(cli: Cli) -> Result<(), String> {
     };
     let public_hex = key.public_key_hex();
 
-    let trusted = match &cli.challenge_pubkey_hex {
+    let trusted = match &cli.trusted_challenge_pubkey {
         Some(h) => Some(parse_pubkey_hex(h)?),
         None => None,
     };
-    if cli.dispatch_auth && trusted.is_none() {
+    let auth_enabled = !cli.dispatch_auth_disable;
+    if auth_enabled && trusted.is_none() {
         return Err(
-            "GBASE_CHALLENGE_PUBKEY_HEX required when dispatch auth is enabled".into(),
+            "dispatch auth enabled but GBASE_TRUSTED_CHALLENGE_PUBKEY unset (or pass --dispatch-auth-disable)"
+                .into(),
         );
     }
 
     let state = RunnerState::new(RunnerConfig {
         max_concurrency: cli.max_concurrency,
-        receipt_key: Some(key),
-        auth_enabled: cli.dispatch_auth,
+        auth_enabled,
         trusted_challenge_pubkey: trusted,
         dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+        receipt_key: Some(key),
     });
     let router = app(state);
     let listener = TcpListener::bind(cli.bind)
@@ -109,9 +123,10 @@ async fn serve(cli: Cli) -> Result<(), String> {
         %actual,
         max_concurrency = cli.max_concurrency,
         receipt_public_key_hex = %public_hex,
-        auth_enabled = cli.dispatch_auth,
+        auth_enabled,
         "agent-runner HTTP surface"
     );
+    let _ = Duration::from_secs(1); // keep import used if ttl changes
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -119,17 +134,4 @@ async fn serve(cli: Cli) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(s).map_err(|e| format!("challenge pubkey hex: {e}"))?;
-    if bytes.len() != 32 {
-        return Err(format!(
-            "challenge pubkey must be 32 bytes (64 hex chars), got {}",
-            bytes.len()
-        ));
-    }
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }
