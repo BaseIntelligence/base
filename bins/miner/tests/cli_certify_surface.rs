@@ -15,7 +15,8 @@ use trustroot::{MeasurementEntry, MeasurementsBody};
 use validator::{spawn_attest_server, AttestState};
 
 const QUOTE: &[u8] = include_bytes!("../../../crates/attest-parse/tests/fixtures/real/quote.bin");
-const EVENT_LOG: &[u8] = include_bytes!("../../../crates/attest-parse/tests/fixtures/real/event_log.json");
+const EVENT_LOG: &[u8] =
+    include_bytes!("../../../crates/attest-parse/tests/fixtures/real/event_log.json");
 
 fn measurements() -> MeasurementsBody {
     let parsed = parse_tdx_quote_v4(QUOTE).unwrap();
