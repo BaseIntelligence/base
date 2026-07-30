@@ -272,13 +272,15 @@ async fn s2c_restore_re_admits_after_cooldown() {
     })
     .unwrap();
 
-    // Eject A via forced failures at registry level.
+    // Spawn before ejecting — spawn_gateway can take > cooldown (120ms),
+    // which previously re-admitted A before the "only B" window ran.
+    let (addr, shutdown) = spawn_gateway(reg.clone()).await;
+    let client = reqwest::Client::new();
+
+    // Eject A via forced failures at registry level (after gateway is live).
     reg.record_failure(av.id);
     reg.record_failure(av.id);
     assert!(reg.get(av.id).unwrap().ejected);
-
-    let (addr, shutdown) = spawn_gateway(reg.clone()).await;
-    let client = reqwest::Client::new();
 
     // During ejection only B.
     for _ in 0..4 {
@@ -293,7 +295,7 @@ async fn s2c_restore_re_admits_after_cooldown() {
         assert_eq!(body, "B");
     }
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // After cooldown, A is re-admitted — should see A again.
     let mut saw_a = false;

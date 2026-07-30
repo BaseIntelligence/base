@@ -21,7 +21,6 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
 
 jobs:
   build-push-digests:
@@ -41,6 +40,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Lowercase GHCR image prefix
+        run: |
+          set -euo pipefail
+          # GHCR rejects mixed-case repository paths (e.g. BaseIntelligence).
+          owner_repo="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_PREFIX=ghcr.io/${owner_repo}" >> "$GITHUB_ENV"
+          echo "IMAGE_PREFIX=ghcr.io/${owner_repo}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
