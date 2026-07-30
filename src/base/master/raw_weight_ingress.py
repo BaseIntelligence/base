@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import inspect
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -65,6 +66,54 @@ PAYLOAD_TOO_LARGE_DETAIL = "payload too large"
 UNSUPPORTED_MEDIA_DETAIL = "unsupported media type"
 UNSUPPORTED_VERSION_DETAIL = "unsupported protocol version"
 FUTURE_EPOCH_DETAIL = "epoch too far in the future"
+ZERO_WEIGHT_DETAIL = "all-zero weight map rejected"
+
+
+logger = logging.getLogger(__name__)
+
+
+def _attributable_schema_detail(exc: ValidationError) -> str:
+    """Map pydantic errors to stable, non-secret rejection details."""
+
+    parts: list[str] = []
+    for err in exc.errors()[:8]:
+        loc_parts = [str(item) for item in err.get("loc", ())]
+        loc = ".".join(loc_parts)
+        msg = str(err.get("msg", "") or "")
+        msg_l = msg.lower()
+        if "payload_digest" in loc or "payload_digest" in msg_l:
+            return DIGEST_DETAIL
+        if "expires_at" in msg_l and "computed_at" in msg_l:
+            return f"{SCHEMA_DETAIL} (expires_at)"
+        err_type = str(err.get("type", "") or "value_error")
+        if loc:
+            parts.append(f"{loc}:{err_type}")
+        else:
+            parts.append(err_type)
+    if not parts:
+        return SCHEMA_DETAIL
+    joined = ", ".join(parts)
+    return f"{SCHEMA_DETAIL} ({joined})"
+
+
+def _log_rejection(
+    *,
+    challenge_slug: str,
+    reason: str,
+    status_code: int,
+    epoch: int | None = None,
+    revision: int | None = None,
+) -> None:
+    logger.info(
+        "raw weight push rejected",
+        extra={
+            "challenge_slug": challenge_slug,
+            "reason": reason,
+            "status_code": status_code,
+            "epoch": epoch,
+            "revision": revision,
+        },
+    )
 
 
 class RawWeightAuthError(PermissionError):
@@ -374,13 +423,17 @@ class RawWeightIngressService:
             # model_validate_json rejects non-object roots and coercion.
             payload = RawWeightPushRequest.model_validate_json(text)
         except ValidationError as exc:
-            raise RawWeightSchemaError(SCHEMA_DETAIL) from exc
+            raise RawWeightSchemaError(_attributable_schema_detail(exc)) from exc
         if payload.protocol_version not in self.accepted_versions:
             raise RawWeightSchemaError(UNSUPPORTED_VERSION_DETAIL)
         if not payload.protocol_version.startswith(f"{PROTOCOL_MAJOR}."):
             raise RawWeightSchemaError(UNSUPPORTED_VERSION_DETAIL)
         if len(payload.weights) > self.max_weight_keys:
             raise RawWeightSchemaError(PAYLOAD_TOO_LARGE_DETAIL)
+        if payload.weights and all(
+            float(weight) <= 0.0 for weight in payload.weights.values()
+        ):
+            raise RawWeightSchemaError(ZERO_WEIGHT_DETAIL)
         # Recompute server digest over the signed field set (exclude digest).
         canonical = payload.model_dump(mode="json", exclude={"payload_digest"})
         expected = RawWeightPushRequest.compute_digest(canonical)
@@ -883,6 +936,11 @@ def build_raw_weight_ingress_router(
             get_weight_flow_metrics().record_push(
                 outcome="rejected_auth", challenge_slug=slug
             )
+            _log_rejection(
+                challenge_slug=slug,
+                reason=UNAUTHORIZED_DETAIL,
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=UNAUTHORIZED_DETAIL,
@@ -890,6 +948,11 @@ def build_raw_weight_ingress_router(
         except RawWeightForbiddenError as exc:
             get_weight_flow_metrics().record_push(
                 outcome="rejected_forbidden", challenge_slug=slug
+            )
+            _log_rejection(
+                challenge_slug=slug,
+                reason=FORBIDDEN_DETAIL,
+                status_code=status.HTTP_403_FORBIDDEN,
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -899,6 +962,11 @@ def build_raw_weight_ingress_router(
             get_weight_flow_metrics().record_push(
                 outcome="conflict", challenge_slug=slug
             )
+            _log_rejection(
+                challenge_slug=slug,
+                reason=CONFLICT_DETAIL,
+                status_code=status.HTTP_409_CONFLICT,
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=CONFLICT_DETAIL,
@@ -907,13 +975,24 @@ def build_raw_weight_ingress_router(
             get_weight_flow_metrics().record_push(
                 outcome="rejected_sealed", challenge_slug=slug
             )
+            sealed_detail = str(exc) or SEALED_REVISION_DETAIL
+            _log_rejection(
+                challenge_slug=slug,
+                reason=sealed_detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc) or SEALED_REVISION_DETAIL,
+                detail=sealed_detail,
             ) from exc
         except RawWeightFreshnessError as exc:
             get_weight_flow_metrics().record_push(
                 outcome="rejected_freshness", challenge_slug=slug
+            )
+            _log_rejection(
+                challenge_slug=slug,
+                reason=FRESHNESS_DETAIL,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -925,15 +1004,30 @@ def build_raw_weight_ingress_router(
             )
             message = str(exc) or SCHEMA_DETAIL
             if message == PAYLOAD_TOO_LARGE_DETAIL:
+                _log_rejection(
+                    challenge_slug=slug,
+                    reason=PAYLOAD_TOO_LARGE_DETAIL,
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=PAYLOAD_TOO_LARGE_DETAIL,
                 ) from exc
             if message == UNSUPPORTED_MEDIA_DETAIL:
+                _log_rejection(
+                    challenge_slug=slug,
+                    reason=UNSUPPORTED_MEDIA_DETAIL,
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                     detail=UNSUPPORTED_MEDIA_DETAIL,
                 ) from exc
+            _log_rejection(
+                challenge_slug=slug,
+                reason=message,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=message,
@@ -958,6 +1052,7 @@ __all__ = [
     "DEFAULT_MAX_CLOCK_SKEW_SECONDS",
     "DEFAULT_MAX_FUTURE_EPOCH_AHEAD",
     "DEFAULT_MAX_WEIGHT_KEYS",
+    "ZERO_WEIGHT_DETAIL",
     "PushOutcome",
     "RAW_WEIGHT_FRESHNESS_POLICY_VERSION",
     "RawWeightAuthError",

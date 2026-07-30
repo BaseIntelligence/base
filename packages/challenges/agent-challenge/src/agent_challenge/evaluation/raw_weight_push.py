@@ -92,6 +92,56 @@ class PushAttemptResult:
     error: str | None = None
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _pending_still_fresh(
+    payload: RawWeightPushRequest,
+    *,
+    now: datetime,
+    skew_seconds: int = 30,
+) -> bool:
+    """Mirror master receipt policy lower/upper bound for local pending reuse."""
+
+    expires = _as_utc(payload.expires_at)
+    receipt = _as_utc(now)
+    return receipt < (expires + timedelta(seconds=int(skew_seconds)))
+
+
+def _safe_response_detail(response: httpx.Response) -> str:
+    """Extract a short rejection detail without logging secrets or full bodies."""
+
+    try:
+        data = response.json()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    detail = data.get("detail")
+    if isinstance(detail, str):
+        return detail[:300]
+    if isinstance(detail, list):
+        # FastAPI validation error shape — field locs only.
+        parts: list[str] = []
+        for item in detail[:5]:
+            if isinstance(item, dict):
+                loc = ".".join(str(x) for x in item.get("loc", ()))
+                if loc:
+                    parts.append(loc)
+        return ",".join(parts)[:300]
+    return ""
+
+
+def _is_all_zero_weights(weights: Mapping[str, float]) -> bool:
+    return bool(weights) and all(float(value) <= 0.0 for value in weights.values())
+
+
+NON_RETRYABLE_PUSH_STATUSES = frozenset({409, 413, 415, 422})
+
+
 class RawWeightPushLedger(Base):
     """Singleton SQLAlchemy row for durable attempt/ack checkpointing.
 
@@ -194,6 +244,22 @@ class RawWeightPushStore:
             row.pending_nonce = nonce
             row.pending_attempted_at = attempted_at
             row.updated_at = attempted_at
+            await session.commit()
+
+    async def clear_pending(self) -> None:
+        """Drop a non-retryable pending snapshot so the next push rebuilds fresh bytes."""
+
+        async with self.database.session() as session:
+            row = await self._get_row(session)
+            if row is None:
+                return
+            row.pending_epoch = None
+            row.pending_revision = None
+            row.pending_payload_digest = None
+            row.pending_canonical_payload = None
+            row.pending_nonce = None
+            row.pending_attempted_at = None
+            row.updated_at = datetime.now(UTC).isoformat()
             await session.commit()
 
     async def acknowledge(
@@ -315,6 +381,8 @@ class RawWeightPushClient:
         }
         if not body["weights"]:
             raise ValueError("empty weight map has no push surface")
+        if _is_all_zero_weights(body["weights"]):
+            raise ValueError("all-zero weight map has no push surface")
         digest = RawWeightPushRequest.compute_digest(body)
         body["payload_digest"] = digest
         payload = RawWeightPushRequest.model_validate(body)
@@ -375,6 +443,19 @@ class RawWeightPushClient:
                 pending_bytes = str(pending["canonical_payload"]).encode("utf-8")
                 payload = RawWeightPushRequest.model_validate_json(pending_bytes)
                 raw_bytes = payload.canonical_bytes()
+                if not _pending_still_fresh(payload, now=now):
+                    logger.info(
+                        "raw weight pending expired; rebuilding",
+                        extra={
+                            "epoch": payload.epoch,
+                            "revision": payload.revision,
+                            "digest": payload.payload_digest[:12],
+                        },
+                    )
+                    await self.store.clear_pending()
+                    pending = None
+                    payload = None
+                    raw_bytes = None
             except Exception:  # noqa: BLE001 - corrupt pending is rebuilt
                 pending = None
                 payload = None
@@ -401,6 +482,16 @@ class RawWeightPushClient:
                     snapshot_id=None,
                     cursor_advanced=False,
                     error="empty weights",
+                )
+            if _is_all_zero_weights(cleaned):
+                return PushAttemptResult(
+                    status="skipped_zero",
+                    epoch=0,
+                    revision=0,
+                    payload_digest="",
+                    snapshot_id=None,
+                    cursor_advanced=False,
+                    error="all-zero weight map",
                 )
             # Host-trust path: never silently push unattested scores as if TEE-backed.
             _log_unattested_weight_push_if_no_phala(cleaned)
@@ -477,6 +568,22 @@ class RawWeightPushClient:
                 error=f"status={response.status_code}",
             )
         if response.status_code not in {200, 201}:
+            detail = _safe_response_detail(response)
+            logger.info(
+                "raw weight push rejected",
+                extra={
+                    "status": response.status_code,
+                    "detail": detail,
+                    "epoch": payload.epoch,
+                    "revision": payload.revision,
+                    "digest": payload.payload_digest[:12],
+                },
+            )
+            if response.status_code in NON_RETRYABLE_PUSH_STATUSES:
+                await self.store.clear_pending()
+            err = f"status={response.status_code}"
+            if detail:
+                err = f"{err} detail={detail}"
             return PushAttemptResult(
                 status="rejected",
                 epoch=payload.epoch,
@@ -484,7 +591,7 @@ class RawWeightPushClient:
                 payload_digest=payload.payload_digest,
                 snapshot_id=None,
                 cursor_advanced=False,
-                error=f"status={response.status_code}",
+                error=err,
             )
         try:
             ack = RawWeightPushAcknowledgement.model_validate(response.json())

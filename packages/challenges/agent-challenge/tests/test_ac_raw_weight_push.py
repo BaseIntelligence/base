@@ -277,3 +277,99 @@ async def test_push_does_not_log_token(
     for record in caplog.records:
         assert TOKEN not in str(record.__dict__)
     await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_expired_pending_is_rebuilt_not_retried(database: Database) -> None:
+    clock = FakeClock()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        seen.append(parsed.nonce)
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-ac-rebuilt",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=lambda: 99,
+        freshness_seconds=60,
+    )
+    await client.init()
+    old = clock.now() - timedelta(hours=12)
+    stale_payload, stale_raw = client._build_payload(
+        weights={WINNER: 1.0},
+        epoch=1,
+        revision=1,
+        nonce="ac-stale-nonce",
+        now=old,
+    )
+    await client.store.record_pending(
+        epoch=stale_payload.epoch,
+        revision=stale_payload.revision,
+        payload_digest=stale_payload.payload_digest,
+        canonical_payload=stale_raw.decode("utf-8"),
+        nonce=stale_payload.nonce,
+        attempted_at=old.isoformat(),
+    )
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={WINNER: 1.0}, epoch=99, reuse_pending=True)
+    assert result.status == "acknowledged"
+    assert len(seen) == 1
+    assert seen[0] != "ac-stale-nonce"
+    assert await client.store.get_pending() is None
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_all_zero_weights_skipped_locally(database: Database) -> None:
+    clock = FakeClock()
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500)
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=lambda: 1,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(
+            weights={"5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At": 0.0},
+            epoch=1,
+        )
+    assert result.cursor_advanced is False
+    assert result.status in {"skipped_empty", "skipped_zero"}
+    assert calls == []
+    await http.aclose()
