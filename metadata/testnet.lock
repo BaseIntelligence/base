@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "endpoint": "wss://test.finney.opentensor.ai:443",
+  "sdk_pin": "e4ffa2e1325c6c7db618dbceaf396310a170990c",
+  "snapshot_netuid": 1,
+  "chain": {
+    "spec_name": "node-subtensor",
+    "spec_version": 440,
+    "transaction_version": 1,
+    "ss58_prefix": 42
+  },
+  "metadata_digest": "0x60bd8ab8e9708f9e0dde451e2855215d8915cc816ff4e77c5538a52bebd8b2fa",
+  "call_indices": {
+    "set_weights": {
+      "pallet": "SubtensorModule",
+      "pallet_index": 7,
+      "call": "set_weights",
+      "call_index": 0
+    },
+    "commit_timelocked_weights": {
+      "pallet": "SubtensorModule",
+      "pallet_index": 7,
+      "call": "commit_timelocked_weights",
+      "call_index": 113
+    },
+    "commit_timelocked_mechanism_weights": {
+      "pallet": "SubtensorModule",
+      "pallet_index": 7,
+      "call": "commit_timelocked_mechanism_weights",
+      "call_index": 118
+    },
+    "set_subnet_identity": {
+      "pallet": "SubtensorModule",
+      "pallet_index": 7,
+      "call": "set_subnet_identity",
+      "call_index": 78
+    }
+  },
+  "weights_tlock_payload": {
+    "fields": [
+      "hotkey",
+      "uids",
+      "values",
+      "version_key"
+    ],
+    "scale_types": [
+      "Vec<u8>",
+      "Vec<u16>",
+      "Vec<u16>",
+      "u64"
+    ],
+    "source": "sdk:bittensor_core::timelock::WeightsTlockPayload@e4ffa2e1325c6c7db618dbceaf396310a170990c"
+  },
+  "commit_reveal_version": {
+    "value": 4,
+    "source": "storage:SubtensorModule.CommitRevealWeightsVersion"
+  },
+  "epoch_schedule_inputs": {
+    "tempo": {
+      "source": "storage:SubtensorModule.Tempo",
+      "key": [
+        "netuid"
+      ],
+      "note": "per-netuid map; snapshot probes netuid=1"
+    },
+    "reveal_period_epochs": {
+      "source": "storage:SubtensorModule.RevealPeriodEpochs",
+      "key": [
+        "netuid"
+      ],
+      "note": "epochs, not blocks (D22)"
+    },
+    "block_time": {
+      "source": "constant:Aura.SlotDuration",
+      "key": [],
+      "note": "milliseconds; block_time_secs = SlotDuration_ms / 1000 (SDK Client::block_time)"
+    },
+    "last_epoch_block": {
+      "source": "storage:SubtensorModule.LastEpochBlock",
+      "key": [
+        "netuid"
+      ]
+    },
+    "pending_epoch_at": {
+      "source": "storage:SubtensorModule.PendingEpochAt",
+      "key": [
+        "netuid"
+      ],
+      "note": "0 when no owner-triggered pending epoch"
+    },
+    "subnet_epoch_index": {
+      "source": "storage:SubtensorModule.SubnetEpochIndex",
+      "key": [
+        "netuid"
+      ]
+    },
+    "blocks_since_last_step": {
+      "source": "storage:SubtensorModule.BlocksSinceLastStep",
+      "key": [
+        "netuid"
+      ]
+    }
+  },
+  "commitments_pallet_present": true,
+  "commitments_pallet": {
+    "name": "Commitments",
+    "index": 18
+  }
+}

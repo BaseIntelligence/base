@@ -1,0 +1,40 @@
+# Nightly (and manual) metadata + epoch-schedule drift gate against Finney testnet.
+# Not on every PR push: requires live RPC and is intentionally schedule-driven.
+name: metadata-drift
+
+on:
+  schedule:
+    # 06:17 UTC daily
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  # Optional: also on push to reborn when lockfile/xtask changes
+  push:
+    branches: [reborn]
+    paths:
+      - "metadata/**"
+      - "xtask/**"
+      - ".github/workflows/metadata-drift.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  metadata-snapshot-check:
+    name: xtask metadata-snapshot --check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: metadata-snapshot --check (Finney testnet)
+        run: cargo run -p xtask -- metadata-snapshot --check
