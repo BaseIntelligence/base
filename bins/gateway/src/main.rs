@@ -46,11 +46,13 @@ async fn main() -> ExitCode {
         }
         _ => {
             // fake_owner (default): owner hotkey == configured gateway hotkey.
-            let mut fc = FakeChainConfig::default();
-            fc.netuid = config.netuid;
-            fc.owner_hotkey = config.hotkey.to_vec();
-            // UID0 = owner for single-master metagraph smoke.
-            fc.hotkeys = vec![config.hotkey.to_vec()];
+            let fc = FakeChainConfig {
+                netuid: config.netuid,
+                owner_hotkey: config.hotkey.to_vec(),
+                // UID0 = owner for single-master metagraph smoke.
+                hotkeys: vec![config.hotkey.to_vec()],
+                ..Default::default()
+            };
             let chain = FakeChain::new(fc);
             tracing::info!(
                 backend = "fake_owner",
