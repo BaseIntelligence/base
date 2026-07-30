@@ -1,0 +1,17 @@
+[package]
+name = "gbase-compose-hash"
+description = "Canonical app-compose.json hashing and mr_config_id (dstack / Phala)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true
