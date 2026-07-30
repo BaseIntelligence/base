@@ -3,8 +3,7 @@
 **/*.rs.bk
 *.pdb
 
-# Cargo — commit Cargo.lock once a binary/workspace exists; ignore until then is N/A
-# (lockfile will be tracked when workspace is added)
+# Cargo.lock is tracked for this binary workspace
 
 # Secrets & keys (never commit)
 .env

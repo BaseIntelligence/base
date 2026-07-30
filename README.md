@@ -14,9 +14,12 @@ Greenfield successor path for Base Intelligence subnet work: validators, miners,
 - Host / workspace pin: **Rust 1.96.0** via [`rust-toolchain.toml`](./rust-toolchain.toml).
 - Bittensor SDK pin used by consumers: `bittensor` / related crates may still require **1.89** via a directory-level `rust-toolchain.toml` override (see SDK pin `e4ffa2e1325c6c7db618dbceaf396310a170990c` from the gbase plan task 4). Dual-toolchain is expected until upstream catches up.
 
-## Layout (upcoming)
+## Layout
 
-Workspace crates and `Cargo.lock` will be added when the monorepo scaffold lands. Until then this tree holds license, ignore rules, ownership, and toolchain only.
+- Cargo workspace (`resolver = "3"`): `crates/*`, `bins/*`, `xtask`
+- Stub member: `crates/gbase-workspace-smoke` (keeps `cargo metadata` green)
+- Gates: `cargo fmt`, `clippy -D warnings`, `test`, `cargo deny`, `xtask loc-cap`, `xtask consensus-lint`
+- CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) on push/PR to `reborn`
 
 ## License
 
