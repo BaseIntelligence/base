@@ -1,0 +1,34 @@
+[package]
+name = "dissent"
+description = "DissentV1, three-outcome policy, quarantine (BUNDLE_SPEC §10–11.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+aggregate = { path = "../aggregate" }
+bundle = { path = "../bundle" }
+chain = { path = "../chain" }
+config = { path = "../config" }
+crosscheck = { path = "../crosscheck" }
+crypto = { path = "../crypto" }
+trustroot = { path = "../trustroot" }
+hex = "0.4"
+metrics = "0.24"
+parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+sha2 = "0.10"
+
+[dev-dependencies]
+crypto = { path = "../crypto" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true

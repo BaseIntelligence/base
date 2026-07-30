@@ -1,0 +1,15 @@
+[package]
+name = "attest-parse"
+description = "Structural Intel TDX quote v4 parser (header + TD report measurements)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[lints]
+workspace = true

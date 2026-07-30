@@ -1,12 +1,12 @@
 task-13-chain evidence
 date: 2026-07-30T02:36:58Z
-crate: crates/gbase-chain
+crate: crates/chain
 head: 888c408
 
-=== GREEN cargo test -p gbase-chain ===
+=== GREEN cargo test -p chain ===
     Blocking waiting for file lock on package cache
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
-     Running unittests src/lib.rs (target/debug/deps/gbase_chain-05fd4034e382499e)
+     Running unittests src/lib.rs (target/debug/deps/chain-05fd4034e382499e)
 
 running 7 tests
 test tests::s1_crv4_enabled_submit_records_payload_without_merkle ... ok
@@ -19,7 +19,7 @@ test tests::s3_unsupported_cr_version_rejected_on_submit ... ok
 
 test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-   Doc-tests gbase_chain
+   Doc-tests chain
 
 running 0 tests
 
@@ -40,6 +40,6 @@ FakeChain CR on (CRV4) records; CR off -> set_weights; no reveal (D22)
 #[ignore] testnet_current_block_positive (--features live)
 
 === files ===
--rw-r--r-- 1 root root   740 Jul 30 02:33 crates/gbase-chain/Cargo.toml
--rw-r--r-- 1 root root 31421 Jul 30 02:33 crates/gbase-chain/src/lib.rs
-946 crates/gbase-chain/src/lib.rs
+-rw-r--r-- 1 root root   740 Jul 30 02:33 crates/chain/Cargo.toml
+-rw-r--r-- 1 root root 31421 Jul 30 02:33 crates/chain/src/lib.rs
+946 crates/chain/src/lib.rs

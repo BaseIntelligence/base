@@ -28,16 +28,16 @@ Useful when no CVM is up. Still exercises CLI wiring:
 ```bash
 # Requires a reachable validator attest endpoint OR will fail on HTTP —
 # for pure CLI parse checks, prefer unit tests:
-cargo test -q -p gbase-miner
+cargo test -q -p miner
 
 # Deploy dry-run remains the zero-dependency smoke:
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 ```
 
 When a local validator is running with fixture-friendly config:
 
 ```bash
-cargo run -q -p gbase-miner-bin -- certify \
+cargo run -q -p miner-bin -- certify \
   --fixture-mode \
   --validator-url "http://127.0.0.1:8081" \
   --netuid 1 \
@@ -65,7 +65,7 @@ export GBASE_EPOCH=123
 export GBASE_MINER_HOTKEY_HEX='<64 hex>'
 export GBASE_AGENT_URL='https://<your-cvm-host>'
 
-cargo run -q -p gbase-miner-bin -- certify \
+cargo run -q -p miner-bin -- certify \
   --validator-url "$GBASE_VALIDATOR_URL" \
   --netuid "$GBASE_NETUID" \
   --epoch "$GBASE_EPOCH" \

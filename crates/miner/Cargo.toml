@@ -1,0 +1,37 @@
+[package]
+name = "miner"
+description = "Miner self-deployment + certify: compose render, offline hash, phala deploy, D10 certify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+attest-parse = { path = "../attest-parse" }
+attest-policy = { path = "../attest-policy" }
+compose-hash = { path = "../compose-hash" }
+crypto = { path = "../crypto" }
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+attest-parse = { path = "../attest-parse" }
+attest-policy = { path = "../attest-policy" }
+attest-replay = { path = "../attest-replay" }
+crypto = { path = "../crypto" }
+trustroot = { path = "../trustroot" }
+validator = { path = "../validator" }
+hex = "0.4"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "process", "io-util"] }
+
+[lints]
+workspace = true

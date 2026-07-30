@@ -1,7 +1,7 @@
-# task-39 gbase-updater evidence
+# task-39 updater evidence
 date: 2026-07-30T02:40:00Z
 branch: reborn
-crate: crates/gbase-updater + bins/gbase-updater (bin name: gbase-updater)
+crate: crates/updater + bins/updater (bin name: updater)
 
 ## API / behavior surface
 - Phases: idle → resolving → pulling → recreating → verifying → committing (+ rolling_back, backoff, exhausted)
@@ -25,28 +25,28 @@ S7 pin_store roundtrip PASS
 S8 already_current short-circuit PASS
 
 ## Manual QA (real binary surface)
-$ ./target/debug/gbase-updater
-gbase-updater config error: missing required updater env var
+$ ./target/debug/updater
+updater config error: missing required updater env var
 exit=2
 
 ## Gates
-cargo test -p gbase-updater --all-targets: 12 passed
-cargo clippy -p gbase-updater -p gbase-updater-bin --all-targets -- -D warnings: exit 0
-cargo fmt -p gbase-updater -p gbase-updater-bin --check: exit 0
-xtask loc-cap: crates/gbase-updater 1003 LOC, bins/gbase-updater 42 LOC (cap 1500)
+cargo test -p updater --all-targets: 12 passed
+cargo clippy -p updater -p updater-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p updater -p updater-bin --check: exit 0
+xtask loc-cap: crates/updater 1003 LOC, bins/updater 42 LOC (cap 1500)
 
 ## Files
-crates/gbase-updater/Cargo.toml
-crates/gbase-updater/src/lib.rs
-crates/gbase-updater/src/config.rs
-crates/gbase-updater/src/digest.rs
-crates/gbase-updater/src/docker.rs
-crates/gbase-updater/src/error.rs
-crates/gbase-updater/src/health.rs
-crates/gbase-updater/src/machine.rs
-crates/gbase-updater/src/pin_store.rs
-bins/gbase-updater/Cargo.toml
-bins/gbase-updater/src/main.rs
+crates/updater/Cargo.toml
+crates/updater/src/lib.rs
+crates/updater/src/config.rs
+crates/updater/src/digest.rs
+crates/updater/src/docker.rs
+crates/updater/src/error.rs
+crates/updater/src/health.rs
+crates/updater/src/machine.rs
+crates/updater/src/pin_store.rs
+bins/updater/Cargo.toml
+bins/updater/src/main.rs
 
 ## Notes
 - Digests only; never :latest.

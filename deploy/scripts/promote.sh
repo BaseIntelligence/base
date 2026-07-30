@@ -2,7 +2,7 @@
 # promote — digest pin promotion with mandatory backup (task 43).
 #
 #   promote.sh --env staging|prod --service validator --image REPO@sha256:HEX
-#   promote.sh --env staging --service validator --digest sha256:HEX --repository gbase-validator
+#   promote.sh --env staging --service validator --digest sha256:HEX --repository validator
 #   promote.sh --env prod --service validator --image ... --confirm-prod
 #   promote.sh --rollback --env staging|prod [--service validator]
 #

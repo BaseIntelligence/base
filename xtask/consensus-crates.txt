@@ -1,7 +1,7 @@
 # Consensus crates subject to D7/D8 lint (integer-only, no HashMap, checked_* only).
 # Missing directories under crates/<name>/ are skipped until the crate is created.
 # Behavior is intentional: list future crates early so CI enforces the rules on day one.
-gbase-aggregate
-gbase-merkle
-gbase-bundle
-gbase-crypto
+aggregate
+merkle
+bundle
+crypto

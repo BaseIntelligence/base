@@ -1,4 +1,4 @@
-=== task-38 gbase-miner certify + validator verifier ===
+=== task-38 miner certify + validator verifier ===
 date: 2026-07-30T03:49:09+00:00
 branch: reborn
 HEAD_before: 7152e405f989073a719155a532edd134ea2b19fd
@@ -16,7 +16,7 @@ CLI surface fixture-mode: cli_fixture_mode_verified PASS
 === cargo test ===
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (target/debug/deps/gbase_miner-e50823983838cd13)
+     Running unittests src/lib.rs (target/debug/deps/miner-e50823983838cd13)
 
 running 0 tests
 
@@ -56,15 +56,15 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 === files ===
-crates/gbase-attest-policy/src/pipeline.rs — verify_submission parse→replay→policy
-crates/gbase-attest-parse/src/lib.rs — patch_report_data
-crates/gbase-validator/src/attest.rs — nonce+submit HTTP + AttestState
-crates/gbase-miner/src/certify.rs — certify client + fixture mode
-bins/gbase-miner/src/main.rs — certify subcommand
-crates/gbase-miner/tests/certify_verify.rs — S1-S6
-crates/gbase-miner/tests/cli_certify_surface.rs — CLI QA
+crates/attest-policy/src/pipeline.rs — verify_submission parse→replay→policy
+crates/attest-parse/src/lib.rs — patch_report_data
+crates/validator/src/attest.rs — nonce+submit HTTP + AttestState
+crates/miner/src/certify.rs — certify client + fixture mode
+bins/miner/src/main.rs — certify subcommand
+crates/miner/tests/certify_verify.rs — S1-S6
+crates/miner/tests/cli_certify_surface.rs — CLI QA
 
 === notes ===
 MockQuoteVerifier for PCS outage; real fixtures measurements for Verified
-D10 binding via gbase-attest-policy compute_report_data
+D10 binding via attest-policy compute_report_data
 No secrets committed

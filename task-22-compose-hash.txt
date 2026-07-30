@@ -1,6 +1,6 @@
 task-22-compose-hash evidence
 date: 2026-07-30T02:08:56+00:00
-crate: crates/gbase-compose-hash
+crate: crates/compose-hash
 
 === RED (stub compose_hash -> [0;32]) ===
 test tests::compose_hash_matches_known_simple_digest ... FAILED
@@ -20,7 +20,7 @@ assertion `left == right` failed
   left: "0000000000000000000000000000000000000000000000000000000000000000"
  right: "ab25a1b1ffa8354d6c12efa29d1c689c3caf09d2710e21776b652c6fb894ca65"
 test result: FAILED. 4 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-error: test failed, to rerun pass `-p gbase-compose-hash --lib`
+error: test failed, to rerun pass `-p compose-hash --lib`
 
 === GREEN ===
 running 8 tests
@@ -37,7 +37,7 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 === clippy -D warnings ===
-    Checking gbase-compose-hash v0.1.0 (/tmp/gbase-compose-iso/crates/gbase-compose-hash)
+    Checking compose-hash v0.1.0 (/tmp/gbase-compose-iso/crates/compose-hash)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
 
 === surface python (dstack ensure_ascii=false) ===
@@ -52,6 +52,6 @@ compose_hash(&[u8]) -> Result<[u8;32], ComposeHashError>
 mr_config_id(&[u8;32]) -> [u8;48]  // 0x01 || hash || 15x00
 
 === files ===
-crates/gbase-compose-hash/Cargo.toml
-crates/gbase-compose-hash/src/lib.rs
-256 crates/gbase-compose-hash/src/lib.rs
+crates/compose-hash/Cargo.toml
+crates/compose-hash/src/lib.rs
+256 crates/compose-hash/src/lib.rs

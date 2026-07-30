@@ -52,7 +52,7 @@ enum Command {
     SpecCheck,
     /// Fail if `docs/AGENT_CHALLENGE.md` is missing required task 9 pins.
     AgentChallengeCheck,
-    /// Fail if external miner docs `protocol_version` differs from `gbase-bundle`, or `THREAT_MODEL` D19 drifts.
+    /// Fail if external miner docs `protocol_version` differs from `bundle`, or `THREAT_MODEL` D19 drifts.
     ExternalDocsCheck,
 }
 

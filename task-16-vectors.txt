@@ -17,30 +17,30 @@ drwxr-xr-x 3 root root 4096 Jul 30 02:41 ..
 -rw-r--r-- 1 root root 2121 Jul 30 02:41 README.md
 
 === headers (matches_spec / divergence) ===
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
   matches_spec= False
   expected_vector= [[1, 32768], [2, 32768]]
   note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
   matches_spec= False
   expected_vector= [[0, 32768], [5, 3277], [15, 9830], [30, 19660]]
   note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
   matches_spec= True
   expected_vector= [[1, 32768], [2, 19660], [3, 13107]]
   note= Numeric round(float*65535) coincides with §6.8 Hamilton [(1,32768),(2,19660),(3,13107)] for this ratio set; algorithm st
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
   matches_spec= False
   expected_vector= [[0, 65535]]
   note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
   matches_spec= False
   expected_vector= [[0, 19661], [1, 6554], [2, 39321]]
   note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
 
-=== cargo check -p gbase-aggregate ===
+=== cargo check -p aggregate ===
 Caused by:
-  failed to read `/root/gbase/crates/gbase-gateway/Cargo.toml`
+  failed to read `/root/gbase/crates/gateway/Cargo.toml`
 
 Caused by:
   No such file or directory (os error 2)
@@ -49,26 +49,26 @@ Caused by:
 capture script deleted: yes
 
 === files ===
-crates/gbase-aggregate/Cargo.toml
-crates/gbase-aggregate/src/lib.rs
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
-crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/README.md
+crates/aggregate/Cargo.toml
+crates/aggregate/src/lib.rs
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
+crates/aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/README.md
 
-=== isolated cargo check -p gbase-aggregate ===
-    Checking gbase-aggregate v0.1.0 (/tmp/gbase-agg-iso/crates/gbase-aggregate)
+=== isolated cargo check -p aggregate ===
+    Checking aggregate v0.1.0 (/tmp/gbase-agg-iso/crates/aggregate)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
 exit: 0
 
 === git commit ===
 commit: 78979c0bf3f816b99ea2bc01bd74913b861b2690
-78979c0 test(gbase-aggregate): add Python BASE characterization vectors for D16
-78979c0 test(gbase-aggregate): add Python BASE characterization vectors for D16
- crates/gbase-aggregate/Cargo.toml                  |  14 +++
- crates/gbase-aggregate/src/lib.rs                  |   9 ++
+78979c0 test(aggregate): add Python BASE characterization vectors for D16
+78979c0 test(aggregate): add Python BASE characterization vectors for D16
+ crates/aggregate/Cargo.toml                  |  14 +++
+ crates/aggregate/src/lib.rs                  |   9 ++
  .../01_single_challenge_two_miners_equal.json      |  62 +++++++++++++
  ...2_two_challenges_absolute_shares_with_burn.json | 100 +++++++++++++++++++++
  ...03_spec_like_scores_50_30_20_one_challenge.json |  87 ++++++++++++++++++

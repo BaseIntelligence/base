@@ -1,0 +1,17 @@
+[package]
+name = "aggregate"
+description = "Integer aggregation (BUNDLE_SPEC §6); Python vectors are characterization only (D16)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[lints]
+workspace = true

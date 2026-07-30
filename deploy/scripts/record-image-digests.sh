@@ -3,7 +3,7 @@
 #
 #   record-image-digests.sh [--out deploy/digests/<sha>.json] [image:tag ...]
 #
-# Default images: gbase-validator:0.1.0 gbase-gateway:0.1.0 gbase-updater:0.1.0
+# Default images: validator:0.1.0 gateway:0.1.0 updater:0.1.0
 # Writes JSON:
 #   { "commit_sha", "created_at", "images": { "validator": { "id", "digest", "repo_digest", "tag" } } }
 set -euo pipefail
@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#IMAGES[@]} -eq 0 ]]; then
-  IMAGES=(gbase-validator:0.1.0 gbase-gateway:0.1.0 gbase-updater:0.1.0)
+  IMAGES=(validator:0.1.0 gateway:0.1.0 updater:0.1.0)
 fi
 
 COMMIT="$(git -C "$ROOT" rev-parse HEAD)"

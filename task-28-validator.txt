@@ -1,7 +1,7 @@
-# task-28 gbase-validator skeleton evidence
+# task-28 validator skeleton evidence
 date: 2026-07-30T02:48:00Z
 branch: reborn
-crate: crates/gbase-validator + bins/gbase-validator (bin name: gbase-validator)
+crate: crates/validator + bins/validator (bin name: validator)
 
 ## API / behavior surface
 - RegistrationStub: unregistered / set_uid / clear (local only)
@@ -24,31 +24,31 @@ S6 s6_registration_stub_default_and_set_uid PASS
 
 ## Manual QA (real binary surface)
 $ GBASE_ROLE=validator GBASE_NETUID=1 GBASE_DATABASE_URL=postgres://...@127.0.0.1:15433/postgres \
-  GBASE_LISTEN=127.0.0.1:18080 ./target/debug/gbase-validator
+  GBASE_LISTEN=127.0.0.1:18080 ./target/debug/validator
 curl /healthz → 200 ok
 curl /readyz → 200 {"status":"ok","checks":[{"name":"chain","ok":true},{"name":"db","ok":true}]}
 curl /metrics → gbase_up 1
-$ ./target/debug/gbase-validator  # no env
+$ ./target/debug/validator  # no env
 → exit=2 missing role+netuid
 
 ## Gates
-cargo test -p gbase-validator --all-targets: 13 passed
-cargo clippy -p gbase-validator -p gbase-validator-bin --all-targets -- -D warnings: exit 0
-cargo fmt -p gbase-validator -p gbase-validator-bin: applied
-xtask loc-cap: crates/gbase-validator 460 LOC, bins/gbase-validator 105 LOC (cap 1500)
+cargo test -p validator --all-targets: 13 passed
+cargo clippy -p validator -p validator-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p validator -p validator-bin: applied
+xtask loc-cap: crates/validator 460 LOC, bins/validator 105 LOC (cap 1500)
 
 ## Files
-crates/gbase-validator/Cargo.toml
-crates/gbase-validator/src/lib.rs
-crates/gbase-validator/src/app.rs
-crates/gbase-validator/src/coordination.rs
-crates/gbase-validator/src/epoch.rs
-crates/gbase-validator/src/error.rs
-crates/gbase-validator/src/registration.rs
-crates/gbase-validator/src/sync_chain.rs
-crates/gbase-validator/src/skeleton_tests.rs
-bins/gbase-validator/Cargo.toml
-bins/gbase-validator/src/main.rs
+crates/validator/Cargo.toml
+crates/validator/src/lib.rs
+crates/validator/src/app.rs
+crates/validator/src/coordination.rs
+crates/validator/src/epoch.rs
+crates/validator/src/error.rs
+crates/validator/src/registration.rs
+crates/validator/src/sync_chain.rs
+crates/validator/src/skeleton_tests.rs
+bins/validator/Cargo.toml
+bins/validator/src/main.rs
 Cargo.lock
 
 ## Notes

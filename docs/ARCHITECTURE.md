@@ -51,19 +51,19 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 
 | Binary / crate | Role |
 |----------------|------|
-| `gbase-gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner |
-| `gbase-validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
-| `gbase-agent-challenge` | Challenge service: score, sign leaves, POST raw weights |
-| `gbase-miner` | Miner CLI: dry-run compose-hash, `phala deploy`, certify |
-| `gbase-updater` | Digest-pinned rollouts via `docker-socket-proxy` |
-| `gbase-trustroot` | Offline keygen / sign / verify for owner-signed TOML |
-| `gbase-bundle` | SCALE types, seal, verify (`PROTOCOL_VERSION`) |
-| `gbase-aggregate` | Integer aggregation (Hamilton house 65535) |
-| `gbase-chain` | Chain client trait + SDK wiring |
-| `gbase-trustroot` (lib) | Load local signed challenges/measurements; dual-accept rotation |
+| `gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner |
+| `validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
+| `agent-challenge` | Challenge service: score, sign leaves, POST raw weights |
+| `miner` | Miner CLI: dry-run compose-hash, `phala deploy`, certify |
+| `updater` | Digest-pinned rollouts via `docker-socket-proxy` |
+| `trustroot` | Offline keygen / sign / verify for owner-signed TOML |
+| `bundle` | SCALE types, seal, verify (`PROTOCOL_VERSION`) |
+| `aggregate` | Integer aggregation (Hamilton house 65535) |
+| `chain` | Chain client trait + SDK wiring |
+| `trustroot` (lib) | Load local signed challenges/measurements; dual-accept rotation |
 | `gbase-attest-*` | Parse / replay / policy for TDX quotes |
-| `gbase-crosscheck` / `gbase-dissent` | Peer roots and three-outcome policy |
-| `gbase-db` | Postgres persistence (bundles, evidence, dissent) |
+| `crosscheck` / `dissent` | Peer roots and three-outcome policy |
+| `db` | Postgres persistence (bundles, evidence, dissent) |
 | `xtask` | loc-cap, consensus-lint, metadata-snapshot, spec gates |
 
 ---

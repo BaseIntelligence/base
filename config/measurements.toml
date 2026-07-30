@@ -1,5 +1,5 @@
 # Owner-signed measurements allowlist (task 35 — real Phala TDX CVM fixtures).
-# Source: crates/gbase-attest-parse/tests/fixtures/real/ (task-34 capture).
+# Source: crates/attest-parse/tests/fixtures/real/ (task-34 capture).
 version = 1
 introduced_epoch = 0
 

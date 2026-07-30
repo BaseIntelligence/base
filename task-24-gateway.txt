@@ -1,13 +1,13 @@
-# task-24 gbase-gateway evidence
+# task-24 gateway evidence
 date: 2026-07-30T02:46:00Z
 branch: reborn
-crate: crates/gbase-gateway + bins/gbase-gateway (bin name: gbase-gateway)
+crate: crates/gateway + bins/gateway (bin name: gateway)
 
 ## API / behavior surface
 - assert_master_only(chain, netuid, hotkey) — ChainClient::subnet_owner_hotkey vs configured bytes
 - GatewayError::MasterMismatch { configured, owner, netuid } → ExitCode 2 (EXIT_MASTER_MISMATCH)
-- run_until / run: master check **before** TcpListener::bind; then gbase-telemetry health router
-- GatewayConfig::from_env: gbase-config load (role=gateway) + GBASE_GATEWAY_LISTEN + GBASE_GATEWAY_HOTKEY (32-byte hex)
+- run_until / run: master check **before** TcpListener::bind; then telemetry health router
+- GatewayConfig::from_env: config load (role=gateway) + GBASE_GATEWAY_LISTEN + GBASE_GATEWAY_HOTKEY (32-byte hex)
 - Structured fatal: tracing::error event=master_only_mismatch fatal=true exit_code=2
 - Compose profile **master** documented in README (full stack = task 40)
 
@@ -20,28 +20,28 @@ S3 chain unknown netuid (tests::s3_chain_unknown_netuid_does_not_look_like_misma
 S3 hotkey hex parse + from_base role guard PASS
 
 ## Manual QA (real binary surface)
-$ ./target/debug/gbase-gateway
+$ ./target/debug/gateway
 structured fatal config missing role/netuid
 exit=1
 
 $ GBASE_ROLE=gateway GBASE_NETUID=1 GBASE_DOMAIN=example.com \
-  GBASE_DATABASE_URL=postgres://u:p@localhost/db ./target/debug/gbase-gateway
+  GBASE_DATABASE_URL=postgres://u:p@localhost/db ./target/debug/gateway
 structured fatal missing GBASE_GATEWAY_HOTKEY
 exit=1
 
 (Master mismatch exit=2 covered by FakeChain library tests; live NotImplementedChain used in bin until RPC owner read lands.)
 
 ## Gates
-cargo test -p gbase-gateway -p gbase-gateway-bin --all-targets: 7 passed
-cargo clippy -p gbase-gateway -p gbase-gateway-bin --all-targets -- -D warnings: exit 0
-cargo fmt -p gbase-gateway -p gbase-gateway-bin --check: exit 0
-xtask loc-cap: crates/gbase-gateway 214 LOC, bins/gbase-gateway 33 LOC (cap 1500)
+cargo test -p gateway -p gateway-bin --all-targets: 7 passed
+cargo clippy -p gateway -p gateway-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p gateway -p gateway-bin --check: exit 0
+xtask loc-cap: crates/gateway 214 LOC, bins/gateway 33 LOC (cap 1500)
 
 ## Files
-crates/gbase-gateway/Cargo.toml
-crates/gbase-gateway/src/lib.rs
-bins/gbase-gateway/Cargo.toml
-bins/gbase-gateway/src/main.rs
+crates/gateway/Cargo.toml
+crates/gateway/src/lib.rs
+bins/gateway/Cargo.toml
+bins/gateway/src/main.rs
 README.md (compose profile master note)
 Cargo.lock
 task-24-gateway.txt

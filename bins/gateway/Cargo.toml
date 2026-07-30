@@ -1,0 +1,23 @@
+[package]
+name = "gateway-bin"
+description = "gateway CLI binary (master-only skeleton)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "gateway"
+path = "src/main.rs"
+
+[dependencies]
+gateway = { path = "../../crates/gateway" }
+chain = { path = "../../crates/chain" }
+telemetry = { path = "../../crates/telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

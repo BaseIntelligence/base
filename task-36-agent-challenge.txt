@@ -1,13 +1,13 @@
-# task-36 gbase-agent-challenge
+# task-36 agent-challenge
 date: 2026-07-30T03:26:29Z
 branch: reborn
-crate: crates/gbase-agent-challenge + bins/gbase-agent-challenge
+crate: crates/agent-challenge + bins/agent-challenge
 
 ## Surface
 - Challenge trait + AgentV1Challenge (score_epoch full E cover, D24 NoScore never silence)
 - Pure scoring SCORE_MAX=1e6 SOFT_MS=2000 HARD_MS=10000 integer lattice
 - task_id/task_blob/answer_digest pinned F1/F11 digests
-- sign via gbase_bundle::make_signed_leaf domain gbase-rawweight-v1
+- sign via bundle::make_signed_leaf domain gbase-rawweight-v1
 - GatewayClient POST /v1/weights/raw: 5xx retry, 409=AlreadyPresent idempotent
 - GBASE_CHALLENGE_SK_FILE load; identity prints pubkey
 - healthz/readyz on :8090
@@ -22,7 +22,7 @@ S5 D24 missing call → signed NoScore(ChallengeInternal) never silence PASS
 S6 pubkey from challenge-dummy.sk matches challenges.toml agent-v1 PASS
 S7 binary identity + healthz 200 + readyz 200 PASS
 
-## cargo test -p gbase-agent-challenge --all-targets
+## cargo test -p agent-challenge --all-targets
 test score::tests::f6_wrong_answer_score_zero ... ok
 test score::tests::f7_parked ... ok
 test score::tests::f8_missing ... ok

@@ -3,7 +3,7 @@
 <!-- protocol_version: 1 -->
 
 Normative compose service/port/image rules: [`AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md) § measured app-compose.  
-CLI: `gbase-miner deploy`.
+CLI: `miner deploy`.
 
 ---
 
@@ -12,7 +12,7 @@ CLI: `gbase-miner deploy`.
 From the gbase repo root:
 
 ```bash
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 ```
 
 Expected stdout includes:
@@ -27,9 +27,9 @@ Exit code must be **0**.
 Optional: write the rendered compose JSON:
 
 ```bash
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1 \
-  --out /tmp/gbase-miner-app-compose.json
-test -f /tmp/gbase-miner-app-compose.json
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1 \
+  --out /tmp/miner-app-compose.json
+test -f /tmp/miner-app-compose.json
 ```
 
 Flags of interest:
@@ -56,7 +56,7 @@ export GBASE_ATTEST_HELPER_IMAGE='<repo>@sha256:<64 hex>'
 export GBASE_LAUNCH_TOKEN_HASH='<64 hex of token>'
 export GBASE_NETUID=1   # publish real netuid when live
 
-cargo run -q -p gbase-miner-bin -- deploy --deploy --netuid "$GBASE_NETUID"
+cargo run -q -p miner-bin -- deploy --deploy --netuid "$GBASE_NETUID"
 ```
 
 Notes printed by the CLI:
@@ -79,7 +79,7 @@ Record the public agent URL Phala assigns. You need it for certify.
 ## 4. Spot-check (no Phala account required)
 
 ```bash
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 ```
 
 Must exit 0.

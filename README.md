@@ -17,14 +17,14 @@ Greenfield successor path for Base Intelligence subnet work: validators, miners,
 ## Layout
 
 - Cargo workspace (`resolver = "3"`): `crates/*`, `bins/*`, `xtask`
-- Stub member: `crates/gbase-workspace-smoke` (keeps `cargo metadata` green)
+- Stub member: `crates/workspace-smoke` (keeps `cargo metadata` green)
 - Gates: `cargo fmt`, `clippy -D warnings`, `test`, `cargo deny`, `xtask loc-cap`, `xtask consensus-lint`, `xtask spec-check`, `xtask agent-challenge-check`, `xtask external-docs-check`
 - CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) on push/PR to `reborn`
 - Docs: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), frozen [`docs/BUNDLE_SPEC.md`](./docs/BUNDLE_SPEC.md) + [`docs/AGENT_CHALLENGE.md`](./docs/AGENT_CHALLENGE.md), [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md), runbooks under `docs/runbooks/`, miner-facing [`docs/external-miner/`](./docs/external-miner/)
 
 ## Gateway (master-only)
 
-`gbase-gateway` is the subnet-owner process (D3). On startup it resolves on-chain
+`gateway` is the subnet-owner process (D3). On startup it resolves on-chain
 `SubnetOwnerHotkey` via `ChainClient` and compares it to `GBASE_GATEWAY_HOTKEY`
 (32-byte hex). On mismatch it emits a structured fatal log and **exits 2 before
 binding any listener**. On match it serves:

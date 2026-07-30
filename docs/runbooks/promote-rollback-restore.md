@@ -1,6 +1,6 @@
 # Runbook: promote, rollback, restore
 
-Digest-pinned rollouts for staging → prod. Updater behaviour: crate `gbase-updater` (D14). Compose layout: [`../../deploy/README.md`](../../deploy/README.md).
+Digest-pinned rollouts for staging → prod. Updater behaviour: crate `updater` (D14). Compose layout: [`../../deploy/README.md`](../../deploy/README.md).
 
 **Self-update of the updater is an operator one-shot, never automatic in prod.**
 
@@ -61,7 +61,7 @@ Operator pattern (illustrative env names; match your `deploy/env/updater.env`):
 
 ```bash
 # Example: pin validator image (replace digest with the real one you built)
-export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/gbase-validator@sha256:REPLACE_WITH_64_HEX"
+export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:REPLACE_WITH_64_HEX"
 
 # Restart updater to pick config, or write pin file if your deploy uses pin_store paths
 docker compose up -d updater
@@ -89,7 +89,7 @@ Updater auto-rolls back when health fails after a swap. Manual path if you must 
 
 ```bash
 # Set desired image back to the last known-good digest
-export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/gbase-validator@sha256:PREVIOUS_64_HEX"
+export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:PREVIOUS_64_HEX"
 docker compose up -d updater
 docker compose logs -f --tail=100 updater
 docker compose ps

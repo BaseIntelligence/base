@@ -17,14 +17,14 @@ Owner host: `docker compose --profile master up -d` starts **5**.
 
 - No floating image tags (digest pins only).
 - `/var/run/docker.sock` only on `socket-proxy` (read-only).
-- socket-proxy allowlist: `CONTAINERS=1 IMAGES=1 POST=1` (matches `gbase-updater`).
+- socket-proxy allowlist: `CONTAINERS=1 IMAGES=1 POST=1` (matches `updater`).
 - Secrets via age-decrypted env files mode **0600** under `deploy/env/*.env` — never in images or cloud-init.
 
 ## Quick start (local)
 
 ```bash
 # 1) Release binaries (or set GBASE_DOCKER_BUILD_FROM=source for full in-Docker rustc 1.96)
-cargo build --release -p gbase-validator-bin -p gbase-gateway-bin -p gbase-updater-bin
+cargo build --release -p validator-bin -p gateway-bin -p updater-bin
 
 # 2) Env files at 0600
 ./deploy/scripts/materialize-env.sh
@@ -80,7 +80,7 @@ docker compose --profile master config --services         # must NOT list evil-g
 ./deploy/scripts/assert-evil-gateway-not-default.sh
 ```
 
-Offline proofs (no live TAO): `cargo test -p gbase-validator a48_`
+Offline proofs (no live TAO): `cargo test -p validator a48_`
 
 
 ## Promotion pipeline (task 43)
@@ -98,12 +98,12 @@ export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 export GBASE_BACKUP_BUCKET=gbase-backups
 ./deploy/scripts/promote.sh \
   --env staging --service validator \
-  --image ghcr.io/org/gbase-validator@sha256:<64-hex>
+  --image ghcr.io/org/validator@sha256:<64-hex>
 
 # 3) After staging is healthy, promote same digest to prod
 ./deploy/scripts/promote.sh \
   --env prod --service validator --confirm-prod \
-  --image ghcr.io/org/gbase-validator@sha256:<64-hex>
+  --image ghcr.io/org/validator@sha256:<64-hex>
 
 # 4) Rollback = re-promote previous snapshot
 ./deploy/scripts/promote.sh --env staging --service validator --rollback

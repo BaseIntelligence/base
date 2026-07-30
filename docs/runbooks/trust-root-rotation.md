@@ -32,7 +32,7 @@ cp config/challenges.toml config/challenges.vNEXT.toml
 # Ensure emission bps sum to 10000.
 
 # Sign with owner mini-secret (age-encrypted path shown)
-cargo run -q -p gbase-trustroot-bin -- sign \
+cargo run -q -p trustroot-bin -- sign \
   --key ~/.gbase-secrets/owner-throwaway.age \
   --age-identity ~/.gbase-secrets/age-identity.txt \
   --input config/challenges.vNEXT.toml \
@@ -47,12 +47,12 @@ If you do not have the production owner secret in this environment, stop. Do not
 ## 3. Verify before merge
 
 ```bash
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/challenges.toml \
   --kind challenges
 
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/measurements.toml \
   --kind measurements
@@ -87,11 +87,11 @@ When dual files are wired in config, verify **both** `v(n)` and `v(n+1)` the sam
 These must exit 0 on a clean checkout with the committed throwaway owner key:
 
 ```bash
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/challenges.toml --kind challenges
 
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/measurements.toml --kind measurements
 ```

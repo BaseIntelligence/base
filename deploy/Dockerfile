@@ -2,11 +2,11 @@
 # Multi-stage Rust build for gbase service binaries (validator | gateway | updater).
 #
 # Source build (default, CI/prod):
-#   docker build -f deploy/Dockerfile --target validator -t gbase-validator:0.1.0 .
+#   docker build -f deploy/Dockerfile --target validator -t validator:0.1.0 .
 #
 # Fast local path (host already ran `cargo build --release -p …`):
 #   docker build -f deploy/Dockerfile --target validator \
-#     --build-arg BUILD_FROM=prebuilt -t gbase-validator:0.1.0 .
+#     --build-arg BUILD_FROM=prebuilt -t validator:0.1.0 .
 #
 # Digests only for base images — never floating tags.
 
@@ -34,16 +34,16 @@ COPY xtask ./xtask
 # Keep workspace metadata members that Docker context needs
 COPY config ./config
 RUN cargo build --release \
-      -p gbase-validator-bin \
-      -p gbase-gateway-bin \
-      -p gbase-updater-bin \
-    && strip target/release/gbase-validator \
-              target/release/gbase-gateway \
-              target/release/gbase-updater \
+      -p validator-bin \
+      -p gateway-bin \
+      -p updater-bin \
+    && strip target/release/validator \
+              target/release/gateway \
+              target/release/updater \
     && mkdir -p /out \
-    && cp target/release/gbase-validator \
-          target/release/gbase-gateway \
-          target/release/gbase-updater /out/
+    && cp target/release/validator \
+          target/release/gateway \
+          target/release/updater /out/
 
 # -----------------------------------------------------------------------------
 # Prebuilt path — copy host target/release artifacts (local verify only)
@@ -53,9 +53,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /out
-COPY target/release/gbase-validator \
-     target/release/gbase-gateway \
-     target/release/gbase-updater \
+COPY target/release/validator \
+     target/release/gateway \
+     target/release/updater \
      /out/
 
 # -----------------------------------------------------------------------------
@@ -79,13 +79,13 @@ USER gbase
 WORKDIR /home/gbase
 
 FROM runtime-base AS validator
-COPY --from=artifacts --chown=gbase:gbase /out/gbase-validator /usr/local/bin/gbase-validator
-ENTRYPOINT ["/usr/local/bin/gbase-validator"]
+COPY --from=artifacts --chown=gbase:gbase /out/validator /usr/local/bin/validator
+ENTRYPOINT ["/usr/local/bin/validator"]
 
 FROM runtime-base AS gateway
-COPY --from=artifacts --chown=gbase:gbase /out/gbase-gateway /usr/local/bin/gbase-gateway
-ENTRYPOINT ["/usr/local/bin/gbase-gateway"]
+COPY --from=artifacts --chown=gbase:gbase /out/gateway /usr/local/bin/gateway
+ENTRYPOINT ["/usr/local/bin/gateway"]
 
 FROM runtime-base AS updater
-COPY --from=artifacts --chown=gbase:gbase /out/gbase-updater /usr/local/bin/gbase-updater
-ENTRYPOINT ["/usr/local/bin/gbase-updater"]
+COPY --from=artifacts --chown=gbase:gbase /out/updater /usr/local/bin/updater
+ENTRYPOINT ["/usr/local/bin/updater"]

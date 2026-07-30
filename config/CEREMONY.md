@@ -28,38 +28,38 @@ age-keygen -o ~/.gbase-secrets/age-identity.txt
 RECIPIENT=$(grep 'public key:' ~/.gbase-secrets/age-identity.txt | awk '{print $4}')
 
 # 2. Owner keypair (throwaway for CI; production uses offline HSM / air-gapped owner key)
-cargo run -p gbase-trustroot-bin -- keygen \
+cargo run -p trustroot-bin -- keygen \
   --out-pub config/owner.pubkey \
   --out-secret ~/.gbase-secrets/owner-throwaway.age \
   --age-recipient "$RECIPIENT"
 
 # 3. Challenge keypair (secret stays off-git)
-cargo run -p gbase-trustroot-bin -- keygen \
+cargo run -p trustroot-bin -- keygen \
   --out-pub ~/.gbase-secrets/challenge-dummy.pub \
   --out-secret ~/.gbase-secrets/challenge-dummy.age \
   --age-recipient "$RECIPIENT"
 # paste public_key into challenges.toml
 
 # 4. Sign bodies (payload = scale(version, introduced_epoch, scale(body)))
-cargo run -p gbase-trustroot-bin -- sign \
+cargo run -p trustroot-bin -- sign \
   --key ~/.gbase-secrets/owner-throwaway.age \
   --age-identity ~/.gbase-secrets/age-identity.txt \
   --input config/challenges.toml --kind challenges
 
-cargo run -p gbase-trustroot-bin -- sign \
+cargo run -p trustroot-bin -- sign \
   --key ~/.gbase-secrets/owner-throwaway.age \
   --age-identity ~/.gbase-secrets/age-identity.txt \
   --input config/measurements.toml --kind measurements
 
 # 5. Verify
-cargo run -p gbase-trustroot-bin -- verify \
+cargo run -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/challenges.toml --kind challenges
 ```
 
 ## Signature preimage
 
-Domain tag: `gbase-trustroot-v1` (via `gbase-crypto`).
+Domain tag: `gbase-trustroot-v1` (via `crypto`).
 
 ```text
 payload = scale(version: u32, introduced_epoch: u64, body: Vec<u8>)
@@ -68,7 +68,7 @@ body    = scale(ChallengesBody | MeasurementsBody)
 
 ## D21 rotation
 
-Publish `v(n+1)` beside `v(n)` (directory of versioned TOML files). Loaders accept both for `rotation_epochs` (default 3 from `gbase-config`) after `introduced_epoch` of the newer file, then drop the old version.
+Publish `v(n+1)` beside `v(n)` (directory of versioned TOML files). Loaders accept both for `rotation_epochs` (default 3 from `config`) after `introduced_epoch` of the newer file, then drop the old version.
 
 ## Fail-closed rules
 

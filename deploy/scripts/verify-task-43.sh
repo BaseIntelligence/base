@@ -43,10 +43,10 @@ git -C "$PIN_ROOT" config user.name t43
 git -C "$PIN_ROOT" add deploy
 git -C "$PIN_ROOT" commit -q -m init || true
 
-GOOD_DIGEST="$(docker image inspect gbase-validator:0.1.0 --format '{{.Id}}')"
-GOOD_IMAGE="gbase-validator@${GOOD_DIGEST}"
+GOOD_DIGEST="$(docker image inspect validator:0.1.0 --format '{{.Id}}')"
+GOOD_IMAGE="validator@${GOOD_DIGEST}"
 BAD_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-BAD_IMAGE="gbase-validator@${BAD_DIGEST}"
+BAD_IMAGE="validator@${BAD_DIGEST}"
 
 # --- S0: record digests ---
 if OUT="$("$ROOT/deploy/scripts/record-image-digests.sh" --out "$WORK/digests.json" 2>&1)"; then
@@ -100,7 +100,7 @@ if (
   # healthz
   HZ="$(docker run --rm --network gbase_gbase curlimages/curl:8.5.0 -sS -o /dev/null -w '%{http_code}' http://validator:8080/healthz || echo fail)"
   # running image id
-  RUN_ID="$(docker inspect gbase-validator-1 --format '{{.Image}}')"
+  RUN_ID="$(docker inspect validator-1 --format '{{.Image}}')"
   RUN_MATCH=0
   [[ "$RUN_ID" == "$GOOD_DIGEST" || "$RUN_ID" == "sha256:${GOOD_DIGEST#sha256:}" ]] && RUN_MATCH=1
   # pin digest matches good
@@ -132,7 +132,7 @@ if (
   STG_D="$(python3 -c 'import json; print(json.load(open("'"$PIN_ROOT"'/deploy/pins/staging.json"))["services"]["validator"]["digest"])')"
   # Run updater s2 test (rollback leaves current pin old)
   set +e
-  cargo test -p gbase-updater s2_unhealthy_rolled_back -- --nocapture >"$WORK/s2-cargo.txt" 2>&1
+  cargo test -p updater s2_unhealthy_rolled_back -- --nocapture >"$WORK/s2-cargo.txt" 2>&1
   CARGO_EC=$?
   set -e
   if [[ "$CARGO_EC" -eq 0 && "$PROD_AFTER2" == "$PROD_BEFORE2" && "$STG_D" == "$BAD_DIGEST" ]]; then
@@ -209,7 +209,7 @@ fi
 
 # --- S4: updater full suite + s1 good ---
 set +e
-cargo test -p gbase-updater --all-targets >"$WORK/updater-all.txt" 2>&1
+cargo test -p updater --all-targets >"$WORK/updater-all.txt" 2>&1
 UEC=$?
 set -e
 if [[ "$UEC" -eq 0 ]]; then

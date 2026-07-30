@@ -1,11 +1,11 @@
-# task-26 gbase-gateway signed raw-weight ingress
+# task-26 gateway signed raw-weight ingress
 date: 2026-07-30T03:11:48Z
 branch: reborn
-crate: crates/gbase-gateway
+crate: crates/gateway
 
 ## Surface
 - POST /v1/weights/raw — signed Score/NoScore leaves
-- Domain tag: gbase-rawweight-v1 (gbase_crypto::domain::RAW_WEIGHT)
+- Domain tag: gbase-rawweight-v1 (crypto::domain::RAW_WEIGHT)
 - Verify against local ChallengesBody trust root (D18 defence in depth)
 - Append-only MemoryRawWeightStore (unique challenge_id, epoch, miner_hotkey)
 - HTTP: 202 accept | 401 bad sig | 404 unknown challenge | 409 replay
@@ -16,7 +16,7 @@ S2 wrong key → 401 + NO row (s2_wrong_key_returns_401_and_no_row) PASS
 S3 unknown challenge → 404 + no row (s3_unknown_challenge_returns_404_and_no_row) PASS
 S4 replay (challenge,epoch,miner) → 409 original unchanged (s4_replay_...) PASS
 
-## cargo test -p gbase-gateway --all-targets
+## cargo test -p gateway --all-targets
 
 running 18 tests
 test proxy::tests::hop_by_hop_detects_connection ... ok
@@ -34,8 +34,8 @@ test tls::tests::default_is_cleartext_sole_owner_stub ... ok
 test tests::s3_parse_hotkey_hex_roundtrip ... ok
 test tls::tests::serde_roundtrip_has_no_foreign_terminators ... ok
 test tests::s1_mismatch_run_until_exits_2_and_port_refused ... ok
-{"timestamp":"2026-07-30T03:11:48.599095Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.599382Z","level":"INFO","fields":{"message":"master-only check passed; serving health + registry + weights + challenge proxy","event":"gateway_listening","bound":"127.0.0.1:5779","netuid":1,"hotkey":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","tls_mode":"cleartext"},"target":"gbase_gateway"}
+{"timestamp":"2026-07-30T03:11:48.599095Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.599382Z","level":"INFO","fields":{"message":"master-only check passed; serving health + registry + weights + challenge proxy","event":"gateway_listening","bound":"127.0.0.1:5779","netuid":1,"hotkey":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","tls_mode":"cleartext"},"target":"gateway"}
 test weights::unit_tests::unit_accept_score_round_trip ... ok
 test tests::s2_match_run_until_healthz_200 ... ok
 test registry::tests::re_admit_after_cooldown ... ok
@@ -45,11 +45,11 @@ test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
      Running tests/proxy_rr.rs (/data/offload/tmp/gbase-xtask-target/debug/deps/proxy_rr-f62ea0d4340d22a2)
 
 running 5 tests
-{"timestamp":"2026-07-30T03:11:48.701125Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.701129Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.701125Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.701126Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.701117Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.701125Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.701129Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.701125Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.701126Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.701117Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
 test s3_registry_api_neither_sets_nor_returns_signing_key ... ok
 test s1_two_wiremock_backends_alternate_round_robin ... ok
 test s2_killing_backend_moves_traffic_to_survivor_200 ... ok
@@ -61,10 +61,10 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/raw_weights.rs (/data/offload/tmp/gbase-xtask-target/debug/deps/raw_weights-0945c15564a23930)
 
 running 4 tests
-{"timestamp":"2026-07-30T03:11:48.879323Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.879336Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.879333Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:11:48.879328Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.879323Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.879336Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.879333Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:11:48.879328Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
 test s3_unknown_challenge_returns_404_and_no_row ... ok
 test s2_wrong_key_returns_401_and_no_row ... ok
 test s1_valid_score_returns_202_and_row ... ok
@@ -81,11 +81,11 @@ clippy_exit=0
 fmt: ok
 
 ## loc-cap
-crates/gbase-gateway: 1189 non-test LOC (cap 1500)
-bins/gbase-gateway: 33 non-test LOC (cap 1500)
+crates/gateway: 1189 non-test LOC (cap 1500)
+bins/gateway: 33 non-test LOC (cap 1500)
 
 ## Files
-crates/gbase-gateway/src/{lib,api,app,weights}.rs
-crates/gbase-gateway/tests/raw_weights.rs
-crates/gbase-gateway/Cargo.toml
+crates/gateway/src/{lib,api,app,weights}.rs
+crates/gateway/tests/raw_weights.rs
+crates/gateway/Cargo.toml
 task-26-raw-weights.txt

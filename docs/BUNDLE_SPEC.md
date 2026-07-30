@@ -1,7 +1,7 @@
 # gbase Epoch Bundle Specification
 
 **Status:** FROZEN (task 8 wave gate)  
-**Normative for:** `gbase-bundle`, `gbase-aggregate`, gateway seal, validator verify/recompute  
+**Normative for:** `bundle`, `aggregate`, gateway seal, validator verify/recompute  
 **Encoding:** parity SCALE (`parity-scale-codec`), little-endian multi-byte integers  
 **protocol_version of this document:** `1`
 
@@ -77,7 +77,7 @@ protocol_version: u16
 
 ### 3.1 Tree rules
 
-Implementations MUST match `gbase-merkle` and RFC 6962 Certificate Transparency:
+Implementations MUST match `merkle` and RFC 6962 Certificate Transparency:
 
 | Node kind | Hash |
 |-----------|------|
@@ -96,7 +96,7 @@ EMPTY_ROOT =
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-This constant is also `gbase_merkle::EMPTY_ROOT`. Divergence is a bug.
+This constant is also `merkle::EMPTY_ROOT`. Divergence is a bug.
 
 ### 3.3 Leaf payload
 
@@ -495,7 +495,7 @@ Two vectors `V_a`, `V_b` match if and only if **both**:
 
 Validators compare:
 
-- gateway `body.final_vector` vs local `gbase_aggregate(...)` output using the dual check above;
+- gateway `body.final_vector` vs local `aggregate(...)` output using the dual check above;
 - `expected_vector_hash = sha256(scale(local_vector))` in dissent messages.
 
 ---
@@ -649,8 +649,8 @@ Failure modes map to §10.1 reason codes.
 ## 15. Byte-stability requirements
 
 - Re-encoding a decoded bundle MUST yield identical bytes.  
-- Golden vectors in `gbase-bundle` / `gbase-aggregate` tests pin this document's field order.  
-- A doc test in `gbase-bundle` (task 19) MUST fail if SCALE field order drifts from §4.1.
+- Golden vectors in `bundle` / `aggregate` tests pin this document's field order.  
+- A doc test in `bundle` (task 19) MUST fail if SCALE field order drifts from §4.1.
 
 ---
 

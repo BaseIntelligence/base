@@ -33,11 +33,11 @@ jobs:
       matrix:
         include:
           - target: validator
-            image_suffix: gbase-validator
+            image_suffix: validator
           - target: gateway
-            image_suffix: gbase-gateway
+            image_suffix: gateway
           - target: updater
-            image_suffix: gbase-updater
+            image_suffix: updater
     steps:
       - name: Checkout
         uses: actions/checkout@v4

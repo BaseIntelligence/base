@@ -43,7 +43,7 @@ Clone or pull `gbase` at the release your validators run (same `protocol_version
 
 ## 4. Wallet (Bittensor)
 
-You need a miner hotkey registered on the gbase netuid (when the subnet is live). Hotkey **public** bytes (32-byte hex) are what `gbase-miner certify` embeds. Never paste mnemonics into tickets, git, or chat.
+You need a miner hotkey registered on the gbase netuid (when the subnet is live). Hotkey **public** bytes (32-byte hex) are what `miner certify` embeds. Never paste mnemonics into tickets, git, or chat.
 
 ```bash
 # Example overview (network/netuid as published by operators)

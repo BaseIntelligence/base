@@ -13,6 +13,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-challenge"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "chain",
+ "crypto",
+ "hex",
+ "parity-scale-codec",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "schnorrkel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "trustroot",
+ "wiremock",
+]
+
+[[package]]
+name = "agent-challenge-bin"
+version = "0.1.0"
+dependencies = [
+ "agent-challenge",
+ "axum",
+ "clap",
+ "telemetry",
+ "tokio",
+ "tracing",
+ "trustroot",
+]
+
+[[package]]
+name = "aggregate"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -136,6 +178,52 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "attest-http"
+version = "0.1.0"
+dependencies = [
+ "attest-policy",
+ "axum",
+ "crypto",
+ "hex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "trustroot",
+]
+
+[[package]]
+name = "attest-parse"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "attest-policy"
+version = "0.1.0"
+dependencies = [
+ "attest-parse",
+ "attest-replay",
+ "compose-hash",
+ "crypto",
+ "dcap-qvl",
+ "parity-scale-codec",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "trustroot",
+]
+
+[[package]]
+name = "attest-replay"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
 
 [[package]]
 name = "autocfg"
@@ -340,6 +428,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bundle"
+version = "0.1.0"
+dependencies = [
+ "aggregate",
+ "chain",
+ "crypto",
+ "merkle",
+ "parity-scale-codec",
+ "proptest",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "trustroot",
+]
+
+[[package]]
 name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,6 +495,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chain"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -471,6 +586,25 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "compose-hash"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml",
 ]
 
 [[package]]
@@ -620,6 +754,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
+name = "crosscheck"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chain",
+ "config",
+ "crypto",
+ "hex",
+ "parity-scale-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "crypto"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -709,6 +871,17 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "db"
+version = "0.1.0"
+dependencies = [
+ "db",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "dcap-qvl"
@@ -899,6 +1072,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "dissent"
+version = "0.1.0"
+dependencies = [
+ "aggregate",
+ "axum",
+ "bundle",
+ "chain",
+ "config",
+ "crosscheck",
+ "crypto",
+ "hex",
+ "metrics",
+ "parity-scale-codec",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "trustroot",
+ "wiremock",
 ]
 
 [[package]]
@@ -1244,216 +1440,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "gbase-agent-challenge"
+name = "gateway"
 version = "0.1.0"
 dependencies = [
- "gbase-bundle",
- "gbase-chain",
- "gbase-crypto",
- "gbase-trustroot",
- "hex",
- "parity-scale-codec",
- "rand_core 0.6.4",
- "reqwest 0.12.28",
- "schnorrkel",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "gbase-agent-challenge-bin"
-version = "0.1.0"
-dependencies = [
+ "aggregate",
  "axum",
- "clap",
- "gbase-agent-challenge",
- "gbase-telemetry",
- "gbase-trustroot",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "gbase-aggregate"
-version = "0.1.0"
-dependencies = [
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "gbase-attest-http"
-version = "0.1.0"
-dependencies = [
- "axum",
- "gbase-attest-policy",
- "gbase-crypto",
- "gbase-trustroot",
- "hex",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "gbase-attest-parse"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-attest-policy"
-version = "0.1.0"
-dependencies = [
- "dcap-qvl",
- "gbase-attest-parse",
- "gbase-attest-replay",
- "gbase-compose-hash",
- "gbase-crypto",
- "gbase-trustroot",
- "parity-scale-codec",
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-attest-replay"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-bundle"
-version = "0.1.0"
-dependencies = [
- "gbase-aggregate",
- "gbase-chain",
- "gbase-crypto",
- "gbase-merkle",
- "gbase-trustroot",
- "parity-scale-codec",
- "proptest",
- "rand_core 0.6.4",
- "schnorrkel",
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-chain"
-version = "0.1.0"
-dependencies = [
- "parity-scale-codec",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "gbase-compose-hash"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-config"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tempfile",
- "thiserror 2.0.19",
- "toml",
-]
-
-[[package]]
-name = "gbase-crosscheck"
-version = "0.1.0"
-dependencies = [
- "axum",
- "gbase-chain",
- "gbase-config",
- "gbase-crypto",
- "hex",
- "parity-scale-codec",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "gbase-crypto"
-version = "0.1.0"
-dependencies = [
- "parity-scale-codec",
- "rand_core 0.6.4",
- "schnorrkel",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "gbase-db"
-version = "0.1.0"
-dependencies = [
- "gbase-db",
- "sqlx",
- "thiserror 2.0.19",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "gbase-dissent"
-version = "0.1.0"
-dependencies = [
- "axum",
- "gbase-aggregate",
- "gbase-bundle",
- "gbase-chain",
- "gbase-config",
- "gbase-crosscheck",
- "gbase-crypto",
- "gbase-trustroot",
- "hex",
- "metrics",
- "parity-scale-codec",
- "serde",
- "sha2 0.10.9",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "gbase-gateway"
-version = "0.1.0"
-dependencies = [
- "axum",
+ "bundle",
  "bytes",
- "gbase-aggregate",
- "gbase-bundle",
- "gbase-chain",
- "gbase-config",
- "gbase-crypto",
- "gbase-merkle",
- "gbase-telemetry",
- "gbase-trustroot",
+ "chain",
+ "config",
+ "crypto",
  "hex",
+ "merkle",
  "metrics-exporter-prometheus",
  "parity-scale-codec",
  "parking_lot",
@@ -1463,188 +1461,25 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "telemetry",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "trustroot",
  "uuid",
  "wiremock",
 ]
 
 [[package]]
-name = "gbase-gateway-bin"
+name = "gateway-bin"
 version = "0.1.0"
 dependencies = [
- "gbase-chain",
- "gbase-gateway",
- "gbase-telemetry",
+ "chain",
+ "gateway",
+ "telemetry",
  "tokio",
  "tracing",
 ]
-
-[[package]]
-name = "gbase-merkle"
-version = "0.1.0"
-dependencies = [
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "gbase-miner"
-version = "0.1.0"
-dependencies = [
- "gbase-attest-parse",
- "gbase-attest-policy",
- "gbase-attest-replay",
- "gbase-compose-hash",
- "gbase-crypto",
- "gbase-trustroot",
- "gbase-validator",
- "hex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
-]
-
-[[package]]
-name = "gbase-miner-bin"
-version = "0.1.0"
-dependencies = [
- "clap",
- "gbase-miner",
- "tokio",
-]
-
-[[package]]
-name = "gbase-submit"
-version = "0.1.0"
-dependencies = [
- "gbase-chain",
- "gbase-dissent",
- "metrics",
- "parity-scale-codec",
- "thiserror 2.0.19",
- "tracing",
-]
-
-[[package]]
-name = "gbase-telemetry"
-version = "0.1.0"
-dependencies = [
- "axum",
- "http",
- "http-body-util",
- "metrics",
- "metrics-exporter-prometheus",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "gbase-trustroot"
-version = "0.1.0"
-dependencies = [
- "gbase-crypto",
- "parity-scale-codec",
- "rand_core 0.6.4",
- "schnorrkel",
- "serde",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.19",
- "toml",
-]
-
-[[package]]
-name = "gbase-trustroot-bin"
-version = "0.1.0"
-dependencies = [
- "clap",
- "gbase-crypto",
- "gbase-trustroot",
- "rand_core 0.6.4",
- "schnorrkel",
- "toml",
-]
-
-[[package]]
-name = "gbase-updater"
-version = "0.1.0"
-dependencies = [
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "gbase-updater-bin"
-version = "0.1.0"
-dependencies = [
- "gbase-updater",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "gbase-validator"
-version = "0.1.0"
-dependencies = [
- "axum",
- "gbase-aggregate",
- "gbase-attest-http",
- "gbase-attest-parse",
- "gbase-attest-replay",
- "gbase-bundle",
- "gbase-chain",
- "gbase-config",
- "gbase-crosscheck",
- "gbase-crypto",
- "gbase-dissent",
- "gbase-submit",
- "gbase-telemetry",
- "gbase-trustroot",
- "hex",
- "parity-scale-codec",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "gbase-validator-bin"
-version = "0.1.0"
-dependencies = [
- "gbase-chain",
- "gbase-config",
- "gbase-db",
- "gbase-telemetry",
- "gbase-validator",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "gbase-workspace-smoke"
-version = "0.1.0"
 
 [[package]]
 name = "generic-array"
@@ -2375,6 +2210,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "merkle"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "merlin"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2431,6 +2273,36 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "miner"
+version = "0.1.0"
+dependencies = [
+ "attest-parse",
+ "attest-policy",
+ "attest-replay",
+ "compose-hash",
+ "crypto",
+ "hex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "trustroot",
+ "validator",
+]
+
+[[package]]
+name = "miner-bin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "miner",
+ "tokio",
+]
 
 [[package]]
 name = "mio"
@@ -3964,6 +3836,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "submit"
+version = "0.1.0"
+dependencies = [
+ "chain",
+ "dissent",
+ "metrics",
+ "parity-scale-codec",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4043,6 +3927,24 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
+name = "telemetry"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "http-body-util",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "tempfile"
@@ -4415,6 +4317,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "trustroot"
+version = "0.1.0"
+dependencies = [
+ "crypto",
+ "parity-scale-codec",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml",
+]
+
+[[package]]
+name = "trustroot-bin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crypto",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "toml",
+ "trustroot",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4487,6 +4416,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "updater"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "updater-bin"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "updater",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4526,6 +4479,49 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validator"
+version = "0.1.0"
+dependencies = [
+ "aggregate",
+ "attest-http",
+ "attest-parse",
+ "attest-replay",
+ "axum",
+ "bundle",
+ "chain",
+ "config",
+ "crosscheck",
+ "crypto",
+ "dissent",
+ "hex",
+ "parity-scale-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "submit",
+ "telemetry",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "trustroot",
+ "wiremock",
+]
+
+[[package]]
+name = "validator-bin"
+version = "0.1.0"
+dependencies = [
+ "chain",
+ "config",
+ "db",
+ "telemetry",
+ "tokio",
+ "tracing",
+ "validator",
 ]
 
 [[package]]
@@ -4975,6 +4971,10 @@ dependencies = [
  "group 0.14.0",
  "hybrid-array",
 ]
+
+[[package]]
+name = "workspace-smoke"
+version = "0.1.0"
 
 [[package]]
 name = "writeable"

@@ -3,7 +3,7 @@
 <!-- protocol_version: 1 -->
 **Bundle `protocol_version`:** `1`
 
-This badge must match `gbase_bundle::PROTOCOL_VERSION` in crate `gbase-bundle`.  
+This badge must match `bundle::PROTOCOL_VERSION` in crate `bundle`.  
 CI gate: `cargo run -p xtask -- external-docs-check`.
 
 These pages are the miner-facing guide (funding Phala, deploy, certify, troubleshoot).  
@@ -24,16 +24,16 @@ Security claim (what validators prove, and what they do not): [`../THREAT_MODEL.
 
 ```bash
 # From gbase repo root (Rust 1.96 toolchain)
-cargo build -q -p gbase-miner-bin
+cargo build -q -p miner-bin
 
 # 1) Offline compose-hash (no Phala call)
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 
 # 2) After funding Phala and installing `phala` CLI — real deploy
-# cargo run -q -p gbase-miner-bin -- deploy --deploy --netuid 1
+# cargo run -q -p miner-bin -- deploy --deploy --netuid 1
 
 # 3) Certify (fixture mode for offline smoke; live needs agent URL + validator)
-# cargo run -q -p gbase-miner-bin -- certify \
+# cargo run -q -p miner-bin -- certify \
 #   --fixture-mode \
 #   --validator-url http://127.0.0.1:8081 \
 #   --epoch 0 \
@@ -46,7 +46,7 @@ Miners **fund their own** Phala account. The subnet owner does not pay your CVM 
 
 ## Version pin
 
-When `protocol_version` bumps in `gbase-bundle`, update:
+When `protocol_version` bumps in `bundle`, update:
 
 1. The HTML comment and bold badge at the top of **this file**.
 2. Any copy in sibling pages that states the bundle protocol version.

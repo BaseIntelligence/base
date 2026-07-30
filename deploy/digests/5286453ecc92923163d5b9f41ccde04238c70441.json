@@ -6,29 +6,29 @@
     "gateway": {
       "digest": "sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
       "id": "sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
-      "image": "gbase-gateway@sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
-      "repo_digest": "gbase-gateway@sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
-      "repository": "gbase-gateway",
+      "image": "gateway@sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
+      "repo_digest": "gateway@sha256:438fb5855ecec55612435212ab3368bddce8a9bfb7894810a58f323ca66df7f4",
+      "repository": "gateway",
       "service": "gateway",
-      "tag": "gbase-gateway:0.1.0"
+      "tag": "gateway:0.1.0"
     },
     "updater": {
       "digest": "sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
       "id": "sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
-      "image": "gbase-updater@sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
-      "repo_digest": "gbase-updater@sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
-      "repository": "gbase-updater",
+      "image": "updater@sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
+      "repo_digest": "updater@sha256:36cadccf8a612bf23a101738024734919f87030e8e47bc83414f9315c18c58d7",
+      "repository": "updater",
       "service": "updater",
-      "tag": "gbase-updater:0.1.0"
+      "tag": "updater:0.1.0"
     },
     "validator": {
       "digest": "sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
       "id": "sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
-      "image": "gbase-validator@sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
-      "repo_digest": "gbase-validator@sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
-      "repository": "gbase-validator",
+      "image": "validator@sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
+      "repo_digest": "validator@sha256:647ef2ed24d4f2a2369f09f7104316347b319e02bf79b9fe9b41686b62fd2568",
+      "repository": "validator",
       "service": "validator",
-      "tag": "gbase-validator:0.1.0"
+      "tag": "validator:0.1.0"
     }
   }
 }

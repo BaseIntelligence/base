@@ -123,4 +123,4 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 - Never claim merkle is on-chain in the weight payload.
 - Never claim owner honesty or public third-party auditability of non-equivocation.
 - Never put secrets, tokens, mnemonics, or private keys in this tree.
-- Miner docs must carry the same `protocol_version` badge as `gbase-bundle::PROTOCOL_VERSION` (CI-gated).
+- Miner docs must carry the same `protocol_version` badge as `bundle::PROTOCOL_VERSION` (CI-gated).

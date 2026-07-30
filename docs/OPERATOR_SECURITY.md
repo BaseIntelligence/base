@@ -36,11 +36,11 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] Detached signatures verify under `config/owner.pubkey`:
 
 ```bash
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/challenges.toml --kind challenges
 
-cargo run -q -p gbase-trustroot-bin -- verify \
+cargo run -q -p trustroot-bin -- verify \
   --owner-pub config/owner.pubkey \
   --input config/measurements.toml --kind measurements
 ```

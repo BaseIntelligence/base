@@ -1,7 +1,7 @@
 # gbase Agent Challenge Specification
 
 **Status:** FROZEN (task 9 wave gate)  
-**Normative for:** `gbase-agent-challenge` service, `gbase-miner` deploy/certify, validator attestation integration  
+**Normative for:** `agent-challenge` service, `miner` deploy/certify, validator attestation integration  
 **challenge_id:** `agent-v1`  
 **challenge_scoring_version:** `1`  
 **Bundle leaf protocol:** [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) **`protocol_version = 1`**
@@ -122,7 +122,7 @@ report_data = SHA512(
 )
 ```
 
-- Domain tag matches `gbase-crypto` / BUNDLE_SPEC appendix A: `gbase-attest-v1`.  
+- Domain tag matches `crypto` / BUNDLE_SPEC appendix A: `gbase-attest-v1`.  
 - Nonce: validator-issued 32 bytes, single-use, TTL strictly less than one epoch.  
 - Construction code lives **inside** the measured compose so the allowlist pins it.  
 - D11: only env **names** and `LAUNCH_TOKEN` **hash** are measured. Env **values** are not attested. Secrets are **mounted files**, never secret values in compose `environment:`.
@@ -385,7 +385,7 @@ assert hex(answer_digest(F1)) == pinned answer_digest_hex
 | Runtime load | Challenge process reads secret from file path env `GBASE_CHALLENGE_SK_FILE` |
 | Gateway DB | **Must not** store challenge secrets or be consulted for leaf provenance (D18) |
 | Signing domain | `gbase-rawweight-v1` over `RawWeightBodyV1` (BUNDLE_SPEC §3.4) |
-| Rotation | D21 dual-accept window via trust-root release; keygen via `gbase-trustroot keygen` (task 18) |
+| Rotation | D21 dual-accept window via trust-root release; keygen via `trustroot keygen` (task 18) |
 | Compromise | Rotate trust root; D19 still applies until rotation lands |
 
 Validators verify leaf signatures **only** against their **local** trust-root copy.
@@ -487,9 +487,9 @@ images:
 | `allowed_envs` names | May include `GBASE_NETUID`, `GBASE_MINER_HOTKEY_FILE`, `GBASE_LAUNCH_TOKEN_HASH` |
 | Secret values | **Files** under `/run/gbase/` (or equivalent), never env values |
 | `LAUNCH_TOKEN` | Hash appears in measured compose (D11); raw token only as file if needed |
-| compose-hash | Canonical JSON → SHA-256 per `gbase-compose-hash`; must match RTMR3 event and `mr_config_id` prefix |
+| compose-hash | Canonical JSON → SHA-256 per `compose-hash`; must match RTMR3 event and `mr_config_id` prefix |
 
-### 9.3 `gbase-miner deploy` (task 37) obligations
+### 9.3 `miner deploy` (task 37) obligations
 
 1. Render compose from the template that satisfies §9.1–§9.2.  
 2. Compute compose-hash **offline**; print it.  
@@ -497,7 +497,7 @@ images:
 4. Miner funds their own Phala account (R3).  
 5. Register public base URL with gateway routing for `agent-v1`.
 
-### 9.4 `gbase-miner certify` (task 38) obligations
+### 9.4 `miner certify` (task 38) obligations
 
 1. Request fresh nonce from validator.  
 2. Inside CVM, build `report_data` per §3.2.  
@@ -508,7 +508,7 @@ images:
 
 | Item | Contract |
 |------|----------|
-| Binary / image | `gbase-agent-challenge` digest-pinned |
+| Binary / image | `agent-challenge` digest-pinned |
 | Listen port | `8090` (internal) |
 | Secrets | `GBASE_CHALLENGE_SK_FILE` mount 0600 |
 | Trust root | Local `config/challenges.toml` path |

@@ -1,4 +1,4 @@
-//! Fail if external miner docs drift from `gbase-bundle` `PROTOCOL_VERSION`,
+//! Fail if external miner docs drift from `bundle` `PROTOCOL_VERSION`,
 //! or if `docs/THREAT_MODEL.md` D19 claim is not word-for-word vs plan pin.
 
 use std::fs;
@@ -42,7 +42,7 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
 }
 
 fn read_bundle_protocol_version(workspace_root: &Path) -> Result<u16, String> {
-    let types_rs = workspace_root.join("crates/gbase-bundle/src/types.rs");
+    let types_rs = workspace_root.join("crates/bundle/src/types.rs");
     let body =
         fs::read_to_string(&types_rs).map_err(|e| format!("read {}: {e}", types_rs.display()))?;
     // pub const PROTOCOL_VERSION: u16 = 1;
@@ -84,7 +84,7 @@ fn check_external_miner_docs(
     match extract_badge_version(&readme_body) {
         Ok(v) if v == expected => {}
         Ok(v) => failures.push(format!(
-            "docs/external-miner/README.md protocol_version badge={v} != gbase-bundle PROTOCOL_VERSION={expected}"
+            "docs/external-miner/README.md protocol_version badge={v} != bundle PROTOCOL_VERSION={expected}"
         )),
         Err(e) => failures.push(format!("docs/external-miner/README.md: {e}")),
     }

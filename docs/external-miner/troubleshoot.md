@@ -14,7 +14,7 @@
 | Compose-hash differs from operator expect | Image/tag drift or template skew | Rebuild from same gbase commit; compare AGENT_CHALLENGE image pins |
 
 ```bash
-cargo run -q -p gbase-miner-bin -- deploy --no-deploy --netuid 1
+cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 echo exit=$?
 ```
 

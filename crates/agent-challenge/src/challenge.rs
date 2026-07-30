@@ -1,0 +1,394 @@
+//! Challenge trait and `agent-v1` implementation (`AGENT_CHALLENGE` §10).
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use bundle::{
+    expected_participants, make_signed_leaf, metagraph_rows_from_chain, LeafV1, NoScoreReasonCode,
+    ScoreOrAbsence,
+};
+use chain::Metagraph;
+use crypto::KEY_LEN;
+use thiserror::Error;
+use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
+
+use crate::score::{score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs};
+use crate::submit::{GatewayClient, SubmitError, SubmitOutcome};
+use crate::task_gen::{
+    answer_digest, task_blob, task_id, CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION,
+};
+
+/// Miner hotkey type alias.
+pub type Hotkey = [u8; KEY_LEN];
+
+/// Epoch context for scoring one challenge epoch.
+#[derive(Debug, Clone)]
+pub struct EpochCtx {
+    /// Subnet netuid.
+    pub netuid: u16,
+    /// Epoch index.
+    pub epoch: u64,
+    /// Metagraph at the epoch's `block_hash` (for participant derivation).
+    pub metagraph: Metagraph,
+    /// Local owner-signed challenges body (for policy + public key).
+    pub challenges: ChallengesBody,
+}
+
+/// Look up attestation status for a miner this epoch.
+pub trait AttestationLookup: Send + Sync {
+    /// Status for `(netuid, epoch, miner)`.
+    fn status(&self, netuid: u16, epoch: u64, miner: &Hotkey) -> AttestationStatus;
+}
+
+/// Fixed map of attestation outcomes (tests / injected control plane).
+#[derive(Debug, Clone, Default)]
+pub struct MapAttestationLookup {
+    /// Keyed by miner hotkey.
+    pub by_miner: BTreeMap<Hotkey, AttestationStatus>,
+    /// Default when miner missing from map.
+    pub default: AttestationStatus,
+}
+
+impl AttestationLookup for MapAttestationLookup {
+    fn status(&self, _netuid: u16, _epoch: u64, miner: &Hotkey) -> AttestationStatus {
+        self.by_miner.get(miner).copied().unwrap_or(self.default)
+    }
+}
+
+/// Outcome of contacting one miner (or a synthetic fixture outcome).
+#[derive(Debug, Clone)]
+pub enum MinerCallOutcome {
+    /// Pure scoring inputs already resolved (offline / fixture path).
+    Resolved(ScoreInputs),
+    /// Use precomputed `CallOutcome` + duration with live attestation lookup.
+    Observed {
+        /// Challenge-side wall ms.
+        duration_ms: u64,
+        /// Terminal call outcome.
+        outcome: CallOutcome,
+    },
+}
+
+/// Challenge trait shaped for Prism accommodation later (`AGENT_CHALLENGE` §10).
+pub trait Challenge {
+    /// Challenge id string.
+    fn challenge_id(&self) -> &str;
+    /// Scoring version.
+    fn scoring_version(&self) -> u16;
+    /// Expected participant set `E` for this epoch.
+    ///
+    /// # Errors
+    ///
+    /// When the challenge is absent from the local trust root or metagraph is invalid.
+    fn expected_set(&self, ctx: &EpochCtx) -> Result<BTreeSet<Hotkey>, ChallengeError>;
+    /// Score one miner (must not be called for `h ∉ E` in production paths).
+    fn score_one(
+        &self,
+        ctx: &EpochCtx,
+        miner: Hotkey,
+        call: &MinerCallOutcome,
+        attest: &dyn AttestationLookup,
+    ) -> ScoreOrAbsence;
+    /// Full cover of `expected_set` — **silence is a bug** (D24).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`expected_set`] failures; every `h ∈ E` still gets an entry.
+    fn score_epoch(
+        &self,
+        ctx: &EpochCtx,
+        calls: &BTreeMap<Hotkey, MinerCallOutcome>,
+        attest: &dyn AttestationLookup,
+    ) -> Result<BTreeMap<Hotkey, ScoreOrAbsence>, ChallengeError>;
+    /// Sign one leaf with the challenge mini-secret.
+    ///
+    /// # Errors
+    ///
+    /// Crypto / id length.
+    fn sign_leaf(
+        &self,
+        secret: &[u8; KEY_LEN],
+        miner: Hotkey,
+        epoch: u64,
+        score_or_absence: ScoreOrAbsence,
+    ) -> Result<LeafV1, ChallengeError>;
+    /// Sign all scores and POST to gateway.
+    ///
+    /// # Errors
+    ///
+    /// Sign or submit failures.
+    fn submit_all(
+        &self,
+        secret: &[u8; KEY_LEN],
+        epoch: u64,
+        scores: &BTreeMap<Hotkey, ScoreOrAbsence>,
+        gateway: &GatewayClient,
+    ) -> impl std::future::Future<Output = Result<Vec<SubmitOutcome>, ChallengeError>> + Send;
+}
+
+/// Errors from challenge orchestration.
+#[derive(Debug, Error)]
+pub enum ChallengeError {
+    /// Challenge id missing from local trust root.
+    #[error("challenge {0} not in local trust root")]
+    UnknownChallenge(String),
+    /// Metagraph shape invalid.
+    #[error("metagraph: {0}")]
+    Metagraph(String),
+    /// Leaf signing failed.
+    #[error("sign leaf: {0}")]
+    Sign(String),
+    /// Gateway submit failed.
+    #[error("submit: {0}")]
+    Submit(#[from] SubmitError),
+}
+
+/// Concrete `agent-v1` challenge.
+#[derive(Debug, Clone, Default)]
+pub struct AgentV1Challenge;
+
+impl AgentV1Challenge {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Trust-root entry for `agent-v1`.
+    fn entry(body: &ChallengesBody) -> Result<&ChallengeEntry, ChallengeError> {
+        body.get(CHALLENGE_ID_BYTES)
+            .ok_or_else(|| ChallengeError::UnknownChallenge(CHALLENGE_ID.into()))
+    }
+
+    /// Policy for participant derivation.
+    fn policy(body: &ChallengesBody) -> Result<&ParticipantPolicy, ChallengeError> {
+        Ok(&Self::entry(body)?.policy)
+    }
+}
+
+impl Challenge for AgentV1Challenge {
+    fn challenge_id(&self) -> &str {
+        CHALLENGE_ID
+    }
+
+    fn scoring_version(&self) -> u16 {
+        SCORING_VERSION
+    }
+
+    fn expected_set(&self, ctx: &EpochCtx) -> Result<BTreeSet<Hotkey>, ChallengeError> {
+        let policy = Self::policy(&ctx.challenges)?;
+        let rows = metagraph_rows_from_chain(&ctx.metagraph.hotkeys, None)
+            .map_err(|e| ChallengeError::Metagraph(e.to_string()))?;
+        Ok(expected_participants(policy, &rows))
+    }
+
+    fn score_one(
+        &self,
+        ctx: &EpochCtx,
+        miner: Hotkey,
+        call: &MinerCallOutcome,
+        attest: &dyn AttestationLookup,
+    ) -> ScoreOrAbsence {
+        match call {
+            MinerCallOutcome::Resolved(inputs) => score_from_outcome(inputs),
+            MinerCallOutcome::Observed {
+                duration_ms,
+                outcome,
+            } => {
+                let attestation = attest.status(ctx.netuid, ctx.epoch, &miner);
+                let inputs = ScoreInputs {
+                    netuid: ctx.netuid,
+                    epoch: ctx.epoch,
+                    miner_hotkey: miner,
+                    attestation,
+                    duration_ms: *duration_ms,
+                    outcome: outcome.clone(),
+                };
+                score_from_outcome(&inputs)
+            }
+        }
+    }
+
+    fn score_epoch(
+        &self,
+        ctx: &EpochCtx,
+        calls: &BTreeMap<Hotkey, MinerCallOutcome>,
+        attest: &dyn AttestationLookup,
+    ) -> Result<BTreeMap<Hotkey, ScoreOrAbsence>, ChallengeError> {
+        let expected = self.expected_set(ctx)?;
+        let mut out = BTreeMap::new();
+        for h in &expected {
+            let call = calls.get(h).cloned().unwrap_or(
+                // Silence is a bug — emit ChallengeInternal NoScore, never omit.
+                MinerCallOutcome::Observed {
+                    duration_ms: 0,
+                    outcome: CallOutcome::ChallengeInternal,
+                },
+            );
+            let soa = self.score_one(ctx, *h, &call, attest);
+            out.insert(*h, soa);
+        }
+        // Do not emit leaves for h ∉ E.
+        Ok(out)
+    }
+
+    fn sign_leaf(
+        &self,
+        secret: &[u8; KEY_LEN],
+        miner: Hotkey,
+        epoch: u64,
+        score_or_absence: ScoreOrAbsence,
+    ) -> Result<LeafV1, ChallengeError> {
+        make_signed_leaf(secret, CHALLENGE_ID_BYTES, miner, epoch, score_or_absence)
+            .map_err(|e| ChallengeError::Sign(e.to_string()))
+    }
+
+    async fn submit_all(
+        &self,
+        secret: &[u8; KEY_LEN],
+        epoch: u64,
+        scores: &BTreeMap<Hotkey, ScoreOrAbsence>,
+        gateway: &GatewayClient,
+    ) -> Result<Vec<SubmitOutcome>, ChallengeError> {
+        let mut leaves = Vec::with_capacity(scores.len());
+        for (miner, soa) in scores {
+            leaves.push(self.sign_leaf(secret, *miner, epoch, soa.clone())?);
+        }
+        Ok(gateway.submit_all(&leaves).await?)
+    }
+}
+
+/// Build a correct `Http200` outcome for fixtures.
+#[must_use]
+pub fn correct_http200(netuid: u16, epoch: u64, miner: &Hotkey) -> CallOutcome {
+    let tid = task_id(netuid, epoch, miner);
+    let blob = task_blob(&tid, SCORING_VERSION);
+    let ans = answer_digest(&blob);
+    CallOutcome::Http200 {
+        challenge_id: CHALLENGE_ID.to_owned(),
+        epoch,
+        task_id: tid,
+        answer_digest: ans,
+        agent_version: "1".into(),
+    }
+}
+
+/// Helper: `NoScore` reason for missing call coverage (D24).
+#[must_use]
+pub fn silence_is_bug_leaf() -> ScoreOrAbsence {
+    ScoreOrAbsence::NoScore {
+        reason: NoScoreReasonCode::ChallengeInternal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::keys::public_key_from_secret;
+    use rand_core::OsRng;
+    use trustroot::{ChallengeEntry, ParticipantPolicy, BPS_DENOM};
+
+    fn mini() -> ([u8; 32], [u8; 32]) {
+        let m = schnorrkel::MiniSecretKey::generate_with(OsRng);
+        let sk = m.to_bytes();
+        let pk = m
+            .expand(schnorrkel::ExpansionMode::Ed25519)
+            .to_public()
+            .to_bytes();
+        (sk, pk)
+    }
+
+    fn ctx(pk: [u8; 32], hotkeys: Vec<Vec<u8>>) -> EpochCtx {
+        EpochCtx {
+            netuid: 1,
+            epoch: 7,
+            metagraph: Metagraph {
+                netuid: 1,
+                hotkeys,
+                owner_hotkey: vec![0u8; 32],
+            },
+            challenges: ChallengesBody {
+                challenges: vec![ChallengeEntry {
+                    id: CHALLENGE_ID_BYTES.to_vec(),
+                    public_key: pk,
+                    emission_share_bps: BPS_DENOM,
+                    policy: ParticipantPolicy::AllMetagraphHotkeys,
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn d24_missing_call_emits_noscore_not_silence() {
+        let (sk, pk) = mini();
+        let m1 = [0x11u8; 32];
+        let m2 = [0x22u8; 32];
+        let ch = AgentV1Challenge::new();
+        let ctx = ctx(pk, vec![m1.to_vec(), m2.to_vec()]);
+        let mut calls = BTreeMap::new();
+        // Only score m1; m2 is in E but has no call.
+        calls.insert(
+            m1,
+            MinerCallOutcome::Observed {
+                duration_ms: 2000,
+                outcome: correct_http200(1, 7, &m1),
+            },
+        );
+        let attest = MapAttestationLookup {
+            default: AttestationStatus::Verified,
+            ..Default::default()
+        };
+        let scores = ch.score_epoch(&ctx, &calls, &attest).expect("epoch");
+        assert_eq!(scores.len(), 2, "full cover of E");
+        assert_eq!(
+            scores.get(&m1),
+            Some(&ScoreOrAbsence::Score {
+                value: crate::SCORE_MAX
+            })
+        );
+        assert_eq!(
+            scores.get(&m2),
+            Some(&ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::ChallengeInternal
+            }),
+            "declared miner with no score → signed NoScore, never silence"
+        );
+        let leaf = ch
+            .sign_leaf(&sk, m2, 7, scores[&m2].clone())
+            .expect("sign noscore");
+        assert!(matches!(
+            leaf.score_or_absence,
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::ChallengeInternal
+            }
+        ));
+        let derived = public_key_from_secret(&sk).expect("pk");
+        assert_eq!(derived, pk);
+    }
+
+    #[test]
+    fn extra_miner_not_in_e_not_emitted() {
+        let (_sk, pk) = mini();
+        let m1 = [0x11u8; 32];
+        let outsider = [0x99u8; 32];
+        let ch = AgentV1Challenge::new();
+        let ctx = ctx(pk, vec![m1.to_vec()]);
+        let mut calls = BTreeMap::new();
+        calls.insert(
+            outsider,
+            MinerCallOutcome::Observed {
+                duration_ms: 0,
+                outcome: correct_http200(1, 7, &outsider),
+            },
+        );
+        let attest = MapAttestationLookup {
+            default: AttestationStatus::Verified,
+            ..Default::default()
+        };
+        let scores = ch.score_epoch(&ctx, &calls, &attest).expect("epoch");
+        assert_eq!(scores.len(), 1);
+        assert!(scores.contains_key(&m1));
+        assert!(!scores.contains_key(&outsider));
+    }
+}

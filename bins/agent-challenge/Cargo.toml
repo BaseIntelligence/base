@@ -1,0 +1,25 @@
+[package]
+name = "agent-challenge-bin"
+description = "agent-challenge operator binary (scoring + signed raw-weight POST)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "agent-challenge"
+path = "src/main.rs"
+
+[dependencies]
+agent-challenge = { path = "../../crates/agent-challenge" }
+telemetry = { path = "../../crates/telemetry" }
+trustroot = { path = "../../crates/trustroot" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

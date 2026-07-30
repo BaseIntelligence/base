@@ -38,8 +38,8 @@ highlight = "all"
 deny = [
     { crate = "openssl-sys", reason = "prefer rustls; avoid openssl sys linkage in core" },
     { crate = "chrono", reason = "prefer time crate; chrono has a history of soundness issues" },
-    # Attestation: dcap-qvl < 0.6.1 lacks required TDX/quote APIs used by gbase-attest-policy.
-    { crate = "dcap-qvl@<0.6.1", reason = "gbase-attest-policy requires dcap-qvl >= 0.6.1 (task 23)" },
+    # Attestation: dcap-qvl < 0.6.1 lacks required TDX/quote APIs used by attest-policy.
+    { crate = "dcap-qvl@<0.6.1", reason = "attest-policy requires dcap-qvl >= 0.6.1 (task 23)" },
 ]
 allow = []
 skip = []

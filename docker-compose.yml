@@ -31,7 +31,7 @@ services:
     # No host ports by default — apps reach postgres on the compose network.
 
   validator:
-    image: gbase-validator:0.1.0
+    image: validator:0.1.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -68,7 +68,7 @@ services:
 
   gateway:
     profiles: ["master"]
-    image: gbase-gateway:0.1.0
+    image: gateway:0.1.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -95,11 +95,11 @@ services:
   # Enable explicitly:
   #   docker compose --profile evil-gateway up -d evil-gateway
   # Do NOT use in production. Staging offline proofs live in
-  # crates/gbase-validator/src/adversarial_tests.rs (FakeChain / wiremock).
+  # crates/validator/src/adversarial_tests.rs (FakeChain / wiremock).
   # ---------------------------------------------------------------------------
   evil-gateway:
     profiles: ["evil-gateway"]
-    image: gbase-gateway:0.1.0
+    image: gateway:0.1.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -126,7 +126,7 @@ services:
       - gbase
 
   updater:
-    image: gbase-updater:0.1.0
+    image: updater:0.1.0
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -159,7 +159,7 @@ services:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     restart: unless-stopped
     environment:
-      # gbase-updater allowlist: CONTAINERS + IMAGES + POST only (D14 / task 39)
+      # updater allowlist: CONTAINERS + IMAGES + POST only (D14 / task 39)
       CONTAINERS: "1"
       IMAGES: "1"
       POST: "1"

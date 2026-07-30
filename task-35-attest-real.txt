@@ -5,7 +5,7 @@ HEAD_before: 0bcc1b004ca144acfe4152687e14376791effbff
 purpose: Re-verify attestation crates against task-34 real Phala fixtures; freeze measurements allowlist
 
 === fixtures ===
-crates/gbase-attest-parse/tests/fixtures/real/
+crates/attest-parse/tests/fixtures/real/
   quote.bin (5010) event_log.json (30 events) app-compose.json quote.hex
 
 === extracted allowlist (signed into config/measurements.toml) ===
@@ -18,7 +18,7 @@ compose_hash = 1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b
 mr_config_id = 01 || compose_hash || 15x00 (matches quote)
 
 === dstack parity fix ===
-gbase-compose-hash: strip JSON null object keys before canonical SHA-256
+compose-hash: strip JSON null object keys before canonical SHA-256
 (without strip: 9d31445a...; with strip: 1b8a63ef... == event payload)
 
 === cargo test (relevant packages) ===
@@ -41,8 +41,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 Finished ok (compose-hash, attest-parse, attest-replay, attest-policy, trustroot)
 
 === ceremony ===
-gbase-trustroot sign --kind measurements (owner-throwaway.age)
-gbase-trustroot verify → OK under owner fa856fcc...
+trustroot sign --kind measurements (owner-throwaway.age)
+trustroot verify → OK under owner fa856fcc...
 
 === surface (phala_quote.py + CLI) ===
 S1 parse+replay phala_quote.py
@@ -62,11 +62,11 @@ S5 policy evaluate Verified on real allowlist; MeasurementNotAllowlisted on muta
 S6 trustroot s9_repo_config_loads_when_present updated for non-empty allowlist: PASS
 
 === files ===
-crates/gbase-compose-hash/src/lib.rs
-crates/gbase-attest-replay/src/lib.rs + Cargo.toml (events_from_json)
-crates/gbase-attest-parse/tests/real_fixtures.rs
-crates/gbase-attest-policy/tests/real_fixtures.rs
-crates/gbase-trustroot/tests/trustroot_verify.rs (s9)
+crates/compose-hash/src/lib.rs
+crates/attest-replay/src/lib.rs + Cargo.toml (events_from_json)
+crates/attest-parse/tests/real_fixtures.rs
+crates/attest-policy/tests/real_fixtures.rs
+crates/trustroot/tests/trustroot_verify.rs (s9)
 config/measurements.toml + measurements.toml.sig
 task-35-attest-real.txt
 

@@ -1,0 +1,22 @@
+[package]
+name = "updater-bin"
+description = "updater CLI binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "updater"
+path = "src/main.rs"
+
+[dependencies]
+updater = { path = "../../crates/updater" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[lints]
+workspace = true

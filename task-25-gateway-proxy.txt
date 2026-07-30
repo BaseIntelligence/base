@@ -1,7 +1,7 @@
-# task-25 gbase-gateway evidence (registry + reverse proxy + RR + TLS owner)
+# task-25 gateway evidence (registry + reverse proxy + RR + TLS owner)
 date: 2026-07-30T03:00:00Z
 branch: reborn
-crate: crates/gbase-gateway + bins/gbase-gateway
+crate: crates/gateway + bins/gateway
 
 ## Surface
 - Registry (in-memory, D18 routing only): POST/GET/DELETE /v1/admin/backends
@@ -21,27 +21,27 @@ S3 registry API neither sets nor returns signing key (s3_registry_api_neither_se
 S4 TLS stub mode_label cleartext + no caddy/nginx fields (tls::tests) PASS
 Regression: master mismatch exit 2 / healthz 200 (lib tests) PASS
 
-## cargo test -p gbase-gateway -p gbase-gateway-bin --all-targets
+## cargo test -p gateway -p gateway-bin --all-targets
 unit: 17 passed
 proxy_rr: 5 passed
 bin: 0 tests
 total: 22 passed
 
 ## clippy / fmt / loc-cap
-cargo clippy -p gbase-gateway -p gbase-gateway-bin --all-targets -- -D warnings: exit 0
+cargo clippy -p gateway -p gateway-bin --all-targets -- -D warnings: exit 0
 cargo fmt --check: exit 0
-xtask loc-cap: crates/gbase-gateway under 1500 non-test LOC
+xtask loc-cap: crates/gateway under 1500 non-test LOC
 
 ## Manual QA
-$ ./target/debug/gbase-gateway
+$ ./target/debug/gateway
 structured fatal missing GBASE_ROLE / config
 exit=1
 
 ## Files
-crates/gbase-gateway/Cargo.toml
-crates/gbase-gateway/src/{lib,api,app,proxy,registry,tls}.rs
-crates/gbase-gateway/tests/proxy_rr.rs
-bins/gbase-gateway/src/main.rs
+crates/gateway/Cargo.toml
+crates/gateway/src/{lib,api,app,proxy,registry,tls}.rs
+crates/gateway/tests/proxy_rr.rs
+bins/gateway/src/main.rs
 README.md
 Cargo.lock
 task-25-gateway-proxy.txt
@@ -57,11 +57,11 @@ test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
      Running tests/proxy_rr.rs (target/debug/deps/proxy_rr-edf391f8c5a4025b)
 
 running 5 tests
-{"timestamp":"2026-07-30T03:00:57.837027Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:00:57.837034Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:00:57.837030Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:00:57.837033Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
-{"timestamp":"2026-07-30T03:00:57.837033Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:00:57.837027Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:00:57.837034Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:00:57.837030Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:00:57.837033Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
+{"timestamp":"2026-07-30T03:00:57.837033Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gateway::app"}
 test s3_registry_api_neither_sets_nor_returns_signing_key ... ok
 test s1_two_wiremock_backends_alternate_round_robin ... ok
 test s2_killing_backend_moves_traffic_to_survivor_200 ... ok
@@ -70,15 +70,15 @@ test s2c_restore_re_admits_after_cooldown ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
-     Running unittests src/main.rs (target/debug/deps/gbase_gateway-2180eee190b7c794)
+     Running unittests src/main.rs (target/debug/deps/gateway-2180eee190b7c794)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 === loc-cap gateway ===
-crates/gbase-gateway: 878 non-test LOC (cap 1500)
-bins/gbase-gateway: 33 non-test LOC (cap 1500)
+crates/gateway: 878 non-test LOC (cap 1500)
+bins/gateway: 33 non-test LOC (cap 1500)
 === manual binary ===
   1. missing required field `role`
   2. missing required field `netuid`

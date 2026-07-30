@@ -1,6 +1,6 @@
 task-12-db evidence
 date: 2026-07-30T02:37:10+00:00
-crate: crates/gbase-db
+crate: crates/db
 branch: reborn
 head_before: a7e1202c6ae6bc226e92d4b09bd08a1a3d022406
 postgres: docker gbase-pg-test postgres:16 on host :15433 (5433 was occupied)
@@ -49,14 +49,14 @@ migrate exit=0 (already applied)
 
 
 === cargo sqlx prepare --check ===
-    Checking gbase-db v0.1.0 (/root/gbase/crates/gbase-db)
+    Checking db v0.1.0 (/root/gbase/crates/db)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
 prepare-check exit=0
 
-=== cargo test -p gbase-db --features testing ===
-   Compiling gbase-db v0.1.0 (/root/gbase/crates/gbase-db)
+=== cargo test -p db --features testing ===
+   Compiling db v0.1.0 (/root/gbase/crates/db)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
-     Running unittests src/lib.rs (target/debug/deps/gbase_db-a6bef21635fac453)
+     Running unittests src/lib.rs (target/debug/deps/db-a6bef21635fac453)
 
 running 3 tests
 test unit_tests::append_only_table_list_is_exact ... ok
@@ -75,15 +75,15 @@ test s1_all_tables_have_created_at ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
 
-   Doc-tests gbase_db
+   Doc-tests db
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
-=== cargo clippy -p gbase-db --features testing -D warnings ===
-    Checking gbase-db v0.1.0 (/root/gbase/crates/gbase-db)
+=== cargo clippy -p db --features testing -D warnings ===
+    Checking db v0.1.0 (/root/gbase/crates/db)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
 
 === D18: no signing_key columns ===
@@ -102,16 +102,16 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 === files ===
-crates/gbase-db/Cargo.toml
-crates/gbase-db/migrations/0001_init.sql
-crates/gbase-db/.sqlx/query-394a36a2ee5880acf461ddaabce3d4c26ece067ba41fbefd5ed2ad71618f809c.json
-crates/gbase-db/.sqlx/query-483f2789842ba1dcf8e7f93cf43407e2e3f8939d05db4aa56372bbefe3e17659.json
-crates/gbase-db/.sqlx/query-4cc53bd9ab91310251454507ddc72b70efde50388f53d41f851f406e88ff3018.json
-crates/gbase-db/.sqlx/query-89433a0a0caa57e0c075992cfc0f91251ae442926e3b643ef9c55aaa7efb08a2.json
-crates/gbase-db/.sqlx/query-c399a288f603ef56bbc92ea99d4646ad83d2e27ba238e99af993eb9a7cad10d2.json
-crates/gbase-db/.sqlx/query-e2c71d898479c282744f668d1227ef94b37373789e5807db1a95468e719ea37b.json
-crates/gbase-db/src/lib.rs
-crates/gbase-db/tests/schema.rs
+crates/db/Cargo.toml
+crates/db/migrations/0001_init.sql
+crates/db/.sqlx/query-394a36a2ee5880acf461ddaabce3d4c26ece067ba41fbefd5ed2ad71618f809c.json
+crates/db/.sqlx/query-483f2789842ba1dcf8e7f93cf43407e2e3f8939d05db4aa56372bbefe3e17659.json
+crates/db/.sqlx/query-4cc53bd9ab91310251454507ddc72b70efde50388f53d41f851f406e88ff3018.json
+crates/db/.sqlx/query-89433a0a0caa57e0c075992cfc0f91251ae442926e3b643ef9c55aaa7efb08a2.json
+crates/db/.sqlx/query-c399a288f603ef56bbc92ea99d4646ad83d2e27ba238e99af993eb9a7cad10d2.json
+crates/db/.sqlx/query-e2c71d898479c282744f668d1227ef94b37373789e5807db1a95468e719ea37b.json
+crates/db/src/lib.rs
+crates/db/tests/schema.rs
 
 === cleanup note ===
 docker container gbase-pg-test (postgres:16) LEFT RUNNING on 127.0.0.1:15433 for later tasks

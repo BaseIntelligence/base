@@ -1,11 +1,11 @@
 # task-37-miner-deploy
 date: 2026-07-30T03:38:16+00:00
 branch: reborn
-crate: crates/gbase-miner + bins/gbase-miner
+crate: crates/miner + bins/miner
 
 ## Surface
-- gbase-miner deploy --no-deploy (default dry-run)
-- gbase-miner deploy --deploy (optional phala)
+- miner deploy --no-deploy (default dry-run)
+- miner deploy --deploy (optional phala)
 - Template AGENT_CHALLENGE.md §9: agent:8080, attest-helper:127.0.0.1:8081
 - Images: ghcr.io/baseintelligence/gbase-agent|attest-helper@sha256:...
 - LAUNCH_TOKEN hash in measured compose (D11)
@@ -13,15 +13,15 @@ crate: crates/gbase-miner + bins/gbase-miner
 - Miner funds own Phala account (note printed)
 
 ## VERIFY scenarios
-S1 --no-deploy compose-hash == gbase_compose_hash(rendered) PASS
+S1 --no-deploy compose-hash == compose_hash(rendered) PASS
 S2 no secrets in environment: block PASS
 S3 services/ports/images match §9 PASS
 S4 write --out roundtrip hash PASS
 S5 reject :latest PASS
 
-## cargo test -p gbase-miner --all-targets
+## cargo test -p miner --all-targets
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running unittests src/lib.rs (target/debug/deps/gbase_miner-9dec28f44773e33b)
+     Running unittests src/lib.rs (target/debug/deps/miner-9dec28f44773e33b)
 
 running 0 tests
 
@@ -44,8 +44,8 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
 
 ## Manual CLI
-   Compiling gbase-miner v0.1.0 (/root/gbase/crates/gbase-miner)
-   Compiling gbase-miner-bin v0.1.0 (/root/gbase/bins/gbase-miner)
+   Compiling miner v0.1.0 (/root/gbase/crates/miner)
+   Compiling miner-bin v0.1.0 (/root/gbase/bins/miner)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
 compose-hash=145e62b8aa5595c06e84b08145d42b6c142606111ee7c340e613dcae0ee31c0b
 phala_invoked=false
@@ -53,18 +53,18 @@ mode=NoDeploy
 note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/gbase
 
 ## files
-bins/gbase-miner/Cargo.toml
-bins/gbase-miner/src/main.rs
-crates/gbase-miner/Cargo.toml
-crates/gbase-miner/src/deploy.rs
-crates/gbase-miner/src/inspect.rs
-crates/gbase-miner/src/lib.rs
-crates/gbase-miner/src/template.rs
-crates/gbase-miner/tests/deploy_contract.rs
+bins/miner/Cargo.toml
+bins/miner/src/main.rs
+crates/miner/Cargo.toml
+crates/miner/src/deploy.rs
+crates/miner/src/inspect.rs
+crates/miner/src/lib.rs
+crates/miner/src/template.rs
+crates/miner/tests/deploy_contract.rs
 
 ALL SCENARIOS PASS
-LOC 206 crates/gbase-miner/src/deploy.rs
-LOC 75 crates/gbase-miner/src/inspect.rs
-LOC 14 crates/gbase-miner/src/lib.rs
-LOC 71 crates/gbase-miner/src/template.rs
-LOC 93 bins/gbase-miner/src/main.rs
+LOC 206 crates/miner/src/deploy.rs
+LOC 75 crates/miner/src/inspect.rs
+LOC 14 crates/miner/src/lib.rs
+LOC 71 crates/miner/src/template.rs
+LOC 93 bins/miner/src/main.rs
