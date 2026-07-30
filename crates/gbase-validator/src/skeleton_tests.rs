@@ -47,6 +47,7 @@ async fn s1_readyz_200_fake_chain_and_wiremock_gateway() {
         listen_addr: "127.0.0.1:0".parse().expect("addr"),
         gateway_endpoint: Some(gateway.uri()),
         registration: crate::RegistrationStub::new(),
+        ..ValidatorRuntime::default()
     };
 
     let running = spawn_validator_with_ok_db(runtime, chain)

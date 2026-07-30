@@ -2,8 +2,8 @@
 //!
 //! Listens for `/healthz`, `/readyz`, `/metrics`. Epoch clock from chain tip.
 //! Coordination client talks only to allowlisted gateway paths.
-//! Bundle fetch/recompute/compare lives in `gbase_validator::recompute` (task 29);
-//! CRV4 submit and dissent are later tasks.
+//! Bundle fetch/recompute/compare (task 29) and verified-bundle mirror/peer fetch
+//! (task 30) live in the library; CRV4 submit and dissent are later tasks.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -85,6 +85,7 @@ async fn main() -> ExitCode {
         listen_addr: listen,
         gateway_endpoint: cfg.gateway_endpoint.clone(),
         registration: RegistrationStub::new(),
+        ..ValidatorRuntime::default()
     };
 
     let running = match spawn_validator(runtime, chain, db_check, vec![]).await {

@@ -1,11 +1,14 @@
-//! Bundle fetch, independent recomputation, and final-vector comparison (task 29).
+//! Bundle fetch, independent recomputation, and final-vector comparison (task 29/30).
 //!
-//! Flow (`BUNDLE_SPEC` §8, §11.2, §14):
+//! Flow (`BUNDLE_SPEC` §8, §9, §11.2, §14):
 //! 1. Fetch sealed bundle bytes from the gateway (allowlisted path only).
-//! 2. Verify against the validator's **own** local trust root + chain.
-//! 3. Independently `gbase_aggregate` the verified leaves.
-//! 4. Dual-compare gateway `final_vector` vs local: full equality **and**
+//! 2. On gateway failure, fetch by content-addressed root from metagraph peers
+//!    (task 30), bound to the expected `(epoch, root)`.
+//! 3. Verify against the validator's **own** local trust root + chain.
+//! 4. Independently `gbase_aggregate` the verified leaves.
+//! 5. Dual-compare gateway `final_vector` vs local: full equality **and**
 //!    `sha256(scale(V))`.
+//! 6. Persist verified bundles into the local mirror store for peer serve.
 //!
 //! **No last-known-good:** a failed fetch/verify never returns a prior epoch's
 //! vector as success. This module never submits extrinsics (task 33 owns that).
@@ -23,6 +26,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::coordination::{CoordinationClient, CoordinationError};
+use crate::mirror::SharedMirrorStore;
+use crate::peers::PeerBook;
 
 /// Why the validator must not submit weights for this epoch (no class-A path).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +48,24 @@ pub enum NoSubmissionReason {
         /// Path that was refused.
         path: String,
     },
+    /// Gateway failed and no `(epoch, root)` binding was supplied for peer fetch.
+    NoExpectedRootForPeerFetch,
+    /// No metagraph peers available (or peer book empty after discovery).
+    NoPeersAvailable,
+    /// All peers failed or returned unbound/wrong content.
+    PeerFetchExhausted {
+        /// Last peer error detail.
+        detail: String,
+    },
+    /// A peer returned bytes whose merkle root ≠ requested root.
+    PeerRootMismatch,
+    /// A peer returned a well-formed bundle for a different epoch.
+    PeerEpochMismatch {
+        /// Epoch inside the peer body.
+        got: u64,
+        /// Epoch the caller bound the fetch to.
+        expected: u64,
+    },
 }
 
 impl std::fmt::Display for NoSubmissionReason {
@@ -55,6 +78,19 @@ impl std::fmt::Display for NoSubmissionReason {
             }
             Self::PathNotAllowed { path } => {
                 write!(f, "gateway path not allowed: {path}")
+            }
+            Self::NoExpectedRootForPeerFetch => {
+                write!(f, "gateway failed and no expected root for peer fetch")
+            }
+            Self::NoPeersAvailable => write!(f, "no peers available for bundle fetch"),
+            Self::PeerFetchExhausted { detail } => {
+                write!(f, "peer fetch exhausted: {detail}")
+            }
+            Self::PeerRootMismatch => {
+                write!(f, "peer bundle merkle root does not match request")
+            }
+            Self::PeerEpochMismatch { got, expected } => {
+                write!(f, "peer bundle epoch {got} != expected {expected}")
             }
         }
     }
@@ -253,10 +289,51 @@ fn map_coord_err(err: CoordinationError) -> ComparisonOutcome {
     ComparisonOutcome::NoSubmission { reason }
 }
 
+/// Expected content-addressed binding for peer fetch (task 30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedBundle {
+    /// Epoch the caller intends to evaluate.
+    pub epoch: u64,
+    /// Merkle root the caller intends to fetch (`body.merkle_root`).
+    pub root: [u8; 32],
+}
+
+/// Persist SCALE bytes into the mirror when the outcome proves inputs verified.
+///
+/// Stores on [`ComparisonOutcome::Match`] and [`ComparisonOutcome::VectorMismatch`]
+/// only (class A still has a trustworthy merkle root). Never stores `InputInvalid`.
+pub fn maybe_persist_verified(
+    store: &SharedMirrorStore,
+    bytes: &[u8],
+    outcome: &ComparisonOutcome,
+) {
+    let (epoch, root) = match outcome {
+        ComparisonOutcome::Match {
+            epoch,
+            merkle_root,
+            ..
+        }
+        | ComparisonOutcome::VectorMismatch {
+            epoch,
+            merkle_root,
+            ..
+        } => (*epoch, *merkle_root),
+        ComparisonOutcome::InputInvalid { .. } | ComparisonOutcome::NoSubmission { .. } => return,
+    };
+    // Defence-in-depth: refuse to index under a root that does not match the body.
+    match EpochBundleV1::decode_bytes(bytes) {
+        Ok(b) if b.body.merkle_root == root && b.body.epoch == epoch => {
+            store.put_verified(epoch, root, bytes.to_vec());
+        }
+        _ => {}
+    }
+}
+
 /// Fetch `GET /v1/bundle/{epoch}` and run independent recompute/compare.
 ///
 /// On any fetch failure returns [`ComparisonOutcome::NoSubmission`] and never
 /// attempts a chain extrinsic. Does **not** fall back to another epoch (no LKG).
+/// Does **not** attempt peer fetch — use [`fetch_and_compare_with_mirror`].
 pub async fn fetch_and_compare<C: ChainClient>(
     client: &CoordinationClient,
     epoch: u64,
@@ -266,6 +343,170 @@ pub async fn fetch_and_compare<C: ChainClient>(
     match client.fetch_bundle(epoch).await {
         Ok(bytes) => compare_bundle_bytes(&bytes, chain, trust),
         Err(e) => map_coord_err(e),
+    }
+}
+
+/// Gateway-first fetch with verified-mirror persist and peer root fallback (task 30).
+///
+/// 1. Try gateway `GET /v1/bundle/{epoch}`.
+/// 2. On success: compare; if Match/VectorMismatch, persist into `store`.
+/// 3. On gateway failure: if `expected` is set, discover peers from the metagraph
+///    via `peers` and `GET /v1/bundle/root/{root}` from each until one binds to
+///    `(expected.epoch, expected.root)` and compares; reject wrong root/epoch.
+/// 4. Never falls back to another epoch (no LKG). Never submits extrinsics.
+pub async fn fetch_and_compare_with_mirror<C: ChainClient>(
+    client: &CoordinationClient,
+    epoch: u64,
+    chain: &C,
+    trust: &LocalTrustRoot,
+    store: &SharedMirrorStore,
+    peers: &PeerBook,
+    expected: Option<ExpectedBundle>,
+) -> ComparisonOutcome {
+    match client.fetch_bundle(epoch).await {
+        Ok(bytes) => {
+            let outcome = compare_bundle_bytes(&bytes, chain, trust);
+            maybe_persist_verified(store, &bytes, &outcome);
+            outcome
+        }
+        Err(gw_err) => {
+            // Local mirror hit (same process already verified this root).
+            if let Some(exp) = expected {
+                if exp.epoch == epoch {
+                    if let Some(bytes) = store.get_by_root(&exp.root) {
+                        if let Some(out) = accept_bound_bytes(&bytes, exp, chain, trust, store) {
+                            return out;
+                        }
+                    }
+                }
+            }
+            match expected {
+                None => map_coord_err(gw_err),
+                Some(exp) if exp.epoch != epoch => ComparisonOutcome::NoSubmission {
+                    reason: NoSubmissionReason::PeerEpochMismatch {
+                        got: exp.epoch,
+                        expected: epoch,
+                    },
+                },
+                Some(exp) => fetch_from_peers(client, chain, trust, store, peers, exp, gw_err).await,
+            }
+        }
+    }
+}
+
+/// Validate peer/local bytes against the expected `(epoch, root)` binding.
+fn accept_bound_bytes<C: ChainClient>(
+    bytes: &[u8],
+    expected: ExpectedBundle,
+    chain: &C,
+    trust: &LocalTrustRoot,
+    store: &SharedMirrorStore,
+) -> Option<ComparisonOutcome> {
+    let Ok(bundle) = decode_bundle(bytes) else {
+        return None;
+    };
+    if bundle.body.merkle_root != expected.root {
+        return Some(ComparisonOutcome::NoSubmission {
+            reason: NoSubmissionReason::PeerRootMismatch,
+        });
+    }
+    if bundle.body.epoch != expected.epoch {
+        return Some(ComparisonOutcome::NoSubmission {
+            reason: NoSubmissionReason::PeerEpochMismatch {
+                got: bundle.body.epoch,
+                expected: expected.epoch,
+            },
+        });
+    }
+    let outcome = compare_bundle(&bundle, chain, trust);
+    maybe_persist_verified(store, bytes, &outcome);
+    Some(outcome)
+}
+
+async fn fetch_from_peers<C: ChainClient>(
+    client: &CoordinationClient,
+    chain: &C,
+    trust: &LocalTrustRoot,
+    store: &SharedMirrorStore,
+    peers: &PeerBook,
+    expected: ExpectedBundle,
+    gw_err: CoordinationError,
+) -> ComparisonOutcome {
+    let discovered = match peers.discover_from_chain(chain) {
+        Ok(p) => p,
+        Err(e) => {
+            return ComparisonOutcome::NoSubmission {
+                reason: NoSubmissionReason::PeerFetchExhausted {
+                    detail: format!("metagraph discover: {e}; gateway: {gw_err}"),
+                },
+            };
+        }
+    };
+    if discovered.is_empty() {
+        // Preserve gateway failure flavour when no peers exist.
+        return match map_coord_err(gw_err) {
+            ComparisonOutcome::NoSubmission { reason } => ComparisonOutcome::NoSubmission {
+                reason: match reason {
+                    NoSubmissionReason::GatewayUnreachable(_)
+                    | NoSubmissionReason::GatewayHttp { .. }
+                    | NoSubmissionReason::NoGatewayConfigured => NoSubmissionReason::NoPeersAvailable,
+                    other => other,
+                },
+            },
+            other => other,
+        };
+    }
+
+    let mut last_detail = format!("gateway: {gw_err}");
+    let mut saw_root_mismatch = false;
+    let mut saw_epoch_mismatch: Option<(u64, u64)> = None;
+
+    for peer in &discovered {
+        match client
+            .fetch_bundle_by_root_from(&peer.base_url, &expected.root)
+            .await
+        {
+            Ok(bytes) => match accept_bound_bytes(&bytes, expected, chain, trust, store) {
+                Some(ComparisonOutcome::NoSubmission {
+                    reason: NoSubmissionReason::PeerRootMismatch,
+                }) => {
+                    saw_root_mismatch = true;
+                    last_detail = format!("peer {} root mismatch", peer.base_url);
+                }
+                Some(ComparisonOutcome::NoSubmission {
+                    reason: NoSubmissionReason::PeerEpochMismatch { got, expected },
+                }) => {
+                    saw_epoch_mismatch = Some((got, expected));
+                    last_detail = format!(
+                        "peer {} epoch mismatch got={got} expected={expected}",
+                        peer.base_url
+                    );
+                }
+                Some(outcome) => return outcome,
+                None => {
+                    last_detail = format!("peer {} decode failed", peer.base_url);
+                }
+            },
+            Err(e) => {
+                last_detail = format!("peer {} => {e}", peer.base_url);
+            }
+        }
+    }
+
+    if saw_root_mismatch && saw_epoch_mismatch.is_none() {
+        return ComparisonOutcome::NoSubmission {
+            reason: NoSubmissionReason::PeerRootMismatch,
+        };
+    }
+    if let Some((got, expected)) = saw_epoch_mismatch {
+        return ComparisonOutcome::NoSubmission {
+            reason: NoSubmissionReason::PeerEpochMismatch { got, expected },
+        };
+    }
+    ComparisonOutcome::NoSubmission {
+        reason: NoSubmissionReason::PeerFetchExhausted {
+            detail: last_detail,
+        },
     }
 }
 

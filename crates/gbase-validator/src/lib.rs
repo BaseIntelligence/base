@@ -5,6 +5,8 @@
 //! Task 29: bundle fetch, verify against **local** trust root, independent
 //! aggregate, dual final-vector comparison (`Match` / `VectorMismatch` /
 //! `InputInvalid` / `NoSubmission`). No last-known-good; no extrinsic submit.
+//! Task 30: verified-bundle mirror store, `GET /v1/bundle/root/{root}`, peer
+//! fetch by root when the gateway is unreachable (content-addressed).
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +14,8 @@ pub mod app;
 pub mod coordination;
 pub mod epoch;
 pub mod error;
+pub mod mirror;
+pub mod peers;
 pub mod recompute;
 pub mod registration;
 pub mod sync_chain;
@@ -26,12 +30,19 @@ pub use coordination::{
 };
 pub use epoch::{epoch_from_block, epoch_from_chain, EpochSnapshot};
 pub use error::ValidatorError;
+pub use mirror::{
+    bundle_identity, mirror_router, parse_root_hex, root_hex, MemoryMirrorStore, SharedMirrorStore,
+};
+pub use peers::{PeerBook, PeerEndpoint};
 pub use recompute::{
-    compare_bundle, compare_bundle_bytes, fetch_and_compare, independent_aggregate, vector_sha256,
-    ComparisonOutcome, NoSubmissionReason, RecomputeError,
+    compare_bundle, compare_bundle_bytes, fetch_and_compare, fetch_and_compare_with_mirror,
+    independent_aggregate, maybe_persist_verified, vector_sha256, ComparisonOutcome,
+    ExpectedBundle, NoSubmissionReason, RecomputeError,
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use sync_chain::SyncChain;
 
 #[cfg(test)]
 mod skeleton_tests;
+#[cfg(test)]
+mod mirror_peer_tests;

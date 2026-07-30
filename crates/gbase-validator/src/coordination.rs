@@ -179,6 +179,65 @@ impl CoordinationClient {
             .map_err(|e| CoordinationError::Transport(e.to_string()))
     }
 
+    /// Fetch sealed bundle by merkle root from the configured gateway.
+    ///
+    /// `GET /v1/bundle/root/{root_hex}` — content-addressed; no LKG.
+    ///
+    /// # Errors
+    ///
+    /// Path not allowed, missing gateway, transport, or non-success status.
+    pub async fn fetch_bundle_by_root(
+        &self,
+        root: &[u8; 32],
+    ) -> Result<Vec<u8>, CoordinationError> {
+        let path = format!("/v1/bundle/root/{}", hex::encode(root));
+        let resp = self.get_allowed(&path).await?;
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| CoordinationError::Transport(e.to_string()))
+    }
+
+    /// Fetch sealed bundle by merkle root from an arbitrary peer base URL.
+    ///
+    /// Used when the gateway is unreachable. The path is the public mirror
+    /// route (`/v1/bundle/root/{root}`); response authenticity is the
+    /// content-addressed root + local verify (not the peer's IP).
+    ///
+    /// # Errors
+    ///
+    /// Transport or non-success HTTP status.
+    pub async fn fetch_bundle_by_root_from(
+        &self,
+        base_url: &str,
+        root: &[u8; 32],
+    ) -> Result<Vec<u8>, CoordinationError> {
+        let base = base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            return Err(CoordinationError::Transport("empty peer base url".into()));
+        }
+        let path = format!("/v1/bundle/root/{}", hex::encode(root));
+        let url = format!("{base}{path}");
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| CoordinationError::Transport(e.to_string()))?;
+        let status = resp.status();
+        if status.is_success() {
+            resp.bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(|e| CoordinationError::Transport(e.to_string()))
+        } else {
+            Err(CoordinationError::HttpStatus {
+                status: status.as_u16(),
+                path,
+            })
+        }
+    }
+
     /// Lightweight coordination tick: probe `GET /v1/weights/latest` when a gateway is set.
     ///
     /// No-op (Ok) when no gateway is configured — validators stay healthy without one.

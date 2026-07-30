@@ -1,4 +1,4 @@
-//! Validator HTTP app: telemetry router + graceful shutdown.
+//! Validator HTTP app: telemetry router + mirror routes + graceful shutdown.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -13,6 +13,8 @@ use tokio::sync::watch;
 use crate::coordination::CoordinationClient;
 use crate::epoch::{epoch_from_block, EpochSnapshot};
 use crate::error::ValidatorError;
+use crate::mirror::{mirror_router, MemoryMirrorStore, SharedMirrorStore};
+use crate::peers::PeerBook;
 use crate::registration::RegistrationStub;
 
 /// Runtime knobs for the skeleton (injectable for tests).
@@ -26,6 +28,10 @@ pub struct ValidatorRuntime {
     pub gateway_endpoint: Option<String>,
     /// Registration stub.
     pub registration: RegistrationStub,
+    /// Peer book for mirror fetch (hotkey → base URL), filtered by metagraph.
+    pub peers: PeerBook,
+    /// Optional pre-built mirror store (tests share stores across validators).
+    pub mirror: Option<SharedMirrorStore>,
 }
 
 impl Default for ValidatorRuntime {
@@ -35,6 +41,8 @@ impl Default for ValidatorRuntime {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             gateway_endpoint: None,
             registration: RegistrationStub::new(),
+            peers: PeerBook::new(),
+            mirror: None,
         }
     }
 }
@@ -79,7 +87,7 @@ pub fn build_health_router(checks: Vec<ReadyCheck>) -> Result<Router, ValidatorE
         .build()?)
 }
 
-/// Running validator handle (bound port + shutdown).
+/// Running validator handle (bound port + shutdown + mirror).
 pub struct RunningValidator {
     /// Bound local address.
     pub addr: SocketAddr,
@@ -89,6 +97,10 @@ pub struct RunningValidator {
     pub join: tokio::task::JoinHandle<Result<(), ValidatorError>>,
     /// Coordination client used by the process.
     pub coordination: Arc<CoordinationClient>,
+    /// Verified-bundle mirror store served at `/v1/bundle/root/{root}`.
+    pub mirror: SharedMirrorStore,
+    /// Peer book used for outbound peer fetch.
+    pub peers: PeerBook,
     /// Epoch length.
     pub epoch_length: u64,
     /// Chain tip reader for epoch snapshots.
@@ -106,6 +118,12 @@ impl RunningValidator {
         epoch_from_block(block, self.epoch_length)
     }
 
+    /// Base URL for this validator's HTTP surface (`http://{addr}`).
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
     /// Request graceful shutdown and wait for the server task.
     ///
     /// # Errors
@@ -120,7 +138,7 @@ impl RunningValidator {
     }
 }
 
-/// Spawn the health server with graceful shutdown.
+/// Spawn the health + mirror server with graceful shutdown.
 ///
 /// # Errors
 ///
@@ -144,10 +162,16 @@ where
         tracing::warn!(error = %e, "coordination tick failed (non-fatal for skeleton)");
     }
 
+    let mirror = runtime
+        .mirror
+        .clone()
+        .unwrap_or_else(MemoryMirrorStore::shared);
+    let peers = runtime.peers.clone();
+
     let mut checks = vec![chain_ready_check(Arc::clone(&chain), "chain"), db_check];
     checks.extend(extra_checks);
 
-    let app = build_health_router(checks)?;
+    let app = build_health_router(checks)?.merge(mirror_router(Arc::clone(&mirror)));
     let listener = TcpListener::bind(runtime.listen_addr)
         .await
         .map_err(|e| ValidatorError::Serve(format!("bind: {e}")))?;
@@ -179,6 +203,7 @@ where
         %addr,
         registered = runtime.registration.status().registered,
         has_gateway = coordination.has_gateway(),
+        peer_count = peers.all().len(),
         "gbase-validator listening"
     );
 
@@ -187,6 +212,8 @@ where
         shutdown_tx,
         join,
         coordination,
+        mirror,
+        peers,
         epoch_length: runtime.epoch_length,
         tip,
     })

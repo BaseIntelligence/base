@@ -1436,12 +1436,21 @@ dependencies = [
 name = "gbase-miner"
 version = "0.1.0"
 dependencies = [
+ "gbase-attest-parse",
+ "gbase-attest-policy",
+ "gbase-attest-replay",
  "gbase-compose-hash",
+ "gbase-crypto",
+ "gbase-trustroot",
+ "gbase-validator",
+ "hex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -1450,6 +1459,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "gbase-miner",
+ "tokio",
 ]
 
 [[package]]
@@ -1533,9 +1543,11 @@ dependencies = [
  "gbase-crypto",
  "gbase-telemetry",
  "gbase-trustroot",
+ "hex",
  "parity-scale-codec",
  "reqwest 0.12.28",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
