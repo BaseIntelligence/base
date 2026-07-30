@@ -883,6 +883,7 @@ dependencies = [
  "gbase-crypto",
  "parity-scale-codec",
  "rand_core 0.6.4",
+ "schnorrkel",
  "serde",
  "sha2",
  "tempfile",
@@ -899,6 +900,7 @@ dependencies = [
  "gbase-trustroot",
  "rand_core 0.6.4",
  "schnorrkel",
+ "toml",
 ]
 
 [[package]]

@@ -1,0 +1,28 @@
+[package]
+name = "gbase-validator"
+description = "Validator skeleton: epoch clock, coordination client, health, graceful shutdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+gbase-chain = { path = "../gbase-chain" }
+gbase-config = { path = "../gbase-config" }
+gbase-telemetry = { path = "../gbase-telemetry" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true

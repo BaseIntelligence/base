@@ -1,0 +1,58 @@
+# task-28 gbase-validator skeleton evidence
+date: 2026-07-30T02:48:00Z
+branch: reborn
+crate: crates/gbase-validator + bins/gbase-validator (bin name: gbase-validator)
+
+## API / behavior surface
+- RegistrationStub: unregistered / set_uid / clear (local only)
+- epoch_from_block / epoch_from_chain: epoch_index = current_block / epoch_length
+- SyncChain: Mutex wrapper so FakeChain (!Sync) is Send+Sync for Arc health checks
+- CoordinationClient: allowlisted GET only; MASTER_ONLY_PATHS refused before network
+  - allowed: /healthz /readyz /v1/bundle/* /v1/bundle/root/* /v1/weights/latest
+  - master-only: /v1/weights/raw /v1/admin/seal /v1/admin/backends /v1/master/status /challenge/*
+- tick(): GET /v1/weights/latest when gateway set; no-op without gateway
+- spawn_validator: telemetry router /healthz /readyz /metrics + graceful shutdown watch
+- Injectable ReadyCheck for chain + db (db_ready_ok / db_ready_from_fn)
+
+## Scenarios
+S1 s1_readyz_200_fake_chain_and_wiremock_gateway PASS — /readyz 200, chain+db checks, wiremock only /v1/weights/latest
+S2 s2_never_calls_master_only_wiremock_unmatched_empty + s2_coordination_refuses_master_only PASS
+S3 s3_readyz_ok_without_gateway PASS — healthy with no co-located gateway
+S4 s4_epoch_clock_matches_fake_chain PASS — tip 720 / 360 → epoch_index 2
+S5 s5_graceful_shutdown PASS — post-shutdown connect fails
+S6 s6_registration_stub_default_and_set_uid PASS
+
+## Manual QA (real binary surface)
+$ GBASE_ROLE=validator GBASE_NETUID=1 GBASE_DATABASE_URL=postgres://...@127.0.0.1:15433/postgres \
+  GBASE_LISTEN=127.0.0.1:18080 ./target/debug/gbase-validator
+curl /healthz → 200 ok
+curl /readyz → 200 {"status":"ok","checks":[{"name":"chain","ok":true},{"name":"db","ok":true}]}
+curl /metrics → gbase_up 1
+$ ./target/debug/gbase-validator  # no env
+→ exit=2 missing role+netuid
+
+## Gates
+cargo test -p gbase-validator --all-targets: 13 passed
+cargo clippy -p gbase-validator -p gbase-validator-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p gbase-validator -p gbase-validator-bin: applied
+xtask loc-cap: crates/gbase-validator 460 LOC, bins/gbase-validator 105 LOC (cap 1500)
+
+## Files
+crates/gbase-validator/Cargo.toml
+crates/gbase-validator/src/lib.rs
+crates/gbase-validator/src/app.rs
+crates/gbase-validator/src/coordination.rs
+crates/gbase-validator/src/epoch.rs
+crates/gbase-validator/src/error.rs
+crates/gbase-validator/src/registration.rs
+crates/gbase-validator/src/sync_chain.rs
+crates/gbase-validator/src/skeleton_tests.rs
+bins/gbase-validator/Cargo.toml
+bins/gbase-validator/src/main.rs
+Cargo.lock
+
+## Notes
+- No full recompute (task 29). Skeleton only.
+- FakeChain used for tip until live SDK client lands.
+- Validator never requires co-located gateway for readiness.
+- Master-only paths hard-refused client-side; wiremock log shows only allowlisted hits.

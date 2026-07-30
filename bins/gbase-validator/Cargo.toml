@@ -1,0 +1,25 @@
+[package]
+name = "gbase-validator-bin"
+description = "gbase-validator CLI binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "gbase-validator"
+path = "src/main.rs"
+
+[dependencies]
+gbase-chain = { path = "../../crates/gbase-chain" }
+gbase-config = { path = "../../crates/gbase-config" }
+gbase-db = { path = "../../crates/gbase-db" }
+gbase-telemetry = { path = "../../crates/gbase-telemetry" }
+gbase-validator = { path = "../../crates/gbase-validator" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

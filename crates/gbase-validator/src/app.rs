@@ -1,0 +1,208 @@
+//! Validator HTTP app: telemetry router + graceful shutdown.
+
+use std::future::Future;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Router;
+use gbase_chain::ChainClient;
+use gbase_telemetry::{HealthRouterBuilder, ReadyCheck};
+use tokio::net::TcpListener;
+use tokio::sync::watch;
+
+use crate::coordination::CoordinationClient;
+use crate::epoch::{epoch_from_block, EpochSnapshot};
+use crate::error::ValidatorError;
+use crate::registration::RegistrationStub;
+
+/// Runtime knobs for the skeleton (injectable for tests).
+#[derive(Clone)]
+pub struct ValidatorRuntime {
+    /// Epoch length in blocks.
+    pub epoch_length: u64,
+    /// Listen address (e.g. `127.0.0.1:0` for ephemeral).
+    pub listen_addr: SocketAddr,
+    /// Optional gateway base URL.
+    pub gateway_endpoint: Option<String>,
+    /// Registration stub.
+    pub registration: RegistrationStub,
+}
+
+impl Default for ValidatorRuntime {
+    fn default() -> Self {
+        Self {
+            epoch_length: gbase_config::DEFAULT_EPOCH_LENGTH,
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            gateway_endpoint: None,
+            registration: RegistrationStub::new(),
+        }
+    }
+}
+
+/// Build readiness checks for chain tip + optional DB ping.
+pub fn chain_ready_check<C>(chain: Arc<C>, name: impl Into<String>) -> ReadyCheck
+where
+    C: ChainClient + Send + Sync + 'static,
+{
+    let name = name.into();
+    ReadyCheck::new(name, move || {
+        let chain = Arc::clone(&chain);
+        async move { chain.current_block().map(|_| ()).map_err(|e| e.to_string()) }
+    })
+}
+
+/// Always-ok DB check (unit tests / no postgres).
+#[must_use]
+pub fn db_ready_ok() -> ReadyCheck {
+    ReadyCheck::always_ok("db")
+}
+
+/// Injectable DB readiness from an async closure (keeps sqlx out of this crate).
+pub fn db_ready_from_fn<F, Fut>(check: F) -> ReadyCheck
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), String>> + Send + 'static,
+{
+    ReadyCheck::new("db", check)
+}
+
+/// Build the observability router with injectable checks.
+///
+/// # Errors
+///
+/// Telemetry builder failures.
+pub fn build_health_router(checks: Vec<ReadyCheck>) -> Result<Router, ValidatorError> {
+    let handle = gbase_telemetry::init_metrics()?;
+    Ok(HealthRouterBuilder::new()
+        .metrics_handle(handle)
+        .readiness_checks(checks)
+        .build()?)
+}
+
+/// Running validator handle (bound port + shutdown).
+pub struct RunningValidator {
+    /// Bound local address.
+    pub addr: SocketAddr,
+    /// Signal graceful shutdown (send `true`).
+    pub shutdown_tx: watch::Sender<bool>,
+    /// Join handle for the serve task.
+    pub join: tokio::task::JoinHandle<Result<(), ValidatorError>>,
+    /// Coordination client used by the process.
+    pub coordination: Arc<CoordinationClient>,
+    /// Epoch length.
+    pub epoch_length: u64,
+    /// Chain tip reader for epoch snapshots.
+    tip: Arc<dyn Fn() -> Result<u64, String> + Send + Sync>,
+}
+
+impl RunningValidator {
+    /// Current epoch snapshot from the injected tip.
+    ///
+    /// # Errors
+    ///
+    /// Tip or `epoch_length` failures.
+    pub fn epoch_snapshot(&self) -> Result<EpochSnapshot, String> {
+        let block = (self.tip)()?;
+        epoch_from_block(block, self.epoch_length)
+    }
+
+    /// Request graceful shutdown and wait for the server task.
+    ///
+    /// # Errors
+    ///
+    /// Serve-task failures.
+    pub async fn shutdown(self) -> Result<(), ValidatorError> {
+        let _ = self.shutdown_tx.send(true);
+        match self.join.await {
+            Ok(r) => r,
+            Err(e) => Err(ValidatorError::Serve(format!("join: {e}"))),
+        }
+    }
+}
+
+/// Spawn the health server with graceful shutdown.
+///
+/// # Errors
+///
+/// Bind, router, or coordination client build failures.
+pub async fn spawn_validator<C>(
+    runtime: ValidatorRuntime,
+    chain: Arc<C>,
+    db_check: ReadyCheck,
+    extra_checks: Vec<ReadyCheck>,
+) -> Result<RunningValidator, ValidatorError>
+where
+    C: ChainClient + Send + Sync + 'static,
+{
+    let coordination = Arc::new(
+        CoordinationClient::new(runtime.gateway_endpoint.clone())
+            .map_err(|e| ValidatorError::Coordination(e.to_string()))?,
+    );
+
+    // Optional one-shot coordination tick (allowed path only).
+    if let Err(e) = coordination.tick().await {
+        tracing::warn!(error = %e, "coordination tick failed (non-fatal for skeleton)");
+    }
+
+    let mut checks = vec![chain_ready_check(Arc::clone(&chain), "chain"), db_check];
+    checks.extend(extra_checks);
+
+    let app = build_health_router(checks)?;
+    let listener = TcpListener::bind(runtime.listen_addr)
+        .await
+        .map_err(|e| ValidatorError::Serve(format!("bind: {e}")))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| ValidatorError::Serve(format!("local_addr: {e}")))?;
+
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let join = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                loop {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    if shutdown_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .map_err(|e| ValidatorError::Serve(format!("serve: {e}")))
+    });
+
+    let tip_chain = Arc::clone(&chain);
+    let tip = Arc::new(move || tip_chain.current_block().map_err(|e| e.to_string()));
+
+    tracing::info!(
+        %addr,
+        registered = runtime.registration.status().registered,
+        has_gateway = coordination.has_gateway(),
+        "gbase-validator listening"
+    );
+
+    Ok(RunningValidator {
+        addr,
+        shutdown_tx,
+        join,
+        coordination,
+        epoch_length: runtime.epoch_length,
+        tip,
+    })
+}
+
+/// Convenience: spawn with always-ok DB check (no postgres required).
+///
+/// # Errors
+///
+/// Same as [`spawn_validator`].
+pub async fn spawn_validator_with_ok_db<C>(
+    runtime: ValidatorRuntime,
+    chain: Arc<C>,
+) -> Result<RunningValidator, ValidatorError>
+where
+    C: ChainClient + Send + Sync + 'static,
+{
+    spawn_validator(runtime, chain, db_ready_ok(), vec![]).await
+}
