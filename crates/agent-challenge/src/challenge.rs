@@ -11,7 +11,9 @@ use crypto::KEY_LEN;
 use thiserror::Error;
 use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 
+use crate::leaf_map::{cover_expected_verify_leaves, score_from_verify_result};
 use crate::score::{score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs};
+use crate::verify::{Reward, VerifyError};
 use crate::submit::{GatewayClient, SubmitError, SubmitOutcome};
 use crate::task_gen::{
     answer_digest_v2, task_id_v2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH,
@@ -300,6 +302,32 @@ pub fn silence_is_bug_leaf() -> ScoreOrAbsence {
     }
 }
 
+
+/// Cover `E` from operator-side verify results (Harbor grade).
+///
+/// Every `h ∈ E` gets exactly one leaf. Missing results → `ChallengeInternal`.
+/// See [`crate::leaf_map::map_verify_error`] for fault attribution.
+///
+/// # Errors
+///
+/// Propagates [`Challenge::expected_set`] failures.
+pub fn score_epoch_from_verify(
+    challenge: &impl Challenge,
+    ctx: &EpochCtx,
+    results: &BTreeMap<Hotkey, Result<Reward, VerifyError>>,
+) -> Result<BTreeMap<Hotkey, ScoreOrAbsence>, ChallengeError> {
+    let expected = challenge.expected_set(ctx)?;
+    Ok(cover_expected_verify_leaves(&expected, results))
+}
+
+/// Map one verify grade into a leaf (no retries). Prefer
+/// [`crate::leaf_map::grade_to_score_or_absence`] when calling the verifier.
+#[must_use]
+pub fn leaf_from_verify_result(result: &Result<Reward, VerifyError>) -> ScoreOrAbsence {
+    score_from_verify_result(result)
+}
+
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -419,5 +447,77 @@ mod tests {
     fn scoring_version_is_two() {
         assert_eq!(AgentV1Challenge::new().scoring_version(), 2);
         assert_eq!(SCORING_VERSION, 2);
+    }
+
+    #[test]
+    fn verify_outage_covers_all_e_with_challenge_internal_leaves() {
+        let (sk, pk) = mini();
+        let m1 = [0x11u8; 32];
+        let m2 = [0x22u8; 32];
+        let m3 = [0x33u8; 32];
+        let ch = AgentV1Challenge::new();
+        let ctx = ctx(pk, vec![m1.to_vec(), m2.to_vec(), m3.to_vec()]);
+        let results = BTreeMap::new();
+        let scores = score_epoch_from_verify(&ch, &ctx, &results).expect("epoch");
+        assert_eq!(scores.len(), 3, "leaf count == |E|");
+        for h in [m1, m2, m3] {
+            assert_eq!(
+                scores.get(&h),
+                Some(&ScoreOrAbsence::NoScore {
+                    reason: NoScoreReasonCode::ChallengeInternal
+                }),
+                "hotkey must not be silent"
+            );
+            let leaf = ch
+                .sign_leaf(&sk, h, 7, scores[&h].clone())
+                .expect("sign");
+            assert!(matches!(
+                leaf.score_or_absence,
+                ScoreOrAbsence::NoScore {
+                    reason: NoScoreReasonCode::ChallengeInternal
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn verify_malformed_not_park_and_apply_failed_miner_zero() {
+        let (_sk, pk) = mini();
+        let m1 = [0x11u8; 32];
+        let m2 = [0x22u8; 32];
+        let ch = AgentV1Challenge::new();
+        let ctx = ctx(pk, vec![m1.to_vec(), m2.to_vec()]);
+        let mut results = BTreeMap::new();
+        results.insert(
+            m1,
+            Err(VerifyError::MalformedOutput {
+                message: "junit broken".into(),
+            }),
+        );
+        results.insert(
+            m2,
+            Err(VerifyError::ApplyFailed {
+                message: "patch reject".into(),
+            }),
+        );
+        let scores = score_epoch_from_verify(&ch, &ctx, &results).expect("epoch");
+        assert_eq!(
+            scores[&m1],
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::ChallengeInternal
+            },
+            "malformed junit is operator ChallengeInternal, never Park"
+        );
+        assert_eq!(
+            scores[&m2],
+            ScoreOrAbsence::Score { value: 0 },
+            "ApplyFailed is miner-attributable Score(0)"
+        );
+        assert!(!matches!(
+            scores[&m1],
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::AttestationNotVerified
+            }
+        ));
     }
 }

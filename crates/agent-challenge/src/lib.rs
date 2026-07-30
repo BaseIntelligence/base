@@ -12,14 +12,20 @@ mod keys;
 mod score;
 mod submit;
 mod task_gen;
+mod leaf_map;
 mod verify;
 
 pub use challenge::{
-    correct_http200, correct_http200_fixture, silence_is_bug_leaf, AgentV1Challenge,
-    AttestationLookup, Challenge, ChallengeError, EpochCtx, Hotkey, MapAttestationLookup,
-    MinerCallOutcome,
+    correct_http200, correct_http200_fixture, leaf_from_verify_result, score_epoch_from_verify,
+    silence_is_bug_leaf, AgentV1Challenge, AttestationLookup, Challenge, ChallengeError, EpochCtx,
+    Hotkey, MapAttestationLookup, MinerCallOutcome,
 };
 pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
+pub use leaf_map::{
+    attempts_within_seal_budget, cover_expected_verify_leaves, grade_to_score_or_absence,
+    grade_to_score_or_absence_budgeted, is_operator_fault, is_retryable_operator_fault, map_reward,
+    map_verify_error, score_from_verify_result, MAX_VERIFY_ATTEMPTS, MAX_VERIFY_RETRIES,
+};
 pub use score::{
     score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs, CONNECT_MS, MAX_ATTEMPTS,
     SCORE_MAX,
