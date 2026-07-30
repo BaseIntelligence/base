@@ -16,6 +16,7 @@ dependencies = [
 name = "agent-challenge"
 version = "0.1.0"
 dependencies = [
+ "agent-dispatch",
  "agent-pack",
  "bundle",
  "chain",

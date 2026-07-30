@@ -15,6 +15,7 @@ mod task_gen;
 mod leaf_map;
 mod verify;
 mod expected_set;
+mod epoch_loop;
 
 pub use challenge::{
     correct_http200, correct_http200_fixture, leaf_from_verify_result, score_epoch_from_verify,
@@ -25,6 +26,11 @@ pub use expected_set::{
     expected_set_at, expected_set_at_chain, expected_set_from_optional_pin,
     expected_set_from_pinned_metagraph, hex32, BlockSource, ExpectedParticipant, ExpectedSet,
     ExpectedSetError, PinnedBlockHash,
+};
+pub use epoch_loop::{
+    run_epoch_dispatch, ActiveSignerRegistry, EpochDispatchClient,
+    EpochDispatchConfig, EpochDispatchResult, EpochLoopError, MinerEpochOutcome, RunnerCapacity,
+    SignerGuard, R1_DEADLINE_FRACTION_DEN, R1_DEADLINE_FRACTION_NUM, TESTNET_TEMPO_BLOCKS,
 };
 pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use leaf_map::{

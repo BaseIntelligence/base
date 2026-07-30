@@ -14,6 +14,7 @@ chain = { path = "../chain" }
 crypto = { path = "../crypto" }
 trustroot = { path = "../trustroot" }
 agent-pack = { path = "../agent-pack" }
+agent-dispatch = { path = "../agent-dispatch" }
 docker-engine = { path = "../docker-engine" }
 hex = "0.4"
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
@@ -22,13 +23,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "signal", "sync"] }
 tracing = "0.1"
 
 [dev-dependencies]
 bundle = { path = "../bundle" }
 crypto = { path = "../crypto" }
 agent-pack = { path = "../agent-pack" }
+agent-dispatch = { path = "../agent-dispatch" }
 docker-engine = { path = "../docker-engine" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
