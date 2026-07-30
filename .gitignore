@@ -49,3 +49,7 @@ deploy/terraform/tfplan
 
 # Promote-generated updater desired-image sidecars (local/ops)
 deploy/pins/*.desired.env
+
+# Miner self-deploy runtime (install.sh)
+miner-runtime/
+/receipt_sk

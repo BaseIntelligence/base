@@ -2,9 +2,13 @@
 
 <!-- protocol_version: 1 -->
 
+**Bundle `protocol_version`:** `1` · **Challenge `scoring_version`:** `2`
+
 Binds a TDX quote to this epoch via D10 `report_data` and submits it to a validator.  
 Normative details: [`AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md).  
 Policy outcomes: Verified / Rejected / Parked (park does **not** carry prior Verified forward).
+
+Certify is the **attestation** path. It is independent of pack scoring: a Verified quote does not mean your `model.patch` scores are “good” (D19). Live scoring uses Harbor packs + operator grade under `challenge_scoring_version = 2`, not the retired echo-answer path.
 
 ---
 
@@ -12,12 +16,19 @@ Policy outcomes: Verified / Rejected / Parked (park does **not** carry prior Ver
 
 | Input | Source |
 |-------|--------|
-| `--validator-url` | Operator-published validator base URL |
+| `--validator-url` | Operator-published validator base URL (`GBASE_VALIDATOR_URL`) |
 | `--netuid` | Subnet netuid |
 | `--epoch` | Current epoch (operator / chain) |
-| `--miner-hotkey-hex` | Your 32-byte hotkey as 64 lowercase hex chars |
+| `--miner-hotkey-hex` | Your 32-byte hotkey as 64 lowercase hex chars (`GBASE_MINER_HOTKEY_HEX`) |
 | Live: `--agent-url` | Public base URL of your CVM agent |
 | Offline smoke: `--fixture-mode` | Uses embedded/fixture quote material |
+
+After `./install.sh`, your local runner should already answer capacity (not a substitute for live TDX certify):
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/capacity
+curl -sS http://127.0.0.1:8080/healthz
+```
 
 ---
 
@@ -32,6 +43,7 @@ cargo test -q -p miner
 
 # Deploy dry-run remains the zero-dependency smoke:
 cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
+# or: ./install.sh  (needs Docker + model-key file)
 ```
 
 When a local validator is running with fixture-friendly config:
@@ -87,9 +99,10 @@ Interpret stdout:
 
 ## 4. What certify does **not** mean
 
-- It does not prove your agent scores are "good" (D19(i)).
-- It does not prove env secret **values** (D11).
-- It does not put anything into the on-chain weight merkle field (there is none; D5).
+- It does not prove your agent scores are "good" (D19(i)).  
+- It does not prove env secret **values** (D11).  
+- It does not put anything into the on-chain weight merkle field (there is none; D5).  
+- It does not re-enable scoring_version 1 echo answers — packs + `model.patch` only.
 
 ---
 
