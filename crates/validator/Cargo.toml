@@ -34,6 +34,7 @@ tracing = "0.1"
 [dev-dependencies]
 attest-parse = { path = "../attest-parse" }
 attest-http = { path = "../attest-http" }
+attest-policy = { path = "../attest-policy" }
 attest-replay = { path = "../attest-replay" }
 crypto = { path = "../crypto" }
 trustroot = { path = "../trustroot" }

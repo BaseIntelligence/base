@@ -122,6 +122,8 @@ pub fn recompute_view_from_comparison(c: &ComparisonOutcome) -> RecomputeView {
 #[cfg(test)]
 mod adversarial_tests;
 #[cfg(test)]
+mod attest_mount_tests;
+#[cfg(test)]
 mod crosscheck_tests;
 #[cfg(test)]
 mod mirror_peer_tests;

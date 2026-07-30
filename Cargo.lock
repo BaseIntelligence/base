@@ -4516,6 +4516,7 @@ dependencies = [
  "aggregate",
  "attest-http",
  "attest-parse",
+ "attest-policy",
  "attest-replay",
  "axum",
  "bundle",

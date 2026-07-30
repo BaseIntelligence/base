@@ -10,6 +10,7 @@ use telemetry::{HealthRouterBuilder, ReadyCheck};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::attest::{attest_router, AttestState};
 use crate::coordination::CoordinationClient;
 use crate::crosscheck::{consensus_root_router, RootStatementStore, SharedRootStore};
 use crate::epoch::{epoch_from_block, EpochSnapshot};
@@ -17,7 +18,9 @@ use crate::error::ValidatorError;
 use crate::mirror::{mirror_router, MemoryMirrorStore, SharedMirrorStore};
 use crate::peers::PeerBook;
 use crate::registration::RegistrationStub;
+use crypto::KEY_LEN;
 use dissent::{dissent_router, DissentStore, SharedDissentStore};
+use trustroot::MeasurementsBody;
 
 /// Runtime knobs for the skeleton (injectable for tests).
 #[derive(Clone)]
@@ -46,6 +49,12 @@ pub struct ValidatorRuntime {
     pub dissent_store: Option<SharedDissentStore>,
     /// Quarantine surviving-share floor (D6).
     pub min_share_mass_bps: u16,
+    /// Optional pre-built attestation state (MockQuoteVerifier by default).
+    ///
+    /// When `None`, `spawn_validator` builds [`AttestState::with_ok_verifier`]
+    /// with an empty allowlist (fail-closed submit) so `/v1/attest/*` is always
+    /// mounted. Inject a fixture-backed state in tests for Verified paths.
+    pub attest: Option<AttestState>,
 }
 
 impl Default for ValidatorRuntime {
@@ -63,6 +72,7 @@ impl Default for ValidatorRuntime {
             min_peer_sample: config::DEFAULT_MIN_PEER_SAMPLE,
             dissent_store: None,
             min_share_mass_bps: config::DEFAULT_MIN_SHARE_MASS_BPS,
+            attest: None,
         }
     }
 }
@@ -133,6 +143,8 @@ pub struct RunningValidator {
     pub dissent_store: SharedDissentStore,
     /// Quarantine mass floor (D6).
     pub min_share_mass_bps: u16,
+    /// Attestation HTTP state (nonce store + credit book).
+    pub attest: AttestState,
     /// Epoch length.
     pub epoch_length: u64,
     /// Chain tip reader for epoch snapshots.
@@ -211,6 +223,10 @@ where
     let root_signing_secret = runtime.root_signing_secret;
     let own_hotkey = runtime.own_hotkey.clone();
     let min_peer_sample = runtime.min_peer_sample;
+    let attest = runtime.attest.clone().unwrap_or_else(|| {
+        let hotkey = hotkey_from_own(runtime.own_hotkey.as_deref());
+        AttestState::with_ok_verifier(MeasurementsBody::default(), hotkey, 1)
+    });
 
     let mut checks = vec![chain_ready_check(Arc::clone(&chain), "chain"), db_check];
     checks.extend(extra_checks);
@@ -218,7 +234,8 @@ where
     let app = build_health_router(checks)?
         .merge(mirror_router(Arc::clone(&mirror)))
         .merge(consensus_root_router(Arc::clone(&root_store)))
-        .merge(dissent_router(Arc::clone(&dissent_store)));
+        .merge(dissent_router(Arc::clone(&dissent_store)))
+        .merge(attest_router(attest.clone()));
     let listener = TcpListener::bind(runtime.listen_addr)
         .await
         .map_err(|e| ValidatorError::Serve(format!("bind: {e}")))?;
@@ -268,6 +285,7 @@ where
         min_peer_sample,
         dissent_store,
         min_share_mass_bps,
+        attest,
         epoch_length: runtime.epoch_length,
         tip,
     })
@@ -286,4 +304,15 @@ where
     C: ChainClient + Send + Sync + 'static,
 {
     spawn_validator(runtime, chain, db_ready_ok(), vec![]).await
+}
+
+fn hotkey_from_own(own: Option<&[u8]>) -> [u8; KEY_LEN] {
+    match own {
+        Some(h) if h.len() == KEY_LEN => {
+            let mut out = [0u8; KEY_LEN];
+            out.copy_from_slice(h);
+            out
+        }
+        _ => [0u8; KEY_LEN],
+    }
 }
