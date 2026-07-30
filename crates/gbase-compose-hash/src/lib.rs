@@ -2,6 +2,7 @@
 //!
 //! Mirrors dstack / Phala `get_compose_hash` and gm-miner `compose_hash`:
 //! - parse JSON
+//! - drop object keys whose value is JSON `null` (dstack strips nulls)
 //! - recursively lexicographically sort object keys
 //! - compact separators (`,` / `:`, no spaces)
 //! - UTF-8 non-ASCII left unescaped (`ensure_ascii=false`)
@@ -39,14 +40,16 @@ pub enum ComposeHashError {
 
 /// Canonicalize `app-compose.json` bytes and return `SHA-256` as 32 raw bytes.
 ///
-/// Key order and insignificant whitespace in the input do not affect the digest.
+/// Key order, insignificant whitespace, and object keys with JSON `null`
+/// values do not affect the digest (dstack / Phala strip nulls before hash).
 ///
 /// # Errors
 /// Returns [`ComposeHashError::InvalidJson`] when `bytes` is not valid JSON.
 pub fn compose_hash(bytes: &[u8]) -> Result<ComposeHash, ComposeHashError> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| ComposeHashError::InvalidJson(e.to_string()))?;
-    let canonical = canonical_json(&value);
+    let stripped = strip_null_object_keys(value);
+    let canonical = canonical_json(&stripped);
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(digest.into())
 }
@@ -77,11 +80,37 @@ pub fn mr_config_id_from_compose(bytes: &[u8]) -> Result<MrConfigId, ComposeHash
 }
 
 /// Deterministic JSON string matching dstack cross-language rules.
+///
+/// Callers that already hold a parsed value should run
+/// [`strip_null_object_keys`] first when matching Phala boot hashes.
 #[must_use]
 pub fn canonical_json(value: &serde_json::Value) -> String {
     let mut out = String::new();
     write_canonical(&mut out, value);
     out
+}
+
+/// Drop object entries whose value is JSON `null` (recursively).
+///
+/// Array elements that are `null` are kept (dstack only strips object keys).
+#[must_use]
+pub fn strip_null_object_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                if v.is_null() {
+                    continue;
+                }
+                out.insert(k, strip_null_object_keys(v));
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(strip_null_object_keys).collect())
+        }
+        other => other,
+    }
 }
 
 fn write_canonical(out: &mut String, value: &serde_json::Value) {
@@ -161,9 +190,13 @@ mod tests {
     /// Python/dstack fixture: `{"a":1,"b":2}` → known SHA-256.
     const SIMPLE_HEX: &str = "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777";
 
-    /// Nested + UTF-8 fixture from Python `json.dumps(..., ensure_ascii=False)`.
+    /// Nested + UTF-8 fixture from Python `json.dumps(..., ensure_ascii=false)`.
     const NESTED_UTF8_HEX: &str =
         "ab25a1b1ffa8354d6c12efa29d1c689c3caf09d2710e21776b652c6fb894ca65";
+
+    /// Task-34 real Phala CVM compose-hash event payload / `mr_config_id` bytes 1..33.
+    const REAL_COMPOSE_HASH_HEX: &str =
+        "1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b";
 
     #[test]
     fn compose_hash_matches_known_simple_digest() {
@@ -252,5 +285,33 @@ mod tests {
             hex_encode(&h),
             "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
         );
+    }
+
+    #[test]
+    fn null_object_keys_are_stripped_like_dstack() {
+        // With nulls kept, hash would differ; dstack drops null-valued keys.
+        let with_null = br#"{"a":1,"b":null,"c":2}"#;
+        let without = br#"{"a":1,"c":2}"#;
+        assert_eq!(
+            compose_hash(with_null).expect("with null"),
+            compose_hash(without).expect("without")
+        );
+    }
+
+    #[test]
+    fn real_phala_app_compose_matches_event_compose_hash() {
+        let bytes = include_bytes!(
+            "../../gbase-attest-parse/tests/fixtures/real/app-compose.json"
+        );
+        let hex = compose_hash_hex(bytes).expect("real app-compose");
+        assert_eq!(
+            hex, REAL_COMPOSE_HASH_HEX,
+            "compose_hash(app-compose.json) must equal RTMR3 compose-hash payload"
+        );
+        let hash = compose_hash(bytes).expect("hash");
+        let mr = mr_config_id(&hash);
+        assert_eq!(mr[0], MR_CONFIG_ID_V1);
+        assert_eq!(&mr[1..33], hash.as_slice());
+        assert_eq!(&mr[33..], &[0_u8; MR_CONFIG_ID_V1_PAD_LEN]);
     }
 }
