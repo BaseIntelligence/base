@@ -1433,6 +1433,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbase-miner"
+version = "0.1.0"
+dependencies = [
+ "gbase-compose-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "gbase-miner-bin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "gbase-miner",
+]
+
+[[package]]
 name = "gbase-telemetry"
 version = "0.1.0"
 dependencies = [
@@ -1506,11 +1525,17 @@ name = "gbase-validator"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "gbase-aggregate",
+ "gbase-bundle",
  "gbase-chain",
  "gbase-config",
+ "gbase-crypto",
  "gbase-telemetry",
+ "gbase-trustroot",
+ "parity-scale-codec",
  "reqwest 0.12.28",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

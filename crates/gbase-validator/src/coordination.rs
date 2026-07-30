@@ -162,6 +162,23 @@ impl CoordinationClient {
         }
     }
 
+    /// Fetch sealed epoch bundle bytes: `GET /v1/bundle/{epoch}`.
+    ///
+    /// Returns raw SCALE `EpochBundleV1` octets (`application/octet-stream`).
+    /// Does **not** fall back to another epoch (no last-known-good).
+    ///
+    /// # Errors
+    ///
+    /// Path not allowed, missing gateway, transport, or non-success status.
+    pub async fn fetch_bundle(&self, epoch: u64) -> Result<Vec<u8>, CoordinationError> {
+        let path = format!("/v1/bundle/{epoch}");
+        let resp = self.get_allowed(&path).await?;
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| CoordinationError::Transport(e.to_string()))
+    }
+
     /// Lightweight coordination tick: probe `GET /v1/weights/latest` when a gateway is set.
     ///
     /// No-op (Ok) when no gateway is configured — validators stay healthy without one.

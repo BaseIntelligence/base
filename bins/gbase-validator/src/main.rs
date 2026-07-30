@@ -1,7 +1,9 @@
-//! gbase-validator — independent weight recomputation process (skeleton).
+//! gbase-validator — independent weight recomputation process.
 //!
 //! Listens for `/healthz`, `/readyz`, `/metrics`. Epoch clock from chain tip.
 //! Coordination client talks only to allowlisted gateway paths.
+//! Bundle fetch/recompute/compare lives in `gbase_validator::recompute` (task 29);
+//! CRV4 submit and dissent are later tasks.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
