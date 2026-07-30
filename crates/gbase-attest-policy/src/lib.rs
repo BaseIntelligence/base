@@ -29,6 +29,7 @@ mod policy;
 mod report_data;
 mod tcb;
 mod verifier;
+mod pipeline;
 
 pub use credit::{AttestCreditBook, CreditKey};
 pub use error::PolicyError;
@@ -42,6 +43,7 @@ pub use tcb::{classify_tcb, CollateralFreshness, TcbAction, TcbStatus};
 pub use verifier::{
     MockQuoteVerifier, QuoteVerifyError, QuoteVerifyOk, QuoteVerifier, VerifierFailureKind,
 };
+pub use pipeline::{verify_submission, SubmissionInput};
 // Re-export pipeline crates callers need beside policy.
 pub use gbase_attest_parse as parse;
 pub use gbase_attest_replay as replay;
@@ -95,6 +97,10 @@ pub enum RejectReason {
     QuoteCryptoInvalid,
     /// TCB status is revoked.
     TcbRevoked,
+    /// Quote bytes failed structural parse (truncated / wrong version).
+    QuoteMalformed,
+    /// Event log JSON or RTMR3 replay failed.
+    EventLogInvalid,
 }
 
 /// Park causes (outage / soft TCB / stale collateral).

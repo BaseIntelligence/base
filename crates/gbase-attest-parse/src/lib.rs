@@ -205,6 +205,26 @@ fn copy_report_data(quote: &[u8]) -> [u8; REPORT_DATA_LEN] {
     out
 }
 
+/// Overwrite `report_data` in a mutable quote buffer (fixture / D10 bind path).
+///
+/// # Errors
+///
+/// Returns [`ParseError::Truncated`] when the buffer is shorter than [`MIN_QUOTE_LEN`].
+pub fn patch_report_data(
+    quote: &mut [u8],
+    report_data: &[u8; REPORT_DATA_LEN],
+) -> Result<(), ParseError> {
+    if quote.len() < MIN_QUOTE_LEN {
+        return Err(ParseError::Truncated {
+            have: quote.len(),
+            need: MIN_QUOTE_LEN,
+        });
+    }
+    quote[REPORT_DATA_OFFSET..REPORT_DATA_OFFSET + REPORT_DATA_LEN]
+        .copy_from_slice(report_data);
+    Ok(())
+}
+
 /// Build a minimal synthetic v4 TDX quote for tests and fixtures.
 ///
 /// Places each register and `report_data` at the fixed Intel/BASE offsets.

@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod attest;
 pub mod coordination;
 pub mod epoch;
 pub mod error;
@@ -46,3 +47,8 @@ pub use sync_chain::SyncChain;
 mod skeleton_tests;
 #[cfg(test)]
 mod mirror_peer_tests;
+
+pub use attest::{
+    attest_router, spawn_attest_server, AttestState, NonceRequest, NonceResponse, SubmitRequest,
+    SubmitResponse, DEFAULT_NONCE_TTL,
+};

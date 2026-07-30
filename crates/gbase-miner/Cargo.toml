@@ -1,6 +1,6 @@
 [package]
 name = "gbase-miner"
-description = "Miner self-deployment: render measured app-compose, offline compose-hash, optional phala deploy"
+description = "Miner self-deployment + certify: compose render, offline hash, phala deploy, D10 certify"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,15 +9,29 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+gbase-attest-parse = { path = "../gbase-attest-parse" }
+gbase-attest-policy = { path = "../gbase-attest-policy" }
 gbase-compose-hash = { path = "../gbase-compose-hash" }
+gbase-crypto = { path = "../gbase-crypto" }
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
+gbase-attest-parse = { path = "../gbase-attest-parse" }
+gbase-attest-policy = { path = "../gbase-attest-policy" }
+gbase-attest-replay = { path = "../gbase-attest-replay" }
+gbase-crypto = { path = "../gbase-crypto" }
+gbase-trustroot = { path = "../gbase-trustroot" }
+gbase-validator = { path = "../gbase-validator" }
+hex = "0.4"
 serde_json = "1"
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "process", "io-util"] }
 
 [lints]
 workspace = true

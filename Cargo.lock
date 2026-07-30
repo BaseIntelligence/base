@@ -1537,6 +1537,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "gbase-aggregate",
+ "gbase-attest-parse",
+ "gbase-attest-policy",
+ "gbase-attest-replay",
  "gbase-bundle",
  "gbase-chain",
  "gbase-config",

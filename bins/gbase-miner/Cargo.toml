@@ -1,6 +1,6 @@
 [package]
 name = "gbase-miner-bin"
-description = "gbase-miner CLI — deploy (compose render + offline hash + optional phala)"
+description = "gbase-miner CLI — deploy + certify (AGENT_CHALLENGE.md §9)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 gbase-miner = { path = "../../crates/gbase-miner" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
