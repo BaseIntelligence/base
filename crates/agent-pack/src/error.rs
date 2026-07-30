@@ -1,4 +1,4 @@
-//! Typed errors for Harbor pack load / project.
+//! Typed errors for Harbor pack load / project / catalog.
 
 use std::path::PathBuf;
 
@@ -41,4 +41,54 @@ pub enum PackError {
     /// Pack selection received an empty catalog.
     #[error("empty pack catalog")]
     EmptyCatalog,
+}
+
+/// Failures while materializing or loading a pinned pack catalog.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum CatalogError {
+    /// No packs found under the source or in the manifest.
+    #[error("empty pack catalog")]
+    Empty,
+    /// Cached pack content does not match the manifest (tamper / corruption).
+    #[error("catalog integrity failure for pack `{pack_id}`: {message}")]
+    Integrity {
+        /// Pack that failed verification.
+        pack_id: String,
+        /// Human-readable mismatch detail.
+        message: String,
+    },
+    /// Recomputed catalog digest does not match the manifest field.
+    #[error("catalog_digest mismatch: expected {expected}, found {found}")]
+    CatalogDigestMismatch {
+        /// Digest recomputed from pin + entries.
+        expected: String,
+        /// Digest stored in the manifest.
+        found: String,
+    },
+    /// Manifest file is missing under the cache root.
+    #[error("catalog manifest missing at {path}")]
+    ManifestMissing {
+        /// Expected path of `manifest.json`.
+        path: PathBuf,
+    },
+    /// Manifest JSON is invalid.
+    #[error("catalog manifest invalid: {0}")]
+    ManifestInvalid(String),
+    /// Pin is empty or a floating reference such as `latest`.
+    #[error("floating or empty catalog pin refused: {0:?}")]
+    FloatingPin(String),
+    /// Filesystem I/O while materializing or loading the catalog.
+    #[error("catalog I/O at {path}: {message}")]
+    Io {
+        /// Path that failed.
+        path: PathBuf,
+        /// OS / context message.
+        message: String,
+    },
+    /// Manifest JSON serialization failed.
+    #[error("catalog manifest serialize error: {0}")]
+    Serialize(String),
+    /// Underlying pack load / parse failure.
+    #[error(transparent)]
+    Pack(#[from] PackError),
 }

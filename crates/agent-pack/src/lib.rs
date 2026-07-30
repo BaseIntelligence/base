@@ -12,17 +12,23 @@
 
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod digest;
 mod error;
 mod load;
 mod model;
 mod select;
 
+pub use catalog::{
+    build_manifest, compute_catalog_digest, load_catalog, manifest_to_bytes, materialize_catalog,
+    materialize_catalog_with_pin, write_manifest, Catalog, CatalogEntry, CatalogManifest,
+    CATALOG_DIGEST_DOMAIN, DEEPAGENT_PIN, MANIFEST_FILE_NAME, PACKS_DIR_NAME,
+};
 pub use digest::{
     content_digest_label, digest_hex, pack_digest_from_entries, sha256_bytes, DigestBytes,
     DIGEST_LEN,
 };
-pub use error::PackError;
+pub use error::{CatalogError, PackError};
 pub use load::load_pack;
 pub use model::{
     HarborPack, HeldOutMaterials, StrippedDescriptor, PACK_DIGEST_LEN, SCHEMA_VERSION_1_1,
