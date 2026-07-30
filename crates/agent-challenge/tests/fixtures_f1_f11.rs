@@ -1,12 +1,13 @@
 //! Fixture-driven offline tests F1–F11 v2 successors (`AGENT_CHALLENGE` scoring_version = 2).
 //!
-//! Each F1–F11 case is a named v2 successor of the retired v1 echo fixtures.
-//! Digests match `tests/fixtures/v2_*.hex` (pack-fixture-001 + FIXTURE_MODEL_PATCH).
+//! Each F1–F11 case is a named v2 successor. Latency decay is removed: correct answers
+//! always score `SCORE_MAX` regardless of `duration_ms`. Digests match
+//! `tests/fixtures/v2_*.hex` (pack-fixture-001 + FIXTURE_MODEL_PATCH).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use agent_challenge::{
-    answer_digest, answer_digest_v2, score_from_outcome, task_blob, task_id, task_blob_v2,
+    answer_digest, answer_digest_v2, score_from_outcome, task_blob, task_blob_v2, task_id,
     task_id_v2, AttestationStatus, CallOutcome, NoScoreReasonCode, ScoreInputs, ScoreOrAbsence,
     FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID, SCORE_MAX, SCORING_VERSION,
 };
@@ -76,6 +77,7 @@ fn f1_v2_digests_and_score_max() {
     );
 }
 
+/// F2 v2 — duration_ms=0 still full credit (latency ignored).
 #[test]
 fn f2_v2_duration_zero_score_max() {
     assert_eq!(
@@ -88,38 +90,56 @@ fn f2_v2_duration_zero_score_max() {
     );
 }
 
+/// F3 v2 — former midpoint (6000 ms) is full credit under correctness-only.
 #[test]
-fn f3_v2_duration_6000_half() {
+fn f3_v2_duration_ignored_full_credit() {
     assert_eq!(
         score_from_outcome(&correct_inputs_v2(
             miner11(),
             6000,
             AttestationStatus::Verified
         )),
-        ScoreOrAbsence::Score { value: 500_000 }
+        ScoreOrAbsence::Score { value: SCORE_MAX }
     );
 }
 
+/// F4 v2 — former hard boundary (10_000 ms) is full credit under correctness-only.
 #[test]
-fn f4_v2_duration_hard_score_zero() {
+fn f4_v2_duration_ignored_full_credit() {
     assert_eq!(
         score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_000,
             AttestationStatus::Verified
         )),
-        ScoreOrAbsence::Score { value: 0 }
+        ScoreOrAbsence::Score { value: SCORE_MAX }
     );
 }
 
+/// F5 v2 — former over-hard duration is full credit when Http200 is correct;
+/// Timeout is only via `CallOutcome::Timeout`.
 #[test]
-fn f5_v2_duration_over_hard_timeout() {
+fn f5_v2_duration_ignored_timeout_only_via_outcome() {
     assert_eq!(
         score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_001,
             AttestationStatus::Verified
         )),
+        ScoreOrAbsence::Score { value: SCORE_MAX }
+    );
+    let timeout = ScoreInputs {
+        netuid: 1,
+        epoch: 7,
+        miner_hotkey: miner11(),
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+        attestation: AttestationStatus::Verified,
+        duration_ms: 10_001,
+        outcome: CallOutcome::Timeout,
+    };
+    assert_eq!(
+        score_from_outcome(&timeout),
         ScoreOrAbsence::NoScore {
             reason: NoScoreReasonCode::Timeout
         }
@@ -231,25 +251,23 @@ fn reference_assertions_section_5_7_v2() {
         )),
         ScoreOrAbsence::Score { value: 1_000_000 }
     );
-    // assert score(F3_v2) == Score(500_000)
+    // F3 former half-credit → full credit under correctness-only
     assert_eq!(
         score_from_outcome(&correct_inputs_v2(
             miner11(),
             6000,
             AttestationStatus::Verified
         )),
-        ScoreOrAbsence::Score { value: 500_000 }
+        ScoreOrAbsence::Score { value: SCORE_MAX }
     );
-    // assert score(F5_v2) == NoScore(Timeout)
+    // F5 duration alone does not Timeout; CallOutcome::Timeout does
     assert_eq!(
         score_from_outcome(&correct_inputs_v2(
             miner11(),
             10_001,
             AttestationStatus::Verified
         )),
-        ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::Timeout
-        }
+        ScoreOrAbsence::Score { value: SCORE_MAX }
     );
     // assert score(F7_v2) == NoScore(AttestationNotVerified)
     assert_eq!(
@@ -299,4 +317,92 @@ fn f_echo_retired_v1_answer_does_not_validate() {
         ScoreOrAbsence::Score { value: 0 },
         "v1 echo answer must not earn credit under scoring_version 2"
     );
+}
+
+/// Integration truth table for QA evidence (reward × attestation).
+#[test]
+fn truth_table_matrix_v2_correctness() {
+    let correct = |att: AttestationStatus| correct_inputs_v2(miner11(), 99_999, att);
+    let mut wrong = correct(AttestationStatus::Verified);
+    if let CallOutcome::Http200 {
+        ref mut answer_digest,
+        ..
+    } = wrong.outcome
+    {
+        *answer_digest = [0xAAu8; 32];
+    }
+    let no_result = ScoreInputs {
+        netuid: 1,
+        epoch: 7,
+        miner_hotkey: miner11(),
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+        attestation: AttestationStatus::Verified,
+        duration_ms: 1,
+        outcome: CallOutcome::MinerError,
+    };
+    let deadline = ScoreInputs {
+        netuid: 1,
+        epoch: 7,
+        miner_hotkey: miner11(),
+        pack_id: FIXTURE_PACK_ID.to_vec(),
+        expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
+        attestation: AttestationStatus::Verified,
+        duration_ms: 1,
+        outcome: CallOutcome::Timeout,
+    };
+
+    // Verified × reward 1
+    assert_eq!(
+        score_from_outcome(&correct(AttestationStatus::Verified)),
+        ScoreOrAbsence::Score { value: 1_000_000 }
+    );
+    // Verified × reward 0
+    assert_eq!(
+        score_from_outcome(&wrong),
+        ScoreOrAbsence::Score { value: 0 }
+    );
+    // Verified × no result
+    assert_eq!(
+        score_from_outcome(&no_result),
+        ScoreOrAbsence::NoScore {
+            reason: NoScoreReasonCode::MinerError
+        }
+    );
+    // Verified × deadline
+    assert_eq!(
+        score_from_outcome(&deadline),
+        ScoreOrAbsence::NoScore {
+            reason: NoScoreReasonCode::Timeout
+        }
+    );
+
+    for att in [
+        AttestationStatus::Rejected,
+        AttestationStatus::Parked,
+        AttestationStatus::Missing,
+    ] {
+        for mut case in [correct(att), {
+            let mut w = wrong.clone();
+            w.attestation = att;
+            w
+        }, {
+            let mut n = no_result.clone();
+            n.attestation = att;
+            n
+        }, {
+            let mut d = deadline.clone();
+            d.attestation = att;
+            d
+        }] {
+            case.attestation = att;
+            assert_eq!(
+                score_from_outcome(&case),
+                ScoreOrAbsence::NoScore {
+                    reason: NoScoreReasonCode::AttestationNotVerified
+                },
+                "non-Verified must gate all rewards"
+            );
+        }
+    }
 }

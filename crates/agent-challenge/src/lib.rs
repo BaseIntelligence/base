@@ -21,8 +21,8 @@ pub use challenge::{
 };
 pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use score::{
-    score_from_outcome, score_latency, AttestationStatus, CallOutcome, ScoreInputs, CONNECT_MS,
-    HARD_MS, MAX_ATTEMPTS, SCORE_MAX, SOFT_MS,
+    score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs, CONNECT_MS, MAX_ATTEMPTS,
+    SCORE_MAX,
 };
 pub use submit::{
     hotkey_hex, leaf_request_json, GatewayClient, GatewayClientConfig, SubmitError, SubmitOutcome,

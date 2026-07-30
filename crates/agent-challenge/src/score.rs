@@ -1,7 +1,9 @@
-//! Pure integer scoring rule (`AGENT_CHALLENGE` §5.4).
+//! Pure integer scoring rule (`AGENT_CHALLENGE` §5.4, scoring_version = 2).
 //!
 //! Live path uses pack-bound v2 task identity and `answer_digest_v2(model.patch)`.
-//! The v1 echo answer (`gbase-agent-answer-v1` ‖ task_blob) is retired.
+//! v2 scores **pure correctness** only — latency decay is removed. `duration_ms` is
+//! ignored by the scorer; epoch deadline is a hard `CallOutcome::Timeout` boundary,
+//! not a decay curve. The v1 echo answer is retired.
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use crypto::KEY_LEN;
@@ -10,10 +12,6 @@ use crate::task_gen::{answer_digest_v2, task_id_v2, CHALLENGE_ID, SCORING_VERSIO
 
 /// Maximum score value.
 pub const SCORE_MAX: u64 = 1_000_000;
-/// Soft latency bound (ms) — full credit at or below.
-pub const SOFT_MS: u64 = 2_000;
-/// Hard latency bound (ms) — zero credit at boundary; timeout above.
-pub const HARD_MS: u64 = 10_000;
 /// Connect timeout (ms) — protocol constant (not used in pure scorer).
 pub const CONNECT_MS: u64 = 3_000;
 /// Max HTTP attempts per miner.
@@ -48,7 +46,7 @@ pub struct ScoreInputs {
     pub expected_model_patch: Vec<u8>,
     /// Attestation status this epoch.
     pub attestation: AttestationStatus,
-    /// Challenge-side wall time of the successful attempt, or time to final failure.
+    /// Challenge-side wall time of the attempt (informational; **ignored** by v2 scorer).
     pub duration_ms: u64,
     /// Terminal miner/call outcome.
     pub outcome: CallOutcome,
@@ -70,7 +68,7 @@ pub enum CallOutcome {
         /// Response `agent_version`.
         agent_version: String,
     },
-    /// Timeout / transport exhausted / deadline.
+    /// Timeout / transport exhausted / epoch deadline exceeded.
     Timeout,
     /// HTTP 500 / `agent_internal`.
     MinerError,
@@ -82,9 +80,11 @@ pub enum CallOutcome {
     ChallengeInternal,
 }
 
-/// Score a miner from pure inputs (`AGENT_CHALLENGE` §5.4).
+/// Score a miner from pure inputs (`AGENT_CHALLENGE` §5.4, v2 correctness).
 ///
-/// Bare floating point is forbidden — integer lattice only.
+/// Attestation is checked **before** honoring any reward. Correct answer →
+/// [`SCORE_MAX`]; wrong answer → `Score(0)`. Bare floating point is forbidden —
+/// integer lattice only. `duration_ms` never decays the score.
 #[must_use]
 pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
     if input.attestation != AttestationStatus::Verified {
@@ -92,6 +92,9 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
             reason: NoScoreReasonCode::AttestationNotVerified,
         };
     }
+
+    // `duration_ms` intentionally unused — v2 has no latency decay.
+    let _ = input.duration_ms;
 
     match &input.outcome {
         CallOutcome::Timeout => ScoreOrAbsence::NoScore {
@@ -135,279 +138,37 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
                 };
             }
 
-            if resp_answer.as_slice() != expected_answer.as_slice() {
-                return ScoreOrAbsence::Score { value: 0 };
+            // Binary correctness: reward 1 → SCORE_MAX, reward 0 → Score(0).
+            if resp_answer.as_slice() == expected_answer.as_slice() {
+                ScoreOrAbsence::Score { value: SCORE_MAX }
+            } else {
+                ScoreOrAbsence::Score { value: 0 }
             }
-
-            score_latency(input.duration_ms)
         }
     }
-}
-
-/// Latency credit on the integer lattice after a correct answer.
-///
-/// ```text
-/// if duration_ms > HARD_MS → NoScore(Timeout)
-/// if duration_ms <= SOFT_MS → Score(SCORE_MAX)
-/// else value = floor(SCORE_MAX * (HARD_MS - duration_ms) / (HARD_MS - SOFT_MS))
-/// ```
-#[must_use]
-pub fn score_latency(duration_ms: u64) -> ScoreOrAbsence {
-    if duration_ms > HARD_MS {
-        return ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::Timeout,
-        };
-    }
-    if duration_ms <= SOFT_MS {
-        return ScoreOrAbsence::Score { value: SCORE_MAX };
-    }
-    // span = HARD_MS - SOFT_MS = 8000
-    let span = HARD_MS - SOFT_MS;
-    let remaining = HARD_MS - duration_ms;
-    // value = (SCORE_MAX * remaining) / span  — u128 intermediate avoids overflow
-    let value = (u128::from(SCORE_MAX) * u128::from(remaining)) / u128::from(span);
-    // value <= SCORE_MAX by construction (remaining <= span).
-    let value_u64 = u64::try_from(value).unwrap_or(0);
-    ScoreOrAbsence::Score { value: value_u64 }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use super::*;
-    use crate::task_gen::{
-        answer_digest, answer_digest_v2, task_blob, task_id, task_id_v2, FIXTURE_MODEL_PATCH,
-        FIXTURE_PACK_ID, SCORING_VERSION,
-    };
-
-    fn base_ok(duration_ms: u64) -> ScoreInputs {
-        let miner = [0x11u8; 32];
-        let tid = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
-        let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
-        ScoreInputs {
-            netuid: 1,
-            epoch: 7,
-            miner_hotkey: miner,
-            pack_id: FIXTURE_PACK_ID.to_vec(),
-            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
-            attestation: AttestationStatus::Verified,
-            duration_ms,
-            outcome: CallOutcome::Http200 {
-                challenge_id: CHALLENGE_ID.to_owned(),
-                epoch: 7,
-                task_id: tid,
-                answer_digest: ans,
-                agent_version: "1".into(),
-            },
-        }
-    }
-
+    /// Scorer source must stay integer-only and free of latency constants.
     #[test]
-    fn f1_v2_score_max_at_soft() {
-        assert_eq!(
-            score_from_outcome(&base_ok(2000)),
-            ScoreOrAbsence::Score { value: SCORE_MAX }
+    fn scorer_source_no_float_no_soft_hard_ms() {
+        let src = include_str!("score.rs");
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production half of score.rs");
+        assert!(
+            !prod.contains("f32") && !prod.contains("f64"),
+            "scorer production code must not use f32/f64"
         );
-    }
-
-    #[test]
-    fn f2_v2_score_max_at_zero() {
-        assert_eq!(
-            score_from_outcome(&base_ok(0)),
-            ScoreOrAbsence::Score { value: SCORE_MAX }
+        assert!(
+            !prod.contains("SOFT_MS") && !prod.contains("HARD_MS"),
+            "SOFT_MS/HARD_MS must be deleted from scorer"
         );
-    }
-
-    #[test]
-    fn f3_v2_midpoint_half() {
-        assert_eq!(
-            score_from_outcome(&base_ok(6000)),
-            ScoreOrAbsence::Score { value: 500_000 }
-        );
-    }
-
-    #[test]
-    fn f4_v2_hard_boundary_zero_score() {
-        assert_eq!(
-            score_from_outcome(&base_ok(10_000)),
-            ScoreOrAbsence::Score { value: 0 }
-        );
-    }
-
-    #[test]
-    fn f5_v2_over_hard_timeout() {
-        assert_eq!(
-            score_from_outcome(&base_ok(10_001)),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::Timeout
-            }
-        );
-    }
-
-    #[test]
-    fn f6_v2_wrong_answer_score_zero() {
-        let mut inp = base_ok(2000);
-        if let CallOutcome::Http200 {
-            ref mut answer_digest,
-            ..
-        } = inp.outcome
-        {
-            *answer_digest = [0u8; 32];
-        }
-        assert_eq!(score_from_outcome(&inp), ScoreOrAbsence::Score { value: 0 });
-    }
-
-    #[test]
-    fn f7_v2_parked() {
-        let mut inp = base_ok(2000);
-        inp.attestation = AttestationStatus::Parked;
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::AttestationNotVerified
-            }
-        );
-    }
-
-    #[test]
-    fn f8_v2_missing() {
-        let mut inp = base_ok(2000);
-        inp.attestation = AttestationStatus::Missing;
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::AttestationNotVerified
-            }
-        );
-    }
-
-    #[test]
-    fn f9_v2_rejected() {
-        let mut inp = base_ok(2000);
-        inp.attestation = AttestationStatus::Rejected;
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::AttestationNotVerified
-            }
-        );
-    }
-
-    #[test]
-    fn f10_v2_schema_fail() {
-        let inp = ScoreInputs {
-            netuid: 1,
-            epoch: 7,
-            miner_hotkey: [0x11u8; 32],
-            pack_id: FIXTURE_PACK_ID.to_vec(),
-            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
-            attestation: AttestationStatus::Verified,
-            duration_ms: 100,
-            outcome: CallOutcome::InvalidResponse,
-        };
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::InvalidResponse
-            }
-        );
-    }
-
-    #[test]
-    fn f11_v2_second_miner() {
-        let miner = [0x22u8; 32];
-        let tid = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
-        let ans = answer_digest_v2(FIXTURE_MODEL_PATCH);
-        let inp = ScoreInputs {
-            netuid: 1,
-            epoch: 7,
-            miner_hotkey: miner,
-            pack_id: FIXTURE_PACK_ID.to_vec(),
-            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
-            attestation: AttestationStatus::Verified,
-            duration_ms: 2000,
-            outcome: CallOutcome::Http200 {
-                challenge_id: CHALLENGE_ID.to_owned(),
-                epoch: 7,
-                task_id: tid,
-                answer_digest: ans,
-                agent_version: "1".into(),
-            },
-        };
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::Score { value: SCORE_MAX }
-        );
-    }
-
-    #[test]
-    fn latency_integer_only_no_float() {
-        // 3000 ms → remaining 7000 → 1_000_000 * 7000 / 8000 = 875_000
-        assert_eq!(
-            score_latency(3000),
-            ScoreOrAbsence::Score { value: 875_000 }
-        );
-    }
-
-    /// Retired v1 echo answer must not receive full credit under scoring_version 2.
-    #[test]
-    fn v1_echo_answer_no_longer_validates() {
-        let miner = [0x11u8; 32];
-        let tid_v2 = task_id_v2(1, 7, &miner, FIXTURE_PACK_ID, SCORING_VERSION);
-        // Historical echo: sha256(gbase-agent-answer-v1 ‖ task_blob_v1)
-        let tid_v1 = task_id(1, 7, &miner);
-        let echo_ans = answer_digest(&task_blob(&tid_v1, 1));
-        let inp = ScoreInputs {
-            netuid: 1,
-            epoch: 7,
-            miner_hotkey: miner,
-            pack_id: FIXTURE_PACK_ID.to_vec(),
-            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
-            attestation: AttestationStatus::Verified,
-            duration_ms: 2000,
-            outcome: CallOutcome::Http200 {
-                challenge_id: CHALLENGE_ID.to_owned(),
-                epoch: 7,
-                task_id: tid_v2,
-                answer_digest: echo_ans,
-                agent_version: "1".into(),
-            },
-        };
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::Score { value: 0 },
-            "v1 echo digest must not validate as a correct v2 model.patch answer"
-        );
-    }
-
-    /// Full v1 identity (v1 task_id + echo answer) is InvalidResponse under v2.
-    #[test]
-    fn v1_task_id_and_echo_rejected_as_invalid_response() {
-        let miner = [0x11u8; 32];
-        let tid_v1 = task_id(1, 7, &miner);
-        let echo_ans = answer_digest(&task_blob(&tid_v1, 1));
-        let inp = ScoreInputs {
-            netuid: 1,
-            epoch: 7,
-            miner_hotkey: miner,
-            pack_id: FIXTURE_PACK_ID.to_vec(),
-            expected_model_patch: FIXTURE_MODEL_PATCH.to_vec(),
-            attestation: AttestationStatus::Verified,
-            duration_ms: 2000,
-            outcome: CallOutcome::Http200 {
-                challenge_id: CHALLENGE_ID.to_owned(),
-                epoch: 7,
-                task_id: tid_v1,
-                answer_digest: echo_ans,
-                agent_version: "1".into(),
-            },
-        };
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::NoScore {
-                reason: NoScoreReasonCode::InvalidResponse
-            }
+        assert!(
+            !prod.contains("score_latency"),
+            "score_latency must be deleted"
         );
     }
 }
