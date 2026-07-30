@@ -1,0 +1,52 @@
+# task-24 gbase-gateway evidence
+date: 2026-07-30T02:46:00Z
+branch: reborn
+crate: crates/gbase-gateway + bins/gbase-gateway (bin name: gbase-gateway)
+
+## API / behavior surface
+- assert_master_only(chain, netuid, hotkey) — ChainClient::subnet_owner_hotkey vs configured bytes
+- GatewayError::MasterMismatch { configured, owner, netuid } → ExitCode 2 (EXIT_MASTER_MISMATCH)
+- run_until / run: master check **before** TcpListener::bind; then gbase-telemetry health router
+- GatewayConfig::from_env: gbase-config load (role=gateway) + GBASE_GATEWAY_LISTEN + GBASE_GATEWAY_HOTKEY (32-byte hex)
+- Structured fatal: tracing::error event=master_only_mismatch fatal=true exit_code=2
+- Compose profile **master** documented in README (full stack = task 40)
+
+## Scenarios
+S1 mismatch assert (tests::s1_assert_master_mismatch_no_bind_needed) PASS — exit_code 2
+S1 mismatch run_until (tests::s1_mismatch_run_until_exits_2_and_port_refused) PASS — MasterMismatch + connection refused
+S2 match assert (tests::s2_assert_master_match_ok) PASS
+S2 match healthz (tests::s2_match_run_until_healthz_200) PASS — GET /healthz → 200 ok
+S3 chain unknown netuid (tests::s3_chain_unknown_netuid_does_not_look_like_mismatch) PASS — exit 1 not 2
+S3 hotkey hex parse + from_base role guard PASS
+
+## Manual QA (real binary surface)
+$ ./target/debug/gbase-gateway
+structured fatal config missing role/netuid
+exit=1
+
+$ GBASE_ROLE=gateway GBASE_NETUID=1 GBASE_DOMAIN=example.com \
+  GBASE_DATABASE_URL=postgres://u:p@localhost/db ./target/debug/gbase-gateway
+structured fatal missing GBASE_GATEWAY_HOTKEY
+exit=1
+
+(Master mismatch exit=2 covered by FakeChain library tests; live NotImplementedChain used in bin until RPC owner read lands.)
+
+## Gates
+cargo test -p gbase-gateway -p gbase-gateway-bin --all-targets: 7 passed
+cargo clippy -p gbase-gateway -p gbase-gateway-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p gbase-gateway -p gbase-gateway-bin --check: exit 0
+xtask loc-cap: crates/gbase-gateway 214 LOC, bins/gbase-gateway 33 LOC (cap 1500)
+
+## Files
+crates/gbase-gateway/Cargo.toml
+crates/gbase-gateway/src/lib.rs
+bins/gbase-gateway/Cargo.toml
+bins/gbase-gateway/src/main.rs
+README.md (compose profile master note)
+Cargo.lock
+task-24-gateway.txt
+
+## Notes
+- No full registry/proxy (task 25).
+- Compose file itself is task 40; README documents profiles: ["master"] contract.
+- Binary uses NotImplementedChain until live subnet_owner_hotkey is wired; tests inject FakeChain.

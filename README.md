@@ -21,6 +21,20 @@ Greenfield successor path for Base Intelligence subnet work: validators, miners,
 - Gates: `cargo fmt`, `clippy -D warnings`, `test`, `cargo deny`, `xtask loc-cap`, `xtask consensus-lint`
 - CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) on push/PR to `reborn`
 
+## Gateway (master-only)
+
+`gbase-gateway` is the subnet-owner process (D3). On startup it resolves on-chain
+`SubnetOwnerHotkey` via `ChainClient` and compares it to `GBASE_GATEWAY_HOTKEY`
+(32-byte hex). On mismatch it emits a structured fatal log and **exits 2 before
+binding any listener**. On match it serves the telemetry router (`/healthz`,
+`/readyz`, `/metrics`).
+
+Compose (task 40): the gateway service MUST use Docker Compose profile **`master`**
+so a default `docker compose up` does **not** start the gateway; operators run
+`docker compose --profile master up` on the owner host only. Full stack wiring
+(postgres, validator, updater, socket-proxy digests) lands in task 40 — this
+skeleton only documents the profile contract.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](./LICENSE).

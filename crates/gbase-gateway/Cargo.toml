@@ -1,0 +1,25 @@
+[package]
+name = "gbase-gateway"
+description = "Master-only gateway skeleton: SubnetOwnerHotkey assert before bind (D3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+gbase-chain = { path = "../gbase-chain" }
+gbase-config = { path = "../gbase-config" }
+gbase-telemetry = { path = "../gbase-telemetry" }
+hex = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[lints]
+workspace = true

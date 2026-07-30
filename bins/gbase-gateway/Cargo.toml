@@ -1,0 +1,23 @@
+[package]
+name = "gbase-gateway-bin"
+description = "gbase-gateway CLI binary (master-only skeleton)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "gbase-gateway"
+path = "src/main.rs"
+
+[dependencies]
+gbase-gateway = { path = "../../crates/gbase-gateway" }
+gbase-chain = { path = "../../crates/gbase-chain" }
+gbase-telemetry = { path = "../../crates/gbase-telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+
+[lints]
+workspace = true
