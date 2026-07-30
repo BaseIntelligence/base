@@ -1,0 +1,95 @@
+//! Normative miner CVM docker-compose fragment (`AGENT_CHALLENGE.md` §9).
+
+/// Public agent HTTP service name.
+pub const AGENT_SERVICE: &str = "agent";
+/// Attest helper service name (loopback only).
+pub const ATTEST_HELPER_SERVICE: &str = "attest-helper";
+/// Agent container / published port.
+pub const AGENT_PORT: u16 = 8080;
+/// Attest-helper container port (bound to 127.0.0.1 only).
+pub const ATTEST_HELPER_PORT: u16 = 8081;
+/// In-CVM directory for secret file mounts (never env values).
+pub const RUN_GBASE_DIR: &str = "/run/gbase";
+/// Hotkey secret path inside the CVM.
+pub const HOTKEY_FILE_IN_CVM: &str = "/run/gbase/miner_hotkey";
+/// Optional raw launch-token file path (hash is what is measured).
+pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/gbase/launch_token";
+
+/// Inputs that shape the measured docker-compose YAML string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeTemplateInput<'a> {
+    /// Digest-pinned agent image (`repo@sha256:<64 hex>`).
+    pub agent_image: &'a str,
+    /// Digest-pinned attest-helper image.
+    pub attest_helper_image: &'a str,
+    /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
+    pub launch_token_hash: &'a str,
+    /// Subnet netuid written as a non-secret env value.
+    pub netuid: u16,
+}
+
+/// Render the docker-compose YAML embedded in `app-compose.json`.
+///
+/// Contract:
+/// - services `agent` (:8080 public) and `attest-helper` (127.0.0.1:8081)
+/// - digest-pinned images only (caller must not pass `:latest`)
+/// - `environment:` holds only non-secret config + launch-token **hash**
+/// - secrets are bind-mounted files under `/run/gbase/`
+#[must_use]
+pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
+    // YAML is hand-built so key order and spacing stay stable for hashing.
+    format!(
+        r#"# gbase miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=1)
+# Secrets: file mounts under {run_dir} only. Never put secret values in environment.
+# LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.
+services:
+  {agent}:
+    image: {agent_image}
+    restart: unless-stopped
+    ports:
+      - "{agent_port}:{agent_port}"
+    environment:
+      GBASE_NETUID: "{netuid}"
+      GBASE_MINER_HOTKEY_FILE: "{hotkey_file}"
+      GBASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
+    volumes:
+      - type: bind
+        source: miner_hotkey
+        target: {hotkey_file}
+        read_only: true
+      - type: bind
+        source: launch_token
+        target: {launch_token_file}
+        read_only: true
+  {attest}:
+    image: {attest_image}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:{attest_port}:{attest_port}"
+    environment:
+      GBASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
+      GBASE_MINER_HOTKEY_FILE: "{hotkey_file}"
+    volumes:
+      - type: bind
+        source: miner_hotkey
+        target: {hotkey_file}
+        read_only: true
+      - type: bind
+        source: launch_token
+        target: {launch_token_file}
+        read_only: true
+      - /var/run/dstack.sock:/var/run/dstack.sock
+"#,
+        run_dir = RUN_GBASE_DIR,
+        agent = AGENT_SERVICE,
+        agent_image = input.agent_image,
+        agent_port = AGENT_PORT,
+        netuid = input.netuid,
+        hotkey_file = HOTKEY_FILE_IN_CVM,
+        launch_hash = input.launch_token_hash,
+        launch_token_file = LAUNCH_TOKEN_FILE_IN_CVM,
+        attest = ATTEST_HELPER_SERVICE,
+        attest_image = input.attest_helper_image,
+        attest_port = ATTEST_HELPER_PORT,
+    )
+}
