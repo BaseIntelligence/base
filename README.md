@@ -26,14 +26,21 @@ Greenfield successor path for Base Intelligence subnet work: validators, miners,
 `gbase-gateway` is the subnet-owner process (D3). On startup it resolves on-chain
 `SubnetOwnerHotkey` via `ChainClient` and compares it to `GBASE_GATEWAY_HOTKEY`
 (32-byte hex). On mismatch it emits a structured fatal log and **exits 2 before
-binding any listener**. On match it serves the telemetry router (`/healthz`,
-`/readyz`, `/metrics`).
+binding any listener**. On match it serves:
+
+- Telemetry: `/healthz`, `/readyz`, `/metrics`
+- Backend registry (routing only — D18): `/v1/admin/backends` CRUD (no signing keys)
+- Challenge reverse proxy: `/challenge/{id}/*` with round-robin, passive ejection
+  after N failures, re-admission after cooldown
+- Sole TLS owner (D20): cleartext by default; `rustls-acme` DNS-01 is task 42
+
+Env knobs: `GBASE_GATEWAY_LISTEN`, `GBASE_GATEWAY_HOTKEY`,
+`GBASE_GATEWAY_FAIL_THRESHOLD` (default 3), `GBASE_GATEWAY_COOLDOWN_SECS` (default 30),
+`GBASE_GATEWAY_TLS*` (stub until task 42).
 
 Compose (task 40): the gateway service MUST use Docker Compose profile **`master`**
 so a default `docker compose up` does **not** start the gateway; operators run
-`docker compose --profile master up` on the owner host only. Full stack wiring
-(postgres, validator, updater, socket-proxy digests) lands in task 40 — this
-skeleton only documents the profile contract.
+`docker compose --profile master up` on the owner host only.
 
 ## License
 

@@ -1,4 +1,4 @@
-//! gbase-gateway — master-only skeleton (D3).
+//! gbase-gateway — master-only gateway with registry + proxy (D3).
 //!
 //! Resolves on-chain `SubnetOwnerHotkey` and refuses to bind any listener when
 //! the configured hotkey does not match (exit code 2).

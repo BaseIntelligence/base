@@ -1,27 +1,42 @@
-//! Master-only gbase gateway skeleton (D3).
+//! Master-only gbase gateway (D3) with backend registry + reverse proxy (task 25).
 //!
 //! Startup order is intentional and tested:
 //! 1. Resolve on-chain [`ChainClient::subnet_owner_hotkey`].
 //! 2. Compare to the configured gateway hotkey.
 //! 3. On mismatch: structured fatal log + [`GatewayError::MasterMismatch`]
 //!    (process exit code [`EXIT_MASTER_MISMATCH`]) **before any listener bind**.
-//! 4. On match: install telemetry and serve the health router (`/healthz`, …).
+//! 4. On match: install telemetry, mount health + registry + challenge proxy,
+//!    and serve. This process is the sole TLS owner (D20); ACME is task 42.
 //!
-//! Full registry / challenge HTTP is task 25 — not here.
+//! Backend registry is operational routing only (D18) — never signing keys.
 
 #![forbid(unsafe_code)]
+
+mod api;
+mod app;
+mod proxy;
+mod registry;
+mod tls;
 
 use std::fmt;
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use axum::Router;
 use gbase_chain::{ChainClient, ChainError};
 use gbase_config::{keys as cfg_keys, Config, Role};
-use gbase_telemetry::{health_router, init_metrics, init_tracing, TelemetryError};
+use gbase_telemetry::{init_metrics, init_tracing, TelemetryError};
 use thiserror::Error;
 use tokio::net::TcpListener;
+
+pub use api::GatewayState;
+pub use registry::{
+    Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
+    DEFAULT_FAILURE_THRESHOLD,
+};
+pub use tls::TlsConfig;
 
 /// Process exit code when configured hotkey ≠ on-chain `SubnetOwnerHotkey`.
 pub const EXIT_MASTER_MISMATCH: u8 = 2;
@@ -35,9 +50,15 @@ pub mod keys {
     pub const LISTEN: &str = "GBASE_GATEWAY_LISTEN";
     /// Gateway hotkey as 64 hex chars (32 raw bytes). Must equal on-chain owner.
     pub const HOTKEY: &str = "GBASE_GATEWAY_HOTKEY";
+    /// Consecutive upstream failures before passive ejection (default 3).
+    pub const FAIL_THRESHOLD: &str = "GBASE_GATEWAY_FAIL_THRESHOLD";
+    /// Ejection cooldown seconds before re-admission (default 30).
+    pub const COOLDOWN_SECS: &str = "GBASE_GATEWAY_COOLDOWN_SECS";
+
+    pub use crate::tls::keys as tls;
 }
 
-/// Runtime knobs required to start the skeleton server.
+/// Runtime knobs required to start the gateway server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayConfig {
     /// TCP bind address (bound only after master check passes).
@@ -46,6 +67,10 @@ pub struct GatewayConfig {
     pub netuid: u16,
     /// Configured gateway hotkey (32-byte sr25519 public key).
     pub hotkey: [u8; 32],
+    /// Passive ejection / re-admission knobs.
+    pub registry: RegistryConfig,
+    /// Sole TLS owner config (D20); real ACME in task 42.
+    pub tls: TlsConfig,
 }
 
 impl GatewayConfig {
@@ -58,6 +83,8 @@ impl GatewayConfig {
         base: &Config,
         listen: SocketAddr,
         hotkey: [u8; 32],
+        registry: RegistryConfig,
+        tls: TlsConfig,
     ) -> Result<Self, GatewayError> {
         if base.role != Role::Gateway {
             return Err(GatewayError::Config(format!(
@@ -69,10 +96,12 @@ impl GatewayConfig {
             listen,
             netuid: base.netuid.get(),
             hotkey,
+            registry,
+            tls,
         })
     }
 
-    /// Load layered gbase-config + `GBASE_GATEWAY_LISTEN` / `GBASE_GATEWAY_HOTKEY`.
+    /// Load layered gbase-config + gateway env knobs.
     ///
     /// # Errors
     ///
@@ -86,8 +115,32 @@ impl GatewayConfig {
         let hotkey_raw = std::env::var(keys::HOTKEY)
             .map_err(|_| GatewayError::Config(format!("missing required env {}", keys::HOTKEY)))?;
         let hotkey = parse_hotkey_hex(&hotkey_raw)?;
-        Self::from_base(&base, listen, hotkey)
+        let registry = registry_config_from_env()?;
+        let tls = TlsConfig::from_env();
+        Self::from_base(&base, listen, hotkey, registry, tls)
     }
+}
+
+fn registry_config_from_env() -> Result<RegistryConfig, GatewayError> {
+    let mut cfg = RegistryConfig::default();
+    if let Ok(raw) = std::env::var(keys::FAIL_THRESHOLD) {
+        cfg.failure_threshold = raw.parse().map_err(|e| {
+            GatewayError::Config(format!("invalid {} `{raw}`: {e}", keys::FAIL_THRESHOLD))
+        })?;
+        if cfg.failure_threshold == 0 {
+            return Err(GatewayError::Config(format!(
+                "{} must be >= 1",
+                keys::FAIL_THRESHOLD
+            )));
+        }
+    }
+    if let Ok(raw) = std::env::var(keys::COOLDOWN_SECS) {
+        let secs: u64 = raw.parse().map_err(|e| {
+            GatewayError::Config(format!("invalid {} `{raw}`: {e}", keys::COOLDOWN_SECS))
+        })?;
+        cfg.cooldown = std::time::Duration::from_secs(secs);
+    }
+    Ok(cfg)
 }
 
 /// Parse a 32-byte hotkey from lowercase/uppercase hex (optional `0x` prefix).
@@ -119,7 +172,7 @@ pub fn hotkey_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
-/// Gateway failures (config, master check, bind, telemetry).
+/// Gateway failures (config, master check, bind, telemetry, client).
 #[derive(Debug, Error)]
 pub enum GatewayError {
     /// Configured hotkey is not the on-chain subnet owner (D3).
@@ -144,6 +197,9 @@ pub enum GatewayError {
     /// Telemetry install failure.
     #[error("telemetry error: {0}")]
     Telemetry(#[from] TelemetryError),
+    /// Outbound HTTP client build failure.
+    #[error("http client error: {0}")]
+    HttpClient(String),
 }
 
 impl GatewayError {
@@ -209,6 +265,20 @@ pub fn assert_master_only(
     Ok(())
 }
 
+/// Build the full application router (health + registry + proxy) without binding.
+///
+/// # Errors
+///
+/// Telemetry or HTTP client construction failures.
+pub fn build_app(
+    metrics: metrics_exporter_prometheus::PrometheusHandle,
+    registry: Arc<Registry>,
+    tls: &TlsConfig,
+) -> Result<Router, GatewayError> {
+    let state = GatewayState::new(registry).map_err(GatewayError::HttpClient)?;
+    app::build_router(metrics, state, tls)
+}
+
 /// Master check → telemetry → bind → axum serve until `shutdown` completes.
 ///
 /// On master mismatch this returns **without** opening a listener (port stays closed).
@@ -224,12 +294,32 @@ pub async fn run_until<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    let registry = Registry::shared(config.registry.clone());
+    run_until_with_registry(config, chain, registry, shutdown).await
+}
+
+/// Like [`run_until`] but injects a pre-built registry (tests / DB hydrate).
+///
+/// # Errors
+///
+/// Same as [`run_until`].
+pub async fn run_until_with_registry<F>(
+    config: GatewayConfig,
+    chain: &dyn ChainClient,
+    registry: Arc<Registry>,
+    shutdown: F,
+) -> Result<(), GatewayError>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     // CRITICAL: master-only before any bind (D3).
     assert_master_only(chain, config.netuid, &config.hotkey)?;
 
     let _ = init_tracing();
     let metrics = init_metrics()?;
-    let app: Router = health_router(metrics)?;
+    // Prefer registry knobs from config when the shared handle was default-built.
+    let _ = &config.registry;
+    let app = build_app(metrics, registry, &config.tls)?;
 
     let listener = TcpListener::bind(config.listen)
         .await
@@ -243,7 +333,8 @@ where
         %bound,
         netuid = config.netuid,
         hotkey = %hotkey_hex(&config.hotkey),
-        "master-only check passed; serving health router"
+        tls_mode = config.tls.mode_label(),
+        "master-only check passed; serving health + registry + challenge proxy"
     );
 
     axum::serve(listener, app)
@@ -253,13 +344,14 @@ where
     Ok(())
 }
 
-/// Production entry: run until ctrl-c / SIGTERM.
+/// Production entry: run until ctrl-c / SIGTERM with a fresh in-memory registry.
 ///
 /// # Errors
 ///
 /// Same as [`run_until`].
 pub async fn run(config: GatewayConfig, chain: &dyn ChainClient) -> Result<(), GatewayError> {
-    run_until(config, chain, shutdown_signal()).await
+    let registry = Registry::shared(config.registry.clone());
+    run_until_with_registry(config, chain, registry, shutdown_signal()).await
 }
 
 async fn shutdown_signal() {
@@ -294,10 +386,11 @@ impl fmt::Display for GatewayConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "GatewayConfig {{ listen: {}, netuid: {}, hotkey: {} }}",
+            "GatewayConfig {{ listen: {}, netuid: {}, hotkey: {}, tls: {} }}",
             self.listen,
             self.netuid,
-            hotkey_hex(&self.hotkey)
+            hotkey_hex(&self.hotkey),
+            self.tls.mode_label()
         )
     }
 }
@@ -327,6 +420,8 @@ mod tests {
             listen,
             netuid: 1,
             hotkey,
+            registry: RegistryConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 
@@ -367,13 +462,9 @@ mod tests {
 
     #[tokio::test]
     async fn s1_mismatch_run_until_exits_2_and_port_refused() {
-        // Reserve an ephemeral port, free it, then confirm mismatch never binds it.
-        // Pre-bind a probe port we will NOT hand to the gateway — instead we
-        // pick an ephemeral free port, pass it to run_until, and after mismatch
-        // confirm nothing is listening there.
         let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = probe.local_addr().unwrap().port();
-        drop(probe); // free the port; gateway must not bind it on mismatch
+        drop(probe);
 
         let listen: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
         let chain = FakeChain::with_defaults();
@@ -388,7 +479,6 @@ mod tests {
         );
         assert_eq!(err.exit_code(), ExitCode::from(EXIT_MASTER_MISMATCH));
 
-        // Connection refused: nothing accepted the port.
         let connect = tokio::time::timeout(
             Duration::from_millis(500),
             tokio::net::TcpStream::connect(listen),
@@ -422,8 +512,6 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        // FakeChain is !Sync (RefCell). LocalSet + spawn_local keeps the server
-        // polled while the client awaits HTTP (no Send bound required).
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async move {
@@ -491,8 +579,14 @@ mod tests {
             max_collateral_age_secs: 1,
             domain: None,
         };
-        let err = GatewayConfig::from_base(&base, "127.0.0.1:9".parse().unwrap(), owner_hotkey())
-            .expect_err("role");
+        let err = GatewayConfig::from_base(
+            &base,
+            "127.0.0.1:9".parse().unwrap(),
+            owner_hotkey(),
+            RegistryConfig::default(),
+            TlsConfig::default(),
+        )
+        .expect_err("role");
         assert!(matches!(err, GatewayError::Config(_)));
     }
 }
