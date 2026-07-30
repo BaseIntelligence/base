@@ -306,7 +306,10 @@ async fn s1_all_tables_have_created_at() {
         .fetch_one(tp.pool())
         .await
         .expect("created_at");
-        assert_eq!(n, 1, "table {table} must have created_at timestamptz not null");
+        assert_eq!(
+            n, 1,
+            "table {table} must have created_at timestamptz not null"
+        );
     }
     tp.drop_schema().await.expect("drop");
 }

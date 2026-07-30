@@ -85,19 +85,14 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
 
     // Explicit attestation precondition (either polarity must be stated; we require YES path).
     let lower = body.to_ascii_lowercase();
-    if !lower.contains("precondition for emitting")
-        && !lower.contains("is a precondition for")
-    {
-        failures.push(
-            "content pin attestation_explicit: need explicit precondition wording".into(),
-        );
+    if !lower.contains("precondition for emitting") && !lower.contains("is a precondition for") {
+        failures
+            .push("content pin attestation_explicit: need explicit precondition wording".into());
     }
 
     // Must forbid :latest in the image contract discussion (the words appear as a ban).
     if !body.contains(":latest") {
-        failures.push(
-            "content pin no_latest_ban: spec must mention :latest as forbidden".into(),
-        );
+        failures.push("content pin no_latest_ban: spec must mention :latest as forbidden".into());
     }
 
     let checklist = fs::read_to_string(&checklist_path)

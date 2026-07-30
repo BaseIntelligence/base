@@ -65,7 +65,7 @@ pub enum CallOutcome {
     },
     /// Timeout / transport exhausted / deadline.
     Timeout,
-    /// HTTP 500 / agent_internal.
+    /// HTTP 500 / `agent_internal`.
     MinerError,
     /// Schema / 400 / 403 / hotkey mismatch / field disagree.
     InvalidResponse,
@@ -239,10 +239,7 @@ mod tests {
         {
             *answer_digest = [0u8; 32];
         }
-        assert_eq!(
-            score_from_outcome(&inp),
-            ScoreOrAbsence::Score { value: 0 }
-        );
+        assert_eq!(score_from_outcome(&inp), ScoreOrAbsence::Score { value: 0 });
     }
 
     #[test]

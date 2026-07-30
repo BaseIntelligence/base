@@ -19,7 +19,10 @@ use rand_core::OsRng;
 use schnorrkel::MiniSecretKey;
 
 #[derive(Debug, Parser)]
-#[command(name = "gbase-trustroot", about = "Owner-signed trust root ceremony tools")]
+#[command(
+    name = "gbase-trustroot",
+    about = "Owner-signed trust root ceremony tools"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -189,7 +192,8 @@ fn cmd_sign(
         }
         _ => return Err(format!("unknown kind {kind}")),
     };
-    let sig = sign_trust_root_raw(&secret, version, introduced_epoch, &body_scale).map_err(|e| err_str(&e))?;
+    let sig = sign_trust_root_raw(&secret, version, introduced_epoch, &body_scale)
+        .map_err(|e| err_str(&e))?;
     let out_path = out.map_or_else(
         || PathBuf::from(format!("{}.sig", input.display())),
         Path::to_path_buf,

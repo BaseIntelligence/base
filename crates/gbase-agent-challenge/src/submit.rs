@@ -91,10 +91,7 @@ impl GatewayClient {
     /// See [`SubmitError`].
     pub async fn submit_leaf(&self, leaf: &LeafV1) -> Result<SubmitOutcome, SubmitError> {
         let body = leaf_to_json(leaf).map_err(SubmitError::Serialize)?;
-        let url = format!(
-            "{}/v1/weights/raw",
-            self.cfg.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/weights/raw", self.cfg.base_url.trim_end_matches('/'));
         let attempts = self.cfg.max_attempts.max(1);
         let mut last_err = SubmitError::Transport("no attempts".into());
 
@@ -211,7 +208,10 @@ fn reason_code_u8(r: NoScoreReasonCode) -> u8 {
 }
 
 /// Build JSON body for tests / external callers.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns an error string if the leaf cannot be encoded as JSON.
 pub fn leaf_request_json(leaf: &LeafV1) -> Result<serde_json::Value, String> {
     leaf_to_json(leaf)
 }

@@ -1,4 +1,9 @@
-#![allow(clippy::too_many_lines, clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::pedantic
+)]
 //! Task 32 VERIFY: three-outcome policy, quarantine (multi-drop), dissent serve.
 
 use std::net::SocketAddr;
@@ -27,8 +32,8 @@ use gbase_trustroot::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    recompute_view_from_comparison, spawn_validator_with_ok_db, compare_bundle,
-    ComparisonOutcome, SyncChain, ValidatorRuntime,
+    compare_bundle, recompute_view_from_comparison, spawn_validator_with_ok_db, ComparisonOutcome,
+    SyncChain, ValidatorRuntime,
 };
 
 fn sk(tag: u8) -> [u8; 32] {
@@ -87,11 +92,9 @@ fn multi_challenge_bundle(
         ..FakeChainConfig::default()
     });
     let block_hash = chain.block_hash(block_b).expect("hash");
-    let rows = metagraph_rows_from_chain(
-        &miners.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-        None,
-    )
-    .expect("rows");
+    let rows =
+        metagraph_rows_from_chain(&miners.iter().map(|h| h.to_vec()).collect::<Vec<_>>(), None)
+            .expect("rows");
     let mut leaves = Vec::new();
     let wrong_sk = sk(0xEE);
     for (id, csk, _, score) in challenges {
@@ -215,7 +218,10 @@ fn s1_class_a_one_submission_and_dissent() {
     .expect("policy");
 
     match decision {
-        EpochDecision::ClassA { ref intent, ref dissent } => {
+        EpochDecision::ClassA {
+            ref intent,
+            ref dissent,
+        } => {
             assert_eq!(intent.vector, local);
             assert_eq!(intent.source, SubmissionSource::Recompute);
             assert_eq!(decision.submissions().len(), 1);
@@ -266,10 +272,16 @@ fn s2_class_b_zero_submissions_dissent() {
 
     assert!(decision.submissions().is_empty());
     match decision {
-        EpochDecision::ClassB { ref dissent, reason } => {
+        EpochDecision::ClassB {
+            ref dissent,
+            reason,
+        } => {
             dissent.verify().expect("verify");
             assert_eq!(reason, DissentReasonCode::PeerRootConflict);
-            assert_eq!(dissent.reason_code(), Some(DissentReasonCode::PeerRootConflict));
+            assert_eq!(
+                dissent.reason_code(),
+                Some(DissentReasonCode::PeerRootConflict)
+            );
         }
         other => panic!("expected ClassB, got {other:?}"),
     }
@@ -287,10 +299,7 @@ fn s3_quarantine_one_bad_60pct_submits() {
     let m2 = pk_of(&sk(21));
     // 6000 + 4000 = 10000; drop 4000 → 60% survive.
     let (bundle, trust, chain) = multi_challenge_bundle(
-        &[
-            (b"good", c_good, 6000, 50),
-            (b"bad", c_bad, 4000, 50),
-        ],
+        &[(b"good", c_good, 6000, 50), (b"bad", c_bad, 4000, 50)],
         &gsk,
         &[m1, m2],
         200,
@@ -345,8 +354,7 @@ fn s3_quarantine_one_bad_60pct_submits() {
                     score_or_absence: to_agg(&l.score_or_absence),
                 })
                 .collect();
-            let expected =
-                aggregate(&verified, &new_shares, &bundle.body.uid_map, AGG_V).unwrap();
+            let expected = aggregate(&verified, &new_shares, &bundle.body.uid_map, AGG_V).unwrap();
             assert_eq!(intent.vector, expected);
         }
         other => panic!("expected Quarantine, got {other:?}"),
@@ -376,10 +384,7 @@ fn s4_quarantine_two_bad_55pct_still_submits() {
         &[b"drop1", b"drop2"],
     );
     let comparison = compare_bundle(&bundle, &chain, &trust);
-    assert!(matches!(
-        comparison,
-        ComparisonOutcome::InputInvalid { .. }
-    ));
+    assert!(matches!(comparison, ComparisonOutcome::InputInvalid { .. }));
     let view = recompute_view_from_comparison(&comparison);
     let secret = sk(96);
     let hotkey = pk_of(&secret);
@@ -425,10 +430,7 @@ fn s5_quarantine_30pct_escalates_class_b() {
     let m1 = pk_of(&sk(40));
     // 3000 + 7000; drop 7000 → 30% < 5000 floor.
     let (bundle, trust, chain) = multi_challenge_bundle(
-        &[
-            (b"tiny", c_good, 3000, 10),
-            (b"huge-bad", c_bad, 7000, 10),
-        ],
+        &[(b"tiny", c_good, 3000, 10), (b"huge-bad", c_bad, 7000, 10)],
         &gsk,
         &[m1],
         400,
@@ -457,7 +459,10 @@ fn s5_quarantine_30pct_escalates_class_b() {
 
     assert!(decision.submissions().is_empty());
     match decision {
-        EpochDecision::ClassB { ref dissent, reason } => {
+        EpochDecision::ClassB {
+            ref dissent,
+            reason,
+        } => {
             dissent.verify().expect("verify");
             assert_eq!(reason, DissentReasonCode::ShareMassBelowThreshold);
             assert!(DissentReasonCode::from_u8(dissent.body.reason_code).is_some());
@@ -504,7 +509,9 @@ async fn s6_dissent_verifies_and_http_serves() {
         ..ValidatorRuntime::default()
     };
     let chain = Arc::new(SyncChain::new(chain));
-    let v = spawn_validator_with_ok_db(runtime, chain).await.expect("spawn");
+    let v = spawn_validator_with_ok_db(runtime, chain)
+        .await
+        .expect("spawn");
     let url = format!("{}/v1/dissent/{epoch}", v.base_url());
     let client = reqwest::Client::new();
     let mut body = None;

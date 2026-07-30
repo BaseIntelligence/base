@@ -300,9 +300,7 @@ mod tests {
 
     #[test]
     fn real_phala_app_compose_matches_event_compose_hash() {
-        let bytes = include_bytes!(
-            "../../gbase-attest-parse/tests/fixtures/real/app-compose.json"
-        );
+        let bytes = include_bytes!("../../gbase-attest-parse/tests/fixtures/real/app-compose.json");
         let hex = compose_hash_hex(bytes).expect("real app-compose");
         assert_eq!(
             hex, REAL_COMPOSE_HASH_HEX,

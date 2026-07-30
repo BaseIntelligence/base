@@ -92,14 +92,10 @@ pub fn verify_trust_root_raw(
     signature: &[u8],
 ) -> Result<(), TrustRootError> {
     let payload = signing_payload_bytes(version, introduced_epoch, body_scale);
-    verify_raw(
-        owner_public_bytes,
-        domain::TRUST_ROOT,
-        &payload,
-        signature,
-    )
-    .map_err(|e| TrustRootError::SignatureRejected {
-        reason: e.to_string(),
+    verify_raw(owner_public_bytes, domain::TRUST_ROOT, &payload, signature).map_err(|e| {
+        TrustRootError::SignatureRejected {
+            reason: e.to_string(),
+        }
     })
 }
 
@@ -141,9 +137,8 @@ pub fn parse_signature_bytes(raw: &[u8]) -> Result<[u8; SIGNATURE_LEN], TrustRoo
         out.copy_from_slice(trimmed);
         return Ok(out);
     }
-    let text = std::str::from_utf8(trimmed).map_err(|e| {
-        TrustRootError::InvalidEncoding(format!("signature not utf-8 hex: {e}"))
-    })?;
+    let text = std::str::from_utf8(trimmed)
+        .map_err(|e| TrustRootError::InvalidEncoding(format!("signature not utf-8 hex: {e}")))?;
     crate::hexutil::decode_hex_array::<SIGNATURE_LEN>(text)
 }
 

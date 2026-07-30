@@ -67,7 +67,11 @@ fn f2_duration_zero_score_max() {
 #[test]
 fn f3_duration_6000_half() {
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 6000, AttestationStatus::Verified)),
+        score_from_outcome(&correct_inputs(
+            miner11(),
+            6000,
+            AttestationStatus::Verified
+        )),
         ScoreOrAbsence::Score { value: 500_000 }
     );
 }
@@ -108,10 +112,7 @@ fn f6_wrong_answer_score_zero() {
     {
         *answer_digest = [0xffu8; 32];
     }
-    assert_eq!(
-        score_from_outcome(&inp),
-        ScoreOrAbsence::Score { value: 0 }
-    );
+    assert_eq!(score_from_outcome(&inp), ScoreOrAbsence::Score { value: 0 });
 }
 
 #[test]
@@ -184,12 +185,20 @@ fn f11_second_miner_digests_and_score() {
 fn reference_assertions_section_5_7() {
     // assert score(F1) == Score(1_000_000)
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 2000, AttestationStatus::Verified)),
+        score_from_outcome(&correct_inputs(
+            miner11(),
+            2000,
+            AttestationStatus::Verified
+        )),
         ScoreOrAbsence::Score { value: 1_000_000 }
     );
     // assert score(F3) == Score(500_000)
     assert_eq!(
-        score_from_outcome(&correct_inputs(miner11(), 6000, AttestationStatus::Verified)),
+        score_from_outcome(&correct_inputs(
+            miner11(),
+            6000,
+            AttestationStatus::Verified
+        )),
         ScoreOrAbsence::Score { value: 500_000 }
     );
     // assert score(F5) == NoScore(Timeout)

@@ -1,4 +1,9 @@
-#![allow(clippy::too_many_lines, clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::pedantic
+)]
 //! Task 31 VERIFY: peer root cross-check with min sample, FakeChain + in-process peers.
 //!
 //! Peer hotkeys are real sr25519 public keys (identity = signature key). Metagraph
@@ -215,13 +220,13 @@ async fn s1_unanimous_peer_sample_pass() {
         &CrossCheckRun {
             root_store: &a.root_store,
             cfg: &CrossCheckConfig {
-            min_peer_sample: 0,
-            own_hotkey: Some(hk_a.to_vec()),
-        },
+                min_peer_sample: 0,
+                own_hotkey: Some(hk_a.to_vec()),
+            },
             signing_secret: Some(&sk_a),
             own_hotkey_pk: Some(hk_a),
         },
-        )
+    )
     .await;
     assert!(
         matches!(out_a, ComparisonOutcome::Match { .. }),
@@ -240,15 +245,18 @@ async fn s1_unanimous_peer_sample_pass() {
         &CrossCheckRun {
             root_store: &b.root_store,
             cfg: &CrossCheckConfig {
-            min_peer_sample: 0,
-            own_hotkey: Some(hk_b.to_vec()),
-        },
+                min_peer_sample: 0,
+                own_hotkey: Some(hk_b.to_vec()),
+            },
             signing_secret: Some(&sk_b),
             own_hotkey_pk: Some(hk_b),
         },
-        )
+    )
     .await;
-    assert!(matches!(out_b, ComparisonOutcome::Match { .. }), "B: {out_b:?}");
+    assert!(
+        matches!(out_b, ComparisonOutcome::Match { .. }),
+        "B: {out_b:?}"
+    );
 
     let url = format!("{}/v1/consensus/root/{epoch}", a.base_url());
     let resp = reqwest::get(&url).await.expect("get");
@@ -295,13 +303,13 @@ async fn s1_unanimous_peer_sample_pass() {
         &CrossCheckRun {
             root_store: &c.root_store,
             cfg: &CrossCheckConfig {
-            min_peer_sample: 1,
-            own_hotkey: Some(hk_c.to_vec()),
-        },
+                min_peer_sample: 1,
+                own_hotkey: Some(hk_c.to_vec()),
+            },
             signing_secret: Some(&sk_c),
             own_hotkey_pk: Some(hk_c),
         },
-        )
+    )
     .await;
     assert!(
         matches!(out_c, ComparisonOutcome::Match { merkle_root: r, .. } if r == root),
@@ -423,8 +431,14 @@ async fn s3_eclipse_insufficient_peers_fail_closed() {
     let hk_c = pk_of(&sk_c);
     let hk_other = pk_of(&sk_other);
 
-    let (bundle, trust, chain_inner) =
-        valid_bundle(&sk(1), &sk(2), b"dummy", &[(hk_c, 50), (hk_other, 30)], 100, epoch);
+    let (bundle, trust, chain_inner) = valid_bundle(
+        &sk(1),
+        &sk(2),
+        b"dummy",
+        &[(hk_c, 50), (hk_other, 30)],
+        100,
+        epoch,
+    );
     let root = bundle.body.merkle_root;
     let chain = Arc::new(SyncChain::new(chain_inner));
 
@@ -490,8 +504,14 @@ async fn s4_self_excluded_from_sample() {
     let hk_a = pk_of(&sk_a);
     let hk_other = pk_of(&sk_other);
 
-    let (bundle, trust, chain_inner) =
-        valid_bundle(&sk(1), &sk(2), b"dummy", &[(hk_a, 50), (hk_other, 30)], 100, epoch);
+    let (bundle, trust, chain_inner) = valid_bundle(
+        &sk(1),
+        &sk(2),
+        b"dummy",
+        &[(hk_a, 50), (hk_other, 30)],
+        100,
+        epoch,
+    );
     let root = bundle.body.merkle_root;
     let chain = Arc::new(SyncChain::new(chain_inner));
 

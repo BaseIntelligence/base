@@ -23,17 +23,18 @@
 #![forbid(unsafe_code)]
 
 mod credit;
-mod glue;
 mod error;
+mod glue;
+mod pipeline;
 mod policy;
 mod report_data;
 mod tcb;
 mod verifier;
-mod pipeline;
 
 pub use credit::{AttestCreditBook, CreditKey};
 pub use error::PolicyError;
 pub use glue::{mr_config_id_matches, replay_compose_hash};
+pub use pipeline::{verify_submission, SubmissionInput};
 pub use policy::{evaluate, PolicyInput};
 pub use report_data::{
     compute_report_data, report_data_preimage, verify_report_data, ReportDataBinding,
@@ -41,9 +42,8 @@ pub use report_data::{
 };
 pub use tcb::{classify_tcb, CollateralFreshness, TcbAction, TcbStatus};
 pub use verifier::{
-    MockQuoteVerifier, QuoteVerifyError, QuoteVerifyOk, QuoteVerifier, VerifierFailureKind,
+    MockQuoteVerifier, QuoteVerifier, QuoteVerifyError, QuoteVerifyOk, VerifierFailureKind,
 };
-pub use pipeline::{verify_submission, SubmissionInput};
 // Re-export pipeline crates callers need beside policy.
 pub use gbase_attest_parse as parse;
 pub use gbase_attest_replay as replay;

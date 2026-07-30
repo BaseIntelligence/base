@@ -119,8 +119,8 @@ impl From<SignatureError> for CryptoError {
 ///
 /// Returns [`CryptoError::InvalidSecretKey`] if the bytes are not a valid mini-secret.
 pub fn secret_from_bytes(bytes: &[u8; KEY_LEN]) -> Result<SecretKey, CryptoError> {
-    let mini = schnorrkel::MiniSecretKey::from_bytes(bytes)
-        .map_err(|_| CryptoError::InvalidSecretKey)?;
+    let mini =
+        schnorrkel::MiniSecretKey::from_bytes(bytes).map_err(|_| CryptoError::InvalidSecretKey)?;
     Ok(mini.expand(schnorrkel::ExpansionMode::Ed25519))
 }
 

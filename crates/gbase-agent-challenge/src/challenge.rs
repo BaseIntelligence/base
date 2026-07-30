@@ -50,10 +50,7 @@ pub struct MapAttestationLookup {
 
 impl AttestationLookup for MapAttestationLookup {
     fn status(&self, _netuid: u16, _epoch: u64, miner: &Hotkey) -> AttestationStatus {
-        self.by_miner
-            .get(miner)
-            .copied()
-            .unwrap_or(self.default)
+        self.by_miner.get(miner).copied().unwrap_or(self.default)
     }
 }
 
@@ -157,14 +154,14 @@ impl AgentV1Challenge {
     }
 
     /// Trust-root entry for `agent-v1`.
-    fn entry<'a>(&self, body: &'a ChallengesBody) -> Result<&'a ChallengeEntry, ChallengeError> {
+    fn entry(body: &ChallengesBody) -> Result<&ChallengeEntry, ChallengeError> {
         body.get(CHALLENGE_ID_BYTES)
             .ok_or_else(|| ChallengeError::UnknownChallenge(CHALLENGE_ID.into()))
     }
 
     /// Policy for participant derivation.
-    fn policy<'a>(&self, body: &'a ChallengesBody) -> Result<&'a ParticipantPolicy, ChallengeError> {
-        Ok(&self.entry(body)?.policy)
+    fn policy(body: &ChallengesBody) -> Result<&ParticipantPolicy, ChallengeError> {
+        Ok(&Self::entry(body)?.policy)
     }
 }
 
@@ -178,7 +175,7 @@ impl Challenge for AgentV1Challenge {
     }
 
     fn expected_set(&self, ctx: &EpochCtx) -> Result<BTreeSet<Hotkey>, ChallengeError> {
-        let policy = self.policy(&ctx.challenges)?;
+        let policy = Self::policy(&ctx.challenges)?;
         let rows = metagraph_rows_from_chain(&ctx.metagraph.hotkeys, None)
             .map_err(|e| ChallengeError::Metagraph(e.to_string()))?;
         Ok(expected_participants(policy, &rows))
@@ -220,13 +217,13 @@ impl Challenge for AgentV1Challenge {
         let expected = self.expected_set(ctx)?;
         let mut out = BTreeMap::new();
         for h in &expected {
-            let call = calls.get(h).cloned().unwrap_or_else(|| {
+            let call = calls.get(h).cloned().unwrap_or(
                 // Silence is a bug — emit ChallengeInternal NoScore, never omit.
                 MinerCallOutcome::Observed {
                     duration_ms: 0,
                     outcome: CallOutcome::ChallengeInternal,
-                }
-            });
+                },
+            );
             let soa = self.score_one(ctx, *h, &call, attest);
             out.insert(*h, soa);
         }
@@ -241,14 +238,8 @@ impl Challenge for AgentV1Challenge {
         epoch: u64,
         score_or_absence: ScoreOrAbsence,
     ) -> Result<LeafV1, ChallengeError> {
-        make_signed_leaf(
-            secret,
-            CHALLENGE_ID_BYTES,
-            miner,
-            epoch,
-            score_or_absence,
-        )
-        .map_err(|e| ChallengeError::Sign(e.to_string()))
+        make_signed_leaf(secret, CHALLENGE_ID_BYTES, miner, epoch, score_or_absence)
+            .map_err(|e| ChallengeError::Sign(e.to_string()))
     }
 
     async fn submit_all(

@@ -45,6 +45,16 @@ pub use crosscheck::{
 };
 pub use epoch::{epoch_from_block, epoch_from_chain, EpochSnapshot};
 pub use error::ValidatorError;
+pub use gbase_dissent::{
+    apply_three_outcome_policy, dissent_router, DissentBodyV1, DissentJson, DissentReasonCode,
+    DissentSigner, DissentStore, DissentV1, EpochDecision, NoSubmitReason, RecomputeView,
+    SharedDissentStore, SubmissionIntent, SubmissionSource,
+};
+pub use gbase_submit::{
+    encode_payload_no_merkle, payload_from_intent, submit_decision_intents, submit_intent, Clock,
+    CountingDrand, DrandClient, DrandError, FailingDrand, FixedClock, ReadyDrand, SubmitConfig,
+    SubmitError, SubmitOutcome, SystemClock, COMMIT_REVEAL_VERSION_V4, MECID_MAIN,
+};
 pub use mirror::{
     bundle_identity, mirror_router, parse_root_hex, root_hex, MemoryMirrorStore, SharedMirrorStore,
 };
@@ -56,16 +66,6 @@ pub use recompute::{
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use sync_chain::SyncChain;
-pub use gbase_submit::{
-    payload_from_intent, submit_decision_intents, submit_intent, encode_payload_no_merkle,
-    Clock, CountingDrand, DrandClient, DrandError, FailingDrand, FixedClock, ReadyDrand,
-    SubmitConfig, SubmitError, SubmitOutcome, SystemClock, COMMIT_REVEAL_VERSION_V4, MECID_MAIN,
-};
-pub use gbase_dissent::{
-    apply_three_outcome_policy, dissent_router, DissentBodyV1, DissentJson, DissentReasonCode,
-    DissentSigner, DissentStore, DissentV1, EpochDecision, NoSubmitReason, RecomputeView,
-    SharedDissentStore, SubmissionIntent, SubmissionSource,
-};
 
 /// Map validator [`ComparisonOutcome`] into policy [`RecomputeView`].
 #[must_use]
@@ -104,9 +104,7 @@ pub fn recompute_view_from_comparison(c: &ComparisonOutcome) -> RecomputeView {
         ComparisonOutcome::NoSubmission { reason } => {
             let mapped = match reason {
                 NoSubmissionReason::PeerRootDisagreement {
-                    epoch,
-                    candidate,
-                    ..
+                    epoch, candidate, ..
                 } => NoSubmitReason::PeerRootDisagreement {
                     epoch: *epoch,
                     candidate: *candidate,
@@ -122,15 +120,15 @@ pub fn recompute_view_from_comparison(c: &ComparisonOutcome) -> RecomputeView {
 }
 
 #[cfg(test)]
-mod skeleton_tests;
-#[cfg(test)]
-mod mirror_peer_tests;
+mod adversarial_tests;
 #[cfg(test)]
 mod crosscheck_tests;
 #[cfg(test)]
+mod mirror_peer_tests;
+#[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
-mod adversarial_tests;
+mod skeleton_tests;
 
 pub use attest::{
     attest_router, spawn_attest_server, AttestState, NonceRequest, NonceResponse, SubmitRequest,

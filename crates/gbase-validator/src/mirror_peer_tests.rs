@@ -1,4 +1,9 @@
-#![allow(clippy::too_many_lines, clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::pedantic
+)]
 //! Task 30 VERIFY: three in-process validators, peer mirror fetch, root/epoch bind.
 
 use std::sync::Arc;
@@ -236,7 +241,10 @@ async fn s1_three_validators_peer_fetch_after_gateway_kill() {
         }
         other => panic!("A expected Match, got {other:?}"),
     }
-    assert!(a.mirror.contains_root(&root), "A must mirror verified bundle");
+    assert!(
+        a.mirror.contains_root(&root),
+        "A must mirror verified bundle"
+    );
 
     // Surface: GET /v1/bundle/root/{hex} from A returns SCALE bytes.
     let root_url = format!("{}/v1/bundle/root/{}", a.base_url(), hex::encode(root));
@@ -312,10 +320,22 @@ async fn s1_three_validators_peer_fetch_after_gateway_kill() {
 #[tokio::test]
 async fn s2_peer_wrong_root_rejected() {
     let epoch = 7u64;
-    let (honest, trust, chain_inner) =
-        valid_bundle(&sk(1), &sk(2), b"dummy", &[(0xA1, 50), (0xB2, 30)], 100, epoch);
-    let (other, _, _) =
-        valid_bundle(&sk(3), &sk(4), b"dummy", &[(0xA1, 10), (0xB2, 90)], 100, epoch);
+    let (honest, trust, chain_inner) = valid_bundle(
+        &sk(1),
+        &sk(2),
+        b"dummy",
+        &[(0xA1, 50), (0xB2, 30)],
+        100,
+        epoch,
+    );
+    let (other, _, _) = valid_bundle(
+        &sk(3),
+        &sk(4),
+        b"dummy",
+        &[(0xA1, 10), (0xB2, 90)],
+        100,
+        epoch,
+    );
     assert_ne!(honest.body.merkle_root, other.body.merkle_root);
     let want_root = honest.body.merkle_root;
     let wrong_bytes = other.encode_bytes();
@@ -329,10 +349,7 @@ async fn s2_peer_wrong_root_rejected() {
     // by using a raw axum is hard — instead use wiremock as the "peer".
     let evil = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(format!(
-            "/v1/bundle/root/{}",
-            hex::encode(want_root)
-        )))
+        .and(path(format!("/v1/bundle/root/{}", hex::encode(want_root))))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/octet-stream")
@@ -377,8 +394,14 @@ async fn s2_peer_wrong_root_rejected() {
 async fn s3_peer_wrong_epoch_rejected() {
     let epoch = 7u64;
     let other_epoch = 8u64;
-    let (honest, trust, chain_inner) =
-        valid_bundle(&sk(1), &sk(2), b"dummy", &[(0xA1, 50), (0xB2, 30)], 100, epoch);
+    let (honest, trust, chain_inner) = valid_bundle(
+        &sk(1),
+        &sk(2),
+        b"dummy",
+        &[(0xA1, 50), (0xB2, 30)],
+        100,
+        epoch,
+    );
     // Same miners/scores but different epoch → different leaf sigs / root.
     let (other_ep, _, _) = valid_bundle(
         &sk(1),

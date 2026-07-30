@@ -150,8 +150,7 @@ pub fn seal_epoch(
         block_b: params.block_b,
         gateway_secret: params.gateway_secret,
     };
-    let bundle =
-        build_sealed_bundle(chain, &trust, leaves, &bparams).map_err(map_bundle_err)?;
+    let bundle = build_sealed_bundle(chain, &trust, leaves, &bparams).map_err(map_bundle_err)?;
     let stored = bundles.put_if_absent(params.epoch, bundle.encode_bytes());
     EpochBundleV1::decode_bytes(&stored).map_err(|e| SealError::Codec(e.to_string()))
 }

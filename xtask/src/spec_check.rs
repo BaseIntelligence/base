@@ -7,30 +7,18 @@ use std::path::Path;
 const LETTER_MARKERS: &[(&str, &str)] = &[
     ("a", "## 1. Encoding law (a)"),
     ("b", "## 2. Protocol version (b)"),
-    (
-        "c",
-        "## 3. Merkle construction (RFC 6962) and leaves (c)",
-    ),
+    ("c", "## 3. Merkle construction (RFC 6962) and leaves (c)"),
     ("d", "## 4. Bundle body and block pin (d)"),
-    (
-        "e",
-        "## 6. Aggregation formula, algorithm_version = 1 (e)",
-    ),
+    ("e", "## 6. Aggregation formula, algorithm_version = 1 (e)"),
     (
         "f",
         "## 5. Emission shares from owner-signed trust root (f)",
     ),
-    (
-        "g",
-        "## 7. Expected participant set derivation (g) (D24)",
-    ),
+    ("g", "## 7. Expected participant set derivation (g) (D24)"),
     ("h", "## 8. Final vector comparison (h)"),
     ("i", "## 9. Distribution and caching (i)"),
     ("j", "## 10. Dissent (j)"),
-    (
-        "k",
-        "## 11. Security claim, quarantine, peer sample (k)",
-    ),
+    ("k", "## 11. Security claim, quarantine, peer sample (k)"),
     (
         "l",
         "## 12. On-chain weight payload: no merkle root (l) (D5)",
@@ -43,10 +31,7 @@ const CONTENT_PINS: &[(&str, &str)] = &[
         "EMPTY_ROOT",
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ),
-    (
-        "D19_claim",
-        "no equivocation between validators",
-    ),
+    ("D19_claim", "no equivocation between validators"),
     ("WeightsTlockPayload", "WeightsTlockPayload"),
     ("no_LKG", "No last-known-good"),
     ("NoScoreReasonCode", "NoScoreReasonCode"),
@@ -105,9 +90,8 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
     {
         // Spec uses bold line; accept the section title path already covered by (l).
         if !body.contains("no merkle root (l)") {
-            failures.push(
-                "content pin D5_negation: need explicit 'merkle root is NOT' wording".into(),
-            );
+            failures
+                .push("content pin D5_negation: need explicit 'merkle root is NOT' wording".into());
         }
     }
 

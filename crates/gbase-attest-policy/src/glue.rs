@@ -11,7 +11,9 @@ use gbase_trustroot::REGISTER_LEN;
 ///
 /// Propagates [`ReplayError`]. Returns [`ReplayError::DigestMismatch`] with
 /// name `"compose-hash"` when the payload length is not 32 bytes (fail closed).
-pub fn replay_compose_hash(events: &[Event]) -> Result<([u8; COMPOSE_HASH_LEN], Replay), ReplayError> {
+pub fn replay_compose_hash(
+    events: &[Event],
+) -> Result<([u8; COMPOSE_HASH_LEN], Replay), ReplayError> {
     let replay = replay_rtmr3(events)?;
     let Some(raw) = replay.compose_hash.as_ref() else {
         return Err(ReplayError::DigestMismatch {

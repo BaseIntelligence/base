@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_possible_truncation)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_possible_truncation
+)]
 
 //! Integration tests for gbase-trustroot (task-18 VERIFY scenarios).
 
@@ -7,10 +11,11 @@ use std::path::Path;
 
 use gbase_crypto::KEY_LEN;
 use gbase_trustroot::{
-    encode_challenges_body, encode_hex, encode_measurements_body, filter_active, load_challenges_file,
-    load_config_dir, load_measurements_file, sign_trust_root_raw, ChallengeEntry, ChallengesBody,
-    ChallengesToml, ChallengeToml, MeasurementEntry, MeasurementsBody, MeasurementsToml,
-    ParticipantPolicy, PolicyToml, TrustRootError, VerifiedRoot, BPS_DENOM,
+    encode_challenges_body, encode_hex, encode_measurements_body, filter_active,
+    load_challenges_file, load_config_dir, load_measurements_file, sign_trust_root_raw,
+    ChallengeEntry, ChallengeToml, ChallengesBody, ChallengesToml, MeasurementEntry,
+    MeasurementsBody, MeasurementsToml, ParticipantPolicy, PolicyToml, TrustRootError,
+    VerifiedRoot, BPS_DENOM,
 };
 use rand_core::OsRng;
 use schnorrkel::MiniSecretKey;
@@ -173,9 +178,9 @@ fn s4_empty_measurements_reject_all_quotes() {
     assert!(root.body.entries.is_empty());
     let zero48 = [0u8; 48];
     let zero32 = [0u8; 32];
-    assert!(!root.body.allows_quote(
-        &zero48, &zero48, &zero48, &zero48, &zero48, &zero32
-    ));
+    assert!(!root
+        .body
+        .allows_quote(&zero48, &zero48, &zero48, &zero48, &zero48, &zero32));
     // Even a "matching" empty profile does not exist.
     let filled = MeasurementEntry {
         mr_td: [1u8; 48],
@@ -320,7 +325,11 @@ fn s9_repo_config_loads_when_present() {
     );
     // Task 35: allowlist frozen from real Phala fixtures (one entry).
     let entries = &ms.primary().unwrap().body.entries;
-    assert_eq!(entries.len(), 1, "measurements allowlist must contain real CVM entry");
+    assert_eq!(
+        entries.len(),
+        1,
+        "measurements allowlist must contain real CVM entry"
+    );
     let e = &entries[0];
     assert!(ms.allows_quote(
         &e.mr_td,

@@ -48,25 +48,25 @@ impl ActiveRoots<ChallengesBody> {
     ///
     /// [`TrustRootError::NoActiveRoot`] if empty.
     pub fn primary(&self) -> Result<&VerifiedRoot<ChallengesBody>, TrustRootError> {
-        self.roots.last().ok_or(TrustRootError::NoActiveRoot {
-            epoch: self.epoch,
-        })
+        self.roots
+            .last()
+            .ok_or(TrustRootError::NoActiveRoot { epoch: self.epoch })
     }
 
     /// Whether any active root contains `(id, public_key)`.
     #[must_use]
     pub fn accepts_challenge_key(&self, id: &[u8], public_key: &[u8; KEY_LEN]) -> bool {
-        self.roots.iter().any(|r| {
-            r.body
-                .get(id)
-                .is_some_and(|c| c.public_key == *public_key)
-        })
+        self.roots
+            .iter()
+            .any(|r| r.body.get(id).is_some_and(|c| c.public_key == *public_key))
     }
 
     /// Whether `shares` byte-equals the emission map of any active root.
     #[must_use]
     pub fn matches_emission_shares(&self, shares: &[(Vec<u8>, u16)]) -> bool {
-        self.roots.iter().any(|r| r.body.emission_shares() == shares)
+        self.roots
+            .iter()
+            .any(|r| r.body.emission_shares() == shares)
     }
 }
 
@@ -77,9 +77,9 @@ impl ActiveRoots<MeasurementsBody> {
     ///
     /// [`TrustRootError::NoActiveRoot`] if empty.
     pub fn primary(&self) -> Result<&VerifiedRoot<MeasurementsBody>, TrustRootError> {
-        self.roots.last().ok_or(TrustRootError::NoActiveRoot {
-            epoch: self.epoch,
-        })
+        self.roots
+            .last()
+            .ok_or(TrustRootError::NoActiveRoot { epoch: self.epoch })
     }
 
     /// Digest of the primary (newest) measurements body.
@@ -155,7 +155,13 @@ pub fn load_challenges_file_with_sig(
     let body = doc.to_body()?;
     let body_scale = encode_challenges_body(&body);
     let signature = read_signature(sig_path)?;
-    verify_owner(owner_public, doc.version, doc.introduced_epoch, &body_scale, &signature)?;
+    verify_owner(
+        owner_public,
+        doc.version,
+        doc.introduced_epoch,
+        &body_scale,
+        &signature,
+    )?;
     Ok(VerifiedRoot {
         path: path.to_path_buf(),
         version: doc.version,
@@ -196,7 +202,13 @@ pub fn load_measurements_file_with_sig(
     let body = doc.to_body()?;
     let body_scale = encode_measurements_body(&body);
     let signature = read_signature(sig_path)?;
-    verify_owner(owner_public, doc.version, doc.introduced_epoch, &body_scale, &signature)?;
+    verify_owner(
+        owner_public,
+        doc.version,
+        doc.introduced_epoch,
+        &body_scale,
+        &signature,
+    )?;
     Ok(VerifiedRoot {
         path: path.to_path_buf(),
         version: doc.version,

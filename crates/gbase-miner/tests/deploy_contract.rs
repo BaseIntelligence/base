@@ -62,11 +62,8 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     assert!(DEFAULT_AGENT_IMAGE.contains("@sha256:"));
     assert!(DEFAULT_ATTEST_HELPER_IMAGE.contains("@sha256:"));
 
-    let doc: serde_json::Value =
-        serde_json::from_str(&result.app_compose_json).expect("json");
-    let allowed = doc["allowed_envs"]
-        .as_array()
-        .expect("allowed_envs array");
+    let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
+    let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
     let names: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
     assert!(names.contains(&"GBASE_NETUID"));
     assert!(names.contains(&"GBASE_MINER_HOTKEY_FILE"));

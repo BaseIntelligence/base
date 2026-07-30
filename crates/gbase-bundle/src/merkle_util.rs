@@ -61,11 +61,7 @@ pub fn metagraph_rows_from_chain(
         let uid = u16::try_from(i)
             .map_err(|_| BundleError::InvalidMetagraph("uid does not fit u16".into()))?;
         let stake = stakes.and_then(|s| s.get(i).copied()).unwrap_or(0);
-        rows.push(MetagraphRow {
-            hotkey,
-            uid,
-            stake,
-        });
+        rows.push(MetagraphRow { hotkey, uid, stake });
     }
     rows.sort_by_key(|a| a.hotkey);
     Ok(rows)

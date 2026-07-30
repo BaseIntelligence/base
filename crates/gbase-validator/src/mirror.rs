@@ -42,10 +42,16 @@ impl MemoryMirrorStore {
     /// Call only after the bundle has been verified (or inputs verified for class A).
     pub fn put_verified(&self, epoch: u64, root: [u8; 32], bytes: Vec<u8>) {
         {
-            let mut by_root = self.by_root.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut by_root = self
+                .by_root
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             by_root.entry(root).or_insert(bytes);
         }
-        let mut by_epoch = self.by_epoch.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut by_epoch = self
+            .by_epoch
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         by_epoch.entry(epoch).or_insert(root);
     }
 
@@ -63,7 +69,10 @@ impl MemoryMirrorStore {
     #[must_use]
     pub fn get_by_epoch(&self, epoch: u64) -> Option<Vec<u8>> {
         let root = {
-            let by_epoch = self.by_epoch.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let by_epoch = self
+                .by_epoch
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             by_epoch.get(&epoch).copied()?
         };
         self.get_by_root(&root)

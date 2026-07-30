@@ -9,16 +9,17 @@
 
 mod error;
 mod merkle_util;
+mod seal;
 mod sign;
 mod types;
-mod seal;
 mod verify;
 
 pub use error::BundleError;
 pub use merkle_util::{
-    compute_merkle_root, compute_metagraph_root, expected_participants, leaf_preimage, leaf_sort_key,
-    metagraph_rows_from_chain, sort_leaves, uid_map_from_rows,
+    compute_merkle_root, compute_metagraph_root, expected_participants, leaf_preimage,
+    leaf_sort_key, metagraph_rows_from_chain, sort_leaves, uid_map_from_rows,
 };
+pub use seal::{build_sealed_bundle, SealParams};
 pub use sign::{
     finalize_body_merkle, make_signed_leaf, raw_weight_payload, sign_bundle, sign_leaf_challenge,
 };
@@ -27,7 +28,6 @@ pub use types::{
     LocalTrustRoot, MetagraphRow, NoScoreReasonCode, RawWeightBodyV1, ScoreOrAbsence,
     VerifiedBundle, ALGORITHM_VERSION, BODY_FIELD_ORDER, MAX_CHALLENGE_ID_LEN, PROTOCOL_VERSION,
 };
-pub use seal::{build_sealed_bundle, SealParams};
 pub use verify::{final_vectors_equal, verify_bundle};
 
 use parity_scale_codec::{Decode, Encode};

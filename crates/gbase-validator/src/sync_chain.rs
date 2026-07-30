@@ -99,7 +99,6 @@ impl<C: ChainClient> ChainClient for SyncChain<C> {
         values: Vec<u16>,
         version_key: u64,
     ) -> Result<(), ChainError> {
-        self.lock()?
-            .set_weights(netuid, uids, values, version_key)
+        self.lock()?.set_weights(netuid, uids, values, version_key)
     }
 }

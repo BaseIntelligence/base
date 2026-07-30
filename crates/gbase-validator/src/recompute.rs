@@ -341,14 +341,10 @@ pub fn maybe_persist_verified(
 ) {
     let (epoch, root) = match outcome {
         ComparisonOutcome::Match {
-            epoch,
-            merkle_root,
-            ..
+            epoch, merkle_root, ..
         }
         | ComparisonOutcome::VectorMismatch {
-            epoch,
-            merkle_root,
-            ..
+            epoch, merkle_root, ..
         } => (*epoch, *merkle_root),
         ComparisonOutcome::InputInvalid { .. } | ComparisonOutcome::NoSubmission { .. } => return,
     };
@@ -420,7 +416,9 @@ pub async fn fetch_and_compare_with_mirror<C: ChainClient>(
                         expected: epoch,
                     },
                 },
-                Some(exp) => fetch_from_peers(client, chain, trust, store, peers, exp, gw_err).await,
+                Some(exp) => {
+                    fetch_from_peers(client, chain, trust, store, peers, exp, gw_err).await
+                }
             }
         }
     }
@@ -481,7 +479,9 @@ async fn fetch_from_peers<C: ChainClient>(
                 reason: match reason {
                     NoSubmissionReason::GatewayUnreachable(_)
                     | NoSubmissionReason::GatewayHttp { .. }
-                    | NoSubmissionReason::NoGatewayConfigured => NoSubmissionReason::NoPeersAvailable,
+                    | NoSubmissionReason::NoGatewayConfigured => {
+                        NoSubmissionReason::NoPeersAvailable
+                    }
                     other => other,
                 },
             },
@@ -541,7 +541,6 @@ async fn fetch_from_peers<C: ChainClient>(
         },
     }
 }
-
 
 /// Fetch + compare (with mirror) then peer-root cross-check (task 31).
 ///

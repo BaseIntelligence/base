@@ -51,9 +51,10 @@ async fn boot_ok() -> (SocketAddr, tokio::sync::watch::Sender<bool>, AttestState
     let (miner, validator) = keys();
     let _ = miner;
     let state = AttestState::with_ok_verifier(real_measurements(), validator, 1);
-    let (addr, tx, _join) = spawn_attest_server(state.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
+    let (addr, tx, _join) =
+        spawn_attest_server(state.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
     // give server a tick
     tokio::time::sleep(Duration::from_millis(20)).await;
     (addr, tx, state)
@@ -62,9 +63,10 @@ async fn boot_ok() -> (SocketAddr, tokio::sync::watch::Sender<bool>, AttestState
 async fn boot_pcs() -> (SocketAddr, tokio::sync::watch::Sender<bool>, AttestState) {
     let (_miner, validator) = keys();
     let state = AttestState::with_pcs_timeout(real_measurements(), validator, 1);
-    let (addr, tx, _join) = spawn_attest_server(state.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
+    let (addr, tx, _join) =
+        spawn_attest_server(state.clone(), SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
     tokio::time::sleep(Duration::from_millis(20)).await;
     (addr, tx, state)
 }
@@ -145,7 +147,7 @@ async fn s2_resubmission_rejected() {
     let _ = shutdown.send(true);
 }
 
-/// S3 — quote bound to different epoch → Rejected (report_data mismatch).
+/// S3 — quote bound to different epoch → Rejected (`report_data` mismatch).
 #[tokio::test]
 async fn s3_different_epoch_rejected() {
     let (addr, shutdown, _state) = boot_ok().await;
@@ -343,7 +345,7 @@ async fn s6_pcs_outage_parked_no_credit() {
     let _ = shutdown.send(true);
 }
 
-/// Pipeline unit: verify_submission happy path without HTTP.
+/// Pipeline unit: `verify_submission` happy path without HTTP.
 #[test]
 fn s0_pipeline_verify_submission_direct() {
     use std::time::{Duration as StdDuration, Instant};
@@ -369,7 +371,7 @@ fn s0_pipeline_verify_submission_direct() {
     patch_report_data(&mut quote, &rd).unwrap();
     let mut nonces = MemoryNonceStore::new();
     let now = Instant::now();
-    register_with_ttl(&mut nonces, nonce, now, StdDuration::from_secs(60)).unwrap();
+    register_with_ttl(&mut nonces, nonce, now, StdDuration::from_mins(1)).unwrap();
     let verifier = MockQuoteVerifier::Ok(QuoteVerifyOk {
         tcb_status: TcbStatus::UpToDate,
         collateral: CollateralFreshness::Fresh,

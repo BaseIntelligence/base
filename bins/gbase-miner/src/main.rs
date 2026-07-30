@@ -134,9 +134,7 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("compose-hash={}", result.compose_hash_hex);
             println!("phala_invoked={}", result.phala_invoked);
             println!("mode={mode:?}");
-            println!(
-                "note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/gbase"
-            );
+            println!("note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/gbase");
             Ok(())
         }
         Cmd::Certify {
@@ -182,10 +180,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("reason={r}");
             }
             println!("grants_credit={}", result.grants_credit);
-            println!(
-                "carries_prior_verified={}",
-                result.carries_prior_verified
-            );
+            println!("carries_prior_verified={}", result.carries_prior_verified);
             println!("validator_hotkey={}", result.validator_hotkey_hex);
             println!("fixture_mode={}", result.fixture_mode);
             Ok(())

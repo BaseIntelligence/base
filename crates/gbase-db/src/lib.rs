@@ -23,11 +23,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Tables that the application role may insert into but never update.
-pub const APPEND_ONLY_TABLES: &[&str] = &[
-    "raw_weight_snapshot",
-    "epoch_bundle",
-    "peer_root_statement",
-];
+pub const APPEND_ONLY_TABLES: &[&str] =
+    &["raw_weight_snapshot", "epoch_bundle", "peer_root_statement"];
 
 /// Application DB role created by migrations (no UPDATE on append-only tables).
 pub const APP_ROLE: &str = "gbase_app";
@@ -269,8 +266,7 @@ pub async fn test_pool_with_url(owner_url: &str) -> Result<TestPool, DbError> {
     let create = format!("CREATE SCHEMA {schema}");
     sqlx::query(&create).execute(&base).await?;
 
-    let opts = PgConnectOptions::from_str(owner_url)?
-        .options([("search_path", schema.as_str())]);
+    let opts = PgConnectOptions::from_str(owner_url)?.options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(5))
@@ -301,8 +297,7 @@ pub async fn test_pool_with_url(owner_url: &str) -> Result<TestPool, DbError> {
     );
     sqlx::query(&grant_all).execute(&pool).await?;
     for table in APPEND_ONLY_TABLES {
-        let revoke =
-            format!("REVOKE UPDATE, DELETE ON TABLE {schema}.{table} FROM {APP_ROLE}");
+        let revoke = format!("REVOKE UPDATE, DELETE ON TABLE {schema}.{table} FROM {APP_ROLE}");
         sqlx::query(&revoke).execute(&pool).await?;
         let grant_ai = format!("GRANT SELECT, INSERT ON TABLE {schema}.{table} TO {APP_ROLE}");
         sqlx::query(&grant_ai).execute(&pool).await?;
@@ -385,11 +380,7 @@ mod unit_tests {
     fn append_only_table_list_is_exact() {
         assert_eq!(
             APPEND_ONLY_TABLES,
-            &[
-                "raw_weight_snapshot",
-                "epoch_bundle",
-                "peer_root_statement"
-            ]
+            &["raw_weight_snapshot", "epoch_bundle", "peer_root_statement"]
         );
     }
 

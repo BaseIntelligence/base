@@ -227,8 +227,8 @@ async fn submit_quote(
 ) -> Result<Json<SubmitResponse>, ApiError> {
     let miner = parse_key_hex(&body.miner_hotkey_hex)?;
     let nonce = parse_key_hex(&body.nonce_hex)?;
-    let quote = hex::decode(body.quote_hex.trim())
-        .map_err(|e| ApiError::bad(format!("quote_hex: {e}")))?;
+    let quote =
+        hex::decode(body.quote_hex.trim()).map_err(|e| ApiError::bad(format!("quote_hex: {e}")))?;
     let event_log = body.event_log_json.into_bytes();
 
     let mut g = st.inner.lock().await;

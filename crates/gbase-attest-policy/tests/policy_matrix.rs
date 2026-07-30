@@ -9,9 +9,9 @@ use gbase_crypto::{register_with_ttl, MemoryNonceStore, KEY_LEN};
 use gbase_trustroot::{MeasurementEntry, MeasurementsBody, COMPOSE_HASH_LEN, REGISTER_LEN};
 
 use gbase_attest_policy::{
-    classify_tcb, compute_report_data, evaluate, AttestCreditBook, AttestOutcome, CollateralFreshness,
-    CreditKey, MockQuoteVerifier, ParkReason, PolicyInput, QuoteVerifyOk, RejectReason,
-    ReportDataBinding, TcbAction, TcbStatus, VerifierFailureKind, REPORT_DATA_LEN,
+    classify_tcb, compute_report_data, evaluate, AttestCreditBook, AttestOutcome,
+    CollateralFreshness, CreditKey, MockQuoteVerifier, ParkReason, PolicyInput, QuoteVerifyOk,
+    RejectReason, ReportDataBinding, TcbAction, TcbStatus, VerifierFailureKind, REPORT_DATA_LEN,
 };
 
 fn zeros_reg() -> [u8; REGISTER_LEN] {
@@ -760,7 +760,7 @@ fn s18_full_pipeline_park_clears_credit_path() {
 /// Glue: `mr_config_id` v1 matches compose hash.
 #[test]
 fn s19_mr_config_id_matches_compose_hash() {
-    use gbase_attest_policy::{mr_config_id_matches, compose_hash};
+    use gbase_attest_policy::{compose_hash, mr_config_id_matches};
     let entry = entry_a();
     let binding = binding_base();
     let mut td = td_for(&binding, &entry);
@@ -773,8 +773,10 @@ fn s19_mr_config_id_matches_compose_hash() {
 /// Glue: `replay_compose_hash` extracts 32-byte payload.
 #[test]
 fn s20_replay_compose_hash_ok() {
-    use gbase_attest_policy::{replay_compose_hash, replay};
-    use gbase_attest_replay::{event_digest, DSTACK_RUNTIME_EVENT_TYPE, APP_IMR, COMPOSE_HASH_EVENT};
+    use gbase_attest_policy::{replay, replay_compose_hash};
+    use gbase_attest_replay::{
+        event_digest, APP_IMR, COMPOSE_HASH_EVENT, DSTACK_RUNTIME_EVENT_TYPE,
+    };
     let payload = [7u8; 32];
     let digest = event_digest(DSTACK_RUNTIME_EVENT_TYPE, COMPOSE_HASH_EVENT, &payload);
     let events = [replay::Event {

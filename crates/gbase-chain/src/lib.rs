@@ -1063,7 +1063,6 @@ mod tests {
             .contains("unsupported commit_reveal_version"));
     }
 
-
     #[test]
     fn s4_payload_scale_encodes_four_fields_only() {
         let p = sample_payload();
@@ -1153,8 +1152,7 @@ mod tests {
     fn testnet_current_block_positive() {
         #[cfg(feature = "live")]
         {
-            let client =
-                LiveRpcChain::connect(DEFAULT_TESTNET_ENDPOINT).expect("connect testnet");
+            let client = LiveRpcChain::connect(DEFAULT_TESTNET_ENDPOINT).expect("connect testnet");
             let n = client.current_block().expect("current_block");
             assert!(n > 0, "expected tip > 0, got {n}");
         }

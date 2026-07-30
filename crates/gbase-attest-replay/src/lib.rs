@@ -201,8 +201,8 @@ struct WireEvent {
 /// # Errors
 /// Returns [`EventLogError`] on JSON or hex failures.
 pub fn events_from_json(bytes: &[u8]) -> Result<Vec<Event>, EventLogError> {
-    let wire: Vec<WireEvent> = serde_json::from_slice(bytes)
-        .map_err(|e| EventLogError::InvalidJson(e.to_string()))?;
+    let wire: Vec<WireEvent> =
+        serde_json::from_slice(bytes).map_err(|e| EventLogError::InvalidJson(e.to_string()))?;
     let mut out = Vec::with_capacity(wire.len());
     for (i, w) in wire.into_iter().enumerate() {
         let payload = decode_hex_field("event_payload", &w.event_payload, i)?;
@@ -495,7 +495,10 @@ mod tests {
         let replay = replay_rtmr3(&events).expect("replay");
         let mut expected = [0_u8; REGISTER_LEN];
         expected.copy_from_slice(&quote[RTMR3_OFF..RTMR3_OFF + REGISTER_LEN]);
-        assert_eq!(replay.rtmr3, expected, "replayed RTMR3 must equal quote RTMR3");
+        assert_eq!(
+            replay.rtmr3, expected,
+            "replayed RTMR3 must equal quote RTMR3"
+        );
         let compose = replay.compose_hash.expect("compose-hash event");
         assert_eq!(compose.len(), 32);
         assert_eq!(
@@ -503,5 +506,4 @@ mod tests {
             "1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b"
         );
     }
-
 }

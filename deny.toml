@@ -25,12 +25,14 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    "CDLA-Permissive-2.0",
 ]
 exceptions = []
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# Workspace path crates use `version = "*"` for internal path deps; lockfile pins the graph.
+wildcards = "warn"
 highlight = "all"
 # Known-bad / abandoned crates we never want in the graph.
 deny = [

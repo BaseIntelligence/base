@@ -210,9 +210,11 @@ async fn get_consensus_root(
     Path(epoch): Path<u64>,
 ) -> Response {
     match store.get_local(epoch) {
-        Some(stmt) => {
-            (StatusCode::OK, Json(RootStatementJson::from_statement(&stmt))).into_response()
-        }
+        Some(stmt) => (
+            StatusCode::OK,
+            Json(RootStatementJson::from_statement(&stmt)),
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "no root statement for epoch" })),
@@ -231,9 +233,7 @@ pub enum CrossCheckFailKind {
         others_on_metagraph: usize,
     },
     /// Verified peers disagree on root (class B / `CrossCheckFailed`).
-    RootDisagreement {
-        candidate: [u8; 32],
-    },
+    RootDisagreement { candidate: [u8; 32] },
 }
 
 /// Cross-check result. Task 32 maps [`Self::Failed`] to dissent.
@@ -246,10 +246,7 @@ pub enum CrossCheckOutcome {
         statements: Vec<SignedRootStatement>,
     },
     /// No other validators on metagraph — waived (D26).
-    SingleValidatorExempt {
-        epoch: u64,
-        merkle_root: [u8; 32],
-    },
+    SingleValidatorExempt { epoch: u64, merkle_root: [u8; 32] },
     Failed {
         epoch: u64,
         kind: CrossCheckFailKind,
@@ -510,10 +507,7 @@ mod tests {
         let out = evaluate_sample(9, root, &[sa, sb], 2, 1);
         assert!(matches!(
             out,
-            CrossCheckOutcome::Agreed {
-                sample_size: 2,
-                ..
-            }
+            CrossCheckOutcome::Agreed { sample_size: 2, .. }
         ));
         assert!(out.allows_submission());
     }

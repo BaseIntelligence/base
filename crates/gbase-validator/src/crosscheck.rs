@@ -85,14 +85,10 @@ pub fn apply_crosscheck_gate(
 pub fn candidate_from_comparison(outcome: &ComparisonOutcome) -> Option<(u64, [u8; 32])> {
     match outcome {
         ComparisonOutcome::Match {
-            epoch,
-            merkle_root,
-            ..
+            epoch, merkle_root, ..
         }
         | ComparisonOutcome::VectorMismatch {
-            epoch,
-            merkle_root,
-            ..
+            epoch, merkle_root, ..
         } => Some((*epoch, *merkle_root)),
         _ => None,
     }

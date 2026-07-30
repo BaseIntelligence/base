@@ -12,20 +12,20 @@
 
 #![forbid(unsafe_code)]
 
+mod certify;
 mod deploy;
 mod inspect;
 mod template;
-mod certify;
 
+pub use certify::{
+    certify, parse_hotkey_hex, CertifyError, CertifyParams, CertifyResult, QuoteSource,
+};
 pub use deploy::{
     deploy_or_dry_run, empty_launch_token_hash_hex, render_app_compose, render_app_compose_bytes,
     run_phala_deploy, DeployError, DeployMode, DeployParams, DeployResult, DEFAULT_AGENT_IMAGE,
     DEFAULT_ATTEST_HELPER_IMAGE,
 };
 pub use inspect::{docker_compose_from_app_compose_json, environment_block_has_no_secrets};
-pub use certify::{
-    certify, parse_hotkey_hex, CertifyError, CertifyParams, CertifyResult, QuoteSource,
-};
 pub use template::{
     docker_compose_yaml, ComposeTemplateInput, AGENT_PORT, AGENT_SERVICE, ATTEST_HELPER_PORT,
     ATTEST_HELPER_SERVICE, HOTKEY_FILE_IN_CVM, LAUNCH_TOKEN_FILE_IN_CVM, RUN_GBASE_DIR,

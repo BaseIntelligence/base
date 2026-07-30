@@ -27,7 +27,8 @@ pub use hexutil::{decode_hex_array, encode_hex};
 pub use load::{
     filter_active, kind_name, load_challenges_dir, load_challenges_file,
     load_challenges_file_with_sig, load_config_dir, load_measurements_dir, load_measurements_file,
-    load_measurements_file_with_sig, load_owner_public_key, sig_path_for, ActiveRoots, VerifiedRoot,
+    load_measurements_file_with_sig, load_owner_public_key, sig_path_for, ActiveRoots,
+    VerifiedRoot,
 };
 pub use sign::{
     encode_challenges_body, encode_measurements_body, measurements_digest, parse_signature_bytes,

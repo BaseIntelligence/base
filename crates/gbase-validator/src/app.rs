@@ -11,13 +11,13 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::coordination::CoordinationClient;
+use crate::crosscheck::{consensus_root_router, RootStatementStore, SharedRootStore};
 use crate::epoch::{epoch_from_block, EpochSnapshot};
 use crate::error::ValidatorError;
-use crate::crosscheck::{consensus_root_router, RootStatementStore, SharedRootStore};
-use gbase_dissent::{dissent_router, DissentStore, SharedDissentStore};
 use crate::mirror::{mirror_router, MemoryMirrorStore, SharedMirrorStore};
 use crate::peers::PeerBook;
 use crate::registration::RegistrationStub;
+use gbase_dissent::{dissent_router, DissentStore, SharedDissentStore};
 
 /// Runtime knobs for the skeleton (injectable for tests).
 #[derive(Clone)]

@@ -66,11 +66,7 @@ pub fn evaluate<S: NonceStore, V: QuoteVerifier>(
     }
 }
 
-fn allows(
-    body: &MeasurementsBody,
-    td: &TdReport,
-    compose_hash: &[u8; COMPOSE_HASH_LEN],
-) -> bool {
+fn allows(body: &MeasurementsBody, td: &TdReport, compose_hash: &[u8; COMPOSE_HASH_LEN]) -> bool {
     body.allows_quote(
         &td.mr_td,
         &td.rtmr0,
@@ -112,4 +108,3 @@ fn reject(reason: RejectReason) -> AttestOutcome {
 fn park(reason: ParkReason) -> AttestOutcome {
     AttestOutcome::Parked { reason }
 }
-

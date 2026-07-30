@@ -220,9 +220,8 @@ pub fn gather_schedule_state<C: crate::ChainClient + ?Sized>(
     netuid: u16,
 ) -> Result<EpochScheduleState, crate::ChainError> {
     let tempo_u64 = chain.tempo(netuid)?;
-    let tempo = u16::try_from(tempo_u64).map_err(|_| {
-        crate::ChainError::Other(format!("tempo {tempo_u64} exceeds u16"))
-    })?;
+    let tempo = u16::try_from(tempo_u64)
+        .map_err(|_| crate::ChainError::Other(format!("tempo {tempo_u64} exceeds u16")))?;
     Ok(EpochScheduleState {
         last_epoch_block: chain.last_epoch_block(netuid)?,
         pending_epoch_at: chain.pending_epoch_at(netuid)?,

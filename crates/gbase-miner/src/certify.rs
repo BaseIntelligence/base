@@ -241,8 +241,7 @@ fn load_fixture_quote(
     } else {
         (EMBEDDED_QUOTE.to_vec(), EMBEDDED_EVENT_LOG.to_vec())
     };
-    patch_report_data(&mut quote, report_data)
-        .map_err(|e| CertifyError::Quote(e.to_string()))?;
+    patch_report_data(&mut quote, report_data).map_err(|e| CertifyError::Quote(e.to_string()))?;
     let event_log_json = String::from_utf8(event_raw)
         .map_err(|e| CertifyError::Fixture(format!("event_log utf8: {e}")))?;
     Ok((quote, event_log_json))
@@ -282,11 +281,10 @@ async fn fetch_live_quote(
     }
     let parsed: QuoteJson =
         serde_json::from_str(&text).map_err(|e| CertifyError::Json(e.to_string()))?;
-    let mut quote = hex::decode(parsed.quote_hex.trim())
-        .map_err(|e| CertifyError::Hex(e.to_string()))?;
+    let mut quote =
+        hex::decode(parsed.quote_hex.trim()).map_err(|e| CertifyError::Hex(e.to_string()))?;
     // Ensure D10 binding is present even if helper omitted it.
-    patch_report_data(&mut quote, report_data)
-        .map_err(|e| CertifyError::Quote(e.to_string()))?;
+    patch_report_data(&mut quote, report_data).map_err(|e| CertifyError::Quote(e.to_string()))?;
     Ok((quote, parsed.event_log_json))
 }
 

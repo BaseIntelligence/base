@@ -18,7 +18,12 @@ fn mini_secret() -> [u8; KEY_LEN] {
     schnorrkel::MiniSecretKey::generate_with(OsRng).to_bytes()
 }
 
-fn signed_score(sk: &[u8; KEY_LEN], miner: [u8; 32], epoch: u64, value: u64) -> gbase_agent_challenge::LeafV1 {
+fn signed_score(
+    sk: &[u8; KEY_LEN],
+    miner: [u8; 32],
+    epoch: u64,
+    value: u64,
+) -> gbase_agent_challenge::LeafV1 {
     make_signed_leaf(
         sk,
         CHALLENGE_ID.as_bytes(),
@@ -74,7 +79,7 @@ async fn well_formed_signed_submission_posts_202() {
                 "epoch": 7,
                 "miner_hotkey": hex::encode(miner),
                 "kind": "score",
-                "score": 1000000
+                "score": 1_000_000
             }))
         })
         .mount(&server)

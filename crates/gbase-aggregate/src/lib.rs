@@ -145,9 +145,7 @@ pub fn aggregate(
         };
         let miners = by_challenge.entry(leaf.challenge_id.clone()).or_default();
         let prev = miners.get(&leaf.miner_hotkey).copied().unwrap_or(0);
-        let next = prev
-            .checked_add(raw)
-            .ok_or(AggregateError::Overflow)?;
+        let next = prev.checked_add(raw).ok_or(AggregateError::Overflow)?;
         miners.insert(leaf.miner_hotkey, next);
     }
 
@@ -194,7 +192,9 @@ pub fn aggregate(
     for hk in &leaf_hotkeys {
         let a = acc.get(hk).copied().unwrap_or(0);
         total = total.checked_add(a).ok_or(AggregateError::Overflow)?;
-        let uid = *hk_to_uid.get(hk).ok_or(AggregateError::MissingUidMapEntry)?;
+        let uid = *hk_to_uid
+            .get(hk)
+            .ok_or(AggregateError::MissingUidMapEntry)?;
         participants.push((*hk, uid, a));
     }
 
@@ -263,12 +263,8 @@ pub fn renormalize_after_quarantine(
     for id in ids {
         let bps = *remaining.get(&id).ok_or(AggregateError::Overflow)?;
         let acc_m = u128::from(bps);
-        let prod = acc_m
-            .checked_mul(house)
-            .ok_or(AggregateError::Overflow)?;
-        let floor_m = prod
-            .checked_div(total)
-            .ok_or(AggregateError::Overflow)?;
+        let prod = acc_m.checked_mul(house).ok_or(AggregateError::Overflow)?;
+        let floor_m = prod.checked_div(total).ok_or(AggregateError::Overflow)?;
         let remainder_m = prod.checked_rem(total).ok_or(AggregateError::Overflow)?;
         if floor_m > house {
             return Err(AggregateError::Overflow);
@@ -290,11 +286,7 @@ pub fn renormalize_after_quarantine(
     let seats_n = usize::try_from(seats_left).map_err(|_| AggregateError::Overflow)?;
 
     // Largest remainder; tie → ascending challenge_id.
-    rows.sort_by(|a, b| {
-        b.remainder
-            .cmp(&a.remainder)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    rows.sort_by(|a, b| b.remainder.cmp(&a.remainder).then_with(|| a.id.cmp(&b.id)));
     if seats_n > rows.len() {
         return Err(AggregateError::Overflow);
     }
@@ -378,12 +370,8 @@ fn hamilton_house(
     let mut sum_floors: u128 = 0;
 
     for &(hotkey, uid, acc_m) in participants {
-        let prod = acc_m
-            .checked_mul(house)
-            .ok_or(AggregateError::Overflow)?;
-        let floor_m = prod
-            .checked_div(total)
-            .ok_or(AggregateError::Overflow)?;
+        let prod = acc_m.checked_mul(house).ok_or(AggregateError::Overflow)?;
+        let floor_m = prod.checked_div(total).ok_or(AggregateError::Overflow)?;
         let remainder_m = prod.checked_rem(total).ok_or(AggregateError::Overflow)?;
         if floor_m > u128::from(u16::MAX) {
             return Err(AggregateError::Overflow);
@@ -433,7 +421,6 @@ fn hamilton_house(
     }
     Ok(out)
 }
-
 
 #[cfg(test)]
 mod tests {

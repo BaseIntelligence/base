@@ -254,8 +254,7 @@ pub fn apply_three_outcome_policy<C: ChainClient>(
         }
         RecomputeView::InputInvalid { error } => {
             if let Some(b) = bundle {
-                if let Some(q) =
-                    try_quarantine(b, chain, trust, min_share_mass_bps, signer, store)?
+                if let Some(q) = try_quarantine(b, chain, trust, min_share_mass_bps, signer, store)?
                 {
                     return Ok(q);
                 }
@@ -279,12 +278,7 @@ fn class_b_from_crosscheck(
             let (reason, root, exp_h, act_h) = match kind {
                 CrossCheckFailKind::RootDisagreement { candidate, .. } => {
                     let (eh, ah) = hashes_from_view(view);
-                    (
-                        DissentReasonCode::PeerRootConflict,
-                        *candidate,
-                        eh,
-                        ah,
-                    )
+                    (DissentReasonCode::PeerRootConflict, *candidate, eh, ah)
                 }
                 CrossCheckFailKind::InsufficientPeers { .. } => {
                     let (root, eh, ah) = roots_hashes_from_view(view);

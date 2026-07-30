@@ -4,8 +4,8 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tokio::process::Command;
 use std::time::Duration;
+use tokio::process::Command;
 
 use gbase_attest_parse::parse_tdx_quote_v4;
 use gbase_attest_policy::replay_compose_hash;
@@ -49,10 +49,9 @@ async fn cli_fixture_mode_verified() {
     let validator = [0xcc; KEY_LEN];
     let miner = [0xaa; KEY_LEN];
     let state = AttestState::with_ok_verifier(measurements(), validator, 1);
-    let (addr, shutdown, _join) =
-        spawn_attest_server(state, SocketAddr::from(([127, 0, 0, 1], 0)))
-            .await
-            .unwrap();
+    let (addr, shutdown, _join) = spawn_attest_server(state, SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let bin = miner_bin();

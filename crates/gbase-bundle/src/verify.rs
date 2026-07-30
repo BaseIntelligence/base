@@ -132,9 +132,7 @@ pub fn verify_bundle<C: ChainClient>(
         return Err(BundleError::FinalVectorMismatch);
     }
 
-    Ok(VerifiedBundle {
-        body: body.clone(),
-    })
+    Ok(VerifiedBundle { body: body.clone() })
 }
 
 fn check_leaves(

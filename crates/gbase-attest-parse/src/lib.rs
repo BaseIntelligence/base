@@ -220,8 +220,7 @@ pub fn patch_report_data(
             need: MIN_QUOTE_LEN,
         });
     }
-    quote[REPORT_DATA_OFFSET..REPORT_DATA_OFFSET + REPORT_DATA_LEN]
-        .copy_from_slice(report_data);
+    quote[REPORT_DATA_OFFSET..REPORT_DATA_OFFSET + REPORT_DATA_LEN].copy_from_slice(report_data);
     Ok(())
 }
 

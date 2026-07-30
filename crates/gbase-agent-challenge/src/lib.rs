@@ -1,4 +1,4 @@
-//! `agent-v1` challenge service (`docs/AGENT_CHALLENGE.md`, scoring_version = 1).
+//! `agent-v1` challenge service (`docs/AGENT_CHALLENGE.md`, `scoring_version` = 1).
 //!
 //! Pure offline scoring, D24 participant coverage (`NoScore` never silence),
 //! sr25519 leaf signing under `gbase-rawweight-v1`, and gateway POST with retry.

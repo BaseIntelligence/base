@@ -44,7 +44,10 @@ fn sk(tag: u8) -> [u8; KEY_LEN] {
 }
 
 fn pk_of(secret: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
-    secret_from_bytes(secret).expect("sk").to_public().to_bytes()
+    secret_from_bytes(secret)
+        .expect("sk")
+        .to_public()
+        .to_bytes()
 }
 
 fn hk(tag: u8) -> [u8; KEY_LEN] {

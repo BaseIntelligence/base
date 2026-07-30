@@ -114,11 +114,9 @@ fn multi_challenge_bundle(
         ..FakeChainConfig::default()
     });
     let block_hash = chain.block_hash(block_b).expect("hash");
-    let rows = metagraph_rows_from_chain(
-        &miners.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
-        None,
-    )
-    .expect("rows");
+    let rows =
+        metagraph_rows_from_chain(&miners.iter().map(|h| h.to_vec()).collect::<Vec<_>>(), None)
+            .expect("rows");
     let mut leaves = Vec::new();
     let wrong_sk = sk(0xEE);
     for (id, csk, _, score) in challenges {
@@ -732,10 +730,7 @@ fn a48_vii_one_garbage_quarantine_still_submit() {
     let m1 = pk_of(&sk(20));
     let m2 = pk_of(&sk(21));
     let (bundle, trust, chain) = multi_challenge_bundle(
-        &[
-            (b"good", c_good, 6000, 50),
-            (b"bad", c_bad, 4000, 50),
-        ],
+        &[(b"good", c_good, 6000, 50), (b"bad", c_bad, 4000, 50)],
         &gsk,
         &[m1, m2],
         200,
@@ -1011,7 +1006,10 @@ fn a48_ops_evil_gateway_profile_isolated() {
                 saw_profile = true;
             }
             // Next top-level service or volumes/networks ends the stanza.
-            if !line.starts_with(' ') && !line.starts_with('\t') && !t.is_empty() && !t.starts_with('#')
+            if !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && !t.is_empty()
+                && !t.starts_with('#')
             {
                 assert!(
                     saw_profile,
@@ -1047,7 +1045,10 @@ fn a48_ops_gateway_restart_policy_unless_stopped() {
                     found = true;
                     break;
                 }
-                if !next.starts_with(' ') && !next.starts_with('\t') && !t.is_empty() && !t.starts_with('#')
+                if !next.starts_with(' ')
+                    && !next.starts_with('\t')
+                    && !t.is_empty()
+                    && !t.starts_with('#')
                 {
                     break;
                 }

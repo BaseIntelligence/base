@@ -1,12 +1,12 @@
 //! Unit tests for gbase-bundle (TDD VERIFY cases).
 
 use super::*;
-use gbase_aggregate::{aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V};
+use gbase_aggregate::{
+    aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V,
+};
 use gbase_chain::{FakeChain, FakeChainConfig};
 use gbase_crypto::secret_from_bytes;
-use gbase_trustroot::{
-    measurements_digest, ChallengeEntry, MeasurementsBody, ParticipantPolicy,
-};
+use gbase_trustroot::{measurements_digest, ChallengeEntry, MeasurementsBody, ParticipantPolicy};
 use parity_scale_codec::{Decode, Encode};
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
@@ -19,7 +19,10 @@ fn sk(tag: u8) -> [u8; 32] {
 }
 
 fn pk_of(secret: &[u8; 32]) -> [u8; 32] {
-    secret_from_bytes(secret).expect("sk").to_public().to_bytes()
+    secret_from_bytes(secret)
+        .expect("sk")
+        .to_public()
+        .to_bytes()
 }
 
 fn hk(tag: u8) -> [u8; 32] {
@@ -37,11 +40,7 @@ fn to_agg(s: &ScoreOrAbsence) -> AggScore {
     }
 }
 
-fn trust_one(
-    cid: &[u8],
-    challenge_pk: [u8; 32],
-    policy: ParticipantPolicy,
-) -> LocalTrustRoot {
+fn trust_one(cid: &[u8], challenge_pk: [u8; 32], policy: ParticipantPolicy) -> LocalTrustRoot {
     LocalTrustRoot {
         challenges: ChallengesBody {
             challenges: vec![ChallengeEntry {
@@ -89,8 +88,14 @@ fn valid_bundle(
     let mut leaves = Vec::new();
     for (tag, score) in miners {
         leaves.push(
-            make_signed_leaf(csk, cid, hk(*tag), epoch, ScoreOrAbsence::Score { value: *score })
-                .expect("leaf"),
+            make_signed_leaf(
+                csk,
+                cid,
+                hk(*tag),
+                epoch,
+                ScoreOrAbsence::Score { value: *score },
+            )
+            .expect("leaf"),
         );
     }
     sort_leaves(&mut leaves);
@@ -150,13 +155,21 @@ fn s0_field_order_canary() {
 
 #[test]
 fn s1_happy_path_verify_ok() {
-    let (bundle, trust, chain) =
-        valid_bundle(&sk(1), &sk(2), b"dummy", &[(0xA1, 50), (0xB2, 30), (0xC3, 20)], 100);
+    let (bundle, trust, chain) = valid_bundle(
+        &sk(1),
+        &sk(2),
+        b"dummy",
+        &[(0xA1, 50), (0xB2, 30), (0xC3, 20)],
+        100,
+    );
     let v = bundle.verify(&chain, &trust).expect("verify");
     assert_eq!(v.body.epoch, 7);
     assert_eq!(v.body.leaves.len(), 3);
     let bytes = bundle.encode_bytes();
-    assert_eq!(EpochBundleV1::decode_bytes(&bytes).unwrap().encode_bytes(), bytes);
+    assert_eq!(
+        EpochBundleV1::decode_bytes(&bytes).unwrap().encode_bytes(),
+        bytes
+    );
 }
 
 #[test]
@@ -446,14 +459,16 @@ fn gateway_sig_invalid_rejected() {
 fn reencode_decoded_bundle_byte_identical() {
     let (bundle, _, _) = valid_bundle(&sk(1), &sk(2), b"dummy", &[(0xA1, 50), (0xB2, 30)], 33);
     let bytes = bundle.encode_bytes();
-    assert_eq!(EpochBundleV1::decode_bytes(&bytes).unwrap().encode_bytes(), bytes);
+    assert_eq!(
+        EpochBundleV1::decode_bytes(&bytes).unwrap().encode_bytes(),
+        bytes
+    );
 }
 
 #[test]
 fn empty_leaves_merkle_is_empty_root() {
     assert_eq!(compute_merkle_root(&[]), gbase_merkle::EMPTY_ROOT);
 }
-
 
 /// Build a random-ish body from a seed for round-trip property tests.
 fn body_from_seed(seed: u64) -> EpochBundleBodyV1 {

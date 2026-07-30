@@ -46,9 +46,7 @@ fn hex_nibble(c: u8) -> Result<u8, TrustRootError> {
         b'0'..=b'9' => Ok(c - b'0'),
         b'a'..=b'f' => Ok(c - b'a' + 10),
         b'A'..=b'F' => Ok(c - b'A' + 10),
-        _ => Err(TrustRootError::InvalidEncoding(format!(
-            "non-hex byte {c}"
-        ))),
+        _ => Err(TrustRootError::InvalidEncoding(format!("non-hex byte {c}"))),
     }
 }
 

@@ -255,11 +255,7 @@ fn bump_drand_skip_alarm() {
     metrics::counter!("gbase_crv4_drand_skip_total").increment(1);
 }
 
-fn with_rate_limit_retry<C, F>(
-    chain: &C,
-    max_retries: u32,
-    mut op: F,
-) -> Result<(), ChainError>
+fn with_rate_limit_retry<C, F>(chain: &C, max_retries: u32, mut op: F) -> Result<(), ChainError>
 where
     C: ChainClient + ?Sized,
     F: FnMut(&C) -> Result<(), ChainError>,
@@ -333,7 +329,12 @@ where
             return Err(SubmitError::WrongCommitRevealVersion { got: ver });
         }
 
-        match wait_drand(chain, drand, cfg.epoch_deadline_block, cfg.max_drand_retries) {
+        match wait_drand(
+            chain,
+            drand,
+            cfg.epoch_deadline_block,
+            cfg.max_drand_retries,
+        ) {
             Ok(()) => {}
             Err(SubmitError::DrandSkipped) => {
                 bump_drand_skip_alarm();
@@ -407,9 +408,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use gbase_chain::{
-        ChainCall, FakeChain, FakeChainConfig, WeightsTlockPayload as P,
-    };
+    use gbase_chain::{ChainCall, FakeChain, FakeChainConfig, WeightsTlockPayload as P};
     use gbase_dissent::{SubmissionIntent, SubmissionSource};
     use parity_scale_codec::{Decode, Encode};
 
@@ -441,14 +440,8 @@ mod tests {
         let clock = FixedClock {
             now_unix_secs: FIXED_NOW,
         };
-        let out = submit_intent(
-            &intent(42),
-            &chain,
-            &ReadyDrand,
-            &clock,
-            &cfg_for(u64::MAX),
-        )
-        .expect("submit");
+        let out = submit_intent(&intent(42), &chain, &ReadyDrand, &clock, &cfg_for(u64::MAX))
+            .expect("submit");
         match out {
             SubmitOutcome::SubmittedTimelocked { mecid, .. } => {
                 assert_eq!(mecid, MECID_MAIN);
@@ -474,21 +467,12 @@ mod tests {
         let clock = FixedClock {
             now_unix_secs: FIXED_NOW,
         };
-        let out = submit_intent(
-            &intent(1),
-            &chain,
-            &ReadyDrand,
-            &clock,
-            &cfg_for(u64::MAX),
-        )
-        .expect("submit");
+        let out = submit_intent(&intent(1), &chain, &ReadyDrand, &clock, &cfg_for(u64::MAX))
+            .expect("submit");
         assert_eq!(out, SubmitOutcome::SubmittedSetWeights);
         assert!(chain.submissions().is_empty());
         assert_eq!(chain.set_weights_log().len(), 1);
-        assert!(matches!(
-            chain.call_log()[0],
-            ChainCall::SetWeights(_)
-        ));
+        assert!(matches!(chain.call_log()[0], ChainCall::SetWeights(_)));
     }
 
     #[test]
@@ -500,14 +484,8 @@ mod tests {
         let clock = FixedClock {
             now_unix_secs: FIXED_NOW,
         };
-        submit_intent(
-            &intent(3),
-            &chain,
-            &ReadyDrand,
-            &clock,
-            &cfg_for(u64::MAX),
-        )
-        .expect("after retries");
+        submit_intent(&intent(3), &chain, &ReadyDrand, &clock, &cfg_for(u64::MAX))
+            .expect("after retries");
         assert_eq!(chain.submissions().len(), 1);
     }
 
@@ -573,14 +551,8 @@ mod tests {
         let clock = FixedClock {
             now_unix_secs: FIXED_NOW,
         };
-        let err = submit_intent(
-            &intent(1),
-            &chain,
-            &ReadyDrand,
-            &clock,
-            &cfg_for(u64::MAX),
-        )
-        .expect_err("v3");
+        let err = submit_intent(&intent(1), &chain, &ReadyDrand, &clock, &cfg_for(u64::MAX))
+            .expect_err("v3");
         assert!(matches!(
             err,
             SubmitError::WrongCommitRevealVersion { got: 3 }

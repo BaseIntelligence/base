@@ -29,10 +29,7 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
         if in_env {
             // left environment block when indentation returns to service key level
             // or a new top-level key under the service (volumes, ports, image, …)
-            if !trimmed.is_empty()
-                && !line.starts_with(' ')
-                && !line.starts_with('\t')
-            {
+            if !trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
                 in_env = false;
                 continue;
             }

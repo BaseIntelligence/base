@@ -134,9 +134,7 @@ fn is_digest_pinned(image: &str) -> bool {
 }
 
 fn is_hex64_lower(s: &str) -> bool {
-    s.len() == 64
-        && s.chars()
-            .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    s.len() == 64 && s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
 }
 
 /// Build the full Phala `app-compose.json` document as a [`Value`].
@@ -145,7 +143,9 @@ fn is_hex64_lower(s: &str) -> bool {
 /// Returns [`DeployError`] when images or launch-token hash fail validation.
 pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
     if !is_digest_pinned(&params.agent_image) {
-        return Err(DeployError::ImageNotDigestPinned(params.agent_image.clone()));
+        return Err(DeployError::ImageNotDigestPinned(
+            params.agent_image.clone(),
+        ));
     }
     if !is_digest_pinned(&params.attest_helper_image) {
         return Err(DeployError::ImageNotDigestPinned(
@@ -224,10 +224,8 @@ pub fn deploy_or_dry_run(params: &DeployParams) -> Result<DeployResult, DeployEr
         let compose_path = if let Some(p) = &params.out_compose {
             p.clone()
         } else {
-            let tmp = std::env::temp_dir().join(format!(
-                "gbase-miner-{}-app-compose.json",
-                &hash_hex[..16]
-            ));
+            let tmp = std::env::temp_dir()
+                .join(format!("gbase-miner-{}-app-compose.json", &hash_hex[..16]));
             std::fs::write(&tmp, pretty.as_bytes()).map_err(|source| DeployError::Io {
                 path: tmp.clone(),
                 source,
@@ -275,4 +273,3 @@ pub fn run_phala_deploy(phala_bin: &Path, compose: &Path, name: &str) -> Result<
         output.status.code()
     )))
 }
-
