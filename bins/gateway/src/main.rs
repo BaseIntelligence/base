@@ -33,8 +33,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let backend = std::env::var("GBASE_CHAIN_BACKEND")
-        .unwrap_or_else(|_| "fake_owner".to_owned());
+    let backend = std::env::var("GBASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake_owner".to_owned());
     let backend = backend.to_ascii_lowercase();
 
     match backend.as_str() {
