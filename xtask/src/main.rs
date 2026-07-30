@@ -5,6 +5,7 @@
 //! - `consensus-lint` — fail if listed consensus crates use forbidden tokens (D8)
 //! - `metadata-snapshot` — fetch testnet metadata + epoch-schedule sources into `metadata/testnet.lock`
 //! - `spec-check` — fail if `docs/BUNDLE_SPEC.md` is missing plan pins (a)–(l)
+//! - `agent-challenge-check` — fail if `docs/AGENT_CHALLENGE.md` is missing plan task 9 pins
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -12,6 +13,7 @@ mod consensus_lint;
 mod loc_cap;
 mod metadata_snapshot;
 mod spec_check;
+mod agent_challenge_check;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -47,6 +49,8 @@ enum Command {
     },
     /// Fail if `docs/BUNDLE_SPEC.md` is missing required (a)–(l) pins (task 8).
     SpecCheck,
+    /// Fail if `docs/AGENT_CHALLENGE.md` is missing required task 9 pins.
+    AgentChallengeCheck,
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -84,6 +88,7 @@ fn main() -> ExitCode {
             metadata_snapshot::run(&root, &args)
         }
         Command::SpecCheck => spec_check::run(&root),
+        Command::AgentChallengeCheck => agent_challenge_check::run(&root),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

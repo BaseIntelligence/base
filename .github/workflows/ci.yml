@@ -51,3 +51,6 @@ jobs:
 
       - name: xtask spec-check
         run: cargo run -p xtask -- spec-check
+
+      - name: xtask agent-challenge-check
+        run: cargo run -p xtask -- agent-challenge-check
