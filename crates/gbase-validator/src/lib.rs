@@ -10,6 +10,8 @@
 //! Task 31: peer root cross-check — `GET /v1/consensus/root/{epoch}` signed
 //! under `gbase-root-v1`, `min_peer_sample` gate (D26), fail closed on
 //! disagreement / insufficient sample.
+//! Task 32: three-outcome policy (class A / quarantine / class B), `DissentV1`,
+//! `GET /v1/dissent/{epoch}`, `gbase_challenge_quarantined_total`.
 
 #![forbid(unsafe_code)]
 
@@ -53,6 +55,65 @@ pub use recompute::{
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use sync_chain::SyncChain;
+pub use gbase_dissent::{
+    apply_three_outcome_policy, dissent_router, DissentBodyV1, DissentJson, DissentReasonCode,
+    DissentSigner, DissentStore, DissentV1, EpochDecision, NoSubmitReason, RecomputeView,
+    SharedDissentStore, SubmissionIntent, SubmissionSource,
+};
+
+/// Map validator [`ComparisonOutcome`] into policy [`RecomputeView`].
+#[must_use]
+pub fn recompute_view_from_comparison(c: &ComparisonOutcome) -> RecomputeView {
+    match c {
+        ComparisonOutcome::Match {
+            epoch,
+            local_vector,
+            merkle_root,
+            vector_hash,
+            ..
+        } => RecomputeView::Match {
+            epoch: *epoch,
+            local_vector: local_vector.clone(),
+            merkle_root: *merkle_root,
+            vector_hash: *vector_hash,
+        },
+        ComparisonOutcome::VectorMismatch {
+            epoch,
+            local_vector,
+            gateway_vector,
+            local_vector_hash,
+            gateway_vector_hash,
+            merkle_root,
+        } => RecomputeView::VectorMismatch {
+            epoch: *epoch,
+            local_vector: local_vector.clone(),
+            gateway_vector: gateway_vector.clone(),
+            local_vector_hash: *local_vector_hash,
+            gateway_vector_hash: *gateway_vector_hash,
+            merkle_root: *merkle_root,
+        },
+        ComparisonOutcome::InputInvalid { error } => RecomputeView::InputInvalid {
+            error: error.clone(),
+        },
+        ComparisonOutcome::NoSubmission { reason } => {
+            let mapped = match reason {
+                NoSubmissionReason::PeerRootDisagreement {
+                    epoch,
+                    candidate,
+                    ..
+                } => NoSubmitReason::PeerRootDisagreement {
+                    epoch: *epoch,
+                    candidate: *candidate,
+                },
+                NoSubmissionReason::PeerSampleInsufficient { .. } => {
+                    NoSubmitReason::PeerSampleInsufficient { epoch: 0 }
+                }
+                _ => NoSubmitReason::FetchFailed { epoch: 0 },
+            };
+            RecomputeView::NoSubmission { reason: mapped }
+        }
+    }
+}
 
 #[cfg(test)]
 mod skeleton_tests;
@@ -60,6 +121,8 @@ mod skeleton_tests;
 mod mirror_peer_tests;
 #[cfg(test)]
 mod crosscheck_tests;
+#[cfg(test)]
+mod policy_tests;
 
 pub use attest::{
     attest_router, spawn_attest_server, AttestState, NonceRequest, NonceResponse, SubmitRequest,

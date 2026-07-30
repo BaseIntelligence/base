@@ -14,6 +14,7 @@ use crate::coordination::CoordinationClient;
 use crate::epoch::{epoch_from_block, EpochSnapshot};
 use crate::error::ValidatorError;
 use crate::crosscheck::{consensus_root_router, RootStatementStore, SharedRootStore};
+use gbase_dissent::{dissent_router, DissentStore, SharedDissentStore};
 use crate::mirror::{mirror_router, MemoryMirrorStore, SharedMirrorStore};
 use crate::peers::PeerBook;
 use crate::registration::RegistrationStub;
@@ -41,6 +42,10 @@ pub struct ValidatorRuntime {
     pub own_hotkey: Option<Vec<u8>>,
     /// Minimum agreeing peer sample (D26); default from config.
     pub min_peer_sample: u32,
+    /// Optional pre-built dissent store (task 32).
+    pub dissent_store: Option<SharedDissentStore>,
+    /// Quarantine surviving-share floor (D6).
+    pub min_share_mass_bps: u16,
 }
 
 impl Default for ValidatorRuntime {
@@ -56,6 +61,8 @@ impl Default for ValidatorRuntime {
             root_signing_secret: None,
             own_hotkey: None,
             min_peer_sample: gbase_config::DEFAULT_MIN_PEER_SAMPLE,
+            dissent_store: None,
+            min_share_mass_bps: gbase_config::DEFAULT_MIN_SHARE_MASS_BPS,
         }
     }
 }
@@ -122,6 +129,10 @@ pub struct RunningValidator {
     pub own_hotkey: Option<Vec<u8>>,
     /// Minimum peer sample (D26).
     pub min_peer_sample: u32,
+    /// Dissent statements store (task 32).
+    pub dissent_store: SharedDissentStore,
+    /// Quarantine mass floor (D6).
+    pub min_share_mass_bps: u16,
     /// Epoch length.
     pub epoch_length: u64,
     /// Chain tip reader for epoch snapshots.
@@ -191,7 +202,12 @@ where
         .root_store
         .clone()
         .unwrap_or_else(RootStatementStore::shared);
+    let dissent_store = runtime
+        .dissent_store
+        .clone()
+        .unwrap_or_else(DissentStore::shared);
     let peers = runtime.peers.clone();
+    let min_share_mass_bps = runtime.min_share_mass_bps;
     let root_signing_secret = runtime.root_signing_secret;
     let own_hotkey = runtime.own_hotkey.clone();
     let min_peer_sample = runtime.min_peer_sample;
@@ -201,7 +217,8 @@ where
 
     let app = build_health_router(checks)?
         .merge(mirror_router(Arc::clone(&mirror)))
-        .merge(consensus_root_router(Arc::clone(&root_store)));
+        .merge(consensus_root_router(Arc::clone(&root_store)))
+        .merge(dissent_router(Arc::clone(&dissent_store)));
     let listener = TcpListener::bind(runtime.listen_addr)
         .await
         .map_err(|e| ValidatorError::Serve(format!("bind: {e}")))?;
@@ -249,6 +266,8 @@ where
         root_signing_secret,
         own_hotkey,
         min_peer_sample,
+        dissent_store,
+        min_share_mass_bps,
         epoch_length: runtime.epoch_length,
         tip,
     })

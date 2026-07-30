@@ -17,6 +17,7 @@ gbase-chain = { path = "../gbase-chain" }
 gbase-config = { path = "../gbase-config" }
 gbase-crosscheck = { path = "../gbase-crosscheck" }
 gbase-crypto = { path = "../gbase-crypto" }
+gbase-dissent = { path = "../gbase-dissent" }
 gbase-telemetry = { path = "../gbase-telemetry" }
 gbase-trustroot = { path = "../gbase-trustroot" }
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }

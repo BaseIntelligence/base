@@ -1416,6 +1416,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbase-dissent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "gbase-aggregate",
+ "gbase-bundle",
+ "gbase-chain",
+ "gbase-config",
+ "gbase-crosscheck",
+ "gbase-crypto",
+ "gbase-trustroot",
+ "hex",
+ "metrics",
+ "parity-scale-codec",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "gbase-gateway"
 version = "0.1.0"
 dependencies = [
@@ -1577,6 +1600,7 @@ dependencies = [
  "gbase-config",
  "gbase-crosscheck",
  "gbase-crypto",
+ "gbase-dissent",
  "gbase-telemetry",
  "gbase-trustroot",
  "hex",
