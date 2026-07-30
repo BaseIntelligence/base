@@ -11,3 +11,9 @@ services:
       - "8089:8080"
     environment:
       GBASE_ROLE: validator
+  agent-challenge:
+    ports:
+      - "8090:8090"
+    environment:
+      GBASE_CHALLENGE_BIND: 0.0.0.0:8090
+      GBASE_DOCKER_BASE: http://socket-proxy:2375

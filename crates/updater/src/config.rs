@@ -3,6 +3,17 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Compose services that promote + a dedicated updater instance may roll.
+///
+/// Keep in lockstep with `deploy/scripts/promote.sh` `--service` allowlist and
+/// keys under `deploy/pins/{staging,prod}.json` (D8 packaging).
+pub const ROLLABLE_SERVICES: &[&str] = &[
+    "validator",
+    "gateway",
+    "updater",
+    "agent-challenge",
+];
+
 /// Runtime configuration for one updater target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdaterConfig {
@@ -24,6 +35,12 @@ pub struct UpdaterConfig {
     pub health_timeout: Duration,
     /// Interval between `/readyz` polls.
     pub health_poll_interval: Duration,
+}
+
+/// True when `name` is a known promote/updater roll target.
+#[must_use]
+pub fn is_rollable_service(name: &str) -> bool {
+    ROLLABLE_SERVICES.iter().any(|s| *s == name)
 }
 
 impl UpdaterConfig {
@@ -81,5 +98,20 @@ impl UpdaterConfig {
             req("GBASE_UPDATER_DESIRED_IMAGE")?,
             self_name,
         ))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{is_rollable_service, ROLLABLE_SERVICES};
+
+    #[test]
+    fn rollable_services_include_agent_challenge() {
+        assert_eq!(
+            ROLLABLE_SERVICES,
+            &["validator", "gateway", "updater", "agent-challenge"]
+        );
+        assert!(is_rollable_service("agent-challenge"));
     }
 }

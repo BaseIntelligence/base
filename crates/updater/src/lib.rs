@@ -21,7 +21,7 @@ mod health;
 mod machine;
 mod pin_store;
 
-pub use config::UpdaterConfig;
+pub use config::{is_rollable_service, UpdaterConfig, ROLLABLE_SERVICES};
 pub use digest::{extract_digest, is_pinned_digest, parse_pinned_image, PinnedImage};
 pub use docker::{
     assert_allowlisted, is_allowlisted, Allowlist, AllowlistClient, ContainerSummary, DockerApi,
@@ -31,3 +31,19 @@ pub use error::UpdaterError;
 pub use health::{check_readyz, wait_readyz, HealthError, ScriptedHealth};
 pub use machine::{tick, HealthProbe, HttpHealthProbe, Phase, TickOutcome, Updater};
 pub use pin_store::{commit_pins, load_pins, save_current, save_previous, PinRecord, PinStore};
+
+
+#[cfg(test)]
+mod rollable_lockstep_tests {
+    use super::{is_rollable_service, ROLLABLE_SERVICES};
+
+    #[test]
+    fn agent_challenge_is_rollable_for_promote_lockstep() {
+        assert!(ROLLABLE_SERVICES.contains(&"agent-challenge"));
+        assert!(is_rollable_service("agent-challenge"));
+        assert!(is_rollable_service("validator"));
+        assert!(!is_rollable_service("gbase-agent"));
+        assert!(!is_rollable_service("socket-proxy"));
+    }
+
+}

@@ -1,12 +1,13 @@
-# gbase control-plane stack (task 40)
+# gbase control-plane stack (task 40 + agent-challenge todo 31)
 #
-# Default: postgres + validator + updater + socket-proxy (4 services).
+# Default: postgres + validator + updater + socket-proxy + agent-challenge (5).
 # Master/owner host only:
 #   docker compose --profile master up -d
-# brings gateway as the 5th service (D3).
+# brings gateway as the 6th service (D3).
 #
 # External images are digest-pinned (no floating tags).
-# docker.sock is mounted ONLY on socket-proxy.
+# docker.sock is mounted ONLY on socket-proxy (read-only).
+# agent-challenge reaches Docker via GBASE_DOCKER_BASE → socket-proxy (no raw sock).
 # Secrets: age-decrypted env files mode 0600 under deploy/env/ (never baked into images).
 
 name: gbase
@@ -155,11 +156,49 @@ services:
       - gbase
     # Talks to Docker Engine only through socket-proxy (allowlisted).
 
+  # ---------------------------------------------------------------------------
+  # agent-challenge — operator Harbor verifier + challenge health (:8090).
+  # Docker ONLY via socket-proxy (GBASE_DOCKER_BASE). No raw docker.sock (Metis S5).
+  # ---------------------------------------------------------------------------
+  agent-challenge:
+    image: agent-challenge:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: agent-challenge
+      args:
+        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      socket-proxy:
+        condition: service_started
+    environment:
+      GBASE_CHALLENGE_BIND: 0.0.0.0:8090
+      # Verify-specific Engine route: shared host sock is only on socket-proxy (RO).
+      GBASE_DOCKER_BASE: http://socket-proxy:2375
+    expose:
+      - "8090"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8090/healthz || exit 0",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      - gbase
+    # No docker.sock — verifier uses Allowlist::verifier over GBASE_DOCKER_BASE.
+
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     restart: unless-stopped
     environment:
-      # updater allowlist: CONTAINERS + IMAGES + POST only (D14 / task 39)
+      # Shared proxy: updater rolls + agent-challenge Harbor verify. App-level
+      # Allowlist::updater / Allowlist::verifier enforce method/path; tecnativa
+      # CONTAINERS includes DELETE needed by verifier cleanup.
       CONTAINERS: "1"
       IMAGES: "1"
       POST: "1"
@@ -186,6 +225,7 @@ services:
       SECRETS: "0"
       VOLUMES: "0"
     volumes:
+      # Sole host docker.sock mount on this stack (read-only).
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - gbase
