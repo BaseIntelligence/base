@@ -713,7 +713,7 @@ async def test_slug_body_route_mismatch_forbidden(harness: dict[str, Any]) -> No
 
 @pytest.mark.asyncio
 async def test_rejection_details_are_attributable(harness: dict[str, Any]) -> None:
-    """Each distinct rejection reason surfaces its own detail string (not one generic)."""
+    """Each rejection reason surfaces its own detail string."""
 
     client = harness["client"]
     clock = harness["clock"]
@@ -758,7 +758,7 @@ async def test_rejection_details_are_attributable(harness: dict[str, Any]) -> No
 
 @pytest.mark.asyncio
 async def test_all_zero_weight_map_rejected(harness: dict[str, Any]) -> None:
-    """Explicit all-zero maps (validator placeholder smell) must not enter aggregation."""
+    """All-zero maps must not enter aggregation."""
 
     client = harness["client"]
     clock = harness["clock"]
