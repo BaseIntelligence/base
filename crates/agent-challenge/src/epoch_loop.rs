@@ -51,24 +51,14 @@ pub struct EpochDispatchResult {
 /// Loop errors.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum EpochLoopError {
-    /// Empty E.
     #[error("empty expected set")]
     EmptyExpectedSet,
-    /// Empty catalog.
     #[error("empty pack catalog")]
     EmptyCatalog,
-    /// Double signer.
     #[error("signer already active for challenge={challenge_id} epoch={epoch}")]
-    SignerAlreadyActive {
-        /// Id.
-        challenge_id: String,
-        /// Epoch.
-        epoch: u64,
-    },
-    /// Select failed.
+    SignerAlreadyActive { challenge_id: String, epoch: u64 },
     #[error("pack select: {0}")]
     PackSelect(String),
-    /// Panic.
     #[error("dispatch task panicked: {0}")]
     Join(String),
 }
@@ -84,7 +74,6 @@ pub struct EpochDispatchConfig {
     pub deadline: Duration,
     pub deadline_unix_ms: u64,
 }
-
 
 /// Dispatch client (fake or HTTP).
 pub trait EpochDispatchClient: Send + Sync + 'static {
@@ -204,12 +193,7 @@ pub async fn run_epoch_dispatch<C: EpochDispatchClient>(
                         pack_id,
                         reason: "runner status=failed".into(),
                     },
-                    TaskStatusV1::Completed => {
-                        MinerEpochOutcome::Completed {
-                            pack_id,
-                            result: r,
-                        }
-                    }
+                    TaskStatusV1::Completed => MinerEpochOutcome::Completed { pack_id, result: r },
                 },
                 Ok(Err(reason)) => MinerEpochOutcome::Failed { pack_id, reason },
                 Err(_) => MinerEpochOutcome::TimedOut { pack_id },
@@ -227,4 +211,3 @@ pub async fn run_epoch_dispatch<C: EpochDispatchClient>(
         outcomes,
     })
 }
-

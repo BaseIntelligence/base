@@ -87,31 +87,18 @@ pub enum CallOutcome {
 /// integer lattice only. `duration_ms` never decays the score.
 #[must_use]
 pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
+    use NoScoreReasonCode as R;
     if input.attestation != AttestationStatus::Verified {
-        return ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::AttestationNotVerified,
-        };
+        return ScoreOrAbsence::NoScore { reason: R::AttestationNotVerified };
     }
-
-    // `duration_ms` intentionally unused — v2 has no latency decay.
-    let _ = input.duration_ms;
-
+    let _ = input.duration_ms; // v2: no latency decay
+    let ns = |r| ScoreOrAbsence::NoScore { reason: r };
     match &input.outcome {
-        CallOutcome::Timeout => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::Timeout,
-        },
-        CallOutcome::MinerError => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::MinerError,
-        },
-        CallOutcome::InvalidResponse => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::InvalidResponse,
-        },
-        CallOutcome::RateLimited => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::RateLimited,
-        },
-        CallOutcome::ChallengeInternal => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::ChallengeInternal,
-        },
+        CallOutcome::Timeout => ns(R::Timeout),
+        CallOutcome::MinerError => ns(R::MinerError),
+        CallOutcome::InvalidResponse => ns(R::InvalidResponse),
+        CallOutcome::RateLimited => ns(R::RateLimited),
+        CallOutcome::ChallengeInternal => ns(R::ChallengeInternal),
         CallOutcome::Http200 {
             challenge_id,
             epoch,
@@ -120,25 +107,16 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
             agent_version,
         } => {
             let expected_tid = task_id_v2(
-                input.netuid,
-                input.epoch,
-                &input.miner_hotkey,
-                &input.pack_id,
-                SCORING_VERSION,
+                input.netuid, input.epoch, &input.miner_hotkey, &input.pack_id, SCORING_VERSION,
             );
             let expected_answer = answer_digest_v2(&input.expected_model_patch);
-
             if challenge_id != CHALLENGE_ID
                 || *epoch != input.epoch
                 || resp_task_id.as_slice() != expected_tid.as_slice()
                 || agent_version != "1"
             {
-                return ScoreOrAbsence::NoScore {
-                    reason: NoScoreReasonCode::InvalidResponse,
-                };
+                return ns(R::InvalidResponse);
             }
-
-            // Binary correctness: reward 1 → SCORE_MAX, reward 0 → Score(0).
             if resp_answer.as_slice() == expected_answer.as_slice() {
                 ScoreOrAbsence::Score { value: SCORE_MAX }
             } else {

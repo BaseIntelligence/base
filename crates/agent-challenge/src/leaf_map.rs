@@ -115,30 +115,7 @@ pub fn grade_to_score_or_absence(
     pack: &HarborPack,
     model_patch: &[u8],
 ) -> ScoreOrAbsence {
-    let mut attempts: u32 = 0;
-    let mut last_operator: Option<VerifyError> = None;
-
-    while attempts < MAX_VERIFY_ATTEMPTS {
-        attempts = attempts.saturating_add(1);
-        match verifier.grade(pack, model_patch) {
-            Ok(r) => return map_reward(r),
-            Err(e) if !is_operator_fault(&e) => return map_verify_error(&e),
-            Err(e) => {
-                let retry = is_retryable_operator_fault(&e) && attempts < MAX_VERIFY_ATTEMPTS;
-                last_operator = Some(e);
-                if !retry {
-                    break;
-                }
-            }
-        }
-    }
-
-    match last_operator {
-        Some(ref e) => map_verify_error(e),
-        None => ScoreOrAbsence::NoScore {
-            reason: NoScoreReasonCode::ChallengeInternal,
-        },
-    }
+    grade_loop(verifier, pack, model_patch, MAX_VERIFY_ATTEMPTS)
 }
 
 /// Cover every hotkey in `expected` with exactly one leaf from verify results.
@@ -192,10 +169,17 @@ pub fn grade_to_score_or_absence_budgeted(
             reason: NoScoreReasonCode::ChallengeInternal,
         };
     }
+    grade_loop(verifier, pack, model_patch, allowed)
+}
 
+fn grade_loop(
+    verifier: &dyn Verifier,
+    pack: &HarborPack,
+    model_patch: &[u8],
+    allowed: u32,
+) -> ScoreOrAbsence {
     let mut attempts: u32 = 0;
     let mut last_operator: Option<VerifyError> = None;
-
     while attempts < allowed {
         attempts = attempts.saturating_add(1);
         match verifier.grade(pack, model_patch) {
@@ -210,7 +194,6 @@ pub fn grade_to_score_or_absence_budgeted(
             }
         }
     }
-
     match last_operator {
         Some(ref e) => map_verify_error(e),
         None => ScoreOrAbsence::NoScore {

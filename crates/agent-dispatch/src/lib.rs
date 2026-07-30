@@ -21,7 +21,8 @@ mod receipt;
 mod wire;
 
 pub use receipt::{
-    patch_sha256, receipt_payload, sign_work_receipt, verify_work_receipt, work_receipt_domain,
+    patch_sha256, receipt_payload, sign_work_receipt, verify_task_result_bind,
+    verify_work_receipt, work_receipt_domain, BoundPatch, ExpectedReceiptBind, ReceiptBindError,
     ReceiptError, SignedWorkReceiptV1, WorkReceiptBodyV1,
 };
 pub use wire::{TaskDescriptorV1, TaskResultV1, TaskStatusV1, DISPATCH_PROTOCOL};

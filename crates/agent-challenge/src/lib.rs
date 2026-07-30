@@ -16,6 +16,7 @@ mod leaf_map;
 mod verify;
 mod expected_set;
 mod epoch_loop;
+mod intake;
 
 pub use challenge::{
     correct_http200, correct_http200_fixture, leaf_from_verify_result, score_epoch_from_verify,
@@ -31,6 +32,10 @@ pub use epoch_loop::{
     run_epoch_dispatch, ActiveSignerRegistry, EpochDispatchClient,
     EpochDispatchConfig, EpochDispatchResult, EpochLoopError, MinerEpochOutcome, RunnerCapacity,
     SignerGuard, R1_DEADLINE_FRACTION_DEN, R1_DEADLINE_FRACTION_NUM, TESTNET_TEMPO_BLOCKS,
+};
+pub use intake::{
+    intake_and_grade, verify_intake_receipt, ExpectedReceiptBind, IntakeOk, IntakePatch,
+    ReceiptBindError,
 };
 pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use leaf_map::{
