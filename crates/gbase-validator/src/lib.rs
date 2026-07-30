@@ -12,6 +12,7 @@
 //! disagreement / insufficient sample.
 //! Task 32: three-outcome policy (class A / quarantine / class B), `DissentV1`,
 //! `GET /v1/dissent/{epoch}`, `gbase_challenge_quarantined_total`.
+//! Task 33: CRV4 timelocked submission via `gbase-submit` (`SubmissionIntent` → chain).
 
 #![forbid(unsafe_code)]
 
@@ -55,6 +56,11 @@ pub use recompute::{
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use sync_chain::SyncChain;
+pub use gbase_submit::{
+    payload_from_intent, submit_decision_intents, submit_intent, encode_payload_no_merkle,
+    Clock, CountingDrand, DrandClient, DrandError, FailingDrand, FixedClock, ReadyDrand,
+    SubmitConfig, SubmitError, SubmitOutcome, SystemClock, COMMIT_REVEAL_VERSION_V4, MECID_MAIN,
+};
 pub use gbase_dissent::{
     apply_three_outcome_policy, dissent_router, DissentBodyV1, DissentJson, DissentReasonCode,
     DissentSigner, DissentStore, DissentV1, EpochDecision, NoSubmitReason, RecomputeView,

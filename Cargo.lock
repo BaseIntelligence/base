@@ -1352,6 +1352,7 @@ dependencies = [
 name = "gbase-chain"
 version = "0.1.0"
 dependencies = [
+ "parity-scale-codec",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1518,6 +1519,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbase-submit"
+version = "0.1.0"
+dependencies = [
+ "gbase-chain",
+ "gbase-dissent",
+ "metrics",
+ "parity-scale-codec",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "gbase-telemetry"
 version = "0.1.0"
 dependencies = [
@@ -1601,6 +1614,7 @@ dependencies = [
  "gbase-crosscheck",
  "gbase-crypto",
  "gbase-dissent",
+ "gbase-submit",
  "gbase-telemetry",
  "gbase-trustroot",
  "hex",

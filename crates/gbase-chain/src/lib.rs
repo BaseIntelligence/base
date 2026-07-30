@@ -26,14 +26,25 @@
 
 #![forbid(unsafe_code)]
 
+mod epoch_schedule;
+
+pub use epoch_schedule::{
+    advance_blocks, block_time_ms_to_secs, compute_reveal_round, current_epoch_pre_run_coinbase,
+    gather_schedule_state, max_simulation_blocks, predict_first_reveal_block, should_run_epoch,
+    simulate_run_coinbase, EpochScheduleError, EpochScheduleState, COMMIT_INCLUSION_BLOCK_OFFSET,
+    DRAND_PERIOD, GENESIS_TIME, MAX_TEMPO, MAX_TEMPO_U64, SECURITY_BLOCK_OFFSET,
+};
+
 use std::cell::RefCell;
 use std::fmt;
+
+use parity_scale_codec::{Decode, Encode};
 
 /// SCALE-shaped weights payload for timelock commit (SDK `WeightsTlockPayload`).
 ///
 /// Fields match `metadata/testnet.lock` → `weights_tlock_payload.fields`:
 /// `hotkey`, `uids`, `values`, `version_key`. **No merkle field** (D5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct WeightsTlockPayload {
     /// Hotkey public key bytes (typically 32-byte sr25519).
     pub hotkey: Vec<u8>,
@@ -67,6 +78,28 @@ pub struct TimelockedWeightsSubmission {
     pub reveal_round: u64,
 }
 
+/// One recorded `set_weights` invocation (`FakeChain` assertions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetWeightsSubmission {
+    /// Subnet netuid.
+    pub netuid: u16,
+    /// Destination UIDs.
+    pub uids: Vec<u16>,
+    /// Weight values.
+    pub values: Vec<u16>,
+    /// Weights version key.
+    pub version_key: u64,
+}
+
+/// Extrinsic call recorded by [`FakeChain`] (CR on/off branch assertions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainCall {
+    /// `commit_timelocked_mechanism_weights` path.
+    SubmitTimelocked(TimelockedWeightsSubmission),
+    /// Plain `set_weights` path (CR disabled only).
+    SetWeights(SetWeightsSubmission),
+}
+
 /// Errors from chain reads/writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainError {
@@ -86,6 +119,11 @@ pub enum ChainError {
     NotImplemented {
         /// What was requested.
         what: &'static str,
+    },
+    /// Weights rate limit hit; caller should retry.
+    RateLimited {
+        /// Optional retry-after hint in blocks.
+        retry_after_blocks: Option<u64>,
     },
     /// Generic transport or decode failure.
     Other(String),
@@ -108,6 +146,10 @@ impl fmt::Display for ChainError {
             Self::NotImplemented { what } => {
                 write!(f, "chain client not implemented: {what}")
             }
+            Self::RateLimited { retry_after_blocks } => match retry_after_blocks {
+                Some(n) => write!(f, "weights rate limited; retry after {n} blocks"),
+                None => write!(f, "weights rate limited"),
+            },
             Self::Other(msg) => write!(f, "{msg}"),
         }
     }
@@ -224,6 +266,21 @@ pub trait ChainClient {
         payload: WeightsTlockPayload,
         reveal_round: u64,
     ) -> Result<(), ChainError>;
+
+    /// Submit plain weights when commit-reveal is **disabled**.
+    ///
+    /// Must not be used while CR is enabled (D22: never downgrade).
+    ///
+    /// # Errors
+    ///
+    /// Rate limit, transport, or not implemented.
+    fn set_weights(
+        &self,
+        netuid: u16,
+        uids: Vec<u16>,
+        values: Vec<u16>,
+        version_key: u64,
+    ) -> Result<(), ChainError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +341,8 @@ pub struct FakeChainConfig {
     pub owner_hotkey: Vec<u8>,
     /// Neuron hotkeys (UID order).
     pub hotkeys: Vec<Vec<u8>>,
+    /// Number of subsequent weight submits that should return [`ChainError::RateLimited`].
+    pub rate_limit_fails_remaining: u32,
 }
 
 impl Default for FakeChainConfig {
@@ -302,6 +361,7 @@ impl Default for FakeChainConfig {
             blocks_since_last_step: fake_defaults::BLOCKS_SINCE_LAST_STEP,
             owner_hotkey: vec![0xA1; 32],
             hotkeys: vec![vec![0xA1; 32], vec![0xB2; 32], vec![0xC3; 32]],
+            rate_limit_fails_remaining: 0,
         }
     }
 }
@@ -311,15 +371,22 @@ impl Default for FakeChainConfig {
 pub struct FakeChain {
     cfg: FakeChainConfig,
     submissions: RefCell<Vec<TimelockedWeightsSubmission>>,
+    set_weights_log: RefCell<Vec<SetWeightsSubmission>>,
+    call_log: RefCell<Vec<ChainCall>>,
+    rate_limit_fails_remaining: RefCell<u32>,
 }
 
 impl FakeChain {
     /// Build from config (CR on + CRV4 by default).
     #[must_use]
     pub fn new(cfg: FakeChainConfig) -> Self {
+        let rate = cfg.rate_limit_fails_remaining;
         Self {
             cfg,
             submissions: RefCell::new(Vec::new()),
+            set_weights_log: RefCell::new(Vec::new()),
+            call_log: RefCell::new(Vec::new()),
+            rate_limit_fails_remaining: RefCell::new(rate),
         }
     }
 
@@ -342,6 +409,34 @@ impl FakeChain {
     #[must_use]
     pub fn submissions(&self) -> Vec<TimelockedWeightsSubmission> {
         self.submissions.borrow().clone()
+    }
+
+    /// Recorded plain `set_weights` calls.
+    #[must_use]
+    pub fn set_weights_log(&self) -> Vec<SetWeightsSubmission> {
+        self.set_weights_log.borrow().clone()
+    }
+
+    /// Full extrinsic call log (timelocked + `set_weights`), in order.
+    #[must_use]
+    pub fn call_log(&self) -> Vec<ChainCall> {
+        self.call_log.borrow().clone()
+    }
+
+    /// Configure remaining synthetic rate-limit failures (tests).
+    pub fn set_rate_limit_fails_remaining(&self, n: u32) {
+        *self.rate_limit_fails_remaining.borrow_mut() = n;
+    }
+
+    fn consume_rate_limit(&self) -> Result<(), ChainError> {
+        let mut left = self.rate_limit_fails_remaining.borrow_mut();
+        if *left > 0 {
+            *left = left.saturating_sub(1);
+            return Err(ChainError::RateLimited {
+                retry_after_blocks: Some(1),
+            });
+        }
+        Ok(())
     }
 
     fn hash_for_block(n: u64) -> [u8; 32] {
@@ -446,13 +541,36 @@ impl ChainClient for FakeChain {
                 fake_defaults::COMMIT_REVEAL_VERSION
             )));
         }
-        self.submissions
+        self.consume_rate_limit()?;
+        let sub = TimelockedWeightsSubmission {
+            mecid,
+            payload,
+            reveal_round,
+        };
+        self.submissions.borrow_mut().push(sub.clone());
+        self.call_log
             .borrow_mut()
-            .push(TimelockedWeightsSubmission {
-                mecid,
-                payload,
-                reveal_round,
-            });
+            .push(ChainCall::SubmitTimelocked(sub));
+        Ok(())
+    }
+
+    fn set_weights(
+        &self,
+        netuid: u16,
+        uids: Vec<u16>,
+        values: Vec<u16>,
+        version_key: u64,
+    ) -> Result<(), ChainError> {
+        // Callers must only use this when CR is disabled (enforced by submit path).
+        self.consume_rate_limit()?;
+        let sub = SetWeightsSubmission {
+            netuid,
+            uids,
+            values,
+            version_key,
+        };
+        self.set_weights_log.borrow_mut().push(sub.clone());
+        self.call_log.borrow_mut().push(ChainCall::SetWeights(sub));
         Ok(())
     }
 }
@@ -548,6 +666,18 @@ impl ChainClient for NotImplementedChain {
     ) -> Result<(), ChainError> {
         Err(ChainError::NotImplemented {
             what: "submit_timelocked_weights",
+        })
+    }
+
+    fn set_weights(
+        &self,
+        _netuid: u16,
+        _uids: Vec<u16>,
+        _values: Vec<u16>,
+        _version_key: u64,
+    ) -> Result<(), ChainError> {
+        Err(ChainError::NotImplemented {
+            what: "set_weights",
         })
     }
 }
@@ -730,6 +860,18 @@ mod live {
         ) -> Result<(), ChainError> {
             Err(ChainError::NotImplemented {
                 what: "live submit_timelocked_weights",
+            })
+        }
+
+        fn set_weights(
+            &self,
+            _netuid: u16,
+            _uids: Vec<u16>,
+            _values: Vec<u16>,
+            _version_key: u64,
+        ) -> Result<(), ChainError> {
+            Err(ChainError::NotImplemented {
+                what: "live set_weights",
             })
         }
     }
@@ -919,6 +1061,87 @@ mod tests {
         assert!(err
             .to_string()
             .contains("unsupported commit_reveal_version"));
+    }
+
+
+    #[test]
+    fn s4_payload_scale_encodes_four_fields_only() {
+        let p = sample_payload();
+        let encoded = p.encode();
+        let decoded = WeightsTlockPayload::decode(&mut &encoded[..]).expect("decode");
+        assert_eq!(decoded, p);
+        // Manual SCALE of the four fields must match (no trailing merkle bytes).
+        let mut manual = Vec::new();
+        p.hotkey.encode_to(&mut manual);
+        p.uids.encode_to(&mut manual);
+        p.values.encode_to(&mut manual);
+        p.version_key.encode_to(&mut manual);
+        assert_eq!(encoded, manual);
+    }
+
+    #[test]
+    fn s4_payload_struct_has_no_merkle_field() {
+        // Compile-time shape: only these four fields exist on the type.
+        let p = WeightsTlockPayload {
+            hotkey: vec![1],
+            uids: vec![0],
+            values: vec![1],
+            version_key: 0,
+        };
+        let names = ["hotkey", "uids", "values", "version_key"];
+        assert_eq!(names.len(), 4);
+        // Runtime: encoding length equals four-field manual encode (no extra root).
+        let mut four = Vec::new();
+        p.hotkey.encode_to(&mut four);
+        p.uids.encode_to(&mut four);
+        p.values.encode_to(&mut four);
+        p.version_key.encode_to(&mut four);
+        assert_eq!(p.encode(), four);
+        // A 32-byte merkle root appended would lengthen SCALE — prove we do not.
+        let mut with_fake_root = four.clone();
+        [0_u8; 32].encode_to(&mut with_fake_root);
+        assert_ne!(p.encode(), with_fake_root);
+    }
+
+    #[test]
+    fn s1_set_weights_records_call_log() {
+        let chain = FakeChain::with_commit_reveal_disabled();
+        chain
+            .set_weights(1, vec![0, 1], vec![100, 200], 7)
+            .expect("set");
+        let log = chain.call_log();
+        assert_eq!(log.len(), 1);
+        match &log[0] {
+            ChainCall::SetWeights(s) => {
+                assert_eq!(s.netuid, 1);
+                assert_eq!(s.uids, vec![0, 1]);
+                assert_eq!(s.values, vec![100, 200]);
+                assert_eq!(s.version_key, 7);
+            }
+            ChainCall::SubmitTimelocked(s) => panic!("expected SetWeights, got {s:?}"),
+        }
+        assert!(chain.submissions().is_empty());
+    }
+
+    #[test]
+    fn s5_rate_limit_then_success() {
+        let chain = FakeChain::new(FakeChainConfig {
+            rate_limit_fails_remaining: 2,
+            ..FakeChainConfig::default()
+        });
+        let p = sample_payload();
+        assert!(matches!(
+            chain.submit_timelocked_weights(0, p.clone(), 1),
+            Err(ChainError::RateLimited { .. })
+        ));
+        assert!(matches!(
+            chain.submit_timelocked_weights(0, p.clone(), 1),
+            Err(ChainError::RateLimited { .. })
+        ));
+        chain
+            .submit_timelocked_weights(0, p, 1)
+            .expect("third succeeds");
+        assert_eq!(chain.submissions().len(), 1);
     }
 
     /// Live testnet smoke: `current_block() > 0`.
