@@ -373,3 +373,251 @@ async def test_all_zero_weights_skipped_locally(database: Database) -> None:
     assert result.status in {"skipped_empty", "skipped_zero"}
     assert calls == []
     await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successful_push_writes_ack_cursor_fields(database: Database) -> None:
+    """ACK path must set last_epoch, last_snapshot_id, and acknowledged_at."""
+
+    clock = FakeClock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 100,
+                    "highest_sealed_epoch": 99,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-ack-fields",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        # No epoch_fn: must use master target-epoch.
+        epoch_fn=None,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={WINNER: 1.0})
+    assert result.status == "acknowledged"
+    assert result.cursor_advanced is True
+    assert result.epoch == 100
+    assert result.snapshot_id == "snap-ack-fields"
+    cursor = await client.store.get_cursor()
+    assert cursor is not None
+    assert cursor.epoch == 100
+    assert cursor.snapshot_id == "snap-ack-fields"
+    assert cursor.acknowledged_at is not None
+    assert cursor.acknowledged_at != ""
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sealed_epoch_409_advances_to_master_target(database: Database) -> None:
+    """Sealed-epoch 409 must not infinite-retry the same epoch; advance via master."""
+
+    clock = FakeClock()
+    post_epochs: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            # Master says next unsealed is 50 after first sealed rejection path.
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 50,
+                    "highest_sealed_epoch": 49,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        post_epochs.append(parsed.epoch)
+        if parsed.epoch == 49:
+            return httpx.Response(
+                409, json={"detail": "epoch is sealed; revision rejected"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": f"snap-{parsed.epoch}",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        # Stale local clock would stick on sealed 49 forever without master.
+        epoch_fn=lambda: 49,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={WINNER: 1.0})
+    assert result.status == "acknowledged"
+    assert result.epoch == 50
+    assert 49 in post_epochs or post_epochs == [50]
+    # Must not hammer the same sealed epoch repeatedly in one push_once.
+    assert post_epochs.count(49) <= 1
+    assert await client.store.get_cursor() is not None
+    assert (await client.store.get_cursor()).epoch == 50
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_conflict_409_does_not_retry_same_epoch_revision(
+    database: Database,
+) -> None:
+    """Conflicting payload at (epoch, rev) must bump revision, not loop forever."""
+
+    clock = FakeClock()
+    seen: list[tuple[int, int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 7,
+                    "highest_sealed_epoch": 6,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        seen.append((parsed.epoch, parsed.revision))
+        if parsed.revision == 1:
+            return httpx.Response(
+                409, json={"detail": "conflicting raw weight payload"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-rev2",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=None,
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={WINNER: 1.0})
+    assert result.status == "acknowledged"
+    assert result.revision == 2
+    assert (7, 1) in seen
+    assert (7, 2) in seen
+    assert seen.count((7, 1)) == 1
+    cursor = await client.store.get_cursor()
+    assert cursor is not None
+    assert cursor.epoch == 7
+    assert cursor.revision == 2
+    assert cursor.acknowledged_at is not None
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_epoch_source_prefers_master_over_local_clock(database: Database) -> None:
+    """When master target-epoch is available, do not use local wall-clock epoch_fn."""
+
+    clock = FakeClock()
+    posted: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "target_epoch": 9001,
+                    "highest_sealed_epoch": 9000,
+                    "max_future_epoch_ahead": 2,
+                },
+            )
+        parsed = RawWeightPushRequest.model_validate_json(request.content)
+        posted.append(parsed.epoch)
+        return httpx.Response(
+            200,
+            json={
+                "protocol_version": "1.0",
+                "challenge_slug": SLUG,
+                "epoch": parsed.epoch,
+                "revision": parsed.revision,
+                "snapshot_id": "snap-master-epoch",
+                "payload_digest": parsed.payload_digest,
+                "accepted": True,
+                "idempotent": False,
+            },
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://master.test",
+    )
+    client = RawWeightPushClient(
+        database=database,
+        challenge_slug=SLUG,
+        master_base_url="http://master.test",
+        shared_token=TOKEN,
+        now_fn=clock.now,
+        http_client=http,
+        epoch_fn=lambda: 1,  # would be wrong if preferred
+    )
+    await client.init()
+    with activate_role(Role.CHALLENGE):
+        result = await client.push_once(weights={WINNER: 1.0})
+    assert result.status == "acknowledged"
+    assert posted == [9001]
+    await http.aclose()
