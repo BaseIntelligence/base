@@ -323,13 +323,24 @@ fn s9_repo_config_loads_when_present() {
         ch.primary().unwrap().body.challenges[0].emission_share_bps,
         BPS_DENOM
     );
-    // Task 35: allowlist frozen from real Phala fixtures (one entry).
+    // Todo 23: dual-entry rotation — old fixture + post socket-proxy compose pin.
     let entries = &ms.primary().unwrap().body.entries;
     assert_eq!(
         entries.len(),
-        1,
-        "measurements allowlist must contain real CVM entry"
+        2,
+        "measurements allowlist must dual-pin old fixture + socket-proxy compose"
     );
+    // Both dual-entry profiles must self-match.
+    for e in entries.iter() {
+        assert!(ms.allows_quote(
+            &e.mr_td,
+            &e.rtmr0,
+            &e.rtmr1,
+            &e.rtmr2,
+            &e.rtmr3,
+            &e.compose_hash
+        ));
+    }
     let e = &entries[0];
     assert!(ms.allows_quote(
         &e.mr_td,
