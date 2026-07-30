@@ -4,12 +4,14 @@
 //! - `loc-cap` — fail if any crate under `crates/` or `bins/` exceeds 1500 non-test LOC
 //! - `consensus-lint` — fail if listed consensus crates use forbidden tokens (D8)
 //! - `metadata-snapshot` — fetch testnet metadata + epoch-schedule sources into `metadata/testnet.lock`
+//! - `spec-check` — fail if `docs/BUNDLE_SPEC.md` is missing plan pins (a)–(l)
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod consensus_lint;
 mod loc_cap;
 mod metadata_snapshot;
+mod spec_check;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -43,6 +45,8 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Fail if `docs/BUNDLE_SPEC.md` is missing required (a)–(l) pins (task 8).
+    SpecCheck,
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -79,6 +83,7 @@ fn main() -> ExitCode {
             };
             metadata_snapshot::run(&root, &args)
         }
+        Command::SpecCheck => spec_check::run(&root),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

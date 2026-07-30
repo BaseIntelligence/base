@@ -48,3 +48,6 @@ jobs:
 
       - name: xtask consensus-lint
         run: cargo run -p xtask -- consensus-lint
+
+      - name: xtask spec-check
+        run: cargo run -p xtask -- spec-check
