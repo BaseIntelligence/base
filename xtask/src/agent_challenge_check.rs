@@ -50,6 +50,9 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("PARTICIPATION_FLOOR", "PARTICIPATION_FLOOR"),
     ("no_score_in_cvm", "NO challenge signing key"),
     ("park_no_credit", "Park grants"),
+    ("agent_egress_open", "Default: OPEN"),
+    ("metis_b6_residual", "Metis B6 residual risk"),
+    ("model_key_q3a", "Q3=A"),
 ];
 
 /// Run the agent-challenge spec completeness gate.

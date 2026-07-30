@@ -3,7 +3,10 @@
 //! Loads the CVM-local work-receipt key from `GBASE_RECEIPT_SK_FILE` (mode 0600
 //! mount). Dispatch auth (todo 18) is on by default when a trusted challenge
 //! pubkey is configured. Concurrency is clamped to 1..=5 and enforced with a
-//! semaphore (todo 19).
+//! semaphore (todo 19). Pack execution uses allowlisted Docker when
+//! `GBASE_DOCKER_BASE` + `GBASE_ENVIRONMENT_IMAGE` + `GBASE_PACK_ROOT` are set;
+//! otherwise the deterministic stub backend is used. Default egress posture is
+//! OPEN (todo 21).
 
 #![forbid(unsafe_code)]
 
@@ -14,6 +17,7 @@ use std::time::Duration;
 
 use agent_runner::{
     app, clamp_concurrency, load_or_generate, load_required, receipt_sk_path_from_env,
+    AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE, DockerExecConfig, ExecutionBackend,
     RunnerConfig, RunnerState, DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH,
     RECEIPT_SK_FILE_ENV,
 };
@@ -25,7 +29,7 @@ use tokio::net::TcpListener;
 #[derive(Debug, Parser)]
 #[command(
     name = "agent-runner",
-    about = "Miner CVM agent task API (capacity + dispatch + work-receipt signing)"
+    about = "Miner CVM agent task API (capacity + dispatch + pack execution + work-receipt)"
 )]
 struct Cli {
     /// Bind address (compose publishes agent:8080).
@@ -46,6 +50,24 @@ struct Cli {
     /// Trusted challenge public key (64 hex) for dispatch auth.
     #[arg(long, env = "GBASE_TRUSTED_CHALLENGE_PUBKEY")]
     trusted_challenge_pubkey: Option<String>,
+    /// Docker Engine HTTP base (socket-proxy). When set with image + pack root → Docker backend.
+    #[arg(long, env = "GBASE_DOCKER_BASE")]
+    docker_base: Option<String>,
+    /// Digest-pinned environment image for pack runs (`name@sha256:…`).
+    #[arg(long, env = "GBASE_ENVIRONMENT_IMAGE")]
+    environment_image: Option<String>,
+    /// Host directory of Harbor packs (`{root}/{pack_id}/`).
+    #[arg(long, env = "GBASE_PACK_ROOT")]
+    pack_root: Option<PathBuf>,
+    /// Staging root for agent binds.
+    #[arg(long, env = "GBASE_AGENT_WORK_ROOT", default_value = "/tmp/gbase-agent-work")]
+    work_root: PathBuf,
+    /// Miner-supplied model API key file (mounted into agent; never logged).
+    #[arg(long, env = "GBASE_MODEL_KEY_FILE")]
+    model_key_file: Option<PathBuf>,
+    /// Egress posture: `open` (default) or `allowlisted_proxy`.
+    #[arg(long, env = "GBASE_AGENT_EGRESS", default_value = "open")]
+    egress: String,
 }
 
 fn main() -> ExitCode {
@@ -78,6 +100,54 @@ fn parse_pubkey_hex(s: &str) -> Result<[u8; KEY_LEN], String> {
     Ok(out)
 }
 
+fn parse_egress(s: &str) -> Result<AgentEgressPosture, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "open" | "" => Ok(AgentEgressPosture::Open),
+        "allowlisted_proxy" | "proxy" => Ok(AgentEgressPosture::AllowlistedProxy),
+        other => Err(format!(
+            "unknown egress posture {other:?} (expected open|allowlisted_proxy)"
+        )),
+    }
+}
+
+fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
+    match (
+        cli.docker_base.as_ref(),
+        cli.environment_image.as_ref(),
+        cli.pack_root.as_ref(),
+    ) {
+        (Some(base), Some(image), Some(root)) => {
+            if image.is_empty() {
+                return Err("GBASE_ENVIRONMENT_IMAGE must be non-empty".into());
+            }
+            if let Some(key) = &cli.model_key_file {
+                if !key.is_file() {
+                    return Err(format!(
+                        "GBASE_MODEL_KEY_FILE not a file: {}",
+                        key.display()
+                    ));
+                }
+            }
+            Ok(ExecutionBackend::Docker(DockerExecConfig {
+                docker_base: base.clone(),
+                environment_image: image.clone(),
+                pack_root: root.clone(),
+                work_root: cli.work_root.clone(),
+                model_key_path: cli.model_key_file.clone(),
+                egress: parse_egress(&cli.egress)?,
+                agent_cmd: None,
+            }))
+        }
+        (None, None, None) => Ok(ExecutionBackend::Stub {
+            hold: Duration::ZERO,
+        }),
+        _ => Err(
+            "Docker pack execution requires GBASE_DOCKER_BASE + GBASE_ENVIRONMENT_IMAGE + GBASE_PACK_ROOT (or omit all three for stub)"
+                .into(),
+        ),
+    }
+}
+
 async fn serve(cli: Cli) -> Result<(), String> {
     let path = if cli.receipt_sk_file.as_os_str().is_empty() {
         receipt_sk_path_from_env()
@@ -108,6 +178,8 @@ async fn serve(cli: Cli) -> Result<(), String> {
         );
     }
 
+    let egress_posture = parse_egress(&cli.egress)?;
+    let execution = build_execution(&cli)?;
     let declared = cli.max_concurrency;
     let effective = clamp_concurrency(declared);
     let state = RunnerState::new(RunnerConfig {
@@ -116,7 +188,8 @@ async fn serve(cli: Cli) -> Result<(), String> {
         trusted_challenge_pubkey: trusted,
         dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
         receipt_key: Some(key),
-        stub_hold: Duration::ZERO,
+        execution,
+        egress_posture,
     });
     let router = app(state);
     let listener = TcpListener::bind(cli.bind)
@@ -130,9 +203,10 @@ async fn serve(cli: Cli) -> Result<(), String> {
         effective_max_concurrency = effective,
         receipt_public_key_hex = %public_hex,
         auth_enabled,
+        egress_posture = egress_posture.as_str(),
+        default_egress = DEFAULT_AGENT_EGRESS_POSTURE.as_str(),
         "agent-runner HTTP surface"
     );
-    let _ = Duration::from_secs(1); // keep import used if ttl changes
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

@@ -83,8 +83,10 @@ name = "agent-runner"
 version = "0.1.0"
 dependencies = [
  "agent-dispatch",
+ "agent-pack",
  "axum",
  "crypto",
+ "docker-engine",
  "hex",
  "http-body-util",
  "parity-scale-codec",

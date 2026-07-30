@@ -219,6 +219,33 @@ Two JSON surfaces coexist:
 
 The descriptor carries a **stripped** pack projection only: instruction + environment image digest / base commit metadata. It MUST NOT include `solution/`, `tests/test.patch`, or `grader.py` (anti-cheat).
 
+### 4.2.1 Agent egress posture (scoring_version 2 — LOCKED default)
+
+**Default: OPEN** (`AgentEgressPosture::Open`). The miner pack-environment container is **not** network-locked down in v2 (`NetworkDisabled=false`).
+
+| Posture | Default? | Meaning |
+|---------|----------|---------|
+| **OPEN** | **yes** | Agent container may use the network. Honest claim: stripping protects **grading-channel integrity** (held-out `solution/` / `tests/` / `grader.py` never reach the miner), **not** miner honesty. |
+| Allowlisted egress proxy | **no** (OFF by default) | Optional stronger mode: only miner model endpoint. Not implied by v2; enable only via explicit miner config. |
+
+**Metis B6 residual risk (explicit):** Harbor packs are public merged PRs (`repository_url` + `base_commit_hash`). With OPEN egress an agent can fetch the upstream fix. Stripping is therefore **not cheat-proof**. D19 already disclaims score honesty and owner honesty; OPEN is consistent with that boundary, not a silent hole.
+
+Contrast: operator-side `HarborVerifier` grades with `network_disabled: true`. That offline grade path is independent of the miner agent egress default.
+
+Pack `task.toml` `allow_internet = false` is the **image build** offline contract (deps baked at build). It is **not** the CVM agent egress posture.
+
+### 4.2.2 Pack execution and model key (Q3=A)
+
+The runner resolves `pack_id` to a stripped Harbor projection, pulls the digest-pinned environment image through the measured socket-proxy allowlist, runs a reference agent against `instruction`, and collects `/logs/artifacts/model.patch`.
+
+| Item | Contract |
+|------|----------|
+| Artifact | `/logs/artifacts/model.patch` (unified diff) |
+| Deadline | `min(deadline_unix_ms remaining, agent.timeout_sec)` → hard stop → `status=timed_out`, no patch, **still signed** work receipt |
+| Containers | Owned name prefix `gbase-verify-agent-` (subset of `gbase-verify-`); unconditional teardown after each attempt |
+| Model key (Q3=A) | Miner-supplied file mount (e.g. `/run/gbase/model_key`); env carries **path only** (`MODEL_KEY_FILE`); **never** key bytes in logs, compose `environment:` values, or measured env values |
+| Receipt | `patch_sha256 = sha256(model.patch bytes)`; sr25519 under `gbase-agent-work-receipt-v1` |
+
 ### 4.3 Dispatch result (`TaskResultV1`)
 
 ```json
@@ -712,7 +739,9 @@ Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no 
 8. Compose render matches §9; no `:latest`; measured socket-proxy; no secrets in `environment:`.  
 9. Leaves verify under BUNDLE_SPEC `protocol_version = 1` and local trust root.  
 10. Work receipt domain is `gbase-agent-work-receipt-v1`, distinct from attest.  
-11. Doc states what v2 attestation does **not** prove (§3.4).
+11. Doc states what v2 attestation does **not** prove (§3.4).  
+12. Agent egress default is **OPEN** (§4.2.1); allowlisted proxy OFF by default; Metis B6 residual stated.  
+13. Model key is a mounted file path only (Q3=A); never logged (§4.2.2).
 
 ---
 
@@ -746,6 +775,8 @@ Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no 
 | R3 work receipt | §5.6 |
 | Q1=A miner-side runner | §1, §9.1 |
 | Q2=B scoring_version 2 | §2, freeze note |
+| Q3=A miner model key file | §4.2.2 |
+| Agent egress OPEN default | §4.2.1 |
 
 ---
 

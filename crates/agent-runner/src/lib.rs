@@ -16,11 +16,20 @@
 //! Accept acquires a semaphore permit; over-capacity returns **HTTP 503** with code
 //! `capacity_exhausted` (retryable; never unbounded-queued). Capacity reports the
 //! effective clamped max and occupied slot count.
+//!
+//! # Pack execution + egress (todo 21)
+//! [`ExecutionBackend::Docker`] pulls a digest-pinned env image via allowlisted
+//! socket-proxy, runs the reference agent, collects `/logs/artifacts/model.patch`,
+//! signs a work receipt, and tears down `gbase-verify-agent-*` containers.
+//! Default egress posture is [`DEFAULT_AGENT_EGRESS_POSTURE`] (**OPEN**): no network
+//! lockdown. Stripping protects grading-channel integrity, not miner honesty (D19).
 
 #![forbid(unsafe_code)]
 
 mod api;
 mod auth;
+mod egress;
+mod executor;
 mod receipt_key;
 mod store;
 
@@ -28,6 +37,14 @@ pub use api::{router, ApiError, CapacityResponse, TaskAccepted, TaskView};
 pub use auth::{
     dispatch_auth_payload, sign_dispatch_request, unix_now_ms, verify_and_consume_dispatch,
     DispatchAuthError, SignedDispatchRequest, DEFAULT_DISPATCH_NONCE_TTL,
+};
+pub use egress::{
+    AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE, EGRESS_POSTURE_OPEN_LABEL,
+};
+pub use executor::{
+    count_agent_containers, execute_pack, load_stripped, reference_agent_cmd, resolve_timeout_sec,
+    DockerExecConfig, ExecOutcome, ExecutionBackend, AGENT_CONTAINER_PREFIX, MODEL_KEY_CONTAINER_PATH,
+    MODEL_KEY_FILE_ENV, MODEL_PATCH_REL,
 };
 pub use receipt_key::{
     load_or_generate, load_required, receipt_sk_path_from_env, ReceiptKey, ReceiptKeyError,
@@ -55,7 +72,7 @@ pub fn crate_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_dispatch::{TaskDescriptorV1, DISPATCH_PROTOCOL};
+    use agent_dispatch::{patch_sha256, TaskDescriptorV1, TaskStatusV1, DISPATCH_PROTOCOL};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use crypto::KEY_LEN;
@@ -78,19 +95,29 @@ mod tests {
     fn test_receipt_key() -> ReceiptKey {
         let dir = tempfile::tempdir().expect("tmpdir");
         let path = dir.path().join("receipt_sk");
-        // Leak dir so path stays valid for the test process lifetime of the key.
         std::mem::forget(dir);
         load_or_generate(&path).expect("receipt key")
     }
 
+    fn cfg_base(max: u32) -> RunnerConfig {
+        RunnerConfig {
+            max_concurrency: max,
+            auth_enabled: false,
+            trusted_challenge_pubkey: None,
+            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
+            receipt_key: Some(test_receipt_key()),
+            execution: ExecutionBackend::Stub {
+                hold: Duration::ZERO,
+            },
+            egress_posture: DEFAULT_AGENT_EGRESS_POSTURE,
+        }
+    }
+
     fn auth_state(max: u32, pk: [u8; KEY_LEN]) -> RunnerState {
         RunnerState::new(RunnerConfig {
-            max_concurrency: max,
-            receipt_key: Some(test_receipt_key()),
             auth_enabled: true,
             trusted_challenge_pubkey: Some(pk),
-            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
-            stub_hold: Duration::ZERO,
+            ..cfg_base(max)
         })
     }
 
@@ -105,40 +132,28 @@ mod tests {
             trusted_challenge_pubkey: Some(pk),
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
             receipt_key: Some(receipt),
-            stub_hold: Duration::ZERO,
+            execution: ExecutionBackend::Stub {
+                hold: Duration::ZERO,
+            },
+            egress_posture: DEFAULT_AGENT_EGRESS_POSTURE,
         })
     }
 
     fn open_state(max: u32) -> RunnerState {
-        RunnerState::new(RunnerConfig {
-            max_concurrency: max,
-            receipt_key: Some(test_receipt_key()),
-            auth_enabled: false,
-            trusted_challenge_pubkey: None,
-            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
-            stub_hold: Duration::ZERO,
-        })
+        RunnerState::new(cfg_base(max))
     }
 
     fn open_state_hold(max: u32, hold: Duration) -> RunnerState {
         RunnerState::new(RunnerConfig {
-            max_concurrency: max,
-            receipt_key: Some(test_receipt_key()),
-            auth_enabled: false,
-            trusted_challenge_pubkey: None,
-            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
-            stub_hold: hold,
+            execution: ExecutionBackend::Stub { hold },
+            ..cfg_base(max)
         })
     }
 
     fn open_state_no_receipt(max: u32) -> RunnerState {
         RunnerState::new(RunnerConfig {
-            max_concurrency: max,
             receipt_key: None,
-            auth_enabled: false,
-            trusted_challenge_pubkey: None,
-            dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
-            stub_hold: Duration::ZERO,
+            ..cfg_base(max)
         })
     }
 
@@ -149,7 +164,18 @@ mod tests {
             7,
             "aa".repeat(32),
             "pack-fixture-001",
-            9_999_999_999_999,
+            unix_now_ms() + 3_600_000,
+        )
+    }
+
+    fn sample_desc_deadline(deadline_unix_ms: u64) -> TaskDescriptorV1 {
+        TaskDescriptorV1::new(
+            "agent-v1",
+            2,
+            7,
+            "aa".repeat(32),
+            "pack-fixture-001",
+            deadline_unix_ms,
         )
     }
 
@@ -191,6 +217,31 @@ mod tests {
             .expect("oneshot")
     }
 
+    async fn poll_terminal(state: &RunnerState, task_id: &str) -> Value {
+        let mut terminal: Option<Value> = None;
+        for _ in 0..100 {
+            let router = app(state.clone());
+            let res = router
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/v1/task/{task_id}"))
+                        .body(Body::empty())
+                        .expect("req"),
+                )
+                .await
+                .expect("oneshot");
+            assert_eq!(res.status(), StatusCode::OK);
+            let v = body_json(res).await;
+            let st = v["status"].as_str().unwrap_or("");
+            if matches!(st, "completed" | "failed" | "timed_out") {
+                terminal = Some(v);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        terminal.expect("task reached terminal status")
+    }
+
     /// S3 — clamp edges: 0→1, 1→1, 5→5, 6→5, 9999→5.
     #[test]
     fn clamp_concurrency_bounds_1_to_5() {
@@ -202,6 +253,16 @@ mod tests {
         assert_eq!(clamp_concurrency(9999), 5);
         assert_eq!(MIN_CONCURRENCY, 1);
         assert_eq!(MAX_CONCURRENCY_BOUND, 5);
+    }
+
+    /// Egress posture locked OPEN (todo 21).
+    #[test]
+    fn egress_default_is_open_documented_label() {
+        assert_eq!(DEFAULT_AGENT_EGRESS_POSTURE, AgentEgressPosture::Open);
+        assert_eq!(DEFAULT_AGENT_EGRESS_POSTURE.as_str(), EGRESS_POSTURE_OPEN_LABEL);
+        assert!(!DEFAULT_AGENT_EGRESS_POSTURE.network_disabled());
+        let st = open_state(1);
+        assert_eq!(st.egress_posture(), AgentEgressPosture::Open);
     }
 
     /// S2 — capacity reports effective clamp for 0 and 9999 (no panic).
@@ -259,7 +320,6 @@ mod tests {
         let r2 = post_plain(&state, &sample_desc()).await;
         assert_eq!(r2.status(), StatusCode::ACCEPTED, "second must accept");
 
-        // Brief yield so both hold permits and bump load.
         tokio::time::sleep(Duration::from_millis(30)).await;
         let cap = state.capacity_async().await;
         assert_eq!(cap.max_concurrency, 2);
@@ -274,10 +334,8 @@ mod tests {
         let v3 = body_json(r3).await;
         assert_eq!(v3["code"], "capacity_exhausted");
         assert!(v3.get("error").is_some());
-        // No unbounded queue: refused request must not create a task.
         assert_eq!(state.task_count().await, before + 2);
 
-        // Wait for holds to finish and slots to free.
         tokio::time::sleep(Duration::from_millis(500)).await;
         let cap_after = state.capacity_async().await;
         assert_eq!(cap_after.current_load, 0, "slots freed after completion");
@@ -291,7 +349,69 @@ mod tests {
         assert_eq!(state.task_count().await, before + 3);
     }
 
-    /// S4 — GET /healthz → 200 ok (unauthenticated).
+    /// Deadline already passed → timed_out, no patch, signed receipt.
+    #[tokio::test]
+    async fn past_deadline_returns_timed_out_with_signed_receipt() {
+        let receipt = test_receipt_key();
+        let receipt_pk = *receipt.public_key();
+        let state = RunnerState::new(RunnerConfig {
+            receipt_key: Some(receipt),
+            ..cfg_base(1)
+        });
+        let desc = sample_desc_deadline(1);
+        let res = post_plain(&state, &desc).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(res).await;
+        let task_id = accepted["task_id"].as_str().expect("id").to_owned();
+        let v = poll_terminal(&state, &task_id).await;
+        assert_eq!(v["status"], "timed_out");
+        let result = v.get("result").expect("result");
+        assert_eq!(result["status"], "timed_out");
+        assert!(result.get("model_patch").is_none() || result["model_patch"].is_null());
+        let sig_hex = result["receipt_sig_hex"].as_str().expect("sig");
+        assert_eq!(sig_hex.len(), 128);
+        let digest = patch_sha256(b"");
+        assert_eq!(result["patch_sha256_hex"], hex::encode(digest));
+        let mut sig = [0u8; 64];
+        sig.copy_from_slice(&hex::decode(sig_hex).unwrap());
+        let mut hk = [0u8; 32];
+        hk.copy_from_slice(&hex::decode("aa".repeat(32)).unwrap());
+        agent_dispatch::verify_work_receipt(
+            &receipt_pk,
+            &agent_dispatch::SignedWorkReceiptV1 {
+                body: agent_dispatch::WorkReceiptBodyV1 {
+                    challenge_id: b"agent-v1".to_vec(),
+                    scoring_version: 2,
+                    epoch: 7,
+                    miner_hotkey: hk,
+                    pack_id: b"pack-fixture-001".to_vec(),
+                    patch_sha256: digest,
+                },
+                signature: sig,
+            },
+        )
+        .expect("timed-out receipt still verifies");
+        let _ = TaskStatusV1::TimedOut;
+    }
+
+    /// Completed stub: patch_sha256 matches returned bytes.
+    #[tokio::test]
+    async fn completed_patch_sha256_matches_bytes() {
+        let state = open_state(1);
+        let res = post_plain(&state, &sample_desc()).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let accepted = body_json(res).await;
+        let task_id = accepted["task_id"].as_str().expect("id").to_owned();
+        let v = poll_terminal(&state, &task_id).await;
+        assert_eq!(v["status"], "completed");
+        let result = v.get("result").expect("result");
+        let patch = result["model_patch"].as_str().expect("patch");
+        assert!(patch.contains("diff --git"));
+        assert!(!patch.is_empty());
+        let expected = hex::encode(patch_sha256(patch.as_bytes()));
+        assert_eq!(result["patch_sha256_hex"], expected);
+    }
+
     #[tokio::test]
     async fn healthz_returns_200_ok() {
         let (_sk, pk) = mini_pair(1);
@@ -309,7 +429,6 @@ mod tests {
         assert_eq!(body_text(res).await, "ok");
     }
 
-    /// S4 — GET /readyz → 200 ready.
     #[tokio::test]
     async fn readyz_returns_200_ready() {
         let (_sk, pk) = mini_pair(1);
@@ -327,7 +446,6 @@ mod tests {
         assert_eq!(body_text(res).await, "ready");
     }
 
-    /// Capacity reflects configured max_concurrency (within clamp) and zero load.
     #[tokio::test]
     async fn capacity_reports_configured_max_and_zero_load() {
         let (_sk, pk) = mini_pair(1);
@@ -347,7 +465,6 @@ mod tests {
         assert_eq!(v["current_load"], 0);
     }
 
-    /// Unknown task id → 404 typed body (not 500).
     #[tokio::test]
     async fn unknown_task_returns_404_typed() {
         let (_sk, pk) = mini_pair(1);
@@ -367,7 +484,6 @@ mod tests {
         assert_eq!(v["code"], "task_not_found");
     }
 
-    /// Malformed JSON body → 401 when auth on (unsigned / unparseable envelope).
     #[tokio::test]
     async fn post_task_malformed_json_returns_401_when_auth_on() {
         let (_sk, pk) = mini_pair(1);
@@ -383,7 +499,6 @@ mod tests {
             )
             .await
             .expect("oneshot");
-        // JsonRejection is 400 from extractor path — still typed.
         assert!(
             res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNAUTHORIZED,
             "status={}",
@@ -393,7 +508,6 @@ mod tests {
         assert!(v.get("error").is_some(), "typed error: {v}");
     }
 
-    /// Unsigned bare descriptor → 401, no task created.
     #[tokio::test]
     async fn post_unsigned_descriptor_returns_401() {
         let (_sk, pk) = mini_pair(2);
@@ -417,7 +531,6 @@ mod tests {
         assert_eq!(state.task_count().await, 0);
     }
 
-    /// Signed dispatch → 202 + poll completion.
     #[tokio::test]
     async fn post_signed_and_poll_task_to_completion() {
         let (sk, pk) = mini_pair(3);
@@ -454,28 +567,7 @@ mod tests {
             .to_owned();
         assert!(!task_id.is_empty());
 
-        let mut terminal: Option<Value> = None;
-        for _ in 0..50 {
-            let router = app(state.clone());
-            let res = router
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/v1/task/{task_id}"))
-                        .body(Body::empty())
-                        .expect("req"),
-                )
-                .await
-                .expect("oneshot");
-            assert_eq!(res.status(), StatusCode::OK);
-            let v = body_json(res).await;
-            let st = v["status"].as_str().unwrap_or("");
-            if st == "completed" || st == "failed" {
-                terminal = Some(v);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        let v = terminal.expect("task reached terminal status");
+        let v = poll_terminal(&state, &task_id).await;
         assert_eq!(v["status"], "completed");
         assert_eq!(v["task_id"], task_id);
         let result = v.get("result").expect("result present when complete");
@@ -514,7 +606,6 @@ mod tests {
         .expect("WORK_RECEIPT verify");
     }
 
-    /// Replay identical signed body → second 401 nonce_replay; one task only.
     #[tokio::test]
     async fn post_replay_nonce_rejected() {
         let (sk, pk) = mini_pair(4);
@@ -560,7 +651,6 @@ mod tests {
         assert_eq!(state.task_count().await, 1);
     }
 
-    /// Foreign signer → 401, no task.
     #[tokio::test]
     async fn post_foreign_key_rejected() {
         let (_sk_trust, pk_trust) = mini_pair(5);
@@ -599,7 +689,6 @@ mod tests {
         assert_eq!(crate_name(), "agent-runner");
     }
 
-    /// Capacity current_load starts at zero for a fresh store.
     #[tokio::test]
     async fn capacity_load_non_negative() {
         let state = open_state(2);
@@ -609,7 +698,6 @@ mod tests {
         let _ = json!({"ok": true});
     }
 
-    /// Auth-off path still accepts plain descriptors (local/dev).
     #[tokio::test]
     async fn auth_disabled_accepts_plain_descriptor() {
         let state = open_state(1);
@@ -628,7 +716,6 @@ mod tests {
         assert_eq!(res.status(), StatusCode::ACCEPTED);
     }
 
-    /// Missing receipt key → task fails closed (no zero stub signature).
     #[tokio::test]
     async fn missing_receipt_key_fails_closed() {
         let state = open_state_no_receipt(1);
@@ -648,27 +735,7 @@ mod tests {
         let accepted = body_json(res).await;
         let task_id = accepted["task_id"].as_str().expect("id").to_owned();
 
-        let mut terminal: Option<Value> = None;
-        for _ in 0..50 {
-            let router = app(state.clone());
-            let res = router
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/v1/task/{task_id}"))
-                        .body(Body::empty())
-                        .expect("req"),
-                )
-                .await
-                .expect("oneshot");
-            let v = body_json(res).await;
-            let st = v["status"].as_str().unwrap_or("");
-            if st == "completed" || st == "failed" {
-                terminal = Some(v);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        let v = terminal.expect("terminal");
+        let v = poll_terminal(&state, &task_id).await;
         assert_eq!(v["status"], "failed");
         let result = v.get("result").expect("result");
         assert_eq!(result["status"], "failed");
@@ -676,7 +743,6 @@ mod tests {
         assert!(sig.is_empty() || sig != &"00".repeat(64));
     }
 
-    /// Signed over-capacity still returns 503 (auth ok, slots full).
     #[tokio::test]
     async fn signed_dispatch_over_capacity_returns_503() {
         let (sk, pk) = mini_pair(7);
@@ -686,7 +752,10 @@ mod tests {
             trusted_challenge_pubkey: Some(pk),
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
             receipt_key: Some(test_receipt_key()),
-            stub_hold: Duration::from_millis(300),
+            execution: ExecutionBackend::Stub {
+                hold: Duration::from_millis(300),
+            },
+            egress_posture: DEFAULT_AGENT_EGRESS_POSTURE,
         });
         let now = unix_now_ms();
         let env1 = sign_dispatch_request(&sk, &pk, sample_desc(), [0x41; KEY_LEN], now + 60_000)

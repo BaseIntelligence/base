@@ -1,4 +1,4 @@
-//! In-memory task store: dispatch auth state + stub executor with receipt signing.
+//! In-memory task store: dispatch auth + pack executor + receipt signing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +18,8 @@ use crate::auth::{
     verify_and_consume_dispatch, DispatchAuthError, SignedDispatchRequest,
     DEFAULT_DISPATCH_NONCE_TTL,
 };
+use crate::egress::{AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE};
+use crate::executor::{execute_pack, ExecutionBackend};
 use crate::receipt_key::ReceiptKey;
 
 /// Inclusive lower bound for miner-declared concurrency (deepagent `--n-concurrent`).
@@ -26,9 +28,6 @@ pub const MIN_CONCURRENCY: u32 = 1;
 pub const MAX_CONCURRENCY_BOUND: u32 = 5;
 
 /// Clamp a miner-declared concurrency into the upstream eval window `1..=5`.
-///
-/// Values below the floor (including `0`) become [`MIN_CONCURRENCY`]. Values above
-/// the ceiling become [`MAX_CONCURRENCY_BOUND`].
 #[must_use]
 pub fn clamp_concurrency(n: u32) -> u32 {
     n.clamp(MIN_CONCURRENCY, MAX_CONCURRENCY_BOUND)
@@ -47,8 +46,10 @@ pub struct RunnerConfig {
     pub dispatch_nonce_ttl: Duration,
     /// CVM-local work-receipt key. Required to complete tasks with a real sig.
     pub receipt_key: Option<ReceiptKey>,
-    /// Artificial hold before stub completion (tests / load simulation). Zero in production.
-    pub stub_hold: Duration,
+    /// Pack execution backend (stub or Docker).
+    pub execution: ExecutionBackend,
+    /// Documented egress posture (default OPEN).
+    pub egress_posture: AgentEgressPosture,
 }
 
 impl Default for RunnerConfig {
@@ -59,7 +60,8 @@ impl Default for RunnerConfig {
             trusted_challenge_pubkey: None,
             dispatch_nonce_ttl: DEFAULT_DISPATCH_NONCE_TTL,
             receipt_key: None,
-            stub_hold: Duration::ZERO,
+            execution: ExecutionBackend::default(),
+            egress_posture: DEFAULT_AGENT_EGRESS_POSTURE,
         }
     }
 }
@@ -70,10 +72,12 @@ impl Default for RunnerConfig {
 pub enum TaskLifecycle {
     /// Accepted, not yet started.
     Pending,
-    /// Stub/real executor holds a slot.
+    /// Executor holds a slot.
     Running,
     /// Finished successfully (result present).
     Completed,
+    /// Hard deadline exceeded (result present, typically no patch).
+    TimedOut,
     /// Finished with failure (result present).
     Failed,
 }
@@ -131,6 +135,12 @@ impl RunnerState {
     #[must_use]
     pub fn effective_max_concurrency(&self) -> u32 {
         self.effective_max
+    }
+
+    /// Configured egress posture (default OPEN).
+    #[must_use]
+    pub fn egress_posture(&self) -> AgentEgressPosture {
+        self.config.egress_posture
     }
 
     /// Whether dispatch auth is enforced.
@@ -228,7 +238,7 @@ impl RunnerState {
         let state = self.clone();
         let id = task_id.clone();
         tokio::spawn(async move {
-            state.run_stub(id, descriptor, permit).await;
+            state.run_task(id, descriptor, permit).await;
         });
         Ok(task_id)
     }
@@ -244,7 +254,7 @@ impl RunnerState {
             .map(|r| (r.lifecycle, r.result.clone()))
     }
 
-    async fn run_stub(
+    async fn run_task(
         &self,
         task_id: String,
         descriptor: TaskDescriptorV1,
@@ -257,14 +267,20 @@ impl RunnerState {
             }
         }
 
-        if !self.config.stub_hold.is_zero() {
-            tokio::time::sleep(self.config.stub_hold).await;
-        } else {
-            tokio::task::yield_now().await;
-        }
+        let backend = self.config.execution.clone();
+        let pack_id = descriptor.pack_id.clone();
+        let deadline = descriptor.deadline_unix_ms;
+        let outcome = tokio::task::spawn_blocking(move || {
+            execute_pack(&backend, &pack_id, deadline)
+        })
+        .await
+        .unwrap_or_else(|_| crate::executor::ExecOutcome {
+            status: TaskStatusV1::Failed,
+            model_patch: None,
+        });
 
-        let (lifecycle, result) = match build_signed_result(&self.config, &descriptor) {
-            Ok(result) => (TaskLifecycle::Completed, result),
+        let (lifecycle, result) = match finalize_result(&self.config, &descriptor, outcome) {
+            Ok((lc, result)) => (lc, result),
             Err(msg) => {
                 tracing::error!(
                     event = "receipt_sign_failed",
@@ -288,17 +304,22 @@ impl RunnerState {
     }
 }
 
-fn build_signed_result(
+fn finalize_result(
     config: &RunnerConfig,
     descriptor: &TaskDescriptorV1,
-) -> Result<TaskResultV1, String> {
+    outcome: crate::executor::ExecOutcome,
+) -> Result<(TaskLifecycle, TaskResultV1), String> {
     let key = config
         .receipt_key
         .as_ref()
         .ok_or_else(|| "receipt signing key missing".to_owned())?;
 
-    let patch = stub_model_patch(&descriptor.pack_id);
-    let digest = patch_sha256(patch.as_bytes());
+    let patch_bytes: &[u8] = outcome
+        .model_patch
+        .as_ref()
+        .map(String::as_bytes)
+        .unwrap_or(b"");
+    let digest = patch_sha256(patch_bytes);
     let miner_hotkey = parse_hotkey_hex(&descriptor.miner_hotkey_hex)?;
 
     let body = WorkReceiptBodyV1 {
@@ -311,18 +332,33 @@ fn build_signed_result(
     };
     let signed = sign_work_receipt(key.secret(), body).map_err(|e| e.to_string())?;
 
-    Ok(TaskResultV1 {
-        protocol: DISPATCH_PROTOCOL.into(),
-        challenge_id: descriptor.challenge_id.clone(),
-        scoring_version: descriptor.scoring_version,
-        epoch: descriptor.epoch,
-        miner_hotkey_hex: descriptor.miner_hotkey_hex.clone(),
-        pack_id: descriptor.pack_id.clone(),
-        status: TaskStatusV1::Completed,
-        model_patch: Some(patch),
-        patch_sha256_hex: hex::encode(digest),
-        receipt_sig_hex: hex::encode(signed.signature),
-    })
+    let lifecycle = match outcome.status {
+        TaskStatusV1::Completed => TaskLifecycle::Completed,
+        TaskStatusV1::TimedOut => TaskLifecycle::TimedOut,
+        TaskStatusV1::Failed => TaskLifecycle::Failed,
+    };
+
+    // Timeout / failure: no patch body on the wire (even if digest is zero).
+    let model_patch = match outcome.status {
+        TaskStatusV1::Completed => outcome.model_patch,
+        TaskStatusV1::TimedOut | TaskStatusV1::Failed => None,
+    };
+
+    Ok((
+        lifecycle,
+        TaskResultV1 {
+            protocol: DISPATCH_PROTOCOL.into(),
+            challenge_id: descriptor.challenge_id.clone(),
+            scoring_version: descriptor.scoring_version,
+            epoch: descriptor.epoch,
+            miner_hotkey_hex: descriptor.miner_hotkey_hex.clone(),
+            pack_id: descriptor.pack_id.clone(),
+            status: outcome.status,
+            model_patch,
+            patch_sha256_hex: hex::encode(digest),
+            receipt_sig_hex: hex::encode(signed.signature),
+        },
+    ))
 }
 
 fn failed_result(descriptor: &TaskDescriptorV1) -> TaskResultV1 {
@@ -352,15 +388,4 @@ fn parse_hotkey_hex(hex_s: &str) -> Result<[u8; KEY_LEN], String> {
     let mut out = [0u8; KEY_LEN];
     out.copy_from_slice(&bytes);
     Ok(out)
-}
-
-fn stub_model_patch(pack_id: &str) -> String {
-    format!(
-        "diff --git a/README.md b/README.md\n\
-         --- a/README.md\n\
-         +++ b/README.md\n\
-         @@ -1 +1,2 @@\n\
-          # pack\n\
-         +stub patch for {pack_id}\n"
-    )
 }

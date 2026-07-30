@@ -55,6 +55,9 @@ from `AGENT_CHALLENGE.md`.
 | F7_parked | `NoScore(AttestationNotVerified)` |
 | no_score_in_cvm | `NO challenge signing key` |
 | park_no_credit | `Park grants` |
+| agent_egress_open | `Default: OPEN` |
+| metis_b6_residual | `Metis B6 residual risk` |
+| model_key_q3a | `Q3=A` |
 
 ## Maintenance
 
