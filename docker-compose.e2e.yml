@@ -1,4 +1,6 @@
-# task-47 cleartext e2e — publish HTTP on host (no Cloudflare/TLS)
+# task-47 / todo-33 cleartext e2e — publish HTTP on host (no Cloudflare/TLS)
+# GBASE_CHAIN_BACKEND=fake_owner for gateway master check.
+# socket-proxy :2375 on localhost so host-side Harbor grade / runner Docker work.
 services:
   gateway:
     ports:
@@ -17,3 +19,6 @@ services:
     environment:
       GBASE_CHALLENGE_BIND: 0.0.0.0:8090
       GBASE_DOCKER_BASE: http://socket-proxy:2375
+  socket-proxy:
+    ports:
+      - "2375:2375"

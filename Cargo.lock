@@ -18,6 +18,7 @@ version = "0.1.0"
 dependencies = [
  "agent-dispatch",
  "agent-pack",
+ "agent-runner",
  "axum",
  "bundle",
  "chain",
@@ -38,6 +39,8 @@ dependencies = [
  "tokio",
  "tracing",
  "trustroot",
+ "uuid",
+ "validator",
  "wiremock",
 ]
 
