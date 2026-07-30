@@ -56,10 +56,12 @@ pub mod domain {
     pub const TRUST_ROOT: DomainTag = DomainTag::new(b"gbase-trustroot-v1");
     /// CVM-local agent work receipt (orchestrator verifies; not D10).
     pub const WORK_RECEIPT: DomainTag = DomainTag::new(b"gbase-agent-work-receipt-v1");
+    /// Orchestrator → runner signed dispatch (single-use nonce envelope).
+    pub const DISPATCH: DomainTag = DomainTag::new(b"gbase-agent-dispatch-v1");
 
     /// All canonical tags (stable order for tests / enumeration).
-    pub const ALL: [DomainTag; 7] = [
-        BUNDLE, RAW_WEIGHT, DISSENT, ROOT, ATTEST, TRUST_ROOT, WORK_RECEIPT,
+    pub const ALL: [DomainTag; 8] = [
+        BUNDLE, RAW_WEIGHT, DISSENT, ROOT, ATTEST, TRUST_ROOT, WORK_RECEIPT, DISPATCH,
     ];
 }
 
@@ -204,6 +206,29 @@ pub fn verify_raw(
 ) -> Result<(), CryptoError> {
     let public = public_from_bytes(public_bytes)?;
     verify(&public, domain, payload, signature)
+}
+
+
+/// Generate a fresh 32-byte mini-secret (OsRng).
+///
+/// Suitable for CVM-local work-receipt keys and test fixtures. Never log the
+/// returned bytes.
+#[must_use]
+pub fn generate_mini_secret() -> [u8; KEY_LEN] {
+    use rand_core::OsRng;
+    schnorrkel::MiniSecretKey::generate_with(OsRng).to_bytes()
+}
+
+/// Derive the 32-byte public key from a mini-secret.
+///
+/// # Errors
+///
+/// [`CryptoError::InvalidSecretKey`] if the mini-secret is malformed.
+pub fn public_key_from_mini_secret(
+    secret: &[u8; KEY_LEN],
+) -> Result<[u8; KEY_LEN], CryptoError> {
+    let sk = secret_from_bytes(secret)?;
+    Ok(sk.to_public().to_bytes())
 }
 
 /// Errors from the single-use nonce store.
@@ -486,7 +511,7 @@ mod tests {
                 std::str::from_utf8(label)
             );
         }
-        assert_eq!(labels.len(), 7);
+        assert_eq!(labels.len(), 8);
 
         assert_eq!(domain::BUNDLE.as_bytes(), b"gbase-bundle-v1");
         assert_eq!(domain::RAW_WEIGHT.as_bytes(), b"gbase-rawweight-v1");
@@ -497,6 +522,10 @@ mod tests {
         assert_eq!(
             domain::WORK_RECEIPT.as_bytes(),
             b"gbase-agent-work-receipt-v1"
+        );
+        assert_eq!(
+            domain::DISPATCH.as_bytes(),
+            b"gbase-agent-dispatch-v1"
         );
     }
 

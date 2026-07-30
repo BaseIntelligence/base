@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 agent-runner = { path = "../../crates/agent-runner" }
 clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
 telemetry = { path = "../../crates/telemetry" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tracing = "0.1"

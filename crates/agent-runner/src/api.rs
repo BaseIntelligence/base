@@ -7,7 +7,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
+use crate::auth::{unix_now_ms, DispatchAuthError, SignedDispatchRequest};
 use crate::store::{RunnerState, TaskLifecycle};
 
 /// `GET /v1/capacity` body.
@@ -62,6 +64,14 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn unauthorized(err: DispatchAuthError) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: err.code(),
+            message: err.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -98,18 +108,43 @@ async fn capacity(State(st): State<RunnerState>) -> Json<CapacityResponse> {
     Json(st.capacity_async().await)
 }
 
-/// Accept a task descriptor.
-///
-/// **Auth stub (todo 18):** no signature / nonce check. Any syntactically valid
-/// [`TaskDescriptorV1`] is accepted. Do not expose this route on a public
-/// ingress until authenticated dispatch ships.
+/// Accept a task descriptor, optionally under signed single-use dispatch auth.
 async fn post_task(
     State(st): State<RunnerState>,
-    body: Result<Json<TaskDescriptorV1>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
-    let Json(descriptor) = body.map_err(|e| {
+    let Json(raw) = body.map_err(|e| {
         ApiError::bad_request("invalid_json", format!("invalid task descriptor JSON: {e}"))
     })?;
+
+    let descriptor = if st.auth_enabled() {
+        let envelope: SignedDispatchRequest = serde_json::from_value(raw).map_err(|e| {
+            // Missing auth fields → 401 (not 400) so unsigned probes get unauthorized.
+            tracing::info!(
+                event = "runner_dispatch_auth_reject",
+                reason = "malformed_or_unsigned",
+                "dispatch auth rejected"
+            );
+            let _ = e;
+            ApiError::unauthorized(DispatchAuthError::Unauthorized)
+        })?;
+        st.verify_dispatch_auth(&envelope, unix_now_ms(), Instant::now())
+            .await
+            .map_err(|err| {
+                tracing::info!(
+                    event = "runner_dispatch_auth_reject",
+                    reason = err.code(),
+                    "dispatch auth rejected"
+                );
+                ApiError::unauthorized(err)
+            })?;
+        envelope.descriptor
+    } else {
+        serde_json::from_value::<TaskDescriptorV1>(raw).map_err(|e| {
+            ApiError::bad_request("invalid_json", format!("invalid task descriptor JSON: {e}"))
+        })?
+    };
+
     if descriptor.protocol != agent_dispatch::DISPATCH_PROTOCOL {
         return Err(ApiError::bad_request(
             "invalid_protocol",
@@ -120,11 +155,7 @@ async fn post_task(
         ));
     }
     let task_id = st.accept_task(descriptor).await;
-    tracing::info!(
-        event = "runner_task_accepted",
-        %task_id,
-        "task accepted (auth not enforced — todo 18)"
-    );
+    tracing::info!(event = "runner_task_accepted", %task_id, "task accepted");
     Ok((
         StatusCode::ACCEPTED,
         Json(TaskAccepted { task_id }),
