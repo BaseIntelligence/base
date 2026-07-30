@@ -7,7 +7,9 @@ use compose_hash::{compose_hash_hex, ComposeHashError};
 use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::template::{docker_compose_yaml, ComposeTemplateInput};
+use crate::inspect::reject_raw_docker_sock_on_agent;
+use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV};
+pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
 
 /// Default digest-pinned agent image (placeholder pin until CI publishes real digests).
 pub const DEFAULT_AGENT_IMAGE: &str = concat!(
@@ -38,6 +40,8 @@ pub struct DeployParams {
     pub agent_image: String,
     /// Digest-pinned attest-helper image.
     pub attest_helper_image: String,
+    /// Digest-pinned socket-proxy image (measured allowlist path).
+    pub socket_proxy_image: String,
     /// Lowercase hex SHA-256 of launch token (measured).
     pub launch_token_hash: String,
     /// Subnet netuid.
@@ -58,6 +62,7 @@ impl Default for DeployParams {
             name: "miner".to_owned(),
             agent_image: DEFAULT_AGENT_IMAGE.to_owned(),
             attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE.to_owned(),
+            socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE.to_owned(),
             // Deterministic empty-token hash placeholder for offline dry-runs.
             launch_token_hash: empty_launch_token_hash_hex(),
             netuid: 1,
@@ -93,6 +98,9 @@ pub enum DeployError {
     /// Receipt public key is not 64 lowercase hex chars.
     #[error("receipt_public_key_hex must be 64 lowercase hex chars")]
     BadReceiptPublicKey,
+    /// Agent service mounts raw docker.sock (must use measured socket-proxy).
+    #[error(transparent)]
+    RawDockerSock(#[from] crate::inspect::RawDockerSockOnAgent),
     /// Compose JSON hashing failed.
     #[error(transparent)]
     ComposeHash(#[from] ComposeHashError),
@@ -159,6 +167,11 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
             params.attest_helper_image.clone(),
         ));
     }
+    if !is_digest_pinned(&params.socket_proxy_image) {
+        return Err(DeployError::ImageNotDigestPinned(
+            params.socket_proxy_image.clone(),
+        ));
+    }
     if !is_hex64_lower(&params.launch_token_hash) {
         return Err(DeployError::BadLaunchTokenHash);
     }
@@ -169,10 +182,12 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
     let yaml = docker_compose_yaml(&ComposeTemplateInput {
         agent_image: &params.agent_image,
         attest_helper_image: &params.attest_helper_image,
+        socket_proxy_image: &params.socket_proxy_image,
         launch_token_hash: &params.launch_token_hash,
         netuid: params.netuid,
         receipt_public_key_hex: &params.receipt_public_key_hex,
     });
+    reject_raw_docker_sock_on_agent(&yaml)?;
 
     // Field set mirrors dstack/Phala app-compose v2 (see real fixture layout).
     // Null-valued keys are stripped by compose_hash; we omit them for clarity.
@@ -182,8 +197,10 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
             "GBASE_MINER_HOTKEY_FILE",
             "GBASE_LAUNCH_TOKEN_HASH",
             "GBASE_RECEIPT_SK_FILE",
-            "GBASE_RECEIPT_PUBLIC_KEY"
+            "GBASE_RECEIPT_PUBLIC_KEY",
+            DOCKER_BASE_ENV
         ],
+
         "docker_compose_file": yaml,
         "features": ["kms", "tproxy-net"],
         "gateway_enabled": true,

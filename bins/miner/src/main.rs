@@ -15,6 +15,7 @@ use crypto::{generate_mini_secret, public_key_from_mini_secret, KEY_LEN};
 use miner::{
     certify, deploy_or_dry_run, empty_launch_token_hash_hex, parse_hotkey_hex, CertifyParams,
     DeployMode, DeployParams, QuoteSource, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE,
+    DEFAULT_SOCKET_PROXY_IMAGE,
 };
 
 #[derive(Debug, Parser)]
@@ -44,6 +45,13 @@ enum Cmd {
             env = "GBASE_ATTEST_HELPER_IMAGE"
         )]
         attest_helper_image: String,
+        /// Digest-pinned socket-proxy image (measured allowlist).
+        #[arg(
+            long,
+            default_value = DEFAULT_SOCKET_PROXY_IMAGE,
+            env = "GBASE_SOCKET_PROXY_IMAGE"
+        )]
+        socket_proxy_image: String,
         /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
         #[arg(long, env = "GBASE_LAUNCH_TOKEN_HASH")]
         launch_token_hash: Option<String>,
@@ -115,6 +123,7 @@ fn run(cli: Cli) -> Result<(), String> {
             name,
             agent_image,
             attest_helper_image,
+            socket_proxy_image,
             launch_token_hash,
             netuid,
             receipt_sk_host_path,
@@ -135,6 +144,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 name,
                 agent_image,
                 attest_helper_image,
+                socket_proxy_image,
                 launch_token_hash: launch_token_hash.unwrap_or_else(empty_launch_token_hash_hex),
                 netuid,
                 receipt_public_key_hex: receipt_public_key_hex.clone(),

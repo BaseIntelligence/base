@@ -2,10 +2,18 @@
 
 use compose_hash::compose_hash_hex;
 use miner::{
-    deploy_or_dry_run, docker_compose_from_app_compose_json, environment_block_has_no_secrets,
-    render_app_compose_bytes, DeployMode, DeployParams, AGENT_PORT, AGENT_SERVICE,
-    ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE,
+    agent_service_mounts_docker_sock, deploy_or_dry_run, docker_compose_from_app_compose_json,
+    docker_compose_yaml, environment_block_has_no_secrets, reject_raw_docker_sock_on_agent,
+    render_app_compose_bytes, ComposeTemplateInput, DeployMode, DeployParams, AGENT_PORT,
+    AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, DEFAULT_AGENT_IMAGE,
+    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE, DOCKER_BASE_ENV, SOCKET_PROXY_PORT,
+    SOCKET_PROXY_SERVICE,
 };
+
+/// Frozen compose-hash of `DeployParams::default()` **before** measured socket-proxy
+/// (todo 22). New renders must differ so RTMR3/compose-hash picks up the proxy.
+const PRE_SOCKET_PROXY_DEFAULT_COMPOSE_HASH: &str =
+    "31e9ea0199236c14972009a576c04d178f97e6aa1cc519ad85b62c62b0c82bd3";
 
 #[test]
 fn no_deploy_compose_hash_equals_gbase_compose_hash_of_rendered_bytes() {
@@ -38,6 +46,10 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
         "missing attest-helper service"
     );
     assert!(
+        yaml.contains(&format!("  {SOCKET_PROXY_SERVICE}:")),
+        "missing socket-proxy service"
+    );
+    assert!(
         yaml.contains(&format!("\"{AGENT_PORT}:{AGENT_PORT}\"")),
         "agent must publish {AGENT_PORT}"
     );
@@ -56,11 +68,16 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
         "attest-helper image repository contract"
     );
     assert!(
+        yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE),
+        "socket-proxy must use spike digest pin"
+    );
+    assert!(
         !yaml.contains(":latest"),
         "digest pins only — zero :latest tags"
     );
     assert!(DEFAULT_AGENT_IMAGE.contains("@sha256:"));
     assert!(DEFAULT_ATTEST_HELPER_IMAGE.contains("@sha256:"));
+    assert!(DEFAULT_SOCKET_PROXY_IMAGE.contains("@sha256:"));
 
     let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
     let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
@@ -68,6 +85,119 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     assert!(names.contains(&"GBASE_NETUID"));
     assert!(names.contains(&"GBASE_MINER_HOTKEY_FILE"));
     assert!(names.contains(&"GBASE_LAUNCH_TOKEN_HASH"));
+    assert!(names.contains(&DOCKER_BASE_ENV));
+}
+
+#[test]
+fn measured_socket_proxy_allowlist_and_agent_docker_base() {
+    let result = deploy_or_dry_run(&DeployParams::default()).expect("render");
+    let yaml = docker_compose_from_app_compose_json(&result.app_compose_json).expect("yaml");
+
+    for key in [
+        "CONTAINERS",
+        "IMAGES",
+        "POST",
+        "ALLOW_START",
+        "ALLOW_STOP",
+        "NETWORKS",
+        "INFO",
+        "AUTH",
+        "BUILD",
+        "EXEC",
+        "VOLUMES",
+        "SWARM",
+        "SERVICES",
+        "SYSTEM",
+    ] {
+        assert!(
+            yaml.contains(&format!("{key}:")),
+            "socket-proxy allowlist missing {key}:\n{yaml}"
+        );
+    }
+    assert!(
+        yaml.contains("/var/run/docker.sock:/var/run/docker.sock:ro"),
+        "only socket-proxy mounts docker.sock ro"
+    );
+    assert!(
+        yaml.contains(&format!("depends_on:\n      - {SOCKET_PROXY_SERVICE}")),
+        "agent must depend_on socket-proxy:\n{yaml}"
+    );
+    let expected_base = format!("http://{SOCKET_PROXY_SERVICE}:{SOCKET_PROXY_PORT}");
+    assert!(
+        yaml.contains(&format!("{DOCKER_BASE_ENV}: \"{expected_base}\"")),
+        "agent must point GBASE_DOCKER_BASE at proxy:\n{yaml}"
+    );
+    // No host ports on socket-proxy (not published publicly)
+    let proxy_block = yaml
+        .split(&format!("  {SOCKET_PROXY_SERVICE}:"))
+        .nth(1)
+        .and_then(|rest| rest.split("  agent:").next())
+        .expect("proxy block");
+    assert!(
+        !proxy_block.contains("ports:"),
+        "socket-proxy must not publish host ports:\n{proxy_block}"
+    );
+    reject_raw_docker_sock_on_agent(&yaml).expect("canonical template must pass");
+    assert!(!agent_service_mounts_docker_sock(&yaml));
+}
+
+#[test]
+fn agent_must_not_mount_raw_docker_sock() {
+    let result = deploy_or_dry_run(&DeployParams::default()).expect("render");
+    let yaml = docker_compose_from_app_compose_json(&result.app_compose_json).expect("yaml");
+    // Agent volumes must not include docker.sock
+    let agent_block = yaml
+        .split(&format!("  {AGENT_SERVICE}:"))
+        .nth(1)
+        .and_then(|rest| rest.split(&format!("  {ATTEST_HELPER_SERVICE}:")).next())
+        .expect("agent block");
+    assert!(
+        !agent_block.contains("docker.sock"),
+        "agent must not mount docker.sock:\n{agent_block}"
+    );
+}
+
+#[test]
+fn raw_docker_sock_on_agent_is_rejected() {
+    // Hand-edited YAML: mount raw sock into agent (forbidden).
+    let bad = r#"services:
+  agent:
+    image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+"#;
+    assert!(agent_service_mounts_docker_sock(bad));
+    let err = reject_raw_docker_sock_on_agent(bad).expect_err("must reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("docker.sock") || msg.contains("socket-proxy"),
+        "unexpected err: {msg}"
+    );
+
+    let good = r#"services:
+  socket-proxy:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  agent:
+    image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    environment:
+      GBASE_DOCKER_BASE: "http://socket-proxy:2375"
+"#;
+    reject_raw_docker_sock_on_agent(good).expect("proxy-only sock ok");
+}
+
+#[test]
+fn compose_hash_deterministic_and_differs_from_pre_proxy_baseline() {
+    let a = deploy_or_dry_run(&DeployParams::default()).expect("a");
+    let b = deploy_or_dry_run(&DeployParams::default()).expect("b");
+    assert_eq!(a.compose_hash_hex, b.compose_hash_hex, "deterministic");
+    assert_ne!(
+        a.compose_hash_hex, PRE_SOCKET_PROXY_DEFAULT_COMPOSE_HASH,
+        "measured socket-proxy must change compose-hash from pre-change baseline"
+    );
+    assert_eq!(a.compose_hash_hex.len(), 64);
 }
 
 #[test]
@@ -129,6 +259,20 @@ fn write_out_compose_roundtrip_hash() {
 fn rejects_latest_tag_on_agent_image() {
     let params = DeployParams {
         agent_image: "ghcr.io/baseintelligence/gbase-agent:latest".into(),
+        ..DeployParams::default()
+    };
+    let err = miner::render_app_compose(&params).expect_err("latest");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("digest-pinned") || msg.contains("latest"),
+        "unexpected err: {msg}"
+    );
+}
+
+#[test]
+fn rejects_latest_tag_on_socket_proxy_image() {
+    let params = DeployParams {
+        socket_proxy_image: "tecnativa/docker-socket-proxy:latest".into(),
         ..DeployParams::default()
     };
     let err = miner::render_app_compose(&params).expect_err("latest");
@@ -207,4 +351,21 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
         .collect();
     assert!(names.contains(&"GBASE_RECEIPT_SK_FILE"));
     assert!(names.contains(&"GBASE_RECEIPT_PUBLIC_KEY"));
+}
+
+#[test]
+fn template_input_includes_socket_proxy_image() {
+    let launch = "cc".repeat(32);
+    let pk = "dd".repeat(32);
+    let yaml = docker_compose_yaml(&ComposeTemplateInput {
+        agent_image: DEFAULT_AGENT_IMAGE,
+        attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE,
+        socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE,
+        launch_token_hash: &launch,
+        netuid: 541,
+        receipt_public_key_hex: &pk,
+    });
+    assert!(yaml.contains("challenge_scoring_version=2"));
+    assert!(yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE));
+    reject_raw_docker_sock_on_agent(&yaml).expect("ok");
 }

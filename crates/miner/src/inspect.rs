@@ -1,8 +1,9 @@
 //! Inspect rendered compose for contract checks (no secrets in env, extract YAML).
 
 use serde_json::Value;
+use thiserror::Error;
 
-use crate::template::AGENT_SERVICE;
+use crate::template::{AGENT_SERVICE, SOCKET_PROXY_SERVICE};
 
 /// Extract the embedded docker-compose YAML from rendered app-compose JSON text.
 #[must_use]
@@ -38,6 +39,7 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 || trimmed.starts_with("image:")
                 || trimmed.starts_with("restart:")
                 || trimmed.starts_with("command:")
+                || trimmed.starts_with("depends_on:")
                 || (trimmed.ends_with(':')
                     && !trimmed.contains(' ')
                     && !trimmed.starts_with("GBASE_"))
@@ -93,4 +95,48 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
     }
     // Must mention agent service (sanity)
     docker_compose_yaml.contains(AGENT_SERVICE)
+}
+
+/// Agent service mounts raw `/var/run/docker.sock` (forbidden; use measured socket-proxy).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "agent service must not mount /var/run/docker.sock (use measured {SOCKET_PROXY_SERVICE})"
+)]
+pub struct RawDockerSockOnAgent;
+
+/// True when the `agent` service block mounts `/var/run/docker.sock`.
+#[must_use]
+pub fn agent_service_mounts_docker_sock(docker_compose_yaml: &str) -> bool {
+    let mut in_agent = false;
+    for line in docker_compose_yaml.lines() {
+        // Service keys are indented exactly two spaces: `  name:`
+        if let Some(rest) = line.strip_prefix("  ") {
+            if !rest.starts_with(' ') && !rest.starts_with('\t') {
+                let trimmed = rest.trim();
+                if trimmed.ends_with(':') && !trimmed[..trimmed.len() - 1].contains(' ') {
+                    let name = &trimmed[..trimmed.len() - 1];
+                    in_agent = name == AGENT_SERVICE;
+                    continue;
+                }
+            }
+        }
+        if in_agent && line.contains("/var/run/docker.sock") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Reject compose YAML where the long-lived `agent` mounts the raw Docker socket.
+///
+/// # Errors
+/// Returns [`RawDockerSockOnAgent`] when the agent service mounts `docker.sock`.
+pub fn reject_raw_docker_sock_on_agent(
+    docker_compose_yaml: &str,
+) -> Result<(), RawDockerSockOnAgent> {
+    if agent_service_mounts_docker_sock(docker_compose_yaml) {
+        Err(RawDockerSockOnAgent)
+    } else {
+        Ok(())
+    }
 }
