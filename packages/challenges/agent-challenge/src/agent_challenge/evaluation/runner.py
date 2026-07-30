@@ -1211,6 +1211,7 @@ def _run_terminal_bench_task(
                 gateway,
                 replay_audit=replay_audit,
                 replay_eval_plan=replay_eval_plan,
+                submission_created_at=submission.created_at,
             ),
             labels=_labels(job, submission, task),
             limits=_terminal_bench_limits(),
@@ -1428,6 +1429,7 @@ async def _run_terminal_bench_task_durable(
                         gateway=gateway,
                         execution_backend=execution_backend,
                         timeout_seconds=settings.evaluation_timeout_seconds,
+                        submission_created_at=submission.created_at,
                     )
                 else:
                     spec = DockerRunSpec(
@@ -1451,7 +1453,11 @@ async def _run_terminal_bench_task_durable(
                         ),
                         workdir="/workspace",
                         env={
-                            **_terminal_bench_env(miner_env, gateway),
+                            **_terminal_bench_env(
+                                miner_env,
+                                gateway,
+                                submission_created_at=submission.created_at,
+                            ),
                             **_terminal_bench_stream_env(plan.attempt_id),
                         },
                         labels=_labels(job, submission, task),
@@ -1625,6 +1631,7 @@ def _terminal_bench_env(
     *,
     replay_audit: bool = False,
     replay_eval_plan: Mapping[str, Any] | None = None,
+    submission_created_at: datetime | None = None,
 ) -> dict[str, str]:
     env = {
         "BASE_AGENT_PATH": "/workspace/agent",
@@ -1639,11 +1646,17 @@ def _terminal_bench_env(
     # agent still fails loudly rather than running an unmeasured default.
     if settings.llm_model:
         env["LLM_MODEL"] = settings.llm_model
-    for name in settings.harbor_forward_env_vars:
-        value = os.environ.get(name)
-        if value and name not in TERMINAL_BENCH_CONTROL_ENV_KEYS:
-            env[name] = value
-    operator_env_names = set(settings.harbor_forward_env_vars)
+    forward_operator = _should_forward_operator_env(submission_created_at)
+    if forward_operator:
+        for name in settings.harbor_forward_env_vars:
+            value = os.environ.get(name)
+            if value and name not in TERMINAL_BENCH_CONTROL_ENV_KEYS:
+                env[name] = value
+        operator_env_names = set(settings.harbor_forward_env_vars)
+    else:
+        # Post-cutoff: do not inject operator keys and do not shadow miner keys
+        # that share those names (e.g. miner OPENROUTER_API_KEY).
+        operator_env_names = set()
     # VAL-ACLOCK: only keys/tokens; drop URL/proxy/host/gateway/stream injection.
     # sanitize_miner_env_for_job is fail-closed even if an older stored env row
     # still contains a rejected key from before the lock landed.
@@ -1663,6 +1676,19 @@ def _terminal_bench_env(
     # (BASE_LLM_GATEWAY_URL / BASE_GATEWAY_TOKEN), even if a residual
     # GatewayExecutionConfig is passed by legacy call sites.
     _ = gateway
+    if not forward_operator:
+        missing = [
+            name
+            for name in settings.harbor_forward_env_vars
+            if name not in TERMINAL_BENCH_CONTROL_ENV_KEYS and not str(env.get(name) or "").strip()
+        ]
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(
+                "miner submission env missing required var(s) after operator "
+                f"forward cutoff: {names}. Set these on the submission env; "
+                "the operator no longer injects them for new submissions."
+            )
     if replay_audit:
         env["BASE_REPLAY_AUDIT"] = "1"
     if replay_eval_plan is not None:
@@ -1672,6 +1698,28 @@ def _terminal_bench_env(
             separators=(",", ":"),
         )
     return env
+
+
+def _should_forward_operator_env(submission_created_at: datetime | None) -> bool:
+    """Return True when operator harbor_forward_env_vars should still be injected.
+
+    Grandfathers submissions created *before* ``operator_env_forward_cutoff_at``.
+    The boundary instant itself is post-cutoff (operator key not forwarded).
+    Comparison uses submission.created_at so a later re-evaluation of an old
+    submission stays grandfathered. When the cutoff is unset, keep legacy
+    always-forward behavior. When cutoff is set but created_at is missing,
+    fail closed (do not forward).
+    """
+    cutoff = settings.operator_env_forward_cutoff_at
+    if cutoff is None:
+        return True
+    if submission_created_at is None:
+        return False
+    created = submission_created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    cutoff_aware = cutoff if cutoff.tzinfo is not None else cutoff.replace(tzinfo=UTC)
+    return created < cutoff_aware
 
 
 def _is_provider_key_env(name: str) -> bool:
@@ -1759,11 +1807,17 @@ async def _terminal_bench_env_for_submission(
     session: AsyncSession,
     submission: AgentSubmission,
 ) -> dict[str, str]:
-    return _terminal_bench_env(await _locked_miner_env_for_submission(session, submission))
+    return _terminal_bench_env(
+        await _locked_miner_env_for_submission(session, submission),
+        submission_created_at=submission.created_at,
+    )
 
 
 def _terminal_bench_env_for_loaded_submission(submission: AgentSubmission) -> dict[str, str]:
-    return _terminal_bench_env(_locked_miner_env_from_loaded_submission(submission))
+    return _terminal_bench_env(
+        _locked_miner_env_from_loaded_submission(submission),
+        submission_created_at=submission.created_at,
+    )
 
 
 async def _locked_miner_env_for_submission(
@@ -2046,6 +2100,7 @@ def _run_no_phala_host_terminal_bench(
     gateway: GatewayExecutionConfig | None,
     execution_backend: str,
     timeout_seconds: int,
+    submission_created_at: datetime | None = None,
 ) -> DockerRunResult:
     """NO_PHALA host-local path: run own_runner in this process namespace.
 
@@ -2098,7 +2153,7 @@ def _run_no_phala_host_terminal_bench(
     ]
     env = {
         **dict(os.environ),
-        **_terminal_bench_env(miner_env, gateway),
+        **_terminal_bench_env(miner_env, gateway, submission_created_at=submission_created_at),
         "PYTHONPATH": f"{agent_workspace}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"),
         "DOCKER_HOST": os.environ.get("DOCKER_HOST") or "unix:///var/run/docker.sock",
         "BASE_AGENT_PATH": str(agent_workspace),

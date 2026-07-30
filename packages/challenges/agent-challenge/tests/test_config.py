@@ -87,6 +87,7 @@ def test_normal_validator_defaults():
     assert settings.terminal_bench_label == "terminal-bench@2.1"
     assert settings.terminal_bench_execution_backend == "own_runner"
     assert settings.harbor_forward_env_vars == ()
+    assert settings.operator_env_forward_cutoff_at is None
     assert settings.harbor_n_concurrent == 1
     assert "ghcr.io/baseintelligence/agent-challenge-analyzer:1.0" in settings.docker_allowed_images
     assert (

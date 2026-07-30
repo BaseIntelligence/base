@@ -137,6 +137,10 @@ challenge:
   harbor_agent_import_path: agent:Agent
   # Empty by default. Operators must explicitly opt in before forwarding provider credentials.
   harbor_forward_env_vars: []
+  # ISO-8601 UTC. Submissions with created_at >= this do not receive operator
+  # harbor_forward_env_vars; miners must supply their own keys. null = always forward.
+  # Env override: CHALLENGE_OPERATOR_ENV_FORWARD_CUTOFF_AT
+  operator_env_forward_cutoff_at: null
   harbor_n_concurrent: 1
   harbor_output_dir: /tmp/harbor-runs
   swe_forge_tree_url: https://huggingface.co/api/datasets/CortexLM/swe-forge/tree/main?recursive=true

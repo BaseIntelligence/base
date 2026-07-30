@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -144,6 +145,11 @@ class ChallengeSettings(BaseSettings):
     harbor_agent_import_path: str = "agent:Agent"
     harbor_model: str | None = None
     harbor_forward_env_vars: tuple[str, ...] = ()
+    # ISO-8601 UTC instant. Submissions with created_at >= this do not receive
+    # operator harbor_forward_env_vars (miners must supply their own keys, e.g.
+    # OPENROUTER_API_KEY). None = legacy always-forward until ops sets a cutoff.
+    # Env: CHALLENGE_OPERATOR_ENV_FORWARD_CUTOFF_AT
+    operator_env_forward_cutoff_at: datetime | None = None
     harbor_n_concurrent: int = 1
     harbor_output_dir: str = "/tmp/harbor-runs"
     # Control-plane paths for the own_runner job's task cache + frozen digest
