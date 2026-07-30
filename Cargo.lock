@@ -1129,6 +1129,9 @@ dependencies = [
 name = "docker-engine"
 version = "0.1.0"
 dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 
@@ -4461,6 +4464,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 name = "updater"
 version = "0.1.0"
 dependencies = [
+ "docker-engine",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

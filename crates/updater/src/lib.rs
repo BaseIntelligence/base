@@ -24,8 +24,8 @@ mod pin_store;
 pub use config::UpdaterConfig;
 pub use digest::{extract_digest, is_pinned_digest, parse_pinned_image, PinnedImage};
 pub use docker::{
-    assert_allowlisted, is_allowlisted, AllowlistClient, ContainerSummary, DockerApi, DockerError,
-    MockDocker, ALLOWED_ROUTES,
+    assert_allowlisted, is_allowlisted, Allowlist, AllowlistClient, ContainerSummary, DockerApi,
+    DockerError, MockDocker, RunResult, ALLOWED_ROUTES, UPDATER_ROUTES, VERIFIER_ROUTES,
 };
 pub use error::UpdaterError;
 pub use health::{check_readyz, wait_readyz, HealthError, ScriptedHealth};
