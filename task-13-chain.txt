@@ -1,0 +1,44 @@
+task-13-chain evidence
+date: 2026-07-30T02:33:40Z
+crate: crates/gbase-chain
+
+=== GREEN cargo test -p gbase-chain ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/gbase_chain-05fd4034e382499e)
+
+running 7 tests
+test tests::s1_crv4_enabled_submit_records_payload_without_merkle ... ok
+test tests::s2_schedule_inputs_match_fake_defaults_and_seven_names ... ok
+test tests::s2_cr_disabled_rejects_timelock_points_at_set_weights ... ok
+test tests::testnet_current_block_positive ... ignored, requires network access to finney testnet
+test tests::s3_unsupported_cr_version_rejected_on_submit ... ok
+test tests::s3_not_implemented_stub_errors_clearly ... ok
+test tests::s3_block_hash_metagraph_owner_and_tip ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gbase_chain
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+=== clippy -D warnings ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+
+=== surface ===
+ChainClient methods: current_block, block_hash, metagraph_at, subnet_owner_hotkey,
+  commit_reveal_enabled, commit_reveal_version,
+  tempo, reveal_period_epochs, block_time, last_epoch_block,
+  pending_epoch_at, subnet_epoch_index, blocks_since_last_step,
+  submit_timelocked_weights(mecid, payload, reveal_round)
+WeightsTlockPayload { hotkey, uids, values, version_key } — NO merkle
+FakeChain: CR on (default CRV4) records submissions; CR off -> set_weights alternate
+No reveal call (D22)
+#[ignore] testnet_current_block_positive (features live)
+
+=== files ===
+-rw-r--r-- 1 root root   740 Jul 30 02:33 crates/gbase-chain/Cargo.toml
+-rw-r--r-- 1 root root 31421 Jul 30 02:33 crates/gbase-chain/src/lib.rs
+946 crates/gbase-chain/src/lib.rs

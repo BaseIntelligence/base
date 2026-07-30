@@ -104,7 +104,7 @@ Each merkle leaf preimage is:
 
 ```text
 LeafV1 = scale(
-  challenge_id:    Bytes,           // Vec<u8>, UTF-8 challenge id
+  challenge_id:    Bytes, // Vec<u8>, UTF-8 challenge id
   miner_hotkey:    [u8; 32],
   epoch:           u64,
   score_or_absence: ScoreOrAbsence,
@@ -130,7 +130,7 @@ ScoreOrAbsence (SCALE enum, u8 discriminant):
 | 5 | `RateLimited` | Challenge rate-limited the miner |
 | 6 | `ChallengeInternal` | Challenge-side fault; still must cover the participant |
 | 7 | `PolicySkip` | Reserved; MUST NOT be used to shrink the expected set (D24). Validators reject bundles that use this to omit coverage |
-| 8–255 | _reserved_ | Reject unknown codes on verify |
+| 8-255 | _reserved_ | Reject unknown codes on verify |
 
 Absence is **signed by the challenge key** over the same domain as scores (see §3.4). Silence is not absence.
 
@@ -170,19 +170,19 @@ Field order is normative. SCALE encode in this order only:
 
 ```text
 EpochBundleBodyV1 = scale(
-  protocol_version:     u16,                 // must be 1 for this doc
+  protocol_version:     u16, // must be 1 for this doc
   epoch:                u64,
   netuid:               u16,
-  block_B:              u64,                 // epoch_end_block (inclusive end of epoch window)
-  block_hash:           [u8; 32],            // hash of block_B
-  metagraph_root:       [u8; 32],            // §4.3
-  algorithm_version:    u16,                 // aggregation; 1 = §6
-  emission_shares:      Vec<(Bytes /*challenge_id*/, u16 /*bps*/)>,  // sorted by challenge_id
-  measurements_digest:  [u8; 32],            // sha256 of local measurements trust root body
-  uid_map:              Vec<([u8; 32] /*hotkey*/, u16 /*uid*/)>,     // sorted by hotkey
-  leaves:               Vec<LeafV1>,         // sorted by scale(challenge_id, miner_hotkey)
-  merkle_root:          [u8; 32],            // recomputed over leaf preimages
-  final_vector:         Vec<(u16 /*uid*/, u16 /*weight*/)>,          // sorted by uid
+  block_B:              u64, // epoch_end_block (inclusive end of epoch window)
+  block_hash:           [u8; 32], // hash of block_B
+  metagraph_root:       [u8; 32], // §4.3
+  algorithm_version:    u16, // aggregation; 1 = §6
+  emission_shares:      Vec<(Bytes /*challenge_id*/, u16 /*bps*/)>, // sorted by challenge_id
+  measurements_digest:  [u8; 32], // sha256 of local measurements trust root body
+  uid_map:              Vec<([u8; 32] /*hotkey*/, u16 /*uid*/)>, // sorted by hotkey
+  leaves:               Vec<LeafV1>, // sorted by scale(challenge_id, miner_hotkey)
+  merkle_root:          [u8; 32], // recomputed over leaf preimages
+  final_vector:         Vec<(u16 /*uid*/, u16 /*weight*/)>, // sorted by uid
   gateway_hotkey:       [u8; 32]
 )
 ```
@@ -245,7 +245,7 @@ Bare `+`/`*`/`-` on accumulators and all `wrapping_*` are forbidden in consensus
 VerifiedLeaf {
   challenge_id: Bytes,
   miner_hotkey: [u8; 32],
-  score_or_absence: ScoreOrAbsence,  // Score(u64) or NoScore(_)
+  score_or_absence: ScoreOrAbsence, // Score(u64) or NoScore(_)
 }
 
 shares: Vec<(challenge_id, bps: u16)>   // sum bps = 10000
@@ -345,7 +345,7 @@ final_vector: Vec<(uid: u16, weight: u16)>
 ```
 
 - Include only UIDs with `weight > 0` **or** include all UIDs from `uid_map` with zeros?  
-  **Canonical rule:** include **every** UID present in `uid_map` that appears as a miner hotkey in at least one leaf, with the computed weight (possibly zero only if that miner had zero acc but others had positive total — actually if total > 0 and acc_m = 0, weight is 0).  
+  **Canonical rule:** include **every** UID present in `uid_map` that appears as a miner hotkey in at least one leaf, with the computed weight (possibly zero only if that miner had zero acc but others had positive total , actually if total > 0 and acc_m = 0, weight is 0).  
   **Tighter canonical rule used by gbase:** emit **all** `(uid, weight)` for every uid in `uid_map` whose hotkey appears in the verified leaf set, sorted by ascending `uid`. Zero weights are kept so vector equality is stable.  
   Exception: the all-zero/no-submit case uses empty `Vec` (§6.5).
 
@@ -406,7 +406,7 @@ renormalize_after_quarantine(shares, dropped_ids) -> Result<Vec<(id, bps)>>
 // identical largest-remainder as §6.6 with uid replaced by challenge_id sort key
 ```
 
-Then re-run §6.3–§6.7 on surviving leaves only.
+Then re-run §6.3-§6.7 on surviving leaves only.
 
 Default `min_share_mass_bps = 5000` (config; D6).
 
@@ -519,9 +519,9 @@ Gateway signature and leaf signatures are always verified against local trust ro
 DissentBodyV1 = scale(
   protocol_version:      u16,
   epoch:                 u64,
-  bundle_root:           [u8; 32],   // merkle_root of the disputed bundle, or 0x00.. if none
-  expected_vector_hash:  [u8; 32],   // sha256(scale(local final_vector))
-  actual_vector_hash:    [u8; 32],   // sha256(scale(gateway final_vector)) or 0x00.. if absent
+  bundle_root:           [u8; 32], // merkle_root of the disputed bundle, or 0x00.. if none
+  expected_vector_hash:  [u8; 32], // sha256(scale(local final_vector))
+  actual_vector_hash:    [u8; 32], // sha256(scale(gateway final_vector)) or 0x00.. if absent
   reason_code:           DissentReasonCode  // u8
 )
 
@@ -536,7 +536,7 @@ DissentV1 = scale(
 
 | Code | Name | Typical class |
 |------|------|----------------|
-| 0 | `VectorMismatch` | A — inputs ok, peer roots ok, gateway vector ≠ recomputation |
+| 0 | `VectorMismatch` | A , inputs ok, peer roots ok, gateway vector ≠ recomputation |
 | 1 | `LeafSignatureInvalid` | B |
 | 2 | `LeafChallengeKeyUnknown` | B (D18) |
 | 3 | `IncompleteParticipantSet` | B (D24) |
@@ -555,7 +555,7 @@ DissentV1 = scale(
 | 16 | `MeasurementsDigestMismatch` | B |
 | 17 | `DuplicateLeaf` | B |
 | 18 | `QuarantineExhausted` | B |
-| 19–255 | _reserved_ | treat as unknown; still persist raw dissent bytes |
+| 19-255 | _reserved_ | treat as unknown; still persist raw dissent bytes |
 
 ---
 
@@ -566,125 +566,3 @@ DissentV1 = scale(
 The following paragraph is **normative wording** for docs and threat models. Do not weaken or inflate:
 
 > gbase guarantees *no equivocation between validators* and *no undetected deviation by the gateway from the owner-signed challenge and measurement artifacts*. It does **not** guarantee (i) that a challenge's scores are honest, (ii) that the owner is honest — the owner signs the trust roots and runs the gateway, so a malicious owner can authorize a dishonest challenge or a backdoored measurement, (iii) completeness beyond what D24 provides, nor (iv) **chain-anchored, third-party-auditable non-equivocation** — per D5 the property is peer-consensus plus local evidence, verifiable by the participating validators and not by an outside observer after the fact.
-
-### 11.2 Mismatch outcomes (D6)
-
-| Class | Condition | Action |
-|-------|-----------|--------|
-| **A** | Inputs verify; peer roots agree; gateway `final_vector` ≠ local recompute | Submit **local** vector + `DissentV1{ reason: VectorMismatch }` |
-| **Quarantine** | One or more challenges' leaves unverifiable/absent, and surviving emission mass ≥ `min_share_mass_bps` | Drop bad challenges, `renormalize_after_quarantine`, aggregate, submit; metric `gbase_challenge_quarantined_total` |
-| **B** | Inputs unverifiable; peer roots conflict; surviving mass `< min_share_mass_bps`; or other hard failures | **No** weight submission; signed dissent; alarm |
-
-Default `min_share_mass_bps = 5000` (half of `10_000`).
-
-### 11.3 Peer sample (D26)
-
-| Rule | Requirement |
-|------|-------------|
-| `min_peer_sample` | Default `1`. May be `0` only when the metagraph contains no other validator with `validator_permit` (single-validator testnet) |
-| Below threshold | Do not submit; status `Degraded`; dissent `PeerSampleInsufficient` |
-| Identity | Peer responses authenticated by **sr25519 over response body** bound to metagraph hotkey — never IP allowlists alone |
-| Root exchange | `GET`-style peer API returns signed `(epoch, merkle_root)` under tag `gbase-root-v1` |
-
----
-
-## 12. On-chain weight payload: no merkle root (l) (D5)
-
-**The merkle root is NOT in the on-chain weight payload.**
-
-`WeightsTlockPayload` is frozen by the runtime to exactly:
-
-```text
-WeightsTlockPayload = {
-  hotkey:      AccountId,      // [u8; 32]
-  uids:        Vec<u16>,
-  values:      Vec<u16>,       // parallel to uids
-  version_key: u64
-}
-```
-
-There is **no** field for a 256-bit merkle root. `version_key` is 64 bits and MUST NOT be overloaded as a root prefix.
-
-Non-equivocation rests on:
-
-1. In-epoch signed peer root exchange (hotkey-authenticated HTTPS).  
-2. Durable local persistence of the signed bundle and peer root statements.  
-3. Optional commitments-pallet announcement **only if** metadata snapshot proves the pallet exists — not required by this spec.
-
-Any code or doc that claims the merkle root is committed inside `WeightsTlockPayload` is wrong and MUST be corrected.
-
----
-
-## 13. Gateway bundle signature
-
-```text
-msg = tag "gbase-bundle-v1" ‖ scale(EpochBundleBodyV1)
-gateway_sig = sr25519_sign(gateway_hotkey_sk, msg)
-```
-
-`gateway_hotkey` MUST equal on-chain `SubnetOwnerHotkey` for master-only gateway operation (D3); validators still verify the signature cryptographically and MAY additionally check owner equality.
-
----
-
-## 14. Verification checklist (implementers)
-
-A `verify(bundle, chain, local_trust_root)` implementation MUST check, in order:
-
-1. `protocol_version` supported  
-2. `gateway_sig` over body  
-3. `block_hash` matches `chain.block_hash(block_B)`  
-4. `metagraph_root` and `uid_map` match `metagraph_at(block_hash)`  
-5. `emission_shares` equal local trust root and sum to `10_000`  
-6. `measurements_digest` equals local measurements digest  
-7. Every leaf challenge key known locally; every `challenge_sig` valid  
-8. Participant-set completeness (§7)  
-9. Leaf sort order canonical; `merkle_root` recomputes  
-10. `algorithm_version == 1` and `final_vector` equals `aggregate(...)` under §8 dual equality  
-11. No duplicate leaves  
-
-Failure modes map to §10.1 reason codes.
-
----
-
-## 15. Byte-stability requirements
-
-- Re-encoding a decoded bundle MUST yield identical bytes.  
-- Golden vectors in `gbase-bundle` / `gbase-aggregate` tests pin this document's field order.  
-- A doc test in `gbase-bundle` (task 19) MUST fail if SCALE field order drifts from §4.1.
-
----
-
-## Appendix A. Domain tags (length-prefixed UTF-8)
-
-| Tag string | Used for |
-|------------|----------|
-| `gbase-bundle-v1` | Epoch bundle body |
-| `gbase-rawweight-v1` | Challenge leaf body |
-| `gbase-dissent-v1` | Dissent body |
-| `gbase-root-v1` | Peer `(epoch, merkle_root)` |
-| `gbase-trustroot-v1` | Owner trust-root body |
-| `gbase-attest-v1` | Attestation bindings (see AGENT_CHALLENGE / D10; out of scope for leaf math) |
-
-Length-prefix rule: SCALE `Bytes` encoding of the tag string UTF-8 bytes (compact length + bytes), then payload. Task 14 owns the exact sign helper; this appendix names the tags only.
-
----
-
-## Appendix B. Related decisions
-
-| Decision | Spec sections |
-|----------|---------------|
-| D4 verifiable aggregation | §4, §6, §14 |
-| D5 no on-chain merkle | §12 (l) |
-| D6 quarantine / classes | §6.9, §11.2 |
-| D7 SCALE + metagraph_root | §1, §4.3 |
-| D8 integer / Hamilton / checked | §6 |
-| D9 RFC6962 + EMPTY_ROOT | §3 |
-| D18 local challenge keys | §3.4, §5, §14 |
-| D19 honest claim | §11.1 |
-| D23 emission shares in trust root | §5 |
-| D24 absence + derived set | §3.3, §7 |
-| D26 peer sample | §11.3 |
-
----
-
-**End of frozen BUNDLE_SPEC protocol_version=1.**
