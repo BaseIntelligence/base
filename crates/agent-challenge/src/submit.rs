@@ -221,3 +221,18 @@ pub fn leaf_request_json(leaf: &LeafV1) -> Result<serde_json::Value, String> {
 pub fn hotkey_hex(hk: &[u8; KEY_LEN]) -> String {
     hex::encode(hk)
 }
+
+/// POST every leaf from [`crate::emit_signed_leaf_set`] (`BTreeMap` order).
+///
+/// Retries use [`DEFAULT_MAX_RETRIES`]; HTTP 409 is success (no duplicate leaf).
+///
+/// # Errors
+///
+/// First non-recoverable [`SubmitError`].
+pub async fn submit_signed_leaf_set(
+    client: &GatewayClient,
+    leaves: &std::collections::BTreeMap<[u8; KEY_LEN], LeafV1>,
+) -> Result<Vec<SubmitOutcome>, SubmitError> {
+    let list: Vec<LeafV1> = leaves.values().cloned().collect();
+    client.submit_all(&list).await
+}

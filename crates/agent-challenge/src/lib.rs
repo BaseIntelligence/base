@@ -48,8 +48,8 @@ pub use score::{
     SCORE_MAX,
 };
 pub use submit::{
-    hotkey_hex, leaf_request_json, GatewayClient, GatewayClientConfig, SubmitError, SubmitOutcome,
-    DEFAULT_MAX_RETRIES,
+    hotkey_hex, leaf_request_json, submit_signed_leaf_set, GatewayClient, GatewayClientConfig,
+    SubmitError, SubmitOutcome, DEFAULT_MAX_RETRIES,
 };
 pub use task_gen::{
     answer_digest, answer_digest_v2, task_blob, task_blob_v2, task_id, task_id_v2,

@@ -29,6 +29,10 @@ tracing = "0.1"
 [dev-dependencies]
 bundle = { path = "../bundle" }
 crypto = { path = "../crypto" }
+chain = { path = "../chain" }
+gateway = { path = "../gateway" }
+telemetry = { path = "../telemetry" }
+trustroot = { path = "../trustroot" }
 agent-pack = { path = "../agent-pack" }
 agent-dispatch = { path = "../agent-dispatch" }
 docker-engine = { path = "../docker-engine" }
@@ -38,6 +42,7 @@ schnorrkel = { version = "0.11.5", default-features = false, features = ["std", 
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "sync"] }
 wiremock = "0.6"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 
 [lints]
 workspace = true

@@ -114,14 +114,15 @@ pub trait Challenge {
         epoch: u64,
         score_or_absence: ScoreOrAbsence,
     ) -> Result<LeafV1, ChallengeError>;
-    /// Sign all scores and POST to gateway.
+    /// Emit exact-E leaves via [`emit_signed_leaf_set`] then POST to gateway.
     ///
     /// # Errors
-    /// Sign or submit failures.
+    /// Emit (D24) or submit failures.
     fn submit_all(
         &self,
         secret: &[u8; KEY_LEN],
         epoch: u64,
+        expected: &BTreeSet<Hotkey>,
         scores: &BTreeMap<Hotkey, ScoreOrAbsence>,
         gateway: &GatewayClient,
     ) -> impl std::future::Future<Output = Result<Vec<SubmitOutcome>, ChallengeError>> + Send;
@@ -255,13 +256,13 @@ impl Challenge for AgentV1Challenge {
         &self,
         secret: &[u8; KEY_LEN],
         epoch: u64,
+        expected: &BTreeSet<Hotkey>,
         scores: &BTreeMap<Hotkey, ScoreOrAbsence>,
         gateway: &GatewayClient,
     ) -> Result<Vec<SubmitOutcome>, ChallengeError> {
-        // Caller must pass exact-E scores (todo 27); gateway POST is todo 28.
-        let leaves: Result<Vec<_>, _> = scores.iter()
-            .map(|(m, s)| self.sign_leaf(secret, *m, epoch, s.clone())).collect();
-        Ok(gateway.submit_all(&leaves?).await?)
+        let leaves = emit_signed_leaf_set(secret, epoch, expected, scores)
+            .map_err(|e| ChallengeError::Sign(e.to_string()))?;
+        Ok(crate::submit::submit_signed_leaf_set(gateway, &leaves).await?)
     }
 }
 
