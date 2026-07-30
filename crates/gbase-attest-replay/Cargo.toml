@@ -1,0 +1,16 @@
+[package]
+name = "gbase-attest-replay"
+description = "RTMR3 event-log replay (dstack cc-eventlog SHA-384 extend)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true
