@@ -1,0 +1,145 @@
+name: images
+
+# Build service images, push by commit SHA tag, record digests as an artifact.
+# Digests-only pins are consumed by deploy/scripts/promote.sh.
+
+on:
+  push:
+    branches: [reborn]
+    paths:
+      - "crates/**"
+      - "bins/**"
+      - "deploy/Dockerfile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-push-digests:
+    name: build · push · record digests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: validator
+            image_suffix: gbase-validator
+          - target: gateway
+            image_suffix: gbase-gateway
+          - target: updater
+            image_suffix: gbase-updater
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: ${{ matrix.target }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}:reborn
+          build-args: |
+            BUILD_FROM=source
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+
+      - name: Write digest fragment
+        run: |
+          set -euo pipefail
+          mkdir -p digests-out
+          DIGEST="${{ steps.build.outputs.digest }}"
+          test -n "$DIGEST"
+          test "${DIGEST#sha256:}" != "$DIGEST"
+          REPO="${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}"
+          cat > "digests-out/${{ matrix.target }}.json" <<EOF
+          {
+            "service": "${{ matrix.target }}",
+            "repository": "${REPO}",
+            "tag_sha": "${{ github.sha }}",
+            "digest": "${DIGEST}",
+            "image": "${REPO}@${DIGEST}",
+            "commit_sha": "${{ github.sha }}"
+          }
+          EOF
+          cat "digests-out/${{ matrix.target }}.json"
+
+      - name: Upload digest fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.target }}
+          path: digests-out/${{ matrix.target }}.json
+          if-no-files-found: error
+
+  merge-digests:
+    name: merge digest manifest
+    needs: build-push-digests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download fragments
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests-in
+          merge-multiple: true
+
+      - name: Merge + validate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, os
+          from datetime import datetime, timezone
+          root = pathlib.Path("digests-in")
+          images = {}
+          for p in sorted(root.glob("*.json")):
+              d = json.loads(p.read_text())
+              assert d["digest"].startswith("sha256:") and len(d["digest"]) == 71
+              assert "@sha256:" in d["image"]
+              images[d["service"]] = d
+          assert set(images) >= {"validator", "gateway", "updater"}, images.keys()
+          out = {
+              "commit_sha": os.environ.get("GITHUB_SHA", ""),
+              "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "registry": "ghcr.io",
+              "images": images,
+          }
+          pathlib.Path("deploy/digests").mkdir(parents=True, exist_ok=True)
+          path = pathlib.Path("deploy/digests") / f"{out['commit_sha']}.json"
+          path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+          print(path.read_text())
+          PY
+
+      - name: Upload merged digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbase-image-digests-${{ github.sha }}
+          path: deploy/digests/${{ github.sha }}.json
+          if-no-files-found: error

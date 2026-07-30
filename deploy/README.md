@@ -81,3 +81,39 @@ docker compose --profile master config --services         # must NOT list evil-g
 ```
 
 Offline proofs (no live TAO): `cargo test -p gbase-validator a48_`
+
+
+## Promotion pipeline (task 43)
+
+Digest-only rollout with backup-before-pin and fail-closed prod.
+
+```bash
+# 1) CI (or local) records digests after build
+./deploy/scripts/record-image-digests.sh
+
+# 2) Promote known-good digest to staging (backs up Postgres first)
+export PGHOST=... PGUSER=... PGPASSWORD=... PGDATABASE=gbase
+export GBASE_BACKUP_ENDPOINT=https://nyc3.digitaloceanspaces.com   # or local MinIO
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+export GBASE_BACKUP_BUCKET=gbase-backups
+./deploy/scripts/promote.sh \
+  --env staging --service validator \
+  --image ghcr.io/org/gbase-validator@sha256:<64-hex>
+
+# 3) After staging is healthy, promote same digest to prod
+./deploy/scripts/promote.sh \
+  --env prod --service validator --confirm-prod \
+  --image ghcr.io/org/gbase-validator@sha256:<64-hex>
+
+# 4) Rollback = re-promote previous snapshot
+./deploy/scripts/promote.sh --env staging --service validator --rollback
+
+# 5) Restore drill (scratch DB row-count match)
+./deploy/scripts/pg-restore-drill.sh --s3-uri s3://gbase-backups/pg/staging/<stamp>.sql.gz
+```
+
+Pin files: `deploy/pins/staging.json`, `deploy/pins/prod.json`.  
+Staging promote **never** writes the prod pin. Prod promote requires staging ladder + `--confirm-prod`.  
+Updater consumes `GBASE_UPDATER_DESIRED_IMAGE` (also written to `deploy/pins/<env>.desired.env`).
+
+Verify locally: `./deploy/scripts/verify-task-43.sh`
