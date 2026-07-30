@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT base_url\n        FROM challenge_backends\n        WHERE challenge_id = $1 AND healthy = TRUE\n        ORDER BY base_url\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "base_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "394a36a2ee5880acf461ddaabce3d4c26ece067ba41fbefd5ed2ad71618f809c"
+}
