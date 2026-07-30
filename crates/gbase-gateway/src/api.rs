@@ -10,32 +10,60 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use gbase_trustroot::ChallengesBody;
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::registry::{BackendView, CreateBackend, Registry, RegistryError};
+use crate::weights::{MemoryRawWeightStore, SharedWeightStore};
 
-/// Shared axum state for registry + proxy.
+/// Shared axum state for registry + proxy + raw-weight ingress.
 #[derive(Clone)]
 pub struct GatewayState {
     /// Backend registry.
     pub registry: Arc<Registry>,
     /// Outbound HTTP client used by the reverse proxy.
     pub client: reqwest::Client,
+    /// Local owner-signed challenges body (D18 defence in depth).
+    pub challenges: Arc<ChallengesBody>,
+    /// Append-only raw-weight store.
+    pub weights: SharedWeightStore,
 }
 
 impl GatewayState {
-    /// Build state with a fresh reqwest client.
+    /// Build state with empty trust root and in-memory weight store.
     ///
     /// # Errors
     ///
     /// When the reqwest client cannot be built.
     pub fn new(registry: Arc<Registry>) -> Result<Self, String> {
+        Self::with_parts(
+            registry,
+            Arc::new(ChallengesBody::default()),
+            Arc::new(MemoryRawWeightStore::new()),
+        )
+    }
+
+    /// Build state with injected trust root and weight store (tests / production).
+    ///
+    /// # Errors
+    ///
+    /// When the reqwest client cannot be built.
+    pub fn with_parts(
+        registry: Arc<Registry>,
+        challenges: Arc<ChallengesBody>,
+        weights: SharedWeightStore,
+    ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { registry, client })
+        Ok(Self {
+            registry,
+            client,
+            challenges,
+            weights,
+        })
     }
 }
 

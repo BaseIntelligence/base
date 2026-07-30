@@ -1,4 +1,4 @@
-//! Composed axum application: health + registry API + challenge proxy.
+//! Composed axum application: health + registry API + challenge proxy + raw weights.
 
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -6,9 +6,10 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use crate::api::{registry_router, GatewayState};
 use crate::proxy::proxy_router;
 use crate::tls::TlsConfig;
+use crate::weights::weights_router;
 use crate::GatewayError;
 
-/// Build the full gateway router (health + registry + proxy).
+/// Build the full gateway router (health + registry + proxy + raw weights).
 ///
 /// # Errors
 ///
@@ -28,6 +29,7 @@ pub fn build_router(
     let health = gbase_telemetry::health_router(metrics)?;
     let app = health
         .merge(registry_router(state.clone()))
+        .merge(weights_router(state.clone()))
         .merge(proxy_router(state));
     Ok(app)
 }

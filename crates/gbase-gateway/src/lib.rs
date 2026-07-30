@@ -1,15 +1,16 @@
-//! Master-only gbase gateway (D3) with backend registry + reverse proxy (task 25).
+//! Master-only gbase gateway (D3) with backend registry, reverse proxy, and
+//! signed raw-weight ingress (tasks 24–26).
 //!
 //! Startup order is intentional and tested:
 //! 1. Resolve on-chain [`ChainClient::subnet_owner_hotkey`].
 //! 2. Compare to the configured gateway hotkey.
 //! 3. On mismatch: structured fatal log + [`GatewayError::MasterMismatch`]
 //!    (process exit code [`EXIT_MASTER_MISMATCH`]) **before any listener bind**.
-//! 4. On match: install telemetry, mount health + registry + challenge proxy,
-//!    and serve. This process is the sole TLS owner (D20); ACME is task 42.
+//! 4. On match: install telemetry, mount health + registry + weights + challenge
+//!    proxy, and serve. This process is the sole TLS owner (D20); ACME is task 42.
 //!
 //! Backend registry is operational routing only (D18) — never signing keys.
-
+//! Raw-weight leaves are verified against the local owner-signed trust root.
 #![forbid(unsafe_code)]
 
 mod api;
@@ -17,6 +18,7 @@ mod app;
 mod proxy;
 mod registry;
 mod tls;
+mod weights;
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -32,11 +34,16 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 
 pub use api::GatewayState;
+pub use gbase_trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy, BPS_DENOM};
 pub use registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
     DEFAULT_FAILURE_THRESHOLD,
 };
 pub use tls::TlsConfig;
+pub use weights::{
+    accept_raw_weight, MemoryRawWeightStore, RawWeightAccepted, RawWeightRequest, RawWeightRow,
+    RawWeightStore, ScoreOrAbsenceWire, SharedWeightStore, StoreError,
+};
 
 /// Process exit code when configured hotkey ≠ on-chain `SubnetOwnerHotkey`.
 pub const EXIT_MASTER_MISMATCH: u8 = 2;
@@ -265,7 +272,7 @@ pub fn assert_master_only(
     Ok(())
 }
 
-/// Build the full application router (health + registry + proxy) without binding.
+/// Build the full application router (health + registry + weights + proxy) without binding.
 ///
 /// # Errors
 ///
@@ -276,6 +283,23 @@ pub fn build_app(
     tls: &TlsConfig,
 ) -> Result<Router, GatewayError> {
     let state = GatewayState::new(registry).map_err(GatewayError::HttpClient)?;
+    app::build_router(metrics, state, tls)
+}
+
+/// Like [`build_app`] with injected trust root and weight store (tests / hydrate).
+///
+/// # Errors
+///
+/// Telemetry or HTTP client construction failures.
+pub fn build_app_with(
+    metrics: metrics_exporter_prometheus::PrometheusHandle,
+    registry: Arc<Registry>,
+    tls: &TlsConfig,
+    challenges: Arc<gbase_trustroot::ChallengesBody>,
+    weights: SharedWeightStore,
+) -> Result<Router, GatewayError> {
+    let state = GatewayState::with_parts(registry, challenges, weights)
+        .map_err(GatewayError::HttpClient)?;
     app::build_router(metrics, state, tls)
 }
 
@@ -334,7 +358,7 @@ where
         netuid = config.netuid,
         hotkey = %hotkey_hex(&config.hotkey),
         tls_mode = config.tls.mode_label(),
-        "master-only check passed; serving health + registry + challenge proxy"
+        "master-only check passed; serving health + registry + weights + challenge proxy"
     );
 
     axum::serve(listener, app)
