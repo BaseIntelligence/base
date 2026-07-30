@@ -90,6 +90,12 @@ services:
     environment:
       GBASE_ROLE: gateway
       GBASE_GATEWAY_LISTEN: 0.0.0.0:8080
+      GBASE_TRUST_ROOT_DIR: ${GBASE_TRUST_ROOT_DIR:-/etc/gbase/config}
+      # Bundle seal mini-secret (host file, never baked into image)
+      GBASE_GATEWAY_SK_FILE: ${GBASE_GATEWAY_SK_FILE:-/run/secrets/gateway_sk}
+    volumes:
+      - ./config:/etc/gbase/config:ro
+      - ./deploy/secrets/gateway_sk:/run/secrets/gateway_sk:ro
     expose:
       - "8080"
     networks:
