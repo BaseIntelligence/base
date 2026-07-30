@@ -4612,9 +4612,11 @@ dependencies = [
  "chain",
  "config",
  "db",
+ "hex",
  "telemetry",
  "tokio",
  "tracing",
+ "trustroot",
  "validator",
 ]
 

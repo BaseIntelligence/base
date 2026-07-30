@@ -51,6 +51,10 @@ services:
       GBASE_LISTEN: 0.0.0.0:8080
       # Optional co-located gateway (only present under profile master)
       GBASE_GATEWAY_ENDPOINT: ${GBASE_GATEWAY_ENDPOINT:-http://gateway:8080}
+      # Owner-signed measurements for attest (image bakes /etc/gbase/config; host mount wins)
+      GBASE_TRUST_ROOT_DIR: ${GBASE_TRUST_ROOT_DIR:-/etc/gbase/config}
+    volumes:
+      - ./config:/etc/gbase/config:ro
     expose:
       - "8080"
     healthcheck:

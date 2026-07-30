@@ -88,6 +88,9 @@ WORKDIR /home/gbase
 
 FROM runtime-base AS validator
 COPY --from=artifacts --chown=gbase:gbase /out/validator /usr/local/bin/validator
+# Owner-signed trust root for /v1/attest allowlist (todo 34 staging Verified path).
+COPY --chown=gbase:gbase config /etc/gbase/config
+ENV GBASE_TRUST_ROOT_DIR=/etc/gbase/config
 ENTRYPOINT ["/usr/local/bin/validator"]
 
 FROM runtime-base AS gateway
