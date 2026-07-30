@@ -1,0 +1,79 @@
+task-16-vectors evidence
+date: 2026-07-30T02:42:10+00:00
+upstream_base_sha: c4ec5c04353a92f9098dc5ee6340b071bb1e566d
+base_path: /root/prism-compute-plane/base
+import: base.master.aggregation -> aggregate_challenge_weights
+authority: BUNDLE_SPEC §6 wins; Python characterization only (D16)
+
+=== vector dir ===
+total 32
+drwxr-xr-x 2 root root 4096 Jul 30 02:41 .
+drwxr-xr-x 3 root root 4096 Jul 30 02:41 ..
+-rw-r--r-- 1 root root 1715 Jul 30 02:41 01_single_challenge_two_miners_equal.json
+-rw-r--r-- 1 root root 2437 Jul 30 02:41 02_two_challenges_absolute_shares_with_burn.json
+-rw-r--r-- 1 root root 2285 Jul 30 02:42 03_spec_like_scores_50_30_20_one_challenge.json
+-rw-r--r-- 1 root root 1583 Jul 30 02:41 04_zero_miner_fallback_burn.json
+-rw-r--r-- 1 root root 1921 Jul 30 02:41 05_unknown_hotkey_share_burns.json
+-rw-r--r-- 1 root root 2121 Jul 30 02:41 README.md
+
+=== headers (matches_spec / divergence) ===
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
+  matches_spec= False
+  expected_vector= [[1, 32768], [2, 32768]]
+  note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
+  matches_spec= False
+  expected_vector= [[0, 32768], [5, 3277], [15, 9830], [30, 19660]]
+  note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
+  matches_spec= True
+  expected_vector= [[1, 32768], [2, 19660], [3, 13107]]
+  note= Numeric round(float*65535) coincides with §6.8 Hamilton [(1,32768),(2,19660),(3,13107)] for this ratio set; algorithm st
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
+  matches_spec= False
+  expected_vector= [[0, 65535]]
+  note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
+  matches_spec= False
+  expected_vector= [[0, 19661], [1, 6554], [2, 39321]]
+  note= Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.
+
+=== cargo check -p gbase-aggregate ===
+Caused by:
+  failed to read `/root/gbase/crates/gbase-gateway/Cargo.toml`
+
+Caused by:
+  No such file or directory (os error 2)
+
+=== /tmp script ===
+capture script deleted: yes
+
+=== files ===
+crates/gbase-aggregate/Cargo.toml
+crates/gbase-aggregate/src/lib.rs
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/01_single_challenge_two_miners_equal.json
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/02_two_challenges_absolute_shares_with_burn.json
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/03_spec_like_scores_50_30_20_one_challenge.json
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/04_zero_miner_fallback_burn.json
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/05_unknown_hotkey_share_burns.json
+crates/gbase-aggregate/tests/vectors/python/c4ec5c04353a92f9098dc5ee6340b071bb1e566d/README.md
+
+=== isolated cargo check -p gbase-aggregate ===
+    Checking gbase-aggregate v0.1.0 (/tmp/gbase-agg-iso/crates/gbase-aggregate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+exit: 0
+
+=== git commit ===
+commit: 78979c0bf3f816b99ea2bc01bd74913b861b2690
+78979c0 test(gbase-aggregate): add Python BASE characterization vectors for D16
+78979c0 test(gbase-aggregate): add Python BASE characterization vectors for D16
+ crates/gbase-aggregate/Cargo.toml                  |  14 +++
+ crates/gbase-aggregate/src/lib.rs                  |   9 ++
+ .../01_single_challenge_two_miners_equal.json      |  62 +++++++++++++
+ ...2_two_challenges_absolute_shares_with_burn.json | 100 +++++++++++++++++++++
+ ...03_spec_like_scores_50_30_20_one_challenge.json |  87 ++++++++++++++++++
+ .../04_zero_miner_fallback_burn.json               |  51 +++++++++++
+ .../05_unknown_hotkey_share_burns.json             |  76 ++++++++++++++++
+ .../README.md                                      |  49 ++++++++++
+ task-16-vectors.txt                                |  64 +++++++++++++
+ 9 files changed, 512 insertions(+)

@@ -1,0 +1,100 @@
+{
+  "header": {
+    "characterization": true,
+    "authority": "BUNDLE_SPEC \u00a76 (algorithm_version=1); Python is NOT authority (D16)",
+    "upstream_base_sha": "c4ec5c04353a92f9098dc5ee6340b071bb1e566d",
+    "upstream_module": "base.master.aggregation -> base.master.aggregator.aggregate_challenge_weights",
+    "python_float_path": true,
+    "expected_vector_encoding": "list of [uid:u16, weight_u16] where weight_u16 = round(float_weight * 65535)",
+    "matches_spec": false,
+    "divergence_vs_BUNDLE_SPEC_section_6": [
+      "Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.",
+      "BUNDLE_SPEC \u00a76: u128 FIXED=1e12, share bps, Hamilton largest-remainder to HOUSE=65535, no burn-to-uid0, empty Vec on all-zero (no-submit).",
+      "Python zero-miner: build_zero_miner_weights self-burn; \u00a76.5: empty final_vector.",
+      "Python over-alloc: renormalize shares to 1.0; \u00a76 requires sum bps == 10000 well-formed.",
+      "Characterization only (D16). Spec wins on disagreement."
+    ],
+    "case": "02_two_challenges_absolute_shares_with_burn"
+  },
+  "inputs": {
+    "challenge_results": [
+      {
+        "slug": "prism",
+        "emission_percent": 30.0,
+        "weights": {
+          "prism-hotkey": 1.0
+        },
+        "ok": true
+      },
+      {
+        "slug": "agent-challenge",
+        "emission_percent": 15.0,
+        "weights": {
+          "agent-hotkey": 1.0
+        },
+        "ok": true
+      },
+      {
+        "slug": "other-active",
+        "emission_percent": 5.0,
+        "weights": {
+          "other-hotkey": 1.0
+        },
+        "ok": true
+      },
+      {
+        "slug": "failed-active",
+        "emission_percent": 50.0,
+        "weights": {
+          "failed-hotkey": 1.0
+        },
+        "ok": false
+      }
+    ],
+    "hotkey_to_uid": {
+      "prism-hotkey": 30,
+      "agent-hotkey": 15,
+      "other-hotkey": 5,
+      "failed-hotkey": 50
+    },
+    "kwargs": {}
+  },
+  "python_float_output": {
+    "uids": [
+      0,
+      5,
+      15,
+      30
+    ],
+    "weights": [
+      0.5,
+      0.05,
+      0.15,
+      0.3
+    ],
+    "hotkey_weights": {
+      "prism-hotkey": 0.3,
+      "agent-hotkey": 0.15,
+      "other-hotkey": 0.05
+    }
+  },
+  "expected_vector": [
+    [
+      0,
+      32768
+    ],
+    [
+      5,
+      3277
+    ],
+    [
+      15,
+      9830
+    ],
+    [
+      30,
+      19660
+    ]
+  ],
+  "chain_u16_max": 65535
+}

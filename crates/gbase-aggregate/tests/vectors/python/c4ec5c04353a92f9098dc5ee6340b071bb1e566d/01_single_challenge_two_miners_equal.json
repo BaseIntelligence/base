@@ -1,0 +1,62 @@
+{
+  "header": {
+    "characterization": true,
+    "authority": "BUNDLE_SPEC \u00a76 (algorithm_version=1); Python is NOT authority (D16)",
+    "upstream_base_sha": "c4ec5c04353a92f9098dc5ee6340b071bb1e566d",
+    "upstream_module": "base.master.aggregation -> base.master.aggregator.aggregate_challenge_weights",
+    "python_float_path": true,
+    "expected_vector_encoding": "list of [uid:u16, weight_u16] where weight_u16 = round(float_weight * 65535)",
+    "matches_spec": false,
+    "divergence_vs_BUNDLE_SPEC_section_6": [
+      "Python path: float normalize per challenge, absolute emission_percent/100, burn remainder to uid 0.",
+      "BUNDLE_SPEC \u00a76: u128 FIXED=1e12, share bps, Hamilton largest-remainder to HOUSE=65535, no burn-to-uid0, empty Vec on all-zero (no-submit).",
+      "Python zero-miner: build_zero_miner_weights self-burn; \u00a76.5: empty final_vector.",
+      "Python over-alloc: renormalize shares to 1.0; \u00a76 requires sum bps == 10000 well-formed.",
+      "Characterization only (D16). Spec wins on disagreement."
+    ],
+    "case": "01_single_challenge_two_miners_equal"
+  },
+  "inputs": {
+    "challenge_results": [
+      {
+        "slug": "c1",
+        "emission_percent": 100.0,
+        "weights": {
+          "hkA": 50.0,
+          "hkB": 50.0
+        },
+        "ok": true
+      }
+    ],
+    "hotkey_to_uid": {
+      "hkA": 1,
+      "hkB": 2
+    },
+    "kwargs": {}
+  },
+  "python_float_output": {
+    "uids": [
+      1,
+      2
+    ],
+    "weights": [
+      0.5,
+      0.5
+    ],
+    "hotkey_weights": {
+      "hkA": 0.5,
+      "hkB": 0.5
+    }
+  },
+  "expected_vector": [
+    [
+      1,
+      32768
+    ],
+    [
+      2,
+      32768
+    ]
+  ],
+  "chain_u16_max": 65535
+}
