@@ -260,8 +260,32 @@ impl CoordinationClient {
     }
 }
 
+/// Parsed `GET /v1/weights/latest` JSON (gateway `WeightsLatestResponse`).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WeightsLatestView {
+    /// Sealed epoch.
+    pub epoch: u64,
+    /// Merkle root hex.
+    pub merkle_root: String,
+}
+
+impl CoordinationClient {
+    /// GET `/v1/weights/latest` and parse epoch when sealed (200).
+    ///
+    /// # Errors
+    ///
+    /// Missing gateway, transport, non-success status, or JSON parse failure.
+    pub async fn fetch_weights_latest(&self) -> Result<WeightsLatestView, CoordinationError> {
+        let resp = self.get_allowed("/v1/weights/latest").await?;
+        resp.json::<WeightsLatestView>()
+            .await
+            .map_err(|e| CoordinationError::Transport(format!("latest json: {e}")))
+    }
+}
+
 /// Shared handle for readiness / runtime.
 pub type SharedCoordination = Arc<CoordinationClient>;
+
 
 #[cfg(test)]
 mod tests {

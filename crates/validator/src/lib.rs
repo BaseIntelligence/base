@@ -19,6 +19,7 @@
 pub mod app;
 pub mod attest;
 pub mod coordination;
+mod epoch_loop;
 pub mod crosscheck;
 pub mod epoch;
 pub mod error;
@@ -32,6 +33,7 @@ pub use app::{
     build_health_router, chain_ready_check, db_ready_from_fn, db_ready_ok, spawn_validator,
     spawn_validator_with_ok_db, RunningValidator, ValidatorRuntime,
 };
+pub use epoch_loop::{coordination_compare_once, format_match_line, spawn_coordination_loop};
 pub use coordination::{
     is_allowed_gateway_path, is_master_only_path, CoordinationClient, CoordinationError,
     ALLOWED_GATEWAY_PATHS, MASTER_ONLY_PATHS,

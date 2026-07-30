@@ -8,18 +8,24 @@
 //! Attestation (`/v1/attest/*`) is always mounted. Measurements allowlist is
 //! loaded from `GBASE_TRUST_ROOT_DIR` (default `./config` then `/etc/gbase/config`)
 //! so fixture/live certify can return `Verified` against the owner-signed root.
+//!
+//! F3 continuous path: after start, a background loop probes gateway
+//! `/v1/weights/latest`, fetches the sealed bundle, runs `compare_bundle`, and
+//! logs a `Match epoch=...` line on success.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
-use chain::FakeChain;
+use bundle::LocalTrustRoot;
+use chain::{FakeChain, FakeChainConfig};
 use config::{keys, load, Role};
-use trustroot::{load_config_dir, MeasurementsBody};
+use trustroot::{load_config_dir, measurements_digest};
 use validator::{
-    db_ready_from_fn, db_ready_ok, spawn_validator, AttestState, RegistrationStub, SyncChain,
-    ValidatorRuntime,
+    db_ready_from_fn, db_ready_ok, spawn_coordination_loop, spawn_validator, AttestState,
+    RegistrationStub, SyncChain, ValidatorRuntime,
 };
 
 #[tokio::main]
@@ -56,8 +62,14 @@ async fn main() -> ExitCode {
         .and_then(|s| s.parse::<SocketAddr>().ok())
         .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 8080)));
 
-    // Skeleton chain: FakeChain until live SDK client is wired (task 13 follow-up).
-    let chain = Arc::new(SyncChain::new(FakeChain::with_defaults()));
+    let netuid = cfg.netuid.get();
+    let (attest, trust, chain) = match build_runtime_trust(netuid, cfg.rotation_epochs) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("trust root / chain: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     let db_check = match resolve_database_url(&cfg) {
         Ok(Some(url)) => match db::connect(&url).await {
@@ -87,15 +99,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    let netuid = cfg.netuid.get();
-    let attest = match build_attest_state(netuid, cfg.rotation_epochs) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("attest allowlist: {e}");
-            return ExitCode::from(2);
-        }
-    };
-
     let runtime = ValidatorRuntime {
         epoch_length: cfg.epoch_length,
         listen_addr: listen,
@@ -107,7 +110,7 @@ async fn main() -> ExitCode {
         ..ValidatorRuntime::default()
     };
 
-    let running = match spawn_validator(runtime, chain, db_check, vec![]).await {
+    let running = match spawn_validator(runtime, Arc::clone(&chain), db_check, vec![]).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("validator failed to start: {e}");
@@ -116,6 +119,19 @@ async fn main() -> ExitCode {
     };
 
     tracing::info!(addr = %running.addr, netuid, "validator ready");
+
+    // F3 continuous Match loop (gateway latest → bundle → compare).
+    let interval_secs: u64 = std::env::var("GBASE_COORDINATION_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5)
+        .max(1);
+    let _coord_loop = spawn_coordination_loop(
+        Arc::clone(&running.coordination),
+        Arc::clone(&chain),
+        trust,
+        Duration::from_secs(interval_secs),
+    );
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -161,77 +177,114 @@ fn trust_root_dir() -> PathBuf {
     PathBuf::from("/etc/gbase/config")
 }
 
-/// Load owner-signed measurements and build AttestState.
-///
-/// `GBASE_ATTEST_VERIFIER=pcs_timeout` forces Parked (PCS outage) for negative QA.
-/// Default is the happy-path mock verifier (fixture/live quotes still need allowlist match).
-fn build_attest_state(netuid: u16, rotation_epochs: u32) -> Result<AttestState, String> {
-    let dir = trust_root_dir();
-    let measurements = load_measurements_allowlist(&dir, rotation_epochs)?;
-    let hotkey = validator_hotkey_from_env();
-    let mode = std::env::var("GBASE_ATTEST_VERIFIER").unwrap_or_else(|_| "ok".to_owned());
-    let state = match mode.as_str() {
-        "pcs_timeout" | "park" | "parked" => {
-            tracing::warn!(%mode, "attest verifier = PCS timeout (Parked path)");
-            AttestState::with_pcs_timeout(measurements, hotkey, netuid)
-        }
-        _ => AttestState::with_ok_verifier(measurements, hotkey, netuid),
-    };
-    Ok(state)
-}
-
-fn load_measurements_allowlist(
-    dir: &Path,
+/// Load challenges + measurements; build AttestState, LocalTrustRoot, and FakeChain
+/// aligned with gateway (`GBASE_GATEWAY_HOTKEY` / `GBASE_FAKE_METAGRAPH_HOTKEYS`).
+fn build_runtime_trust(
+    netuid: u16,
     rotation_epochs: u32,
-) -> Result<MeasurementsBody, String> {
+) -> Result<
+    (
+        AttestState,
+        LocalTrustRoot,
+        Arc<SyncChain<FakeChain>>,
+    ),
+    String,
+> {
+    let dir = trust_root_dir();
     if !dir.is_dir() {
         return Err(format!(
             "trust root dir missing: {} (set GBASE_TRUST_ROOT_DIR)",
             dir.display()
         ));
     }
-    // epoch=0 accepts introduced_epoch=0 roots (committed config).
-    let (_ch, ms) = load_config_dir(dir, 0, rotation_epochs)
+    let (ch, ms) = load_config_dir(&dir, 0, rotation_epochs)
         .map_err(|e| format!("load_config_dir {}: {e}", dir.display()))?;
-    let primary = ms
+    let primary_ch = ch
+        .primary()
+        .map_err(|e| format!("challenges primary: {e}"))?;
+    let primary_ms = ms
         .primary()
         .map_err(|e| format!("measurements primary: {e}"))?;
-    let n = primary.body.entries.len();
-    if n == 0 {
-        tracing::warn!(
-            dir = %dir.display(),
-            "measurements allowlist empty — attest submit fail-closed"
-        );
-    } else {
-        tracing::info!(
-            dir = %dir.display(),
-            entries = n,
-            version = primary.version,
-            "loaded measurements allowlist"
-        );
+    let measurements = primary_ms.body.clone();
+    let mdigest = measurements_digest(&measurements);
+    let trust = LocalTrustRoot {
+        challenges: primary_ch.body.clone(),
+        measurements_digest: mdigest,
+    };
+    tracing::info!(
+        dir = %dir.display(),
+        challenges = primary_ch.body.challenges.len(),
+        measurements = measurements.entries.len(),
+        "loaded validator trust root"
+    );
+
+    let hotkey = validator_hotkey_from_env();
+    let mode = std::env::var("GBASE_ATTEST_VERIFIER").unwrap_or_else(|_| "ok".to_owned());
+    let attest = match mode.as_str() {
+        "pcs_timeout" | "park" | "parked" => {
+            tracing::warn!(%mode, "attest verifier = PCS timeout (Parked path)");
+            AttestState::with_pcs_timeout(measurements, hotkey, netuid)
+        }
+        _ => AttestState::with_ok_verifier(measurements, hotkey, netuid),
+    };
+
+    let chain = Arc::new(SyncChain::new(fake_chain_aligned(netuid)?));
+    Ok((attest, trust, chain))
+}
+
+fn fake_chain_aligned(netuid: u16) -> Result<FakeChain, String> {
+    let owner = parse_hotkey_env("GBASE_GATEWAY_HOTKEY")
+        .or_else(|| parse_hotkey_env("GBASE_VALIDATOR_HOTKEY_HEX"))
+        .unwrap_or([0xA1; 32]);
+    let hotkeys = parse_fake_metagraph_hotkeys(&owner)?;
+    Ok(FakeChain::new(FakeChainConfig {
+        netuid,
+        owner_hotkey: owner.to_vec(),
+        hotkeys,
+        current_block: 10_000,
+        ..FakeChainConfig::default()
+    }))
+}
+
+fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
+    let Ok(raw) = std::env::var("GBASE_FAKE_METAGRAPH_HOTKEYS") else {
+        return Ok(vec![owner.to_vec()]);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(vec![owner.to_vec()]);
     }
-    Ok(primary.body.clone())
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let h = parse_hotkey_hex(part.trim()).map_err(|e| e.to_string())?;
+        out.push(h.to_vec());
+    }
+    if out.is_empty() {
+        out.push(owner.to_vec());
+    }
+    Ok(out)
+}
+
+fn parse_hotkey_env(name: &str) -> Option<[u8; 32]> {
+    let Ok(s) = std::env::var(name) else {
+        return None;
+    };
+    parse_hotkey_hex(s.trim()).ok()
+}
+
+fn parse_hotkey_hex(s: &str) -> Result<[u8; 32], String> {
+    let s = s.trim();
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|e| format!("hotkey hex: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|v: Vec<u8>| format!("hotkey must be 32 bytes, got {}", v.len()))
 }
 
 /// Optional 32-byte validator hotkey for D10 report_data binding (hex or zeros).
 fn validator_hotkey_from_env() -> [u8; 32] {
-    let Ok(hex_str) = std::env::var("GBASE_VALIDATOR_HOTKEY_HEX") else {
-        return [0u8; 32];
-    };
-    let hex_str = hex_str.trim();
-    if hex_str.len() != 64 {
-        tracing::warn!("GBASE_VALIDATOR_HOTKEY_HEX length != 64; using zeros");
-        return [0u8; 32];
-    }
-    let mut out = [0u8; 32];
-    match hex::decode(hex_str) {
-        Ok(bytes) if bytes.len() == 32 => {
-            out.copy_from_slice(&bytes);
-            out
-        }
-        _ => {
-            tracing::warn!("GBASE_VALIDATOR_HOTKEY_HEX decode failed; using zeros");
-            [0u8; 32]
-        }
-    }
+    parse_hotkey_env("GBASE_VALIDATOR_HOTKEY_HEX").unwrap_or([0u8; 32])
 }

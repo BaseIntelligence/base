@@ -18,6 +18,7 @@ config = { path = "../../crates/config" }
 db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }
 validator = { path = "../../crates/validator" }
+bundle = { path = "../../crates/bundle" }
 trustroot = { path = "../../crates/trustroot" }
 hex = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
