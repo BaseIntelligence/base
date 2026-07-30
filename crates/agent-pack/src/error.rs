@@ -38,4 +38,7 @@ pub enum PackError {
     /// `task.toml` is not valid TOML or failed typed decode.
     #[error("task.toml parse error: {0}")]
     Toml(String),
+    /// Pack selection received an empty catalog.
+    #[error("empty pack catalog")]
+    EmptyCatalog,
 }

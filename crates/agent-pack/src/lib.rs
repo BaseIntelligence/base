@@ -16,6 +16,7 @@ mod digest;
 mod error;
 mod load;
 mod model;
+mod select;
 
 pub use digest::{
     content_digest_label, digest_hex, pack_digest_from_entries, sha256_bytes, DigestBytes,
@@ -27,6 +28,7 @@ pub use model::{
     HarborPack, HeldOutMaterials, StrippedDescriptor, PACK_DIGEST_LEN, SCHEMA_VERSION_1_1,
     STRIPPED_FIELD_NAMES,
 };
+pub use select::{select_index, select_pack, HOTKEY_LEN, PACK_SELECT_DOMAIN};
 
 /// Stable pack identity (content-addressed id string; typically `metadata.task_id`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
