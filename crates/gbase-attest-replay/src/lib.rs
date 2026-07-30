@@ -167,6 +167,108 @@ pub fn replay_rtmr3(events: &[Event]) -> Result<Replay, ReplayError> {
     })
 }
 
+/// Failures while decoding a dstack / Phala event-log JSON document.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum EventLogError {
+    /// JSON is not a valid array of event objects.
+    #[error("invalid event log JSON: {0}")]
+    InvalidJson(String),
+    /// A required field is missing or has the wrong type.
+    #[error("event log entry invalid: {0}")]
+    InvalidEntry(String),
+    /// Hex field is malformed.
+    #[error("event log hex decode failed for field '{field}': {detail}")]
+    BadHex { field: String, detail: String },
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WireEvent {
+    imr: u32,
+    event_type: u32,
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    event: String,
+    #[serde(default)]
+    event_payload: String,
+}
+
+/// Parse a dstack / Phala `event_log.json` array into [`Event`] values.
+///
+/// Wire fields: `imr`, `event_type`, `event` (name), `event_payload` (hex),
+/// optional `digest` (hex). Empty payload/digest strings become empty / `None`.
+///
+/// # Errors
+/// Returns [`EventLogError`] on JSON or hex failures.
+pub fn events_from_json(bytes: &[u8]) -> Result<Vec<Event>, EventLogError> {
+    let wire: Vec<WireEvent> = serde_json::from_slice(bytes)
+        .map_err(|e| EventLogError::InvalidJson(e.to_string()))?;
+    let mut out = Vec::with_capacity(wire.len());
+    for (i, w) in wire.into_iter().enumerate() {
+        let payload = decode_hex_field("event_payload", &w.event_payload, i)?;
+        let digest = match w.digest.as_deref() {
+            None | Some("") => None,
+            Some(h) => {
+                let raw = decode_hex_field("digest", h, i)?;
+                if raw.len() != REGISTER_LEN {
+                    return Err(EventLogError::InvalidEntry(format!(
+                        "entry {i}: digest must be {REGISTER_LEN} bytes, got {}",
+                        raw.len()
+                    )));
+                }
+                let mut reg = [0_u8; REGISTER_LEN];
+                reg.copy_from_slice(&raw);
+                Some(reg)
+            }
+        };
+        out.push(Event {
+            imr: w.imr,
+            event_type: w.event_type,
+            name: w.event,
+            payload,
+            digest,
+        });
+    }
+    Ok(out)
+}
+
+fn decode_hex_field(field: &str, hex: &str, index: usize) -> Result<Vec<u8>, EventLogError> {
+    if hex.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !hex.len().is_multiple_of(2) {
+        return Err(EventLogError::BadHex {
+            field: field.into(),
+            detail: format!("entry {index}: odd length {}", hex.len()),
+        });
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = hex_nibble(bytes[i]).map_err(|d| EventLogError::BadHex {
+            field: field.into(),
+            detail: format!("entry {index}: {d}"),
+        })?;
+        let lo = hex_nibble(bytes[i + 1]).map_err(|d| EventLogError::BadHex {
+            field: field.into(),
+            detail: format!("entry {index}: {d}"),
+        })?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("invalid hex byte {b:?}")),
+    }
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
@@ -381,4 +483,25 @@ mod tests {
         let mr = rtmr_extend(&[0_u8; REGISTER_LEN], &digest);
         assert_eq!(hex_encode(&mr), HAND_SINGLE_RTMR3_HEX);
     }
+
+    /// Task-34 real Phala event log → RTMR3 must match quote.bin register.
+    #[test]
+    fn real_event_log_replays_quote_rtmr3() {
+        // RTMR3 absolute offset in v4 quote (header 48 + 472).
+        const RTMR3_OFF: usize = 48 + 472;
+        let log = include_bytes!("../../gbase-attest-parse/tests/fixtures/real/event_log.json");
+        let quote = include_bytes!("../../gbase-attest-parse/tests/fixtures/real/quote.bin");
+        let events = events_from_json(log).expect("parse event log");
+        let replay = replay_rtmr3(&events).expect("replay");
+        let mut expected = [0_u8; REGISTER_LEN];
+        expected.copy_from_slice(&quote[RTMR3_OFF..RTMR3_OFF + REGISTER_LEN]);
+        assert_eq!(replay.rtmr3, expected, "replayed RTMR3 must equal quote RTMR3");
+        let compose = replay.compose_hash.expect("compose-hash event");
+        assert_eq!(compose.len(), 32);
+        assert_eq!(
+            hex_encode(&compose),
+            "1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b"
+        );
+    }
+
 }
