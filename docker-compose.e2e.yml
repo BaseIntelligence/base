@@ -1,0 +1,13 @@
+# task-47 cleartext e2e — publish HTTP on host (no Cloudflare/TLS)
+services:
+  gateway:
+    ports:
+      - "8088:8080"
+    environment:
+      GBASE_CHAIN_BACKEND: fake_owner
+      GBASE_ROLE: gateway
+  validator:
+    ports:
+      - "8089:8080"
+    environment:
+      GBASE_ROLE: validator
