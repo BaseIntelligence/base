@@ -74,7 +74,6 @@ jobs:
           build-args: |
             BUILD_FROM=source
           provenance: false
-          outputs: type=image,name=${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
 
       - name: Write digest fragment
         run: |
