@@ -3,6 +3,21 @@
 //! Pure function. No I/O. No floats. Accumulators use `u128` with **`checked_*` only**.
 //! Consensus lint (D8): no `HashMap`, `f32`/`f64`, or `wrapping_*`.
 //!
+//! # Binary rewards and all-zero epochs (`BUNDLE_SPEC` §6.5)
+//!
+//! Agent-challenge scoring is effectively **binary** (solved / not). Frontier pass@1 is
+//! low, so many epochs have **zero solvers**. When accumulator mass `total == 0`:
+//!
+//! - Canonical output is an **empty** `Vec` (not equal weights, not a fabricated uniform
+//!   vector). Callers classify this as **no-submit** and MUST NOT emit a CRV4 /
+//!   `set_weights` extrinsic (`submit::payload_from_intent` rejects empty vectors).
+//! - [`PARTICIPATION_FLOOR`] defaults to **`false`**. Setting it `true` is a deliberate
+//!   one-constant switch that replaces all-zero mass with unit participation scores
+//!   before Hamilton — it changes what a weight means and stays off unless operators
+//!   accept that semantic shift.
+//!
+//! When `total > 0`, Hamilton largest-remainder apportions exactly [`HOUSE`] (`u16::MAX`).
+//!
 //! Python BASE vectors under `tests/vectors/python/<sha>/` are **characterization only**
 //! (D16). Where they diverge from this crate / `BUNDLE_SPEC` §6, the **spec wins**.
 
@@ -20,6 +35,13 @@ pub const FIXED: u128 = 1_000_000_000_000;
 pub const ALGORITHM_VERSION: u16 = 1;
 /// Default minimum surviving share mass after quarantine (config; D6). Callers enforce.
 pub const DEFAULT_MIN_SHARE_MASS_BPS: u16 = 5_000;
+/// Participation floor for all-zero epochs (plan todo 15 / Metis B2).
+///
+/// When `false` (default): `total == 0` → empty vector → **no-submit** (§6.5).
+/// When `true`: each leaf participant gets unit `acc = 1` before Hamilton so a
+/// near-equal weight vector is emitted even if nobody solved. **Off by default** —
+/// flip only as a conscious product decision; it is a one-constant change.
+pub const PARTICIPATION_FLOOR: bool = false;
 
 /// Score present on a verified leaf, or explicit absence (`NoScore`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +127,42 @@ struct MinerRow {
     extra: u128,
 }
 
+/// Returns `true` when `vector` is the canonical §6.5 no-submit signal (empty).
+///
+/// Non-empty vectors — including those with zero-weight rows when `total > 0` —
+/// are submit-eligible from the aggregation layer's point of view.
+#[must_use]
+pub fn is_no_submit_vector(vector: &[(u16, u16)]) -> bool {
+    vector.is_empty()
+}
+
+/// Prepare participant accumulators for Hamilton, applying an optional participation floor.
+///
+/// # Returns
+///
+/// - `Some(total)` when Hamilton should run (`total > 0` after optional floor).
+/// - `None` when the epoch is **no-submit** (empty weight vector).
+///
+/// Production callers pass [`PARTICIPATION_FLOOR`]. Tests may pass `true` to exercise
+/// the floor path without flipping the crate default.
+pub fn prepare_weight_inputs(
+    participants: &mut Vec<([u8; 32], u16, u128)>,
+    total: u128,
+    participation_floor: bool,
+) -> Option<u128> {
+    if total > 0 {
+        return Some(total);
+    }
+    if participation_floor && !participants.is_empty() {
+        let n = u128::try_from(participants.len()).ok()?;
+        for row in participants.iter_mut() {
+            row.2 = 1;
+        }
+        return Some(n);
+    }
+    None
+}
+
 /// Aggregate verified leaves into the canonical final weight vector.
 ///
 /// # Errors
@@ -114,7 +172,8 @@ struct MinerRow {
 ///
 /// # Canonical output (`BUNDLE_SPEC` §6.5–§6.7)
 ///
-/// - All-zero / `total == 0` → empty `Vec` (no-submit).
+/// - All-zero / `total == 0` and [`PARTICIPATION_FLOOR`] is `false` → empty `Vec`
+///   (no-submit). See [`is_no_submit_vector`].
 /// - Otherwise every uid whose hotkey appears in `leaves` (and is in `uid_map`),
 ///   sorted by ascending uid; `sum(weight) == HOUSE` (`65_535`). Zero weights kept.
 pub fn aggregate(
@@ -198,10 +257,10 @@ pub fn aggregate(
         participants.push((*hk, uid, a));
     }
 
-    // §6.5 all-zero → empty Vec (no-submit).
-    if total == 0 {
+    // §6.5 all-zero → empty Vec (no-submit) unless PARTICIPATION_FLOOR is on.
+    let Some(total) = prepare_weight_inputs(&mut participants, total, PARTICIPATION_FLOOR) else {
         return Ok(Vec::new());
-    }
+    };
 
     let weights = hamilton_house(&participants, total, u128::from(HOUSE))?;
 
@@ -744,5 +803,110 @@ mod tests {
         assert_eq!(HOUSE, u16::MAX);
         assert_eq!(FIXED, 1_000_000_000_000);
         assert_eq!(ALGORITHM_VERSION, 1);
+        // Todo 15: participation floor stays OFF — all-zero is no-submit.
+        assert!(!PARTICIPATION_FLOOR, "PARTICIPATION_FLOOR must default false");
+    }
+
+    fn vector_sum(v: &[(u16, u16)]) -> u32 {
+        v.iter().map(|(_, w)| u32::from(*w)).sum()
+    }
+
+    /// Binary-reward shape suite (todo 15): all-zero, single-winner, all-winners, sparse.
+    #[test]
+    fn s15_binary_reward_four_shapes_bound_and_sum() {
+        let cid = b"bin";
+        let shares = vec![(cid.to_vec(), 10_000)];
+        let uid_map = vec![(hk(1), 0), (hk(2), 1), (hk(3), 2)];
+
+        // Shape A — all-zero (binary fails): empty no-submit vector.
+        let all_zero_leaves = vec![
+            score_leaf(cid, 1, 0),
+            score_leaf(cid, 2, 0),
+            noscore_leaf(cid, 3),
+        ];
+        let all_zero = aggregate(&all_zero_leaves, &shares, &uid_map, 1).expect("zero");
+        assert!(is_no_submit_vector(&all_zero));
+        assert!(all_zero.is_empty());
+        assert_eq!(vector_sum(&all_zero), 0);
+        eprintln!("shape all-zero: {all_zero:?} sum={}", vector_sum(&all_zero));
+
+        // Shape B — single winner (binary 1/0/0): winner takes HOUSE, losers kept at 0.
+        let single_leaves = vec![
+            score_leaf(cid, 1, 0),
+            score_leaf(cid, 2, 1),
+            score_leaf(cid, 3, 0),
+        ];
+        let single = aggregate(&single_leaves, &shares, &uid_map, 1).expect("single");
+        assert!(!is_no_submit_vector(&single));
+        assert_eq!(vector_sum(&single), u32::from(HOUSE));
+        assert_eq!(single, vec![(0, 0), (1, HOUSE), (2, 0)]);
+        eprintln!("shape single-winner: {single:?} sum={}", vector_sum(&single));
+
+        // Shape C — all winners (binary 1/1/1): equal Hamilton split of HOUSE.
+        let all_win_leaves = vec![
+            score_leaf(cid, 1, 1),
+            score_leaf(cid, 2, 1),
+            score_leaf(cid, 3, 1),
+        ];
+        let all_win = aggregate(&all_win_leaves, &shares, &uid_map, 1).expect("all");
+        assert!(!is_no_submit_vector(&all_win));
+        assert_eq!(vector_sum(&all_win), u32::from(HOUSE));
+        // 65535 / 3 = 21845 exactly.
+        assert_eq!(all_win, vec![(0, 21_845), (1, 21_845), (2, 21_845)]);
+        eprintln!("shape all-winners: {all_win:?} sum={}", vector_sum(&all_win));
+
+        // Shape D — sparse (two of many solve): winners share HOUSE, zeros kept.
+        let sparse_leaves = vec![
+            score_leaf(cid, 1, 1),
+            score_leaf(cid, 2, 0),
+            score_leaf(cid, 3, 1),
+        ];
+        let sparse = aggregate(&sparse_leaves, &shares, &uid_map, 1).expect("sparse");
+        assert!(!is_no_submit_vector(&sparse));
+        assert_eq!(vector_sum(&sparse), u32::from(HOUSE));
+        // acc [1,0,1] total=2 → floors 32767/0/32767, one extra seat → lower uid.
+        assert_eq!(sparse, vec![(0, 32_768), (1, 0), (2, 32_767)]);
+        eprintln!("shape sparse: {sparse:?} sum={}", vector_sum(&sparse));
+
+        // Live reference [(0,3641),(1,65535),(2,3641)] is NOT a Hamilton HOUSE vector
+        // (sum ≠ 65535). Canonical gbase never emits that shape.
+        let live_ref_sum: u32 = 3_641 + u32::from(HOUSE) + 3_641;
+        assert_ne!(live_ref_sum, u32::from(HOUSE));
+    }
+
+    #[test]
+    fn s15_participation_floor_off_by_default_no_submit() {
+        assert!(!PARTICIPATION_FLOOR);
+        let mut parts = vec![(hk(1), 0_u16, 0_u128), (hk(2), 1, 0), (hk(3), 2, 0)];
+        let mass = prepare_weight_inputs(&mut parts, 0, PARTICIPATION_FLOOR);
+        assert!(mass.is_none(), "default floor off → no-submit");
+        // Accumulators untouched when floor is off.
+        assert!(parts.iter().all(|(_, _, a)| *a == 0));
+    }
+
+    #[test]
+    fn s15_participation_floor_on_is_one_constant_path() {
+        // Documented alternative: pass true without flipping the crate const.
+        let mut parts = vec![(hk(1), 0_u16, 0_u128), (hk(2), 1, 0), (hk(3), 2, 0)];
+        let mass = prepare_weight_inputs(&mut parts, 0, true).expect("floor on");
+        assert_eq!(mass, 3);
+        assert!(parts.iter().all(|(_, _, a)| *a == 1));
+        // Equal unit acc feeds the same Hamilton path as all-winners (s15 four shapes).
+        // Production aggregate still uses PARTICIPATION_FLOOR=false.
+        // Production aggregate still uses PARTICIPATION_FLOOR=false.
+        let cid = b"c";
+        let leaves = vec![score_leaf(cid, 1, 0), score_leaf(cid, 2, 0), score_leaf(cid, 3, 0)];
+        let shares = vec![(cid.to_vec(), 10_000)];
+        let uid_map = vec![(hk(1), 0), (hk(2), 1), (hk(3), 2)];
+        let prod = aggregate(&leaves, &shares, &uid_map, 1).expect("agg");
+        assert!(is_no_submit_vector(&prod));
+    }
+
+    #[test]
+    fn s15_prepare_weight_inputs_positive_total_passthrough() {
+        let mut parts = vec![(hk(1), 1_u16, 50_u128), (hk(2), 2, 50)];
+        let mass = prepare_weight_inputs(&mut parts, 100, false).expect("pos");
+        assert_eq!(mass, 100);
+        assert_eq!(parts[0].2, 50);
     }
 }

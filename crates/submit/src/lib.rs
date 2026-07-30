@@ -559,4 +559,30 @@ mod tests {
         ));
         assert!(chain.call_log().is_empty());
     }
+
+    #[test]
+    fn s15_empty_vector_no_submit_no_crv4_extrinsic() {
+        // Aggregate §6.5 empty vector must never reach the chain (todo 15).
+        let chain = FakeChain::with_defaults();
+        let clock = FixedClock {
+            now_unix_secs: FIXED_NOW,
+        };
+        let empty = SubmissionIntent {
+            epoch: 99,
+            vector: vec![],
+            source: SubmissionSource::Recompute,
+        };
+        let err = submit_intent(&empty, &chain, &ReadyDrand, &clock, &cfg_for(u64::MAX))
+            .expect_err("empty");
+        assert!(matches!(err, SubmitError::EmptyVector));
+        assert!(
+            chain.call_log().is_empty(),
+            "no CRV4 / set_weights extrinsic on all-zero no-submit"
+        );
+        assert!(chain.submissions().is_empty());
+        assert!(chain.set_weights_log().is_empty());
+        // payload builder alone also rejects.
+        let p_err = payload_from_intent(&empty, vec![0xA1; 32], 0).expect_err("payload");
+        assert!(matches!(p_err, SubmitError::EmptyVector));
+    }
 }
