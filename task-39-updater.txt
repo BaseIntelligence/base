@@ -1,0 +1,55 @@
+# task-39 gbase-updater evidence
+date: 2026-07-30T02:40:00Z
+branch: reborn
+crate: crates/gbase-updater + bins/gbase-updater (bin name: gbase-updater)
+
+## API / behavior surface
+- Phases: idle → resolving → pulling → recreating → verifying → committing (+ rolling_back, backoff, exhausted)
+- tick(updater, docker, health) → TickOutcome
+- DockerApi trait + AllowlistClient (HTTP to socket-proxy) + MockDocker
+- ALLOWED_ROUTES / is_allowlisted / assert_allowlisted — CONTAINERS+IMAGES+POST only
+- PinStore: current.json / previous.json atomic write (commit_pins)
+- parse_pinned_image: require repo@sha256:<64-hex>; reject :latest / unpinned
+- Health: check_readyz / wait_readyz / ScriptedHealth / HttpHealthProbe
+- D14: refuse when target container name == self_container_name (no create/recreate)
+- Config env: GBASE_UPDATER_PROXY_URL, _COMPOSE_PROJECT, _SERVICE_NAME, _HEALTH_URL, _STATE_DIR, _DESIRED_IMAGE, _SELF_NAME
+
+## Scenarios
+S1 good_digest_adopted (machine::tests::s1_good_digest_adopted) PASS — current.json=new, previous.json=old
+S2 unhealthy_digest_rollback (machine::tests::s2_unhealthy_rolled_back) PASS — current.json stays old
+S3 proxy_no_disallowed_methods (machine::tests::s3 + docker allowlist tests) PASS — DELETE /volumes and POST /networks rejected
+S4 never_recreates_own_container (machine::tests::s4_never_recreates_self) PASS — zero /create calls
+S5 rejects_unpinned_desired PASS
+S6 wiremock_readyz_200_and_503 PASS
+S7 pin_store roundtrip PASS
+S8 already_current short-circuit PASS
+
+## Manual QA (real binary surface)
+$ ./target/debug/gbase-updater
+gbase-updater config error: missing required updater env var
+exit=2
+
+## Gates
+cargo test -p gbase-updater --all-targets: 12 passed
+cargo clippy -p gbase-updater -p gbase-updater-bin --all-targets -- -D warnings: exit 0
+cargo fmt -p gbase-updater -p gbase-updater-bin --check: exit 0
+xtask loc-cap: crates/gbase-updater 1003 LOC, bins/gbase-updater 42 LOC (cap 1500)
+
+## Files
+crates/gbase-updater/Cargo.toml
+crates/gbase-updater/src/lib.rs
+crates/gbase-updater/src/config.rs
+crates/gbase-updater/src/digest.rs
+crates/gbase-updater/src/docker.rs
+crates/gbase-updater/src/error.rs
+crates/gbase-updater/src/health.rs
+crates/gbase-updater/src/machine.rs
+crates/gbase-updater/src/pin_store.rs
+bins/gbase-updater/Cargo.toml
+bins/gbase-updater/src/main.rs
+
+## Notes
+- Digests only; never :latest.
+- Self-update is not automatic (D14); library hard-refuses self container name.
+- Live socket-proxy + two-version dummy image is deferred to compose task 40; VERIFY covered via MockDocker + wiremock HTTP health.
+- Cargo.lock updated for reqwest/wiremock/tempfile.

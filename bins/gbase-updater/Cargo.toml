@@ -1,0 +1,22 @@
+[package]
+name = "gbase-updater-bin"
+description = "gbase-updater CLI binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "gbase-updater"
+path = "src/main.rs"
+
+[dependencies]
+gbase-updater = { path = "../../crates/gbase-updater" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[lints]
+workspace = true
