@@ -15,23 +15,26 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::registry::{BackendView, CreateBackend, Registry, RegistryError};
+use crate::sealer::{MemoryBundleStore, SharedBundleStore};
 use crate::weights::{MemoryRawWeightStore, SharedWeightStore};
 
-/// Shared axum state for registry + proxy + raw-weight ingress.
+/// Shared axum state for registry + proxy + weights + sealed bundles.
 #[derive(Clone)]
 pub struct GatewayState {
     /// Backend registry.
     pub registry: Arc<Registry>,
     /// Outbound HTTP client used by the reverse proxy.
     pub client: reqwest::Client,
-    /// Local owner-signed challenges body (D18 defence in depth).
+    /// Local owner-signed challenges body (D18).
     pub challenges: Arc<ChallengesBody>,
     /// Append-only raw-weight store.
     pub weights: SharedWeightStore,
+    /// Sealed epoch bundles.
+    pub bundles: SharedBundleStore,
 }
 
 impl GatewayState {
-    /// Build state with empty trust root and in-memory weight store.
+    /// Empty trust root and in-memory stores.
     ///
     /// # Errors
     ///
@@ -41,10 +44,11 @@ impl GatewayState {
             registry,
             Arc::new(ChallengesBody::default()),
             Arc::new(MemoryRawWeightStore::new()),
+            Arc::new(MemoryBundleStore::new()),
         )
     }
 
-    /// Build state with injected trust root and weight store (tests / production).
+    /// Injected trust root, weight store, and bundle store.
     ///
     /// # Errors
     ///
@@ -53,6 +57,7 @@ impl GatewayState {
         registry: Arc<Registry>,
         challenges: Arc<ChallengesBody>,
         weights: SharedWeightStore,
+        bundles: SharedBundleStore,
     ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -63,6 +68,7 @@ impl GatewayState {
             client,
             challenges,
             weights,
+            bundles,
         })
     }
 }

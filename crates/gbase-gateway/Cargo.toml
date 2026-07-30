@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 bytes = "1"
+gbase-aggregate = { path = "../gbase-aggregate" }
+gbase-bundle = { path = "../gbase-bundle" }
 gbase-chain = { path = "../gbase-chain" }
 gbase-config = { path = "../gbase-config" }
 gbase-crypto = { path = "../gbase-crypto" }
@@ -37,6 +39,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
 wiremock = "0.6"
+gbase-aggregate = { path = "../gbase-aggregate" }
+gbase-bundle = { path = "../gbase-bundle" }
+gbase-merkle = { path = "../gbase-merkle" }
 
 [lints]
 workspace = true

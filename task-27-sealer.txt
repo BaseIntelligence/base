@@ -1,0 +1,118 @@
+=== task 27 epoch sealer evidence ===
+2026-07-30T03:30:13+00:00
+
+=== cargo test -p gbase-gateway --all-targets ===
+   Compiling gbase-gateway v0.1.0 (/root/gbase/crates/gbase-gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
+     Running unittests src/lib.rs (target/debug/deps/gbase_gateway-435e0d5e4e72d12c)
+
+running 18 tests
+test proxy::tests::hop_by_hop_detects_connection ... ok
+test proxy::tests::upstream_uri_joins_path_and_query ... ok
+test registry::tests::create_rejects_empty_and_duplicate ... ok
+test registry::tests::deny_unknown_fields_signing_key ... ok
+test registry::tests::backend_view_has_no_key_shaped_fields ... ok
+test registry::tests::ejection_after_threshold_leaves_survivor ... ok
+test tests::from_base_rejects_non_gateway_role ... ok
+test tests::s1_assert_master_mismatch_no_bind_needed ... ok
+test registry::tests::round_robin_alternates_two_backends ... ok
+test tests::s2_assert_master_match_ok ... ok
+test tests::s3_chain_unknown_netuid_does_not_look_like_mismatch ... ok
+test tls::tests::default_is_cleartext_sole_owner_stub ... ok
+test tests::s3_parse_hotkey_hex_roundtrip ... ok
+test tls::tests::serde_roundtrip_has_no_foreign_terminators ... ok
+test tests::s1_mismatch_run_until_exits_2_and_port_refused ... ok
+{"timestamp":"2026-07-30T03:30:14.215914Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.216256Z","level":"INFO","fields":{"message":"master-only check passed; serving health + registry + weights + challenge proxy","event":"gateway_listening","bound":"127.0.0.1:19217","netuid":1,"hotkey":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","tls_mode":"cleartext"},"target":"gbase_gateway"}
+test weights::unit_tests::unit_accept_score_round_trip ... ok
+test tests::s2_match_run_until_healthz_200 ... ok
+test registry::tests::re_admit_after_cooldown ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/proxy_rr.rs (target/debug/deps/proxy_rr-c35d01f58f1962b9)
+
+running 5 tests
+{"timestamp":"2026-07-30T03:30:14.317683Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.317689Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.317689Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.317690Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.317688Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+test s3_registry_api_neither_sets_nor_returns_signing_key ... ok
+test s1_two_wiremock_backends_alternate_round_robin ... ok
+test s2_killing_backend_moves_traffic_to_survivor_200 ... ok
+test s2b_connection_refused_ejects_and_survivor_serves ... ok
+test s2c_restore_re_admits_after_cooldown ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/raw_weights.rs (target/debug/deps/raw_weights-af0785c15674080d)
+
+running 4 tests
+{"timestamp":"2026-07-30T03:30:14.490969Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.490977Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.490987Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+{"timestamp":"2026-07-30T03:30:14.490983Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+test s3_unknown_challenge_returns_404_and_no_row ... ok
+test s2_wrong_key_returns_401_and_no_row ... ok
+test s1_valid_score_returns_202_and_row ... ok
+test s4_replay_challenge_epoch_miner_returns_409_original_unchanged ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/sealer.rs (target/debug/deps/sealer-dce78acaa22edcb8)
+
+running 4 tests
+test s3_missing_participant_no_noscore_fails_no_publish ... ok
+test s2_reseal_idempotent_identical_bytes_and_signature ... ok
+{"timestamp":"2026-07-30T03:30:14.516998Z","level":"INFO","fields":{"message":"TLS ownership is this process only (D20); ACME via rustls-acme is task 42","event":"gateway_tls_mode","mode":"cleartext","tls_enabled":false},"target":"gbase_gateway::app"}
+test s1_seal_three_leaves_verifies_merkle_and_aggregate ... ok
+test s4_http_bundle_routes_and_weights_latest ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+=== cargo test -p gbase-bundle --lib ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/gbase_bundle-f0c7f55145f414c6)
+
+running 21 tests
+test tests::empty_leaves_merkle_is_empty_root ... ok
+test tests::s0_body_field_order_list ... ok
+test tests::s0_field_order_canary ... ok
+test tests::reencode_decoded_bundle_byte_identical ... ok
+test tests::r1_protocol_version_rejected ... ok
+test tests::prop_body_scale_roundtrip_byte_stable ... ok
+test tests::prop_bundle_envelope_roundtrip ... ok
+test tests::gateway_sig_invalid_rejected ... ok
+test tests::d18_unknown_challenge_id_rejected ... ok
+test tests::r2_block_hash_mismatch ... ok
+test tests::r3_metagraph_root_mismatch ... ok
+test tests::r5_shares_sum_invalid ... ok
+test tests::r4_emission_share_mismatch_d23 ... ok
+test tests::r6_measurements_digest_mismatch ... ok
+test tests::r9_uid_map_mismatch ... ok
+test tests::d18_foreign_challenge_key_rejected ... ok
+test tests::r7_merkle_root_mismatch ... ok
+test tests::r8_leaf_sig_invalid ... ok
+test tests::d24_missing_participant_rejected ... ok
+test tests::d24_noscore_covers_participant ... ok
+test tests::s1_happy_path_verify_ok ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+=== cargo clippy -p gbase-gateway -p gbase-bundle --all-targets -- -D warnings ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+
+=== loc-cap ===
+crates/gbase-bundle: 697 non-test LOC (cap 1500)
+crates/gbase-gateway: 1456 non-test LOC (cap 1500)
+bins/gbase-gateway: 33 non-test LOC (cap 1500)
+
+=== VERIFY scenarios ===
+S1: FakeChain + 3 leaves → verify_bundle OK, merkle independent match, final_vector == aggregate
+S2: re-seal identical bytes + signature
+S3: missing participant no NoScore → SealError::IncompleteParticipantSet, no publish
+S4: GET /v1/bundle/{epoch}, /v1/bundle/root/{root}, /v1/weights/latest
+Regression: proxy_rr + raw_weights + unit tests green

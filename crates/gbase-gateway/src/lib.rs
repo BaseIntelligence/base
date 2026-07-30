@@ -1,22 +1,24 @@
 //! Master-only gbase gateway (D3) with backend registry, reverse proxy, and
-//! signed raw-weight ingress (tasks 24–26).
+//! signed raw-weight ingress and epoch bundle seal/serve (tasks 24–27).
 //!
 //! Startup order is intentional and tested:
 //! 1. Resolve on-chain [`ChainClient::subnet_owner_hotkey`].
 //! 2. Compare to the configured gateway hotkey.
 //! 3. On mismatch: structured fatal log + [`GatewayError::MasterMismatch`]
 //!    (process exit code [`EXIT_MASTER_MISMATCH`]) **before any listener bind**.
-//! 4. On match: install telemetry, mount health + registry + weights + challenge
-//!    proxy, and serve. This process is the sole TLS owner (D20); ACME is task 42.
+//! 4. On match: install telemetry, mount health + registry + weights + bundles +
+//!    challenge proxy, and serve. This process is the sole TLS owner (D20); ACME is task 42.
 //!
 //! Backend registry is operational routing only (D18) — never signing keys.
 //! Raw-weight leaves are verified against the local owner-signed trust root.
+//! Epoch seal uses local trust-root shares (D23) and fails closed on incomplete sets (D24).
 #![forbid(unsafe_code)]
 
 mod api;
 mod app;
 mod proxy;
 mod registry;
+mod sealer;
 mod tls;
 mod weights;
 
@@ -38,6 +40,9 @@ pub use gbase_trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy, BPS
 pub use registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
     DEFAULT_FAILURE_THRESHOLD,
+};
+pub use sealer::{
+    seal_epoch, BundleStore, MemoryBundleStore, SealError, SealParams, SharedBundleStore,
 };
 pub use tls::TlsConfig;
 pub use weights::{
@@ -298,7 +303,30 @@ pub fn build_app_with(
     challenges: Arc<gbase_trustroot::ChallengesBody>,
     weights: SharedWeightStore,
 ) -> Result<Router, GatewayError> {
-    let state = GatewayState::with_parts(registry, challenges, weights)
+    build_app_with_bundles(
+        metrics,
+        registry,
+        tls,
+        challenges,
+        weights,
+        Arc::new(MemoryBundleStore::new()),
+    )
+}
+
+/// Full injection for seal/serve tests: trust root, weights, and bundle store.
+///
+/// # Errors
+///
+/// Telemetry or HTTP client construction failures.
+pub fn build_app_with_bundles(
+    metrics: metrics_exporter_prometheus::PrometheusHandle,
+    registry: Arc<Registry>,
+    tls: &TlsConfig,
+    challenges: Arc<gbase_trustroot::ChallengesBody>,
+    weights: SharedWeightStore,
+    bundles: SharedBundleStore,
+) -> Result<Router, GatewayError> {
+    let state = GatewayState::with_parts(registry, challenges, weights, bundles)
         .map_err(GatewayError::HttpClient)?;
     app::build_router(metrics, state, tls)
 }

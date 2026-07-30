@@ -11,6 +11,7 @@ mod error;
 mod merkle_util;
 mod sign;
 mod types;
+mod seal;
 mod verify;
 
 pub use error::BundleError;
@@ -26,6 +27,7 @@ pub use types::{
     LocalTrustRoot, MetagraphRow, NoScoreReasonCode, RawWeightBodyV1, ScoreOrAbsence,
     VerifiedBundle, ALGORITHM_VERSION, BODY_FIELD_ORDER, MAX_CHALLENGE_ID_LEN, PROTOCOL_VERSION,
 };
+pub use seal::{build_sealed_bundle, SealParams};
 pub use verify::{final_vectors_equal, verify_bundle};
 
 use parity_scale_codec::{Decode, Encode};

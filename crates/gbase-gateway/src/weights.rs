@@ -72,6 +72,9 @@ pub trait RawWeightStore: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// All rows for a given epoch (any challenge / miner).
+    fn list_for_epoch(&self, epoch: u64) -> Vec<RawWeightRow>;
 }
 
 /// Store insert failures.
@@ -123,6 +126,15 @@ impl RawWeightStore for MemoryRawWeightStore {
 
     fn len(&self) -> usize {
         self.rows.read().len()
+    }
+
+    fn list_for_epoch(&self, epoch: u64) -> Vec<RawWeightRow> {
+        self.rows
+            .read()
+            .values()
+            .filter(|r| r.epoch == epoch)
+            .cloned()
+            .collect()
     }
 }
 
