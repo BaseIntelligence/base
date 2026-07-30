@@ -48,6 +48,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-dispatch"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "agent-pack"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "aggregate"
 version = "0.1.0"
 dependencies = [
@@ -1095,6 +1109,13 @@ dependencies = [
  "tracing",
  "trustroot",
  "wiremock",
+]
+
+[[package]]
+name = "docker-engine"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
 ]
 
 [[package]]

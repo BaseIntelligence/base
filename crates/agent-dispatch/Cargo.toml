@@ -1,0 +1,15 @@
+[package]
+name = "agent-dispatch"
+description = "Orchestrator↔runner task-dispatch wire types and traits (skeleton; protocol lands later)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[lints]
+workspace = true

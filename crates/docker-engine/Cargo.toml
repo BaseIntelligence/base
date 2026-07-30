@@ -1,0 +1,15 @@
+[package]
+name = "docker-engine"
+description = "Allowlisted Docker Engine HTTP client shared by updater and agent runners (skeleton; extract from updater later)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[lints]
+workspace = true
