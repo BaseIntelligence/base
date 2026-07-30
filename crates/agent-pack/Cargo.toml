@@ -1,6 +1,6 @@
 [package]
 name = "agent-pack"
-description = "Harbor pack contract: model + stripped projection traits (skeleton; parsing lands later)"
+description = "Harbor pack model: parse task.toml, stable pack_digest, total stripped agent projection"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,15 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
