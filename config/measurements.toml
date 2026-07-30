@@ -1,0 +1,5 @@
+# Owner-signed measurements allowlist. EMPTY = fail-closed (every quote rejected).
+# Populated after real CVM fixtures in task 35.
+version = 1
+introduced_epoch = 0
+measurements = []
