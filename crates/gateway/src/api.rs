@@ -31,6 +31,16 @@ pub struct GatewayState {
     pub weights: SharedWeightStore,
     /// Sealed epoch bundles.
     pub bundles: SharedBundleStore,
+    /// Measurements digest used at seal (must match validator local root).
+    pub measurements_digest: [u8; 32],
+    /// Default netuid for admin seal.
+    pub seal_netuid: u16,
+    /// Owner hotkey for FakeChain seal context.
+    pub seal_owner_hotkey: [u8; 32],
+    /// Metagraph hotkeys (UID order) for seal; empty → owner only.
+    pub seal_hotkeys: Vec<Vec<u8>>,
+    /// Tip block used when seal body omits `block_b`.
+    pub seal_current_block: u64,
 }
 
 impl GatewayState {
@@ -59,6 +69,35 @@ impl GatewayState {
         weights: SharedWeightStore,
         bundles: SharedBundleStore,
     ) -> Result<Self, String> {
+        Self::with_parts_seal(
+            registry,
+            challenges,
+            weights,
+            bundles,
+            trustroot::measurements_digest(&trustroot::MeasurementsBody::default()),
+            1,
+            [0u8; 32],
+            Vec::new(),
+            100,
+        )
+    }
+
+    /// Full injection including seal FakeChain context.
+    ///
+    /// # Errors
+    ///
+    /// When the reqwest client cannot be built.
+    pub fn with_parts_seal(
+        registry: Arc<Registry>,
+        challenges: Arc<ChallengesBody>,
+        weights: SharedWeightStore,
+        bundles: SharedBundleStore,
+        measurements_digest: [u8; 32],
+        seal_netuid: u16,
+        seal_owner_hotkey: [u8; 32],
+        seal_hotkeys: Vec<Vec<u8>>,
+        seal_current_block: u64,
+    ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -69,6 +108,11 @@ impl GatewayState {
             challenges,
             weights,
             bundles,
+            measurements_digest,
+            seal_netuid,
+            seal_owner_hotkey,
+            seal_hotkeys,
+            seal_current_block,
         })
     }
 }

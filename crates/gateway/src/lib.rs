@@ -41,13 +41,14 @@ pub use registry::{
     DEFAULT_FAILURE_THRESHOLD,
 };
 pub use sealer::{
-    seal_epoch, BundleStore, MemoryBundleStore, SealError, SealParams, SharedBundleStore,
+    admin_seal_router, bundle_router, load_gateway_secret, seal_epoch, BundleStore,
+    MemoryBundleStore, SealError, SealParams, SealRequest, SealResponse, SharedBundleStore,
 };
 pub use tls::TlsConfig;
 pub use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy, BPS_DENOM};
 pub use weights::{
-    accept_raw_weight, MemoryRawWeightStore, RawWeightAccepted, RawWeightRequest, RawWeightRow,
-    RawWeightStore, ScoreOrAbsenceWire, SharedWeightStore, StoreError,
+    accept_raw_weight, weights_router, MemoryRawWeightStore, RawWeightAccepted, RawWeightRequest,
+    RawWeightRow, RawWeightStore, ScoreOrAbsenceWire, SharedWeightStore, StoreError,
 };
 
 /// Process exit code when configured hotkey ≠ on-chain `SubnetOwnerHotkey`.
@@ -66,6 +67,14 @@ pub mod keys {
     pub const FAIL_THRESHOLD: &str = "GBASE_GATEWAY_FAIL_THRESHOLD";
     /// Ejection cooldown seconds before re-admission (default 30).
     pub const COOLDOWN_SECS: &str = "GBASE_GATEWAY_COOLDOWN_SECS";
+    /// Owner-signed trust root directory (`challenges.toml` + `measurements.toml`).
+    pub const TRUST_ROOT_DIR: &str = "GBASE_TRUST_ROOT_DIR";
+    /// Comma-separated 64-hex hotkeys for FakeChain metagraph (UID order).
+    pub const FAKE_METAGRAPH_HOTKEYS: &str = "GBASE_FAKE_METAGRAPH_HOTKEYS";
+    /// Gateway bundle-signing mini-secret (64 hex).
+    pub const GATEWAY_SK: &str = "GBASE_GATEWAY_SK";
+    /// Path to gateway mini-secret (32 raw bytes or 64 hex).
+    pub const GATEWAY_SK_FILE: &str = "GBASE_GATEWAY_SK_FILE";
 
     pub use crate::tls::keys as tls;
 }
@@ -277,17 +286,125 @@ pub fn assert_master_only(
     Ok(())
 }
 
-/// Build the full application router (health + registry + weights + proxy) without binding.
+/// Resolve trust-root directory: env, then `./config`, then `/etc/gbase/config`.
+#[must_use]
+pub fn trust_root_dir() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var(keys::TRUST_ROOT_DIR) {
+        let pb = std::path::PathBuf::from(p);
+        if !pb.as_os_str().is_empty() {
+            return pb;
+        }
+    }
+    let cwd = std::path::PathBuf::from("config");
+    if cwd.join("challenges.toml").is_file() {
+        return cwd;
+    }
+    std::path::PathBuf::from("/etc/gbase/config")
+}
+
+/// Load owner-signed challenges + measurements digest from the trust-root dir.
 ///
 /// # Errors
 ///
-/// Telemetry or HTTP client construction failures.
+/// Missing dir or verify failure.
+pub fn load_production_trust_root(
+    rotation_epochs: u32,
+) -> Result<(Arc<trustroot::ChallengesBody>, [u8; 32]), GatewayError> {
+    let dir = trust_root_dir();
+    if !dir.is_dir() {
+        return Err(GatewayError::Config(format!(
+            "trust root dir missing: {} (set {})",
+            dir.display(),
+            keys::TRUST_ROOT_DIR
+        )));
+    }
+    let (ch, ms) = trustroot::load_config_dir(&dir, 0, rotation_epochs).map_err(|e| {
+        GatewayError::Config(format!("load_config_dir {}: {e}", dir.display()))
+    })?;
+    let primary_ch = ch.primary().map_err(|e| {
+        GatewayError::Config(format!("challenges primary: {e}"))
+    })?;
+    let primary_ms = ms.primary().map_err(|e| {
+        GatewayError::Config(format!("measurements primary: {e}"))
+    })?;
+    let digest = trustroot::measurements_digest(&primary_ms.body);
+    tracing::info!(
+        dir = %dir.display(),
+        challenges = primary_ch.body.challenges.len(),
+        measurements = primary_ms.body.entries.len(),
+        "loaded gateway trust root"
+    );
+    Ok((Arc::new(primary_ch.body.clone()), digest))
+}
+
+/// Parse `GBASE_FAKE_METAGRAPH_HOTKEYS` (comma-separated 64-hex). Empty → owner only.
+///
+/// # Errors
+///
+/// Bad hex encoding.
+pub fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, GatewayError> {
+    let Ok(raw) = std::env::var(keys::FAKE_METAGRAPH_HOTKEYS) else {
+        return Ok(vec![owner.to_vec()]);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(vec![owner.to_vec()]);
+    }
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let h = parse_hotkey_hex(part.trim())?;
+        out.push(h.to_vec());
+    }
+    if out.is_empty() {
+        out.push(owner.to_vec());
+    }
+    Ok(out)
+}
+
+/// Build the full application router (health + registry + weights + proxy) without binding.
+///
+/// Production path loads owner-signed challenges from [`trust_root_dir`].
+///
+/// # Errors
+///
+/// Telemetry, trust-root load, or HTTP client construction failures.
 pub fn build_app(
     metrics: metrics_exporter_prometheus::PrometheusHandle,
     registry: Arc<Registry>,
     tls: &TlsConfig,
 ) -> Result<Router, GatewayError> {
-    let state = GatewayState::new(registry).map_err(GatewayError::HttpClient)?;
+    // Prefer production trust root; fall back to empty only when dir missing in tests.
+    let (challenges, mdigest) = match load_production_trust_root(3) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway trust root unavailable; empty challenges");
+            (
+                Arc::new(trustroot::ChallengesBody::default()),
+                trustroot::measurements_digest(&trustroot::MeasurementsBody::default()),
+            )
+        }
+    };
+    let owner = std::env::var(keys::HOTKEY)
+        .ok()
+        .and_then(|s| parse_hotkey_hex(&s).ok())
+        .unwrap_or([0u8; 32]);
+    let hotkeys = parse_fake_metagraph_hotkeys(&owner).unwrap_or_else(|_| vec![owner.to_vec()]);
+    let netuid = std::env::var("GBASE_NETUID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1u16);
+    let state = GatewayState::with_parts_seal(
+        registry,
+        challenges,
+        Arc::new(MemoryRawWeightStore::new()),
+        Arc::new(MemoryBundleStore::new()),
+        mdigest,
+        netuid,
+        owner,
+        hotkeys,
+        10_000,
+    )
+    .map_err(GatewayError::HttpClient)?;
     app::build_router(metrics, state, tls)
 }
 

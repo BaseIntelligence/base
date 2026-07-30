@@ -4590,6 +4590,7 @@ dependencies = [
  "crosscheck",
  "crypto",
  "dissent",
+ "gateway",
  "hex",
  "parity-scale-codec",
  "reqwest 0.12.28",
@@ -4602,6 +4603,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trustroot",
+ "uuid",
  "wiremock",
 ]
 
@@ -4609,6 +4611,7 @@ dependencies = [
 name = "validator-bin"
 version = "0.1.0"
 dependencies = [
+ "bundle",
  "chain",
  "config",
  "db",

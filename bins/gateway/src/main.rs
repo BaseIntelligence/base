@@ -46,17 +46,22 @@ async fn main() -> ExitCode {
         }
         _ => {
             // fake_owner (default): owner hotkey == configured gateway hotkey.
+            let hotkeys = gateway::parse_fake_metagraph_hotkeys(&config.hotkey).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "bad GBASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
+                vec![config.hotkey.to_vec()]
+            });
             let fc = FakeChainConfig {
                 netuid: config.netuid,
                 owner_hotkey: config.hotkey.to_vec(),
-                // UID0 = owner for single-master metagraph smoke.
-                hotkeys: vec![config.hotkey.to_vec()],
+                hotkeys: hotkeys.clone(),
+                current_block: 10_000,
                 ..Default::default()
             };
             let chain = FakeChain::new(fc);
             tracing::info!(
                 backend = "fake_owner",
                 netuid = config.netuid,
+                metagraph_n = hotkeys.len(),
                 "gateway chain: FakeChain owner matches GBASE_GATEWAY_HOTKEY (cleartext e2e)"
             );
             run_with(config, &chain).await
