@@ -1,18 +1,23 @@
 # gbase Agent Challenge Specification
 
-**Status:** FROZEN (task 9 wave gate)  
-**Normative for:** `agent-challenge` service, `miner` deploy/certify, validator attestation integration  
+**Status:** FROZEN (task 16 re-freeze — scoring_version 2 / SWE Harbor packs)  
+**Prior freeze:** task 9 wave gate (scoring_version 1 / echo) — **superseded** by this document  
+**Normative for:** `agent-challenge` service, `miner` deploy/certify, miner runner (`gbase-agent`), validator attestation integration  
 **challenge_id:** `agent-v1`  
-**challenge_scoring_version:** `1`  
+**challenge_scoring_version:** `2`  
 **Bundle leaf protocol:** [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) **`protocol_version = 1`**
 
-This file is the single source of truth for the first gbase challenge: topology, wire protocol between the challenge service and the miner CVM, the offline-testable scoring rule, challenge key custody, D24 participant coverage, and the Phala compose image/port contract consumed by tasks 37/38.
+This file is the single source of truth for the gbase agent challenge at **scoring_version 2**: topology, pack-based task dispatch, the `model.patch` contract, operator-side held-out grading, pure integer scoring, work receipts, challenge key custody, D24 participant coverage, and the Phala compose image/port contract (including the measured miner socket-proxy).
 
 Where this document and any other source disagree on **agent-challenge behaviour**, **this document wins**.  
 Where this document and [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) disagree on **leaf bytes, signatures, aggregation, or bundle verify**, **BUNDLE_SPEC wins**.
 
 Checklist map: [`AGENT_CHALLENGE_CHECKLIST.md`](./AGENT_CHALLENGE_CHECKLIST.md).  
 CI gate: `cargo run -p xtask -- agent-challenge-check`.
+
+### Re-freeze gate note (task 16)
+
+Task 9 froze scoring_version **1** (SHA-256 echo answer + latency decay). Owner decision Q2=B bumps the same `challenge_id` (`agent-v1`) to scoring_version **2** (Harbor SWE packs + pure correctness). This rewrite is an intentional freeze invalidation + re-freeze: checklist pins and `xtask agent-challenge-check` update **in the same commit**. Bundle `protocol_version` remains **1** — do not confuse the two version axes.
 
 ---
 
@@ -26,11 +31,24 @@ CI gate: `cargo run -p xtask -- agent-challenge-check`.
 | `scale(T)` | Canonical SCALE encoding |
 | `sha256` / `sha512` | SHA-256 / SHA-512 digests |
 | `‖` | Byte concatenation |
-| HTTP JSON | Allowed **only** on the challenge↔miner CVM hop (§4). Forbidden in bundle leaves (BUNDLE_SPEC §1) |
+| HTTP JSON | Allowed on challenge↔miner hops (§4). Forbidden in bundle leaves (BUNDLE_SPEC §1) |
 
 Hotkeys inside SCALE structures are `[u8; 32]` raw public keys, not SS58 strings.
 
-Cross-reference: leaf `ScoreOrAbsence`, `NoScoreReasonCode`, and `gbase-rawweight-v1` signing are defined in BUNDLE_SPEC §3. This document defines **when** each reason is chosen and **how** `Score { value: u64 }` is computed.
+Cross-reference: leaf `ScoreOrAbsence`, `NoScoreReasonCode`, and `gbase-rawweight-v1` signing are defined in BUNDLE_SPEC §3. This document defines **when** each reason is chosen and **how** `Score { value: u64 }` is computed under scoring_version 2.
+
+### 0.1 Invariants preserved across the version bump (I1–I8)
+
+| id | invariant |
+|----|-----------|
+| I1 | Same-epoch `Verified` attestation gates `Score`; else `NoScore{AttestationNotVerified}` (3) |
+| I2 | Exactly one leaf per expected `(challenge_id, hotkey)` per epoch; silence is a bug (D24) |
+| I3 | No floating point in the scorer |
+| I4 | Challenge signing key never inside the miner CVM (D18) |
+| I5 | Validators verify and recompute; never re-score agents (D19) |
+| I6 | Merkle root absent from the on-chain weight payload (D5) |
+| I7 | Expected set `E` is sealed at `block_B`; late registrations wait for the next epoch |
+| I8 | Bundle `protocol_version` stays **1** |
 
 ---
 
@@ -40,21 +58,26 @@ Three distinct trust domains. Do not collapse them.
 
 ```text
 Operator / master host (compose profile master)
-  postgres · gateway · validator · updater · socket-proxy
+  postgres · gateway · validator · updater · socket-proxy (operator Docker API)
   + agent-challenge service (registered challenge backend)
            | HTTPS (gateway TLS terminates, D20)
            | proxy path /challenge/agent-v1/*
            v
-Challenge service process
+Challenge service process (orchestrator)
   - challenge signing secret (mounted file only)
   - expected set from local trust root + metagraph (D24)
-  - task issue, score, sign leaves, POST /v1/weights/raw
+  - pack catalog + select_pack(epoch, hotkey)
+  - dispatch stripped descriptors; collect model.patch + work receipt
+  - HarborVerifier (held-out tests) via operator socket-proxy
+  - score, sign leaves, POST /v1/weights/raw
            | HTTPS to miner public URL
            v
 Miner Phala TDX CVM (measured app-compose)
-  - agent HTTP server
-  - report_data builder (D10) inside measured image
-  - quote + event-log for certify
+  - gbase-agent runner HTTP server (:8080)
+  - measured socket-proxy (Docker Engine allowlist; see §9.1)
+  - pack environment containers (agent workload only)
+  - CVM-local work-receipt key (not the challenge sk)
+  - report_data builder (D10) + attest-helper (:8081)
   - NO challenge signing key
            | certify quote -> validator
            v
@@ -66,16 +89,18 @@ Validator
 
 | Component | Host | TDX-measured? | Holds challenge sk? | Signs leaves? |
 |-----------|------|---------------|---------------------|---------------|
-| Miner agent HTTP | Miner Phala CVM | **Yes** | No | No |
+| Miner agent runner | Miner Phala CVM | **Yes** | No | No (signs **work receipt** only) |
+| Miner socket-proxy | Miner Phala CVM | **Yes** (in compose-hash) | No | No |
 | report_data + quote path | Miner Phala CVM | **Yes** | No | No |
-| Challenge service | Operator backend (gateway-registered) | No | **Yes** (file) | **Yes** |
+| Challenge service | Operator backend | No | **Yes** (file) | **Yes** (leaves) |
+| Operator HarborVerifier | Operator host via socket-proxy | No | No | No |
 | Gateway | Master only (D3) | No | No (routing DB only, D18) | Bundle only |
 | Validator | Validator host | No | No | Dissent / peer-root |
 
 **Normative split:**
 
-1. **Miner CVM** proves which measured code answered and liveness this epoch.  
-2. **Challenge service** computes numeric scores and signs leaves.  
+1. **Miner CVM** proves which measured code ran, executes packs behind a measured socket-proxy, and returns `model.patch` plus a work receipt.  
+2. **Challenge service** selects packs, grades held-out tests operator-side, computes numeric scores, and signs leaves.  
 3. **Validator** enforces attestation policy and bundle cryptography. It does **not** re-derive scores from agent transcripts (challenge honesty is out of scope per D19).
 
 ---
@@ -85,12 +110,19 @@ Validator
 | Field | Value |
 |-------|-------|
 | `challenge_id` | UTF-8 `agent-v1` (SCALE `Bytes`) |
-| `challenge_scoring_version` | `u16 = 1` |
+| `challenge_scoring_version` | `u16 = 2` |
 | Bundle `protocol_version` | `1` ([`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md)) |
 | Trust-root row | Owner-signed `config/challenges.toml` entry: id, public key, emission bps, `ParticipantPolicy` |
 
-Bump `challenge_scoring_version` when task generation, scoring math, score-affecting HTTP schema, attestation precondition, or compose service/port/image contract changes.  
-Leaf SCALE layout changes go through BUNDLE_SPEC `protocol_version`.
+Bump `challenge_scoring_version` when task generation, scoring math, score-affecting HTTP schema, attestation precondition, pack selection, or compose service/port/image contract changes.  
+Leaf SCALE layout changes go through BUNDLE_SPEC `protocol_version` (still **1** for this freeze).
+
+### 2.1 Historical scoring_version 1 (retired)
+
+scoring_version **1** used a pure echo answer  
+`answer_digest = sha256(b"gbase-agent-answer-v1" ‖ task_blob)`  
+and integer latency decay with historical constants `SOFT_MS = 2_000` and `HARD_MS = 10_000`.  
+Those constants are **not** live scoring inputs under version 2. Offline code may retain v1 digest helpers solely for golden regression of the retired formulas.
 
 ---
 
@@ -131,9 +163,15 @@ report_data = SHA512(
 
 The challenge service reads attestation outcomes from its configured control-plane source (shared DB or authenticated internal API). It MUST NOT invent `Verified`. If the channel is unavailable at scoring time, treat as Missing → `AttestationNotVerified`.
 
-### 3.4 Non-claims
+### 3.4 What v2 attestation does **not** prove
 
-Attestation does not prove env secret values (D11), challenge score honesty, or owner honesty (D19).
+Attestation proves **which measured code** answered a **fresh, bound** challenge for this epoch. It does **not** prove:
+
+- env secret values (D11);
+- challenge score honesty or owner honesty (D19);
+- that `model.patch` is free of external cheating (public PR leakage, open egress);
+- that the operator-side Harbor grade is fair (operator is inside the D19 trust boundary);
+- that a work receipt implies a correct solve — receipts bind identity of the patch bytes, not reward.
 
 ---
 
@@ -141,81 +179,88 @@ Attestation does not prove env secret values (D11), challenge score honesty, or 
 
 Transport: HTTPS. `Content-Type: application/json; charset=utf-8`.
 
+Two JSON surfaces coexist:
+
+1. **Dispatch** (`gbase-agent-dispatch-v1`) — orchestrator ↔ runner task descriptor / result (normative for scoring_version 2).  
+2. **Legacy task envelope** (`gbase-agent-task-v1`) — retained only where older probes still speak it; live scoring uses dispatch + operator grade.
+
 ### 4.1 Miner endpoints (public base URL)
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/healthz` | Liveness; body `ok` |
 | `GET` | `/readyz` | Ready for tasks |
-| `POST` | `/v1/task` | Execute one task (scoring path) |
-| `GET` | `/v1/quote` | Certify path (task 38); not used for scoring |
+| `GET` | `/v1/capacity` | Effective `max_concurrency` and current load |
+| `POST` | `/v1/task` | Accept one dispatch descriptor |
+| `GET` | `/v1/task/{id}` | Poll status; when complete, `model.patch` + receipt |
+| `GET` | `/v1/quote` | Certify path; not used for scoring |
 
-### 4.2 `POST /v1/task` request
+### 4.2 Dispatch descriptor (`TaskDescriptorV1`)
 
 ```json
 {
-  "protocol": "gbase-agent-task-v1",
+  "protocol": "gbase-agent-dispatch-v1",
   "challenge_id": "agent-v1",
-  "challenge_scoring_version": 1,
-  "netuid": 1,
+  "scoring_version": 2,
   "epoch": 42,
   "miner_hotkey_hex": "<64 lowercase hex>",
-  "task_id_hex": "<64 lowercase hex>",
-  "task_blob_hex": "<64 lowercase hex>",
+  "pack_id": "<catalog pack id>",
   "deadline_unix_ms": 0
 }
 ```
 
 | Field | Rule |
 |-------|------|
-| `protocol` | Exactly `gbase-agent-task-v1` |
+| `protocol` | Exactly `gbase-agent-dispatch-v1` |
 | `challenge_id` | Exactly `agent-v1` |
-| `challenge_scoring_version` | `1` |
-| `miner_hotkey_hex` | Must match CVM configured hotkey |
-| `task_id_hex` / `task_blob_hex` | From §5.2 |
-| `deadline_unix_ms` | Absolute deadline; miner SHOULD stop after |
+| `scoring_version` | `2` |
+| `pack_id` | From §5.2 `select_pack` |
+| `deadline_unix_ms` | Absolute deadline; runner MUST stop after (R1) |
 
-### 4.3 `POST /v1/task` success response (HTTP 200)
+The descriptor carries a **stripped** pack projection only: instruction + environment image digest / base commit metadata. It MUST NOT include `solution/`, `tests/test.patch`, or `grader.py` (anti-cheat).
+
+### 4.3 Dispatch result (`TaskResultV1`)
 
 ```json
 {
-  "protocol": "gbase-agent-task-v1",
+  "protocol": "gbase-agent-dispatch-v1",
   "challenge_id": "agent-v1",
+  "scoring_version": 2,
   "epoch": 42,
   "miner_hotkey_hex": "<64 hex>",
-  "task_id_hex": "<64 hex>",
-  "answer_digest_hex": "<64 hex>",
-  "worker_ms": 12,
-  "agent_version": "1"
+  "pack_id": "<pack id>",
+  "status": "completed",
+  "model_patch": "diff --git ...",
+  "patch_sha256_hex": "<64 hex>",
+  "receipt_sig_hex": "<128 hex>"
 }
 ```
 
 | Field | Rule |
 |-------|------|
-| `answer_digest_hex` | Hex of `sha256(answer_bytes)` per §5.3 |
-| `worker_ms` | Miner-reported; **ignored for scoring**. Challenge uses its own wall clock (§5.4) |
-| `agent_version` | Exactly `"1"` for scoring_version 1 |
+| `status` | `completed` \| `timed_out` \| `failed` |
+| `model_patch` | Unified diff text when produced; omitted/empty on timeout |
+| `patch_sha256_hex` | Hex of `sha256(model.patch bytes)`; zero digest when no patch |
+| `receipt_sig_hex` | sr25519 over work-receipt body (§5.6) |
 
-### 4.4 Error map
+### 4.4 Error map (challenge↔miner hop)
 
 | Outcome | `NoScoreReasonCode` |
 |---------|---------------------|
 | HTTP 400 / 403 / schema fail / hotkey mismatch | `InvalidResponse` (2) |
 | HTTP 500 / `agent_internal` | `MinerError` (4) |
-| 503 exhausted / transport fail / deadline | `Timeout` (1) |
+| 503 exhausted / transport fail / epoch deadline | `Timeout` (1) |
 | Rate limit (HTTP 429) | `RateLimited` (5) |
 | Challenge-side fault after retries exhausted | `ChallengeInternal` (6) still MUST cover participant |
 
-### 4.5 Timing constants
+### 4.5 Timing constants (protocol, not latency scoring)
 
 ```text
-SOFT_MS      = 2_000
-HARD_MS      = 10_000
 CONNECT_MS   = 3_000
 MAX_ATTEMPTS = 2
 ```
 
-`duration_ms` is challenge-side wall time of the **successful** attempt, or time to final failure. Do not sum retry attempts for latency credit.
+`duration_ms` (challenge-side wall time) is **informational only** under scoring_version 2. It does **not** decay `Score`. Epoch deadline is a hard `Timeout` boundary (R1), not a soft/hard latency lattice.
 
 ### 4.6 Submission idempotency
 
@@ -224,7 +269,7 @@ Gateway `POST /v1/weights/raw` is idempotent on that key. Challenge retries 5xx;
 
 ---
 
-## 5. Score meaning and scoring rule (`challenge_scoring_version = 1`)
+## 5. Score meaning and scoring rule (`challenge_scoring_version = 2`)
 
 ### 5.1 Meaning
 
@@ -235,38 +280,72 @@ Gateway `POST /v1/weights/raw` is idempotent on that key. Challenge retries 5xx;
 | Ordering | Higher is better |
 | Range | `0 ..= SCORE_MAX` |
 | `SCORE_MAX` | `1_000_000` |
-| Zero score | Valid `Score(0)` means attempted and failed correctness (or zero latency credit at HARD boundary) |
+| Correct solve (reward 1) | `Score(SCORE_MAX)` |
+| Incorrect / apply-fail / tests-fail (reward 0) | `Score(0)` |
 | `NoScore` | Signed absence; aggregation later treats raw as 0 **after** D24 completeness |
+| All-zero epoch | Production aggregation uses `PARTICIPATION_FLOOR = false` → empty final vector / no-submit (BUNDLE_SPEC §6.5) |
 
-### 5.2 Task generation (pure, offline)
+### 5.2 Pack selection (R1 cadence)
+
+**Exactly one deterministically selected pack per miner per epoch.**
 
 ```text
-task_id = sha256(
-  b"gbase-agent-task-id-v1" ‖
+// catalog: ordered PackId slice, identical across challenge replicas
+// n = catalog.len(); n == 0 → EmptyCatalog (operator fault → ChallengeInternal leaves)
+
+digest = sha256(b"gbase-agent-pack-select-v1" ‖ miner_hotkey)
+seed   = u64::from_le_bytes(digest[0..8])   // little-endian
+index  = seed.wrapping_add(epoch) % (n as u64)
+pack_id = catalog[index]
+```
+
+Domain tag: `gbase-agent-pack-select-v1`. No RNG. No I/O. No wall clock.
+
+**R1 deadline:** hard stop at approximately **60% of the epoch** (testnet tempo ≈ 72 min → ~43 min). Unfinished work → `NoScore(Timeout)`. No multi-pack cross-epoch carry-over in this freeze.
+
+### 5.3 Task identity formulas (pure, offline, v2)
+
+```text
+task_id_v2 = sha256(
+  b"gbase-agent-task-id-v2" ‖
   scale(netuid: u16) ‖
   scale(epoch: u64) ‖
-  miner_hotkey: [u8; 32]
+  miner_hotkey: [u8; 32] ‖
+  scale(pack_id: Vec<u8>) ‖   // UTF-8 pack id bytes
+  scale(scoring_version: u16) // 2
 )
 
-task_blob = sha256(
-  b"gbase-agent-task-blob-v1" ‖
-  task_id ‖
-  scale(challenge_scoring_version: u16)   // 1
+task_blob_v2 = sha256(
+  b"gbase-agent-task-blob-v2" ‖
+  task_id_v2 ‖
+  scale(scoring_version: u16) ‖
+  scale(pack_id: Vec<u8>)
+)
+
+answer_digest_v2 = sha256(
+  b"gbase-agent-answer-v2" ‖
+  model_patch                 // raw returned model.patch bytes
 )
 ```
 
-No RNG. No I/O. Fixtures fix `(netuid, epoch, miner_hotkey)` only.
+Domain tags are distinct from v1, from `gbase-agent-work-receipt-v1`, and from `gbase-attest-v1`.  
+`answer_digest_v2` is **not** equal to untagged `sha256(model.patch)` (receipt `patch_sha256`).
 
-### 5.3 Expected answer (pure, offline)
+### 5.4 Operator-side grading (`HarborVerifier`)
 
-Honest agent:
+The operator runs the pack's held-out `tests/` harness in a digest-pinned container through `docker_engine::AllowlistClient` + verifier allowlist (`HarborVerifier`).
 
-```text
-answer_bytes  = b"gbase-agent-answer-v1" ‖ task_blob
-answer_digest = sha256(answer_bytes)
-```
+| Rule | Requirement |
+|------|-------------|
+| Held-out bytes | Stay on the operator host; never projected into agent-facing types |
+| Resolve (reward 1) | Every F2P **and** every P2P node passes |
+| Dual-truth | `solution.patch` → reward 1; empty patch → reward 0 |
+| Default timeout | pack `verifier.timeout_sec` or 1800 s |
+| Docker path | Operator `socket-proxy` only — no raw `/var/run/docker.sock` on long-lived challenge process |
 
-### 5.4 Scoring function (pure, integer-only)
+Binary reward maps to the score lattice via §5.5 / §7.3.
+
+### 5.5 Scoring function (pure, integer-only, correctness-only)
 
 ```text
 function score_miner(...) -> ScoreOrAbsence:
@@ -274,7 +353,9 @@ function score_miner(...) -> ScoreOrAbsence:
   if attestation != Verified:
     return NoScore(AttestationNotVerified)        // 3
 
-  if terminal timeout / transport exhausted:
+  // duration_ms intentionally unused — no latency decay in v2
+
+  if terminal timeout / transport exhausted / R1 deadline:
     return NoScore(Timeout)                       // 1
   if miner HTTP 500 / agent_internal:
     return NoScore(MinerError)                     // 4
@@ -282,32 +363,41 @@ function score_miner(...) -> ScoreOrAbsence:
     return NoScore(InvalidResponse)               // 2
   if HTTP 429 exhausted:
     return NoScore(RateLimited)                   // 5
+  if challenge / verifier operator fault exhausted:
+    return NoScore(ChallengeInternal)             // 6
 
-  // HTTP 200 body present
-  if resp fields disagree with request epoch/challenge_id/task_id:
-    return NoScore(InvalidResponse)
-  if resp.agent_version != "1":
-    return NoScore(InvalidResponse)
-
-  expected = sha256(b"gbase-agent-answer-v1" ‖ task_blob)
-  if resp.answer_digest != expected:
-    return Score(0)
-
-  if duration_ms > HARD_MS:
-    return NoScore(Timeout)
-  if duration_ms <= SOFT_MS:
+  // After HarborVerifier (or pure fixture path with expected_model_patch):
+  if reward == 1 OR answer_digest_v2(model.patch) == expected:
     return Score(SCORE_MAX)                       // 1_000_000
-
-  // Linear decay on integer lattice:
-  // value = floor( SCORE_MAX * (HARD_MS - duration_ms) / (HARD_MS - SOFT_MS) )
-  span = HARD_MS - SOFT_MS                        // 8000
-  value = (SCORE_MAX * (HARD_MS - duration_ms)) / span
-  return Score(value as u64)
+  else:
+    return Score(0)
 ```
 
-Bare floating point is forbidden in the scorer implementation (same spirit as D8 for this pure function).
+Bare floating point is forbidden in the scorer implementation (I3).
 
-### 5.5 Worked fixture F1 (task 36 MUST match)
+### 5.6 Work receipt (R3)
+
+Signed **inside** the miner CVM by a key that exists only in the measured compose (not the challenge sk; not required in the trust-root ceremony for validators).
+
+Domain: `gbase-agent-work-receipt-v1` (`crypto::domain::WORK_RECEIPT`).
+
+```text
+WorkReceiptBodyV1 {
+  challenge_id: Vec<u8>,       // b"agent-v1"
+  scoring_version: u16,        // 2
+  epoch: u64,
+  miner_hotkey: [u8; 32],
+  pack_id: Vec<u8>,
+  patch_sha256: [u8; 32],      // untagged sha256(model.patch)
+}
+sig = sr25519_sign(cvm_receipt_sk, tag WORK_RECEIPT ‖ scale(body))
+```
+
+The **challenge service** verifies receipts against the receipt public key published in the measured miner compose. Validators do not need this key (D19 — no re-score).
+
+A valid receipt proves the measured runner attested those patch bytes for that pack/epoch. It does **not** prove reward 1.
+
+### 5.7 Worked fixture F1 v2 (offline MUST match)
 
 **Inputs:**
 
@@ -315,62 +405,66 @@ Bare floating point is forbidden in the scorer implementation (same spirit as D8
 netuid       = 1
 epoch        = 7
 miner_hotkey = 32 bytes of 0x11
+pack_id      = b"pack-fixture-001"
+model.patch  = b"diff --git a/x b/x\n+hello\n"
 attestation  = Verified
-duration_ms  = 2000
-answer       = correct
+scoring_version = 2
 ```
 
 **Derived digests (pinned):**
 
 ```text
-task_id_hex =
-  4a590b2abf87da6bccd97d8fbe5d2e774bdbda3ad421119688010537be2b31ec
+task_id_v2_hex =
+  b1c18e56abe993e20e8dadcb72c7a7cadee8975e5741d15d1acb37f5ea367644
 
-task_blob_hex =
-  8c5430ceb95b9e422026baf2eaddb4c9c723923c6353164fe9b0905a47f9a29f
+task_blob_v2_hex =
+  c563caca4fa3a7c5e834a88b0dae9eb1ef87f90fcddc9973e38d2730b347c441
 
-answer_digest_hex =
-  83180b08e05630496531a158d174ce69ba857d854d8692087947706c159a487c
+answer_digest_v2_hex =
+  703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d
 ```
 
 **Result:** `Score { value: 1_000_000 }`
 
-### 5.6 Additional fixture table (task 36)
+### 5.8 Additional fixture table (v2 successors of F1–F11)
 
-Same `netuid=1`, `epoch=7`, `miner_hotkey=[0x11;32]`, correct answer, `Verified`, unless noted:
+Same `netuid=1`, `epoch=7`, `pack_id=pack-fixture-001`, fixture patch, unless noted:
 
 | Fixture id | Variation | Expected leaf |
 |------------|-----------|---------------|
-| F1 | `duration_ms=2000` | `Score(1_000_000)` |
-| F2 | `duration_ms=0` | `Score(1_000_000)` |
-| F3 | `duration_ms=6000` | `Score(500_000)` |
-| F4 | `duration_ms=10000` | `Score(0)` |
-| F5 | `duration_ms=10001` | `NoScore(Timeout)` |
-| F6 | wrong `answer_digest` | `Score(0)` |
+| F1 | correct patch, `Verified` | `Score(1_000_000)` |
+| F2 | `duration_ms=0`, correct | `Score(1_000_000)` (latency ignored) |
+| F3 | `duration_ms=6000`, correct | `Score(1_000_000)` (no half-credit) |
+| F4 | `duration_ms=10000`, correct | `Score(1_000_000)` |
+| F5 | `duration_ms=10001` + `Http200` correct | `Score(1_000_000)`; Timeout only via `CallOutcome::Timeout` |
+| F6 | wrong `answer_digest` / reward 0 | `Score(0)` |
 | F7 | attestation `Parked` | `NoScore(AttestationNotVerified)` |
 | F8 | attestation `Missing` | `NoScore(AttestationNotVerified)` |
 | F9 | attestation `Rejected` | `NoScore(AttestationNotVerified)` |
 | F10 | HTTP schema fail | `NoScore(InvalidResponse)` |
-| F11 | second miner `hotkey=[0x22;32]`, correct, `duration_ms=2000` | `Score(1_000_000)` with digests below |
+| F11 | second miner `hotkey=[0x22;32]`, correct | `Score(1_000_000)` with digests below |
 
 **F11 digests:**
 
 ```text
-task_id_hex =
-  d954306fba3943a86bb69aedfd08f2bca850eb2adabaaf5efe2ad2728dbf3412
-answer_digest_hex =
-  05157d001bb1ec9ef5acc7140d0221141d2fbc14a830ce32893793f30470c0aa
+task_id_v2_hex =
+  b99762643336fbf7abeb2c07085ff3d64ee1fd8d1c98b149c57a36ec0396228f
+answer_digest_v2_hex =
+  703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d
+  // same patch → same answer_digest_v2 (patch-only preimage)
 ```
 
-### 5.7 Reference assertions (task 36 offline tests)
+### 5.9 Reference assertions (offline tests)
 
 ```text
 assert score(F1) == Score(1_000_000)
-assert score(F3) == Score(500_000)
-assert score(F5) == NoScore(Timeout)
+assert score(F3) == Score(1_000_000)   // not 500_000
+assert score(F5 Http200) == Score(1_000_000)
+assert score(Timeout outcome) == NoScore(Timeout)
 assert score(F7) == NoScore(AttestationNotVerified)
-assert hex(task_id(F1)) == pinned task_id_hex
-assert hex(answer_digest(F1)) == pinned answer_digest_hex
+assert hex(task_id_v2(F1)) == pinned task_id_v2_hex
+assert hex(answer_digest_v2(F1)) == pinned answer_digest_v2_hex
+assert v1 echo answer does not validate as v2 correct
 ```
 
 ---
@@ -385,8 +479,9 @@ assert hex(answer_digest(F1)) == pinned answer_digest_hex
 | Runtime load | Challenge process reads secret from file path env `GBASE_CHALLENGE_SK_FILE` |
 | Gateway DB | **Must not** store challenge secrets or be consulted for leaf provenance (D18) |
 | Signing domain | `gbase-rawweight-v1` over `RawWeightBodyV1` (BUNDLE_SPEC §3.4) |
-| Rotation | D21 dual-accept window via trust-root release; keygen via `trustroot keygen` (task 18) |
+| Rotation | D21 dual-accept window via trust-root release; keygen via `trustroot keygen` |
 | Compromise | Rotate trust root; D19 still applies until rotation lands |
+| Work-receipt key | Separate CVM-local key; **not** the challenge sk; published in measured compose |
 
 Validators verify leaf signatures **only** against their **local** trust-root copy.
 
@@ -422,17 +517,35 @@ Evaluate in order; first match wins:
 | 4 | Rate limited | `RateLimited` (5) |
 | 5 | Schema / bad response | `InvalidResponse` (2) |
 | 6 | Miner explicit 500 | `MinerError` (4) |
-| 7 | Challenge internal fault | `ChallengeInternal` (6) |
+| 7 | Challenge / verifier operator fault | `ChallengeInternal` (6) |
 | 8 | Else scored | `Score(value)` per §5 |
+
+### 7.4 Verifier-fault matrix (`map_verify_error`)
+
+Operator-side Harbor faults must never silence a hotkey in `E` and must never be charged as miner solve failure. Park / `AttestationNotVerified` is D13 attestation-only — **not** reused for verifier outages.
+
+| `VerifyError` | `ScoreOrAbsence` | Attribution |
+|---------------|------------------|-------------|
+| `Timeout` (verifier wall) | `NoScore(ChallengeInternal)` | operator |
+| `Docker` (crash, pull, API) | `NoScore(ChallengeInternal)` | operator |
+| `MalformedOutput` (junit/reward parse) | `NoScore(ChallengeInternal)` | operator |
+| `Staging` | `NoScore(ChallengeInternal)` | operator |
+| `MissingHeldOut` | `NoScore(ChallengeInternal)` | operator |
+| `ApplyFailed` | `Score { value: 0 }` | miner |
+| `RewardZero` | `Score { value: 0 }` | miner |
+| `Reward(1)` | `Score { SCORE_MAX }` | miner solve |
+| `Reward(0)` | `Score { 0 }` | miner solve |
+
+Operator faults may retry at most `MAX_VERIFY_RETRIES = 2` (total attempts `1 + 2`) for retryable classes only; then emit `ChallengeInternal`. Never unbounded retries past seal.
 
 **Forbidden:**
 
 | Code | Name | Rule |
 |------|------|------|
-| 0 | `NotAttempted` | MUST NOT skip work for an `h ∈ E` under normal operation. A leaf is still required if ever used |
-| 7 | `PolicySkip` | MUST NOT shrink `E` (BUNDLE_SPEC §3.3.1). Coverage comes from owner policy + metagraph only |
+| 0 | `NotAttempted` | MUST NOT skip work for an `h ∈ E` under normal operation |
+| 7 | `PolicySkip` | MUST NOT shrink `E` (BUNDLE_SPEC §3.3.1) |
 
-### 7.4 Default trust-root policy
+### 7.5 Default trust-root policy
 
 Initial testnet policy is whatever the signed `challenges.toml` carries (typically `AllMetagraphHotkeys` or `StakeAtLeast`). Emission bps are D23/trust-root, not defined here.
 
@@ -464,10 +577,22 @@ Gateway verifies against **its** local trust root (defence in depth) and appends
 
 | Service name | Role | Container port | Published |
 |--------------|------|----------------|-----------|
-| `agent` | HTTP agent (§4) | `8080` | Phala ingress → 8080 |
+| `agent` | HTTP runner (§4) | `8080` | Phala ingress → 8080 |
+| `socket-proxy` | Allowlisted Docker Engine API for pack env containers | loopback inside CVM | **Not** public |
 | `attest-helper` | Builds `report_data`, exports quote + event log for certify | `8081` (loopback inside CVM) | **Not** public |
 
-No other long-lived services required for v1. No docker.sock. No `:latest` tags.
+#### 9.1.1 Measured socket-proxy supersedes v1 "No docker.sock"
+
+**scoring_version 1** stated: "No docker.sock. No `:latest` tags."
+
+**scoring_version 2 supersedes the docker.sock ban for the miner CVM only**, with explicit reason:
+
+- SWE Harbor packs require nested containers (environment image) on the miner host (Q1=A).  
+- The runner reaches Docker **only** through a method-allowlisted `socket-proxy` declared in the CVM `app-compose`, so the proxy is covered by compose-hash and RTMR3 (measured path).  
+- Raw `/var/run/docker.sock` MUST NOT be mounted into the long-lived `agent` container.  
+- On the **operator** side, the host socket remains solely on the operator `socket-proxy` (read-only); no raw sock on `agent-challenge`.
+
+**Still forbidden everywhere:** `:latest` tags.
 
 ### 9.2 Image contract
 
@@ -479,6 +604,8 @@ images:
   attest-helper:
     repository: ghcr.io/baseintelligence/gbase-attest-helper
     // digest-pinned only
+  socket-proxy:
+    // digest-pinned allowlisted proxy image (miner CVM + operator)
 ```
 
 | Rule | Requirement |
@@ -488,16 +615,17 @@ images:
 | Secret values | **Files** under `/run/gbase/` (or equivalent), never env values |
 | `LAUNCH_TOKEN` | Hash appears in measured compose (D11); raw token only as file if needed |
 | compose-hash | Canonical JSON → SHA-256 per `compose-hash`; must match RTMR3 event and `mr_config_id` prefix |
+| Work-receipt pubkey | Published in measured compose for challenge verification |
 
-### 9.3 `miner deploy` (task 37) obligations
+### 9.3 `miner deploy` obligations
 
-1. Render compose from the template that satisfies §9.1–§9.2.  
+1. Render compose from the template that satisfies §9.1–§9.2 (including measured socket-proxy).  
 2. Compute compose-hash **offline**; print it.  
 3. `phala deploy` (or `--no-deploy` for hash-only).  
 4. Miner funds their own Phala account (R3).  
 5. Register public base URL with gateway routing for `agent-v1`.
 
-### 9.4 `miner certify` (task 38) obligations
+### 9.4 `miner certify` obligations
 
 1. Request fresh nonce from validator.  
 2. Inside CVM, build `report_data` per §3.2.  
@@ -513,20 +641,22 @@ images:
 | Secrets | `GBASE_CHALLENGE_SK_FILE` mount 0600 |
 | Trust root | Local `config/challenges.toml` path |
 | Health | `/healthz`, `/readyz` on 8090 |
+| Docker | Operator socket-proxy only (HarborVerifier) |
 
 Gateway remains the only public TLS terminator (D20).
 
 ---
 
-## 10. Challenge trait shape (task 36 implementers)
+## 10. Challenge trait shape (implementers)
 
 Informative surface (behaviour must match this doc):
 
 ```text
 trait Challenge {
   fn challenge_id(&self) -> &str;                    // "agent-v1"
-  fn scoring_version(&self) -> u16;                  // 1
+  fn scoring_version(&self) -> u16;                  // 2
   fn expected_set(&self, ctx: &EpochCtx) -> BTreeSet<Hotkey>;
+  fn select_pack(&self, epoch, hotkey) -> PackId;
   fn score_one(&self, ctx: &EpochCtx, miner: Hotkey)
       -> ScoreOrAbsence;
   fn score_epoch(&self, ctx: &EpochCtx)
@@ -542,25 +672,47 @@ Prism (out of scope) must remain accommodable without breaking `agent-v1` leaf b
 
 ## 11. Security claim boundary
 
-D19 applies unchanged:
+D19 applies unchanged (see [`THREAT_MODEL.md`](./THREAT_MODEL.md) §1 — byte-identical freeze):
 
 - Valid leaf signatures prove the **challenge key** attested those scores, not that the scores are fair.  
 - TEE attestation proves measured miner code and D10 binding, not challenge honesty.  
-- Owner signs trust roots and operates the gateway: owner compromise remains residual risk (R12).
+- Owner signs trust roots and operates the gateway: owner compromise remains residual risk (R12).  
+- Work receipts and Harbor grades sit inside the same honesty boundary as the challenge operator.
 
 ---
 
-## 12. Verification checklist (implementers)
+## 12. Parent-plan clause F7 restatement (SWE challenge)
 
-1. Topology matches §1 (no challenge sk in CVM; no agent re-score in validator).  
+Parent plan `gbase-rust-subnet` final verification **F7** ("The original request, clause by clause") includes:
+
+> Agent Challenge on Phala, miners self-deploying, validators verifying cryptographically → tasks 36, 37, 38, 47.
+
+Under scoring_version **2**, that clause means:
+
+| Original clause fragment | SWE / v2 reading |
+|--------------------------|------------------|
+| Agent Challenge on Phala | Miner CVM runs `gbase-agent` + measured socket-proxy + attest-helper; packs are Harbor SWE tasks from the pinned deepagent catalog |
+| Miners self-deploying | `miner deploy` / install script renders digest-pinned compose; miner funds Phala |
+| Validators verifying cryptographically | D10 quote path + BUNDLE_SPEC leaf/bundle verify; validators **do not** re-score `model.patch` (D19) |
+| End-to-end proof | Parent task 47 criteria, with scoring_version 2 leaves and attestation precondition |
+
+Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no silent scope reduction. This document freezes the **contract**; live e2e is a later wave.
+
+---
+
+## 13. Verification checklist (implementers)
+
+1. Topology matches §1 (no challenge sk in CVM; measured miner socket-proxy; no agent re-score in validator).  
 2. Attestation precondition §3 enforced before any `Score`.  
-3. Task/answer digests match §5.5 pinned fixtures.  
-4. F1–F11 table §5.6 green in offline tests (task 36).  
+3. v2 task/answer digests match §5.7 pinned fixtures.  
+4. F1–F11 v2 table §5.8 green in offline tests.  
 5. Every `h ∈ E` gets a signed leaf; no silence (D24).  
-6. `PolicySkip` never used to drop coverage.  
-7. Compose render matches §9; no `:latest`; no secrets in `environment:`.  
-8. Leaves verify under BUNDLE_SPEC `protocol_version = 1` and local trust root.  
-9. E2E scores (task 47) are consistent with this rule, not hardcoded toys.
+6. Verifier faults map per §7.4; never Park for Docker/junit outages.  
+7. `PolicySkip` never used to drop coverage.  
+8. Compose render matches §9; no `:latest`; measured socket-proxy; no secrets in `environment:`.  
+9. Leaves verify under BUNDLE_SPEC `protocol_version = 1` and local trust root.  
+10. Work receipt domain is `gbase-agent-work-receipt-v1`, distinct from attest.  
+11. Doc states what v2 attestation does **not** prove (§3.4).
 
 ---
 
@@ -569,11 +721,12 @@ D19 applies unchanged:
 | Topic | Document |
 |-------|----------|
 | Leaf SCALE, `NoScoreReasonCode`, rawweight domain | BUNDLE_SPEC §3 |
-| Aggregation of scores | BUNDLE_SPEC §6 |
+| Aggregation of scores / `PARTICIPATION_FLOOR` | BUNDLE_SPEC §6 |
 | Participant derivation | BUNDLE_SPEC §7 |
-| D19 claim | BUNDLE_SPEC §11.1 |
+| D19 claim | BUNDLE_SPEC §11.1 / THREAT_MODEL §1 |
 | Bundle `protocol_version` | BUNDLE_SPEC §2 (**value 1**) |
 | D10/D11/D13/D18/D24 decisions | plan `gbase-rust-subnet` |
+| SWE deepagent plan | plan `gbase-agent-challenge-deepagent` |
 
 ---
 
@@ -585,11 +738,31 @@ D19 applies unchanged:
 | D11 env names only | §3.2, §9.2 |
 | D13 park no credit | §3.1 |
 | D18 local challenge keys | §6, §8 |
-| D19 honest claim | §1, §11 |
+| D19 honest claim | §1, §3.4, §11 |
 | D20 gateway TLS only | §1, §9.5 |
 | D23/D24 participants + shares | §7 |
 | D21 key rotation | §6 |
+| R1 one pack / epoch deadline | §5.2 |
+| R3 work receipt | §5.6 |
+| Q1=A miner-side runner | §1, §9.1 |
+| Q2=B scoring_version 2 | §2, freeze note |
 
 ---
 
-**End of frozen AGENT_CHALLENGE challenge_scoring_version=1 (bundle protocol_version=1).**
+## Appendix C. Domain tag registry (agent-v1)
+
+| Tag | Purpose |
+|-----|---------|
+| `gbase-agent-task-id-v2` | v2 task id preimage |
+| `gbase-agent-task-blob-v2` | v2 task blob preimage |
+| `gbase-agent-answer-v2` | v2 answer over `model.patch` |
+| `gbase-agent-pack-select-v1` | deterministic pack index |
+| `gbase-agent-work-receipt-v1` | CVM work receipt signatures |
+| `gbase-agent-dispatch-v1` | JSON dispatch protocol label |
+| `gbase-attest-v1` | D10 report_data (unchanged) |
+| `gbase-rawweight-v1` | leaf signatures (unchanged) |
+| `gbase-agent-task-id-v1` / `…-blob-v1` / `…-answer-v1` | **retired** v1 echo (historical only) |
+
+---
+
+**End of frozen AGENT_CHALLENGE challenge_scoring_version=2 (bundle protocol_version=1). Re-freeze gate: task 16.**

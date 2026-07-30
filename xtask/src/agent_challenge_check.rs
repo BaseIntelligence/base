@@ -1,4 +1,4 @@
-//! Fail if `docs/AGENT_CHALLENGE.md` is missing required plan item 9 pins.
+//! Fail if `docs/AGENT_CHALLENGE.md` is missing required plan item 9 / task 16 pins.
 
 use std::fs;
 use std::path::Path;
@@ -14,21 +14,28 @@ const SECTION_MARKERS: &[(&str, &str)] = &[
     ("C", "## 9. Compose services, ports, image contract"),
 ];
 
-/// Content pins (not only headings).
+/// Content pins (not only headings). scoring_version 2 / task 16 delta.
 const CONTENT_PINS: &[(&str, &str)] = &[
     ("bundle_protocol_version", "protocol_version = 1"),
     ("challenge_id", "agent-v1"),
     ("scoring_version", "challenge_scoring_version"),
+    ("scoring_version_2", "u16 = 2"),
     ("SCORE_MAX", "1_000_000"),
-    ("SOFT_MS", "SOFT_MS"),
-    ("HARD_MS", "HARD_MS"),
+    ("task_id_v2_domain", "gbase-agent-task-id-v2"),
+    ("task_blob_v2_domain", "gbase-agent-task-blob-v2"),
+    ("answer_v2_domain", "gbase-agent-answer-v2"),
+    ("pack_select_domain", "gbase-agent-pack-select-v1"),
+    ("work_receipt_domain", "gbase-agent-work-receipt-v1"),
+    ("model_patch", "model.patch"),
+    ("ChallengeInternal", "ChallengeInternal"),
+    ("HarborVerifier", "HarborVerifier"),
     (
-        "fixture_task_id",
-        "4a590b2abf87da6bccd97d8fbe5d2e774bdbda3ad421119688010537be2b31ec",
+        "fixture_task_id_v2",
+        "b1c18e56abe993e20e8dadcb72c7a7cadee8975e5741d15d1acb37f5ea367644",
     ),
     (
-        "fixture_answer",
-        "83180b08e05630496531a158d174ce69ba857d854d8692087947706c159a487c",
+        "fixture_answer_v2",
+        "703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d",
     ),
     ("attestation_precondition", "precondition for emitting"),
     ("NoScore_attestation", "AttestationNotVerified"),
@@ -39,7 +46,8 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("BUNDLE_SPEC_link", "BUNDLE_SPEC.md"),
     ("D10_report_data", "gbase-attest-v1"),
     ("rawweight_domain", "gbase-rawweight-v1"),
-    ("F3_half", "Score(500_000)"),
+    ("socket_proxy", "socket-proxy"),
+    ("PARTICIPATION_FLOOR", "PARTICIPATION_FLOOR"),
     ("no_score_in_cvm", "NO challenge signing key"),
     ("park_no_credit", "Park grants"),
 ];
@@ -95,6 +103,14 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
         failures.push("content pin no_latest_ban: spec must mention :latest as forbidden".into());
     }
 
+    // Live scoring must not reintroduce SOFT_MS/HARD_MS as active constants (historical OK).
+    // Require v2 correctness language instead.
+    if !body.contains("correctness-only") && !body.contains("pure correctness") {
+        failures.push(
+            "content pin v2_correctness: spec must state pure/correctness-only scoring".into(),
+        );
+    }
+
     let checklist = fs::read_to_string(&checklist_path)
         .map_err(|e| format!("read {}: {e}", checklist_path.display()))?;
     for (pin, _) in SECTION_MARKERS {
@@ -138,5 +154,16 @@ mod tests {
     #[test]
     fn content_pins_nonempty() {
         assert!(CONTENT_PINS.len() >= 10);
+    }
+
+    #[test]
+    fn v2_pins_present_soft_hard_absent() {
+        let names: Vec<&str> = CONTENT_PINS.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"scoring_version_2"));
+        assert!(names.contains(&"task_id_v2_domain"));
+        assert!(names.contains(&"ChallengeInternal"));
+        assert!(names.contains(&"model_patch"));
+        assert!(!names.contains(&"SOFT_MS"));
+        assert!(!names.contains(&"HARD_MS"));
     }
 }
