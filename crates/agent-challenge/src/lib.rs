@@ -25,7 +25,9 @@ pub use submit::{
     DEFAULT_MAX_RETRIES,
 };
 pub use task_gen::{
-    answer_digest, task_blob, task_id, CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION,
+    answer_digest, answer_digest_v2, task_blob, task_blob_v2, task_id, task_id_v2,
+    ANSWER_DOMAIN_V2, CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION, SCORING_VERSION_V2,
+    TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
 };
 
 pub use bundle::{
