@@ -14,8 +14,8 @@ use crypto::KEY_LEN;
 use trustroot::{MeasurementEntry, MeasurementsBody};
 use validator::{spawn_attest_server, AttestState};
 
-const QUOTE: &[u8] = include_bytes!("../../attest-parse/tests/fixtures/real/quote.bin");
-const EVENT_LOG: &[u8] = include_bytes!("../../attest-parse/tests/fixtures/real/event_log.json");
+const QUOTE: &[u8] = include_bytes!("../../../crates/attest-parse/tests/fixtures/real/quote.bin");
+const EVENT_LOG: &[u8] = include_bytes!("../../../crates/attest-parse/tests/fixtures/real/event_log.json");
 
 fn measurements() -> MeasurementsBody {
     let parsed = parse_tdx_quote_v4(QUOTE).unwrap();
@@ -34,7 +34,7 @@ fn measurements() -> MeasurementsBody {
 }
 
 fn miner_bin() -> PathBuf {
-    // Prefer CARGO_BIN_EXE when available (integration test harness).
+    // Same-package bin: cargo sets CARGO_BIN_EXE_miner for integration tests.
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_miner") {
         return PathBuf::from(p);
     }

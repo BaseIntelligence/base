@@ -2299,9 +2299,16 @@ dependencies = [
 name = "miner-bin"
 version = "0.1.0"
 dependencies = [
+ "attest-parse",
+ "attest-policy",
+ "attest-replay",
  "clap",
+ "crypto",
+ "hex",
  "miner",
  "tokio",
+ "trustroot",
+ "validator",
 ]
 
 [[package]]

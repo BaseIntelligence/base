@@ -19,3 +19,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+attest-parse = { path = "../../crates/attest-parse" }
+attest-policy = { path = "../../crates/attest-policy" }
+attest-replay = { path = "../../crates/attest-replay" }
+crypto = { path = "../../crates/crypto" }
+hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
+trustroot = { path = "../../crates/trustroot" }
+validator = { path = "../../crates/validator" }
+
