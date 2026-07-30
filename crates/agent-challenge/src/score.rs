@@ -100,24 +100,16 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
         CallOutcome::RateLimited => ns(R::RateLimited),
         CallOutcome::ChallengeInternal => ns(R::ChallengeInternal),
         CallOutcome::Http200 {
-            challenge_id,
-            epoch,
-            task_id: resp_task_id,
-            answer_digest: resp_answer,
-            agent_version,
+            challenge_id, epoch, task_id: tid, answer_digest: ans, agent_version,
         } => {
-            let expected_tid = task_id_v2(
-                input.netuid, input.epoch, &input.miner_hotkey, &input.pack_id, SCORING_VERSION,
-            );
-            let expected_answer = answer_digest_v2(&input.expected_model_patch);
-            if challenge_id != CHALLENGE_ID
-                || *epoch != input.epoch
-                || resp_task_id.as_slice() != expected_tid.as_slice()
-                || agent_version != "1"
+            let exp_tid = task_id_v2(input.netuid, input.epoch, &input.miner_hotkey, &input.pack_id, SCORING_VERSION);
+            let exp_ans = answer_digest_v2(&input.expected_model_patch);
+            if challenge_id != CHALLENGE_ID || *epoch != input.epoch
+                || tid.as_slice() != exp_tid.as_slice() || agent_version != "1"
             {
                 return ns(R::InvalidResponse);
             }
-            if resp_answer.as_slice() == expected_answer.as_slice() {
+            if ans.as_slice() == exp_ans.as_slice() {
                 ScoreOrAbsence::Score { value: SCORE_MAX }
             } else {
                 ScoreOrAbsence::Score { value: 0 }

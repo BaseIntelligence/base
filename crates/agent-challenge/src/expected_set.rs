@@ -189,12 +189,7 @@ impl fmt::Display for ExpectedSet {
         writeln!(f, "block_hash={}", hex32(&self.block_hash))?;
         writeln!(f, "|E|={}", self.participants.len())?;
         for p in &self.participants {
-            writeln!(
-                f,
-                "  uid={} hotkey={}",
-                p.uid,
-                hex32(&p.hotkey)
-            )?;
+            writeln!(f, "  uid={} hotkey={}", p.uid, hex32(&p.hotkey))?;
         }
         Ok(())
     }

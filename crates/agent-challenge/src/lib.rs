@@ -19,9 +19,9 @@ mod epoch_loop;
 mod intake;
 
 pub use challenge::{
-    correct_http200, correct_http200_fixture, leaf_from_verify_result, score_epoch_from_verify,
-    silence_is_bug_leaf, AgentV1Challenge, AttestationLookup, Challenge, ChallengeError, EpochCtx,
-    Hotkey, MapAttestationLookup, MinerCallOutcome,
+    correct_http200, correct_http200_fixture, emit_signed_leaf_set, leaf_from_verify_result,
+    score_epoch_from_verify, silence_is_bug_leaf, AgentV1Challenge, AttestationLookup, Challenge,
+    ChallengeError, EpochCtx, Hotkey, LeafEmitError, MapAttestationLookup, MinerCallOutcome,
 };
 pub use expected_set::{
     expected_set_at, expected_set_at_chain, expected_set_from_optional_pin,
@@ -29,7 +29,7 @@ pub use expected_set::{
     ExpectedSetError, PinnedBlockHash,
 };
 pub use epoch_loop::{
-    run_epoch_dispatch, ActiveSignerRegistry, EpochDispatchClient,
+    run_epoch_dispatch, score_map_covering_expected, ActiveSignerRegistry, EpochDispatchClient,
     EpochDispatchConfig, EpochDispatchResult, EpochLoopError, MinerEpochOutcome, RunnerCapacity,
     SignerGuard, R1_DEADLINE_FRACTION_DEN, R1_DEADLINE_FRACTION_NUM, TESTNET_TEMPO_BLOCKS,
 };
