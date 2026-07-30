@@ -1,0 +1,103 @@
+{
+  "success": true,
+  "id": "cvm_yKlLq1Kx",
+  "name": "gbase-spike-nested-docker",
+  "app_id": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1",
+  "vm_uuid": "abc7f56e-7bb0-444c-947a-cd89601d35ea",
+  "instance_id": null,
+  "resource": {
+    "instance_type": "tdx.small",
+    "vcpu": 1,
+    "memory_in_gb": 2,
+    "disk_in_gb": 20,
+    "gpus": 0,
+    "compute_billing_price": "0.058000",
+    "billing_period": "hourly"
+  },
+  "node_info": {
+    "object_type": "node",
+    "id": 26,
+    "name": "prod5",
+    "region": "US-WEST-1",
+    "device_id": "c4691f9c88f44e05cbc45521678e72b99fcd54fa35d302f13e8f9fa9727f33a6",
+    "ppid": "3e306e133b7fdaa7bb79f67634cb520c",
+    "status": "ONLINE",
+    "version": "v0.5.7 (git:9c5c5e2b9c945945c193)"
+  },
+  "os": {
+    "name": "dstack-dev-0.5.9",
+    "version": "0.5.9",
+    "is_dev": true,
+    "os_image_hash": "de9c74f0c85d0820ce075cb4a99f8e39f7b681be632907c5bf8bdc95ea72feb9"
+  },
+  "kms_type": "phala",
+  "kms_info": {
+    "chain_id": null,
+    "dstack_kms_address": "",
+    "dstack_app_address": null,
+    "deployer_address": null,
+    "rpc_endpoint": "https://kms.dstack-pha-prod7.phala.network",
+    "encrypted_env_pubkey": "cf882280135fe3845ba78c5008a21b136afd3f0d12b177c53e256313b1a6ad57"
+  },
+  "status": "running",
+  "progress": null,
+  "compose_hash": "41cf215c2ba553eff8340e6ac364b914b67a5d861ec7e0a663517391a4356e3a",
+  "gateway": {
+    "base_domain": "dstack-pha-prod5.phala.network",
+    "cname": "_.dstack-pha-prod5.phala.network"
+  },
+  "services": [],
+  "endpoints": [],
+  "public_logs": true,
+  "public_sysinfo": true,
+  "public_tcbinfo": true,
+  "gateway_enabled": true,
+  "secure_time": false,
+  "listed": false,
+  "storage_fs": "zfs",
+  "workspace": {
+    "object_type": "workspace",
+    "id": "wks_vKGJ7pe8",
+    "name": "echobt's projects",
+    "slug": "echobts-projects",
+    "avatar_url": null
+  },
+  "creator": {
+    "object_type": "user",
+    "id": "usr_BKylEJel",
+    "username": "echobt",
+    "avatar_url": "https://cloud-r2.phala.com/avatars/oauth/d78518ab488a3bad1db7e5c846b5fb77.png"
+  },
+  "compose_file": {
+    "allowed_envs": [
+      "DSTACK_AUTHORIZED_KEYS"
+    ],
+    "bash_script": null,
+    "default_gateway_domain": null,
+    "docker_compose_file": "# SPIKE ONLY — prove nested container via guest docker.sock + socket-proxy in measured compose\nservices:\n  socket-proxy:\n    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459\n    restart: unless-stopped\n    environment:\n      CONTAINERS: \"1\"\n      IMAGES: \"1\"\n      POST: \"1\"\n      ALLOW_START: \"1\"\n      ALLOW_STOP: \"1\"\n      NETWORKS: \"1\"\n      AUTH: \"0\"\n      BUILD: \"0\"\n      EXEC: \"0\"\n      VOLUMES: \"0\"\n      SWARM: \"0\"\n      SERVICES: \"0\"\n      SYSTEM: \"0\"\n      INFO: \"1\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n  agent:\n    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\n    restart: \"no\"\n    depends_on:\n      - socket-proxy\n    command:\n      - /bin/sh\n      - -c\n      - |\n        set -ex\n        echo SPIKE_START\n        apk add --no-cache curl jq >/dev/null\n        for i in $(seq 1 90); do\n          curl -fsS http://socket-proxy:2375/version && break\n          sleep 2\n        done\n        curl -fsS http://socket-proxy:2375/version\n        echo\n        curl -fsS -X POST \"http://socket-proxy:2375/images/create?fromImage=hello-world&tag=latest\"\n        echo\n        CREATE=$$(curl -fsS -X POST -H 'Content-Type: application/json' \\\n          -d '{\"Image\":\"hello-world:latest\"}' \\\n          http://socket-proxy:2375/containers/create)\n        echo \"CREATE=$$CREATE\"\n        CID=$$(echo \"$$CREATE\" | jq -r .Id)\n        echo \"CID=$$CID\"\n        curl -fsS -X POST \"http://socket-proxy:2375/containers/$$CID/start\"\n        echo\n        sleep 2\n        # logs are multiplexed; still useful as presence signal\n        curl -fsS \"http://socket-proxy:2375/containers/$$CID/json\" | jq '{Id,State,Image,Config}'\n        echo SPIKE_NESTED_OK\n        sleep 180\n",
+    "init_script": null,
+    "key_provider": null,
+    "key_provider_id": null,
+    "kms_enabled": true,
+    "local_key_provider_enabled": false,
+    "manifest_version": 2,
+    "name": "",
+    "no_instance_id": false,
+    "port_policy": null,
+    "pre_launch_script": "#!/bin/bash\necho \"----------------------------------------------\"\necho \"Running Phala Cloud Pre-Launch Script v0.0.15\"\necho \"----------------------------------------------\"\nset -e\n\n# Function: notify host\n\nnotify_host() {\n    if command -v dstack-util >/dev/null 2>&1; then\n        dstack-util notify-host -e \"$1\" -d \"$2\"\n    else\n        tdxctl notify-host -e \"$1\" -d \"$2\"\n    fi\n}\n\nnotify_host_hoot_info() {\n    notify_host \"boot.progress\" \"$1\"\n}\n\nnotify_host_hoot_error() {\n    notify_host \"boot.error\" \"$1\"\n}\n\n# Function: Perform Docker cleanup\nperform_cleanup() {\n    echo \"Pruning unused images\"\n    docker image prune -af\n    echo \"Pruning unused volumes\"\n    docker volume prune -f\n    notify_host_hoot_info \"docker cleanup completed\"\n}\n\n# Function: Check Docker login status without exposing credentials\ncheck_docker_login() {\n    local registry=\"$1\"\n\n    # When registry is specified, check auth entry for that registry in Docker config\n    if [[ -n \"$registry\" ]]; then\n        local docker_config_path=\"${DOCKER_CONFIG:-$HOME/.docker}/config.json\"\n        if [[ -f \"$docker_config_path\" ]] && grep -q \"$registry\" \"$docker_config_path\"; then\n            return 0\n        else\n            return 1\n        fi\n    fi\n\n    # Fallback check when no explicit registry is provided\n    if docker info 2>/dev/null | grep -q \"Username\"; then\n        return 0\n    else\n        return 1\n    fi\n}\n\n# Main logic starts here\necho \"Starting login process...\"\n\n# Check if Docker credentials exist\nif [[ -n \"$DSTACK_DOCKER_USERNAME\" && -n \"$DSTACK_DOCKER_PASSWORD\" ]]; then\n    echo \"Docker credentials found\"\n    DOCKER_REGISTRY_TARGET=\"${DSTACK_DOCKER_REGISTRY:-docker.io}\"\n    echo \"Target Docker registry: $DOCKER_REGISTRY_TARGET\"\n\n    # Check if already logged in\n    if check_docker_login \"$DSTACK_DOCKER_REGISTRY\"; then\n        echo \"Already logged in to Docker registry: $DOCKER_REGISTRY_TARGET\"\n    else\n        echo \"Logging in to Docker registry: $DOCKER_REGISTRY_TARGET\"\n        # Login without exposing password in process list\n        if [[ -n \"$DSTACK_DOCKER_REGISTRY\" ]]; then\n            echo \"$DSTACK_DOCKER_PASSWORD\" | docker login -u \"$DSTACK_DOCKER_USERNAME\" --password-stdin \"$DSTACK_DOCKER_REGISTRY\"\n        else\n            echo \"$DSTACK_DOCKER_PASSWORD\" | docker login -u \"$DSTACK_DOCKER_USERNAME\" --password-stdin\n        fi\n\n        if [ $? -eq 0 ]; then\n            echo \"Docker login successful: $DOCKER_REGISTRY_TARGET\"\n        else\n            echo \"Docker login failed: $DOCKER_REGISTRY_TARGET\"\n            notify_host_hoot_error \"docker login failed\"\n            exit 1\n        fi\n    fi\n# Check if AWS ECR credentials exist\nelif [[ -n \"$DSTACK_AWS_ACCESS_KEY_ID\" && -n \"$DSTACK_AWS_SECRET_ACCESS_KEY\" && -n \"$DSTACK_AWS_REGION\" && -n \"$DSTACK_AWS_ECR_REGISTRY\" ]]; then\n    echo \"AWS ECR credentials found\"\n\n    # Check if AWS CLI is installed\n    if [ ! -f \"./aws/dist/aws\" ]; then\n        notify_host_hoot_info \"awscli not installed, installing...\"\n        echo \"AWS CLI not installed, installing...\"\n        curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.24.14.zip\" -o \"awscliv2.zip\"\n        echo \"6ff031a26df7daebbfa3ccddc9af1450 awscliv2.zip\" | md5sum -c\n        if [ $? -ne 0 ]; then\n            echo \"MD5 checksum failed\"\n            notify_host_hoot_error \"awscli install failed\"\n            exit 1\n        fi\n        unzip awscliv2.zip &> /dev/null\n    else\n        echo \"AWS CLI is already installed: ./aws/dist/aws\"\n    fi\n\n    # Set AWS credentials as environment variables\n    export AWS_ACCESS_KEY_ID=\"$DSTACK_AWS_ACCESS_KEY_ID\"\n    export AWS_SECRET_ACCESS_KEY=\"$DSTACK_AWS_SECRET_ACCESS_KEY\"\n    export AWS_DEFAULT_REGION=\"$DSTACK_AWS_REGION\"\n\n    # Set session token if provided (for temporary credentials)\n    if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n        echo \"AWS session token found, using temporary credentials\"\n        export AWS_SESSION_TOKEN=\"$DSTACK_AWS_SESSION_TOKEN\"\n    fi\n\n    # Test AWS credentials before attempting ECR login\n    echo \"Testing AWS credentials...\"\n    if ! ./aws/dist/aws sts get-caller-identity &> /dev/null; then\n        echo \"AWS credentials test failed\"\n        # For session token credentials, this might be expected if they're expired\n        # Log warning but don't fail startup\n        if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n            echo \"Warning: AWS temporary credentials may have expired, continuing startup\"\n            notify_host_hoot_info \"AWS temporary credentials may have expired\"\n        else\n            echo \"AWS credentials test failed\"\n            notify_host_hoot_error \"Invalid AWS credentials\"\n            exit 1\n        fi\n    else\n        echo \"Logging in to AWS ECR...\"\n        ./aws/dist/aws ecr get-login-password --region $DSTACK_AWS_REGION | docker login --username AWS --password-stdin \"$DSTACK_AWS_ECR_REGISTRY\"\n        if [ $? -eq 0 ]; then\n            echo \"AWS ECR login successful\"\n            notify_host_hoot_info \"AWS ECR login successful\"\n        else\n            echo \"AWS ECR login failed\"\n            # For session token credentials, don't fail startup if login fails\n            if [[ -n \"$DSTACK_AWS_SESSION_TOKEN\" ]]; then\n                echo \"Warning: AWS ECR login failed with temporary credentials, continuing startup\"\n                notify_host_hoot_info \"AWS ECR login failed with temporary credentials\"\n            else\n                notify_host_hoot_error \"AWS ECR login failed\"\n                exit 1\n            fi\n        fi\n    fi\nfi\n\nperform_cleanup\n\n#\n# GHCR image pull access verification (pure HTTP, no docker daemon)\n#\nif [[ \"$DOCKER_REGISTRY_TARGET\" == \"ghcr.io\" && -n \"$DSTACK_DOCKER_USERNAME\" && -n \"$DSTACK_DOCKER_PASSWORD\" ]]; then\n    COMPOSE_IMAGES=$(grep 'image:' /dstack/docker-compose.yaml 2>/dev/null | awk '{print $2}' | tr -d '\"'\"'\" || true)\n    for img in $COMPOSE_IMAGES; do\n        [[ \"$img\" != ghcr.io/* ]] && continue\n        repo=\"${img#ghcr.io/}\"; repo=\"${repo%%:*}\"\n        tag=\"${img##*:}\"; [[ \"$tag\" == \"$img\" || \"$tag\" == \"$repo\" ]] && tag=\"latest\"\n        echo \"Verifying GHCR pull access: $img\"\n        token=$(curl -sf -u \"$DSTACK_DOCKER_USERNAME:$DSTACK_DOCKER_PASSWORD\"             \"https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull\" | jq -r '.token // empty' || true)\n        if [[ -z \"$token\" ]]; then\n            echo \"ERROR: GHCR token exchange failed for $img\"\n            notify_host_hoot_error \"GHCR token exchange failed: $img\"\n            exit 1\n        fi\n        http_code=$(curl -s -o /dev/null -w \"%{http_code}\" -H \"Authorization: Bearer $token\"             -H \"Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json\"             \"https://ghcr.io/v2/${repo}/manifests/${tag}\")\n        if [[ \"$http_code\" != \"200\" ]]; then\n            echo \"ERROR: GHCR pull access denied for $img (HTTP $http_code)\"\n            notify_host_hoot_error \"GHCR pull access denied: $img (HTTP $http_code)\"\n            exit 1\n        fi\n        echo \"GHCR pull access OK: $img\"\n    done\nfi\n\n#\n# Pull latest images from docker-compose.yaml so existing CVMs pick up new tags.\n# Pull is fail-soft: short-lived tokens may expire between login and pull, but\n# falling back to already-cached images is preferable to blocking boot.\n#\necho \"Images before pull:\"\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\n\necho \"Pulling latest images from /dstack/docker-compose.yaml...\"\nif docker compose -f /dstack/docker-compose.yaml pull; then\n    echo \"docker compose pull completed\"\n    notify_host_hoot_info \"docker compose pull completed\"\nelse\n    echo \"WARNING: docker compose pull failed; continuing with existing images\"\n    notify_host_hoot_info \"docker compose pull failed; using existing images\"\nfi\n\necho \"Images after pull:\"\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\n\n#\n# Set root password.\n#\necho \"Setting root password..\"\n\n# Check if password files are writable\nPASSWD_WRITABLE=true\nif [ ! -w /etc/passwd ]; then\n    echo \"Warning: /etc/passwd is read-only\"\n    PASSWD_WRITABLE=false\nfi\nif [ ! -w /etc/shadow ]; then\n    echo \"Warning: /etc/shadow is read-only\"\n    PASSWD_WRITABLE=false\nfi\n\nif [ \"$PASSWD_WRITABLE\" = \"false\" ]; then\n    echo \"Skipping password setup due to read-only file system\"\nelse\n    # Check if chpasswd is available\n    if command -v chpasswd >/dev/null 2>&1; then\n        echo \"Using chpasswd method\"\n\n        if [ -n \"$DSTACK_ROOT_PASSWORD\" ]; then\n            echo \"Setting root password from user..\"\n            echo \"root:$DSTACK_ROOT_PASSWORD\" | chpasswd\n            unset DSTACK_ROOT_PASSWORD\n            echo \"Root password set/updated from DSTACK_ROOT_PASSWORD\"\n        elif [ -z \"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\" ]; then\n            echo \"Setting random root password..\"\n            DSTACK_ROOT_PASSWORD=$(\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\n            )\n            echo \"root:$DSTACK_ROOT_PASSWORD\" | chpasswd\n            unset DSTACK_ROOT_PASSWORD\n            echo \"Root password set (random auto-init)\"\n        else\n            echo \"Root password already set; no changes.\"\n        fi\n    else\n        echo \"Using passwd method\"\n\n        if [ -n \"$DSTACK_ROOT_PASSWORD\" ]; then\n            echo \"Setting root password from user..\"\n            echo \"$DSTACK_ROOT_PASSWORD\" | passwd --stdin root 2>/dev/null                 || printf '%s\n%s\n' \"$DSTACK_ROOT_PASSWORD\" \"$DSTACK_ROOT_PASSWORD\" | passwd root\n            unset DSTACK_ROOT_PASSWORD\n            echo \"Root password set/updated from DSTACK_ROOT_PASSWORD\"\n        elif [ -z \"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\" ]; then\n            echo \"Setting random root password..\"\n            DSTACK_ROOT_PASSWORD=$(\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\n            )\n            echo \"$DSTACK_ROOT_PASSWORD\" | passwd --stdin root 2>/dev/null                 || printf '%s\n%s\n' \"$DSTACK_ROOT_PASSWORD\" \"$DSTACK_ROOT_PASSWORD\" | passwd root\n            unset DSTACK_ROOT_PASSWORD\n            echo \"Root password set (random auto-init)\"\n        else\n            echo \"Root password already set; no changes.\"\n        fi\n    fi\nfi\n\n#\n# Set SSH authorized keys\n#\nif mkdir -p /home/root/.ssh 2>/dev/null; then\n    if [[ -n \"$DSTACK_ROOT_PUBLIC_KEY\" ]]; then\n        echo \"$DSTACK_ROOT_PUBLIC_KEY\" > /home/root/.ssh/authorized_keys\n        unset $DSTACK_ROOT_PUBLIC_KEY\n        echo \"Root public key set\"\n    fi\n    if [[ -n \"$DSTACK_AUTHORIZED_KEYS\" ]]; then\n        echo \"$DSTACK_AUTHORIZED_KEYS\" > /home/root/.ssh/authorized_keys\n        unset $DSTACK_AUTHORIZED_KEYS\n        echo \"Root authorized_keys set\"\n    fi\n\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\n        if [[ $(jq 'has(\"ssh_authorized_keys\")' /dstack/user_config 2>/dev/null) == \"true\" ]]; then\n            jq -j '.ssh_authorized_keys' /dstack/user_config >> /home/root/.ssh/authorized_keys\n            # Remove duplicates if there are multiple keys\n            if [[ $(cat /home/root/.ssh/authorized_keys | wc -l) -gt 1 ]]; then\n                sort -u /home/root/.ssh/authorized_keys > /home/root/.ssh/authorized_keys.tmp\n                mv /home/root/.ssh/authorized_keys.tmp /home/root/.ssh/authorized_keys\n            fi\n            echo \"Set root authorized_keys from user preferences, total\" $(cat /home/root/.ssh/authorized_keys | wc -l) \"keys\"\n        fi\n    fi\nelse\n    echo \"Warning: Cannot create /home/root/.ssh directory (read-only file system?)\"\n    echo \"Skipping SSH key setup\"\nfi\n\nif [[ -S /var/run/dstack.sock ]]; then\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/dstack.sock http://dstack/Info | jq -j .app_id)\nelif [[ -S /var/run/tappd.sock ]]; then\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/tappd.sock http://dstack/prpc/Tappd.Info | jq -j .app_id)\nfi\n# Check if DSTACK_GATEWAY_DOMAIN is not set, try to get it from user_config or app-compose.json\n# Priority: user_config > app-compose.json\nif [[ -z \"$DSTACK_GATEWAY_DOMAIN\" ]]; then\n    # First try to get from /dstack/user_config if it exists and is valid JSON\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\n        if [[ $(jq 'has(\"default_gateway_domain\")' /dstack/user_config 2>/dev/null) == \"true\" ]]; then\n            export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' /dstack/user_config)\n        fi\n    fi\n\n    # If still not set, try to get from app-compose.json\n    if [[ -z \"$DSTACK_GATEWAY_DOMAIN\" ]] && [[ $(jq 'has(\"default_gateway_domain\")' app-compose.json) == \"true\" ]]; then\n        export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' app-compose.json)\n    fi\nfi\nif [[ -n \"$DSTACK_GATEWAY_DOMAIN\" ]]; then\n    export DSTACK_APP_DOMAIN=$DSTACK_APP_ID\".\"$DSTACK_GATEWAY_DOMAIN\nfi\n\necho \"----------------------------------------------\"\necho \"Script execution completed\"\necho \"----------------------------------------------\"\n",
+    "public_logs": true,
+    "public_sysinfo": true,
+    "public_tcbinfo": true,
+    "runner": "docker-compose",
+    "gateway_enabled": true,
+    "features": [
+      "kms",
+      "tproxy-net"
+    ],
+    "salt": null,
+    "secure_time": false,
+    "storage_fs": "zfs",
+    "swap_size": null,
+    "tproxy_enabled": true
+  }
+}

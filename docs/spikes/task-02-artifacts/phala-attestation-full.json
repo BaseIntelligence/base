@@ -1,0 +1,308 @@
+{
+  "success": true,
+  "is_online": true,
+  "is_public": true,
+  "error": null,
+  "app_certificates": [
+    {
+      "subject": {
+        "common_name": "demo-cert",
+        "organization": null,
+        "country": null,
+        "state": null,
+        "locality": null
+      },
+      "issuer": {
+        "common_name": "Dstack App CA",
+        "organization": "Dstack",
+        "country": null
+      },
+      "serial_number": "7c4bce078e0fb767dfc7173cc5069171118c44c6",
+      "not_before": "1975-01-01T00:00:00+00:00",
+      "not_after": "2036-07-27T19:53:04+00:00",
+      "version": "v3",
+      "fingerprint": "8e821bc96849e6c127cce3564c1cdcd65171cd189dba9ba0964073ab43a8644b",
+      "signature_algorithm": "ecdsa-with-SHA256",
+      "sans": null,
+      "is_ca": false,
+      "position_in_chain": 0,
+      "quote": "040002008100000000000000939a7233f79c4ca9940a0db3957f0607228b1b2533416561505b6d6ef4236c79000000000b0105000000000000000000000000007bf063280e94fb051f5dd7b1fc59ce9aac42bb961df8d44b709c9b0ff87a7b4df648657ba6d1189589feab1d5a3c9a9d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000702000000000000f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa870770141cf215c2ba553eff8340e6ac364b914b67a5d861ec7e0a663517391a4356e3a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000068102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe9607e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878ca2a58c9a959a4fa44bd6da0c97a2270c051faf12084cfe91ae900e4fdff6cdd4f69a82005e04ee920f231497894d677f5cf68a7e48c71465f274af3e4bfdb9829ec02d1a2520815c0c45480f5fc797177ff985e3f01d2303883db72e5df96f265f19e8f6d876eddfd758553386774955f36cd719d43eaf33c61d2e1b897c7d42ebb1a95cd478f57e18fae45fe3f0426d6bb8d7a5907c4109de3eb7b17104617dd01000007e96b2cf89fb9b8b2d19b98e4e0890b35a96a21d0914e353a627ac828f746356ed4d70cc4f7322919a0160ca013a87f9a7f5241eea4d9d60b2efb04425af4209d4aea0ab2a5cfdc479e2b02599d8e30d7dcbcc11bc550681a15d0777d298867465adda0877a31bf4a80dd227d0b1c53f263afe5136081698ff89101622c5616f06004a10000005050a0a05ff00020000000000000000000000000000000000000000000000000000000000000000000000000000000015000000000000000700000000000000e5a3a7b5d830c2953b98534c6c59a3a34fdc34e933f7f5898f0a85cf08846bca0000000000000000000000000000000000000000000000000000000000000000dc9e2a7c6f948f17474e34a7fc43ed030f7c1563f1babddf6340c82e0e54a8c500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bbf5f2fdd1fd1fc2e16e13810b22d19ded102d47dcde36beb537b37730625faa0000000000000000000000000000000000000000000000000000000000000000de021b77d29b4a265512188e7636c2f92d9232d53d7c725e2c72be9ef35bc01bf30412b065b5b5c1b2f6390d06ce6d071f3c16aef49bedd1af9421bbc5f1df932000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0500620e00002d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d0a4d494945386a4343424a69674177494241674956414e5a424d42727175543357555555623435426c4f637a33633669424d416f4743437147534d343942414d430a4d484178496a416742674e5642414d4d47556c756447567349464e4857434251513073675547786864475a76636d306751304578476a415942674e5642416f4d0a45556c756447567349454e76636e4276636d4630615739754d5251774567594456515148444174545957353059534244624746795954454c4d416b47413155450a4341774351304578437a414a42674e5642415954416c56544d423458445449324d4445794f5441314d7a49774e6c6f5844544d7a4d4445794f5441314d7a49770a4e6c6f77634445694d434147413155454177775a535735305a5777675530645949464244537942445a584a3061575a70593246305a5445614d426747413155450a43677752535735305a577767513239796347397959585270623234784644415342674e564241634d43314e68626e526849454e7359584a684d517377435159440a5651514944414a445154454c4d416b474131554542684d4356564d775754415442676371686b6a4f5051494242676771686b6a4f50514d4242774e43414152390a463045517555582b43746677516a61726a6b4270436f4e646361746642503168444e2f776677397042797851584b42464c74696e6e6c58637a7856616948544c0a724f2f6352764f7437556375764d793231772f586f3449444454434341776b77487759445652306a42426777466f41556c5739647a62306234656c4153636e550a3944504f4156634c336c5177617759445652306642475177596a42676f46366758495a616148523063484d364c79396863476b7564484a316333526c5a484e6c0a636e5a705932567a4c6d6c75644756734c6d4e766253397a5a3367765932567964476c6d61574e6864476c76626939324e4339775932746a636d772f593245390a6347786864475a76636d306d5a57356a62325270626d63395a4756794d4230474131556444675157424252547a744d5341354376394c675467314c37433136540a4b5079553044414f42674e56485138424166384542414d434273417744415944565230544151482f4241497741444343416a6f4743537147534962345451454e0a41515343416973776767496e4d42344743697147534962345451454e415145454544347762684d376639716e75336e32646a544c556777776767466b42676f710a686b69472b453042445145434d4949425644415142677371686b69472b45304244514543415149424254415142677371686b69472b45304244514543416749420a4254415142677371686b69472b4530424451454341774942416a415142677371686b69472b4530424451454342414942416a415142677371686b69472b4530420a44514543425149424254415242677371686b69472b4530424451454342674943415038774541594c4b6f5a496876684e4151304241676343415141774541594c0a4b6f5a496876684e4151304241676743415149774541594c4b6f5a496876684e4151304241676b43415141774541594c4b6f5a496876684e4151304241676f430a415141774541594c4b6f5a496876684e4151304241677343415141774541594c4b6f5a496876684e4151304241677743415141774541594c4b6f5a496876684e0a4151304241673043415141774541594c4b6f5a496876684e4151304241673443415141774541594c4b6f5a496876684e4151304241673843415141774541594c0a4b6f5a496876684e4151304241684143415141774541594c4b6f5a496876684e4151304241684543415130774877594c4b6f5a496876684e41513042416849450a45415546416749462f7741434141414141414141414141774541594b4b6f5a496876684e4151304241775143414141774641594b4b6f5a496876684e415130420a42415147494b4276414141414d41384743697147534962345451454e4151554b415145774867594b4b6f5a496876684e4151304242675151704548632f65354d0a784b43445636306651747932666a424542676f71686b69472b453042445145484d4459774541594c4b6f5a496876684e4151304242774542416638774541594c0a4b6f5a496876684e4151304242774942416638774541594c4b6f5a496876684e4151304242774d4241663877436759494b6f5a497a6a304541774944534141770a52514967515147314e57757a55647566317a4b516561562f56616d2f43587657506752544f7a7362326941366c4767434951445235314670636f7572547a4e570a78572b62566f34382b7a6b7a3132655739532b4b2f5147644d54765233513d3d0a2d2d2d2d2d454e442043455254494649434154452d2d2d2d2d0a2d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d0a4d4949436c6a4343416a32674177494241674956414a567658633239472b487051456e4a3150517a7a674658433935554d416f4743437147534d343942414d430a4d476778476a415942674e5642414d4d45556c756447567349464e48574342536232393049454e424d526f77474159445651514b4442464a626e526c624342440a62334a7762334a6864476c76626a45554d424947413155454277774c553246756447456751327868636d4578437a414a42674e564241674d416b4e424d5173770a435159445651514745774a56557a4165467730784f4441314d6a45784d4455774d5442614677307a4d7a41314d6a45784d4455774d5442614d484178496a41670a42674e5642414d4d47556c756447567349464e4857434251513073675547786864475a76636d306751304578476a415942674e5642416f4d45556c75644756730a49454e76636e4276636d4630615739754d5251774567594456515148444174545957353059534244624746795954454c4d416b474131554543417743513045780a437a414a42674e5642415954416c56544d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741454e53422f377432316c58534f0a3243757a7078773734654a423732457944476757357258437478327456544c7136684b6b367a2b5569525a436e71523770734f766771466553786c6d546c4a6c0a65546d693257597a33714f42757a43427544416642674e5648534d4547444157674251695a517a575770303069664f44744a5653763141624f536347724442530a42674e5648523845537a424a4d45656752614244686b466f64485277637a6f764c324e6c636e52705a6d6c6a5958526c63793530636e567a6447566b633256790a646d6c6a5a584d75615735305a577775593239744c306c756447567355306459556d397664454e424c6d526c636a416442674e5648513445466751556c5739640a7a62306234656c4153636e553944504f4156634c336c517744675944565230504151482f42415144416745474d42494741315564457745422f7751494d4159420a4166384341514177436759494b6f5a497a6a30454177494452774177524149675873566b6930772b6936565947573355462f32327561586530594a446a3155650a6e412b546a44316169356343494359623153416d4435786b66545670766f34556f79695359787244574c6d5552344349394e4b7966504e2b0a2d2d2d2d2d454e442043455254494649434154452d2d2d2d2d0a2d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d0a4d4949436a7a4343416a53674177494241674955496d554d316c71644e496e7a6737535655723951477a6b6e42717777436759494b6f5a497a6a3045417749770a614445614d4267474131554541777752535735305a5777675530645949464a766233516751304578476a415942674e5642416f4d45556c756447567349454e760a636e4276636d4630615739754d5251774567594456515148444174545957353059534244624746795954454c4d416b47413155454341774351304578437a414a0a42674e5642415954416c56544d423458445445344d4455794d5445774e4455784d466f58445451354d54497a4d54497a4e546b314f566f77614445614d4267470a4131554541777752535735305a5777675530645949464a766233516751304578476a415942674e5642416f4d45556c756447567349454e76636e4276636d46300a615739754d5251774567594456515148444174545957353059534244624746795954454c4d416b47413155454341774351304578437a414a42674e56424159540a416c56544d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a3044415163445167414543366e45774d4449595a4f6a2f69505773437a61454b69370a314f694f534c52466857476a626e42564a66566e6b59347533496a6b4459594c304d784f346d717379596a6c42616c54565978465032734a424b357a6c4b4f420a757a43427544416642674e5648534d4547444157674251695a517a575770303069664f44744a5653763141624f5363477244425342674e5648523845537a424a0a4d45656752614244686b466f64485277637a6f764c324e6c636e52705a6d6c6a5958526c63793530636e567a6447566b63325679646d6c6a5a584d75615735300a5a577775593239744c306c756447567355306459556d397664454e424c6d526c636a416442674e564851344546675155496d554d316c71644e496e7a673753560a55723951477a6b6e4271777744675944565230504151482f42415144416745474d42494741315564457745422f7751494d4159424166384341514577436759490a4b6f5a497a6a3045417749445351417752674968414f572f35516b522b533943695344634e6f6f774c7550524c735747662f59693747535839344267775477670a41694541344a306c72486f4d732b586f356f2f7358364f39515778485241765a55474f6452513763767152586171493d0a2d2d2d2d2d454e442043455254494649434154452d2d2d2d2d0a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "app_id": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1",
+      "cert_usage": "6170703a637573746f6d"
+    },
+    {
+      "subject": {
+        "common_name": "Dstack App CA",
+        "organization": "Dstack",
+        "country": null,
+        "state": null,
+        "locality": null
+      },
+      "issuer": {
+        "common_name": "Dstack KMS CA",
+        "organization": "Dstack",
+        "country": null
+      },
+      "serial_number": "31a19a887f3cc34b6f9d5cbb90cc1dc9f682a775",
+      "not_before": "1975-01-01T00:00:00+00:00",
+      "not_after": "2036-07-27T19:53:04+00:00",
+      "version": "v3",
+      "fingerprint": "76633d71f9a8963c4a4f176bc91eb0fd5af8f551ec67bebad4ecdf47089105e9",
+      "signature_algorithm": "ecdsa-with-SHA256",
+      "sans": null,
+      "is_ca": true,
+      "position_in_chain": 1,
+      "quote": null,
+      "app_id": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1",
+      "cert_usage": "6170703a6361"
+    },
+    {
+      "subject": {
+        "common_name": "Dstack KMS CA",
+        "organization": "Dstack",
+        "country": null,
+        "state": null,
+        "locality": null
+      },
+      "issuer": {
+        "common_name": "Dstack KMS CA",
+        "organization": "Dstack",
+        "country": null
+      },
+      "serial_number": "2e34c86d3d16f7f72749c1856acedcf30474323d",
+      "not_before": "1975-01-01T00:00:00+00:00",
+      "not_after": "2036-02-08T15:50:01+00:00",
+      "version": "v3",
+      "fingerprint": "41c806839c99a1c3859983f9a63e431d7506742a75355b60cee48714206b99d8",
+      "signature_algorithm": "ecdsa-with-SHA256",
+      "sans": null,
+      "is_ca": true,
+      "position_in_chain": 2,
+      "quote": null,
+      "app_id": null,
+      "cert_usage": null
+    }
+  ],
+  "tcb_info": {
+    "mrtd": "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077",
+    "rootfs_hash": null,
+    "rtmr0": "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96",
+    "rtmr1": "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c",
+    "rtmr2": "a2a58c9a959a4fa44bd6da0c97a2270c051faf12084cfe91ae900e4fdff6cdd4f69a82005e04ee920f231497894d677f",
+    "rtmr3": "5cf68a7e48c71465f274af3e4bfdb9829ec02d1a2520815c0c45480f5fc797177ff985e3f01d2303883db72e5df96f26",
+    "event_log": [
+      {
+        "imr": 0,
+        "event_type": 2147483659,
+        "digest": "0b8772e5b0b41b83e6044a68397e02f49fb47066b4fbe4917ea2c45c64f323fdacbb37948f821ebaf8bc9c938ba8a749",
+        "event": "",
+        "event_payload": "095464785461626c65000100000000000000af96bb93f2b9b84e9462e0ba745642360090800000000000"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483658,
+        "digest": "344bc51c980ba621aaa00da3ed7436f7d6e549197dfe699515dfa2c6583d95e6412af21c097d473155875ffd561d6790",
+        "event": "",
+        "event_payload": "2946762858585858585858582d585858582d585858582d585858582d58585858585858585858585829000000c0ff000000000040080000000000"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483649,
+        "digest": "9dc3a1f80bcec915391dcda5ffbb15e7419f77eab462bbf72b42166fb70d50325e37b36f93537a863769bcf9bedae6fb",
+        "event": "",
+        "event_payload": "61dfe48bca93d211aa0d00e098032b8c0a00000000000000000000000000000053006500630075007200650042006f006f007400"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483649,
+        "digest": "6f2e3cbc14f9def86980f5f66fd85e99d63e69a73014ed8a5633ce56eca5b64b692108c56110e22acadcef58c3250f1b",
+        "event": "",
+        "event_payload": "61dfe48bca93d211aa0d00e098032b8c0200000000000000000000000000000050004b00"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483649,
+        "digest": "d607c0efb41c0d757d69bca0615c3a9ac0b1db06c557d992e906c6b7dee40e0e031640c7bfd7bcd35844ef9edeadc6f9",
+        "event": "",
+        "event_payload": "61dfe48bca93d211aa0d00e098032b8c030000000000000000000000000000004b0045004b00"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483649,
+        "digest": "08a74f8963b337acb6c93682f934496373679dd26af1089cb4eaf0c30cf260a12e814856385ab8843e56a9acea19e127",
+        "event": "",
+        "event_payload": "cbb219d73a3d9645a3bcdad00e67656f0200000000000000000000000000000064006200"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483649,
+        "digest": "18cc6e01f0c6ea99aa23f8a280423e94ad81d96d0aeb5180504fc0f7a40cb3619dd39bd6a95ec1680a86ed6ab0f9828d",
+        "event": "",
+        "event_payload": "cbb219d73a3d9645a3bcdad00e67656f03000000000000000000000000000000640062007800"
+      },
+      {
+        "imr": 0,
+        "event_type": 4,
+        "digest": "394341b7182cd227c5c6b07ef8000cdfd86136c4292b8e576573ad7ed9ae41019f5818b4b971c9effc60e1ad9f1289f0",
+        "event": "",
+        "event_payload": "00000000"
+      },
+      {
+        "imr": 0,
+        "event_type": 10,
+        "digest": "39740da2ea1e7e6c69e5e6569755b2ad6d622a8a9983a2c5b32d5574659dbdc4ca8b95b1c766bd610bc5c26dcde842f8",
+        "event": "",
+        "event_payload": "414350492044415441"
+      },
+      {
+        "imr": 0,
+        "event_type": 10,
+        "digest": "6385b89d2decb3de678d51faba0ff3506835915818fd3ee53a739aa678cd9c76bdd755adfa0aa714cf35a1abe062b253",
+        "event": "",
+        "event_payload": "414350492044415441"
+      },
+      {
+        "imr": 0,
+        "event_type": 10,
+        "digest": "05705c3ca9d71e908d5ce70d4331b6aadce5331b9a6a546f222f017fb0e1797b951a3dac72f59cb197a0c897a201ca07",
+        "event": "",
+        "event_payload": "414350492044415441"
+      },
+      {
+        "imr": 1,
+        "event_type": 2147483651,
+        "digest": "90e278aa4d688f4f05bf76f1786fea174abcea0d6b44e81cea5b3327f3f211e5c465a9c34b513283bed2512bca6d4a19",
+        "event": "",
+        "event_payload": "1860fd7a0000000000c485000000000000000000000000002a000000000000000403140072f728144ab61e44b8c39ebdd7f893c7040412006b00650072006e0065006c0000007fff0400"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483650,
+        "digest": "1dd6f7b457ad880d840d41c961283bab688e94e4b59359ea45686581e90feccea3c624b1226113f824f315eb60ae0a7c",
+        "event": "",
+        "event_payload": "61dfe48bca93d211aa0d00e098032b8c0900000000000000020000000000000042006f006f0074004f0072006400650072000000"
+      },
+      {
+        "imr": 0,
+        "event_type": 2147483650,
+        "digest": "23ada07f5261f12f34a0bd8e46760962d6b4d576a416f1fea1c64bc656b1d28eacf7047ae6e967c58fd2a98bfa74c298",
+        "event": "",
+        "event_payload": "61dfe48bca93d211aa0d00e098032b8c08000000000000003e0000000000000042006f006f0074003000300030003000090100002c0055006900410070007000000004071400c9bdb87cebf8344faaea3ee4af6516a10406140021aa2c4614760345836e8ab6f46623317fff0400"
+      },
+      {
+        "imr": 1,
+        "event_type": 2147483655,
+        "digest": "77a0dab2312b4e1e57a84d865a21e5b2ee8d677a21012ada819d0a98988078d3d740f6346bfe0abaa938ca20439a8d71",
+        "event": "",
+        "event_payload": "43616c6c696e6720454649204170706c69636174696f6e2066726f6d20426f6f74204f7074696f6e"
+      },
+      {
+        "imr": 1,
+        "event_type": 4,
+        "digest": "394341b7182cd227c5c6b07ef8000cdfd86136c4292b8e576573ad7ed9ae41019f5818b4b971c9effc60e1ad9f1289f0",
+        "event": "",
+        "event_payload": "00000000"
+      },
+      {
+        "imr": 2,
+        "event_type": 6,
+        "digest": "6ec1ffeee872ca08ae3301c05890516deead7a24d961eb24eefef1ab63901aab85afdc971d5d6c43dfa183009f49df9f",
+        "event": "",
+        "event_payload": "ed223b8f1a0000004c4f414445445f494d4147453a3a4c6f61644f7074696f6e7300"
+      },
+      {
+        "imr": 2,
+        "event_type": 6,
+        "digest": "5eb4f34f2ec49071551c5562ebaab9f86408f4a0eadaa3d7f05157e37ab04a1f040a82eaae94015d628a7ea4aa482cd2",
+        "event": "",
+        "event_payload": "ec223b8f0d0000004c696e757820696e6974726400"
+      },
+      {
+        "imr": 1,
+        "event_type": 2147483655,
+        "digest": "214b0bef1379756011344877743fdc2a5382bac6e70362d624ccf3f654407c1b4badf7d8f9295dd3dabdef65b27677e0",
+        "event": "",
+        "event_payload": "4578697420426f6f7420536572766963657320496e766f636174696f6e"
+      },
+      {
+        "imr": 1,
+        "event_type": 2147483655,
+        "digest": "0a2e01c85deae718a530ad8c6d20a84009babe6c8989269e950d8cf440c6e997695e64d455c4174a652cd080f6230b74",
+        "event": "",
+        "event_payload": "4578697420426f6f742053657276696365732052657475726e656420776974682053756363657373"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "f9974020ef507068183313d0ca808e0d1ca9b2d1ad0c61f5784e7157c362c06536f5ddacdad4451693f48fcc72fff624",
+        "event": "system-preparing",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "1ec22db0a6536be2c7bfe425fce58819c60d8b909616b2eb52db71341c60eaa07acec2919bab809e1bf96fa5d0673929",
+        "event": "app-id",
+        "event_payload": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "f23ad3f9b62d30d97fa35b13ed997c6e36d46f9ea7336d3cf2fe9b61fcc0de30f8177c2f796e7bae7e47b943f5e46efd",
+        "event": "compose-hash",
+        "event_payload": "41cf215c2ba553eff8340e6ac364b914b67a5d861ec7e0a663517391a4356e3a"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "3e340410da69b5fbb75c60f40790c43db90bfb5d82b0af6a7b8e6f246c8df7087056bfdaeddf7e9ca2dccd0a6b2f952d",
+        "event": "instance-id",
+        "event_payload": "e1c95725e01747ef859cb44c1ab08b828e5eb76c"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "98bd7e6bd3952720b65027fd494834045d06b4a714bf737a06b874638b3ea00ff402f7f583e3e3b05e921c8570433ac6",
+        "event": "boot-mr-done",
+        "event_payload": ""
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "f90478ca858afb60d2b963a882e7508d2a88cbd348ed63a0de303bc59c82c2dfb14c3677e8ff00cc2ffeb84603e2f413",
+        "event": "mr-kms",
+        "event_payload": "7eb8f89cf5067da82fe5a8321dd6dbd08681c25165dbd0ab3cefc26bbd028855"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "ce4d96a1544f2f558070c691b7911370690ea3f7f6cd41e67dbd0a30a9f745ff72b1a4f6ccdc3cbfe6d0e794b72d66eb",
+        "event": "os-image-hash",
+        "event_payload": "de9c74f0c85d0820ce075cb4a99f8e39f7b681be632907c5bf8bdc95ea72feb9"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "83368b43a0fc6f824f5a9220592df85fd30e2d405ecbd253a5c6354af63e6c9b41aec557c38a38e348ab87f9ac8fc68c",
+        "event": "key-provider",
+        "event_payload": "7b226e616d65223a226b6d73222c226964223a223330353933303133303630373261383634386365336430323031303630383261383634386365336430333031303730333432303030343838343465623432636364663863353266643466313734663336326663623962626431396334356664343866316564656332643866316361323335333665633161373430323162346365653631306330373466383239346434333162326237666565326333396535333333666461663061343532326434336662313539643966227d"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "ba51104636900268b0e059fa3d266419d079d1e94aea26fb9fcbb8d764bf4c89a67ac271b8a0d1a3989945132a111fc7",
+        "event": "storage-fs",
+        "event_payload": "7a6673"
+      },
+      {
+        "imr": 3,
+        "event_type": 134217729,
+        "digest": "1a76b2a80a0be71eae59f80945d876351a7a3fb8e9fd1ff1cede5734aa84ea11fd72b4edfbb6f04e5a85edd114c751bd",
+        "event": "system-ready",
+        "event_payload": ""
+      }
+    ],
+    "app_compose": "{\"allowed_envs\":[\"DSTACK_AUTHORIZED_KEYS\"],\"docker_compose_file\":\"# SPIKE ONLY — prove nested container via guest docker.sock + socket-proxy in measured compose\\nservices:\\n  socket-proxy:\\n    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459\\n    restart: unless-stopped\\n    environment:\\n      CONTAINERS: \\\"1\\\"\\n      IMAGES: \\\"1\\\"\\n      POST: \\\"1\\\"\\n      ALLOW_START: \\\"1\\\"\\n      ALLOW_STOP: \\\"1\\\"\\n      NETWORKS: \\\"1\\\"\\n      AUTH: \\\"0\\\"\\n      BUILD: \\\"0\\\"\\n      EXEC: \\\"0\\\"\\n      VOLUMES: \\\"0\\\"\\n      SWARM: \\\"0\\\"\\n      SERVICES: \\\"0\\\"\\n      SYSTEM: \\\"0\\\"\\n      INFO: \\\"1\\\"\\n    volumes:\\n      - /var/run/docker.sock:/var/run/docker.sock:ro\\n  agent:\\n    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\\n    restart: \\\"no\\\"\\n    depends_on:\\n      - socket-proxy\\n    command:\\n      - /bin/sh\\n      - -c\\n      - |\\n        set -ex\\n        echo SPIKE_START\\n        apk add --no-cache curl jq >/dev/null\\n        for i in $(seq 1 90); do\\n          curl -fsS http://socket-proxy:2375/version && break\\n          sleep 2\\n        done\\n        curl -fsS http://socket-proxy:2375/version\\n        echo\\n        curl -fsS -X POST \\\"http://socket-proxy:2375/images/create?fromImage=hello-world&tag=latest\\\"\\n        echo\\n        CREATE=$$(curl -fsS -X POST -H 'Content-Type: application/json' \\\\\\n          -d '{\\\"Image\\\":\\\"hello-world:latest\\\"}' \\\\\\n          http://socket-proxy:2375/containers/create)\\n        echo \\\"CREATE=$$CREATE\\\"\\n        CID=$$(echo \\\"$$CREATE\\\" | jq -r .Id)\\n        echo \\\"CID=$$CID\\\"\\n        curl -fsS -X POST \\\"http://socket-proxy:2375/containers/$$CID/start\\\"\\n        echo\\n        sleep 2\\n        # logs are multiplexed; still useful as presence signal\\n        curl -fsS \\\"http://socket-proxy:2375/containers/$$CID/json\\\" | jq '{Id,State,Image,Config}'\\n        echo SPIKE_NESTED_OK\\n        sleep 180\\n\",\"features\":[\"kms\",\"tproxy-net\"],\"gateway_enabled\":true,\"kms_enabled\":true,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"\",\"no_instance_id\":false,\"pre_launch_script\":\"#!/bin/bash\\necho \\\"----------------------------------------------\\\"\\necho \\\"Running Phala Cloud Pre-Launch Script v0.0.15\\\"\\necho \\\"----------------------------------------------\\\"\\nset -e\\n\\n# Function: notify host\\n\\nnotify_host() {\\n    if command -v dstack-util >/dev/null 2>&1; then\\n        dstack-util notify-host -e \\\"$1\\\" -d \\\"$2\\\"\\n    else\\n        tdxctl notify-host -e \\\"$1\\\" -d \\\"$2\\\"\\n    fi\\n}\\n\\nnotify_host_hoot_info() {\\n    notify_host \\\"boot.progress\\\" \\\"$1\\\"\\n}\\n\\nnotify_host_hoot_error() {\\n    notify_host \\\"boot.error\\\" \\\"$1\\\"\\n}\\n\\n# Function: Perform Docker cleanup\\nperform_cleanup() {\\n    echo \\\"Pruning unused images\\\"\\n    docker image prune -af\\n    echo \\\"Pruning unused volumes\\\"\\n    docker volume prune -f\\n    notify_host_hoot_info \\\"docker cleanup completed\\\"\\n}\\n\\n# Function: Check Docker login status without exposing credentials\\ncheck_docker_login() {\\n    local registry=\\\"$1\\\"\\n\\n    # When registry is specified, check auth entry for that registry in Docker config\\n    if [[ -n \\\"$registry\\\" ]]; then\\n        local docker_config_path=\\\"${DOCKER_CONFIG:-$HOME/.docker}/config.json\\\"\\n        if [[ -f \\\"$docker_config_path\\\" ]] && grep -q \\\"$registry\\\" \\\"$docker_config_path\\\"; then\\n            return 0\\n        else\\n            return 1\\n        fi\\n    fi\\n\\n    # Fallback check when no explicit registry is provided\\n    if docker info 2>/dev/null | grep -q \\\"Username\\\"; then\\n        return 0\\n    else\\n        return 1\\n    fi\\n}\\n\\n# Main logic starts here\\necho \\\"Starting login process...\\\"\\n\\n# Check if Docker credentials exist\\nif [[ -n \\\"$DSTACK_DOCKER_USERNAME\\\" && -n \\\"$DSTACK_DOCKER_PASSWORD\\\" ]]; then\\n    echo \\\"Docker credentials found\\\"\\n    DOCKER_REGISTRY_TARGET=\\\"${DSTACK_DOCKER_REGISTRY:-docker.io}\\\"\\n    echo \\\"Target Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n\\n    # Check if already logged in\\n    if check_docker_login \\\"$DSTACK_DOCKER_REGISTRY\\\"; then\\n        echo \\\"Already logged in to Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n    else\\n        echo \\\"Logging in to Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n        # Login without exposing password in process list\\n        if [[ -n \\\"$DSTACK_DOCKER_REGISTRY\\\" ]]; then\\n            echo \\\"$DSTACK_DOCKER_PASSWORD\\\" | docker login -u \\\"$DSTACK_DOCKER_USERNAME\\\" --password-stdin \\\"$DSTACK_DOCKER_REGISTRY\\\"\\n        else\\n            echo \\\"$DSTACK_DOCKER_PASSWORD\\\" | docker login -u \\\"$DSTACK_DOCKER_USERNAME\\\" --password-stdin\\n        fi\\n\\n        if [ $? -eq 0 ]; then\\n            echo \\\"Docker login successful: $DOCKER_REGISTRY_TARGET\\\"\\n        else\\n            echo \\\"Docker login failed: $DOCKER_REGISTRY_TARGET\\\"\\n            notify_host_hoot_error \\\"docker login failed\\\"\\n            exit 1\\n        fi\\n    fi\\n# Check if AWS ECR credentials exist\\nelif [[ -n \\\"$DSTACK_AWS_ACCESS_KEY_ID\\\" && -n \\\"$DSTACK_AWS_SECRET_ACCESS_KEY\\\" && -n \\\"$DSTACK_AWS_REGION\\\" && -n \\\"$DSTACK_AWS_ECR_REGISTRY\\\" ]]; then\\n    echo \\\"AWS ECR credentials found\\\"\\n\\n    # Check if AWS CLI is installed\\n    if [ ! -f \\\"./aws/dist/aws\\\" ]; then\\n        notify_host_hoot_info \\\"awscli not installed, installing...\\\"\\n        echo \\\"AWS CLI not installed, installing...\\\"\\n        curl \\\"https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.24.14.zip\\\" -o \\\"awscliv2.zip\\\"\\n        echo \\\"6ff031a26df7daebbfa3ccddc9af1450 awscliv2.zip\\\" | md5sum -c\\n        if [ $? -ne 0 ]; then\\n            echo \\\"MD5 checksum failed\\\"\\n            notify_host_hoot_error \\\"awscli install failed\\\"\\n            exit 1\\n        fi\\n        unzip awscliv2.zip &> /dev/null\\n    else\\n        echo \\\"AWS CLI is already installed: ./aws/dist/aws\\\"\\n    fi\\n\\n    # Set AWS credentials as environment variables\\n    export AWS_ACCESS_KEY_ID=\\\"$DSTACK_AWS_ACCESS_KEY_ID\\\"\\n    export AWS_SECRET_ACCESS_KEY=\\\"$DSTACK_AWS_SECRET_ACCESS_KEY\\\"\\n    export AWS_DEFAULT_REGION=\\\"$DSTACK_AWS_REGION\\\"\\n\\n    # Set session token if provided (for temporary credentials)\\n    if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n        echo \\\"AWS session token found, using temporary credentials\\\"\\n        export AWS_SESSION_TOKEN=\\\"$DSTACK_AWS_SESSION_TOKEN\\\"\\n    fi\\n\\n    # Test AWS credentials before attempting ECR login\\n    echo \\\"Testing AWS credentials...\\\"\\n    if ! ./aws/dist/aws sts get-caller-identity &> /dev/null; then\\n        echo \\\"AWS credentials test failed\\\"\\n        # For session token credentials, this might be expected if they're expired\\n        # Log warning but don't fail startup\\n        if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n            echo \\\"Warning: AWS temporary credentials may have expired, continuing startup\\\"\\n            notify_host_hoot_info \\\"AWS temporary credentials may have expired\\\"\\n        else\\n            echo \\\"AWS credentials test failed\\\"\\n            notify_host_hoot_error \\\"Invalid AWS credentials\\\"\\n            exit 1\\n        fi\\n    else\\n        echo \\\"Logging in to AWS ECR...\\\"\\n        ./aws/dist/aws ecr get-login-password --region $DSTACK_AWS_REGION | docker login --username AWS --password-stdin \\\"$DSTACK_AWS_ECR_REGISTRY\\\"\\n        if [ $? -eq 0 ]; then\\n            echo \\\"AWS ECR login successful\\\"\\n            notify_host_hoot_info \\\"AWS ECR login successful\\\"\\n        else\\n            echo \\\"AWS ECR login failed\\\"\\n            # For session token credentials, don't fail startup if login fails\\n            if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n                echo \\\"Warning: AWS ECR login failed with temporary credentials, continuing startup\\\"\\n                notify_host_hoot_info \\\"AWS ECR login failed with temporary credentials\\\"\\n            else\\n                notify_host_hoot_error \\\"AWS ECR login failed\\\"\\n                exit 1\\n            fi\\n        fi\\n    fi\\nfi\\n\\nperform_cleanup\\n\\n#\\n# GHCR image pull access verification (pure HTTP, no docker daemon)\\n#\\nif [[ \\\"$DOCKER_REGISTRY_TARGET\\\" == \\\"ghcr.io\\\" && -n \\\"$DSTACK_DOCKER_USERNAME\\\" && -n \\\"$DSTACK_DOCKER_PASSWORD\\\" ]]; then\\n    COMPOSE_IMAGES=$(grep 'image:' /dstack/docker-compose.yaml 2>/dev/null | awk '{print $2}' | tr -d '\\\"'\\\"'\\\" || true)\\n    for img in $COMPOSE_IMAGES; do\\n        [[ \\\"$img\\\" != ghcr.io/* ]] && continue\\n        repo=\\\"${img#ghcr.io/}\\\"; repo=\\\"${repo%%:*}\\\"\\n        tag=\\\"${img##*:}\\\"; [[ \\\"$tag\\\" == \\\"$img\\\" || \\\"$tag\\\" == \\\"$repo\\\" ]] && tag=\\\"latest\\\"\\n        echo \\\"Verifying GHCR pull access: $img\\\"\\n        token=$(curl -sf -u \\\"$DSTACK_DOCKER_USERNAME:$DSTACK_DOCKER_PASSWORD\\\"             \\\"https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull\\\" | jq -r '.token // empty' || true)\\n        if [[ -z \\\"$token\\\" ]]; then\\n            echo \\\"ERROR: GHCR token exchange failed for $img\\\"\\n            notify_host_hoot_error \\\"GHCR token exchange failed: $img\\\"\\n            exit 1\\n        fi\\n        http_code=$(curl -s -o /dev/null -w \\\"%{http_code}\\\" -H \\\"Authorization: Bearer $token\\\"             -H \\\"Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json\\\"             \\\"https://ghcr.io/v2/${repo}/manifests/${tag}\\\")\\n        if [[ \\\"$http_code\\\" != \\\"200\\\" ]]; then\\n            echo \\\"ERROR: GHCR pull access denied for $img (HTTP $http_code)\\\"\\n            notify_host_hoot_error \\\"GHCR pull access denied: $img (HTTP $http_code)\\\"\\n            exit 1\\n        fi\\n        echo \\\"GHCR pull access OK: $img\\\"\\n    done\\nfi\\n\\n#\\n# Pull latest images from docker-compose.yaml so existing CVMs pick up new tags.\\n# Pull is fail-soft: short-lived tokens may expire between login and pull, but\\n# falling back to already-cached images is preferable to blocking boot.\\n#\\necho \\\"Images before pull:\\\"\\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\\n\\necho \\\"Pulling latest images from /dstack/docker-compose.yaml...\\\"\\nif docker compose -f /dstack/docker-compose.yaml pull; then\\n    echo \\\"docker compose pull completed\\\"\\n    notify_host_hoot_info \\\"docker compose pull completed\\\"\\nelse\\n    echo \\\"WARNING: docker compose pull failed; continuing with existing images\\\"\\n    notify_host_hoot_info \\\"docker compose pull failed; using existing images\\\"\\nfi\\n\\necho \\\"Images after pull:\\\"\\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\\n\\n#\\n# Set root password.\\n#\\necho \\\"Setting root password..\\\"\\n\\n# Check if password files are writable\\nPASSWD_WRITABLE=true\\nif [ ! -w /etc/passwd ]; then\\n    echo \\\"Warning: /etc/passwd is read-only\\\"\\n    PASSWD_WRITABLE=false\\nfi\\nif [ ! -w /etc/shadow ]; then\\n    echo \\\"Warning: /etc/shadow is read-only\\\"\\n    PASSWD_WRITABLE=false\\nfi\\n\\nif [ \\\"$PASSWD_WRITABLE\\\" = \\\"false\\\" ]; then\\n    echo \\\"Skipping password setup due to read-only file system\\\"\\nelse\\n    # Check if chpasswd is available\\n    if command -v chpasswd >/dev/null 2>&1; then\\n        echo \\\"Using chpasswd method\\\"\\n\\n        if [ -n \\\"$DSTACK_ROOT_PASSWORD\\\" ]; then\\n            echo \\\"Setting root password from user..\\\"\\n            echo \\\"root:$DSTACK_ROOT_PASSWORD\\\" | chpasswd\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set/updated from DSTACK_ROOT_PASSWORD\\\"\\n        elif [ -z \\\"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\\\" ]; then\\n            echo \\\"Setting random root password..\\\"\\n            DSTACK_ROOT_PASSWORD=$(\\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\\n            )\\n            echo \\\"root:$DSTACK_ROOT_PASSWORD\\\" | chpasswd\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set (random auto-init)\\\"\\n        else\\n            echo \\\"Root password already set; no changes.\\\"\\n        fi\\n    else\\n        echo \\\"Using passwd method\\\"\\n\\n        if [ -n \\\"$DSTACK_ROOT_PASSWORD\\\" ]; then\\n            echo \\\"Setting root password from user..\\\"\\n            echo \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd --stdin root 2>/dev/null                 || printf '%s\\n%s\\n' \\\"$DSTACK_ROOT_PASSWORD\\\" \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd root\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set/updated from DSTACK_ROOT_PASSWORD\\\"\\n        elif [ -z \\\"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\\\" ]; then\\n            echo \\\"Setting random root password..\\\"\\n            DSTACK_ROOT_PASSWORD=$(\\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\\n            )\\n            echo \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd --stdin root 2>/dev/null                 || printf '%s\\n%s\\n' \\\"$DSTACK_ROOT_PASSWORD\\\" \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd root\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set (random auto-init)\\\"\\n        else\\n            echo \\\"Root password already set; no changes.\\\"\\n        fi\\n    fi\\nfi\\n\\n#\\n# Set SSH authorized keys\\n#\\nif mkdir -p /home/root/.ssh 2>/dev/null; then\\n    if [[ -n \\\"$DSTACK_ROOT_PUBLIC_KEY\\\" ]]; then\\n        echo \\\"$DSTACK_ROOT_PUBLIC_KEY\\\" > /home/root/.ssh/authorized_keys\\n        unset $DSTACK_ROOT_PUBLIC_KEY\\n        echo \\\"Root public key set\\\"\\n    fi\\n    if [[ -n \\\"$DSTACK_AUTHORIZED_KEYS\\\" ]]; then\\n        echo \\\"$DSTACK_AUTHORIZED_KEYS\\\" > /home/root/.ssh/authorized_keys\\n        unset $DSTACK_AUTHORIZED_KEYS\\n        echo \\\"Root authorized_keys set\\\"\\n    fi\\n\\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\\n        if [[ $(jq 'has(\\\"ssh_authorized_keys\\\")' /dstack/user_config 2>/dev/null) == \\\"true\\\" ]]; then\\n            jq -j '.ssh_authorized_keys' /dstack/user_config >> /home/root/.ssh/authorized_keys\\n            # Remove duplicates if there are multiple keys\\n            if [[ $(cat /home/root/.ssh/authorized_keys | wc -l) -gt 1 ]]; then\\n                sort -u /home/root/.ssh/authorized_keys > /home/root/.ssh/authorized_keys.tmp\\n                mv /home/root/.ssh/authorized_keys.tmp /home/root/.ssh/authorized_keys\\n            fi\\n            echo \\\"Set root authorized_keys from user preferences, total\\\" $(cat /home/root/.ssh/authorized_keys | wc -l) \\\"keys\\\"\\n        fi\\n    fi\\nelse\\n    echo \\\"Warning: Cannot create /home/root/.ssh directory (read-only file system?)\\\"\\n    echo \\\"Skipping SSH key setup\\\"\\nfi\\n\\nif [[ -S /var/run/dstack.sock ]]; then\\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/dstack.sock http://dstack/Info | jq -j .app_id)\\nelif [[ -S /var/run/tappd.sock ]]; then\\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/tappd.sock http://dstack/prpc/Tappd.Info | jq -j .app_id)\\nfi\\n# Check if DSTACK_GATEWAY_DOMAIN is not set, try to get it from user_config or app-compose.json\\n# Priority: user_config > app-compose.json\\nif [[ -z \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]]; then\\n    # First try to get from /dstack/user_config if it exists and is valid JSON\\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\\n        if [[ $(jq 'has(\\\"default_gateway_domain\\\")' /dstack/user_config 2>/dev/null) == \\\"true\\\" ]]; then\\n            export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' /dstack/user_config)\\n        fi\\n    fi\\n\\n    # If still not set, try to get from app-compose.json\\n    if [[ -z \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]] && [[ $(jq 'has(\\\"default_gateway_domain\\\")' app-compose.json) == \\\"true\\\" ]]; then\\n        export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' app-compose.json)\\n    fi\\nfi\\nif [[ -n \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]]; then\\n    export DSTACK_APP_DOMAIN=$DSTACK_APP_ID\\\".\\\"$DSTACK_GATEWAY_DOMAIN\\nfi\\n\\necho \\\"----------------------------------------------\\\"\\necho \\\"Script execution completed\\\"\\necho \\\"----------------------------------------------\\\"\\n\",\"public_logs\":true,\"public_sysinfo\":true,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"zfs\",\"tproxy_enabled\":true}"
+  },
+  "compose_file": "{\"allowed_envs\":[\"DSTACK_AUTHORIZED_KEYS\"],\"docker_compose_file\":\"# SPIKE ONLY — prove nested container via guest docker.sock + socket-proxy in measured compose\\nservices:\\n  socket-proxy:\\n    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459\\n    restart: unless-stopped\\n    environment:\\n      CONTAINERS: \\\"1\\\"\\n      IMAGES: \\\"1\\\"\\n      POST: \\\"1\\\"\\n      ALLOW_START: \\\"1\\\"\\n      ALLOW_STOP: \\\"1\\\"\\n      NETWORKS: \\\"1\\\"\\n      AUTH: \\\"0\\\"\\n      BUILD: \\\"0\\\"\\n      EXEC: \\\"0\\\"\\n      VOLUMES: \\\"0\\\"\\n      SWARM: \\\"0\\\"\\n      SERVICES: \\\"0\\\"\\n      SYSTEM: \\\"0\\\"\\n      INFO: \\\"1\\\"\\n    volumes:\\n      - /var/run/docker.sock:/var/run/docker.sock:ro\\n  agent:\\n    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\\n    restart: \\\"no\\\"\\n    depends_on:\\n      - socket-proxy\\n    command:\\n      - /bin/sh\\n      - -c\\n      - |\\n        set -ex\\n        echo SPIKE_START\\n        apk add --no-cache curl jq >/dev/null\\n        for i in $(seq 1 90); do\\n          curl -fsS http://socket-proxy:2375/version && break\\n          sleep 2\\n        done\\n        curl -fsS http://socket-proxy:2375/version\\n        echo\\n        curl -fsS -X POST \\\"http://socket-proxy:2375/images/create?fromImage=hello-world&tag=latest\\\"\\n        echo\\n        CREATE=$$(curl -fsS -X POST -H 'Content-Type: application/json' \\\\\\n          -d '{\\\"Image\\\":\\\"hello-world:latest\\\"}' \\\\\\n          http://socket-proxy:2375/containers/create)\\n        echo \\\"CREATE=$$CREATE\\\"\\n        CID=$$(echo \\\"$$CREATE\\\" | jq -r .Id)\\n        echo \\\"CID=$$CID\\\"\\n        curl -fsS -X POST \\\"http://socket-proxy:2375/containers/$$CID/start\\\"\\n        echo\\n        sleep 2\\n        # logs are multiplexed; still useful as presence signal\\n        curl -fsS \\\"http://socket-proxy:2375/containers/$$CID/json\\\" | jq '{Id,State,Image,Config}'\\n        echo SPIKE_NESTED_OK\\n        sleep 180\\n\",\"features\":[\"kms\",\"tproxy-net\"],\"gateway_enabled\":true,\"kms_enabled\":true,\"local_key_provider_enabled\":false,\"manifest_version\":2,\"name\":\"\",\"no_instance_id\":false,\"pre_launch_script\":\"#!/bin/bash\\necho \\\"----------------------------------------------\\\"\\necho \\\"Running Phala Cloud Pre-Launch Script v0.0.15\\\"\\necho \\\"----------------------------------------------\\\"\\nset -e\\n\\n# Function: notify host\\n\\nnotify_host() {\\n    if command -v dstack-util >/dev/null 2>&1; then\\n        dstack-util notify-host -e \\\"$1\\\" -d \\\"$2\\\"\\n    else\\n        tdxctl notify-host -e \\\"$1\\\" -d \\\"$2\\\"\\n    fi\\n}\\n\\nnotify_host_hoot_info() {\\n    notify_host \\\"boot.progress\\\" \\\"$1\\\"\\n}\\n\\nnotify_host_hoot_error() {\\n    notify_host \\\"boot.error\\\" \\\"$1\\\"\\n}\\n\\n# Function: Perform Docker cleanup\\nperform_cleanup() {\\n    echo \\\"Pruning unused images\\\"\\n    docker image prune -af\\n    echo \\\"Pruning unused volumes\\\"\\n    docker volume prune -f\\n    notify_host_hoot_info \\\"docker cleanup completed\\\"\\n}\\n\\n# Function: Check Docker login status without exposing credentials\\ncheck_docker_login() {\\n    local registry=\\\"$1\\\"\\n\\n    # When registry is specified, check auth entry for that registry in Docker config\\n    if [[ -n \\\"$registry\\\" ]]; then\\n        local docker_config_path=\\\"${DOCKER_CONFIG:-$HOME/.docker}/config.json\\\"\\n        if [[ -f \\\"$docker_config_path\\\" ]] && grep -q \\\"$registry\\\" \\\"$docker_config_path\\\"; then\\n            return 0\\n        else\\n            return 1\\n        fi\\n    fi\\n\\n    # Fallback check when no explicit registry is provided\\n    if docker info 2>/dev/null | grep -q \\\"Username\\\"; then\\n        return 0\\n    else\\n        return 1\\n    fi\\n}\\n\\n# Main logic starts here\\necho \\\"Starting login process...\\\"\\n\\n# Check if Docker credentials exist\\nif [[ -n \\\"$DSTACK_DOCKER_USERNAME\\\" && -n \\\"$DSTACK_DOCKER_PASSWORD\\\" ]]; then\\n    echo \\\"Docker credentials found\\\"\\n    DOCKER_REGISTRY_TARGET=\\\"${DSTACK_DOCKER_REGISTRY:-docker.io}\\\"\\n    echo \\\"Target Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n\\n    # Check if already logged in\\n    if check_docker_login \\\"$DSTACK_DOCKER_REGISTRY\\\"; then\\n        echo \\\"Already logged in to Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n    else\\n        echo \\\"Logging in to Docker registry: $DOCKER_REGISTRY_TARGET\\\"\\n        # Login without exposing password in process list\\n        if [[ -n \\\"$DSTACK_DOCKER_REGISTRY\\\" ]]; then\\n            echo \\\"$DSTACK_DOCKER_PASSWORD\\\" | docker login -u \\\"$DSTACK_DOCKER_USERNAME\\\" --password-stdin \\\"$DSTACK_DOCKER_REGISTRY\\\"\\n        else\\n            echo \\\"$DSTACK_DOCKER_PASSWORD\\\" | docker login -u \\\"$DSTACK_DOCKER_USERNAME\\\" --password-stdin\\n        fi\\n\\n        if [ $? -eq 0 ]; then\\n            echo \\\"Docker login successful: $DOCKER_REGISTRY_TARGET\\\"\\n        else\\n            echo \\\"Docker login failed: $DOCKER_REGISTRY_TARGET\\\"\\n            notify_host_hoot_error \\\"docker login failed\\\"\\n            exit 1\\n        fi\\n    fi\\n# Check if AWS ECR credentials exist\\nelif [[ -n \\\"$DSTACK_AWS_ACCESS_KEY_ID\\\" && -n \\\"$DSTACK_AWS_SECRET_ACCESS_KEY\\\" && -n \\\"$DSTACK_AWS_REGION\\\" && -n \\\"$DSTACK_AWS_ECR_REGISTRY\\\" ]]; then\\n    echo \\\"AWS ECR credentials found\\\"\\n\\n    # Check if AWS CLI is installed\\n    if [ ! -f \\\"./aws/dist/aws\\\" ]; then\\n        notify_host_hoot_info \\\"awscli not installed, installing...\\\"\\n        echo \\\"AWS CLI not installed, installing...\\\"\\n        curl \\\"https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.24.14.zip\\\" -o \\\"awscliv2.zip\\\"\\n        echo \\\"6ff031a26df7daebbfa3ccddc9af1450 awscliv2.zip\\\" | md5sum -c\\n        if [ $? -ne 0 ]; then\\n            echo \\\"MD5 checksum failed\\\"\\n            notify_host_hoot_error \\\"awscli install failed\\\"\\n            exit 1\\n        fi\\n        unzip awscliv2.zip &> /dev/null\\n    else\\n        echo \\\"AWS CLI is already installed: ./aws/dist/aws\\\"\\n    fi\\n\\n    # Set AWS credentials as environment variables\\n    export AWS_ACCESS_KEY_ID=\\\"$DSTACK_AWS_ACCESS_KEY_ID\\\"\\n    export AWS_SECRET_ACCESS_KEY=\\\"$DSTACK_AWS_SECRET_ACCESS_KEY\\\"\\n    export AWS_DEFAULT_REGION=\\\"$DSTACK_AWS_REGION\\\"\\n\\n    # Set session token if provided (for temporary credentials)\\n    if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n        echo \\\"AWS session token found, using temporary credentials\\\"\\n        export AWS_SESSION_TOKEN=\\\"$DSTACK_AWS_SESSION_TOKEN\\\"\\n    fi\\n\\n    # Test AWS credentials before attempting ECR login\\n    echo \\\"Testing AWS credentials...\\\"\\n    if ! ./aws/dist/aws sts get-caller-identity &> /dev/null; then\\n        echo \\\"AWS credentials test failed\\\"\\n        # For session token credentials, this might be expected if they're expired\\n        # Log warning but don't fail startup\\n        if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n            echo \\\"Warning: AWS temporary credentials may have expired, continuing startup\\\"\\n            notify_host_hoot_info \\\"AWS temporary credentials may have expired\\\"\\n        else\\n            echo \\\"AWS credentials test failed\\\"\\n            notify_host_hoot_error \\\"Invalid AWS credentials\\\"\\n            exit 1\\n        fi\\n    else\\n        echo \\\"Logging in to AWS ECR...\\\"\\n        ./aws/dist/aws ecr get-login-password --region $DSTACK_AWS_REGION | docker login --username AWS --password-stdin \\\"$DSTACK_AWS_ECR_REGISTRY\\\"\\n        if [ $? -eq 0 ]; then\\n            echo \\\"AWS ECR login successful\\\"\\n            notify_host_hoot_info \\\"AWS ECR login successful\\\"\\n        else\\n            echo \\\"AWS ECR login failed\\\"\\n            # For session token credentials, don't fail startup if login fails\\n            if [[ -n \\\"$DSTACK_AWS_SESSION_TOKEN\\\" ]]; then\\n                echo \\\"Warning: AWS ECR login failed with temporary credentials, continuing startup\\\"\\n                notify_host_hoot_info \\\"AWS ECR login failed with temporary credentials\\\"\\n            else\\n                notify_host_hoot_error \\\"AWS ECR login failed\\\"\\n                exit 1\\n            fi\\n        fi\\n    fi\\nfi\\n\\nperform_cleanup\\n\\n#\\n# GHCR image pull access verification (pure HTTP, no docker daemon)\\n#\\nif [[ \\\"$DOCKER_REGISTRY_TARGET\\\" == \\\"ghcr.io\\\" && -n \\\"$DSTACK_DOCKER_USERNAME\\\" && -n \\\"$DSTACK_DOCKER_PASSWORD\\\" ]]; then\\n    COMPOSE_IMAGES=$(grep 'image:' /dstack/docker-compose.yaml 2>/dev/null | awk '{print $2}' | tr -d '\\\"'\\\"'\\\" || true)\\n    for img in $COMPOSE_IMAGES; do\\n        [[ \\\"$img\\\" != ghcr.io/* ]] && continue\\n        repo=\\\"${img#ghcr.io/}\\\"; repo=\\\"${repo%%:*}\\\"\\n        tag=\\\"${img##*:}\\\"; [[ \\\"$tag\\\" == \\\"$img\\\" || \\\"$tag\\\" == \\\"$repo\\\" ]] && tag=\\\"latest\\\"\\n        echo \\\"Verifying GHCR pull access: $img\\\"\\n        token=$(curl -sf -u \\\"$DSTACK_DOCKER_USERNAME:$DSTACK_DOCKER_PASSWORD\\\"             \\\"https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull\\\" | jq -r '.token // empty' || true)\\n        if [[ -z \\\"$token\\\" ]]; then\\n            echo \\\"ERROR: GHCR token exchange failed for $img\\\"\\n            notify_host_hoot_error \\\"GHCR token exchange failed: $img\\\"\\n            exit 1\\n        fi\\n        http_code=$(curl -s -o /dev/null -w \\\"%{http_code}\\\" -H \\\"Authorization: Bearer $token\\\"             -H \\\"Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json\\\"             \\\"https://ghcr.io/v2/${repo}/manifests/${tag}\\\")\\n        if [[ \\\"$http_code\\\" != \\\"200\\\" ]]; then\\n            echo \\\"ERROR: GHCR pull access denied for $img (HTTP $http_code)\\\"\\n            notify_host_hoot_error \\\"GHCR pull access denied: $img (HTTP $http_code)\\\"\\n            exit 1\\n        fi\\n        echo \\\"GHCR pull access OK: $img\\\"\\n    done\\nfi\\n\\n#\\n# Pull latest images from docker-compose.yaml so existing CVMs pick up new tags.\\n# Pull is fail-soft: short-lived tokens may expire between login and pull, but\\n# falling back to already-cached images is preferable to blocking boot.\\n#\\necho \\\"Images before pull:\\\"\\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\\n\\necho \\\"Pulling latest images from /dstack/docker-compose.yaml...\\\"\\nif docker compose -f /dstack/docker-compose.yaml pull; then\\n    echo \\\"docker compose pull completed\\\"\\n    notify_host_hoot_info \\\"docker compose pull completed\\\"\\nelse\\n    echo \\\"WARNING: docker compose pull failed; continuing with existing images\\\"\\n    notify_host_hoot_info \\\"docker compose pull failed; using existing images\\\"\\nfi\\n\\necho \\\"Images after pull:\\\"\\ndocker images --format '{{.Repository}}:{{.Tag}} {{.ID}} ({{.CreatedSince}})'\\n\\n#\\n# Set root password.\\n#\\necho \\\"Setting root password..\\\"\\n\\n# Check if password files are writable\\nPASSWD_WRITABLE=true\\nif [ ! -w /etc/passwd ]; then\\n    echo \\\"Warning: /etc/passwd is read-only\\\"\\n    PASSWD_WRITABLE=false\\nfi\\nif [ ! -w /etc/shadow ]; then\\n    echo \\\"Warning: /etc/shadow is read-only\\\"\\n    PASSWD_WRITABLE=false\\nfi\\n\\nif [ \\\"$PASSWD_WRITABLE\\\" = \\\"false\\\" ]; then\\n    echo \\\"Skipping password setup due to read-only file system\\\"\\nelse\\n    # Check if chpasswd is available\\n    if command -v chpasswd >/dev/null 2>&1; then\\n        echo \\\"Using chpasswd method\\\"\\n\\n        if [ -n \\\"$DSTACK_ROOT_PASSWORD\\\" ]; then\\n            echo \\\"Setting root password from user..\\\"\\n            echo \\\"root:$DSTACK_ROOT_PASSWORD\\\" | chpasswd\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set/updated from DSTACK_ROOT_PASSWORD\\\"\\n        elif [ -z \\\"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\\\" ]; then\\n            echo \\\"Setting random root password..\\\"\\n            DSTACK_ROOT_PASSWORD=$(\\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\\n            )\\n            echo \\\"root:$DSTACK_ROOT_PASSWORD\\\" | chpasswd\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set (random auto-init)\\\"\\n        else\\n            echo \\\"Root password already set; no changes.\\\"\\n        fi\\n    else\\n        echo \\\"Using passwd method\\\"\\n\\n        if [ -n \\\"$DSTACK_ROOT_PASSWORD\\\" ]; then\\n            echo \\\"Setting root password from user..\\\"\\n            echo \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd --stdin root 2>/dev/null                 || printf '%s\\n%s\\n' \\\"$DSTACK_ROOT_PASSWORD\\\" \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd root\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set/updated from DSTACK_ROOT_PASSWORD\\\"\\n        elif [ -z \\\"$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)\\\" ]; then\\n            echo \\\"Setting random root password..\\\"\\n            DSTACK_ROOT_PASSWORD=$(\\n                LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null\\n            )\\n            echo \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd --stdin root 2>/dev/null                 || printf '%s\\n%s\\n' \\\"$DSTACK_ROOT_PASSWORD\\\" \\\"$DSTACK_ROOT_PASSWORD\\\" | passwd root\\n            unset DSTACK_ROOT_PASSWORD\\n            echo \\\"Root password set (random auto-init)\\\"\\n        else\\n            echo \\\"Root password already set; no changes.\\\"\\n        fi\\n    fi\\nfi\\n\\n#\\n# Set SSH authorized keys\\n#\\nif mkdir -p /home/root/.ssh 2>/dev/null; then\\n    if [[ -n \\\"$DSTACK_ROOT_PUBLIC_KEY\\\" ]]; then\\n        echo \\\"$DSTACK_ROOT_PUBLIC_KEY\\\" > /home/root/.ssh/authorized_keys\\n        unset $DSTACK_ROOT_PUBLIC_KEY\\n        echo \\\"Root public key set\\\"\\n    fi\\n    if [[ -n \\\"$DSTACK_AUTHORIZED_KEYS\\\" ]]; then\\n        echo \\\"$DSTACK_AUTHORIZED_KEYS\\\" > /home/root/.ssh/authorized_keys\\n        unset $DSTACK_AUTHORIZED_KEYS\\n        echo \\\"Root authorized_keys set\\\"\\n    fi\\n\\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\\n        if [[ $(jq 'has(\\\"ssh_authorized_keys\\\")' /dstack/user_config 2>/dev/null) == \\\"true\\\" ]]; then\\n            jq -j '.ssh_authorized_keys' /dstack/user_config >> /home/root/.ssh/authorized_keys\\n            # Remove duplicates if there are multiple keys\\n            if [[ $(cat /home/root/.ssh/authorized_keys | wc -l) -gt 1 ]]; then\\n                sort -u /home/root/.ssh/authorized_keys > /home/root/.ssh/authorized_keys.tmp\\n                mv /home/root/.ssh/authorized_keys.tmp /home/root/.ssh/authorized_keys\\n            fi\\n            echo \\\"Set root authorized_keys from user preferences, total\\\" $(cat /home/root/.ssh/authorized_keys | wc -l) \\\"keys\\\"\\n        fi\\n    fi\\nelse\\n    echo \\\"Warning: Cannot create /home/root/.ssh directory (read-only file system?)\\\"\\n    echo \\\"Skipping SSH key setup\\\"\\nfi\\n\\nif [[ -S /var/run/dstack.sock ]]; then\\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/dstack.sock http://dstack/Info | jq -j .app_id)\\nelif [[ -S /var/run/tappd.sock ]]; then\\n    export DSTACK_APP_ID=$(curl -s --unix-socket /var/run/tappd.sock http://dstack/prpc/Tappd.Info | jq -j .app_id)\\nfi\\n# Check if DSTACK_GATEWAY_DOMAIN is not set, try to get it from user_config or app-compose.json\\n# Priority: user_config > app-compose.json\\nif [[ -z \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]]; then\\n    # First try to get from /dstack/user_config if it exists and is valid JSON\\n    if [[ -f /dstack/user_config ]] && jq empty /dstack/user_config 2>/dev/null; then\\n        if [[ $(jq 'has(\\\"default_gateway_domain\\\")' /dstack/user_config 2>/dev/null) == \\\"true\\\" ]]; then\\n            export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' /dstack/user_config)\\n        fi\\n    fi\\n\\n    # If still not set, try to get from app-compose.json\\n    if [[ -z \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]] && [[ $(jq 'has(\\\"default_gateway_domain\\\")' app-compose.json) == \\\"true\\\" ]]; then\\n        export DSTACK_GATEWAY_DOMAIN=$(jq -j '.default_gateway_domain' app-compose.json)\\n    fi\\nfi\\nif [[ -n \\\"$DSTACK_GATEWAY_DOMAIN\\\" ]]; then\\n    export DSTACK_APP_DOMAIN=$DSTACK_APP_ID\\\".\\\"$DSTACK_GATEWAY_DOMAIN\\nfi\\n\\necho \\\"----------------------------------------------\\\"\\necho \\\"Script execution completed\\\"\\necho \\\"----------------------------------------------\\\"\\n\",\"public_logs\":true,\"public_sysinfo\":true,\"public_tcbinfo\":true,\"runner\":\"docker-compose\",\"secure_time\":false,\"storage_fs\":\"zfs\",\"tproxy_enabled\":true}"
+}

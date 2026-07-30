@@ -1,0 +1,138 @@
+# SPIKE: Nested Docker inside Phala TDX CVM via measured socket-proxy
+# Date: 2026-07-30
+# Host: this workspace + Phala Cloud (echobt workspace)
+# Operator: gbase-agent-challenge-deepagent task-02
+
+VERDICT: PASS
+
+## Summary
+
+A throwaway Phala TDX CVM was deployed with a measured app-compose that includes:
+  1) tecnativa/docker-socket-proxy (digest-pinned) mounting guest /var/run/docker.sock:ro
+  2) alpine agent that talks to the proxy over TCP :2375 and runs hello-world via Docker Engine API
+
+Result: nested container hello-world exited 0 inside the CVM. Attestation event log contains
+compose-hash matching the deployed compose. Quote embeds 0x01||compose_hash (mr_config_id layout).
+
+CVM torn down after evidence capture (status deleting → gone).
+
+## Answers to required questions
+
+### 1. Can socket-proxy be declared in app-compose.json?
+YES. It is a normal service inside docker_compose_file (embedded YAML). No special schema field.
+Phala accepted the compose; CVM status=running; services listed via `phala ps`.
+
+### 2. compose-hash / RTMR3 impact?
+YES — full app-compose (including socket-proxy service + docker.sock volume) is hashed.
+  compose_hash (Phala API): 41cf215c2ba553eff8340e6ac364b914b67a5d861ec7e0a663517391a4356e3a
+  event_log IMR3 event "compose-hash" payload: same 32-byte hex
+  quote hex contains: 01 + compose_hash (mr_config_id v1 prefix layout)
+  rtmr3: 5cf68a7e48c71465f274af3e4bfdb9829ec02d1a2520815c0c45480f5fc797177ff985e3f01d2303883db72e5df96f26
+
+Structural local proof (gbase miner app-compose):
+  baseline compose-hash: e29275e80d91ccdb289c09cb36320f2e4a32882dbad458e715f8a32a2e3d4b9a
+  +socket-proxy fragment: e1ce4a2c06ed5a69fe2ab3f207c67eaf06710dc4ab34925dd1dbe8c3f1eeae7e
+  (canonical JSON sort_keys + compact separators — matches miner-bin offline hash)
+
+### 3. Nested docker daemon availability inside CVM?
+YES. Guest runs Docker Engine (not host bare-metal sock).
+  From agent log /version via socket-proxy:
+    Engine Version=25.0.3 ApiVersion=1.44
+    KernelVersion=6.9.0-dstack
+    Os=linux Arch=amd64
+  Official dstack-examples "launcher" pattern mounts /var/run/docker.sock the same way.
+
+### 4. Did a nested container actually run?
+YES.
+  phala ps showed container /nice_bell image=hello-world:latest state=exited (0)
+  Agent logs: CREATE Id=2de886efd66c09a0838dc3958dc211b13dece2bd4532b1326fc4f4dca05ecdd0
+  State.ExitCode=0, SPIKE_NESTED_OK printed
+
+## Caveats (do not over-claim)
+
+1. Runtime-spawned containers (hello-world here) are NOT individually listed in compose-hash/RTMR3.
+   Only the measured compose services (socket-proxy + agent) are. Nested image integrity is an
+   application-policy problem (digest allowlist inside measured agent), not automatic RTMR coverage.
+
+2. gbase frozen contract AGENT_CHALLENGE.md §9.1 still says:
+   "No other long-lived services required for v1. No docker.sock. No `:latest` tags."
+   This SPIKE proves Phala/dstack PLATFORM capability. Adopting socket-proxy in the normative
+   miner template requires an explicit contract/measurement allowlist change — out of scope here.
+
+3. OS image used: dstack-dev-0.5.9 (is_dev=true) — still real TDX CVM on Phala Cloud node prod5
+   (US-WEST-1). Instance type tdx.small (1 vCPU / 2GB).
+
+4. Nested hello-world used tag :latest for the spike only; production must digest-pin.
+
+## Deploy identity
+
+  name:        gbase-spike-nested-docker
+  vm_uuid:     abc7f56e-7bb0-444c-947a-cd89601d35ea
+  app_id:      5c6c52c5cbd86a461532c923b4b045eed18e1eb1
+  dashboard:   https://cloud.phala.com/dashboard/cvms/abc7f56e-7bb0-444c-947a-cd89601d35ea
+  node:        prod5 / US-WEST-1 / dstack v0.5.7 host
+  os_image_hash: de9c74f0c85d0820ce075cb4a99f8e39f7b681be632907c5bf8bdc95ea72feb9
+  compose_hash:  41cf215c2ba553eff8340e6ac364b914b67a5d861ec7e0a663517391a4356e3a
+  deleted:     yes (phala cvms delete; list total=0 after)
+
+## Commands (exact)
+
+```bash
+# CLI
+npm install -g phala@1.1.19
+phala status -j   # Logged in as echobt / echobts-projects
+# compose at /tmp/opencode/phala-spike-nested-docker/docker-compose.yml
+phala deploy --name gbase-spike-nested-docker \
+  --compose /tmp/opencode/phala-spike-nested-docker/docker-compose.yml \
+  --instance-type tdx.small --no-listed --public-logs --wait -j
+# => vm_uuid abc7f56e-7bb0-444c-947a-cd89601d35ea success=true
+
+phala cvms get --cvm-id abc7f56e-7bb0-444c-947a-cd89601d35ea -j
+# status=running compose_hash=41cf215c...
+
+phala ps --cvm-id abc7f56e-7bb0-444c-947a-cd89601d35ea -j
+# containers: dstack-socket-proxy-1 (running), dstack-agent-1 (running),
+#             nice_bell hello-world:latest Exited (0)
+
+phala logs --cvm-id abc7f56e-7bb0-444c-947a-cd89601d35ea dstack-agent-1 -n 200
+# SPIKE_START ... SPIKE_NESTED_OK
+
+phala cvms attestation --cvm-id abc7f56e-7bb0-444c-947a-cd89601d35ea -j
+# tcb_info.event_log contains event=compose-hash payload=41cf215c...
+
+printf 'y\n' | phala cvms delete --cvm-id abc7f56e-7bb0-444c-947a-cd89601d35ea
+phala cvms list -j   # total=0
+```
+
+## Artifact paths
+
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/docker-compose.yml
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-spike-deploy.out
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-cvm-get.json
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-ps.json
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-agent-logs.txt
+  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-attestation-full.json
+
+## gbase in-repo context (not a STOP)
+
+  crates/miner/src/template.rs — agent + attest-helper only; mounts dstack.sock not docker.sock
+  docs/AGENT_CHALLENGE.md §9.1 L470 — "No docker.sock" for normative v1 miner
+  docker-compose.yml — socket-proxy is control-plane host pattern (updater), not miner CVM today
+
+## Vendor docs corroboration
+
+  - docs.phala.com/dstack/overview: multiple docker containers inside one CVM; guest dockerd
+  - Dstack-TEE/dstack-examples/launcher: official /var/run/docker.sock mount for runtime compose
+  - Dstack-TEE/dstack docs/security/cvm-boundaries.md: compose-hash = hash(app-compose.json) → RTMR3
+  - dstack-examples/dev.sh security_checks flags docker.sock as ERROR for *example hygiene*,
+    but launcher example intentionally uses it — not a platform ban
+
+## PASS criteria checklist
+
+  [x] container ran inside CVM via measured proxy
+  [x] proxy declared in app-compose / docker_compose_file
+  [x] compose-hash present and matches deployed compose
+  [x] quote / event log carries compose-hash (replay surface available)
+  [x] throwaway CVM deleted (no lingering burn)
+
+VERDICT: PASS

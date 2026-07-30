@@ -1,0 +1,44 @@
+{
+  "success": true,
+  "containers": [
+    {
+      "id": "2de886efd66c09a0838dc3958dc211b13dece2bd4532b1326fc4f4dca05ecdd0",
+      "names": [
+        "/nice_bell"
+      ],
+      "image": "hello-world:latest",
+      "image_id": "sha256:e2ac70e7319a02c5a477f5825259bd118b94e8b02c279c67afa63adab6d8685b",
+      "command": null,
+      "created": 1785441191,
+      "state": "exited",
+      "status": "Exited (0) 4 seconds ago",
+      "log_endpoint": "https://cloud-api.phala.com/logs/prod5/containers/5c6c52c5cbd86a461532c923b4b045eed18e1eb1/nice_bell"
+    },
+    {
+      "id": "7e7059086d179d61a31ba1111de62f225ceb5965af155a96d271342a1b388bdd",
+      "names": [
+        "/dstack-agent-1"
+      ],
+      "image": "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+      "image_id": "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+      "command": null,
+      "created": 1785441188,
+      "state": "running",
+      "status": "Up 10 seconds",
+      "log_endpoint": "https://cloud-api.phala.com/logs/prod5/containers/5c6c52c5cbd86a461532c923b4b045eed18e1eb1/dstack-agent-1"
+    },
+    {
+      "id": "830540b0b87c2601fd406a8b724152e4b02d10f26718e72ab7f824daff4e7149",
+      "names": [
+        "/dstack-socket-proxy-1"
+      ],
+      "image": "tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459",
+      "image_id": "sha256:a14e639cf2a202e87bb83f21ff041885098f295dbbbb18e2f3a8f078f90dfdcc",
+      "command": null,
+      "created": 1785441188,
+      "state": "running",
+      "status": "Up 11 seconds",
+      "log_endpoint": "https://cloud-api.phala.com/logs/prod5/containers/5c6c52c5cbd86a461532c923b4b045eed18e1eb1/dstack-socket-proxy-1"
+    }
+  ]
+}

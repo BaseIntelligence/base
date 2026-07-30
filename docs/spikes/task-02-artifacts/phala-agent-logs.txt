@@ -1,0 +1,59 @@
+SPIKE_START
+{"Platform":{"Name":""},"Components":[{"Name":"Engine","Version":"25.0.3","Details":{"ApiVersion":"1.44","Arch":"amd64","BuildTime":"1970-01-01T00:00:00.000000000+00:00","Experimental":"false","GitCommit":"f417435e5f6216828dec57958c490c4f8bae4f98","GoVersion":"go1.22.6","KernelVersion":"6.9.0-dstack","MinAPIVersion":"1.24","Os":"linux"}},{"Name":"containerd","Version":"v2.0.0-beta.2-204-gb1624c362.m","Details":{"GitCommit":"b1624c3628954e769dd50783b63823040b2db38c.m"}},{"Name":"runc","Version":"1.1.12+dev","Details":{"GitCommit":"v1.1.12-2-ga9833ff3-dirty"}},{"Name":"docker-init","Version":"0.19.0","Details":{"GitCommit":"b9f42a0-dirty"}}],"Version":"25.0.3","ApiVersion":"1.44","MinAPIVersion":"1.24","GitCommit":"f417435e5f6216828dec57958c490c4f8bae4f98","GoVersion":"go1.22.6","Os":"linux","Arch":"amd64","KernelVersion":"6.9.0-dstack","BuildTime":"1970-01-01T00:00:00.000000000+00:00"}
+{"Platform":{"Name":""},"Components":[{"Name":"Engine","Version":"25.0.3","Details":{"ApiVersion":"1.44","Arch":"amd64","BuildTime":"1970-01-01T00:00:00.000000000+00:00","Experimental":"false","GitCommit":"f417435e5f6216828dec57958c490c4f8bae4f98","GoVersion":"go1.22.6","KernelVersion":"6.9.0-dstack","MinAPIVersion":"1.24","Os":"linux"}},{"Name":"containerd","Version":"v2.0.0-beta.2-204-gb1624c362.m","Details":{"GitCommit":"b1624c3628954e769dd50783b63823040b2db38c.m"}},{"Name":"runc","Version":"1.1.12+dev","Details":{"GitCommit":"v1.1.12-2-ga9833ff3-dirty"}},{"Name":"docker-init","Version":"0.19.0","Details":{"GitCommit":"b9f42a0-dirty"}}],"Version":"25.0.3","ApiVersion":"1.44","MinAPIVersion":"1.24","GitCommit":"f417435e5f6216828dec57958c490c4f8bae4f98","GoVersion":"go1.22.6","Os":"linux","Arch":"amd64","KernelVersion":"6.9.0-dstack","BuildTime":"1970-01-01T00:00:00.000000000+00:00"}
+
+{"status":"Pulling from library/hello-world","id":"latest"}
+{"status":"Pulling fs layer","progressDetail":{},"id":"4f55086f7dd0"}
+{"status":"Downloading","progressDetail":{"current":2415,"total":2415},"progress":"[==================================================\u003e]  2.415kB/2.415kB","id":"4f55086f7dd0"}
+{"status":"Verifying Checksum","progressDetail":{},"id":"4f55086f7dd0"}
+{"status":"Download complete","progressDetail":{},"id":"4f55086f7dd0"}
+{"status":"Extracting","progressDetail":{"current":2415,"total":2415},"progress":"[==================================================\u003e]  2.415kB/2.415kB","id":"4f55086f7dd0"}
+{"status":"Extracting","progressDetail":{"current":2415,"total":2415},"progress":"[==================================================\u003e]  2.415kB/2.415kB","id":"4f55086f7dd0"}
+{"status":"Pull complete","progressDetail":{},"id":"4f55086f7dd0"}
+{"status":"Digest: sha256:c3cbe1cc1aa588a64951ac6286e0df7b27fe2e6324b1001c619bb358770c0178"}
+{"status":"Status: Downloaded newer image for hello-world:latest"}
+
+CREATE={"Id":"2de886efd66c09a0838dc3958dc211b13dece2bd4532b1326fc4f4dca05ecdd0","Warnings":[]}
+CID=2de886efd66c09a0838dc3958dc211b13dece2bd4532b1326fc4f4dca05ecdd0
+
+{
+  "Id": "2de886efd66c09a0838dc3958dc211b13dece2bd4532b1326fc4f4dca05ecdd0",
+  "State": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-07-30T19:53:14.550847002Z",
+    "FinishedAt": "2026-07-30T19:53:14.549305752Z"
+  },
+  "Image": "sha256:e2ac70e7319a02c5a477f5825259bd118b94e8b02c279c67afa63adab6d8685b",
+  "Config": {
+    "Hostname": "2de886efd66c",
+    "Domainname": "",
+    "User": "",
+    "AttachStdin": false,
+    "AttachStdout": false,
+    "AttachStderr": false,
+    "Tty": false,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ],
+    "Cmd": [
+      "/hello"
+    ],
+    "Image": "hello-world:latest",
+    "Volumes": null,
+    "WorkingDir": "/",
+    "Entrypoint": null,
+    "OnBuild": null,
+    "Labels": {}
+  }
+}
+SPIKE_NESTED_OK

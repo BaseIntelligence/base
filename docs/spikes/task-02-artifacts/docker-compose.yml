@@ -1,0 +1,55 @@
+# SPIKE ONLY — prove nested container via guest docker.sock + socket-proxy in measured compose
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      NETWORKS: "1"
+      AUTH: "0"
+      BUILD: "0"
+      EXEC: "0"
+      VOLUMES: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      SYSTEM: "0"
+      INFO: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  agent:
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    restart: "no"
+    depends_on:
+      - socket-proxy
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -ex
+        echo SPIKE_START
+        apk add --no-cache curl jq >/dev/null
+        for i in $(seq 1 90); do
+          curl -fsS http://socket-proxy:2375/version && break
+          sleep 2
+        done
+        curl -fsS http://socket-proxy:2375/version
+        echo
+        curl -fsS -X POST "http://socket-proxy:2375/images/create?fromImage=hello-world&tag=latest"
+        echo
+        CREATE=$$(curl -fsS -X POST -H 'Content-Type: application/json' \
+          -d '{"Image":"hello-world:latest"}' \
+          http://socket-proxy:2375/containers/create)
+        echo "CREATE=$$CREATE"
+        CID=$$(echo "$$CREATE" | jq -r .Id)
+        echo "CID=$$CID"
+        curl -fsS -X POST "http://socket-proxy:2375/containers/$$CID/start"
+        echo
+        sleep 2
+        # logs are multiplexed; still useful as presence signal
+        curl -fsS "http://socket-proxy:2375/containers/$$CID/json" | jq '{Id,State,Image,Config}'
+        echo SPIKE_NESTED_OK
+        sleep 180
