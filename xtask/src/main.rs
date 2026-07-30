@@ -6,14 +6,15 @@
 //! - `metadata-snapshot` — fetch testnet metadata + epoch-schedule sources into `metadata/testnet.lock`
 //! - `spec-check` — fail if `docs/BUNDLE_SPEC.md` is missing plan pins (a)–(l)
 //! - `agent-challenge-check` — fail if `docs/AGENT_CHALLENGE.md` is missing plan task 9 pins
-
+//! - `external-docs-check` — fail if external miner docs `protocol_version` ≠ bundle, or D19 drifts
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod agent_challenge_check;
 mod consensus_lint;
+mod external_docs_check;
 mod loc_cap;
 mod metadata_snapshot;
 mod spec_check;
-mod agent_challenge_check;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,8 @@ enum Command {
     SpecCheck,
     /// Fail if `docs/AGENT_CHALLENGE.md` is missing required task 9 pins.
     AgentChallengeCheck,
+    /// Fail if external miner docs `protocol_version` differs from `gbase-bundle`, or `THREAT_MODEL` D19 drifts.
+    ExternalDocsCheck,
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -89,6 +92,7 @@ fn main() -> ExitCode {
         }
         Command::SpecCheck => spec_check::run(&root),
         Command::AgentChallengeCheck => agent_challenge_check::run(&root),
+        Command::ExternalDocsCheck => external_docs_check::run(&root),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

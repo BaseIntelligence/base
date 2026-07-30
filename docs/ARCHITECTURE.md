@@ -1,0 +1,134 @@
+# gbase architecture
+
+Operator-facing map of the control plane. Normative byte contracts live in the frozen specs:
+
+| Spec | Status | Role |
+|------|--------|------|
+| [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) | **FROZEN** | Epoch bundle SCALE layout, merkle, aggregation, on-chain payload bounds |
+| [`AGENT_CHALLENGE.md`](./AGENT_CHALLENGE.md) | **FROZEN** | `agent-v1` challenge topology, scoring, Phala compose contract |
+
+Do not restate those contracts here. Link them.
+
+Security claim and what it excludes: [`THREAT_MODEL.md`](./THREAT_MODEL.md).  
+Operator checklist: [`OPERATOR_SECURITY.md`](./OPERATOR_SECURITY.md).  
+Runbooks: [`runbooks/`](./runbooks/).  
+Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
+
+---
+
+## 1. Goals
+
+- Lighter Rust control plane than the Python BASE stack.
+- Gateway runs **only** as subnet owner (master). Startup asserts hotkey == on-chain `SubnetOwnerHotkey` or exits `2` before bind.
+- Validators **recompute** the weight vector from a signed, merkle-rooted epoch bundle. Challenge keys and measurements come from **owner-signed local files**, never from gateway HTTP.
+- CRV4 timelock commit-reveal on Bittensor testnet/mainnet as configured. Reveal is automatic on-chain.
+- Agent Challenge on Phala TDX: miners self-deploy and certify; validators verify attestation policy offline-testably.
+
+---
+
+## 2. Process topology
+
+```text
+                    ┌─────────────────────────────────────┐
+                    │  Master host (compose profile master) │
+                    │  postgres · gateway · validator ·     │
+                    │  updater · socket-proxy ·             │
+                    │  agent-challenge backend(s)           │
+                    └───────────────┬─────────────────────┘
+                                    │ TLS terminates in gateway (D20)
+                                    │ /challenge/{id}/*  /v1/bundle/*
+                    ┌───────────────▼─────────────────────┐
+                    │  Other validator hosts (no gateway)  │
+                    │  validator · local trust roots        │
+                    │  peer root exchange (HTTPS + hotkey)  │
+                    └───────────────┬─────────────────────┘
+                                    │ certify / nonces
+                    ┌───────────────▼─────────────────────┐
+                    │  Miner Phala TDX CVM                  │
+                    │  measured agent + report_data path    │
+                    └─────────────────────────────────────┘
+```
+
+| Binary / crate | Role |
+|----------------|------|
+| `gbase-gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner |
+| `gbase-validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
+| `gbase-agent-challenge` | Challenge service: score, sign leaves, POST raw weights |
+| `gbase-miner` | Miner CLI: dry-run compose-hash, `phala deploy`, certify |
+| `gbase-updater` | Digest-pinned rollouts via `docker-socket-proxy` |
+| `gbase-trustroot` | Offline keygen / sign / verify for owner-signed TOML |
+| `gbase-bundle` | SCALE types, seal, verify (`PROTOCOL_VERSION`) |
+| `gbase-aggregate` | Integer aggregation (Hamilton house 65535) |
+| `gbase-chain` | Chain client trait + SDK wiring |
+| `gbase-trustroot` (lib) | Load local signed challenges/measurements; dual-accept rotation |
+| `gbase-attest-*` | Parse / replay / policy for TDX quotes |
+| `gbase-crosscheck` / `gbase-dissent` | Peer roots and three-outcome policy |
+| `gbase-db` | Postgres persistence (bundles, evidence, dissent) |
+| `xtask` | loc-cap, consensus-lint, metadata-snapshot, spec gates |
+
+---
+
+## 3. Data flow (one epoch)
+
+1. **Pin.** Gateway (or seal path) pins `block_hash` / metagraph root at epoch boundary.
+2. **Leaves.** Challenge backends produce challenge-signed `Score` or `NoScore` leaves for the **validator-derived** expected set (D24).
+3. **Seal.** Gateway builds `EpochBundleV1`, computes merkle root, signs the body. **Does not** put the merkle root into the on-chain weight payload (there is no field; see BUNDLE_SPEC §12 / D5).
+4. **Distribute.** Bundle served over HTTPS; validators may also **mirror** from peers (content-addressed by root).
+5. **Verify.** Each validator loads **local** `challenges.toml` + `measurements.toml` (owner-signed). Rejects leaves whose keys are not in the local trust root (D18).
+6. **Cross-check.** Hotkey-authenticated peer root exchange; minimum sample (D26). Persist signed bundle + peer statements as local evidence.
+7. **Recompute.** Integer aggregation per BUNDLE_SPEC. Compare to gateway `final_vector`.
+8. **Outcomes (D6).** Class A: submit local vector + dissent. Quarantine: drop bad challenges if share mass survives. Class B: no submit + dissent + alarm.
+9. **Submit.** `WeightsTlockPayload { hotkey, uids, values, version_key }` only. CRV4 reveal round from schedule inputs (D22). Never invent a round; never downgrade to plain `set_weights` while CR is enabled.
+
+---
+
+## 4. Trust roots (local only)
+
+| Artifact | In git? | Loaded by |
+|----------|---------|-----------|
+| `config/owner.pubkey` | yes (public) | validators, ceremony verify |
+| `config/challenges.toml` + `.sig` | yes | every validator from **disk** |
+| `config/measurements.toml` + `.sig` | yes | every validator from **disk** |
+| Challenge / owner mini-secrets | **never** | challenge service / offline ceremony only |
+
+Gateway DB is **routing only**. It is never a source of challenge keys, emission shares, or measurements (D18, D23).
+
+Ceremony: [`config/CEREMONY.md`](../config/CEREMONY.md).  
+Rotation: [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) (D21).
+
+---
+
+## 5. Compose profiles
+
+| Profile | Services |
+|---------|----------|
+| default | postgres, validator, updater, socket-proxy |
+| `master` | + gateway (owner host only) |
+| `evil-gateway` | **test-only** adversarial harness (task 48). Never prod. |
+
+See [`deploy/README.md`](../deploy/README.md) and root [`docker-compose.yml`](../docker-compose.yml).
+
+---
+
+## 6. What this architecture does **not** claim
+
+See D19 in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Short form:
+
+- Challenge score honesty is out of scope.
+- Owner honesty is out of scope (owner signs roots and runs gateway).
+- Non-equivocation is **peer-consensus + local evidence**, not a public on-chain `(epoch → bundle_root)` anchor.
+- Gateway HA is **not** claimed (R9): restart policy + manual failover only.
+
+---
+
+## 7. Related docs
+
+| Doc | Purpose |
+|-----|---------|
+| [`THREAT_MODEL.md`](./THREAT_MODEL.md) | D19 verbatim, D5, D11, R12 |
+| [`OPERATOR_SECURITY.md`](./OPERATOR_SECURITY.md) | Checklist |
+| [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) | D21 dual-accept |
+| [`runbooks/promote-rollback-restore.md`](./runbooks/promote-rollback-restore.md) | Digest promote, rollback, `pg_dump` |
+| [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md) | Manual failover (R9) |
+| [`external-miner/README.md`](./external-miner/README.md) | Miner path + `protocol_version` badge |
+| [`../README.md`](../README.md) | Repo bootstrap |

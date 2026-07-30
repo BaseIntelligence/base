@@ -54,3 +54,6 @@ jobs:
 
       - name: xtask agent-challenge-check
         run: cargo run -p xtask -- agent-challenge-check
+
+      - name: xtask external-docs-check
+        run: cargo run -p xtask -- external-docs-check

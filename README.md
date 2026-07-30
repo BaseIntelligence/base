@@ -18,8 +18,9 @@ Greenfield successor path for Base Intelligence subnet work: validators, miners,
 
 - Cargo workspace (`resolver = "3"`): `crates/*`, `bins/*`, `xtask`
 - Stub member: `crates/gbase-workspace-smoke` (keeps `cargo metadata` green)
-- Gates: `cargo fmt`, `clippy -D warnings`, `test`, `cargo deny`, `xtask loc-cap`, `xtask consensus-lint`
+- Gates: `cargo fmt`, `clippy -D warnings`, `test`, `cargo deny`, `xtask loc-cap`, `xtask consensus-lint`, `xtask spec-check`, `xtask agent-challenge-check`, `xtask external-docs-check`
 - CI: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) on push/PR to `reborn`
+- Docs: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), frozen [`docs/BUNDLE_SPEC.md`](./docs/BUNDLE_SPEC.md) + [`docs/AGENT_CHALLENGE.md`](./docs/AGENT_CHALLENGE.md), [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md), runbooks under `docs/runbooks/`, miner-facing [`docs/external-miner/`](./docs/external-miner/)
 
 ## Gateway (master-only)
 
