@@ -1,0 +1,54 @@
+# Make GHCR container packages public so paid Phala / unauth pulls work.
+# GITHUB_TOKEN has packages:write in this workflow; account PATs often lack it.
+name: ghcr-public
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["images"]
+    types: [completed]
+    branches: [reborn, dev]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  set-public:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set package visibility public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # Nested image names: ghcr.io/<owner>/gbase/<suffix> → package name "gbase/<suffix>"
+          pkgs=(
+            "gbase/gbase-agent"
+            "gbase/gbase-attest-helper"
+            "gbase/gateway"
+            "gbase/validator"
+            "gbase/updater"
+            "gbase/agent-challenge"
+          )
+          ok=0
+          for pkg in "${pkgs[@]}"; do
+            enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$pkg")
+            code=$(curl -sS -o "/tmp/vis-${enc}.json" -w "%{http_code}" \
+              -X PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/${enc}/visibility" \
+              -d '{"visibility":"public"}' || true)
+            echo "pkg=${pkg} http=${code} body=$(head -c 200 /tmp/vis-${enc}.json || true)"
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+              ok=$((ok + 1))
+            fi
+          done
+          echo "publicized_ok=${ok}/${#pkgs[@]}"
+          test "$ok" -ge 1

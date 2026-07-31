@@ -11,12 +11,12 @@ use crate::inspect::reject_raw_docker_sock_on_agent;
 pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
 use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV};
 
-/// Default digest-pinned agent image (placeholder pin until CI publishes real digests).
+/// Default digest-pinned agent image (digest from images CI tip 3056ca7).
 pub const DEFAULT_AGENT_IMAGE: &str =
-    "ghcr.io/baseintelligence/gbase/gbase-agent@sha256:c4cd56307195c50aab92c4b162c603dbca080061f86c5b9886c0e3c61cf7285f";
+    "ghcr.io/baseintelligence/gbase/gbase-agent@sha256:50508825f450c6d1b21e53bf61cda8eeee6373eaced24ec3925555feac3ebc83";
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
-    "ghcr.io/baseintelligence/gbase/gbase-attest-helper@sha256:783582207b46ec19ff9a8568d922125e2b6ad6049b493903107746b326289cd2";
+    "ghcr.io/baseintelligence/gbase/gbase-attest-helper@sha256:9bf28955414f087d27e033e085a16be2fda20290404add83bd919893c24e8d7c";
 
 /// Whether to invoke the Phala CLI after rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
