@@ -1,0 +1,16 @@
+[package]
+name = "hypertraining-antinois"
+description = "Anti-noise similarity L0-3, K-by-sim, fingerprint dedupe for hypertraining"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true

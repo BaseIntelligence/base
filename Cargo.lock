@@ -2017,6 +2017,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypertraining-antinois"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "hypertraining-build"
 version = "0.1.0"
 dependencies = [
@@ -2030,6 +2038,37 @@ version = "0.1.0"
 
 [[package]]
 name = "hypertraining-cluster"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "hypertraining-eval"
+version = "0.1.0"
+dependencies = [
+ "hypertraining-cluster",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "hypertraining-kernel-gate"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "hypertraining-pay"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "hypertraining-promo"
 version = "0.1.0"
 dependencies = [
  "sha2 0.10.9",
