@@ -1,0 +1,32 @@
+[package]
+name = "prism-challenge-bin"
+description = "prism-challenge operator binary (health + miner submit on :8092)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "prism-challenge"
+path = "src/main.rs"
+
+[dependencies]
+agent-challenge-keys = { path = "../../crates/agent-challenge-keys" }
+clap = { version = "4", features = ["derive", "env"] }
+prism-challenge = { path = "../../crates/prism-challenge" }
+crypto = { path = "../../crates/crypto" }
+telemetry = { path = "../../crates/telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+trustroot = { path = "../../crates/trustroot" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tracing = "0.1"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[lints]
+workspace = true
