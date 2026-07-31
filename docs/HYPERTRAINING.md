@@ -178,7 +178,29 @@ Transport: HTTPS. `Content-Type: application/json; charset=utf-8`.
 
 Default compose port for hypertraining-challenge: **8091** (agent-challenge remains **8090**).
 
-Gateway registration (planned): `POST /v1/admin/backends` with `challenge_id = hypertraining`, `base_url` pointing at the hypertraining-challenge service. Proxy path: `/challenge/hypertraining/*`.
+Gateway registration (master-only admin API, D3/D18):
+
+```http
+POST /v1/admin/backends
+Content-Type: application/json
+
+{
+  "challenge_id": "hypertraining",
+  "base_url": "http://hypertraining-challenge:8091"
+}
+```
+
+| Field | Value |
+|-------|-------|
+| `challenge_id` | UTF-8 `hypertraining` (must match trust-root row in `config/challenges.toml`) |
+| `base_url` | Compose service URL `http://hypertraining-challenge:8091` (no trailing slash; `http://` or `https://` required) |
+| `weight` | Optional; default `1` |
+
+Response: `201 Created` with backend view (`id`, `challenge_id`, `base_url`, `weight`, `healthy`, `fail_count`, `ejected`). **No signing keys** in request or response (D18 — keys stay in owner-signed trust root only).
+
+Proxy path after registration: `/challenge/hypertraining/*` → round-robin among healthy backends for that `challenge_id`. List filter: `GET /v1/admin/backends?challenge_id=hypertraining`.
+
+`agent-v1` remains registered separately (`http://agent-challenge:8090` / port **8090**). Multi-challenge registries are first-class; do not hardcode a single challenge id in gateway routing.
 
 ### 4.2 Submission body (brief §7)
 

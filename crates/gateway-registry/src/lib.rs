@@ -490,4 +490,42 @@ mod tests {
         assert!(obj.contains_key("base_url"));
         assert!(obj.contains_key("challenge_id"));
     }
+
+    /// Hypertraining compose registration: challenge_id + service base_url (todo 15).
+    #[test]
+    fn create_hypertraining_backend_compose_url() {
+        let reg = Registry::with_defaults();
+        let view = reg
+            .create(&CreateBackend {
+                challenge_id: "hypertraining".into(),
+                base_url: "http://hypertraining-challenge:8091/".into(),
+                weight: 1,
+            })
+            .expect("create hypertraining backend");
+        assert_eq!(view.challenge_id, "hypertraining");
+        assert_eq!(view.base_url, "http://hypertraining-challenge:8091");
+        assert!(view.healthy);
+        assert!(!view.ejected);
+
+        // Multi-challenge: agent-v1 coexists (must not hardcode a single id).
+        let agent = reg
+            .create(&CreateBackend {
+                challenge_id: "agent-v1".into(),
+                base_url: "http://agent-challenge:8090".into(),
+                weight: 1,
+            })
+            .expect("create agent-v1 backend");
+        assert_eq!(agent.challenge_id, "agent-v1");
+
+        let listed = reg.list(Some("hypertraining"));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, view.id);
+
+        let picked = reg.pick("hypertraining").expect("pick hypertraining");
+        assert_eq!(picked.id, view.id);
+        assert_eq!(picked.base_url, "http://hypertraining-challenge:8091");
+
+        let agent_pick = reg.pick("agent-v1").expect("pick agent-v1");
+        assert_eq!(agent_pick.id, agent.id);
+    }
 }
