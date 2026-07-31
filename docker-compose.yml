@@ -1,6 +1,7 @@
 # base control-plane stack (task 40 + agent-challenge todo 31)
 #
-# Default: postgres + validator + updater + socket-proxy + agent-challenge (5).
+# Default: postgres + validator + updater + socket-proxy + agent-challenge +
+# hypertraining-challenge (6).
 # Master/owner host only:
 #   docker compose --profile master up -d
 # brings gateway as the 6th service (D3).
@@ -205,6 +206,40 @@ services:
     networks:
       - base
     # No docker.sock — verifier uses Allowlist::verifier over BASE_DOCKER_BASE.
+
+  # ---------------------------------------------------------------------------
+  # hypertraining-challenge — operator hypertraining health + epoch host (:8091).
+  # Distinct from agent-challenge (:8090). Must not share 8090.
+  # ---------------------------------------------------------------------------
+  hypertraining-challenge:
+    image: hypertraining-challenge:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: hypertraining-challenge
+      args:
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    environment:
+      BASE_CHALLENGE_BIND: 0.0.0.0:8091
+      # Host file must be owned uid 65532 (base) mode 0400 — see deploy/secrets/README.md
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+    volumes:
+      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+    expose:
+      - "8091"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8091/health || exit 0",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      - base
 
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2

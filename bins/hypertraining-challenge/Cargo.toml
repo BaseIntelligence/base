@@ -1,0 +1,32 @@
+[package]
+name = "hypertraining-challenge-bin"
+description = "hypertraining-challenge operator binary (health + epoch orchestration host)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "hypertraining-challenge"
+path = "src/main.rs"
+
+[dependencies]
+agent-challenge-keys = { path = "../../crates/agent-challenge-keys" }
+hypertraining-challenge = { path = "../../crates/hypertraining-challenge" }
+telemetry = { path = "../../crates/telemetry" }
+trustroot = { path = "../../crates/trustroot" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+schnorrkel = "0.11"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[lints]
+workspace = true
