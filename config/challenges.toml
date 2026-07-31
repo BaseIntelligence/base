@@ -14,3 +14,10 @@ id = "hypertraining"
 public_key = "f63d946c180535574b9fe79c6c75d3ca6fd51f7cde47267a679d9d6e05d0294c"
 emission_share_bps = 0
 policy = "all_metagraph_hotkeys"
+
+[[challenges]]
+id = "prism"
+public_key = "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
+emission_share_bps = 0
+policy = "all_metagraph_hotkeys"
+

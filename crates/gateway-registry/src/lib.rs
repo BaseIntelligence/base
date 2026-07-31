@@ -491,7 +491,7 @@ mod tests {
         assert!(obj.contains_key("challenge_id"));
     }
 
-    /// Hypertraining compose registration: challenge_id + service base_url (todo 15).
+    /// Hypertraining compose registration: `challenge_id` + service `base_url` (todo 15).
     #[test]
     fn create_hypertraining_backend_compose_url() {
         let reg = Registry::with_defaults();
@@ -527,5 +527,22 @@ mod tests {
 
         let agent_pick = reg.pick("agent-v1").expect("pick agent-v1");
         assert_eq!(agent_pick.id, agent.id);
+    }
+
+    /// PRISM compose registration: `challenge_id` + service `base_url` port 8092 (no Phala CVM).
+    #[test]
+    fn create_prism_backend_compose_url() {
+        let reg = Registry::with_defaults();
+        let view = reg
+            .create(&CreateBackend {
+                challenge_id: "prism".into(),
+                base_url: "http://prism-challenge:8092/".into(),
+                weight: 1,
+            })
+            .expect("create prism backend");
+        assert_eq!(view.challenge_id, "prism");
+        assert_eq!(view.base_url, "http://prism-challenge:8092");
+        let picked = reg.pick("prism").expect("pick prism");
+        assert_eq!(picked.base_url, "http://prism-challenge:8092");
     }
 }
