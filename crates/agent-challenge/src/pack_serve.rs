@@ -1,7 +1,7 @@
 //! HTTP pack catalog + stripped pack delivery for miners.
 //!
 //! Routes (mounted at challenge root, proxied via gateway `/challenge/{id}/*`):
-//! - `GET /v1/catalog` → pin, catalog_digest, entries
+//! - `GET /v1/catalog` → pin, `catalog_digest`, entries
 //! - `GET /v1/packs/{pack_id}` → application/gzip stripped pack tar
 
 use std::fs;
@@ -242,7 +242,6 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), PackServeError> {
 }
 
 /// Axum routes for pack catalog + download.
-#[must_use]
 pub fn pack_routes(state: Arc<PackCatalogState>) -> Router {
     Router::new()
         .route("/v1/catalog", get(get_catalog))

@@ -1,4 +1,4 @@
-//! Integration: PackCatalogState + HTTP pack routes (stripped delivery).
+//! Integration: `PackCatalogState` + HTTP pack routes (stripped delivery).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -54,7 +54,7 @@ fn open_from_source_catalog_json_and_tar_gz() {
 
     let state = PackCatalogState::open_from_source(&source, &cache).expect("open");
     assert!(state.is_ready());
-    assert!(state.catalog().len() >= 1);
+    assert!(!state.catalog().is_empty());
 
     let cat = state.catalog_json();
     assert!(!cat["pin"].as_str().unwrap().is_empty());

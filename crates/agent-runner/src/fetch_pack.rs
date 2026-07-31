@@ -83,7 +83,7 @@ fn pack_loadable(dir: &Path) -> bool {
 
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, PackFetchError> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_mins(2))
         .build()
         .map_err(|e| PackFetchError::Fetch(e.to_string()))?;
     let resp = client
