@@ -102,7 +102,7 @@ Validator
 | Mode | Status |
 |------|--------|
 | SimBackend | **Current** implementation target; CI and E2E use sim only |
-| Real B300 dual-cluster A/B | **Not live**; operator runbook later (plan todo 18) |
+| Real B300 dual-cluster A/B | **Not live**; enablement: [`runbooks/hypertraining-enable-real-and-emission.md`](./runbooks/hypertraining-enable-real-and-emission.md) |
 | Live MFU §10.4 measurement | **Not claimed**; first real-cluster day-one op when HW arrives |
 
 ---
@@ -495,9 +495,9 @@ trait ClusterBackend:
 | Backend | Behavior now |
 |---------|----------------|
 | `SimBackend` | Deterministic or seeded wallclock from code fingerprint + noise param; fake checkpoint hash; API surface for partition ids without real IB |
-| `RealBackend` | Stub: `Err(NotConfigured)` with message that owner B300 enablement is deferred |
+| `RealBackend` | Stub: `Err(NotConfigured)` until owner runs [`runbooks/hypertraining-enable-real-and-emission.md`](./runbooks/hypertraining-enable-real-and-emission.md) |
 
-Must NOT pretend RealBackend produces GPU timing until the enablement runbook is executed.
+Must NOT pretend RealBackend produces GPU timing until that enablement runbook is executed for the target environment.
 
 ---
 
@@ -517,7 +517,7 @@ agent-v1 gate remains: `cargo run -p xtask -- agent-challenge-check` (must stay 
 | [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) | Leaf / bundle crypto |
 | [`AGENT_CHALLENGE.md`](./AGENT_CHALLENGE.md) | Sibling challenge (agent-v1); do not merge domains |
 | [`HYPERTRAINING_CHECKLIST.md`](./HYPERTRAINING_CHECKLIST.md) | Pin table for xtask |
-| `docs/runbooks/hypertraining-enable-real-and-emission.md` | Planned (todo 18): Real B300 + emission unlock |
+| [`runbooks/hypertraining-enable-real-and-emission.md`](./runbooks/hypertraining-enable-real-and-emission.md) | Operator runbook (todo 18): Real B300 + emission unlock (not current state) |
 
 ---
 
