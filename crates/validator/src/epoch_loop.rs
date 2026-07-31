@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use crate::coordination::{CoordinationClient, CoordinationError};
 use crate::recompute::{fetch_and_compare, ComparisonOutcome};
 
-/// Format Match line identical to `full_local_e2e` VALIDATOR_LOG shape.
+/// Format Match line identical to `full_local_e2e` `VALIDATOR_LOG` shape.
 #[must_use]
 pub fn format_match_line(
     epoch: u64,
@@ -26,7 +26,7 @@ pub fn format_match_line(
     )
 }
 
-/// One coordination compare cycle: latest → bundle → compare_bundle.
+/// One coordination compare cycle: latest → bundle → `compare_bundle`.
 ///
 /// Soft-ok when gateway missing or latest 404 (no sealed bundle yet).
 ///
@@ -181,6 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn tick_sealed_latest_yields_match() {
         let csk = sk(1);
         let gsk = sk(2);

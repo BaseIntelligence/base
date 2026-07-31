@@ -57,11 +57,7 @@ pub struct ComposeTemplateInput<'a> {
 #[must_use]
 pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
     // YAML is hand-built so key order and spacing stay stable for hashing.
-    let docker_base = format!(
-        "http://{proxy}:{port}",
-        proxy = SOCKET_PROXY_SERVICE,
-        port = SOCKET_PROXY_PORT
-    );
+    let docker_base = format!("http://{SOCKET_PROXY_SERVICE}:{SOCKET_PROXY_PORT}");
     format!(
         r#"# gbase miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)
 # Secrets: file mounts under {run_dir} only. Never put secret values in environment.

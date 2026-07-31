@@ -1,4 +1,4 @@
-//! Miner CVM agent HTTP surface (AGENT_CHALLENGE compose `agent:8080`).
+//! Miner CVM agent HTTP surface (`AGENT_CHALLENGE` compose `agent:8080`).
 //!
 //! Routes:
 //! - `GET /healthz` / `GET /readyz`
@@ -56,7 +56,6 @@ pub use store::{
 use axum::Router;
 
 /// Build the full agent-runner router with shared state.
-#[must_use]
 pub fn app(state: RunnerState) -> Router {
     router(state)
 }
@@ -303,7 +302,7 @@ mod tests {
         assert_eq!(v["max_concurrency"], 5);
     }
 
-    /// S1 — max=2: two accepted while held; third 503 capacity_exhausted; after free, next 202.
+    /// S1 — max=2: two accepted while held; third 503 `capacity_exhausted`; after free, next 202.
     #[tokio::test]
     async fn over_capacity_refused_then_succeeds_when_slot_frees() {
         let state = open_state_hold(2, Duration::from_millis(400));
@@ -343,7 +342,7 @@ mod tests {
         assert_eq!(state.task_count().await, before + 3);
     }
 
-    /// Deadline already passed → timed_out, no patch, signed receipt.
+    /// Deadline already passed → `timed_out`, no patch, signed receipt.
     #[tokio::test]
     async fn past_deadline_returns_timed_out_with_signed_receipt() {
         let receipt = test_receipt_key();
@@ -388,7 +387,7 @@ mod tests {
         let _ = TaskStatusV1::TimedOut;
     }
 
-    /// Completed stub: patch_sha256 matches returned bytes.
+    /// Completed stub: `patch_sha256` matches returned bytes.
     #[tokio::test]
     async fn completed_patch_sha256_matches_bytes() {
         let state = open_state(1);
@@ -722,7 +721,7 @@ mod tests {
         let result = v.get("result").expect("result");
         assert_eq!(result["status"], "failed");
         let sig = result["receipt_sig_hex"].as_str().unwrap_or("x");
-        assert!(sig.is_empty() || sig != &"00".repeat(64));
+        assert!(sig.is_empty() || sig != "00".repeat(64));
     }
 
     #[tokio::test]

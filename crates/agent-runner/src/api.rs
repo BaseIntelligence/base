@@ -65,7 +65,7 @@ impl ApiError {
         }
     }
 
-    fn unauthorized(err: DispatchAuthError) -> Self {
+    fn unauthorized(err: &DispatchAuthError) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
             code: err.code(),
@@ -75,7 +75,7 @@ impl ApiError {
 
     /// Over-capacity: HTTP 503 + `capacity_exhausted` (retryable).
     ///
-    /// Chosen over 429 because AGENT_CHALLENGE §4.4 maps "503 exhausted" to
+    /// Chosen over 429 because `AGENT_CHALLENGE` §4.4 maps "503 exhausted" to
     /// `Timeout` (retryable hop outcome). This is slot exhaustion, not rate limiting.
     fn capacity_exhausted() -> Self {
         let _ = CapacityExhausted;
@@ -98,7 +98,6 @@ impl IntoResponse for ApiError {
 }
 
 /// Mount all runner routes on a fresh router.
-#[must_use]
 pub fn router(state: RunnerState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -139,7 +138,7 @@ async fn post_task(
                 "dispatch auth rejected"
             );
             let _ = e;
-            ApiError::unauthorized(DispatchAuthError::Unauthorized)
+            ApiError::unauthorized(&DispatchAuthError::Unauthorized)
         })?;
         st.verify_dispatch_auth(&envelope, unix_now_ms(), Instant::now())
             .await
@@ -149,7 +148,7 @@ async fn post_task(
                     reason = err.code(),
                     "dispatch auth rejected"
                 );
-                ApiError::unauthorized(err)
+                ApiError::unauthorized(&err)
             })?;
         envelope.descriptor
     } else {

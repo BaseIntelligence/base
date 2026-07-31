@@ -215,7 +215,7 @@ pub fn verify_raw(
     verify(&public, domain, payload, signature)
 }
 
-/// Generate a fresh 32-byte mini-secret (OsRng).
+/// Generate a fresh 32-byte mini-secret (`OsRng`).
 ///
 /// Suitable for CVM-local work-receipt keys and test fixtures. Never log the
 /// returned bytes.

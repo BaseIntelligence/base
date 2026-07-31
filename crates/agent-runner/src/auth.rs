@@ -18,7 +18,7 @@ use thiserror::Error;
 /// Default max dispatch-auth TTL (must stay strictly below one epoch).
 ///
 /// Mirrors `attest-http::DEFAULT_NONCE_TTL` (5 minutes).
-pub const DEFAULT_DISPATCH_NONCE_TTL: Duration = Duration::from_secs(5 * 60);
+pub const DEFAULT_DISPATCH_NONCE_TTL: Duration = Duration::from_mins(5);
 
 /// JSON body for authenticated `POST /v1/task`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,7 +77,10 @@ impl DispatchAuthError {
 }
 
 /// Build the canonical signing payload for a descriptor + nonce + expiry.
-#[must_use]
+///
+/// # Errors
+///
+/// None today — reserved for future fallible canonicalization.
 pub fn dispatch_auth_payload(
     descriptor: &TaskDescriptorV1,
     nonce: &[u8; KEY_LEN],
@@ -169,8 +172,7 @@ pub fn verify_and_consume_dispatch(
 pub fn unix_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn crypto_to_unauth(_err: CryptoError) -> DispatchAuthError {

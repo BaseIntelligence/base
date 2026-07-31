@@ -1,4 +1,4 @@
-//! Todo 28: emit_signed_leaf_set → GatewayClient POST /v1/weights/raw → seal → /v1/weights/latest.
+//! Todo 28: `emit_signed_leaf_set` → `GatewayClient` POST /v1/weights/raw → seal → /v1/weights/latest.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,6 +116,7 @@ fn gw_client(base: &str) -> GatewayClient {
 
 /// S1: emit |E| → POST raw → seal → GET /v1/weights/latest 200 with |E| leaves.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn s1_emit_submit_seal_latest_serves_bundle() {
     let secret = sk();
     let pk = public_key_from_secret(&secret).unwrap();
@@ -232,7 +233,7 @@ async fn s1_emit_submit_seal_latest_serves_bundle() {
     let _ = shutdown.send(());
 }
 
-/// S2: bad challenge_sig / untrusted key rejected; 5xx retry does not double-count.
+/// S2: bad `challenge_sig` / untrusted key rejected; 5xx retry does not double-count.
 #[tokio::test]
 async fn s2_bad_sig_rejected_and_retry_no_duplicate() {
     let secret = sk();
@@ -340,6 +341,5 @@ fn chrono_like_now() -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_else(|| "unknown".into())
+        .map_or_else(|| "unknown".into(), |s| s.trim().to_owned())
 }

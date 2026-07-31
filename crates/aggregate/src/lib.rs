@@ -146,7 +146,7 @@ pub fn is_no_submit_vector(vector: &[(u16, u16)]) -> bool {
 /// Production callers pass [`PARTICIPATION_FLOOR`]. Tests may pass `true` to exercise
 /// the floor path without flipping the crate default.
 pub fn prepare_weight_inputs(
-    participants: &mut Vec<([u8; 32], u16, u128)>,
+    participants: &mut [([u8; 32], u16, u128)],
     total: u128,
     participation_floor: bool,
 ) -> Option<u128> {
@@ -804,10 +804,7 @@ mod tests {
         assert_eq!(FIXED, 1_000_000_000_000);
         assert_eq!(ALGORITHM_VERSION, 1);
         // Todo 15: participation floor stays OFF — all-zero is no-submit.
-        assert!(
-            !PARTICIPATION_FLOOR,
-            "PARTICIPATION_FLOOR must default false"
-        );
+        const { assert!(!PARTICIPATION_FLOOR) };
     }
 
     fn vector_sum(v: &[(u16, u16)]) -> u32 {
@@ -885,7 +882,7 @@ mod tests {
 
     #[test]
     fn s15_participation_floor_off_by_default_no_submit() {
-        assert!(!PARTICIPATION_FLOOR);
+        const { assert!(!PARTICIPATION_FLOOR) };
         let mut parts = vec![(hk(1), 0_u16, 0_u128), (hk(2), 1, 0), (hk(3), 2, 0)];
         let mass = prepare_weight_inputs(&mut parts, 0, PARTICIPATION_FLOOR);
         assert!(mass.is_none(), "default floor off → no-submit");

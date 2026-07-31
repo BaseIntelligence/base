@@ -1,4 +1,4 @@
-//! Agent container network egress posture (scoring_version 2).
+//! Agent container network egress posture (`scoring_version` 2).
 //!
 //! # Locked default
 //!
@@ -23,7 +23,7 @@ pub enum AgentEgressPosture {
     AllowlistedProxy,
 }
 
-/// Documented and tested default for agent-v1 / scoring_version 2.
+/// Documented and tested default for agent-v1 / `scoring_version` 2.
 pub const DEFAULT_AGENT_EGRESS_POSTURE: AgentEgressPosture = AgentEgressPosture::Open;
 
 /// Spec / log label for the default posture (stable string for gates and tests).

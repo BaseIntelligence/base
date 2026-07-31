@@ -1,8 +1,8 @@
-//! Fixture-driven offline tests F1–F11 v2 successors (`AGENT_CHALLENGE` scoring_version = 2).
+//! Fixture-driven offline tests F1–F11 v2 successors (`AGENT_CHALLENGE` `scoring_version` = 2).
 //!
 //! Each F1–F11 case is a named v2 successor. Latency decay is removed: correct answers
 //! always score `SCORE_MAX` regardless of `duration_ms`. Digests match
-//! `tests/fixtures/v2_*.hex` (pack-fixture-001 + FIXTURE_MODEL_PATCH).
+//! `tests/fixtures/v2_*.hex` (pack-fixture-001 + `FIXTURE_MODEL_PATCH`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -12,13 +12,13 @@ use agent_challenge::{
     FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID, SCORE_MAX, SCORING_VERSION,
 };
 
-/// F1 v2 successor — miner 0x11 task_id golden.
+/// F1 v2 successor — miner 0x11 `task_id` golden.
 const F1_V2_TASK_ID: &str = "b1c18e56abe993e20e8dadcb72c7a7cadee8975e5741d15d1acb37f5ea367644";
-/// F1 v2 successor — task_blob golden.
+/// F1 v2 successor — `task_blob` golden.
 const F1_V2_TASK_BLOB: &str = "c563caca4fa3a7c5e834a88b0dae9eb1ef87f90fcddc9973e38d2730b347c441";
-/// F1/F11 v2 successor — answer_digest_v2(model.patch) golden (patch-only preimage).
+/// F1/F11 v2 successor — `answer_digest_v2(model.patch)` golden (patch-only preimage).
 const F1_V2_ANSWER: &str = "703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d";
-/// F11 v2 successor — miner 0x22 task_id golden.
+/// F11 v2 successor — miner 0x22 `task_id` golden.
 const F11_V2_TASK_ID: &str = "b99762643336fbf7abeb2c07085ff3d64ee1fd8d1c98b149c57a36ec0396228f";
 
 fn miner11() -> [u8; 32] {
@@ -77,7 +77,7 @@ fn f1_v2_digests_and_score_max() {
     );
 }
 
-/// F2 v2 — duration_ms=0 still full credit (latency ignored).
+/// F2 v2 — `duration_ms=0` still full credit (latency ignored).
 #[test]
 fn f2_v2_duration_zero_score_max() {
     assert_eq!(
@@ -103,7 +103,7 @@ fn f3_v2_duration_ignored_full_credit() {
     );
 }
 
-/// F4 v2 — former hard boundary (10_000 ms) is full credit under correctness-only.
+/// F4 v2 — former hard boundary (`10_000` ms) is full credit under correctness-only.
 #[test]
 fn f4_v2_duration_ignored_full_credit() {
     assert_eq!(
@@ -296,7 +296,7 @@ fn reference_assertions_section_5_7_v2() {
     );
 }
 
-/// Retired v1 echo fixture must not validate under live scoring_version 2.
+/// Retired v1 echo fixture must not validate under live `scoring_version` 2.
 #[test]
 fn f_echo_retired_v1_answer_does_not_validate() {
     let m = miner11();

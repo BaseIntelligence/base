@@ -1,4 +1,4 @@
-//! Expected participant set `E` sealed at `block_B` (I7 / BUNDLE_SPEC §7 / D24).
+//! Expected participant set `E` sealed at `block_B` (I7 / `BUNDLE_SPEC` §7 / D24).
 //!
 //! Derivation is pure in `(block_hash, policy, metagraph_at(block_hash))`.
 //! A moving tip is never an input — callers must pass an explicit pin.
@@ -57,7 +57,7 @@ pub struct ExpectedParticipant {
 pub struct ExpectedSet {
     /// Pin used for derivation (`block_hash`).
     pub block_hash: [u8; 32],
-    /// Participants ordered by ascending hotkey bytes (BUNDLE_SPEC §7.2).
+    /// Participants ordered by ascending hotkey bytes (`BUNDLE_SPEC` §7.2).
     pub participants: Vec<ExpectedParticipant>,
 }
 

@@ -69,7 +69,7 @@ pub mod keys {
     pub const COOLDOWN_SECS: &str = "GBASE_GATEWAY_COOLDOWN_SECS";
     /// Owner-signed trust root directory (`challenges.toml` + `measurements.toml`).
     pub const TRUST_ROOT_DIR: &str = "GBASE_TRUST_ROOT_DIR";
-    /// Comma-separated 64-hex hotkeys for FakeChain metagraph (UID order).
+    /// Comma-separated 64-hex hotkeys for `FakeChain` metagraph (UID order).
     pub const FAKE_METAGRAPH_HOTKEYS: &str = "GBASE_FAKE_METAGRAPH_HOTKEYS";
     /// Gateway bundle-signing mini-secret (64 hex).
     pub const GATEWAY_SK: &str = "GBASE_GATEWAY_SK";

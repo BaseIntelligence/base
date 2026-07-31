@@ -14,7 +14,7 @@ fn live_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn live_enabled() -> bool {
@@ -22,9 +22,10 @@ fn live_enabled() -> bool {
 }
 
 fn pack_dir() -> PathBuf {
-    std::env::var("GBASE_VERIFY_PACK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"))
+    std::env::var("GBASE_VERIFY_PACK").map_or_else(
+        |_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"),
+        PathBuf::from,
+    )
 }
 
 fn docker_base() -> String {
@@ -39,14 +40,16 @@ fn env_image() -> String {
 }
 
 fn make_verifier_at(work_root: PathBuf, reward_zero_as_err: bool) -> HarborVerifier {
-    HarborVerifier::new(HarborVerifierConfig {
+    match HarborVerifier::new(HarborVerifierConfig {
         docker_base: docker_base(),
         environment_image: env_image(),
         work_root,
         timeout_sec_override: Some(600),
         reward_zero_as_err,
-    })
-    .expect("verifier")
+    }) {
+        Ok(v) => v,
+        Err(e) => panic!("verifier: {e}"),
+    }
 }
 
 #[test]
@@ -66,8 +69,7 @@ fn dual_truth_solution_one_empty_zero() {
         "/tmp/gbase-verify-it-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     let v = make_verifier_at(work.clone(), false);
     let r1 = v.grade(&pack, &solution).expect("sol grade");
@@ -91,8 +93,7 @@ fn invalid_and_p2p_break_distinct_zero_reasons() {
         "/tmp/gbase-verify-fail-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     let v = make_verifier_at(work.clone(), true);
 
@@ -129,8 +130,7 @@ fn timeout_is_typed_not_reward_zero() {
     let client = AllowlistClient::with_allowlist(docker_base(), Allowlist::verifier()).expect("c");
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let name = format!("{OWNED_NAME_PREFIX}timeout-{ns}");
     let err = client
         .run_owned(&RunSpec {

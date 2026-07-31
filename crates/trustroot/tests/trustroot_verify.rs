@@ -331,7 +331,7 @@ fn s9_repo_config_loads_when_present() {
         "measurements allowlist must dual-pin old fixture + socket-proxy compose"
     );
     // Both dual-entry profiles must self-match.
-    for e in entries.iter() {
+    for e in entries {
         assert!(ms.allows_quote(
             &e.mr_td,
             &e.rtmr0,

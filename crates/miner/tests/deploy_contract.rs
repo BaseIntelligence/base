@@ -160,14 +160,14 @@ fn agent_must_not_mount_raw_docker_sock() {
 #[test]
 fn raw_docker_sock_on_agent_is_rejected() {
     // Hand-edited YAML: mount raw sock into agent (forbidden).
-    let bad = r#"services:
+    let bad = r"services:
   agent:
     image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
-"#;
+";
     assert!(agent_service_mounts_docker_sock(bad));
     let err = reject_raw_docker_sock_on_agent(bad).expect_err("must reject");
     let msg = err.to_string();

@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(payload, body.encode());
     }
 
-    /// S1b — sign under WORK_RECEIPT and verify.
+    /// S1b — sign under `WORK_RECEIPT` and verify.
     #[test]
     fn s1_sign_verify_work_receipt_round_trip() {
         let body = golden_body();
@@ -187,7 +187,7 @@ mod tests {
         );
     }
 
-    /// S2 — receipt signed under gbase-attest-v1 fails under WORK_RECEIPT.
+    /// S2 — receipt signed under gbase-attest-v1 fails under `WORK_RECEIPT`.
     #[test]
     fn s2_cross_domain_attest_signature_rejected() {
         let body = golden_body();
@@ -206,7 +206,7 @@ mod tests {
         assert!(matches!(rerr, ReceiptError::Crypto(_)));
     }
 
-    /// S3 — tampered pack_id after sign fails verify.
+    /// S3 — tampered `pack_id` after sign fails verify.
     #[test]
     fn s3_tampered_pack_id_rejected() {
         let body = golden_body();

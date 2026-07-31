@@ -49,7 +49,7 @@ pub struct ValidatorRuntime {
     pub dissent_store: Option<SharedDissentStore>,
     /// Quarantine surviving-share floor (D6).
     pub min_share_mass_bps: u16,
-    /// Optional pre-built attestation state (MockQuoteVerifier by default).
+    /// Optional pre-built attestation state (`MockQuoteVerifier` by default).
     ///
     /// When `None`, `spawn_validator` builds [`AttestState::with_ok_verifier`]
     /// with an empty allowlist (fail-closed submit) so `/v1/attest/*` is always

@@ -35,7 +35,7 @@ pub struct UpdaterConfig {
 /// True when `name` is a known promote/updater roll target.
 #[must_use]
 pub fn is_rollable_service(name: &str) -> bool {
-    ROLLABLE_SERVICES.iter().any(|s| *s == name)
+    ROLLABLE_SERVICES.contains(&name)
 }
 
 impl UpdaterConfig {

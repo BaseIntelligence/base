@@ -185,7 +185,7 @@ impl RunnerState {
     /// Snapshot capacity for `GET /v1/capacity`.
     #[must_use]
     pub fn capacity(&self) -> CapacityResponse {
-        let load = self.inner.try_lock().map(|g| g.running).unwrap_or(0);
+        let load = self.inner.try_lock().map_or(0, |g| g.running);
         CapacityResponse {
             max_concurrency: self.effective_max,
             current_load: load,
@@ -264,7 +264,7 @@ impl RunnerState {
         let outcome =
             tokio::task::spawn_blocking(move || execute_pack(&backend, &pack_id, deadline))
                 .await
-                .unwrap_or_else(|_| crate::executor::ExecOutcome {
+                .unwrap_or(crate::executor::ExecOutcome {
                     status: TaskStatusV1::Failed,
                     model_patch: None,
                 });
@@ -304,11 +304,7 @@ fn finalize_result(
         .as_ref()
         .ok_or_else(|| "receipt signing key missing".to_owned())?;
 
-    let patch_bytes: &[u8] = outcome
-        .model_patch
-        .as_ref()
-        .map(String::as_bytes)
-        .unwrap_or(b"");
+    let patch_bytes: &[u8] = outcome.model_patch.as_deref().map_or(b"", str::as_bytes);
     let digest = patch_sha256(patch_bytes);
     let miner_hotkey = parse_hotkey_hex(&descriptor.miner_hotkey_hex)?;
 

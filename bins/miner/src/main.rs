@@ -154,7 +154,7 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let result = deploy_or_dry_run(&params).map_err(|e| e.to_string())?;
             println!("compose-hash={}", result.compose_hash_hex);
-            println!("receipt-public-key={}", receipt_public_key_hex);
+            println!("receipt-public-key={receipt_public_key_hex}");
             println!("receipt-sk-host-path={}", receipt_sk_host_path.display());
             println!("phala_invoked={}", result.phala_invoked);
             println!("mode={mode:?}");

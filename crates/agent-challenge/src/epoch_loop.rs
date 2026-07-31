@@ -1,6 +1,6 @@
 //! Headless epoch dispatch + single active signer (Metis N2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -96,7 +96,7 @@ pub trait EpochDispatchClient: Send + Sync + 'static {
 /// Single-active-signer registry.
 #[derive(Debug, Default)]
 pub struct ActiveSignerRegistry {
-    held: Mutex<BTreeMap<(String, u64), ()>>,
+    held: Mutex<BTreeSet<(String, u64)>>,
 }
 
 /// RAII lease.
@@ -127,13 +127,12 @@ impl ActiveSignerRegistry {
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if g.contains_key(&key) {
+        if !g.insert(key.clone()) {
             return Err(EpochLoopError::SignerAlreadyActive {
                 challenge_id: challenge_id.to_owned(),
                 epoch,
             });
         }
-        g.insert(key.clone(), ());
         Ok(SignerGuard {
             reg: Arc::clone(self),
             key,
@@ -154,7 +153,7 @@ impl Drop for SignerGuard {
 /// Map graded leaves + epoch outcomes onto full `E` coverage (never silence).
 ///
 /// Prefer `graded` when present. Else: TimedOut→Timeout, Failed→MinerError,
-/// CapacityExhausted / Completed-without-grade / missing → ChallengeInternal.
+/// `CapacityExhausted` / Completed-without-grade / missing → `ChallengeInternal`.
 #[must_use]
 pub fn score_map_covering_expected(
     expected: &std::collections::BTreeSet<[u8; KEY_LEN]>,
@@ -179,7 +178,7 @@ pub fn score_map_covering_expected(
         .collect()
 }
 
-/// One epoch: parallel dispatch, deadline → TimedOut, `|E|` outcomes.
+/// One epoch: parallel dispatch, deadline → `TimedOut`, `|E|` outcomes.
 ///
 /// # Errors
 /// Empty E/catalog, signer conflict, pack select, join panic.

@@ -119,7 +119,7 @@ impl Verifier for FailVerifier {
     }
 }
 
-/// S1 — valid result → receipt-OK + leaf SCORE_MAX; verifier invoked once.
+/// S1 — valid result → receipt-OK + leaf `SCORE_MAX`; verifier invoked once.
 #[test]
 fn s1_valid_intake_grades_leaf() {
     let epoch = 42u64;
@@ -154,8 +154,8 @@ fn s1_valid_intake_grades_leaf() {
     assert!(path.is_file());
 }
 
-/// S2 — patch bytes ≠ receipt hash → PatchHashMismatch, zero verifier calls.
-/// S3 — wrong epoch → EpochMismatch, zero verifier calls.
+/// S2 — patch bytes ≠ receipt hash → `PatchHashMismatch`, zero verifier calls.
+/// S3 — wrong epoch → `EpochMismatch`, zero verifier calls.
 #[test]
 fn s2_s3_receipt_mismatch_rejected_pre_grade() {
     let epoch = 99u64;

@@ -62,7 +62,7 @@ const TASK_ID_DOMAIN: &[u8] = b"gbase-agent-task-id-v1";
 const TASK_BLOB_DOMAIN: &[u8] = b"gbase-agent-task-blob-v1";
 const ANSWER_DOMAIN: &[u8] = b"gbase-agent-answer-v1";
 
-/// Domain tag for [`task_id_v2`] (distinct from v1 / WORK_RECEIPT / ATTEST).
+/// Domain tag for [`task_id_v2`] (distinct from v1 / `WORK_RECEIPT` / ATTEST).
 pub const TASK_ID_DOMAIN_V2: &[u8] = b"gbase-agent-task-id-v2";
 /// Domain tag for [`task_blob_v2`].
 pub const TASK_BLOB_DOMAIN_V2: &[u8] = b"gbase-agent-task-blob-v2";
@@ -99,7 +99,7 @@ pub fn answer_digest(task_blob: &[u8; 32]) -> [u8; 32] {
     finalize32(h)
 }
 
-/// v2 task id: binds netuid, epoch, hotkey, pack_id, and scoring_version.
+/// v2 task id: binds netuid, epoch, hotkey, `pack_id`, and `scoring_version`.
 ///
 /// `pack_id` is the UTF-8 pack identity bytes (same surface as receipt `pack_id`).
 #[must_use]
@@ -120,7 +120,7 @@ pub fn task_id_v2(
     finalize32(h)
 }
 
-/// v2 task blob: binds `task_id_v2`, scoring_version, and pack_id.
+/// v2 task blob: binds `task_id_v2`, `scoring_version`, and `pack_id`.
 #[must_use]
 pub fn task_blob_v2(task_id: &[u8; 32], scoring_version: u16, pack_id: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -133,7 +133,7 @@ pub fn task_blob_v2(task_id: &[u8; 32], scoring_version: u16, pack_id: &[u8]) ->
 
 /// v2 answer digest: domain-tagged SHA-256 over returned `model.patch` bytes.
 ///
-/// Distinct from receipt `patch_sha256` (untagged) and from v1 answer (over task_blob).
+/// Distinct from receipt `patch_sha256` (untagged) and from v1 answer (over `task_blob`).
 #[must_use]
 pub fn answer_digest_v2(model_patch: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();

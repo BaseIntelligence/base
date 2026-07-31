@@ -14,7 +14,7 @@ const SECTION_MARKERS: &[(&str, &str)] = &[
     ("C", "## 9. Compose services, ports, image contract"),
 ];
 
-/// Content pins (not only headings). scoring_version 2 / task 16 delta.
+/// Content pins (not only headings). `scoring_version` 2 / task 16 delta.
 const CONTENT_PINS: &[(&str, &str)] = &[
     ("bundle_protocol_version", "protocol_version = 1"),
     ("challenge_id", "agent-v1"),

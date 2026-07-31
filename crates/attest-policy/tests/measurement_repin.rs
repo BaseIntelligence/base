@@ -1,8 +1,8 @@
 //! Todo 23: measurement re-pin sequencing after socket-proxy compose-hash change.
 //!
 //! Proves fail-closed stale allowlist (wrong cutover order) and acceptance after
-//! dual-entry / hard-cut update. Uses synthetic MeasurementEntry profiles plus
-//! real Phala fixture registers for the historical compose_hash row.
+//! dual-entry / hard-cut update. Uses synthetic `MeasurementEntry` profiles plus
+//! real Phala fixture registers for the historical `compose_hash` row.
 //!
 //! Live CVM MRTD/RTMR for the normative post-proxy template must still be
 //! captured before production scoring depends on Verified — see
@@ -75,7 +75,7 @@ fn old_fixture_entry() -> (MeasurementEntry, [u8; COMPOSE_HASH_LEN]) {
     (entry, compose_hash)
 }
 
-/// Provisional new-template profile: fixture-shaped registers + new compose_hash.
+/// Provisional new-template profile: fixture-shaped registers + new `compose_hash`.
 /// Structure-only stand-in until live CVM capture replaces registers.
 fn new_socket_proxy_entry() -> MeasurementEntry {
     let (old, _) = old_fixture_entry();
@@ -270,7 +270,7 @@ fn repin_empty_allowlist_still_fail_closed() {
     );
 }
 
-/// Documented normative new compose_hash is 32 bytes and differs from fixture.
+/// Documented normative new `compose_hash` is 32 bytes and differs from fixture.
 #[test]
 fn repin_new_compose_hash_differs_from_fixture() {
     let (_, old_hash) = old_fixture_entry();

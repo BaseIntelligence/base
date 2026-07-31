@@ -62,8 +62,7 @@ fn now_iso() -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_else(|| "unknown".into())
+        .map_or_else(|| "unknown".into(), |s| s.trim().to_owned())
 }
 
 fn sk() -> [u8; KEY_LEN] {
@@ -284,9 +283,10 @@ fn harbor_enabled() -> bool {
 }
 
 fn pack_dir() -> PathBuf {
-    std::env::var("GBASE_VERIFY_PACK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"))
+    std::env::var("GBASE_VERIFY_PACK").map_or_else(
+        |_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"),
+        PathBuf::from,
+    )
 }
 
 fn docker_base() -> String {
@@ -340,6 +340,7 @@ fn try_harbor_grade() -> Option<(u8, String)> {
 
 /// S1 — runner epoch → intake/grade → |E| leaves → seal → validator Match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
 async fn s1_full_local_epoch_match_and_seal() {
     // --- 1. Runner epoch dispatch (fake miners, real loop) ---
     let expected = expected_set();
@@ -368,9 +369,10 @@ async fn s1_full_local_epoch_match_and_seal() {
     ));
 
     // --- 2. Intake + grade (real grade path; optional Harbor) ---
-    let harbor_note = try_harbor_grade()
-        .map(|(_, n)| n)
-        .unwrap_or_else(|| "harbor_skipped (set GBASE_E2E_HARBOR=1 for live pack grade)".into());
+    let harbor_note = try_harbor_grade().map_or_else(
+        || "harbor_skipped (set GBASE_E2E_HARBOR=1 for live pack grade)".into(),
+        |(_, n)| n,
+    );
     let grade_calls = Arc::new(AtomicU32::new(0));
     let verifier = FixtureVerifier {
         calls: Arc::clone(&grade_calls),

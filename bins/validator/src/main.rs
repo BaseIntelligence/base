@@ -29,6 +29,7 @@ use validator::{
 };
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> ExitCode {
     if let Err(e) = telemetry::init_tracing() {
         // Subscriber may already be set; continue with best-effort logs.
@@ -177,7 +178,7 @@ fn trust_root_dir() -> PathBuf {
     PathBuf::from("/etc/gbase/config")
 }
 
-/// Load challenges + measurements; build AttestState, LocalTrustRoot, and FakeChain
+/// Load challenges + measurements; build `AttestState`, `LocalTrustRoot`, and `FakeChain`
 /// aligned with gateway (`GBASE_GATEWAY_HOTKEY` / `GBASE_FAKE_METAGRAPH_HOTKEYS`).
 fn build_runtime_trust(
     netuid: u16,
@@ -249,7 +250,7 @@ fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, String
     }
     let mut out = Vec::new();
     for part in raw.split(',') {
-        let h = parse_hotkey_hex(part.trim()).map_err(|e| e.to_string())?;
+        let h = parse_hotkey_hex(part.trim()).map_err(|e| e.clone())?;
         out.push(h.to_vec());
     }
     if out.is_empty() {
@@ -277,7 +278,7 @@ fn parse_hotkey_hex(s: &str) -> Result<[u8; 32], String> {
         .map_err(|v: Vec<u8>| format!("hotkey must be 32 bytes, got {}", v.len()))
 }
 
-/// Optional 32-byte validator hotkey for D10 report_data binding (hex or zeros).
+/// Optional 32-byte validator hotkey for D10 `report_data` binding (hex or zeros).
 fn validator_hotkey_from_env() -> [u8; 32] {
     parse_hotkey_env("GBASE_VALIDATOR_HOTKEY_HEX").unwrap_or([0u8; 32])
 }

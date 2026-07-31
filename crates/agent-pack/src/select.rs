@@ -68,7 +68,11 @@ pub fn select_index(epoch: u64, miner_hotkey: &[u8; HOTKEY_LEN], n: usize) -> us
     let seed = u64::from_le_bytes([
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
     ]);
-    (seed.wrapping_add(epoch) % (n as u64)) as usize
+    // n is from catalog.len(); remainder is always < n, so fits usize on all targets.
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (seed.wrapping_add(epoch) % (n as u64)) as usize
+    }
 }
 
 #[cfg(test)]
@@ -88,7 +92,7 @@ mod tests {
         [byte; HOTKEY_LEN]
     }
 
-    /// S5 — empty catalog → typed EmptyCatalog (not panic).
+    /// S5 — empty catalog → typed `EmptyCatalog` (not panic).
     #[test]
     fn empty_catalog_returns_empty_catalog_error() {
         let err = select_pack(0, &hotkey(0x11), &[]).expect_err("empty");
@@ -172,6 +176,7 @@ mod tests {
     fn uniform_within_tolerance() {
         let cat = catalog(&["u0", "u1", "u2", "u3"]);
         let n = cat.len();
+        #[allow(clippy::cast_precision_loss)]
         let samples = 10_000_usize;
         let mut hist: BTreeMap<String, usize> = BTreeMap::new();
         for i in 0..samples {
@@ -182,10 +187,12 @@ mod tests {
             let id = select_pack(epoch, &hk, &cat).expect("ok");
             *hist.entry(id.as_str().to_owned()).or_default() += 1;
         }
+        #[allow(clippy::cast_precision_loss)]
         let expected = samples as f64 / n as f64;
         // ±15% relative tolerance (hash + modular walk is near-uniform).
         let tol = expected * 0.15;
         for (pack, count) in &hist {
+            #[allow(clippy::cast_precision_loss)]
             let c = *count as f64;
             assert!(
                 (c - expected).abs() <= tol,

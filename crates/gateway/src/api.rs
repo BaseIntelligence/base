@@ -35,7 +35,7 @@ pub struct GatewayState {
     pub measurements_digest: [u8; 32],
     /// Default netuid for admin seal.
     pub seal_netuid: u16,
-    /// Owner hotkey for FakeChain seal context.
+    /// Owner hotkey for `FakeChain` seal context.
     pub seal_owner_hotkey: [u8; 32],
     /// Metagraph hotkeys (UID order) for seal; empty → owner only.
     pub seal_hotkeys: Vec<Vec<u8>>,
@@ -82,11 +82,12 @@ impl GatewayState {
         )
     }
 
-    /// Full injection including seal FakeChain context.
+    /// Full injection including seal `FakeChain` context.
     ///
     /// # Errors
     ///
     /// When the reqwest client cannot be built.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_parts_seal(
         registry: Arc<Registry>,
         challenges: Arc<ChallengesBody>,

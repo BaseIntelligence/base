@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -161,7 +162,7 @@ fn format_outcome_table(result: &EpochDispatchResult) -> String {
                 ("capacity_exhausted", pack_id.as_str())
             }
         };
-        s.push_str(&format!("{:<40} {k:<20} {p}\n", hex32(key)));
+        let _ = writeln!(s, "{:<40} {k:<20} {p}", hex32(key));
     }
     s
 }
@@ -211,7 +212,7 @@ async fn s1_epoch_fast_slow_dead_outcomes() {
     assert_eq!(client.fast_before_slow.load(Ordering::SeqCst), 1);
 }
 
-/// S2 — hang past deadline → TimedOut; epoch still completes with |E|.
+/// S2 — hang past deadline → `TimedOut`; epoch still completes with |E|.
 #[tokio::test]
 async fn s2_deadline_timeout_epoch_completes() {
     let expected = ExpectedSet {
@@ -258,7 +259,7 @@ async fn s3_second_signer_refused() {
     let _g2 = signers.try_acquire("agent-v1", 99).expect("after drop");
 }
 
-/// S3b — run_epoch_dispatch refuses when lease already held.
+/// S3b — `run_epoch_dispatch` refuses when lease already held.
 #[tokio::test]
 async fn s3b_run_epoch_refuses_second_signer() {
     let expected = ExpectedSet {
@@ -278,7 +279,7 @@ async fn s3b_run_epoch_refuses_second_signer() {
     assert!(matches!(err, EpochLoopError::SignerAlreadyActive { .. }));
 }
 
-/// S4 — abort in-flight JoinSet without leak.
+/// S4 — abort in-flight `JoinSet` without leak.
 #[tokio::test]
 async fn s4_cancel_aborts_inflight() {
     let expected = ExpectedSet {
@@ -298,7 +299,7 @@ async fn s4_cancel_aborts_inflight() {
     assert!(err.is_cancelled());
 }
 
-/// Capacity gate: free_slots==0 → CapacityExhausted, no run_pack.
+/// Capacity gate: `free_slots==0` → `CapacityExhausted`, no `run_pack`.
 #[tokio::test]
 async fn capacity_exhausted_skips_run() {
     let expected = ExpectedSet {

@@ -1,4 +1,4 @@
-//! Pure integer scoring rule (`AGENT_CHALLENGE` §5.4, scoring_version = 2).
+//! Pure integer scoring rule (`AGENT_CHALLENGE` §5.4, `scoring_version` = 2).
 //!
 //! Live path uses pack-bound v2 task identity and `answer_digest_v2(model.patch)`.
 //! v2 scores **pure correctness** only — latency decay is removed. `duration_ms` is

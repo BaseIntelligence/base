@@ -86,8 +86,7 @@ impl ReceiptKey {
 #[must_use]
 pub fn receipt_sk_path_from_env() -> PathBuf {
     std::env::var_os(RECEIPT_SK_FILE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_RECEIPT_SK_PATH))
+        .map_or_else(|| PathBuf::from(DEFAULT_RECEIPT_SK_PATH), PathBuf::from)
 }
 
 /// Load a 32-byte mini-secret from `path` (raw bytes or hex text).

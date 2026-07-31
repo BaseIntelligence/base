@@ -138,7 +138,7 @@ pub struct BoundPatch {
 /// Receipt bind failures (pre-grading; no Harbor compute).
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ReceiptBindError {
-    /// sr25519 verify failed under WORK_RECEIPT.
+    /// sr25519 verify failed under `WORK_RECEIPT`.
     #[error("receipt signature invalid: {0}")]
     ReceiptSigInvalid(String),
     /// Returned patch does not match `patch_sha256_hex` / receipt body.
