@@ -1,0 +1,108 @@
+{
+  "success": true,
+  "id": "cvm_BKyPxael",
+  "name": "base-miner-dev",
+  "app_id": "7345719d5c152d26c73330ba07bf0f3dd4eb29c1",
+  "vm_uuid": "96238355-a3a7-4732-a610-eb4529c303bc",
+  "instance_id": null,
+  "resource": {
+    "instance_type": "tdx.small",
+    "vcpu": 1,
+    "memory_in_gb": 2,
+    "disk_in_gb": 20,
+    "gpus": 0,
+    "compute_billing_price": "0.058000",
+    "billing_period": "hourly"
+  },
+  "node_info": {
+    "object_type": "node",
+    "id": 26,
+    "name": "prod5",
+    "region": "US-WEST-1",
+    "device_id": "c4691f9c88f44e05cbc45521678e72b99fcd54fa35d302f13e8f9fa9727f33a6",
+    "ppid": "3e306e133b7fdaa7bb79f67634cb520c",
+    "status": "ONLINE",
+    "version": "v0.5.7 (git:9c5c5e2b9c945945c193)"
+  },
+  "os": {
+    "name": "dstack-dev-0.5.9",
+    "version": "0.5.9",
+    "is_dev": true,
+    "os_image_hash": "de9c74f0c85d0820ce075cb4a99f8e39f7b681be632907c5bf8bdc95ea72feb9"
+  },
+  "kms_type": "phala",
+  "kms_info": {
+    "chain_id": null,
+    "dstack_kms_address": "",
+    "dstack_app_address": null,
+    "deployer_address": null,
+    "rpc_endpoint": "https://kms.dstack-pha-prod7.phala.network",
+    "encrypted_env_pubkey": "dbce9abec296aa8261f8fe9e17dfd6637cc59fd359adf172f69915fca79c3c4c"
+  },
+  "status": "running",
+  "progress": null,
+  "compose_hash": "5dbbf77467cae6f85242e69d70ede9e246ed6c87e9e09f5e1128025eac8e7015",
+  "gateway": {
+    "base_domain": "dstack-pha-prod5.phala.network",
+    "cname": "_.dstack-pha-prod5.phala.network"
+  },
+  "services": [],
+  "endpoints": [
+    {
+      "app": "https://7345719d5c152d26c73330ba07bf0f3dd4eb29c1-8080.dstack-pha-prod5.phala.network",
+      "instance": ""
+    }
+  ],
+  "public_logs": true,
+  "public_sysinfo": true,
+  "public_tcbinfo": true,
+  "gateway_enabled": true,
+  "secure_time": false,
+  "listed": false,
+  "storage_fs": "zfs",
+  "workspace": {
+    "object_type": "workspace",
+    "id": "wks_vKGJ7pe8",
+    "name": "echobt's projects",
+    "slug": "echobts-projects",
+    "avatar_url": null
+  },
+  "creator": {
+    "object_type": "user",
+    "id": "usr_BKylEJel",
+    "username": "echobt",
+    "avatar_url": "https://cloud-r2.phala.com/avatars/oauth/d78518ab488a3bad1db7e5c846b5fb77.png"
+  },
+  "compose_file": {
+    "allowed_envs": [
+      "DSTACK_AUTHORIZED_KEYS"
+    ],
+    "bash_script": null,
+    "default_gateway_domain": null,
+    "docker_compose_file": "# base miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)\n# Secrets: file mounts under /run/base only. Never put secret values in environment.\n# LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.\n# Work-receipt: private key file-mounted; public key published for challenge pin (D19).\n# Docker: measured socket-proxy only; agent must not mount docker.sock (D4 / §9.1.1).\n# Packs: named volume at pack_root; catalog URL for on-demand fetch.\nservices:\n  socket-proxy:\n    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459\n    restart: unless-stopped\n    environment:\n      CONTAINERS: \"1\"\n      IMAGES: \"1\"\n      POST: \"1\"\n      ALLOW_START: \"1\"\n      ALLOW_STOP: \"1\"\n      NETWORKS: \"1\"\n      INFO: \"1\"\n      AUTH: \"0\"\n      BUILD: \"0\"\n      EXEC: \"0\"\n      VOLUMES: \"0\"\n      SWARM: \"0\"\n      SERVICES: \"0\"\n      SYSTEM: \"0\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n  agent:\n    image: ghcr.io/baseintelligence/base/base-agent@sha256:b5e6081f352c44cf9374c0b5d5d15c938892e0a05bfa0cc36c04ac19d2ae3de2\n    restart: unless-stopped\n    depends_on:\n      - socket-proxy\n    ports:\n      - \"8080:8080\"\n    environment:\n      BASE_NETUID: \"1\"\n      BASE_MINER_HOTKEY_FILE: \"/run/base/miner_hotkey\"\n      BASE_LAUNCH_TOKEN_HASH: \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n      BASE_RECEIPT_SK_FILE: \"/run/base/receipt_sk\"\n      BASE_RECEIPT_PUBLIC_KEY: \"a0464947d2669f0eddbcdb1329209c4302963b81e5bf181b9af27998fba08438\"\n      BASE_DOCKER_BASE: \"http://socket-proxy:2375\"\n      BASE_ENVIRONMENT_IMAGE: \"bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324\"\n      BASE_PACK_ROOT: \"/var/lib/base/packs\"\n      BASE_PACK_CATALOG_URL: \"http://127.0.0.1:8090\"\n      BASE_TRUSTED_CHALLENGE_PUBKEY: \"f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45\"\n    volumes:\n      - type: bind\n        source: miner_hotkey\n        target: /run/base/miner_hotkey\n        read_only: true\n      - type: bind\n        source: launch_token\n        target: /run/base/launch_token\n        read_only: true\n      - type: bind\n        source: receipt_sk\n        target: /run/base/receipt_sk\n        read_only: true\n      - packs:/var/lib/base/packs\n  attest-helper:\n    image: ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf\n    restart: unless-stopped\n    ports:\n      - \"127.0.0.1:8081:8081\"\n    environment:\n      BASE_LAUNCH_TOKEN_HASH: \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n      BASE_MINER_HOTKEY_FILE: \"/run/base/miner_hotkey\"\n    volumes:\n      - type: bind\n        source: miner_hotkey\n        target: /run/base/miner_hotkey\n        read_only: true\n      - type: bind\n        source: launch_token\n        target: /run/base/launch_token\n        read_only: true\n      - /var/run/dstack.sock:/var/run/dstack.sock\nvolumes:\n  packs:\n",
+    "init_script": null,
+    "key_provider": null,
+    "key_provider_id": null,
+    "kms_enabled": true,
+    "local_key_provider_enabled": false,
+    "manifest_version": 2,
+    "name": "",
+    "no_instance_id": false,
+    "port_policy": null,
+    "pre_launch_script": "#!/bin/bash\nset -euo pipefail\nmkdir -p /dstack\n: > /dstack/launch_token\nprintf '\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x09\\x0a\\x0b\\x0c\\x0d\\x0e\\x0f\\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f' > /dstack/miner_hotkey\nprintf '\\xdc\\x28\\xd9\\xa6\\xfb\\x26\\x94\\x3b\\xf4\\x96\\xe0\\x37\\x22\\xc5\\x33\\x77\\xb5\\x3a\\xff\\xe9\\xec\\x84\\xc4\\xd2\\xae\\xde\\x2f\\xdd\\x0d\\x9c\\x48\\x21' > /dstack/receipt_sk\nif chown 65532:65532 /dstack/miner_hotkey /dstack/receipt_sk /dstack/launch_token 2>/dev/null; then\n  chmod 0400 /dstack/miner_hotkey /dstack/receipt_sk\n  chmod 0444 /dstack/launch_token\nelse\n  chmod 0444 /dstack/miner_hotkey /dstack/receipt_sk /dstack/launch_token\nfi\nls -la /dstack/miner_hotkey /dstack/launch_token /dstack/receipt_sk\necho \"pre-launch secrets materialised ok\"\n",
+    "public_logs": true,
+    "public_sysinfo": true,
+    "public_tcbinfo": true,
+    "runner": "docker-compose",
+    "gateway_enabled": true,
+    "features": [
+      "kms",
+      "tproxy-net"
+    ],
+    "salt": null,
+    "secure_time": false,
+    "storage_fs": "zfs",
+    "swap_size": null,
+    "tproxy_enabled": true
+  }
+}

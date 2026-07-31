@@ -1,0 +1,18 @@
+=== FINAL FULL-PROD VALIDATION 2026-07-31T06:28:13Z ===
+EP=https://7345719d5c152d26c73330ba07bf0f3dd4eb29c1-8080.dstack-pha-prod5.phala.network
+/healthz HTTP 200 body=ok
+/readyz HTTP 200 body=ready
+/v1/capacity HTTP 200 body={"max_concurrency":1,"current_load":0}
+--- capacity x5 ---
+{"max_concurrency":1,"current_load":0}
+{"max_concurrency":1,"current_load":0}
+{"max_concurrency":1,"current_load":0}
+{"max_concurrency":1,"current_load":0}
+{"max_concurrency":1,"current_load":0}
+--- unsigned POST ---
+{"code":"unauthorized","error":"unauthorized"}
+HTTP 401
+--- CVM status ---
+status running
+compose_hash 5dbbf77467cae6f85242e69d70ede9e246ed6c87e9e09f5e1128025eac8e7015
+name base-miner-dev

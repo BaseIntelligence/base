@@ -1,0 +1,4 @@
+Warning: This command is deprecated and may be removed in a future version.
+{"timestamp":"2026-07-31T06:22:23.104011Z","level":"INFO","fields":{"message":"agent-runner HTTP surface","event":"agent_runner_listening","actual":"0.0.0.0:8080","declared_max_concurrency":1,"effective_max_concurrency":1,"receipt_public_key_hex":"a0464947d2669f0eddbcdb1329209c4302963b81e5bf181b9af27998fba08438","auth_enabled":true,"egress_posture":"open","default_egress":"open"},"target":"agent_runner"}
+{"timestamp":"2026-07-31T06:22:47.349760Z","level":"INFO","fields":{"message":"dispatch auth rejected","event":"runner_dispatch_auth_reject","reason":"malformed_or_unsigned"},"target":"agent_runner::api"}
+

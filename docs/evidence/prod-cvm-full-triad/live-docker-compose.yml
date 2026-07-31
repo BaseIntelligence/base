@@ -1,0 +1,79 @@
+# base miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)
+# Secrets: file mounts under /run/base only. Never put secret values in environment.
+# LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.
+# Work-receipt: private key file-mounted; public key published for challenge pin (D19).
+# Docker: measured socket-proxy only; agent must not mount docker.sock (D4 / §9.1.1).
+# Packs: named volume at pack_root; catalog URL for on-demand fetch.
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      NETWORKS: "1"
+      INFO: "1"
+      AUTH: "0"
+      BUILD: "0"
+      EXEC: "0"
+      VOLUMES: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  agent:
+    image: ghcr.io/baseintelligence/base/base-agent@sha256:b5e6081f352c44cf9374c0b5d5d15c938892e0a05bfa0cc36c04ac19d2ae3de2
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    ports:
+      - "8080:8080"
+    environment:
+      BASE_NETUID: "1"
+      BASE_MINER_HOTKEY_FILE: "/run/base/miner_hotkey"
+      BASE_LAUNCH_TOKEN_HASH: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      BASE_RECEIPT_SK_FILE: "/run/base/receipt_sk"
+      BASE_RECEIPT_PUBLIC_KEY: "a0464947d2669f0eddbcdb1329209c4302963b81e5bf181b9af27998fba08438"
+      BASE_DOCKER_BASE: "http://socket-proxy:2375"
+      BASE_ENVIRONMENT_IMAGE: "bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324"
+      BASE_PACK_ROOT: "/var/lib/base/packs"
+      BASE_PACK_CATALOG_URL: "http://127.0.0.1:8090"
+      BASE_TRUSTED_CHALLENGE_PUBKEY: "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
+    volumes:
+      - type: bind
+        source: miner_hotkey
+        target: /run/base/miner_hotkey
+        read_only: true
+      - type: bind
+        source: launch_token
+        target: /run/base/launch_token
+        read_only: true
+      - type: bind
+        source: receipt_sk
+        target: /run/base/receipt_sk
+        read_only: true
+      - packs:/var/lib/base/packs
+  attest-helper:
+    image: ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      BASE_LAUNCH_TOKEN_HASH: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      BASE_MINER_HOTKEY_FILE: "/run/base/miner_hotkey"
+    volumes:
+      - type: bind
+        source: miner_hotkey
+        target: /run/base/miner_hotkey
+        read_only: true
+      - type: bind
+        source: launch_token
+        target: /run/base/launch_token
+        read_only: true
+      - /var/run/dstack.sock:/var/run/dstack.sock
+volumes:
+  packs:
