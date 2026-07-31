@@ -239,12 +239,8 @@ fn execute_docker(
     pack_id: &str,
     deadline_unix_ms: u64,
 ) -> Result<ExecOutcome, ExecError> {
-    crate::fetch_pack::ensure_pack(
-        &cfg.pack_root,
-        cfg.pack_catalog_url.as_deref(),
-        pack_id,
-    )
-    .map_err(|e| ExecError::Pack(e.to_string()))?;
+    crate::fetch_pack::ensure_pack(&cfg.pack_root, cfg.pack_catalog_url.as_deref(), pack_id)
+        .map_err(|e| ExecError::Pack(e.to_string()))?;
     let stripped = load_stripped(&cfg.pack_root, pack_id)?;
     let now = unix_now_ms();
     let timeout_sec = resolve_timeout_sec(deadline_unix_ms, stripped.deadline_sec, now);

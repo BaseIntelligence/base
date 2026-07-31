@@ -52,10 +52,7 @@ impl PackCatalogState {
     ///
     /// # Errors
     /// Propagates materialize/load failures.
-    pub fn open_from_source(
-        source_dir: &Path,
-        cache_dir: &Path,
-    ) -> Result<Self, PackServeError> {
+    pub fn open_from_source(source_dir: &Path, cache_dir: &Path) -> Result<Self, PackServeError> {
         ensure_pack_source(source_dir)?;
         materialize_catalog(source_dir, cache_dir)?;
         let catalog = load_catalog(cache_dir)?;
@@ -269,9 +266,9 @@ async fn get_pack(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_static("application/gzip"),
             );
-            if let Ok(val) = header::HeaderValue::from_str(&format!(
-                "attachment; filename=\"{pack_id}.tar.gz\""
-            )) {
+            if let Ok(val) =
+                header::HeaderValue::from_str(&format!("attachment; filename=\"{pack_id}.tar.gz\""))
+            {
                 res.headers_mut().insert(header::CONTENT_DISPOSITION, val);
             }
             res
@@ -311,9 +308,7 @@ mod tests {
         let cache = tmp.path().join("cache");
         fs::create_dir_all(&source).unwrap();
         seed_fixture_source(&source);
-        let state = Arc::new(
-            PackCatalogState::open_from_source(&source, &cache).expect("open"),
-        );
+        let state = Arc::new(PackCatalogState::open_from_source(&source, &cache).expect("open"));
         assert!(state.is_ready());
         let app = pack_routes(state.clone());
 

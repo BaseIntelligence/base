@@ -178,9 +178,9 @@ pub fn export_stripped_tar_gz(pack: &HarborPack) -> Result<Vec<u8>, PackError> {
                 )));
             }
             let mut header = Header::new_gnu();
-            header.set_path(rel).map_err(|e| {
-                PackError::Invalid(format!("tar path {rel}: {e}"))
-            })?;
+            header
+                .set_path(rel)
+                .map_err(|e| PackError::Invalid(format!("tar path {rel}: {e}")))?;
             header.set_size(bytes.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();

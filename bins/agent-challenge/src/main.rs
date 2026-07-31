@@ -28,7 +28,12 @@ struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
     /// Bind address for health endpoints (default 0.0.0.0:8090).
-    #[arg(long, env = "BASE_CHALLENGE_BIND", default_value = "0.0.0.0:8090", global = true)]
+    #[arg(
+        long,
+        env = "BASE_CHALLENGE_BIND",
+        default_value = "0.0.0.0:8090",
+        global = true
+    )]
     bind: SocketAddr,
     /// Path to challenge mini-secret (32 raw bytes or hex). Required for ready.
     #[arg(long, env = "BASE_CHALLENGE_SK_FILE", global = true)]
@@ -113,31 +118,29 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         _ => false,
     };
 
-    let pack_state = match PackCatalogState::open_from_source(
-        &cli.pack_source_dir,
-        &cli.pack_cache_dir,
-    ) {
-        Ok(s) => {
-            tracing::info!(
-                event = "pack_catalog_loaded",
-                source = %cli.pack_source_dir.display(),
-                cache = %cli.pack_cache_dir.display(),
-                packs = s.catalog().len(),
-                pin = %s.catalog().pin(),
-                "pack catalog ready"
-            );
-            Some(Arc::new(s))
-        }
-        Err(e) => {
-            tracing::warn!(
-                event = "pack_catalog_bootstrap_failed",
-                source = %cli.pack_source_dir.display(),
-                error = %e,
-                "pack catalog not loaded; /v1/* pack routes unavailable"
-            );
-            None
-        }
-    };
+    let pack_state =
+        match PackCatalogState::open_from_source(&cli.pack_source_dir, &cli.pack_cache_dir) {
+            Ok(s) => {
+                tracing::info!(
+                    event = "pack_catalog_loaded",
+                    source = %cli.pack_source_dir.display(),
+                    cache = %cli.pack_cache_dir.display(),
+                    packs = s.catalog().len(),
+                    pin = %s.catalog().pin(),
+                    "pack catalog ready"
+                );
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    event = "pack_catalog_bootstrap_failed",
+                    source = %cli.pack_source_dir.display(),
+                    error = %e,
+                    "pack catalog not loaded; /v1/* pack routes unavailable"
+                );
+                None
+            }
+        };
 
     let catalog_ready = pack_state.as_ref().is_some_and(|s| s.is_ready());
     let ready = sk_ready && catalog_ready;
@@ -161,10 +164,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
                         if reason == "ready" {
                             (axum::http::StatusCode::OK, "ready".to_owned())
                         } else {
-                            (
-                                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                                reason,
-                            )
+                            (axum::http::StatusCode::SERVICE_UNAVAILABLE, reason)
                         }
                     }
                 }

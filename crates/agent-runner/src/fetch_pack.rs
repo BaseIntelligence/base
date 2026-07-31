@@ -13,10 +13,7 @@ use thiserror::Error;
 pub enum PackFetchError {
     /// Pack missing and no catalog URL configured.
     #[error("pack {pack_id} missing under {pack_root} and BASE_PACK_CATALOG_URL unset")]
-    MissingNoCatalog {
-        pack_id: String,
-        pack_root: String,
-    },
+    MissingNoCatalog { pack_id: String, pack_root: String },
     /// Invalid pack id (path traversal / empty).
     #[error("invalid pack_id: {0}")]
     InvalidPackId(String),
@@ -56,11 +53,7 @@ pub fn ensure_pack(
         });
     };
 
-    let url = format!(
-        "{}/v1/packs/{}",
-        base.trim_end_matches('/'),
-        pack_id
-    );
+    let url = format!("{}/v1/packs/{}", base.trim_end_matches('/'), pack_id);
     let bytes = http_get_bytes(&url)?;
     extract_tar_gz_atomic(pack_root, pack_id, &bytes)?;
     if !pack_loadable(&dest) {
@@ -200,7 +193,7 @@ fn resolve_extracted_root(staging: &Path, pack_id: &str) -> Result<PathBuf, Pack
 /// Build a gzipped tar of a Harbor pack directory (test helper).
 #[cfg(test)]
 pub fn pack_dir_to_tar_gz(dir: &Path) -> Result<Vec<u8>, String> {
-use flate2::write::GzEncoder;
+    use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
 
@@ -218,9 +211,9 @@ use flate2::write::GzEncoder;
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::Arc;
-use std::thread;
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::thread;
 
     fn fixture_minimal_ok() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../agent-pack/tests/fixtures/minimal-ok")
@@ -314,8 +307,7 @@ use std::thread;
             let (mut stream, _) = listener.accept().expect("accept");
             let mut req = [0u8; 1024];
             let _ = stream.read(&mut req);
-            let resp =
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             stream.write_all(resp).expect("write");
         });
         let tmp = tempfile::tempdir().expect("tmp");

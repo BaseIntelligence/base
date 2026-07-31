@@ -40,11 +40,7 @@ fn copy_dir(from: &Path, to: &Path) {
 
 fn stage_source(tmp: &Path) -> (PathBuf, String) {
     let src_pack = fixture_pack();
-    let pack_id = src_pack
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let pack_id = src_pack.file_name().unwrap().to_string_lossy().into_owned();
     let source = tmp.join("source");
     copy_dir(&src_pack, &source.join(&pack_id));
     (source, pack_id)

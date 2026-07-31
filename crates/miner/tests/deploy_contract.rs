@@ -84,9 +84,9 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
     let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
     let names: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
-assert!(names.contains(&"BASE_NETUID"));
-assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
-assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
+    assert!(names.contains(&"BASE_NETUID"));
+    assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
+    assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
     assert!(names.contains(&DOCKER_BASE_ENV));
     assert!(names.contains(&ENV_IMAGE_ENV));
     assert!(names.contains(&PACK_ROOT_ENV));
@@ -100,9 +100,7 @@ fn pack_triad_env_and_packs_volume_in_measured_compose() {
     let yaml = docker_compose_from_app_compose_json(&result.app_compose_json).expect("yaml");
 
     assert!(
-        yaml.contains(&format!(
-            "{ENV_IMAGE_ENV}: \"{DEFAULT_ENVIRONMENT_IMAGE}\""
-        )),
+        yaml.contains(&format!("{ENV_IMAGE_ENV}: \"{DEFAULT_ENVIRONMENT_IMAGE}\"")),
         "missing digest-pinned environment image:\n{yaml}"
     );
     assert!(
@@ -421,18 +419,18 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
 fn template_input_includes_socket_proxy_image() {
     let launch = "cc".repeat(32);
     let pk = "dd".repeat(32);
-let yaml = docker_compose_yaml(&ComposeTemplateInput {
-agent_image: DEFAULT_AGENT_IMAGE,
-attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE,
-socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE,
-launch_token_hash: &launch,
-netuid: 541,
+    let yaml = docker_compose_yaml(&ComposeTemplateInput {
+        agent_image: DEFAULT_AGENT_IMAGE,
+        attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE,
+        socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE,
+        launch_token_hash: &launch,
+        netuid: 541,
         receipt_public_key_hex: &pk,
         environment_image: DEFAULT_ENVIRONMENT_IMAGE,
         pack_root: DEFAULT_PACK_ROOT_IN_CVM,
         pack_catalog_url: DEFAULT_PACK_CATALOG_URL,
         trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
-});
+    });
     assert!(yaml.contains("challenge_scoring_version=2"));
     assert!(yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE));
     reject_raw_docker_sock_on_agent(&yaml).expect("ok");

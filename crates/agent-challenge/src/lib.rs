@@ -47,14 +47,12 @@ pub use intake::{
     intake_and_grade, verify_intake_receipt, ExpectedReceiptBind, IntakeOk, IntakePatch,
     ReceiptBindError,
 };
-pub use pack_serve::{
-    ensure_pack_source, pack_routes, PackCatalogState, PackServeError,
-};
 pub use leaf_map::{
     attempts_within_seal_budget, cover_expected_verify_leaves, grade_to_score_or_absence,
     grade_to_score_or_absence_budgeted, is_operator_fault, is_retryable_operator_fault, map_reward,
     map_verify_error, score_from_verify_result, MAX_VERIFY_ATTEMPTS, MAX_VERIFY_RETRIES,
 };
+pub use pack_serve::{ensure_pack_source, pack_routes, PackCatalogState, PackServeError};
 pub use score::{
     score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs, CONNECT_MS, MAX_ATTEMPTS,
     SCORE_MAX,

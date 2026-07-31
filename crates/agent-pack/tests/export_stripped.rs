@@ -35,8 +35,14 @@ fn assert_no_held_out_paths(root: &Path) {
         !root.join("solution.patch").exists(),
         "root solution.patch must not exist"
     );
-    assert!(!root.join("grader.py").exists(), "root grader.py must not exist");
-    assert!(!root.join("test.patch").exists(), "root test.patch must not exist");
+    assert!(
+        !root.join("grader.py").exists(),
+        "root grader.py must not exist"
+    );
+    assert!(
+        !root.join("test.patch").exists(),
+        "root test.patch must not exist"
+    );
 }
 
 #[test]
@@ -106,12 +112,18 @@ fn export_stripped_tar_gz_is_valid_and_has_no_solution() {
     let mut paths = Vec::new();
     for entry in archive.entries().expect("entries") {
         let entry = entry.expect("entry");
-        let path = entry.path().expect("path").to_string_lossy().replace('\\', "/");
+        let path = entry
+            .path()
+            .expect("path")
+            .to_string_lossy()
+            .replace('\\', "/");
         paths.push(path);
     }
 
     assert!(
-        paths.iter().any(|p| p == "task.toml" || p.ends_with("/task.toml")),
+        paths
+            .iter()
+            .any(|p| p == "task.toml" || p.ends_with("/task.toml")),
         "missing task.toml in tar: {paths:?}"
     );
     assert!(
@@ -121,7 +133,9 @@ fn export_stripped_tar_gz_is_valid_and_has_no_solution() {
         "missing instruction.md in tar: {paths:?}"
     );
     assert!(
-        paths.iter().any(|p| p.contains("environment/") && p.ends_with("Dockerfile")),
+        paths
+            .iter()
+            .any(|p| p.contains("environment/") && p.ends_with("Dockerfile")),
         "missing environment/Dockerfile in tar: {paths:?}"
     );
 
