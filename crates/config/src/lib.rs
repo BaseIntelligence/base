@@ -20,7 +20,7 @@ mod role;
 
 pub use error::{Error, Issue, ValidationReport};
 pub use load::{
-    gbase_env_from_process, keys, load, load_from, load_from_toml_str, resolve_toml_path,
+    base_env_from_process, keys, load, load_from, load_from_toml_str, resolve_toml_path,
     DEFAULT_CHAIN_ENDPOINT, DEFAULT_EPOCH_LENGTH, DEFAULT_MAX_COLLATERAL_AGE_SECS,
     DEFAULT_MIN_PEER_SAMPLE, DEFAULT_MIN_SHARE_MASS_BPS, DEFAULT_ROTATION_EPOCHS,
     MAX_SHARE_MASS_BPS,
@@ -320,7 +320,7 @@ epoch_length = 100
             r#"
 role = "updater"
 netuid = 5
-database_url = "postgres://u:p@localhost/gbase"
+database_url = "postgres://u:p@localhost/base"
 domain = "ignored-for-updater.example"
 "#,
         )

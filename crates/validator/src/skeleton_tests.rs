@@ -69,7 +69,7 @@ async fn s1_readyz_200_fake_chain_and_wiremock_gateway() {
 
     let (mz, mz_body) = get_status(&base, "/metrics").await;
     assert_eq!(mz, 200);
-    assert!(mz_body.contains("gbase_up"), "{mz_body}");
+    assert!(mz_body.contains("base_up"), "{mz_body}");
 
     // S2: no master-only hits; only allowlisted coordination traffic.
     let received = gateway.received_requests().await.expect("recv");

@@ -211,13 +211,13 @@ CREATE INDEX ix_promotion_created_at ON promotion (created_at);
 
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gbase_app') THEN
-        CREATE ROLE gbase_app LOGIN PASSWORD 'gbase_app';
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'base_app') THEN
+        CREATE ROLE base_app LOGIN PASSWORD 'base_app';
     END IF;
 END
 $$;
 
-GRANT USAGE ON SCHEMA public TO gbase_app;
+GRANT USAGE ON SCHEMA public TO base_app;
 
 -- Mutable tables: full DML for the app role.
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
@@ -227,14 +227,14 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     attestation_nonce,
     dissent,
     promotion
-TO gbase_app;
+TO base_app;
 
 -- Append-only tables: SELECT + INSERT only (no UPDATE, no DELETE).
 GRANT SELECT, INSERT ON TABLE
     raw_weight_snapshot,
     epoch_bundle,
     peer_root_statement
-TO gbase_app;
+TO base_app;
 
 -- Sequences / identity defaults (uuid via pgcrypto; no serials today).
--- Future serials would need: GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO gbase_app;
+-- Future serials would need: GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO base_app;

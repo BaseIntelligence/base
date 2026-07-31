@@ -306,7 +306,7 @@ fn age_decrypt(ciphertext: &[u8], identity: &Path) -> Result<[u8; KEY_LEN], Stri
 
 fn refuse_git_secret_path(path: &Path) -> Result<(), String> {
     let s = path.to_string_lossy();
-    if s.contains("/gbase/config/") || s.contains("/gbase/crates/") || s.ends_with(".toml") {
+    if s.contains("/base/config/") || s.contains("/base/crates/") || s.ends_with(".toml") {
         return Err(format!(
             "refusing to write secret into likely-git path: {}",
             path.display()

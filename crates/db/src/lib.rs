@@ -3,7 +3,7 @@
 //! # Roles
 //!
 //! Migrations run as the database owner (superuser in tests). Application
-//! connections should use the `gbase_app` role, which has **no** `UPDATE`
+//! connections should use the `base_app` role, which has **no** `UPDATE`
 //! privilege on the append-only tables `raw_weight_snapshot`, `epoch_bundle`,
 //! and `peer_root_statement`.
 //!
@@ -27,7 +27,7 @@ pub const APPEND_ONLY_TABLES: &[&str] =
     &["raw_weight_snapshot", "epoch_bundle", "peer_root_statement"];
 
 /// Application DB role created by migrations (no UPDATE on append-only tables).
-pub const APP_ROLE: &str = "gbase_app";
+pub const APP_ROLE: &str = "base_app";
 
 /// Failures while connecting, migrating, or isolating a test schema.
 #[derive(Debug, Error)]
@@ -215,7 +215,7 @@ pub async fn current_user(pool: &PgPool) -> Result<String, DbError> {
 
 /// Build an application-role URL from an owner `DATABASE_URL`.
 ///
-/// Replaces the username/password with `gbase_app` / `gbase_app` (migration default).
+/// Replaces the username/password with `base_app` / `base_app` (migration default).
 ///
 /// # Errors
 ///
@@ -236,7 +236,7 @@ pub fn app_role_database_url(owner_url: &str) -> Result<String, DbError> {
 
 /// Per-test isolated schema + migrated pool (owner role).
 ///
-/// Behind `feature = "testing"`. Creates `gbase_test_<uuid>`, sets
+/// Behind `feature = "testing"`. Creates `base_test_<uuid>`, sets
 /// `search_path`, runs migrations, and returns a pool whose connections use
 /// that schema. Drop the schema when the test finishes via [`TestPool::drop_schema`].
 ///
@@ -260,7 +260,7 @@ pub async fn test_pool() -> Result<TestPool, DbError> {
 /// Connection, schema creation, grant, or migrate failures.
 #[cfg(feature = "testing")]
 pub async fn test_pool_with_url(owner_url: &str) -> Result<TestPool, DbError> {
-    let schema = format!("gbase_test_{}", Uuid::new_v4().simple());
+    let schema = format!("base_test_{}", Uuid::new_v4().simple());
     let base = connect_with(owner_url, 5).await?;
 
     let create = format!("CREATE SCHEMA {schema}");
@@ -326,13 +326,13 @@ impl TestPool {
         &self.pool
     }
 
-    /// Schema name (`gbase_test_<uuid>`).
+    /// Schema name (`base_test_<uuid>`).
     #[must_use]
     pub fn schema(&self) -> &str {
         &self.schema
     }
 
-    /// Connect as `gbase_app` with `search_path` set to this test schema.
+    /// Connect as `base_app` with `search_path` set to this test schema.
     ///
     /// # Errors
     ///
@@ -386,11 +386,11 @@ mod unit_tests {
 
     #[test]
     fn app_role_url_rewrites_user() {
-        let url = app_role_database_url("postgres://postgres:postgres@127.0.0.1:15433/gbase")
+        let url = app_role_database_url("postgres://postgres:postgres@127.0.0.1:15433/base")
             .expect("url");
-        assert!(url.contains("gbase_app:gbase_app@"), "url={url}");
+        assert!(url.contains("base_app:base_app@"), "url={url}");
         assert!(url.contains("127.0.0.1:15433"));
-        assert!(url.ends_with("/gbase"));
+        assert!(url.ends_with("/base"));
     }
 
     #[test]

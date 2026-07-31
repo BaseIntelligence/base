@@ -416,13 +416,13 @@ pub fn load_from_toml_str(
 
 /// Collect `BASE_*` variables from the process environment.
 #[must_use]
-pub fn gbase_env_from_process() -> BTreeMap<String, String> {
+pub fn base_env_from_process() -> BTreeMap<String, String> {
     std::env::vars()
         .filter(|(k, _)| k.starts_with("BASE_"))
         .collect()
 }
 
-/// Resolve the TOML path: `BASE_CONFIG` env, else `./gbase.toml` if it exists.
+/// Resolve the TOML path: `BASE_CONFIG` env, else `./base.toml` if it exists.
 #[must_use]
 pub fn resolve_toml_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     if let Some(p) = env.get(keys::CONFIG_PATH) {
@@ -442,7 +442,7 @@ pub fn resolve_toml_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
 ///
 /// Returns [`Error::Validation`] with **all** problems discovered.
 pub fn load() -> Result<Config, Error> {
-    let env = gbase_env_from_process();
+    let env = base_env_from_process();
     let path = resolve_toml_path(&env);
     load_from(path.as_deref(), &env)
 }

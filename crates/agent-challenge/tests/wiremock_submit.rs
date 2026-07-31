@@ -286,7 +286,11 @@ async fn committed_dummy_secret_pubkey_matches_challenges_toml_entry() {
     let pub_hex = std::fs::read_to_string(pub_path).unwrap();
     assert_eq!(hex::encode(pk), pub_hex.trim());
     // challenges.toml (agent-v1 or dummy) commits this public key.
-    let toml = std::fs::read_to_string("/root/gbase/config/challenges.toml").unwrap();
+    let toml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/challenges.toml"
+    ))
+    .unwrap();
     assert!(
         toml.contains(&hex::encode(pk)),
         "challenges.toml must commit challenge public key"

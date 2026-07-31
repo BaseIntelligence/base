@@ -152,7 +152,7 @@ async fn s2_app_role_cannot_update_append_only_tables() {
             .unwrap_or_else(|e| panic!("privilege check {table}: {e}"));
         assert!(
             !can,
-            "gbase_app must NOT have UPDATE on append-only table {table}"
+            "base_app must NOT have UPDATE on append-only table {table}"
         );
     }
 

@@ -99,7 +99,7 @@ mod tests {
             enabled: true,
             cert_path: Some(PathBuf::from("/certs/fullchain.pem")),
             key_path: Some(PathBuf::from("/certs/privkey.pem")),
-            acme_cache_dir: Some(PathBuf::from("/var/lib/gbase/acme")),
+            acme_cache_dir: Some(PathBuf::from("/var/lib/base/acme")),
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["enabled"], true);

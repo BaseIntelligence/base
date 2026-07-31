@@ -249,10 +249,10 @@ pub fn encode_payload_no_merkle(payload: &WeightsTlockPayload) -> Vec<u8> {
 
 fn bump_drand_skip_alarm() {
     metrics::describe_counter!(
-        "gbase_crv4_drand_skip_total",
+        "base_crv4_drand_skip_total",
         "Epochs skipped because drand was unavailable through the deadline (CR enabled)"
     );
-    metrics::counter!("gbase_crv4_drand_skip_total").increment(1);
+    metrics::counter!("base_crv4_drand_skip_total").increment(1);
 }
 
 fn with_rate_limit_retry<C, F>(chain: &C, max_retries: u32, mut op: F) -> Result<(), ChainError>

@@ -13,13 +13,13 @@ use agent_challenge::{
 };
 
 /// F1 v2 successor — miner 0x11 `task_id` golden.
-const F1_V2_TASK_ID: &str = "b1c18e56abe993e20e8dadcb72c7a7cadee8975e5741d15d1acb37f5ea367644";
+const F1_V2_TASK_ID: &str = "f376c306e25c784e7f298f44a05c9c04efbd104d91ceb1e7d2b9d0e8c69f666c";
 /// F1 v2 successor — `task_blob` golden.
-const F1_V2_TASK_BLOB: &str = "c563caca4fa3a7c5e834a88b0dae9eb1ef87f90fcddc9973e38d2730b347c441";
+const F1_V2_TASK_BLOB: &str = "8b3d4fbbb5b13c3b31ad72822040c5b01e65b11a1ad8316fa2aff2483769a9b8";
 /// F1/F11 v2 successor — `answer_digest_v2(model.patch)` golden (patch-only preimage).
-const F1_V2_ANSWER: &str = "703b806158d655e5d37a5b45e3cbdf1e04735517805377199d108ae2a45ead5d";
+const F1_V2_ANSWER: &str = "8ace51744c5c04212c37d9b0bf5027451bd82d6c5c23a3c5264d718da1b7821c";
 /// F11 v2 successor — miner 0x22 `task_id` golden.
-const F11_V2_TASK_ID: &str = "b99762643336fbf7abeb2c07085ff3d64ee1fd8d1c98b149c57a36ec0396228f";
+const F11_V2_TASK_ID: &str = "2817d1b4b47ee662996155b222254ba239a14da70c4dbf1cecd53c901b0912a1";
 
 fn miner11() -> [u8; 32] {
     [0x11u8; 32]

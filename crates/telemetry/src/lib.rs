@@ -69,7 +69,7 @@ static METRICS_ERROR: OnceLock<String> = OnceLock::new();
 
 /// Install the global Prometheus metrics recorder and return a scrape handle.
 ///
-/// Idempotent. Registers `gbase_up` gauge = 1 so `/metrics` is non-empty after init.
+/// Idempotent. Registers `base_up` gauge = 1 so `/metrics` is non-empty after init.
 ///
 /// # Errors
 ///
@@ -77,8 +77,8 @@ static METRICS_ERROR: OnceLock<String> = OnceLock::new();
 pub fn init_metrics() -> Result<PrometheusHandle, TelemetryError> {
     METRICS_INIT.call_once(|| match PrometheusBuilder::new().install_recorder() {
         Ok(handle) => {
-            metrics::describe_gauge!("gbase_up", "1 when telemetry metrics are live");
-            metrics::gauge!("gbase_up").set(1.0);
+            metrics::describe_gauge!("base_up", "1 when telemetry metrics are live");
+            metrics::gauge!("base_up").set(1.0);
             let _ = METRICS_HANDLE.set(handle);
         }
         Err(err) => {
@@ -389,8 +389,8 @@ mod tests {
             "body is not well-formed prometheus exposition:\n{text}"
         );
         assert!(
-            text.contains("gbase_up"),
-            "expected gbase_up metric in body:\n{text}"
+            text.contains("base_up"),
+            "expected base_up metric in body:\n{text}"
         );
     }
 

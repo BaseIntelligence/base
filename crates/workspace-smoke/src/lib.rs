@@ -12,7 +12,7 @@ mod tests {
     use super::workspace_name;
 
     #[test]
-    fn workspace_name_is_gbase() {
+    fn workspace_name_is_base() {
         assert_eq!(workspace_name(), "base");
     }
 }

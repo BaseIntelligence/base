@@ -16,7 +16,7 @@ const PRE_SOCKET_PROXY_DEFAULT_COMPOSE_HASH: &str =
     "31e9ea0199236c14972009a576c04d178f97e6aa1cc519ad85b62c62b0c82bd3";
 
 #[test]
-fn no_deploy_compose_hash_equals_gbase_compose_hash_of_rendered_bytes() {
+fn no_deploy_compose_hash_equals_base_compose_hash_of_rendered_bytes() {
     let params = DeployParams {
         mode: DeployMode::NoDeploy,
         ..DeployParams::default()

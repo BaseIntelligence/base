@@ -18,8 +18,8 @@ Tracked in-repo pointer for parent-plan task 47 testnet E2E close-out and the
 | `/root/.omo/evidence/base-agent-challenge-deepagent/live-complete-residual-matrix.txt` | **Master** residual matrix A–H (this session) |
 | `/root/.omo/evidence/base-agent-challenge-deepagent/task-35-testnet-e2e-close.txt` | Close-out + dated live-complete refresh |
 | `/root/.omo/evidence/base-agent-challenge-deepagent/task-35-unmet-criteria.txt` | Honest PARTIAL/UNMET (refreshed; (a) no longer unmet) |
-| `/root/.omo/evidence/gbase-rust-subnet/task-47-e2e.txt` | Parent evidence + Live-complete refresh section |
-| `/root/.omo/plans/gbase-rust-subnet.md` task 47 | Parent plan status remains `[~]` PARTIAL |
+| `/root/.omo/evidence/base-rust-subnet/task-47-e2e.txt` | Parent evidence + Live-complete refresh section |
+| `/root/.omo/plans/base-rust-subnet.md` task 47 | Parent plan status remains `[~]` PARTIAL |
 
 ## Criteria snapshot (2026-07-31 live-complete)
 

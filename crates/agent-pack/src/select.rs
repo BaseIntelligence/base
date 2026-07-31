@@ -216,7 +216,7 @@ mod tests {
 
     /// Domain tag is the expected ASCII label.
     #[test]
-    fn domain_tag_is_gbase_agent_pack_select_v1() {
+    fn domain_tag_is_base_agent_pack_select_v1() {
         assert_eq!(PACK_SELECT_DOMAIN, b"base-agent-pack-select-v1");
     }
 

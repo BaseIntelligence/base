@@ -40,7 +40,7 @@ write_files:
           "max-file": "5"
         }
       }
-  - path: /usr/local/sbin/gbase-install-docker.sh
+  - path: /usr/local/sbin/base-install-docker.sh
     permissions: "0755"
     content: |
       #!/bin/bash
@@ -56,9 +56,9 @@ write_files:
       usermod -aG docker base || true
       mkdir -p /opt/base /etc/base
       chmod 0755 /opt/base /etc/base
-      touch /var/lib/cloud/instance/gbase-docker-ready
+      touch /var/lib/cloud/instance/base-docker-ready
 
 runcmd:
-  - [/usr/local/sbin/gbase-install-docker.sh]
+  - [/usr/local/sbin/base-install-docker.sh]
 
 final_message: "base cloud-init complete: docker+compose only, zero secrets"
