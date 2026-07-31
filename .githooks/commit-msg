@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Enforce conventional commit subject: type(scope): summary
+set -euo pipefail
+
+msg_file="$1"
+subject="$(grep -v '^#' "$msg_file" | sed -n '/./{p;q;}')"
+
+if [[ -z "${subject}" ]]; then
+  echo "commit-msg: empty subject" >&2
+  exit 1
+fi
+
+# Allow merge / revert specials
+if [[ "$subject" =~ ^Merge\  ]] || [[ "$subject" =~ ^Revert\  ]]; then
+  exit 0
+fi
+
+re='^(feat|fix|refactor|perf|test|docs|chore|build|ci|style|revert)(\([a-z0-9][a-z0-9._/-]*\))?: [a-z].+'
+if [[ ! "$subject" =~ $re ]]; then
+  echo "commit-msg: subject must match type(scope): summary (imperative, lowercase)" >&2
+  echo "  got: $subject" >&2
+  echo "  e.g. feat(prism): add lium eval backend" >&2
+  exit 1
+fi
+
+if [[ ${#subject} -gt 72 ]]; then
+  echo "commit-msg: subject longer than 72 chars (${#subject})" >&2
+  exit 1
+fi
+
+exit 0
