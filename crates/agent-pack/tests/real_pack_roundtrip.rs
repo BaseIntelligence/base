@@ -1,35 +1,44 @@
 //! Integration: real Harbor pack `realpr-click-3442` round-trip + strip.
+//!
+//! Skips when the fixture pack is not present locally (CI default).
+//! Set `GBASE_REAL_PACK_DIR` or place the pack on one of the candidate paths.
 
 use std::path::{Path, PathBuf};
 
 use agent_pack::{load_pack, PackError, STRIPPED_FIELD_NAMES};
 
 fn real_pack_candidates() -> Vec<PathBuf> {
-    [
-        "/tmp/deepagent/datasets/prod_hard_deepswe_med/tasks/realpr-click-3442",
-        "/tmp/baseintel/deepagent/datasets/prod_hard_deepswe_med/tasks/realpr-click-3442",
-        "/tmp/da_m29d_hf_pull_verify/tasks/realpr-click-3442",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .collect()
+    let mut out = Vec::new();
+    if let Ok(p) = std::env::var("GBASE_REAL_PACK_DIR") {
+        out.push(PathBuf::from(p));
+    }
+    out.extend(
+        [
+            "/tmp/deepagent/datasets/prod_hard_deepswe_med/tasks/realpr-click-3442",
+            "/tmp/baseintel/deepagent/datasets/prod_hard_deepswe_med/tasks/realpr-click-3442",
+            "/tmp/da_m29d_hf_pull_verify/tasks/realpr-click-3442",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    out
 }
 
-fn resolve_real_pack() -> PathBuf {
-    for p in real_pack_candidates() {
-        if p.join("task.toml").is_file() {
-            return p;
-        }
-    }
-    panic!(
-        "realpr-click-3442 not found; tried {:?}",
-        real_pack_candidates()
-    );
+fn resolve_real_pack() -> Option<PathBuf> {
+    real_pack_candidates()
+        .into_iter()
+        .find(|p| p.join("task.toml").is_file())
 }
 
 #[test]
 fn realpr_click_3442_round_trip_strip_and_stable_digest() {
-    let root = resolve_real_pack();
+    let Some(root) = resolve_real_pack() else {
+        eprintln!(
+            "skip: realpr-click-3442 not found; tried {:?}; set GBASE_REAL_PACK_DIR to run",
+            real_pack_candidates()
+        );
+        return;
+    };
     let pack = load_pack(&root).unwrap_or_else(|e| panic!("load {}: {e}", root.display()));
 
     assert_eq!(pack.task_id, "realpr-click-3442");
@@ -98,7 +107,13 @@ fn realpr_click_3442_round_trip_strip_and_stable_digest() {
 
 #[test]
 fn real_pack_path_is_directory() {
-    let root = resolve_real_pack();
+    let Some(root) = resolve_real_pack() else {
+        eprintln!(
+            "skip: realpr-click-3442 not found; tried {:?}; set GBASE_REAL_PACK_DIR to run",
+            real_pack_candidates()
+        );
+        return;
+    };
     assert!(Path::new(&root).is_dir());
 }
 
