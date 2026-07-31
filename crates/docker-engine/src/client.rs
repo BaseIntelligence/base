@@ -78,7 +78,7 @@ impl AllowlistClient {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let id =
-            self.create_container_cmd(&format!("gbase-run-{ns}"), image, cmd, &HashMap::new())?;
+            self.create_container_cmd(&format!("base-run-{ns}"), image, cmd, &HashMap::new())?;
         let result = (|| {
             self.start_container(&id)?;
             Ok(RunResult {

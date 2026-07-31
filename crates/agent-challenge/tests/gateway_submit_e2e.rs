@@ -8,14 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn evidence_path(name: &str) -> PathBuf {
-    let preferred = PathBuf::from("/root/.omo/evidence/gbase-agent-challenge-deepagent");
+    let preferred = PathBuf::from("/root/.omo/evidence/base-agent-challenge-deepagent");
     let dir = if std::fs::create_dir_all(&preferred).is_ok()
         && std::fs::write(preferred.join(".w"), b"ok").is_ok()
     {
         let _ = std::fs::remove_file(preferred.join(".w"));
         preferred
     } else {
-        let d = std::env::temp_dir().join("gbase-agent-challenge-deepagent");
+        let d = std::env::temp_dir().join("base-agent-challenge-deepagent");
         std::fs::create_dir_all(&d).expect("temp evidence dir");
         d
     };

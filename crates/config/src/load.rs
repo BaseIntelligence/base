@@ -1,4 +1,4 @@
-//! Layered configuration loading: defaults → TOML → `GBASE_*` env.
+//! Layered configuration loading: defaults → TOML → `BASE_*` env.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -36,31 +36,31 @@ pub const MAX_SHARE_MASS_BPS: u16 = 10_000;
 /// Env / file key names (stable contract for operators).
 pub mod keys {
     /// Process role.
-    pub const ROLE: &str = "GBASE_ROLE";
+    pub const ROLE: &str = "BASE_ROLE";
     /// Subnet netuid.
-    pub const NETUID: &str = "GBASE_NETUID";
+    pub const NETUID: &str = "BASE_NETUID";
     /// Chain WebSocket URL.
-    pub const CHAIN_ENDPOINT: &str = "GBASE_CHAIN_ENDPOINT";
+    pub const CHAIN_ENDPOINT: &str = "BASE_CHAIN_ENDPOINT";
     /// Gateway base URL (validators / miners).
-    pub const GATEWAY_ENDPOINT: &str = "GBASE_GATEWAY_ENDPOINT";
+    pub const GATEWAY_ENDPOINT: &str = "BASE_GATEWAY_ENDPOINT";
     /// Postgres URL.
-    pub const DATABASE_URL: &str = "GBASE_DATABASE_URL";
+    pub const DATABASE_URL: &str = "BASE_DATABASE_URL";
     /// Path to a file containing the Postgres URL (secret mount).
-    pub const DATABASE_URL_FILE: &str = "GBASE_DATABASE_URL_FILE";
+    pub const DATABASE_URL_FILE: &str = "BASE_DATABASE_URL_FILE";
     /// Epoch length in blocks.
-    pub const EPOCH_LENGTH: &str = "GBASE_EPOCH_LENGTH";
+    pub const EPOCH_LENGTH: &str = "BASE_EPOCH_LENGTH";
     /// Quarantine mass floor (bps).
-    pub const MIN_SHARE_MASS_BPS: &str = "GBASE_MIN_SHARE_MASS_BPS";
+    pub const MIN_SHARE_MASS_BPS: &str = "BASE_MIN_SHARE_MASS_BPS";
     /// Trust-root rotation dual-accept epochs.
-    pub const ROTATION_EPOCHS: &str = "GBASE_ROTATION_EPOCHS";
+    pub const ROTATION_EPOCHS: &str = "BASE_ROTATION_EPOCHS";
     /// Minimum peer sample size.
-    pub const MIN_PEER_SAMPLE: &str = "GBASE_MIN_PEER_SAMPLE";
+    pub const MIN_PEER_SAMPLE: &str = "BASE_MIN_PEER_SAMPLE";
     /// Max collateral age seconds.
-    pub const MAX_COLLATERAL_AGE_SECS: &str = "GBASE_MAX_COLLATERAL_AGE_SECS";
+    pub const MAX_COLLATERAL_AGE_SECS: &str = "BASE_MAX_COLLATERAL_AGE_SECS";
     /// Cloudflare zone / public domain (D25).
-    pub const DOMAIN: &str = "GBASE_DOMAIN";
+    pub const DOMAIN: &str = "BASE_DOMAIN";
     /// Optional path to TOML config file.
-    pub const CONFIG_PATH: &str = "GBASE_CONFIG";
+    pub const CONFIG_PATH: &str = "BASE_CONFIG";
 }
 
 /// Optional overrides from a single layer (TOML file or env).
@@ -346,7 +346,7 @@ fn parse_u64_field(field: &'static str, raw: &str, issues: &mut Vec<Issue>) -> O
 
 fn layer_from_toml_str(text: &str) -> Result<Layer, Issue> {
     toml::from_str(text).map_err(|e| Issue::InvalidValue {
-        field: "gbase.toml",
+        field: "base.toml",
         reason: e.to_string(),
     })
 }
@@ -414,21 +414,21 @@ pub fn load_from_toml_str(
     builder.finish().map_err(Error::Validation)
 }
 
-/// Collect `GBASE_*` variables from the process environment.
+/// Collect `BASE_*` variables from the process environment.
 #[must_use]
 pub fn gbase_env_from_process() -> BTreeMap<String, String> {
     std::env::vars()
-        .filter(|(k, _)| k.starts_with("GBASE_"))
+        .filter(|(k, _)| k.starts_with("BASE_"))
         .collect()
 }
 
-/// Resolve the TOML path: `GBASE_CONFIG` env, else `./gbase.toml` if it exists.
+/// Resolve the TOML path: `BASE_CONFIG` env, else `./gbase.toml` if it exists.
 #[must_use]
 pub fn resolve_toml_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     if let Some(p) = env.get(keys::CONFIG_PATH) {
         return Some(PathBuf::from(p));
     }
-    let default = PathBuf::from("gbase.toml");
+    let default = PathBuf::from("base.toml");
     if default.is_file() {
         Some(default)
     } else {

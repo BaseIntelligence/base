@@ -4,7 +4,7 @@
 /// Workspace identity string used by the smoke unit test.
 #[must_use]
 pub fn workspace_name() -> &'static str {
-    "gbase"
+    "base"
 }
 
 #[cfg(test)]
@@ -13,6 +13,6 @@ mod tests {
 
     #[test]
     fn workspace_name_is_gbase() {
-        assert_eq!(workspace_name(), "gbase");
+        assert_eq!(workspace_name(), "base");
     }
 }

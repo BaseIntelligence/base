@@ -1,4 +1,4 @@
-# gbase control-plane stack (task 40 + agent-challenge todo 31)
+# base control-plane stack (task 40 + agent-challenge todo 31)
 #
 # Default: postgres + validator + updater + socket-proxy + agent-challenge (5).
 # Master/owner host only:
@@ -7,10 +7,10 @@
 #
 # External images are digest-pinned (no floating tags).
 # docker.sock is mounted ONLY on socket-proxy (read-only).
-# agent-challenge reaches Docker via GBASE_DOCKER_BASE → socket-proxy (no raw sock).
+# agent-challenge reaches Docker via BASE_DOCKER_BASE → socket-proxy (no raw sock).
 # Secrets: age-decrypted env files mode 0600 under deploy/env/ (never baked into images).
 
-name: gbase
+name: base
 
 services:
   postgres:
@@ -20,7 +20,7 @@ services:
       - path: ./deploy/env/postgres.env
         required: true
     volumes:
-      - gbase-pgdata:/var/lib/postgresql/data
+      - base-pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
@@ -28,7 +28,7 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - gbase
+      - base
     # No host ports by default — apps reach postgres on the compose network.
 
   validator:
@@ -38,7 +38,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: validator
       args:
-        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -47,14 +47,14 @@ services:
       - path: ./deploy/env/validator.env
         required: true
     environment:
-      GBASE_ROLE: validator
-      GBASE_LISTEN: 0.0.0.0:8080
+      BASE_ROLE: validator
+      BASE_LISTEN: 0.0.0.0:8080
       # Optional co-located gateway (only present under profile master)
-      GBASE_GATEWAY_ENDPOINT: ${GBASE_GATEWAY_ENDPOINT:-http://gateway:8080}
-      # Owner-signed measurements for attest (image bakes /etc/gbase/config; host mount wins)
-      GBASE_TRUST_ROOT_DIR: ${GBASE_TRUST_ROOT_DIR:-/etc/gbase/config}
+      BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://gateway:8080}
+      # Owner-signed measurements for attest (image bakes /etc/base/config; host mount wins)
+      BASE_TRUST_ROOT_DIR: ${BASE_TRUST_ROOT_DIR:-/etc/base/config}
     volumes:
-      - ./config:/etc/gbase/config:ro
+      - ./config:/etc/base/config:ro
     expose:
       - "8080"
     healthcheck:
@@ -68,7 +68,7 @@ services:
       retries: 6
       start_period: 15s
     networks:
-      - gbase
+      - base
     # No docker.sock — updater talks via socket-proxy only.
 
   gateway:
@@ -79,7 +79,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: gateway
       args:
-        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -88,18 +88,18 @@ services:
       - path: ./deploy/env/gateway.env
         required: true
     environment:
-      GBASE_ROLE: gateway
-      GBASE_GATEWAY_LISTEN: 0.0.0.0:8080
-      GBASE_TRUST_ROOT_DIR: ${GBASE_TRUST_ROOT_DIR:-/etc/gbase/config}
+      BASE_ROLE: gateway
+      BASE_GATEWAY_LISTEN: 0.0.0.0:8080
+      BASE_TRUST_ROOT_DIR: ${BASE_TRUST_ROOT_DIR:-/etc/base/config}
       # Bundle seal mini-secret (host file, never baked into image)
-      GBASE_GATEWAY_SK_FILE: ${GBASE_GATEWAY_SK_FILE:-/run/secrets/gateway_sk}
+      BASE_GATEWAY_SK_FILE: ${BASE_GATEWAY_SK_FILE:-/run/secrets/gateway_sk}
     volumes:
-      - ./config:/etc/gbase/config:ro
+      - ./config:/etc/base/config:ro
       - ./deploy/secrets/gateway_sk:/run/secrets/gateway_sk:ro
     expose:
       - "8080"
     networks:
-      - gbase
+      - base
 
   # ---------------------------------------------------------------------------
   # TEST-ONLY adversarial gateway (task 48). NEVER on default or master path.
@@ -116,7 +116,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: gateway
       args:
-        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     # Test harness — no auto-restart loop that could look like prod.
     restart: "no"
     depends_on:
@@ -126,15 +126,15 @@ services:
       - path: ./deploy/env/gateway.env
         required: false
     environment:
-      GBASE_ROLE: gateway
-      GBASE_GATEWAY_LISTEN: 0.0.0.0:8080
+      BASE_ROLE: gateway
+      BASE_GATEWAY_LISTEN: 0.0.0.0:8080
       # Marker so operators never confuse with prod gateway (master profile).
-      GBASE_EVIL_GATEWAY: "1"
-      GBASE_EVIL_SCENARIO: ${GBASE_EVIL_SCENARIO:-inconsistent-vector}
+      BASE_EVIL_GATEWAY: "1"
+      BASE_EVIL_SCENARIO: ${BASE_EVIL_SCENARIO:-inconsistent-vector}
     expose:
       - "8080"
     networks:
-      - gbase
+      - base
 
   updater:
     image: updater:0.1.0
@@ -143,7 +143,7 @@ services:
       dockerfile: deploy/Dockerfile
       target: updater
       args:
-        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     restart: unless-stopped
     depends_on:
       socket-proxy:
@@ -154,21 +154,21 @@ services:
       - path: ./deploy/env/updater.env
         required: true
     environment:
-      GBASE_UPDATER_PROXY_URL: http://socket-proxy:2375
-      GBASE_UPDATER_COMPOSE_PROJECT: gbase
-      GBASE_UPDATER_SERVICE_NAME: validator
-      GBASE_UPDATER_HEALTH_URL: http://validator:8080/readyz
-      GBASE_UPDATER_STATE_DIR: /var/lib/gbase-updater
-      GBASE_UPDATER_SELF_NAME: gbase-updater-1
+      BASE_UPDATER_PROXY_URL: http://socket-proxy:2375
+      BASE_UPDATER_COMPOSE_PROJECT: base
+      BASE_UPDATER_SERVICE_NAME: validator
+      BASE_UPDATER_HEALTH_URL: http://validator:8080/readyz
+      BASE_UPDATER_STATE_DIR: /var/lib/base-updater
+      BASE_UPDATER_SELF_NAME: base-updater-1
     volumes:
-      - gbase-updater-state:/var/lib/gbase-updater
+      - base-updater-state:/var/lib/base-updater
     networks:
-      - gbase
+      - base
     # Talks to Docker Engine only through socket-proxy (allowlisted).
 
   # ---------------------------------------------------------------------------
   # agent-challenge — operator Harbor verifier + challenge health (:8090).
-  # Docker ONLY via socket-proxy (GBASE_DOCKER_BASE). No raw docker.sock (Metis S5).
+  # Docker ONLY via socket-proxy (BASE_DOCKER_BASE). No raw docker.sock (Metis S5).
   # ---------------------------------------------------------------------------
   agent-challenge:
     image: agent-challenge:0.1.0
@@ -177,19 +177,19 @@ services:
       dockerfile: deploy/Dockerfile
       target: agent-challenge
       args:
-        BUILD_FROM: ${GBASE_DOCKER_BUILD_FROM:-prebuilt}
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     restart: unless-stopped
     depends_on:
       socket-proxy:
         condition: service_started
     environment:
-      GBASE_CHALLENGE_BIND: 0.0.0.0:8090
+      BASE_CHALLENGE_BIND: 0.0.0.0:8090
       # Verify-specific Engine route: shared host sock is only on socket-proxy (RO).
-      GBASE_DOCKER_BASE: http://socket-proxy:2375
-      # Host file must be owned uid 65532 (gbase) mode 0400 — see deploy/secrets/README.md
-      GBASE_CHALLENGE_SK_FILE: /run/gbase/challenge_sk
+      BASE_DOCKER_BASE: http://socket-proxy:2375
+      # Host file must be owned uid 65532 (base) mode 0400 — see deploy/secrets/README.md
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
     volumes:
-      - ./deploy/secrets/challenge_sk:/run/gbase/challenge_sk:ro
+      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
     expose:
       - "8090"
     healthcheck:
@@ -203,8 +203,8 @@ services:
       retries: 6
       start_period: 10s
     networks:
-      - gbase
-    # No docker.sock — verifier uses Allowlist::verifier over GBASE_DOCKER_BASE.
+      - base
+    # No docker.sock — verifier uses Allowlist::verifier over BASE_DOCKER_BASE.
 
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
@@ -242,13 +242,13 @@ services:
       # Sole host docker.sock mount on this stack (read-only).
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - gbase
+      - base
     # Bound only on the internal network — never publish 2375 to the host.
 
 volumes:
-  gbase-pgdata:
-  gbase-updater-state:
+  base-pgdata:
+  base-updater-state:
 
 networks:
-  gbase:
+  base:
     driver: bridge

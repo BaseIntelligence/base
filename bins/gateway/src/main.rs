@@ -4,10 +4,10 @@
 //! the configured hotkey does not match (exit code 2).
 //!
 //! Chain backend (task 47 cleartext/IP e2e):
-//! - default / `GBASE_CHAIN_BACKEND=fake_owner`: [`FakeChain`] whose owner hotkey
-//!   equals the configured `GBASE_GATEWAY_HOTKEY` so master check can pass without
+//! - default / `BASE_CHAIN_BACKEND=fake_owner`: [`FakeChain`] whose owner hotkey
+//!   equals the configured `BASE_GATEWAY_HOTKEY` so master check can pass without
 //!   a full live SDK client (TLS/ACME still deferred to task 42).
-//! - `GBASE_CHAIN_BACKEND=not_implemented`: previous fail-closed stub.
+//! - `BASE_CHAIN_BACKEND=not_implemented`: previous fail-closed stub.
 
 use std::process::ExitCode;
 
@@ -25,15 +25,15 @@ async fn main() -> ExitCode {
             e.log_fatal();
             eprintln!("gateway config error: {e}");
             eprintln!(
-                "required: GBASE_ROLE=gateway GBASE_NETUID GBASE_DOMAIN \
-                 GBASE_DATABASE_URL (or _FILE) GBASE_GATEWAY_HOTKEY \
-                 [GBASE_GATEWAY_LISTEN]"
+                "required: BASE_ROLE=gateway BASE_NETUID BASE_DOMAIN \
+                 BASE_DATABASE_URL (or _FILE) BASE_GATEWAY_HOTKEY \
+                 [BASE_GATEWAY_LISTEN]"
             );
             return e.exit_code();
         }
     };
 
-    let backend = std::env::var("GBASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake_owner".to_owned());
+    let backend = std::env::var("BASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake_owner".to_owned());
     let backend = backend.to_ascii_lowercase();
 
     match backend.as_str() {
@@ -48,7 +48,7 @@ async fn main() -> ExitCode {
             // fake_owner (default): owner hotkey == configured gateway hotkey.
             let hotkeys =
                 gateway::parse_fake_metagraph_hotkeys(&config.hotkey).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "bad GBASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
+                    tracing::warn!(error = %e, "bad BASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
                     vec![config.hotkey.to_vec()]
                 });
             let fc = FakeChainConfig {
@@ -63,7 +63,7 @@ async fn main() -> ExitCode {
                 backend = "fake_owner",
                 netuid = config.netuid,
                 metagraph_n = hotkeys.len(),
-                "gateway chain: FakeChain owner matches GBASE_GATEWAY_HOTKEY (cleartext e2e)"
+                "gateway chain: FakeChain owner matches BASE_GATEWAY_HOTKEY (cleartext e2e)"
             );
             run_with(config, &chain).await
         }

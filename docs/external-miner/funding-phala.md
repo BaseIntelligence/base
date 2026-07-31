@@ -1,6 +1,6 @@
 # Fund your Phala account
 
-Miners pay for their own Phala TDX CVM **and** their own model inference (Q3=A). The gbase owner does not sponsor miner compute or LLM tokens.
+Miners pay for their own Phala TDX CVM **and** their own model inference (Q3=A). The base owner does not sponsor miner compute or LLM tokens.
 
 <!-- protocol_version: 1 -->
 
@@ -24,7 +24,7 @@ Miners pay for their own Phala TDX CVM **and** their own model inference (Q3=A).
    - headroom for redeploys after measurement or image rotations.
 2. Re-check balance before every `--deploy` invocation.
 
-There is no gbase CLI that spends owner funds on your behalf.
+There is no base CLI that spends owner funds on your behalf.
 
 ---
 
@@ -36,10 +36,10 @@ Scoring_version **2** runs a reference agent against Harbor pack instructions. T
 umask 077
 printf '%s' "$YOUR_PROVIDER_API_KEY" > /secure/model_key
 chmod 0600 /secure/model_key
-export GBASE_MODEL_KEY_FILE=/secure/model_key
+export BASE_MODEL_KEY_FILE=/secure/model_key
 ```
 
-- Pass the **path** into `./install.sh` / CVM mounts (`GBASE_MODEL_KEY_FILE`).  
+- Pass the **path** into `./install.sh` / CVM mounts (`BASE_MODEL_KEY_FILE`).  
 - Never put key bytes in compose `environment:` values, git, chat, or tickets.  
 - `install.sh` refuses to start if the file is missing, empty, or unreadable (fail-closed).
 
@@ -60,14 +60,14 @@ command -v phala
 phala --help >/dev/null
 ```
 
-Clone or pull `gbase` at the release your validators run (same bundle `protocol_version` **1**; challenge scoring is **2**).
+Clone or pull `base` at the release your validators run (same bundle `protocol_version` **1**; challenge scoring is **2**).
 
 Quick start after funding:
 
 ```bash
-export GBASE_MINER_HOTKEY_HEX='<64 hex>'
-export GBASE_MODEL_KEY_FILE=/secure/model_key
-export GBASE_MAX_CONCURRENCY=1
+export BASE_MINER_HOTKEY_HEX='<64 hex>'
+export BASE_MODEL_KEY_FILE=/secure/model_key
+export BASE_MAX_CONCURRENCY=1
 ./install.sh
 ```
 
@@ -75,7 +75,7 @@ export GBASE_MAX_CONCURRENCY=1
 
 ## 5. Wallet (Bittensor)
 
-You need a miner hotkey registered on the gbase netuid (when the subnet is live). Hotkey **public** bytes (32-byte hex) are what `miner certify` and `install.sh` embed. Never paste mnemonics into tickets, git, or chat.
+You need a miner hotkey registered on the base netuid (when the subnet is live). Hotkey **public** bytes (32-byte hex) are what `miner certify` and `install.sh` embed. Never paste mnemonics into tickets, git, or chat.
 
 ```bash
 # Example overview (network/netuid as published by operators)
@@ -88,7 +88,7 @@ btcli wallet overview --wallet-name <your-wallet> --network <network>
 
 Per D11 / AGENT_CHALLENGE:
 
-- Secrets are **file mounts** under the measured layout (for example `/run/gbase/...`).  
+- Secrets are **file mounts** under the measured layout (for example `/run/base/...`).  
 - Env **values** are not attested. Only allowed env **names** and the launch-token **hash** are in the measured compose.  
 - Do not put coldkey material inside the CVM unless a future challenge doc explicitly requires a file mount pattern.  
 - Model key and receipt mini-secret follow the same file-mount rule.

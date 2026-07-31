@@ -1,4 +1,4 @@
-# gbase miner docs (external-facing)
+# base miner docs (external-facing)
 
 <!-- protocol_version: 1 -->
 **Bundle `protocol_version`:** `1`  
@@ -36,19 +36,19 @@ From a clean box with Docker Compose:
 
 ```bash
 # Public hotkey only (64 lowercase hex). Never paste mnemonics.
-export GBASE_MINER_HOTKEY_HEX='<64 hex>'
+export BASE_MINER_HOTKEY_HEX='<64 hex>'
 
 # Miner-funded inference key (Q3=A) — file path only; never put key bytes in env.
 umask 077
 printf '%s' "$YOUR_PROVIDER_API_KEY" > /secure/model_key
 chmod 0600 /secure/model_key
-export GBASE_MODEL_KEY_FILE=/secure/model_key
+export BASE_MODEL_KEY_FILE=/secure/model_key
 
 # Concurrency knob (clamped 1..=5 on the runner)
-export GBASE_MAX_CONCURRENCY=2
+export BASE_MAX_CONCURRENCY=2
 
 # Digest-pinned agent image (operators publish pins; local dev may use preloaded images)
-# export GBASE_AGENT_IMAGE='ghcr.io/baseintelligence/base/gbase-agent@sha256:<64 hex>'
+# export BASE_AGENT_IMAGE='ghcr.io/baseintelligence/base/base-agent@sha256:<64 hex>'
 
 ./install.sh
 # → prints compose-hash=…, starts local agent-runner
@@ -64,7 +64,7 @@ curl -sS http://127.0.0.1:8080/v1/capacity
 
 1. **Deploy** measured CVM (`agent` + measured `socket-proxy` + `attest-helper`) — see [deploy.md](./deploy.md).  
 2. **Certify** each epoch — [certify.md](./certify.md).  
-3. Orchestrator **dispatches** a stripped Harbor pack (`gbase-agent-dispatch-v1`, `scoring_version: 2`).  
+3. Orchestrator **dispatches** a stripped Harbor pack (`base-agent-dispatch-v1`, `scoring_version: 2`).  
 4. Your runner pulls the digest-pinned environment image **through the measured socket-proxy**, runs the agent with **OPEN egress** (default), and returns `model.patch` + a signed work receipt.  
 5. Operator grades offline with held-out tests; pure correctness → leaf `Score` / `NoScore`. Bundle leaves stay on **protocol_version 1**.
 
@@ -79,7 +79,7 @@ Miner inference is **miner-funded** (your model key file). The subnet owner does
 ## CLI path (compose-hash / Phala)
 
 ```bash
-# From gbase repo root (Rust 1.96 toolchain) — offline compose-hash
+# From base repo root (Rust 1.96 toolchain) — offline compose-hash
 cargo build -q -p miner-bin
 cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
 

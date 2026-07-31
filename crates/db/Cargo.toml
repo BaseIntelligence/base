@@ -1,6 +1,6 @@
 [package]
 name = "db"
-description = "Postgres schema, sqlx migrations, and pool helpers for gbase"
+description = "Postgres schema, sqlx migrations, and pool helpers for base"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

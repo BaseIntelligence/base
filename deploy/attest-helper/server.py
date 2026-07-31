@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gbase-attest-helper — GET /v1/quote for miner CVM certify path."""
+"""base-attest-helper — GET /v1/quote for miner CVM certify path."""
 from __future__ import annotations
 
 import binascii
@@ -11,9 +11,9 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-SOCK = os.environ.get("GBASE_DSTACK_SOCK", "/var/run/dstack.sock")
-PORT = int(os.environ.get("GBASE_ATTEST_PORT", "8081"))
-DOMAIN = b"gbase-attest-v1"
+SOCK = os.environ.get("BASE_DSTACK_SOCK", "/var/run/dstack.sock")
+PORT = int(os.environ.get("BASE_ATTEST_PORT", "8081"))
+DOMAIN = b"base-attest-v1"
 
 
 def scale_bytes(b: bytes) -> bytes:
@@ -129,7 +129,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ("/healthz", "/readyz", "/"):
-            self._send(200, {"ok": True, "service": "gbase-attest-helper"})
+            self._send(200, {"ok": True, "service": "base-attest-helper"})
             return
         if u.path != "/v1/quote":
             self._send(404, {"error": "not found"})
@@ -176,7 +176,7 @@ class H(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    print(f"gbase-attest-helper listening on 0.0.0.0:{PORT} sock={SOCK}", flush=True)
+    print(f"base-attest-helper listening on 0.0.0.0:{PORT} sock={SOCK}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
 
 

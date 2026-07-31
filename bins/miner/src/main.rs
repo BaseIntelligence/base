@@ -36,33 +36,33 @@ enum Cmd {
         #[arg(long, default_value = "miner")]
         name: String,
         /// Digest-pinned agent image (`repo@sha256:<64 hex>`).
-        #[arg(long, default_value = DEFAULT_AGENT_IMAGE, env = "GBASE_AGENT_IMAGE")]
+        #[arg(long, default_value = DEFAULT_AGENT_IMAGE, env = "BASE_AGENT_IMAGE")]
         agent_image: String,
         /// Digest-pinned attest-helper image.
         #[arg(
             long,
             default_value = DEFAULT_ATTEST_HELPER_IMAGE,
-            env = "GBASE_ATTEST_HELPER_IMAGE"
+            env = "BASE_ATTEST_HELPER_IMAGE"
         )]
         attest_helper_image: String,
         /// Digest-pinned socket-proxy image (measured allowlist).
         #[arg(
             long,
             default_value = DEFAULT_SOCKET_PROXY_IMAGE,
-            env = "GBASE_SOCKET_PROXY_IMAGE"
+            env = "BASE_SOCKET_PROXY_IMAGE"
         )]
         socket_proxy_image: String,
         /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
-        #[arg(long, env = "GBASE_LAUNCH_TOKEN_HASH")]
+        #[arg(long, env = "BASE_LAUNCH_TOKEN_HASH")]
         launch_token_hash: Option<String>,
         /// Subnet netuid embedded as non-secret env.
-        #[arg(long, default_value_t = 1, env = "GBASE_NETUID")]
+        #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
         netuid: u16,
         /// Host path for the CVM-local receipt mini-secret (mode 0600). Generated if missing.
-        #[arg(long, env = "GBASE_RECEIPT_SK_HOST_PATH", default_value = "receipt_sk")]
+        #[arg(long, env = "BASE_RECEIPT_SK_HOST_PATH", default_value = "receipt_sk")]
         receipt_sk_host_path: PathBuf,
         /// Optional pre-known receipt public key (64 hex). When omitted, derived from the secret file.
-        #[arg(long, env = "GBASE_RECEIPT_PUBLIC_KEY")]
+        #[arg(long, env = "BASE_RECEIPT_PUBLIC_KEY")]
         receipt_public_key: Option<String>,
         /// Write rendered app-compose.json here.
         #[arg(long)]
@@ -74,22 +74,22 @@ enum Cmd {
         #[arg(long)]
         deploy: bool,
         /// Path to `phala` binary.
-        #[arg(long, default_value = "phala", env = "GBASE_PHALA_BIN")]
+        #[arg(long, default_value = "phala", env = "BASE_PHALA_BIN")]
         phala_bin: PathBuf,
     },
     /// Request nonce, obtain D10-bound quote, submit to validator (task 38).
     Certify {
         /// Validator base URL (`http://host:port`).
-        #[arg(long, env = "GBASE_VALIDATOR_URL")]
+        #[arg(long, env = "BASE_VALIDATOR_URL")]
         validator_url: String,
         /// Subnet netuid.
-        #[arg(long, default_value_t = 1, env = "GBASE_NETUID")]
+        #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
         netuid: u16,
         /// Epoch to bind into `report_data`.
-        #[arg(long, env = "GBASE_EPOCH")]
+        #[arg(long, env = "BASE_EPOCH")]
         epoch: u64,
         /// Miner hotkey (64 hex).
-        #[arg(long, env = "GBASE_MINER_HOTKEY_HEX")]
+        #[arg(long, env = "BASE_MINER_HOTKEY_HEX")]
         miner_hotkey_hex: String,
         /// Use embedded/real fixtures instead of a live CVM.
         #[arg(long, default_value_t = false)]
@@ -98,10 +98,10 @@ enum Cmd {
         #[arg(long)]
         fixture_dir: Option<PathBuf>,
         /// Live agent / attest-helper base URL (ignored when `--fixture-mode`).
-        #[arg(long, env = "GBASE_AGENT_URL")]
+        #[arg(long, env = "BASE_AGENT_URL")]
         agent_url: Option<String>,
         /// Optional validator hotkey override (defaults to nonce response).
-        #[arg(long, env = "GBASE_VALIDATOR_HOTKEY_HEX")]
+        #[arg(long, env = "BASE_VALIDATOR_HOTKEY_HEX")]
         validator_hotkey_hex: Option<String>,
     },
 }
@@ -158,7 +158,7 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("receipt-sk-host-path={}", receipt_sk_host_path.display());
             println!("phala_invoked={}", result.phala_invoked);
             println!("mode={mode:?}");
-            println!("note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/gbase");
+            println!("note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/base");
             Ok(())
         }
         Cmd::Certify {

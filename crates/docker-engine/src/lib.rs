@@ -24,7 +24,7 @@ pub use mock::MockDocker;
 pub use types::{ContainerSummary, RunResult, RunSpec};
 
 /// Required name prefix for owned verifier / one-shot runs.
-pub const OWNED_NAME_PREFIX: &str = "gbase-verify-";
+pub const OWNED_NAME_PREFIX: &str = "base-verify-";
 
 /// Crate identity for smoke / wiring checks.
 #[must_use]

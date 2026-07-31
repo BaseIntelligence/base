@@ -1,6 +1,6 @@
 //! Live dual-truth / failure QA for the operator-side held-out verifier.
 //!
-//! Gated on `GBASE_VERIFY_LIVE=1` and a reachable socket-proxy + env image.
+//! Gated on `BASE_VERIFY_LIVE=1` and a reachable socket-proxy + env image.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -18,23 +18,23 @@ fn live_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn live_enabled() -> bool {
-    std::env::var("GBASE_VERIFY_LIVE").ok().as_deref() == Some("1")
+    std::env::var("BASE_VERIFY_LIVE").ok().as_deref() == Some("1")
 }
 
 fn pack_dir() -> PathBuf {
-    std::env::var("GBASE_VERIFY_PACK").map_or_else(
+    std::env::var("BASE_VERIFY_PACK").map_or_else(
         |_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"),
         PathBuf::from,
     )
 }
 
 fn docker_base() -> String {
-    std::env::var("GBASE_DOCKER_BASE").unwrap_or_else(|_| "http://127.0.0.1:2375".into())
+    std::env::var("BASE_DOCKER_BASE").unwrap_or_else(|_| "http://127.0.0.1:2375".into())
 }
 
 fn env_image() -> String {
-    std::env::var("GBASE_VERIFY_IMAGE").unwrap_or_else(|_| {
-        "gbase-verify-env-more-itertools-1136@sha256:462caa0ae2f4ce87509323a33c383eb6b5c364fff4350ba33c2c2bddae62537f"
+    std::env::var("BASE_VERIFY_IMAGE").unwrap_or_else(|_| {
+        "base-verify-env-more-itertools-1136@sha256:462caa0ae2f4ce87509323a33c383eb6b5c364fff4350ba33c2c2bddae62537f"
             .into()
     })
 }
@@ -56,7 +56,7 @@ fn make_verifier_at(work_root: PathBuf, reward_zero_as_err: bool) -> HarborVerif
 fn dual_truth_solution_one_empty_zero() {
     let _guard = live_lock();
     if !live_enabled() {
-        eprintln!("skip: set GBASE_VERIFY_LIVE=1");
+        eprintln!("skip: set BASE_VERIFY_LIVE=1");
         return;
     }
     let pack = load_pack(pack_dir()).expect("load pack");
@@ -66,7 +66,7 @@ fn dual_truth_solution_one_empty_zero() {
         .clone()
         .expect("solution.patch present");
     let work = PathBuf::from(format!(
-        "/tmp/gbase-verify-it-{}",
+        "/tmp/base-verify-it-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos())
@@ -85,12 +85,12 @@ fn dual_truth_solution_one_empty_zero() {
 fn invalid_and_p2p_break_distinct_zero_reasons() {
     let _guard = live_lock();
     if !live_enabled() {
-        eprintln!("skip: set GBASE_VERIFY_LIVE=1");
+        eprintln!("skip: set BASE_VERIFY_LIVE=1");
         return;
     }
     let pack = load_pack(pack_dir()).expect("load pack");
     let work = PathBuf::from(format!(
-        "/tmp/gbase-verify-fail-{}",
+        "/tmp/base-verify-fail-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos())
@@ -124,7 +124,7 @@ fn invalid_and_p2p_break_distinct_zero_reasons() {
 fn timeout_is_typed_not_reward_zero() {
     let _guard = live_lock();
     if !live_enabled() {
-        eprintln!("skip: set GBASE_VERIFY_LIVE=1");
+        eprintln!("skip: set BASE_VERIFY_LIVE=1");
         return;
     }
     let client = AllowlistClient::with_allowlist(docker_base(), Allowlist::verifier()).expect("c");

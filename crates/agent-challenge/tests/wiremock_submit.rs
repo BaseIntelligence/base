@@ -266,9 +266,9 @@ async fn noscore_leaf_posts_and_pubkey_matches_secret() {
 
 #[tokio::test]
 async fn committed_dummy_secret_pubkey_matches_challenges_toml_entry() {
-    // /root/.gbase-secrets/challenge-dummy.age decrypts to the key whose pub is in challenges.toml.
+    // /root/.base-secrets/challenge-dummy.age decrypts to the key whose pub is in challenges.toml.
     // Prefer decrypted raw path if present; else skip-friendly load of known pub file.
-    let pub_path = std::path::Path::new("/root/.gbase-secrets/challenge-dummy.pub");
+    let pub_path = std::path::Path::new("/root/.base-secrets/challenge-dummy.pub");
     let sk_path = std::path::Path::new("/tmp/challenge-dummy.sk");
     if !sk_path.exists() || !pub_path.exists() {
         // Environment without secrets — still assert hex file content if pub exists alone.

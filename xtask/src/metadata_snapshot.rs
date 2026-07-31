@@ -9,7 +9,7 @@
 //! input so task 13 cannot invent them.
 //!
 //! Implementation uses blocking reqwest + frame-metadata (not bittensor-core)
-//! so gbase does not inherit the monorepo's w3f-bls/path patches. Sources and
+//! so base does not inherit the monorepo's w3f-bls/path patches. Sources and
 //! field names match the pinned SDK at `SDK_PIN`.
 
 use frame_metadata::v15::{RuntimeMetadataV15, StorageEntryType};

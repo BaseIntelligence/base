@@ -1,4 +1,4 @@
-# gbase architecture
+# base architecture
 
 Operator-facing map of the control plane. Normative byte contracts live in the frozen specs:
 
@@ -61,7 +61,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `aggregate` | Integer aggregation (Hamilton house 65535) |
 | `chain` | Chain client trait + SDK wiring |
 | `trustroot` (lib) | Load local signed challenges/measurements; dual-accept rotation |
-| `gbase-attest-*` | Parse / replay / policy for TDX quotes |
+| `base-attest-*` | Parse / replay / policy for TDX quotes |
 | `crosscheck` / `dissent` | Peer roots and three-outcome policy |
 | `db` | Postgres persistence (bundles, evidence, dissent) |
 | `xtask` | loc-cap, consensus-lint, metadata-snapshot, spec gates |

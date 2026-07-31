@@ -1,4 +1,4 @@
-//! Postgres access for gbase: migrations, pool helpers, and typed row shapes.
+//! Postgres access for base: migrations, pool helpers, and typed row shapes.
 //!
 //! # Roles
 //!

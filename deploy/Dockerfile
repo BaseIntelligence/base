@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage Rust build for gbase service binaries
+# Multi-stage Rust build for base service binaries
 #
 # Source build (default, CI/prod):
 #   docker build -f deploy/Dockerfile --target validator -t validator:0.1.0 .
@@ -81,31 +81,31 @@ FROM ${DEBIAN_IMAGE} AS runtime-base
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 65532 gbase \
-    && useradd --system --uid 65532 --gid gbase --home-dir /home/gbase --create-home gbase
-USER gbase
-WORKDIR /home/gbase
+    && groupadd --system --gid 65532 base \
+    && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base
+USER base
+WORKDIR /home/base
 
 FROM runtime-base AS validator
-COPY --from=artifacts --chown=gbase:gbase /out/validator /usr/local/bin/validator
+COPY --from=artifacts --chown=base:base /out/validator /usr/local/bin/validator
 # Owner-signed trust root for /v1/attest allowlist (todo 34 staging Verified path).
-COPY --chown=gbase:gbase config /etc/gbase/config
-ENV GBASE_TRUST_ROOT_DIR=/etc/gbase/config
+COPY --chown=base:base config /etc/base/config
+ENV BASE_TRUST_ROOT_DIR=/etc/base/config
 ENTRYPOINT ["/usr/local/bin/validator"]
 
 FROM runtime-base AS gateway
-COPY --from=artifacts --chown=gbase:gbase /out/gateway /usr/local/bin/gateway
+COPY --from=artifacts --chown=base:base /out/gateway /usr/local/bin/gateway
 ENTRYPOINT ["/usr/local/bin/gateway"]
 
 FROM runtime-base AS updater
-COPY --from=artifacts --chown=gbase:gbase /out/updater /usr/local/bin/updater
+COPY --from=artifacts --chown=base:base /out/updater /usr/local/bin/updater
 ENTRYPOINT ["/usr/local/bin/updater"]
 
 FROM runtime-base AS agent-challenge
-COPY --from=artifacts --chown=gbase:gbase /out/agent-challenge /usr/local/bin/agent-challenge
+COPY --from=artifacts --chown=base:base /out/agent-challenge /usr/local/bin/agent-challenge
 ENTRYPOINT ["/usr/local/bin/agent-challenge"]
 
-# Miner runner binary (agent-runner) published as image target gbase-agent.
-FROM runtime-base AS gbase-agent
-COPY --from=artifacts --chown=gbase:gbase /out/agent-runner /usr/local/bin/agent-runner
+# Miner runner binary (agent-runner) published as image target base-agent.
+FROM runtime-base AS base-agent
+COPY --from=artifacts --chown=base:base /out/agent-runner /usr/local/bin/agent-runner
 ENTRYPOINT ["/usr/local/bin/agent-runner"]

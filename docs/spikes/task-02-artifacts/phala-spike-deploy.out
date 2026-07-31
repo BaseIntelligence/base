@@ -1,8 +1,8 @@
-Provisioning CVM gbase-spike-nested-docker...
+Provisioning CVM base-spike-nested-docker...
 {
   "success": true,
   "vm_uuid": "abc7f56e-7bb0-444c-947a-cd89601d35ea",
-  "name": "gbase-spike-nested-docker",
+  "name": "base-spike-nested-docker",
   "app_id": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1",
   "dashboard_url": "https://cloud.phala.com/dashboard/cvms/abc7f56e-7bb0-444c-947a-cd89601d35ea"
 }

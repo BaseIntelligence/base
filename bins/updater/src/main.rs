@@ -1,7 +1,7 @@
 //! updater — digest-pinned rollout over docker-socket-proxy (D14).
 //!
 //! Self-update of this container is **never** automatic; the library refuses
-//! when the target name matches `GBASE_UPDATER_SELF_NAME` / `HOSTNAME`.
+//! when the target name matches `BASE_UPDATER_SELF_NAME` / `HOSTNAME`.
 
 use std::process::ExitCode;
 
@@ -21,9 +21,9 @@ fn main() -> ExitCode {
         Err(msg) => {
             eprintln!("updater config error: {msg}");
             eprintln!(
-                "required: GBASE_UPDATER_PROXY_URL GBASE_UPDATER_COMPOSE_PROJECT \
-                 GBASE_UPDATER_SERVICE_NAME GBASE_UPDATER_HEALTH_URL \
-                 GBASE_UPDATER_STATE_DIR GBASE_UPDATER_DESIRED_IMAGE"
+                "required: BASE_UPDATER_PROXY_URL BASE_UPDATER_COMPOSE_PROJECT \
+                 BASE_UPDATER_SERVICE_NAME BASE_UPDATER_HEALTH_URL \
+                 BASE_UPDATER_STATE_DIR BASE_UPDATER_DESIRED_IMAGE"
             );
             return ExitCode::from(2);
         }

@@ -10,10 +10,10 @@ cd "$ROOT"
 # shellcheck source=lib-promote.sh
 source "${SCRIPT_DIR}/lib-promote.sh"
 
-EVIDENCE_DIR="${GBASE_EVIDENCE_DIR:-/root/.omo/evidence/gbase-rust-subnet}"
+EVIDENCE_DIR="${BASE_EVIDENCE_DIR:-/root/.omo/evidence/base-rust-subnet}"
 mkdir -p "$EVIDENCE_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gbase-t43.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/base-t43.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -61,15 +61,15 @@ fi
 PROD_BEFORE="$(sha256sum "$PIN_ROOT/deploy/pins/prod.json" | awk '{print $1}')"
 export PGHOST="${PGHOST:-}" # may set below
 # Prefer docker network postgres
-PG_IP="$(docker inspect gbase-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)"
+PG_IP="$(docker inspect base-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)"
 if [[ -n "$PG_IP" ]]; then
-  export PGHOST="$PG_IP" PGPORT=5432 PGUSER=gbase PGPASSWORD=gbase_dev_only_change_me PGDATABASE=gbase
+  export PGHOST="$PG_IP" PGPORT=5432 PGUSER=base PGPASSWORD=base_dev_only_change_me PGDATABASE=base
 fi
-export GBASE_BACKUP_ENDPOINT="${GBASE_BACKUP_ENDPOINT:-http://127.0.0.1:55000}"
+export BASE_BACKUP_ENDPOINT="${BASE_BACKUP_ENDPOINT:-http://127.0.0.1:55000}"
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID required}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY required}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-export GBASE_BACKUP_BUCKET="${GBASE_BACKUP_BUCKET:-gbase-backups}"
+export BASE_BACKUP_BUCKET="${BASE_BACKUP_BUCKET:-base-backups}"
 
 # Seed a known row for restore drill
 if [[ -n "${PGHOST:-}" ]]; then
@@ -98,7 +98,7 @@ if (
   PROD_AFTER="$(sha256sum "$PIN_ROOT/deploy/pins/prod.json" | awk '{print $1}')"
   PROD_UNTOUCHED="$(python3 -c 'import json; print(json.load(open("'"$S1_OUT"'"))["prod_untouched"])')"
   # healthz
-  HZ="$(docker run --rm --network gbase_gbase curlimages/curl:8.5.0 -sS -o /dev/null -w '%{http_code}' http://validator:8080/healthz || echo fail)"
+  HZ="$(docker run --rm --network base_base curlimages/curl:8.5.0 -sS -o /dev/null -w '%{http_code}' http://validator:8080/healthz || echo fail)"
   # running image id
   RUN_ID="$(docker inspect validator-1 --format '{{.Image}}')"
   RUN_MATCH=0
@@ -179,8 +179,8 @@ fi
 
 # --- S3: real pg_restore drill ---
 if [[ -n "${PGHOST:-}" ]]; then
-  export GBASE_BACKUP_ENV=staging
-  export GBASE_BACKUP_OUT="$WORK/drill.sql.gz"
+  export BASE_BACKUP_ENV=staging
+  export BASE_BACKUP_OUT="$WORK/drill.sql.gz"
   set +e
   BACKUP_OUT="$(./deploy/scripts/pg-backup.sh 2>"$WORK/backup.err")"
   BEC=$?

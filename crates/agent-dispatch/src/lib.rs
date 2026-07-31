@@ -11,7 +11,7 @@
 //! receipt key or domain — they do not re-score agents.
 //!
 //! # What stays in `agent-challenge`
-//! Scoring, `NoScore` / D24 completeness, leaf signing (`gbase-rawweight-v1`), and
+//! Scoring, `NoScore` / D24 completeness, leaf signing (`base-rawweight-v1`), and
 //! weight submit remain in `agent-challenge`. The challenge signing key never
 //! enters the miner CVM (D18).
 
@@ -183,11 +183,11 @@ mod tests {
         assert_eq!(signed.signature.len(), SIGNATURE_LEN);
         assert_eq!(
             work_receipt_domain().as_bytes(),
-            b"gbase-agent-work-receipt-v1"
+            b"base-agent-work-receipt-v1"
         );
     }
 
-    /// S2 — receipt signed under gbase-attest-v1 fails under `WORK_RECEIPT`.
+    /// S2 — receipt signed under base-attest-v1 fails under `WORK_RECEIPT`.
     #[test]
     fn s2_cross_domain_attest_signature_rejected() {
         let body = golden_body();

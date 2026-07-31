@@ -1,7 +1,7 @@
 //! Signed raw-weight ingress (`POST /v1/weights/raw`) — task 26 / `BUNDLE_SPEC` §3.4.
 //!
 //! Challenge leaves are verified against the **local** owner-signed trust root
-//! (D18 defence in depth) under domain tag `gbase-rawweight-v1`, then appended
+//! (D18 defence in depth) under domain tag `base-rawweight-v1`, then appended
 //! to an append-only store. Unique key: `(challenge_id, epoch, miner_hotkey)`.
 
 use std::collections::BTreeMap;
@@ -150,7 +150,7 @@ pub struct RawWeightRequest {
     pub epoch: u64,
     /// Score or signed absence.
     pub score_or_absence: ScoreOrAbsenceWire,
-    /// sr25519 signature hex (64 bytes) over `gbase-rawweight-v1` ‖ scale(body).
+    /// sr25519 signature hex (64 bytes) over `base-rawweight-v1` ‖ scale(body).
     pub challenge_sig: String,
 }
 

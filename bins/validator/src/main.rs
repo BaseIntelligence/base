@@ -6,7 +6,7 @@
 //! (task 30) live in the library; CRV4 submit and dissent are later tasks.
 //!
 //! Attestation (`/v1/attest/*`) is always mounted. Measurements allowlist is
-//! loaded from `GBASE_TRUST_ROOT_DIR` (default `./config` then `/etc/gbase/config`)
+//! loaded from `BASE_TRUST_ROOT_DIR` (default `./config` then `/etc/base/config`)
 //! so fixture/live certify can return `Verified` against the owner-signed root.
 //!
 //! F3 continuous path: after start, a background loop probes gateway
@@ -58,7 +58,7 @@ async fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let listen = std::env::var("GBASE_LISTEN")
+    let listen = std::env::var("BASE_LISTEN")
         .ok()
         .and_then(|s| s.parse::<SocketAddr>().ok())
         .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 8080)));
@@ -122,7 +122,7 @@ async fn main() -> ExitCode {
     tracing::info!(addr = %running.addr, netuid, "validator ready");
 
     // F3 continuous Match loop (gateway latest → bundle → compare).
-    let interval_secs: u64 = std::env::var("GBASE_COORDINATION_INTERVAL_SECS")
+    let interval_secs: u64 = std::env::var("BASE_COORDINATION_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5)
@@ -163,9 +163,9 @@ fn resolve_database_url(cfg: &config::Config) -> Result<Option<String>, String> 
     Ok(None)
 }
 
-/// Resolve trust-root directory: env override, then `./config`, then `/etc/gbase/config`.
+/// Resolve trust-root directory: env override, then `./config`, then `/etc/base/config`.
 fn trust_root_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("GBASE_TRUST_ROOT_DIR") {
+    if let Ok(p) = std::env::var("BASE_TRUST_ROOT_DIR") {
         let pb = PathBuf::from(p);
         if !pb.as_os_str().is_empty() {
             return pb;
@@ -175,11 +175,11 @@ fn trust_root_dir() -> PathBuf {
     if cwd.join("measurements.toml").is_file() {
         return cwd;
     }
-    PathBuf::from("/etc/gbase/config")
+    PathBuf::from("/etc/base/config")
 }
 
 /// Load challenges + measurements; build `AttestState`, `LocalTrustRoot`, and `FakeChain`
-/// aligned with gateway (`GBASE_GATEWAY_HOTKEY` / `GBASE_FAKE_METAGRAPH_HOTKEYS`).
+/// aligned with gateway (`BASE_GATEWAY_HOTKEY` / `BASE_FAKE_METAGRAPH_HOTKEYS`).
 fn build_runtime_trust(
     netuid: u16,
     rotation_epochs: u32,
@@ -187,7 +187,7 @@ fn build_runtime_trust(
     let dir = trust_root_dir();
     if !dir.is_dir() {
         return Err(format!(
-            "trust root dir missing: {} (set GBASE_TRUST_ROOT_DIR)",
+            "trust root dir missing: {} (set BASE_TRUST_ROOT_DIR)",
             dir.display()
         ));
     }
@@ -213,7 +213,7 @@ fn build_runtime_trust(
     );
 
     let hotkey = validator_hotkey_from_env();
-    let mode = std::env::var("GBASE_ATTEST_VERIFIER").unwrap_or_else(|_| "ok".to_owned());
+    let mode = std::env::var("BASE_ATTEST_VERIFIER").unwrap_or_else(|_| "ok".to_owned());
     let attest = match mode.as_str() {
         "pcs_timeout" | "park" | "parked" => {
             tracing::warn!(%mode, "attest verifier = PCS timeout (Parked path)");
@@ -227,8 +227,8 @@ fn build_runtime_trust(
 }
 
 fn fake_chain_aligned(netuid: u16) -> Result<FakeChain, String> {
-    let owner = parse_hotkey_env("GBASE_GATEWAY_HOTKEY")
-        .or_else(|| parse_hotkey_env("GBASE_VALIDATOR_HOTKEY_HEX"))
+    let owner = parse_hotkey_env("BASE_GATEWAY_HOTKEY")
+        .or_else(|| parse_hotkey_env("BASE_VALIDATOR_HOTKEY_HEX"))
         .unwrap_or([0xA1; 32]);
     let hotkeys = parse_fake_metagraph_hotkeys(&owner)?;
     Ok(FakeChain::new(FakeChainConfig {
@@ -241,7 +241,7 @@ fn fake_chain_aligned(netuid: u16) -> Result<FakeChain, String> {
 }
 
 fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
-    let Ok(raw) = std::env::var("GBASE_FAKE_METAGRAPH_HOTKEYS") else {
+    let Ok(raw) = std::env::var("BASE_FAKE_METAGRAPH_HOTKEYS") else {
         return Ok(vec![owner.to_vec()]);
     };
     let raw = raw.trim();
@@ -280,5 +280,5 @@ fn parse_hotkey_hex(s: &str) -> Result<[u8; 32], String> {
 
 /// Optional 32-byte validator hotkey for D10 `report_data` binding (hex or zeros).
 fn validator_hotkey_from_env() -> [u8; 32] {
-    parse_hotkey_env("GBASE_VALIDATOR_HOTKEY_HEX").unwrap_or([0u8; 32])
+    parse_hotkey_env("BASE_VALIDATOR_HOTKEY_HEX").unwrap_or([0u8; 32])
 }

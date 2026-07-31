@@ -96,7 +96,7 @@ async fn serve(app: Router) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
 
 #[tokio::test]
 async fn s1_admin_seal_happy_latest_200() {
-    std::env::set_var("GBASE_GATEWAY_SK", hex::encode(sk(9)));
+    std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
     let _ = init_metrics();
     let csk = sk(1);
     let cid = b"agent-v1";
@@ -189,7 +189,7 @@ async fn s1_admin_seal_happy_latest_200() {
 
 #[tokio::test]
 async fn s2_admin_seal_incomplete_409() {
-    std::env::set_var("GBASE_GATEWAY_SK", hex::encode(sk(9)));
+    std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
     let _ = init_metrics();
     let csk = sk(1);
     let cid = b"agent-v1";

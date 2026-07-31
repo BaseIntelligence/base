@@ -16,20 +16,20 @@ groups:
 
 users:
   - default
-  - name: gbase
+  - name: base
     groups: [docker, sudo]
     shell: /bin/bash
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     lock_passwd: true
 
 write_files:
-  - path: /etc/gbase/README
+  - path: /etc/base/README
     permissions: "0644"
     content: |
-      gbase host bootstrap (cloud-init)
+      base host bootstrap (cloud-init)
       - Docker + compose installed; no app secrets on this path.
-      - Place age identity at /etc/gbase/age-identity.txt (mode 600) out of band.
-      - Copy *.env.age under /opt/gbase/deploy/env/ then run materialize-env.sh.
+      - Place age identity at /etc/base/age-identity.txt (mode 600) out of band.
+      - Copy *.env.age under /opt/base/deploy/env/ then run materialize-env.sh.
   - path: /etc/docker/daemon.json
     permissions: "0644"
     content: |
@@ -53,12 +53,12 @@ write_files:
       apt-get update -y
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       systemctl enable --now docker
-      usermod -aG docker gbase || true
-      mkdir -p /opt/gbase /etc/gbase
-      chmod 0755 /opt/gbase /etc/gbase
+      usermod -aG docker base || true
+      mkdir -p /opt/base /etc/base
+      chmod 0755 /opt/base /etc/base
       touch /var/lib/cloud/instance/gbase-docker-ready
 
 runcmd:
   - [/usr/local/sbin/gbase-install-docker.sh]
 
-final_message: "gbase cloud-init complete: docker+compose only, zero secrets"
+final_message: "base cloud-init complete: docker+compose only, zero secrets"

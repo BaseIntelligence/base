@@ -28,16 +28,16 @@ done
 : "${PGPORT:=5432}"
 : "${PGUSER:?PGUSER required}"
 : "${PGPASSWORD:?PGPASSWORD required}"
-export GBASE_RESTORE_DB="${GBASE_RESTORE_DB:-gbase_restore_drill}"
-SCRATCH_DB="$GBASE_RESTORE_DB"
+export BASE_RESTORE_DB="${BASE_RESTORE_DB:-base_restore_drill}"
+SCRATCH_DB="$BASE_RESTORE_DB"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gbase-restore-drill.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/base-restore-drill.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 if [[ -n "$S3_URI" ]]; then
   require_cmd aws
-  : "${GBASE_BACKUP_ENDPOINT:?GBASE_BACKUP_ENDPOINT required for --s3-uri}"
+  : "${BASE_BACKUP_ENDPOINT:?BASE_BACKUP_ENDPOINT required for --s3-uri}"
   : "${AWS_ACCESS_KEY_ID:?required}"
   : "${AWS_SECRET_ACCESS_KEY:?required}"
   DUMP="${WORK}/dump.sql.gz"
@@ -87,7 +87,7 @@ with open(meta_path, encoding="utf-8") as f:
 expected = meta.get("row_counts_exact") or meta.get("row_counts") or {}
 
 env = {**os.environ, "PGPASSWORD": os.environ["PGPASSWORD"]}
-db = os.environ.get("GBASE_RESTORE_DB", "gbase_restore_drill")
+db = os.environ.get("BASE_RESTORE_DB", "base_restore_drill")
 base = [
     "psql",
     "--host", os.environ["PGHOST"],

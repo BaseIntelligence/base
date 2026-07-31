@@ -343,25 +343,25 @@ impl DissentStore {
     }
 }
 
-/// Increment `gbase_challenge_quarantined_total` by `n` (number of dropped challenges).
+/// Increment `base_challenge_quarantined_total` by `n` (number of dropped challenges).
 pub fn record_challenges_quarantined(n: u64) {
     if n == 0 {
         return;
     }
     metrics::describe_counter!(
-        "gbase_challenge_quarantined_total",
+        "base_challenge_quarantined_total",
         "Challenges dropped by validator quarantine (D6)"
     );
-    metrics::counter!("gbase_challenge_quarantined_total").increment(n);
+    metrics::counter!("base_challenge_quarantined_total").increment(n);
 }
 
 /// Increment class-B no-submit counter (alarm path).
 pub fn record_class_b() {
     metrics::describe_counter!(
-        "gbase_class_b_total",
+        "base_class_b_total",
         "Epochs where the validator took class B (no weight submission)"
     );
-    metrics::counter!("gbase_class_b_total").increment(1);
+    metrics::counter!("base_class_b_total").increment(1);
 }
 
 /// Axum router: `GET /v1/dissent/{epoch}`.

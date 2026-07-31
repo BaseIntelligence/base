@@ -1,4 +1,4 @@
-//! Master-only gbase gateway (D3) with backend registry, reverse proxy, and
+//! Master-only base gateway (D3) with backend registry, reverse proxy, and
 //! signed raw-weight ingress and epoch bundle seal/serve (tasks 24–27).
 //!
 //! Startup order is intentional and tested:
@@ -53,27 +53,27 @@ pub use weights::{
 /// Process exit code when configured hotkey ≠ on-chain `SubnetOwnerHotkey`.
 pub const EXIT_MASTER_MISMATCH: u8 = 2;
 
-/// Default listen address when `GBASE_GATEWAY_LISTEN` is unset.
+/// Default listen address when `BASE_GATEWAY_LISTEN` is unset.
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 
-/// Env keys specific to the gateway binary (in addition to `GBASE_*` from config).
+/// Env keys specific to the gateway binary (in addition to `BASE_*` from config).
 pub mod keys {
     /// Bind address (`host:port`), e.g. `0.0.0.0:8080`.
-    pub const LISTEN: &str = "GBASE_GATEWAY_LISTEN";
+    pub const LISTEN: &str = "BASE_GATEWAY_LISTEN";
     /// Gateway hotkey as 64 hex chars (32 raw bytes). Must equal on-chain owner.
-    pub const HOTKEY: &str = "GBASE_GATEWAY_HOTKEY";
+    pub const HOTKEY: &str = "BASE_GATEWAY_HOTKEY";
     /// Consecutive upstream failures before passive ejection (default 3).
-    pub const FAIL_THRESHOLD: &str = "GBASE_GATEWAY_FAIL_THRESHOLD";
+    pub const FAIL_THRESHOLD: &str = "BASE_GATEWAY_FAIL_THRESHOLD";
     /// Ejection cooldown seconds before re-admission (default 30).
-    pub const COOLDOWN_SECS: &str = "GBASE_GATEWAY_COOLDOWN_SECS";
+    pub const COOLDOWN_SECS: &str = "BASE_GATEWAY_COOLDOWN_SECS";
     /// Owner-signed trust root directory (`challenges.toml` + `measurements.toml`).
-    pub const TRUST_ROOT_DIR: &str = "GBASE_TRUST_ROOT_DIR";
+    pub const TRUST_ROOT_DIR: &str = "BASE_TRUST_ROOT_DIR";
     /// Comma-separated 64-hex hotkeys for `FakeChain` metagraph (UID order).
-    pub const FAKE_METAGRAPH_HOTKEYS: &str = "GBASE_FAKE_METAGRAPH_HOTKEYS";
+    pub const FAKE_METAGRAPH_HOTKEYS: &str = "BASE_FAKE_METAGRAPH_HOTKEYS";
     /// Gateway bundle-signing mini-secret (64 hex).
-    pub const GATEWAY_SK: &str = "GBASE_GATEWAY_SK";
+    pub const GATEWAY_SK: &str = "BASE_GATEWAY_SK";
     /// Path to gateway mini-secret (32 raw bytes or 64 hex).
-    pub const GATEWAY_SK_FILE: &str = "GBASE_GATEWAY_SK_FILE";
+    pub const GATEWAY_SK_FILE: &str = "BASE_GATEWAY_SK_FILE";
 
     pub use crate::tls::keys as tls;
 }
@@ -285,7 +285,7 @@ pub fn assert_master_only(
     Ok(())
 }
 
-/// Resolve trust-root directory: env, then `./config`, then `/etc/gbase/config`.
+/// Resolve trust-root directory: env, then `./config`, then `/etc/base/config`.
 #[must_use]
 pub fn trust_root_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var(keys::TRUST_ROOT_DIR) {
@@ -298,7 +298,7 @@ pub fn trust_root_dir() -> std::path::PathBuf {
     if cwd.join("challenges.toml").is_file() {
         return cwd;
     }
-    std::path::PathBuf::from("/etc/gbase/config")
+    std::path::PathBuf::from("/etc/base/config")
 }
 
 /// Load owner-signed challenges + measurements digest from the trust-root dir.
@@ -335,7 +335,7 @@ pub fn load_production_trust_root(
     Ok((Arc::new(primary_ch.body.clone()), digest))
 }
 
-/// Parse `GBASE_FAKE_METAGRAPH_HOTKEYS` (comma-separated 64-hex). Empty → owner only.
+/// Parse `BASE_FAKE_METAGRAPH_HOTKEYS` (comma-separated 64-hex). Empty → owner only.
 ///
 /// # Errors
 ///
@@ -387,7 +387,7 @@ pub fn build_app(
         .and_then(|s| parse_hotkey_hex(&s).ok())
         .unwrap_or([0u8; 32]);
     let hotkeys = parse_fake_metagraph_hotkeys(&owner).unwrap_or_else(|_| vec![owner.to_vec()]);
-    let netuid = std::env::var("GBASE_NETUID")
+    let netuid = std::env::var("BASE_NETUID")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1u16);

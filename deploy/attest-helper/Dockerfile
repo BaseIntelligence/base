@@ -5,7 +5,7 @@ FROM python@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa
 WORKDIR /app
 COPY server.py /app/server.py
 USER nobody
-ENV GBASE_ATTEST_PORT=8081 \
-    GBASE_DSTACK_SOCK=/var/run/dstack.sock
+ENV BASE_ATTEST_PORT=8081 \
+    BASE_DSTACK_SOCK=/var/run/dstack.sock
 EXPOSE 8081
 ENTRYPOINT ["python3", "-u", "/app/server.py"]

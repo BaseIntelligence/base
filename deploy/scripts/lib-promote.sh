@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for gbase promotion / backup (task 43).
+# Shared helpers for base promotion / backup (task 43).
 # shellcheck disable=SC2034
 set -euo pipefail
 
@@ -88,17 +88,17 @@ sha256_file() {
 }
 
 # S3/Spaces endpoint helpers. Prefer real DO Spaces when configured;
-# fall back to local S3-compatible (MinIO) via GBASE_BACKUP_*.
+# fall back to local S3-compatible (MinIO) via BASE_BACKUP_*.
 s3_endpoint() {
-  printf '%s' "${GBASE_BACKUP_ENDPOINT:-${AWS_ENDPOINT_URL:-}}"
+  printf '%s' "${BASE_BACKUP_ENDPOINT:-${AWS_ENDPOINT_URL:-}}"
 }
 
 s3_bucket() {
-  printf '%s' "${GBASE_BACKUP_BUCKET:-gbase-backups}"
+  printf '%s' "${BASE_BACKUP_BUCKET:-base-backups}"
 }
 
 s3_prefix() {
-  printf '%s' "${GBASE_BACKUP_PREFIX:-pg}"
+  printf '%s' "${BASE_BACKUP_PREFIX:-pg}"
 }
 
 # aws s3 cp wrapper with optional custom endpoint.

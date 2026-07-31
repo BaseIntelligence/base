@@ -22,7 +22,7 @@
 On the **master** host:
 
 ```bash
-cd /opt/gbase   # or your checkout path
+cd /opt/base   # or your checkout path
 docker compose --profile master ps gateway
 docker inspect "$(docker compose ps -q gateway)" \
   --format 'status={{.State.Status}} restart_policy={{.HostConfig.RestartPolicy.Name}}'
@@ -43,14 +43,14 @@ Offline CI proof of the policy lives in validator adversarial tests (`a48_ops_ga
 ## 3. Manual restart
 
 ```bash
-cd /opt/gbase
+cd /opt/base
 docker compose --profile master up -d gateway
 docker compose --profile master ps gateway
 # replace listen port if your env differs
-curl -fsS "http://127.0.0.1:${GBASE_GATEWAY_HEALTH_PORT:-8080}/healthz"
+curl -fsS "http://127.0.0.1:${BASE_GATEWAY_HEALTH_PORT:-8080}/healthz"
 ```
 
-If the process exits **2** immediately: hotkey ≠ on-chain `SubnetOwnerHotkey` (D3). Fix `GBASE_GATEWAY_HOTKEY` / wallet; do not bypass the check.
+If the process exits **2** immediately: hotkey ≠ on-chain `SubnetOwnerHotkey` (D3). Fix `BASE_GATEWAY_HOTKEY` / wallet; do not bypass the check.
 
 ---
 
@@ -64,16 +64,16 @@ There is **no** automatic multi-master. Procedure:
    docker compose --profile master stop gateway
    ```
 
-2. Confirm DNS / VIP for `prod.$GBASE_DOMAIN` (or staging) points at the **standby** host you control. TLS still terminates **in** the gateway process on that host (D20).
+2. Confirm DNS / VIP for `prod.$BASE_DOMAIN` (or staging) points at the **standby** host you control. TLS still terminates **in** the gateway process on that host (D20).
 
 3. On the standby, materialize env, ensure owner hotkey and age secrets are present, then:
 
    ```bash
-   cd /opt/gbase
+   cd /opt/base
    ./deploy/scripts/materialize-env.sh
    docker compose --profile master up -d
    docker compose ps
-   curl -fsS "https://prod.${GBASE_DOMAIN}/healthz"   # when DNS+TLS live
+   curl -fsS "https://prod.${BASE_DOMAIN}/healthz"   # when DNS+TLS live
    ```
 
 4. Confirm validators can fetch the current epoch bundle and that peer cross-check still meets `min_peer_sample`.

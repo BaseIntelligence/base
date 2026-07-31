@@ -14,13 +14,13 @@ CLI: `miner deploy`. One-command box setup: repo-root [`install.sh`](../../insta
 On a clean miner host (Docker + Compose required):
 
 ```bash
-export GBASE_MINER_HOTKEY_HEX='<64 lowercase hex public hotkey>'
-export GBASE_MODEL_KEY_FILE=/path/to/model_key   # mode 0600; miner-funded (Q3=A)
-export GBASE_MAX_CONCURRENCY=2                   # 1..=5
-# export GBASE_AGENT_IMAGE='repo@sha256:<64 hex>'
-# export GBASE_ATTEST_HELPER_IMAGE='repo@sha256:<64 hex>'
-# export GBASE_LAUNCH_TOKEN_HASH='<64 hex>'
-# export GBASE_VALIDATOR_URL='https://validator.example'
+export BASE_MINER_HOTKEY_HEX='<64 lowercase hex public hotkey>'
+export BASE_MODEL_KEY_FILE=/path/to/model_key   # mode 0600; miner-funded (Q3=A)
+export BASE_MAX_CONCURRENCY=2                   # 1..=5
+# export BASE_AGENT_IMAGE='repo@sha256:<64 hex>'
+# export BASE_ATTEST_HELPER_IMAGE='repo@sha256:<64 hex>'
+# export BASE_LAUNCH_TOKEN_HASH='<64 hex>'
+# export BASE_VALIDATOR_URL='https://validator.example'
 
 ./install.sh
 curl -sS http://127.0.0.1:8080/v1/capacity
@@ -42,7 +42,7 @@ For Phala production, take the rendered `app-compose.json` / hash from the insta
 
 ## 1. Offline compose-hash (always do this first)
 
-From the gbase repo root:
+From the base repo root:
 
 ```bash
 cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
@@ -82,13 +82,13 @@ Env surface (same names used by `install.sh`):
 
 | Env | Role |
 |-----|------|
-| `GBASE_AGENT_IMAGE` | Digest-pinned runner image |
-| `GBASE_ATTEST_HELPER_IMAGE` | Digest-pinned attest helper |
-| `GBASE_LAUNCH_TOKEN_HASH` | Measured launch-token hash |
-| `GBASE_VALIDATOR_URL` | For certify (not required to start runner) |
-| `GBASE_MINER_HOTKEY_HEX` | Public hotkey hex |
-| `GBASE_MODEL_KEY_FILE` | Path to miner-funded model key file |
-| `GBASE_MAX_CONCURRENCY` | Runner concurrency `1..=5` |
+| `BASE_AGENT_IMAGE` | Digest-pinned runner image |
+| `BASE_ATTEST_HELPER_IMAGE` | Digest-pinned attest helper |
+| `BASE_LAUNCH_TOKEN_HASH` | Measured launch-token hash |
+| `BASE_VALIDATOR_URL` | For certify (not required to start runner) |
+| `BASE_MINER_HOTKEY_HEX` | Public hotkey hex |
+| `BASE_MODEL_KEY_FILE` | Path to miner-funded model key file |
+| `BASE_MAX_CONCURRENCY` | Runner concurrency `1..=5` |
 
 ---
 
@@ -104,11 +104,11 @@ Env surface (same names used by `install.sh`):
 
 ### Concurrency
 
-`GBASE_MAX_CONCURRENCY` (or `install.sh --max-concurrency`) is clamped to **1..=5**. `GET /v1/capacity` reports the effective max and current load. Over-capacity task accepts return HTTP **503** `capacity_exhausted`.
+`BASE_MAX_CONCURRENCY` (or `install.sh --max-concurrency`) is clamped to **1..=5**. `GET /v1/capacity` reports the effective max and current load. Over-capacity task accepts return HTTP **503** `capacity_exhausted`.
 
 ### Miner-funded inference (Q3=A)
 
-Mount the provider API key as a **file** (e.g. `/run/gbase/model_key`). Env carries the **path** only. Never put key bytes in compose `environment:` values, tickets, or logs.
+Mount the provider API key as a **file** (e.g. `/run/base/model_key`). Env carries the **path** only. Never put key bytes in compose `environment:` values, tickets, or logs.
 
 ### Egress (OPEN default)
 
@@ -121,18 +121,18 @@ Default agent egress is **OPEN** ([`AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md) 
 Preconditions: [funding-phala.md](./funding-phala.md), `phala` on PATH, images reachable.
 
 ```bash
-export GBASE_AGENT_IMAGE='<repo>@sha256:<64 hex>'
-export GBASE_ATTEST_HELPER_IMAGE='<repo>@sha256:<64 hex>'
-export GBASE_LAUNCH_TOKEN_HASH='<64 hex of token>'
-export GBASE_NETUID=1   # publish real netuid when live
+export BASE_AGENT_IMAGE='<repo>@sha256:<64 hex>'
+export BASE_ATTEST_HELPER_IMAGE='<repo>@sha256:<64 hex>'
+export BASE_LAUNCH_TOKEN_HASH='<64 hex of token>'
+export BASE_NETUID=1   # publish real netuid when live
 
-cargo run -q -p miner-bin -- deploy --deploy --netuid "$GBASE_NETUID"
+cargo run -q -p miner-bin -- deploy --deploy --netuid "$BASE_NETUID"
 ```
 
 Notes printed by the CLI:
 
 - You fund your own Phala account.  
-- Secrets are file mounts under `/run/gbase` (not env values).
+- Secrets are file mounts under `/run/base` (not env values).
 
 Record the public agent URL Phala assigns. You need it for certify.
 
@@ -140,7 +140,7 @@ Record the public agent URL Phala assigns. You need it for certify.
 
 ## 4. After deploy
 
-1. Confirm the CVM is healthy: `curl -sS "$GBASE_AGENT_URL/v1/capacity"`.  
+1. Confirm the CVM is healthy: `curl -sS "$BASE_AGENT_URL/v1/capacity"`.  
 2. Proceed to [certify.md](./certify.md) each epoch (or per operator schedule).  
 3. When measurements or images rotate, redeploy and re-hash; validators fail closed on unknown measurements.
 

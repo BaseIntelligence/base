@@ -1,4 +1,4 @@
-//! Domain-separated sr25519 signing and single-use nonce store for gbase consensus.
+//! Domain-separated sr25519 signing and single-use nonce store for base consensus.
 //!
 //! # Signature preimage
 //!
@@ -28,7 +28,7 @@ use thiserror::Error;
 /// Fixed schnorrkel signing context (domain separation of the transcript itself).
 ///
 /// Payload domain tags ([`DomainTag`]) are still bound inside the preimage.
-pub const SIGNING_CONTEXT: &[u8] = b"gbase-sr25519-v1";
+pub const SIGNING_CONTEXT: &[u8] = b"base-sr25519-v1";
 
 /// Length of a raw sr25519 public key / secret seed / nonce (bytes).
 pub const KEY_LEN: usize = 32;
@@ -43,21 +43,21 @@ pub mod domain {
     use super::DomainTag;
 
     /// Epoch bundle body signatures.
-    pub const BUNDLE: DomainTag = DomainTag::new(b"gbase-bundle-v1");
+    pub const BUNDLE: DomainTag = DomainTag::new(b"base-bundle-v1");
     /// Raw weight snapshot signatures.
-    pub const RAW_WEIGHT: DomainTag = DomainTag::new(b"gbase-rawweight-v1");
+    pub const RAW_WEIGHT: DomainTag = DomainTag::new(b"base-rawweight-v1");
     /// Dissent statement signatures.
-    pub const DISSENT: DomainTag = DomainTag::new(b"gbase-dissent-v1");
+    pub const DISSENT: DomainTag = DomainTag::new(b"base-dissent-v1");
     /// Peer merkle-root statement signatures.
-    pub const ROOT: DomainTag = DomainTag::new(b"gbase-root-v1");
+    pub const ROOT: DomainTag = DomainTag::new(b"base-root-v1");
     /// Attestation / `report_data` binding material.
-    pub const ATTEST: DomainTag = DomainTag::new(b"gbase-attest-v1");
+    pub const ATTEST: DomainTag = DomainTag::new(b"base-attest-v1");
     /// Owner-signed trust-root bodies.
-    pub const TRUST_ROOT: DomainTag = DomainTag::new(b"gbase-trustroot-v1");
+    pub const TRUST_ROOT: DomainTag = DomainTag::new(b"base-trustroot-v1");
     /// CVM-local agent work receipt (orchestrator verifies; not D10).
-    pub const WORK_RECEIPT: DomainTag = DomainTag::new(b"gbase-agent-work-receipt-v1");
+    pub const WORK_RECEIPT: DomainTag = DomainTag::new(b"base-agent-work-receipt-v1");
     /// Orchestrator → runner signed dispatch (single-use nonce envelope).
-    pub const DISPATCH: DomainTag = DomainTag::new(b"gbase-agent-dispatch-v1");
+    pub const DISPATCH: DomainTag = DomainTag::new(b"base-agent-dispatch-v1");
 
     /// All canonical tags (stable order for tests / enumeration).
     pub const ALL: [DomainTag; 8] = [
@@ -495,7 +495,7 @@ mod tests {
         // Manual SCALE via the same Encode path as production (`&[u8]`, not `[u8; N]`).
         // Fixed-size arrays encode without a Compact length prefix.
         let tag = domain::BUNDLE.as_bytes();
-        assert_eq!(tag, b"gbase-bundle-v1");
+        assert_eq!(tag, b"base-bundle-v1");
         let mut expected = Vec::new();
         <[u8] as Encode>::encode_to(tag, &mut expected);
         <[u8] as Encode>::encode_to(payload.as_slice(), &mut expected);
@@ -517,17 +517,17 @@ mod tests {
         }
         assert_eq!(labels.len(), 8);
 
-        assert_eq!(domain::BUNDLE.as_bytes(), b"gbase-bundle-v1");
-        assert_eq!(domain::RAW_WEIGHT.as_bytes(), b"gbase-rawweight-v1");
-        assert_eq!(domain::DISSENT.as_bytes(), b"gbase-dissent-v1");
-        assert_eq!(domain::ROOT.as_bytes(), b"gbase-root-v1");
-        assert_eq!(domain::ATTEST.as_bytes(), b"gbase-attest-v1");
-        assert_eq!(domain::TRUST_ROOT.as_bytes(), b"gbase-trustroot-v1");
+        assert_eq!(domain::BUNDLE.as_bytes(), b"base-bundle-v1");
+        assert_eq!(domain::RAW_WEIGHT.as_bytes(), b"base-rawweight-v1");
+        assert_eq!(domain::DISSENT.as_bytes(), b"base-dissent-v1");
+        assert_eq!(domain::ROOT.as_bytes(), b"base-root-v1");
+        assert_eq!(domain::ATTEST.as_bytes(), b"base-attest-v1");
+        assert_eq!(domain::TRUST_ROOT.as_bytes(), b"base-trustroot-v1");
         assert_eq!(
             domain::WORK_RECEIPT.as_bytes(),
-            b"gbase-agent-work-receipt-v1"
+            b"base-agent-work-receipt-v1"
         );
-        assert_eq!(domain::DISPATCH.as_bytes(), b"gbase-agent-dispatch-v1");
+        assert_eq!(domain::DISPATCH.as_bytes(), b"base-agent-dispatch-v1");
     }
 
     /// S6b — different payloads under same domain do not verify.

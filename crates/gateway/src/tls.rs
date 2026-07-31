@@ -1,7 +1,7 @@
 //! TLS ownership for the gateway process (D20).
 //!
-//! This process is the **sole** TLS terminator for gbase. No Caddy, Traefik, or
-//! nginx may sit in front. Production ACME (DNS-01 via Cloudflare + `GBASE_DOMAIN`)
+//! This process is the **sole** TLS terminator for base. No Caddy, Traefik, or
+//! nginx may sit in front. Production ACME (DNS-01 via Cloudflare + `BASE_DOMAIN`)
 //! lands in **task 42** using [`rustls-acme`](https://docs.rs/rustls-acme).
 //!
 //! Until task 42, operators may:
@@ -13,7 +13,7 @@
 //! ## Task 42 checklist (`rustls-acme`)
 //!
 //! 1. Depend on `rustls-acme` + `tokio-rustls` + `axum-server` (or hyper accept loop).
-//! 2. Require `GBASE_DOMAIN`; abort if unset (D25).
+//! 2. Require `BASE_DOMAIN`; abort if unset (D25).
 //! 3. DNS-01 challenge with Cloudflare token (`/root/.cf_api_token` in deploy).
 //! 4. Persist certs on a mounted volume; restart must not re-issue unnecessarily.
 //! 5. Serve HTTPS only; keep master-only check **before** any listener bind (D3).
@@ -25,13 +25,13 @@ use serde::{Deserialize, Serialize};
 /// Env keys for the TLS stub (task 42 will extend these).
 pub mod keys {
     /// When `1`/`true`, prefer TLS mode (task 42 wires real accept).
-    pub const ENABLED: &str = "GBASE_GATEWAY_TLS";
+    pub const ENABLED: &str = "BASE_GATEWAY_TLS";
     /// Path to PEM certificate chain (static stub).
-    pub const CERT_PATH: &str = "GBASE_GATEWAY_TLS_CERT";
+    pub const CERT_PATH: &str = "BASE_GATEWAY_TLS_CERT";
     /// Path to PEM private key (static stub).
-    pub const KEY_PATH: &str = "GBASE_GATEWAY_TLS_KEY";
+    pub const KEY_PATH: &str = "BASE_GATEWAY_TLS_KEY";
     /// Directory for ACME cache (task 42 / rustls-acme).
-    pub const ACME_CACHE: &str = "GBASE_GATEWAY_ACME_CACHE";
+    pub const ACME_CACHE: &str = "BASE_GATEWAY_ACME_CACHE";
 }
 
 /// TLS configuration owned exclusively by the gateway (D20).

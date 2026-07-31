@@ -3,7 +3,7 @@ locals {
     [
       var.project_name,
       "managed-by:terraform",
-      "cost-center:gbase",
+      "cost-center:base",
     ],
     var.tags,
   ))
@@ -32,7 +32,7 @@ resource "digitalocean_droplet" "host" {
 
   tags = distinct(concat(local.base_tags, [
     "env:${each.key}",
-    "role:gbase-host",
+    "role:base-host",
   ]))
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
@@ -47,7 +47,7 @@ resource "digitalocean_droplet" "host" {
   }
 }
 
-resource "digitalocean_firewall" "gbase" {
+resource "digitalocean_firewall" "base" {
   name = "${var.project_name}-hosts"
 
   droplet_ids = [for d in digitalocean_droplet.host : d.id]

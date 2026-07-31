@@ -1,6 +1,6 @@
 [package]
 name = "crosscheck"
-description = "Peer root cross-check (D26): signed gbase-root-v1 sample gate"
+description = "Peer root cross-check (D26): signed base-root-v1 sample gate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

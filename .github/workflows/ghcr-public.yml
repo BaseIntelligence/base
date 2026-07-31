@@ -28,8 +28,8 @@ jobs:
           set -euo pipefail
           # Nested image names: ghcr.io/<owner>/base/<suffix> → package name "base/<suffix>"
           pkgs=(
-            "base/gbase-agent"
-            "base/gbase-attest-helper"
+            "base/base-agent"
+            "base/base-attest-helper"
             "base/gateway"
             "base/validator"
             "base/updater"

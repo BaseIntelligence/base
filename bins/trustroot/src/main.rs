@@ -1,7 +1,7 @@
 //! `trustroot` — offline ceremony CLI (keygen / sign / verify).
 //!
 //! Secrets are written outside the git tree (operator chooses path). Prefer
-//! `/root/.gbase-secrets/` with mode 0700. Age encryption is applied via the
+//! `/root/.base-secrets/` with mode 0700. Age encryption is applied via the
 //! system `age` binary when `--age-recipient` is set.
 
 use std::fs;

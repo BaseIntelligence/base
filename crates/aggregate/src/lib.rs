@@ -875,7 +875,7 @@ mod tests {
         eprintln!("shape sparse: {sparse:?} sum={}", vector_sum(&sparse));
 
         // Live reference [(0,3641),(1,65535),(2,3641)] is NOT a Hamilton HOUSE vector
-        // (sum ≠ 65535). Canonical gbase never emits that shape.
+        // (sum ≠ 65535). Canonical base never emits that shape.
         let live_ref_sum: u32 = 3_641 + u32::from(HOUSE) + 3_641;
         assert_ne!(live_ref_sum, u32::from(HOUSE));
     }

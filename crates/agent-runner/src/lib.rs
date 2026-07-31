@@ -20,7 +20,7 @@
 //! # Pack execution + egress (todo 21)
 //! [`ExecutionBackend::Docker`] pulls a digest-pinned env image via allowlisted
 //! socket-proxy, runs the reference agent, collects `/logs/artifacts/model.patch`,
-//! signs a work receipt, and tears down `gbase-verify-agent-*` containers.
+//! signs a work receipt, and tears down `base-verify-agent-*` containers.
 //! Default egress posture is [`DEFAULT_AGENT_EGRESS_POSTURE`] (**OPEN**): no network
 //! lockdown. Stripping protects grading-channel integrity, not miner honesty (D19).
 

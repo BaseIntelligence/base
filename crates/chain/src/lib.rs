@@ -1,4 +1,4 @@
-//! Chain client abstraction for gbase validators/miners.
+//! Chain client abstraction for base validators/miners.
 //!
 //! # Commit-reveal (CRV4)
 //!

@@ -1,10 +1,10 @@
-//! Typed layered configuration for gbase binaries.
+//! Typed layered configuration for base binaries.
 //!
 //! # Layers (later wins)
 //!
 //! 1. **Defaults** — chain endpoint, epoch length, D6/D21/D26 knobs.
-//! 2. **`gbase.toml`** (or path from `GBASE_CONFIG`) — optional file.
-//! 3. **`GBASE_*` environment variables** — highest precedence.
+//! 2. **`base.toml`** (or path from `BASE_CONFIG`) — optional file.
+//! 3. **`BASE_*` environment variables** — highest precedence.
 //!
 //! # Validation
 //!
@@ -55,7 +55,7 @@ pub struct Config {
     pub min_peer_sample: u32,
     /// Max DCAP collateral age in seconds before park (D13).
     pub max_collateral_age_secs: u64,
-    /// Public DNS zone (`GBASE_DOMAIN`, D25). Required for [`Role::Gateway`].
+    /// Public DNS zone (`BASE_DOMAIN`, D25). Required for [`Role::Gateway`].
     pub domain: Option<String>,
 }
 
@@ -314,7 +314,7 @@ epoch_length = 100
     #[test]
     fn load_from_real_toml_file() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("gbase.toml");
+        let path = dir.path().join("base.toml");
         std::fs::write(
             &path,
             r#"

@@ -40,7 +40,7 @@ cargo run -q -p miner-bin -- deploy --no-deploy --netuid 541 \
 ### Step 1 — Deploy the new miner template **without** requiring `Verified` for scoring
 
 1. Ship the todo-22 template (socket-proxy measured; agent uses
-   `GBASE_DOCKER_BASE=http://socket-proxy:2375`; no raw docker.sock on the agent).
+   `BASE_DOCKER_BASE=http://socket-proxy:2375`; no raw docker.sock on the agent).
 2. Keep validator / scoring in a mode that **does not** hard-fail the epoch when
    attestation is not yet `Verified` (park / prior policy as already deployed).
 3. Miners redeploy CVMs from the new compose.
@@ -60,7 +60,7 @@ task-34 / spikes under `docs/spikes/task-02-*`):
 
 Store quote + event log + app-compose beside the capture (same layout as
 `crates/attest-parse/tests/fixtures/real/` and
-`/root/.omo/evidence/gbase-rust-subnet/phala-fixtures/`).
+`/root/.omo/evidence/base-rust-subnet/phala-fixtures/`).
 
 **If live deploy is blocked:** you may still land dual-entry **structure** in git
 (tests + provisional compose-hash pin) and this runbook. You **must not** claim
@@ -81,8 +81,8 @@ dual-accept of `v(n)` + `v(n+1)` files):
 
 ```bash
 cargo run -q -p trustroot-bin -- sign \
-  --key ~/.gbase-secrets/owner-throwaway.age \
-  --age-identity ~/.gbase-secrets/age-identity.txt \
+  --key ~/.base-secrets/owner-throwaway.age \
+  --age-identity ~/.base-secrets/age-identity.txt \
   --input config/measurements.toml \
   --kind measurements
 

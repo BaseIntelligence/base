@@ -13,10 +13,10 @@ use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV
 
 /// Default digest-pinned agent image (digest from images CI tip 3056ca7).
 pub const DEFAULT_AGENT_IMAGE: &str =
-    "ghcr.io/baseintelligence/base/gbase-agent@sha256:f7d168546398a6e927a1e05132334ebda3bbb75fc03378952e3c3e2ea4d05e6f";
+    "ghcr.io/baseintelligence/base/base-agent@sha256:f7d168546398a6e927a1e05132334ebda3bbb75fc03378952e3c3e2ea4d05e6f";
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
-    "ghcr.io/baseintelligence/base/gbase-attest-helper@sha256:b724cb8b67b8e6b4c89972b61ecf942d663cd0b80f87d87b423fe3406baa1b1c";
+    "ghcr.io/baseintelligence/base/base-attest-helper@sha256:b724cb8b67b8e6b4c89972b61ecf942d663cd0b80f87d87b423fe3406baa1b1c";
 
 /// Whether to invoke the Phala CLI after rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,11 +189,11 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
     // Null-valued keys are stripped by compose_hash; we omit them for clarity.
     Ok(json!({
         "allowed_envs": [
-            "GBASE_NETUID",
-            "GBASE_MINER_HOTKEY_FILE",
-            "GBASE_LAUNCH_TOKEN_HASH",
-            "GBASE_RECEIPT_SK_FILE",
-            "GBASE_RECEIPT_PUBLIC_KEY",
+            "BASE_NETUID",
+            "BASE_MINER_HOTKEY_FILE",
+            "BASE_LAUNCH_TOKEN_HASH",
+            "BASE_RECEIPT_SK_FILE",
+            "BASE_RECEIPT_PUBLIC_KEY",
             DOCKER_BASE_ENV
         ],
 

@@ -67,13 +67,13 @@ impl UpdaterConfig {
     ///
     /// | Variable | Required | Meaning |
     /// |----------|----------|---------|
-    /// | `GBASE_UPDATER_PROXY_URL` | yes | socket-proxy base URL |
-    /// | `GBASE_UPDATER_COMPOSE_PROJECT` | yes | compose project |
-    /// | `GBASE_UPDATER_SERVICE_NAME` | yes | target service |
-    /// | `GBASE_UPDATER_HEALTH_URL` | yes | full `/readyz` URL |
-    /// | `GBASE_UPDATER_STATE_DIR` | yes | pin directory |
-    /// | `GBASE_UPDATER_DESIRED_IMAGE` | yes | `image@sha256:…` |
-    /// | `GBASE_UPDATER_SELF_NAME` | no | defaults to `HOSTNAME` or `updater` |
+    /// | `BASE_UPDATER_PROXY_URL` | yes | socket-proxy base URL |
+    /// | `BASE_UPDATER_COMPOSE_PROJECT` | yes | compose project |
+    /// | `BASE_UPDATER_SERVICE_NAME` | yes | target service |
+    /// | `BASE_UPDATER_HEALTH_URL` | yes | full `/readyz` URL |
+    /// | `BASE_UPDATER_STATE_DIR` | yes | pin directory |
+    /// | `BASE_UPDATER_DESIRED_IMAGE` | yes | `image@sha256:…` |
+    /// | `BASE_UPDATER_SELF_NAME` | no | defaults to `HOSTNAME` or `updater` |
     ///
     /// # Errors
     /// Returns a static message when a required variable is missing.
@@ -81,16 +81,16 @@ impl UpdaterConfig {
         fn req(key: &str) -> Result<String, &'static str> {
             std::env::var(key).map_err(|_| "missing required updater env var")
         }
-        let self_name = std::env::var("GBASE_UPDATER_SELF_NAME")
+        let self_name = std::env::var("BASE_UPDATER_SELF_NAME")
             .or_else(|_| std::env::var("HOSTNAME"))
             .unwrap_or_else(|_| "updater".to_owned());
         Ok(Self::new(
-            req("GBASE_UPDATER_PROXY_URL")?,
-            req("GBASE_UPDATER_COMPOSE_PROJECT")?,
-            req("GBASE_UPDATER_SERVICE_NAME")?,
-            req("GBASE_UPDATER_HEALTH_URL")?,
-            PathBuf::from(req("GBASE_UPDATER_STATE_DIR")?),
-            req("GBASE_UPDATER_DESIRED_IMAGE")?,
+            req("BASE_UPDATER_PROXY_URL")?,
+            req("BASE_UPDATER_COMPOSE_PROJECT")?,
+            req("BASE_UPDATER_SERVICE_NAME")?,
+            req("BASE_UPDATER_HEALTH_URL")?,
+            PathBuf::from(req("BASE_UPDATER_STATE_DIR")?),
+            req("BASE_UPDATER_DESIRED_IMAGE")?,
             self_name,
         ))
     }

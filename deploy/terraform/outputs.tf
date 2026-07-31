@@ -20,12 +20,12 @@ output "droplet_sizes" {
 
 output "firewall_id" {
   description = "Cloud firewall ID attached to both hosts."
-  value       = digitalocean_firewall.gbase.id
+  value       = digitalocean_firewall.base.id
 }
 
 output "firewall_name" {
   description = "Cloud firewall name."
-  value       = digitalocean_firewall.gbase.name
+  value       = digitalocean_firewall.base.name
 }
 
 output "region" {

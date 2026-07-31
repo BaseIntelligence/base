@@ -9,7 +9,7 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] No secrets in git (`git log -p` / `git grep` clean of `dop_v1_`, `secretPhrase`, PEM private keys).
 - [ ] Coldkeys and age identities are mode `600`; secret dirs mode `700`.
 - [ ] Compose env files under `deploy/env/*.env` are mode `0600` after `materialize-env.sh`.
-- [ ] Age identity delivered **out of band** to `/etc/gbase/age-identity.txt` (or `AGE_IDENTITY`). Never in terraform state or cloud-init user-data.
+- [ ] Age identity delivered **out of band** to `/etc/base/age-identity.txt` (or `AGE_IDENTITY`). Never in terraform state or cloud-init user-data.
 - [ ] Challenge signing secrets are **files** mounted into the challenge service, not env values (D11).
 - [ ] Owner and challenge mini-secrets never committed; only `*.pubkey` / TOML bodies + detached `.sig` in git.
 - [ ] Cloudflare / DO / Phala tokens live only in operator secret stores, not in docs or CI logs.
@@ -54,7 +54,7 @@ cargo run -q -p trustroot-bin -- verify \
 
 - [ ] Gateway hotkey equals on-chain `SubnetOwnerHotkey` (else process exits 2).
 - [ ] TLS terminates **only** in the gateway process (D20). No second reverse proxy claiming TLS.
-- [ ] `GBASE_DOMAIN` is a real delegated zone when ACME is enabled (D25).
+- [ ] `BASE_DOMAIN` is a real delegated zone when ACME is enabled (D25).
 - [ ] Manual failover procedure is known: [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md). HA is **not** claimed (R9).
 
 ---

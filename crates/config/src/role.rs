@@ -1,4 +1,4 @@
-//! Process role for a gbase binary.
+//! Process role for a base binary.
 
 use std::fmt;
 use std::str::FromStr;
@@ -35,7 +35,7 @@ impl Role {
         matches!(self, Self::Validator | Self::Gateway | Self::Updater)
     }
 
-    /// Gateway owns TLS hostnames and must have `GBASE_DOMAIN` (D25).
+    /// Gateway owns TLS hostnames and must have `BASE_DOMAIN` (D25).
     #[must_use]
     pub const fn requires_domain(self) -> bool {
         matches!(self, Self::Gateway)

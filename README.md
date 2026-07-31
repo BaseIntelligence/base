@@ -37,10 +37,10 @@ validators. The gateway is the sole TLS / public edge process.
 
 Day-1: [docs/external-miner/](docs/external-miner/)
 
-1. Deploy a measured CVM (`miner deploy`) with digest-pinned `gbase-agent` +
-   `gbase-attest-helper` + socket-proxy.
+1. Deploy a measured CVM (`miner deploy`) with digest-pinned `base-agent` +
+   `base-attest-helper` + socket-proxy.
 2. Fund your own Phala account; hotkey + launch token + receipt sk are **files**
-   under `/run/gbase/` (never env secret values).
+   under `/run/base/` (never env secret values).
 3. Certify each epoch (`miner certify`) via loopback attest-helper
    `GET /v1/quote` → validator attest API.
 
@@ -74,8 +74,8 @@ Never `:latest` in measured compose.
 | gateway | `gateway` |
 | updater | `updater` |
 | agent-challenge | `agent-challenge` |
-| gbase-agent | `gbase-agent` (miner runner) |
-| gbase-attest-helper | `gbase-attest-helper` (quote helper) |
+| base-agent | `base-agent` (miner runner) |
+| base-attest-helper | `base-attest-helper` (quote helper) |
 
 ## Toolchain
 

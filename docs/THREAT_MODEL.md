@@ -1,4 +1,4 @@
-# gbase threat model
+# base threat model
 
 This document states the **honest** security claim and the properties we deliberately do **not** claim. Overclaiming is treated as a project failure mode.
 
@@ -13,7 +13,7 @@ CI enforces that §1 matches plan decision **D19** word for word (`cargo run -p 
 
 The following paragraph is copied from plan decision D19 and MUST remain byte-identical to that decision (modulo a single trailing newline). Do not paraphrase in this section.
 
-gbase guarantees *no equivocation between validators* and *no undetected deviation by the gateway from the owner-signed challenge and measurement artifacts*. It does **not** guarantee (i) that a challenge's scores are honest, (ii) that the owner is honest — the owner signs the trust roots and runs the gateway, so a malicious owner can authorize a dishonest challenge or a backdoored measurement, (iii) completeness beyond what D24 provides, nor (iv) **chain-anchored, third-party-auditable non-equivocation** — per D5 the property is peer-consensus plus local evidence, verifiable by the participating validators and not by an outside observer after the fact.
+base guarantees *no equivocation between validators* and *no undetected deviation by the gateway from the owner-signed challenge and measurement artifacts*. It does **not** guarantee (i) that a challenge's scores are honest, (ii) that the owner is honest — the owner signs the trust roots and runs the gateway, so a malicious owner can authorize a dishonest challenge or a backdoored measurement, (iii) completeness beyond what D24 provides, nor (iv) **chain-anchored, third-party-auditable non-equivocation** — per D5 the property is peer-consensus plus local evidence, verifiable by the participating validators and not by an outside observer after the fact.
 
 ---
 

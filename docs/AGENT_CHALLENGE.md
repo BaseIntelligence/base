@@ -1,13 +1,13 @@
-# gbase Agent Challenge Specification
+# base Agent Challenge Specification
 
 **Status:** FROZEN (task 16 re-freeze — scoring_version 2 / SWE Harbor packs)  
 **Prior freeze:** task 9 wave gate (scoring_version 1 / echo) — **superseded** by this document  
-**Normative for:** `agent-challenge` service, `miner` deploy/certify, miner runner (`gbase-agent`), validator attestation integration  
+**Normative for:** `agent-challenge` service, `miner` deploy/certify, miner runner (`base-agent`), validator attestation integration  
 **challenge_id:** `agent-v1`  
 **challenge_scoring_version:** `2`  
 **Bundle leaf protocol:** [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) **`protocol_version = 1`**
 
-This file is the single source of truth for the gbase agent challenge at **scoring_version 2**: topology, pack-based task dispatch, the `model.patch` contract, operator-side held-out grading, pure integer scoring, work receipts, challenge key custody, D24 participant coverage, and the Phala compose image/port contract (including the measured miner socket-proxy).
+This file is the single source of truth for the base agent challenge at **scoring_version 2**: topology, pack-based task dispatch, the `model.patch` contract, operator-side held-out grading, pure integer scoring, work receipts, challenge key custody, D24 participant coverage, and the Phala compose image/port contract (including the measured miner socket-proxy).
 
 Where this document and any other source disagree on **agent-challenge behaviour**, **this document wins**.  
 Where this document and [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) disagree on **leaf bytes, signatures, aggregation, or bundle verify**, **BUNDLE_SPEC wins**.
@@ -35,7 +35,7 @@ Task 9 froze scoring_version **1** (SHA-256 echo answer + latency decay). Owner 
 
 Hotkeys inside SCALE structures are `[u8; 32]` raw public keys, not SS58 strings.
 
-Cross-reference: leaf `ScoreOrAbsence`, `NoScoreReasonCode`, and `gbase-rawweight-v1` signing are defined in BUNDLE_SPEC §3. This document defines **when** each reason is chosen and **how** `Score { value: u64 }` is computed under scoring_version 2.
+Cross-reference: leaf `ScoreOrAbsence`, `NoScoreReasonCode`, and `base-rawweight-v1` signing are defined in BUNDLE_SPEC §3. This document defines **when** each reason is chosen and **how** `Score { value: u64 }` is computed under scoring_version 2.
 
 ### 0.1 Invariants preserved across the version bump (I1–I8)
 
@@ -73,7 +73,7 @@ Challenge service process (orchestrator)
            | HTTPS to miner public URL
            v
 Miner Phala TDX CVM (measured app-compose)
-  - gbase-agent runner HTTP server (:8080)
+  - base-agent runner HTTP server (:8080)
   - measured socket-proxy (Docker Engine allowlist; see §9.1)
   - pack environment containers (agent workload only)
   - CVM-local work-receipt key (not the challenge sk)
@@ -120,7 +120,7 @@ Leaf SCALE layout changes go through BUNDLE_SPEC `protocol_version` (still **1**
 ### 2.1 Historical scoring_version 1 (retired)
 
 scoring_version **1** used a pure echo answer  
-`answer_digest = sha256(b"gbase-agent-answer-v1" ‖ task_blob)`  
+`answer_digest = sha256(b"base-agent-answer-v1" ‖ task_blob)`  
 and integer latency decay with historical constants `SOFT_MS = 2_000` and `HARD_MS = 10_000`.  
 Those constants are **not** live scoring inputs under version 2. Offline code may retain v1 digest helpers solely for golden regression of the retired formulas.
 
@@ -145,7 +145,7 @@ The challenge MUST NOT emit `Score` unless attestation status is `Verified` for 
 
 ```text
 report_data = SHA512(
-  scale(b"gbase-attest-v1")
+  scale(b"base-attest-v1")
   ‖ scale(netuid: u16)
   ‖ scale(epoch: u64)
   ‖ scale(miner_pubkey: [u8; 32])
@@ -154,7 +154,7 @@ report_data = SHA512(
 )
 ```
 
-- Domain tag matches `crypto` / BUNDLE_SPEC appendix A: `gbase-attest-v1`.  
+- Domain tag matches `crypto` / BUNDLE_SPEC appendix A: `base-attest-v1`.  
 - Nonce: validator-issued 32 bytes, single-use, TTL strictly less than one epoch.  
 - Construction code lives **inside** the measured compose so the allowlist pins it.  
 - D11: only env **names** and `LAUNCH_TOKEN` **hash** are measured. Env **values** are not attested. Secrets are **mounted files**, never secret values in compose `environment:`.
@@ -181,8 +181,8 @@ Transport: HTTPS. `Content-Type: application/json; charset=utf-8`.
 
 Two JSON surfaces coexist:
 
-1. **Dispatch** (`gbase-agent-dispatch-v1`) — orchestrator ↔ runner task descriptor / result (normative for scoring_version 2).  
-2. **Legacy task envelope** (`gbase-agent-task-v1`) — retained only where older probes still speak it; live scoring uses dispatch + operator grade.
+1. **Dispatch** (`base-agent-dispatch-v1`) — orchestrator ↔ runner task descriptor / result (normative for scoring_version 2).  
+2. **Legacy task envelope** (`base-agent-task-v1`) — retained only where older probes still speak it; live scoring uses dispatch + operator grade.
 
 ### 4.1 Miner endpoints (public base URL)
 
@@ -199,7 +199,7 @@ Two JSON surfaces coexist:
 
 ```json
 {
-  "protocol": "gbase-agent-dispatch-v1",
+  "protocol": "base-agent-dispatch-v1",
   "challenge_id": "agent-v1",
   "scoring_version": 2,
   "epoch": 42,
@@ -211,7 +211,7 @@ Two JSON surfaces coexist:
 
 | Field | Rule |
 |-------|------|
-| `protocol` | Exactly `gbase-agent-dispatch-v1` |
+| `protocol` | Exactly `base-agent-dispatch-v1` |
 | `challenge_id` | Exactly `agent-v1` |
 | `scoring_version` | `2` |
 | `pack_id` | From §5.2 `select_pack` |
@@ -242,15 +242,15 @@ The runner resolves `pack_id` to a stripped Harbor projection, pulls the digest-
 |------|----------|
 | Artifact | `/logs/artifacts/model.patch` (unified diff) |
 | Deadline | `min(deadline_unix_ms remaining, agent.timeout_sec)` → hard stop → `status=timed_out`, no patch, **still signed** work receipt |
-| Containers | Owned name prefix `gbase-verify-agent-` (subset of `gbase-verify-`); unconditional teardown after each attempt |
-| Model key (Q3=A) | Miner-supplied file mount (e.g. `/run/gbase/model_key`); env carries **path only** (`MODEL_KEY_FILE`); **never** key bytes in logs, compose `environment:` values, or measured env values |
-| Receipt | `patch_sha256 = sha256(model.patch bytes)`; sr25519 under `gbase-agent-work-receipt-v1` |
+| Containers | Owned name prefix `base-verify-agent-` (subset of `base-verify-`); unconditional teardown after each attempt |
+| Model key (Q3=A) | Miner-supplied file mount (e.g. `/run/base/model_key`); env carries **path only** (`MODEL_KEY_FILE`); **never** key bytes in logs, compose `environment:` values, or measured env values |
+| Receipt | `patch_sha256 = sha256(model.patch bytes)`; sr25519 under `base-agent-work-receipt-v1` |
 
 ### 4.3 Dispatch result (`TaskResultV1`)
 
 ```json
 {
-  "protocol": "gbase-agent-dispatch-v1",
+  "protocol": "base-agent-dispatch-v1",
   "challenge_id": "agent-v1",
   "scoring_version": 2,
   "epoch": 42,
@@ -320,13 +320,13 @@ Gateway `POST /v1/weights/raw` is idempotent on that key. Challenge retries 5xx;
 // catalog: ordered PackId slice, identical across challenge replicas
 // n = catalog.len(); n == 0 → EmptyCatalog (operator fault → ChallengeInternal leaves)
 
-digest = sha256(b"gbase-agent-pack-select-v1" ‖ miner_hotkey)
+digest = sha256(b"base-agent-pack-select-v1" ‖ miner_hotkey)
 seed   = u64::from_le_bytes(digest[0..8])   // little-endian
 index  = seed.wrapping_add(epoch) % (n as u64)
 pack_id = catalog[index]
 ```
 
-Domain tag: `gbase-agent-pack-select-v1`. No RNG. No I/O. No wall clock.
+Domain tag: `base-agent-pack-select-v1`. No RNG. No I/O. No wall clock.
 
 **R1 deadline:** hard stop at approximately **60% of the epoch** (testnet tempo ≈ 72 min → ~43 min). Unfinished work → `NoScore(Timeout)`. No multi-pack cross-epoch carry-over in this freeze.
 
@@ -334,7 +334,7 @@ Domain tag: `gbase-agent-pack-select-v1`. No RNG. No I/O. No wall clock.
 
 ```text
 task_id_v2 = sha256(
-  b"gbase-agent-task-id-v2" ‖
+  b"base-agent-task-id-v2" ‖
   scale(netuid: u16) ‖
   scale(epoch: u64) ‖
   miner_hotkey: [u8; 32] ‖
@@ -343,19 +343,19 @@ task_id_v2 = sha256(
 )
 
 task_blob_v2 = sha256(
-  b"gbase-agent-task-blob-v2" ‖
+  b"base-agent-task-blob-v2" ‖
   task_id_v2 ‖
   scale(scoring_version: u16) ‖
   scale(pack_id: Vec<u8>)
 )
 
 answer_digest_v2 = sha256(
-  b"gbase-agent-answer-v2" ‖
+  b"base-agent-answer-v2" ‖
   model_patch                 // raw returned model.patch bytes
 )
 ```
 
-Domain tags are distinct from v1, from `gbase-agent-work-receipt-v1`, and from `gbase-attest-v1`.  
+Domain tags are distinct from v1, from `base-agent-work-receipt-v1`, and from `base-attest-v1`.  
 `answer_digest_v2` is **not** equal to untagged `sha256(model.patch)` (receipt `patch_sha256`).
 
 ### 5.4 Operator-side grading (`HarborVerifier`)
@@ -406,7 +406,7 @@ Bare floating point is forbidden in the scorer implementation (I3).
 
 Signed **inside** the miner CVM by a key that exists only in the measured compose (not the challenge sk; not required in the trust-root ceremony for validators).
 
-Domain: `gbase-agent-work-receipt-v1` (`crypto::domain::WORK_RECEIPT`).
+Domain: `base-agent-work-receipt-v1` (`crypto::domain::WORK_RECEIPT`).
 
 ```text
 WorkReceiptBodyV1 {
@@ -503,9 +503,9 @@ assert v1 echo answer does not validate as v2 correct
 | Algorithm | sr25519 (same as BUNDLE_SPEC leaf sigs) |
 | Public key | Committed in owner-signed `config/challenges.toml` for `agent-v1` |
 | Secret key | **Never** in git. Stored `age`-encrypted offline; decrypted to a **mode 0600 file** on the challenge host |
-| Runtime load | Challenge process reads secret from file path env `GBASE_CHALLENGE_SK_FILE` |
+| Runtime load | Challenge process reads secret from file path env `BASE_CHALLENGE_SK_FILE` |
 | Gateway DB | **Must not** store challenge secrets or be consulted for leaf provenance (D18) |
-| Signing domain | `gbase-rawweight-v1` over `RawWeightBodyV1` (BUNDLE_SPEC §3.4) |
+| Signing domain | `base-rawweight-v1` over `RawWeightBodyV1` (BUNDLE_SPEC §3.4) |
 | Rotation | D21 dual-accept window via trust-root release; keygen via `trustroot keygen` |
 | Compromise | Rotate trust root; D19 still applies until rotation lands |
 | Work-receipt key | Separate CVM-local key; **not** the challenge sk; published in measured compose |
@@ -589,7 +589,7 @@ body = RawWeightBodyV1 {
   epoch,
   score_or_absence: Score(v) | NoScore(reason),
 }
-sig = sr25519_sign(challenge_sk, tag "gbase-rawweight-v1" ‖ scale(body))
+sig = sr25519_sign(challenge_sk, tag "base-rawweight-v1" ‖ scale(body))
 leaf = LeafV1 { ... body fields ..., challenge_sig: sig }
 POST /v1/weights/raw  with the gateway-accepted leaf envelope
 ```
@@ -626,10 +626,10 @@ Gateway verifies against **its** local trust root (defence in depth) and appends
 ```text
 images:
   agent:
-    repository: ghcr.io/baseintelligence/base/gbase-agent
+    repository: ghcr.io/baseintelligence/base/base-agent
     // digest-pinned only, e.g. repo@sha256:<64 hex>
   attest-helper:
-    repository: ghcr.io/baseintelligence/base/gbase-attest-helper
+    repository: ghcr.io/baseintelligence/base/base-attest-helper
     // digest-pinned only
   socket-proxy:
     // digest-pinned allowlisted proxy image (miner CVM + operator)
@@ -638,8 +638,8 @@ images:
 | Rule | Requirement |
 |------|-------------|
 | Tags | Digest pins only; rendered compose must contain zero `:latest` |
-| `allowed_envs` names | May include `GBASE_NETUID`, `GBASE_MINER_HOTKEY_FILE`, `GBASE_LAUNCH_TOKEN_HASH` |
-| Secret values | **Files** under `/run/gbase/` (or equivalent), never env values |
+| `allowed_envs` names | May include `BASE_NETUID`, `BASE_MINER_HOTKEY_FILE`, `BASE_LAUNCH_TOKEN_HASH` |
+| Secret values | **Files** under `/run/base/` (or equivalent), never env values |
 | `LAUNCH_TOKEN` | Hash appears in measured compose (D11); raw token only as file if needed |
 | compose-hash | Canonical JSON → SHA-256 per `compose-hash`; must match RTMR3 event and `mr_config_id` prefix |
 | Work-receipt pubkey | Published in measured compose for challenge verification |
@@ -665,7 +665,7 @@ images:
 |------|----------|
 | Binary / image | `agent-challenge` digest-pinned |
 | Listen port | `8090` (internal) |
-| Secrets | `GBASE_CHALLENGE_SK_FILE` mount 0600 |
+| Secrets | `BASE_CHALLENGE_SK_FILE` mount 0600 |
 | Trust root | Local `config/challenges.toml` path |
 | Health | `/healthz`, `/readyz` on 8090 |
 | Docker | Operator socket-proxy only (HarborVerifier) |
@@ -710,7 +710,7 @@ D19 applies unchanged (see [`THREAT_MODEL.md`](./THREAT_MODEL.md) §1 — byte-i
 
 ## 12. Parent-plan clause F7 restatement (SWE challenge)
 
-Parent plan `gbase-rust-subnet` final verification **F7** ("The original request, clause by clause") includes:
+Parent plan `base-rust-subnet` final verification **F7** ("The original request, clause by clause") includes:
 
 > Agent Challenge on Phala, miners self-deploying, validators verifying cryptographically → tasks 36, 37, 38, 47.
 
@@ -718,7 +718,7 @@ Under scoring_version **2**, that clause means:
 
 | Original clause fragment | SWE / v2 reading |
 |--------------------------|------------------|
-| Agent Challenge on Phala | Miner CVM runs `gbase-agent` + measured socket-proxy + attest-helper; packs are Harbor SWE tasks from the pinned deepagent catalog |
+| Agent Challenge on Phala | Miner CVM runs `base-agent` + measured socket-proxy + attest-helper; packs are Harbor SWE tasks from the pinned deepagent catalog |
 | Miners self-deploying | `miner deploy` / install script renders digest-pinned compose; miner funds Phala |
 | Validators verifying cryptographically | D10 quote path + BUNDLE_SPEC leaf/bundle verify; validators **do not** re-score `model.patch` (D19) |
 | End-to-end proof | Parent task 47 criteria, with scoring_version 2 leaves and attestation precondition |
@@ -738,7 +738,7 @@ Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no 
 7. `PolicySkip` never used to drop coverage.  
 8. Compose render matches §9; no `:latest`; measured socket-proxy; no secrets in `environment:`.  
 9. Leaves verify under BUNDLE_SPEC `protocol_version = 1` and local trust root.  
-10. Work receipt domain is `gbase-agent-work-receipt-v1`, distinct from attest.  
+10. Work receipt domain is `base-agent-work-receipt-v1`, distinct from attest.  
 11. Doc states what v2 attestation does **not** prove (§3.4).  
 12. Agent egress default is **OPEN** (§4.2.1); allowlisted proxy OFF by default; Metis B6 residual stated.  
 13. Model key is a mounted file path only (Q3=A); never logged (§4.2.2).
@@ -754,8 +754,8 @@ Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no 
 | Participant derivation | BUNDLE_SPEC §7 |
 | D19 claim | BUNDLE_SPEC §11.1 / THREAT_MODEL §1 |
 | Bundle `protocol_version` | BUNDLE_SPEC §2 (**value 1**) |
-| D10/D11/D13/D18/D24 decisions | plan `gbase-rust-subnet` |
-| SWE deepagent plan | plan `gbase-agent-challenge-deepagent` |
+| D10/D11/D13/D18/D24 decisions | plan `base-rust-subnet` |
+| SWE deepagent plan | plan `base-agent-challenge-deepagent` |
 
 ---
 
@@ -784,15 +784,15 @@ Any F7 sub-clause not yet demonstrated live remains **explicitly unmet** — no 
 
 | Tag | Purpose |
 |-----|---------|
-| `gbase-agent-task-id-v2` | v2 task id preimage |
-| `gbase-agent-task-blob-v2` | v2 task blob preimage |
-| `gbase-agent-answer-v2` | v2 answer over `model.patch` |
-| `gbase-agent-pack-select-v1` | deterministic pack index |
-| `gbase-agent-work-receipt-v1` | CVM work receipt signatures |
-| `gbase-agent-dispatch-v1` | JSON dispatch protocol label |
-| `gbase-attest-v1` | D10 report_data (unchanged) |
-| `gbase-rawweight-v1` | leaf signatures (unchanged) |
-| `gbase-agent-task-id-v1` / `…-blob-v1` / `…-answer-v1` | **retired** v1 echo (historical only) |
+| `base-agent-task-id-v2` | v2 task id preimage |
+| `base-agent-task-blob-v2` | v2 task blob preimage |
+| `base-agent-answer-v2` | v2 answer over `model.patch` |
+| `base-agent-pack-select-v1` | deterministic pack index |
+| `base-agent-work-receipt-v1` | CVM work receipt signatures |
+| `base-agent-dispatch-v1` | JSON dispatch protocol label |
+| `base-attest-v1` | D10 report_data (unchanged) |
+| `base-rawweight-v1` | leaf signatures (unchanged) |
+| `base-agent-task-id-v1` / `…-blob-v1` / `…-answer-v1` | **retired** v1 echo (historical only) |
 
 ---
 

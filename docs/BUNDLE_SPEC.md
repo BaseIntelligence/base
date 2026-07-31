@@ -1,4 +1,4 @@
-# gbase Epoch Bundle Specification
+# base Epoch Bundle Specification
 
 **Status:** FROZEN (task 8 wave gate)  
 **Normative for:** `bundle`, `aggregate`, gateway seal, validator verify/recompute  
@@ -139,7 +139,7 @@ Absence is **signed by the challenge key** over the same domain as scores (see �
 Domain-separated message (plan task 14 tags):
 
 ```text
-msg = "gbase-rawweight-v1" as length-prefixed UTF-8 tag ‖ scale(RawWeightBodyV1)
+msg = "base-rawweight-v1" as length-prefixed UTF-8 tag ‖ scale(RawWeightBodyV1)
 
 RawWeightBodyV1 = scale(
   challenge_id:     Bytes,
@@ -192,7 +192,7 @@ Signed envelope:
 ```text
 EpochBundleV1 = scale(
   body: EpochBundleBodyV1,
-  gateway_sig: [u8; 64]   // sr25519 over tag "gbase-bundle-v1" ‖ scale(body)
+  gateway_sig: [u8; 64]   // sr25519 over tag "base-bundle-v1" ‖ scale(body)
 )
 ```
 
@@ -346,7 +346,7 @@ final_vector: Vec<(uid: u16, weight: u16)>
 
 - Include only UIDs with `weight > 0` **or** include all UIDs from `uid_map` with zeros?  
   **Canonical rule:** include **every** UID present in `uid_map` that appears as a miner hotkey in at least one leaf, with the computed weight (possibly zero only if that miner had zero acc but others had positive total — actually if total > 0 and acc_m = 0, weight is 0).  
-  **Tighter canonical rule used by gbase:** emit **all** `(uid, weight)` for every uid in `uid_map` whose hotkey appears in the verified leaf set, sorted by ascending `uid`. Zero weights are kept so vector equality is stable.  
+  **Tighter canonical rule used by base:** emit **all** `(uid, weight)` for every uid in `uid_map` whose hotkey appears in the verified leaf set, sorted by ascending `uid`. Zero weights are kept so vector equality is stable.  
   Exception: the all-zero/no-submit case uses empty `Vec` (§6.5).
 
 - Sorted by ascending `uid`.
@@ -528,7 +528,7 @@ DissentBodyV1 = scale(
 DissentV1 = scale(
   body: DissentBodyV1,
   validator_hotkey: [u8; 32],
-  signature: [u8; 64]   // sr25519 over tag "gbase-dissent-v1" ‖ scale(body)
+  signature: [u8; 64]   // sr25519 over tag "base-dissent-v1" ‖ scale(body)
 )
 ```
 
@@ -565,14 +565,14 @@ DissentV1 = scale(
 
 The following paragraph is **normative wording** for docs and threat models. Do not weaken or inflate:
 
-> gbase guarantees *no equivocation between validators* and *no undetected deviation by the gateway from the owner-signed challenge and measurement artifacts*. It does **not** guarantee (i) that a challenge's scores are honest, (ii) that the owner is honest — the owner signs the trust roots and runs the gateway, so a malicious owner can authorize a dishonest challenge or a backdoored measurement, (iii) completeness beyond what D24 provides, nor (iv) **chain-anchored, third-party-auditable non-equivocation** — per D5 the property is peer-consensus plus local evidence, verifiable by the participating validators and not by an outside observer after the fact.
+> base guarantees *no equivocation between validators* and *no undetected deviation by the gateway from the owner-signed challenge and measurement artifacts*. It does **not** guarantee (i) that a challenge's scores are honest, (ii) that the owner is honest — the owner signs the trust roots and runs the gateway, so a malicious owner can authorize a dishonest challenge or a backdoored measurement, (iii) completeness beyond what D24 provides, nor (iv) **chain-anchored, third-party-auditable non-equivocation** — per D5 the property is peer-consensus plus local evidence, verifiable by the participating validators and not by an outside observer after the fact.
 
 ### 11.2 Mismatch outcomes (D6)
 
 | Class | Condition | Action |
 |-------|-----------|--------|
 | **A** | Inputs verify; peer roots agree; gateway `final_vector` ≠ local recompute | Submit **local** vector + `DissentV1{ reason: VectorMismatch }` |
-| **Quarantine** | One or more challenges' leaves unverifiable/absent, and surviving emission mass ≥ `min_share_mass_bps` | Drop bad challenges, `renormalize_after_quarantine`, aggregate, submit; metric `gbase_challenge_quarantined_total` |
+| **Quarantine** | One or more challenges' leaves unverifiable/absent, and surviving emission mass ≥ `min_share_mass_bps` | Drop bad challenges, `renormalize_after_quarantine`, aggregate, submit; metric `base_challenge_quarantined_total` |
 | **B** | Inputs unverifiable; peer roots conflict; surviving mass `< min_share_mass_bps`; or other hard failures | **No** weight submission; signed dissent; alarm |
 
 Default `min_share_mass_bps = 5000` (half of `10_000`).
@@ -584,7 +584,7 @@ Default `min_share_mass_bps = 5000` (half of `10_000`).
 | `min_peer_sample` | Default `1`. May be `0` only when the metagraph contains no other validator with `validator_permit` (single-validator testnet) |
 | Below threshold | Do not submit; status `Degraded`; dissent `PeerSampleInsufficient` |
 | Identity | Peer responses authenticated by **sr25519 over response body** bound to metagraph hotkey — never IP allowlists alone |
-| Root exchange | `GET`-style peer API returns signed `(epoch, merkle_root)` under tag `gbase-root-v1` |
+| Root exchange | `GET`-style peer API returns signed `(epoch, merkle_root)` under tag `base-root-v1` |
 
 ---
 
@@ -618,7 +618,7 @@ Any code or doc that claims the merkle root is committed inside `WeightsTlockPay
 ## 13. Gateway bundle signature
 
 ```text
-msg = tag "gbase-bundle-v1" ‖ scale(EpochBundleBodyV1)
+msg = tag "base-bundle-v1" ‖ scale(EpochBundleBodyV1)
 gateway_sig = sr25519_sign(gateway_hotkey_sk, msg)
 ```
 
@@ -658,12 +658,12 @@ Failure modes map to §10.1 reason codes.
 
 | Tag string | Used for |
 |------------|----------|
-| `gbase-bundle-v1` | Epoch bundle body |
-| `gbase-rawweight-v1` | Challenge leaf body |
-| `gbase-dissent-v1` | Dissent body |
-| `gbase-root-v1` | Peer `(epoch, merkle_root)` |
-| `gbase-trustroot-v1` | Owner trust-root body |
-| `gbase-attest-v1` | Attestation bindings (see AGENT_CHALLENGE / D10; out of scope for leaf math) |
+| `base-bundle-v1` | Epoch bundle body |
+| `base-rawweight-v1` | Challenge leaf body |
+| `base-dissent-v1` | Dissent body |
+| `base-root-v1` | Peer `(epoch, merkle_root)` |
+| `base-trustroot-v1` | Owner trust-root body |
+| `base-attest-v1` | Attestation bindings (see AGENT_CHALLENGE / D10; out of scope for leaf math) |
 
 Length-prefix rule: SCALE `Bytes` encoding of the tag string UTF-8 bytes (compact length + bytes), then payload. Task 14 owns the exact sign helper; this appendix names the tags only.
 

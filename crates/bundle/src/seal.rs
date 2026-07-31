@@ -27,7 +27,7 @@ pub struct SealParams {
     pub netuid: u16,
     /// Inclusive epoch end block.
     pub block_b: u64,
-    /// Gateway mini-secret (`gbase-bundle-v1`).
+    /// Gateway mini-secret (`base-bundle-v1`).
     pub gateway_secret: [u8; KEY_LEN],
 }
 

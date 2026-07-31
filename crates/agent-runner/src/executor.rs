@@ -22,12 +22,12 @@ use crate::egress::{AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE};
 /// Env var name inside the agent container pointing at the mounted key file path.
 pub const MODEL_KEY_FILE_ENV: &str = "MODEL_KEY_FILE";
 /// In-container mount path for the miner-supplied model key (file, mode 0600 on host).
-pub const MODEL_KEY_CONTAINER_PATH: &str = "/run/gbase/model_key";
+pub const MODEL_KEY_CONTAINER_PATH: &str = "/run/base/model_key";
 /// Artifact path produced by the agent (Harbor contract).
 pub const MODEL_PATCH_REL: &str = "artifacts/model.patch";
 
 /// Prefix for agent one-shot containers (subset of [`OWNED_NAME_PREFIX`]).
-pub const AGENT_CONTAINER_PREFIX: &str = "gbase-verify-agent-";
+pub const AGENT_CONTAINER_PREFIX: &str = "base-verify-agent-";
 
 /// Configuration for Docker-backed pack execution.
 #[derive(Debug, Clone)]
@@ -53,8 +53,8 @@ impl Default for DockerExecConfig {
         Self {
             docker_base: "http://127.0.0.1:2375".into(),
             environment_image: String::new(),
-            pack_root: PathBuf::from("/var/lib/gbase/packs"),
-            work_root: PathBuf::from("/tmp/gbase-agent-work"),
+            pack_root: PathBuf::from("/var/lib/base/packs"),
+            work_root: PathBuf::from("/tmp/base-agent-work"),
             model_key_path: None,
             egress: DEFAULT_AGENT_EGRESS_POSTURE,
             agent_cmd: None,
@@ -377,7 +377,7 @@ fn unique_agent_name(pack_id: &str) -> String {
 }
 
 fn cleanup_agent_owned(client: &AllowlistClient) -> Result<usize, DockerError> {
-    // OWNED_NAME_PREFIX covers gbase-verify-agent-*; remove only agent-prefixed.
+    // OWNED_NAME_PREFIX covers base-verify-agent-*; remove only agent-prefixed.
     let owned = client.list_owned()?;
     let mut n = 0usize;
     for c in owned {

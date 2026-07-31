@@ -32,7 +32,7 @@ CONFIRM_PROD=0
 FORCE_PROD=0
 SKIP_BACKUP=0
 ROLLBACK=0
-COMMIT_SHA="${GBASE_PROMOTE_COMMIT:-}"
+COMMIT_SHA="${BASE_PROMOTE_COMMIT:-}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -65,7 +65,7 @@ PROD_PATH="$(prod_pin_path "$ROOT")"
 PROD_HASH_BEFORE="$(sha256_file "$PROD_PATH")"
 PIN_HASH_BEFORE="$(sha256_file "$PIN_PATH")"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gbase-promote.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/base-promote.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 NEW_JSON_PATH="${WORK}/new-pin.json"
@@ -107,7 +107,7 @@ else
     REPOSITORY="$(repo_from_image "$IMAGE_REF" "$REPOSITORY")"
   elif [[ -n "$DIGEST_ONLY" ]]; then
     DIGEST="$(normalize_digest "$DIGEST_ONLY")"
-    [[ -n "$REPOSITORY" ]] || REPOSITORY="gbase-${SERVICE}"
+    [[ -n "$REPOSITORY" ]] || REPOSITORY="base-${SERVICE}"
     IMAGE_REF="${REPOSITORY}@${DIGEST}"
   else
     die "provide --image REPO@sha256:… or --digest sha256:… --repository REPO"
@@ -164,10 +164,10 @@ if [[ "$SKIP_BACKUP" -eq 0 ]]; then
   : "${PGUSER:?PGUSER required}"
   : "${PGPASSWORD:?PGPASSWORD required}"
   : "${PGDATABASE:?PGDATABASE required}"
-  : "${GBASE_BACKUP_ENDPOINT:?GBASE_BACKUP_ENDPOINT required}"
+  : "${BASE_BACKUP_ENDPOINT:?BASE_BACKUP_ENDPOINT required}"
   : "${AWS_ACCESS_KEY_ID:?required}"
   : "${AWS_SECRET_ACCESS_KEY:?required}"
-  export GBASE_BACKUP_ENV="$ENV_NAME"
+  export BASE_BACKUP_ENV="$ENV_NAME"
   log "backup before promote ($ENV_NAME)"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo '{"ok":true,"dry_run":true}' >"$BACKUP_JSON_PATH"
@@ -193,7 +193,7 @@ atomic_write "$PIN_PATH" "$(cat "$NEW_JSON_PATH")"
 
 DESIRED_ENV="${ROOT}/deploy/pins/${ENV_NAME}.desired.env"
 DESIRED_IMAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"][sys.argv[2]]["image"])' "$NEW_JSON_PATH" "$SERVICE")"
-atomic_write "$DESIRED_ENV" "GBASE_UPDATER_DESIRED_IMAGE=${DESIRED_IMAGE}"
+atomic_write "$DESIRED_ENV" "BASE_UPDATER_DESIRED_IMAGE=${DESIRED_IMAGE}"
 
 if [[ "$ENV_NAME" == "staging" ]]; then
   PROD_HASH_AFTER="$(sha256_file "$PROD_PATH")"

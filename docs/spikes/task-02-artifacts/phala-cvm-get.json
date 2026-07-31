@@ -1,7 +1,7 @@
 {
   "success": true,
   "id": "cvm_yKlLq1Kx",
-  "name": "gbase-spike-nested-docker",
+  "name": "base-spike-nested-docker",
   "app_id": "5c6c52c5cbd86a461532c923b4b045eed18e1eb1",
   "vm_uuid": "abc7f56e-7bb0-444c-947a-cd89601d35ea",
   "instance_id": null,

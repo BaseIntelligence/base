@@ -9,7 +9,7 @@
 //! # Algorithm (normative)
 //! Let `n = catalog.len()`.
 //! - `n == 0` → [`PackError::EmptyCatalog`]
-//! - `digest = sha256(b"gbase-agent-pack-select-v1" ‖ miner_hotkey)`
+//! - `digest = sha256(b"base-agent-pack-select-v1" ‖ miner_hotkey)`
 //! - `seed = u64::from_le_bytes(digest[0..8])` (little-endian)
 //! - `index = seed.wrapping_add(epoch) % (n as u64)` as `usize`
 //! - return `catalog[index].clone()`
@@ -29,7 +29,7 @@ use crate::error::PackError;
 use crate::PackId;
 
 /// Domain-separation tag for pack selection (hash family, not a signing tag).
-pub const PACK_SELECT_DOMAIN: &[u8] = b"gbase-agent-pack-select-v1";
+pub const PACK_SELECT_DOMAIN: &[u8] = b"base-agent-pack-select-v1";
 
 /// Miner hotkey width (sr25519 public key / `crypto::KEY_LEN`).
 pub const HOTKEY_LEN: usize = 32;
@@ -217,7 +217,7 @@ mod tests {
     /// Domain tag is the expected ASCII label.
     #[test]
     fn domain_tag_is_gbase_agent_pack_select_v1() {
-        assert_eq!(PACK_SELECT_DOMAIN, b"gbase-agent-pack-select-v1");
+        assert_eq!(PACK_SELECT_DOMAIN, b"base-agent-pack-select-v1");
     }
 
     /// Different hotkeys can diverge at the same epoch (not a constant map).

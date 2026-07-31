@@ -1,7 +1,7 @@
 # Copy to terraform.tfvars (gitignored) and fill in.
 # Never put DIGITALOCEAN_TOKEN or private keys in this file.
 
-project_name = "gbase"
+project_name = "base"
 region       = "nyc1"  # nyc3 has no s-8vcpu-16gb* on this account; nyc1 is NY metro
 # Plan text said s-8vcpu-16gb ($96). Current DO catalog offers s-8vcpu-16gb-amd
 # (8 vCPU / 16 GB Basic AMD). Override only if a cheaper equivalent appears.
@@ -19,6 +19,6 @@ tags = [
 ]
 
 environments = {
-  staging = { name = "gbase-staging" }
-  prod    = { name = "gbase-prod" }
+  staging = { name = "base-staging" }
+  prod    = { name = "base-prod" }
 }

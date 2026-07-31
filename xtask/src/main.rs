@@ -1,4 +1,4 @@
-//! gbase workspace maintenance binary.
+//! base workspace maintenance binary.
 //!
 //! Subcommands:
 //! - `loc-cap` — fail if any crate under `crates/` or `bins/` exceeds 1500 non-test LOC
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "gbase workspace maintenance tasks")]
+#[command(name = "xtask", about = "base workspace maintenance tasks")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

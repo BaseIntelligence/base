@@ -1,7 +1,7 @@
 //! CVM-local work-receipt signing key (I4 / R3).
 //!
 //! Private half lives only as a mode-0600 file inside the measured CVM
-//! (`GBASE_RECEIPT_SK_FILE`, default `/run/gbase/receipt_sk`). Never the
+//! (`BASE_RECEIPT_SK_FILE`, default `/run/base/receipt_sk`). Never the
 //! challenge signing key. Public half is published in the measured compose
 //! for the challenge service to pin (D19: validators never need it).
 
@@ -14,10 +14,10 @@ use crypto::{generate_mini_secret, public_key_from_mini_secret, secret_from_byte
 use thiserror::Error;
 
 /// Env var naming the receipt secret file path inside the CVM.
-pub const RECEIPT_SK_FILE_ENV: &str = "GBASE_RECEIPT_SK_FILE";
+pub const RECEIPT_SK_FILE_ENV: &str = "BASE_RECEIPT_SK_FILE";
 
 /// Default in-CVM path for the receipt mini-secret (matches miner template).
-pub const DEFAULT_RECEIPT_SK_PATH: &str = "/run/gbase/receipt_sk";
+pub const DEFAULT_RECEIPT_SK_PATH: &str = "/run/base/receipt_sk";
 
 /// Receipt key load / provision failures.
 #[derive(Debug, Error)]

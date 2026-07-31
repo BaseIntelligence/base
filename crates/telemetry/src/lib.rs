@@ -1,4 +1,4 @@
-//! Observability primitives for gbase services: JSON tracing, Prometheus metrics,
+//! Observability primitives for base services: JSON tracing, Prometheus metrics,
 //! and a reusable axum router exposing `/healthz`, `/readyz`, and `/metrics`.
 //!
 //! Readiness probes (DB, chain, …) are injectable callbacks so this crate stays free

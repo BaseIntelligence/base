@@ -1,7 +1,7 @@
 //! Todo 33: full local challenge → grade → |E| leaves → gateway seal → validator Match.
 //!
 //! In-process e2e (no staging/testnet). Optional Harbor live grade when
-//! `GBASE_E2E_HARBOR=1` and socket-proxy + pack image are available.
+//! `BASE_E2E_HARBOR=1` and socket-proxy + pack image are available.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,14 +56,14 @@ const EVIDENCE_UNTRUSTED_NAME: &str = "task-33-local-e2e-untrusted.txt";
 
 /// Prefer operator evidence dir when writable; else temp (CI runners).
 fn evidence_path(name: &str) -> PathBuf {
-    let preferred = PathBuf::from("/root/.omo/evidence/gbase-agent-challenge-deepagent");
+    let preferred = PathBuf::from("/root/.omo/evidence/base-agent-challenge-deepagent");
     let dir = if std::fs::create_dir_all(&preferred).is_ok()
         && std::fs::write(preferred.join(".w"), b"ok").is_ok()
     {
         let _ = std::fs::remove_file(preferred.join(".w"));
         preferred
     } else {
-        let d = std::env::temp_dir().join("gbase-agent-challenge-deepagent");
+        let d = std::env::temp_dir().join("base-agent-challenge-deepagent");
         std::fs::create_dir_all(&d).expect("temp evidence dir");
         d
     };
@@ -293,23 +293,23 @@ impl EpochDispatchClient for FakeRunner {
 }
 
 fn harbor_enabled() -> bool {
-    std::env::var("GBASE_E2E_HARBOR").ok().as_deref() == Some("1")
+    std::env::var("BASE_E2E_HARBOR").ok().as_deref() == Some("1")
 }
 
 fn pack_dir() -> PathBuf {
-    std::env::var("GBASE_VERIFY_PACK").map_or_else(
+    std::env::var("BASE_VERIFY_PACK").map_or_else(
         |_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"),
         PathBuf::from,
     )
 }
 
 fn docker_base() -> String {
-    std::env::var("GBASE_DOCKER_BASE").unwrap_or_else(|_| "http://127.0.0.1:2375".into())
+    std::env::var("BASE_DOCKER_BASE").unwrap_or_else(|_| "http://127.0.0.1:2375".into())
 }
 
 fn env_image() -> String {
-    std::env::var("GBASE_VERIFY_IMAGE").unwrap_or_else(|_| {
-        "gbase-verify-env-more-itertools-1136@sha256:462caa0ae2f4ce87509323a33c383eb6b5c364fff4350ba33c2c2bddae62537f"
+    std::env::var("BASE_VERIFY_IMAGE").unwrap_or_else(|_| {
+        "base-verify-env-more-itertools-1136@sha256:462caa0ae2f4ce87509323a33c383eb6b5c364fff4350ba33c2c2bddae62537f"
             .into()
     })
 }
@@ -328,7 +328,7 @@ fn try_harbor_grade() -> Option<(u8, String)> {
         Err(e) => return Some((0, format!("load_pack err: {e}"))),
     };
     let solution = pack.held_out.solution_patch.clone()?;
-    let work = PathBuf::from(format!("/tmp/gbase-e2e-harbor-{}", uuid::Uuid::new_v4()));
+    let work = PathBuf::from(format!("/tmp/base-e2e-harbor-{}", uuid::Uuid::new_v4()));
     let v = HarborVerifier::new(HarborVerifierConfig {
         docker_base: docker_base(),
         environment_image: env_image(),
@@ -384,7 +384,7 @@ async fn s1_full_local_epoch_match_and_seal() {
 
     // --- 2. Intake + grade (real grade path; optional Harbor) ---
     let harbor_note = try_harbor_grade().map_or_else(
-        || "harbor_skipped (set GBASE_E2E_HARBOR=1 for live pack grade)".into(),
+        || "harbor_skipped (set BASE_E2E_HARBOR=1 for live pack grade)".into(),
         |(_, n)| n,
     );
     let grade_calls = Arc::new(AtomicU32::new(0));

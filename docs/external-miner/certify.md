@@ -16,10 +16,10 @@ Certify is the **attestation** path. It is independent of pack scoring: a Verifi
 
 | Input | Source |
 |-------|--------|
-| `--validator-url` | Operator-published validator base URL (`GBASE_VALIDATOR_URL`) |
+| `--validator-url` | Operator-published validator base URL (`BASE_VALIDATOR_URL`) |
 | `--netuid` | Subnet netuid |
 | `--epoch` | Current epoch (operator / chain) |
-| `--miner-hotkey-hex` | Your 32-byte hotkey as 64 lowercase hex chars (`GBASE_MINER_HOTKEY_HEX`) |
+| `--miner-hotkey-hex` | Your 32-byte hotkey as 64 lowercase hex chars (`BASE_MINER_HOTKEY_HEX`) |
 | Live: `--agent-url` | Public base URL of your CVM agent |
 | Offline smoke: `--fixture-mode` | Uses embedded/fixture quote material |
 
@@ -71,18 +71,18 @@ echo "hotkey_len=${#HK}"
 ## 3. Live certify
 
 ```bash
-export GBASE_VALIDATOR_URL='https://validator.example'  # operator URL
-export GBASE_NETUID=1
-export GBASE_EPOCH=123
-export GBASE_MINER_HOTKEY_HEX='<64 hex>'
-export GBASE_AGENT_URL='https://<your-cvm-host>'
+export BASE_VALIDATOR_URL='https://validator.example'  # operator URL
+export BASE_NETUID=1
+export BASE_EPOCH=123
+export BASE_MINER_HOTKEY_HEX='<64 hex>'
+export BASE_AGENT_URL='https://<your-cvm-host>'
 
 cargo run -q -p miner-bin -- certify \
-  --validator-url "$GBASE_VALIDATOR_URL" \
-  --netuid "$GBASE_NETUID" \
-  --epoch "$GBASE_EPOCH" \
-  --miner-hotkey-hex "$GBASE_MINER_HOTKEY_HEX" \
-  --agent-url "$GBASE_AGENT_URL"
+  --validator-url "$BASE_VALIDATOR_URL" \
+  --netuid "$BASE_NETUID" \
+  --epoch "$BASE_EPOCH" \
+  --miner-hotkey-hex "$BASE_MINER_HOTKEY_HEX" \
+  --agent-url "$BASE_AGENT_URL"
 ```
 
 Interpret stdout:

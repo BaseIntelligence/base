@@ -41,7 +41,7 @@ mod rollable_lockstep_tests {
         assert!(ROLLABLE_SERVICES.contains(&"agent-challenge"));
         assert!(is_rollable_service("agent-challenge"));
         assert!(is_rollable_service("validator"));
-        assert!(!is_rollable_service("gbase-agent"));
+        assert!(!is_rollable_service("base-agent"));
         assert!(!is_rollable_service("socket-proxy"));
     }
 }

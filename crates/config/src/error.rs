@@ -26,7 +26,7 @@ pub enum Issue {
     },
     /// `epoch_length` must be non-zero.
     EpochLengthZero,
-    /// `GBASE_DOMAIN` / `domain` required when `role = gateway` (D25).
+    /// `BASE_DOMAIN` / `domain` required when `role = gateway` (D25).
     DomainRequiredForGateway,
     /// Server roles need a database URL source.
     DatabaseRequired {
@@ -59,7 +59,7 @@ impl fmt::Display for Issue {
             }
             Self::EpochLengthZero => write!(f, "epoch_length must be > 0"),
             Self::DomainRequiredForGateway => {
-                write!(f, "domain (GBASE_DOMAIN) is required when role is gateway")
+                write!(f, "domain (BASE_DOMAIN) is required when role is gateway")
             }
             Self::DatabaseRequired { role } => {
                 write!(

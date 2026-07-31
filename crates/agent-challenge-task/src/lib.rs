@@ -4,13 +4,13 @@
 //!
 //! ```text
 //! task_id = sha256(
-//!   b"gbase-agent-task-id-v1" ‖
+//!   b"base-agent-task-id-v1" ‖
 //!   scale(netuid: u16) ‖ scale(epoch: u64) ‖ miner_hotkey: [u8; 32]
 //! )
 //! task_blob = sha256(
-//!   b"gbase-agent-task-blob-v1" ‖ task_id ‖ scale(scoring_version: u16)
+//!   b"base-agent-task-blob-v1" ‖ task_id ‖ scale(scoring_version: u16)
 //! )
-//! answer_digest = sha256(b"gbase-agent-answer-v1" ‖ task_blob)
+//! answer_digest = sha256(b"base-agent-answer-v1" ‖ task_blob)
 //! ```
 //!
 //! # v2 field order (normative, pack-bound, `scoring_version = 2`)
@@ -19,7 +19,7 @@
 //!
 //! ```text
 //! task_id_v2 = sha256(
-//!   b"gbase-agent-task-id-v2" ‖
+//!   b"base-agent-task-id-v2" ‖
 //!   scale(netuid: u16) ‖
 //!   scale(epoch: u64) ‖
 //!   miner_hotkey: [u8; 32] ‖
@@ -27,13 +27,13 @@
 //!   scale(scoring_version: u16) // typically 2
 //! )
 //! task_blob_v2 = sha256(
-//!   b"gbase-agent-task-blob-v2" ‖
+//!   b"base-agent-task-blob-v2" ‖
 //!   task_id_v2 ‖
 //!   scale(scoring_version: u16) ‖
 //!   scale(pack_id: Vec<u8>)
 //! )
 //! answer_digest_v2 = sha256(
-//!   b"gbase-agent-answer-v2" ‖
+//!   b"base-agent-answer-v2" ‖
 //!   model_patch                 // raw returned model.patch bytes
 //! )
 //! ```
@@ -58,18 +58,18 @@ pub const FIXTURE_PACK_ID: &[u8] = b"pack-fixture-001";
 /// Placeholder model.patch bytes for unit fixtures (matches v2 golden vectors).
 pub const FIXTURE_MODEL_PATCH: &[u8] = b"diff --git a/x b/x\n+hello\n";
 
-const TASK_ID_DOMAIN: &[u8] = b"gbase-agent-task-id-v1";
-const TASK_BLOB_DOMAIN: &[u8] = b"gbase-agent-task-blob-v1";
-const ANSWER_DOMAIN: &[u8] = b"gbase-agent-answer-v1";
+const TASK_ID_DOMAIN: &[u8] = b"base-agent-task-id-v1";
+const TASK_BLOB_DOMAIN: &[u8] = b"base-agent-task-blob-v1";
+const ANSWER_DOMAIN: &[u8] = b"base-agent-answer-v1";
 
 /// Domain tag for [`task_id_v2`] (distinct from v1 / `WORK_RECEIPT` / ATTEST).
-pub const TASK_ID_DOMAIN_V2: &[u8] = b"gbase-agent-task-id-v2";
+pub const TASK_ID_DOMAIN_V2: &[u8] = b"base-agent-task-id-v2";
 /// Domain tag for [`task_blob_v2`].
-pub const TASK_BLOB_DOMAIN_V2: &[u8] = b"gbase-agent-task-blob-v2";
+pub const TASK_BLOB_DOMAIN_V2: &[u8] = b"base-agent-task-blob-v2";
 /// Domain tag for [`answer_digest_v2`] over `model.patch`.
-pub const ANSWER_DOMAIN_V2: &[u8] = b"gbase-agent-answer-v2";
+pub const ANSWER_DOMAIN_V2: &[u8] = b"base-agent-answer-v2";
 
-/// `task_id = sha256(b"gbase-agent-task-id-v1" ‖ scale(netuid) ‖ scale(epoch) ‖ miner_hotkey)`.
+/// `task_id = sha256(b"base-agent-task-id-v1" ‖ scale(netuid) ‖ scale(epoch) ‖ miner_hotkey)`.
 #[must_use]
 pub fn task_id(netuid: u16, epoch: u64, miner_hotkey: &[u8; KEY_LEN]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -80,7 +80,7 @@ pub fn task_id(netuid: u16, epoch: u64, miner_hotkey: &[u8; KEY_LEN]) -> [u8; 32
     finalize32(h)
 }
 
-/// `task_blob = sha256(b"gbase-agent-task-blob-v1" ‖ task_id ‖ scale(scoring_version))`.
+/// `task_blob = sha256(b"base-agent-task-blob-v1" ‖ task_id ‖ scale(scoring_version))`.
 #[must_use]
 pub fn task_blob(task_id: &[u8; 32], scoring_version: u16) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -90,7 +90,7 @@ pub fn task_blob(task_id: &[u8; 32], scoring_version: u16) -> [u8; 32] {
     finalize32(h)
 }
 
-/// `answer_digest = sha256(b"gbase-agent-answer-v1" ‖ task_blob)`.
+/// `answer_digest = sha256(b"base-agent-answer-v1" ‖ task_blob)`.
 #[must_use]
 pub fn answer_digest(task_blob: &[u8; 32]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -174,18 +174,18 @@ mod tests {
         let tid = task_id(1, 7, &miner);
         assert_eq!(
             hex::encode(tid),
-            "4a590b2abf87da6bccd97d8fbe5d2e774bdbda3ad421119688010537be2b31ec"
+            "9f5f3ffadce8c71f842ecbc6de0239845d35afe840356ba706d6237a1a0386d0"
         );
         // Historical v1 goldens lock scoring_version = 1 (not live SCORING_VERSION).
         let blob = task_blob(&tid, 1);
         assert_eq!(
             hex::encode(blob),
-            "8c5430ceb95b9e422026baf2eaddb4c9c723923c6353164fe9b0905a47f9a29f"
+            "b23838ac21f3fdb5c6e61a0931a5ab11cf9b10e951cad62871e2c003bc232d63"
         );
         let ans = answer_digest(&blob);
         assert_eq!(
             hex::encode(ans),
-            "83180b08e05630496531a158d174ce69ba857d854d8692087947706c159a487c"
+            "ee363230d12929bab861c191ba3cf509d03d17610869d33d84717dbb2f3ecc20"
         );
     }
 
@@ -195,13 +195,13 @@ mod tests {
         let tid = task_id(1, 7, &miner);
         assert_eq!(
             hex::encode(tid),
-            "d954306fba3943a86bb69aedfd08f2bca850eb2adabaaf5efe2ad2728dbf3412"
+            "d8beb9282234be2d1ca9cf641639e855365fa615d8750eba9e3a264c3020ee67"
         );
         let blob = task_blob(&tid, 1);
         let ans = answer_digest(&blob);
         assert_eq!(
             hex::encode(ans),
-            "05157d001bb1ec9ef5acc7140d0221141d2fbc14a830ce32893793f30470c0aa"
+            "655651e6f24ac2d71b79e3c50f204564d501862f7c55ebed4131906b310bfc92"
         );
     }
 
@@ -225,10 +225,10 @@ mod tests {
         assert_ne!(TASK_ID_DOMAIN_V2, TASK_ID_DOMAIN);
         assert_ne!(TASK_BLOB_DOMAIN_V2, TASK_BLOB_DOMAIN);
         assert_ne!(ANSWER_DOMAIN_V2, ANSWER_DOMAIN);
-        assert_ne!(TASK_ID_DOMAIN_V2, b"gbase-agent-work-receipt-v1");
-        assert_ne!(TASK_ID_DOMAIN_V2, b"gbase-attest-v1");
-        assert_ne!(ANSWER_DOMAIN_V2, b"gbase-agent-work-receipt-v1");
-        assert_ne!(ANSWER_DOMAIN_V2, b"gbase-attest-v1");
+        assert_ne!(TASK_ID_DOMAIN_V2, b"base-agent-work-receipt-v1");
+        assert_ne!(TASK_ID_DOMAIN_V2, b"base-attest-v1");
+        assert_ne!(ANSWER_DOMAIN_V2, b"base-agent-work-receipt-v1");
+        assert_ne!(ANSWER_DOMAIN_V2, b"base-attest-v1");
     }
 
     #[test]

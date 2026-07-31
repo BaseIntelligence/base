@@ -9,8 +9,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_DIR="${GBASE_SECRETS_DIR:-$ROOT/deploy/env}"
-AGE_IDENTITY="${AGE_IDENTITY:-${GBASE_AGE_IDENTITY:-}}"
+ENV_DIR="${BASE_SECRETS_DIR:-$ROOT/deploy/env}"
+AGE_IDENTITY="${AGE_IDENTITY:-${BASE_AGE_IDENTITY:-}}"
 
 mkdir -p "$ENV_DIR"
 umask 077

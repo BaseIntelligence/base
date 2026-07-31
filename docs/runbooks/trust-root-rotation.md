@@ -20,11 +20,11 @@ Threat bounds: owner remains the trust root (R12 / D19).
 
 ```bash
 # From repo root. Secrets outside git.
-mkdir -p ~/.gbase-secrets
-chmod 700 ~/.gbase-secrets
+mkdir -p ~/.base-secrets
+chmod 700 ~/.base-secrets
 
 # Optional: ensure age identity exists (do not commit)
-# age-keygen -o ~/.gbase-secrets/age-identity.txt
+# age-keygen -o ~/.base-secrets/age-identity.txt
 
 # Edit the next version body (example paths; keep v(n) files until window ends)
 cp config/challenges.toml config/challenges.vNEXT.toml
@@ -33,8 +33,8 @@ cp config/challenges.toml config/challenges.vNEXT.toml
 
 # Sign with owner mini-secret (age-encrypted path shown)
 cargo run -q -p trustroot-bin -- sign \
-  --key ~/.gbase-secrets/owner-throwaway.age \
-  --age-identity ~/.gbase-secrets/age-identity.txt \
+  --key ~/.base-secrets/owner-throwaway.age \
+  --age-identity ~/.base-secrets/age-identity.txt \
   --input config/challenges.vNEXT.toml \
   --kind challenges \
   --out config/challenges.vNEXT.toml.sig

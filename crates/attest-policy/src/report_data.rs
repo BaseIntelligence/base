@@ -1,7 +1,7 @@
 //! D10 liveness binding: `report_data = SHA512(scale concat …)`.
 //!
 //! ```text
-//! preimage = scale(b"gbase-attest-v1")
+//! preimage = scale(b"base-attest-v1")
 //!          ‖ scale(netuid: u16)
 //!          ‖ scale(epoch: u64)
 //!          ‖ scale(miner_pubkey: [u8; 32])
@@ -32,7 +32,7 @@ pub struct ReportDataBinding {
     pub validator_hotkey: [u8; KEY_LEN],
 }
 
-/// Domain tag bytes for the D10 preimage (`gbase-attest-v1`).
+/// Domain tag bytes for the D10 preimage (`base-attest-v1`).
 #[must_use]
 pub const fn attest_domain() -> DomainTag {
     domain::ATTEST

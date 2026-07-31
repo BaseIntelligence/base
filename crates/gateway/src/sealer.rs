@@ -290,11 +290,11 @@ pub struct SealResponse {
 }
 
 /// Env: 64-hex mini-secret for bundle signing.
-pub const GATEWAY_SK_ENV: &str = "GBASE_GATEWAY_SK";
+pub const GATEWAY_SK_ENV: &str = "BASE_GATEWAY_SK";
 /// Env: path to 32-byte raw or 64-hex gateway mini-secret file.
-pub const GATEWAY_SK_FILE_ENV: &str = "GBASE_GATEWAY_SK_FILE";
+pub const GATEWAY_SK_FILE_ENV: &str = "BASE_GATEWAY_SK_FILE";
 
-/// Load gateway mini-secret from `GBASE_GATEWAY_SK` or `GBASE_GATEWAY_SK_FILE`.
+/// Load gateway mini-secret from `BASE_GATEWAY_SK` or `BASE_GATEWAY_SK_FILE`.
 ///
 /// # Errors
 ///

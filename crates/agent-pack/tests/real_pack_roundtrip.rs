@@ -1,7 +1,7 @@
 //! Integration: real Harbor pack `realpr-click-3442` round-trip + strip.
 //!
 //! Skips when the fixture pack is not present locally (CI default).
-//! Set `GBASE_REAL_PACK_DIR` or place the pack on one of the candidate paths.
+//! Set `BASE_REAL_PACK_DIR` or place the pack on one of the candidate paths.
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +9,7 @@ use agent_pack::{load_pack, PackError, STRIPPED_FIELD_NAMES};
 
 fn real_pack_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(p) = std::env::var("GBASE_REAL_PACK_DIR") {
+    if let Ok(p) = std::env::var("BASE_REAL_PACK_DIR") {
         out.push(PathBuf::from(p));
     }
     out.extend(
@@ -34,7 +34,7 @@ fn resolve_real_pack() -> Option<PathBuf> {
 fn realpr_click_3442_round_trip_strip_and_stable_digest() {
     let Some(root) = resolve_real_pack() else {
         eprintln!(
-            "skip: realpr-click-3442 not found; tried {:?}; set GBASE_REAL_PACK_DIR to run",
+            "skip: realpr-click-3442 not found; tried {:?}; set BASE_REAL_PACK_DIR to run",
             real_pack_candidates()
         );
         return;
@@ -109,7 +109,7 @@ fn realpr_click_3442_round_trip_strip_and_stable_digest() {
 fn real_pack_path_is_directory() {
     let Some(root) = resolve_real_pack() else {
         eprintln!(
-            "skip: realpr-click-3442 not found; tried {:?}; set GBASE_REAL_PACK_DIR to run",
+            "skip: realpr-click-3442 not found; tried {:?}; set BASE_REAL_PACK_DIR to run",
             real_pack_candidates()
         );
         return;

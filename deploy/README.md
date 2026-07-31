@@ -1,4 +1,4 @@
-# gbase deploy (compose)
+# base deploy (compose)
 
 ## Services
 
@@ -23,14 +23,14 @@ Owner host: `docker compose --profile master up -d` starts **5**.
 ## Quick start (local)
 
 ```bash
-# 1) Release binaries (or set GBASE_DOCKER_BUILD_FROM=source for full in-Docker rustc 1.96)
+# 1) Release binaries (or set BASE_DOCKER_BUILD_FROM=source for full in-Docker rustc 1.96)
 cargo build --release -p validator-bin -p gateway-bin -p updater-bin
 
 # 2) Env files at 0600
 ./deploy/scripts/materialize-env.sh
 
 # 3) Build service images + start default stack
-export GBASE_DOCKER_BUILD_FROM=prebuilt
+export BASE_DOCKER_BUILD_FROM=prebuilt
 docker compose build
 docker compose up -d
 docker compose ps
@@ -45,14 +45,14 @@ docker compose --profile master up -d
 # On operator machine
 age -r "$RECIPIENT" -o deploy/env/postgres.env.age deploy/env/postgres.env
 # On droplet (identity delivered out of band)
-export AGE_IDENTITY=/etc/gbase/age-identity.txt
+export AGE_IDENTITY=/etc/base/age-identity.txt
 ./deploy/scripts/materialize-env.sh
 ```
 
 ## Infrastructure (DigitalOcean)
 
 Terraform lives in [`terraform/`](./terraform/): two `s-8vcpu-16gb-amd` droplets
-(`gbase-staging`, `gbase-prod`) in `nyc1` (nyc3 has no 8vCPU/16GB slug on this account) plus a firewall (SSH from operator IP
+(`base-staging`, `base-prod`) in `nyc1` (nyc3 has no 8vCPU/16GB slug on this account) plus a firewall (SSH from operator IP
 only; 80/443 open). Cloud-init installs Docker + Compose only.
 
 Age delivery helpers:
@@ -62,10 +62,10 @@ Age delivery helpers:
 ./deploy/scripts/age-encrypt-env.sh \
   --recipient "$(age-keygen -y /path/to/age-identity.txt)" \
   --src-dir deploy/env \
-  --out-dir /tmp/gbase-env-age
+  --out-dir /tmp/base-env-age
 
 # After OOB identity install on the droplet:
-./deploy/scripts/age-push-env.sh --host root@DROPLET_IP --age-dir /tmp/gbase-env-age --materialize
+./deploy/scripts/age-push-env.sh --host root@DROPLET_IP --age-dir /tmp/base-env-age --materialize
 ```
 
 See [`terraform/README.md`](./terraform/README.md) for apply steps and R11 notes.
@@ -92,10 +92,10 @@ Digest-only rollout with backup-before-pin and fail-closed prod.
 ./deploy/scripts/record-image-digests.sh
 
 # 2) Promote known-good digest to staging (backs up Postgres first)
-export PGHOST=... PGUSER=... PGPASSWORD=... PGDATABASE=gbase
-export GBASE_BACKUP_ENDPOINT=https://nyc3.digitaloceanspaces.com   # or local MinIO
+export PGHOST=... PGUSER=... PGPASSWORD=... PGDATABASE=base
+export BASE_BACKUP_ENDPOINT=https://nyc3.digitaloceanspaces.com   # or local MinIO
 export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
-export GBASE_BACKUP_BUCKET=gbase-backups
+export BASE_BACKUP_BUCKET=base-backups
 ./deploy/scripts/promote.sh \
   --env staging --service validator \
   --image ghcr.io/org/validator@sha256:<64-hex>
@@ -109,11 +109,11 @@ export GBASE_BACKUP_BUCKET=gbase-backups
 ./deploy/scripts/promote.sh --env staging --service validator --rollback
 
 # 5) Restore drill (scratch DB row-count match)
-./deploy/scripts/pg-restore-drill.sh --s3-uri s3://gbase-backups/pg/staging/<stamp>.sql.gz
+./deploy/scripts/pg-restore-drill.sh --s3-uri s3://base-backups/pg/staging/<stamp>.sql.gz
 ```
 
 Pin files: `deploy/pins/staging.json`, `deploy/pins/prod.json`.  
 Staging promote **never** writes the prod pin. Prod promote requires staging ladder + `--confirm-prod`.  
-Updater consumes `GBASE_UPDATER_DESIRED_IMAGE` (also written to `deploy/pins/<env>.desired.env`).
+Updater consumes `BASE_UPDATER_DESIRED_IMAGE` (also written to `deploy/pins/<env>.desired.env`).
 
 Verify locally: `./deploy/scripts/verify-task-43.sh`

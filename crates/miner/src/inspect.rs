@@ -42,10 +42,10 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 || trimmed.starts_with("depends_on:")
                 || (trimmed.ends_with(':')
                     && !trimmed.contains(' ')
-                    && !trimmed.starts_with("GBASE_"))
+                    && !trimmed.starts_with("BASE_"))
             {
                 // next service key
-                if !trimmed.starts_with("GBASE_") {
+                if !trimmed.starts_with("BASE_") {
                     in_env = false;
                     continue;
                 }
@@ -63,7 +63,7 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 continue;
             }
             let key_upper = key.to_ascii_uppercase();
-            let measured_public_key_name = key == "GBASE_RECEIPT_PUBLIC_KEY";
+            let measured_public_key_name = key == "BASE_RECEIPT_PUBLIC_KEY";
             if key_upper.contains("SECRET")
                 || key_upper.contains("PRIVATE")
                 || key_upper.ends_with("_SK")
@@ -77,7 +77,7 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
             }
             // Reject raw 64-byte hex that is NOT a known measured public field
             let measured_public_hex =
-                matches!(key, "GBASE_LAUNCH_TOKEN_HASH" | "GBASE_RECEIPT_PUBLIC_KEY");
+                matches!(key, "BASE_LAUNCH_TOKEN_HASH" | "BASE_RECEIPT_PUBLIC_KEY");
             if !measured_public_hex
                 && value.len() == 64
                 && value.chars().all(|c| c.is_ascii_hexdigit())

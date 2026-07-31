@@ -6,8 +6,8 @@
 //! (D19) and do not need this key or domain tag in the trust-root ceremony.
 //!
 //! # Signing
-//! `sr25519` over [`crypto::domain::WORK_RECEIPT`] (`gbase-agent-work-receipt-v1`)
-//! and `scale(WorkReceiptBodyV1)`. Distinct from D10 `gbase-attest-v1`.
+//! `sr25519` over [`crypto::domain::WORK_RECEIPT`] (`base-agent-work-receipt-v1`)
+//! and `scale(WorkReceiptBodyV1)`. Distinct from D10 `base-attest-v1`.
 
 use crypto::{domain, sign_raw, verify_raw, CryptoError, DomainTag, KEY_LEN, SIGNATURE_LEN};
 use parity_scale_codec::{Decode, Encode};

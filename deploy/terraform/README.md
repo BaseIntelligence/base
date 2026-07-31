@@ -1,12 +1,12 @@
-# gbase Terraform — droplets + firewall
+# base Terraform — droplets + firewall
 
 Provisions **exactly two** DigitalOcean droplets and **one** cloud firewall.
 
 | Resource | Spec |
 |----------|------|
-| `gbase-staging` | `s-8vcpu-16gb-amd`, `nyc1`, Ubuntu 24.04 |
-| `gbase-prod` | same |
-| `gbase-hosts` firewall | TCP 22 from operator `/32` only; TCP 80/443 + ICMP world; outbound open |
+| `base-staging` | `s-8vcpu-16gb-amd`, `nyc1`, Ubuntu 24.04 |
+| `base-prod` | same |
+| `base-hosts` firewall | TCP 22 from operator `/32` only; TCP 80/443 + ICMP world; outbound open |
 
 
 > **Region note:** Plan text asked for `nyc3`. On this DO account the
@@ -49,28 +49,28 @@ age private keys** in user-data.
 Secrets never travel through Terraform or cloud-init.
 
 1. **Generate / hold identity off-box** (operator laptop or HSM path):
-   - Private: `/root/.gbase-secrets/age-identity.txt` mode `600` (example path)
+   - Private: `/root/.base-secrets/age-identity.txt` mode `600` (example path)
    - Public: `age-keygen -y age-identity.txt` → recipient string
 2. **Encrypt env files on the operator machine:**
    ```bash
    ./deploy/scripts/age-encrypt-env.sh \
      --recipient age1... \
      --src-dir deploy/env \
-     --out-dir /tmp/gbase-env-age
+     --out-dir /tmp/base-env-age
    ```
 3. **Deliver identity out of band once** (USB, 1Password, `scp` over the
    already-firewalled SSH from the operator IP — not via cloud-init):
    ```bash
-   ssh root@<droplet-ip> 'mkdir -p /etc/gbase && chmod 700 /etc/gbase'
-   scp /path/to/age-identity.txt root@<droplet-ip>:/etc/gbase/age-identity.txt
-   ssh root@<droplet-ip> 'chmod 600 /etc/gbase/age-identity.txt'
+   ssh root@<droplet-ip> 'mkdir -p /etc/base && chmod 700 /etc/base'
+   scp /path/to/age-identity.txt root@<droplet-ip>:/etc/base/age-identity.txt
+   ssh root@<droplet-ip> 'chmod 600 /etc/base/age-identity.txt'
    ```
 4. **Push ciphertext and materialize on the box:**
    ```bash
-   ./deploy/scripts/age-push-env.sh --host root@<droplet-ip> --age-dir /tmp/gbase-env-age
+   ./deploy/scripts/age-push-env.sh --host root@<droplet-ip> --age-dir /tmp/base-env-age
    # on droplet:
-   export AGE_IDENTITY=/etc/gbase/age-identity.txt
-   /opt/gbase/deploy/scripts/materialize-env.sh
+   export AGE_IDENTITY=/etc/base/age-identity.txt
+   /opt/base/deploy/scripts/materialize-env.sh
    ```
 
 Ciphertext (`*.env.age`) may live in a private ops store; plaintext `*.env`

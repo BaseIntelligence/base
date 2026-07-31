@@ -19,19 +19,19 @@ require_cmd python3
 : "${PGUSER:?PGUSER required}"
 : "${PGPASSWORD:?PGPASSWORD required}"
 : "${PGDATABASE:?PGDATABASE required}"
-: "${GBASE_BACKUP_ENDPOINT:?GBASE_BACKUP_ENDPOINT required (Spaces or MinIO URL)}"
+: "${BASE_BACKUP_ENDPOINT:?BASE_BACKUP_ENDPOINT required (Spaces or MinIO URL)}"
 : "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID required}"
 : "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY required}"
 
-ENV_SEG="${GBASE_BACKUP_ENV:-local}"
+ENV_SEG="${BASE_BACKUP_ENV:-local}"
 STAMP="$(utc_stamp)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gbase-pg-backup.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/base-pg-backup.XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
-DUMP_SQL="${WORK}/gbase-${ENV_SEG}-${STAMP}.sql"
+DUMP_SQL="${WORK}/base-${ENV_SEG}-${STAMP}.sql"
 DUMP_GZ="${DUMP_SQL}.gz"
-META="${WORK}/gbase-${ENV_SEG}-${STAMP}.meta.json"
+META="${WORK}/base-${ENV_SEG}-${STAMP}.meta.json"
 
 log "pg_dump ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
 PGPASSWORD="$PGPASSWORD" pg_dump \
@@ -108,10 +108,10 @@ KEY_BASE="s3://${BUCKET}/${PREFIX}/${ENV_SEG}/${STAMP}"
 s3_cp "$DUMP_GZ" "${KEY_BASE}.sql.gz"
 s3_cp "$META" "${KEY_BASE}.meta.json"
 
-if [[ -n "${GBASE_BACKUP_OUT:-}" ]]; then
-  mkdir -p "$(dirname "$GBASE_BACKUP_OUT")"
-  cp -f "$DUMP_GZ" "$GBASE_BACKUP_OUT"
-  cp -f "$META" "${GBASE_BACKUP_OUT%.sql.gz}.meta.json"
+if [[ -n "${BASE_BACKUP_OUT:-}" ]]; then
+  mkdir -p "$(dirname "$BASE_BACKUP_OUT")"
+  cp -f "$DUMP_GZ" "$BASE_BACKUP_OUT"
+  cp -f "$META" "${BASE_BACKUP_OUT%.sql.gz}.meta.json"
 fi
 
 cat <<EOF

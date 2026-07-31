@@ -18,23 +18,23 @@ Digest-pinned rollouts for staging → prod. Updater behaviour: crate `updater` 
 
 ## 2. Backup Postgres **before** every prod promote
 
-On the target host (paths assume `/opt/gbase` checkout; adjust if different):
+On the target host (paths assume `/opt/base` checkout; adjust if different):
 
 ```bash
 set -euo pipefail
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-BACKUP_DIR="${GBASE_BACKUP_DIR:-/var/backups/gbase}"
+BACKUP_DIR="${BASE_BACKUP_DIR:-/var/backups/base}"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
 # Requires compose stack up with service name postgres
-docker compose -f /opt/gbase/docker-compose.yml exec -T postgres \
-  pg_dump -U "${POSTGRES_USER:-gbase}" -d "${POSTGRES_DB:-gbase}" \
+docker compose -f /opt/base/docker-compose.yml exec -T postgres \
+  pg_dump -U "${POSTGRES_USER:-base}" -d "${POSTGRES_DB:-base}" \
   --no-owner --format=custom \
-  > "$BACKUP_DIR/gbase-${STAMP}.dump"
+  > "$BACKUP_DIR/base-${STAMP}.dump"
 
-ls -la "$BACKUP_DIR/gbase-${STAMP}.dump"
-echo "BACKUP_OK=$BACKUP_DIR/gbase-${STAMP}.dump"
+ls -la "$BACKUP_DIR/base-${STAMP}.dump"
+echo "BACKUP_OK=$BACKUP_DIR/base-${STAMP}.dump"
 ```
 
 Record the path in the change ticket. An unexercised backup is not a backup (D17).
@@ -46,8 +46,8 @@ Record the path in the change ticket. An unexercised backup is not a backup (D17
 ### 3.1 Materialize env (if secrets changed)
 
 ```bash
-cd /opt/gbase
-export AGE_IDENTITY=/etc/gbase/age-identity.txt
+cd /opt/base
+export AGE_IDENTITY=/etc/base/age-identity.txt
 ./deploy/scripts/materialize-env.sh
 # confirm modes
 stat -c '%a %n' deploy/env/*.env
@@ -61,7 +61,7 @@ Operator pattern (illustrative env names; match your `deploy/env/updater.env`):
 
 ```bash
 # Example: pin validator image (replace digest with the real one you built)
-export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:REPLACE_WITH_64_HEX"
+export BASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:REPLACE_WITH_64_HEX"
 
 # Restart updater to pick config, or write pin file if your deploy uses pin_store paths
 docker compose up -d updater
@@ -89,7 +89,7 @@ Updater auto-rolls back when health fails after a swap. Manual path if you must 
 
 ```bash
 # Set desired image back to the last known-good digest
-export GBASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:PREVIOUS_64_HEX"
+export BASE_UPDATER_DESIRED_IMAGE="ghcr.io/example/validator@sha256:PREVIOUS_64_HEX"
 docker compose up -d updater
 docker compose logs -f --tail=100 updater
 docker compose ps
@@ -111,12 +111,12 @@ Prod must stay on the last good digest until staging proves the fix.
 
 ```bash
 set -euo pipefail
-DUMP="${1:?usage: restore.sh /var/backups/gbase/gbase-....dump}"
+DUMP="${1:?usage: restore.sh /var/backups/base/base-....dump}"
 test -f "$DUMP"
 
 docker compose stop validator gateway updater
 docker compose exec -T postgres \
-  pg_restore -U "${POSTGRES_USER:-gbase}" -d "${POSTGRES_DB:-gbase}" \
+  pg_restore -U "${POSTGRES_USER:-base}" -d "${POSTGRES_DB:-base}" \
   --clean --if-exists --no-owner \
   < "$DUMP"
 

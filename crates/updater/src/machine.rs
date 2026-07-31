@@ -376,7 +376,7 @@ mod tests {
     fn cfg(dir: &std::path::Path, desired: &str, self_name: &str) -> UpdaterConfig {
         let mut c = UpdaterConfig::new(
             "http://proxy:2375",
-            "gbase",
+            "base",
             "validator",
             "http://validator:8080/readyz",
             dir.to_path_buf(),
@@ -401,7 +401,7 @@ mod tests {
             id: "c1".into(),
             name: "validator-1".into(),
             image: old_img.clone(),
-            compose_project: Some("gbase".into()),
+            compose_project: Some("base".into()),
             compose_service: Some("validator".into()),
         });
 
@@ -452,7 +452,7 @@ mod tests {
             id: "c1".into(),
             name: "validator-1".into(),
             image: old_img.clone(),
-            compose_project: Some("gbase".into()),
+            compose_project: Some("base".into()),
             compose_service: Some("validator".into()),
         });
         let store = PinStore::new(dir.path());
@@ -504,7 +504,7 @@ mod tests {
             id: "up1".into(),
             name: "updater".into(),
             image: format!("ghcr.io/org/updater:0@{}", d('a')),
-            compose_project: Some("gbase".into()),
+            compose_project: Some("base".into()),
             compose_service: Some("validator".into()), // misconfig still protected by name
         });
         let mut updater = Updater::new(cfg(dir.path(), &new_img, "updater"));
@@ -534,7 +534,7 @@ mod tests {
             id: "c1".into(),
             name: "v".into(),
             image: format!("x@{}", d('a')),
-            compose_project: Some("gbase".into()),
+            compose_project: Some("base".into()),
             compose_service: Some("validator".into()),
         });
         let mut updater = Updater::new(cfg(dir.path(), "ghcr.io/org/val:latest", "updater"));
@@ -553,7 +553,7 @@ mod tests {
             id: "c1".into(),
             name: "v".into(),
             image: img.clone(),
-            compose_project: Some("gbase".into()),
+            compose_project: Some("base".into()),
             compose_service: Some("validator".into()),
         });
         let mut updater = Updater::new(cfg(dir.path(), &img, "updater"));

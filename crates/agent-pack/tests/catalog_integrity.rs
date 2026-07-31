@@ -50,7 +50,7 @@ fn deepagent_pin_is_fixed_commit() {
 
 #[test]
 fn catalog_digest_domain_tag() {
-    assert_eq!(CATALOG_DIGEST_DOMAIN, b"gbase-agent-pack-catalog-v1");
+    assert_eq!(CATALOG_DIGEST_DOMAIN, b"base-agent-pack-catalog-v1");
 }
 
 #[test]

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// JSON protocol id for dispatch descriptor / result envelopes.
-pub const DISPATCH_PROTOCOL: &str = "gbase-agent-dispatch-v1";
+pub const DISPATCH_PROTOCOL: &str = "base-agent-dispatch-v1";
 
 /// Orchestrator → runner task descriptor (stripped pack; no solution/tests).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

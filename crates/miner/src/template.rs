@@ -13,15 +13,15 @@ pub const ATTEST_HELPER_PORT: u16 = 8081;
 /// Socket-proxy Docker Engine HTTP port (compose-internal only).
 pub const SOCKET_PROXY_PORT: u16 = 2375;
 /// In-CVM directory for secret file mounts (never env values).
-pub const RUN_GBASE_DIR: &str = "/run/gbase";
+pub const RUN_BASE_DIR: &str = "/run/base";
 /// Hotkey secret path inside the CVM.
-pub const HOTKEY_FILE_IN_CVM: &str = "/run/gbase/miner_hotkey";
+pub const HOTKEY_FILE_IN_CVM: &str = "/run/base/miner_hotkey";
 /// Optional raw launch-token file path (hash is what is measured).
-pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/gbase/launch_token";
+pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/base/launch_token";
 /// CVM-local work-receipt mini-secret path (never the challenge sk).
-pub const RECEIPT_SK_FILE_IN_CVM: &str = "/run/gbase/receipt_sk";
+pub const RECEIPT_SK_FILE_IN_CVM: &str = "/run/base/receipt_sk";
 /// Env name for the runner Docker Engine HTTP base (socket-proxy URL).
-pub const DOCKER_BASE_ENV: &str = "GBASE_DOCKER_BASE";
+pub const DOCKER_BASE_ENV: &str = "BASE_DOCKER_BASE";
 /// Spike-proven digest pin for the measured socket-proxy image.
 pub const DEFAULT_SOCKET_PROXY_IMAGE: &str = concat!(
     "tecnativa/docker-socket-proxy@sha256:",
@@ -50,16 +50,16 @@ pub struct ComposeTemplateInput<'a> {
 /// Contract:
 /// - services `socket-proxy` (internal), `agent` (:8080 public), `attest-helper` (127.0.0.1:8081)
 /// - only `socket-proxy` mounts `/var/run/docker.sock` (read-only) with an explicit allowlist
-/// - agent reaches Docker via `GBASE_DOCKER_BASE=http://socket-proxy:2375` (no raw sock)
+/// - agent reaches Docker via `BASE_DOCKER_BASE=http://socket-proxy:2375` (no raw sock)
 /// - digest-pinned images only (caller must not pass `:latest`)
 /// - `environment:` holds only non-secret config + launch-token **hash** + receipt **pubkey**
-/// - secrets are bind-mounted files under `/run/gbase/`
+/// - secrets are bind-mounted files under `/run/base/`
 #[must_use]
 pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
     // YAML is hand-built so key order and spacing stay stable for hashing.
     let docker_base = format!("http://{SOCKET_PROXY_SERVICE}:{SOCKET_PROXY_PORT}");
     format!(
-        r#"# gbase miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)
+        r#"# base miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)
 # Secrets: file mounts under {run_dir} only. Never put secret values in environment.
 # LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.
 # Work-receipt: private key file-mounted; public key published for challenge pin (D19).
@@ -93,11 +93,11 @@ services:
     ports:
       - "{agent_port}:{agent_port}"
     environment:
-      GBASE_NETUID: "{netuid}"
-      GBASE_MINER_HOTKEY_FILE: "{hotkey_file}"
-      GBASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
-      GBASE_RECEIPT_SK_FILE: "{receipt_sk_file}"
-      GBASE_RECEIPT_PUBLIC_KEY: "{receipt_pk}"
+      BASE_NETUID: "{netuid}"
+      BASE_MINER_HOTKEY_FILE: "{hotkey_file}"
+      BASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
+      BASE_RECEIPT_SK_FILE: "{receipt_sk_file}"
+      BASE_RECEIPT_PUBLIC_KEY: "{receipt_pk}"
       {docker_base_env}: "{docker_base}"
     volumes:
       - type: bind
@@ -118,8 +118,8 @@ services:
     ports:
       - "127.0.0.1:{attest_port}:{attest_port}"
     environment:
-      GBASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
-      GBASE_MINER_HOTKEY_FILE: "{hotkey_file}"
+      BASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
+      BASE_MINER_HOTKEY_FILE: "{hotkey_file}"
     volumes:
       - type: bind
         source: miner_hotkey
@@ -131,7 +131,7 @@ services:
         read_only: true
       - /var/run/dstack.sock:/var/run/dstack.sock
 "#,
-        run_dir = RUN_GBASE_DIR,
+        run_dir = RUN_BASE_DIR,
         proxy = SOCKET_PROXY_SERVICE,
         proxy_image = input.socket_proxy_image,
         agent = AGENT_SERVICE,

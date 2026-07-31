@@ -179,7 +179,7 @@ impl HarborVerifier {
             .unwrap_or(DEFAULT_VERIFIER_TIMEOUT_SEC)
     }
 
-    /// Remove any leftover `gbase-verify-*` containers.
+    /// Remove any leftover `base-verify-*` containers.
     ///
     /// # Errors
     /// Docker list failures.

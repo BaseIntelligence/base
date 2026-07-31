@@ -1,10 +1,10 @@
 //! `agent-runner` — miner CVM HTTP task API (`agent:8080`).
 //!
-//! Loads the CVM-local work-receipt key from `GBASE_RECEIPT_SK_FILE` (mode 0600
+//! Loads the CVM-local work-receipt key from `BASE_RECEIPT_SK_FILE` (mode 0600
 //! mount). Dispatch auth (todo 18) is on by default when a trusted challenge
 //! pubkey is configured. Concurrency is clamped to 1..=5 and enforced with a
 //! semaphore (todo 19). Pack execution uses allowlisted Docker when
-//! `GBASE_DOCKER_BASE` + `GBASE_ENVIRONMENT_IMAGE` + `GBASE_PACK_ROOT` are set;
+//! `BASE_DOCKER_BASE` + `BASE_ENVIRONMENT_IMAGE` + `BASE_PACK_ROOT` are set;
 //! otherwise the deterministic stub backend is used. Default egress posture is
 //! OPEN (todo 21).
 
@@ -33,44 +33,44 @@ use tokio::net::TcpListener;
 )]
 struct Cli {
     /// Bind address (compose publishes agent:8080).
-    #[arg(long, env = "GBASE_RUNNER_BIND", default_value = "0.0.0.0:8080")]
+    #[arg(long, env = "BASE_RUNNER_BIND", default_value = "0.0.0.0:8080")]
     bind: SocketAddr,
     /// Miner-declared max concurrency (clamped to 1..=5 at runtime).
-    #[arg(long, env = "GBASE_MAX_CONCURRENCY", default_value_t = 1)]
+    #[arg(long, env = "BASE_MAX_CONCURRENCY", default_value_t = 1)]
     max_concurrency: u32,
     /// Path to the CVM-local receipt mini-secret (mode 0600 file).
-    #[arg(long, env = "GBASE_RECEIPT_SK_FILE", default_value = DEFAULT_RECEIPT_SK_PATH)]
+    #[arg(long, env = "BASE_RECEIPT_SK_FILE", default_value = DEFAULT_RECEIPT_SK_PATH)]
     receipt_sk_file: PathBuf,
     /// When set, generate the receipt key if the file is missing (local/dev only).
-    #[arg(long, env = "GBASE_RECEIPT_SK_GENERATE", default_value_t = false)]
+    #[arg(long, env = "BASE_RECEIPT_SK_GENERATE", default_value_t = false)]
     receipt_sk_generate: bool,
     /// Disable dispatch auth (local/dev only). Default: auth on when pubkey set.
-    #[arg(long, env = "GBASE_DISPATCH_AUTH_DISABLE", default_value_t = false)]
+    #[arg(long, env = "BASE_DISPATCH_AUTH_DISABLE", default_value_t = false)]
     dispatch_auth_disable: bool,
     /// Trusted challenge public key (64 hex) for dispatch auth.
-    #[arg(long, env = "GBASE_TRUSTED_CHALLENGE_PUBKEY")]
+    #[arg(long, env = "BASE_TRUSTED_CHALLENGE_PUBKEY")]
     trusted_challenge_pubkey: Option<String>,
     /// Docker Engine HTTP base (socket-proxy). When set with image + pack root → Docker backend.
-    #[arg(long, env = "GBASE_DOCKER_BASE")]
+    #[arg(long, env = "BASE_DOCKER_BASE")]
     docker_base: Option<String>,
     /// Digest-pinned environment image for pack runs (`name@sha256:…`).
-    #[arg(long, env = "GBASE_ENVIRONMENT_IMAGE")]
+    #[arg(long, env = "BASE_ENVIRONMENT_IMAGE")]
     environment_image: Option<String>,
     /// Host directory of Harbor packs (`{root}/{pack_id}/`).
-    #[arg(long, env = "GBASE_PACK_ROOT")]
+    #[arg(long, env = "BASE_PACK_ROOT")]
     pack_root: Option<PathBuf>,
     /// Staging root for agent binds.
     #[arg(
         long,
-        env = "GBASE_AGENT_WORK_ROOT",
-        default_value = "/tmp/gbase-agent-work"
+        env = "BASE_AGENT_WORK_ROOT",
+        default_value = "/tmp/base-agent-work"
     )]
     work_root: PathBuf,
     /// Miner-supplied model API key file (mounted into agent; never logged).
-    #[arg(long, env = "GBASE_MODEL_KEY_FILE")]
+    #[arg(long, env = "BASE_MODEL_KEY_FILE")]
     model_key_file: Option<PathBuf>,
     /// Egress posture: `open` (default) or `allowlisted_proxy`.
-    #[arg(long, env = "GBASE_AGENT_EGRESS", default_value = "open")]
+    #[arg(long, env = "BASE_AGENT_EGRESS", default_value = "open")]
     egress: String,
 }
 
@@ -122,12 +122,12 @@ fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
     ) {
         (Some(base), Some(image), Some(root)) => {
             if image.is_empty() {
-                return Err("GBASE_ENVIRONMENT_IMAGE must be non-empty".into());
+                return Err("BASE_ENVIRONMENT_IMAGE must be non-empty".into());
             }
             if let Some(key) = &cli.model_key_file {
                 if !key.is_file() {
                     return Err(format!(
-                        "GBASE_MODEL_KEY_FILE not a file: {}",
+                        "BASE_MODEL_KEY_FILE not a file: {}",
                         key.display()
                     ));
                 }
@@ -146,7 +146,7 @@ fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
             hold: Duration::ZERO,
         }),
         _ => Err(
-            "Docker pack execution requires GBASE_DOCKER_BASE + GBASE_ENVIRONMENT_IMAGE + GBASE_PACK_ROOT (or omit all three for stub)"
+            "Docker pack execution requires BASE_DOCKER_BASE + BASE_ENVIRONMENT_IMAGE + BASE_PACK_ROOT (or omit all three for stub)"
                 .into(),
         ),
     }
@@ -177,7 +177,7 @@ async fn serve(cli: Cli) -> Result<(), String> {
     let auth_enabled = !cli.dispatch_auth_disable;
     if auth_enabled && trusted.is_none() {
         return Err(
-            "dispatch auth enabled but GBASE_TRUSTED_CHALLENGE_PUBKEY unset (or pass --dispatch-auth-disable)"
+            "dispatch auth enabled but BASE_TRUSTED_CHALLENGE_PUBKEY unset (or pass --dispatch-auth-disable)"
                 .into(),
         );
     }

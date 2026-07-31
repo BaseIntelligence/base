@@ -1,4 +1,4 @@
-# cargo-deny configuration for gbase.
+# cargo-deny configuration for base.
 # https://embarkstudios.github.io/cargo-deny/
 
 [graph]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical app-compose.json SHA-256 (dstack / gbase compose-hash rules).
+"""Canonical app-compose.json SHA-256 (dstack / base compose-hash rules).
 
 Mirrors crates/compose-hash: strip object keys with null values, lexicographic
 key order, compact separators, ensure_ascii=False, no trailing newline.

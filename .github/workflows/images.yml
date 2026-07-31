@@ -45,11 +45,11 @@ jobs:
           - target: agent-challenge
             image_suffix: agent-challenge
             dockerfile: deploy/Dockerfile
-          - target: gbase-agent
-            image_suffix: gbase-agent
+          - target: base-agent
+            image_suffix: base-agent
             dockerfile: deploy/Dockerfile
           - target: ""
-            image_suffix: gbase-attest-helper
+            image_suffix: base-attest-helper
             dockerfile: deploy/attest-helper/Dockerfile
     steps:
       - name: Checkout
@@ -78,7 +78,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.image_suffix == 'gbase-attest-helper' && 'deploy/attest-helper' || '.' }}
+          context: ${{ matrix.image_suffix == 'base-attest-helper' && 'deploy/attest-helper' || '.' }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           push: ${{ github.event_name != 'pull_request' }}
@@ -150,8 +150,8 @@ jobs:
               "gateway",
               "updater",
               "agent-challenge",
-              "gbase-agent",
-              "gbase-attest-helper",
+              "base-agent",
+              "base-attest-helper",
           }
           assert set(images) == expected, (set(images), expected)
           out = {

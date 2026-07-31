@@ -8,15 +8,15 @@ usage() {
   cat <<'EOF'
 Usage: age-push-env.sh --host user@ip --age-dir DIR [--remote-dir PATH] [--materialize]
 
-Copies *.env.age to the droplet under remote-dir (default /opt/gbase/deploy/env).
+Copies *.env.age to the droplet under remote-dir (default /opt/base/deploy/env).
 With --materialize, runs materialize-env.sh on the remote host using
-AGE_IDENTITY=/etc/gbase/age-identity.txt (must already exist, mode 600).
+AGE_IDENTITY=/etc/base/age-identity.txt (must already exist, mode 600).
 EOF
 }
 
 HOST=""
 AGE_DIR=""
-REMOTE_DIR="/opt/gbase/deploy/env"
+REMOTE_DIR="/opt/base/deploy/env"
 MATERIALIZE=0
 
 while [[ $# -gt 0 ]]; do
@@ -55,14 +55,14 @@ echo "copied ${#files[@]} age file(s) -> ${HOST}:${REMOTE_DIR}/"
 if [[ "$MATERIALIZE" -eq 1 ]]; then
   ssh -o BatchMode=yes "$HOST" bash -s <<'REMOTE'
 set -euo pipefail
-export AGE_IDENTITY="${AGE_IDENTITY:-/etc/gbase/age-identity.txt}"
+export AGE_IDENTITY="${AGE_IDENTITY:-/etc/base/age-identity.txt}"
 if [[ ! -f "$AGE_IDENTITY" ]]; then
   echo "missing identity on host: $AGE_IDENTITY (deliver OOB first)" >&2
   exit 1
 fi
-if [[ -x /opt/gbase/deploy/scripts/materialize-env.sh ]]; then
-  GBASE_SECRETS_DIR=/opt/gbase/deploy/env \
-    /opt/gbase/deploy/scripts/materialize-env.sh
+if [[ -x /opt/base/deploy/scripts/materialize-env.sh ]]; then
+  BASE_SECRETS_DIR=/opt/base/deploy/env \
+    /opt/base/deploy/scripts/materialize-env.sh
 elif [[ -x ./deploy/scripts/materialize-env.sh ]]; then
   ./deploy/scripts/materialize-env.sh
 else

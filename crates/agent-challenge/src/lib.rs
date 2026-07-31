@@ -1,7 +1,7 @@
 //! `agent-v1` challenge service (`docs/AGENT_CHALLENGE.md`, `scoring_version` = 2).
 //!
 //! Pure offline scoring, D24 participant coverage (`NoScore` never silence),
-//! sr25519 leaf signing under `gbase-rawweight-v1`, and gateway POST with retry.
+//! sr25519 leaf signing under `base-rawweight-v1`, and gateway POST with retry.
 //!
 //! Live task identity uses pack-bound v2 formulas (`task_id_v2`, `answer_digest_v2`).
 

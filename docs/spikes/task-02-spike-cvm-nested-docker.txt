@@ -1,7 +1,7 @@
 # SPIKE: Nested Docker inside Phala TDX CVM via measured socket-proxy
 # Date: 2026-07-30
 # Host: this workspace + Phala Cloud (echobt workspace)
-# Operator: gbase-agent-challenge-deepagent task-02
+# Operator: base-agent-challenge-deepagent task-02
 
 VERDICT: PASS
 
@@ -29,7 +29,7 @@ YES — full app-compose (including socket-proxy service + docker.sock volume) i
   quote hex contains: 01 + compose_hash (mr_config_id v1 prefix layout)
   rtmr3: 5cf68a7e48c71465f274af3e4bfdb9829ec02d1a2520815c0c45480f5fc797177ff985e3f01d2303883db72e5df96f26
 
-Structural local proof (gbase miner app-compose):
+Structural local proof (base miner app-compose):
   baseline compose-hash: e29275e80d91ccdb289c09cb36320f2e4a32882dbad458e715f8a32a2e3d4b9a
   +socket-proxy fragment: e1ce4a2c06ed5a69fe2ab3f207c67eaf06710dc4ab34925dd1dbe8c3f1eeae7e
   (canonical JSON sort_keys + compact separators — matches miner-bin offline hash)
@@ -54,7 +54,7 @@ YES.
    Only the measured compose services (socket-proxy + agent) are. Nested image integrity is an
    application-policy problem (digest allowlist inside measured agent), not automatic RTMR coverage.
 
-2. gbase frozen contract AGENT_CHALLENGE.md §9.1 still says:
+2. base frozen contract AGENT_CHALLENGE.md §9.1 still says:
    "No other long-lived services required for v1. No docker.sock. No `:latest` tags."
    This SPIKE proves Phala/dstack PLATFORM capability. Adopting socket-proxy in the normative
    miner template requires an explicit contract/measurement allowlist change — out of scope here.
@@ -66,7 +66,7 @@ YES.
 
 ## Deploy identity
 
-  name:        gbase-spike-nested-docker
+  name:        base-spike-nested-docker
   vm_uuid:     abc7f56e-7bb0-444c-947a-cd89601d35ea
   app_id:      5c6c52c5cbd86a461532c923b4b045eed18e1eb1
   dashboard:   https://cloud.phala.com/dashboard/cvms/abc7f56e-7bb0-444c-947a-cd89601d35ea
@@ -82,7 +82,7 @@ YES.
 npm install -g phala@1.1.19
 phala status -j   # Logged in as echobt / echobts-projects
 # compose at /tmp/opencode/phala-spike-nested-docker/docker-compose.yml
-phala deploy --name gbase-spike-nested-docker \
+phala deploy --name base-spike-nested-docker \
   --compose /tmp/opencode/phala-spike-nested-docker/docker-compose.yml \
   --instance-type tdx.small --no-listed --public-logs --wait -j
 # => vm_uuid abc7f56e-7bb0-444c-947a-cd89601d35ea success=true
@@ -106,14 +106,14 @@ phala cvms list -j   # total=0
 
 ## Artifact paths
 
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/docker-compose.yml
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-spike-deploy.out
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-cvm-get.json
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-ps.json
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-agent-logs.txt
-  /root/.omo/evidence/gbase-agent-challenge-deepagent/task-02-artifacts/phala-attestation-full.json
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/docker-compose.yml
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/phala-spike-deploy.out
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/phala-cvm-get.json
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/phala-ps.json
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/phala-agent-logs.txt
+  /root/.omo/evidence/base-agent-challenge-deepagent/task-02-artifacts/phala-attestation-full.json
 
-## gbase in-repo context (not a STOP)
+## base in-repo context (not a STOP)
 
   crates/miner/src/template.rs — agent + attest-helper only; mounts dstack.sock not docker.sock
   docs/AGENT_CHALLENGE.md §9.1 L470 — "No docker.sock" for normative v1 miner

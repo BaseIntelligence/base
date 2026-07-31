@@ -1,7 +1,7 @@
 variable "project_name" {
   type        = string
   description = "Prefix for resource names and cost tags."
-  default     = "gbase"
+  default     = "base"
 }
 
 variable "region" {
@@ -46,7 +46,7 @@ variable "environments" {
   }))
   description = "Map of environment key -> droplet display name."
   default = {
-    staging = { name = "gbase-staging" }
-    prod    = { name = "gbase-prod" }
+    staging = { name = "base-staging" }
+    prod    = { name = "base-prod" }
   }
 }

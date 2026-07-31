@@ -111,7 +111,7 @@ pub struct EpochBundleBodyV1 {
 pub struct EpochBundleV1 {
     /// Bundle body.
     pub body: EpochBundleBodyV1,
-    /// sr25519 over tag `gbase-bundle-v1` ‖ `scale(body)`.
+    /// sr25519 over tag `base-bundle-v1` ‖ `scale(body)`.
     pub gateway_sig: [u8; SIGNATURE_LEN],
 }
 

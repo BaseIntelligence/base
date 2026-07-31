@@ -60,11 +60,11 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
         "attest-helper must be loopback-only on {ATTEST_HELPER_PORT}"
     );
     assert!(
-        yaml.contains("ghcr.io/baseintelligence/base/gbase-agent@sha256:"),
+        yaml.contains("ghcr.io/baseintelligence/base/base-agent@sha256:"),
         "agent image repository contract"
     );
     assert!(
-        yaml.contains("ghcr.io/baseintelligence/base/gbase-attest-helper@sha256:"),
+        yaml.contains("ghcr.io/baseintelligence/base/base-attest-helper@sha256:"),
         "attest-helper image repository contract"
     );
     assert!(
@@ -82,9 +82,9 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
     let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
     let names: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"GBASE_NETUID"));
-    assert!(names.contains(&"GBASE_MINER_HOTKEY_FILE"));
-    assert!(names.contains(&"GBASE_LAUNCH_TOKEN_HASH"));
+    assert!(names.contains(&"BASE_NETUID"));
+    assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
+    assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
     assert!(names.contains(&DOCKER_BASE_ENV));
 }
 
@@ -125,7 +125,7 @@ fn measured_socket_proxy_allowlist_and_agent_docker_base() {
     let expected_base = format!("http://{SOCKET_PROXY_SERVICE}:{SOCKET_PROXY_PORT}");
     assert!(
         yaml.contains(&format!("{DOCKER_BASE_ENV}: \"{expected_base}\"")),
-        "agent must point GBASE_DOCKER_BASE at proxy:\n{yaml}"
+        "agent must point BASE_DOCKER_BASE at proxy:\n{yaml}"
     );
     // No host ports on socket-proxy (not published publicly)
     let proxy_block = yaml
@@ -183,7 +183,7 @@ fn raw_docker_sock_on_agent_is_rejected() {
   agent:
     image: alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     environment:
-      GBASE_DOCKER_BASE: "http://socket-proxy:2375"
+      BASE_DOCKER_BASE: "http://socket-proxy:2375"
 "#;
     reject_raw_docker_sock_on_agent(good).expect("proxy-only sock ok");
 }
@@ -216,8 +216,8 @@ fn no_secret_appears_in_rendered_environment_block() {
         "environment block leaked a secret:\n{yaml}"
     );
     // File mounts present
-    assert!(yaml.contains("target: /run/gbase/miner_hotkey"));
-    assert!(yaml.contains("target: /run/gbase/launch_token"));
+    assert!(yaml.contains("target: /run/base/miner_hotkey"));
+    assert!(yaml.contains("target: /run/base/launch_token"));
     // No PEM / mnemonic markers anywhere in compose YAML
     let lower = yaml.to_ascii_lowercase();
     assert!(!lower.contains("begin private"));
@@ -258,7 +258,7 @@ fn write_out_compose_roundtrip_hash() {
 #[test]
 fn rejects_latest_tag_on_agent_image() {
     let params = DeployParams {
-        agent_image: "ghcr.io/baseintelligence/base/gbase-agent:latest".into(),
+        agent_image: "ghcr.io/baseintelligence/base/base-agent:latest".into(),
         ..DeployParams::default()
     };
     let err = miner::render_app_compose(&params).expect_err("latest");
@@ -298,12 +298,12 @@ fn receipt_public_key_published_and_stable_across_renders() {
     );
     let yaml = docker_compose_from_app_compose_json(&a.app_compose_json).expect("yaml");
     assert!(
-        yaml.contains(&format!("GBASE_RECEIPT_PUBLIC_KEY: \"{pk}\"")),
+        yaml.contains(&format!("BASE_RECEIPT_PUBLIC_KEY: \"{pk}\"")),
         "pubkey published in compose env:
 {yaml}"
     );
-    assert!(yaml.contains("target: /run/gbase/receipt_sk"));
-    assert!(yaml.contains("GBASE_RECEIPT_SK_FILE:"));
+    assert!(yaml.contains("target: /run/base/receipt_sk"));
+    assert!(yaml.contains("BASE_RECEIPT_SK_FILE:"));
     // Public key printed surface for challenge pin
     assert!(a.app_compose_json.contains(&pk) || yaml.contains(&pk));
 }
@@ -336,9 +336,9 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
     );
     // Path only — not raw key bytes
     for line in yaml.lines() {
-        if line.contains("GBASE_RECEIPT_SK_FILE") {
+        if line.contains("BASE_RECEIPT_SK_FILE") {
             assert!(
-                line.contains("/run/gbase/receipt_sk"),
+                line.contains("/run/base/receipt_sk"),
                 "sk env must be path only: {line}"
             );
             assert!(
@@ -355,8 +355,8 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
         .iter()
         .filter_map(|v| v.as_str())
         .collect();
-    assert!(names.contains(&"GBASE_RECEIPT_SK_FILE"));
-    assert!(names.contains(&"GBASE_RECEIPT_PUBLIC_KEY"));
+    assert!(names.contains(&"BASE_RECEIPT_SK_FILE"));
+    assert!(names.contains(&"BASE_RECEIPT_PUBLIC_KEY"));
 }
 
 #[test]

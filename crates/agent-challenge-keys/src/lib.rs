@@ -1,4 +1,4 @@
-//! Challenge signing key load (`GBASE_CHALLENGE_SK_FILE`, mode 0600 file).
+//! Challenge signing key load (`BASE_CHALLENGE_SK_FILE`, mode 0600 file).
 
 use std::fs;
 use std::path::Path;

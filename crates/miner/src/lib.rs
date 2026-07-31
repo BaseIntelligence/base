@@ -6,7 +6,7 @@
 //! out to `phala deploy`.
 //!
 //! **D11 / secrets:** only env *names* and the `LAUNCH_TOKEN` *hash* appear in
-//! the measured compose. Secret material is file-mounted under `/run/gbase/`,
+//! the measured compose. Secret material is file-mounted under `/run/base/`,
 //! never as compose `environment:` values. The miner funds their own Phala
 //! account (R3).
 //!
@@ -35,5 +35,5 @@ pub use inspect::{
 pub use template::{
     docker_compose_yaml, ComposeTemplateInput, AGENT_PORT, AGENT_SERVICE, ATTEST_HELPER_PORT,
     ATTEST_HELPER_SERVICE, DOCKER_BASE_ENV, HOTKEY_FILE_IN_CVM, LAUNCH_TOKEN_FILE_IN_CVM,
-    RECEIPT_SK_FILE_IN_CVM, RUN_GBASE_DIR, SOCKET_PROXY_PORT, SOCKET_PROXY_SERVICE,
+    RECEIPT_SK_FILE_IN_CVM, RUN_BASE_DIR, SOCKET_PROXY_PORT, SOCKET_PROXY_SERVICE,
 };

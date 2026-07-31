@@ -30,11 +30,11 @@ from `AGENT_CHALLENGE.md`.
 | scoring_version | `challenge_scoring_version` |
 | scoring_version_2 | `u16 = 2` |
 | SCORE_MAX | `1_000_000` |
-| task_id_v2_domain | `gbase-agent-task-id-v2` |
-| task_blob_v2_domain | `gbase-agent-task-blob-v2` |
-| answer_v2_domain | `gbase-agent-answer-v2` |
-| pack_select_domain | `gbase-agent-pack-select-v1` |
-| work_receipt_domain | `gbase-agent-work-receipt-v1` |
+| task_id_v2_domain | `base-agent-task-id-v2` |
+| task_blob_v2_domain | `base-agent-task-blob-v2` |
+| answer_v2_domain | `base-agent-answer-v2` |
+| pack_select_domain | `base-agent-pack-select-v1` |
+| work_receipt_domain | `base-agent-work-receipt-v1` |
 | model_patch | `model.patch` |
 | ChallengeInternal | `ChallengeInternal` |
 | HarborVerifier | `HarborVerifier` |
@@ -45,12 +45,12 @@ from `AGENT_CHALLENGE.md`.
 | D24_silence | `Silence is a bug` |
 | compose_agent_port | `8080` |
 | compose_challenge_port | `8090` |
-| image_agent | `ghcr.io/baseintelligence/base/gbase-agent` |
+| image_agent | `ghcr.io/baseintelligence/base/base-agent` |
 | no_latest | `:latest` |
 | socket_proxy | `socket-proxy` |
 | BUNDLE_SPEC_link | `BUNDLE_SPEC.md` |
-| D10_report_data | `gbase-attest-v1` |
-| rawweight_domain | `gbase-rawweight-v1` |
+| D10_report_data | `base-attest-v1` |
+| rawweight_domain | `base-rawweight-v1` |
 | PARTICIPATION_FLOOR | `PARTICIPATION_FLOOR` |
 | F7_parked | `NoScore(AttestationNotVerified)` |
 | no_score_in_cvm | `NO challenge signing key` |

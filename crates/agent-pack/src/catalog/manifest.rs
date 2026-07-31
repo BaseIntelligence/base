@@ -7,7 +7,7 @@ use crate::digest::digest_hex;
 use crate::error::CatalogError;
 
 /// Domain-separation tag for catalog digest (hash family, not a signing tag).
-pub const CATALOG_DIGEST_DOMAIN: &[u8] = b"gbase-agent-pack-catalog-v1";
+pub const CATALOG_DIGEST_DOMAIN: &[u8] = b"base-agent-pack-catalog-v1";
 
 /// Pinned deepagent git revision used as the sole floating-ref replacement.
 ///

@@ -8,10 +8,10 @@
 //! Task 30: verified-bundle mirror store, `GET /v1/bundle/root/{root}`, peer
 //! fetch by root when the gateway is unreachable (content-addressed).
 //! Task 31: peer root cross-check — `GET /v1/consensus/root/{epoch}` signed
-//! under `gbase-root-v1`, `min_peer_sample` gate (D26), fail closed on
+//! under `base-root-v1`, `min_peer_sample` gate (D26), fail closed on
 //! disagreement / insufficient sample.
 //! Task 32: three-outcome policy (class A / quarantine / class B), `DissentV1`,
-//! `GET /v1/dissent/{epoch}`, `gbase_challenge_quarantined_total`.
+//! `GET /v1/dissent/{epoch}`, `base_challenge_quarantined_total`.
 //! Task 33: CRV4 timelocked submission via `submit` (`SubmissionIntent` → chain).
 
 #![forbid(unsafe_code)]
