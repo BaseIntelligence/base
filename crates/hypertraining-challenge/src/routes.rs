@@ -35,11 +35,7 @@ async fn post_submission(
     let Json(req) = match body {
         Ok(j) => j,
         Err(rej) => {
-            return json_err(
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                &rej.body_text(),
-            );
+            return json_err(StatusCode::BAD_REQUEST, "invalid_json", &rej.body_text());
         }
     };
     match svc.accept_response(req) {
@@ -61,7 +57,6 @@ fn map_submission_err(err: &SubmissionError) -> Response {
     json_err(status, code, &err.to_string())
 }
 
-
 fn json_err(status: StatusCode, code: &str, message: &str) -> Response {
     let body: Value = json!({
         "error": message,
@@ -69,7 +64,6 @@ fn json_err(status: StatusCode, code: &str, message: &str) -> Response {
     });
     (status, Json(body)).into_response()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -89,9 +83,8 @@ mod tests {
         let v: Value = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes).unwrap_or(Value::String(
-                String::from_utf8_lossy(&bytes).into_owned(),
-            ))
+            serde_json::from_slice(&bytes)
+                .unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
         };
         (status, v)
     }

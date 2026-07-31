@@ -77,7 +77,7 @@ impl LiumClient {
         if api_key.trim().is_empty() {
             return Err(LiumError::Api("empty LIUM_API_KEY".into()));
         }
-let mut headers = HeaderMap::new();
+        let mut headers = HeaderMap::new();
         let mut hv = HeaderValue::from_str(&api_key)
             .map_err(|e| LiumError::Api(format!("invalid api key header: {e}")))?;
         hv.set_sensitive(true);
@@ -228,9 +228,7 @@ let mut headers = HeaderMap::new();
         name: Option<&str>,
     ) -> Result<Value, LiumError> {
         let normalized = public_key.trim();
-        let v = self
-            .request_json(reqwest::Method::GET, "/ssh-keys")
-            .await?;
+        let v = self.request_json(reqwest::Method::GET, "/ssh-keys").await?;
         let keys = v
             .as_array()
             .cloned()
@@ -325,9 +323,7 @@ let mut headers = HeaderMap::new();
 
     /// Account balance (USD) when available.
     pub async fn balance(&self) -> Result<f64, LiumError> {
-        let v = self
-            .request_json(reqwest::Method::GET, "/users/me")
-            .await?;
+        let v = self.request_json(reqwest::Method::GET, "/users/me").await?;
         v.get("balance")
             .and_then(|x| x.as_f64())
             .or_else(|| {
@@ -520,7 +516,6 @@ PY
     }
 }
 
-
 fn attested_metrics(
     architecture_py: &str,
     training_py: &str,
@@ -664,10 +659,7 @@ fn extract_pod_id(v: &Value) -> Option<String> {
 
 #[async_trait]
 impl EvalJobBackend for LiumClient {
-    async fn list_offers(
-        &self,
-        max_price_per_hour: Option<f64>,
-    ) -> Result<Vec<Offer>, LiumError> {
+    async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError> {
         let v = self
             .request_json(reqwest::Method::GET, "/executors")
             .await?;
@@ -855,7 +847,10 @@ mod tests {
             template_name: None,
         };
         let err = c.provision(&spec).await.unwrap_err();
-        assert!(matches!(err, LiumError::Cost(CostGuardrailError::LifetimeMissing)));
+        assert!(matches!(
+            err,
+            LiumError::Cost(CostGuardrailError::LifetimeMissing)
+        ));
     }
 
     #[tokio::test]

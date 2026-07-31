@@ -104,7 +104,8 @@ pub fn evaluate_with_llm<A: LlmAdvisory>(
     let fp_hex = binary_fingerprint_hex(candidate.compiled);
 
     // Dedupe before measure path — same fingerprint within N segments.
-    let dedupe_out = dedupe.check_and_record(candidate.miner_id, &fp_hex, candidate.segment_index)?;
+    let dedupe_out =
+        dedupe.check_and_record(candidate.miner_id, &fp_hex, candidate.segment_index)?;
     if let DedupeOutcome::Rejected {
         last_segment,
         window_n,
@@ -130,11 +131,7 @@ pub fn evaluate_with_llm<A: LlmAdvisory>(
     let mut advisory = advisory_only(llm, &norm_diff);
     // If levels disagree strongly, attach explanation (still non-binding).
     if (source_similarity - binary_similarity).abs() > 0.4 {
-        let expl = llm.explain_level_disagreement(
-            source_similarity,
-            binary_similarity,
-            &norm_diff,
-        );
+        let expl = llm.explain_level_disagreement(source_similarity, binary_similarity, &norm_diff);
         if advisory.explanation.is_empty() {
             advisory = expl;
         }

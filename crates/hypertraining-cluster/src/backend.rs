@@ -14,11 +14,7 @@ pub trait ClusterBackend {
     /// # Errors
     /// [`ClusterError::TopologyMismatch`] when any axis differs.
     /// [`ClusterError::NotConfigured`] on Real until B300 is enabled.
-    fn check_topology_mirror(
-        &self,
-        master: Topology,
-        slot: Topology,
-    ) -> Result<(), ClusterError>;
+    fn check_topology_mirror(&self, master: Topology, slot: Topology) -> Result<(), ClusterError>;
 
     /// Allocate an exclusive tournament créneau bound to `pkey_id`.
     ///

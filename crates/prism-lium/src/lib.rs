@@ -28,7 +28,6 @@
 #![allow(clippy::duration_suboptimal_units)]
 #![allow(clippy::manual_clamp)]
 
-
 mod client;
 mod error;
 mod receipt;
@@ -49,10 +48,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait EvalJobBackend: Send + Sync {
     /// List rentable offers (filtered by max price when set).
-    async fn list_offers(
-        &self,
-        max_price_per_hour: Option<f64>,
-    ) -> Result<Vec<Offer>, LiumError>;
+    async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError>;
 
     /// Provision under cost guardrails; fail-closed cleanup on error.
     async fn provision(&self, spec: &InstanceSpec) -> Result<Instance, LiumError>;

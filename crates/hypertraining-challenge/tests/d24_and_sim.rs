@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use chain::Metagraph;
+use crypto::KEY_LEN;
 use hypertraining_challenge::{
     emit_signed_leaf_set, public_key_from_secret, run_sim_pipeline, search_faster_compiled,
     verify_leaf_sig, AttestationStatus, EpochCtx, Hotkey, HypertrainingChallenge,
@@ -11,8 +13,6 @@ use hypertraining_challenge::{
 };
 use hypertraining_cluster::{SegmentSeeds, SimBackend, Topology};
 use hypertraining_eval::fixtures::fixture_equal_quality_pairs;
-use chain::Metagraph;
-use crypto::KEY_LEN;
 use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 
 const CHAMP_SRC: &str = "def fused_gemm(a, b):\n    return a @ b\n";

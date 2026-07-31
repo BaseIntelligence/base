@@ -278,12 +278,10 @@ impl PromotionMachine {
     /// CONFIRMED → CHAMPION; append public lineage tip.
     pub fn promote(&mut self, id: ChallengerId) -> Result<PromoState, PromoError> {
         let (hash, _) = {
-            let ch = self
-                .challenger(id)
-                .ok_or(PromoError::InvalidTransition {
-                    from: PromoState::Confirmed,
-                    action: "promote",
-                })?;
+            let ch = self.challenger(id).ok_or(PromoError::InvalidTransition {
+                from: PromoState::Confirmed,
+                action: "promote",
+            })?;
             if ch.state != PromoState::Confirmed {
                 return Err(PromoError::InvalidTransition {
                     from: ch.state,
@@ -293,10 +291,12 @@ impl PromotionMachine {
             (ch.checkpoint_hash, ch.id)
         };
         self.lineage.append(hash, Some(id));
-        let ch = self.challenger_mut(id).ok_or(PromoError::InvalidTransition {
-            from: PromoState::Confirmed,
-            action: "promote",
-        })?;
+        let ch = self
+            .challenger_mut(id)
+            .ok_or(PromoError::InvalidTransition {
+                from: PromoState::Confirmed,
+                action: "promote",
+            })?;
         ch.state = PromoState::Champion;
         Ok(ch.state)
     }
@@ -354,7 +354,10 @@ mod tests {
         let mut m = PromotionMachine::new();
         m.bootstrap_champion(ck(1)).expect("bootstrap");
         let id = m.admit(ck(2));
-        assert_eq!(m.advance_screen(id, screen_pass()).unwrap(), PromoState::Screened);
+        assert_eq!(
+            m.advance_screen(id, screen_pass()).unwrap(),
+            PromoState::Screened
+        );
         assert_eq!(
             m.advance_duel(id, duel_pass(0.01)).unwrap(),
             PromoState::Duelled
@@ -416,10 +419,7 @@ mod tests {
         let restored = m.rollback().unwrap();
         assert_eq!(restored, ck(1));
         assert_eq!(m.champion_hash(), Some(ck(1)));
-        assert_eq!(
-            m.challenger(id).unwrap().state,
-            PromoState::RolledBack
-        );
+        assert_eq!(m.challenger(id).unwrap().state, PromoState::RolledBack);
     }
 
     #[test]
@@ -430,10 +430,7 @@ mod tests {
         let err = m.advance_duel(id, duel_pass(0.01)).unwrap_err();
         assert!(matches!(
             err,
-            PromoError::InvalidTransition {
-                action: "duel",
-                ..
-            }
+            PromoError::InvalidTransition { action: "duel", .. }
         ));
     }
 

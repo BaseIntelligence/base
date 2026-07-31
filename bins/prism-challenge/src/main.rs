@@ -144,7 +144,9 @@ fn load_ssh_public_key() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn build_backend(force_sim: bool) -> Result<(Arc<dyn EvalJobBackend>, PrismConfig, &'static str), String> {
+fn build_backend(
+    force_sim: bool,
+) -> Result<(Arc<dyn EvalJobBackend>, PrismConfig, &'static str), String> {
     if force_sim || load_lium_api_key().is_none() {
         let cfg = PrismConfig::sim();
         let backend: Arc<dyn EvalJobBackend> = Arc::new(SimLiumBackend::new());
@@ -194,7 +196,15 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let worker_sk = sk;
     let epoch = cli.epoch;
     tokio::spawn(async move {
-        eval_worker_loop(worker_state, worker_backend, worker_cfg, worker_sk, epoch, sem).await;
+        eval_worker_loop(
+            worker_state,
+            worker_backend,
+            worker_cfg,
+            worker_sk,
+            epoch,
+            sem,
+        )
+        .await;
     });
 
     let listener = TcpListener::bind(cli.bind)

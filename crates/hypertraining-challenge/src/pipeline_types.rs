@@ -87,4 +87,3 @@ pub enum PipelineError {
     #[error("invalid input: {0}")]
     Invalid(String),
 }
-

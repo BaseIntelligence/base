@@ -41,7 +41,7 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-          arguments: --all-features
+          # cargo-deny ≥0.17 dropped bare --all-features; graph features live in deny.toml
 
       - name: xtask loc-cap
         run: cargo run -p xtask -- loc-cap

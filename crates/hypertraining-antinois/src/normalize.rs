@@ -69,10 +69,10 @@ fn collapse_ws(s: &str) -> String {
 }
 
 const KEYWORDS: &[&str] = &[
-    "def", "class", "return", "if", "else", "elif", "for", "while", "import", "from", "as",
-    "with", "try", "except", "finally", "raise", "yield", "lambda", "pass", "break", "continue",
-    "and", "or", "not", "in", "is", "None", "True", "False", "global", "nonlocal", "assert",
-    "async", "await", "del",
+    "def", "class", "return", "if", "else", "elif", "for", "while", "import", "from", "as", "with",
+    "try", "except", "finally", "raise", "yield", "lambda", "pass", "break", "continue", "and",
+    "or", "not", "in", "is", "None", "True", "False", "global", "nonlocal", "assert", "async",
+    "await", "del",
 ];
 
 fn is_keyword(tok: &str) -> bool {
@@ -85,25 +85,23 @@ fn alpha_rename(src: &str) -> String {
     let mut next = 0_u32;
     let mut out = String::with_capacity(src.len());
     let mut token = String::new();
-    let flush = |tok: &mut String,
-                 map: &mut BTreeMap<String, String>,
-                 next: &mut u32,
-                 out: &mut String| {
-        if tok.is_empty() {
-            return;
-        }
-        if tok.chars().all(|c| c.is_ascii_digit()) || is_keyword(tok) {
-            out.push_str(tok);
-        } else if let Some(name) = map.get(tok.as_str()) {
-            out.push_str(name);
-        } else {
-            let name = format!("v{next}");
-            *next = next.saturating_add(1);
-            map.insert(tok.clone(), name.clone());
-            out.push_str(&name);
-        }
-        tok.clear();
-    };
+    let flush =
+        |tok: &mut String, map: &mut BTreeMap<String, String>, next: &mut u32, out: &mut String| {
+            if tok.is_empty() {
+                return;
+            }
+            if tok.chars().all(|c| c.is_ascii_digit()) || is_keyword(tok) {
+                out.push_str(tok);
+            } else if let Some(name) = map.get(tok.as_str()) {
+                out.push_str(name);
+            } else {
+                let name = format!("v{next}");
+                *next = next.saturating_add(1);
+                map.insert(tok.clone(), name.clone());
+                out.push_str(&name);
+            }
+            tok.clear();
+        };
 
     for ch in src.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {

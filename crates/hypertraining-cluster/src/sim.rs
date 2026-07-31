@@ -47,11 +47,7 @@ impl SimBackend {
 }
 
 impl ClusterBackend for SimBackend {
-    fn check_topology_mirror(
-        &self,
-        master: Topology,
-        slot: Topology,
-    ) -> Result<(), ClusterError> {
+    fn check_topology_mirror(&self, master: Topology, slot: Topology) -> Result<(), ClusterError> {
         if master == slot {
             Ok(())
         } else {
@@ -89,9 +85,7 @@ impl ClusterBackend for SimBackend {
 
         let wallclock_ms = sim_wallclock_ms(cfg);
         let checkpoint_hash = fake_checkpoint_hash(cfg);
-        let steps = cfg
-            .budget_tokens
-            .div_ceil(SIM_TOKENS_PER_STEP.max(1));
+        let steps = cfg.budget_tokens.div_ceil(SIM_TOKENS_PER_STEP.max(1));
         let physics = sim_physics_counters(cfg, steps);
 
         Ok(SegmentResult {

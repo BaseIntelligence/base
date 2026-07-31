@@ -119,7 +119,9 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
     }
 
     // Emission must stay zero until ceremony — require explicit zero posture language.
-    if !body.contains("emission_share_bps = 0") && !body.contains("emission_share_bps` for hypertraining is **0**") {
+    if !body.contains("emission_share_bps = 0")
+        && !body.contains("emission_share_bps` for hypertraining is **0**")
+    {
         failures.push(
             "content pin emission_posture: need explicit hypertraining emission 0 bps".into(),
         );

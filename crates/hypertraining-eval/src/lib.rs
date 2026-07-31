@@ -193,11 +193,10 @@ mod tests {
         )
         .expect("eval");
         assert!(!v.physics_ok);
-        assert!(
-            v.reasons
-                .iter()
-                .any(|r| matches!(r, RejectReason::DramBytesImplausible { .. }))
-        );
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| matches!(r, RejectReason::DramBytesImplausible { .. })));
     }
 
     #[test]
@@ -215,11 +214,10 @@ mod tests {
         )
         .expect("eval");
         assert!(!v.physics_ok);
-        assert!(
-            v.reasons
-                .iter()
-                .any(|r| matches!(r, RejectReason::MmaFamilyMismatch { .. }))
-        );
+        assert!(v
+            .reasons
+            .iter()
+            .any(|r| matches!(r, RejectReason::MmaFamilyMismatch { .. })));
     }
 
     #[test]

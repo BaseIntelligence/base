@@ -10,10 +10,8 @@ use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 
 use crate::config::HypertrainingConfig;
 use crate::expected_set::{expected_set_from_pinned_metagraph, Hotkey};
-use crate::score::{
-    missing_call_noscore, score_from_pipeline, AttestationStatus, PipelineOutcome,
-};
 use crate::leaf_emit::emit_signed_leaf_set;
+use crate::score::{missing_call_noscore, score_from_pipeline, AttestationStatus, PipelineOutcome};
 use crate::submit::{submit_signed_leaf_set, GatewayClient, SubmitError, SubmitOutcome};
 use hypertraining_challenge_task::{CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORING_VERSION};
 
@@ -222,7 +220,9 @@ impl HypertrainingChallenge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::leaf_emit::{emit_signed_leaf_set, public_key_from_secret, verify_leaf_sig, LeafEmitError};
+    use crate::leaf_emit::{
+        emit_signed_leaf_set, public_key_from_secret, verify_leaf_sig, LeafEmitError,
+    };
     use bundle::NoScoreReasonCode;
     use trustroot::BPS_DENOM;
 

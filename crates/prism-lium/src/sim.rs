@@ -45,10 +45,7 @@ impl SimLiumBackend {
 
 #[async_trait]
 impl EvalJobBackend for SimLiumBackend {
-    async fn list_offers(
-        &self,
-        max_price_per_hour: Option<f64>,
-    ) -> Result<Vec<Offer>, LiumError> {
+    async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError> {
         let mut offers = vec![
             Offer {
                 id: "sim-blackwell".into(),
@@ -178,6 +175,9 @@ mod tests {
             template_name: None,
         };
         let e = b.provision(&spec).await.unwrap_err();
-        assert!(matches!(e, LiumError::Cost(CostGuardrailError::LifetimeBelowFloor)));
+        assert!(matches!(
+            e,
+            LiumError::Cost(CostGuardrailError::LifetimeBelowFloor)
+        ));
     }
 }

@@ -1,7 +1,7 @@
 //! L2 — fixture "compiled" blob compare (brief §12.3 level 2).
 
-use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 use crate::normalize::normalize_source;
 

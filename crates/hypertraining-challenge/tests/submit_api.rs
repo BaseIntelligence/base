@@ -23,8 +23,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 fn sealed_fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../hypertraining-sealed/tests/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hypertraining-sealed/tests/fixtures")
 }
 
 fn load_tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -115,10 +114,7 @@ async fn s1_valid_submission_accepted() {
     assert_eq!(v["status"], "accepted");
     assert_eq!(v["challenge_id"], "hypertraining");
     assert!(
-        v["submission_id"]
-            .as_str()
-            .unwrap()
-            .starts_with("ht-sub-"),
+        v["submission_id"].as_str().unwrap().starts_with("ht-sub-"),
         "{v}"
     );
 }

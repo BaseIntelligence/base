@@ -54,10 +54,16 @@ fn fixture_digest_stable_across_two_runs() {
 #[test]
 fn fixture_digest_independent_of_source_insert_order() {
     let builder = FixtureBuilder::new();
-    let s1 = AdmittedSource::new([("a.py".into(), b"1".to_vec()), ("b.py".into(), b"2".to_vec())])
-        .expect("s1");
-    let s2 = AdmittedSource::new([("b.py".into(), b"2".to_vec()), ("a.py".into(), b"1".to_vec())])
-        .expect("s2");
+    let s1 = AdmittedSource::new([
+        ("a.py".into(), b"1".to_vec()),
+        ("b.py".into(), b"2".to_vec()),
+    ])
+    .expect("s1");
+    let s2 = AdmittedSource::new([
+        ("b.py".into(), b"2".to_vec()),
+        ("a.py".into(), b"1".to_vec()),
+    ])
+    .expect("s2");
     let lock = sample_lock();
     let d1 = builder
         .build(&request(s1, lock.clone().into()))

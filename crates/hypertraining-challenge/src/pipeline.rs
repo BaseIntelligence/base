@@ -1,5 +1,8 @@
 //! Sim tournament pipeline: build → kernel → antinois → cluster → eval → pay.
 
+use crate::pipeline_types::{PipelineError, SimPipelineInput, SimPipelineResult};
+use crate::score::PipelineOutcome;
+use crate::sim_search::code_fingerprint;
 use hypertraining_antinois::{
     evaluate, AntinoisReport, CandidateArtifacts, ChampionArtifacts, FingerprintDedupe,
     DEFAULT_DEDUPE_SEGMENTS,
@@ -15,15 +18,10 @@ use hypertraining_eval::{
     evaluate_candidate, AnalyticModel, EpsilonParams, EvalVerdict, PhysicsTelemetry,
 };
 use hypertraining_kernel_gate::{
-    fixtures::{
-        fixture_attestation_ok, fixture_baseline, fixture_good_kernel, fixture_reference,
-    },
+    fixtures::{fixture_attestation_ok, fixture_baseline, fixture_good_kernel, fixture_reference},
     gate_kernel, validate_attestation, AttestationPolicy, KAPPA,
 };
 use hypertraining_pay::{score_from_pay_inputs, PayInputs};
-use crate::pipeline_types::{PipelineError, SimPipelineInput, SimPipelineResult};
-use crate::score::PipelineOutcome;
-use crate::sim_search::code_fingerprint;
 
 /// Run build→kernel→antinois→sim→eval→pay for one candidate (sim backend).
 ///
@@ -47,7 +45,8 @@ pub fn run_sim_pipeline(
     }
 
     let (cand_segment, t_champ_ms) = run_segments(input, cluster)?;
-    let physics = PhysicsTelemetry::from_segment(&cand_segment.telemetry, cand_segment.wallclock_ms);
+    let physics =
+        PhysicsTelemetry::from_segment(&cand_segment.telemetry, cand_segment.wallclock_ms);
     let model = AnalyticModel::from_telemetry_baseline(&physics, 3_000);
     let eval = evaluate_candidate(
         &input.champ_loss,

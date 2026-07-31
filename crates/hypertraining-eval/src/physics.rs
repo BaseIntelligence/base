@@ -32,10 +32,7 @@ pub struct PhysicsTelemetry {
 impl PhysicsTelemetry {
     /// Lift cluster segment telemetry + wallclock into eval physics input.
     #[must_use]
-    pub fn from_segment(
-        tel: &hypertraining_cluster::SegmentTelemetry,
-        wallclock_ms: u64,
-    ) -> Self {
+    pub fn from_segment(tel: &hypertraining_cluster::SegmentTelemetry, wallclock_ms: u64) -> Self {
         Self {
             dram_bytes: tel.dram_bytes,
             tensor_ops: tel.tensor_ops,
@@ -65,7 +62,10 @@ impl AnalyticModel {
     /// Build a model that treats `tel` as the analytic baseline (exact match OK)
     /// with a given max speedup vs `tel.wallclock_ms` as reference.
     #[must_use]
-    pub fn from_telemetry_baseline(tel: &PhysicsTelemetry, max_plausible_speedup_milli: u64) -> Self {
+    pub fn from_telemetry_baseline(
+        tel: &PhysicsTelemetry,
+        max_plausible_speedup_milli: u64,
+    ) -> Self {
         Self {
             expected_dram_bytes: tel.dram_bytes,
             expected_tensor_ops: tel.tensor_ops,
@@ -140,10 +140,7 @@ pub fn check_physics(
     }
 
     let cand_ms = tel.wallclock_ms.max(1);
-    let speedup_milli = model
-        .reference_wallclock_ms
-        .saturating_mul(1000)
-        / cand_ms;
+    let speedup_milli = model.reference_wallclock_ms.saturating_mul(1000) / cand_ms;
     if speedup_milli > model.max_plausible_speedup_milli {
         reasons.push(RejectReason::RooflineImplausible {
             speedup_milli,
@@ -155,10 +152,7 @@ pub fn check_physics(
 
     if tel.peak_dram_bandwidth_bytes_per_s > 0 && tel.wallclock_ms > 0 {
         let elapsed_s_milli = tel.wallclock_ms;
-        let observed_bps = tel
-            .dram_bytes
-            .saturating_mul(1000)
-            / elapsed_s_milli.max(1);
+        let observed_bps = tel.dram_bytes.saturating_mul(1000) / elapsed_s_milli.max(1);
         let cap = tel.peak_dram_bandwidth_bytes_per_s.saturating_mul(2);
         if observed_bps > cap {
             reasons.push(RejectReason::RooflineImplausible {

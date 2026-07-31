@@ -2,7 +2,7 @@
 //! Todo 15: register hypertraining challenge backend when trust root has the row.
 //!
 //! S1 trust-root load includes `hypertraining`
-//! S2 POST /v1/admin/backends → 201 with compose base_url
+//! S2 POST /v1/admin/backends → 201 with compose `base_url`
 //! S3 agent-v1 registration still works (multi-challenge, not agent-v1-only)
 
 use std::net::SocketAddr;
@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gateway::{
-    build_app_with, ChallengesBody, MemoryRawWeightStore, RawWeightStore, Registry,
-    RegistryConfig, TlsConfig,
+    build_app_with, ChallengesBody, MemoryRawWeightStore, RawWeightStore, Registry, RegistryConfig,
+    TlsConfig,
 };
 use telemetry::init_metrics;
 use tokio::net::TcpListener;
@@ -32,9 +32,10 @@ fn load_repo_challenges() -> ChallengesBody {
     );
     let (ch, _ms) = load_config_dir(&root, 0, 3).expect("committed config must verify");
     let primary = ch.primary().expect("active challenges root");
-    primary.body.get(HYPERTRAINING_ID.as_bytes()).expect(
-        "trust root must include hypertraining row before gateway backend registration",
-    );
+    primary
+        .body
+        .get(HYPERTRAINING_ID.as_bytes())
+        .expect("trust root must include hypertraining row before gateway backend registration");
     primary
         .body
         .get(AGENT_V1_ID.as_bytes())

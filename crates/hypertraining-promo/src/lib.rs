@@ -24,9 +24,7 @@ mod state;
 pub use bh::{benjamini_hochberg, benjamini_hochberg_default, DEFAULT_ALPHA};
 pub use error::PromoError;
 pub use lineage::{hash_hex, hash_lineage_entry, CheckpointLineage, LineageEntry};
-pub use machine::{
-    Challenger, DuelEvidence, HoldoutEvidence, PromotionMachine, ScreenEvidence,
-};
+pub use machine::{Challenger, DuelEvidence, HoldoutEvidence, PromotionMachine, ScreenEvidence};
 pub use state::{
     ChallengerId, CheckpointHash, PromoState, RejectReason, ALPHA, CALIBRATION_K, PROMOTION_K,
     SCREEN_K,

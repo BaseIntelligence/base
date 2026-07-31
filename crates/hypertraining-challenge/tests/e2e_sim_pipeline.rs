@@ -15,6 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chain::Metagraph;
+use crypto::KEY_LEN;
 use hypertraining_antinois::Sanction;
 use hypertraining_challenge::{
     default_dedupe, emit_signed_leaf_set, public_key_from_secret, run_sim_pipeline,
@@ -33,8 +35,6 @@ use hypertraining_sealed::{
     admit, sealed_symbol_ast_hash, sha256_hex, AdmitError, AdmitInput, DatasetPin, SealedSurfaceV1,
     SegmentPin, DEFAULT_SEALED_SYMBOL_KEYS,
 };
-use chain::Metagraph;
-use crypto::KEY_LEN;
 use serde_json::{json, Value};
 use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 use wiremock::matchers::{method, path};
@@ -341,7 +341,9 @@ async fn e2e_happy_sim_pipeline_to_gateway() {
         default: AttestationStatus::Verified,
         ..Default::default()
     };
-    let scores = ch.score_epoch(&ctx, &outcomes, &attest).expect("score_epoch");
+    let scores = ch
+        .score_epoch(&ctx, &outcomes, &attest)
+        .expect("score_epoch");
     assert_eq!(scores.len(), 2);
     assert!(matches!(
         &scores[&miner_fast],
@@ -381,9 +383,7 @@ async fn e2e_happy_sim_pipeline_to_gateway() {
         .await
         .expect("submit");
     assert_eq!(submit_out.len(), 2);
-    assert!(submit_out
-        .iter()
-        .all(|o| *o == SubmitOutcome::Accepted));
+    assert!(submit_out.iter().all(|o| *o == SubmitOutcome::Accepted));
 
     // --- artifacts ---
     let leaves_json: Vec<Value> = leaves.values().map(leaf_json).collect();
@@ -516,10 +516,7 @@ async fn e2e_noise_farm_identical_binary_rejected() {
         ..Default::default()
     };
     let scores = ch.score_epoch(&ctx, &outcomes, &attest).expect("scores");
-    assert!(matches!(
-        scores[&miner],
-        ScoreOrAbsence::Score { value: 0 }
-    ));
+    assert!(matches!(scores[&miner], ScoreOrAbsence::Score { value: 0 }));
     let expected: BTreeSet<_> = scores.keys().copied().collect();
     let leaves = emit_signed_leaf_set(&sk, EPOCH, &expected, &scores).expect("emit");
     verify_leaf_sig(leaves.get(&miner).unwrap(), &pk).unwrap();
@@ -537,7 +534,9 @@ async fn e2e_noise_farm_identical_binary_rejected() {
         backoff: Duration::from_millis(5),
     })
     .unwrap();
-    let out = submit_signed_leaf_set(&client, &leaves).await.expect("submit");
+    let out = submit_signed_leaf_set(&client, &leaves)
+        .await
+        .expect("submit");
     assert_eq!(out, vec![SubmitOutcome::Accepted]);
 
     write_json(

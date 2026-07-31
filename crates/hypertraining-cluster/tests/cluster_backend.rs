@@ -62,11 +62,17 @@ fn sim_wallclock_changes_with_fingerprint() {
 #[test]
 fn sim_noise_param_affects_wallclock_surface() {
     let mut backend = SimBackend::new();
-    let quiet = backend.run_segment(&cfg(0x55, 0)).expect("quiet").wallclock_ms;
+    let quiet = backend
+        .run_segment(&cfg(0x55, 0))
+        .expect("quiet")
+        .wallclock_ms;
     backend.release_slot(0x1234);
     let n1 = backend.run_segment(&cfg(0x55, 1)).expect("n1").wallclock_ms;
     backend.release_slot(0x1234);
-    let n2 = backend.run_segment(&cfg(0x55, 50_000)).expect("n2").wallclock_ms;
+    let n2 = backend
+        .run_segment(&cfg(0x55, 50_000))
+        .expect("n2")
+        .wallclock_ms;
     assert!(
         n1 != quiet || n2 != quiet || n1 != n2,
         "noise_ms must be able to affect wallclock (got quiet={quiet} n1={n1} n2={n2})"

@@ -88,6 +88,9 @@ pub fn compute_epsilon_micro(
     let l = mean_champ_loss.abs();
     let rel = (l.saturating_mul(i64::from(params.loss_rel_budget_bps))) / 10_000;
     let den = i64::from(params.sigma_coeff_den.max(1));
-    let half_sigma = (sigma_d_micro.abs().saturating_mul(i64::from(params.sigma_coeff_num))) / den;
+    let half_sigma = (sigma_d_micro
+        .abs()
+        .saturating_mul(i64::from(params.sigma_coeff_num)))
+        / den;
     rel.min(half_sigma).max(0)
 }

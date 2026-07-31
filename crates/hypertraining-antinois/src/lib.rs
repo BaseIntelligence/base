@@ -38,10 +38,10 @@ mod sanctions;
 
 pub use dedupe::{DedupeOutcome, FingerprintDedupe, DEFAULT_DEDUPE_SEGMENTS};
 pub use error::AntinoisError;
-pub use gate::{evaluate, evaluate_with_llm, AntinoisReport, CandidateArtifacts, ChampionArtifacts};
-pub use k_table::{
-    k_for_binary_similarity, KBySim, BINARY_SIM_REJECT, K_BASE, K_HIGH, K_MID,
+pub use gate::{
+    evaluate, evaluate_with_llm, AntinoisReport, CandidateArtifacts, ChampionArtifacts,
 };
+pub use k_table::{k_for_binary_similarity, KBySim, BINARY_SIM_REJECT, K_BASE, K_HIGH, K_MID};
 pub use l1::l1_source_similarity;
 pub use l2::{
     binary_fingerprint, binary_fingerprint_hex, l2_binary_similarity, normalize_compiled_blob,
@@ -68,7 +68,8 @@ def fused_gemm(a, b):
     return a @ b
 ";
 
-    const CHAMP_BIN: &[u8] = b".version 7.0\n.entry gemm {\nadd.u32 %r1, %r2, %r3;\nmul.f32 %f1, %f2, %f3;\n}\n";
+    const CHAMP_BIN: &[u8] =
+        b".version 7.0\n.entry gemm {\nadd.u32 %r1, %r2, %r3;\nmul.f32 %f1, %f2, %f3;\n}\n";
 
     const NOVEL_SRC: &str = r"
 def pipeline_overlap(x, y, z):
@@ -203,10 +204,7 @@ class TotallyDifferent:
         let r2 = evaluate(&cand2, &champ, &mut dedupe).expect("second");
         assert!(matches!(r2.sanction, Sanction::DedupeReject { .. }));
         assert!(!r2.allows_measure());
-        assert_eq!(
-            r1.candidate_fingerprint_hex,
-            r2.candidate_fingerprint_hex
-        );
+        assert_eq!(r1.candidate_fingerprint_hex, r2.candidate_fingerprint_hex);
     }
 
     /// S5: LLM Noop never blocks; advisory empty.

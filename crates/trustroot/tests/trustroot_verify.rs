@@ -314,7 +314,8 @@ fn s8_bps_sum_validated() {
 #[test]
 fn s8b_zero_share_row_allowed_when_sum_is_denom() {
     let body = ChallengesBody {
-        challenges: vec![ChallengeEntry {
+        challenges: vec![
+            ChallengeEntry {
                 id: b"agent-v1".to_vec(),
                 public_key: [1u8; 32],
                 emission_share_bps: BPS_DENOM,
@@ -345,20 +346,35 @@ fn s9_repo_config_loads_when_present() {
     }
     let (ch, ms) = load_config_dir(&root, 0, 3).expect("committed config must verify");
     let primary = ch.primary().unwrap();
-    assert_eq!(primary.body.challenges.len(), 2);
+    assert_eq!(primary.body.challenges.len(), 3);
     let agent = primary.body.get(b"agent-v1").expect("agent-v1 row");
     assert_eq!(agent.emission_share_bps, BPS_DENOM);
     assert_eq!(
         encode_hex(&agent.public_key),
         "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
     );
-    let ht = primary.body.get(b"hypertraining").expect("hypertraining row");
+    let ht = primary
+        .body
+        .get(b"hypertraining")
+        .expect("hypertraining row");
     assert_eq!(ht.emission_share_bps, 0);
     assert_ne!(ht.public_key, agent.public_key);
+    let prism = primary.body.get(b"prism").expect("prism row");
+    assert_eq!(prism.emission_share_bps, 0);
+    assert_eq!(
+        encode_hex(&prism.public_key),
+        "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
+    );
+    assert_ne!(prism.public_key, agent.public_key);
+    assert_ne!(prism.public_key, ht.public_key);
     let shares = primary.body.emission_shares();
+    assert_eq!(shares.len(), 3);
     assert_eq!(shares[0].0, b"agent-v1");
+    assert_eq!(shares[0].1, BPS_DENOM);
     assert_eq!(shares[1].0, b"hypertraining");
     assert_eq!(shares[1].1, 0);
+    assert_eq!(shares[2].0, b"prism");
+    assert_eq!(shares[2].1, 0);
     // Todo 23: dual-entry rotation — old fixture + post socket-proxy compose pin.
     let entries = &ms.primary().unwrap().body.entries;
     assert_eq!(

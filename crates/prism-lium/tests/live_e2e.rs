@@ -11,13 +11,10 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
 
-
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use prism_lium::{
-    EvalJobBackend, InstanceSpec, LiumClient, LiumSshConfig, MIN_LIFETIME_HOURS,
-};
+use prism_lium::{EvalJobBackend, InstanceSpec, LiumClient, LiumSshConfig, MIN_LIFETIME_HOURS};
 
 fn load_api_key() -> String {
     if let Ok(k) = std::env::var("LIUM_API_KEY") {
@@ -72,8 +69,8 @@ async fn live_rent_ssh_eval_terminate() {
     ssh.ssh_attempts = 10;
     ssh.ssh_retry_secs = 5;
 
-    let client = LiumClient::with_config(api_key, prism_lium::LIUM_API_BASE_URL, ssh)
-        .expect("client");
+    let client =
+        LiumClient::with_config(api_key, prism_lium::LIUM_API_BASE_URL, ssh).expect("client");
 
     let mut trace = serde_json::json!({
         "started_at": now_rfc3339(),
@@ -163,7 +160,10 @@ async fn live_rent_ssh_eval_terminate() {
             Err(e) => {
                 let msg = e.to_string();
                 // ensure key never appears
-                assert!(!msg.contains(&load_api_key_prefix()), "api key leaked in error");
+                assert!(
+                    !msg.contains(&load_api_key_prefix()),
+                    "api key leaked in error"
+                );
                 att["result"] = serde_json::json!(format!("failed: {msg}"));
                 attempts.push(att);
                 last_err = msg;

@@ -40,10 +40,7 @@ impl PromoState {
     /// Terminal states that accept no further forward transitions.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Rejected(_) | Self::RolledBack | Self::Champion
-        )
+        matches!(self, Self::Rejected(_) | Self::RolledBack | Self::Champion)
     }
 }
 

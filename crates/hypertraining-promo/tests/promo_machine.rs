@@ -3,7 +3,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use hypertraining_promo::{
-    hash_hex, benjamini_hochberg, ChallengerId, CheckpointHash, DuelEvidence, HoldoutEvidence,
+    benjamini_hochberg, hash_hex, ChallengerId, CheckpointHash, DuelEvidence, HoldoutEvidence,
     PromoError, PromoState, PromotionMachine, RejectReason, ScreenEvidence, PROMOTION_K, SCREEN_K,
 };
 

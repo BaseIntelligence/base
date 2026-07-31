@@ -90,17 +90,11 @@ pub async fn run_eval_pipeline(
     if let Err(e) = backend.terminate(&pod_id).await {
         warn!(error = %e, %pod_id, "terminate failed");
     }
-    let mut termination_verified = backend
-        .verify_terminated(&pod_id)
-        .await
-        .unwrap_or(false);
+    let mut termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
     if !termination_verified {
         // Second confirmation attempt — billing leak is critical.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        termination_verified = backend
-            .verify_terminated(&pod_id)
-            .await
-            .unwrap_or(false);
+        termination_verified = backend.verify_terminated(&pod_id).await.unwrap_or(false);
     }
 
     let submission_hash =
