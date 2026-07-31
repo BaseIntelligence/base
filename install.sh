@@ -78,6 +78,10 @@ EOF
 
 # --- defaults (digest pins; override via env) ---
 DEFAULT_SOCKET_PROXY_IMAGE='tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459'
+DEFAULT_ENVIRONMENT_IMAGE='bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324'
+DEFAULT_PACK_ROOT_IN_CVM='/var/lib/base/packs'
+DEFAULT_PACK_CATALOG_URL='http://127.0.0.1:8090'
+DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX='f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45'
 # Placeholder GHCR pins match miner crate defaults until CI publishes real digests.
 DEFAULT_AGENT_IMAGE="${BASE_AGENT_IMAGE:-ghcr.io/baseintelligence/base/base-agent@sha256:b92468cc4e619e6975c3b4d8774547323a2a9efcb9a6140c49774f6e2b0c1102}"
 DEFAULT_ATTEST_HELPER_IMAGE="${BASE_ATTEST_HELPER_IMAGE:-ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf}"
@@ -88,6 +92,10 @@ MAX_CONCURRENCY="${BASE_MAX_CONCURRENCY:-1}"
 AGENT_IMAGE="${BASE_AGENT_IMAGE:-$DEFAULT_AGENT_IMAGE}"
 ATTEST_HELPER_IMAGE="${BASE_ATTEST_HELPER_IMAGE:-$DEFAULT_ATTEST_HELPER_IMAGE}"
 SOCKET_PROXY_IMAGE="${BASE_SOCKET_PROXY_IMAGE:-$DEFAULT_SOCKET_PROXY_IMAGE}"
+ENVIRONMENT_IMAGE="${BASE_ENVIRONMENT_IMAGE:-$DEFAULT_ENVIRONMENT_IMAGE}"
+PACK_ROOT_IN_CVM="${BASE_PACK_ROOT:-$DEFAULT_PACK_ROOT_IN_CVM}"
+PACK_CATALOG_URL="${BASE_PACK_CATALOG_URL:-$DEFAULT_PACK_CATALOG_URL}"
+TRUSTED_CHALLENGE_PUBKEY_HEX="${BASE_TRUSTED_CHALLENGE_PUBKEY:-$DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX}"
 LAUNCH_TOKEN_HASH="${BASE_LAUNCH_TOKEN_HASH:-}"
 VALIDATOR_URL="${BASE_VALIDATOR_URL:-}"
 NETUID="${BASE_NETUID:-1}"
@@ -396,6 +404,10 @@ services:
       BASE_RECEIPT_SK_FILE: "/run/base/receipt_sk"
       BASE_RECEIPT_PUBLIC_KEY: "${RECEIPT_PK_HEX}"
       BASE_DOCKER_BASE: "${docker_base}"
+      BASE_ENVIRONMENT_IMAGE: "${ENVIRONMENT_IMAGE}"
+      BASE_PACK_ROOT: "${PACK_ROOT_IN_CVM}"
+      BASE_PACK_CATALOG_URL: "${PACK_CATALOG_URL}"
+      BASE_TRUSTED_CHALLENGE_PUBKEY: "${TRUSTED_CHALLENGE_PUBKEY_HEX}"
       BASE_MAX_CONCURRENCY: "${MAX_CONCURRENCY}"
       BASE_MODEL_KEY_FILE: "/run/base/model_key"
       BASE_AGENT_EGRESS: "open"
@@ -416,6 +428,7 @@ services:
         source: model_key
         target: /run/base/model_key
         read_only: true
+      - packs:${PACK_ROOT_IN_CVM}
   attest-helper:
     image: ${ATTEST_HELPER_IMAGE}
     restart: unless-stopped
@@ -434,6 +447,8 @@ services:
         target: /run/base/launch_token
         read_only: true
       - /var/run/dstack.sock:/var/run/dstack.sock
+volumes:
+  packs:
 YAML
   )
   # Build app-compose.json with python for correct JSON escaping of YAML string
@@ -451,6 +466,10 @@ doc = {
         "BASE_RECEIPT_SK_FILE",
         "BASE_RECEIPT_PUBLIC_KEY",
         "BASE_DOCKER_BASE",
+        "BASE_ENVIRONMENT_IMAGE",
+        "BASE_PACK_ROOT",
+        "BASE_PACK_CATALOG_URL",
+        "BASE_TRUSTED_CHALLENGE_PUBKEY",
         "BASE_MAX_CONCURRENCY",
         "BASE_MODEL_KEY_FILE",
         "BASE_AGENT_EGRESS",

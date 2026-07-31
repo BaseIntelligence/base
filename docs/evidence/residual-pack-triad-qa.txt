@@ -1,0 +1,21 @@
+# Residual pack triad + pack-serve QA
+UTC: 2026-07-31T04:43:15Z
+DeployParams::default compose-hash=
+dabc47c0f0db5eaf040474d06ae657a08f4ae83ffb26aaff31d0724f66f0a642
+agent-challenge local:
+  bind=127.0.0.1:18095
+  /healthz=200 ok
+  /readyz=200 ready
+  /v1/catalog entry_count=1 pack_id=minimal-ok pin=4a16f063c83032ad4db2bb5a3099608bfdcb5fe2
+  /v1/packs/minimal-ok HTTP 200 gzip 580 bytes magic=1f8b
+  tar entries=environment/Dockerfile,instruction.md,task.toml
+  no solution/tests paths
+tests:
+  cargo test -p agent-pack --test export_stripped → 3 passed
+  cargo test -p agent-challenge --test pack_serve → 2 passed
+  cargo test -p miner --test deploy_contract → 15 passed
+  cargo test -p agent-runner → 42 passed
+ENV pin:
+  bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324
+live CVM still on stub agent image tip be72eeff compose_hash 637a961c…
+CVM redeploy blocked until new GHCR base-agent image builds with fetch_pack + new compose triad is phala-updated + dual-entry re-pin.

@@ -140,18 +140,19 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let receipt_public_key_hex =
                 provision_receipt_key(&receipt_sk_host_path, receipt_public_key.as_deref())?;
-            let params = DeployParams {
-                name,
-                agent_image,
-                attest_helper_image,
-                socket_proxy_image,
-                launch_token_hash: launch_token_hash.unwrap_or_else(empty_launch_token_hash_hex),
-                netuid,
-                receipt_public_key_hex: receipt_public_key_hex.clone(),
-                mode,
-                out_compose: out,
+let params = DeployParams {
+name,
+agent_image,
+attest_helper_image,
+socket_proxy_image,
+launch_token_hash: launch_token_hash.unwrap_or_else(empty_launch_token_hash_hex),
+netuid,
+receipt_public_key_hex: receipt_public_key_hex.clone(),
+mode,
+out_compose: out,
                 phala_bin,
-            };
+                ..DeployParams::default()
+};
             let result = deploy_or_dry_run(&params).map_err(|e| e.to_string())?;
             println!("compose-hash={}", result.compose_hash_hex);
             println!("receipt-public-key={receipt_public_key_hex}");

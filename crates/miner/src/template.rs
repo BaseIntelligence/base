@@ -22,6 +22,19 @@ pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/base/launch_token";
 pub const RECEIPT_SK_FILE_IN_CVM: &str = "/run/base/receipt_sk";
 /// Env name for the runner Docker Engine HTTP base (socket-proxy URL).
 pub const DOCKER_BASE_ENV: &str = "BASE_DOCKER_BASE";
+/// Env name for the digest-pinned Harbor environment image.
+pub const ENV_IMAGE_ENV: &str = "BASE_ENVIRONMENT_IMAGE";
+/// Env name for the on-disk Harbor pack root inside the agent.
+pub const PACK_ROOT_ENV: &str = "BASE_PACK_ROOT";
+/// Env name for the pack catalog HTTP base URL.
+pub const PACK_CATALOG_URL_ENV: &str = "BASE_PACK_CATALOG_URL";
+/// Env name for the trusted challenge public key (64 lowercase hex).
+pub const TRUSTED_CHALLENGE_PUBKEY_ENV: &str = "BASE_TRUSTED_CHALLENGE_PUBKEY";
+/// Default pack root path inside the CVM agent container.
+pub const DEFAULT_PACK_ROOT_IN_CVM: &str = "/var/lib/base/packs";
+/// Default digest-pinned environment image for pack runs (frozen pin).
+pub const DEFAULT_ENVIRONMENT_IMAGE: &str =
+    "bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324";
 /// Spike-proven digest pin for the measured socket-proxy image.
 pub const DEFAULT_SOCKET_PROXY_IMAGE: &str = concat!(
     "tecnativa/docker-socket-proxy@sha256:",
@@ -43,6 +56,14 @@ pub struct ComposeTemplateInput<'a> {
     pub netuid: u16,
     /// Work-receipt public key as 64 lowercase hex chars (measured; not secret).
     pub receipt_public_key_hex: &'a str,
+    /// Digest-pinned Harbor environment image for pack execution.
+    pub environment_image: &'a str,
+    /// Pack root path inside the agent container.
+    pub pack_root: &'a str,
+    /// Pack catalog HTTP base URL (gateway overlay in production).
+    pub pack_catalog_url: &'a str,
+    /// Trusted challenge public key (64 lowercase hex).
+    pub trusted_challenge_pubkey_hex: &'a str,
 }
 
 /// Render the docker-compose YAML embedded in `app-compose.json`.
@@ -51,6 +72,7 @@ pub struct ComposeTemplateInput<'a> {
 /// - services `socket-proxy` (internal), `agent` (:8080 public), `attest-helper` (127.0.0.1:8081)
 /// - only `socket-proxy` mounts `/var/run/docker.sock` (read-only) with an explicit allowlist
 /// - agent reaches Docker via `BASE_DOCKER_BASE=http://socket-proxy:2375` (no raw sock)
+/// - agent has pack triad env + named `packs` volume at pack_root (writable for catalog fetch)
 /// - digest-pinned images only (caller must not pass `:latest`)
 /// - `environment:` holds only non-secret config + launch-token **hash** + receipt **pubkey**
 /// - secrets are bind-mounted files under `/run/base/`
@@ -64,6 +86,7 @@ pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
 # LAUNCH_TOKEN: only the hash is measured (D11). Miner funds their own Phala account.
 # Work-receipt: private key file-mounted; public key published for challenge pin (D19).
 # Docker: measured socket-proxy only; agent must not mount docker.sock (D4 / §9.1.1).
+# Packs: named volume at pack_root; catalog URL for on-demand fetch.
 services:
   {proxy}:
     image: {proxy_image}
@@ -99,6 +122,10 @@ services:
       BASE_RECEIPT_SK_FILE: "{receipt_sk_file}"
       BASE_RECEIPT_PUBLIC_KEY: "{receipt_pk}"
       {docker_base_env}: "{docker_base}"
+      {env_image_env}: "{environment_image}"
+      {pack_root_env}: "{pack_root}"
+      {pack_catalog_url_env}: "{pack_catalog_url}"
+      {trusted_pubkey_env}: "{trusted_pubkey}"
     volumes:
       - type: bind
         source: miner_hotkey
@@ -112,6 +139,7 @@ services:
         source: receipt_sk
         target: {receipt_sk_file}
         read_only: true
+      - packs:{pack_root}
   {attest}:
     image: {attest_image}
     restart: unless-stopped
@@ -130,6 +158,8 @@ services:
         target: {launch_token_file}
         read_only: true
       - /var/run/dstack.sock:/var/run/dstack.sock
+volumes:
+  packs:
 "#,
         run_dir = RUN_BASE_DIR,
         proxy = SOCKET_PROXY_SERVICE,
@@ -145,6 +175,14 @@ services:
         receipt_pk = input.receipt_public_key_hex,
         docker_base_env = DOCKER_BASE_ENV,
         docker_base = docker_base,
+        env_image_env = ENV_IMAGE_ENV,
+        environment_image = input.environment_image,
+        pack_root_env = PACK_ROOT_ENV,
+        pack_root = input.pack_root,
+        pack_catalog_url_env = PACK_CATALOG_URL_ENV,
+        pack_catalog_url = input.pack_catalog_url,
+        trusted_pubkey_env = TRUSTED_CHALLENGE_PUBKEY_ENV,
+        trusted_pubkey = input.trusted_challenge_pubkey_hex,
         attest = ATTEST_HELPER_SERVICE,
         attest_image = input.attest_helper_image,
         attest_port = ATTEST_HELPER_PORT,

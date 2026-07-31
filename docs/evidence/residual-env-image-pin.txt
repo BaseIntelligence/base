@@ -1,0 +1,9 @@
+# Residual BASE_ENVIRONMENT_IMAGE pin (public bash)
+# Captured UTC: 2026-07-31T04:22:43Z
+# Command:
+#   docker pull bash:5.2.37
+#   docker image inspect bash:5.2.37 --format '{{index .RepoDigests 0}}'
+DEFAULT_ENVIRONMENT_IMAGE=bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324
+RepoDigest=bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324
+Tag=bash:5.2.37
+Rationale=reference_agent_cmd is bash; residual pack exec writes model.patch via bash heredoc

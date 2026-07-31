@@ -6,8 +6,10 @@ use miner::{
     docker_compose_yaml, environment_block_has_no_secrets, reject_raw_docker_sock_on_agent,
     render_app_compose_bytes, ComposeTemplateInput, DeployMode, DeployParams, AGENT_PORT,
     AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, DEFAULT_AGENT_IMAGE,
-    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE, DOCKER_BASE_ENV, SOCKET_PROXY_PORT,
-    SOCKET_PROXY_SERVICE,
+    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_CATALOG_URL,
+    DEFAULT_PACK_ROOT_IN_CVM, DEFAULT_SOCKET_PROXY_IMAGE, DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
+    DOCKER_BASE_ENV, ENV_IMAGE_ENV, PACK_CATALOG_URL_ENV, PACK_ROOT_ENV, SOCKET_PROXY_PORT,
+    SOCKET_PROXY_SERVICE, TRUSTED_CHALLENGE_PUBKEY_ENV,
 };
 
 /// Frozen compose-hash of `DeployParams::default()` **before** measured socket-proxy
@@ -82,10 +84,66 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
     let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
     let names: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"BASE_NETUID"));
-    assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
-    assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
+assert!(names.contains(&"BASE_NETUID"));
+assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
+assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
     assert!(names.contains(&DOCKER_BASE_ENV));
+    assert!(names.contains(&ENV_IMAGE_ENV));
+    assert!(names.contains(&PACK_ROOT_ENV));
+    assert!(names.contains(&PACK_CATALOG_URL_ENV));
+    assert!(names.contains(&TRUSTED_CHALLENGE_PUBKEY_ENV));
+}
+
+#[test]
+fn pack_triad_env_and_packs_volume_in_measured_compose() {
+    let result = deploy_or_dry_run(&DeployParams::default()).expect("render");
+    let yaml = docker_compose_from_app_compose_json(&result.app_compose_json).expect("yaml");
+
+    assert!(
+        yaml.contains(&format!(
+            "{ENV_IMAGE_ENV}: \"{DEFAULT_ENVIRONMENT_IMAGE}\""
+        )),
+        "missing digest-pinned environment image:\n{yaml}"
+    );
+    assert!(
+        yaml.contains(&format!("{PACK_ROOT_ENV}: \"{DEFAULT_PACK_ROOT_IN_CVM}\"")),
+        "missing pack root:\n{yaml}"
+    );
+    assert!(
+        yaml.contains(&format!(
+            "{PACK_CATALOG_URL_ENV}: \"{DEFAULT_PACK_CATALOG_URL}\""
+        )),
+        "missing pack catalog url:\n{yaml}"
+    );
+    assert!(
+        yaml.contains(&format!(
+            "{TRUSTED_CHALLENGE_PUBKEY_ENV}: \"{DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX}\""
+        )),
+        "missing trusted challenge pubkey:\n{yaml}"
+    );
+    assert!(
+        yaml.contains(&format!("packs:{DEFAULT_PACK_ROOT_IN_CVM}")),
+        "agent must mount packs volume at pack_root:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("volumes:\n  packs:"),
+        "named packs volume declaration missing:\n{yaml}"
+    );
+    // Agent must not mount docker.sock; packs volume is writable (no :ro suffix on packs mount).
+    let agent_block = yaml
+        .split(&format!("  {AGENT_SERVICE}:"))
+        .nth(1)
+        .and_then(|rest| rest.split(&format!("  {ATTEST_HELPER_SERVICE}:")).next())
+        .expect("agent block");
+    assert!(!agent_block.contains("docker.sock"));
+    assert!(
+        agent_block.contains(&format!("packs:{DEFAULT_PACK_ROOT_IN_CVM}")),
+        "packs mount in agent:\n{agent_block}"
+    );
+    assert!(
+        !agent_block.contains(&format!("packs:{DEFAULT_PACK_ROOT_IN_CVM}:ro")),
+        "packs volume must be writable for catalog fetch:\n{agent_block}"
+    );
 }
 
 #[test]
@@ -363,14 +421,18 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
 fn template_input_includes_socket_proxy_image() {
     let launch = "cc".repeat(32);
     let pk = "dd".repeat(32);
-    let yaml = docker_compose_yaml(&ComposeTemplateInput {
-        agent_image: DEFAULT_AGENT_IMAGE,
-        attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE,
-        socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE,
-        launch_token_hash: &launch,
-        netuid: 541,
+let yaml = docker_compose_yaml(&ComposeTemplateInput {
+agent_image: DEFAULT_AGENT_IMAGE,
+attest_helper_image: DEFAULT_ATTEST_HELPER_IMAGE,
+socket_proxy_image: DEFAULT_SOCKET_PROXY_IMAGE,
+launch_token_hash: &launch,
+netuid: 541,
         receipt_public_key_hex: &pk,
-    });
+        environment_image: DEFAULT_ENVIRONMENT_IMAGE,
+        pack_root: DEFAULT_PACK_ROOT_IN_CVM,
+        pack_catalog_url: DEFAULT_PACK_CATALOG_URL,
+        trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
+});
     assert!(yaml.contains("challenge_scoring_version=2"));
     assert!(yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE));
     reject_raw_docker_sock_on_agent(&yaml).expect("ok");

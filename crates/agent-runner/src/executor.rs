@@ -46,6 +46,8 @@ pub struct DockerExecConfig {
     pub egress: AgentEgressPosture,
     /// Override agent argv; default is the reference agent that writes a unified diff.
     pub agent_cmd: Option<Vec<String>>,
+    /// Optional pack catalog base URL (`…/v1/packs/{id}`).
+    pub pack_catalog_url: Option<String>,
 }
 
 impl Default for DockerExecConfig {
@@ -58,6 +60,7 @@ impl Default for DockerExecConfig {
             model_key_path: None,
             egress: DEFAULT_AGENT_EGRESS_POSTURE,
             agent_cmd: None,
+            pack_catalog_url: None,
         }
     }
 }
@@ -236,6 +239,12 @@ fn execute_docker(
     pack_id: &str,
     deadline_unix_ms: u64,
 ) -> Result<ExecOutcome, ExecError> {
+    crate::fetch_pack::ensure_pack(
+        &cfg.pack_root,
+        cfg.pack_catalog_url.as_deref(),
+        pack_id,
+    )
+    .map_err(|e| ExecError::Pack(e.to_string()))?;
     let stripped = load_stripped(&cfg.pack_root, pack_id)?;
     let now = unix_now_ms();
     let timeout_sec = resolve_timeout_sec(deadline_unix_ms, stripped.deadline_sec, now);

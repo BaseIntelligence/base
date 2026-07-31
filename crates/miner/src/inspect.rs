@@ -63,7 +63,10 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 continue;
             }
             let key_upper = key.to_ascii_uppercase();
-            let measured_public_key_name = key == "BASE_RECEIPT_PUBLIC_KEY";
+            let measured_public_key_name = matches!(
+                key,
+                "BASE_RECEIPT_PUBLIC_KEY" | "BASE_TRUSTED_CHALLENGE_PUBKEY"
+            );
             if key_upper.contains("SECRET")
                 || key_upper.contains("PRIVATE")
                 || key_upper.ends_with("_SK")
@@ -76,8 +79,12 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 return false;
             }
             // Reject raw 64-byte hex that is NOT a known measured public field
-            let measured_public_hex =
-                matches!(key, "BASE_LAUNCH_TOKEN_HASH" | "BASE_RECEIPT_PUBLIC_KEY");
+            let measured_public_hex = matches!(
+                key,
+                "BASE_LAUNCH_TOKEN_HASH"
+                    | "BASE_RECEIPT_PUBLIC_KEY"
+                    | "BASE_TRUSTED_CHALLENGE_PUBKEY"
+            );
             if !measured_public_hex
                 && value.len() == 64
                 && value.chars().all(|c| c.is_ascii_hexdigit())

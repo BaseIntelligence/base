@@ -1,0 +1,4 @@
+NAME                    IMAGE                                                                                                                     CREATED      STATUS      STATE  
+dstack-agent-1          ghcr.io/baseintelligence/base/base-agent@sha256:b92468cc4e619e6975c3b4d8774547323a2a9efcb9a6140c49774f6e2b0c1102          2 hours ago  Up 2 hours  running
+dstack-attest-helper-1  ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf  2 hours ago  Up 2 hours  running
+dstack-socket-proxy-1   tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459                     2 hours ago  Up 2 hours  running

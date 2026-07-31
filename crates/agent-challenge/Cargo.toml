@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
@@ -45,9 +46,13 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "sync"] }
 wiremock = "0.6"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 agent-runner = { path = "../agent-runner" }
 validator = { path = "../validator" }
 uuid = { version = "1", features = ["v4"] }
+flate2 = "1"
+tar = "0.4"
 
 [lints]
 workspace = true

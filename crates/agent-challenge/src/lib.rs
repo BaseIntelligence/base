@@ -12,6 +12,7 @@ mod epoch_loop;
 mod expected_set;
 mod intake;
 mod leaf_map;
+mod pack_serve;
 mod score;
 mod submit;
 mod verify;
@@ -45,6 +46,9 @@ pub use expected_set::{
 pub use intake::{
     intake_and_grade, verify_intake_receipt, ExpectedReceiptBind, IntakeOk, IntakePatch,
     ReceiptBindError,
+};
+pub use pack_serve::{
+    ensure_pack_source, pack_routes, PackCatalogState, PackServeError,
 };
 pub use leaf_map::{
     attempts_within_seal_budget, cover_expected_verify_leaves, grade_to_score_or_absence,

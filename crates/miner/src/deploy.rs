@@ -9,7 +9,11 @@ use thiserror::Error;
 
 use crate::inspect::reject_raw_docker_sock_on_agent;
 pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
-use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV};
+use crate::template::{
+    docker_compose_yaml, ComposeTemplateInput, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_ROOT_IN_CVM,
+    DOCKER_BASE_ENV, ENV_IMAGE_ENV, PACK_CATALOG_URL_ENV, PACK_ROOT_ENV,
+    TRUSTED_CHALLENGE_PUBKEY_ENV,
+};
 
 /// Default digest-pinned agent image (digest from images CI tip b3f1c1e).
 pub const DEFAULT_AGENT_IMAGE: &str =
@@ -17,6 +21,11 @@ pub const DEFAULT_AGENT_IMAGE: &str =
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
     "ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf";
+/// Default pack catalog HTTP base (local/dev; production overlays gateway).
+pub const DEFAULT_PACK_CATALOG_URL: &str = "http://127.0.0.1:8090";
+/// Default trusted challenge pubkey (`config/challenges.toml` agent-v1 `public_key`).
+pub const DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX: &str =
+    "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45";
 
 /// Whether to invoke the Phala CLI after rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +53,14 @@ pub struct DeployParams {
     pub netuid: u16,
     /// Work-receipt public key (64 lowercase hex) published in measured compose.
     pub receipt_public_key_hex: String,
+    /// Digest-pinned Harbor environment image for pack runs.
+    pub environment_image: String,
+    /// Pack root path inside the agent container.
+    pub pack_root: String,
+    /// Pack catalog HTTP base URL.
+    pub pack_catalog_url: String,
+    /// Trusted challenge public key (64 lowercase hex).
+    pub trusted_challenge_pubkey_hex: String,
     /// Deploy vs dry-run.
     pub mode: DeployMode,
     /// Optional path to write `app-compose.json`.
@@ -64,6 +81,10 @@ impl Default for DeployParams {
             netuid: 1,
             // Deterministic placeholder pubkey for offline dry-runs (not a real sk).
             receipt_public_key_hex: "11".repeat(32),
+            environment_image: DEFAULT_ENVIRONMENT_IMAGE.to_owned(),
+            pack_root: DEFAULT_PACK_ROOT_IN_CVM.to_owned(),
+            pack_catalog_url: DEFAULT_PACK_CATALOG_URL.to_owned(),
+            trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX.to_owned(),
             mode: DeployMode::NoDeploy,
             out_compose: None,
             phala_bin: PathBuf::from("phala"),
@@ -94,6 +115,9 @@ pub enum DeployError {
     /// Receipt public key is not 64 lowercase hex chars.
     #[error("receipt_public_key_hex must be 64 lowercase hex chars")]
     BadReceiptPublicKey,
+    /// Trusted challenge public key is not 64 lowercase hex chars.
+    #[error("trusted_challenge_pubkey_hex must be 64 lowercase hex chars")]
+    BadTrustedChallengePubkey,
     /// Agent service mounts raw docker.sock (must use measured socket-proxy).
     #[error(transparent)]
     RawDockerSock(#[from] crate::inspect::RawDockerSockOnAgent),
@@ -168,11 +192,19 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
             params.socket_proxy_image.clone(),
         ));
     }
+    if !is_digest_pinned(&params.environment_image) {
+        return Err(DeployError::ImageNotDigestPinned(
+            params.environment_image.clone(),
+        ));
+    }
     if !is_hex64_lower(&params.launch_token_hash) {
         return Err(DeployError::BadLaunchTokenHash);
     }
     if !is_hex64_lower(&params.receipt_public_key_hex) {
         return Err(DeployError::BadReceiptPublicKey);
+    }
+    if !is_hex64_lower(&params.trusted_challenge_pubkey_hex) {
+        return Err(DeployError::BadTrustedChallengePubkey);
     }
 
     let yaml = docker_compose_yaml(&ComposeTemplateInput {
@@ -182,6 +214,10 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
         launch_token_hash: &params.launch_token_hash,
         netuid: params.netuid,
         receipt_public_key_hex: &params.receipt_public_key_hex,
+        environment_image: &params.environment_image,
+        pack_root: &params.pack_root,
+        pack_catalog_url: &params.pack_catalog_url,
+        trusted_challenge_pubkey_hex: &params.trusted_challenge_pubkey_hex,
     });
     reject_raw_docker_sock_on_agent(&yaml)?;
 
@@ -194,7 +230,11 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
             "BASE_LAUNCH_TOKEN_HASH",
             "BASE_RECEIPT_SK_FILE",
             "BASE_RECEIPT_PUBLIC_KEY",
-            DOCKER_BASE_ENV
+            DOCKER_BASE_ENV,
+            ENV_IMAGE_ENV,
+            PACK_ROOT_ENV,
+            PACK_CATALOG_URL_ENV,
+            TRUSTED_CHALLENGE_PUBKEY_ENV
         ],
 
         "docker_compose_file": yaml,

@@ -15,6 +15,7 @@
 mod catalog;
 mod digest;
 mod error;
+mod export;
 mod load;
 mod model;
 mod select;
@@ -29,6 +30,9 @@ pub use digest::{
     DIGEST_LEN,
 };
 pub use error::{CatalogError, PackError};
+pub use export::{
+    export_stripped_tar_gz, is_stripped_rel_path, stripped_file_entries, write_stripped_tree,
+};
 pub use load::load_pack;
 pub use model::{
     HarborPack, HeldOutMaterials, StrippedDescriptor, PACK_DIGEST_LEN, SCHEMA_VERSION_1_1,

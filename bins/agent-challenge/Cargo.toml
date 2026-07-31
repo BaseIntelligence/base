@@ -16,7 +16,7 @@ path = "src/main.rs"
 agent-challenge = { path = "../../crates/agent-challenge" }
 telemetry = { path = "../../crates/telemetry" }
 trustroot = { path = "../../crates/trustroot" }
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tracing = "0.1"

@@ -30,6 +30,7 @@ mod api;
 mod auth;
 mod egress;
 mod executor;
+mod fetch_pack;
 mod receipt_key;
 mod store;
 
@@ -44,6 +45,7 @@ pub use executor::{
     DockerExecConfig, ExecOutcome, ExecutionBackend, AGENT_CONTAINER_PREFIX,
     MODEL_KEY_CONTAINER_PATH, MODEL_KEY_FILE_ENV, MODEL_PATCH_REL,
 };
+pub use fetch_pack::{ensure_pack, PackFetchError};
 pub use receipt_key::{
     load_or_generate, load_required, receipt_sk_path_from_env, ReceiptKey, ReceiptKeyError,
     DEFAULT_RECEIPT_SK_PATH, RECEIPT_SK_FILE_ENV,
