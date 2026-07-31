@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   # Optional: also on push to reborn when lockfile/xtask changes
   push:
-    branches: [reborn]
+    branches: [dev, reborn]
     paths:
       - "metadata/**"
       - "xtask/**"

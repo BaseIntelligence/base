@@ -1,15 +1,17 @@
 name: images
 
-# Build service images, push by commit SHA tag, record digests as an artifact.
+# Build service images, push by commit SHA + branch tag, record digests as an artifact.
 # Digests-only pins are consumed by deploy/scripts/promote.sh.
+# Registry: GHCR only (never AWS ECR).
 
 on:
   push:
-    branches: [reborn]
+    branches: [dev, reborn]
     paths:
       - "crates/**"
       - "bins/**"
       - "deploy/Dockerfile"
+      - "deploy/attest-helper/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/images.yml"
@@ -33,14 +35,22 @@ jobs:
         include:
           - target: validator
             image_suffix: validator
+            dockerfile: deploy/Dockerfile
           - target: gateway
             image_suffix: gateway
+            dockerfile: deploy/Dockerfile
           - target: updater
             image_suffix: updater
+            dockerfile: deploy/Dockerfile
           - target: agent-challenge
             image_suffix: agent-challenge
+            dockerfile: deploy/Dockerfile
           - target: gbase-agent
             image_suffix: gbase-agent
+            dockerfile: deploy/Dockerfile
+          - target: ""
+            image_suffix: gbase-attest-helper
+            dockerfile: deploy/attest-helper/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,13 +78,13 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: deploy/Dockerfile
+          context: ${{ matrix.image_suffix == 'gbase-attest-helper' && 'deploy/attest-helper' || '.' }}
+          file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}:${{ github.sha }}
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}:reborn
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}:${{ github.ref_name }}
           build-args: |
             BUILD_FROM=source
           provenance: false
@@ -87,9 +97,10 @@ jobs:
           test -n "$DIGEST"
           test "${DIGEST#sha256:}" != "$DIGEST"
           REPO="${{ env.IMAGE_PREFIX }}/${{ matrix.image_suffix }}"
-          cat > "digests-out/${{ matrix.target }}.json" <<EOF
+          SVC="${{ matrix.image_suffix }}"
+          cat > "digests-out/${SVC}.json" <<EOF
           {
-            "service": "${{ matrix.target }}",
+            "service": "${SVC}",
             "repository": "${REPO}",
             "tag_sha": "${{ github.sha }}",
             "digest": "${DIGEST}",
@@ -97,13 +108,13 @@ jobs:
             "commit_sha": "${{ github.sha }}"
           }
           EOF
-          cat "digests-out/${{ matrix.target }}.json"
+          cat "digests-out/${SVC}.json"
 
       - name: Upload digest fragment
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.target }}
-          path: digests-out/${{ matrix.target }}.json
+          name: digest-${{ matrix.image_suffix }}
+          path: digests-out/${{ matrix.image_suffix }}.json
           if-no-files-found: error
 
   merge-digests:
@@ -134,7 +145,14 @@ jobs:
               assert d["digest"].startswith("sha256:") and len(d["digest"]) == 71
               assert "@sha256:" in d["image"]
               images[d["service"]] = d
-          expected = {"validator", "gateway", "updater", "agent-challenge", "gbase-agent"}
+          expected = {
+              "validator",
+              "gateway",
+              "updater",
+              "agent-challenge",
+              "gbase-agent",
+              "gbase-attest-helper",
+          }
           assert set(images) == expected, (set(images), expected)
           out = {
               "commit_sha": os.environ.get("GITHUB_SHA", ""),
@@ -151,6 +169,6 @@ jobs:
       - name: Upload merged digests
         uses: actions/upload-artifact@v4
         with:
-          name: gbase-image-digests-${{ github.sha }}
+          name: base-image-digests-${{ github.sha }}
           path: deploy/digests/${{ github.sha }}.json
           if-no-files-found: error

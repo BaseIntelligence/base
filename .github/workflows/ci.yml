@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [reborn]
+    branches: [dev, reborn]
   pull_request:
-    branches: [reborn]
+    branches: [dev, reborn]
 
 env:
   CARGO_TERM_COLOR: always
