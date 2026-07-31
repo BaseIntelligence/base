@@ -14,9 +14,9 @@ use serde::Deserialize;
 use trustroot::ChallengesBody;
 use uuid::Uuid;
 
-use crate::registry::{BackendView, CreateBackend, Registry, RegistryError};
 use crate::sealer::{MemoryBundleStore, SharedBundleStore};
 use crate::weights::{MemoryRawWeightStore, SharedWeightStore};
+use gateway_registry::{BackendView, CreateBackend, Registry, RegistryError};
 
 /// Shared axum state for registry + proxy + weights + sealed bundles.
 #[derive(Clone)]

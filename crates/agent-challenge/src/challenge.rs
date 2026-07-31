@@ -362,7 +362,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use crate::keys::public_key_from_secret;
+    use agent_challenge_keys::public_key_from_secret;
     use rand_core::OsRng;
     use trustroot::{ChallengeEntry, ParticipantPolicy, BPS_DENOM};
 

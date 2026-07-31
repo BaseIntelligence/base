@@ -1,0 +1,21 @@
+[package]
+name = "gateway-registry"
+description = "Gateway backend registry (routing only, D18) — extracted for loc-cap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

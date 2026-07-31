@@ -13,7 +13,7 @@ use axum::Router;
 use bytes::Bytes;
 
 use crate::api::GatewayState;
-use crate::registry::RegistryError;
+use gateway_registry::RegistryError;
 
 /// Hop-by-hop headers that must not be forwarded (RFC 7230).
 fn is_hop_by_hop(name: &HeaderName) -> bool {

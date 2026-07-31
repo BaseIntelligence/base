@@ -16,6 +16,7 @@ dependencies = [
 name = "agent-challenge"
 version = "0.1.0"
 dependencies = [
+ "agent-challenge-keys",
  "agent-dispatch",
  "agent-pack",
  "agent-runner",
@@ -55,6 +56,15 @@ dependencies = [
  "tokio",
  "tracing",
  "trustroot",
+]
+
+[[package]]
+name = "agent-challenge-keys"
+version = "0.1.0"
+dependencies = [
+ "crypto",
+ "hex",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1535,6 +1545,7 @@ dependencies = [
  "chain",
  "config",
  "crypto",
+ "gateway-registry",
  "hex",
  "merkle",
  "metrics-exporter-prometheus",
@@ -1564,6 +1575,17 @@ dependencies = [
  "telemetry",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "gateway-registry"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "uuid",
 ]
 
 [[package]]
@@ -4604,6 +4626,7 @@ dependencies = [
  "tracing",
  "trustroot",
  "uuid",
+ "validator-sync",
  "wiremock",
 ]
 
@@ -4621,6 +4644,13 @@ dependencies = [
  "tracing",
  "trustroot",
  "validator",
+]
+
+[[package]]
+name = "validator-sync"
+version = "0.1.0"
+dependencies = [
+ "chain",
 ]
 
 [[package]]

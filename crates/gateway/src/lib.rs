@@ -17,7 +17,6 @@
 mod api;
 mod app;
 mod proxy;
-mod registry;
 mod sealer;
 mod tls;
 mod weights;
@@ -36,7 +35,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 
 pub use api::GatewayState;
-pub use registry::{
+pub use gateway_registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
     DEFAULT_FAILURE_THRESHOLD,
 };

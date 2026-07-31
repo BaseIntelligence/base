@@ -27,7 +27,6 @@ pub mod mirror;
 pub mod peers;
 pub mod recompute;
 pub mod registration;
-pub mod sync_chain;
 
 pub use app::{
     build_health_router, chain_ready_check, db_ready_from_fn, db_ready_ok, spawn_validator,
@@ -67,7 +66,7 @@ pub use submit::{
     CountingDrand, DrandClient, DrandError, FailingDrand, FixedClock, ReadyDrand, SubmitConfig,
     SubmitError, SubmitOutcome, SystemClock, COMMIT_REVEAL_VERSION_V4, MECID_MAIN,
 };
-pub use sync_chain::SyncChain;
+pub use validator_sync::SyncChain;
 
 /// Map validator [`ComparisonOutcome`] into policy [`RecomputeView`].
 #[must_use]

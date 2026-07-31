@@ -12,6 +12,7 @@ publish = false
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
+agent-challenge-keys = { path = "../agent-challenge-keys" }
 trustroot = { path = "../trustroot" }
 agent-pack = { path = "../agent-pack" }
 agent-dispatch = { path = "../agent-dispatch" }

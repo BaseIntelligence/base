@@ -7,17 +7,11 @@
 
 #![forbid(unsafe_code)]
 
-mod challenge;
-mod epoch_loop;
-mod expected_set;
-mod intake;
-mod keys;
-mod leaf_map;
-mod score;
-mod submit;
-mod task_gen;
-mod verify;
+mod challenge; mod epoch_loop; mod expected_set;
+mod intake; mod leaf_map; mod score;
+mod submit; mod task_gen; mod verify;
 
+pub use agent_challenge_keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use challenge::{
     correct_http200, correct_http200_fixture, emit_signed_leaf_set, leaf_from_verify_result,
     score_epoch_from_verify, silence_is_bug_leaf, AgentV1Challenge, AttestationLookup, Challenge,
@@ -37,7 +31,6 @@ pub use intake::{
     intake_and_grade, verify_intake_receipt, ExpectedReceiptBind, IntakeOk, IntakePatch,
     ReceiptBindError,
 };
-pub use keys::{load_challenge_secret, public_key_from_secret, ChallengeKeyError};
 pub use leaf_map::{
     attempts_within_seal_budget, cover_expected_verify_leaves, grade_to_score_or_absence,
     grade_to_score_or_absence_budgeted, is_operator_fault, is_retryable_operator_fault, map_reward,
@@ -52,17 +45,12 @@ pub use submit::{
     SubmitError, SubmitOutcome, DEFAULT_MAX_RETRIES,
 };
 pub use task_gen::{
-    answer_digest, answer_digest_v2, task_blob, task_blob_v2, task_id, task_id_v2,
-    ANSWER_DOMAIN_V2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID,
-    SCORING_VERSION, SCORING_VERSION_V2, TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
+    answer_digest, answer_digest_v2, task_blob, task_blob_v2, task_id, task_id_v2, ANSWER_DOMAIN_V2,
+    CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID, SCORING_VERSION,
+    SCORING_VERSION_V2, TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
 };
-
-pub use bundle::{
-    make_signed_leaf, raw_weight_payload, LeafV1, NoScoreReasonCode, RawWeightBodyV1,
-    ScoreOrAbsence,
-};
+pub use bundle::{make_signed_leaf, raw_weight_payload, LeafV1, NoScoreReasonCode, RawWeightBodyV1, ScoreOrAbsence};
 pub use crypto::{KEY_LEN, SIGNATURE_LEN};
-
 pub use verify::{
     map_docker_timeout, reward_from_json_bytes, HarborVerifier, HarborVerifierConfig, Reward,
     Verifier, VerifyError, ZeroReason, DEFAULT_VERIFIER_TIMEOUT_SEC,

@@ -1,0 +1,17 @@
+[package]
+name = "agent-challenge-keys"
+description = "Challenge signing key load for agent-v1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+crypto = { path = "../crypto" }
+hex = "0.4"
+thiserror = "2"
+
+[lints]
+workspace = true
