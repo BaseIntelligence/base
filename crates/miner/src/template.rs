@@ -72,10 +72,12 @@ pub struct ComposeTemplateInput<'a> {
 /// - services `socket-proxy` (internal), `agent` (:8080 public), `attest-helper` (127.0.0.1:8081)
 /// - only `socket-proxy` mounts `/var/run/docker.sock` (read-only) with an explicit allowlist
 /// - agent reaches Docker via `BASE_DOCKER_BASE=http://socket-proxy:2375` (no raw sock)
-/// - agent has pack triad env + named `packs` volume at pack_root (writable for catalog fetch)
+/// - agent has pack triad env + named `packs` volume at `pack_root` (writable for catalog fetch)
 /// - digest-pinned images only (caller must not pass `:latest`)
 /// - `environment:` holds only non-secret config + launch-token **hash** + receipt **pubkey**
 /// - secrets are bind-mounted files under `/run/base/`
+// YAML template is intentionally monolithic for measured compose hash stability.
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
     // YAML is hand-built so key order and spacing stay stable for hashing.
