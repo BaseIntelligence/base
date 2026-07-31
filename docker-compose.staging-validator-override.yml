@@ -1,0 +1,29 @@
+# Staging normal validator host — NO gateway, NO owner hotkey.
+# Points at the staging-master gateway over the DO VPC private IP.
+#
+# Usage on validator host:
+#   export BASE_GATEWAY_ENDPOINT=http://10.116.0.2:8080
+#   docker compose -f docker-compose.yml -f docker-compose.staging-validator-override.yml up -d
+services:
+  validator:
+    environment:
+      BASE_TRUST_ROOT_DIR: /etc/base/config
+      # Overridden at deploy time if needed; default is staging-master private IP.
+      BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://10.116.0.2:8080}
+      BASE_COORDINATION_INTERVAL_SECS: "3"
+      # Owner hotkey intentionally omitted — this is NOT the master host.
+    volumes:
+      - ./config:/etc/base/config:ro
+  agent-challenge:
+    environment:
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+      BASE_CHALLENGE_BIND: 0.0.0.0:8090
+      BASE_DOCKER_BASE: http://socket-proxy:2375
+    volumes:
+      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+  # Gateway must not run on the normal validator host.
+  gateway:
+    profiles: ["never"]
+  # Updater pulls digest pins from registry — disable on bare staging-validator until GHCR pins wired.
+  updater:
+    profiles: ["never"]

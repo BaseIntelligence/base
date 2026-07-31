@@ -74,6 +74,13 @@ resource "digitalocean_firewall" "base" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
+  # Control-plane private VPC: gateway:8080 between staging master and validators.
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "8080"
+    source_addresses = ["10.116.0.0/20"]
+  }
+
   # ICMP for diagnostics.
   inbound_rule {
     protocol         = "icmp"

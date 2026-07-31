@@ -49,6 +49,49 @@ export AGE_IDENTITY=/etc/base/age-identity.txt
 ./deploy/scripts/materialize-env.sh
 ```
 
+
+## Staging topology (master + normal validator)
+
+| Host | Droplet | Role | Hotkey | Gateway |
+|------|---------|------|--------|---------|
+| staging master | `gbase-staging` | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
+| staging validator | `gbase-staging-validator` | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
+| prod | `gbase-prod` | owner control plane | yes | yes |
+
+Deploy:
+
+```bash
+export BASE_SSH_IDENTITY=~/.ssh/id_ed25519
+# One-time secrets bootstrap from existing staging master:
+./deploy/scripts/remote-deploy.sh \
+  --host root@<staging-master-ip> --role master \
+  --bootstrap-secrets-from root@<staging-master-ip>
+
+./deploy/scripts/remote-deploy.sh \
+  --host root@<staging-validator-ip> --role validator \
+  --gateway-endpoint http://10.116.0.2:8080 \
+  --bootstrap-secrets-from root@<staging-master-ip>
+```
+
+### Auto CI deploy
+
+- `.github/workflows/deploy-staging.yml` — after successful `ci` on `dev` (and manual dispatch)
+- `.github/workflows/deploy-prod.yml` — on push to `main` / manual
+
+Required GitHub secrets:
+
+| Secret | Purpose |
+|--------|---------|
+| `STAGING_SSH_KEY` | private key for droplet SSH |
+| `STAGING_MASTER_HOST` | public IPv4 of `gbase-staging` |
+| `STAGING_VALIDATOR_HOST` | public IPv4 of `gbase-staging-validator` |
+| `STAGING_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.2:8080` |
+| `PROD_HOST` | public IPv4 of `gbase-prod` |
+| `PROD_SSH_KEY` | optional override of staging key |
+
+> **Not AWS EKS.** Control plane stays Docker Compose on DigitalOcean droplets (existing design). A separate DOKS cluster on this account (`basecrawl-prod-nyc3`) is unrelated and must not host gbase.
+
+
 ## Infrastructure (DigitalOcean)
 
 Terraform lives in [`terraform/`](./terraform/): two `s-8vcpu-16gb-amd` droplets

@@ -1,0 +1,61 @@
+name: deploy-prod
+
+# Promote digest-pinned images to the prod droplet after push to main.
+# Staging must already be healthy; this workflow does NOT rebuild from source
+# by default — it pulls the commit SHA tags from GHCR when available, else
+# builds on-box (same remote-deploy path as staging, role=master).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy-prod:
+    name: deploy prod master
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}" || {
+            echo "missing PROD_SSH_KEY (or STAGING_SSH_KEY fallback)"
+            exit 1
+          }
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}" > ~/.ssh/deploy_ed25519
+          chmod 600 ~/.ssh/deploy_ed25519
+
+      - name: Deploy master stack
+        run: |
+          set -euo pipefail
+          host="${{ secrets.PROD_HOST }}"
+          test -n "$host" || { echo "missing PROD_HOST"; exit 1; }
+          chmod +x deploy/scripts/remote-deploy.sh
+          export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
+          ./deploy/scripts/remote-deploy.sh \
+            --host "root@${host}" \
+            --role master \
+            --build-from source
+
+      - name: Smoke health
+        run: |
+          set -euo pipefail
+          host="${{ secrets.PROD_HOST }}"
+          export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "root@${host}" \
+            'docker compose -f /opt/base/docker-compose.yml --profile master ps; docker compose -f /opt/base/docker-compose.yml --profile master exec -T validator curl -fsS -m 10 http://127.0.0.1:8080/healthz || true'

@@ -1,0 +1,118 @@
+name: deploy-staging
+
+# Auto-deploy control plane to DigitalOcean staging after CI is green on dev.
+# Roles:
+#   - staging master  = validator + gateway + hotkey (owner)
+#   - staging validator = validator only (no hotkey / no gateway)
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      role:
+        description: "Which staging role(s) to deploy"
+        type: choice
+        options:
+          - both
+          - master
+          - validator
+        default: both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy staging master + validator
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'dev')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: master
+            host_secret: STAGING_MASTER_HOST
+          - role: validator
+            host_secret: STAGING_VALIDATOR_HOST
+    steps:
+      - name: Skip unwanted roles on manual dispatch
+        id: gate
+        run: |
+          set -euo pipefail
+          want="${{ github.event.inputs.role || 'both' }}"
+          role="${{ matrix.role }}"
+          if [[ "$want" == "both" || "$want" == "$role" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install SSH key
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.STAGING_SSH_KEY }}" || { echo "missing STAGING_SSH_KEY"; exit 1; }
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/staging_ed25519
+          chmod 600 ~/.ssh/staging_ed25519
+          echo "StrictHostKeyChecking accept-new" > ~/.ssh/config
+
+      - name: Resolve host
+        if: steps.gate.outputs.run == 'true'
+        id: host
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.role }}" == "master" ]]; then
+            h="${{ secrets.STAGING_MASTER_HOST }}"
+          else
+            h="${{ secrets.STAGING_VALIDATOR_HOST }}"
+          fi
+          test -n "$h" || { echo "missing host secret ${{ matrix.host_secret }}"; exit 1; }
+          echo "value=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BASE_SSH_IDENTITY: ${{ runner.temp }}/../.ssh/staging_ed25519
+        run: |
+          set -euo pipefail
+          chmod +x deploy/scripts/remote-deploy.sh
+          export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
+          EXTRA=()
+          if [[ "${{ matrix.role }}" == "validator" ]]; then
+            # Prefer private VPC endpoint of master when provided.
+            if [[ -n "${{ secrets.STAGING_MASTER_GATEWAY_URL }}" ]]; then
+              EXTRA+=(--gateway-endpoint "${{ secrets.STAGING_MASTER_GATEWAY_URL }}")
+            fi
+          fi
+          ./deploy/scripts/remote-deploy.sh \
+            --host "root@${{ steps.host.outputs.value }}" \
+            --role "${{ matrix.role }}" \
+            --build-from source \
+            "${EXTRA[@]}"
+
+      - name: Smoke health
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "root@${{ steps.host.outputs.value }}" \
+            'docker compose -f /opt/base/docker-compose.yml ps; docker compose -f /opt/base/docker-compose.yml exec -T validator curl -fsS -m 10 http://127.0.0.1:8080/healthz || true'

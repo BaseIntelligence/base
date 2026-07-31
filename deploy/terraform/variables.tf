@@ -46,7 +46,8 @@ variable "environments" {
   }))
   description = "Map of environment key -> droplet display name."
   default = {
-    staging = { name = "base-staging" }
-    prod    = { name = "base-prod" }
+    staging           = { name = "gbase-staging" }
+    staging_validator = { name = "gbase-staging-validator" }
+    prod              = { name = "gbase-prod" }
   }
 }

@@ -1,0 +1,12 @@
+# Staging master networking — publish gateway on the host so VPC peers can reach it.
+# Public firewall still only allows 22/80/443; VPC private 10.116.0.0/20 is free.
+services:
+  gateway:
+    ports:
+      - "8080:8080"
+  validator:
+    ports:
+      - "127.0.0.1:18080:8080"
+  agent-challenge:
+    ports:
+      - "127.0.0.1:18090:8090"
