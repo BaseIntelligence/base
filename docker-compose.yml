@@ -186,6 +186,10 @@ services:
       GBASE_CHALLENGE_BIND: 0.0.0.0:8090
       # Verify-specific Engine route: shared host sock is only on socket-proxy (RO).
       GBASE_DOCKER_BASE: http://socket-proxy:2375
+      # Host file must be owned uid 65532 (gbase) mode 0400 — see deploy/secrets/README.md
+      GBASE_CHALLENGE_SK_FILE: /run/gbase/challenge_sk
+    volumes:
+      - ./deploy/secrets/challenge_sk:/run/gbase/challenge_sk:ro
     expose:
       - "8090"
     healthcheck:

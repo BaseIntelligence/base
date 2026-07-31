@@ -53,4 +53,8 @@ deploy/pins/*.desired.env
 # Miner self-deploy runtime (install.sh)
 miner-runtime/
 /receipt_sk
-deploy/secrets/
+deploy/secrets/*
+!deploy/secrets/README.md
+
+__pycache__/
+*.pyc
