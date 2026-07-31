@@ -79,8 +79,8 @@ EOF
 # --- defaults (digest pins; override via env) ---
 DEFAULT_SOCKET_PROXY_IMAGE='tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459'
 # Placeholder GHCR pins match miner crate defaults until CI publishes real digests.
-DEFAULT_AGENT_IMAGE="${BASE_AGENT_IMAGE:-ghcr.io/baseintelligence/base/base-agent@sha256:f7d168546398a6e927a1e05132334ebda3bbb75fc03378952e3c3e2ea4d05e6f}"
-DEFAULT_ATTEST_HELPER_IMAGE="${BASE_ATTEST_HELPER_IMAGE:-ghcr.io/baseintelligence/base/base-attest-helper@sha256:b724cb8b67b8e6b4c89972b61ecf942d663cd0b80f87d87b423fe3406baa1b1c}"
+DEFAULT_AGENT_IMAGE="${BASE_AGENT_IMAGE:-ghcr.io/baseintelligence/base/base-agent@sha256:ecb0651043d2270956c86e6c2040cc76dc8bd946990eec5d487d35116e27d134}"
+DEFAULT_ATTEST_HELPER_IMAGE="${BASE_ATTEST_HELPER_IMAGE:-ghcr.io/baseintelligence/base/base-attest-helper@sha256:ea2be50266ce2ccef53045880361e5dfdcebe8346e59bd8cd4a6ae0dd08c0098}"
 
 HOTKEY_HEX="${BASE_MINER_HOTKEY_HEX:-}"
 MODEL_KEY_FILE="${BASE_MODEL_KEY_FILE:-}"
