@@ -292,7 +292,10 @@ fn receipt_public_key_published_and_stable_across_renders() {
     };
     let a = deploy_or_dry_run(&params).expect("a");
     let b = deploy_or_dry_run(&params).expect("b");
-    assert_eq!(a.compose_hash_hex, b.compose_hash_hex, "stable compose-hash");
+    assert_eq!(
+        a.compose_hash_hex, b.compose_hash_hex,
+        "stable compose-hash"
+    );
     let yaml = docker_compose_from_app_compose_json(&a.app_compose_json).expect("yaml");
     assert!(
         yaml.contains(&format!("GBASE_RECEIPT_PUBLIC_KEY: \"{pk}\"")),
@@ -326,8 +329,11 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
         "no PEM private markers"
     );
     // Env must not carry a secret-looking _SK value (only the path).
-    assert!(environment_block_has_no_secrets(&yaml), "env secrets leaked:
-{yaml}");
+    assert!(
+        environment_block_has_no_secrets(&yaml),
+        "env secrets leaked:
+{yaml}"
+    );
     // Path only — not raw key bytes
     for line in yaml.lines() {
         if line.contains("GBASE_RECEIPT_SK_FILE") {

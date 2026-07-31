@@ -281,7 +281,13 @@ fn reference_assertions_section_5_7_v2() {
         }
     );
     assert_eq!(
-        hex::encode(task_id_v2(1, 7, &miner11(), FIXTURE_PACK_ID, SCORING_VERSION)),
+        hex::encode(task_id_v2(
+            1,
+            7,
+            &miner11(),
+            FIXTURE_PACK_ID,
+            SCORING_VERSION
+        )),
         F1_V2_TASK_ID
     );
     assert_eq!(
@@ -382,19 +388,24 @@ fn truth_table_matrix_v2_correctness() {
         AttestationStatus::Parked,
         AttestationStatus::Missing,
     ] {
-        for mut case in [correct(att), {
-            let mut w = wrong.clone();
-            w.attestation = att;
-            w
-        }, {
-            let mut n = no_result.clone();
-            n.attestation = att;
-            n
-        }, {
-            let mut d = deadline.clone();
-            d.attestation = att;
-            d
-        }] {
+        for mut case in [
+            correct(att),
+            {
+                let mut w = wrong.clone();
+                w.attestation = att;
+                w
+            },
+            {
+                let mut n = no_result.clone();
+                n.attestation = att;
+                n
+            },
+            {
+                let mut d = deadline.clone();
+                d.attestation = att;
+                d
+            },
+        ] {
             case.attestation = att;
             assert_eq!(
                 score_from_outcome(&case),

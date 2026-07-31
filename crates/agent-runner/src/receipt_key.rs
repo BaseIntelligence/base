@@ -10,9 +10,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crypto::{
-    generate_mini_secret, public_key_from_mini_secret, secret_from_bytes, KEY_LEN,
-};
+use crypto::{generate_mini_secret, public_key_from_mini_secret, secret_from_bytes, KEY_LEN};
 use thiserror::Error;
 
 /// Env var naming the receipt secret file path inside the CVM.

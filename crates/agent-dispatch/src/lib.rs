@@ -21,9 +21,9 @@ mod receipt;
 mod wire;
 
 pub use receipt::{
-    patch_sha256, receipt_payload, sign_work_receipt, verify_task_result_bind,
-    verify_work_receipt, work_receipt_domain, BoundPatch, ExpectedReceiptBind, ReceiptBindError,
-    ReceiptError, SignedWorkReceiptV1, WorkReceiptBodyV1,
+    patch_sha256, receipt_payload, sign_work_receipt, verify_task_result_bind, verify_work_receipt,
+    work_receipt_domain, BoundPatch, ExpectedReceiptBind, ReceiptBindError, ReceiptError,
+    SignedWorkReceiptV1, WorkReceiptBodyV1,
 };
 pub use wire::{TaskDescriptorV1, TaskResultV1, TaskStatusV1, DISPATCH_PROTOCOL};
 
@@ -165,7 +165,10 @@ mod tests {
         let payload = receipt_payload(&body);
         let got = hex::encode(&payload);
         let want = GOLDEN_BODY_HEX.trim();
-        assert_eq!(got, want, "SCALE body drift — update fixture only with intent");
+        assert_eq!(
+            got, want,
+            "SCALE body drift — update fixture only with intent"
+        );
         // Encode path equals derive Encode.
         assert_eq!(payload, body.encode());
     }
@@ -249,9 +252,6 @@ mod tests {
     /// Domain tag is not ATTEST (D10 separation).
     #[test]
     fn work_receipt_domain_distinct_from_attest() {
-        assert_ne!(
-            work_receipt_domain().as_bytes(),
-            domain::ATTEST.as_bytes()
-        );
+        assert_ne!(work_receipt_domain().as_bytes(), domain::ATTEST.as_bytes());
     }
 }

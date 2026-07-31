@@ -44,8 +44,11 @@ pub const MAX_VERIFY_ATTEMPTS: u32 = 1 + MAX_VERIFY_RETRIES;
 pub fn is_operator_fault(err: &VerifyError) -> bool {
     matches!(
         err,
-        VerifyError::Timeout { .. } | VerifyError::Docker(_) | VerifyError::MalformedOutput { .. }
-            | VerifyError::Staging { .. } | VerifyError::MissingHeldOut { .. }
+        VerifyError::Timeout { .. }
+            | VerifyError::Docker(_)
+            | VerifyError::MalformedOutput { .. }
+            | VerifyError::Staging { .. }
+            | VerifyError::MissingHeldOut { .. }
     )
 }
 
@@ -77,10 +80,13 @@ pub fn map_verify_error(err: &VerifyError) -> ScoreOrAbsence {
         VerifyError::ApplyFailed { .. } | VerifyError::RewardZero { .. } => {
             ScoreOrAbsence::Score { value: 0 }
         }
-        VerifyError::Timeout { .. } | VerifyError::Docker(_) | VerifyError::MalformedOutput { .. }
-        | VerifyError::Staging { .. } | VerifyError::MissingHeldOut { .. } => {
-            ScoreOrAbsence::NoScore { reason: NoScoreReasonCode::ChallengeInternal }
-        }
+        VerifyError::Timeout { .. }
+        | VerifyError::Docker(_)
+        | VerifyError::MalformedOutput { .. }
+        | VerifyError::Staging { .. }
+        | VerifyError::MissingHeldOut { .. } => ScoreOrAbsence::NoScore {
+            reason: NoScoreReasonCode::ChallengeInternal,
+        },
     }
 }
 
@@ -120,13 +126,18 @@ pub fn cover_expected_verify_leaves(
     expected: &BTreeSet<Hotkey>,
     results: &BTreeMap<Hotkey, Result<Reward, VerifyError>>,
 ) -> BTreeMap<Hotkey, ScoreOrAbsence> {
-    expected.iter().map(|h| {
-        let soa = results.get(h).map_or_else(
-            || ScoreOrAbsence::NoScore { reason: NoScoreReasonCode::ChallengeInternal },
-            score_from_verify_result,
-        );
-        (*h, soa)
-    }).collect()
+    expected
+        .iter()
+        .map(|h| {
+            let soa = results.get(h).map_or_else(
+                || ScoreOrAbsence::NoScore {
+                    reason: NoScoreReasonCode::ChallengeInternal,
+                },
+                score_from_verify_result,
+            );
+            (*h, soa)
+        })
+        .collect()
 }
 
 /// Cap attempts by remaining seal budget so retries cannot outrun the deadline.
@@ -178,12 +189,16 @@ fn grade_loop(
             Err(e) => {
                 let retry = is_retryable_operator_fault(&e) && attempts < allowed;
                 last_operator = Some(e);
-                if !retry { break; }
+                if !retry {
+                    break;
+                }
             }
         }
     }
     last_operator.as_ref().map_or_else(
-        || ScoreOrAbsence::NoScore { reason: NoScoreReasonCode::ChallengeInternal },
+        || ScoreOrAbsence::NoScore {
+            reason: NoScoreReasonCode::ChallengeInternal,
+        },
         map_verify_error,
     )
 }

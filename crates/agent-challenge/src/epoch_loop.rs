@@ -31,7 +31,10 @@ pub struct RunnerCapacity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MinerEpochOutcome {
     /// Done before deadline.
-    Completed { pack_id: String, result: TaskResultV1 },
+    Completed {
+        pack_id: String,
+        result: TaskResultV1,
+    },
     /// Deadline hit.
     TimedOut { pack_id: String },
     /// Failed early.
@@ -120,7 +123,10 @@ impl ActiveSignerRegistry {
         epoch: u64,
     ) -> Result<SignerGuard, EpochLoopError> {
         let key = (challenge_id.to_owned(), epoch);
-        let mut g = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut g = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.contains_key(&key) {
             return Err(EpochLoopError::SignerAlreadyActive {
                 challenge_id: challenge_id.to_owned(),
@@ -128,13 +134,20 @@ impl ActiveSignerRegistry {
             });
         }
         g.insert(key.clone(), ());
-        Ok(SignerGuard { reg: Arc::clone(self), key })
+        Ok(SignerGuard {
+            reg: Arc::clone(self),
+            key,
+        })
     }
 }
 
 impl Drop for SignerGuard {
     fn drop(&mut self) {
-        self.reg.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.key);
+        self.reg
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
     }
 }
 
@@ -153,11 +166,14 @@ pub fn score_map_covering_expected(
     expected
         .iter()
         .map(|h| {
-            let soa = graded.get(h).cloned().unwrap_or_else(|| match outcomes.get(h) {
-                Some(MinerEpochOutcome::TimedOut { .. }) => ns(R::Timeout),
-                Some(MinerEpochOutcome::Failed { .. }) => ns(R::MinerError),
-                _ => ns(R::ChallengeInternal),
-            });
+            let soa = graded
+                .get(h)
+                .cloned()
+                .unwrap_or_else(|| match outcomes.get(h) {
+                    Some(MinerEpochOutcome::TimedOut { .. }) => ns(R::Timeout),
+                    Some(MinerEpochOutcome::Failed { .. }) => ns(R::MinerError),
+                    _ => ns(R::ChallengeInternal),
+                });
             (*h, soa)
         })
         .collect()

@@ -15,9 +15,9 @@ use agent_challenge::{
     emit_signed_leaf_set, hex32, intake_and_grade, public_key_from_secret, run_epoch_dispatch,
     score_map_covering_expected, submit_signed_leaf_set, ActiveSignerRegistry, EpochDispatchClient,
     EpochDispatchConfig, ExpectedParticipant, ExpectedReceiptBind, ExpectedSet, GatewayClient,
-    GatewayClientConfig, HarborVerifier, HarborVerifierConfig, MinerEpochOutcome, NoScoreReasonCode,
-    Reward, RunnerCapacity, ScoreOrAbsence, SubmitError, SubmitOutcome, Verifier, CHALLENGE_ID,
-    SCORE_MAX, SCORING_VERSION,
+    GatewayClientConfig, HarborVerifier, HarborVerifierConfig, MinerEpochOutcome,
+    NoScoreReasonCode, Reward, RunnerCapacity, ScoreOrAbsence, SubmitError, SubmitOutcome,
+    Verifier, CHALLENGE_ID, SCORE_MAX, SCORING_VERSION,
 };
 use agent_dispatch::{
     patch_sha256, sign_work_receipt, TaskDescriptorV1, TaskResultV1, TaskStatusV1,
@@ -263,11 +263,7 @@ impl EpochDispatchClient for FakeRunner {
             std::future::pending::<()>().await;
             unreachable!()
         }
-        let patch = if miner == SOLVER {
-            PATCH_FIXTURE
-        } else {
-            ""
-        };
+        let patch = if miner == SOLVER { PATCH_FIXTURE } else { "" };
         Ok(TaskResultV1 {
             protocol: DISPATCH_PROTOCOL.into(),
             challenge_id: descriptor.challenge_id,
@@ -290,9 +286,7 @@ fn harbor_enabled() -> bool {
 fn pack_dir() -> PathBuf {
     std::env::var("GBASE_VERIFY_PACK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136")
-        })
+        .unwrap_or_else(|_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"))
 }
 
 fn docker_base() -> String {
@@ -320,10 +314,7 @@ fn try_harbor_grade() -> Option<(u8, String)> {
         Err(e) => return Some((0, format!("load_pack err: {e}"))),
     };
     let solution = pack.held_out.solution_patch.clone()?;
-    let work = PathBuf::from(format!(
-        "/tmp/gbase-e2e-harbor-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let work = PathBuf::from(format!("/tmp/gbase-e2e-harbor-{}", uuid::Uuid::new_v4()));
     let v = HarborVerifier::new(HarborVerifierConfig {
         docker_base: docker_base(),
         environment_image: env_image(),
@@ -394,7 +385,11 @@ async fn s1_full_local_epoch_match_and_seal() {
     let intake = intake_and_grade(&exp_bind(EPOCH, SOLVER), &solver_result, &verifier, &pack)
         .expect("intake grade");
     assert_eq!(intake.leaf, ScoreOrAbsence::Score { value: SCORE_MAX });
-    assert_eq!(grade_calls.load(Ordering::SeqCst), 1, "verifier invoked once");
+    assert_eq!(
+        grade_calls.load(Ordering::SeqCst),
+        1,
+        "verifier invoked once"
+    );
 
     // Map dispatch outcomes → score map covering E (D24).
     let mut scores: BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> = BTreeMap::new();
@@ -418,8 +413,8 @@ async fn s1_full_local_epoch_match_and_seal() {
     // --- 3. Emit |E| signed leaves ---
     let challenge_secret = sk();
     let challenge_pk = public_key_from_secret(&challenge_secret).unwrap();
-    let leaves = emit_signed_leaf_set(&challenge_secret, EPOCH, &e_three(), &covered)
-        .expect("emit |E|");
+    let leaves =
+        emit_signed_leaf_set(&challenge_secret, EPOCH, &e_three(), &covered).expect("emit |E|");
     assert_eq!(leaves.len(), n, "sealed leaf count must equal |E|");
 
     // --- 4. Gateway submit + seal ---
@@ -589,10 +584,7 @@ async fn s1_full_local_epoch_match_and_seal() {
         fv_len,
         match_line,
     );
-    std::fs::create_dir_all(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent",
-    )
-    .ok();
+    std::fs::create_dir_all("/root/.omo/evidence/gbase-agent-challenge-deepagent").ok();
     std::fs::write(EVIDENCE_MATCH, &evidence).expect("write match evidence");
     eprintln!("EVIDENCE_MATCH written\n{evidence}");
 
@@ -693,10 +685,7 @@ async fn s2_untrusted_foreign_key_no_seal() {
         status,
         weights.len(),
     );
-    std::fs::create_dir_all(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent",
-    )
-    .ok();
+    std::fs::create_dir_all("/root/.omo/evidence/gbase-agent-challenge-deepagent").ok();
     std::fs::write(EVIDENCE_UNTRUSTED, &evidence).expect("write untrusted evidence");
     eprintln!("EVIDENCE_UNTRUSTED written\n{evidence}");
 

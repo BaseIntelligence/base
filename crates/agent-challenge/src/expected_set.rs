@@ -294,8 +294,7 @@ mod tests {
             "{tip_err}"
         );
 
-        let none_err =
-            expected_set_from_optional_pin(&policy, None, &chain).expect_err("none pin");
+        let none_err = expected_set_from_optional_pin(&policy, None, &chain).expect_err("none pin");
         assert_eq!(none_err, ExpectedSetError::BlockNotPinned);
 
         // Prove we did not fall through to tip: FakeChain tip metagraph would succeed if called.

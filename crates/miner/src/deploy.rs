@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use thiserror::Error;
 
 use crate::inspect::reject_raw_docker_sock_on_agent;
-use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV};
 pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
+use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV};
 
 /// Default digest-pinned agent image (placeholder pin until CI publishes real digests).
 pub const DEFAULT_AGENT_IMAGE: &str =

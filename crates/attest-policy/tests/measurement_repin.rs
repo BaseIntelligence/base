@@ -145,9 +145,7 @@ fn eval(body: &MeasurementsBody, entry: &MeasurementEntry) -> AttestOutcome {
 #[test]
 fn repin_stale_allowlist_rejects_new_compose() {
     let (old, _) = old_fixture_entry();
-    let body_old_only = MeasurementsBody {
-        entries: vec![old],
-    };
+    let body_old_only = MeasurementsBody { entries: vec![old] };
     let new_e = new_socket_proxy_entry();
     assert!(
         !body_old_only.allows_quote(
@@ -199,14 +197,9 @@ fn repin_dual_entry_still_accepts_old_compose() {
     let body = MeasurementsBody {
         entries: vec![old.clone(), new_e],
     };
-    assert!(body.allows_quote(
-        &old.mr_td,
-        &old.rtmr0,
-        &old.rtmr1,
-        &old.rtmr2,
-        &old.rtmr3,
-        &old_hash
-    ));
+    assert!(
+        body.allows_quote(&old.mr_td, &old.rtmr0, &old.rtmr1, &old.rtmr2, &old.rtmr3, &old_hash)
+    );
     // Real quote path through policy (mock crypto), same as real_fixtures happy path.
     let mut td = parse_tdx_quote_v4(QUOTE).expect("td").td_report;
     let b = binding();
@@ -236,14 +229,8 @@ fn repin_hard_cut_rejects_old_compose() {
     let body_new_only = MeasurementsBody {
         entries: vec![new_e],
     };
-    assert!(!body_new_only.allows_quote(
-        &old.mr_td,
-        &old.rtmr0,
-        &old.rtmr1,
-        &old.rtmr2,
-        &old.rtmr3,
-        &old_hash
-    ));
+    assert!(!body_new_only
+        .allows_quote(&old.mr_td, &old.rtmr0, &old.rtmr1, &old.rtmr2, &old.rtmr3, &old_hash));
     let mut td = parse_tdx_quote_v4(QUOTE).expect("td").td_report;
     let b = binding();
     td.report_data = attest_policy::compute_report_data(&b);

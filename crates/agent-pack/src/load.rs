@@ -6,16 +6,10 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::PackError;
-use crate::model::{
-    HarborPack, HeldOutMaterials, SCHEMA_VERSION_1_1,
-};
+use crate::model::{HarborPack, HeldOutMaterials, SCHEMA_VERSION_1_1};
 
 /// Files that must exist for a valid pack layout.
-const REQUIRED_REL_PATHS: &[&str] = &[
-    "task.toml",
-    "instruction.md",
-    "environment/Dockerfile",
-];
+const REQUIRED_REL_PATHS: &[&str] = &["task.toml", "instruction.md", "environment/Dockerfile"];
 
 #[derive(Debug, Deserialize)]
 struct RawTaskToml {
@@ -68,8 +62,8 @@ pub fn load_pack(dir: impl AsRef<Path>) -> Result<HarborPack, PackError> {
 
     let task_toml_path = root.join("task.toml");
     let task_toml_text = read_to_string(&task_toml_path)?;
-    let raw: RawTaskToml = toml::from_str(&task_toml_text)
-        .map_err(|e| PackError::Toml(e.to_string()))?;
+    let raw: RawTaskToml =
+        toml::from_str(&task_toml_text).map_err(|e| PackError::Toml(e.to_string()))?;
 
     if raw.schema_version != SCHEMA_VERSION_1_1 {
         return Err(PackError::UnsupportedSchema {
@@ -78,10 +72,8 @@ pub fn load_pack(dir: impl AsRef<Path>) -> Result<HarborPack, PackError> {
         });
     }
 
-    let base_commit_hash = require_nonempty(
-        raw.metadata.base_commit_hash.as_deref(),
-        "base_commit_hash",
-    )?;
+    let base_commit_hash =
+        require_nonempty(raw.metadata.base_commit_hash.as_deref(), "base_commit_hash")?;
     let task_id = require_nonempty(Some(raw.metadata.task_id.as_str()), "task_id")?;
     let repository_url =
         require_nonempty(Some(raw.metadata.repository_url.as_str()), "repository_url")?;
@@ -209,10 +201,9 @@ fn collect_files_rec(
         if ft.is_dir() {
             collect_files_rec(root, &path, out)?;
         } else if ft.is_file() {
-            let rel = path.strip_prefix(root).map_err(|_| PackError::Invalid(format!(
-                "path {} not under pack root",
-                path.display()
-            )))?;
+            let rel = path.strip_prefix(root).map_err(|_| {
+                PackError::Invalid(format!("path {} not under pack root", path.display()))
+            })?;
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             let bytes = read_to_bytes(&path)?;
             out.push((rel_str, bytes));
@@ -267,8 +258,12 @@ mod tests {
 
     #[test]
     fn pack_digest_stable_across_two_loads() {
-        let a = load_pack(fixture("minimal-ok")).expect("a").pack_digest_hex();
-        let b = load_pack(fixture("minimal-ok")).expect("b").pack_digest_hex();
+        let a = load_pack(fixture("minimal-ok"))
+            .expect("a")
+            .pack_digest_hex();
+        let b = load_pack(fixture("minimal-ok"))
+            .expect("b")
+            .pack_digest_hex();
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
     }

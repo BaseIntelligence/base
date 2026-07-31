@@ -318,15 +318,14 @@ pub fn load_production_trust_root(
             keys::TRUST_ROOT_DIR
         )));
     }
-    let (ch, ms) = trustroot::load_config_dir(&dir, 0, rotation_epochs).map_err(|e| {
-        GatewayError::Config(format!("load_config_dir {}: {e}", dir.display()))
-    })?;
-    let primary_ch = ch.primary().map_err(|e| {
-        GatewayError::Config(format!("challenges primary: {e}"))
-    })?;
-    let primary_ms = ms.primary().map_err(|e| {
-        GatewayError::Config(format!("measurements primary: {e}"))
-    })?;
+    let (ch, ms) = trustroot::load_config_dir(&dir, 0, rotation_epochs)
+        .map_err(|e| GatewayError::Config(format!("load_config_dir {}: {e}", dir.display())))?;
+    let primary_ch = ch
+        .primary()
+        .map_err(|e| GatewayError::Config(format!("challenges primary: {e}")))?;
+    let primary_ms = ms
+        .primary()
+        .map_err(|e| GatewayError::Config(format!("measurements primary: {e}")))?;
     let digest = trustroot::measurements_digest(&primary_ms.body);
     tracing::info!(
         dir = %dir.display(),

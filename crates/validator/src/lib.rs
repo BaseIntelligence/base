@@ -19,9 +19,9 @@
 pub mod app;
 pub mod attest;
 pub mod coordination;
-mod epoch_loop;
 pub mod crosscheck;
 pub mod epoch;
+mod epoch_loop;
 pub mod error;
 pub mod mirror;
 pub mod peers;
@@ -33,7 +33,6 @@ pub use app::{
     build_health_router, chain_ready_check, db_ready_from_fn, db_ready_ok, spawn_validator,
     spawn_validator_with_ok_db, RunningValidator, ValidatorRuntime,
 };
-pub use epoch_loop::{coordination_compare_once, format_match_line, spawn_coordination_loop};
 pub use coordination::{
     is_allowed_gateway_path, is_master_only_path, CoordinationClient, CoordinationError,
     ALLOWED_GATEWAY_PATHS, MASTER_ONLY_PATHS,
@@ -51,6 +50,7 @@ pub use dissent::{
     SharedDissentStore, SubmissionIntent, SubmissionSource,
 };
 pub use epoch::{epoch_from_block, epoch_from_chain, EpochSnapshot};
+pub use epoch_loop::{coordination_compare_once, format_match_line, spawn_coordination_loop};
 pub use error::ValidatorError;
 pub use mirror::{
     bundle_identity, mirror_router, parse_root_hex, root_hex, MemoryMirrorStore, SharedMirrorStore,

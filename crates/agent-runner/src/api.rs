@@ -161,24 +161,21 @@ async fn post_task(
     if descriptor.protocol != agent_dispatch::DISPATCH_PROTOCOL {
         return Err(ApiError::bad_request(
             "invalid_protocol",
-            format!(
-                "protocol must be {}",
-                agent_dispatch::DISPATCH_PROTOCOL
-            ),
+            format!("protocol must be {}", agent_dispatch::DISPATCH_PROTOCOL),
         ));
     }
-    let task_id = st.accept_task(descriptor).await.map_err(|_: CapacityExhausted| {
-        tracing::info!(
-            event = "runner_capacity_exhausted",
-            "dispatch refused: concurrency slots full"
-        );
-        ApiError::capacity_exhausted()
-    })?;
+    let task_id = st
+        .accept_task(descriptor)
+        .await
+        .map_err(|_: CapacityExhausted| {
+            tracing::info!(
+                event = "runner_capacity_exhausted",
+                "dispatch refused: concurrency slots full"
+            );
+            ApiError::capacity_exhausted()
+        })?;
     tracing::info!(event = "runner_task_accepted", %task_id, "task accepted");
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(TaskAccepted { task_id }),
-    ))
+    Ok((StatusCode::ACCEPTED, Json(TaskAccepted { task_id })))
 }
 
 async fn get_task(

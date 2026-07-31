@@ -8,9 +8,9 @@ use std::sync::Arc;
 use agent_challenge::{
     attempts_within_seal_budget, cover_expected_verify_leaves, grade_to_score_or_absence,
     grade_to_score_or_absence_budgeted, is_operator_fault, map_reward, map_verify_error,
-    score_from_outcome, AttestationStatus, CallOutcome, Reward, ScoreInputs, ScoreOrAbsence,
-    Verifier, VerifyError, ZeroReason, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID, MAX_VERIFY_ATTEMPTS,
-    MAX_VERIFY_RETRIES, SCORE_MAX, NoScoreReasonCode,
+    score_from_outcome, AttestationStatus, CallOutcome, NoScoreReasonCode, Reward, ScoreInputs,
+    ScoreOrAbsence, Verifier, VerifyError, ZeroReason, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID,
+    MAX_VERIFY_ATTEMPTS, MAX_VERIFY_RETRIES, SCORE_MAX,
 };
 use agent_pack::{HarborPack, HeldOutMaterials};
 use docker_engine::DockerError;
@@ -86,9 +86,7 @@ fn map_never_emits_park_or_attestation_not_verified() {
         malformed(),
         apply_failed(),
         VerifyError::RewardZero {
-            reason: ZeroReason::Unspecified {
-                detail: "z".into(),
-            },
+            reason: ZeroReason::Unspecified { detail: "z".into() },
         },
     ];
     for err in samples {

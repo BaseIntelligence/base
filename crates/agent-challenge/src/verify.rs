@@ -340,11 +340,10 @@ fn parse_reward_from_logs(logs: &str) -> Result<GradeOutcome, VerifyError> {
 }
 
 fn parse_reward_json(text: &str) -> Result<GradeOutcome, VerifyError> {
-    let rj: RewardJson = serde_json::from_str(text.trim()).map_err(|e| {
-        VerifyError::MalformedOutput {
+    let rj: RewardJson =
+        serde_json::from_str(text.trim()).map_err(|e| VerifyError::MalformedOutput {
             message: format!("reward.json: {e}"),
-        }
-    })?;
+        })?;
     let reward = Reward::try_new(rj.reward)?;
     let apply_failed = rj.apply_failed.unwrap_or(0) != 0;
     let f2p_total = rj.f2p_total.unwrap_or(0);
@@ -428,10 +427,8 @@ fn stage_workdir(
         });
     }
 
-    fs::write(artifacts.join("model.patch"), model_patch).map_err(|e| {
-        VerifyError::Staging {
-            message: format!("model.patch: {e}"),
-        }
+    fs::write(artifacts.join("model.patch"), model_patch).map_err(|e| VerifyError::Staging {
+        message: format!("model.patch: {e}"),
     })?;
 
     Ok(Stage {
@@ -533,9 +530,7 @@ mod tests {
     fn timeout_variant_distinct_from_reward_zero() {
         let t = VerifyError::Timeout { timeout_sec: 5 };
         let z = VerifyError::RewardZero {
-            reason: ZeroReason::Unspecified {
-                detail: "x".into(),
-            },
+            reason: ZeroReason::Unspecified { detail: "x".into() },
         };
         assert_ne!(format!("{t}"), format!("{z}"));
         assert!(matches!(t, VerifyError::Timeout { .. }));

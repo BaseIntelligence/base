@@ -171,7 +171,8 @@ impl AgentV1Challenge {
     }
 
     fn entry(body: &ChallengesBody) -> Result<&ChallengeEntry, ChallengeError> {
-        body.get(CHALLENGE_ID_BYTES).ok_or_else(|| ChallengeError::UnknownChallenge(CHALLENGE_ID.into()))
+        body.get(CHALLENGE_ID_BYTES)
+            .ok_or_else(|| ChallengeError::UnknownChallenge(CHALLENGE_ID.into()))
     }
     fn policy(body: &ChallengesBody) -> Result<&ParticipantPolicy, ChallengeError> {
         Ok(&Self::entry(body)?.policy)
@@ -231,14 +232,17 @@ impl Challenge for AgentV1Challenge {
         attest: &dyn AttestationLookup,
     ) -> Result<BTreeMap<Hotkey, ScoreOrAbsence>, ChallengeError> {
         let expected = self.expected_set(ctx)?;
-        Ok(expected.iter().map(|h| {
-            let call = calls.get(h).cloned().unwrap_or(MinerCallOutcome::Observed {
-                duration_ms: 0,
-                outcome: CallOutcome::ChallengeInternal,
-                expected_model_patch: Vec::new(),
-            });
-            (*h, self.score_one(ctx, *h, &call, attest))
-        }).collect())
+        Ok(expected
+            .iter()
+            .map(|h| {
+                let call = calls.get(h).cloned().unwrap_or(MinerCallOutcome::Observed {
+                    duration_ms: 0,
+                    outcome: CallOutcome::ChallengeInternal,
+                    expected_model_patch: Vec::new(),
+                });
+                (*h, self.score_one(ctx, *h, &call, attest))
+            })
+            .collect())
     }
 
     fn sign_leaf(
@@ -293,7 +297,9 @@ pub fn correct_http200_fixture(netuid: u16, epoch: u64, miner: &Hotkey) -> CallO
 /// Helper: `NoScore` reason for missing call coverage (D24).
 #[must_use]
 pub fn silence_is_bug_leaf() -> ScoreOrAbsence {
-    ScoreOrAbsence::NoScore { reason: NoScoreReasonCode::ChallengeInternal }
+    ScoreOrAbsence::NoScore {
+        reason: NoScoreReasonCode::ChallengeInternal,
+    }
 }
 
 /// Sign exactly one leaf per `h ∈ expected`. Refuses subset/superset (D24).
@@ -318,10 +324,14 @@ pub fn emit_signed_leaf_set(
     if !extra.is_empty() {
         return Err(LeafEmitError::UnknownHotkeys(extra.join(",")));
     }
-    scores.iter().map(|(h, s)| {
-        make_signed_leaf(secret, CHALLENGE_ID_BYTES, *h, epoch, s.clone())
-            .map(|l| (*h, l)).map_err(|e| LeafEmitError::Sign(e.to_string()))
-    }).collect()
+    scores
+        .iter()
+        .map(|(h, s)| {
+            make_signed_leaf(secret, CHALLENGE_ID_BYTES, *h, epoch, s.clone())
+                .map(|l| (*h, l))
+                .map_err(|e| LeafEmitError::Sign(e.to_string()))
+        })
+        .collect()
 }
 
 /// Cover `E` from operator-side verify results (Harbor grade).
@@ -335,7 +345,10 @@ pub fn score_epoch_from_verify(
     ctx: &EpochCtx,
     results: &BTreeMap<Hotkey, Result<Reward, VerifyError>>,
 ) -> Result<BTreeMap<Hotkey, ScoreOrAbsence>, ChallengeError> {
-    Ok(cover_expected_verify_leaves(&challenge.expected_set(ctx)?, results))
+    Ok(cover_expected_verify_leaves(
+        &challenge.expected_set(ctx)?,
+        results,
+    ))
 }
 
 /// Map one verify grade into a leaf (no retries).
@@ -490,9 +503,7 @@ mod tests {
                 }),
                 "hotkey must not be silent"
             );
-            let leaf = ch
-                .sign_leaf(&sk, h, 7, scores[&h].clone())
-                .expect("sign");
+            let leaf = ch.sign_leaf(&sk, h, 7, scores[&h].clone()).expect("sign");
             assert!(matches!(
                 leaf.score_or_absence,
                 ScoreOrAbsence::NoScore {

@@ -236,7 +236,10 @@ mod tests {
         let m = miner11();
         let v1 = task_id(FIX_NETUID, FIX_EPOCH, &m);
         let v2 = task_id_v2(FIX_NETUID, FIX_EPOCH, &m, FIX_PACK, SCORING_VERSION_V2);
-        assert_ne!(v1, v2, "v1 golden must not equal v2 for same netuid/epoch/hotkey");
+        assert_ne!(
+            v1, v2,
+            "v1 golden must not equal v2 for same netuid/epoch/hotkey"
+        );
     }
 
     #[test]

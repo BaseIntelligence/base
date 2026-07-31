@@ -32,7 +32,6 @@ pub use health::{check_readyz, wait_readyz, HealthError, ScriptedHealth};
 pub use machine::{tick, HealthProbe, HttpHealthProbe, Phase, TickOutcome, Updater};
 pub use pin_store::{commit_pins, load_pins, save_current, save_previous, PinRecord, PinStore};
 
-
 #[cfg(test)]
 mod rollable_lockstep_tests {
     use super::{is_rollable_service, ROLLABLE_SERVICES};
@@ -45,5 +44,4 @@ mod rollable_lockstep_tests {
         assert!(!is_rollable_service("gbase-agent"));
         assert!(!is_rollable_service("socket-proxy"));
     }
-
 }

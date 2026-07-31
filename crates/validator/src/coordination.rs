@@ -286,7 +286,6 @@ impl CoordinationClient {
 /// Shared handle for readiness / runtime.
 pub type SharedCoordination = Arc<CoordinationClient>;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

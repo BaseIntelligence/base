@@ -105,15 +105,9 @@ pub fn verify_work_receipt(
     signed: &SignedWorkReceiptV1,
 ) -> Result<(), ReceiptError> {
     let payload = receipt_payload(&signed.body);
-    verify_raw(
-        public,
-        work_receipt_domain(),
-        &payload,
-        &signed.signature,
-    )?;
+    verify_raw(public, work_receipt_domain(), &payload, &signed.signature)?;
     Ok(())
 }
-
 
 /// Expected bind fields for challenge-side intake (I5).
 #[derive(Debug, Clone, PartialEq, Eq)]

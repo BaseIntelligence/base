@@ -182,14 +182,7 @@ fn trust_root_dir() -> PathBuf {
 fn build_runtime_trust(
     netuid: u16,
     rotation_epochs: u32,
-) -> Result<
-    (
-        AttestState,
-        LocalTrustRoot,
-        Arc<SyncChain<FakeChain>>,
-    ),
-    String,
-> {
+) -> Result<(AttestState, LocalTrustRoot, Arc<SyncChain<FakeChain>>), String> {
     let dir = trust_root_dir();
     if !dir.is_dir() {
         return Err(format!(

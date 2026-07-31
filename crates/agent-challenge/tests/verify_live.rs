@@ -6,9 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use agent_challenge::{
-    HarborVerifier, HarborVerifierConfig, Verifier, VerifyError, ZeroReason,
-};
+use agent_challenge::{HarborVerifier, HarborVerifierConfig, Verifier, VerifyError, ZeroReason};
 use agent_pack::load_pack;
 use docker_engine::{Allowlist, AllowlistClient, DockerApi, RunSpec, OWNED_NAME_PREFIX};
 
@@ -26,9 +24,7 @@ fn live_enabled() -> bool {
 fn pack_dir() -> PathBuf {
     std::env::var("GBASE_VERIFY_PACK")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136")
-        })
+        .unwrap_or_else(|_| PathBuf::from("/tmp/da_m18c_hf_pull/tasks/realpr-more-itertools-1136"))
 }
 
 fn docker_base() -> String {
@@ -115,7 +111,11 @@ fn invalid_and_p2p_break_distinct_zero_reasons() {
         other => panic!("empty should be TestsFailed reward0, got {other:?}"),
     }
 
-    assert_eq!(v.owned_count().expect("owned"), 0, "no surviving containers");
+    assert_eq!(
+        v.owned_count().expect("owned"),
+        0,
+        "no surviving containers"
+    );
     let _ = std::fs::remove_dir_all(work);
 }
 
@@ -135,8 +135,9 @@ fn timeout_is_typed_not_reward_zero() {
     let err = client
         .run_owned(&RunSpec {
             name: name.clone(),
-            image: "busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
-                .into(),
+            image:
+                "busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+                    .into(),
             cmd: vec!["sh".into(), "-c".into(), "sleep 30".into()],
             binds: vec![],
             env: vec![],

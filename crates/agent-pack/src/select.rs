@@ -127,7 +127,8 @@ mod tests {
             let id = select_pack(epoch, &hk, &cat).expect("ok");
             if let Some(ref p) = prev {
                 assert_ne!(
-                    p, &id,
+                    p,
+                    &id,
                     "consecutive repeat at epoch {epoch}: {}",
                     id.as_str()
                 );

@@ -117,9 +117,7 @@ pub fn load_catalog(cache_dir: impl AsRef<Path>) -> Result<Catalog, CatalogError
         return Err(CatalogError::Empty);
     }
 
-    manifest
-        .entries
-        .sort_by(|a, b| a.pack_id.cmp(&b.pack_id));
+    manifest.entries.sort_by(|a, b| a.pack_id.cmp(&b.pack_id));
 
     let expected_digest = recompute_digest(&manifest.pin, &manifest.entries);
     if expected_digest != manifest.catalog_digest {

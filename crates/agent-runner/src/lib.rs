@@ -38,13 +38,11 @@ pub use auth::{
     dispatch_auth_payload, sign_dispatch_request, unix_now_ms, verify_and_consume_dispatch,
     DispatchAuthError, SignedDispatchRequest, DEFAULT_DISPATCH_NONCE_TTL,
 };
-pub use egress::{
-    AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE, EGRESS_POSTURE_OPEN_LABEL,
-};
+pub use egress::{AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE, EGRESS_POSTURE_OPEN_LABEL};
 pub use executor::{
     count_agent_containers, execute_pack, load_stripped, reference_agent_cmd, resolve_timeout_sec,
-    DockerExecConfig, ExecOutcome, ExecutionBackend, AGENT_CONTAINER_PREFIX, MODEL_KEY_CONTAINER_PATH,
-    MODEL_KEY_FILE_ENV, MODEL_PATCH_REL,
+    DockerExecConfig, ExecOutcome, ExecutionBackend, AGENT_CONTAINER_PREFIX,
+    MODEL_KEY_CONTAINER_PATH, MODEL_KEY_FILE_ENV, MODEL_PATCH_REL,
 };
 pub use receipt_key::{
     load_or_generate, load_required, receipt_sk_path_from_env, ReceiptKey, ReceiptKeyError,
@@ -121,11 +119,7 @@ mod tests {
         })
     }
 
-    fn auth_state_with_receipt(
-        max: u32,
-        pk: [u8; KEY_LEN],
-        receipt: ReceiptKey,
-    ) -> RunnerState {
+    fn auth_state_with_receipt(max: u32, pk: [u8; KEY_LEN], receipt: ReceiptKey) -> RunnerState {
         RunnerState::new(RunnerConfig {
             max_concurrency: max,
             auth_enabled: true,
@@ -199,10 +193,7 @@ mod tests {
         String::from_utf8(bytes.to_vec()).expect("utf8")
     }
 
-    async fn post_plain(
-        state: &RunnerState,
-        desc: &TaskDescriptorV1,
-    ) -> axum::response::Response {
+    async fn post_plain(state: &RunnerState, desc: &TaskDescriptorV1) -> axum::response::Response {
         let body = serde_json::to_vec(desc).expect("ser");
         app(state.clone())
             .oneshot(
@@ -259,7 +250,10 @@ mod tests {
     #[test]
     fn egress_default_is_open_documented_label() {
         assert_eq!(DEFAULT_AGENT_EGRESS_POSTURE, AgentEgressPosture::Open);
-        assert_eq!(DEFAULT_AGENT_EGRESS_POSTURE.as_str(), EGRESS_POSTURE_OPEN_LABEL);
+        assert_eq!(
+            DEFAULT_AGENT_EGRESS_POSTURE.as_str(),
+            EGRESS_POSTURE_OPEN_LABEL
+        );
         assert!(!DEFAULT_AGENT_EGRESS_POSTURE.network_disabled());
         let st = open_state(1);
         assert_eq!(st.egress_posture(), AgentEgressPosture::Open);
@@ -539,14 +533,8 @@ mod tests {
         let state = auth_state_with_receipt(1, pk, receipt);
         let router = app(state.clone());
         let now = unix_now_ms();
-        let req = sign_dispatch_request(
-            &sk,
-            &pk,
-            sample_desc(),
-            [0x10; KEY_LEN],
-            now + 60_000,
-        )
-        .expect("sign");
+        let req = sign_dispatch_request(&sk, &pk, sample_desc(), [0x10; KEY_LEN], now + 60_000)
+            .expect("sign");
         let body = serde_json::to_vec(&req).expect("ser");
         let res = router
             .oneshot(
@@ -573,16 +561,12 @@ mod tests {
         let result = v.get("result").expect("result present when complete");
         assert_eq!(result["protocol"], DISPATCH_PROTOCOL);
         assert_eq!(result["status"], "completed");
-        let patch = result["model_patch"]
-            .as_str()
-            .expect("model_patch string");
+        let patch = result["model_patch"].as_str().expect("model_patch string");
         assert!(
             patch.contains("diff --git"),
             "stub patch should look like a unified diff: {patch}"
         );
-        let sig_hex = result["receipt_sig_hex"]
-            .as_str()
-            .expect("receipt_sig_hex");
+        let sig_hex = result["receipt_sig_hex"].as_str().expect("receipt_sig_hex");
         assert_eq!(sig_hex.len(), 128);
         assert_ne!(sig_hex, "00".repeat(64), "must not be all-zero stub");
         let mut sig = [0u8; 64];
@@ -611,14 +595,9 @@ mod tests {
         let (sk, pk) = mini_pair(4);
         let state = auth_state(2, pk);
         let now = unix_now_ms();
-        let envelope = sign_dispatch_request(
-            &sk,
-            &pk,
-            sample_desc(),
-            [0x20; KEY_LEN],
-            now + 60_000,
-        )
-        .expect("sign");
+        let envelope =
+            sign_dispatch_request(&sk, &pk, sample_desc(), [0x20; KEY_LEN], now + 60_000)
+                .expect("sign");
         let body = serde_json::to_vec(&envelope).expect("ser");
 
         let res1 = app(state.clone())
@@ -680,7 +659,10 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let v = body_json(res).await;
         assert_eq!(v["code"], "unauthorized");
-        assert!(!v["error"].as_str().unwrap_or("").contains(&envelope.signature_hex));
+        assert!(!v["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&envelope.signature_hex));
         assert_eq!(state.task_count().await, 0);
     }
 

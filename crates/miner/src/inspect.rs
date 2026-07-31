@@ -76,10 +76,8 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
                 return false;
             }
             // Reject raw 64-byte hex that is NOT a known measured public field
-            let measured_public_hex = matches!(
-                key,
-                "GBASE_LAUNCH_TOKEN_HASH" | "GBASE_RECEIPT_PUBLIC_KEY"
-            );
+            let measured_public_hex =
+                matches!(key, "GBASE_LAUNCH_TOKEN_HASH" | "GBASE_RECEIPT_PUBLIC_KEY");
             if !measured_public_hex
                 && value.len() == 64
                 && value.chars().all(|c| c.is_ascii_hexdigit())
@@ -99,9 +97,7 @@ pub fn environment_block_has_no_secrets(docker_compose_yaml: &str) -> bool {
 
 /// Agent service mounts raw `/var/run/docker.sock` (forbidden; use measured socket-proxy).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error(
-    "agent service must not mount /var/run/docker.sock (use measured {SOCKET_PROXY_SERVICE})"
-)]
+#[error("agent service must not mount /var/run/docker.sock (use measured {SOCKET_PROXY_SERVICE})")]
 pub struct RawDockerSockOnAgent;
 
 /// True when the `agent` service block mounts `/var/run/docker.sock`.

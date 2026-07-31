@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use agent_challenge::{
     emit_signed_leaf_set, score_map_covering_expected, AttestationStatus, CallOutcome,
-    LeafEmitError, MinerEpochOutcome, NoScoreReasonCode, ScoreOrAbsence, SCORE_MAX, CHALLENGE_ID,
+    LeafEmitError, MinerEpochOutcome, NoScoreReasonCode, ScoreOrAbsence, CHALLENGE_ID, SCORE_MAX,
 };
 use agent_dispatch::{TaskResultV1, TaskStatusV1, DISPATCH_PROTOCOL};
 use crypto::KEY_LEN;
@@ -65,7 +65,11 @@ fn s1_leaf_completeness_four_distinct_outcomes() {
         kinds.insert(format!("{:?}", leaf.score_or_absence));
         assert_ne!(leaf.challenge_sig, [0u8; 64], "must be signed");
     }
-    assert_eq!(kinds.len(), 4, "four distinct ScoreOrAbsence outcomes: {kinds:?}");
+    assert_eq!(
+        kinds.len(),
+        4,
+        "four distinct ScoreOrAbsence outcomes: {kinds:?}"
+    );
 }
 
 /// S2: proper subset of E → named missing hotkey; nothing emitted (Err, no partial).
@@ -80,7 +84,10 @@ fn s2_subset_refused_names_missing_hotkey() {
         LeafEmitError::MissingHotkeys(s) => {
             let hx = hex::encode(UNREACH);
             assert!(s.contains(&hx), "must name missing hotkey {hx}: {s}");
-            assert!(!s.contains(&hex::encode(SOLVER)), "must not list present keys as missing");
+            assert!(
+                !s.contains(&hex::encode(SOLVER)),
+                "must not list present keys as missing"
+            );
         }
         other => panic!("expected MissingHotkeys, got {other:?}"),
     }

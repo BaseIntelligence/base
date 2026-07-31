@@ -266,7 +266,6 @@ async fn get_weights_latest(State(st): State<GatewayState>) -> Response {
     }
 }
 
-
 /// JSON body for `POST /v1/admin/seal`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -338,10 +337,7 @@ pub fn admin_seal_router(state: GatewayState) -> Router {
         .with_state(state)
 }
 
-async fn post_admin_seal(
-    State(st): State<GatewayState>,
-    Json(req): Json<SealRequest>,
-) -> Response {
+async fn post_admin_seal(State(st): State<GatewayState>, Json(req): Json<SealRequest>) -> Response {
     let gateway_secret = match load_gateway_secret() {
         Ok(s) => s,
         Err(e) => {
@@ -353,9 +349,7 @@ async fn post_admin_seal(
         }
     };
     let netuid = req.netuid.unwrap_or(st.seal_netuid);
-    let block_b = req
-        .block_b
-        .unwrap_or(st.seal_current_block.max(10));
+    let block_b = req.block_b.unwrap_or(st.seal_current_block.max(10));
     let mut hotkeys = st.seal_hotkeys.clone();
     if hotkeys.is_empty() {
         hotkeys.push(st.seal_owner_hotkey.to_vec());

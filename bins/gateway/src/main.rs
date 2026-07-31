@@ -46,10 +46,11 @@ async fn main() -> ExitCode {
         }
         _ => {
             // fake_owner (default): owner hotkey == configured gateway hotkey.
-            let hotkeys = gateway::parse_fake_metagraph_hotkeys(&config.hotkey).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "bad GBASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
-                vec![config.hotkey.to_vec()]
-            });
+            let hotkeys =
+                gateway::parse_fake_metagraph_hotkeys(&config.hotkey).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "bad GBASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
+                    vec![config.hotkey.to_vec()]
+                });
             let fc = FakeChainConfig {
                 netuid: config.netuid,
                 owner_hotkey: config.hotkey.to_vec(),

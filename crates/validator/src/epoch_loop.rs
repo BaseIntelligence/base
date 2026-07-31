@@ -125,8 +125,9 @@ mod tests {
     use chain::{FakeChain, FakeChainConfig};
     use crypto::{secret_from_bytes, KEY_LEN};
     use gateway::{
-        seal_epoch, ChallengeEntry, ChallengesBody, MemoryBundleStore, MemoryRawWeightStore,
-        BundleStore, ParticipantPolicy, RawWeightRow, RawWeightStore, SealParams, BPS_DENOM,
+        seal_epoch, BundleStore, ChallengeEntry, ChallengesBody, MemoryBundleStore,
+        MemoryRawWeightStore, ParticipantPolicy, RawWeightRow, RawWeightStore, SealParams,
+        BPS_DENOM,
     };
     use sha2::{Digest, Sha256};
     use trustroot::{measurements_digest, MeasurementsBody};
@@ -286,13 +287,7 @@ mod tests {
             } => {
                 assert_eq!(e, epoch);
                 assert_eq!(merkle_root, bundle.body.merkle_root);
-                let line = format_match_line(
-                    e,
-                    &merkle_root,
-                    &[0u8; 32],
-                    1,
-                    1,
-                );
+                let line = format_match_line(e, &merkle_root, &[0u8; 32], 1, 1);
                 assert!(line.contains("Match epoch=77"));
             }
             other => panic!("expected Match, got {other:?}"),

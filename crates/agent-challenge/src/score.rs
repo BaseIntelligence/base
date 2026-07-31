@@ -89,7 +89,9 @@ pub enum CallOutcome {
 pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
     use NoScoreReasonCode as R;
     if input.attestation != AttestationStatus::Verified {
-        return ScoreOrAbsence::NoScore { reason: R::AttestationNotVerified };
+        return ScoreOrAbsence::NoScore {
+            reason: R::AttestationNotVerified,
+        };
     }
     let _ = input.duration_ms; // v2: no latency decay
     let ns = |r| ScoreOrAbsence::NoScore { reason: r };
@@ -100,12 +102,24 @@ pub fn score_from_outcome(input: &ScoreInputs) -> ScoreOrAbsence {
         CallOutcome::RateLimited => ns(R::RateLimited),
         CallOutcome::ChallengeInternal => ns(R::ChallengeInternal),
         CallOutcome::Http200 {
-            challenge_id, epoch, task_id: tid, answer_digest: ans, agent_version,
+            challenge_id,
+            epoch,
+            task_id: tid,
+            answer_digest: ans,
+            agent_version,
         } => {
-            let exp_tid = task_id_v2(input.netuid, input.epoch, &input.miner_hotkey, &input.pack_id, SCORING_VERSION);
+            let exp_tid = task_id_v2(
+                input.netuid,
+                input.epoch,
+                &input.miner_hotkey,
+                &input.pack_id,
+                SCORING_VERSION,
+            );
             let exp_ans = answer_digest_v2(&input.expected_model_patch);
-            if challenge_id != CHALLENGE_ID || *epoch != input.epoch
-                || tid.as_slice() != exp_tid.as_slice() || agent_version != "1"
+            if challenge_id != CHALLENGE_ID
+                || *epoch != input.epoch
+                || tid.as_slice() != exp_tid.as_slice()
+                || agent_version != "1"
             {
                 return ns(R::InvalidResponse);
             }

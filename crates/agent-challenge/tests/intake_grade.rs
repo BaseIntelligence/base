@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use agent_challenge::{
     hex32, intake_and_grade, verify_intake_receipt, ExpectedReceiptBind, IntakeOk,
-    ReceiptBindError, Reward, ScoreOrAbsence, Verifier, SCORE_MAX, CHALLENGE_ID, SCORING_VERSION,
+    ReceiptBindError, Reward, ScoreOrAbsence, Verifier, CHALLENGE_ID, SCORE_MAX, SCORING_VERSION,
 };
 use agent_dispatch::{
     patch_sha256, sign_work_receipt, TaskResultV1, TaskStatusV1, WorkReceiptBodyV1,
@@ -172,7 +172,11 @@ fn s2_s3_receipt_mismatch_rejected_pre_grade() {
     bad_patch.model_patch = Some("diff --git a/x b/x\n+TAMPERED\n".into());
     let err = intake_and_grade(&e, &bad_patch, &v, &pack).expect_err("patch mismatch");
     assert_eq!(err, ReceiptBindError::PatchHashMismatch);
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "no grade on patch mismatch");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no grade on patch mismatch"
+    );
 
     // S3: receipt/result epoch wrong vs expected.
     let wrong_epoch_result = signed_result(epoch + 1, MINER_A, PATCH);
@@ -187,7 +191,11 @@ fn s2_s3_receipt_mismatch_rejected_pre_grade() {
         ),
         "got {err2:?}"
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "no grade on epoch mismatch");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no grade on epoch mismatch"
+    );
 
     let report = format!(
         "patch_mismatch={err:?}\nepoch_mismatch={err2:?}\nverifier_calls={}\n",
@@ -215,15 +223,23 @@ fn s4_miner_isolation() {
         calls: Arc::clone(&calls_b),
         reward: 1,
     };
-    let a: IntakeOk = intake_and_grade(&exp(epoch, MINER_A), &signed_result(epoch, MINER_A, PATCH), &fail_a, &pack)
-        .expect("a");
-    let b: IntakeOk = intake_and_grade(&exp(epoch, MINER_B), &signed_result(epoch, MINER_B, PATCH), &ok_b, &pack)
-        .expect("b");
+    let a: IntakeOk = intake_and_grade(
+        &exp(epoch, MINER_A),
+        &signed_result(epoch, MINER_A, PATCH),
+        &fail_a,
+        &pack,
+    )
+    .expect("a");
+    let b: IntakeOk = intake_and_grade(
+        &exp(epoch, MINER_B),
+        &signed_result(epoch, MINER_B, PATCH),
+        &ok_b,
+        &pack,
+    )
+    .expect("b");
     assert_eq!(a.leaf, ScoreOrAbsence::Score { value: 0 });
     assert_eq!(b.leaf, ScoreOrAbsence::Score { value: SCORE_MAX });
     assert_eq!(calls_a.load(Ordering::SeqCst), 1);
     assert_eq!(calls_b.load(Ordering::SeqCst), 1);
     assert_ne!(a.leaf, b.leaf);
 }
-
-

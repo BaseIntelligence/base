@@ -154,13 +154,7 @@ pub fn verify_and_consume_dispatch(
     }
 
     let payload = dispatch_auth_payload(&req.descriptor, &nonce, req.expires_at_unix_ms)?;
-    verify_raw(
-        trusted_pubkey,
-        domain::DISPATCH,
-        &payload,
-        &signature,
-    )
-    .map_err(crypto_to_unauth)?;
+    verify_raw(trusted_pubkey, domain::DISPATCH, &payload, &signature).map_err(crypto_to_unauth)?;
 
     let expires_at = now_instant + Duration::from_millis(remaining_ms);
     match nonces.register(nonce, expires_at) {
@@ -257,8 +251,7 @@ mod tests {
         let nonce = [0x44_u8; KEY_LEN];
         let now_ms = 1_700_000_000_000_u64;
         let exp = now_ms + 60_000;
-        let req =
-            sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
+        let req = sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
         let mut store = MemoryNonceStore::new();
         verify_and_consume_dispatch(
             &pk,
@@ -292,8 +285,7 @@ mod tests {
         // Sign with foreign secret but claim trusted pubkey in envelope → still fails verify
         // (signer field must match trusted; we set signer to foreign public).
         let (sk_f, pk_f) = (sk_foreign, mini_pair(0x55).1);
-        let req =
-            sign_dispatch_request(&sk_f, &pk_f, sample_desc(), nonce, exp).expect("sign");
+        let req = sign_dispatch_request(&sk_f, &pk_f, sample_desc(), nonce, exp).expect("sign");
         let mut store = MemoryNonceStore::new();
         let err = verify_and_consume_dispatch(
             &pk_trust,
@@ -314,8 +306,7 @@ mod tests {
         let nonce = [0x99_u8; KEY_LEN];
         let now_ms = 1_700_000_000_000_u64;
         let exp = now_ms; // not strictly after now
-        let req =
-            sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
+        let req = sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
         let mut store = MemoryNonceStore::new();
         let err = verify_and_consume_dispatch(
             &pk,
@@ -335,8 +326,7 @@ mod tests {
         let nonce = [0xcd_u8; KEY_LEN];
         let now_ms = 1_700_000_000_000_u64;
         let exp = now_ms + 60_000;
-        let mut req =
-            sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
+        let mut req = sign_dispatch_request(&sk, &pk, sample_desc(), nonce, exp).expect("sign");
         // Flip one nibble of the signature.
         let mut chars: Vec<char> = req.signature_hex.chars().collect();
         chars[0] = if chars[0] == '0' { '1' } else { '0' };
@@ -353,7 +343,10 @@ mod tests {
         .expect_err("bad sig");
         assert_eq!(err, DispatchAuthError::Unauthorized);
         let msg = err.to_string();
-        assert!(!msg.contains("signature"), "must not leak sig detail: {msg}");
+        assert!(
+            !msg.contains("signature"),
+            "must not leak sig detail: {msg}"
+        );
         assert!(!req.signature_hex.is_empty()); // request still has it; error must not
     }
 }

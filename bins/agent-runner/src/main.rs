@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use agent_runner::{
     app, clamp_concurrency, load_or_generate, load_required, receipt_sk_path_from_env,
-    AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE, DockerExecConfig, ExecutionBackend,
-    RunnerConfig, RunnerState, DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH,
+    AgentEgressPosture, DockerExecConfig, ExecutionBackend, RunnerConfig, RunnerState,
+    DEFAULT_AGENT_EGRESS_POSTURE, DEFAULT_DISPATCH_NONCE_TTL, DEFAULT_RECEIPT_SK_PATH,
     RECEIPT_SK_FILE_ENV,
 };
 use clap::Parser;
@@ -60,7 +60,11 @@ struct Cli {
     #[arg(long, env = "GBASE_PACK_ROOT")]
     pack_root: Option<PathBuf>,
     /// Staging root for agent binds.
-    #[arg(long, env = "GBASE_AGENT_WORK_ROOT", default_value = "/tmp/gbase-agent-work")]
+    #[arg(
+        long,
+        env = "GBASE_AGENT_WORK_ROOT",
+        default_value = "/tmp/gbase-agent-work"
+    )]
     work_root: PathBuf,
     /// Miner-supplied model API key file (mounted into agent; never logged).
     #[arg(long, env = "GBASE_MODEL_KEY_FILE")]

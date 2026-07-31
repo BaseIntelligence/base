@@ -37,10 +37,7 @@ fn realpr_click_3442_round_trip_strip_and_stable_digest() {
         pack.base_commit_hash,
         "d5fbd32842da361cc9be8658d94a64e9cc417fb5"
     );
-    assert_eq!(
-        pack.repository_url,
-        "https://github.com/pallets/click.git"
-    );
+    assert_eq!(pack.repository_url, "https://github.com/pallets/click.git");
     assert!(pack.instruction.contains("Merge Main into Stable"));
     assert_eq!(pack.agent_timeout_sec, 5400);
     assert!(
@@ -63,7 +60,10 @@ fn realpr_click_3442_round_trip_strip_and_stable_digest() {
     assert_eq!(stripped.task_id, "realpr-click-3442");
     assert_eq!(stripped.deadline_sec, 5400);
     assert!(stripped.environment_image_digest.starts_with("sha256:"));
-    assert_eq!(stripped.environment_image_digest.len(), "sha256:".len() + 64);
+    assert_eq!(
+        stripped.environment_image_digest.len(),
+        "sha256:".len() + 64
+    );
 
     let json = serde_json::to_value(&stripped).expect("json");
     let obj = json.as_object().expect("object");
@@ -71,14 +71,23 @@ fn realpr_click_3442_round_trip_strip_and_stable_digest() {
     for k in STRIPPED_FIELD_NAMES {
         assert!(obj.contains_key(*k), "missing {k}");
     }
-    for forbidden in ["solution", "solution_patch", "test_patch", "tests", "grader"] {
+    for forbidden in [
+        "solution",
+        "solution_patch",
+        "test_patch",
+        "tests",
+        "grader",
+    ] {
         assert!(!obj.contains_key(forbidden), "leaked {forbidden}");
     }
 
     // Solution patch body must not appear in stripped serialization.
     if let Some(sol) = &pack.held_out.solution_patch {
         let sol_str = String::from_utf8_lossy(sol);
-        let needle = sol_str.lines().find(|l| l.len() > 40).unwrap_or("solution.patch");
+        let needle = sol_str
+            .lines()
+            .find(|l| l.len() > 40)
+            .unwrap_or("solution.patch");
         let ser = serde_json::to_string(&stripped).expect("ser");
         assert!(
             !ser.contains(needle) || needle.len() < 8,
@@ -98,8 +107,5 @@ fn missing_field_error_display_names_field() {
     let err = PackError::MissingField {
         field: "base_commit_hash",
     };
-    assert_eq!(
-        err.to_string(),
-        "missing required field `base_commit_hash`"
-    );
+    assert_eq!(err.to_string(), "missing required field `base_commit_hash`");
 }

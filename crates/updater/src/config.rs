@@ -7,12 +7,7 @@ use std::time::Duration;
 ///
 /// Keep in lockstep with `deploy/scripts/promote.sh` `--service` allowlist and
 /// keys under `deploy/pins/{staging,prod}.json` (D8 packaging).
-pub const ROLLABLE_SERVICES: &[&str] = &[
-    "validator",
-    "gateway",
-    "updater",
-    "agent-challenge",
-];
+pub const ROLLABLE_SERVICES: &[&str] = &["validator", "gateway", "updater", "agent-challenge"];
 
 /// Runtime configuration for one updater target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +95,6 @@ impl UpdaterConfig {
         ))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

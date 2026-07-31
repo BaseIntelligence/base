@@ -185,11 +185,7 @@ impl RunnerState {
     /// Snapshot capacity for `GET /v1/capacity`.
     #[must_use]
     pub fn capacity(&self) -> CapacityResponse {
-        let load = self
-            .inner
-            .try_lock()
-            .map(|g| g.running)
-            .unwrap_or(0);
+        let load = self.inner.try_lock().map(|g| g.running).unwrap_or(0);
         CapacityResponse {
             max_concurrency: self.effective_max,
             current_load: load,
@@ -244,14 +240,9 @@ impl RunnerState {
     }
 
     /// Lookup task view fields.
-    pub async fn get_task(
-        &self,
-        id: &str,
-    ) -> Option<(TaskLifecycle, Option<TaskResultV1>)> {
+    pub async fn get_task(&self, id: &str) -> Option<(TaskLifecycle, Option<TaskResultV1>)> {
         let g = self.inner.lock().await;
-        g.tasks
-            .get(id)
-            .map(|r| (r.lifecycle, r.result.clone()))
+        g.tasks.get(id).map(|r| (r.lifecycle, r.result.clone()))
     }
 
     async fn run_task(
@@ -270,14 +261,13 @@ impl RunnerState {
         let backend = self.config.execution.clone();
         let pack_id = descriptor.pack_id.clone();
         let deadline = descriptor.deadline_unix_ms;
-        let outcome = tokio::task::spawn_blocking(move || {
-            execute_pack(&backend, &pack_id, deadline)
-        })
-        .await
-        .unwrap_or_else(|_| crate::executor::ExecOutcome {
-            status: TaskStatusV1::Failed,
-            model_patch: None,
-        });
+        let outcome =
+            tokio::task::spawn_blocking(move || execute_pack(&backend, &pack_id, deadline))
+                .await
+                .unwrap_or_else(|_| crate::executor::ExecOutcome {
+                    status: TaskStatusV1::Failed,
+                    model_patch: None,
+                });
 
         let (lifecycle, result) = match finalize_result(&self.config, &descriptor, outcome) {
             Ok((lc, result)) => (lc, result),

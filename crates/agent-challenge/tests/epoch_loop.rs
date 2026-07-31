@@ -251,10 +251,7 @@ async fn s3_second_signer_refused() {
     let g1 = signers.try_acquire("agent-v1", 99).expect("first");
     let err = signers.try_acquire("agent-v1", 99).expect_err("second");
     assert!(
-        matches!(
-            err,
-            EpochLoopError::SignerAlreadyActive { epoch: 99, .. }
-        ),
+        matches!(err, EpochLoopError::SignerAlreadyActive { epoch: 99, .. }),
         "{err:?}"
     );
     drop(g1);

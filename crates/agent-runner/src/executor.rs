@@ -16,8 +16,8 @@ use docker_engine::{
 };
 use thiserror::Error;
 
-use crate::egress::{AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE};
 use crate::auth::unix_now_ms;
+use crate::egress::{AgentEgressPosture, DEFAULT_AGENT_EGRESS_POSTURE};
 
 /// Env var name inside the agent container pointing at the mounted key file path.
 pub const MODEL_KEY_FILE_ENV: &str = "MODEL_KEY_FILE";

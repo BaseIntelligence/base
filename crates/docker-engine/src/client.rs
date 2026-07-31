@@ -77,12 +77,8 @@ impl AllowlistClient {
         let ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let id = self.create_container_cmd(
-            &format!("gbase-run-{ns}"),
-            image,
-            cmd,
-            &HashMap::new(),
-        )?;
+        let id =
+            self.create_container_cmd(&format!("gbase-run-{ns}"), image, cmd, &HashMap::new())?;
         let result = (|| {
             self.start_container(&id)?;
             Ok(RunResult {
@@ -152,11 +148,7 @@ impl AllowlistClient {
         Ok(n)
     }
 
-    fn run_lifecycle(
-        &self,
-        id: &str,
-        timeout_sec: Option<u64>,
-    ) -> Result<RunResult, DockerError> {
+    fn run_lifecycle(&self, id: &str, timeout_sec: Option<u64>) -> Result<RunResult, DockerError> {
         self.start_container(id)?;
         let status_code = match timeout_sec {
             None => self.wait_container(id)?,
@@ -220,8 +212,11 @@ impl AllowlistClient {
                 body["HostConfig"] = serde_json::json!({ "Binds": b });
             }
         }
-        let val =
-            self.request_json("POST", &format!("/containers/create?name={name}"), Some(body))?;
+        let val = self.request_json(
+            "POST",
+            &format!("/containers/create?name={name}"),
+            Some(body),
+        )?;
         val.get("Id")
             .and_then(Value::as_str)
             .map(str::to_owned)

@@ -61,7 +61,14 @@ pub mod domain {
 
     /// All canonical tags (stable order for tests / enumeration).
     pub const ALL: [DomainTag; 8] = [
-        BUNDLE, RAW_WEIGHT, DISSENT, ROOT, ATTEST, TRUST_ROOT, WORK_RECEIPT, DISPATCH,
+        BUNDLE,
+        RAW_WEIGHT,
+        DISSENT,
+        ROOT,
+        ATTEST,
+        TRUST_ROOT,
+        WORK_RECEIPT,
+        DISPATCH,
     ];
 }
 
@@ -208,7 +215,6 @@ pub fn verify_raw(
     verify(&public, domain, payload, signature)
 }
 
-
 /// Generate a fresh 32-byte mini-secret (OsRng).
 ///
 /// Suitable for CVM-local work-receipt keys and test fixtures. Never log the
@@ -224,9 +230,7 @@ pub fn generate_mini_secret() -> [u8; KEY_LEN] {
 /// # Errors
 ///
 /// [`CryptoError::InvalidSecretKey`] if the mini-secret is malformed.
-pub fn public_key_from_mini_secret(
-    secret: &[u8; KEY_LEN],
-) -> Result<[u8; KEY_LEN], CryptoError> {
+pub fn public_key_from_mini_secret(secret: &[u8; KEY_LEN]) -> Result<[u8; KEY_LEN], CryptoError> {
     let sk = secret_from_bytes(secret)?;
     Ok(sk.to_public().to_bytes())
 }
@@ -523,10 +527,7 @@ mod tests {
             domain::WORK_RECEIPT.as_bytes(),
             b"gbase-agent-work-receipt-v1"
         );
-        assert_eq!(
-            domain::DISPATCH.as_bytes(),
-            b"gbase-agent-dispatch-v1"
-        );
+        assert_eq!(domain::DISPATCH.as_bytes(), b"gbase-agent-dispatch-v1");
     }
 
     /// S6b — different payloads under same domain do not verify.

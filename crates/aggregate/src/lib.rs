@@ -804,7 +804,10 @@ mod tests {
         assert_eq!(FIXED, 1_000_000_000_000);
         assert_eq!(ALGORITHM_VERSION, 1);
         // Todo 15: participation floor stays OFF — all-zero is no-submit.
-        assert!(!PARTICIPATION_FLOOR, "PARTICIPATION_FLOOR must default false");
+        assert!(
+            !PARTICIPATION_FLOOR,
+            "PARTICIPATION_FLOOR must default false"
+        );
     }
 
     fn vector_sum(v: &[(u16, u16)]) -> u32 {
@@ -840,7 +843,10 @@ mod tests {
         assert!(!is_no_submit_vector(&single));
         assert_eq!(vector_sum(&single), u32::from(HOUSE));
         assert_eq!(single, vec![(0, 0), (1, HOUSE), (2, 0)]);
-        eprintln!("shape single-winner: {single:?} sum={}", vector_sum(&single));
+        eprintln!(
+            "shape single-winner: {single:?} sum={}",
+            vector_sum(&single)
+        );
 
         // Shape C — all winners (binary 1/1/1): equal Hamilton split of HOUSE.
         let all_win_leaves = vec![
@@ -853,7 +859,10 @@ mod tests {
         assert_eq!(vector_sum(&all_win), u32::from(HOUSE));
         // 65535 / 3 = 21845 exactly.
         assert_eq!(all_win, vec![(0, 21_845), (1, 21_845), (2, 21_845)]);
-        eprintln!("shape all-winners: {all_win:?} sum={}", vector_sum(&all_win));
+        eprintln!(
+            "shape all-winners: {all_win:?} sum={}",
+            vector_sum(&all_win)
+        );
 
         // Shape D — sparse (two of many solve): winners share HOUSE, zeros kept.
         let sparse_leaves = vec![
@@ -895,7 +904,11 @@ mod tests {
         // Production aggregate still uses PARTICIPATION_FLOOR=false.
         // Production aggregate still uses PARTICIPATION_FLOOR=false.
         let cid = b"c";
-        let leaves = vec![score_leaf(cid, 1, 0), score_leaf(cid, 2, 0), score_leaf(cid, 3, 0)];
+        let leaves = vec![
+            score_leaf(cid, 1, 0),
+            score_leaf(cid, 2, 0),
+            score_leaf(cid, 3, 0),
+        ];
         let shares = vec![(cid.to_vec(), 10_000)];
         let uid_map = vec![(hk(1), 0), (hk(2), 1), (hk(3), 2)];
         let prod = aggregate(&leaves, &shares, &uid_map, 1).expect("agg");

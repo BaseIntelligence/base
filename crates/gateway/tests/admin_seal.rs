@@ -13,8 +13,8 @@ use axum::Router;
 use bundle::{make_signed_leaf, ScoreOrAbsence};
 use crypto::{secret_from_bytes, KEY_LEN};
 use gateway::{
-    admin_seal_router, bundle_router, weights_router, ChallengeEntry, ChallengesBody,
-    GatewayState, MemoryBundleStore, MemoryRawWeightStore, ParticipantPolicy, RawWeightRow, RawWeightStore,
+    admin_seal_router, bundle_router, weights_router, ChallengeEntry, ChallengesBody, GatewayState,
+    MemoryBundleStore, MemoryRawWeightStore, ParticipantPolicy, RawWeightRow, RawWeightStore,
     Registry, RegistryConfig, SharedBundleStore, BPS_DENOM,
 };
 use sha2::{Digest, Sha256};
@@ -43,8 +43,16 @@ fn hk(tag: u8) -> [u8; KEY_LEN] {
     h
 }
 
-fn insert_leaf(store: &MemoryRawWeightStore, csk: &[u8; KEY_LEN], cid: &[u8], miner: [u8; KEY_LEN], epoch: u64, value: u64) {
-    let leaf = make_signed_leaf(csk, cid, miner, epoch, ScoreOrAbsence::Score { value }).expect("leaf");
+fn insert_leaf(
+    store: &MemoryRawWeightStore,
+    csk: &[u8; KEY_LEN],
+    cid: &[u8],
+    miner: [u8; KEY_LEN],
+    epoch: u64,
+    value: u64,
+) {
+    let leaf =
+        make_signed_leaf(csk, cid, miner, epoch, ScoreOrAbsence::Score { value }).expect("leaf");
     let payload = bundle::raw_weight_payload(
         &leaf.challenge_id,
         &leaf.miner_hotkey,
@@ -148,7 +156,12 @@ async fn s1_admin_seal_happy_latest_200() {
         .send()
         .await
         .unwrap();
-    assert_eq!(seal.status().as_u16(), 200, "body={}", seal.text().await.unwrap_or_default());
+    assert_eq!(
+        seal.status().as_u16(),
+        200,
+        "body={}",
+        seal.text().await.unwrap_or_default()
+    );
     let body: serde_json::Value = client
         .post(format!("http://{addr}/v1/admin/seal"))
         .json(&serde_json::json!({ "epoch": epoch, "block_b": block_b }))

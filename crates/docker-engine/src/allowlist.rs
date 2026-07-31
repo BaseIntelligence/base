@@ -32,22 +32,34 @@ pub const ALLOWED_ROUTES: &[(&str, &str)] = UPDATER_ROUTES;
 impl Allowlist {
     /// Digest-pinned container updater profile.
     #[must_use]
-    pub const fn updater() -> Self { Self { routes: UPDATER_ROUTES } }
+    pub const fn updater() -> Self {
+        Self {
+            routes: UPDATER_ROUTES,
+        }
+    }
 
     /// Challenge verifier / one-shot agent runner profile.
     #[must_use]
-    pub const fn verifier() -> Self { Self { routes: VERIFIER_ROUTES } }
+    pub const fn verifier() -> Self {
+        Self {
+            routes: VERIFIER_ROUTES,
+        }
+    }
 
     /// Route table for this profile.
     #[must_use]
-    pub const fn routes(self) -> &'static [(&'static str, &'static str)] { self.routes }
+    pub const fn routes(self) -> &'static [(&'static str, &'static str)] {
+        self.routes
+    }
 
     /// True if method+path is permitted.
     #[must_use]
     pub fn is_allowed(self, method: &str, path: &str) -> bool {
         let method = method.to_ascii_uppercase();
         let path = strip_api_version(path);
-        self.routes.iter().any(|(m, p)| method == *m && path_matches(path, p))
+        self.routes
+            .iter()
+            .any(|(m, p)| method == *m && path_matches(path, p))
     }
 
     /// Reject non-allowlisted calls before any HTTP is sent.
@@ -58,7 +70,10 @@ impl Allowlist {
         if self.is_allowed(method, path) {
             Ok(())
         } else {
-            Err(DockerError::NotAllowlisted { method: method.to_owned(), path: path.to_owned() })
+            Err(DockerError::NotAllowlisted {
+                method: method.to_owned(),
+                path: path.to_owned(),
+            })
         }
     }
 }
@@ -80,7 +95,9 @@ pub fn assert_allowlisted(method: &str, path: &str) -> Result<(), DockerError> {
 fn strip_api_version(path: &str) -> &str {
     let b = path.as_bytes();
     if b.len() > 4 && b[0] == b'/' && b[1] == b'v' {
-        if let Some(i) = path[1..].find('/') { return &path[1 + i..]; }
+        if let Some(i) = path[1..].find('/') {
+            return &path[1 + i..];
+        }
     }
     path
 }
@@ -136,7 +153,10 @@ mod tests {
         assert!(!v.is_allowed("POST", "/networks/create"));
         assert!(!v.is_allowed("GET", "/volumes"));
         assert!(!v.is_allowed("POST", "/build"));
-        assert!(matches!(v.assert_allowed("DELETE", "/volumes/data"), Err(DockerError::NotAllowlisted { .. })));
+        assert!(matches!(
+            v.assert_allowed("DELETE", "/volumes/data"),
+            Err(DockerError::NotAllowlisted { .. })
+        ));
     }
 
     #[test]
