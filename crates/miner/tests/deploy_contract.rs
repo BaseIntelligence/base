@@ -60,11 +60,11 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
         "attest-helper must be loopback-only on {ATTEST_HELPER_PORT}"
     );
     assert!(
-        yaml.contains("ghcr.io/baseintelligence/gbase-agent@sha256:"),
+        yaml.contains("ghcr.io/baseintelligence/gbase/gbase-agent@sha256:"),
         "agent image repository contract"
     );
     assert!(
-        yaml.contains("ghcr.io/baseintelligence/gbase-attest-helper@sha256:"),
+        yaml.contains("ghcr.io/baseintelligence/gbase/gbase-attest-helper@sha256:"),
         "attest-helper image repository contract"
     );
     assert!(
@@ -258,7 +258,7 @@ fn write_out_compose_roundtrip_hash() {
 #[test]
 fn rejects_latest_tag_on_agent_image() {
     let params = DeployParams {
-        agent_image: "ghcr.io/baseintelligence/gbase-agent:latest".into(),
+        agent_image: "ghcr.io/baseintelligence/gbase/gbase-agent:latest".into(),
         ..DeployParams::default()
     };
     let err = miner::render_app_compose(&params).expect_err("latest");
