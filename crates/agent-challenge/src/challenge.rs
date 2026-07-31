@@ -11,11 +11,11 @@ use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
 use crate::leaf_map::{cover_expected_verify_leaves, score_from_verify_result};
 use crate::score::{score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs};
 use crate::submit::{GatewayClient, SubmitError, SubmitOutcome};
-use crate::task_gen::{
+use crate::verify::{Reward, VerifyError};
+use agent_challenge_task::{
     answer_digest_v2, task_id_v2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH,
     FIXTURE_PACK_ID, SCORING_VERSION,
 };
-use crate::verify::{Reward, VerifyError};
 
 /// Miner hotkey type alias.
 pub type Hotkey = [u8; KEY_LEN];

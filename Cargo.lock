@@ -17,6 +17,7 @@ name = "agent-challenge"
 version = "0.1.0"
 dependencies = [
  "agent-challenge-keys",
+ "agent-challenge-task",
  "agent-dispatch",
  "agent-pack",
  "agent-runner",
@@ -65,6 +66,16 @@ dependencies = [
  "crypto",
  "hex",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "agent-challenge-task"
+version = "0.1.0"
+dependencies = [
+ "crypto",
+ "hex",
+ "parity-scale-codec",
+ "sha2 0.10.9",
 ]
 
 [[package]]

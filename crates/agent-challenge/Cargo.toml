@@ -13,6 +13,7 @@ bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
 agent-challenge-keys = { path = "../agent-challenge-keys" }
+agent-challenge-task = { path = "../agent-challenge-task" }
 trustroot = { path = "../trustroot" }
 agent-pack = { path = "../agent-pack" }
 agent-dispatch = { path = "../agent-dispatch" }

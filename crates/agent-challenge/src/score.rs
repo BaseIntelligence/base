@@ -8,7 +8,7 @@
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use crypto::KEY_LEN;
 
-use crate::task_gen::{answer_digest_v2, task_id_v2, CHALLENGE_ID, SCORING_VERSION};
+use agent_challenge_task::{answer_digest_v2, task_id_v2, CHALLENGE_ID, SCORING_VERSION};
 
 /// Maximum score value.
 pub const SCORE_MAX: u64 = 1_000_000;
