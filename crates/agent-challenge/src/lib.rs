@@ -12,7 +12,6 @@ mod epoch_loop;
 mod expected_set;
 mod intake;
 mod leaf_map;
-mod pack_serve;
 mod score;
 mod submit;
 mod verify;
@@ -23,6 +22,7 @@ pub use agent_challenge_task::{
     ANSWER_DOMAIN_V2, CHALLENGE_ID, CHALLENGE_ID_BYTES, FIXTURE_MODEL_PATCH, FIXTURE_PACK_ID,
     SCORING_VERSION, SCORING_VERSION_V2, TASK_BLOB_DOMAIN_V2, TASK_ID_DOMAIN_V2,
 };
+pub use agent_pack::{ensure_pack_source, pack_routes, PackCatalogState, PackServeError};
 pub use bundle::{
     make_signed_leaf, raw_weight_payload, LeafV1, NoScoreReasonCode, RawWeightBodyV1,
     ScoreOrAbsence,
@@ -52,7 +52,6 @@ pub use leaf_map::{
     grade_to_score_or_absence_budgeted, is_operator_fault, is_retryable_operator_fault, map_reward,
     map_verify_error, score_from_verify_result, MAX_VERIFY_ATTEMPTS, MAX_VERIFY_RETRIES,
 };
-pub use pack_serve::{ensure_pack_source, pack_routes, PackCatalogState, PackServeError};
 pub use score::{
     score_from_outcome, AttestationStatus, CallOutcome, ScoreInputs, CONNECT_MS, MAX_ATTEMPTS,
     SCORE_MAX,

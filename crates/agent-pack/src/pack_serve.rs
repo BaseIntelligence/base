@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_pack::{
+use crate::{
     export_stripped_tar_gz, load_catalog, load_pack, materialize_catalog, Catalog, CatalogError,
     CatalogManifest, DEEPAGENT_PIN, PACKS_DIR_NAME,
 };
@@ -294,8 +294,7 @@ mod tests {
     use tower::ServiceExt;
 
     fn seed_fixture_source(dest: &Path) {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../agent-pack/tests/fixtures/minimal-ok");
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal-ok");
         let pack_dest = dest.join("minimal-ok");
         copy_dir_recursive(&fixture, &pack_dest).expect("seed");
     }

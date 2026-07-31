@@ -8,7 +8,8 @@
 //! # What stays in `agent-challenge`
 //! Scoring, `NoScore` / D24 completeness gates, sr25519 signing of weight
 //! payloads, and the signed raw-weight submit HTTP path remain in
-//! `agent-challenge`. This crate must not grow scoring or submit logic.
+//! `agent-challenge`. This crate owns Harbor pack model + HTTP pack serve
+//! (`pack_routes`); it must not grow scoring or submit logic.
 
 #![forbid(unsafe_code)]
 
@@ -18,6 +19,7 @@ mod error;
 mod export;
 mod load;
 mod model;
+mod pack_serve;
 mod select;
 
 pub use catalog::{
@@ -38,6 +40,7 @@ pub use model::{
     HarborPack, HeldOutMaterials, StrippedDescriptor, PACK_DIGEST_LEN, SCHEMA_VERSION_1_1,
     STRIPPED_FIELD_NAMES,
 };
+pub use pack_serve::{ensure_pack_source, pack_routes, PackCatalogState, PackServeError};
 pub use select::{select_index, select_pack, HOTKEY_LEN, PACK_SELECT_DOMAIN};
 
 /// Stable pack identity (content-addressed id string; typically `metadata.task_id`).

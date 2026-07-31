@@ -9,7 +9,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }

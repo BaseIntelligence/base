@@ -107,15 +107,19 @@ dependencies = [
 name = "agent-pack"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "flate2",
  "hex",
+ "http-body-util",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tar",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
  "toml",
+ "tower",
 ]
 
 [[package]]
