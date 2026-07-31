@@ -48,7 +48,7 @@ export GBASE_MODEL_KEY_FILE=/secure/model_key
 export GBASE_MAX_CONCURRENCY=2
 
 # Digest-pinned agent image (operators publish pins; local dev may use preloaded images)
-# export GBASE_AGENT_IMAGE='ghcr.io/baseintelligence/gbase-agent@sha256:<64 hex>'
+# export GBASE_AGENT_IMAGE='ghcr.io/baseintelligence/base/gbase-agent@sha256:<64 hex>'
 
 ./install.sh
 # → prints compose-hash=…, starts local agent-runner

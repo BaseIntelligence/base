@@ -6,7 +6,7 @@ members = ["crates/*", "bins/*", "xtask"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/BaseIntelligence/gbase"
+repository = "https://github.com/BaseIntelligence/base"
 rust-version = "1.96"
 
 [workspace.lints.rust]

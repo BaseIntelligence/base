@@ -13,10 +13,10 @@ use crate::template::{docker_compose_yaml, ComposeTemplateInput, DOCKER_BASE_ENV
 
 /// Default digest-pinned agent image (digest from images CI tip 3056ca7).
 pub const DEFAULT_AGENT_IMAGE: &str =
-    "ghcr.io/baseintelligence/gbase/gbase-agent@sha256:50508825f450c6d1b21e53bf61cda8eeee6373eaced24ec3925555feac3ebc83";
+    "ghcr.io/baseintelligence/base/gbase-agent@sha256:50508825f450c6d1b21e53bf61cda8eeee6373eaced24ec3925555feac3ebc83";
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
-    "ghcr.io/baseintelligence/gbase/gbase-attest-helper@sha256:9bf28955414f087d27e033e085a16be2fda20290404add83bd919893c24e8d7c";
+    "ghcr.io/baseintelligence/base/gbase-attest-helper@sha256:9bf28955414f087d27e033e085a16be2fda20290404add83bd919893c24e8d7c";
 
 /// Whether to invoke the Phala CLI after rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

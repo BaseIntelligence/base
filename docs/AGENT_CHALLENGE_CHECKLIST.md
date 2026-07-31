@@ -45,7 +45,7 @@ from `AGENT_CHALLENGE.md`.
 | D24_silence | `Silence is a bug` |
 | compose_agent_port | `8080` |
 | compose_challenge_port | `8090` |
-| image_agent | `ghcr.io/baseintelligence/gbase-agent` |
+| image_agent | `ghcr.io/baseintelligence/base/gbase-agent` |
 | no_latest | `:latest` |
 | socket_proxy | `socket-proxy` |
 | BUNDLE_SPEC_link | `BUNDLE_SPEC.md` |

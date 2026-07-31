@@ -626,10 +626,10 @@ Gateway verifies against **its** local trust root (defence in depth) and appends
 ```text
 images:
   agent:
-    repository: ghcr.io/baseintelligence/gbase-agent
+    repository: ghcr.io/baseintelligence/base/gbase-agent
     // digest-pinned only, e.g. repo@sha256:<64 hex>
   attest-helper:
-    repository: ghcr.io/baseintelligence/gbase-attest-helper
+    repository: ghcr.io/baseintelligence/base/gbase-attest-helper
     // digest-pinned only
   socket-proxy:
     // digest-pinned allowlisted proxy image (miner CVM + operator)

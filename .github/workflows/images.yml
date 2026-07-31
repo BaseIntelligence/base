@@ -6,7 +6,7 @@ name: images
 
 on:
   push:
-    branches: [dev, reborn]
+    branches: [dev]
     paths:
       - "crates/**"
       - "bins/**"

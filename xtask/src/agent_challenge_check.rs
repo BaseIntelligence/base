@@ -42,7 +42,7 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("D24_silence", "Silence is a bug"),
     ("compose_agent_port", "8080"),
     ("compose_challenge_port", "8090"),
-    ("image_agent", "ghcr.io/baseintelligence/gbase-agent"),
+    ("image_agent", "ghcr.io/baseintelligence/base/gbase-agent"),
     ("BUNDLE_SPEC_link", "BUNDLE_SPEC.md"),
     ("D10_report_data", "gbase-attest-v1"),
     ("rawweight_domain", "gbase-rawweight-v1"),
