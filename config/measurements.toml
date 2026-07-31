@@ -1,12 +1,12 @@
 # Owner-signed measurements allowlist.
 # Historical row: task-34/35 real Phala TDX fixtures (pre–socket-proxy compose).
-# Socket-proxy row: provisional dual-entry pin for the post–todo-22 normative
-# miner template compose-hash (DeployParams::default / miner-bin --no-deploy).
-# Registers on the socket-proxy row are structure placeholders (fixture-shaped
-# with distinct RTMR3) until a live CVM capture replaces them — see
-# docs/runbooks/measurement-repin-socket-proxy.md. Do NOT require Verified for
-# scoring until live MRTD/RTMR for the new compose are published and signed.
-# Source fixtures: crates/attest-parse/tests/fixtures/real/
+# Live row: paid Phala CVM base-miner-dev (prod5) residual capture 2026-07-31
+#   cvm_id=96238355-a3a7-4732-a610-eb4529c303bc
+#   app_id=7345719d5c152d26c73330ba07bf0f3dd4eb29c1
+#   endpoint=https://7345719d5c152d26c73330ba07bf0f3dd4eb29c1-8080.dstack-pha-prod5.phala.network
+#   capacity: GET /v1/capacity → 200 {"max_concurrency":1,"current_load":0}
+# Evidence: /tmp/ulw-miner/evidence/live-cvm/
+# Source fixtures (historical): crates/attest-parse/tests/fixtures/real/
 version = 2
 introduced_epoch = 0
 
@@ -19,14 +19,11 @@ rtmr2 = "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa75
 rtmr3 = "9c343d652b721b398b2b1233251831c67162b8e7c1f09956d5162715c5be48f8ae8c5001facd341759c4abc7aff61a0f"
 compose_hash = "1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b"
 
-# --- v(n+1): post socket-proxy normative compose-hash (provisional registers) ---
-# compose_hash = miner DeployParams::default() after todo 22 (netuid 1, default images).
-# rtmr3 last byte flipped vs fixture so the tuple is unique; REPLACE entire row
-# with live CVM capture before production Verified scoring depends on it.
+# --- v(n+1): live residual Phala CVM (base-miner-dev prod5, stub exec + measured socket-proxy) ---
 [[measurements]]
 mr_td = "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077"
 rtmr0 = "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96"
 rtmr1 = "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c"
-rtmr2 = "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858"
-rtmr3 = "9c343d652b721b398b2b1233251831c67162b8e7c1f09956d5162715c5be48f8ae8c5001facd341759c4abc7aff61aaa"
-compose_hash = "433afe1d2f2832c0b6277fdd441c3e599076fae458a7b3a78b9413ad2919cd77"
+rtmr2 = "a2a58c9a959a4fa44bd6da0c97a2270c051faf12084cfe91ae900e4fdff6cdd4f69a82005e04ee920f231497894d677f"
+rtmr3 = "8841b5f9f73d1c88012d9d2162ee8dad5f4275fa0fcf020d89bb4377e121a10af83eefcd53d839f3e0953a8d58592bb5"
+compose_hash = "637a961cec974de7be300eb9a1e51585f995100c8845a97e42684dd56b0b4569"
