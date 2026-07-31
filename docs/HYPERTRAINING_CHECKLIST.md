@@ -1,13 +1,13 @@
-# HYPERTRAINING checklist (task 3 freeze skeleton)
+# HYPERTRAINING checklist (task 17 freeze)
 
-Maps each required pin from plan item 3 / future xtask `hypertraining-check`
+Maps each required pin from plan item 3 / xtask `hypertraining-check`
 to a section heading in [`HYPERTRAINING.md`](./HYPERTRAINING.md).
 
-CI (planned, task 17): `cargo run -p xtask -- hypertraining-check` fails if any
+CI: `cargo run -p xtask -- hypertraining-check` fails if any
 marker is missing from `HYPERTRAINING.md`.
 
-**Status:** DRAFT skeleton. Pins below are the contract for the freeze doc and
-for the future check binary. Do not weaken pins without bumping
+**Status:** FROZEN with the task 17 check binary. Pins below are the contract
+for the freeze doc. Do not weaken pins without bumping
 `challenge_scoring_version` when score-affecting.
 
 | Pin | Requirement | Section heading | Anchor marker (must appear in spec) |
@@ -23,10 +23,10 @@ for the future check binary. Do not weaken pins without bumping
 | (K) | Key custody | ## 8. Key custody (challenge signing key) | `## 8. Key custody (challenge signing key)` |
 | (D) | D24 participant set + NoScore | ## 9. Declared participant set and `NoScore` reasons (D24) | `## 9. Declared participant set and` |
 | (L) | Leaf emission + gateway | ## 10. Leaf emission and gateway POST | `## 10. Leaf emission and gateway POST` |
-| (C) | Compose ports / no Harbor | ## 11. Compose services, ports, image contract (draft) | `## 11. Compose services, ports, image contract` |
-| (B) | ClusterBackend Sim now / Real later | ## 13. ClusterBackend contract (draft) | `## 13. ClusterBackend contract` |
+| (C) | Compose ports / no Harbor | ## 11. Compose services, ports, image contract | `## 11. Compose services, ports, image contract` |
+| (B) | ClusterBackend Sim now / Real later | ## 13. ClusterBackend contract | `## 13. ClusterBackend contract` |
 
-## Extra pins verified by hypertraining-check (planned)
+## Extra pins verified by hypertraining-check
 
 | Pin | Marker substring required in HYPERTRAINING.md |
 |-----|-----------------------------------------------|
@@ -63,11 +63,15 @@ for the future check binary. Do not weaken pins without bumping
 | denylist | `megatron/core/datasets/**` |
 | marginal_delta | `Δ(candidate)` |
 | branding_base | `product name is **base**` |
+| task_id_domain | `base-hypertraining-task-id-v1` |
+| task_blob_domain | `base-hypertraining-task-blob-v1` |
+| answer_domain | `base-hypertraining-answer-v1` |
+| receipt_domain | `base-hypertraining-receipt-v1` |
 
 ## Maintenance
 
 When editing `HYPERTRAINING.md` headings, update this table and keep the
-markers so `xtask hypertraining-check` stays green once implemented.
+markers so `xtask hypertraining-check` stays green.
 
 Do **not** rewrite [`AGENT_CHALLENGE.md`](./AGENT_CHALLENGE.md) or its checklist
 for hypertraining work.

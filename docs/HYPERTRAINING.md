@@ -1,24 +1,24 @@
 # base Hypertraining Challenge Specification
 
-**Status:** DRAFT (task 3 freeze skeleton: structure locked; implementation fills remaining pins)  
+**Status:** FROZEN (task 17 — scoring_version 1 / SimBackend path; Real B300 deferred)  
 **Normative design source:** [`/root/challenge-training-fork.md`](/root/challenge-training-fork.md) (v1.0)  
-**Normative for (when FROZEN):** `hypertraining-challenge` service, miner submit API, SimBackend tournament path, leaf emission under `challenge_id = hypertraining`  
+**Normative for:** `hypertraining-challenge` service, miner submit API, SimBackend tournament path, leaf emission under `challenge_id = hypertraining`  
 **challenge_id:** `hypertraining`  
 **challenge_scoring_version:** `1`  
 **Bundle leaf protocol:** [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) **`protocol_version = 1`** (unchanged)
 
 This file is the freeze surface for the base **hypertraining** challenge: miner-owned training-code forks, validator-owned measurement, three independent guards, integer-only leaf scores, and a software-first path that runs today on **SimBackend** without live B300 hardware.
 
-Where this document and any other source disagree on **hypertraining-challenge behaviour**, **this document wins** once status is FROZEN.  
+Where this document and any other source disagree on **hypertraining-challenge behaviour**, **this document wins**.  
 Where this document and [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) disagree on **leaf bytes, signatures, aggregation, or bundle verify**, **BUNDLE_SPEC wins**.  
-Where this document and the design brief disagree on **tournament economics, sealed surface, or statistical gates**, the brief is the design source until this freeze is completed (task 17).
+Where this document and the design brief disagree on **tournament economics, sealed surface, or statistical gates**, **this freeze wins** for implemented behaviour; the brief remains the design narrative for deferred Real B300 ops.
 
 Checklist map: [`HYPERTRAINING_CHECKLIST.md`](./HYPERTRAINING_CHECKLIST.md).  
-CI gate (planned, task 17): `cargo run -p xtask -- hypertraining-check`.
+CI gate: `cargo run -p xtask -- hypertraining-check`.
 
-### Draft gate note (task 3)
+### Freeze gate note (task 17)
 
-This skeleton freezes **identifiers, topology split, emission posture, sealed-surface summary, three guards, integer scoring path, D24 coverage, and must-not claims**. Implementation crates and Sim E2E land in later plan todos. Do **not** treat Real B300, live MFU measurement, or non-zero emission as current state.
+This freeze locks **identifiers, topology split, emission posture, sealed-surface summary, three guards, integer scoring path, domain tags, D24 coverage, compose port 8091, and must-not claims** against the landed crates (`hypertraining-challenge-task`, sealed/build/kernel/cluster/eval/promo/pay/antinois, `bins/hypertraining-challenge`). Do **not** treat Real B300, live MFU measurement, or non-zero emission as current state.
 
 ---
 
@@ -168,13 +168,14 @@ Attestation (when used) proves measured identity binding for the epoch. It does 
 
 Transport: HTTPS. `Content-Type: application/json; charset=utf-8`.
 
-### 4.1 Challenge service endpoints (planned)
+### 4.1 Challenge service endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | Liveness |
+| `GET` | `/health` | Liveness (`challenge_id`, `scoring_version`) |
 | `POST` | `/v1/submissions` | Accept fork submission (brief §7) |
-| Admin / internal | TBD in implementation | enqueue, status |
+
+Implemented by `hypertraining_challenge::routes::submission_router`. Epoch leaf emission POSTs to gateway `POST /v1/weights/raw` (same pattern as agent-challenge).
 
 Default compose port for hypertraining-challenge: **8091** (agent-challenge remains **8090**).
 
@@ -356,11 +357,17 @@ Resubmitting the champion unchanged → Δ = 0 → score 0.
 |-------|-------|
 | Leaf score type | `Score { value: u64 }` or `NoScore { reason }` |
 | Range | `0 ..= SCORE_MAX` |
-| `SCORE_MAX` | `1_000_000` |
+| `SCORE_MAX` | `1_000_000` (`hypertraining_pay::SCORE_MAX`) |
 | Domain tag for leaf sig | `base-rawweight-v1` |
 | Floating point in final score API | **Forbidden** (fixed-point internal math OK if public API is integer-only) |
 
-Mapping from vested marginal reward to `u64` is implementation-defined under scoring_version 1 but MUST be monotone in vested Δ, MUST clamp to `[0, SCORE_MAX]`, and MUST yield `0` when Δ ≤ 0 or guards fail.
+Normative map (`hypertraining_pay::score_from_reward_ms`):
+
+```text
+score = min(SCORE_MAX, floor(reward_ms * SCORE_MAX / reference_ms))
+```
+
+Mapping from vested marginal reward to `u64` MUST be monotone in vested Δ, MUST clamp to `[0, SCORE_MAX]`, and MUST yield `0` when Δ ≤ 0 or guards fail. `reference_ms` is the configured full-window savings that maps to `SCORE_MAX`.
 
 ### 7.3 Vesting and clawback (summary)
 
@@ -452,14 +459,14 @@ Challenge service POSTs raw weights to gateway per existing base patterns (same 
 
 ---
 
-## 11. Compose services, ports, image contract (draft)
+## 11. Compose services, ports, image contract
 
 | Service | Port | Notes |
 |---------|------|-------|
 | `agent-challenge` | 8090 | Unchanged |
-| `hypertraining-challenge` | **8091** | New; must not remove agent-challenge |
+| `hypertraining-challenge` | **8091** | Compose service + image target; must not remove agent-challenge |
 
-Image pins and Dockerfile stages follow repo patterns when the binary lands (plan todo 13). No `:latest` floating tags in production compose.
+Image: `hypertraining-challenge:0.1.0` (Dockerfile target `hypertraining-challenge`). Bind `BASE_CHALLENGE_BIND=0.0.0.0:8091`, secret via `BASE_CHALLENGE_SK_FILE` (or `HYPERTRAINING_CHALLENGE_SK_FILE`). No `:latest` floating tags in production compose.
 
 **Out of scope for this challenge:**
 
@@ -483,7 +490,7 @@ Image pins and Dockerfile stages follow repo patterns when the binary lands (pla
 
 ---
 
-## 13. ClusterBackend contract (draft)
+## 13. ClusterBackend contract
 
 ```text
 trait ClusterBackend:
@@ -497,14 +504,14 @@ trait ClusterBackend:
 | `SimBackend` | Deterministic or seeded wallclock from code fingerprint + noise param; fake checkpoint hash; API surface for partition ids without real IB |
 | `RealBackend` | Stub: `Err(NotConfigured)` until owner runs [`runbooks/hypertraining-enable-real-and-emission.md`](./runbooks/hypertraining-enable-real-and-emission.md) |
 
-Must NOT pretend RealBackend produces GPU timing until that enablement runbook is executed for the target environment.
+Must NOT pretend RealBackend produces GPU timing until that enablement runbook is executed for the target environment. Crate: `hypertraining-cluster`.
 
 ---
 
 ## 14. Verification checklist (implementers)
 
 See [`HYPERTRAINING_CHECKLIST.md`](./HYPERTRAINING_CHECKLIST.md).  
-Planned: `cargo run -p xtask -- hypertraining-check` (task 17).  
+Gate: `cargo run -p xtask -- hypertraining-check`.  
 agent-v1 gate remains: `cargo run -p xtask -- agent-challenge-check` (must stay green).
 
 ---
@@ -543,14 +550,17 @@ agent-v1 gate remains: `cargo run -p xtask -- agent-challenge-check` (must stay 
 
 ---
 
-## Appendix C. Domain tags (hypertraining, draft)
+## Appendix C. Domain tags (hypertraining)
 
-Distinct from `base-agent-*` tags. Exact strings land with `hypertraining-challenge-task` crate:
+Normative strings from `hypertraining_challenge_task` (distinct from `base-agent-*`):
 
-| Purpose | Tag family (intent) |
-|---------|---------------------|
-| Task / blob / receipt domains | `base-hypertraining-*` (crate pins) |
-| Leaf signatures | `base-rawweight-v1` (unchanged) |
+| Purpose | Tag |
+|---------|-----|
+| Task id digests | `base-hypertraining-task-id-v1` |
+| Task blob digests | `base-hypertraining-task-blob-v1` |
+| Answer / score digests | `base-hypertraining-answer-v1` |
+| Work-receipt style digests | `base-hypertraining-receipt-v1` |
+| Leaf signatures | `base-rawweight-v1` (unchanged; BUNDLE_SPEC) |
 
 ---
 
