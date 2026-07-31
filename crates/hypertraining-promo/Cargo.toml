@@ -1,0 +1,16 @@
+[package]
+name = "hypertraining-promo"
+description = "Promotion state machine: K=3/5/holdout, Benjamini-Hochberg, checkpoint lineage, rollback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true
