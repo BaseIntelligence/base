@@ -2036,10 +2036,12 @@ dependencies = [
 name = "hypertraining-challenge"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "bundle",
  "chain",
  "crypto",
  "hex",
+ "http-body-util",
  "hypertraining-antinois",
  "hypertraining-build",
  "hypertraining-challenge-task",
@@ -2047,6 +2049,7 @@ dependencies = [
  "hypertraining-eval",
  "hypertraining-kernel-gate",
  "hypertraining-pay",
+ "hypertraining-sealed",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
  "schnorrkel",
@@ -2055,8 +2058,27 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
+ "tower",
  "trustroot",
  "wiremock",
+]
+
+[[package]]
+name = "hypertraining-challenge-bin"
+version = "0.1.0"
+dependencies = [
+ "agent-challenge-keys",
+ "axum",
+ "clap",
+ "hypertraining-challenge",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "schnorrkel",
+ "telemetry",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "trustroot",
 ]
 
 [[package]]

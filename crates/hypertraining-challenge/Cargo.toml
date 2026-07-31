@@ -1,6 +1,6 @@
 [package]
 name = "hypertraining-challenge"
-description = "Hypertraining challenge orchestrator: pipeline, D24 leaves, gateway submit"
+description = "Hypertraining challenge orchestrator: pipeline, D24 leaves, gateway submit, miner API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
@@ -20,6 +21,7 @@ hypertraining-cluster = { path = "../hypertraining-cluster" }
 hypertraining-eval = { path = "../hypertraining-eval" }
 hypertraining-kernel-gate = { path = "../hypertraining-kernel-gate" }
 hypertraining-pay = { path = "../hypertraining-pay" }
+hypertraining-sealed = { path = "../hypertraining-sealed" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,9 +32,11 @@ trustroot = { path = "../trustroot" }
 
 [dev-dependencies]
 crypto = { path = "../crypto" }
+http-body-util = "0.1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 schnorrkel = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 
 [lints]

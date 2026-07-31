@@ -1,4 +1,5 @@
-//! Hypertraining challenge orchestrator: pipeline, D24 leaves, gateway submit.
+//! Hypertraining challenge orchestrator: pipeline, D24 leaves, gateway submit,
+//! miner HTTP submit API (brief §7).
 //!
 //! Wires sealed → build → kernel → cluster Sim → eval → promo hooks → antinois → pay
 //! into epoch scoring and signed `LeafV1` emission under `challenge_id = hypertraining`.
@@ -11,6 +12,10 @@
 //!
 //! [`HypertrainingConfig::require_attestation`] defaults to `true` (prod). Sim tests use
 //! [`HypertrainingChallenge::sim`] (`false`).
+//!
+//! # Miner submit
+//!
+//! [`routes::submission_router`] exposes `POST /v1/submissions` and `GET /health`.
 
 #![forbid(unsafe_code)]
 
@@ -23,6 +28,8 @@ mod pipeline_types;
 mod score;
 mod sim_search;
 mod submit;
+mod submission;
+mod routes;
 
 pub use challenge::{
     AttestationLookup, ChallengeError, EpochCtx, HypertrainingChallenge, MapAttestationLookup,
@@ -49,6 +56,11 @@ pub use submit::{
     submit_signed_leaf_set, GatewayClient, GatewayClientConfig, SubmitError, SubmitOutcome,
     DEFAULT_MAX_RETRIES,
 };
+pub use submission::{
+    example_valid_request, PrecisionAttestationWire, QueuedSubmission, SubmissionAccepted,
+    SubmissionError, SubmissionId, SubmissionRequest, SubmissionService, TopologyWire,
+};
+pub use routes::{submission_router, AppState};
 
 pub use bundle::{LeafV1, NoScoreReasonCode, ScoreOrAbsence};
 pub use crypto::KEY_LEN;
