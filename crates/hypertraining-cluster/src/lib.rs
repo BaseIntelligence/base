@@ -20,7 +20,7 @@ pub use error::ClusterError;
 pub use real::RealBackend;
 pub use sim::SimBackend;
 pub use types::{
-    CheckpointHash, ExclusiveSlot, PKeyId, SegmentConfig, SegmentResult, SegmentSeeds,
+    CheckpointHash, ExclusiveSlot, MmaFamily, PKeyId, SegmentConfig, SegmentResult, SegmentSeeds,
     SegmentTelemetry, Topology,
 };
 

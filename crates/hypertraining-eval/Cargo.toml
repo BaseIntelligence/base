@@ -1,0 +1,16 @@
+[package]
+name = "hypertraining-eval"
+description = "Validator-owned eval: Guard 2 quality non-inferiority + Guard 3 physical plausibility"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hypertraining-cluster = { path = "../hypertraining-cluster" }
+thiserror = "2"
+
+[lints]
+workspace = true

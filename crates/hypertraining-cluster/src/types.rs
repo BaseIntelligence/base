@@ -75,7 +75,26 @@ pub struct SegmentConfig {
 /// Fake / real checkpoint content digest (32 bytes).
 pub type CheckpointHash = [u8; 32];
 
+/// Tensor-core MMA instruction family observed in a segment (Guard 3 / Nsight later).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MmaFamily {
+    /// IEEE-ish BF16 tensor cores (default sim / expected harness).
+    #[default]
+    Bf16,
+    /// FP16 tensor cores.
+    Fp16,
+    /// TF32 path (silent precision downgrade when harness forbids TF32).
+    Tf32,
+    /// FP8 tensor cores.
+    Fp8,
+    /// No tensor-core MMA observed (unexpected for `MoE` training path).
+    None,
+}
+
 /// Telemetry counters produced by a segment run (sim fixtures or real Nsight later).
+///
+/// Physics counters (`dram_bytes`, `tensor_ops`, `mma_family`, peak BW) feed Guard 3
+/// (physical plausibility) in `hypertraining-eval`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SegmentTelemetry {
     /// Tokens processed (should equal budget on success).
@@ -88,6 +107,14 @@ pub struct SegmentTelemetry {
     pub pkey_id: PKeyId,
     /// Exclusive slot handle used for the run.
     pub slot_handle: u64,
+    /// DRAM bytes moved (sim fixture or Nsight).
+    pub dram_bytes: u64,
+    /// Tensor-core operation count (sim fixture or Nsight).
+    pub tensor_ops: u64,
+    /// Dominant MMA instruction family observed.
+    pub mma_family: MmaFamily,
+    /// Peak DRAM bandwidth assumed for roofline (bytes/s); 0 = unset.
+    pub peak_dram_bandwidth_bytes_per_s: u64,
 }
 
 /// Result of [`crate::ClusterBackend::run_segment`].

@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::backend::ClusterBackend;
 use crate::error::ClusterError;
 use crate::types::{
-    CheckpointHash, ExclusiveSlot, PKeyId, SegmentConfig, SegmentResult, SegmentTelemetry, Topology,
+    CheckpointHash, ExclusiveSlot, MmaFamily, PKeyId, SegmentConfig, SegmentResult,
+    SegmentTelemetry, Topology,
 };
 
 /// Base wallclock floor in ms before fingerprint-derived spread (sim only).
@@ -91,6 +92,7 @@ impl ClusterBackend for SimBackend {
         let steps = cfg
             .budget_tokens
             .div_ceil(SIM_TOKENS_PER_STEP.max(1));
+        let physics = sim_physics_counters(cfg, steps);
 
         Ok(SegmentResult {
             wallclock_ms,
@@ -101,6 +103,10 @@ impl ClusterBackend for SimBackend {
                 backend: "sim",
                 pkey_id: slot.pkey_id,
                 slot_handle: slot.handle,
+                dram_bytes: physics.0,
+                tensor_ops: physics.1,
+                mma_family: MmaFamily::Bf16,
+                peak_dram_bandwidth_bytes_per_s: physics.2,
             },
             seeds: cfg.seeds.clone(),
         })
@@ -151,4 +157,37 @@ fn fake_checkpoint_hash(cfg: &SegmentConfig) -> CheckpointHash {
     hasher.update(cfg.master_topology.ep.to_le_bytes());
     hasher.update(cfg.master_topology.cp.to_le_bytes());
     hasher.finalize().into()
+}
+
+/// Deterministic physics counters from budget + fingerprint (fixture-scale, not real Nsight).
+///
+/// Returns `(dram_bytes, tensor_ops, peak_dram_bandwidth_bytes_per_s)`.
+fn sim_physics_counters(cfg: &SegmentConfig, steps: u64) -> (u64, u64, u64) {
+    // ~bytes/token and ops/token scales chosen so Guard 3 fixtures have stable magnitudes.
+    const DRAM_BYTES_PER_TOKEN: u64 = 64;
+    const TENSOR_OPS_PER_TOKEN: u64 = 128;
+    // 2 TB/s class peak (sim label only).
+    const PEAK_DRAM_BW: u64 = 2_000_000_000_000;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"hypertraining-sim-physics-v1");
+    hasher.update(cfg.code_fingerprint);
+    hasher.update(cfg.budget_tokens.to_le_bytes());
+    let digest = hasher.finalize();
+    let mix = u64::from_le_bytes(digest[0..8].try_into().unwrap_or([0; 8]));
+    // ±0.1% jitter from fingerprint so counters are code-dependent but near analytic Θ.
+    let jitter_bps = mix % 21; // 0..=20 bps
+    let scale_num = 10_000_u64.saturating_add(jitter_bps);
+    let dram = cfg
+        .budget_tokens
+        .saturating_mul(DRAM_BYTES_PER_TOKEN)
+        .saturating_mul(scale_num)
+        / 10_000;
+    let tops = cfg
+        .budget_tokens
+        .saturating_mul(TENSOR_OPS_PER_TOKEN)
+        .saturating_mul(scale_num)
+        / 10_000;
+    let _ = steps;
+    (dram, tops, PEAK_DRAM_BW)
 }
