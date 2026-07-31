@@ -3,8 +3,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+fn evidence_path(name: &str) -> PathBuf {
+    let preferred = PathBuf::from("/root/.omo/evidence/gbase-agent-challenge-deepagent");
+    let dir = if std::fs::create_dir_all(&preferred).is_ok()
+        && std::fs::write(preferred.join(".w"), b"ok").is_ok()
+    {
+        let _ = std::fs::remove_file(preferred.join(".w"));
+        preferred
+    } else {
+        let d = std::env::temp_dir().join("gbase-agent-challenge-deepagent");
+        std::fs::create_dir_all(&d).expect("temp evidence dir");
+        d
+    };
+    dir.join(name)
+}
 
 use agent_challenge::{
     emit_signed_leaf_set, public_key_from_secret, submit_signed_leaf_set, AgentV1Challenge,
@@ -224,11 +240,7 @@ async fn s1_emit_submit_seal_latest_serves_bundle() {
         json["final_vector"].as_array().unwrap().len(),
         weights.len(),
     );
-    std::fs::write(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-28-gateway-sealed-bundle.txt",
-        evidence,
-    )
-    .unwrap();
+    std::fs::write(evidence_path("task-28-gateway-sealed-bundle.txt"), evidence).unwrap();
 
     let _ = shutdown.send(());
 }
@@ -326,7 +338,7 @@ async fn s2_bad_sig_rejected_and_retry_no_duplicate() {
         agent_challenge::DEFAULT_MAX_RETRIES,
     );
     std::fs::write(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-28-untrusted-key-and-idempotency.txt",
+        evidence_path("task-28-untrusted-key-and-idempotency.txt"),
         evidence,
     )
     .unwrap();

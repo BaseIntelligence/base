@@ -18,6 +18,21 @@ use crypto::KEY_LEN;
 use schnorrkel::MiniSecretKey;
 
 const CVM_SK: [u8; KEY_LEN] = [0x7A; KEY_LEN];
+
+fn evidence_path(name: &str) -> PathBuf {
+    let preferred = PathBuf::from("/root/.omo/evidence/gbase-agent-challenge-deepagent");
+    let dir = if std::fs::create_dir_all(&preferred).is_ok()
+        && std::fs::write(preferred.join(".w"), b"ok").is_ok()
+    {
+        let _ = std::fs::remove_file(preferred.join(".w"));
+        preferred
+    } else {
+        let d = std::env::temp_dir().join("gbase-agent-challenge-deepagent");
+        std::fs::create_dir_all(&d).expect("temp evidence dir");
+        d
+    };
+    dir.join(name)
+}
 const MINER_A: [u8; KEY_LEN] = [0xA1; KEY_LEN];
 const MINER_B: [u8; KEY_LEN] = [0xB2; KEY_LEN];
 const PACK: &str = "pack-intake-001";
@@ -147,9 +162,7 @@ fn s1_valid_intake_grades_leaf() {
         ok.leaf
     );
     println!("{line}");
-    let path = PathBuf::from(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-26-intake-grade-leaf.txt",
-    );
+    let path = evidence_path("task-26-intake-grade-leaf.txt");
     std::fs::write(&path, &line).expect("evidence");
     assert!(path.is_file());
 }
@@ -202,9 +215,7 @@ fn s2_s3_receipt_mismatch_rejected_pre_grade() {
         calls.load(Ordering::SeqCst)
     );
     println!("{report}");
-    let path = PathBuf::from(
-        "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-26-receipt-mismatch-rejected.txt",
-    );
+    let path = evidence_path("task-26-receipt-mismatch-rejected.txt");
     std::fs::write(&path, &report).expect("evidence");
     assert!(path.is_file());
 }

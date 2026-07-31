@@ -51,10 +51,24 @@ const CVM_SK: [u8; KEY_LEN] = [0x7A; KEY_LEN];
 const PACK_ID: &str = "realpr-more-itertools-1136";
 const PATCH_FIXTURE: &str = "diff --git a/x b/x\n+todo33-e2e\n";
 
-const EVIDENCE_MATCH: &str =
-    "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-33-local-e2e-match.txt";
-const EVIDENCE_UNTRUSTED: &str =
-    "/root/.omo/evidence/gbase-agent-challenge-deepagent/task-33-local-e2e-untrusted.txt";
+const EVIDENCE_MATCH_NAME: &str = "task-33-local-e2e-match.txt";
+const EVIDENCE_UNTRUSTED_NAME: &str = "task-33-local-e2e-untrusted.txt";
+
+/// Prefer operator evidence dir when writable; else temp (CI runners).
+fn evidence_path(name: &str) -> PathBuf {
+    let preferred = PathBuf::from("/root/.omo/evidence/gbase-agent-challenge-deepagent");
+    let dir = if std::fs::create_dir_all(&preferred).is_ok()
+        && std::fs::write(preferred.join(".w"), b"ok").is_ok()
+    {
+        let _ = std::fs::remove_file(preferred.join(".w"));
+        preferred
+    } else {
+        let d = std::env::temp_dir().join("gbase-agent-challenge-deepagent");
+        std::fs::create_dir_all(&d).expect("temp evidence dir");
+        d
+    };
+    dir.join(name)
+}
 
 fn now_iso() -> String {
     std::process::Command::new("date")
@@ -586,9 +600,9 @@ async fn s1_full_local_epoch_match_and_seal() {
         fv_len,
         match_line,
     );
-    std::fs::create_dir_all("/root/.omo/evidence/gbase-agent-challenge-deepagent").ok();
-    std::fs::write(EVIDENCE_MATCH, &evidence).expect("write match evidence");
-    eprintln!("EVIDENCE_MATCH written\n{evidence}");
+    let path = evidence_path(EVIDENCE_MATCH_NAME);
+    std::fs::write(&path, &evidence).expect("write match evidence");
+    eprintln!("EVIDENCE_MATCH written path={path:?}\n{evidence}");
 
     let _ = shutdown.send(());
 }
@@ -687,9 +701,9 @@ async fn s2_untrusted_foreign_key_no_seal() {
         status,
         weights.len(),
     );
-    std::fs::create_dir_all("/root/.omo/evidence/gbase-agent-challenge-deepagent").ok();
-    std::fs::write(EVIDENCE_UNTRUSTED, &evidence).expect("write untrusted evidence");
-    eprintln!("EVIDENCE_UNTRUSTED written\n{evidence}");
+    let path = evidence_path(EVIDENCE_UNTRUSTED_NAME);
+    std::fs::write(&path, &evidence).expect("write untrusted evidence");
+    eprintln!("EVIDENCE_UNTRUSTED written path={path:?}\n{evidence}");
 
     let _ = shutdown.send(());
 }
