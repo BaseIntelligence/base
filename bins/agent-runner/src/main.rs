@@ -59,7 +59,7 @@ struct Cli {
     /// Host directory of Harbor packs (`{root}/{pack_id}/`).
     #[arg(long, env = "BASE_PACK_ROOT")]
     pack_root: Option<PathBuf>,
-    /// Pack catalog HTTP base (challenge via gateway), e.g. http://gateway:8080/challenge/agent-v1
+    /// Pack catalog HTTP base (challenge via gateway), e.g. <http://gateway:8080/challenge/agent-v1>
     #[arg(long, env = "BASE_PACK_CATALOG_URL")]
     pack_catalog_url: Option<String>,
     /// Staging root for agent binds.

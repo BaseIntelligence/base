@@ -168,22 +168,23 @@ fn export_stripped_tar_gz_is_valid_and_has_no_solution() {
     reloaded.strip().assert_total_keys().expect("total");
 }
 
-fn walkdir_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    fn rec(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = fs::read_dir(dir) else {
-            return;
-        };
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                rec(&p, out);
-            } else if p.is_file() {
-                out.push(p);
-            }
+fn walkdir_files_rec(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walkdir_files_rec(&p, out);
+        } else if p.is_file() {
+            out.push(p);
         }
     }
-    rec(root, &mut out);
+}
+
+fn walkdir_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walkdir_files_rec(root, &mut out);
     out
 }
 
