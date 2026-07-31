@@ -1,0 +1,15 @@
+[package]
+name = "hypertraining-kernel-gate"
+description = "Guard 1: κ=2 numeric kernel gate and precision attestation validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[lints]
+workspace = true
