@@ -310,6 +310,32 @@ fn s8_bps_sum_validated() {
     assert!(matches!(err, TrustRootError::InvalidBody(_)));
 }
 
+/// S8b — multi-challenge with a zero-share row still validates when sum is 10000.
+#[test]
+fn s8b_zero_share_row_allowed_when_sum_is_denom() {
+    let body = ChallengesBody {
+        challenges: vec![ChallengeEntry {
+                id: b"agent-v1".to_vec(),
+                public_key: [1u8; 32],
+                emission_share_bps: BPS_DENOM,
+                policy: ParticipantPolicy::AllMetagraphHotkeys,
+            },
+            ChallengeEntry {
+                id: b"hypertraining".to_vec(),
+                public_key: [2u8; 32],
+                emission_share_bps: 0,
+                policy: ParticipantPolicy::AllMetagraphHotkeys,
+            },
+        ],
+    };
+    body.validate().expect("10000+0 must validate");
+    assert!(body.get(b"hypertraining").is_some());
+    let shares = body.emission_shares();
+    assert_eq!(shares.len(), 2);
+    assert_eq!(shares[0], (b"agent-v1".to_vec(), BPS_DENOM));
+    assert_eq!(shares[1], (b"hypertraining".to_vec(), 0));
+}
+
 /// S9 — committed repo config/ loads (if present and signed).
 #[test]
 fn s9_repo_config_loads_when_present() {
@@ -318,11 +344,21 @@ fn s9_repo_config_loads_when_present() {
         return;
     }
     let (ch, ms) = load_config_dir(&root, 0, 3).expect("committed config must verify");
-    assert_eq!(ch.primary().unwrap().body.challenges.len(), 1);
+    let primary = ch.primary().unwrap();
+    assert_eq!(primary.body.challenges.len(), 2);
+    let agent = primary.body.get(b"agent-v1").expect("agent-v1 row");
+    assert_eq!(agent.emission_share_bps, BPS_DENOM);
     assert_eq!(
-        ch.primary().unwrap().body.challenges[0].emission_share_bps,
-        BPS_DENOM
+        encode_hex(&agent.public_key),
+        "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
     );
+    let ht = primary.body.get(b"hypertraining").expect("hypertraining row");
+    assert_eq!(ht.emission_share_bps, 0);
+    assert_ne!(ht.public_key, agent.public_key);
+    let shares = primary.body.emission_shares();
+    assert_eq!(shares[0].0, b"agent-v1");
+    assert_eq!(shares[1].0, b"hypertraining");
+    assert_eq!(shares[1].1, 0);
     // Todo 23: dual-entry rotation — old fixture + post socket-proxy compose pin.
     let entries = &ms.primary().unwrap().body.entries;
     assert_eq!(
