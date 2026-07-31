@@ -2033,6 +2033,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypertraining-challenge"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "chain",
+ "crypto",
+ "hex",
+ "hypertraining-antinois",
+ "hypertraining-build",
+ "hypertraining-challenge-task",
+ "hypertraining-cluster",
+ "hypertraining-eval",
+ "hypertraining-kernel-gate",
+ "hypertraining-pay",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "schnorrkel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "trustroot",
+ "wiremock",
+]
+
+[[package]]
 name = "hypertraining-challenge-task"
 version = "0.1.0"
 
