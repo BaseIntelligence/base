@@ -581,3 +581,23 @@ fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
         "renderer drifted from the app-compose Phala actually measured"
     );
 }
+
+/// Docker only seeds a named volume with the image's ownership when the
+/// mountpoint exists in the image. When it does not, the miner's agent gets a
+/// root-owned pack volume it cannot write, and every dispatched task dies with
+/// `pack fetch: Permission denied` after the CVM has already attested.
+#[test]
+fn the_runtime_image_creates_the_pack_root_the_cvm_mounts_over() {
+    let dockerfile = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/Dockerfile"),
+    )
+    .expect("read deploy/Dockerfile");
+    let mkdir = dockerfile
+        .lines()
+        .find(|l| l.contains("mkdir") && l.contains("/var/lib/base"))
+        .expect("runtime base must create /var/lib/base directories");
+    assert!(
+        mkdir.contains(DEFAULT_PACK_ROOT_IN_CVM),
+        "image never creates {DEFAULT_PACK_ROOT_IN_CVM}, so the packs volume lands root-owned: {mkdir}"
+    );
+}

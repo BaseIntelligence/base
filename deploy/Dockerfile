@@ -94,10 +94,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 65532 base \
     && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
-    && mkdir -p /var/lib/base/pack-source \
+    && mkdir -p /var/lib/base/pack-source /var/lib/base/packs \
     && chown -R base:base /var/lib/base
-# A named volume mounted here inherits this ownership, so the nonroot user can
-# write pulled task packs.
+# Docker seeds a named volume from the image directory it covers, ownership
+# included. It only does that when the directory exists: mounting over a path
+# the image never created yields a root-owned empty volume the nonroot user
+# cannot write. agent-challenge mounts pack-source, the miner CVM mounts packs,
+# so both have to be here.
 USER base
 WORKDIR /home/base
 

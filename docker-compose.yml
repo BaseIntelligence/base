@@ -194,6 +194,11 @@ services:
     depends_on:
       socket-proxy:
         condition: service_started
+    # Only dispatch needs this file, so a deployment that leaves dispatch off
+    # must still come up without it.
+    env_file:
+      - path: ./deploy/env/agent-challenge.env
+        required: false
     environment:
       BASE_CHALLENGE_BIND: 0.0.0.0:8090
       # Verify-specific Engine route: shared host sock is only on socket-proxy (RO).
