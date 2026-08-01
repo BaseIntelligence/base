@@ -59,9 +59,17 @@ runs:
         if [[ -n "$DO_FW_ID" ]]; then
           fwid="$DO_FW_ID"
         else
-          fwid=$(curl -fsS -H "Authorization: Bearer ${DO_TOKEN}" \
-            "https://api.digitalocean.com/v2/firewalls?per_page=200" \
-            | DO_FW_NAME="$DO_FW_NAME" python3 -c 'import json,os,sys; n=os.environ["DO_FW_NAME"]; m=[f["id"] for f in json.load(sys.stdin)["firewalls"] if f["name"]==n]; sys.exit("no firewall named "+n) if not m else print(m[0])')
+          # Check the status separately so an auth failure reports as 401
+          # rather than as a JSON decode traceback.
+          code=$(curl -sS -o /tmp/do-fws.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${DO_TOKEN}" \
+            "https://api.digitalocean.com/v2/firewalls?per_page=200")
+          if [[ "$code" != "200" ]]; then
+            echo "DigitalOcean firewall list failed: http=$code"
+            [[ "$code" == "401" ]] && echo "the DIGITALOCEAN_TOKEN secret is missing or invalid"
+            exit 1
+          fi
+          fwid=$(DO_FW_NAME="$DO_FW_NAME" python3 -c 'import json,os,sys; n=os.environ["DO_FW_NAME"]; m=[f["id"] for f in json.load(open("/tmp/do-fws.json"))["firewalls"] if f["name"]==n]; sys.exit("no firewall named "+n) if not m else print(m[0])')
         fi
 
         [[ "$DO_ACTION" == "open" ]] && verb=POST || verb=DELETE
