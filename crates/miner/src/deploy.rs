@@ -10,17 +10,16 @@ use thiserror::Error;
 use crate::inspect::reject_raw_docker_sock_on_agent;
 pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
 use crate::template::{
-    docker_compose_yaml, ComposeTemplateInput, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_ROOT_IN_CVM,
-    DOCKER_BASE_ENV, ENV_IMAGE_ENV, PACK_CATALOG_URL_ENV, PACK_ROOT_ENV,
-    TRUSTED_CHALLENGE_PUBKEY_ENV,
+    docker_compose_yaml, pre_launch_script, ComposeTemplateInput, DEFAULT_ENVIRONMENT_IMAGE,
+    DEFAULT_PACK_ROOT_IN_CVM, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV, RECEIPT_SK_HEX_ENV,
 };
 
-/// Default digest-pinned agent image (digest from images CI tip b3f1c1e).
+/// Default digest-pinned agent image (digest from the images CI run for abab330a).
 pub const DEFAULT_AGENT_IMAGE: &str =
-    "ghcr.io/baseintelligence/base/base-agent@sha256:b92468cc4e619e6975c3b4d8774547323a2a9efcb9a6140c49774f6e2b0c1102";
+    "ghcr.io/baseintelligence/base/base-agent@sha256:d8f7722896156f0f3dda0c50f0f6897f93b6442dfc9d85d8a8c675a50c81216f";
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
-    "ghcr.io/baseintelligence/base/base-attest-helper@sha256:deb28d9dfd43d735372e177b6b621730bf145a2069b67f420aa07db18689e0bf";
+    "ghcr.io/baseintelligence/base/base-attest-helper@sha256:7fe62eadb9e7f48f63c81586ec5e152626882d9f649e0def8dcb0f2dd847501e";
 /// Default pack catalog HTTP base (local/dev; production overlays gateway).
 pub const DEFAULT_PACK_CATALOG_URL: &str = "http://127.0.0.1:8090";
 /// Default trusted challenge pubkey (`config/challenges.toml` agent-v1 `public_key`).
@@ -34,6 +33,54 @@ pub enum DeployMode {
     NoDeploy,
     /// Render, print hash, then run `phala deploy`.
     Deploy,
+}
+
+/// Values handed to the CVM as Phala **encrypted secrets**.
+///
+/// These are never measured, never written into `app_compose_json`, and never
+/// printed: the measured compose only carries their variable names.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct DeploySecrets {
+    /// Work-receipt mini-secret as 64 hex chars (`agent-runner` accepts hex).
+    pub receipt_sk_hex: String,
+    /// Raw launch token whose SHA-256 is measured.
+    pub launch_token: String,
+    /// Public miner hotkey hex (not secret, but travels the same channel).
+    pub miner_hotkey_hex: String,
+}
+
+// Derived Debug would print the secrets through any `{params:?}`.
+impl std::fmt::Debug for DeploySecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploySecrets")
+            .field("receipt_sk_hex", &"<redacted>")
+            .field("launch_token", &"<redacted>")
+            .field("miner_hotkey_hex", &"<redacted>")
+            .finish()
+    }
+}
+
+impl DeploySecrets {
+    /// `NAME=VALUE` lines for the `phala deploy -e <file>` env file.
+    fn env_file_body(&self) -> String {
+        format!(
+            "{RECEIPT_SK_HEX_ENV}={}\n{LAUNCH_TOKEN_ENV}={}\n{MINER_HOTKEY_HEX_ENV}={}\n",
+            self.receipt_sk_hex, self.launch_token, self.miner_hotkey_hex
+        )
+    }
+
+    fn require_all(&self) -> Result<(), DeployError> {
+        for (name, value) in [
+            (RECEIPT_SK_HEX_ENV, &self.receipt_sk_hex),
+            (LAUNCH_TOKEN_ENV, &self.launch_token),
+            (MINER_HOTKEY_HEX_ENV, &self.miner_hotkey_hex),
+        ] {
+            if value.trim().is_empty() {
+                return Err(DeployError::MissingSecret(name));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Parameters for a miner CVM deploy render.
@@ -61,6 +108,8 @@ pub struct DeployParams {
     pub pack_catalog_url: String,
     /// Trusted challenge public key (64 lowercase hex).
     pub trusted_challenge_pubkey_hex: String,
+    /// Encrypted-secret values (required for [`DeployMode::Deploy`] only).
+    pub secrets: DeploySecrets,
     /// Deploy vs dry-run.
     pub mode: DeployMode,
     /// Optional path to write `app-compose.json`.
@@ -85,6 +134,7 @@ impl Default for DeployParams {
             pack_root: DEFAULT_PACK_ROOT_IN_CVM.to_owned(),
             pack_catalog_url: DEFAULT_PACK_CATALOG_URL.to_owned(),
             trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX.to_owned(),
+            secrets: DeploySecrets::default(),
             mode: DeployMode::NoDeploy,
             out_compose: None,
             phala_bin: PathBuf::from("phala"),
@@ -134,6 +184,12 @@ pub enum DeployError {
         #[source]
         source: std::io::Error,
     },
+    /// An encrypted-secret value required for a real deploy is absent.
+    #[error(
+        "missing encrypted-secret value for {0}; pass --receipt-sk-host-path, \
+         --launch-token-file and --miner-hotkey-hex"
+    )]
+    MissingSecret(&'static str),
     /// `phala` CLI failed or missing.
     #[error("phala deploy failed: {0}")]
     Phala(String),
@@ -232,26 +288,33 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
     // Field set mirrors dstack/Phala app-compose v2 (see real fixture layout).
     // Null-valued keys are stripped by compose_hash; we omit them for clarity.
     Ok(json!({
+        // Measured allowlist: a variable the guest was not measured to accept
+        // cannot be smuggled in. The CLI rewrites this from the names in the
+        // `-e` env file, in file order, and appends its own
+        // DSTACK_AUTHORIZED_KEYS, so mirroring that exactly is what makes the
+        // hash printed here equal the one Phala measures. Verified against
+        // app_id 340ead2af2ff1d950d47a6fae0ffa473854b5d96. Every other BASE_*
+        // setting is a literal in the compose and needs no entry.
         "allowed_envs": [
-            "BASE_NETUID",
-            "BASE_MINER_HOTKEY_FILE",
-            "BASE_LAUNCH_TOKEN_HASH",
-            "BASE_RECEIPT_SK_FILE",
-            "BASE_RECEIPT_PUBLIC_KEY",
-            DOCKER_BASE_ENV,
-            ENV_IMAGE_ENV,
-            PACK_ROOT_ENV,
-            PACK_CATALOG_URL_ENV,
-            TRUSTED_CHALLENGE_PUBKEY_ENV
+            RECEIPT_SK_HEX_ENV,
+            LAUNCH_TOKEN_ENV,
+            MINER_HOTKEY_HEX_ENV,
+            "DSTACK_AUTHORIZED_KEYS"
         ],
 
         "docker_compose_file": yaml,
+        // Materialises the three bind sources from encrypted-secret values.
+        // Nothing else creates them, so without this the guest boots without
+        // /run/base/receipt_sk and agent-runner exits.
+        "pre_launch_script": pre_launch_script(),
         "features": ["kms", "tproxy-net"],
         "gateway_enabled": true,
         "kms_enabled": true,
         "local_key_provider_enabled": false,
         "manifest_version": 2,
-        "name": params.name,
+        // The display name travels as `phala deploy --name` and the CLI leaves
+        // this empty, so putting `params.name` here would only desync the hash.
+        "name": "",
         "no_instance_id": false,
         "public_logs": true,
         "public_sysinfo": true,
@@ -295,18 +358,8 @@ pub fn deploy_or_dry_run(params: &DeployParams) -> Result<DeployResult, DeployEr
 
     let mut phala_invoked = false;
     if params.mode == DeployMode::Deploy {
-        let compose_path = if let Some(p) = &params.out_compose {
-            p.clone()
-        } else {
-            let tmp =
-                std::env::temp_dir().join(format!("miner-{}-app-compose.json", &hash_hex[..16]));
-            std::fs::write(&tmp, pretty.as_bytes()).map_err(|source| DeployError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-            tmp
-        };
-        run_phala_deploy(&params.phala_bin, &compose_path, &params.name)?;
+        params.secrets.require_all()?;
+        run_phala_deploy_with_secrets(params, &value, &hash_hex[..16])?;
         phala_invoked = true;
     }
 
@@ -317,18 +370,98 @@ pub fn deploy_or_dry_run(params: &DeployParams) -> Result<DeployResult, DeployEr
     })
 }
 
-/// Invoke `phala deploy --compose <path> --name <name>` (best-effort argv).
+/// Files `phala deploy` reads: the CLI builds the app-compose itself from the
+/// docker-compose YAML plus the pre-launch script, so `-c` is *not* the
+/// rendered `app-compose.json`.
+#[derive(Debug, Clone, Copy)]
+pub struct PhalaDeployInvocation<'a> {
+    /// `phala` binary.
+    pub phala_bin: &'a Path,
+    /// docker-compose YAML (the `-c` argument).
+    pub docker_compose: &'a Path,
+    /// Rendered pre-launch script.
+    pub pre_launch_script: &'a Path,
+    /// Mode-0600 `.env` file with the encrypted-secret values.
+    pub env_file: &'a Path,
+    /// CVM display name.
+    pub name: &'a str,
+}
+
+/// Write the CLI inputs to temp files, deploy, then shred the secret env file.
+fn run_phala_deploy_with_secrets(
+    params: &DeployParams,
+    app_compose: &Value,
+    stem: &str,
+) -> Result<(), DeployError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = std::env::temp_dir();
+    let compose_path = dir.join(format!("miner-{stem}-docker-compose.yml"));
+    let script_path = dir.join(format!("miner-{stem}-pre-launch.sh"));
+    let env_path = dir.join(format!("miner-{stem}.env"));
+
+    let yaml = app_compose["docker_compose_file"]
+        .as_str()
+        .unwrap_or_default();
+    write_file(&compose_path, yaml.as_bytes())?;
+    let script = app_compose["pre_launch_script"]
+        .as_str()
+        .unwrap_or_default();
+    write_file(&script_path, script.as_bytes())?;
+
+    // Secrets go through a 0600 file rather than argv, because argv is world
+    // readable via /proc for the lifetime of the child.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true).mode(0o600);
+    let write_env = opts
+        .open(&env_path)
+        .and_then(|mut f| f.write_all(params.secrets.env_file_body().as_bytes()));
+
+    let outcome = write_env
+        .map_err(|source| DeployError::Io {
+            path: env_path.clone(),
+            source,
+        })
+        .and_then(|()| {
+            run_phala_deploy(&PhalaDeployInvocation {
+                phala_bin: &params.phala_bin,
+                docker_compose: &compose_path,
+                pre_launch_script: &script_path,
+                env_file: &env_path,
+                name: &params.name,
+            })
+        });
+    // Also on the error path: the file holds the receipt private key.
+    let _ = std::fs::remove_file(&env_path);
+    outcome
+}
+
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), DeployError> {
+    std::fs::write(path, bytes).map_err(|source| DeployError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Invoke `phala deploy --name <n> -c <yml> --pre-launch-script <sh> -e <env>`.
 ///
 /// # Errors
-/// Missing binary or non-zero exit.
-pub fn run_phala_deploy(phala_bin: &Path, compose: &Path, name: &str) -> Result<(), DeployError> {
+/// Missing binary or non-zero exit. The argv is never quoted back into the
+/// error, because `--pre-launch-script` and `-e` name files holding secrets.
+pub fn run_phala_deploy(inv: &PhalaDeployInvocation<'_>) -> Result<(), DeployError> {
+    let phala_bin = inv.phala_bin;
     let output = Command::new(phala_bin)
         .args([
             "deploy",
-            "--compose",
-            &compose.display().to_string(),
             "--name",
-            name,
+            inv.name,
+            "-c",
+            &inv.docker_compose.display().to_string(),
+            "--pre-launch-script",
+            &inv.pre_launch_script.display().to_string(),
+            "-e",
+            &inv.env_file.display().to_string(),
         ])
         .output()
         .map_err(|e| {

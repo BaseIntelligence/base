@@ -14,8 +14,9 @@ use clap::{Parser, Subcommand};
 use crypto::{generate_mini_secret, public_key_from_mini_secret, KEY_LEN};
 use miner::{
     announce, certify, deploy_or_dry_run, empty_launch_token_hash_hex, launch_token_hash_hex,
-    parse_hotkey_hex, AnnounceParams, CertifyParams, DeployMode, DeployParams, QuoteSource,
-    DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE,
+    parse_hotkey_hex, AnnounceParams, CertifyParams, DeployMode, DeployParams, DeploySecrets,
+    QuoteSource, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE,
+    DEFAULT_PACK_CATALOG_URL, DEFAULT_SOCKET_PROXY_IMAGE,
 };
 
 #[derive(Debug, Parser)]
@@ -28,58 +29,70 @@ struct Cli {
     cmd: Cmd,
 }
 
-#[derive(Debug, Subcommand)]
-enum Cmd {
-    /// Render measured app-compose, print offline compose-hash, optionally phala deploy.
-    Deploy {
-        /// CVM / app-compose name.
-        #[arg(long, default_value = "miner")]
-        name: String,
-        /// Digest-pinned agent image (`repo@sha256:<64 hex>`).
-        #[arg(long, default_value = DEFAULT_AGENT_IMAGE, env = "BASE_AGENT_IMAGE")]
-        agent_image: String,
-        /// Digest-pinned attest-helper image.
-        #[arg(
+#[derive(Debug, clap::Args)]
+struct DeployArgs {
+    /// CVM / app-compose name.
+    #[arg(long, default_value = "miner")]
+    name: String,
+    /// Digest-pinned agent image (`repo@sha256:<64 hex>`).
+    #[arg(long, default_value = DEFAULT_AGENT_IMAGE, env = "BASE_AGENT_IMAGE")]
+    agent_image: String,
+    /// Digest-pinned attest-helper image.
+    #[arg(
             long,
             default_value = DEFAULT_ATTEST_HELPER_IMAGE,
             env = "BASE_ATTEST_HELPER_IMAGE"
         )]
-        attest_helper_image: String,
-        /// Digest-pinned socket-proxy image (measured allowlist).
-        #[arg(
+    attest_helper_image: String,
+    /// Digest-pinned socket-proxy image (measured allowlist).
+    #[arg(
             long,
             default_value = DEFAULT_SOCKET_PROXY_IMAGE,
             env = "BASE_SOCKET_PROXY_IMAGE"
         )]
-        socket_proxy_image: String,
-        /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
-        #[arg(long, env = "BASE_LAUNCH_TOKEN_HASH")]
-        launch_token_hash: Option<String>,
-        /// Host path for the raw launch token (mode 0600). Generated if missing.
-        #[arg(long, env = "BASE_LAUNCH_TOKEN_FILE")]
-        launch_token_file: Option<PathBuf>,
-        /// Subnet netuid embedded as non-secret env.
-        #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
-        netuid: u16,
-        /// Host path for the CVM-local receipt mini-secret (mode 0600). Generated if missing.
-        #[arg(long, env = "BASE_RECEIPT_SK_HOST_PATH", default_value = "receipt_sk")]
-        receipt_sk_host_path: PathBuf,
-        /// Optional pre-known receipt public key (64 hex). When omitted, derived from the secret file.
-        #[arg(long, env = "BASE_RECEIPT_PUBLIC_KEY")]
-        receipt_public_key: Option<String>,
-        /// Write rendered app-compose.json here.
-        #[arg(long)]
-        out: Option<PathBuf>,
-        /// Skip `phala deploy` (default). Print compose-hash only.
-        #[arg(long, conflicts_with = "deploy")]
-        no_deploy: bool,
-        /// Actually invoke `phala deploy` after hashing.
-        #[arg(long)]
-        deploy: bool,
-        /// Path to `phala` binary.
-        #[arg(long, default_value = "phala", env = "BASE_PHALA_BIN")]
-        phala_bin: PathBuf,
-    },
+    socket_proxy_image: String,
+    /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
+    #[arg(long, env = "BASE_LAUNCH_TOKEN_HASH")]
+    launch_token_hash: Option<String>,
+    /// Host path for the raw launch token (mode 0600). Generated if missing.
+    #[arg(long, env = "BASE_LAUNCH_TOKEN_FILE")]
+    launch_token_file: Option<PathBuf>,
+    /// Subnet netuid embedded as non-secret env.
+    #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
+    netuid: u16,
+    /// Host path for the CVM-local receipt mini-secret (mode 0600). Generated if missing.
+    #[arg(long, env = "BASE_RECEIPT_SK_HOST_PATH", default_value = "receipt_sk")]
+    receipt_sk_host_path: PathBuf,
+    /// Optional pre-known receipt public key (64 hex). When omitted, derived from the secret file.
+    #[arg(long, env = "BASE_RECEIPT_PUBLIC_KEY")]
+    receipt_public_key: Option<String>,
+    /// Public miner hotkey (64 hex). Required for `--deploy`.
+    #[arg(long, env = "BASE_MINER_HOTKEY_HEX")]
+    miner_hotkey_hex: Option<String>,
+    /// Operator-published pack catalog base URL, as reachable from inside the CVM.
+    #[arg(long, env = "BASE_PACK_CATALOG_URL", default_value = DEFAULT_PACK_CATALOG_URL)]
+    pack_catalog_url: String,
+    /// Digest-pinned Harbor environment image the agent runs pack tasks in.
+    #[arg(long, env = "BASE_ENVIRONMENT_IMAGE", default_value = DEFAULT_ENVIRONMENT_IMAGE)]
+    environment_image: String,
+    /// Write rendered app-compose.json here.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Skip `phala deploy` (default). Print compose-hash only.
+    #[arg(long, conflicts_with = "deploy")]
+    no_deploy: bool,
+    /// Actually invoke `phala deploy` after hashing.
+    #[arg(long)]
+    deploy: bool,
+    /// Path to `phala` binary.
+    #[arg(long, default_value = "phala", env = "BASE_PHALA_BIN")]
+    phala_bin: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Render measured app-compose, print offline compose-hash, optionally phala deploy.
+    Deploy(DeployArgs),
     /// Request nonce, obtain D10-bound quote, submit to validator (task 38).
     Certify {
         /// Validator base URL (`http://host:port`).
@@ -109,6 +122,10 @@ enum Cmd {
         /// Host path of the raw launch token presented to the CVM attest-helper.
         #[arg(long, env = "BASE_LAUNCH_TOKEN_FILE")]
         launch_token_file: Option<PathBuf>,
+        /// `app-compose.json` written by `deploy --out`, submitted as the
+        /// RTMR3 compose preimage when the quote response omits it.
+        #[arg(long, env = "BASE_APP_COMPOSE_FILE")]
+        app_compose_file: Option<PathBuf>,
     },
     /// Announce the CVM's public base URL to the gateway (§9.3 step 5).
     Announce {
@@ -140,53 +157,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
-        Cmd::Deploy {
-            name,
-            agent_image,
-            attest_helper_image,
-            socket_proxy_image,
-            launch_token_hash,
-            launch_token_file,
-            netuid,
-            receipt_sk_host_path,
-            receipt_public_key,
-            out,
-            no_deploy: _,
-            deploy,
-            phala_bin,
-        } => {
-            let mode = if deploy {
-                DeployMode::Deploy
-            } else {
-                DeployMode::NoDeploy
-            };
-            let receipt_public_key_hex =
-                provision_receipt_key(&receipt_sk_host_path, receipt_public_key.as_deref())?;
-            let launch_token_hash =
-                resolve_launch_token_hash(launch_token_hash, launch_token_file.as_deref())?;
-            let params = DeployParams {
-                name,
-                agent_image,
-                attest_helper_image,
-                socket_proxy_image,
-                launch_token_hash: launch_token_hash.clone(),
-                netuid,
-                receipt_public_key_hex: receipt_public_key_hex.clone(),
-                mode,
-                out_compose: out,
-                phala_bin,
-                ..DeployParams::default()
-            };
-            let result = deploy_or_dry_run(&params).map_err(|e| e.to_string())?;
-            println!("compose-hash={}", result.compose_hash_hex);
-            println!("receipt-public-key={receipt_public_key_hex}");
-            println!("receipt-sk-host-path={}", receipt_sk_host_path.display());
-            print_launch_token_report(launch_token_file.as_deref(), &launch_token_hash);
-            println!("phala_invoked={}", result.phala_invoked);
-            println!("mode={mode:?}");
-            println!("note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/base");
-            Ok(())
-        }
+        Cmd::Deploy(args) => run_deploy(args),
         Cmd::Certify {
             validator_url,
             netuid,
@@ -197,6 +168,7 @@ fn run(cli: Cli) -> Result<(), String> {
             agent_url,
             validator_hotkey_hex,
             launch_token_file,
+            app_compose_file,
         } => {
             let miner_hotkey = parse_hotkey_hex(&miner_hotkey_hex).map_err(|e| e.to_string())?;
             let validator_hotkey_override = match validator_hotkey_hex {
@@ -221,6 +193,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 quote_source,
                 validator_hotkey_override,
                 launch_token: token_file.map(read_launch_token).transpose()?,
+                app_compose_override: app_compose_file
+                    .as_deref()
+                    .map(std::fs::read_to_string)
+                    .transpose()
+                    .map_err(|e| format!("app-compose file: {e}"))?,
             };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -237,6 +214,70 @@ fn run(cli: Cli) -> Result<(), String> {
             base_url,
         } => run_announce(gateway_url, netuid, epoch, base_url),
     }
+}
+
+/// Render the measured compose, then optionally hand the secrets to Phala.
+fn run_deploy(args: DeployArgs) -> Result<(), String> {
+    let DeployArgs {
+        name,
+        agent_image,
+        attest_helper_image,
+        socket_proxy_image,
+        launch_token_hash,
+        launch_token_file,
+        netuid,
+        receipt_sk_host_path,
+        receipt_public_key,
+        miner_hotkey_hex,
+        pack_catalog_url,
+        environment_image,
+        out,
+        no_deploy: _,
+        deploy,
+        phala_bin,
+    } = args;
+    let mode = if deploy {
+        DeployMode::Deploy
+    } else {
+        DeployMode::NoDeploy
+    };
+    let (receipt_public_key_hex, receipt_secret) =
+        provision_receipt_key(&receipt_sk_host_path, receipt_public_key.as_deref())?;
+    let launch_token_hash =
+        resolve_launch_token_hash(launch_token_hash, launch_token_file.as_deref())?;
+    let secrets = collect_deploy_secrets(
+        &receipt_secret,
+        launch_token_file.as_deref(),
+        miner_hotkey_hex.as_deref(),
+    )?;
+    let params = DeployParams {
+        name,
+        agent_image,
+        attest_helper_image,
+        socket_proxy_image,
+        launch_token_hash: launch_token_hash.clone(),
+        netuid,
+        receipt_public_key_hex: receipt_public_key_hex.clone(),
+        pack_catalog_url,
+        environment_image,
+        secrets,
+        mode,
+        out_compose: out,
+        phala_bin,
+        ..DeployParams::default()
+    };
+    let result = deploy_or_dry_run(&params).map_err(|e| e.to_string())?;
+    println!("compose-hash={}", result.compose_hash_hex);
+    println!("receipt-public-key={receipt_public_key_hex}");
+    println!("receipt-sk-host-path={}", receipt_sk_host_path.display());
+    print_launch_token_report(launch_token_file.as_deref(), &launch_token_hash);
+    println!("phala_invoked={}", result.phala_invoked);
+    println!("mode={mode:?}");
+    println!(
+        "note=miner_funds_own_phala_account \
+                 secrets_travel_as_phala_encrypted_env_and_land_as_file_mounts_under_/run/base"
+    );
+    Ok(())
 }
 
 fn resolve_launch_token_hash(
@@ -337,7 +378,7 @@ fn resolve_miner_hotkey_secret() -> Result<[u8; KEY_LEN], String> {
 fn provision_receipt_key(
     path: &std::path::Path,
     known_public_hex: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, [u8; KEY_LEN]), String> {
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -372,7 +413,34 @@ fn provision_receipt_key(
             ));
         }
     }
-    Ok(derived_hex)
+    Ok((derived_hex, secret))
+}
+
+/// Gather the values the CVM receives as Phala encrypted secrets.
+///
+/// Dry-runs leave them empty: only the variable *names* are measured, so the
+/// compose-hash an owner signs is identical with or without them.
+fn collect_deploy_secrets(
+    receipt_secret: &[u8; KEY_LEN],
+    launch_token_file: Option<&std::path::Path>,
+    miner_hotkey_hex: Option<&str>,
+) -> Result<DeploySecrets, String> {
+    let miner_hotkey_hex = match miner_hotkey_hex {
+        Some(h) => {
+            let h = h.trim().to_ascii_lowercase();
+            parse_hotkey_hex(&h).map_err(|e| e.to_string())?;
+            h
+        }
+        None => String::new(),
+    };
+    Ok(DeploySecrets {
+        receipt_sk_hex: hex::encode(receipt_secret),
+        launch_token: launch_token_file
+            .map(read_launch_token)
+            .transpose()?
+            .unwrap_or_default(),
+        miner_hotkey_hex,
+    })
 }
 
 /// Load or generate the raw launch token on the host; return its SHA-256 hex.

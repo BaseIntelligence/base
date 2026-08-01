@@ -73,6 +73,9 @@ Flags of interest:
 | `--attest-helper-image` | Digest-pinned helper image |
 | `--socket-proxy-image` | Digest-pinned measured socket-proxy |
 | `--launch-token-hash` | Lowercase hex SHA-256 of the launch token (measured) |
+| `--launch-token-file` | Host path of the **raw** launch token (mode 0600, generated if missing) |
+| `--receipt-sk-host-path` | Host path of the work-receipt mini-secret (mode 0600, generated if missing) |
+| `--miner-hotkey-hex` | Your **public** hotkey hex; required with `--deploy` |
 | `--netuid` | Subnet netuid embedded as non-secret env |
 | `--no-deploy` | Default path: hash only |
 | `--deploy` | Invoke `phala deploy` after hashing |
@@ -123,16 +126,44 @@ Preconditions: [funding-phala.md](./funding-phala.md), `phala` on PATH, images r
 ```bash
 export BASE_AGENT_IMAGE='<repo>@sha256:<64 hex>'
 export BASE_ATTEST_HELPER_IMAGE='<repo>@sha256:<64 hex>'
-export BASE_LAUNCH_TOKEN_HASH='<64 hex of token>'
+export BASE_MINER_HOTKEY_HEX='<64 lowercase hex public hotkey>'
 export BASE_NETUID=1   # publish real netuid when live
 
-cargo run -q -p miner-bin -- deploy --deploy --netuid "$BASE_NETUID"
+cargo run -q -p miner-bin -- deploy --deploy --netuid "$BASE_NETUID" \
+  --launch-token-file "$HOME/.base/launch_token" \
+  --receipt-sk-host-path "$HOME/.base/receipt_sk"
 ```
+
+`--deploy` requires all three of `--launch-token-file`, `--receipt-sk-host-path` and
+`--miner-hotkey-hex`. The first two files are generated (mode 0600) on first use and
+reused afterwards; keep them — the launch token is the bearer credential you present to
+your own `attest-helper`, and the receipt key is what signs your work receipts.
+
+### How the secrets reach the CVM
+
+The measured `app-compose.json` is **public**: it is submitted to validators, hash-checked
+against RTMR3, and served by Phala. It therefore carries only the secret variable *names*.
+The values are sent as **Phala encrypted secrets** (X25519 + AES-256-GCM, decrypted only
+inside the TEE), and the measured `pre_launch_script` writes them to the bind sources the
+compose mounts under `/run/base`:
+
+| Encrypted secret | Becomes |
+|------------------|---------|
+| `BASE_RECEIPT_SK_HEX` | `/run/base/receipt_sk` (mode 0400) |
+| `BASE_LAUNCH_TOKEN` | `/run/base/launch_token` |
+| `BASE_MINER_HOTKEY_HEX` | `/run/base/miner_hotkey` |
+
+If a value is missing the CVM aborts at boot instead of starting with an empty file.
+**Never** paste a key into the compose, a pre-launch script literal, a ticket, or a log:
+anything in the compose is published with the measurement.
+
+Because only the names are measured, the compose-hash from step 1 is unchanged by your
+secret values.
 
 Notes printed by the CLI:
 
 - You fund your own Phala account.  
-- Secrets are file mounts under `/run/base` (not env values).
+- Secret values travel as encrypted env and land as file mounts under `/run/base`; they are never measured.
 
 Record the public agent URL Phala assigns. You need it for certify.
 

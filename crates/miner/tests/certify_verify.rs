@@ -80,6 +80,7 @@ fn base_params(addr: SocketAddr) -> CertifyParams {
         quote_source: QuoteSource::Fixture { dir: None },
         validator_hotkey_override: None,
         launch_token: None,
+        app_compose_override: None,
     }
 }
 
@@ -149,6 +150,7 @@ async fn live_quote_request_omits_header_without_a_token() {
     let params = CertifyParams {
         quote_source: QuoteSource::Live { agent_base },
         launch_token: None,
+        app_compose_override: None,
         ..base_params(addr)
     };
     certify(&params).await.expect("certify");

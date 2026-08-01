@@ -1,31 +1,41 @@
 # Owner-signed measurements allowlist.
-# Historical row: task-34/35 real Phala TDX fixtures (pre–socket-proxy compose).
-# Live row: paid Phala CVM base-miner-dev (prod5) FULL TRIAD pack path 2026-07-31
-#   cvm_id=96238355-a3a7-4732-a610-eb4529c303bc
-#   app_id=7345719d5c152d26c73330ba07bf0f3dd4eb29c1
-#   endpoint=https://7345719d5c152d26c73330ba07bf0f3dd4eb29c1-8080.dstack-pha-prod5.phala.network
-#   agent=ghcr.io/baseintelligence/base/base-agent@sha256:b5e6081f352c44cf9374c0b5d5d15c938892e0a05bfa0cc36c04ac19d2ae3de2
-#   mode=full-triad (BASE_DOCKER_BASE + ENV image + packs volume + catalog URL)
-#   capacity: GET /v1/capacity → 200 {"max_concurrency":1,"current_load":0}
-# Evidence: /tmp/ulw-miner/evidence/live-cvm/full-prod/
-# Source fixtures (historical): crates/attest-parse/tests/fixtures/real/
-version = 2
+#
+# One row per CVM build we are willing to credit. A quote is accepted only when
+# a single row matches all six values at once, so a build is either wholly
+# allowed or not at all.
+#
+# Live row: paid Phala CVM base-miner-541 (prod5), deployed 2026-08-01 by
+#   `miner deploy --deploy --netuid 541`, which is the first build whose
+#   app-compose carries no secret values: the receipt key, launch token and
+#   hotkey travel as Phala encrypted secrets and are materialised by the
+#   measured pre_launch_script.
+#   cvm_name=base-miner-541
+#   app_id=340ead2af2ff1d950d47a6fae0ffa473854b5d96
+#   agent=ghcr.io/baseintelligence/base/base-agent@sha256:d8f7722896156f0f3dda0c50f0f6897f93b6442dfc9d85d8a8c675a50c81216f
+#   attest-helper=ghcr.io/baseintelligence/base/base-attest-helper@sha256:7fe62eadb9e7f48f63c81586ec5e152626882d9f649e0def8dcb0f2dd847501e
+#   compose_hash equals the offline hash `miner deploy` prints and the value
+#   embedded in the hardware mr_config_id, all three verified byte-for-byte.
+#
+# Revoked 2026-08-01, do not restore:
+#   5dbbf77467cae6f85242e69d70ede9e246ed6c87e9e09f5e1128025eac8e7015
+#     base-miner-dev. Its pre_launch_script wrote the work-receipt private key
+#     as a byte literal, and the compose is disclosed to every validator as
+#     SubmitRequest.app_compose_json, so that key is public and anyone can
+#     forge its receipts. Its miner_hotkey file was the placeholder 0x00..0x1f
+#     and its launch token was empty.
+#   1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b
+#     task-34/35 test fixture, kept as
+#     crates/attest-parse/tests/fixtures/real/app-compose.json. A fixture must
+#     not be creditable in production; the tests that need it build their own
+#     allowlist.
+version = 3
 introduced_epoch = 0
 
-# --- v(n): task-34/35 real fixture (old compose) ---
-[[measurements]]
-mr_td = "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077"
-rtmr0 = "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96"
-rtmr1 = "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c"
-rtmr2 = "df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858"
-rtmr3 = "9c343d652b721b398b2b1233251831c67162b8e7c1f09956d5162715c5be48f8ae8c5001facd341759c4abc7aff61a0f"
-compose_hash = "1b8a63efb0f7afda1e52c823f39cc0a79d6d75c2e7a086b58e0e6a2db548524b"
-
-# --- v(n+1): live full-triad Phala CVM (base-miner-dev prod5, pack path + measured socket-proxy) ---
+# --- v(n+2): base-miner-541, secrets via Phala encrypted env (netuid 541) ---
 [[measurements]]
 mr_td = "f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077"
 rtmr0 = "68102e7b524af310f7b7d426ce75481e36c40f5d513a9009c046e9d37e31551f0134d954b496a3357fd61d03f07ffe96"
 rtmr1 = "07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c"
 rtmr2 = "a2a58c9a959a4fa44bd6da0c97a2270c051faf12084cfe91ae900e4fdff6cdd4f69a82005e04ee920f231497894d677f"
-rtmr3 = "2439cee0dc08193a1809a92dd6a92d757fcd9f62a35496fdfefc31159d2c2ebfc675c1c336650fd3dbf7c1c1f6390dfc"
-compose_hash = "5dbbf77467cae6f85242e69d70ede9e246ed6c87e9e09f5e1128025eac8e7015"
+rtmr3 = "cbfeb7388ef9f2e4e60b9ca69ebf09cf8bf872bba3a0e4859bc40c5fa08365fd69306a98b9f37ce5d71f4bebca41e519"
+compose_hash = "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a"

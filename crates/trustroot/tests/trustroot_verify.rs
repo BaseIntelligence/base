@@ -375,12 +375,14 @@ fn s9_repo_config_loads_when_present() {
     assert_eq!(shares[1].1, 0);
     assert_eq!(shares[2].0, b"prism");
     assert_eq!(shares[2].1, 0);
-    // Todo 23: dual-entry rotation — old fixture + post socket-proxy compose pin.
+    // The committed allowlist credits exactly the CVM builds we operate. A test
+    // fixture must never be one of them, so this stays at the live build alone
+    // until a rotation deliberately overlaps two.
     let entries = &ms.primary().unwrap().body.entries;
+    assert_eq!(entries.len(), 1, "one creditable CVM build");
     assert_eq!(
-        entries.len(),
-        2,
-        "measurements allowlist must dual-pin old fixture + socket-proxy compose"
+        encode_hex(&entries[0].compose_hash),
+        "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a"
     );
     // Both dual-entry profiles must self-match.
     for e in entries {

@@ -74,6 +74,11 @@ pub struct CertifyParams {
     /// Raw launch token presented to the CVM attest-helper as a bearer
     /// credential (its SHA-256 is what the measured compose pins).
     pub launch_token: Option<String>,
+    /// `app-compose.json` preimage to submit when the quote source does not
+    /// carry one. Supplying it is safe from the validator's side because the
+    /// validator hashes it and compares against the compose hash replayed from
+    /// RTMR3, so a wrong preimage is refused rather than believed.
+    pub app_compose_override: Option<String>,
     /// Optional override for claimed validator hotkey (defaults to nonce response).
     pub validator_hotkey_override: Option<[u8; KEY_LEN]>,
 }
@@ -185,12 +190,15 @@ pub async fn certify(params: &CertifyParams) -> Result<CertifyResult, CertifyErr
 
     let fixture_mode = matches!(params.quote_source, QuoteSource::Fixture { .. });
     let token = params.launch_token.as_deref();
-    let evidence = match &params.quote_source {
+    let mut evidence = match &params.quote_source {
         QuoteSource::Fixture { dir } => load_fixture_quote(dir.as_deref(), &report_data)?,
         QuoteSource::Live { agent_base } => {
             fetch_live_quote(&client, agent_base, token, &binding, &report_data).await?
         }
     };
+    if evidence.app_compose_json.is_none() {
+        evidence.app_compose_json = params.app_compose_override.clone();
+    }
 
     let submit_body = serde_json::json!({
         "miner_hotkey_hex": hex::encode(params.miner_hotkey),

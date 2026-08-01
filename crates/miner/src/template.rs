@@ -24,6 +24,15 @@ pub const HOTKEY_FILE_IN_CVM: &str = "/run/base/miner_hotkey";
 pub const LAUNCH_TOKEN_FILE_IN_CVM: &str = "/run/base/launch_token";
 /// CVM-local work-receipt mini-secret path (never the challenge sk).
 pub const RECEIPT_SK_FILE_IN_CVM: &str = "/run/base/receipt_sk";
+/// Env name carrying the raw work-receipt mini-secret (Phala encrypted secret).
+///
+/// Only the *name* is measured; the value is decrypted inside the TEE and the
+/// pre-launch script turns it into [`RECEIPT_SK_FILE_IN_CVM`].
+pub const RECEIPT_SK_HEX_ENV: &str = "BASE_RECEIPT_SK_HEX";
+/// Env name carrying the raw launch token (Phala encrypted secret).
+pub const LAUNCH_TOKEN_ENV: &str = "BASE_LAUNCH_TOKEN";
+/// Env name carrying the public miner hotkey hex (Phala encrypted secret).
+pub const MINER_HOTKEY_HEX_ENV: &str = "BASE_MINER_HOTKEY_HEX";
 /// Env name for the runner Docker Engine HTTP base (socket-proxy URL).
 pub const DOCKER_BASE_ENV: &str = "BASE_DOCKER_BASE";
 /// Env name for the digest-pinned Harbor environment image.
@@ -44,6 +53,55 @@ pub const DEFAULT_SOCKET_PROXY_IMAGE: &str = concat!(
     "tecnativa/docker-socket-proxy@sha256:",
     "1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459"
 );
+
+/// Directory the compose bind `source:` entries resolve against inside the CVM.
+///
+/// dstack runs the pre-launch script with this as the compose working
+/// directory, so a relative `source: receipt_sk` lands here.
+pub const CVM_BIND_SOURCE_DIR: &str = "/dstack";
+/// Uid:gid of the runner images; the secret files must be readable by it.
+const RUNNER_UID_GID: &str = "65532:65532";
+
+/// Render the measured `pre_launch_script`.
+///
+/// The script text is part of the measured compose and therefore public, so it
+/// may only contain variable *references*. The values arrive as Phala
+/// encrypted secrets (X25519 + AES-256-GCM, decrypted inside the TEE); only the
+/// names appear in `allowed_envs`, which is what stops a miner from smuggling
+/// an unmeasured variable into the guest.
+///
+/// This replaces Phala's default pre-launch script, which exists to do
+/// private-registry login and `DSTACK_APP_ID` / `DSTACK_GATEWAY_DOMAIN`
+/// substitution. base images are public and the compose references neither
+/// variable, so nothing is lost.
+#[must_use]
+pub fn pre_launch_script() -> String {
+    let dir = CVM_BIND_SOURCE_DIR;
+    let uid_gid = RUNNER_UID_GID;
+    let sk_env = RECEIPT_SK_HEX_ENV;
+    let token_env = LAUNCH_TOKEN_ENV;
+    let hotkey_env = MINER_HOTKEY_HEX_ENV;
+    format!(
+        r#"#!/bin/bash
+set -euo pipefail
+umask 077
+mkdir -p {dir}
+# ${{VAR:?}} aborts the boot instead of writing an empty file: an empty launch
+# token combined with the measured empty-token hash would authenticate anyone.
+printf '%s' "${{{sk_env}:?{sk_env} was not supplied as an encrypted secret}}" > {dir}/receipt_sk
+printf '%s' "${{{token_env}:?{token_env} was not supplied as an encrypted secret}}" > {dir}/launch_token
+printf '%s' "${{{hotkey_env}:?{hotkey_env} was not supplied as an encrypted secret}}" > {dir}/miner_hotkey
+if chown {uid_gid} {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey 2>/dev/null; then
+  chmod 0400 {dir}/receipt_sk
+  chmod 0444 {dir}/launch_token {dir}/miner_hotkey
+else
+  chmod 0444 {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey
+fi
+# Existence proof only — never echo a value.
+ls -la {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey
+"#
+    )
+}
 
 /// Inputs that shape the measured docker-compose YAML string.
 #[derive(Debug, Clone, PartialEq, Eq)]

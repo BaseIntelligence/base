@@ -638,8 +638,9 @@ images:
 | Rule | Requirement |
 |------|-------------|
 | Tags | Digest pins only; rendered compose must contain zero `:latest` |
-| `allowed_envs` names | May include `BASE_NETUID`, `BASE_MINER_HOTKEY_FILE`, `BASE_LAUNCH_TOKEN_HASH` |
-| Secret values | **Files** under `/run/base/` (or equivalent), never env values |
+| `allowed_envs` names | May include `BASE_NETUID`, `BASE_MINER_HOTKEY_FILE`, `BASE_LAUNCH_TOKEN_HASH`, and the encrypted-secret names `BASE_RECEIPT_SK_HEX`, `BASE_LAUNCH_TOKEN`, `BASE_MINER_HOTKEY_HEX`; the list is measured, so an unlisted variable cannot reach the guest |
+| Secret values | **Files** under `/run/base/` (or equivalent), never env values and never literals in the compose |
+| Secret delivery | Values travel as **Phala encrypted secrets** (decrypted only inside the TEE). The measured `pre_launch_script` writes them to the compose bind sources under `/dstack` and aborts the boot with `${VAR:?…}` if any is absent |
 | `LAUNCH_TOKEN` | Hash appears in measured compose (D11); raw token only as file if needed |
 | compose-hash | Canonical JSON → SHA-256 per `compose-hash`; must match RTMR3 event and `mr_config_id` prefix |
 | Work-receipt pubkey | Published in measured compose for challenge verification |
@@ -647,8 +648,8 @@ images:
 ### 9.3 `miner deploy` obligations
 
 1. Render compose from the template that satisfies §9.1–§9.2 (including measured socket-proxy).  
-2. Compute compose-hash **offline**; print it.  
-3. `phala deploy` (or `--no-deploy` for hash-only).  
+2. Compute compose-hash **offline**; print it. The hash is independent of the secret *values*, so a measurement can be signed before any miner picks theirs.  
+3. `phala deploy` (or `--no-deploy` for hash-only), passing the receipt key, launch token and public hotkey as encrypted secrets.  
 4. Miner funds their own Phala account (R3).  
 5. Register public base URL with gateway routing for `agent-v1`.
 

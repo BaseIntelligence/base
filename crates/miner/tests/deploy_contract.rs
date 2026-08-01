@@ -1,6 +1,7 @@
 //! Integration: `AGENT_CHALLENGE.md` §9 contract + offline compose-hash.
 
 use compose_hash::compose_hash_hex;
+use miner::DeploySecrets;
 use miner::{
     agent_service_mounts_docker_sock, deploy_or_dry_run, docker_compose_from_app_compose_json,
     docker_compose_yaml, environment_block_has_no_secrets, reject_raw_docker_sock_on_agent,
@@ -8,8 +9,9 @@ use miner::{
     AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, DEFAULT_AGENT_IMAGE,
     DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_CATALOG_URL,
     DEFAULT_PACK_ROOT_IN_CVM, DEFAULT_SOCKET_PROXY_IMAGE, DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
-    DOCKER_BASE_ENV, ENV_IMAGE_ENV, PACK_CATALOG_URL_ENV, PACK_ROOT_ENV, SOCKET_PROXY_PORT,
-    SOCKET_PROXY_SERVICE, TRUSTED_CHALLENGE_PUBKEY_ENV,
+    DOCKER_BASE_ENV, ENV_IMAGE_ENV, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV, PACK_CATALOG_URL_ENV,
+    PACK_ROOT_ENV, RECEIPT_SK_HEX_ENV, SOCKET_PROXY_PORT, SOCKET_PROXY_SERVICE,
+    TRUSTED_CHALLENGE_PUBKEY_ENV,
 };
 
 /// Frozen compose-hash of `DeployParams::default()` **before** measured socket-proxy
@@ -83,17 +85,20 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
     assert!(DEFAULT_ATTEST_HELPER_IMAGE.contains("@sha256:"));
     assert!(DEFAULT_SOCKET_PROXY_IMAGE.contains("@sha256:"));
 
-    let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
-    let allowed = doc["allowed_envs"].as_array().expect("allowed_envs array");
-    let names: Vec<&str> = allowed.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"BASE_NETUID"));
-    assert!(names.contains(&"BASE_MINER_HOTKEY_FILE"));
-    assert!(names.contains(&"BASE_LAUNCH_TOKEN_HASH"));
-    assert!(names.contains(&DOCKER_BASE_ENV));
-    assert!(names.contains(&ENV_IMAGE_ENV));
-    assert!(names.contains(&PACK_ROOT_ENV));
-    assert!(names.contains(&PACK_CATALOG_URL_ENV));
-    assert!(names.contains(&TRUSTED_CHALLENGE_PUBKEY_ENV));
+    // These settings are literals in the measured YAML, not injected values,
+    // so they belong in the compose and must stay out of allowed_envs.
+    for env in [
+        "BASE_NETUID",
+        "BASE_MINER_HOTKEY_FILE",
+        "BASE_LAUNCH_TOKEN_HASH",
+        DOCKER_BASE_ENV,
+        ENV_IMAGE_ENV,
+        PACK_ROOT_ENV,
+        PACK_CATALOG_URL_ENV,
+        TRUSTED_CHALLENGE_PUBKEY_ENV,
+    ] {
+        assert!(yaml.contains(env), "{env} must be a literal in the compose");
+    }
 }
 
 #[test]
@@ -405,16 +410,131 @@ fn receipt_private_key_never_leaks_into_compose_or_env() {
             );
         }
     }
-    // allowed_envs lists path + pubkey names only
+    // The path and the public half are literals in the compose; only the
+    // secret's carrier name is an injected value.
+    assert!(yaml.contains("BASE_RECEIPT_SK_FILE"));
+    assert!(yaml.contains("BASE_RECEIPT_PUBLIC_KEY"));
+}
+
+/// Distinctive values a leaking renderer would bake into the measured compose.
+fn probe_secrets() -> DeploySecrets {
+    DeploySecrets {
+        receipt_sk_hex: "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef".into(),
+        launch_token: "tok-4f1c9a2b-never-measured".into(),
+        miner_hotkey_hex: "fe".repeat(32),
+    }
+}
+
+#[test]
+fn pre_launch_script_materialises_secrets_without_baking_any_in() {
+    let secrets = probe_secrets();
+    let params = DeployParams {
+        secrets: secrets.clone(),
+        ..DeployParams::default()
+    };
+    let result = deploy_or_dry_run(&params).expect("render");
     let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
+    let script = doc["pre_launch_script"]
+        .as_str()
+        .expect("pre_launch_script");
+
+    for path in [
+        "/dstack/receipt_sk",
+        "/dstack/launch_token",
+        "/dstack/miner_hotkey",
+    ] {
+        assert!(
+            script.contains(path),
+            "script must create {path}:\n{script}"
+        );
+    }
+    for env in [RECEIPT_SK_HEX_ENV, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV] {
+        assert!(
+            script.contains(&format!("${{{env}:?")),
+            "{env} must be read fail-closed as ${{VAR:?...}}:\n{script}"
+        );
+    }
+    assert!(
+        !script.contains(r"printf '\x"),
+        "byte-literal printf is how a key gets baked into the measurement:\n{script}"
+    );
+    assert!(
+        !script.lines().any(|l| {
+            let l = l.trim();
+            l.starts_with("echo") && !l.starts_with("echo \"pre")
+        }),
+        "the script must never echo a value:\n{script}"
+    );
+    let has_hex64_run = script
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .any(|w| w.len() >= 64);
+    assert!(
+        !has_hex64_run,
+        "no key-shaped literal may appear:\n{script}"
+    );
+
+    // The whole measured document, not just the script.
+    for value in [
+        secrets.receipt_sk_hex.as_str(),
+        secrets.launch_token.as_str(),
+        secrets.miner_hotkey_hex.as_str(),
+    ] {
+        assert!(
+            !result.app_compose_json.contains(value),
+            "secret value leaked into the measured app-compose"
+        );
+    }
+}
+
+#[test]
+fn allowed_envs_names_the_secrets_and_the_hash_ignores_their_values() {
+    let a = deploy_or_dry_run(&DeployParams {
+        secrets: probe_secrets(),
+        ..DeployParams::default()
+    })
+    .expect("a");
+    let b = deploy_or_dry_run(&DeployParams {
+        secrets: DeploySecrets {
+            receipt_sk_hex: "11".repeat(32),
+            launch_token: "a-completely-different-token".into(),
+            miner_hotkey_hex: "22".repeat(32),
+        },
+        ..DeployParams::default()
+    })
+    .expect("b");
+    assert_eq!(
+        a.compose_hash_hex, b.compose_hash_hex,
+        "only secret *names* are measured, so an owner can sign the measurement \
+         before any miner picks their values"
+    );
+
+    let doc: serde_json::Value = serde_json::from_str(&a.app_compose_json).expect("json");
     let names: Vec<&str> = doc["allowed_envs"]
         .as_array()
-        .unwrap()
+        .expect("allowed_envs")
         .iter()
-        .filter_map(|v| v.as_str())
+        .filter_map(serde_json::Value::as_str)
         .collect();
-    assert!(names.contains(&"BASE_RECEIPT_SK_FILE"));
-    assert!(names.contains(&"BASE_RECEIPT_PUBLIC_KEY"));
+    for env in [RECEIPT_SK_HEX_ENV, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV] {
+        assert!(
+            names.contains(&env),
+            "allowed_envs missing {env}: {names:?}"
+        );
+    }
+    // Order and membership are not ours to choose: `phala deploy` rewrites
+    // allowed_envs from the `-e` env file in file order and appends its own
+    // entry. Predicting it wrong is what makes the printed compose-hash differ
+    // from the one the hardware measures.
+    assert_eq!(
+        names,
+        vec![
+            RECEIPT_SK_HEX_ENV,
+            LAUNCH_TOKEN_ENV,
+            MINER_HOTKEY_HEX_ENV,
+            "DSTACK_AUTHORIZED_KEYS",
+        ],
+        "allowed_envs must mirror what the Phala CLI writes"
+    );
 }
 
 #[test]
@@ -436,4 +556,28 @@ fn template_input_includes_socket_proxy_image() {
     assert!(yaml.contains("challenge_scoring_version=2"));
     assert!(yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE));
     reject_raw_docker_sock_on_agent(&yaml).expect("ok");
+}
+
+/// The compose-hash printed here is what an owner signs into
+/// `config/measurements.toml` before any miner deploys, so it has to equal the
+/// value Phala measures. Pinned against the live CVM `base-miner-541`
+/// (`app_id` `340ead2af2ff1d950d47a6fae0ffa473854b5d96`): its hardware
+/// `mr_config_id` carries `01 || this hash || 15 zero bytes`.
+#[test]
+fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
+    let params = DeployParams {
+        name: "base-miner-541".into(),
+        netuid: 541,
+        launch_token_hash: "8070605dc9b99dd5ad90f2bc8eed7aef29f76fe07139e3b3eb4a59fad4189957"
+            .into(),
+        receipt_public_key_hex: "da3dc84f6f64b86b0cfc26bd2370f4f6e159e589435f0ac52ae4c51e15169a7c"
+            .into(),
+        pack_catalog_url: "http://68.183.23.51:8090".into(),
+        ..DeployParams::default()
+    };
+    let result = deploy_or_dry_run(&params).expect("render");
+    assert_eq!(
+        result.compose_hash_hex, "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a",
+        "renderer drifted from the app-compose Phala actually measured"
+    );
 }
