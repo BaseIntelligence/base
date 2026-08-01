@@ -382,7 +382,7 @@ fn s9_repo_config_loads_when_present() {
     assert_eq!(entries.len(), 1, "one creditable CVM build");
     assert_eq!(
         encode_hex(&entries[0].compose_hash),
-        "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a"
+        "6548b5062dbfa96eb9be3e9a41d0f0e12bcdb8883b72e2f7cd5a387fa3e69abd"
     );
     // Both dual-entry profiles must self-match.
     for e in entries {
