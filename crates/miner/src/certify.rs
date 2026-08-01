@@ -71,6 +71,9 @@ pub struct CertifyParams {
     pub miner_hotkey: [u8; KEY_LEN],
     /// Quote source.
     pub quote_source: QuoteSource,
+    /// Raw launch token presented to the CVM attest-helper as a bearer
+    /// credential (its SHA-256 is what the measured compose pins).
+    pub launch_token: Option<String>,
     /// Optional override for claimed validator hotkey (defaults to nonce response).
     pub validator_hotkey_override: Option<[u8; KEY_LEN]>,
 }
@@ -181,10 +184,11 @@ pub async fn certify(params: &CertifyParams) -> Result<CertifyResult, CertifyErr
     let report_data = compute_report_data(&binding);
 
     let fixture_mode = matches!(params.quote_source, QuoteSource::Fixture { .. });
+    let token = params.launch_token.as_deref();
     let evidence = match &params.quote_source {
         QuoteSource::Fixture { dir } => load_fixture_quote(dir.as_deref(), &report_data)?,
         QuoteSource::Live { agent_base } => {
-            fetch_live_quote(&client, agent_base, &binding, &report_data).await?
+            fetch_live_quote(&client, agent_base, token, &binding, &report_data).await?
         }
     };
 
@@ -276,6 +280,7 @@ fn load_fixture_quote(
 async fn fetch_live_quote(
     client: &reqwest::Client,
     agent_base: &str,
+    launch_token: Option<&str>,
     binding: &ReportDataBinding,
     report_data: &[u8; REPORT_DATA_LEN],
 ) -> Result<QuoteEvidence, CertifyError> {
@@ -289,8 +294,11 @@ async fn fetch_live_quote(
         hex::encode(binding.validator_hotkey),
         hex::encode(binding.miner_pubkey),
     );
-    let resp = client
-        .get(&url)
+    let mut req = client.get(&url);
+    if let Some(token) = launch_token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| CertifyError::Http(e.to_string()))?;

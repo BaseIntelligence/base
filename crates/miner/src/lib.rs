@@ -26,10 +26,10 @@ pub use certify::{
     certify, parse_hotkey_hex, CertifyError, CertifyParams, CertifyResult, QuoteSource,
 };
 pub use deploy::{
-    deploy_or_dry_run, empty_launch_token_hash_hex, render_app_compose, render_app_compose_bytes,
-    run_phala_deploy, DeployError, DeployMode, DeployParams, DeployResult, DEFAULT_AGENT_IMAGE,
-    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_PACK_CATALOG_URL, DEFAULT_SOCKET_PROXY_IMAGE,
-    DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
+    deploy_or_dry_run, empty_launch_token_hash_hex, launch_token_hash_hex, render_app_compose,
+    render_app_compose_bytes, run_phala_deploy, DeployError, DeployMode, DeployParams,
+    DeployResult, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_PACK_CATALOG_URL,
+    DEFAULT_SOCKET_PROXY_IMAGE, DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
 };
 pub use inspect::{
     agent_service_mounts_docker_sock, docker_compose_from_app_compose_json,

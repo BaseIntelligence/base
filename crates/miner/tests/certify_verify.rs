@@ -79,7 +79,81 @@ fn base_params(addr: SocketAddr) -> CertifyParams {
         miner_hotkey: miner,
         quote_source: QuoteSource::Fixture { dir: None },
         validator_hotkey_override: None,
+        launch_token: None,
     }
+}
+
+/// One-shot `/v1/quote` stub that reports back the `Authorization` header it saw.
+async fn spawn_quote_stub() -> (String, tokio::task::JoinHandle<Option<String>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let join = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        let text = String::from_utf8_lossy(&req).into_owned();
+        let auth = text.lines().find_map(|l| {
+            let (name, value) = l.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim().to_owned())
+        });
+        let body = serde_json::json!({
+            "quote_hex": hex::encode(QUOTE),
+            "event_log_json": String::from_utf8(EVENT_LOG.to_vec()).unwrap(),
+        })
+        .to_string();
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(resp.as_bytes()).await.unwrap();
+        sock.flush().await.unwrap();
+        auth
+    });
+    (base, join)
+}
+
+/// The attest-helper only issues a quote to a caller holding the launch token,
+/// so certify must present it as a bearer credential.
+#[tokio::test]
+async fn live_quote_request_carries_the_launch_token() {
+    let (addr, shutdown, _state) = boot_ok().await;
+    let (agent_base, stub) = spawn_quote_stub().await;
+    let params = CertifyParams {
+        quote_source: QuoteSource::Live { agent_base },
+        launch_token: Some("s3cr3t-token".to_owned()),
+        ..base_params(addr)
+    };
+    let result = certify(&params).await.expect("certify");
+    assert_eq!(result.outcome, "verified");
+    assert!(!result.fixture_mode);
+    assert_eq!(stub.await.unwrap().as_deref(), Some("Bearer s3cr3t-token"));
+    let _ = shutdown.send(true);
+}
+
+#[tokio::test]
+async fn live_quote_request_omits_header_without_a_token() {
+    let (addr, shutdown, _state) = boot_ok().await;
+    let (agent_base, stub) = spawn_quote_stub().await;
+    let params = CertifyParams {
+        quote_source: QuoteSource::Live { agent_base },
+        launch_token: None,
+        ..base_params(addr)
+    };
+    certify(&params).await.expect("certify");
+    assert_eq!(stub.await.unwrap(), None);
+    let _ = shutdown.send(true);
 }
 
 /// S1 — correct D10 binding against real fixtures → Verified + credit.

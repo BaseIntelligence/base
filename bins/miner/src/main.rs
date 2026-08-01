@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use crypto::{generate_mini_secret, public_key_from_mini_secret, KEY_LEN};
 use miner::{
-    announce, certify, deploy_or_dry_run, empty_launch_token_hash_hex, parse_hotkey_hex,
-    AnnounceParams, CertifyParams, DeployMode, DeployParams, QuoteSource, DEFAULT_AGENT_IMAGE,
-    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE,
+    announce, certify, deploy_or_dry_run, empty_launch_token_hash_hex, launch_token_hash_hex,
+    parse_hotkey_hex, AnnounceParams, CertifyParams, DeployMode, DeployParams, QuoteSource,
+    DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE,
 };
 
 #[derive(Debug, Parser)]
@@ -55,6 +55,9 @@ enum Cmd {
         /// Lowercase hex SHA-256 of the launch token (measured; not the raw token).
         #[arg(long, env = "BASE_LAUNCH_TOKEN_HASH")]
         launch_token_hash: Option<String>,
+        /// Host path for the raw launch token (mode 0600). Generated if missing.
+        #[arg(long, env = "BASE_LAUNCH_TOKEN_FILE")]
+        launch_token_file: Option<PathBuf>,
         /// Subnet netuid embedded as non-secret env.
         #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
         netuid: u16,
@@ -103,6 +106,9 @@ enum Cmd {
         /// Optional validator hotkey override (defaults to nonce response).
         #[arg(long, env = "BASE_VALIDATOR_HOTKEY_HEX")]
         validator_hotkey_hex: Option<String>,
+        /// Host path of the raw launch token presented to the CVM attest-helper.
+        #[arg(long, env = "BASE_LAUNCH_TOKEN_FILE")]
+        launch_token_file: Option<PathBuf>,
     },
     /// Announce the CVM's public base URL to the gateway (§9.3 step 5).
     Announce {
@@ -140,6 +146,7 @@ fn run(cli: Cli) -> Result<(), String> {
             attest_helper_image,
             socket_proxy_image,
             launch_token_hash,
+            launch_token_file,
             netuid,
             receipt_sk_host_path,
             receipt_public_key,
@@ -155,12 +162,14 @@ fn run(cli: Cli) -> Result<(), String> {
             };
             let receipt_public_key_hex =
                 provision_receipt_key(&receipt_sk_host_path, receipt_public_key.as_deref())?;
+            let launch_token_hash =
+                resolve_launch_token_hash(launch_token_hash, launch_token_file.as_deref())?;
             let params = DeployParams {
                 name,
                 agent_image,
                 attest_helper_image,
                 socket_proxy_image,
-                launch_token_hash: launch_token_hash.unwrap_or_else(empty_launch_token_hash_hex),
+                launch_token_hash: launch_token_hash.clone(),
                 netuid,
                 receipt_public_key_hex: receipt_public_key_hex.clone(),
                 mode,
@@ -172,6 +181,7 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("compose-hash={}", result.compose_hash_hex);
             println!("receipt-public-key={receipt_public_key_hex}");
             println!("receipt-sk-host-path={}", receipt_sk_host_path.display());
+            print_launch_token_report(launch_token_file.as_deref(), &launch_token_hash);
             println!("phala_invoked={}", result.phala_invoked);
             println!("mode={mode:?}");
             println!("note=miner_funds_own_phala_account secrets_are_file_mounts_under_/run/base");
@@ -186,6 +196,7 @@ fn run(cli: Cli) -> Result<(), String> {
             fixture_dir,
             agent_url,
             validator_hotkey_hex,
+            launch_token_file,
         } => {
             let miner_hotkey = parse_hotkey_hex(&miner_hotkey_hex).map_err(|e| e.to_string())?;
             let validator_hotkey_override = match validator_hotkey_hex {
@@ -201,6 +212,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 })?;
                 QuoteSource::Live { agent_base }
             };
+            let token_file = launch_token_file.as_deref();
             let params = CertifyParams {
                 validator_url,
                 netuid,
@@ -208,21 +220,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 miner_hotkey,
                 quote_source,
                 validator_hotkey_override,
+                launch_token: token_file.map(read_launch_token).transpose()?,
             };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| e.to_string())?;
             let result = rt.block_on(certify(&params)).map_err(|e| e.to_string())?;
-            println!("nonce={}", result.nonce_hex);
-            println!("outcome={}", result.outcome);
-            if let Some(r) = &result.reason {
-                println!("reason={r}");
-            }
-            println!("grants_credit={}", result.grants_credit);
-            println!("carries_prior_verified={}", result.carries_prior_verified);
-            println!("validator_hotkey={}", result.validator_hotkey_hex);
-            println!("fixture_mode={}", result.fixture_mode);
+            print_certify_result(&result);
             Ok(())
         }
         Cmd::Announce {
@@ -232,6 +237,55 @@ fn run(cli: Cli) -> Result<(), String> {
             base_url,
         } => run_announce(gateway_url, netuid, epoch, base_url),
     }
+}
+
+fn resolve_launch_token_hash(
+    hash: Option<String>,
+    token_file: Option<&std::path::Path>,
+) -> Result<String, String> {
+    match (hash, token_file) {
+        // Measuring a hash the operator's own token does not produce yields a
+        // CVM that answers 401 to its owner, and only after deploying.
+        (Some(h), Some(path)) => {
+            let derived = launch_token_hash_hex(&read_launch_token(path)?);
+            if derived == h {
+                Ok(h)
+            } else {
+                Err(format!(
+                    "--launch-token-hash does not match the token in {}",
+                    path.display()
+                ))
+            }
+        }
+        (Some(h), None) => Ok(h),
+        (None, Some(path)) => provision_launch_token(path),
+        (None, None) => Ok(empty_launch_token_hash_hex()),
+    }
+}
+
+fn print_launch_token_report(launch_token_file: Option<&std::path::Path>, hash: &str) {
+    match launch_token_file {
+        Some(path) => println!("launch-token-host-path={}", path.display()),
+        None => println!("launch-token-host-path="),
+    }
+    if hash == empty_launch_token_hash_hex() {
+        println!(
+            "warning=no_launch_token_configured \
+             attest_helper_will_refuse_quotes_pass_--launch-token-file"
+        );
+    }
+}
+
+fn print_certify_result(result: &miner::CertifyResult) {
+    println!("nonce={}", result.nonce_hex);
+    println!("outcome={}", result.outcome);
+    if let Some(r) = &result.reason {
+        println!("reason={r}");
+    }
+    println!("grants_credit={}", result.grants_credit);
+    println!("carries_prior_verified={}", result.carries_prior_verified);
+    println!("validator_hotkey={}", result.validator_hotkey_hex);
+    println!("fixture_mode={}", result.fixture_mode);
 }
 
 /// Sign and POST the CVM base URL to the gateway (§9.3 step 5).
@@ -319,6 +373,50 @@ fn provision_receipt_key(
         }
     }
     Ok(derived_hex)
+}
+
+/// Load or generate the raw launch token on the host; return its SHA-256 hex.
+///
+/// Token bytes are written mode 0600 and never printed: the compose measures
+/// only the hash, so the file is the sole copy of the bearer credential that
+/// lets the operator ask their own CVM for a quote.
+fn provision_launch_token(path: &std::path::Path) -> Result<String, String> {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let token = if path.is_file() {
+        read_launch_token(path)?
+    } else {
+        let token = hex::encode(generate_mini_secret());
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+        }
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        let mut f = opts.open(path).map_err(|e| e.to_string())?;
+        f.write_all(token.as_bytes()).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        let mut perms = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms).map_err(|e| e.to_string())?;
+        token
+    };
+    Ok(launch_token_hash_hex(&token))
+}
+
+/// Read a launch token file; trailing newline from `echo`/editors is not part
+/// of the credential the CVM hashes.
+fn read_launch_token(path: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("launch token {}: {e}", path.display()))?;
+    let token = raw.trim_end().to_owned();
+    if token.is_empty() {
+        return Err(format!("launch token {} is empty", path.display()));
+    }
+    Ok(token)
 }
 
 fn parse_mini_secret(raw: &[u8]) -> Result<[u8; KEY_LEN], String> {

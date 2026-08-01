@@ -147,6 +147,14 @@ pub fn empty_launch_token_hash_hex() -> String {
     hex_encode(d.as_slice())
 }
 
+/// Measured launch-token hash for a raw token (what the attest-helper compares
+/// the bearer credential against).
+#[must_use]
+pub fn launch_token_hash_hex(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex_encode(Sha256::digest(token.as_bytes()).as_slice())
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);

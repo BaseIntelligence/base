@@ -75,15 +75,25 @@ export BASE_VALIDATOR_URL='https://validator.example'  # operator URL
 export BASE_NETUID=1
 export BASE_EPOCH=123
 export BASE_MINER_HOTKEY_HEX='<64 hex>'
-export BASE_AGENT_URL='https://<your-cvm-host>'
+# Phala publishes each container port on its own hostname, so 8081 is a
+# subdomain, not a `:8081` suffix:
+export BASE_AGENT_URL='https://<app-id>-8081.<node>.phala.network'
+export BASE_LAUNCH_TOKEN_FILE='./launch_token'   # the file `deploy` provisioned
 
 cargo run -q -p miner-bin -- certify \
   --validator-url "$BASE_VALIDATOR_URL" \
   --netuid "$BASE_NETUID" \
   --epoch "$BASE_EPOCH" \
   --miner-hotkey-hex "$BASE_MINER_HOTKEY_HEX" \
-  --agent-url "$BASE_AGENT_URL"
+  --agent-url "$BASE_AGENT_URL" \
+  --launch-token-file "$BASE_LAUNCH_TOKEN_FILE"
 ```
+
+The attest-helper serves `/v1/quote` only to a caller presenting the launch
+token as `Authorization: Bearer <token>`; without it the CVM answers **401**,
+and a CVM deployed with no launch token answers **503**. Anyone able to obtain
+an unauthenticated quote could bind it to *their* hotkey, so keep the token
+file secret and re-deploy if it leaks.
 
 Interpret stdout:
 

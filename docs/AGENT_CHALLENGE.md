@@ -606,7 +606,7 @@ Gateway verifies against **its** local trust root (defence in depth) and appends
 |--------------|------|----------------|-----------|
 | `agent` | HTTP runner (§4) | `8080` | Phala ingress → 8080 |
 | `socket-proxy` | Allowlisted Docker Engine API for pack env containers | loopback inside CVM | **Not** public |
-| `attest-helper` | Builds `report_data`, exports quote + event log for certify | `8081` (loopback inside CVM) | **Not** public |
+| `attest-helper` | Builds `report_data`, exports quote + event log for certify | `8081` | Phala ingress → 8081, `Authorization: Bearer <launch token>` required |
 
 #### 9.1.1 Measured socket-proxy supersedes v1 "No docker.sock"
 

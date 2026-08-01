@@ -56,10 +56,12 @@ fn rendered_services_match_agent_challenge_image_port_contract() {
         "agent must publish {AGENT_PORT}"
     );
     assert!(
-        yaml.contains(&format!(
-            "127.0.0.1:{ATTEST_HELPER_PORT}:{ATTEST_HELPER_PORT}"
-        )),
-        "attest-helper must be loopback-only on {ATTEST_HELPER_PORT}"
+        yaml.contains(&format!("\"{ATTEST_HELPER_PORT}:{ATTEST_HELPER_PORT}\"")),
+        "attest-helper must publish {ATTEST_HELPER_PORT} for remote certify"
+    );
+    assert!(
+        !yaml.contains(&format!("127.0.0.1:{ATTEST_HELPER_PORT}")),
+        "attest-helper is guarded by the launch token, not by a loopback bind:\n{yaml}"
     );
     assert!(
         yaml.contains("ghcr.io/baseintelligence/base/base-agent@sha256:"),

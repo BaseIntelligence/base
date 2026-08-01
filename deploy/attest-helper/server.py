@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -14,6 +15,27 @@ from urllib.parse import parse_qs, urlparse
 SOCK = os.environ.get("BASE_DSTACK_SOCK", "/var/run/dstack.sock")
 PORT = int(os.environ.get("BASE_ATTEST_PORT", "8081"))
 DOMAIN = b"base-attest-v1"
+EMPTY_TOKEN_HASH = hashlib.sha256(b"").hexdigest()
+HEX_DIGITS = set("0123456789abcdef")
+
+
+def check_auth(configured_hash: str | None, auth_header: str | None) -> tuple[int, str] | None:
+    """Authorize a /v1/quote caller. Return None to allow, else (status, message)."""
+    h = (configured_hash or "").strip()
+    # A quote is only as trustworthy as the caller's right to name its
+    # report_data: without a token any reachable party could have this CVM sign
+    # a binding for someone else's hotkey. The empty-string hash is the compose
+    # default, and it authenticates an empty bearer token, i.e. everyone — so it
+    # is refused as hard as an absent one.
+    if len(h) != 64 or not set(h) <= HEX_DIGITS or h == EMPTY_TOKEN_HASH:
+        return (503, "no launch token configured: this CVM cannot serve quotes\n")
+    prefix = "Bearer "
+    if not auth_header or not auth_header.startswith(prefix):
+        return (401, "missing launch token\n")
+    offered = hashlib.sha256(auth_header[len(prefix) :].strip().encode()).hexdigest()
+    if not hmac.compare_digest(offered, h):
+        return (401, "invalid launch token\n")
+    return None
 
 
 def scale_bytes(b: bytes) -> bytes:
@@ -126,6 +148,14 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_text(self, code: int, message: str):
+        body = message.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ("/healthz", "/readyz", "/"):
@@ -133,6 +163,12 @@ class H(BaseHTTPRequestHandler):
             return
         if u.path != "/v1/quote":
             self._send(404, {"error": "not found"})
+            return
+        denied = check_auth(
+            os.environ.get("BASE_LAUNCH_TOKEN_HASH"), self.headers.get("Authorization")
+        )
+        if denied is not None:
+            self._send_text(denied[0], denied[1])
             return
         qs = parse_qs(u.query)
         try:

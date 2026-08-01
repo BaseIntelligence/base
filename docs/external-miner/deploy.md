@@ -98,7 +98,7 @@ Env surface (same names used by `install.sh`):
 |---------|------|------|
 | `agent` | HTTP runner (`/healthz`, `/v1/capacity`, `/v1/task`, …) | `8080` public |
 | `socket-proxy` | Allowlisted Docker Engine API for pack env containers | internal only |
-| `attest-helper` | Quote + event log for certify | `127.0.0.1:8081` |
+| `attest-helper` | Quote + event log for certify | `8081` public, launch-token authenticated |
 
 **Raw `/var/run/docker.sock` must not be mounted into `agent`.** Only `socket-proxy` mounts the host socket (read-only), and that proxy is part of the measured compose-hash (RTMR3).
 

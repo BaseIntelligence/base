@@ -2,13 +2,17 @@
 
 /// Public agent HTTP service name.
 pub const AGENT_SERVICE: &str = "agent";
-/// Attest helper service name (loopback only).
+/// Attest helper service name.
 pub const ATTEST_HELPER_SERVICE: &str = "attest-helper";
 /// Measured allowlisted Docker Engine proxy (not public).
 pub const SOCKET_PROXY_SERVICE: &str = "socket-proxy";
 /// Agent container / published port.
 pub const AGENT_PORT: u16 = 8080;
-/// Attest-helper container port (bound to 127.0.0.1 only).
+/// Attest-helper container / published port.
+///
+/// Published so the documented remote certify flow can reach `/v1/quote`
+/// through the dstack gateway; the helper gates that path on the launch-token
+/// bearer credential whose hash is measured, not on a loopback bind.
 pub const ATTEST_HELPER_PORT: u16 = 8081;
 /// Socket-proxy Docker Engine HTTP port (compose-internal only).
 pub const SOCKET_PROXY_PORT: u16 = 2375;
@@ -69,7 +73,8 @@ pub struct ComposeTemplateInput<'a> {
 /// Render the docker-compose YAML embedded in `app-compose.json`.
 ///
 /// Contract:
-/// - services `socket-proxy` (internal), `agent` (:8080 public), `attest-helper` (127.0.0.1:8081)
+/// - services `socket-proxy` (internal), `agent` (:8080 public), `attest-helper`
+///   (:8081 public, launch-token authenticated)
 /// - only `socket-proxy` mounts `/var/run/docker.sock` (read-only) with an explicit allowlist
 /// - agent reaches Docker via `BASE_DOCKER_BASE=http://socket-proxy:2375` (no raw sock)
 /// - agent has pack triad env + named `packs` volume at `pack_root` (writable for catalog fetch)
@@ -146,7 +151,7 @@ services:
     image: {attest_image}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:{attest_port}:{attest_port}"
+      - "{attest_port}:{attest_port}"
     environment:
       BASE_LAUNCH_TOKEN_HASH: "{launch_hash}"
       BASE_MINER_HOTKEY_FILE: "{hotkey_file}"
