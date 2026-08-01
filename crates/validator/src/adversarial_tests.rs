@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aggregate::{
-    aggregate, renormalize_after_quarantine, ScoreOrAbsence as AggScore, VerifiedLeaf,
-    ALGORITHM_VERSION as AGG_V,
+    aggregate_python_vector, renormalize_after_quarantine, ScoreOrAbsence as AggScore,
+    VerifiedLeaf, ALGORITHM_VERSION as AGG_V,
 };
 use bundle::{
     compute_merkle_root, compute_metagraph_root, finalize_body_merkle, make_signed_leaf,
@@ -140,15 +140,9 @@ fn multi_challenge_bundle(
     let merkle_root = compute_merkle_root(&leaves);
     let uid_map = uid_map_from_rows(&rows);
     let shares = trust.challenges.emission_shares();
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).expect("agg");
+    let final_vector = bundle::python_weights_from_parts(&leaves, &shares, &uid_map)
+        .expect("agg")
+        .final_vector;
     let body = EpochBundleBodyV1 {
         protocol_version: PROTOCOL_VERSION,
         epoch,
@@ -518,23 +512,7 @@ fn a48_iv_invented_key_absent_from_local_trust_d18() {
     .unwrap();
     bundle.body.leaves = vec![leaf];
     finalize_body_merkle(&mut bundle.body);
-    let verified: Vec<VerifiedLeaf> = bundle
-        .body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    bundle.body.final_vector = aggregate(
-        &verified,
-        &bundle.body.emission_shares,
-        &bundle.body.uid_map,
-        AGG_V,
-    )
-    .unwrap();
+    bundle.body.final_vector = bundle::python_weights(&bundle.body).unwrap().final_vector;
     let bundle = sign_bundle(&gsk, bundle.body).unwrap();
 
     let comparison = compare_bundle(&bundle, &chain, &trust);
@@ -605,23 +583,7 @@ fn a48_v_omit_participant_d24() {
     // Drop second miner leaf (censorship).
     bundle.body.leaves.retain(|l| l.miner_hotkey == m1);
     finalize_body_merkle(&mut bundle.body);
-    let verified: Vec<VerifiedLeaf> = bundle
-        .body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    bundle.body.final_vector = aggregate(
-        &verified,
-        &bundle.body.emission_shares,
-        &bundle.body.uid_map,
-        AGG_V,
-    )
-    .unwrap();
+    bundle.body.final_vector = bundle::python_weights(&bundle.body).unwrap().final_vector;
     let bundle = sign_bundle(&gsk, bundle.body).unwrap();
 
     let comparison = compare_bundle(&bundle, &chain, &trust);
@@ -687,23 +649,7 @@ fn a48_vi_set_shrink_rejected_d24() {
     // Shrink: drop m3 entirely (proper subset of expected set).
     bundle.body.leaves.retain(|l| l.miner_hotkey != m3);
     finalize_body_merkle(&mut bundle.body);
-    let verified: Vec<VerifiedLeaf> = bundle
-        .body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    bundle.body.final_vector = aggregate(
-        &verified,
-        &bundle.body.emission_shares,
-        &bundle.body.uid_map,
-        AGG_V,
-    )
-    .unwrap();
+    bundle.body.final_vector = bundle::python_weights(&bundle.body).unwrap().final_vector;
     let bundle = sign_bundle(&gsk, bundle.body).unwrap();
 
     // Expected set is derived from local trust policy + metagraph — not gateway claims.
@@ -769,7 +715,10 @@ fn a48_vii_one_garbage_quarantine_still_submit() {
                     score_or_absence: to_agg(&l.score_or_absence),
                 })
                 .collect();
-            let expected = aggregate(&verified, &new_shares, &bundle.body.uid_map, AGG_V).unwrap();
+            let expected =
+                aggregate_python_vector(&verified, &new_shares, &bundle.body.uid_map, AGG_V)
+                    .unwrap()
+                    .final_vector;
             assert_eq!(intent.vector, expected);
         }
         other => panic!("expected Quarantine, got {other:?}"),

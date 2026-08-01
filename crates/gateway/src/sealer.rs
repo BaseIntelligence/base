@@ -19,6 +19,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use trustroot::ChallengesBody;
+use weights_api::{build_latest, SealRecord};
 
 use crate::api::GatewayState;
 use crate::weights::{RawWeightRow, RawWeightStore};
@@ -36,6 +37,8 @@ pub trait BundleStore: Send + Sync {
     fn get_by_root(&self, root: &[u8; 32]) -> Option<Vec<u8>>;
     /// Highest sealed epoch.
     fn latest_epoch(&self) -> Option<u64>;
+    /// Seal-time provenance for `epoch` (`computed_at`, revision).
+    fn seal_record(&self, epoch: u64) -> Option<SealRecord>;
 }
 
 /// In-memory sealed-bundle store.
@@ -43,6 +46,7 @@ pub trait BundleStore: Send + Sync {
 pub struct MemoryBundleStore {
     by_epoch: RwLock<BTreeMap<u64, Vec<u8>>>,
     by_root: RwLock<BTreeMap<[u8; 32], Vec<u8>>>,
+    seals: RwLock<BTreeMap<u64, SealRecord>>,
 }
 
 impl MemoryBundleStore {
@@ -69,6 +73,11 @@ impl BundleStore for MemoryBundleStore {
         by_epoch.insert(epoch, bytes.clone());
         drop(by_epoch);
         self.by_root.write().insert(root, bytes.clone());
+        let mut seals = self.seals.write();
+        // Revision counts accepted seals for the epoch; the first seal is 1 and
+        // only a replacing seal of the same epoch can raise it.
+        let revision = seals.get(&epoch).map_or(1, |prev| prev.revision + 1);
+        seals.insert(epoch, SealRecord::now(revision));
         bytes
     }
 
@@ -82,6 +91,10 @@ impl BundleStore for MemoryBundleStore {
 
     fn latest_epoch(&self) -> Option<u64> {
         self.by_epoch.read().keys().next_back().copied()
+    }
+
+    fn seal_record(&self, epoch: u64) -> Option<SealRecord> {
+        self.seals.read().get(&epoch).copied()
     }
 }
 
@@ -179,17 +192,6 @@ fn rows_to_leaves(rows: &[RawWeightRow]) -> Result<Vec<LeafV1>, SealError> {
     Ok(out)
 }
 
-/// Latest weights JSON.
-#[derive(Debug, Clone, Serialize)]
-pub struct WeightsLatestResponse {
-    /// Epoch.
-    pub epoch: u64,
-    /// Merkle root hex.
-    pub merkle_root: String,
-    /// Final vector.
-    pub final_vector: Vec<(u16, u16)>,
-}
-
 /// Bundle serve routes.
 pub fn bundle_router(state: GatewayState) -> Router {
     Router::new()
@@ -234,14 +236,13 @@ async fn get_bundle_by_root(
 }
 
 async fn get_weights_latest(State(st): State<GatewayState>) -> Response {
-    let Some(epoch) = st.bundles.latest_epoch() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "no sealed bundle" })),
-        )
-            .into_response();
-    };
-    let Some(bytes) = st.bundles.get_by_epoch(epoch) else {
+    let sealed = st.bundles.latest_epoch().and_then(|epoch| {
+        Some((
+            st.bundles.get_by_epoch(epoch)?,
+            st.bundles.seal_record(epoch)?,
+        ))
+    });
+    let Some((bytes, seal)) = sealed else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "no sealed bundle" })),
@@ -249,15 +250,7 @@ async fn get_weights_latest(State(st): State<GatewayState>) -> Response {
             .into_response();
     };
     match EpochBundleV1::decode_bytes(&bytes) {
-        Ok(bundle) => (
-            StatusCode::OK,
-            Json(WeightsLatestResponse {
-                epoch: bundle.body.epoch,
-                merkle_root: hex::encode(bundle.body.merkle_root),
-                final_vector: bundle.body.final_vector,
-            }),
-        )
-            .into_response(),
+        Ok(bundle) => (StatusCode::OK, Json(build_latest(&bundle, seal))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),

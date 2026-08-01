@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 
-use aggregate::{aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V};
 use chain::ChainClient;
 use crypto::{secret_from_bytes, KEY_LEN};
 use trustroot::{ChallengesBody, BPS_DENOM};
@@ -12,10 +11,10 @@ use crate::merkle_util::{
     compute_merkle_root, compute_metagraph_root, expected_participants, metagraph_rows_from_chain,
     sort_leaves, uid_map_from_rows,
 };
+use crate::pyweights::python_weights_from_parts;
 use crate::sign::sign_bundle;
 use crate::types::{
-    EpochBundleBodyV1, EpochBundleV1, LeafV1, LocalTrustRoot, ScoreOrAbsence, ALGORITHM_VERSION,
-    PROTOCOL_VERSION,
+    EpochBundleBodyV1, EpochBundleV1, LeafV1, LocalTrustRoot, ALGORITHM_VERSION, PROTOCOL_VERSION,
 };
 
 /// Seal inputs beyond chain + leaves + trust root.
@@ -61,16 +60,7 @@ pub fn build_sealed_bundle<C: ChainClient + ?Sized>(
     sort_leaves(&mut leaves);
     let merkle_root = compute_merkle_root(&leaves);
 
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &emission_shares, &uid_map, AGG_V)
-        .map_err(|e| BundleError::Aggregation(e.to_string()))?;
+    let final_vector = python_weights_from_parts(&leaves, &emission_shares, &uid_map)?.final_vector;
 
     let gateway_hotkey = secret_from_bytes(&params.gateway_secret)
         .map_err(|e| BundleError::Crypto(e.to_string()))?
@@ -107,15 +97,6 @@ fn validate_shares_sum(shares: &[(Vec<u8>, u16)]) -> Result<(), BundleError> {
         return Err(BundleError::EmissionSharesSumInvalid);
     }
     Ok(())
-}
-
-fn to_agg(s: &ScoreOrAbsence) -> AggScore {
-    match s {
-        ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-        ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-            reason: *reason as u8,
-        },
-    }
 }
 
 fn assert_participant_completeness(

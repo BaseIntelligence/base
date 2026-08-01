@@ -13,12 +13,9 @@
 //! **No last-known-good:** a failed fetch/verify never returns a prior epoch's
 //! vector as success. This module never submits extrinsics (task 33 owns that).
 
-use aggregate::{
-    aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_ALGO_V1,
-};
 use bundle::{
-    decode_bundle, final_vectors_equal, verify_bundle, BundleError, EpochBundleBodyV1,
-    EpochBundleV1, LocalTrustRoot, ALGORITHM_VERSION,
+    decode_bundle, final_vectors_equal, python_weights, verify_bundle, BundleError,
+    EpochBundleBodyV1, EpochBundleV1, LocalTrustRoot, ALGORITHM_VERSION,
 };
 use chain::ChainClient;
 use parity_scale_codec::Encode;
@@ -191,7 +188,10 @@ pub fn vector_sha256(vector: &[(u16, u16)]) -> [u8; 32] {
     out
 }
 
-/// Map leaves on a body into aggregate inputs and run `aggregate`.
+/// Recompute the body's weight vector from its leaves, independently of the gateway.
+///
+/// Uses [`bundle::python_weights`] — the same adapter the gateway seals with — so an
+/// honest gateway always matches bit-for-bit and any difference is real evidence.
 ///
 /// Call only after leaf signatures / participant checks have passed (or when
 /// `verify_bundle` failed solely on final-vector equality).
@@ -200,22 +200,18 @@ pub fn vector_sha256(vector: &[(u16, u16)]) -> [u8; 32] {
 ///
 /// [`RecomputeError::Aggregate`] on aggregation failure.
 pub fn independent_aggregate(body: &EpochBundleBodyV1) -> Result<Vec<(u16, u16)>, RecomputeError> {
-    let verified: Vec<VerifiedLeaf> = body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: match &l.score_or_absence {
-                bundle::ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-                bundle::ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-                    reason: *reason as u8,
-                },
-            },
-        })
-        .collect();
-    aggregate(&verified, &body.emission_shares, &body.uid_map, AGG_ALGO_V1)
-        .map_err(|e| RecomputeError::Aggregate(e.to_string()))
+    independent_python_weights(body).map(|v| v.final_vector)
+}
+
+/// [`independent_aggregate`] plus the exact floats the gateway serves.
+///
+/// # Errors
+///
+/// [`RecomputeError::Aggregate`] on aggregation failure.
+pub fn independent_python_weights(
+    body: &EpochBundleBodyV1,
+) -> Result<aggregate::PythonVector, RecomputeError> {
+    python_weights(body).map_err(|e| RecomputeError::Aggregate(e.to_string()))
 }
 
 /// Verify + independently recompute + dual-compare a decoded bundle.
@@ -612,9 +608,6 @@ pub async fn fetch_compare_and_crosscheck<C: ChainClient>(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::pedantic)]
 mod tests {
     use super::*;
-    use aggregate::{
-        aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V,
-    };
     use bundle::{
         compute_merkle_root, compute_metagraph_root, finalize_body_merkle, make_signed_leaf,
         metagraph_rows_from_chain, sign_bundle, sort_leaves, uid_map_from_rows, EpochBundleBodyV1,
@@ -671,15 +664,6 @@ mod tests {
         })
     }
 
-    fn to_agg(s: &ScoreOrAbsence) -> AggScore {
-        match s {
-            ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-            ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-                reason: *reason as u8,
-            },
-        }
-    }
-
     fn valid_bundle(
         csk: &[u8; 32],
         gsk: &[u8; 32],
@@ -716,15 +700,9 @@ mod tests {
         let merkle_root = compute_merkle_root(&leaves);
         let uid_map = uid_map_from_rows(&rows);
         let shares = trust.challenges.emission_shares();
-        let verified: Vec<VerifiedLeaf> = leaves
-            .iter()
-            .map(|l| VerifiedLeaf {
-                challenge_id: l.challenge_id.clone(),
-                miner_hotkey: l.miner_hotkey,
-                score_or_absence: to_agg(&l.score_or_absence),
-            })
-            .collect();
-        let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).expect("agg");
+        let final_vector = bundle::python_weights_from_parts(&leaves, &shares, &uid_map)
+            .expect("agg")
+            .final_vector;
         let body = EpochBundleBodyV1 {
             protocol_version: PROTOCOL_VERSION,
             epoch,
@@ -917,23 +895,9 @@ mod tests {
         bundle.body.leaves.pop();
         finalize_body_merkle(&mut bundle.body);
         // Re-aggregate remaining leaf so we fail on D24 not vector.
-        let verified: Vec<VerifiedLeaf> = bundle
-            .body
-            .leaves
-            .iter()
-            .map(|l| VerifiedLeaf {
-                challenge_id: l.challenge_id.clone(),
-                miner_hotkey: l.miner_hotkey,
-                score_or_absence: to_agg(&l.score_or_absence),
-            })
-            .collect();
-        bundle.body.final_vector = aggregate(
-            &verified,
-            &bundle.body.emission_shares,
-            &bundle.body.uid_map,
-            AGG_V,
-        )
-        .expect("agg");
+        bundle.body.final_vector = bundle::python_weights(&bundle.body)
+            .expect("agg")
+            .final_vector;
         bundle = sign_bundle(&gsk, bundle.body).unwrap();
 
         let outcome = compare_bundle(&bundle, &chain, &trust);

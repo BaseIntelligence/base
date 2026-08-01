@@ -9,7 +9,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aggregate::{aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V};
 use bundle::{
     compute_merkle_root, compute_metagraph_root, make_signed_leaf, metagraph_rows_from_chain,
     sign_bundle, sort_leaves, uid_map_from_rows, EpochBundleBodyV1, EpochBundleV1, ScoreOrAbsence,
@@ -47,15 +46,6 @@ fn hk(tag: u8) -> [u8; 32] {
     let mut h = [0u8; 32];
     h[0] = tag;
     h
-}
-
-fn to_agg(s: &ScoreOrAbsence) -> AggScore {
-    match s {
-        ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-        ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-            reason: *reason as u8,
-        },
-    }
 }
 
 fn valid_bundle(
@@ -110,15 +100,9 @@ fn valid_bundle(
     let merkle_root = compute_merkle_root(&leaves);
     let uid_map = uid_map_from_rows(&rows);
     let shares = trust.challenges.emission_shares();
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).expect("agg");
+    let final_vector = bundle::python_weights_from_parts(&leaves, &shares, &uid_map)
+        .expect("agg")
+        .final_vector;
     let body = EpochBundleBodyV1 {
         protocol_version: PROTOCOL_VERSION,
         epoch,

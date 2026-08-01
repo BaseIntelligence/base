@@ -15,7 +15,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aggregate::{aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V};
 use bundle::{
     compute_merkle_root, make_signed_leaf, sort_leaves, verify_bundle, EpochBundleV1, LeafV1,
     LocalTrustRoot, ScoreOrAbsence, ALGORITHM_VERSION,
@@ -190,27 +189,20 @@ fn s1_seal_three_leaves_verifies_merkle_and_aggregate() {
     let independent = compute_merkle_root(&leaves);
     assert_eq!(bundle.body.merkle_root, independent, "merkle_root mismatch");
 
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: match &l.score_or_absence {
-                ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-                ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-                    reason: *reason as u8,
-                },
-            },
-        })
-        .collect();
-    let expected = aggregate(
-        &verified,
+    let expected = bundle::python_weights_from_parts(
+        &leaves,
         &bundle.body.emission_shares,
         &bundle.body.uid_map,
-        AGG_V,
     )
-    .expect("agg");
+    .expect("agg")
+    .final_vector;
     assert_eq!(bundle.body.final_vector, expected);
+    // Python authority for this fixture (scores 50/30/20 on uids 0/1/2, uid 0 being the
+    // burn sink): weights [0.5, 0.3, 0.2] -> round-half-even [32768, 19660, 13107].
+    assert_eq!(
+        bundle.body.final_vector,
+        vec![(0, 32_768), (1, 19_660), (2, 13_107)]
+    );
     assert_eq!(bundle.body.algorithm_version, ALGORITHM_VERSION);
     assert_eq!(bundle.body.leaves.len(), 3);
 
@@ -401,6 +393,37 @@ async fn s4_http_bundle_routes_and_weights_latest() {
     assert_eq!(json["epoch"], params.epoch);
     assert_eq!(json["merkle_root"], root_hex);
     assert!(!json["final_vector"].as_array().unwrap().is_empty());
+    // Served body carries the full master-weights contract, not just the extras.
+    for key in [
+        "protocol_version",
+        "vector_id",
+        "vector_digest",
+        "revision",
+        "netuid",
+        "chain_endpoint",
+        "uids",
+        "weights",
+        "hotkey_weights",
+        "chain_domain_bytes",
+        "computed_at",
+        "expires_at",
+        "source_challenges",
+        "source_snapshots",
+        "source_outcomes",
+        "emission_policy_version",
+        "emission_shares",
+        "burn_policy_version",
+        "mapping_policy_version",
+        "metagraph_identity",
+        "metagraph_hash",
+        "metagraph_block",
+        "burn_outcome",
+        "metagraph_updated_at",
+    ] {
+        assert!(json.get(key).is_some(), "missing {key} in served body");
+    }
+    assert_eq!(json["revision"], 1);
+    assert!(json["computed_at"].as_str().unwrap().ends_with('Z'));
 
     // 404 unknown epoch
     let resp = client

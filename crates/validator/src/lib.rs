@@ -57,8 +57,9 @@ pub use mirror::{
 pub use peers::{PeerBook, PeerEndpoint};
 pub use recompute::{
     compare_bundle, compare_bundle_bytes, fetch_and_compare, fetch_and_compare_with_mirror,
-    fetch_compare_and_crosscheck, independent_aggregate, maybe_persist_verified, vector_sha256,
-    ComparisonOutcome, ExpectedBundle, NoSubmissionReason, RecomputeError,
+    fetch_compare_and_crosscheck, independent_aggregate, independent_python_weights,
+    maybe_persist_verified, vector_sha256, ComparisonOutcome, ExpectedBundle, NoSubmissionReason,
+    RecomputeError,
 };
 pub use registration::{RegistrationStatus, RegistrationStub};
 pub use submit::{

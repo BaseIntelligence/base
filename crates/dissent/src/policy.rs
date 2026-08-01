@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 
 use aggregate::{
-    aggregate, renormalize_after_quarantine, ScoreOrAbsence as AggScore, VerifiedLeaf,
-    ALGORITHM_VERSION as AGG_ALGO_V1, BPS_DENOM,
+    aggregate_python_vector, renormalize_after_quarantine, PythonVectorError,
+    ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_ALGO_V1, BPS_DENOM,
 };
 use bundle::{
     compute_metagraph_root, expected_participants, metagraph_rows_from_chain, raw_weight_payload,
@@ -508,16 +508,25 @@ fn try_quarantine<C: ChainClient>(
         })
         .collect();
 
-    let Ok(vector) = aggregate(&verified, &new_shares, &body.uid_map, AGG_ALGO_V1) else {
-        return Ok(Some(finish_class_b(
-            body.epoch,
-            body.merkle_root,
-            [0u8; 32],
-            vector_sha256(&body.final_vector),
-            DissentReasonCode::AggregationOverflow,
-            signer,
-            store,
-        )?));
+    // Same algorithm as the seal and serve paths: a quarantine epoch must not
+    // submit a vector built by a different apportionment than a normal epoch.
+    let vector = match aggregate_python_vector(&verified, &new_shares, &body.uid_map, AGG_ALGO_V1) {
+        Ok(v) => v.final_vector,
+        Err(e) => {
+            let reason = match e {
+                PythonVectorError::Input(_) => DissentReasonCode::AggregationOverflow,
+                PythonVectorError::ZeroMiner(_) => DissentReasonCode::EmptyScoreVectorNoSubmit,
+            };
+            return Ok(Some(finish_class_b(
+                body.epoch,
+                body.merkle_root,
+                [0u8; 32],
+                vector_sha256(&body.final_vector),
+                reason,
+                signer,
+                store,
+            )?));
+        }
     };
 
     if vector.is_empty() {

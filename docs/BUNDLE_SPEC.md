@@ -6,8 +6,12 @@
 **protocol_version of this document:** `1`
 
 This file is the single source of truth for hashed and signed epoch-bundle bytes.
-Where this document and any other source disagree, **this document wins**.
-Python BASE float/JSON vectors are characterization only (plan D16).
+Where this document and any other source disagree, **this document wins**, with one
+scoped exception: the aggregation formula in §6 is defined by behavioural parity with
+the BASE Python master, so that `/v1/weights/latest` can replace
+`https://chain.joinbase.ai/v1/weights/latest` for clients already parsing it. There,
+the pinned upstream and its frozen vectors win. This supersedes D16, which had made the
+Python float/JSON vectors characterization only.
 
 Checklist map: [`BUNDLE_SPEC_CHECKLIST.md`](./BUNDLE_SPEC_CHECKLIST.md).  
 CI gate: `cargo run -p xtask -- spec-check`.
@@ -236,8 +240,22 @@ Share values are `u16` basis points. No floats.
 
 ## 6. Aggregation formula, algorithm_version = 1 (e)
 
-Pure function. No I/O. No floats. Accumulators are `u128` with **`checked_*` only**.  
-Bare `+`/`*`/`-` on accumulators and all `wrapping_*` are forbidden in consensus crates (D8).
+Pure function. No I/O.
+
+**Authority.** This section specifies the algorithm served by the BASE master at
+`https://chain.joinbase.ai/v1/weights/latest`. The normative reference is
+`base.master.aggregator.aggregate_challenge_weights` at
+`8249563774ee2e71c41ae2cfac182ff32aa35dd1`. The Rust implementation
+(`aggregate::aggregate_python`) is a bit-for-bit port and MUST stay one:
+`crates/aggregate/tests/differential.rs` compares both against a live interpreter,
+and the frozen vectors under
+`crates/aggregate/tests/vectors/python/8249563774ee2e71c41ae2cfac182ff32aa35dd1/`
+pin the result. Where implementation and this prose disagree, the frozen vectors win.
+
+This algorithm is specified in IEEE-754 binary64. That is a deliberate exception to
+D8 for this section only; every other consensus surface (merkle, encoding, payload)
+stays integer. `xtask/consensus-crates.txt` records the exception as a per-token
+waiver so `HashMap` and `wrapping_*` remain banned in `aggregate`.
 
 ### 6.1 Inputs
 
@@ -249,7 +267,7 @@ VerifiedLeaf {
 }
 
 shares: Vec<(challenge_id, bps: u16)>   // sum bps = 10000
-uid_map: Vec<(hotkey, uid: u16)>        // bijective for all hotkeys appearing in leaves
+uid_map: Vec<(hotkey, uid: u16)>
 algorithm_version: u16                  // must be 1
 ```
 
@@ -258,163 +276,156 @@ Only leaves that already passed signature and participant-set checks enter aggre
 ### 6.2 Constants
 
 ```text
-BPS_DENOM:          u128 = 10_000
-HOUSE:              u16  = 65_535        // u16::MAX
-FIXED:              u128 = 1_000_000_000_000   // 10^12 fixed-point scale for per-challenge norms
-algorithm_version:  u16  = 1
+CHAIN_U16_MAX:       u16  = 65_535
+ZERO_MINER_BURN_UID: u16  = 0
+EPS:                 f64  = 1e-12
+BPS_DENOM:           u128 = 10_000
+min_allowed_weights: u32  = 1
+max_weight_limit:    u16  = 65_535
+algorithm_version:   u16  = 1
 ```
 
-### 6.3 Per-challenge normalization
+`min_allowed_weights` and `max_weight_limit` are pinned constants, not chain reads.
+The deployed master constructs `AggregationService(session_factory, freshness_seconds=…)`
+without passing either, so it runs on the `aggregate_challenge_weights` defaults.
+Pinning them keeps recompute a pure function of the signed body.
 
-For each challenge `c` with share `s_c > 0`:
+### 6.3 Float determinism (normative)
 
-1. Let `L_c` be all verified leaves with `challenge_id == c`.
-2. For each leaf, define raw score:
-   - `Score { value: v }` → `raw = v` as `u128`
-   - `NoScore { .. }` → `raw = 0`
-3. `sum_c = checked_sum(raw over L_c)`. If overflow → hard error (do not submit).
-4. If `sum_c == 0`: every miner in `L_c` contributes `0` from this challenge (skip weight add).
-5. Else, for each miner `m` in `L_c` with raw `r_m`:
+Seal and independent recompute MUST produce bit-identical `f64`. Three rules make
+that hold, and each has a regression test:
+
+1. **Summation.** CPython's builtin `sum()` over floats is Neumaier-compensated, not
+   a naive fold. `sum([0.1] * 10)` is exactly `1.0`; a fold gives `0.9999999999999999`.
+   Implementations MUST reproduce `builtin_sum_impl`, including the trailing
+   `if c != 0.0 { result += c }` correction. This makes the algorithm sensitive to the
+   interpreter version; the port targets CPython 3.12.
+2. **Iteration order.** Python `dict` preserves insertion order and float summation is
+   order-dependent. The Rust adapter re-derives a canonical order inside the aggregation
+   (challenges ascending by `challenge_id`, hotkeys ascending by key bytes) so no caller
+   can move a ulp by reordering its input.
+3. **Rounding.** `round()` is half-to-even. `0.5 * 65535 = 32767.5 → 32768` and
+   `0.3 * 65535 = 19660.5 → 19660`. Half-away-from-zero is wrong and gives `19661`.
+
+`max(x, 0.0)` follows Python, not Rust: `max(NaN, 0.0)` is `NaN`.
+
+### 6.4 Per-challenge normalization
+
+`ok_results` = challenges whose share is present. For each, the absolute fraction is
 
 ```text
-// fixed-point fraction of challenge mass, then weight by share bps
-// norm_m = floor(r_m * FIXED / sum_c)          // in 0..FIXED
-// term_m = floor(norm_m * s_c / BPS_DENOM)     // share-weighted
-//
-// Combined without separate storage (checked):
-term_m = r_m
-  .checked_mul(FIXED)?
-  .checked_mul(u128::from(s_c))?
-  .checked_div(sum_c)?
-  .checked_div(BPS_DENOM)?
-acc[m] = acc[m].checked_add(term_m)?
+frac[slug] = max(emission_percent, 0.0) / 100.0      // bps / 100.0
 ```
 
-Miners that do not appear under challenge `c` get no term from `c` (they must still have been covered by completeness before aggregation; see §7).
+`emission_percent` is an **absolute** share of 100, not a share renormalized across
+challenges: a challenge with `emission_percent = e` owns `e / 100` of the whole vector.
+If `alloc_total = sum(frac) > 1.0`, every `frac` is divided by `alloc_total` so the
+total is exactly `1.0`. Under-allocation is **not** scaled up; the slack burns.
 
-Challenges with `s_c == 0` are ignored (should not appear if shares are well-formed).
-
-### 6.4 Cross-challenge combine
-
-After all challenges:
+Within a challenge, miner weights are cleaned then normalized to sum 1.0:
 
 ```text
-total = checked_sum(acc[m] for all m in acc)
+clean:     drop non-finite, drop weight <= 0
+normalize: w / sum(clean)            // {} when sum <= 0
 ```
 
-### 6.5 All-zero → all-zero, no-submit
+`Score { value: v }` contributes `v as f64`; `NoScore` contributes nothing.
 
-If `total == 0` OR every `acc[m] == 0`:
+Each miner accumulates `frac[slug] * normalized_weight`, in first-appearance order.
+Challenges with `share <= 0.0` are skipped; a `NaN` share is **not** skipped, because
+NaN comparisons are false.
 
-- Output weight vector is empty **or** all pairs `(uid, 0)` for uid_map (implementations MUST pick **empty `Vec`** as the canonical all-zero vector).
-- Classification: **no-submit** condition (not a division-by-zero). Validators/gateway MUST NOT call `commit_timelocked_*` with a fabricated uniform vector.
-- Dissent MAY use `DissentReasonCode::EmptyScoreVectorNoSubmit` when this blocks submission after an otherwise valid bundle path.
+### 6.5 Mapping to uids, and burn
 
-### 6.6 Hamilton largest-remainder apportionment (house = 65_535)
-
-When `total > 0`:
-
-For each miner `m` with `acc_m` and `uid_m` from `uid_map`:
+Hotkey scores map through `uid_map`. A hotkey that is **absent** from `uid_map`, or that
+maps to `ZERO_MINER_BURN_UID`, is dropped and its mass burns. This is a deliberate
+divergence from the integer path, which raised `MissingUidMapEntry`.
 
 ```text
-// exact quota in u128
-prod_m     = acc_m.checked_mul(u128::from(HOUSE))?   // HOUSE = 65535
-floor_m    = prod_m / total                           // integer division
-remainder_m = prod_m % total
+miner_total = sum(uid_scores)
+burn        = 1.0 - miner_total
+if burn > EPS: uid_scores[0] += burn        // appended last
+normalized  = uid_scores / sum(uid_scores)
 ```
 
-Let `sum_floors = checked_sum(floor_m)`.  
-Overflow of any `floor_m` above `u16::MAX` as a single seat count is impossible because `sum_floors <= HOUSE` when math is correct; if `floor_m > u128::from(u16::MAX)` → hard error.
+### 6.6 Zero-miner burn
+
+If `miner_total <= EPS` (no real miner scored), the vector is built by
+`build_zero_miner_weights`:
 
 ```text
-seats_left = u128::from(HOUSE).checked_sub(sum_floors)?   // leftover seats to assign
+max_fraction = min(max_weight_limit / 65535, 1.0)
+required     = max(min_allowed_weights, 1, ceil(1.0 / max_fraction))
+candidates   = [burn_uid] + sorted(set(uid_map values) - {burn_uid})
+if candidates.len() < required -> ZeroMinerWeightError (never submit)
+weight       = 1.0 / required, assigned to candidates[..required]
 ```
 
-Assign one extra seat to the `seats_left` miners with the **largest** `remainder_m`.  
-**Tie-break:** lower `uid` wins (ascending UID).  
-If remainders and UIDs still tie (identical uid is impossible), lower hotkey bytes win.
+With the pinned constants this is `{0: 1.0}`: a full burn to the subnet owner.
+`hotkey_weights` is empty on this branch.
 
-```text
-weight[uid_m] = u16::try_from(floor_m + extra_m)?
-```
+There is no "empty vector, no-submit" case: an epoch with no scoring miner burns.
 
 ### 6.7 Output vector
 
 ```text
-final_vector: Vec<(uid: u16, weight: u16)>
+uids:          Vec<u16>              // ascending
+weights:       Vec<f64>              // sums to 1.0
+hotkey_weights: [(hotkey, f64)]      // kept miners only, first-appearance order
+final_vector:  Vec<(uid, u16)>       // round_ties_even(weight * 65535)
 ```
 
-- Include only UIDs with `weight > 0` **or** include all UIDs from `uid_map` with zeros?  
-  **Canonical rule:** include **every** UID present in `uid_map` that appears as a miner hotkey in at least one leaf, with the computed weight (possibly zero only if that miner had zero acc but others had positive total — actually if total > 0 and acc_m = 0, weight is 0).  
-  **Tighter canonical rule used by base:** emit **all** `(uid, weight)` for every uid in `uid_map` whose hotkey appears in the verified leaf set, sorted by ascending `uid`. Zero weights are kept so vector equality is stable.  
-  Exception: the all-zero/no-submit case uses empty `Vec` (§6.5).
+`sum(final_vector.weight)` is **not** guaranteed to equal `65_535`. Python performs no
+post-rounding renormalization, so roughly 30% of vectors sum to `65_536` or `65_534`.
+Implementations MUST NOT add a correction step: it would break parity. No consensus
+invariant, dissent check, or chain submission path depends on the sum.
 
-- Sorted by ascending `uid`.
-- `sum(weight) == HOUSE` (65_535) whenever `total > 0`.
+`hotkey_weights` excludes the burn uid, per `burn-uid0.v1`.
 
-### 6.8 Worked numeric example (Hamilton)
+### 6.8 Worked numeric example
 
-Three miners, one challenge, shares = 10_000 bps on that challenge.
+One challenge at `emission_percent = 100`, three miners, `uid_map` mapping each to a
+non-zero uid.
 
-| Miner | UID | raw score |
-|-------|-----|-----------|
-| A | 1 | 50 |
-| B | 2 | 30 |
-| C | 3 | 20 |
+| Miner | UID | raw |
+|-------|-----|-----|
+| A | 0 | 50 |
+| B | 1 | 30 |
+| C | 2 | 20 |
 
-`sum_c = 100`, `s_c = 10000`, `FIXED = 10^12`.
+A sits on the burn uid, so its mass burns. B and C normalize to `0.3` and `0.2` of the
+whole, and the remaining `0.5` burns to uid 0:
 
 ```text
-term_A = 50 * 10^12 * 10000 / 100 / 10000 = 50 * 10^12 / 100 = 5 * 10^11
-term_B = 30 * 10^12 / 100 = 3 * 10^11
-term_C = 20 * 10^12 / 100 = 2 * 10^11
-total  = 10^12
+uids         = [0, 1, 2]
+weights      = [0.5, 0.3, 0.2]
+final_vector = [(0, 32768), (1, 19660), (2, 13107)]   // sum = 65535
 ```
 
-Quotas with `HOUSE = 65535`:
+Note `0.3 * 65535 = 19660.5` rounds **down** to `19660` under half-to-even, while
+`0.5 * 65535 = 32767.5` rounds **up** to `32768`.
 
-```text
-prod_A = 5e11 * 65535 = 32767500000000000 ; floor_A = 32767 ; rem_A = 5000000000000
-prod_B = 3e11 * 65535 = 19660500000000000 ; floor_B = 19660 ; rem_B = 5000000000000
-prod_C = 2e11 * 65535 = 13107000000000000 ; floor_C = 13107 ; rem_C = 0
-sum_floors = 32767 + 19660 + 13107 = 65534
-seats_left = 1
-```
+### 6.9 Quarantine re-aggregation (D6)
 
-Remainders: A and B tie at `5e12`; **ascending UID** → A (uid 1) gets the extra seat.
+1. Drop quarantined `challenge_id`s from both leaves and shares.
+2. Let `surv = sum(remaining bps)`. If `surv == 0` → error (escalate class B).
+3. If `surv < min_share_mass_bps` → caller escalates class B (no submit).
+4. Else re-apportion the remaining mass to sum exactly `10_000` by Hamilton
+   largest-remainder on the remaining share weights, house `10_000`, tie-break by
+   ascending `scale(challenge_id)`. This apportions **shares**, which are integers;
+   it is unaffected by §6.3.
 
-```text
-weights = [(1, 32768), (2, 19660), (3, 13107)]
-sum = 65535
-```
-
-### 6.9 Quarantine renormalization (D6 helper)
-
-When challenges `D` are dropped:
-
-```text
-renormalize_after_quarantine(shares, dropped_ids) -> Result<Vec<(id, bps)>>
-```
-
-1. Remove dropped ids from shares.  
-2. Let `surv = sum(remaining bps)`. If `surv == 0` → error (escalate class B).  
-3. If `surv < min_share_mass_bps` → caller escalates class B (no submit).  
-4. Else re-apportion remaining mass to sum exactly `10_000` by the same Hamilton rule on the remaining share weights as "scores", house `10_000`, tie-break by ascending `scale(challenge_id)`:
-
-```text
-// treat each remaining bps as acc; HOUSE_SHARES = 10000
-// identical largest-remainder as §6.6 with uid replaced by challenge_id sort key
-```
-
-Then re-run §6.3–§6.7 on surviving leaves only.
+Then re-run §6.4–§6.7 on the surviving leaves. The quarantine submission vector uses
+the same algorithm as a normal epoch, so the two are never built differently.
 
 Default `min_share_mass_bps = 5000` (config; D6).
 
-### 6.10 Overflow policy
+### 6.10 Failure policy
 
-Any `checked_*` failure → aggregation returns `Err(Overflow)`.  
-Callers MUST treat overflow as class B (no submit + dissent `AggregationOverflow`).  
-Debug panics on overflow are not an acceptable substitute: release builds must not wrap.
+`ZeroMinerWeightError` (not enough candidate uids to satisfy `min_allowed_weights`)
+→ class B, dissent `EmptyScoreVectorNoSubmit`. Malformed input (bad shares sum,
+duplicate uid_map entry, wrong `algorithm_version`) → class B, dissent
+`AggregationOverflow`. Never submit a vector the chain would reject.
 
 ---
 

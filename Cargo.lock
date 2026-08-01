@@ -1689,6 +1689,7 @@ dependencies = [
  "tracing",
  "trustroot",
  "uuid",
+ "weights-api",
  "wiremock",
 ]
 
@@ -5004,6 +5005,7 @@ dependencies = [
  "dissent",
  "gateway",
  "hex",
+ "keystore",
  "parity-scale-codec",
  "reqwest 0.12.28",
  "serde",
@@ -5017,6 +5019,7 @@ dependencies = [
  "trustroot",
  "uuid",
  "validator-sync",
+ "weights-api",
  "wiremock",
 ]
 
@@ -5203,6 +5206,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "weights-api"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "config",
+ "hex",
+ "keystore",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "trustroot",
+ "uuid",
 ]
 
 [[package]]

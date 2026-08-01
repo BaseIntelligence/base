@@ -1,0 +1,136 @@
+{
+  "header": {
+    "authority": "Python base.master.aggregator.aggregate_challenge_weights IS the authority for the served weight vector (chain.joinbase.ai). Rust crates/aggregate::python is a bit-for-bit port; on disagreement Python wins.",
+    "upstream_base_sha": "8249563774ee2e71c41ae2cfac182ff32aa35dd1",
+    "upstream_module": "base.master.aggregator.aggregate_challenge_weights",
+    "python_float_path": true,
+    "served_algorithm_specification": [
+      "Per-challenge weights are cleaned (drop non-finite and <= 0) then normalized by their float sum.",
+      "emission_percent is an ABSOLUTE share of 100; sum(shares) > 1.0 is scaled back to exactly 1.0.",
+      "Any share not landing on a real miner (unallocated remainder, uid 0, unknown hotkey, empty challenge) burns to uid 0.",
+      "No miner mass at all (<= 1e-12) falls back to build_zero_miner_weights: {0: 1.0}, padded with metagraph uids when min_allowed_weights or max_weight_limit demand it, else ZeroMinerWeightError.",
+      "All summation is CPython >= 3.12 sum(), i.e. Neumaier compensated - NOT a naive fold.",
+      "Map iteration follows Python dict insertion order; only the final vector is sorted by uid.",
+      "round(w * 65535) is Python round(), i.e. round-half-to-EVEN. The u16 vector is NOT renormalized and may sum to 65534/65535/65536.",
+      "BUNDLE_SPEC section 6 (u128 FIXED + Hamilton, no burn, empty vector on all-zero) describes a DIFFERENT algorithm that is not what chain.joinbase.ai serves."
+    ],
+    "expected_vector_encoding": "list of [uid:u16, weight_u16] where weight_u16 = round(float_weight * 65535) using Python round() semantics (round-half-to-EVEN)",
+    "case": "17_order_fidelity_natural"
+  },
+  "inputs": {
+    "challenge_results": [
+      {
+        "slug": "c",
+        "emission_percent": 100.0,
+        "weights": {
+          "hk01": 0.1,
+          "hk02": 0.2,
+          "hk03": 0.30000000000000004,
+          "hk04": 0.3333333333333333,
+          "hk05": 0.7,
+          "hk06": 1e-08,
+          "hk07": 100000000.0,
+          "hk08": 3.14159265358979,
+          "hk09": 2.718281828459045,
+          "hk10": 0.14285714285714285
+        },
+        "ok": true
+      }
+    ],
+    "hotkey_to_uid": {
+      "hk01": 1,
+      "hk02": 2,
+      "hk03": 3,
+      "hk04": 4,
+      "hk05": 5,
+      "hk06": 6,
+      "hk07": 7,
+      "hk08": 8,
+      "hk09": 9,
+      "hk10": 10
+    },
+    "kwargs": {}
+  },
+  "python_float_output": {
+    "uids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "weights": [
+      9.999999236393562e-10,
+      1.9999998472787123e-09,
+      2.999999770918069e-09,
+      3.333333078797854e-09,
+      6.9999994654754934e-09,
+      9.999999236393562e-17,
+      0.9999999236393562,
+      3.141592413695752e-08,
+      2.7182816208892946e-08,
+      1.4285713194847945e-09
+    ],
+    "hotkey_weights": {
+      "hk01": 9.999999236393562e-10,
+      "hk02": 1.9999998472787123e-09,
+      "hk03": 2.999999770918069e-09,
+      "hk04": 3.333333078797854e-09,
+      "hk05": 6.9999994654754934e-09,
+      "hk06": 9.999999236393562e-17,
+      "hk07": 0.9999999236393562,
+      "hk08": 3.141592413695752e-08,
+      "hk09": 2.7182816208892946e-08,
+      "hk10": 1.4285713194847945e-09
+    }
+  },
+  "expected_vector": [
+    [
+      1,
+      0
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      3,
+      0
+    ],
+    [
+      4,
+      0
+    ],
+    [
+      5,
+      0
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      7,
+      65535
+    ],
+    [
+      8,
+      0
+    ],
+    [
+      9,
+      0
+    ],
+    [
+      10,
+      0
+    ]
+  ],
+  "chain_u16_sum": 65535,
+  "chain_u16_max": 65535
+}

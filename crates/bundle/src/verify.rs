@@ -2,9 +2,6 @@
 
 use std::collections::BTreeSet;
 
-use aggregate::{
-    aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_ALGO_V1,
-};
 use chain::ChainClient;
 use crypto::{domain, verify_raw, KEY_LEN};
 use parity_scale_codec::Encode;
@@ -16,9 +13,10 @@ use crate::merkle_util::{
     compute_merkle_root, compute_metagraph_root, expected_participants, leaf_sort_key,
     metagraph_rows_from_chain, uid_map_from_rows,
 };
+use crate::pyweights::python_weights;
 use crate::sign::raw_weight_payload;
 use crate::types::{
-    EpochBundleBodyV1, EpochBundleV1, LocalTrustRoot, MetagraphRow, ScoreOrAbsence, VerifiedBundle,
+    EpochBundleBodyV1, EpochBundleV1, LocalTrustRoot, MetagraphRow, VerifiedBundle,
     ALGORITHM_VERSION, MAX_CHALLENGE_ID_LEN, PROTOCOL_VERSION,
 };
 
@@ -31,15 +29,6 @@ pub fn final_vectors_equal(a: &[(u16, u16)], b: &[(u16, u16)]) -> bool {
     let ha = Sha256::digest(a.encode());
     let hb = Sha256::digest(b.encode());
     ha == hb
-}
-
-fn to_agg_score(s: &ScoreOrAbsence) -> AggScore {
-    match s {
-        ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-        ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-            reason: *reason as u8,
-        },
-    }
 }
 
 /// Verify bundle against chain + local trust root.
@@ -112,22 +101,7 @@ pub fn verify_bundle<C: ChainClient>(
     if body.algorithm_version != ALGORITHM_VERSION {
         return Err(BundleError::FinalVectorMismatch);
     }
-    let verified_leaves = body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg_score(&l.score_or_absence),
-        })
-        .collect::<Vec<_>>();
-    let local_vector = aggregate(
-        &verified_leaves,
-        &body.emission_shares,
-        &body.uid_map,
-        AGG_ALGO_V1,
-    )
-    .map_err(|e| BundleError::Aggregation(e.to_string()))?;
+    let local_vector = python_weights(body)?.final_vector;
     if !final_vectors_equal(&local_vector, &body.final_vector) {
         return Err(BundleError::FinalVectorMismatch);
     }

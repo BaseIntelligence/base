@@ -1,6 +1,6 @@
 [package]
 name = "aggregate"
-description = "Integer aggregation (BUNDLE_SPEC §6); Python vectors are characterization only (D16)"
+description = "Weight aggregation: the served Python-parity float path plus BUNDLE_SPEC §6 integer Hamilton"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

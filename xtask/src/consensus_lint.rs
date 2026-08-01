@@ -3,10 +3,27 @@
 //! Reads `xtask/consensus-crates.txt` (one crate directory name per line).
 //! Missing crate directories are skipped (future crates may be listed early).
 //! Existing crates' non-test sources are scanned for forbidden tokens.
+//!
+//! A line may waive individual tokens with `name allow=f32,f64`. Waivers are
+//! per token so a crate that needs one relaxation keeps every other rule.
 
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+
+/// Tokens banned in consensus crates, as (waiver label, match pattern).
+const BANNED_TOKENS: [(&str, &str); 4] = [
+    ("HashMap", r"\bHashMap\b"),
+    ("f32", r"\bf32\b"),
+    ("f64", r"\bf64\b"),
+    ("wrapping_", r"\bwrapping_"),
+];
+
+#[derive(Debug)]
+struct CrateRule {
+    name: String,
+    allow: Vec<String>,
+}
 
 /// Behavior: crates listed in `consensus-crates.txt` that do not yet exist under
 /// `crates/<name>/` are **skipped** with a note. Only existing trees are linted.
@@ -15,37 +32,36 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
     let list =
         fs::read_to_string(&list_path).map_err(|e| format!("read {}: {e}", list_path.display()))?;
 
-    let names: Vec<String> = list
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(ToOwned::to_owned)
-        .collect();
+    let rules = parse_rules(&list)?;
 
-    if names.is_empty() {
+    if rules.is_empty() {
         return Err("consensus-crates.txt lists no crates".into());
     }
-
-    // Minimum gate (task 6): HashMap | f32 | f64 | wrapping_
-    let token_re = Regex::new(r"\bHashMap\b|\bf32\b|\bf64\b|\bwrapping_")
-        .map_err(|e| format!("compile token regex: {e}"))?;
 
     let mut violations = Vec::new();
     let mut linted = 0usize;
 
-    for name in &names {
-        let crate_dir = workspace_root.join("crates").join(name);
+    for rule in &rules {
+        let crate_dir = workspace_root.join("crates").join(&rule.name);
         if !crate_dir.is_dir() {
-            println!("consensus-lint: skip missing crates/{name}");
+            println!("consensus-lint: skip missing crates/{}", rule.name);
             continue;
         }
         linted = linted.saturating_add(1);
-        scan_crate(&crate_dir, name, &token_re, &mut violations)?;
+        if !rule.allow.is_empty() {
+            println!(
+                "consensus-lint: crates/{} waives {}",
+                rule.name,
+                rule.allow.join(",")
+            );
+        }
+        let token_re = token_regex(&rule.allow)?;
+        scan_crate(&crate_dir, &rule.name, token_re.as_ref(), &mut violations)?;
     }
 
     println!(
         "consensus-lint: scanned {linted} existing crate(s), {} listed",
-        names.len()
+        rules.len()
     );
 
     if violations.is_empty() {
@@ -61,10 +77,61 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
     }
 }
 
+/// Parse `name` / `name allow=f32,f64` lines, rejecting unknown waiver labels so
+/// a typo fails the gate instead of silently waiving nothing.
+fn parse_rules(list: &str) -> Result<Vec<CrateRule>, String> {
+    let mut rules = Vec::new();
+    for line in list.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let Some(name) = fields.next() else { continue };
+        let mut allow = Vec::new();
+        for field in fields {
+            let Some(tokens) = field.strip_prefix("allow=") else {
+                return Err(format!(
+                    "consensus-crates.txt: unexpected field {field:?} on line {line:?} \
+                     (only `allow=<token>[,<token>]` is supported)"
+                ));
+            };
+            for token in tokens.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                if !BANNED_TOKENS.iter().any(|(label, _)| *label == token) {
+                    return Err(format!(
+                        "consensus-crates.txt: unknown waiver token {token:?} for crate {name:?}"
+                    ));
+                }
+                allow.push(token.to_owned());
+            }
+        }
+        rules.push(CrateRule {
+            name: name.to_owned(),
+            allow,
+        });
+    }
+    Ok(rules)
+}
+
+/// `None` when every token is waived, which means there is nothing left to match.
+fn token_regex(allow: &[String]) -> Result<Option<Regex>, String> {
+    let patterns: Vec<&str> = BANNED_TOKENS
+        .iter()
+        .filter(|(label, _)| !allow.iter().any(|a| a == label))
+        .map(|(_, pattern)| *pattern)
+        .collect();
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    Regex::new(&patterns.join("|"))
+        .map(Some)
+        .map_err(|e| format!("compile token regex: {e}"))
+}
+
 fn scan_crate(
     crate_dir: &Path,
     crate_name: &str,
-    token_re: &Regex,
+    token_re: Option<&Regex>,
     violations: &mut Vec<String>,
 ) -> Result<(), String> {
     let mut stack = vec![crate_dir.to_path_buf()];
@@ -106,7 +173,7 @@ fn scan_crate(
                 if trimmed.starts_with("//") {
                     continue;
                 }
-                if token_re.is_match(line) {
+                if token_re.is_some_and(|re| re.is_match(line)) {
                     violations.push(format!(
                         "crates/{crate_name}/{rel}:{line_no}: forbidden token: {trimmed}"
                     ));
@@ -234,9 +301,32 @@ fn apply_braces(line: &str, brace_depth: &mut usize, depth_test: &mut Option<usi
 
 #[cfg(test)]
 mod tests {
-    use super::{has_bare_u128_arithmetic, run, strip_cfg_test_modules};
+    use super::{has_bare_u128_arithmetic, parse_rules, run, strip_cfg_test_modules, token_regex};
     use regex::Regex;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn waiver_relaxes_only_the_named_token() {
+        let rules = parse_rules("aggregate allow=f32,f64\nmerkle\n").expect("parse");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].allow, vec!["f32".to_owned(), "f64".to_owned()]);
+        assert!(rules[1].allow.is_empty());
+
+        let re = token_regex(&rules[0].allow)
+            .expect("regex")
+            .expect("some tokens remain banned");
+        assert!(!re.is_match("let x: f64 = 1.0;"));
+        assert!(re.is_match("a.wrapping_add(1)"));
+        assert!(re.is_match("use std::collections::HashMap;"));
+    }
+
+    #[test]
+    fn unknown_waiver_token_is_rejected() {
+        let err = parse_rules("aggregate allow=f65\n").expect_err("typo must fail the gate");
+        assert!(err.contains("unknown waiver token"), "{err}");
+        let err = parse_rules("aggregate deny=f64\n").expect_err("unknown field must fail");
+        assert!(err.contains("unexpected field"), "{err}");
+    }
 
     #[test]
     fn strips_test_mod() {

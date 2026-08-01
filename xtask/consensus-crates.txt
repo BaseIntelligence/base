@@ -1,7 +1,13 @@
 # Consensus crates subject to D7/D8 lint (integer-only, no HashMap, checked_* only).
 # Missing directories under crates/<name>/ are skipped until the crate is created.
 # Behavior is intentional: list future crates early so CI enforces the rules on day one.
-aggregate
+#
+# `allow=<token>[,<token>]` waives individual tokens for one crate.
+# aggregate: the served weight vector must match the Python master bit-for-bit
+# (see docs/BUNDLE_SPEC.md section 6), which is specified in IEEE-754 doubles.
+# Determinism is preserved by pinning summation order and using banker's rounding,
+# so gateway seal and validator recompute still agree exactly.
+aggregate allow=f32,f64
 merkle
 bundle
 crypto

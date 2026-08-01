@@ -1,0 +1,23 @@
+[package]
+name = "weights-api"
+description = "Validator-facing GET /v1/weights/latest response shape (master weights vector projection)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+bundle = { path = "../bundle" }
+config = { path = "../config" }
+hex = "0.4"
+keystore = { path = "../keystore" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+trustroot = { path = "../trustroot" }
+uuid = { version = "1" }
+
+[lints]
+workspace = true

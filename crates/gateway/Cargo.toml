@@ -20,6 +20,7 @@ crypto = { path = "../crypto" }
 keystore = { path = "../keystore" }
 telemetry = { path = "../telemetry" }
 trustroot = { path = "../trustroot" }
+weights-api = { path = "../weights-api" }
 hex = "0.4"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }

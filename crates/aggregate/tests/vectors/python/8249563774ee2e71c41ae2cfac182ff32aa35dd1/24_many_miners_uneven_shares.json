@@ -1,0 +1,170 @@
+{
+  "header": {
+    "authority": "Python base.master.aggregator.aggregate_challenge_weights IS the authority for the served weight vector (chain.joinbase.ai). Rust crates/aggregate::python is a bit-for-bit port; on disagreement Python wins.",
+    "upstream_base_sha": "8249563774ee2e71c41ae2cfac182ff32aa35dd1",
+    "upstream_module": "base.master.aggregator.aggregate_challenge_weights",
+    "python_float_path": true,
+    "served_algorithm_specification": [
+      "Per-challenge weights are cleaned (drop non-finite and <= 0) then normalized by their float sum.",
+      "emission_percent is an ABSOLUTE share of 100; sum(shares) > 1.0 is scaled back to exactly 1.0.",
+      "Any share not landing on a real miner (unallocated remainder, uid 0, unknown hotkey, empty challenge) burns to uid 0.",
+      "No miner mass at all (<= 1e-12) falls back to build_zero_miner_weights: {0: 1.0}, padded with metagraph uids when min_allowed_weights or max_weight_limit demand it, else ZeroMinerWeightError.",
+      "All summation is CPython >= 3.12 sum(), i.e. Neumaier compensated - NOT a naive fold.",
+      "Map iteration follows Python dict insertion order; only the final vector is sorted by uid.",
+      "round(w * 65535) is Python round(), i.e. round-half-to-EVEN. The u16 vector is NOT renormalized and may sum to 65534/65535/65536.",
+      "BUNDLE_SPEC section 6 (u128 FIXED + Hamilton, no burn, empty vector on all-zero) describes a DIFFERENT algorithm that is not what chain.joinbase.ai serves."
+    ],
+    "expected_vector_encoding": "list of [uid:u16, weight_u16] where weight_u16 = round(float_weight * 65535) using Python round() semantics (round-half-to-EVEN)",
+    "case": "24_many_miners_uneven_shares"
+  },
+  "inputs": {
+    "challenge_results": [
+      {
+        "slug": "alpha",
+        "emission_percent": 33.0,
+        "weights": {
+          "a1": 1.0,
+          "a2": 2.0,
+          "a3": 3.0,
+          "a4": 4.0,
+          "a5": 5.0,
+          "a6": 6.0,
+          "a7": 7.0
+        },
+        "ok": true
+      },
+      {
+        "slug": "beta",
+        "emission_percent": 33.0,
+        "weights": {
+          "b1": 1.0,
+          "b2": 4.0,
+          "b3": 9.0,
+          "b4": 16.0
+        },
+        "ok": true
+      },
+      {
+        "slug": "gamma",
+        "emission_percent": 34.0,
+        "weights": {
+          "a3": 1.0,
+          "b2": 2.0,
+          "c1": 3.0
+        },
+        "ok": true
+      }
+    ],
+    "hotkey_to_uid": {
+      "a1": 1,
+      "a2": 2,
+      "a3": 3,
+      "a4": 4,
+      "a5": 5,
+      "a6": 6,
+      "a7": 7,
+      "b1": 11,
+      "b2": 12,
+      "b3": 13,
+      "b4": 14,
+      "c1": 21
+    },
+    "kwargs": {}
+  },
+  "python_float_output": {
+    "uids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      11,
+      12,
+      13,
+      14,
+      21
+    ],
+    "weights": [
+      0.011785714285714285,
+      0.02357142857142857,
+      0.09202380952380954,
+      0.04714285714285714,
+      0.058928571428571434,
+      0.07071428571428572,
+      0.0825,
+      0.011000000000000001,
+      0.15733333333333335,
+      0.099,
+      0.17600000000000002,
+      0.17
+    ],
+    "hotkey_weights": {
+      "a1": 0.011785714285714285,
+      "a2": 0.02357142857142857,
+      "a3": 0.09202380952380954,
+      "a4": 0.04714285714285714,
+      "a5": 0.058928571428571434,
+      "a6": 0.07071428571428572,
+      "a7": 0.0825,
+      "b1": 0.011000000000000001,
+      "b2": 0.15733333333333335,
+      "b3": 0.099,
+      "b4": 0.17600000000000002,
+      "c1": 0.17
+    }
+  },
+  "expected_vector": [
+    [
+      1,
+      772
+    ],
+    [
+      2,
+      1545
+    ],
+    [
+      3,
+      6031
+    ],
+    [
+      4,
+      3090
+    ],
+    [
+      5,
+      3862
+    ],
+    [
+      6,
+      4634
+    ],
+    [
+      7,
+      5407
+    ],
+    [
+      11,
+      721
+    ],
+    [
+      12,
+      10311
+    ],
+    [
+      13,
+      6488
+    ],
+    [
+      14,
+      11534
+    ],
+    [
+      21,
+      11141
+    ]
+  ],
+  "chain_u16_sum": 65536,
+  "chain_u16_max": 65535
+}

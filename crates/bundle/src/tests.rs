@@ -1,7 +1,6 @@
 //! Unit tests for bundle (TDD VERIFY cases).
 
 use super::*;
-use aggregate::{aggregate, ScoreOrAbsence as AggScore, VerifiedLeaf, ALGORITHM_VERSION as AGG_V};
 use chain::{FakeChain, FakeChainConfig};
 use crypto::secret_from_bytes;
 use parity_scale_codec::{Decode, Encode};
@@ -29,13 +28,9 @@ fn hk(tag: u8) -> [u8; 32] {
     h
 }
 
-fn to_agg(s: &ScoreOrAbsence) -> AggScore {
-    match s {
-        ScoreOrAbsence::Score { value } => AggScore::Score { value: *value },
-        ScoreOrAbsence::NoScore { reason } => AggScore::NoScore {
-            reason: *reason as u8,
-        },
-    }
+/// The served vector for a body, via the same adapter the gateway seals with.
+fn served_vector(body: &EpochBundleBodyV1) -> Vec<(u16, u16)> {
+    python_weights(body).expect("python weights").final_vector
 }
 
 fn trust_one(cid: &[u8], challenge_pk: [u8; 32], policy: ParticipantPolicy) -> LocalTrustRoot {
@@ -100,15 +95,9 @@ fn valid_bundle(
     let merkle_root = compute_merkle_root(&leaves);
     let uid_map = uid_map_from_rows(&rows);
     let shares = trust.challenges.emission_shares();
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).expect("agg");
+    let final_vector = python_weights_from_parts(&leaves, &shares, &uid_map)
+        .expect("agg")
+        .final_vector;
     let body = EpochBundleBodyV1 {
         protocol_version: PROTOCOL_VERSION,
         epoch,
@@ -293,23 +282,7 @@ fn d18_foreign_challenge_key_rejected() {
     .unwrap();
     bundle.body.leaves = vec![leaf];
     finalize_body_merkle(&mut bundle.body);
-    let verified: Vec<VerifiedLeaf> = bundle
-        .body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    bundle.body.final_vector = aggregate(
-        &verified,
-        &bundle.body.emission_shares,
-        &bundle.body.uid_map,
-        AGG_V,
-    )
-    .unwrap();
+    bundle.body.final_vector = served_vector(&bundle.body);
     bundle = sign_bundle(&gsk, bundle.body).unwrap();
     let err = bundle.verify(&chain, &trust).unwrap_err();
     assert!(
@@ -351,23 +324,7 @@ fn d24_missing_participant_rejected() {
         valid_bundle(&csk, &gsk, b"dummy", &[(0xA1, 5), (0xB2, 5)], 70);
     bundle.body.leaves.pop();
     finalize_body_merkle(&mut bundle.body);
-    let verified: Vec<VerifiedLeaf> = bundle
-        .body
-        .leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    bundle.body.final_vector = aggregate(
-        &verified,
-        &bundle.body.emission_shares,
-        &bundle.body.uid_map,
-        AGG_V,
-    )
-    .unwrap();
+    bundle.body.final_vector = served_vector(&bundle.body);
     bundle = sign_bundle(&gsk, bundle.body).unwrap();
     assert_eq!(
         bundle.verify(&chain, &trust).unwrap_err(),
@@ -414,15 +371,13 @@ fn d24_noscore_covers_participant() {
     sort_leaves(&mut leaves);
     let uid_map = uid_map_from_rows(&rows);
     let shares = trust.challenges.emission_shares();
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).unwrap();
+    let final_vector = python_weights_from_parts(&leaves, &shares, &uid_map)
+        .unwrap()
+        .final_vector;
+    // Python authority (`aggregate_challenge_weights`, min_allowed_weights=1,
+    // max_weight_limit=65535): the only scorer sits on uid 0, which is the burn sink,
+    // so no miner mass survives and the zero-miner fallback returns {0: 1.0}.
+    assert_eq!(final_vector, vec![(0, 65_535)]);
     let body = EpochBundleBodyV1 {
         protocol_version: 1,
         epoch,

@@ -1,0 +1,107 @@
+{
+  "header": {
+    "authority": "Python base.master.aggregator.aggregate_challenge_weights IS the authority for the served weight vector (chain.joinbase.ai). Rust crates/aggregate::python is a bit-for-bit port; on disagreement Python wins.",
+    "upstream_base_sha": "8249563774ee2e71c41ae2cfac182ff32aa35dd1",
+    "upstream_module": "base.master.aggregator.aggregate_challenge_weights",
+    "python_float_path": true,
+    "served_algorithm_specification": [
+      "Per-challenge weights are cleaned (drop non-finite and <= 0) then normalized by their float sum.",
+      "emission_percent is an ABSOLUTE share of 100; sum(shares) > 1.0 is scaled back to exactly 1.0.",
+      "Any share not landing on a real miner (unallocated remainder, uid 0, unknown hotkey, empty challenge) burns to uid 0.",
+      "No miner mass at all (<= 1e-12) falls back to build_zero_miner_weights: {0: 1.0}, padded with metagraph uids when min_allowed_weights or max_weight_limit demand it, else ZeroMinerWeightError.",
+      "All summation is CPython >= 3.12 sum(), i.e. Neumaier compensated - NOT a naive fold.",
+      "Map iteration follows Python dict insertion order; only the final vector is sorted by uid.",
+      "round(w * 65535) is Python round(), i.e. round-half-to-EVEN. The u16 vector is NOT renormalized and may sum to 65534/65535/65536.",
+      "BUNDLE_SPEC section 6 (u128 FIXED + Hamilton, no burn, empty vector on all-zero) describes a DIFFERENT algorithm that is not what chain.joinbase.ai serves."
+    ],
+    "expected_vector_encoding": "list of [uid:u16, weight_u16] where weight_u16 = round(float_weight * 65535) using Python round() semantics (round-half-to-EVEN)",
+    "case": "08_max_weight_limit_9000_pads_to_eight"
+  },
+  "inputs": {
+    "challenge_results": [
+      {
+        "slug": "empty",
+        "emission_percent": 100.0,
+        "weights": {},
+        "ok": true
+      }
+    ],
+    "hotkey_to_uid": {
+      "validator": 0,
+      "hk1": 1,
+      "hk2": 2,
+      "hk3": 3,
+      "hk4": 4,
+      "hk5": 5,
+      "hk6": 6,
+      "hk7": 7,
+      "hk8": 8,
+      "hk9": 9,
+      "hk10": 10,
+      "hk11": 11
+    },
+    "kwargs": {
+      "min_allowed_weights": 1,
+      "max_weight_limit": 9000
+    }
+  },
+  "python_float_output": {
+    "uids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "weights": [
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125
+    ],
+    "hotkey_weights": {}
+  },
+  "expected_vector": [
+    [
+      0,
+      8192
+    ],
+    [
+      1,
+      8192
+    ],
+    [
+      2,
+      8192
+    ],
+    [
+      3,
+      8192
+    ],
+    [
+      4,
+      8192
+    ],
+    [
+      5,
+      8192
+    ],
+    [
+      6,
+      8192
+    ],
+    [
+      7,
+      8192
+    ]
+  ],
+  "chain_u16_sum": 65536,
+  "chain_u16_max": 65535
+}

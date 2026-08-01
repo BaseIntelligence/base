@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aggregate::{
-    aggregate, renormalize_after_quarantine, ScoreOrAbsence as AggScore, VerifiedLeaf,
-    ALGORITHM_VERSION as AGG_V,
+    aggregate_python_vector, renormalize_after_quarantine, ScoreOrAbsence as AggScore,
+    VerifiedLeaf, ALGORITHM_VERSION as AGG_V,
 };
 use bundle::{
     compute_merkle_root, compute_metagraph_root, make_signed_leaf, metagraph_rows_from_chain,
@@ -122,15 +122,9 @@ fn multi_challenge_bundle(
     let shares = trust.challenges.emission_shares();
     // Gateway final_vector: honest aggregate of *all* leaves as if signatures were good
     // (for bad leaves we still put scores in the body; verify will fail on sig).
-    let verified: Vec<VerifiedLeaf> = leaves
-        .iter()
-        .map(|l| VerifiedLeaf {
-            challenge_id: l.challenge_id.clone(),
-            miner_hotkey: l.miner_hotkey,
-            score_or_absence: to_agg(&l.score_or_absence),
-        })
-        .collect();
-    let final_vector = aggregate(&verified, &shares, &uid_map, AGG_V).expect("agg");
+    let final_vector = bundle::python_weights_from_parts(&leaves, &shares, &uid_map)
+        .expect("agg")
+        .final_vector;
     let body = EpochBundleBodyV1 {
         protocol_version: PROTOCOL_VERSION,
         epoch,
@@ -354,7 +348,10 @@ fn s3_quarantine_one_bad_60pct_submits() {
                     score_or_absence: to_agg(&l.score_or_absence),
                 })
                 .collect();
-            let expected = aggregate(&verified, &new_shares, &bundle.body.uid_map, AGG_V).unwrap();
+            let expected =
+                aggregate_python_vector(&verified, &new_shares, &bundle.body.uid_map, AGG_V)
+                    .unwrap()
+                    .final_vector;
             assert_eq!(intent.vector, expected);
         }
         other => panic!("expected Quarantine, got {other:?}"),

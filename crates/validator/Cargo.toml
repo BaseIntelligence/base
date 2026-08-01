@@ -51,6 +51,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
 wiremock = "0.6"
 hex = "0.4"
+keystore = { path = "../keystore" }
+weights-api = { path = "../weights-api" }
 
 [lints]
 workspace = true

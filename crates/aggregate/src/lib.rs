@@ -18,10 +18,35 @@
 //!
 //! When `total > 0`, Hamilton largest-remainder apportions exactly [`HOUSE`] (`u16::MAX`).
 //!
-//! Python BASE vectors under `tests/vectors/python/<sha>/` are **characterization only**
-//! (D16). Where they diverge from this crate / `BUNDLE_SPEC` §6, the **spec wins**.
+//! # Two algorithms live here
+//!
+//! - [`aggregate`] (this module): the integer `BUNDLE_SPEC` §6 Hamilton path, still used by
+//!   the bundle/validator code.
+//! - [`chain_vector`]: the one adapter both the gateway seal and the validator recompute
+//!   call. It maps bundle-shaped inputs onto [`python`] and is the serving algorithm.
+//! - [`python`]: a bit-for-bit port of the Python service that actually serves
+//!   <https://chain.joinbase.ai>. The operator chose full behavioural parity with Python
+//!   for the gateway, so **that** module is the authority for the served vector and it
+//!   uses `f64` deliberately.
+//!
+//! Vectors under `tests/vectors/python/8249563774ee2e71c41ae2cfac182ff32aa35dd1/` are
+//! generated from the Python authority; the older `c4ec5c04.../` set is the same code at
+//! an earlier upstream commit.
 
 #![forbid(unsafe_code)]
+
+pub mod chain_vector;
+pub mod python;
+
+pub use chain_vector::{
+    aggregate_python_vector, PythonVector, PythonVectorError, PY_MAX_WEIGHT_LIMIT,
+    PY_MIN_ALLOWED_WEIGHTS,
+};
+pub use python::{
+    aggregate_python, build_zero_miner_weights, normalize_weights, to_chain_u16,
+    ChallengeWeightsResult, FinalWeights, ZeroMinerWeightError, CHAIN_U16_MAX, EPS,
+    ZERO_MINER_BURN_UID,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
