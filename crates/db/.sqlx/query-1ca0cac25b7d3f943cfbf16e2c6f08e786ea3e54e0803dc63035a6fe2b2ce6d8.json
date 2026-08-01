@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, challenge_id, epoch, miner_hotkey, kind, score, absence_reason,\n               payload, payload_digest, signature\n        FROM raw_weight_snapshot\n        WHERE epoch = $1\n        ORDER BY challenge_id, miner_hotkey\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "challenge_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "epoch",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "miner_hotkey",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "score",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "absence_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "payload",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "payload_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "signature",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ca0cac25b7d3f943cfbf16e2c6f08e786ea3e54e0803dc63035a6fe2b2ce6d8"
+}

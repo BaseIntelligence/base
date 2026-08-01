@@ -13,16 +13,19 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
-pub use chain::{ChainClient, ChainError, Metagraph, WeightsTlockPayload};
+pub use chain::{AxonInfo, ChainClient, ChainError, Metagraph, WeightsTlockPayload};
 pub use extrinsic::{
-    build_and_sign_commit_timelocked, build_and_sign_set_weights, commit_timelocked_call,
-    derive_public_key, set_weights_call, Era,
+    build_and_sign_commit_timelocked, build_and_sign_serve_axon, build_and_sign_set_weights,
+    commit_timelocked_call, derive_public_key, serve_axon_call, set_weights_call, Era,
+    ServeAxonParams,
 };
 pub use rpc::{LiveChainRpc, RuntimeVersion, StorageEntry};
 pub use storage::{
-    decode_bool, decode_double_map_k2, decode_hotkey, decode_metagraph, decode_u16, decode_u64,
-    decode_vec_vec_u8, storage_double_map_key_u16_u16, storage_double_map_prefix_u16, storage_key,
-    storage_map_key_identity, storage_map_key_twox64, storage_map_key_u16,
+    decode_axon_info, decode_bool, decode_double_map_account_k2, decode_double_map_k2,
+    decode_hotkey, decode_metagraph, decode_u16, decode_u64, decode_vec_vec_u8,
+    storage_double_map_key_u16_account, storage_double_map_key_u16_u16,
+    storage_double_map_prefix_u16, storage_key, storage_map_key_identity, storage_map_key_twox64,
+    storage_map_key_u16, ACCOUNT_ID_LEN,
 };
 
 use std::path::Path;
@@ -201,29 +204,7 @@ impl LiveChainClient {
         at: Option<&[u8; 32]>,
     ) -> Result<Vec<Vec<u8>>, ChainError> {
         let prefix = storage::storage_double_map_prefix_u16(PALLET_SUBTENSOR, "Keys", netuid);
-        let mut start = prefix.clone();
-        let mut all_keys: Vec<Vec<u8>> = Vec::new();
-        loop {
-            let page = self
-                .rpc
-                .state_get_keys_paged(&prefix, KEYS_PAGE_SIZE, &start, at)?;
-            if page.is_empty() {
-                break;
-            }
-            let short = page.len() < KEYS_PAGE_SIZE as usize;
-            if let Some(last) = page.last() {
-                start.clone_from(last);
-            }
-            all_keys.extend(page);
-            if short {
-                break;
-            }
-            if all_keys.len() > MAX_NEURONS {
-                return Err(ChainError::Other(format!(
-                    "{PALLET_SUBTENSOR}.Keys({netuid}) exceeded {MAX_NEURONS} entries"
-                )));
-            }
-        }
+        let all_keys = self.paged_keys(&prefix, "Keys", netuid, at)?;
         if all_keys.is_empty() {
             return Ok(Vec::new());
         }
@@ -239,11 +220,121 @@ impl LiveChainClient {
         Ok(by_uid.into_values().collect())
     }
 
+    /// Read `Axons(netuid, hotkey)`; `None` means the miner never served one.
+    ///
+    /// # Errors
+    /// Bad hotkey length, transport, or decode failure.
+    pub fn read_axon(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+        let account = account_id(hotkey)?;
+        let key = storage::storage_double_map_key_u16_account(
+            PALLET_SUBTENSOR,
+            "Axons",
+            netuid,
+            &account,
+        );
+        match self.rpc.state_get_storage(&key)? {
+            Some(bytes) => storage::decode_axon_info(&bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Enumerate every published axon on `netuid` as `(hotkey, info)`.
+    ///
+    /// # Errors
+    /// Transport or decode failure, or more than [`MAX_NEURONS`] entries.
+    pub fn enumerate_axons(&self, netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+        let prefix = storage::storage_double_map_prefix_u16(PALLET_SUBTENSOR, "Axons", netuid);
+        let all_keys = self.paged_keys(&prefix, "Axons", netuid, None)?;
+        if all_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(all_keys.len());
+        for chunk in all_keys.chunks(256) {
+            for (key, value) in self.rpc.state_query_storage_at(chunk, None)? {
+                out.push((
+                    storage::decode_double_map_account_k2(&key)?,
+                    storage::decode_axon_info(&value)?,
+                ));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    /// Page `state_getKeysPaged` to completion under `prefix`.
+    fn paged_keys(
+        &self,
+        prefix: &[u8],
+        item: &str,
+        netuid: u16,
+        at: Option<&[u8; 32]>,
+    ) -> Result<Vec<Vec<u8>>, ChainError> {
+        let mut start = prefix.to_vec();
+        let mut all_keys: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let page = self
+                .rpc
+                .state_get_keys_paged(prefix, KEYS_PAGE_SIZE, &start, at)?;
+            if page.is_empty() {
+                break;
+            }
+            let short = page.len() < KEYS_PAGE_SIZE as usize;
+            if let Some(last) = page.last() {
+                start.clone_from(last);
+            }
+            all_keys.extend(page);
+            if short {
+                break;
+            }
+            if all_keys.len() > MAX_NEURONS {
+                return Err(ChainError::Other(format!(
+                    "{PALLET_SUBTENSOR}.{item}({netuid}) exceeded {MAX_NEURONS} entries"
+                )));
+            }
+        }
+        Ok(all_keys)
+    }
+
+    /// Build and submit a `serve_axon` extrinsic publishing this miner's endpoint.
+    ///
+    /// Returns the extrinsic hash / subscription ID from the node.
+    ///
+    /// # Errors
+    /// Runtime-version drift, missing signing key, transport failure.
+    pub fn serve_axon(&self, params: &extrinsic::ServeAxonParams) -> Result<String, ChainError> {
+        self.check_runtime_version()?;
+        let key = self.require_key()?;
+        let genesis_hash = self.block_hash(0)?;
+        let pubkey = extrinsic::derive_public_key(&key)?;
+        let nonce = self.rpc.system_account_next_index(pubkey)?;
+        let ext = extrinsic::build_and_sign_serve_axon(
+            &key,
+            nonce,
+            &Era::Immortal,
+            &genesis_hash,
+            &genesis_hash,
+            self.spec_version,
+            self.tx_version,
+            params,
+        )?;
+        self.submit_extrinsic(&ext)
+    }
+
     /// Submit a signed extrinsic and return the hash/subscription ID.
     fn submit_extrinsic(&self, ext: &[u8]) -> Result<String, ChainError> {
         tracing::debug!(len = ext.len(), "submitting extrinsic");
         self.rpc.author_submit_and_watch_extrinsic(ext)
     }
+}
+
+fn account_id(hotkey: &[u8]) -> Result<[u8; storage::ACCOUNT_ID_LEN], ChainError> {
+    hotkey.try_into().map_err(|_| {
+        ChainError::Other(format!(
+            "hotkey must be {} bytes, got {}",
+            storage::ACCOUNT_ID_LEN,
+            hotkey.len()
+        ))
+    })
 }
 
 fn load_signing_key(path: &Path) -> Result<[u8; 32], ChainError> {
@@ -300,6 +391,14 @@ impl ChainClient for LiveChainClient {
 
     fn subnet_owner_hotkey(&self, netuid: u16) -> Result<Vec<u8>, ChainError> {
         self.read_owner_hotkey(netuid, None)
+    }
+
+    fn axon(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+        self.read_axon(netuid, hotkey)
+    }
+
+    fn axons(&self, netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+        self.enumerate_axons(netuid)
     }
 
     fn commit_reveal_enabled(&self, netuid: u16) -> Result<bool, ChainError> {

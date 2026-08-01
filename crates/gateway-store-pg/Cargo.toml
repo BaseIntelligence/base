@@ -1,0 +1,27 @@
+[package]
+name = "gateway-store-pg"
+description = "Postgres-backed raw-weight and sealed-bundle stores for the gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+bundle = { path = "../bundle" }
+db = { path = "../db" }
+gateway = { path = "../gateway" }
+weights-api = { path = "../weights-api" }
+parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+db = { path = "../db", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -45,6 +45,7 @@ wiremock = "0.6"
 aggregate = { path = "../aggregate" }
 bundle = { path = "../bundle" }
 merkle = { path = "../merkle" }
+validator-sync = { path = "../validator-sync" }
 
 [lints]
 workspace = true

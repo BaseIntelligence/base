@@ -10,18 +10,34 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use bundle::{make_signed_leaf, ScoreOrAbsence};
+use bundle::{
+    compute_metagraph_root, make_signed_leaf, metagraph_rows_from_chain, uid_map_from_rows,
+    EpochBundleV1, ScoreOrAbsence,
+};
+use chain::{FakeChain, FakeChainConfig};
 use crypto::{secret_from_bytes, KEY_LEN};
 use gateway::{
-    admin_seal_router, bundle_router, weights_router, ChallengeEntry, ChallengesBody, GatewayState,
-    MemoryBundleStore, MemoryRawWeightStore, ParticipantPolicy, RawWeightRow, RawWeightStore,
-    Registry, RegistryConfig, SharedBundleStore, BPS_DENOM,
+    admin_seal_router, bundle_router, weights_router, BundleStore, ChallengeEntry, ChallengesBody,
+    GatewayState, MemoryBundleStore, MemoryRawWeightStore, ParticipantPolicy, RawWeightRow,
+    RawWeightStore, Registry, RegistryConfig, SharedBundleStore, SharedChain, BPS_DENOM,
 };
 use sha2::{Digest, Sha256};
 use telemetry::init_metrics;
 use tokio::net::TcpListener;
 use trustroot::{measurements_digest, MeasurementsBody};
 use uuid::Uuid;
+
+/// In-repo chain double for the seal path; production wires the live client.
+fn fake_chain(hotkeys: Vec<Vec<u8>>, tip: u64) -> SharedChain {
+    Arc::new(validator_sync::SyncChain::new(FakeChain::new(
+        FakeChainConfig {
+            hotkeys,
+            owner_hotkey: vec![0xA1; 32],
+            current_block: tip.max(10),
+            ..FakeChainConfig::default()
+        },
+    )))
+}
 
 fn sk(tag: u8) -> [u8; KEY_LEN] {
     let dig = Sha256::digest([0x5A, tag, 0xA5, tag]);
@@ -117,19 +133,16 @@ async fn s1_admin_seal_happy_latest_200() {
         insert_leaf(weights.as_ref(), &csk, cid, *m, epoch, 10 * (i as u64 + 1));
     }
     let bundles = Arc::new(MemoryBundleStore::new());
-    let owner = [0xA1u8; 32];
     let hotkeys: Vec<Vec<u8>> = miners.iter().map(|h| h.to_vec()).collect();
     let registry = Registry::shared(RegistryConfig::default());
     let state = GatewayState::with_parts_seal(
         registry,
+        fake_chain(hotkeys, block_b),
         challenges,
         weights,
         bundles as SharedBundleStore,
         mdigest,
         1,
-        owner,
-        hotkeys,
-        block_b.max(10),
     )
     .expect("state");
 
@@ -208,14 +221,12 @@ async fn s2_admin_seal_incomplete_409() {
     let bundles = Arc::new(MemoryBundleStore::new());
     let state = GatewayState::with_parts_seal(
         Registry::shared(RegistryConfig::default()),
+        fake_chain(vec![hk(1).to_vec(), hk(2).to_vec(), hk(3).to_vec()], 1000),
         challenges,
         weights,
         bundles as SharedBundleStore,
         measurements_digest(&MeasurementsBody::default()),
         1,
-        [0xA1; 32],
-        vec![hk(1).to_vec(), hk(2).to_vec(), hk(3).to_vec()],
-        1000,
     )
     .expect("state");
     let metrics = init_metrics().expect("m");
@@ -231,4 +242,79 @@ async fn s2_admin_seal_incomplete_409() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 409);
     let _ = shutdown.send(());
+}
+
+/// The sealed body must be pinned to the chain handed to the gateway, not to a
+/// default or env-derived metagraph: UID order, metagraph root, block hash and
+/// tip all have to come back out of the injected chain.
+#[tokio::test]
+async fn s3_admin_seal_pins_injected_chain() {
+    std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
+    let _ = init_metrics();
+    let csk = sk(1);
+    let cid = b"agent-v1";
+    let epoch = 93u64;
+    let tip = 777u64;
+    // Deliberately not sorted: a fabricated metagraph would not reproduce it.
+    let uid_order = vec![hk(3).to_vec(), hk(1).to_vec(), hk(2).to_vec()];
+    let challenges = Arc::new(ChallengesBody {
+        challenges: vec![ChallengeEntry {
+            id: cid.to_vec(),
+            public_key: pk_of(&csk),
+            emission_share_bps: BPS_DENOM,
+            policy: ParticipantPolicy::AllMetagraphHotkeys,
+        }],
+    });
+    let weights = Arc::new(MemoryRawWeightStore::new());
+    for (i, m) in [hk(1), hk(2), hk(3)].iter().enumerate() {
+        insert_leaf(weights.as_ref(), &csk, cid, *m, epoch, 10 * (i as u64 + 1));
+    }
+    let bundles = Arc::new(MemoryBundleStore::new());
+    let chain = fake_chain(uid_order.clone(), tip);
+    let state = GatewayState::with_parts_seal(
+        Registry::shared(RegistryConfig::default()),
+        Arc::clone(&chain),
+        challenges,
+        weights,
+        bundles.clone() as SharedBundleStore,
+        measurements_digest(&MeasurementsBody::default()),
+        1,
+    )
+    .expect("state");
+    let metrics = init_metrics().expect("metrics");
+    let app = telemetry::health_router(metrics)
+        .expect("health")
+        .merge(admin_seal_router(state));
+    let (addr, shutdown) = serve(app).await;
+
+    // No `block_b`: the tip must be read from the chain, not from a constant.
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/admin/seal"))
+        .json(&serde_json::json!({ "epoch": epoch }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "body={}",
+        resp.text().await.unwrap_or_default()
+    );
+    let _ = shutdown.send(());
+
+    let sealed = bundles.get_by_epoch(epoch).expect("sealed bytes");
+    let body = EpochBundleV1::decode_bytes(&sealed).expect("decode").body;
+    let rows = metagraph_rows_from_chain(&uid_order, None).expect("rows");
+    assert_eq!(body.block_b, tip);
+    assert_eq!(body.block_hash, chain.block_hash(tip).expect("hash"));
+    assert_eq!(body.metagraph_root, compute_metagraph_root(&rows));
+    assert_eq!(body.uid_map, uid_map_from_rows(&rows));
+    // hk(3) is uid 0 only because the injected chain says so.
+    assert_eq!(
+        body.uid_map
+            .iter()
+            .find(|(h, _)| *h == hk(3))
+            .map(|(_, uid)| *uid),
+        Some(0)
+    );
 }

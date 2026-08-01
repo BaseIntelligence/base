@@ -53,6 +53,7 @@ dependencies = [
  "trustroot",
  "uuid",
  "validator",
+ "validator-sync",
  "wiremock",
 ]
 
@@ -63,13 +64,23 @@ dependencies = [
  "agent-challenge",
  "agent-dispatch",
  "agent-pack",
+ "agent-runner",
  "axum",
+ "bundle",
+ "chain",
+ "chain-live",
  "clap",
+ "config",
  "hex",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "serde_json",
  "telemetry",
+ "tempfile",
  "tokio",
  "tracing",
  "trustroot",
+ "wiremock",
 ]
 
 [[package]]
@@ -658,6 +669,7 @@ dependencies = [
 name = "chain-live"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "chain",
  "crypto",
  "hex",
@@ -1689,6 +1701,7 @@ dependencies = [
  "tracing",
  "trustroot",
  "uuid",
+ "validator-sync",
  "weights-api",
  "wiremock",
 ]
@@ -1697,10 +1710,11 @@ dependencies = [
 name = "gateway-bin"
 version = "0.1.0"
 dependencies = [
- "chain",
  "chain-live",
  "config",
+ "db",
  "gateway",
+ "gateway-store-pg",
  "telemetry",
  "tokio",
  "tracing",
@@ -1715,6 +1729,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "uuid",
+]
+
+[[package]]
+name = "gateway-store-pg"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "db",
+ "gateway",
+ "parity-scale-codec",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+ "weights-api",
 ]
 
 [[package]]

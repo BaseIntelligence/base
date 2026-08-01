@@ -296,9 +296,12 @@ async fn spawn_with_bundles(
     let _ = telemetry::init_tracing();
     let metrics = init_metrics().expect("metrics");
     let registry = Registry::shared(RegistryConfig::default());
+    let chain: gateway::SharedChain =
+        Arc::new(validator_sync::SyncChain::new(FakeChain::with_defaults()));
     let app = build_app_with_bundles(
         metrics,
         registry,
+        chain,
         &TlsConfig::default(),
         Arc::new(challenges),
         weights as Arc<dyn RawWeightStore>,

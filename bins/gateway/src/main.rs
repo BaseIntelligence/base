@@ -8,9 +8,10 @@
 //! `BASE_GATEWAY_REQUIRE_OWNER=1` to restore the fail-closed master-only check.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use config::keys;
-use gateway::{GatewayConfig, GatewayError};
+use gateway::{GatewayConfig, GatewayError, MemoryBundleStore, MemoryRawWeightStore, Stores};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -46,11 +47,70 @@ async fn main() -> ExitCode {
         }
     };
     client.set_netuid(config.netuid);
-    run_with(config, &client).await
+    // Same live client backs the master-only check and the epoch seal: the
+    // sealed metagraph root must come from the chain we actually talked to.
+    let chain: gateway::SharedChain = Arc::new(client);
+
+    let stores = match resolve_stores().await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("gateway: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    run_with(config, chain, stores).await
 }
 
-async fn run_with(config: GatewayConfig, chain: &dyn chain::ChainClient) -> ExitCode {
-    match gateway::run(config, chain).await {
+/// Postgres stores when a database is configured, in-memory otherwise.
+///
+/// A configured but unreachable database is fatal: falling back to memory would
+/// silently drop every raw weight and sealed bundle on restart.
+async fn resolve_stores() -> Result<Stores, String> {
+    let base = config::load().map_err(|e| e.to_string())?;
+    let Some(url) = resolve_database_url(&base)? else {
+        tracing::warn!(
+            event = "gateway_store_memory",
+            "no database configured; raw weights and sealed bundles are not persisted"
+        );
+        return Ok((
+            Arc::new(MemoryRawWeightStore::new()),
+            Arc::new(MemoryBundleStore::new()),
+        ));
+    };
+    let pool = db::connect(&url)
+        .await
+        .map_err(|e| format!("database connect failed: {e}"))?;
+    db::migrate(&pool)
+        .await
+        .map_err(|e| format!("database migrate failed: {e}"))?;
+    pool.close().await;
+    let stores = gateway_store_pg::stores(&url)?;
+    tracing::info!(
+        event = "gateway_store_postgres",
+        "raw weights and sealed bundles persist to postgres"
+    );
+    Ok(stores)
+}
+
+fn resolve_database_url(cfg: &config::Config) -> Result<Option<String>, String> {
+    if let Some(url) = cfg.database_url.as_ref() {
+        return Ok(Some(url.clone()));
+    }
+    if let Some(path) = cfg.database_url_file.as_ref() {
+        let raw =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let trimmed = raw.trim().to_owned();
+        if trimmed.is_empty() {
+            return Err("database_url_file is empty".into());
+        }
+        return Ok(Some(trimmed));
+    }
+    Ok(None)
+}
+
+async fn run_with(config: GatewayConfig, chain: gateway::SharedChain, stores: Stores) -> ExitCode {
+    match gateway::run(config, chain, stores).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             e.log_fatal();

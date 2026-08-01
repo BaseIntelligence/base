@@ -48,9 +48,13 @@ async fn spawn_gateway(challenges: ChallengesBody) -> (SocketAddr, oneshot::Send
     let metrics = init_metrics().expect("metrics");
     let registry = Registry::shared(RegistryConfig::default());
     let store = Arc::new(MemoryRawWeightStore::new());
+    let chain: gateway::SharedChain = Arc::new(validator_sync::SyncChain::new(
+        chain::FakeChain::with_defaults(),
+    ));
     let app = build_app_with(
         metrics,
         registry,
+        chain,
         &TlsConfig::default(),
         Arc::new(challenges),
         store as Arc<dyn RawWeightStore>,

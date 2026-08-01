@@ -34,6 +34,12 @@
       "pallet_index": 7,
       "call": "set_subnet_identity",
       "call_index": 78
+    },
+    "serve_axon": {
+      "pallet": "SubtensorModule",
+      "pallet_index": 7,
+      "call": "serve_axon",
+      "call_index": 4
     }
   },
   "weights_tlock_payload": {

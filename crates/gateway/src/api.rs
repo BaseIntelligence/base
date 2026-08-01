@@ -14,9 +14,12 @@ use serde::Deserialize;
 use trustroot::ChallengesBody;
 use uuid::Uuid;
 
-use crate::sealer::{MemoryBundleStore, SharedBundleStore};
-use crate::weights::{MemoryRawWeightStore, SharedWeightStore};
+use crate::sealer::SharedBundleStore;
+use crate::weights::SharedWeightStore;
 use gateway_registry::{BackendView, CreateBackend, Registry, RegistryError};
+
+/// Shared chain handle; `Send + Sync` because axum state crosses tasks.
+pub type SharedChain = Arc<dyn chain::ChainClient + Send + Sync>;
 
 /// Shared axum state for registry + proxy + weights + sealed bundles.
 #[derive(Clone)]
@@ -35,69 +38,47 @@ pub struct GatewayState {
     pub measurements_digest: [u8; 32],
     /// Default netuid for admin seal.
     pub seal_netuid: u16,
-    /// Owner hotkey for `FakeChain` seal context.
-    pub seal_owner_hotkey: [u8; 32],
-    /// Metagraph hotkeys (UID order) for seal; empty → owner only.
-    pub seal_hotkeys: Vec<Vec<u8>>,
-    /// Tip block used when seal body omits `block_b`.
-    pub seal_current_block: u64,
+    /// Chain the seal pins against (metagraph, block hash, tip).
+    pub chain: SharedChain,
 }
 
 impl GatewayState {
-    /// Empty trust root and in-memory stores.
-    ///
-    /// # Errors
-    ///
-    /// When the reqwest client cannot be built.
-    pub fn new(registry: Arc<Registry>) -> Result<Self, String> {
-        Self::with_parts(
-            registry,
-            Arc::new(ChallengesBody::default()),
-            Arc::new(MemoryRawWeightStore::new()),
-            Arc::new(MemoryBundleStore::new()),
-        )
-    }
-
-    /// Injected trust root, weight store, and bundle store.
+    /// Injected chain, trust root, weight store, and bundle store.
     ///
     /// # Errors
     ///
     /// When the reqwest client cannot be built.
     pub fn with_parts(
         registry: Arc<Registry>,
+        chain: SharedChain,
         challenges: Arc<ChallengesBody>,
         weights: SharedWeightStore,
         bundles: SharedBundleStore,
     ) -> Result<Self, String> {
         Self::with_parts_seal(
             registry,
+            chain,
             challenges,
             weights,
             bundles,
             trustroot::measurements_digest(&trustroot::MeasurementsBody::default()),
             1,
-            [0u8; 32],
-            Vec::new(),
-            100,
         )
     }
 
-    /// Full injection including seal `FakeChain` context.
+    /// [`Self::with_parts`] plus the seal measurements digest and netuid.
     ///
     /// # Errors
     ///
     /// When the reqwest client cannot be built.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_parts_seal(
         registry: Arc<Registry>,
+        chain: SharedChain,
         challenges: Arc<ChallengesBody>,
         weights: SharedWeightStore,
         bundles: SharedBundleStore,
         measurements_digest: [u8; 32],
         seal_netuid: u16,
-        seal_owner_hotkey: [u8; 32],
-        seal_hotkeys: Vec<Vec<u8>>,
-        seal_current_block: u64,
     ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -111,9 +92,7 @@ impl GatewayState {
             bundles,
             measurements_digest,
             seal_netuid,
-            seal_owner_hotkey,
-            seal_hotkeys,
-            seal_current_block,
+            chain,
         })
     }
 }

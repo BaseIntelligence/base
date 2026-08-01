@@ -49,6 +49,7 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 agent-runner = { path = "../agent-runner" }
 validator = { path = "../validator" }
+validator-sync = { path = "../validator-sync" }
 uuid = { version = "1", features = ["v4"] }
 flate2 = "1"
 tar = "0.4"

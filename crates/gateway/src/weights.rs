@@ -86,6 +86,9 @@ pub enum StoreError {
         /// Unchanged original row.
         original: Box<RawWeightRow>,
     },
+    /// Backend failure; the row was **not** persisted.
+    #[error("raw weight store backend failure: {0}")]
+    Backend(String),
 }
 
 /// In-memory append-only store (tests + default runtime until DB hydrate).
@@ -240,20 +243,19 @@ pub enum IngressError {
         /// Original row (unchanged).
         original: Box<RawWeightRow>,
     },
+    /// Store backend refused or failed the write; nothing was persisted.
+    #[error("storage backend unavailable: {0}")]
+    Backend(String),
 }
 
 impl IntoResponse for IngressError {
     fn into_response(self) -> Response {
+        let plain = || serde_json::json!({ "error": self.to_string() });
         let (status, body) = match &self {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, serde_json::json!({ "error": msg })),
-            Self::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                serde_json::json!({ "error": self.to_string() }),
-            ),
-            Self::UnknownChallenge => (
-                StatusCode::NOT_FOUND,
-                serde_json::json!({ "error": self.to_string() }),
-            ),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, plain()),
+            Self::UnknownChallenge => (StatusCode::NOT_FOUND, plain()),
+            Self::Backend(_) => (StatusCode::SERVICE_UNAVAILABLE, plain()),
             Self::Conflict { original } => (
                 StatusCode::CONFLICT,
                 serde_json::json!({
@@ -352,6 +354,7 @@ pub fn accept_raw_weight(
     match store.insert(row) {
         Ok(stored) => Ok(stored),
         Err(StoreError::Conflict { original }) => Err(IngressError::Conflict { original }),
+        Err(StoreError::Backend(msg)) => Err(IngressError::Backend(msg)),
     }
 }
 

@@ -162,11 +162,27 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
         }
     };
 
+    let hotkey = validator_hotkey_from_env();
+    let registration = match validator::registration::resolve_on_chain(chain.as_ref(), &hotkey) {
+        Ok(status) => {
+            tracing::info!(
+                registered = status.registered,
+                uid = ?status.uid,
+                "resolved on-chain registration"
+            );
+            RegistrationStub::from_status(status)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "registration lookup failed; reporting unregistered");
+            RegistrationStub::new()
+        }
+    };
+
     let runtime = ValidatorRuntime {
         epoch_length: cfg.epoch_length,
         listen_addr: listen,
         gateway_endpoint: cfg.gateway_endpoint.clone(),
-        registration: RegistrationStub::new(),
+        registration,
         attest: Some(attest),
         min_peer_sample: cfg.min_peer_sample,
         min_share_mass_bps: cfg.min_share_mass_bps,

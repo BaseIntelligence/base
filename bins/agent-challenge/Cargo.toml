@@ -16,13 +16,25 @@ path = "src/main.rs"
 agent-challenge = { path = "../../crates/agent-challenge" }
 agent-dispatch = { path = "../../crates/agent-dispatch" }
 agent-pack = { path = "../../crates/agent-pack" }
+agent-runner = { path = "../../crates/agent-runner" }
+bundle = { path = "../../crates/bundle" }
+chain = { path = "../../crates/chain" }
+chain-live = { path = "../../crates/chain-live" }
+config = { path = "../../crates/config" }
 telemetry = { path = "../../crates/telemetry" }
 trustroot = { path = "../../crates/trustroot" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
 
 [lints]
 workspace = true

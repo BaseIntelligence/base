@@ -10,12 +10,26 @@
 //! `Keys` is a **double map** `(netuid, uid) -> AccountId32` whose suffix is 4
 //! bytes (`netuid_le ++ uid_le`), not a `Vec<AccountId32>` under a single key.
 //!
+//! `Axons` is the exception to the all-`Identity` rule: it is
+//! `(netuid [Identity], hotkey [Blake2_128Concat]) -> AxonInfo`, so the account
+//! key *is* hash-prefixed.
+//!
 //! [`storage_map_key_twox64`] is retained for pallets that do use
 //! `Twox64Concat`; it is not the Subtensor convention.
 
-use chain::{ChainError, Metagraph};
+use blake2::digest::consts::U16;
+use blake2::{Blake2b, Digest as _};
+use chain::{AxonInfo, ChainError, Metagraph};
 use parity_scale_codec::Decode;
 use twox_hash::XxHash64;
+
+/// Byte length of an `AccountId32`.
+pub const ACCOUNT_ID_LEN: usize = 32;
+
+/// Offset of the second key in a `(u16 Identity, AccountId32 Blake2_128Concat)` map key.
+///
+/// `Twox128(pallet) ++ Twox128(item) ++ netuid_le_u16 ++ blake2_128(account)`.
+const ACCOUNT_K2_OFFSET: usize = 16 + 16 + 2 + 16;
 
 /// Twox128: two `XxHash64` (seeds 0 and 1) LE-concatenated → 16 bytes.
 fn twox128(data: &[u8]) -> [u8; 16] {
@@ -28,6 +42,13 @@ fn twox128(data: &[u8]) -> [u8; 16] {
 /// Twox64: `XxHash64` with seed 0, LE → 8 bytes.
 fn twox64(data: &[u8]) -> [u8; 8] {
     XxHash64::oneshot(0, data).to_le_bytes()
+}
+
+/// Blake2b with a 16-byte digest, as Substrate's `Blake2_128` hasher.
+fn blake2_128(data: &[u8]) -> [u8; 16] {
+    let mut hasher = Blake2b::<U16>::new();
+    hasher.update(data);
+    hasher.finalize().into()
 }
 
 /// Plain storage key: `Twox128(pallet) ++ Twox128(item)`.
@@ -76,6 +97,39 @@ pub fn storage_double_map_key_u16_u16(pallet: &str, item: &str, k1: u16, k2: u16
     let mut k = storage_double_map_prefix_u16(pallet, item, k1);
     k.extend_from_slice(&k2.to_le_bytes());
     k
+}
+
+/// Full key for a `(u16 Identity, AccountId32 Blake2_128Concat)` double map.
+///
+/// This is `SubtensorModule.Axons`' shape; unlike the all-`Identity` maps in
+/// this pallet, the account key is prefixed by its Blake2-128 hash. Verified
+/// against `substrateinterface`'s key for `Axons(1, 5Gui9iTEmk…)` on testnet.
+#[must_use]
+pub fn storage_double_map_key_u16_account(
+    pallet: &str,
+    item: &str,
+    k1: u16,
+    account: &[u8; ACCOUNT_ID_LEN],
+) -> Vec<u8> {
+    let mut k = storage_double_map_prefix_u16(pallet, item, k1);
+    k.extend_from_slice(&blake2_128(account));
+    k.extend_from_slice(account);
+    k
+}
+
+/// Recover the trailing `AccountId32` from a `Blake2_128Concat` double-map key.
+///
+/// # Errors
+/// Returns [`ChainError::Other`] when the key is not the expected 82 bytes.
+pub fn decode_double_map_account_k2(key: &[u8]) -> Result<Vec<u8>, ChainError> {
+    let end = ACCOUNT_K2_OFFSET + ACCOUNT_ID_LEN;
+    let Some(tail) = key.get(ACCOUNT_K2_OFFSET..end) else {
+        return Err(ChainError::Other(format!(
+            "account double-map key too short: {} bytes (want {end})",
+            key.len()
+        )));
+    };
+    Ok(tail.to_vec())
 }
 
 /// Recover the trailing `u16` (e.g. `uid`) from a `(u16, u16)` double-map key.
@@ -127,6 +181,15 @@ pub fn decode_bool(bytes: &[u8]) -> Result<bool, ChainError> {
 pub fn decode_vec_vec_u8(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ChainError> {
     Vec::<Vec<u8>>::decode(&mut &bytes[..])
         .map_err(|e| ChainError::Other(format!("decode Vec<Vec<u8>>: {e}")))
+}
+
+/// Decode a SCALE-encoded [`AxonInfo`] (`SubtensorModule.Axons` value).
+///
+/// # Errors
+/// Decode failure.
+pub fn decode_axon_info(bytes: &[u8]) -> Result<AxonInfo, ChainError> {
+    AxonInfo::decode(&mut &bytes[..])
+        .map_err(|e| ChainError::Other(format!("decode AxonInfo: {e}")))
 }
 
 /// Decode a hotkey / `AccountId32` from raw storage bytes.

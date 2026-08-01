@@ -194,6 +194,18 @@ impl HarborVerifier {
     pub fn owned_count(&self) -> Result<usize, VerifyError> {
         Ok(self.client.list_owned()?.len())
     }
+
+    /// Run the held-out harness on `model_patch` without importing [`Verifier`].
+    ///
+    /// # Errors
+    /// See [`Verifier::grade`].
+    pub fn grade_patch(
+        &self,
+        pack: &HarborPack,
+        model_patch: &[u8],
+    ) -> Result<Reward, VerifyError> {
+        <Self as Verifier>::grade(self, pack, model_patch)
+    }
 }
 
 impl Verifier for HarborVerifier {

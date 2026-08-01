@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 
-use chain::{ChainClient, ChainError, Metagraph, WeightsTlockPayload};
+use chain::{AxonInfo, ChainClient, ChainError, Metagraph, WeightsTlockPayload};
 
 /// Mutex-wrapped [`ChainClient`] that is `Send + Sync`.
 #[derive(Debug)]
@@ -44,6 +44,14 @@ impl<C: ChainClient> ChainClient for SyncChain<C> {
 
     fn subnet_owner_hotkey(&self, netuid: u16) -> Result<Vec<u8>, ChainError> {
         self.lock()?.subnet_owner_hotkey(netuid)
+    }
+
+    fn axon(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+        self.lock()?.axon(netuid, hotkey)
+    }
+
+    fn axons(&self, netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+        self.lock()?.axons(netuid)
     }
 
     fn commit_reveal_enabled(&self, netuid: u16) -> Result<bool, ChainError> {

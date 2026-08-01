@@ -67,6 +67,55 @@ pub struct Metagraph {
     pub owner_hotkey: Vec<u8>,
 }
 
+/// `SubtensorModule.Axons(netuid, hotkey)` value — a miner's published endpoint.
+///
+/// Field order is the on-chain SCALE layout; `ip` is a `u128` so a single field
+/// carries both IPv4 (packed into the low 32 bits) and IPv6 addresses.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct AxonInfo {
+    /// Block at which the axon was last served.
+    pub block: u64,
+    /// Bittensor version identifier of the serving neuron.
+    pub version: u32,
+    /// Endpoint address as a numeric integer (IPv4 in the low 32 bits).
+    pub ip: u128,
+    /// Endpoint TCP port.
+    pub port: u16,
+    /// `4` or `6`.
+    pub ip_type: u8,
+    /// Transport protocol tag as published by the miner.
+    pub protocol: u8,
+    /// Reserved by the pallet.
+    pub placeholder1: u8,
+    /// Reserved by the pallet.
+    pub placeholder2: u8,
+}
+
+impl AxonInfo {
+    /// Reachable HTTP base URL, or `None` when the axon is unpublished.
+    ///
+    /// A neuron that never called `serve_axon` (or that cleared it) is stored as
+    /// all-zero rather than removed, so `ip == 0` / `port == 0` means "absent"
+    /// and must never be turned into a dial-able `http://0.0.0.0:0`.
+    #[must_use]
+    pub fn base_url(&self) -> Option<String> {
+        if self.ip == 0 || self.port == 0 {
+            return None;
+        }
+        match self.ip_type {
+            4 => {
+                let v4 = std::net::Ipv4Addr::from(u32::try_from(self.ip).ok()?);
+                Some(format!("http://{v4}:{}", self.port))
+            }
+            6 => {
+                let v6 = std::net::Ipv6Addr::from(self.ip);
+                Some(format!("http://[{v6}]:{}", self.port))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// One recorded `submit_timelocked_weights` invocation (`FakeChain` assertions).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelockedWeightsSubmission {
@@ -188,6 +237,20 @@ pub trait ChainClient {
     ///
     /// Missing subnet or transport failure.
     fn subnet_owner_hotkey(&self, netuid: u16) -> Result<Vec<u8>, ChainError>;
+
+    /// Published axon for one hotkey, or `None` when it never served one.
+    ///
+    /// # Errors
+    ///
+    /// Transport or decode failure.
+    fn axon(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError>;
+
+    /// All published axons on `netuid` as `(hotkey, info)` pairs.
+    ///
+    /// # Errors
+    ///
+    /// Transport or decode failure.
+    fn axons(&self, netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError>;
 
     /// Whether commit-reveal is enabled for `netuid`.
     ///
@@ -341,6 +404,8 @@ pub struct FakeChainConfig {
     pub owner_hotkey: Vec<u8>,
     /// Neuron hotkeys (UID order).
     pub hotkeys: Vec<Vec<u8>>,
+    /// Published axons as `(hotkey, info)`; hotkeys absent here have never served.
+    pub axons: Vec<(Vec<u8>, AxonInfo)>,
     /// Number of subsequent weight submits that should return [`ChainError::RateLimited`].
     pub rate_limit_fails_remaining: u32,
 }
@@ -361,6 +426,7 @@ impl Default for FakeChainConfig {
             blocks_since_last_step: fake_defaults::BLOCKS_SINCE_LAST_STEP,
             owner_hotkey: vec![0xA1; 32],
             hotkeys: vec![vec![0xA1; 32], vec![0xB2; 32], vec![0xC3; 32]],
+            axons: Vec::new(),
             rate_limit_fails_remaining: 0,
         }
     }
@@ -374,6 +440,7 @@ pub struct FakeChain {
     set_weights_log: RefCell<Vec<SetWeightsSubmission>>,
     call_log: RefCell<Vec<ChainCall>>,
     rate_limit_fails_remaining: RefCell<u32>,
+    axons: RefCell<Vec<(Vec<u8>, AxonInfo)>>,
 }
 
 impl FakeChain {
@@ -381,12 +448,14 @@ impl FakeChain {
     #[must_use]
     pub fn new(cfg: FakeChainConfig) -> Self {
         let rate = cfg.rate_limit_fails_remaining;
+        let axons = cfg.axons.clone();
         Self {
             cfg,
             submissions: RefCell::new(Vec::new()),
             set_weights_log: RefCell::new(Vec::new()),
             call_log: RefCell::new(Vec::new()),
             rate_limit_fails_remaining: RefCell::new(rate),
+            axons: RefCell::new(axons),
         }
     }
 
@@ -421,6 +490,15 @@ impl FakeChain {
     #[must_use]
     pub fn call_log(&self) -> Vec<ChainCall> {
         self.call_log.borrow().clone()
+    }
+
+    /// Publish (or overwrite) one hotkey's axon so dispatch paths can be tested.
+    pub fn set_axon(&self, hotkey: &[u8], info: AxonInfo) {
+        let mut axons = self.axons.borrow_mut();
+        match axons.iter_mut().find(|(hk, _)| hk == hotkey) {
+            Some(slot) => slot.1 = info,
+            None => axons.push((hotkey.to_vec(), info)),
+        }
     }
 
     /// Configure remaining synthetic rate-limit failures (tests).
@@ -484,6 +562,25 @@ impl ChainClient for FakeChain {
             return Err(ChainError::Other(format!("unknown netuid {netuid}")));
         }
         Ok(self.cfg.owner_hotkey.clone())
+    }
+
+    fn axon(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+        if netuid != self.cfg.netuid {
+            return Err(ChainError::Other(format!("unknown netuid {netuid}")));
+        }
+        Ok(self
+            .axons
+            .borrow()
+            .iter()
+            .find(|(hk, _)| hk == hotkey)
+            .map(|(_, info)| info.clone()))
+    }
+
+    fn axons(&self, netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+        if netuid != self.cfg.netuid {
+            return Err(ChainError::Other(format!("unknown netuid {netuid}")));
+        }
+        Ok(self.axons.borrow().clone())
     }
 
     fn commit_reveal_enabled(&self, _netuid: u16) -> Result<bool, ChainError> {
@@ -608,6 +705,14 @@ impl ChainClient for NotImplementedChain {
         })
     }
 
+    fn axon(&self, _netuid: u16, _hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+        Err(ChainError::NotImplemented { what: "axon" })
+    }
+
+    fn axons(&self, _netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+        Err(ChainError::NotImplemented { what: "axons" })
+    }
+
     fn commit_reveal_enabled(&self, _netuid: u16) -> Result<bool, ChainError> {
         Err(ChainError::NotImplemented {
             what: "commit_reveal_enabled",
@@ -684,7 +789,7 @@ impl ChainClient for NotImplementedChain {
 
 #[cfg(feature = "live")]
 mod live {
-    use super::{ChainClient, ChainError, Metagraph, WeightsTlockPayload};
+    use super::{AxonInfo, ChainClient, ChainError, Metagraph, WeightsTlockPayload};
     use serde_json::{json, Value};
 
     /// Finney testnet default (same as `metadata/testnet.lock` / config).
@@ -798,6 +903,14 @@ mod live {
             Err(ChainError::NotImplemented {
                 what: "live subnet_owner_hotkey",
             })
+        }
+
+        fn axon(&self, _netuid: u16, _hotkey: &[u8]) -> Result<Option<AxonInfo>, ChainError> {
+            Err(ChainError::NotImplemented { what: "live axon" })
+        }
+
+        fn axons(&self, _netuid: u16) -> Result<Vec<(Vec<u8>, AxonInfo)>, ChainError> {
+            Err(ChainError::NotImplemented { what: "live axons" })
         }
 
         fn commit_reveal_enabled(&self, _netuid: u16) -> Result<bool, ChainError> {
@@ -1120,6 +1233,79 @@ mod tests {
             ChainCall::SubmitTimelocked(s) => panic!("expected SetWeights, got {s:?}"),
         }
         assert!(chain.submissions().is_empty());
+    }
+
+    fn sample_axon(ip: u128, port: u16, ip_type: u8) -> AxonInfo {
+        AxonInfo {
+            block: 4_116_180,
+            version: 9_001_000,
+            ip,
+            port,
+            ip_type,
+            protocol: 4,
+            placeholder1: 0,
+            placeholder2: 0,
+        }
+    }
+
+    #[test]
+    fn s6_axon_base_url_covers_v4_v6_and_unpublished() {
+        // 3717915933 == 221.154.229.29, the shape of a real netuid-1 entry.
+        assert_eq!(
+            sample_axon(3_717_915_933, 8091, 4).base_url().as_deref(),
+            Some("http://221.154.229.29:8091")
+        );
+        // IPv6 must be bracketed so the port parses.
+        assert_eq!(
+            sample_axon(1, 8091, 6).base_url().as_deref(),
+            Some("http://[::1]:8091")
+        );
+        assert_eq!(sample_axon(0, 8091, 4).base_url(), None);
+        assert_eq!(sample_axon(3_717_915_933, 0, 4).base_url(), None);
+        assert_eq!(sample_axon(3_717_915_933, 8091, 5).base_url(), None);
+        // An IPv4-typed axon whose value overflows u32 is not addressable.
+        assert_eq!(sample_axon(u128::from(u64::MAX), 8091, 4).base_url(), None);
+    }
+
+    #[test]
+    fn s6_axon_scale_roundtrip_is_34_bytes() {
+        let a = sample_axon(3_717_915_933, 8091, 4);
+        let encoded = a.encode();
+        assert_eq!(encoded.len(), 8 + 4 + 16 + 2 + 1 + 1 + 1 + 1);
+        assert_eq!(AxonInfo::decode(&mut &encoded[..]).expect("decode"), a);
+    }
+
+    #[test]
+    fn s6_fake_chain_axon_lookup_and_enumeration() {
+        let hk = vec![0xB2; 32];
+        let chain = FakeChain::new(FakeChainConfig {
+            axons: vec![(hk.clone(), sample_axon(3_717_915_933, 8091, 4))],
+            ..FakeChainConfig::default()
+        });
+        let n = fake_defaults::NETUID;
+        let found = chain.axon(n, &hk).expect("axon").expect("published");
+        assert_eq!(found.port, 8091);
+        assert_eq!(chain.axon(n, &[0xC3; 32]).expect("axon"), None);
+        assert_eq!(chain.axons(n).expect("axons").len(), 1);
+
+        chain.set_axon(&[0xC3; 32], sample_axon(1, 9000, 6));
+        assert_eq!(chain.axons(n).expect("axons").len(), 2);
+        chain.set_axon(&hk, sample_axon(3_717_915_933, 7777, 4));
+        assert_eq!(
+            chain.axons(n).expect("axons").len(),
+            2,
+            "overwrite in place"
+        );
+        assert_eq!(
+            chain
+                .axon(n, &hk)
+                .expect("axon")
+                .expect("published")
+                .base_url()
+                .as_deref(),
+            Some("http://221.154.229.29:7777")
+        );
+        assert!(chain.axons(n + 1).is_err());
     }
 
     #[test]

@@ -40,6 +40,7 @@ const TRACKED_CALLS: &[&str] = &[
     "commit_timelocked_weights",
     "commit_timelocked_mechanism_weights",
     "set_subnet_identity",
+    "serve_axon",
 ];
 
 const WEIGHTS_TLOCK_FIELDS: &[&str] = &["hotkey", "uids", "values", "version_key"];
@@ -86,6 +87,7 @@ pub struct CallIndices {
     pub commit_timelocked_weights: CallIndex,
     pub commit_timelocked_mechanism_weights: CallIndex,
     pub set_subnet_identity: CallIndex,
+    pub serve_axon: CallIndex,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -591,6 +593,9 @@ fn resolve_tracked_calls(meta: &MetaView) -> Result<CallIndices, String> {
         set_subnet_identity: map
             .remove("set_subnet_identity")
             .ok_or_else(|| "missing set_subnet_identity".to_owned())?,
+        serve_axon: map
+            .remove("serve_axon")
+            .ok_or_else(|| "missing serve_axon".to_owned())?,
     })
 }
 
@@ -1000,6 +1005,12 @@ mod tests {
                     pallet_index: 7,
                     call: "set_subnet_identity".into(),
                     call_index: 3,
+                },
+                serve_axon: CallIndex {
+                    pallet: "SubtensorModule".into(),
+                    pallet_index: 7,
+                    call: "serve_axon".into(),
+                    call_index: 4,
                 },
             },
             weights_tlock_payload: weights_tlock_shape(),

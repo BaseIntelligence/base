@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+blake2 = "0.10"
 chain = { path = "../chain" }
 crypto = { path = "../crypto" }
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }

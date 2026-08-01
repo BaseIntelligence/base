@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT epoch, revision, payload,\n               (EXTRACT(EPOCH FROM created_at) * 1000000)::bigint AS \"sealed_at_micros!\"\n        FROM epoch_bundle\n        WHERE merkle_root = $1\n        ORDER BY epoch DESC, revision DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "revision",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "sealed_at_micros!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "c806ce8d129df677d56d041bddb92256e04e82db89aee2ef9b455f61c62b8fe4"
+}

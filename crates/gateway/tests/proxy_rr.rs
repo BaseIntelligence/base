@@ -7,8 +7,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chain::FakeChain;
 use gateway::{
-    build_app, CreateBackend, Registry, RegistryConfig, TlsConfig, DEFAULT_FAILURE_THRESHOLD,
+    build_app_with_bundles, CreateBackend, MemoryBundleStore, MemoryRawWeightStore, Registry,
+    RegistryConfig, SharedChain, TlsConfig, DEFAULT_FAILURE_THRESHOLD,
 };
 use telemetry::init_metrics;
 use tokio::net::TcpListener;
@@ -19,7 +21,17 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 async fn spawn_gateway(registry: Arc<Registry>) -> (SocketAddr, oneshot::Sender<()>) {
     let _ = telemetry::init_tracing();
     let metrics = init_metrics().expect("metrics");
-    let app = build_app(metrics, registry, &TlsConfig::default()).expect("router");
+    let chain: SharedChain = Arc::new(validator_sync::SyncChain::new(FakeChain::with_defaults()));
+    let app = build_app_with_bundles(
+        metrics,
+        registry,
+        chain,
+        &TlsConfig::default(),
+        Arc::new(trustroot::ChallengesBody::default()),
+        Arc::new(MemoryRawWeightStore::new()),
+        Arc::new(MemoryBundleStore::new()),
+    )
+    .expect("router");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

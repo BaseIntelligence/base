@@ -14,13 +14,22 @@
 
 #![forbid(unsafe_code)]
 
+mod store;
+
 use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub use sqlx::PgPool;
+pub use store::{
+    count_raw_weights, get_epoch_bundle, get_epoch_bundle_by_root, get_raw_weight,
+    insert_epoch_bundle, insert_raw_weight, latest_bundle_epoch, list_raw_weights_for_epoch,
+    EpochBundleRecord, NewEpochBundle, NewRawWeight, RawWeightRecord,
+};
 
 /// Tables that the application role may insert into but never update.
 pub const APPEND_ONLY_TABLES: &[&str] =

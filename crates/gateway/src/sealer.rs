@@ -12,7 +12,7 @@ use bundle::{
     build_sealed_bundle, EpochBundleV1, LeafV1, LocalTrustRoot, RawWeightBodyV1,
     SealParams as BundleSealParams,
 };
-use chain::{ChainClient, FakeChain, FakeChainConfig};
+use chain::ChainClient;
 use crypto::{KEY_LEN, SIGNATURE_LEN};
 use parity_scale_codec::Decode;
 use parking_lot::RwLock;
@@ -267,7 +267,7 @@ pub struct SealRequest {
     pub epoch: u64,
     /// Optional netuid (defaults to gateway seal context).
     pub netuid: Option<u16>,
-    /// Optional inclusive epoch end block (defaults to seal context tip).
+    /// Optional inclusive epoch end block (defaults to the chain tip).
     pub block_b: Option<u64>,
 }
 
@@ -342,18 +342,21 @@ async fn post_admin_seal(State(st): State<GatewayState>, Json(req): Json<SealReq
         }
     };
     let netuid = req.netuid.unwrap_or(st.seal_netuid);
-    let block_b = req.block_b.unwrap_or(st.seal_current_block.max(10));
-    let mut hotkeys = st.seal_hotkeys.clone();
-    if hotkeys.is_empty() {
-        hotkeys.push(st.seal_owner_hotkey.to_vec());
-    }
-    let chain = FakeChain::new(FakeChainConfig {
-        netuid,
-        owner_hotkey: st.seal_owner_hotkey.to_vec(),
-        hotkeys,
-        current_block: block_b.max(st.seal_current_block).max(10),
-        ..FakeChainConfig::default()
-    });
+    // No `block_b` means "seal at the chain tip"; a stale constant would pin the
+    // metagraph to a block the caller never chose.
+    let block_b = match req.block_b {
+        Some(b) => b,
+        None => match st.chain.current_block() {
+            Ok(b) => b,
+            Err(e) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "error": format!("chain tip unavailable: {e}") })),
+                )
+                    .into_response();
+            }
+        },
+    };
     let params = SealParams {
         epoch: req.epoch,
         netuid,
@@ -362,7 +365,7 @@ async fn post_admin_seal(State(st): State<GatewayState>, Json(req): Json<SealReq
         measurements_digest: st.measurements_digest,
     };
     match seal_epoch(
-        &chain,
+        st.chain.as_ref(),
         st.challenges.as_ref(),
         st.weights.as_ref(),
         st.bundles.as_ref(),

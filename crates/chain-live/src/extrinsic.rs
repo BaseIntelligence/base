@@ -10,6 +10,46 @@ const PALLET_INDEX: u8 = 7;
 const CALL_SET_WEIGHTS: u8 = 0;
 /// Call index for `commit_timelocked_mechanism_weights` (lockfile).
 const CALL_COMMIT_MECHANISM_WEIGHTS: u8 = 118;
+/// Call index for `serve_axon` (lockfile).
+const CALL_SERVE_AXON: u8 = 4;
+
+/// Arguments of `SubtensorModule::serve_axon`, in on-chain order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServeAxonParams {
+    /// Subnet to publish on.
+    pub netuid: u16,
+    /// Bittensor version identifier.
+    pub version: u32,
+    /// Endpoint address as a numeric integer (IPv4 packed into the low 32 bits).
+    pub ip: u128,
+    /// Endpoint TCP port.
+    pub port: u16,
+    /// `4` or `6`; the pallet rejects anything else.
+    pub ip_type: u8,
+    /// TCP:0 or UDP:1.
+    pub protocol: u8,
+    /// Reserved by the pallet.
+    pub placeholder1: u8,
+    /// Reserved by the pallet.
+    pub placeholder2: u8,
+}
+
+impl ServeAxonParams {
+    /// IPv4 endpoint over TCP with all placeholders zeroed.
+    #[must_use]
+    pub fn ipv4(netuid: u16, version: u32, ip: std::net::Ipv4Addr, port: u16) -> Self {
+        Self {
+            netuid,
+            version,
+            ip: u128::from(u32::from(ip)),
+            port,
+            ip_type: 4,
+            protocol: 0,
+            placeholder1: 0,
+            placeholder2: 0,
+        }
+    }
+}
 
 /// Extrinsic era.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +198,52 @@ pub fn commit_timelocked_call(
     payload.encode_to(&mut call);
     reveal_round.encode_to(&mut call);
     call
+}
+
+/// SCALE-encode the `serve_axon` call bytes.
+#[must_use]
+pub fn serve_axon_call(p: &ServeAxonParams) -> Vec<u8> {
+    let mut call = Vec::new();
+    call.push(PALLET_INDEX);
+    call.push(CALL_SERVE_AXON);
+    p.netuid.encode_to(&mut call);
+    p.version.encode_to(&mut call);
+    p.ip.encode_to(&mut call);
+    p.port.encode_to(&mut call);
+    p.ip_type.encode_to(&mut call);
+    p.protocol.encode_to(&mut call);
+    p.placeholder1.encode_to(&mut call);
+    p.placeholder2.encode_to(&mut call);
+    call
+}
+
+/// Build and sign a `serve_axon` extrinsic.
+///
+/// # Errors
+/// Invalid signing key.
+#[allow(clippy::too_many_arguments)]
+pub fn build_and_sign_serve_axon(
+    key: &[u8; 32],
+    nonce: u64,
+    era: &Era,
+    genesis_hash: &[u8; 32],
+    block_hash: &[u8; 32],
+    spec_version: u32,
+    tx_version: u32,
+    params: &ServeAxonParams,
+) -> Result<Vec<u8>, ChainError> {
+    let call = serve_axon_call(params);
+    build_signed_extrinsic(
+        key,
+        era,
+        nonce,
+        0,
+        &call,
+        spec_version,
+        tx_version,
+        genesis_hash,
+        block_hash,
+    )
 }
 
 /// Build and sign a `set_weights` extrinsic.

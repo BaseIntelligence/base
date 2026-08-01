@@ -34,7 +34,7 @@ use telemetry::{init_metrics, init_tracing, TelemetryError};
 use thiserror::Error;
 use tokio::net::TcpListener;
 
-pub use api::GatewayState;
+pub use api::{GatewayState, SharedChain};
 pub use gateway_registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
     DEFAULT_FAILURE_THRESHOLD,
@@ -49,6 +49,11 @@ pub use weights::{
     accept_raw_weight, weights_router, MemoryRawWeightStore, RawWeightAccepted, RawWeightRequest,
     RawWeightRow, RawWeightStore, ScoreOrAbsenceWire, SharedWeightStore, StoreError,
 };
+
+/// Raw-weight and sealed-bundle stores injected by the binary.
+///
+/// Production passes Postgres-backed stores; tests pass the in-memory pair.
+pub type Stores = (SharedWeightStore, SharedBundleStore);
 
 /// Process exit code when configured hotkey ≠ on-chain `SubnetOwnerHotkey`.
 pub const EXIT_MASTER_MISMATCH: u8 = 2;
@@ -68,8 +73,6 @@ pub mod keys {
     pub const COOLDOWN_SECS: &str = "BASE_GATEWAY_COOLDOWN_SECS";
     /// Owner-signed trust root directory (`challenges.toml` + `measurements.toml`).
     pub const TRUST_ROOT_DIR: &str = "BASE_TRUST_ROOT_DIR";
-    /// Comma-separated 64-hex hotkeys for `FakeChain` metagraph (UID order).
-    pub const FAKE_METAGRAPH_HOTKEYS: &str = "BASE_FAKE_METAGRAPH_HOTKEYS";
     /// Gateway bundle-signing mini-secret (64 hex).
     pub const GATEWAY_SK: &str = "BASE_GATEWAY_SK";
     /// Path to gateway mini-secret (32 raw bytes or 64 hex).
@@ -428,30 +431,6 @@ pub fn load_production_trust_root(
     Ok((Arc::new(primary_ch.body.clone()), digest))
 }
 
-/// Parse `BASE_FAKE_METAGRAPH_HOTKEYS` (comma-separated 64-hex). Empty → owner only.
-///
-/// # Errors
-///
-/// Bad hex encoding.
-pub fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, GatewayError> {
-    let Ok(raw) = std::env::var(keys::FAKE_METAGRAPH_HOTKEYS) else {
-        return Ok(vec![owner.to_vec()]);
-    };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(vec![owner.to_vec()]);
-    }
-    let mut out = Vec::new();
-    for part in raw.split(',') {
-        let h = parse_hotkey_hex(part.trim())?;
-        out.push(h.to_vec());
-    }
-    if out.is_empty() {
-        out.push(owner.to_vec());
-    }
-    Ok(out)
-}
-
 /// Build the full application router (health + registry + weights + proxy) without binding.
 ///
 /// Production path loads owner-signed challenges from [`trust_root_dir`].
@@ -462,38 +441,19 @@ pub fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, Ga
 pub fn build_app(
     metrics: metrics_exporter_prometheus::PrometheusHandle,
     registry: Arc<Registry>,
+    chain: SharedChain,
     tls: &TlsConfig,
+    stores: Stores,
 ) -> Result<Router, GatewayError> {
-    // Prefer production trust root; fall back to empty only when dir missing in tests.
-    let (challenges, mdigest) = match load_production_trust_root(3) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "gateway trust root unavailable; empty challenges");
-            (
-                Arc::new(trustroot::ChallengesBody::default()),
-                trustroot::measurements_digest(&trustroot::MeasurementsBody::default()),
-            )
-        }
-    };
-    let owner = std::env::var(keys::HOTKEY)
-        .ok()
-        .and_then(|s| parse_hotkey_hex(&s).ok())
-        .unwrap_or([0u8; 32]);
-    let hotkeys = parse_fake_metagraph_hotkeys(&owner).unwrap_or_else(|_| vec![owner.to_vec()]);
+    // Fail closed: an empty trust root would seal bundles with a default
+    // measurements digest and no challenges. Tests inject one via `build_app_with`.
+    let (challenges, mdigest) = load_production_trust_root(3)?;
     let netuid = std::env::var("BASE_NETUID")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1u16);
     let state = GatewayState::with_parts_seal(
-        registry,
-        challenges,
-        Arc::new(MemoryRawWeightStore::new()),
-        Arc::new(MemoryBundleStore::new()),
-        mdigest,
-        netuid,
-        owner,
-        hotkeys,
-        10_000,
+        registry, chain, challenges, stores.0, stores.1, mdigest, netuid,
     )
     .map_err(GatewayError::HttpClient)?;
     app::build_router(metrics, state, tls)
@@ -507,6 +467,7 @@ pub fn build_app(
 pub fn build_app_with(
     metrics: metrics_exporter_prometheus::PrometheusHandle,
     registry: Arc<Registry>,
+    chain: SharedChain,
     tls: &TlsConfig,
     challenges: Arc<trustroot::ChallengesBody>,
     weights: SharedWeightStore,
@@ -514,6 +475,7 @@ pub fn build_app_with(
     build_app_with_bundles(
         metrics,
         registry,
+        chain,
         tls,
         challenges,
         weights,
@@ -529,12 +491,13 @@ pub fn build_app_with(
 pub fn build_app_with_bundles(
     metrics: metrics_exporter_prometheus::PrometheusHandle,
     registry: Arc<Registry>,
+    chain: SharedChain,
     tls: &TlsConfig,
     challenges: Arc<trustroot::ChallengesBody>,
     weights: SharedWeightStore,
     bundles: SharedBundleStore,
 ) -> Result<Router, GatewayError> {
-    let state = GatewayState::with_parts(registry, challenges, weights, bundles)
+    let state = GatewayState::with_parts(registry, chain, challenges, weights, bundles)
         .map_err(GatewayError::HttpClient)?;
     app::build_router(metrics, state, tls)
 }
@@ -548,14 +511,15 @@ pub fn build_app_with_bundles(
 /// Master mismatch, chain, telemetry, or bind/serve failures.
 pub async fn run_until<F>(
     config: GatewayConfig,
-    chain: &dyn ChainClient,
+    chain: SharedChain,
+    stores: Stores,
     shutdown: F,
 ) -> Result<(), GatewayError>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let registry = Registry::shared(config.registry.clone());
-    run_until_with_registry(config, chain, registry, shutdown).await
+    run_until_with_registry(config, chain, registry, stores, shutdown).await
 }
 
 /// Like [`run_until`] but injects a pre-built registry (tests / DB hydrate).
@@ -565,21 +529,27 @@ where
 /// Same as [`run_until`].
 pub async fn run_until_with_registry<F>(
     config: GatewayConfig,
-    chain: &dyn ChainClient,
+    chain: SharedChain,
     registry: Arc<Registry>,
+    stores: Stores,
     shutdown: F,
 ) -> Result<(), GatewayError>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     // CRITICAL: master-only before any bind (D3).
-    check_master_only(chain, config.netuid, &config.hotkey, config.owner_check)?;
+    check_master_only(
+        chain.as_ref(),
+        config.netuid,
+        &config.hotkey,
+        config.owner_check,
+    )?;
 
     let _ = init_tracing();
     let metrics = init_metrics()?;
     // Prefer registry knobs from config when the shared handle was default-built.
     let _ = &config.registry;
-    let app = build_app(metrics, registry, &config.tls)?;
+    let app = build_app(metrics, registry, chain, &config.tls, stores)?;
 
     let listener = TcpListener::bind(config.listen)
         .await
@@ -609,9 +579,13 @@ where
 /// # Errors
 ///
 /// Same as [`run_until`].
-pub async fn run(config: GatewayConfig, chain: &dyn ChainClient) -> Result<(), GatewayError> {
+pub async fn run(
+    config: GatewayConfig,
+    chain: SharedChain,
+    stores: Stores,
+) -> Result<(), GatewayError> {
     let registry = Registry::shared(config.registry.clone());
-    run_until_with_registry(config, chain, registry, shutdown_signal()).await
+    run_until_with_registry(config, chain, registry, stores, shutdown_signal()).await
 }
 
 async fn shutdown_signal() {
@@ -666,6 +640,7 @@ mod tests {
     use chain::{FakeChain, FakeChainConfig};
     use std::time::Duration;
     use tokio::sync::oneshot;
+    use validator_sync::SyncChain;
 
     fn owner_hotkey() -> [u8; 32] {
         [0xA1; 32]
@@ -673,6 +648,13 @@ mod tests {
 
     fn other_hotkey() -> [u8; 32] {
         [0xB2; 32]
+    }
+
+    fn mem_stores() -> Stores {
+        (
+            Arc::new(MemoryRawWeightStore::new()),
+            Arc::new(MemoryBundleStore::new()),
+        )
     }
 
     /// Test config with the fail-closed owner check, so the D3 refusal path
@@ -755,10 +737,10 @@ mod tests {
         drop(probe);
 
         let listen: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-        let chain = FakeChain::with_defaults();
+        let chain: SharedChain = Arc::new(SyncChain::new(FakeChain::with_defaults()));
         let config = cfg(listen, other_hotkey());
 
-        let err = run_until(config, &chain, async {})
+        let err = run_until(config, chain, mem_stores(), async {})
             .await
             .expect_err("must refuse");
         assert!(
@@ -801,14 +783,19 @@ mod tests {
     async fn run_until_serves_healthz(
         make_cfg: impl FnOnce(SocketAddr, [u8; 32]) -> GatewayConfig,
     ) {
+        // `build_app` fails closed without a trust root; use the committed one.
+        std::env::set_var(
+            keys::TRUST_ROOT_DIR,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config"),
+        );
         let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = reserve.local_addr().unwrap();
         drop(reserve);
 
-        let chain = FakeChain::new(FakeChainConfig {
+        let chain: SharedChain = Arc::new(SyncChain::new(FakeChain::new(FakeChainConfig {
             owner_hotkey: owner_hotkey().to_vec(),
             ..FakeChainConfig::default()
-        });
+        })));
         let config = make_cfg(addr, owner_hotkey());
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -817,7 +804,7 @@ mod tests {
         local
             .run_until(async move {
                 let server = tokio::task::spawn_local(async move {
-                    run_until(config, &chain, async move {
+                    run_until(config, chain, mem_stores(), async move {
                         let _ = shutdown_rx.await;
                     })
                     .await

@@ -27,7 +27,13 @@ services:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
   agent-challenge:
     environment:
+      # Dispatch stays off until a digest-pinned verifier image exists for the
+      # pulled packs: enabling it also needs BASE_VERIFY_IMAGE_MAP (or
+      # BASE_ENVIRONMENT_IMAGE), and the daemon refuses to start without one
+      # rather than emit ungradeable leaves.
       BASE_CHALLENGE_DISPATCH: "0"
+      BASE_NETUID: "541"
+      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
       # Pull the pinned deepagent task packs from HuggingFace on first boot.
       BASE_HF_AUTO_PULL: "1"
       BASE_HF_MAX_PACKS: "9"

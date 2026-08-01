@@ -6,20 +6,26 @@
 //!
 //! # Epoch dispatch driver
 //!
-//! When `BASE_CHALLENGE_DISPATCH=1`, a background tokio task periodically drives
-//! an epoch dispatch: it builds an [`ExpectedSet`] from
-//! `BASE_FAKE_METAGRAPH_HOTKEYS`, runs [`run_epoch_dispatch`] with a stub
-//! [`OperatorDispatchClient`] that declares zero runner capacity (the operator
-//! host is a scoring coordinator, not a pack runner), scores the outcomes with
-//! [`score_map_covering_expected`], signs the leaf set with
-//! [`emit_signed_leaf_set`], and POSTs it via [`submit_signed_leaf_set`].
+//! When `BASE_CHALLENGE_DISPATCH=1`, a background tokio task drives one epoch
+//! per tick, and every input of that tick comes from the chain:
 //!
-//! The epoch number is a CLI/env argument (`BASE_CHALLENGE_EPOCH`, default 0).
-//! The daemon does **not** read the chain for the epoch or the `block_B` pin —
-//! that is a future enhancement. `block_hash` is stamped with a fixed
-//! placeholder until chain-tip epoch integration lands.
+//! 1. [`chainsnap::read_snapshot`] re-reads the epoch, the `block_B` pin, the
+//!    expected set `E` (real uid → hotkey), and each miner's published axon.
+//! 2. [`run_epoch_dispatch`] hands the work to [`dispatch::HttpDispatchClient`],
+//!    which talks HTTP to those axons under signed dispatch auth.
+//! 3. [`grade::grade_outcomes`] runs returned patches through the pack's
+//!    held-out Harbor harness.
+//! 4. [`score_map_covering_expected`] covers all of `E`, [`emit_signed_leaf_set`]
+//!    signs, and [`submit_signed_leaf_set`] POSTs to the gateway.
+//!
+//! Grading is fail-closed: a miner that cannot be graded gets a `NoScore` with
+//! the reason it could not be, never an invented score.
 
 #![forbid(unsafe_code)]
+
+mod chainsnap;
+mod dispatch;
+mod grade;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -31,17 +37,20 @@ use std::time::Duration;
 use agent_challenge::{
     emit_signed_leaf_set, load_challenge_secret, pack_routes, public_key_from_secret,
     run_epoch_dispatch, score_map_covering_expected, submit_signed_leaf_set, ActiveSignerRegistry,
-    AgentV1Challenge, Challenge, EpochDispatchClient, EpochDispatchConfig, ExpectedParticipant,
-    ExpectedSet, GatewayClient, GatewayClientConfig, Hotkey, PackCatalogState, RunnerCapacity,
-    CHALLENGE_ID, DEFAULT_MAX_RETRIES, SCORING_VERSION,
+    AgentV1Challenge, Challenge, EpochDispatchConfig, GatewayClient, GatewayClientConfig,
+    PackCatalogState, CHALLENGE_ID, DEFAULT_MAX_RETRIES, SCORING_VERSION,
 };
-use agent_dispatch::{TaskDescriptorV1, TaskResultV1};
 use agent_pack::PackId;
 use axum::routing::get;
 use axum::Router;
+use chain::ChainClient;
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
-use trustroot::encode_hex;
+use trustroot::{encode_hex, ParticipantPolicy};
+
+use chainsnap::ChainSnapshot;
+use dispatch::HttpDispatchClient;
+use grade::{grade_outcomes, HarborGradeSource};
 
 /// Operator challenge service CLI.
 #[derive(Debug, Parser)]
@@ -99,9 +108,34 @@ struct Cli {
         global = true
     )]
     challenge_epoch_interval_secs: u64,
-    /// Epoch number stamped into dispatch + leaves (no chain read yet).
-    #[arg(long, env = "BASE_CHALLENGE_EPOCH", default_value = "0", global = true)]
-    challenge_epoch: u64,
+    /// Substrate JSON-RPC endpoint the epoch, pin, `E`, and axons are read from.
+    #[arg(
+        long,
+        env = "BASE_CHAIN_ENDPOINT",
+        default_value = config::DEFAULT_CHAIN_ENDPOINT,
+        global = true
+    )]
+    chain_endpoint: String,
+    /// Subnet netuid. Required when dispatch is enabled; there is no safe default.
+    #[arg(long, env = "BASE_NETUID", global = true)]
+    netuid: Option<u16>,
+    /// Docker Engine HTTP base (socket-proxy) used by the held-out verifier.
+    #[arg(long, env = "BASE_DOCKER_BASE", global = true)]
+    docker_base: Option<String>,
+    /// JSON file mapping `pack_id` → digest-pinned verifier image.
+    #[arg(long, env = "BASE_VERIFY_IMAGE_MAP", global = true)]
+    verify_image_map: Option<PathBuf>,
+    /// Verifier image for packs absent from the map (single-pack operators).
+    #[arg(long, env = "BASE_ENVIRONMENT_IMAGE", global = true)]
+    environment_image: Option<String>,
+    /// Staging root for verifier binds.
+    #[arg(
+        long,
+        env = "BASE_VERIFY_WORK_ROOT",
+        default_value = "/var/lib/base/verify",
+        global = true
+    )]
+    verify_work_root: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -130,35 +164,6 @@ impl DispatchState {
             DispatchState::Active => "active",
             DispatchState::Error => "error",
         }
-    }
-}
-
-/// Stub dispatch client for the operator-side challenge daemon.
-///
-/// The operator host is a scoring coordinator, not a pack runner. It declares
-/// **zero** runner capacity, so every miner resolves to
-/// `CapacityExhausted` → `ChallengeInternal` `NoScore`. Real runner integration
-/// replaces this client later (the `run_pack` body is unreachable while capacity
-/// stays zero).
-#[derive(Debug, Clone, Copy, Default)]
-struct OperatorDispatchClient;
-
-impl EpochDispatchClient for OperatorDispatchClient {
-    async fn capacity(&self, _miner: Hotkey) -> RunnerCapacity {
-        RunnerCapacity {
-            max_concurrency: 0,
-            current_load: 0,
-        }
-    }
-
-    async fn run_pack(
-        &self,
-        _miner: Hotkey,
-        _descriptor: TaskDescriptorV1,
-    ) -> Result<TaskResultV1, String> {
-        // Unreachable: capacity() advertises zero slots, so run_epoch_dispatch
-        // short-circuits every miner to CapacityExhausted before calling run_pack.
-        Err("operator dispatch client declares no runner capacity".into())
     }
 }
 
@@ -337,57 +342,6 @@ fn resolve_gateway_endpoint(cli: &Cli) -> String {
     "http://gateway:8080".to_owned()
 }
 
-/// Build an [`ExpectedSet`] from `BASE_FAKE_METAGRAPH_HOTKEYS` (comma-separated
-/// 64-hex hotkeys). `block_hash` is a fixed placeholder — the daemon does not
-/// read the chain yet.
-///
-/// # Errors
-///
-/// Empty env / malformed hotkey hex / wrong byte length.
-fn parse_expected_set_from_env() -> Result<ExpectedSet, String> {
-    let raw = std::env::var("BASE_FAKE_METAGRAPH_HOTKEYS").unwrap_or_default();
-    // Fixed placeholder pin — replaced by chain-tip `block_B` pin later.
-    let mut block_hash = [0u8; 32];
-    block_hash[0] = 0xBD;
-    block_hash[1] = 0xE0;
-    block_hash[2] = 0x0C;
-
-    let mut participants = Vec::new();
-    for (idx, part) in raw
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .enumerate()
-    {
-        let stripped = part
-            .strip_prefix("0x")
-            .or_else(|| part.strip_prefix("0X"))
-            .unwrap_or(part);
-        let bytes =
-            hex::decode(stripped).map_err(|e| format!("invalid hotkey hex '{part}': {e}"))?;
-        let hk: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-            format!(
-                "hotkey must be 32 bytes (64 hex chars), got {} bytes",
-                v.len()
-            )
-        })?;
-        let uid = u16::try_from(idx).unwrap_or(u16::MAX);
-        participants.push(ExpectedParticipant { hotkey: hk, uid });
-    }
-
-    if participants.is_empty() {
-        return Err(
-            "BASE_CHALLENGE_DISPATCH=1 requires BASE_FAKE_METAGRAPH_HOTKEYS (comma-separated 64-hex)"
-                .into(),
-        );
-    }
-
-    Ok(ExpectedSet {
-        block_hash,
-        participants,
-    })
-}
-
 /// Current unix time in milliseconds (best-effort; 0 if the clock is before epoch).
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -395,20 +349,33 @@ fn unix_now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
 }
 
-/// Catalog for dispatch: real pack ids when the catalog is loaded and non-empty,
-/// else a single placeholder (the stub never runs packs, but
-/// [`run_epoch_dispatch`] requires a non-empty catalog for `select_pack`).
-fn dispatch_catalog(pack_state: Option<&Arc<PackCatalogState>>) -> Vec<PackId> {
-    pack_state
-        .and_then(|s| {
-            let ids = s.catalog().pack_ids();
-            if ids.is_empty() {
-                None
-            } else {
-                Some(ids)
-            }
-        })
-        .unwrap_or_else(|| vec![PackId::new("operator-stub")])
+/// Pack ids eligible for dispatch this epoch.
+///
+/// # Errors
+///
+/// Empty or unloaded catalog: without a pack there is nothing to dispatch, and
+/// a placeholder id would only produce ungradeable results.
+fn dispatch_catalog(pack_state: Option<&Arc<PackCatalogState>>) -> Result<Vec<PackId>, String> {
+    let ids = pack_state
+        .map(|s| s.catalog().pack_ids())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err("BASE_CHALLENGE_DISPATCH=1 requires a non-empty pack catalog".into());
+    }
+    Ok(ids)
+}
+
+/// Everything the driver needs that does not change between ticks.
+struct DriverConfig {
+    sk: [u8; 32],
+    pk: [u8; 32],
+    netuid: u16,
+    policy: ParticipantPolicy,
+    catalog: Vec<PackId>,
+    gateway: GatewayClient,
+    signers: Arc<ActiveSignerRegistry>,
+    grade_source: HarborGradeSource,
+    interval: Duration,
 }
 
 /// Wire the background epoch dispatch driver. Returns the shared
@@ -416,9 +383,8 @@ fn dispatch_catalog(pack_state: Option<&Arc<PackCatalogState>>) -> Vec<PackId> {
 ///
 /// # Errors
 ///
-/// Fail-closed when dispatch is enabled but the challenge signing key is
-/// missing/unreadable, the expected set is empty, or the gateway client cannot
-/// be built.
+/// Fail-closed when dispatch is enabled but the challenge signing key, netuid,
+/// pack catalog, docker base, chain connection, or gateway client is missing.
 fn setup_dispatch_driver(
     cli: &Cli,
     pack_state: Option<&Arc<PackCatalogState>>,
@@ -433,8 +399,30 @@ fn setup_dispatch_driver(
         .ok_or("BASE_CHALLENGE_DISPATCH=1 requires BASE_CHALLENGE_SK_FILE")?;
     let sk = load_challenge_secret(sk_path)
         .map_err(|e| format!("dispatch enabled but challenge secret load failed: {e}"))?;
+    let pk = public_key_from_secret(&sk).map_err(|e| format!("challenge public key: {e}"))?;
 
-    let expected = parse_expected_set_from_env()?;
+    let netuid = cli
+        .netuid
+        .ok_or("BASE_CHALLENGE_DISPATCH=1 requires BASE_NETUID")?;
+    let docker_base = cli
+        .docker_base
+        .clone()
+        .ok_or("BASE_CHALLENGE_DISPATCH=1 requires BASE_DOCKER_BASE (grading is not optional)")?;
+    let images = match cli.verify_image_map.as_ref() {
+        Some(p) => HarborGradeSource::load_image_map(p)?,
+        None => BTreeMap::new(),
+    };
+    if images.is_empty() && cli.environment_image.is_none() {
+        return Err(
+            "BASE_CHALLENGE_DISPATCH=1 requires BASE_VERIFY_IMAGE_MAP or BASE_ENVIRONMENT_IMAGE"
+                .into(),
+        );
+    }
+
+    let mut chain = chain_live::LiveChainClient::connect(&cli.chain_endpoint)
+        .map_err(|e| format!("chain connect {}: {e}", cli.chain_endpoint))?;
+    chain.set_netuid(netuid);
+
     let endpoint = resolve_gateway_endpoint(cli);
     let gateway = GatewayClient::new(GatewayClientConfig {
         base_url: endpoint.clone(),
@@ -442,76 +430,100 @@ fn setup_dispatch_driver(
         backoff: Duration::from_millis(50),
     })
     .map_err(|e| format!("gateway client build: {e}"))?;
-    let catalog = dispatch_catalog(pack_state);
-    let signers = ActiveSignerRegistry::new();
+    let catalog = dispatch_catalog(pack_state)?;
     let state = Arc::new(Mutex::new(DispatchState::Idle));
-    let interval = Duration::from_secs(cli.challenge_epoch_interval_secs);
 
     tracing::info!(
         event = "epoch_dispatch_driver_start",
-        epoch = cli.challenge_epoch,
+        netuid,
+        chain = %cli.chain_endpoint,
         interval_secs = cli.challenge_epoch_interval_secs,
-        participants = expected.participants.len(),
         catalog = catalog.len(),
         gateway = %endpoint,
         "epoch dispatch driver enabled"
     );
 
-    tokio::spawn(epoch_dispatch_driver(
+    let cfg = DriverConfig {
         sk,
-        expected,
+        pk,
+        netuid,
+        policy: ParticipantPolicy::AllMetagraphHotkeys,
         catalog,
         gateway,
-        signers,
-        interval,
-        cli.challenge_epoch,
-        Arc::clone(&state),
-    ));
+        signers: ActiveSignerRegistry::new(),
+        grade_source: HarborGradeSource {
+            docker_base,
+            cache_dir: cli.pack_cache_dir.clone(),
+            work_root: cli.verify_work_root.clone(),
+            images,
+            default_image: cli.environment_image.clone(),
+        },
+        interval: Duration::from_secs(cli.challenge_epoch_interval_secs),
+    };
+
+    tokio::spawn(epoch_dispatch_driver(cfg, chain, Arc::clone(&state)));
 
     Ok(Some(state))
 }
 
-/// Run one epoch dispatch + score + sign + submit, returning the leaf count.
+/// Run one epoch dispatch + grade + score + sign + submit, returning the leaf count.
 ///
 /// # Errors
 ///
-/// String describing the first failure (dispatch, emit, or submit).
-async fn run_one_epoch(
-    sk: &[u8; 32],
-    expected: &ExpectedSet,
-    catalog: &[PackId],
-    gateway: &GatewayClient,
-    signers: &Arc<ActiveSignerRegistry>,
-    epoch: u64,
-    deadline: Duration,
-) -> Result<usize, String> {
-    let expected_keys = expected.hotkeys();
+/// String describing the first failure (dispatch, grade join, emit, or submit).
+async fn run_one_epoch(cfg: &DriverConfig, snap: &ChainSnapshot) -> Result<usize, String> {
+    let epoch = snap.pin.epoch;
+    let expected_keys = snap.expected.hotkeys();
+    let deadline = cfg.interval;
     let deadline_unix_ms =
         unix_now_ms().saturating_add(u64::try_from(deadline.as_millis()).unwrap_or(60_000));
 
-    let cfg = EpochDispatchConfig {
+    let dispatch_cfg = EpochDispatchConfig {
         challenge_id: CHALLENGE_ID.to_owned(),
         scoring_version: SCORING_VERSION,
         epoch,
-        expected: expected.clone(),
-        catalog: catalog.to_vec(),
+        expected: snap.expected.clone(),
+        catalog: cfg.catalog.clone(),
         deadline,
         deadline_unix_ms,
     };
 
-    let client = Arc::new(OperatorDispatchClient);
-    let result = run_epoch_dispatch(&cfg, client, signers)
+    let client = Arc::new(HttpDispatchClient::new(
+        snap.endpoints.clone(),
+        cfg.sk,
+        cfg.pk,
+    )?);
+    let result = run_epoch_dispatch(&dispatch_cfg, client, &cfg.signers)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Empty graded map: every CapacityExhausted outcome → ChallengeInternal NoScore.
-    let graded: BTreeMap<[u8; 32], agent_challenge::ScoreOrAbsence> = BTreeMap::new();
+    // Harbor grading is a long blocking Docker run; keep it off the reactor.
+    let (source, expected, endpoints, outcomes) = (
+        cfg.grade_source.clone(),
+        snap.expected.clone(),
+        snap.endpoints.clone(),
+        result.outcomes.clone(),
+    );
+    let graded = tokio::task::spawn_blocking(move || {
+        grade_outcomes(
+            &source,
+            epoch,
+            CHALLENGE_ID,
+            SCORING_VERSION,
+            &expected,
+            &endpoints,
+            &outcomes,
+        )
+    })
+    .await
+    .map_err(|e| format!("grade task: {e}"))?;
+
     let scores = score_map_covering_expected(&expected_keys, &graded, &result.outcomes);
 
-    let leaves = emit_signed_leaf_set(sk, epoch, &expected_keys, &scores)
+    let leaves = emit_signed_leaf_set(&cfg.sk, epoch, &expected_keys, &scores)
         .map_err(|e| format!("emit leaves: {e}"))?;
     let n = leaves.len();
-    submit_signed_leaf_set(gateway, &leaves)
+    submit_signed_leaf_set(&cfg.gateway, &leaves)
         .await
         .map_err(|e| format!("submit leaves: {e}"))?;
     Ok(n)
@@ -524,40 +536,49 @@ fn set_dispatch_state(state: &Mutex<DispatchState>, s: DispatchState) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
 }
 
-/// Eternal epoch dispatch loop: sleep → dispatch → score → sign → submit.
-#[allow(clippy::too_many_arguments)]
-async fn epoch_dispatch_driver(
-    sk: [u8; 32],
-    expected: ExpectedSet,
-    catalog: Vec<PackId>,
-    gateway: GatewayClient,
-    signers: Arc<ActiveSignerRegistry>,
-    interval: Duration,
-    epoch: u64,
+/// Eternal epoch loop: sleep → read chain → dispatch → grade → sign → submit.
+///
+/// The chain snapshot is taken **inside** the loop: epoch, pin, `E`, and axons
+/// all move as the subnet moves.
+async fn epoch_dispatch_driver<C: ChainClient + Send + 'static>(
+    cfg: DriverConfig,
+    chain: C,
     state: Arc<Mutex<DispatchState>>,
 ) {
     loop {
-        tokio::time::sleep(interval).await;
-
+        tokio::time::sleep(cfg.interval).await;
         set_dispatch_state(&state, DispatchState::Active);
+
+        let snap = match chainsnap::read_snapshot(&chain, cfg.netuid, &cfg.policy) {
+            Ok(s) => s,
+            Err(e) => {
+                set_dispatch_state(&state, DispatchState::Error);
+                tracing::warn!(
+                    event = "epoch_chain_snapshot_error",
+                    netuid = cfg.netuid,
+                    error = %e,
+                    "chain snapshot failed; no leaves emitted this tick"
+                );
+                continue;
+            }
+        };
+
         tracing::info!(
             event = "epoch_dispatch_start",
-            epoch,
-            participants = expected.participants.len(),
-            interval_secs = interval.as_secs(),
+            epoch = snap.pin.epoch,
+            block_b = snap.pin.block_b,
+            block_hash = %hex::encode(snap.pin.block_hash),
+            participants = snap.expected.participants.len(),
+            reachable = snap.endpoints.len(),
             "epoch dispatch tick"
         );
 
-        match run_one_epoch(
-            &sk, &expected, &catalog, &gateway, &signers, epoch, interval,
-        )
-        .await
-        {
+        match run_one_epoch(&cfg, &snap).await {
             Ok(leaves) => {
                 set_dispatch_state(&state, DispatchState::Idle);
                 tracing::info!(
                     event = "epoch_dispatch_complete",
-                    epoch,
+                    epoch = snap.pin.epoch,
                     leaves,
                     "epoch dispatch complete"
                 );
@@ -566,7 +587,7 @@ async fn epoch_dispatch_driver(
                 set_dispatch_state(&state, DispatchState::Error);
                 tracing::warn!(
                     event = "epoch_dispatch_error",
-                    epoch,
+                    epoch = snap.pin.epoch,
                     error = %e,
                     "epoch dispatch failed"
                 );

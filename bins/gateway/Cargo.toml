@@ -14,7 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 gateway = { path = "../../crates/gateway" }
-chain = { path = "../../crates/chain" }
+gateway-store-pg = { path = "../../crates/gateway-store-pg" }
+db = { path = "../../crates/db" }
 chain-live = { path = "../../crates/chain-live" }
 config = { path = "../../crates/config" }
 telemetry = { path = "../../crates/telemetry" }

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO epoch_bundle\n            (epoch, revision, protocol_version, block_number, block_hash,\n             metagraph_root, merkle_root, measurements_digest, vector_hash,\n             payload, signature)\n        SELECT $1,\n               COALESCE((SELECT MAX(revision) FROM epoch_bundle WHERE epoch = $1), 0) + 1,\n               $2, $3, $4, $5, $6, $7, $8, $9, $10\n        RETURNING revision,\n                  (EXTRACT(EPOCH FROM created_at) * 1000000)::bigint AS \"sealed_at_micros!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "sealed_at_micros!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "75c9d002d2261b70018962dee7713e50253acb98c78b59d02929fcb27d841e73"
+}

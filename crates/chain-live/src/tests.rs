@@ -2,10 +2,12 @@
 //! Unit tests for chain-live (wiremock + pure fixture tests).
 
 use crate::{
-    commit_timelocked_call, decode_bool, decode_double_map_k2, decode_hotkey, decode_metagraph,
-    decode_u16, decode_u64, decode_vec_vec_u8, set_weights_call, storage_double_map_key_u16_u16,
-    storage_double_map_prefix_u16, storage_key, storage_map_key_twox64, storage_map_key_u16,
-    ChainClient, ChainError, Era, LiveChainClient, WeightsTlockPayload,
+    commit_timelocked_call, decode_axon_info, decode_bool, decode_double_map_account_k2,
+    decode_double_map_k2, decode_hotkey, decode_metagraph, decode_u16, decode_u64,
+    decode_vec_vec_u8, serve_axon_call, set_weights_call, storage_double_map_key_u16_account,
+    storage_double_map_key_u16_u16, storage_double_map_prefix_u16, storage_key,
+    storage_map_key_twox64, storage_map_key_u16, ChainClient, ChainError, Era, LiveChainClient,
+    ServeAxonParams, WeightsTlockPayload,
 };
 use parity_scale_codec::Encode;
 use serde_json::json;
@@ -663,6 +665,103 @@ async fn mock_metagraph_at() {
 }
 
 // ---------------------------------------------------------------------------
+// Axons: storage key, value decode, serve_axon call
+// ---------------------------------------------------------------------------
+
+/// A real netuid-1 axon entry, captured from testnet via `substrateinterface`.
+///
+/// `Axons(1, 5Gui9iTEmkGcDUqYMM8V2jhGTuudoZYGKNM3FZSaG53rCJTa)`.
+const AXON_HOTKEY_HEX: &str = "d650f2b10830144abe932c82d01bdc359fb6461c4d9ed6527b83aa197d75e90f";
+const AXON_KEY_HEX: &str = "658faa385070e074c85bf6b568cf0555b4e0c7b1d5f74994fcd58c28ab601fec\
+01000462dd252e492bb60bcd4be55cc02581\
+d650f2b10830144abe932c82d01bdc359fb6461c4d9ed6527b83aa197d75e90f";
+const AXON_VALUE_HEX: &str = "d4ce3e0000000000285889001de59add0000000000000000000000009b1f04040000";
+
+fn axon_hotkey() -> [u8; 32] {
+    let bytes = hex::decode(AXON_HOTKEY_HEX).expect("hotkey hex");
+    bytes.try_into().expect("32 bytes")
+}
+
+/// `Axons` uses `Blake2_128Concat` on the hotkey, unlike the all-`Identity`
+/// per-netuid maps. Locked to the key `substrateinterface` produced for the
+/// same `(netuid, hotkey)` pair against live testnet.
+#[test]
+fn axons_storage_key_matches_substrateinterface() {
+    let key = storage_double_map_key_u16_account("SubtensorModule", "Axons", 1, &axon_hotkey());
+    assert_eq!(hex::encode(&key), AXON_KEY_HEX);
+    // Twox128 ++ Twox128 ++ netuid ++ blake2_128 ++ AccountId32.
+    assert_eq!(key.len(), 16 + 16 + 2 + 16 + 32);
+    // The enumeration prefix must be a prefix of the full key.
+    let prefix = storage_double_map_prefix_u16("SubtensorModule", "Axons", 1);
+    assert_eq!(&key[..prefix.len()], &prefix[..]);
+}
+
+#[test]
+fn axons_key_round_trips_the_hotkey() {
+    let hk = axon_hotkey();
+    let key = storage_double_map_key_u16_account("SubtensorModule", "Axons", 1, &hk);
+    assert_eq!(decode_double_map_account_k2(&key).expect("k2"), hk.to_vec());
+    assert!(decode_double_map_account_k2(&key[..40]).is_err());
+}
+
+#[test]
+fn axon_info_decodes_live_testnet_value() {
+    let raw = hex::decode(AXON_VALUE_HEX).expect("value hex");
+    let axon = decode_axon_info(&raw).expect("decode AxonInfo");
+    assert_eq!(axon.block, 4_116_180);
+    assert_eq!(axon.version, 9_001_000);
+    assert_eq!(axon.ip, 3_717_915_933);
+    assert_eq!(axon.port, 8091);
+    assert_eq!(axon.ip_type, 4);
+    assert_eq!(axon.protocol, 4);
+    assert_eq!(axon.placeholder1, 0);
+    assert_eq!(axon.placeholder2, 0);
+    assert_eq!(
+        axon.base_url().as_deref(),
+        Some("http://221.154.229.29:8091")
+    );
+}
+
+/// `serve_axon` is `SubtensorModule` (pallet 7) call index 4, args in the order
+/// `netuid, version, ip, port, ip_type, protocol, placeholder1, placeholder2`
+/// (testnet metadata `get_metadata_call_function('SubtensorModule','serve_axon')`).
+#[test]
+fn serve_axon_call_encodes_pallet_7_call_4() {
+    let params = ServeAxonParams::ipv4(541, 9_012_002, std::net::Ipv4Addr::new(1, 2, 3, 4), 8091);
+    let call = serve_axon_call(&params);
+    let mut want = vec![7_u8, 4];
+    541_u16.encode_to(&mut want);
+    9_012_002_u32.encode_to(&mut want);
+    u128::from(u32::from_be_bytes([1, 2, 3, 4])).encode_to(&mut want);
+    8091_u16.encode_to(&mut want);
+    want.extend_from_slice(&[4, 0, 0, 0]);
+    assert_eq!(call, want);
+    assert_eq!(call.len(), 2 + 2 + 4 + 16 + 2 + 4);
+}
+
+#[test]
+fn serve_axon_extrinsic_is_signed_and_carries_the_call() {
+    let params = ServeAxonParams::ipv4(541, 9_012_002, std::net::Ipv4Addr::new(1, 2, 3, 4), 8091);
+    let ext = crate::build_and_sign_serve_axon(
+        &[7_u8; 32],
+        0,
+        &Era::Immortal,
+        &[0x11; 32],
+        &[0x11; 32],
+        440,
+        1,
+        &params,
+    )
+    .expect("sign");
+    assert_eq!(ext[0], 0x84, "V4 signed extrinsic");
+    let call = serve_axon_call(&params);
+    assert!(
+        ext.ends_with(&call),
+        "signed extrinsic must end with the call bytes"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Live testnet (ignored — requires network)
 // ---------------------------------------------------------------------------
 
@@ -783,4 +882,85 @@ async fn testnet_absent_subnet_errors() {
     .expect_err("absent subnet must error");
     let msg = err.to_string();
     assert!(msg.contains("SubnetOwnerHotkey"), "unexpected: {msg}");
+}
+
+/// Netuid 1 has thousands of served axons; a wrong hasher yields an empty set.
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_netuid1_axons_enumerate() {
+    let axons = tokio::task::spawn_blocking(|| {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.enumerate_axons(1))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("enumerate axons");
+    assert!(!axons.is_empty(), "netuid 1 must have served axons");
+    let reachable = axons.iter().filter(|(_, a)| a.base_url().is_some()).count();
+    println!(
+        "netuid 1: {} axons, {reachable} with a reachable base_url",
+        axons.len()
+    );
+    for (hk, axon) in axons.iter().take(3) {
+        println!("  {} -> {:?} {:?}", hex::encode(hk), axon, axon.base_url());
+    }
+    assert!(reachable > 0, "at least one axon must publish ip+port");
+    for (hk, axon) in &axons {
+        assert_eq!(hk.len(), 32, "axon key must be a 32-byte AccountId");
+        assert!(
+            axon.ip_type == 4 || axon.ip_type == 6,
+            "unexpected ip_type {} for {}",
+            axon.ip_type,
+            hex::encode(hk)
+        );
+    }
+}
+
+/// Our subnet has neurons but nobody has served an axon yet: empty, not an error.
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_541_axons_empty_without_error() {
+    let axons = tokio::task::spawn_blocking(|| {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.enumerate_axons(OUR_NETUID))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("enumerate axons must not error on an empty map");
+    println!("netuid {OUR_NETUID}: {} axons {axons:?}", axons.len());
+    for (hk, axon) in &axons {
+        assert_eq!(hk.len(), 32);
+        assert!(axon.ip_type == 4 || axon.ip_type == 6);
+    }
+}
+
+/// The single-key read must return exactly what `substrateinterface` decoded
+/// for the same `(netuid, hotkey)` — the fixture in [`AXON_VALUE_HEX`].
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_single_axon_read_matches_reference() {
+    let hk = axon_hotkey();
+    let live = tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.read_axon(1, &hk))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("read_axon")
+    .expect("hotkey must have a served axon");
+    let reference = decode_axon_info(&hex::decode(AXON_VALUE_HEX).expect("hex")).expect("decode");
+    println!("live      : {live:?} url={:?}", live.base_url());
+    println!("reference : {reference:?} url={:?}", reference.base_url());
+    // `block`/`version` advance whenever the miner re-serves; the endpoint is
+    // the part the operator dispatches to, so compare that exactly.
+    assert_eq!(live.ip, reference.ip);
+    assert_eq!(live.port, reference.port);
+    assert_eq!(live.ip_type, reference.ip_type);
+    assert_eq!(live.base_url(), reference.base_url());
+
+    // An unregistered hotkey on the same netuid must be absent, not defaulted.
+    let absent = tokio::task::spawn_blocking(|| {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.read_axon(1, &[0xEE_u8; 32]))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("read_axon");
+    assert_eq!(absent, None);
 }
