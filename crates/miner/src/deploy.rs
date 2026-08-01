@@ -15,10 +15,11 @@ use crate::template::{
     RECEIPT_SK_HEX_ENV,
 };
 
-/// Default digest-pinned agent image (digest from the images CI run for 5a906ffa,
-/// the first runtime-base that creates the pack root the CVM mounts over).
+/// Default digest-pinned agent image (digest from the images CI run for 915a824a,
+/// the first runner build that hosts a real agent command and stages sibling
+/// container binds where the daemon can see them).
 pub const DEFAULT_AGENT_IMAGE: &str =
-    "ghcr.io/baseintelligence/base/base-agent@sha256:7ea4ddda065724b2a0394097c12f127979817d3663dc93939485b96eccd752cb";
+    "ghcr.io/baseintelligence/base/base-agent@sha256:82203580ab8e8c09fa2060229f4ae800d0a8676bae0e3109e495eb7067055d09";
 /// Default digest-pinned attest-helper image.
 pub const DEFAULT_ATTEST_HELPER_IMAGE: &str =
     "ghcr.io/baseintelligence/base/base-attest-helper@sha256:7fe62eadb9e7f48f63c81586ec5e152626882d9f649e0def8dcb0f2dd847501e";

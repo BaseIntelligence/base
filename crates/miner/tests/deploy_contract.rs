@@ -563,7 +563,7 @@ fn template_input_includes_socket_proxy_image() {
 /// The compose-hash printed here is what an owner signs into
 /// `config/measurements.toml` before any miner deploys, so it has to equal the
 /// value Phala measures. Pinned against the tuple the v3 CVM cycle renders
-/// from: agent image `7ea4ddda0657…`, name `base-miner-541-v3`. Hardware
+/// from: agent image `82203580ab8e…`, name `base-miner-541-v3`. Hardware
 /// confirmation lands with the v3 deploy; every earlier build's pin
 /// (`f3dd0224a37f…`, `6548b5062dbf…`) matched its hardware `mr_config_id`
 /// byte-for-byte at deploy time.
@@ -581,7 +581,7 @@ fn offline_hash_equals_the_hash_phala_records() {
     };
     let result = deploy_or_dry_run(&params).expect("render");
     assert_eq!(
-        result.compose_hash_hex, "f6ddd2d07ec9ae6c3f25f6f3c37bb8668b038005b2dd20f5e5da820c899a5da0",
+        result.compose_hash_hex, "c842fca4ebf8b5ba4302cc10384be7ffa3335ec4dfe60ec9c390d75b86ff059e",
         "renderer drifted from the tuple recorded for the v3 cycle"
     );
 }
