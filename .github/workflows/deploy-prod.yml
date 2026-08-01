@@ -134,6 +134,13 @@ jobs:
           test -n "$h" || { echo "missing host secret for ${{ matrix.role }}"; exit 1; }
           echo "value=$h" >> "$GITHUB_OUTPUT"
 
+      - name: Open firewall for this runner
+        id: fw
+        uses: ./.github/actions/do-firewall
+        with:
+          action: open
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
       - name: Deploy
         run: |
           set -euo pipefail
@@ -170,3 +177,12 @@ jobs:
                sleep 5; \
              done; \
              echo "validator health: FAILED"; exit 1'
+
+      - name: Close firewall for this runner
+        if: always() && steps.fw.outputs.ip != ''
+        uses: ./.github/actions/do-firewall
+        with:
+          action: close
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          ip: ${{ steps.fw.outputs.ip }}
+          firewall-id: ${{ steps.fw.outputs.firewall-id }}

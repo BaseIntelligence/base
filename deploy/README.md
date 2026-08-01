@@ -149,6 +149,22 @@ Age delivery helpers:
 
 See [`terraform/README.md`](./terraform/README.md) for apply steps and R11 notes.
 
+### SSH access from CI
+
+The `base-hosts` firewall allows port 22 from the operator IP only. GitHub
+runners get ephemeral Azure addresses that cannot be allowlisted ahead of time,
+so the deploy jobs use [`.github/actions/do-firewall`](../.github/actions/do-firewall):
+it adds an inbound rule for the runner's own `/32`, and an `if: always()` step
+removes exactly that rule afterwards. Port 22 is closed to the world at rest.
+
+This needs a `DIGITALOCEAN_TOKEN` repository secret. Two caveats:
+
+- A runner killed between the two steps leaves its `/32` behind. Audit with
+  `doctl compute firewall get base-hosts` and delete anything that is not the
+  operator IP.
+- `terraform apply` rewrites the firewall's whole rule set, so it will drop a
+  live ephemeral rule. Do not apply Terraform while a deploy is running.
+
 ## Test-only: evil-gateway profile (task 48)
 
 **Never enable in production.** Adversarial staging harness:

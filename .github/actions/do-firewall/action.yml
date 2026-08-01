@@ -1,0 +1,83 @@
+name: DigitalOcean firewall hole
+description: >
+  Open or close port 22 on a DigitalOcean firewall for the runner's own public
+  IP. Droplets keep SSH closed to everything but the operator IP; runners get
+  an ephemeral /32 that the caller closes again with `if: always()`.
+
+inputs:
+  action:
+    description: "open or close"
+    required: true
+  token:
+    description: DigitalOcean API token
+    required: true
+  firewall-name:
+    description: Firewall to modify
+    required: false
+    default: base-hosts
+  ip:
+    description: "IP to close (close only; ignored on open)"
+    required: false
+    default: ""
+  firewall-id:
+    description: "Firewall id (close only; avoids a second lookup)"
+    required: false
+    default: ""
+
+outputs:
+  ip:
+    description: The runner IP that was allowed
+    value: ${{ steps.run.outputs.ip }}
+  firewall-id:
+    description: Resolved firewall id
+    value: ${{ steps.run.outputs.firewall-id }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        DO_TOKEN: ${{ inputs.token }}
+        DO_ACTION: ${{ inputs.action }}
+        DO_FW_NAME: ${{ inputs.firewall-name }}
+        DO_IP: ${{ inputs.ip }}
+        DO_FW_ID: ${{ inputs.firewall-id }}
+      run: |
+        set -euo pipefail
+        test -n "$DO_TOKEN" || { echo "missing DigitalOcean token"; exit 1; }
+
+        if [[ "$DO_ACTION" == "open" ]]; then
+          ip=$(curl -fsS --retry 3 https://api.ipify.org)
+          [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "could not determine runner IP: '$ip'"; exit 1; }
+        else
+          ip="$DO_IP"
+          [[ -n "$ip" ]] || { echo "close requires an ip"; exit 1; }
+        fi
+
+        if [[ -n "$DO_FW_ID" ]]; then
+          fwid="$DO_FW_ID"
+        else
+          fwid=$(curl -fsS -H "Authorization: Bearer ${DO_TOKEN}" \
+            "https://api.digitalocean.com/v2/firewalls?per_page=200" \
+            | DO_FW_NAME="$DO_FW_NAME" python3 -c 'import json,os,sys; n=os.environ["DO_FW_NAME"]; m=[f["id"] for f in json.load(sys.stdin)["firewalls"] if f["name"]==n]; sys.exit("no firewall named "+n) if not m else print(m[0])')
+        fi
+
+        [[ "$DO_ACTION" == "open" ]] && verb=POST || verb=DELETE
+        code=$(curl -sS -o /tmp/do-fw.json -w '%{http_code}' -X "$verb" \
+          -H "Authorization: Bearer ${DO_TOKEN}" \
+          -H "Content-Type: application/json" \
+          "https://api.digitalocean.com/v2/firewalls/${fwid}/rules" \
+          -d "{\"inbound_rules\":[{\"protocol\":\"tcp\",\"ports\":\"22\",\"sources\":{\"addresses\":[\"${ip}/32\"]}}]}")
+        if [[ "$code" != "204" ]]; then
+          echo "firewall $DO_ACTION failed http=$code $(cat /tmp/do-fw.json)"
+          exit 1
+        fi
+
+        echo "ip=$ip" >> "$GITHUB_OUTPUT"
+        echo "firewall-id=$fwid" >> "$GITHUB_OUTPUT"
+        echo "firewall $DO_ACTION: 22 for ${ip}/32 on ${fwid}"
+
+        # The DO edge needs a moment before the first connection.
+        [[ "$DO_ACTION" == "open" ]] && sleep 10 || true
