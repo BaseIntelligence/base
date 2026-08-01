@@ -560,13 +560,16 @@ fn template_input_includes_socket_proxy_image() {
 
 /// The compose-hash printed here is what an owner signs into
 /// `config/measurements.toml` before any miner deploys, so it has to equal the
-/// value Phala measures. Pinned against the live CVM `base-miner-541`
-/// (`app_id` `340ead2af2ff1d950d47a6fae0ffa473854b5d96`): its hardware
-/// `mr_config_id` carries `01 || this hash || 15 zero bytes`.
+/// value Phala measures. Pinned against the live CVM `base-miner-541-v2`
+/// (`app_id` `5b11f1a95ea5cab43243d8a48826228179dc97cf`): the Phala API records
+/// this hash for that app, and its hardware `mr_config_id` carries
+/// `01 || this hash || 15 zero bytes`. The same property was established for
+/// the first build, `base-miner-541` (`f3dd0224a37f…`), whose measurement is
+/// revoked in `config/measurements.toml`.
 #[test]
 fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
     let params = DeployParams {
-        name: "base-miner-541".into(),
+        name: "base-miner-541-v2".into(),
         netuid: 541,
         launch_token_hash: "8070605dc9b99dd5ad90f2bc8eed7aef29f76fe07139e3b3eb4a59fad4189957"
             .into(),
@@ -577,8 +580,23 @@ fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
     };
     let result = deploy_or_dry_run(&params).expect("render");
     assert_eq!(
-        result.compose_hash_hex, "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a",
+        result.compose_hash_hex, "6548b5062dbfa96eb9be3e9a41d0f0e12bcdb8883b72e2f7cd5a387fa3e69abd",
         "renderer drifted from the app-compose Phala actually measured"
+    );
+
+    // The revoked first build still renders to its own recorded hash under its
+    // own image pin, so the assertion above is load-bearing, not a tautology.
+    let legacy = DeployParams {
+        name: "base-miner-541".into(),
+        agent_image: "ghcr.io/baseintelligence/base/base-agent@sha256:d8f7722896156f0f3dda0c50f0f6897f93b6442dfc9d85d8a8c675a50c81216f".into(),
+        ..params
+    };
+    assert_eq!(
+        deploy_or_dry_run(&legacy)
+            .expect("render legacy")
+            .compose_hash_hex,
+        "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a",
+        "the revoked build must keep rendering to its recorded hash"
     );
 }
 
