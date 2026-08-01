@@ -356,19 +356,9 @@ fn resolve_gateway_endpoint(cli: &Cli) -> String {
 ///
 /// Unreadable or empty `database_url_file`.
 fn resolve_database_url() -> Result<Option<String>, String> {
-    let cfg = config::load().map_err(|e| e.to_string())?;
-    if let Some(url) = cfg.database_url.as_ref() {
-        return Ok(Some(url.clone()));
-    }
-    let Some(path) = cfg.database_url_file.as_ref() else {
-        return Ok(None);
-    };
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let trimmed = raw.trim().to_owned();
-    if trimmed.is_empty() {
-        return Err("database_url_file is empty".into());
-    }
-    Ok(Some(trimmed))
+    let env = config::base_env_from_process();
+    config::database_url_from(config::resolve_toml_path(&env).as_deref(), &env)
+        .map_err(|e| e.to_string())
 }
 
 /// Current unix time in milliseconds (best-effort; 0 if the clock is before epoch).

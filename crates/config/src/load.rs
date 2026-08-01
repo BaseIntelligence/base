@@ -391,6 +391,53 @@ pub fn load_from(
     builder.finish().map_err(Error::Validation)
 }
 
+/// Resolve only the control-plane database URL from the usual layers.
+///
+/// Challenge daemons persist to the same Postgres as the nodes but are not
+/// nodes themselves, so they have no [`Role`](crate::Role) to declare. Going
+/// through [`load_from`] just to read a URL would make them fail on a field
+/// that does not apply to them.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when `database_url_file` cannot be read or is
+/// empty. A missing URL is not an error, it is `Ok(None)`.
+pub fn database_url_from(
+    toml_path: Option<&Path>,
+    env: &BTreeMap<String, String>,
+) -> Result<Option<String>, Error> {
+    let mut builder = Builder::default();
+    if let Some(path) = toml_path {
+        if let Ok(layer) = layer_from_toml_path(path) {
+            builder.apply_layer(layer);
+        }
+    }
+    builder.apply_env_map(env);
+    if let Some(url) = builder.database_url {
+        return Ok(Some(url));
+    }
+    let Some(path) = builder.database_url_file else {
+        return Ok(None);
+    };
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| db_file_error(format!("read {}: {e}", path.display())))?;
+    let trimmed = raw.trim().to_owned();
+    if trimmed.is_empty() {
+        return Err(db_file_error("file is empty".to_owned()));
+    }
+    Ok(Some(trimmed))
+}
+
+fn db_file_error(reason: String) -> Error {
+    let issues = vec![Issue::InvalidValue {
+        field: "database_url_file",
+        reason,
+    }];
+    Error::Validation(
+        ValidationReport::from_issues(issues).unwrap_or_else(ValidationReport::invariant_violation),
+    )
+}
+
 /// Load from defaults, optional TOML string, and env map (filesystem-free tests).
 ///
 /// # Errors

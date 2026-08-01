@@ -20,10 +20,10 @@ mod role;
 
 pub use error::{Error, Issue, ValidationReport};
 pub use load::{
-    base_env_from_process, keys, load, load_from, load_from_toml_str, resolve_toml_path,
-    DEFAULT_CHAIN_ENDPOINT, DEFAULT_EPOCH_LENGTH, DEFAULT_MAX_COLLATERAL_AGE_SECS,
-    DEFAULT_MIN_PEER_SAMPLE, DEFAULT_MIN_SHARE_MASS_BPS, DEFAULT_ROTATION_EPOCHS,
-    MAX_SHARE_MASS_BPS,
+    base_env_from_process, database_url_from, keys, load, load_from, load_from_toml_str,
+    resolve_toml_path, DEFAULT_CHAIN_ENDPOINT, DEFAULT_EPOCH_LENGTH,
+    DEFAULT_MAX_COLLATERAL_AGE_SECS, DEFAULT_MIN_PEER_SAMPLE, DEFAULT_MIN_SHARE_MASS_BPS,
+    DEFAULT_ROTATION_EPOCHS, MAX_SHARE_MASS_BPS,
 };
 pub use netuid::{NetUid, ParseNetUidError};
 pub use role::{ParseRoleError, Role};
@@ -328,5 +328,30 @@ domain = "ignored-for-updater.example"
         let cfg = load_from(Some(&path), &BTreeMap::new()).expect("file load");
         assert_eq!(cfg.role, Role::Updater);
         assert_eq!(cfg.netuid.get(), 5);
+    }
+
+    /// The challenge daemons persist to Postgres but have no [`Role`], so
+    /// asking them for one just to locate the database made dispatch
+    /// impossible to enable with the shipped compose.
+    #[test]
+    fn database_url_resolves_without_a_role() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            keys::DATABASE_URL.to_owned(),
+            "postgres://base@db/base".to_owned(),
+        );
+        assert!(load_from(None, &env).is_err(), "role is still required");
+        assert_eq!(
+            database_url_from(None, &env).expect("resolve"),
+            Some("postgres://base@db/base".to_owned())
+        );
+    }
+
+    #[test]
+    fn database_url_is_absent_rather_than_an_error_when_unset() {
+        assert_eq!(
+            database_url_from(None, &BTreeMap::new()).expect("resolve"),
+            None
+        );
     }
 }
