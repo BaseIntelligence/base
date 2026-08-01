@@ -91,6 +91,11 @@ struct DeployArgs {
     /// Path to `phala` binary.
     #[arg(long, default_value = "phala", env = "BASE_PHALA_BIN")]
     phala_bin: PathBuf,
+    /// Pin deployment to a specific Phala node id (placement only; auto-selected
+    /// when omitted). Useful when the auto-selected node never materialises
+    /// containers, as prod9 proved on 2026-08-01.
+    #[arg(long, env = "BASE_PHALA_NODE_ID")]
+    node_id: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -240,6 +245,7 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
         no_deploy: _,
         deploy,
         phala_bin,
+        node_id,
     } = args;
     let mode = if deploy {
         DeployMode::Deploy
@@ -274,6 +280,7 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
         mode,
         out_compose: out,
         phala_bin,
+        phala_node_id: node_id,
         ..DeployParams::default()
     };
     let result = deploy_or_dry_run(&params).map_err(|e| e.to_string())?;

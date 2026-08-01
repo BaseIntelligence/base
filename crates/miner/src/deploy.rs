@@ -124,6 +124,9 @@ pub struct DeployParams {
     pub out_compose: Option<PathBuf>,
     /// `phala` binary (default `phala` on PATH).
     pub phala_bin: PathBuf,
+    /// Optional Phala node id passed to `phala deploy --node-id` (placement
+    /// only; auto-selected when unset).
+    pub phala_node_id: Option<String>,
 }
 
 impl Default for DeployParams {
@@ -148,6 +151,7 @@ impl Default for DeployParams {
             mode: DeployMode::NoDeploy,
             out_compose: None,
             phala_bin: PathBuf::from("phala"),
+            phala_node_id: None,
         }
     }
 }
@@ -397,6 +401,9 @@ pub struct PhalaDeployInvocation<'a> {
     pub env_file: &'a Path,
     /// CVM display name.
     pub name: &'a str,
+    /// Optional Phala node id (placement only; not part of the measured
+    /// compose, so it cannot change the hash the owner signs).
+    pub node_id: Option<&'a str>,
 }
 
 /// Write the CLI inputs to temp files, deploy, then shred the secret env file.
@@ -437,6 +444,7 @@ fn run_phala_deploy_with_secrets(
         })
         .and_then(|()| {
             run_phala_deploy(&PhalaDeployInvocation {
+                node_id: params.phala_node_id.as_deref(),
                 phala_bin: &params.phala_bin,
                 docker_compose: &compose_path,
                 pre_launch_script: &script_path,
@@ -463,18 +471,23 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), DeployError> {
 /// error, because `--pre-launch-script` and `-e` name files holding secrets.
 pub fn run_phala_deploy(inv: &PhalaDeployInvocation<'_>) -> Result<(), DeployError> {
     let phala_bin = inv.phala_bin;
+    let mut argv = vec![
+        "deploy".to_owned(),
+        "--name".to_owned(),
+        inv.name.to_owned(),
+        "-c".to_owned(),
+        inv.docker_compose.display().to_string(),
+        "--pre-launch-script".to_owned(),
+        inv.pre_launch_script.display().to_string(),
+        "-e".to_owned(),
+        inv.env_file.display().to_string(),
+    ];
+    if let Some(node) = inv.node_id {
+        argv.push("--node-id".to_owned());
+        argv.push(node.to_owned());
+    }
     let output = Command::new(phala_bin)
-        .args([
-            "deploy",
-            "--name",
-            inv.name,
-            "-c",
-            &inv.docker_compose.display().to_string(),
-            "--pre-launch-script",
-            &inv.pre_launch_script.display().to_string(),
-            "-e",
-            &inv.env_file.display().to_string(),
-        ])
+        .args(&argv)
         .output()
         .map_err(|e| {
             DeployError::Phala(format!(
