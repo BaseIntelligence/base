@@ -180,3 +180,60 @@ jobs:
           name: base-image-digests-${{ github.sha }}
           path: deploy/digests/${{ github.sha }}.json
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Make GHCR packages public so unauthenticated / Phala pulls work. Lives here
+  # rather than in ghcr-public.yml because a `workflow_run` trigger is only read
+  # from the default branch (main) and these workflows live on dev.
+  # ---------------------------------------------------------------------------
+  ghcr-public:
+    needs: merge-digests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set package visibility public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # Nested image names: ghcr.io/<owner>/base/<suffix> → package name "base/<suffix>"
+          pkgs=(
+            "base/base-agent"
+            "base/base-attest-helper"
+            "base/gateway"
+            "base/validator"
+            "base/updater"
+            "base/agent-challenge"
+            "base/hypertraining-challenge"
+            "base/prism-challenge"
+          )
+          ok=0
+          # First list packages to Learn exact names (debug)
+          curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/orgs/${OWNER}/packages?package_type=container&per_page=100" \
+            | tee /tmp/pkg-list.json | head -c 2000 || true
+          echo
+          for pkg in "${pkgs[@]}"; do
+            enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$pkg")
+            code=$(curl -sS -o "/tmp/vis-${enc}.json" -w "%{http_code}" \
+              -X PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/${enc}/visibility" \
+              -d '{"visibility":"public"}' || true)
+            echo "pkg=${pkg} http=${code} body=$(head -c 200 /tmp/vis-${enc}.json || true)"
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+              ok=$((ok + 1))
+            fi
+          done
+          echo "publicized_ok=${ok}/${#pkgs[@]}"
+          # Soft fail while packages may not exist yet on first base build
+          if [ "$ok" -lt 1 ]; then
+            echo "WARNING: no packages publicized yet (may be missing until images run)"
+            exit 0
+          fi

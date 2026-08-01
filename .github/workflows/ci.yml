@@ -60,3 +60,94 @@ jobs:
 
       - name: xtask external-docs-check
         run: cargo run -p xtask -- external-docs-check
+
+      - name: clippy with dcap feature (release path)
+        run: cargo clippy -p validator-bin --features dcap --all-targets -- -D warnings
+
+      - name: compose matrix assertions
+        run: bash deploy/scripts/assert-compose-matrix.sh
+
+  # ---------------------------------------------------------------------------
+  # Auto-deploy staging. Lives here rather than in deploy-staging.yml because a
+  # `workflow_run` trigger is only read from the default branch (main), and
+  # these workflows live on dev. `needs: ci` keeps the CI-green ordering.
+  # deploy-staging.yml remains for manual re-deploys.
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: deploy staging ${{ matrix.role }}
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: deploy-staging-${{ matrix.role }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [master, validator]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.STAGING_SSH_KEY }}" || { echo "missing STAGING_SSH_KEY"; exit 1; }
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/staging_ed25519
+          chmod 600 ~/.ssh/staging_ed25519
+          echo "StrictHostKeyChecking accept-new" > ~/.ssh/config
+
+      - name: Resolve host
+        id: host
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.role }}" == "master" ]]; then
+            h="${{ secrets.STAGING_MASTER_HOST }}"
+          else
+            h="${{ secrets.STAGING_VALIDATOR_HOST }}"
+          fi
+          test -n "$h" || { echo "missing staging host secret for ${{ matrix.role }}"; exit 1; }
+          echo "value=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          chmod +x deploy/scripts/remote-deploy.sh
+          export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
+          EXTRA=()
+          if [[ "${{ matrix.role }}" == "validator" && -n "${{ secrets.STAGING_MASTER_GATEWAY_URL }}" ]]; then
+            EXTRA+=(--gateway-endpoint "${{ secrets.STAGING_MASTER_GATEWAY_URL }}")
+          fi
+          ./deploy/scripts/remote-deploy.sh \
+            --host "root@${{ steps.host.outputs.value }}" \
+            --role "${{ matrix.role }}" \
+            --env staging \
+            --build-from source \
+            "${EXTRA[@]}"
+
+      - name: Smoke health (fail-closed)
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/staging_ed25519" -o BatchMode=yes \
+            "root@${{ steps.host.outputs.value }}" \
+            'cd /opt/base && docker compose ps --format "{{.Service}}\t{{.Status}}" && \
+             for i in $(seq 1 12); do \
+               if docker exec "$(docker ps -q --filter name=validator)" \
+                    curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then \
+                 echo "validator health: ok"; exit 0; \
+               fi; sleep 5; \
+             done; echo "validator health: FAILED"; exit 1'
+
+      - name: Verify live chain (no fake backend)
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/staging_ed25519" -o BatchMode=yes \
+            "root@${{ steps.host.outputs.value }}" \
+            'cd /opt/base && logs=$(docker compose logs validator --no-log-prefix --tail 200 2>&1); \
+             echo "$logs" | grep -q "live chain reachable" \
+               || { echo "validator never reached the live chain"; exit 1; }; \
+             echo "$logs" | grep -qi "fake" \
+               && { echo "fake backend present in validator logs"; exit 1; }; \
+             echo "live chain confirmed"'

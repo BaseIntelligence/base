@@ -2,12 +2,12 @@
 # Packages live under the *base* repo path: ghcr.io/baseintelligence/base/<suffix>
 name: ghcr-public
 
+# Manual re-run only. The automatic pass is the `ghcr-public` job in
+# images.yml — a `workflow_run` trigger here would never fire, because GitHub
+# only reads that trigger from the default branch (main) and these workflows
+# live on dev.
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["images"]
-    types: [completed]
-    branches: [dev]
 
 permissions:
   contents: read
@@ -15,9 +15,6 @@ permissions:
 
 jobs:
   set-public:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Set package visibility public

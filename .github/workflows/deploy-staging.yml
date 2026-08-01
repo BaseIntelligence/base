@@ -9,11 +9,11 @@ name: deploy-staging
 # before validator can reach the gateway — the validator retry loop
 # tolerates a brief gateway outage, so parallel is safe.
 
+# Manual re-deploy only. The automatic post-CI deploy is the `deploy-staging`
+# job in ci.yml — a `workflow_run` trigger here would never fire, because
+# GitHub only reads that trigger from the default branch (main) and these
+# workflows live on dev.
 on:
-  workflow_run:
-    workflows: ["ci"]
-    types: [completed]
-    branches: [dev]
   workflow_dispatch:
     inputs:
       role:
@@ -36,10 +36,6 @@ concurrency:
 jobs:
   deploy:
     name: deploy staging ${{ matrix.role }}
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'dev')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -67,7 +63,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Install SSH key
         if: steps.gate.outputs.run == 'true'
