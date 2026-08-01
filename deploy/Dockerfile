@@ -39,12 +39,14 @@ RUN cargo build --release \
 -p updater-bin \
       -p agent-challenge-bin \
       -p hypertraining-challenge-bin \
+      -p prism-challenge-bin \
 -p agent-runner-bin \
 && strip target/release/validator \
 target/release/gateway \
 target/release/updater \
               target/release/agent-challenge \
               target/release/hypertraining-challenge \
+              target/release/prism-challenge \
 target/release/agent-runner \
 && mkdir -p /out \
 && cp target/release/validator \
@@ -52,6 +54,7 @@ target/release/gateway \
 target/release/updater \
           target/release/agent-challenge \
           target/release/hypertraining-challenge \
+          target/release/prism-challenge \
 target/release/agent-runner /out/
 
 # -----------------------------------------------------------------------------
@@ -67,6 +70,7 @@ target/release/gateway \
 target/release/updater \
 target/release/agent-challenge \
      target/release/hypertraining-challenge \
+     target/release/prism-challenge \
 target/release/agent-runner \
 /out/
 
@@ -112,6 +116,11 @@ ENTRYPOINT ["/usr/local/bin/agent-challenge"]
 FROM runtime-base AS hypertraining-challenge
 COPY --from=artifacts --chown=base:base /out/hypertraining-challenge /usr/local/bin/hypertraining-challenge
 ENTRYPOINT ["/usr/local/bin/hypertraining-challenge"]
+
+# Miner runner binary (agent-runner) published as image target base-agent.
+FROM runtime-base AS prism-challenge
+COPY --from=artifacts --chown=base:base /out/prism-challenge /usr/local/bin/prism-challenge
+ENTRYPOINT ["/usr/local/bin/prism-challenge"]
 
 # Miner runner binary (agent-runner) published as image target base-agent.
 FROM runtime-base AS base-agent

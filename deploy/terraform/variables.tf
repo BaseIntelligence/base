@@ -49,5 +49,6 @@ variable "environments" {
     staging           = { name = "gbase-staging" }
     staging_validator = { name = "gbase-staging-validator" }
     prod              = { name = "gbase-prod" }
+    prod_validator    = { name = "gbase-prod-validator" }
   }
 }

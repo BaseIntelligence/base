@@ -1,0 +1,13 @@
+# Master role — gateway enabled, published on VPC for validator peers.
+# Used with: docker compose -f docker-compose.yml -f deploy/compose/role-master.yml --profile master
+services:
+  gateway:
+    profiles: ["master"]
+    ports:
+      - "8080:8080"
+  validator:
+    ports:
+      - "127.0.0.1:18080:8080"
+  agent-challenge:
+    ports:
+      - "127.0.0.1:18090:8090"

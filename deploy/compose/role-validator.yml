@@ -1,0 +1,23 @@
+# Validator role — NO gateway, NO owner hotkey.
+# Points at the master gateway over the DO VPC private IP.
+# Used with: docker compose -f docker-compose.yml -f deploy/compose/role-validator.yml
+services:
+  validator:
+    environment:
+      BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://10.116.0.2:8080}
+      BASE_COORDINATION_INTERVAL_SECS: "3"
+    volumes:
+      - ./config:/etc/base/config:ro
+  agent-challenge:
+    environment:
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+      BASE_CHALLENGE_BIND: 0.0.0.0:8090
+      BASE_DOCKER_BASE: http://socket-proxy:2375
+    volumes:
+      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+  # Gateway must not run on the validator host.
+  gateway:
+    profiles: ["never"]
+  # Updater disabled on validator until GHCR pins wired.
+  updater:
+    profiles: ["never"]

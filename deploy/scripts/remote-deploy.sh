@@ -13,6 +13,7 @@ ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 HOST=""
 ROLE=""
+ENV="${BASE_DEPLOY_ENV:-staging}"
 GATEWAY_ENDPOINT=""
 BOOTSTRAP_FROM=""
 BUILD_FROM="${BASE_DOCKER_BUILD_FROM:-source}"
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --host) HOST="${2:-}"; shift 2 ;;
     --role) ROLE="${2:-}"; shift 2 ;;
     --gateway-endpoint) GATEWAY_ENDPOINT="${2:-}"; shift 2 ;;
+    --env) ENV="${2:-}"; shift 2 ;;
     --bootstrap-secrets-from) BOOTSTRAP_FROM="${2:-}"; shift 2 ;;
     --build-from) BUILD_FROM="${2:-}"; shift 2 ;;
     --remote-dir) REMOTE_DIR="${2:-}"; shift 2 ;;
@@ -39,11 +41,12 @@ done
 
 [[ -n "$HOST" ]] || die "--host required"
 case "$ROLE" in master|validator) ;; *) die "--role master|validator required" ;; esac
+case "$ENV" in staging|prod) ;; *) die "--env staging|prod required" ;; esac
 
 ssh_h() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 scp_h() { scp "${SSH_OPTS[@]}" "$@"; }
 
-echo "remote-deploy: host=$HOST role=$ROLE remote=$REMOTE_DIR build_from=$BUILD_FROM"
+echo "remote-deploy: host=$HOST role=$ROLE env=$ENV remote=$REMOTE_DIR build_from=$BUILD_FROM"
 
 ssh_h "mkdir -p '$REMOTE_DIR' && command -v docker >/dev/null"
 
@@ -75,7 +78,7 @@ fi
 
 echo "remote-deploy: rsync tree"
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
-  for b in validator gateway updater agent-challenge hypertraining-challenge agent-runner; do
+  for b in validator gateway updater agent-challenge hypertraining-challenge prism-challenge agent-runner; do
     [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run cargo build --release"
   done
 fi
@@ -120,14 +123,16 @@ COMPOSE_FILES=(-f docker-compose.yml)
 PROFILE_ARGS=()
 case "$ROLE" in
   master)
-    COMPOSE_FILES+=(-f docker-compose.staging-override.yml)
-    # Publish gateway on all interfaces so VPC peers can reach it (still firewalled public).
-    COMPOSE_FILES+=(-f docker-compose.staging-master-net.yml)
+    COMPOSE_FILES+=(-f deploy/compose/role-master.yml)
     PROFILE_ARGS=(--profile master)
     ;;
   validator)
-    COMPOSE_FILES+=(-f docker-compose.staging-validator-override.yml)
+    COMPOSE_FILES+=(-f deploy/compose/role-validator.yml)
     ;;
+esac
+case "$ENV" in
+  staging) COMPOSE_FILES+=(-f deploy/compose/env-staging.yml) ;;
+  prod)    COMPOSE_FILES+=(-f deploy/compose/env-prod.yml) ;;
 esac
 
 GE_EXPORT=""
@@ -138,7 +143,7 @@ fi
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
   echo "remote-deploy: sync release binaries"
   ssh_h "mkdir -p '$REMOTE_DIR/target/release'"
-  rsync -az -e "$RSYNC_SSH"     "$ROOT/target/release/validator"     "$ROOT/target/release/gateway"     "$ROOT/target/release/updater"     "$ROOT/target/release/agent-challenge"     "$ROOT/target/release/hypertraining-challenge"     "$ROOT/target/release/agent-runner"     "$HOST:$REMOTE_DIR/target/release/"
+  rsync -az -e "$RSYNC_SSH"     "$ROOT/target/release/validator"     "$ROOT/target/release/gateway"     "$ROOT/target/release/updater"     "$ROOT/target/release/agent-challenge"     "$ROOT/target/release/hypertraining-challenge"     "$ROOT/target/release/prism-challenge"     "$ROOT/target/release/agent-runner"     "$HOST:$REMOTE_DIR/target/release/"
 fi
 
 echo "remote-deploy: build + up"

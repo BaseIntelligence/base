@@ -12,6 +12,10 @@
 //! F3 continuous path: after start, a background loop probes gateway
 //! `/v1/weights/latest`, fetches the sealed bundle, runs `compare_bundle`, and
 //! logs a `Match epoch=...` line on success.
+//!
+//! Chain backend (`BASE_CHAIN_BACKEND`):
+//! - default / `"fake"`: [`chain::FakeChain`] aligned with gateway hotkey.
+//! - `"live"`: [`chain_live::LiveChainClient`] reading from `BASE_CHAIN_ENDPOINT`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bundle::LocalTrustRoot;
-use chain::{FakeChain, FakeChainConfig};
+use chain::{ChainClient, FakeChain, FakeChainConfig};
 use config::{keys, load, Role};
 use trustroot::{load_config_dir, measurements_digest};
 use validator::{
@@ -32,7 +36,6 @@ use validator::{
 #[allow(clippy::too_many_lines)]
 async fn main() -> ExitCode {
     if let Err(e) = telemetry::init_tracing() {
-        // Subscriber may already be set; continue with best-effort logs.
         eprintln!("tracing init: {e}");
     }
 
@@ -64,14 +67,56 @@ async fn main() -> ExitCode {
         .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 8080)));
 
     let netuid = cfg.netuid.get();
-    let (attest, trust, chain) = match build_runtime_trust(netuid, cfg.rotation_epochs) {
+    let (attest, trust) = match load_attest_and_trust(netuid, cfg.rotation_epochs) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("trust root / chain: {e}");
+            eprintln!("trust root: {e}");
             return ExitCode::from(2);
         }
     };
 
+    let backend = std::env::var("BASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake".to_owned());
+    let backend = backend.to_ascii_lowercase();
+
+    if backend == "live" {
+        tracing::info!(
+            backend = "live",
+            endpoint = %cfg.chain_endpoint,
+            netuid,
+            "validator connecting to live chain"
+        );
+        match chain_live::LiveChainClient::connect(&cfg.chain_endpoint) {
+            Ok(client) => {
+                let chain = Arc::new(SyncChain::new(client));
+                run_validator_main(cfg, listen, netuid, attest, trust, chain).await
+            }
+            Err(e) => {
+                eprintln!("validator: live chain connect failed: {e}");
+                ExitCode::from(1)
+            }
+        }
+    } else {
+        let fake = match fake_chain_aligned(netuid) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("validator: fake chain build failed: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let chain = Arc::new(SyncChain::new(fake));
+        run_validator_main(cfg, listen, netuid, attest, trust, chain).await
+    }
+}
+
+/// Generic main body: database, runtime, spawn, coordination loop, ctrl-c, shutdown.
+async fn run_validator_main<C: ChainClient + Send + 'static>(
+    cfg: config::Config,
+    listen: SocketAddr,
+    netuid: u16,
+    attest: AttestState,
+    trust: LocalTrustRoot,
+    chain: Arc<SyncChain<C>>,
+) -> ExitCode {
     let db_check = match resolve_database_url(&cfg) {
         Ok(Some(url)) => match db::connect(&url).await {
             Ok(pool) => {
@@ -121,7 +166,6 @@ async fn main() -> ExitCode {
 
     tracing::info!(addr = %running.addr, netuid, "validator ready");
 
-    // F3 continuous Match loop (gateway latest → bundle → compare).
     let interval_secs: u64 = std::env::var("BASE_COORDINATION_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -178,12 +222,12 @@ fn trust_root_dir() -> PathBuf {
     PathBuf::from("/etc/base/config")
 }
 
-/// Load challenges + measurements; build `AttestState`, `LocalTrustRoot`, and `FakeChain`
-/// aligned with gateway (`BASE_GATEWAY_HOTKEY` / `BASE_FAKE_METAGRAPH_HOTKEYS`).
-fn build_runtime_trust(
+/// Load challenges + measurements; build `AttestState` and `LocalTrustRoot`.
+/// Chain creation is handled separately in `main()` based on `BASE_CHAIN_BACKEND`.
+fn load_attest_and_trust(
     netuid: u16,
     rotation_epochs: u32,
-) -> Result<(AttestState, LocalTrustRoot, Arc<SyncChain<FakeChain>>), String> {
+) -> Result<(AttestState, LocalTrustRoot), String> {
     let dir = trust_root_dir();
     if !dir.is_dir() {
         return Err(format!(
@@ -222,8 +266,7 @@ fn build_runtime_trust(
         _ => AttestState::with_ok_verifier(measurements, hotkey, netuid),
     };
 
-    let chain = Arc::new(SyncChain::new(fake_chain_aligned(netuid)?));
-    Ok((attest, trust, chain))
+    Ok((attest, trust))
 }
 
 fn fake_chain_aligned(netuid: u16) -> Result<FakeChain, String> {

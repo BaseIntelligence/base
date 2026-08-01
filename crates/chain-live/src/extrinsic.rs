@@ -1,0 +1,224 @@
+//! sr25519 signed Substrate extrinsic builder (V4 format).
+
+use chain::{ChainError, WeightsTlockPayload};
+use parity_scale_codec::{Compact, Encode};
+use schnorrkel::{signing_context, ExpansionMode, MiniSecretKey};
+
+/// Pallet index for `SubtensorModule` (lockfile `call_indices`).
+const PALLET_INDEX: u8 = 7;
+/// Call index for `set_weights` (lockfile).
+const CALL_SET_WEIGHTS: u8 = 0;
+/// Call index for `commit_timelocked_mechanism_weights` (lockfile).
+const CALL_COMMIT_MECHANISM_WEIGHTS: u8 = 118;
+
+/// Extrinsic era.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Era {
+    /// Immortal era — valid forever; `block_hash` = genesis hash in signing payload.
+    Immortal,
+    /// Mortal era — valid for `period` blocks starting at `phase`.
+    Mortal {
+        /// Period in blocks (rounded to next power of two, min 2).
+        period: u64,
+        /// Phase offset in blocks.
+        phase: u64,
+    },
+}
+
+impl Era {
+    /// Encode as Substrate does (single byte).
+    #[must_use]
+    pub fn encode_era(&self) -> Vec<u8> {
+        match self {
+            Self::Immortal => vec![0x00],
+            Self::Mortal { period, phase } => {
+                let period = period.next_power_of_two().max(2);
+                let quantize_factor = (period >> 2).max(1);
+                let last = period - 1;
+                let first = (last / 2 + 1).max(2);
+                let factor = first.trailing_zeros();
+                let factor_u8 = u8::try_from(factor).unwrap_or(0) & 0x0F;
+                let phase_u8 = u8::try_from(phase / quantize_factor).unwrap_or(0) & 0x0F;
+                vec![(factor_u8 << 4) | phase_u8]
+            }
+        }
+    }
+}
+
+/// Derive the sr25519 public key from a 32-byte mini-secret.
+///
+/// # Errors
+/// Invalid secret key bytes.
+pub fn derive_public_key(secret: &[u8; 32]) -> Result<[u8; 32], ChainError> {
+    let mini = MiniSecretKey::from_bytes(secret)
+        .map_err(|e| ChainError::Other(format!("invalid secret key: {e}")))?;
+    Ok(mini
+        .expand(ExpansionMode::Ed25519)
+        .to_keypair()
+        .public
+        .to_bytes())
+}
+
+/// Sign a payload with sr25519 under the `"substrate"` context.
+fn sign_payload(secret: &[u8; 32], payload: &[u8]) -> Result<[u8; 64], ChainError> {
+    let mini = MiniSecretKey::from_bytes(secret)
+        .map_err(|e| ChainError::Other(format!("invalid secret key: {e}")))?;
+    let keypair = mini.expand(ExpansionMode::Ed25519).to_keypair();
+    let ctx = signing_context(b"substrate");
+    Ok(keypair.sign(ctx.bytes(payload)).to_bytes())
+}
+
+/// Build the signing payload for a V4 extrinsic.
+#[allow(clippy::too_many_arguments)]
+fn signing_payload(
+    era: &Era,
+    nonce: u64,
+    tip: u64,
+    call: &[u8],
+    spec_version: u32,
+    tx_version: u32,
+    genesis_hash: &[u8; 32],
+    block_hash: &[u8; 32],
+) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&era.encode_era());
+    Compact(nonce).encode_to(&mut payload);
+    Compact(tip).encode_to(&mut payload);
+    payload.extend_from_slice(call);
+    payload.extend_from_slice(&spec_version.to_le_bytes());
+    payload.extend_from_slice(&tx_version.to_le_bytes());
+    payload.extend_from_slice(genesis_hash);
+    payload.extend_from_slice(block_hash);
+    payload
+}
+
+/// Build a signed V4 extrinsic from call bytes.
+#[allow(clippy::too_many_arguments)]
+fn build_signed_extrinsic(
+    secret: &[u8; 32],
+    era: &Era,
+    nonce: u64,
+    tip: u64,
+    call: &[u8],
+    spec_version: u32,
+    tx_version: u32,
+    genesis_hash: &[u8; 32],
+    block_hash: &[u8; 32],
+) -> Result<Vec<u8>, ChainError> {
+    let payload = signing_payload(
+        era,
+        nonce,
+        tip,
+        call,
+        spec_version,
+        tx_version,
+        genesis_hash,
+        block_hash,
+    );
+    let sig = sign_payload(secret, &payload)?;
+    let pubkey = derive_public_key(secret)?;
+
+    let mut ext = Vec::new();
+    ext.push(0x84); // version 4 + signed bit
+    ext.push(0x00); // MultiAddress::Id
+    ext.extend_from_slice(&pubkey);
+    ext.push(0x01); // MultiSignature::Sr25519
+    ext.extend_from_slice(&sig);
+    ext.extend_from_slice(&era.encode_era());
+    Compact(nonce).encode_to(&mut ext);
+    Compact(tip).encode_to(&mut ext);
+    ext.extend_from_slice(call);
+    Ok(ext)
+}
+
+/// SCALE-encode the `set_weights` call bytes (pallet + call index + params).
+#[must_use]
+pub fn set_weights_call(netuid: u16, uids: &[u16], values: &[u16], version_key: u64) -> Vec<u8> {
+    let mut call = Vec::new();
+    call.push(PALLET_INDEX);
+    call.push(CALL_SET_WEIGHTS);
+    netuid.encode_to(&mut call);
+    uids.encode_to(&mut call);
+    values.encode_to(&mut call);
+    version_key.encode_to(&mut call);
+    call
+}
+
+/// SCALE-encode the `commit_timelocked_mechanism_weights` call bytes.
+#[must_use]
+pub fn commit_timelocked_call(
+    mecid: u8,
+    payload: &WeightsTlockPayload,
+    reveal_round: u64,
+) -> Vec<u8> {
+    let mut call = Vec::new();
+    call.push(PALLET_INDEX);
+    call.push(CALL_COMMIT_MECHANISM_WEIGHTS);
+    mecid.encode_to(&mut call);
+    payload.encode_to(&mut call);
+    reveal_round.encode_to(&mut call);
+    call
+}
+
+/// Build and sign a `set_weights` extrinsic.
+///
+/// # Errors
+/// Invalid signing key.
+#[allow(clippy::too_many_arguments)]
+pub fn build_and_sign_set_weights(
+    key: &[u8; 32],
+    nonce: u64,
+    era: &Era,
+    genesis_hash: &[u8; 32],
+    block_hash: &[u8; 32],
+    spec_version: u32,
+    tx_version: u32,
+    netuid: u16,
+    uids: &[u16],
+    values: &[u16],
+    version_key: u64,
+) -> Result<Vec<u8>, ChainError> {
+    let call = set_weights_call(netuid, uids, values, version_key);
+    build_signed_extrinsic(
+        key,
+        era,
+        nonce,
+        0,
+        &call,
+        spec_version,
+        tx_version,
+        genesis_hash,
+        block_hash,
+    )
+}
+
+/// Build and sign a `commit_timelocked_mechanism_weights` extrinsic.
+///
+/// # Errors
+/// Invalid signing key.
+#[allow(clippy::too_many_arguments)]
+pub fn build_and_sign_commit_timelocked(
+    key: &[u8; 32],
+    nonce: u64,
+    era: &Era,
+    genesis_hash: &[u8; 32],
+    block_hash: &[u8; 32],
+    spec_version: u32,
+    tx_version: u32,
+    mecid: u8,
+    payload: &WeightsTlockPayload,
+    reveal_round: u64,
+) -> Result<Vec<u8>, ChainError> {
+    let call = commit_timelocked_call(mecid, payload, reveal_round);
+    build_signed_extrinsic(
+        key,
+        era,
+        nonce,
+        0,
+        &call,
+        spec_version,
+        tx_version,
+        genesis_hash,
+        block_hash,
+    )
+}

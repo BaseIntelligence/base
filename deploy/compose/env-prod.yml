@@ -1,0 +1,15 @@
+# Production environment — mainnet.
+# Netuid 100, conservative intervals, no evil-gateway, no e2e overrides.
+services:
+  validator:
+    environment:
+      BASE_NETUID: "100"
+      BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
+      BASE_COORDINATION_INTERVAL_SECS: "10"
+  gateway:
+    environment:
+      BASE_NETUID: "100"
+      BASE_CHAIN_BACKEND: "fake_owner"
+  agent-challenge:
+    environment:
+      BASE_CHALLENGE_DISPATCH: "0"

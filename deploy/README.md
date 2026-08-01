@@ -50,33 +50,67 @@ export AGE_IDENTITY=/etc/base/age-identity.txt
 ```
 
 
-## Staging topology (master + normal validator)
+## Host topology (4 hosts: 2 staging + 2 prod)
 
-| Host | Droplet | Role | Hotkey | Gateway |
-|------|---------|------|--------|---------|
-| staging master | `gbase-staging` | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
-| staging validator | `gbase-staging-validator` | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
-| prod | `gbase-prod` | owner control plane | yes | yes |
+| Host | Droplet | VPC IP | Role | Hotkey | Gateway |
+|------|---------|--------|------|--------|---------|
+| staging master | `gbase-staging` | 10.116.0.2 | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
+| staging validator | `gbase-staging-validator` | 10.116.0.4 | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
+| prod master | `gbase-prod` | 10.116.0.3 | owner control plane | yes | yes |
+| prod validator | `gbase-prod-validator` | 10.116.0.5 (assigned) | normal validator | **no** | **no** — uses prod master gateway over VPC `:8080` |
 
-Deploy:
+Deploy (manual or via CI):
 
 ```bash
 export BASE_SSH_IDENTITY=~/.ssh/id_ed25519
-# One-time secrets bootstrap from existing staging master:
-./deploy/scripts/remote-deploy.sh \
-  --host root@<staging-master-ip> --role master \
-  --bootstrap-secrets-from root@<staging-master-ip>
 
+# Staging master (testnet 541)
 ./deploy/scripts/remote-deploy.sh \
-  --host root@<staging-validator-ip> --role validator \
+  --host root@68.183.23.51 --role master --env staging \
+  --bootstrap-secrets-from root@68.183.23.51
+
+# Staging validator (points at master VPC gateway)
+./deploy/scripts/remote-deploy.sh \
+  --host root@142.93.197.253 --role validator --env staging \
   --gateway-endpoint http://10.116.0.2:8080 \
-  --bootstrap-secrets-from root@<staging-master-ip>
+  --bootstrap-secrets-from root@68.183.23.51
+
+# Prod master
+./deploy/scripts/remote-deploy.sh \
+  --host root@206.189.224.155 --role master --env prod \
+  --bootstrap-secrets-from root@206.189.224.155
+
+# Prod validator (points at prod master VPC gateway)
+./deploy/scripts/remote-deploy.sh \
+  --host root@<prod-validator-ip> --role validator --env prod \
+  --gateway-endpoint http://10.116.0.3:8080 \
+  --bootstrap-secrets-from root@206.189.224.155
 ```
+
+### Compose matrix (role × env)
+
+| File | Purpose |
+|------|---------|
+| `deploy/compose/role-master.yml` | gateway profile, VPC `:8080` publish, loopback tunnels |
+| `deploy/compose/role-validator.yml` | gateway disabled, VPC gateway endpoint |
+| `deploy/compose/env-staging.yml` | testnet 541, `wss://test.finney.opentensor.ai:443`, 3s coordination |
+| `deploy/compose/env-prod.yml` | mainnet, conservative intervals |
+
+`remote-deploy.sh --env staging|prod --role master|validator` selects the correct
+combination. Verify locally: `./deploy/scripts/assert-compose-matrix.sh`.
 
 ### Auto CI deploy
 
 - `.github/workflows/deploy-staging.yml` — after successful `ci` on `dev` (and manual dispatch)
-- `.github/workflows/deploy-prod.yml` — on push to `main` / manual
+- `.github/workflows/deploy-prod.yml` — on push of `v*.*.*` tags from `dev` (and manual dispatch with SHA)
+
+**Prod release flow (tag-based):**
+1. CI passes on `dev` for commit X.
+2. `deploy-staging.yml` auto-deploys X to staging; staging pins recorded.
+3. Operator cuts `git tag vX.Y.Z` on commit X and pushes the tag.
+4. `deploy-prod.yml` preflight verifies: tag commit is on `dev`, CI passed for that SHA, staging pins match.
+5. `environment: production` (enable required reviewers in GitHub UI).
+6. Both prod hosts deployed with the same digest-pinned images.
 
 Required GitHub secrets:
 
@@ -88,6 +122,8 @@ Required GitHub secrets:
 | `STAGING_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.2:8080` |
 | `PROD_HOST` | public IPv4 of `gbase-prod` |
 | `PROD_SSH_KEY` | optional override of staging key |
+| `PROD_VALIDATOR_HOST` | public IPv4 of `gbase-prod-validator` |
+| `PROD_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.3:8080` |
 
 > **Not AWS EKS.** Control plane stays Docker Compose on DigitalOcean droplets (existing design). A separate DOKS cluster on this account (`basecrawl-prod-nyc3`) is unrelated and must not host gbase.
 

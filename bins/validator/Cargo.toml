@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 chain = { path = "../../crates/chain" }
+chain-live = { path = "../../crates/chain-live" }
 config = { path = "../../crates/config" }
 db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }

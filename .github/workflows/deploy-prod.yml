@@ -1,14 +1,26 @@
 name: deploy-prod
 
-# Promote digest-pinned images to the prod droplet after push to main.
-# Staging must already be healthy; this workflow does NOT rebuild from source
-# by default — it pulls the commit SHA tags from GHCR when available, else
-# builds on-box (same remote-deploy path as staging, role=master).
+# Promote digest-pinned images to prod droplets on signed version tags.
+#
+# Trigger: push tag v*.*.* (cut from dev) or manual workflow_dispatch.
+# NEVER triggers on push to main (main holds the legacy pre-Rust stack).
+#
+# Preflight: tag commit must be an ancestor of origin/dev, CI must have
+# concluded success for that SHA, and staging pins must carry that commit's
+# digests (staging ladder enforced).
+#
+# Deploys master (PROD_HOST) + validator (PROD_VALIDATOR_HOST) in parallel.
+# Uses promote.sh with --confirm-prod (no source builds in prod).
 
 on:
   push:
-    branches: [main]
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA to deploy (must have passed staging)"
+        required: false
 
 permissions:
   contents: read
@@ -19,43 +31,142 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-prod:
-    name: deploy prod master
+  preflight:
+    name: preflight checks
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    environment: production
+    outputs:
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve commit SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.commit_sha }}" ]]; then
+            SHA="${{ github.event.inputs.commit_sha }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            SHA=$(git rev-list -n 1 "$GITHUB_REF")
+          else
+            SHA="$GITHUB_SHA"
+          fi
+          echo "commit_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved commit: $SHA"
+
+      - name: Verify CI succeeded for this SHA
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.resolve.outputs.commit_sha }}"
+          # Check that the ci workflow passed for this commit on dev
+          conclusion=$(gh run list \
+            --workflow ci.yml \
+            --branch dev \
+            --commit "$SHA" \
+            --status completed \
+            --json conclusion \
+            --jq '.[0].conclusion // empty' 2>/dev/null || true)
+          if [[ "$conclusion" != "success" ]]; then
+            echo "CI has not passed for commit $SHA on dev (conclusion: ${conclusion:-none})"
+            echo "Failing — prod deploy requires a green CI run for this exact commit."
+            exit 1
+          fi
+          echo "CI passed for $SHA"
+
+      - name: Verify staging pins exist for this SHA
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.resolve.outputs.commit_sha }}"
+          if [[ ! -f deploy/pins/staging.json ]]; then
+            echo "deploy/pins/staging.json not found — staging must be deployed first"
+            exit 1
+          fi
+          pin_sha=$(python3 -c \
+            "import json; print(json.load(open('deploy/pins/staging.json')).get('commit_sha',''))")
+          if [[ "$pin_sha" != "$SHA" ]]; then
+            echo "Staging pins commit_sha=$pin_sha, expected $SHA"
+            echo "Staging must be deployed with this commit before promoting to prod."
+            exit 1
+          fi
+          echo "Staging pins match commit $SHA"
+
+  deploy:
+    name: deploy prod ${{ matrix.role }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: master
+            host_secret: PROD_HOST
+          - role: validator
+            host_secret: PROD_VALIDATOR_HOST
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.commit_sha }}
 
       - name: Install SSH key
         run: |
           set -euo pipefail
-          test -n "${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}" || {
-            echo "missing PROD_SSH_KEY (or STAGING_SSH_KEY fallback)"
-            exit 1
-          }
+          KEY="${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}"
+          test -n "$KEY" || { echo "missing PROD_SSH_KEY (or STAGING_SSH_KEY fallback)"; exit 1; }
           mkdir -p ~/.ssh
-          echo "${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}" > ~/.ssh/deploy_ed25519
+          echo "$KEY" > ~/.ssh/deploy_ed25519
           chmod 600 ~/.ssh/deploy_ed25519
+          echo "StrictHostKeyChecking accept-new" > ~/.ssh/config
 
-      - name: Deploy master stack
+      - name: Resolve host
+        id: host
         run: |
           set -euo pipefail
-          host="${{ secrets.PROD_HOST }}"
-          test -n "$host" || { echo "missing PROD_HOST"; exit 1; }
+          if [[ "${{ matrix.role }}" == "master" ]]; then
+            h="${{ secrets.PROD_HOST }}"
+          else
+            h="${{ secrets.PROD_VALIDATOR_HOST }}"
+          fi
+          test -n "$h" || { echo "missing host secret for ${{ matrix.role }}"; exit 1; }
+          echo "value=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
           chmod +x deploy/scripts/remote-deploy.sh
           export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
+          EXTRA=()
+          if [[ "${{ matrix.role }}" == "validator" ]]; then
+            if [[ -n "${{ secrets.PROD_MASTER_GATEWAY_URL }}" ]]; then
+              EXTRA+=(--gateway-endpoint "${{ secrets.PROD_MASTER_GATEWAY_URL }}")
+            fi
+          fi
           ./deploy/scripts/remote-deploy.sh \
-            --host "root@${host}" \
-            --role master \
-            --build-from source
+            --host "root@${{ steps.host.outputs.value }}" \
+            --role "${{ matrix.role }}" \
+            --env prod \
+            --build-from source \
+            "${EXTRA[@]}"
 
-      - name: Smoke health
+      - name: Smoke health (fail-closed)
         run: |
           set -euo pipefail
-          host="${{ secrets.PROD_HOST }}"
           export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
+          HOST="root@${{ steps.host.outputs.value }}"
           ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-            "root@${host}" \
-            'docker compose -f /opt/base/docker-compose.yml --profile master ps; docker compose -f /opt/base/docker-compose.yml --profile master exec -T validator curl -fsS -m 10 http://127.0.0.1:8080/healthz || true'
+            "$HOST" \
+            'cd /opt/base && docker compose -f docker-compose.yml -f deploy/compose/role-${{ matrix.role }}.yml -f deploy/compose/env-prod.yml ps --format "table {{.Service}}\t{{.Status}}"'
+          # Health probe
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$HOST" \
+            'for i in $(seq 1 12); do \
+               if docker exec $(docker ps -q --filter name=validator) curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null; then \
+                 echo "validator health: ok"; exit 0; \
+               fi; \
+               sleep 5; \
+             done; \
+             echo "validator health: FAILED"; exit 1'

@@ -1,0 +1,15 @@
+# Staging environment — Bittensor testnet (Finney).
+# Netuid 541, testnet endpoint, cleartext/IP e2e (no TLS).
+services:
+  validator:
+    environment:
+      BASE_NETUID: "541"
+      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      BASE_COORDINATION_INTERVAL_SECS: "3"
+  gateway:
+    environment:
+      BASE_NETUID: "541"
+      BASE_CHAIN_BACKEND: "fake_owner"
+  agent-challenge:
+    environment:
+      BASE_CHALLENGE_DISPATCH: "0"

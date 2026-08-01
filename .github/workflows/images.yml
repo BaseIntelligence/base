@@ -45,6 +45,12 @@ jobs:
           - target: agent-challenge
             image_suffix: agent-challenge
             dockerfile: deploy/Dockerfile
+          - target: hypertraining-challenge
+            image_suffix: hypertraining-challenge
+            dockerfile: deploy/Dockerfile
+          - target: prism-challenge
+            image_suffix: prism-challenge
+            dockerfile: deploy/Dockerfile
           - target: base-agent
             image_suffix: base-agent
             dockerfile: deploy/Dockerfile
@@ -150,6 +156,8 @@ jobs:
               "gateway",
               "updater",
               "agent-challenge",
+              "hypertraining-challenge",
+              "prism-challenge",
               "base-agent",
               "base-attest-helper",
           }

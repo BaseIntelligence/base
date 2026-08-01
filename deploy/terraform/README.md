@@ -1,12 +1,14 @@
 # base Terraform — droplets + firewall
 
-Provisions **exactly two** DigitalOcean droplets and **one** cloud firewall.
+Provisions **four** DigitalOcean droplets and **one** cloud firewall.
 
 | Resource | Spec |
 |----------|------|
 | `base-staging` | `s-8vcpu-16gb-amd`, `nyc1`, Ubuntu 24.04 |
+| `base-staging-validator` | same |
 | `base-prod` | same |
-| `base-hosts` firewall | TCP 22 from operator `/32` only; TCP 80/443 + ICMP world; outbound open |
+| `base-prod-validator` | same |
+| `base-hosts` firewall | TCP 22 from operator `/32` only; TCP 80/443/8080 + ICMP world; outbound open |
 
 
 > **Region note:** Plan text asked for `nyc3`. On this DO account the

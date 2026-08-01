@@ -4,6 +4,10 @@ name: deploy-staging
 # Roles:
 #   - staging master  = validator + gateway + hotkey (owner)
 #   - staging validator = validator only (no hotkey / no gateway)
+#
+# Deploys both roles in parallel (fail-fast: false). Master must be up
+# before validator can reach the gateway — the validator retry loop
+# tolerates a brief gateway outage, so parallel is safe.
 
 on:
   workflow_run:
@@ -23,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: deploy-staging
@@ -30,7 +35,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: deploy staging master + validator
+    name: deploy staging ${{ matrix.role }}
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -89,15 +94,12 @@ jobs:
 
       - name: Deploy
         if: steps.gate.outputs.run == 'true'
-        env:
-          BASE_SSH_IDENTITY: ${{ runner.temp }}/../.ssh/staging_ed25519
         run: |
           set -euo pipefail
           chmod +x deploy/scripts/remote-deploy.sh
           export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
           EXTRA=()
           if [[ "${{ matrix.role }}" == "validator" ]]; then
-            # Prefer private VPC endpoint of master when provided.
             if [[ -n "${{ secrets.STAGING_MASTER_GATEWAY_URL }}" ]]; then
               EXTRA+=(--gateway-endpoint "${{ secrets.STAGING_MASTER_GATEWAY_URL }}")
             fi
@@ -105,14 +107,44 @@ jobs:
           ./deploy/scripts/remote-deploy.sh \
             --host "root@${{ steps.host.outputs.value }}" \
             --role "${{ matrix.role }}" \
+            --env staging \
             --build-from source \
             "${EXTRA[@]}"
 
-      - name: Smoke health
+      - name: Smoke health (fail-closed)
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
+          HOST="root@${{ steps.host.outputs.value }}"
+          # Verify containers are up
           ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-            "root@${{ steps.host.outputs.value }}" \
-            'docker compose -f /opt/base/docker-compose.yml ps; docker compose -f /opt/base/docker-compose.yml exec -T validator curl -fsS -m 10 http://127.0.0.1:8080/healthz || true'
+            "$HOST" \
+            'cd /opt/base && docker compose -f docker-compose.yml -f deploy/compose/role-${{ matrix.role }}.yml -f deploy/compose/env-staging.yml ps --format "table {{.Service}}\t{{.Status}}"'
+          # Health probe: validator must respond within 60s
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$HOST" \
+            'for i in $(seq 1 12); do \
+               if docker exec $(docker ps -q --filter name=validator) curl -fsS -m 5 http://127.0.0.1:8080/healthz 2>/dev/null; then \
+                 echo "validator health: ok"; exit 0; \
+               fi; \
+               sleep 5; \
+             done; \
+             echo "validator health: FAILED (no /healthz within 60s)"; exit 1'
+
+      - name: Post-deploy Match gate (validator only)
+        if: steps.gate.outputs.run == 'true' && matrix.role == 'validator'
+        run: |
+          set -euo pipefail
+          export BASE_SSH_IDENTITY="$HOME/.ssh/staging_ed25519"
+          HOST="root@${{ steps.host.outputs.value }}"
+          # Wait up to 180s for a Match epoch= line in validator logs
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$HOST" \
+            'for i in $(seq 1 36); do \
+               if docker logs $(docker ps -q --filter name=validator) 2>&1 | grep -q "Match epoch="; then \
+                 echo "bundle Match confirmed"; exit 0; \
+               fi; \
+               sleep 5; \
+             done; \
+             echo "WARNING: no Match epoch= in validator logs within 180s (may still be syncing)"; exit 0'

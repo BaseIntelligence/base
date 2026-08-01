@@ -34,6 +34,8 @@ jobs:
             "base/validator"
             "base/updater"
             "base/agent-challenge"
+            "base/hypertraining-challenge"
+            "base/prism-challenge"
           )
           ok=0
           # First list packages to Learn exact names (debug)

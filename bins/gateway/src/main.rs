@@ -7,11 +7,14 @@
 //! - default / `BASE_CHAIN_BACKEND=fake_owner`: [`FakeChain`] whose owner hotkey
 //!   equals the configured `BASE_GATEWAY_HOTKEY` so master check can pass without
 //!   a full live SDK client (TLS/ACME still deferred to task 42).
+//! - `BASE_CHAIN_BACKEND=live`: [`chain_live::LiveChainClient`] reading from the
+//!   configured `BASE_CHAIN_ENDPOINT` (testnet or mainnet).
 //! - `BASE_CHAIN_BACKEND=not_implemented`: previous fail-closed stub.
 
 use std::process::ExitCode;
 
 use chain::{FakeChain, FakeChainConfig, NotImplementedChain};
+use config::keys;
 use gateway::{GatewayConfig, GatewayError};
 
 #[tokio::main]
@@ -43,6 +46,21 @@ async fn main() -> ExitCode {
                 "gateway using NotImplementedChain (master check will fail until live SDK)"
             );
             run_with(config, &NotImplementedChain).await
+        }
+        "live" => {
+            let endpoint = std::env::var(keys::CHAIN_ENDPOINT)
+                .unwrap_or_else(|_| config::DEFAULT_CHAIN_ENDPOINT.to_owned());
+            tracing::info!(backend = "live", endpoint = %endpoint, netuid = config.netuid, "gateway connecting to live chain");
+            match chain_live::LiveChainClient::connect(&endpoint) {
+                Ok(client) => {
+                    tracing::info!(backend = "live", "gateway live chain connected");
+                    run_with(config, &client).await
+                }
+                Err(e) => {
+                    eprintln!("gateway: live chain connect failed: {e}");
+                    ExitCode::from(1)
+                }
+            }
         }
         _ => {
             // fake_owner (default): owner hotkey == configured gateway hotkey.
