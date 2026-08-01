@@ -236,7 +236,7 @@ Pack `task.toml` `allow_internet = false` is the **image build** offline contrac
 
 ### 4.2.2 Pack execution and model key (Q3=A)
 
-The runner resolves `pack_id` to a stripped Harbor projection, pulls the digest-pinned environment image through the measured socket-proxy allowlist, runs a reference agent against `instruction`, and collects `/logs/artifacts/model.patch`.
+The runner resolves `pack_id` to a stripped Harbor projection, pulls the digest-pinned environment image through the measured socket-proxy allowlist, runs the miner's agent against `instruction`, and collects `/logs/artifacts/model.patch`. The agent command is operator-settable: `BASE_AGENT_CMD` (a JSON array, e.g. `["bash","-lc","python /agent/run.py"]`) replaces the built-in reference command, which only writes a canned patch so the plumbing can be exercised without an agent; a miner that wants non-zero scores runs a real agent through it. Staged bind sources live under `BASE_AGENT_WORK_ROOT`, which must be bound at the identical path on the Docker host, because the daemon resolves bind sources on the host while the executor stages them from inside the agent container.
 
 | Item | Contract |
 |------|----------|

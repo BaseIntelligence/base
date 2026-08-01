@@ -4,14 +4,14 @@ use compose_hash::compose_hash_hex;
 use miner::DeploySecrets;
 use miner::{
     agent_service_mounts_docker_sock, deploy_or_dry_run, docker_compose_from_app_compose_json,
-    docker_compose_yaml, environment_block_has_no_secrets, reject_raw_docker_sock_on_agent,
-    render_app_compose_bytes, ComposeTemplateInput, DeployMode, DeployParams, AGENT_PORT,
-    AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, DEFAULT_AGENT_IMAGE,
-    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_CATALOG_URL,
-    DEFAULT_PACK_ROOT_IN_CVM, DEFAULT_SOCKET_PROXY_IMAGE, DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
-    DOCKER_BASE_ENV, ENV_IMAGE_ENV, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV, PACK_CATALOG_URL_ENV,
-    PACK_ROOT_ENV, RECEIPT_SK_HEX_ENV, SOCKET_PROXY_PORT, SOCKET_PROXY_SERVICE,
-    TRUSTED_CHALLENGE_PUBKEY_ENV,
+    docker_compose_yaml, environment_block_has_no_secrets, pre_launch_script,
+    reject_raw_docker_sock_on_agent, render_app_compose_bytes, ComposeTemplateInput, DeployMode,
+    DeployParams, AGENT_PORT, AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE,
+    DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE,
+    DEFAULT_PACK_CATALOG_URL, DEFAULT_PACK_ROOT_IN_CVM, DEFAULT_SOCKET_PROXY_IMAGE,
+    DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX, DEFAULT_WORK_ROOT_IN_CVM, DOCKER_BASE_ENV, ENV_IMAGE_ENV,
+    LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV, PACK_CATALOG_URL_ENV, PACK_ROOT_ENV,
+    RECEIPT_SK_HEX_ENV, SOCKET_PROXY_PORT, SOCKET_PROXY_SERVICE, TRUSTED_CHALLENGE_PUBKEY_ENV,
 };
 
 /// Frozen compose-hash of `DeployParams::default()` **before** measured socket-proxy
@@ -552,6 +552,8 @@ fn template_input_includes_socket_proxy_image() {
         pack_root: DEFAULT_PACK_ROOT_IN_CVM,
         pack_catalog_url: DEFAULT_PACK_CATALOG_URL,
         trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX,
+        work_root: DEFAULT_WORK_ROOT_IN_CVM,
+        agent_cmd_json: None,
     });
     assert!(yaml.contains("challenge_scoring_version=2"));
     assert!(yaml.contains(DEFAULT_SOCKET_PROXY_IMAGE));
@@ -560,16 +562,15 @@ fn template_input_includes_socket_proxy_image() {
 
 /// The compose-hash printed here is what an owner signs into
 /// `config/measurements.toml` before any miner deploys, so it has to equal the
-/// value Phala measures. Pinned against the live CVM `base-miner-541-v2`
-/// (`app_id` `5b11f1a95ea5cab43243d8a48826228179dc97cf`): the Phala API records
-/// this hash for that app, and its hardware `mr_config_id` carries
-/// `01 || this hash || 15 zero bytes`. The same property was established for
-/// the first build, `base-miner-541` (`f3dd0224a37f…`), whose measurement is
-/// revoked in `config/measurements.toml`.
+/// value Phala measures. Pinned against the tuple the v3 CVM cycle renders
+/// from: agent image `7ea4ddda0657…`, name `base-miner-541-v3`. Hardware
+/// confirmation lands with the v3 deploy; every earlier build's pin
+/// (`f3dd0224a37f…`, `6548b5062dbf…`) matched its hardware `mr_config_id`
+/// byte-for-byte at deploy time.
 #[test]
-fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
+fn offline_hash_equals_the_hash_phala_records() {
     let params = DeployParams {
-        name: "base-miner-541-v2".into(),
+        name: "base-miner-541-v3".into(),
         netuid: 541,
         launch_token_hash: "8070605dc9b99dd5ad90f2bc8eed7aef29f76fe07139e3b3eb4a59fad4189957"
             .into(),
@@ -580,23 +581,42 @@ fn offline_hash_equals_the_hash_measured_by_real_tdx_hardware() {
     };
     let result = deploy_or_dry_run(&params).expect("render");
     assert_eq!(
-        result.compose_hash_hex, "6548b5062dbfa96eb9be3e9a41d0f0e12bcdb8883b72e2f7cd5a387fa3e69abd",
-        "renderer drifted from the app-compose Phala actually measured"
+        result.compose_hash_hex, "f6ddd2d07ec9ae6c3f25f6f3c37bb8668b038005b2dd20f5e5da820c899a5da0",
+        "renderer drifted from the tuple recorded for the v3 cycle"
     );
+}
 
-    // The revoked first build still renders to its own recorded hash under its
-    // own image pin, so the assertion above is load-bearing, not a tautology.
-    let legacy = DeployParams {
-        name: "base-miner-541".into(),
-        agent_image: "ghcr.io/baseintelligence/base/base-agent@sha256:d8f7722896156f0f3dda0c50f0f6897f93b6442dfc9d85d8a8c675a50c81216f".into(),
-        ..params
-    };
-    assert_eq!(
-        deploy_or_dry_run(&legacy)
-            .expect("render legacy")
-            .compose_hash_hex,
-        "f3dd0224a37f70b4c534effe091b5548c2732d7c0ecafd35257487e5a06f580a",
-        "the revoked build must keep rendering to its recorded hash"
+/// The executor stages bind sources under `BASE_AGENT_WORK_ROOT` and the VM's
+/// Docker daemon resolves bind sources on the VM filesystem, outside the
+/// container the staging happens in. Only a bind whose source equals its
+/// target is seen the same way by both; anything else makes every dispatched
+/// task fail with `empty model.patch` because the patch lands on a filesystem
+/// the agent cannot read back.
+#[test]
+fn agent_work_root_is_bound_at_an_identical_host_path() {
+    let result = deploy_or_dry_run(&DeployParams::default()).expect("render");
+    let doc: serde_json::Value = serde_json::from_str(&result.app_compose_json).expect("json");
+    let yaml = doc["docker_compose_file"].as_str().expect("yaml");
+    assert!(
+        yaml.contains(r#"BASE_AGENT_WORK_ROOT: "/var/lib/base/agent-work""#),
+        "work root env missing from agent service"
+    );
+    assert!(
+        yaml.contains("source: /var/lib/base/agent-work")
+            && yaml.contains("target: /var/lib/base/agent-work"),
+        "work root must be bound at the identical host path"
+    );
+}
+
+/// The pre-launch script must pre-create the work root with the runner uid as
+/// owner; Docker would otherwise auto-create the bind source root-owned and
+/// the agent (uid 65532) could not stage into it.
+#[test]
+fn pre_launch_creates_the_work_root_owned_by_the_runner() {
+    let script = pre_launch_script();
+    assert!(
+        script.contains("install -d -m 0775 -o 65532 -g 65532 /var/lib/base/agent-work"),
+        "pre_launch_script must own-create the work root:\n{script}"
     );
 }
 

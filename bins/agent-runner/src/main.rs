@@ -72,6 +72,11 @@ struct Cli {
     /// Miner-supplied model API key file (mounted into agent; never logged).
     #[arg(long, env = "BASE_MODEL_KEY_FILE")]
     model_key_file: Option<PathBuf>,
+    /// Real agent command as a JSON array, e.g. `["bash","-lc","python /agent/run.py"]`.
+    /// Replaces the built-in reference command, which is a placeholder that
+    /// writes a canned patch; without this flag no miner can run a real agent.
+    #[arg(long, env = "BASE_AGENT_CMD")]
+    agent_cmd: Option<String>,
     /// Egress posture: `open` (default) or `allowlisted_proxy`.
     #[arg(long, env = "BASE_AGENT_EGRESS", default_value = "open")]
     egress: String,
@@ -117,6 +122,25 @@ fn parse_egress(s: &str) -> Result<AgentEgressPosture, String> {
     }
 }
 
+fn parse_agent_cmd(raw: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("BASE_AGENT_CMD is not JSON: {e}"))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| "BASE_AGENT_CMD must be a JSON array of strings".to_owned())?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let s = item
+            .as_str()
+            .ok_or_else(|| "BASE_AGENT_CMD entries must be strings".to_owned())?;
+        out.push(s.to_owned());
+    }
+    if out.is_empty() {
+        return Err("BASE_AGENT_CMD must not be an empty array".into());
+    }
+    Ok(out)
+}
+
 fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
     match (
         cli.docker_base.as_ref(),
@@ -135,6 +159,11 @@ fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
                     ));
                 }
             }
+            let agent_cmd = cli
+                .agent_cmd
+                .as_deref()
+                .map(parse_agent_cmd)
+                .transpose()?;
             Ok(ExecutionBackend::Docker(DockerExecConfig {
                 docker_base: base.clone(),
                 environment_image: image.clone(),
@@ -142,7 +171,7 @@ fn build_execution(cli: &Cli) -> Result<ExecutionBackend, String> {
                 work_root: cli.work_root.clone(),
                 model_key_path: cli.model_key_file.clone(),
                 egress: parse_egress(&cli.egress)?,
-                agent_cmd: None,
+                agent_cmd,
                 pack_catalog_url: cli.pack_catalog_url.clone(),
             }))
         }
@@ -222,4 +251,26 @@ async fn serve(cli: Cli) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_agent_cmd;
+
+    #[test]
+    fn agent_cmd_json_array_of_strings() {
+        let cmd = parse_agent_cmd(r#"["bash","-lc","echo hi"]"#).expect("ok");
+        assert_eq!(cmd, vec!["bash", "-lc", "echo hi"]);
+    }
+
+    #[test]
+    fn agent_cmd_rejects_non_array_and_empty_array_and_non_strings() {
+        for raw in ["{}", "[]", "[\"bash\", 1]", "not json"] {
+            assert!(
+                parse_agent_cmd(raw).is_err(),
+                "{raw} must be rejected: an invalid agent command silently changes \
+                 the measured compose away from what the operator signed"
+            );
+        }
+    }
 }

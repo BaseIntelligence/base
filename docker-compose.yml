@@ -205,10 +205,17 @@ services:
       BASE_DOCKER_BASE: http://socket-proxy:2375
       # Host file must be owned uid 65532 (base) mode 0400 — see deploy/secrets/README.md
       BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+      # Staging root for verifier binds. It must equal the bind source below
+      # byte-for-byte: the daemon resolves bind sources on the host, while the
+      # verifier stages them from inside this container, so only an identical
+      # string is seen the same way by both.
+      BASE_VERIFY_WORK_ROOT: ${BASE_STATE_DIR:-/var/lib/base}/verify
     volumes:
       - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
       # Persist HuggingFace-pulled task packs across restarts.
       - agent-pack-source:/var/lib/base/pack-source
+      # Host dir pre-created uid 65532 by deploy/scripts/remote-deploy.sh.
+      - ${BASE_STATE_DIR:-/var/lib/base}/verify:${BASE_STATE_DIR:-/var/lib/base}/verify
     expose:
       - "8090"
     healthcheck:

@@ -18,6 +18,9 @@ GATEWAY_ENDPOINT=""
 BOOTSTRAP_FROM=""
 BUILD_FROM="${BASE_DOCKER_BUILD_FROM:-source}"
 REMOTE_DIR="${BASE_REMOTE_DIR:-/opt/base}"
+# Host-side staging root for held-out verifier binds; must match the compose
+# bind source and the container's BASE_VERIFY_WORK_ROOT byte-for-byte.
+STATE_ROOT="${BASE_STATE_DIR:-/var/lib/base}"
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 if [[ -n "${BASE_SSH_IDENTITY:-}" ]]; then
   SSH_OPTS+=(-i "$BASE_SSH_IDENTITY")
@@ -111,6 +114,14 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' '$REM
   && chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/lium' \
   && chmod -R a-w '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; \
   chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; true"
+
+# Held-out verifier staging root. The challenge container stages bind sources
+# here and hands them to the host's Docker daemon, which resolves bind sources
+# on the host filesystem, so the path must exist on the host with the container
+# uid as owner, or 'docker compose' would auto-create it root-owned and every
+# grade would fail on staging I/O.
+ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/verify'"
+
 
 # Materialize missing env from examples (dev-safe placeholders) if absent
 ssh_h "bash -s" <<EOS

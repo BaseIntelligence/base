@@ -11,7 +11,8 @@ use crate::inspect::reject_raw_docker_sock_on_agent;
 pub use crate::template::DEFAULT_SOCKET_PROXY_IMAGE;
 use crate::template::{
     docker_compose_yaml, pre_launch_script, ComposeTemplateInput, DEFAULT_ENVIRONMENT_IMAGE,
-    DEFAULT_PACK_ROOT_IN_CVM, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV, RECEIPT_SK_HEX_ENV,
+    DEFAULT_PACK_ROOT_IN_CVM, DEFAULT_WORK_ROOT_IN_CVM, LAUNCH_TOKEN_ENV, MINER_HOTKEY_HEX_ENV,
+    RECEIPT_SK_HEX_ENV,
 };
 
 /// Default digest-pinned agent image (digest from the images CI run for 5a906ffa,
@@ -109,6 +110,11 @@ pub struct DeployParams {
     pub pack_catalog_url: String,
     /// Trusted challenge public key (64 lowercase hex).
     pub trusted_challenge_pubkey_hex: String,
+    /// Exec staging root, bound host-side at the same path (sibling containers).
+    pub work_root: String,
+    /// Optional `BASE_AGENT_CMD` JSON array (real agent command replacing the
+    /// built-in reference placeholder). Measured into the compose when set.
+    pub agent_cmd_json: Option<String>,
     /// Encrypted-secret values (required for [`DeployMode::Deploy`] only).
     pub secrets: DeploySecrets,
     /// Deploy vs dry-run.
@@ -135,6 +141,8 @@ impl Default for DeployParams {
             pack_root: DEFAULT_PACK_ROOT_IN_CVM.to_owned(),
             pack_catalog_url: DEFAULT_PACK_CATALOG_URL.to_owned(),
             trusted_challenge_pubkey_hex: DEFAULT_TRUSTED_CHALLENGE_PUBKEY_HEX.to_owned(),
+            work_root: DEFAULT_WORK_ROOT_IN_CVM.to_owned(),
+            agent_cmd_json: None,
             secrets: DeploySecrets::default(),
             mode: DeployMode::NoDeploy,
             out_compose: None,
@@ -283,6 +291,8 @@ pub fn render_app_compose(params: &DeployParams) -> Result<Value, DeployError> {
         pack_root: &params.pack_root,
         pack_catalog_url: &params.pack_catalog_url,
         trusted_challenge_pubkey_hex: &params.trusted_challenge_pubkey_hex,
+        work_root: &params.work_root,
+        agent_cmd_json: params.agent_cmd_json.as_deref(),
     });
     reject_raw_docker_sock_on_agent(&yaml)?;
 

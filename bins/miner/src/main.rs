@@ -75,6 +75,10 @@ struct DeployArgs {
     /// Digest-pinned Harbor environment image the agent runs pack tasks in.
     #[arg(long, env = "BASE_ENVIRONMENT_IMAGE", default_value = DEFAULT_ENVIRONMENT_IMAGE)]
     environment_image: String,
+    /// Real agent command as a JSON array. Measured into the compose when set;
+    /// omitted, the runner falls back to its built-in reference placeholder.
+    #[arg(long, env = "BASE_AGENT_CMD")]
+    agent_cmd: Option<String>,
     /// Write rendered app-compose.json here.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -231,6 +235,7 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
         miner_hotkey_hex,
         pack_catalog_url,
         environment_image,
+        agent_cmd,
         out,
         no_deploy: _,
         deploy,
@@ -250,6 +255,10 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
         launch_token_file.as_deref(),
         miner_hotkey_hex.as_deref(),
     )?;
+    let agent_cmd_json = agent_cmd
+        .as_deref()
+        .map(validate_agent_cmd_json)
+        .transpose()?;
     let params = DeployParams {
         name,
         agent_image,
@@ -260,6 +269,7 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
         receipt_public_key_hex: receipt_public_key_hex.clone(),
         pack_catalog_url,
         environment_image,
+        agent_cmd_json,
         secrets,
         mode,
         out_compose: out,
@@ -278,6 +288,18 @@ fn run_deploy(args: DeployArgs) -> Result<(), String> {
                  secrets_travel_as_phala_encrypted_env_and_land_as_file_mounts_under_/run/base"
     );
     Ok(())
+}
+
+fn validate_agent_cmd_json(raw: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("--agent-cmd is not JSON: {e}"))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| "--agent-cmd must be a JSON array of strings".to_owned())?;
+    if items.is_empty() || !items.iter().all(serde_json::Value::is_string) {
+        return Err("--agent-cmd must be a JSON array of strings".into());
+    }
+    Ok(raw.to_owned())
 }
 
 fn resolve_launch_token_hash(

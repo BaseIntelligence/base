@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "env"] }
 crypto = { path = "../../crates/crypto" }
 hex = "0.4"
+serde_json = "1"
 miner = { path = "../../crates/miner" }
 keystore = { path = "../../crates/keystore" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -29,6 +30,7 @@ attest-policy = { path = "../../crates/attest-policy" }
 attest-replay = { path = "../../crates/attest-replay" }
 crypto = { path = "../../crates/crypto" }
 hex = "0.4"
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
 trustroot = { path = "../../crates/trustroot" }
 validator = { path = "../../crates/validator" }

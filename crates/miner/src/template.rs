@@ -43,8 +43,17 @@ pub const PACK_ROOT_ENV: &str = "BASE_PACK_ROOT";
 pub const PACK_CATALOG_URL_ENV: &str = "BASE_PACK_CATALOG_URL";
 /// Env name for the trusted challenge public key (64 lowercase hex).
 pub const TRUSTED_CHALLENGE_PUBKEY_ENV: &str = "BASE_TRUSTED_CHALLENGE_PUBKEY";
+/// Env name for the staging root the executor binds from (sibling containers).
+pub const WORK_ROOT_ENV: &str = "BASE_AGENT_WORK_ROOT";
+/// Env name for an optional operator agent command, as a JSON array string.
+pub const AGENT_CMD_ENV: &str = "BASE_AGENT_CMD";
 /// Default pack root path inside the CVM agent container.
 pub const DEFAULT_PACK_ROOT_IN_CVM: &str = "/var/lib/base/packs";
+/// Default exec staging root. It must be a host bind with identical source and
+/// target: the VM's Docker daemon resolves bind sources on the VM filesystem,
+/// while the executor stages them from inside the agent container, so only an
+/// identical string is seen the same way by both.
+pub const DEFAULT_WORK_ROOT_IN_CVM: &str = "/var/lib/base/agent-work";
 /// Default digest-pinned environment image for pack runs (frozen pin).
 pub const DEFAULT_ENVIRONMENT_IMAGE: &str =
     "bash@sha256:3bee76a96d86d5d2d5efc7c1c570e5a7c95db22348a26944e0e546fa174e3324";
@@ -59,8 +68,10 @@ pub const DEFAULT_SOCKET_PROXY_IMAGE: &str = concat!(
 /// dstack runs the pre-launch script with this as the compose working
 /// directory, so a relative `source: receipt_sk` lands here.
 pub const CVM_BIND_SOURCE_DIR: &str = "/dstack";
-/// Uid:gid of the runner images; the secret files must be readable by it.
-const RUNNER_UID_GID: &str = "65532:65532";
+/// Uid of the runner images; the secret files must be readable by it.
+const RUNNER_UID: u32 = 65532;
+/// Gid of the runner images.
+const RUNNER_GID: u32 = 65532;
 
 /// Render the measured `pre_launch_script`.
 ///
@@ -77,7 +88,10 @@ const RUNNER_UID_GID: &str = "65532:65532";
 #[must_use]
 pub fn pre_launch_script() -> String {
     let dir = CVM_BIND_SOURCE_DIR;
-    let uid_gid = RUNNER_UID_GID;
+    let uid_gid = format!("{RUNNER_UID}:{RUNNER_GID}");
+    let uid = RUNNER_UID.to_string();
+    let gid = RUNNER_GID.to_string();
+    let work_root = DEFAULT_WORK_ROOT_IN_CVM;
     let sk_env = RECEIPT_SK_HEX_ENV;
     let token_env = LAUNCH_TOKEN_ENV;
     let hotkey_env = MINER_HOTKEY_HEX_ENV;
@@ -97,6 +111,10 @@ if chown {uid_gid} {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey 2>/dev
 else
   chmod 0444 {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey
 fi
+# The executor stages bind sources for sibling containers under the work root.
+# Docker would auto-create an unknown bind source as root-owned, and the agent
+# runs as {uid_gid}, so create it here with the right owner instead.
+install -d -m 0775 -o {uid} -g {gid} {work_root}
 # Existence proof only — never echo a value.
 ls -la {dir}/receipt_sk {dir}/launch_token {dir}/miner_hotkey
 "#
@@ -126,6 +144,12 @@ pub struct ComposeTemplateInput<'a> {
     pub pack_catalog_url: &'a str,
     /// Trusted challenge public key (64 lowercase hex).
     pub trusted_challenge_pubkey_hex: &'a str,
+    /// Exec staging root; rendered as both the env value and the bind whose
+    /// source equals its target (see [`DEFAULT_WORK_ROOT_IN_CVM`]).
+    pub work_root: &'a str,
+    /// Optional `BASE_AGENT_CMD` JSON array. `None` keeps the reference agent
+    /// command, which is a placeholder no honest scoring depends on.
+    pub agent_cmd_json: Option<&'a str>,
 }
 
 /// Render the docker-compose YAML embedded in `app-compose.json`.
@@ -145,6 +169,9 @@ pub struct ComposeTemplateInput<'a> {
 pub fn docker_compose_yaml(input: &ComposeTemplateInput<'_>) -> String {
     // YAML is hand-built so key order and spacing stay stable for hashing.
     let docker_base = format!("http://{SOCKET_PROXY_SERVICE}:{SOCKET_PROXY_PORT}");
+    let agent_cmd_line = input.agent_cmd_json.map_or_else(String::new, |json| {
+        format!("\n      {AGENT_CMD_ENV}: '{}'", json.replace('\'', "''"))
+    });
     format!(
         r#"# base miner CVM — AGENT_CHALLENGE.md §9 (challenge_scoring_version=2)
 # Secrets: file mounts under {run_dir} only. Never put secret values in environment.
@@ -191,6 +218,7 @@ services:
       {pack_root_env}: "{pack_root}"
       {pack_catalog_url_env}: "{pack_catalog_url}"
       {trusted_pubkey_env}: "{trusted_pubkey}"
+      {work_root_env}: "{work_root}"{agent_cmd_line}
     volumes:
       - type: bind
         source: miner_hotkey
@@ -205,6 +233,13 @@ services:
         target: {receipt_sk_file}
         read_only: true
       - packs:{pack_root}
+      # The executor stages bind sources under this path and hands them to the
+      # VM's Docker daemon, which resolves bind sources on the VM, not in this
+      # container. source == target keeps staging path and daemon path the same
+      # string, which is the only arrangement that can work for both.
+      - type: bind
+        source: {work_root}
+        target: {work_root}
   {attest}:
     image: {attest_image}
     restart: unless-stopped
@@ -248,6 +283,9 @@ volumes:
         pack_catalog_url = input.pack_catalog_url,
         trusted_pubkey_env = TRUSTED_CHALLENGE_PUBKEY_ENV,
         trusted_pubkey = input.trusted_challenge_pubkey_hex,
+        work_root_env = WORK_ROOT_ENV,
+        work_root = input.work_root,
+        agent_cmd_line = agent_cmd_line,
         attest = ATTEST_HELPER_SERVICE,
         attest_image = input.attest_helper_image,
         attest_port = ATTEST_HELPER_PORT,
