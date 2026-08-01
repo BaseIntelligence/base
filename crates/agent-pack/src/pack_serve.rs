@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::{
-    export_stripped_tar_gz, load_catalog, load_pack, materialize_catalog, Catalog, CatalogError,
-    CatalogManifest, DEEPAGENT_PIN, PACKS_DIR_NAME,
+    export_stripped_tar_gz, load_catalog, load_pack, materialize_catalog, pull_packs, Catalog,
+    CatalogError, CatalogManifest, HfPullConfig, DEEPAGENT_HF_REPO, DEEPAGENT_HF_REVISION,
+    DEEPAGENT_HF_SUBDIR, DEEPAGENT_PIN, PACKS_DIR_NAME,
 };
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, StatusCode};
@@ -45,6 +46,9 @@ pub enum PackServeError {
     /// Source bootstrap empty.
     #[error("pack source empty or missing: {0}")]
     EmptySource(String),
+    /// `HuggingFace` Hub auto-pull failed: `(repo@revision, detail)`.
+    #[error("hf auto-pull from {0} failed: {1}")]
+    HfPull(String, String),
 }
 
 impl PackCatalogState {
@@ -125,14 +129,29 @@ impl PackCatalogState {
     }
 }
 
-/// Ensure pack source exists and is non-empty, optionally filling from seed / auto paths.
+/// Local directories checked before spending a network round-trip on the Hub.
+const LOCAL_PULL_CACHES: [&str; 2] = ["/tmp/da_m18c_hf_pull/tasks", "/var/lib/base/pack-seed"];
+
+/// Ensure pack source exists and is non-empty, optionally filling it from a
+/// local seed or a real `HuggingFace` Hub pull.
+///
+/// Bootstrap order when `source` has no packs:
+/// 1. copy `$BASE_PACK_SEED` (air-gapped / pre-staged runs),
+/// 2. when `BASE_HF_AUTO_PULL` is truthy: copy a pre-existing local pull cache
+///    if one is populated, otherwise download the pinned dataset subtree from
+///    the Hub via [`crate::pull_packs`].
 ///
 /// Env:
 /// - `BASE_PACK_SEED` — directory to copy when `source` is empty
-/// - `BASE_HF_AUTO_PULL=1` — if seed unset, try well-known local HF pull path
+/// - `BASE_HF_AUTO_PULL=1` — enable the Hub pull
+/// - `BASE_HF_SKIP_LOCAL_CACHE=1` — ignore [`LOCAL_PULL_CACHES`] and always
+///   fetch the pinned revision
+/// - `BASE_HF_REPO` / `BASE_HF_REVISION` / `BASE_HF_SUBDIR` / `BASE_HF_MAX_PACKS`
+/// - `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` — only needed for a private repo
 ///
 /// # Errors
-/// Empty source after bootstrap attempts.
+/// [`PackServeError::HfPull`] when the download fails, or
+/// [`PackServeError::EmptySource`] when every bootstrap path is exhausted.
 pub fn ensure_pack_source(source: &Path) -> Result<(), PackServeError> {
     if source_has_packs(source) {
         return Ok(());
@@ -148,23 +167,48 @@ pub fn ensure_pack_source(source: &Path) -> Result<(), PackServeError> {
         }
     }
 
-    let auto = std::env::var("BASE_HF_AUTO_PULL").unwrap_or_default();
-    if matches!(auto.as_str(), "1" | "true" | "TRUE" | "yes") {
-        let candidates = [
-            PathBuf::from("/tmp/da_m18c_hf_pull/tasks"),
-            PathBuf::from("/var/lib/base/pack-seed"),
-        ];
-        for c in candidates {
-            if source_has_packs(&c) {
-                copy_dir_contents(&c, source)?;
-                if source_has_packs(source) {
-                    return Ok(());
+    if env_truthy("BASE_HF_AUTO_PULL") {
+        // The local caches are an unpinned convenience: an operator can force
+        // the pinned revision instead of whatever a previous run left behind.
+        if !env_truthy("BASE_HF_SKIP_LOCAL_CACHE") {
+            for c in LOCAL_PULL_CACHES.map(PathBuf::from) {
+                if source_has_packs(&c) {
+                    copy_dir_contents(&c, source)?;
+                    if source_has_packs(source) {
+                        return Ok(());
+                    }
                 }
             }
         }
+
+        let cfg = HfPullConfig::from_env();
+        let n = pull_packs(&cfg, source)
+            .map_err(|e| PackServeError::HfPull(cfg.pin_label(), e.to_string()))?
+            .len();
+        if source_has_packs(source) {
+            return Ok(());
+        }
+        return Err(PackServeError::HfPull(
+            cfg.pin_label(),
+            format!(
+                "pulled {n} dir(s) into {}, none with task.toml",
+                source.display()
+            ),
+        ));
     }
 
-    Err(PackServeError::EmptySource(source.display().to_string()))
+    Err(PackServeError::EmptySource(format!(
+        "{}: no packs; set BASE_PACK_SEED=<dir> to copy a local seed, or BASE_HF_AUTO_PULL=1 \
+         to download {DEEPAGENT_HF_REPO}@{DEEPAGENT_HF_REVISION} subdir `{DEEPAGENT_HF_SUBDIR}` \
+         (override: BASE_HF_REPO / BASE_HF_REVISION / BASE_HF_SUBDIR / BASE_HF_MAX_PACKS / \
+         BASE_HF_SKIP_LOCAL_CACHE)",
+        source.display(),
+    )))
+}
+
+fn env_truthy(key: &str) -> bool {
+    let truthy = |v: &str| matches!(v, "1" | "true" | "yes" | "on");
+    std::env::var(key).is_ok_and(|v| truthy(v.trim().to_ascii_lowercase().as_str()))
 }
 
 fn source_has_packs(dir: &Path) -> bool {
@@ -340,5 +384,34 @@ mod tests {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         assert!(bytes.len() > 32);
         assert_eq!(&bytes[0..2], &[0x1f, 0x8b]);
+    }
+
+    #[test]
+    fn env_truthy_accepts_common_spellings() {
+        let key = "BASE_TEST_ENV_TRUTHY_PROBE";
+        for v in ["1", "true", "TRUE", "Yes", " on "] {
+            std::env::set_var(key, v);
+            assert!(super::env_truthy(key), "expected truthy for {v:?}");
+        }
+        for v in ["0", "false", "", "no", "maybe"] {
+            std::env::set_var(key, v);
+            assert!(!super::env_truthy(key), "expected falsy for {v:?}");
+        }
+        std::env::remove_var(key);
+        assert!(!super::env_truthy(key));
+    }
+
+    #[test]
+    fn empty_source_error_names_pin_and_operator_env_vars() {
+        std::env::remove_var("BASE_PACK_SEED");
+        std::env::remove_var("BASE_HF_AUTO_PULL");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = ensure_pack_source(tmp.path()).expect_err("no packs, auto-pull off");
+        let msg = err.to_string();
+        assert!(msg.contains(DEEPAGENT_HF_REPO), "{msg}");
+        assert!(msg.contains(DEEPAGENT_HF_REVISION), "{msg}");
+        assert!(msg.contains("BASE_PACK_SEED"), "{msg}");
+        assert!(msg.contains("BASE_HF_AUTO_PULL"), "{msg}");
+        assert!(msg.contains("BASE_HF_REVISION"), "{msg}");
     }
 }

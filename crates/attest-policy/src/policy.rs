@@ -12,7 +12,7 @@ use crate::verifier::{QuoteVerifier, VerifierFailureKind};
 use crate::{AttestOutcome, ParkReason, RejectReason};
 
 /// Inputs for one attestation policy evaluation.
-pub struct PolicyInput<'a, S: NonceStore, V: QuoteVerifier> {
+pub struct PolicyInput<'a, S: NonceStore, V: QuoteVerifier + ?Sized> {
     /// Owner-signed measurement allowlist (empty ⇒ fail closed).
     pub measurements: &'a MeasurementsBody,
     /// Parsed TD report fields (from `attest-parse`).
@@ -33,7 +33,7 @@ pub struct PolicyInput<'a, S: NonceStore, V: QuoteVerifier> {
 
 /// Run the full policy pipeline. Always returns an [`AttestOutcome`] (never panics).
 #[must_use]
-pub fn evaluate<S: NonceStore, V: QuoteVerifier>(
+pub fn evaluate<S: NonceStore, V: QuoteVerifier + ?Sized>(
     input: &mut PolicyInput<'_, S, V>,
 ) -> AttestOutcome {
     // 1. Allowlist fail-closed (empty body rejects every quote).

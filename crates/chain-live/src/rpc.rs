@@ -3,6 +3,9 @@
 use chain::ChainError;
 use serde_json::{json, Value};
 
+/// One `(storage_key, raw_value)` pair returned by a batched storage read.
+pub type StorageEntry = (Vec<u8>, Vec<u8>);
+
 /// Runtime version fields checked against the lockfile before signing.
 #[derive(Debug, Clone)]
 pub struct RuntimeVersion {
@@ -73,6 +76,105 @@ impl LiveChainRpc {
             return Ok(None);
         }
         Ok(Some(decode_hex_result(&result, "state_getStorage")?))
+    }
+
+    /// `state_getStorage` at an explicit block hash.
+    ///
+    /// # Errors
+    /// Transport or hex decode failure.
+    pub fn state_get_storage_at(
+        &self,
+        key: &[u8],
+        block_hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, ChainError> {
+        let hex_key = format!("0x{}", hex::encode(key));
+        let hex_at = format!("0x{}", hex::encode(block_hash));
+        let result = self.rpc("state_getStorage", &json!([hex_key, hex_at]))?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(decode_hex_result(&result, "state_getStorage")?))
+    }
+
+    /// `state_getKeysPaged` — one page of storage keys under `prefix`.
+    ///
+    /// `start_key` is exclusive; pass `prefix` to begin. An empty result means
+    /// the enumeration is complete.
+    ///
+    /// # Errors
+    /// Transport or hex decode failure.
+    pub fn state_get_keys_paged(
+        &self,
+        prefix: &[u8],
+        count: u32,
+        start_key: &[u8],
+        block_hash: Option<&[u8; 32]>,
+    ) -> Result<Vec<Vec<u8>>, ChainError> {
+        let hex_prefix = format!("0x{}", hex::encode(prefix));
+        let hex_start = format!("0x{}", hex::encode(start_key));
+        let params = match block_hash {
+            Some(h) => json!([
+                hex_prefix,
+                count,
+                hex_start,
+                format!("0x{}", hex::encode(h))
+            ]),
+            None => json!([hex_prefix, count, hex_start]),
+        };
+        let result = self.rpc("state_getKeysPaged", &params)?;
+        let arr = result
+            .as_array()
+            .ok_or_else(|| ChainError::Other("state_getKeysPaged: expected array".into()))?;
+        arr.iter()
+            .map(|v| decode_hex_result(v, "state_getKeysPaged"))
+            .collect()
+    }
+
+    /// `state_queryStorageAt` — batch-read values for `keys`.
+    ///
+    /// Returns [`StorageEntry`] pairs, skipping keys whose value is null.
+    ///
+    /// # Errors
+    /// Transport or hex decode failure.
+    pub fn state_query_storage_at(
+        &self,
+        keys: &[Vec<u8>],
+        block_hash: Option<&[u8; 32]>,
+    ) -> Result<Vec<StorageEntry>, ChainError> {
+        let hex_keys: Vec<String> = keys
+            .iter()
+            .map(|k| format!("0x{}", hex::encode(k)))
+            .collect();
+        let params = match block_hash {
+            Some(h) => json!([hex_keys, format!("0x{}", hex::encode(h))]),
+            None => json!([hex_keys]),
+        };
+        let result = self.rpc("state_queryStorageAt", &params)?;
+        let blocks = result
+            .as_array()
+            .ok_or_else(|| ChainError::Other("state_queryStorageAt: expected array".into()))?;
+        let mut out = Vec::new();
+        for block in blocks {
+            let Some(changes) = block.get("changes").and_then(Value::as_array) else {
+                continue;
+            };
+            for change in changes {
+                let Some(pair) = change.as_array() else {
+                    continue;
+                };
+                let (Some(k), Some(v)) = (pair.first(), pair.get(1)) else {
+                    continue;
+                };
+                if v.is_null() {
+                    continue;
+                }
+                out.push((
+                    decode_hex_result(k, "state_queryStorageAt key")?,
+                    decode_hex_result(v, "state_queryStorageAt value")?,
+                ));
+            }
+        }
+        Ok(out)
     }
 
     /// `state_call` — invoke a runtime API.

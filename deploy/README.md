@@ -54,10 +54,10 @@ export AGE_IDENTITY=/etc/base/age-identity.txt
 
 | Host | Droplet | VPC IP | Role | Hotkey | Gateway |
 |------|---------|--------|------|--------|---------|
-| staging master | `gbase-staging` | 10.116.0.2 | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
-| staging validator | `gbase-staging-validator` | 10.116.0.4 | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
-| prod master | `gbase-prod` | 10.116.0.3 | owner control plane | yes | yes |
-| prod validator | `gbase-prod-validator` | 10.116.0.5 (assigned) | normal validator | **no** | **no** — uses prod master gateway over VPC `:8080` |
+| staging master | `base-staging` | 10.116.0.2 | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
+| staging validator | `base-staging-validator` | 10.116.0.4 | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
+| prod master | `base-prod` | 10.116.0.3 | owner control plane | yes | yes |
+| prod validator | `base-prod-validator` | 10.116.0.5 (assigned) | normal validator | **no** | **no** — uses prod master gateway over VPC `:8080` |
 
 Deploy (manual or via CI):
 
@@ -117,15 +117,15 @@ Required GitHub secrets:
 | Secret | Purpose |
 |--------|---------|
 | `STAGING_SSH_KEY` | private key for droplet SSH |
-| `STAGING_MASTER_HOST` | public IPv4 of `gbase-staging` |
-| `STAGING_VALIDATOR_HOST` | public IPv4 of `gbase-staging-validator` |
+| `STAGING_MASTER_HOST` | public IPv4 of `base-staging` |
+| `STAGING_VALIDATOR_HOST` | public IPv4 of `base-staging-validator` |
 | `STAGING_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.2:8080` |
-| `PROD_HOST` | public IPv4 of `gbase-prod` |
+| `PROD_HOST` | public IPv4 of `base-prod` |
 | `PROD_SSH_KEY` | optional override of staging key |
-| `PROD_VALIDATOR_HOST` | public IPv4 of `gbase-prod-validator` |
+| `PROD_VALIDATOR_HOST` | public IPv4 of `base-prod-validator` |
 | `PROD_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.3:8080` |
 
-> **Not AWS EKS.** Control plane stays Docker Compose on DigitalOcean droplets (existing design). A separate DOKS cluster on this account (`basecrawl-prod-nyc3`) is unrelated and must not host gbase.
+> **Not AWS EKS.** Control plane stays Docker Compose on DigitalOcean droplets (existing design). A separate DOKS cluster on this account (`basecrawl-prod-nyc3`) is unrelated and must not host base.
 
 
 ## Infrastructure (DigitalOcean)

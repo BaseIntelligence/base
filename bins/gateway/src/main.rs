@@ -1,19 +1,14 @@
 //! gateway — master-only gateway with registry + proxy (D3).
 //!
-//! Resolves on-chain `SubnetOwnerHotkey` and refuses to bind any listener when
-//! the configured hotkey does not match (exit code 2).
+//! Chain backend: always [`chain_live::LiveChainClient`] against
+//! `BASE_CHAIN_ENDPOINT`. There is no in-memory fake.
 //!
-//! Chain backend (task 47 cleartext/IP e2e):
-//! - default / `BASE_CHAIN_BACKEND=fake_owner`: [`FakeChain`] whose owner hotkey
-//!   equals the configured `BASE_GATEWAY_HOTKEY` so master check can pass without
-//!   a full live SDK client (TLS/ACME still deferred to task 42).
-//! - `BASE_CHAIN_BACKEND=live`: [`chain_live::LiveChainClient`] reading from the
-//!   configured `BASE_CHAIN_ENDPOINT` (testnet or mainnet).
-//! - `BASE_CHAIN_BACKEND=not_implemented`: previous fail-closed stub.
+//! The gateway resolves the on-chain `SubnetOwnerHotkey` and logs whether the
+//! configured hotkey matches it. The mismatch is advisory by default; set
+//! `BASE_GATEWAY_REQUIRE_OWNER=1` to restore the fail-closed master-only check.
 
 use std::process::ExitCode;
 
-use chain::{FakeChain, FakeChainConfig, NotImplementedChain};
 use config::keys;
 use gateway::{GatewayConfig, GatewayError};
 
@@ -36,56 +31,22 @@ async fn main() -> ExitCode {
         }
     };
 
-    let backend = std::env::var("BASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake_owner".to_owned());
-    let backend = backend.to_ascii_lowercase();
-
-    match backend.as_str() {
-        "not_implemented" | "stub" => {
-            tracing::warn!(
-                backend = %backend,
-                "gateway using NotImplementedChain (master check will fail until live SDK)"
-            );
-            run_with(config, &NotImplementedChain).await
+    let endpoint = std::env::var(keys::CHAIN_ENDPOINT)
+        .unwrap_or_else(|_| config::DEFAULT_CHAIN_ENDPOINT.to_owned());
+    tracing::info!(
+        endpoint = %endpoint,
+        netuid = config.netuid,
+        "gateway connecting to live chain"
+    );
+    let mut client = match chain_live::LiveChainClient::connect(&endpoint) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("gateway: live chain connect failed: {e}");
+            return ExitCode::from(1);
         }
-        "live" => {
-            let endpoint = std::env::var(keys::CHAIN_ENDPOINT)
-                .unwrap_or_else(|_| config::DEFAULT_CHAIN_ENDPOINT.to_owned());
-            tracing::info!(backend = "live", endpoint = %endpoint, netuid = config.netuid, "gateway connecting to live chain");
-            match chain_live::LiveChainClient::connect(&endpoint) {
-                Ok(client) => {
-                    tracing::info!(backend = "live", "gateway live chain connected");
-                    run_with(config, &client).await
-                }
-                Err(e) => {
-                    eprintln!("gateway: live chain connect failed: {e}");
-                    ExitCode::from(1)
-                }
-            }
-        }
-        _ => {
-            // fake_owner (default): owner hotkey == configured gateway hotkey.
-            let hotkeys =
-                gateway::parse_fake_metagraph_hotkeys(&config.hotkey).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "bad BASE_FAKE_METAGRAPH_HOTKEYS; owner-only");
-                    vec![config.hotkey.to_vec()]
-                });
-            let fc = FakeChainConfig {
-                netuid: config.netuid,
-                owner_hotkey: config.hotkey.to_vec(),
-                hotkeys: hotkeys.clone(),
-                current_block: 10_000,
-                ..Default::default()
-            };
-            let chain = FakeChain::new(fc);
-            tracing::info!(
-                backend = "fake_owner",
-                netuid = config.netuid,
-                metagraph_n = hotkeys.len(),
-                "gateway chain: FakeChain owner matches BASE_GATEWAY_HOTKEY (cleartext e2e)"
-            );
-            run_with(config, &chain).await
-        }
-    }
+    };
+    client.set_netuid(config.netuid);
+    run_with(config, &client).await
 }
 
 async fn run_with(config: GatewayConfig, chain: &dyn chain::ChainClient) -> ExitCode {

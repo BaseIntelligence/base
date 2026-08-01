@@ -134,6 +134,6 @@ mod policy_tests;
 mod skeleton_tests;
 
 pub use attest::{
-    attest_router, spawn_attest_server, AttestState, NonceRequest, NonceResponse, SubmitRequest,
-    SubmitResponse, DEFAULT_NONCE_TTL,
+    attest_router, spawn_attest_server, verifier_from_env, AttestState, NonceRequest,
+    NonceResponse, SubmitRequest, SubmitResponse, DEFAULT_NONCE_TTL,
 };

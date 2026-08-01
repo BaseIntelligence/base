@@ -16,13 +16,18 @@
 //!
 //! # DCAP
 //!
-//! Unit tests use [`MockQuoteVerifier`]. Real `dcap-qvl >= 0.6.1` is an
-//! optional `dcap` feature; full integration is tasks 35/38. `deny.toml`
-//! bans `dcap-qvl < 0.6.1`.
+//! Unit tests use [`MockQuoteVerifier`]. Real Intel DCAP verification is
+//! [`DcapQuoteVerifier`] behind the non-default `dcap` feature (`dcap-qvl >=
+//! 0.6.1`, `deny.toml` bans older versions). The verdict mapping tables in
+//! [`map_dcap_tcb_status`] and friends are always compiled so the default
+//! offline CI path still tests them.
 
 #![forbid(unsafe_code)]
 
 mod credit;
+#[cfg(feature = "dcap")]
+mod dcap;
+mod dcap_map;
 mod error;
 mod glue;
 mod pipeline;
@@ -32,6 +37,15 @@ mod tcb;
 mod verifier;
 
 pub use credit::{AttestCreditBook, CreditKey};
+#[cfg(feature = "dcap")]
+pub use dcap::{
+    DcapInitError, DcapQuoteVerifier, DEFAULT_COLLATERAL_MAX_AGE, DEFAULT_FETCH_TIMEOUT,
+    DEFAULT_PCS_URL, PHALA_PCCS_URL,
+};
+pub use dcap_map::{
+    classify_dcap_collateral_error, classify_dcap_verify_error, is_dcap_revoked_error,
+    map_dcap_tcb_status,
+};
 pub use error::PolicyError;
 pub use glue::{mr_config_id_matches, replay_compose_hash};
 pub use pipeline::{verify_submission, SubmissionInput};

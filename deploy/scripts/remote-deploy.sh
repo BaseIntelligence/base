@@ -79,7 +79,7 @@ fi
 echo "remote-deploy: rsync tree"
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
   for b in validator gateway updater agent-challenge hypertraining-challenge prism-challenge agent-runner; do
-    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run cargo build --release"
+    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p agent-challenge-bin -p hypertraining-challenge-bin -p prism-challenge-bin -p agent-runner-bin"
   done
 fi
 
@@ -98,8 +98,19 @@ rsync -az --delete \
   --exclude '.omo/' \
   "$ROOT/" "$HOST:$REMOTE_DIR/"
 
-# Ensure secrets dirs exist (empty OK if not bootstrapped)
-ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets' && chmod 700 '$REMOTE_DIR/deploy/secrets'"
+# Ensure secrets dirs exist (empty OK if not bootstrapped).
+# deploy/secrets/lium is bind-mounted by prism-challenge, so it must be a real
+# directory with real files: compose would otherwise create directories where
+# the container expects files.
+ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' '$REMOTE_DIR/deploy/secrets/wallets' \
+  && chmod 700 '$REMOTE_DIR/deploy/secrets' '$REMOTE_DIR/deploy/secrets/lium' \
+  && for f in api_key ssh_ed25519 ssh_ed25519.pub; do \
+       [ -e '$REMOTE_DIR/deploy/secrets/lium/'\$f ] || : > '$REMOTE_DIR/deploy/secrets/lium/'\$f; \
+     done \
+  && chmod 400 '$REMOTE_DIR/deploy/secrets/lium/'* \
+  && chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/lium' \
+  && chmod -R a-w '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; \
+  chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; true"
 
 # Materialize missing env from examples (dev-safe placeholders) if absent
 ssh_h "bash -s" <<EOS
@@ -156,8 +167,21 @@ export BASE_DOCKER_BUILD_FROM='$BUILD_FROM'
 export COMPOSE_PROJECT_NAME=base
 # Build service images from current tree (source) unless prebuilt binaries exist.
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
-docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} up -d --remove-orphans
-docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} ps
+# The updater can only pull from a registry. Enable it only when the desired
+# image is a registry reference (host/path@sha256:…), otherwise every tick 404s
+# trying to pull a locally-built tag from Docker Hub.
+UP_PROFILE=""
+desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' deploy/env/updater.env 2>/dev/null | tail -1)
+case "\$desired" in
+  */*) UP_PROFILE="--profile auto-update"; echo "updater enabled (registry image)" ;;
+  *)
+    echo "updater disabled (desired image '\$desired' is not a registry reference)"
+    # Deselecting a profile does not remove an already-running container.
+    docker compose ${COMPOSE_FILES[*]} --profile auto-update rm -sf updater >/dev/null 2>&1 || true
+    ;;
+esac
+docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE up -d --remove-orphans
+docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
 # Local health probes via published tunnels if present, else container exec.
 sleep 5
 if curl -fsS -m 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then

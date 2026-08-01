@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use attest_policy::{
     verify_submission, AttestCreditBook, AttestOutcome, CollateralFreshness, CreditKey,
-    MockQuoteVerifier, ParkReason, QuoteVerifyOk, RejectReason, ReportDataBinding, SubmissionInput,
-    TcbStatus, VerifierFailureKind,
+    MockQuoteVerifier, ParkReason, QuoteVerifier, QuoteVerifyOk, RejectReason, ReportDataBinding,
+    SubmissionInput, TcbStatus, VerifierFailureKind,
 };
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -40,18 +40,31 @@ struct AttestInner {
     measurements: MeasurementsBody,
     validator_hotkey: [u8; KEY_LEN],
     netuid: u16,
-    verifier: MockQuoteVerifier,
+    verifier: Arc<dyn QuoteVerifier>,
     nonce_ttl: Duration,
 }
 
 impl AttestState {
-    /// Build state with allowlist + validator identity + mock/real verifier.
+    /// Build state with allowlist + validator identity + any verifier.
     #[must_use]
     pub fn new(
         measurements: MeasurementsBody,
         validator_hotkey: [u8; KEY_LEN],
         netuid: u16,
-        verifier: MockQuoteVerifier,
+        verifier: impl QuoteVerifier + 'static,
+    ) -> Self {
+        Self::with_verifier(measurements, validator_hotkey, netuid, Box::new(verifier))
+    }
+
+    /// Build state with an already-boxed verifier (dynamic startup selection).
+    ///
+    /// Pair with [`verifier_from_env`] to pick mock vs real DCAP at runtime.
+    #[must_use]
+    pub fn with_verifier(
+        measurements: MeasurementsBody,
+        validator_hotkey: [u8; KEY_LEN],
+        netuid: u16,
+        verifier: Box<dyn QuoteVerifier>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AttestInner {
@@ -60,13 +73,18 @@ impl AttestState {
                 measurements,
                 validator_hotkey,
                 netuid,
-                verifier,
+                verifier: Arc::from(verifier),
                 nonce_ttl: DEFAULT_NONCE_TTL,
             })),
         }
     }
 
-    /// Happy-path mock verifier (`UpToDate` + Fresh).
+    /// Happy-path **mock** verifier (`UpToDate` + Fresh) — tests only.
+    ///
+    /// This accepts every structurally valid quote without running any DCAP
+    /// crypto. Production must use [`verifier_from_env`] / [`with_verifier`].
+    ///
+    /// [`with_verifier`]: AttestState::with_verifier
     #[must_use]
     pub fn with_ok_verifier(
         measurements: MeasurementsBody,
@@ -84,7 +102,7 @@ impl AttestState {
         )
     }
 
-    /// PCS-outage mock (`Parked` / `PcsTimeout`).
+    /// PCS-outage **mock** (`Parked` / `PcsTimeout`) — tests only.
     #[must_use]
     pub fn with_pcs_timeout(
         measurements: MeasurementsBody,
@@ -130,6 +148,109 @@ impl AttestState {
     pub async fn validator_hotkey(&self) -> [u8; KEY_LEN] {
         self.inner.lock().await.validator_hotkey
     }
+}
+
+/// Env var selecting the quote verifier backend.
+pub const ENV_VERIFIER: &str = "BASE_ATTEST_VERIFIER";
+/// Env var overriding the PCCS / Intel PCS collateral base URL.
+pub const ENV_PCCS_URL: &str = "BASE_PCCS_URL";
+/// Env var overriding the maximum collateral age, in seconds.
+pub const ENV_COLLATERAL_MAX_AGE_SECS: &str = "BASE_COLLATERAL_MAX_AGE_SECS";
+
+/// Build the quote verifier selected by the environment.
+///
+/// | `BASE_ATTEST_VERIFIER` | verifier |
+/// |------------------------|----------|
+/// | unset | `DcapQuoteVerifier` when built with `--features dcap`, else the park mock |
+/// | `dcap` | `DcapQuoteVerifier` (hard park + `error!` when the feature is absent) |
+/// | `pcs_timeout` / `park` | park mock (`PcsTimeout`) |
+/// | `mock_ok` / `ok` | accept-everything mock — logs a loud `warn!` |
+/// | anything else | park mock (`VerifierUnavailable`) |
+///
+/// `BASE_PCCS_URL` overrides the collateral endpoint (default Intel PCS) and
+/// `BASE_COLLATERAL_MAX_AGE_SECS` the collateral cache TTL / max age.
+///
+/// Never fails: a verifier that cannot be constructed degrades to a park mock
+/// so the validator keeps serving without ever silently granting credit.
+#[must_use]
+pub fn verifier_from_env() -> Box<dyn QuoteVerifier> {
+    let mode = std::env::var(ENV_VERIFIER)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match mode.as_str() {
+        "" | "dcap" => dcap_verifier(),
+        "pcs_timeout" | "park" => park_verifier(VerifierFailureKind::PcsTimeout),
+        "mock_ok" | "ok" => {
+            tracing::warn!(
+                target: "attest",
+                verifier = "mock_ok",
+                "ATTESTATION QUOTES ARE NOT VERIFIED: {ENV_VERIFIER}=mock_ok accepts every \
+                 well-formed quote as TCB UpToDate. Never use this outside tests."
+            );
+            Box::new(MockQuoteVerifier::Ok(QuoteVerifyOk {
+                tcb_status: TcbStatus::UpToDate,
+                collateral: CollateralFreshness::Fresh,
+            }))
+        }
+        other => {
+            tracing::error!(
+                target: "attest",
+                verifier = other,
+                "unknown {ENV_VERIFIER} value; parking every quote"
+            );
+            park_verifier(VerifierFailureKind::Unavailable)
+        }
+    }
+}
+
+fn park_verifier(kind: VerifierFailureKind) -> Box<dyn QuoteVerifier> {
+    Box::new(MockQuoteVerifier::Err(kind))
+}
+
+#[cfg(feature = "dcap")]
+fn dcap_verifier() -> Box<dyn QuoteVerifier> {
+    use attest_policy::{DcapQuoteVerifier, DEFAULT_COLLATERAL_MAX_AGE, DEFAULT_PCS_URL};
+
+    let url = std::env::var(ENV_PCCS_URL)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_PCS_URL.to_owned());
+    let max_age = std::env::var(ENV_COLLATERAL_MAX_AGE_SECS)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map_or(DEFAULT_COLLATERAL_MAX_AGE, Duration::from_secs);
+    match DcapQuoteVerifier::new(&url, max_age) {
+        Ok(v) => {
+            tracing::info!(
+                target: "attest",
+                verifier = "dcap",
+                pccs_url = %url,
+                max_collateral_age_secs = max_age.as_secs(),
+                "real Intel DCAP quote verification enabled"
+            );
+            Box::new(v)
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "attest",
+                error = %e,
+                "failed to build the DCAP verifier; parking every quote"
+            );
+            park_verifier(VerifierFailureKind::Unavailable)
+        }
+    }
+}
+
+#[cfg(not(feature = "dcap"))]
+fn dcap_verifier() -> Box<dyn QuoteVerifier> {
+    tracing::error!(
+        target: "attest",
+        "DCAP verification requested but this binary was built without the \
+         `dcap` feature; parking every quote"
+    );
+    park_verifier(VerifierFailureKind::Unavailable)
 }
 
 /// Mount attestation routes on a new router (merge into the health app).
@@ -246,7 +367,7 @@ async fn submit_quote(
     };
 
     let now = Instant::now();
-    let verifier = g.verifier.clone();
+    let verifier = Arc::clone(&g.verifier);
     let measurements = g.measurements.clone();
     let outcome = {
         let nonces = &mut g.nonces;

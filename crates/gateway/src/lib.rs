@@ -91,6 +91,8 @@ pub struct GatewayConfig {
     pub registry: RegistryConfig,
     /// Sole TLS owner config (D20); real ACME in task 42.
     pub tls: TlsConfig,
+    /// How strictly to treat an on-chain subnet-owner mismatch.
+    pub owner_check: OwnerCheck,
 }
 
 impl GatewayConfig {
@@ -118,6 +120,7 @@ impl GatewayConfig {
             hotkey,
             registry,
             tls,
+            owner_check: OwnerCheck::from_env(),
         })
     }
 
@@ -132,9 +135,7 @@ impl GatewayConfig {
         let listen = SocketAddr::from_str(&listen_raw).map_err(|e| {
             GatewayError::Config(format!("invalid {} `{listen_raw}`: {e}", keys::LISTEN))
         })?;
-        let hotkey_raw = std::env::var(keys::HOTKEY)
-            .map_err(|_| GatewayError::Config(format!("missing required env {}", keys::HOTKEY)))?;
-        let hotkey = parse_hotkey_hex(&hotkey_raw)?;
+        let hotkey = resolve_gateway_hotkey()?;
         let registry = registry_config_from_env()?;
         let tls = TlsConfig::from_env();
         Self::from_base(&base, listen, hotkey, registry, tls)
@@ -161,6 +162,31 @@ fn registry_config_from_env() -> Result<RegistryConfig, GatewayError> {
         cfg.cooldown = std::time::Duration::from_secs(secs);
     }
     Ok(cfg)
+}
+
+/// Resolve the gateway hotkey from a Bittensor wallet, mnemonic file, or hex.
+///
+/// Delegates to [`keystore::resolve_public_key_from_env`] with the
+/// `BASE_GATEWAY` prefix, so operators may set any of:
+/// `BASE_GATEWAY_WALLET` (+ `BASE_GATEWAY_WALLET_HOTKEY`), `BASE_WALLET_NAME`,
+/// `BASE_GATEWAY_MNEMONIC_FILE`, `BASE_GATEWAY_SK_FILE`, or the legacy
+/// `BASE_GATEWAY_HOTKEY` (64 hex chars or an SS58 address).
+///
+/// # Errors
+///
+/// No source configured, or the configured source failed to load.
+pub fn resolve_gateway_hotkey() -> Result<[u8; 32], GatewayError> {
+    match keystore::resolve_public_key_from_env("BASE_GATEWAY") {
+        Ok(Some(pk)) => Ok(pk),
+        Ok(None) => Err(GatewayError::Config(format!(
+            "no gateway hotkey configured: set BASE_GATEWAY_WALLET (Bittensor wallet), \
+             BASE_GATEWAY_MNEMONIC_FILE, BASE_GATEWAY_SK_FILE, or {}",
+            keys::HOTKEY
+        ))),
+        Err(e) => Err(GatewayError::Config(format!(
+            "gateway hotkey resolution failed: {e}"
+        ))),
+    }
 }
 
 /// Parse a 32-byte hotkey from lowercase/uppercase hex (optional `0x` prefix).
@@ -262,27 +288,94 @@ impl GatewayError {
     }
 }
 
-/// Resolve `SubnetOwnerHotkey` and require equality with `configured_hotkey`.
+/// Env flag restoring the fail-closed master-only check.
+pub const REQUIRE_OWNER_ENV: &str = "BASE_GATEWAY_REQUIRE_OWNER";
+
+/// How strictly to treat an on-chain subnet-owner mismatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerCheck {
+    /// Log the result and start anyway (default).
+    Advisory,
+    /// Refuse to start unless the configured hotkey is the on-chain owner.
+    Required,
+}
+
+impl OwnerCheck {
+    /// Read the mode from [`REQUIRE_OWNER_ENV`]; absent or falsy → advisory.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let on = std::env::var(REQUIRE_OWNER_ENV)
+            .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes"));
+        if on {
+            Self::Required
+        } else {
+            Self::Advisory
+        }
+    }
+}
+
+/// Resolve `SubnetOwnerHotkey` and compare it with `configured_hotkey`.
 ///
 /// Does **not** bind any socket. Call this before [`TcpListener::bind`].
 ///
+/// Under [`OwnerCheck::Advisory`] a mismatch (or an unreadable owner) is logged
+/// and startup proceeds: the trust anchor for consumers is the bundle signature
+/// under the configured hotkey, not this lookup.
+///
 /// # Errors
 ///
-/// [`GatewayError::MasterMismatch`] or chain transport errors.
-pub fn assert_master_only(
+/// Under [`OwnerCheck::Required`]: [`GatewayError::MasterMismatch`] on a
+/// differing owner, or [`GatewayError::Chain`] when the lookup fails.
+pub fn check_master_only(
     chain: &dyn ChainClient,
     netuid: u16,
     configured_hotkey: &[u8],
+    mode: OwnerCheck,
 ) -> Result<(), GatewayError> {
-    let owner = chain.subnet_owner_hotkey(netuid)?;
-    if owner.as_slice() != configured_hotkey {
+    let strict = mode == OwnerCheck::Required;
+    let owner = match chain.subnet_owner_hotkey(netuid) {
+        Ok(o) => o,
+        Err(e) if strict => return Err(e.into()),
+        Err(e) => {
+            tracing::warn!(
+                netuid,
+                error = %e,
+                "subnet owner unreadable; continuing (advisory master check)"
+            );
+            return Ok(());
+        }
+    };
+    if owner.as_slice() == configured_hotkey {
+        tracing::info!(netuid, "master-only check passed: hotkey is subnet owner");
+        return Ok(());
+    }
+    if strict {
         return Err(GatewayError::MasterMismatch {
             configured: hotkey_hex(configured_hotkey),
             owner: hotkey_hex(&owner),
             netuid,
         });
     }
+    tracing::warn!(
+        netuid,
+        configured = %hotkey_hex(configured_hotkey),
+        owner = %hotkey_hex(&owner),
+        "configured hotkey is NOT the on-chain subnet owner; continuing because {REQUIRE_OWNER_ENV} is unset"
+    );
     Ok(())
+}
+
+/// [`check_master_only`] with the mode taken from [`REQUIRE_OWNER_ENV`].
+///
+/// # Errors
+///
+/// See [`check_master_only`].
+pub fn assert_master_only(
+    chain: &dyn ChainClient,
+    netuid: u16,
+    configured_hotkey: &[u8],
+) -> Result<(), GatewayError> {
+    check_master_only(chain, netuid, configured_hotkey, OwnerCheck::from_env())
 }
 
 /// Resolve trust-root directory: env, then `./config`, then `/etc/base/config`.
@@ -480,7 +573,7 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     // CRITICAL: master-only before any bind (D3).
-    assert_master_only(chain, config.netuid, &config.hotkey)?;
+    check_master_only(chain, config.netuid, &config.hotkey, config.owner_check)?;
 
     let _ = init_tracing();
     let metrics = init_metrics()?;
@@ -582,6 +675,8 @@ mod tests {
         [0xB2; 32]
     }
 
+    /// Test config with the fail-closed owner check, so the D3 refusal path
+    /// stays covered even though production now defaults to advisory.
     fn cfg(listen: SocketAddr, hotkey: [u8; 32]) -> GatewayConfig {
         GatewayConfig {
             listen,
@@ -589,13 +684,22 @@ mod tests {
             hotkey,
             registry: RegistryConfig::default(),
             tls: TlsConfig::default(),
+            owner_check: OwnerCheck::Required,
+        }
+    }
+
+    fn cfg_advisory(listen: SocketAddr, hotkey: [u8; 32]) -> GatewayConfig {
+        GatewayConfig {
+            owner_check: OwnerCheck::Advisory,
+            ..cfg(listen, hotkey)
         }
     }
 
     #[test]
     fn s1_assert_master_mismatch_no_bind_needed() {
         let chain = FakeChain::with_defaults();
-        let err = assert_master_only(&chain, 1, &other_hotkey()).expect_err("mismatch");
+        let err = check_master_only(&chain, 1, &other_hotkey(), OwnerCheck::Required)
+            .expect_err("mismatch");
         match &err {
             GatewayError::MasterMismatch {
                 configured,
@@ -614,7 +718,24 @@ mod tests {
     #[test]
     fn s2_assert_master_match_ok() {
         let chain = FakeChain::with_defaults();
-        assert_master_only(&chain, 1, &owner_hotkey()).expect("match");
+        check_master_only(&chain, 1, &owner_hotkey(), OwnerCheck::Required).expect("match");
+        check_master_only(&chain, 1, &owner_hotkey(), OwnerCheck::Advisory).expect("match");
+    }
+
+    /// Advisory mode is the default: a non-owner hotkey must still start.
+    #[test]
+    fn advisory_mode_allows_non_owner_hotkey() {
+        let chain = FakeChain::with_defaults();
+        check_master_only(&chain, 1, &other_hotkey(), OwnerCheck::Advisory)
+            .expect("advisory must not fail on mismatch");
+    }
+
+    /// Advisory mode also tolerates an unreadable owner (unknown netuid).
+    #[test]
+    fn advisory_mode_tolerates_chain_lookup_failure() {
+        let chain = FakeChain::with_defaults();
+        check_master_only(&chain, 99, &owner_hotkey(), OwnerCheck::Advisory)
+            .expect("advisory must not fail on chain error");
     }
 
     #[test]
@@ -667,6 +788,19 @@ mod tests {
 
     #[tokio::test]
     async fn s2_match_run_until_healthz_200() {
+        run_until_serves_healthz(cfg).await;
+    }
+
+    /// Advisory mode (the production default) must bind and serve even when the
+    /// configured hotkey is not the on-chain subnet owner.
+    #[tokio::test]
+    async fn advisory_non_owner_still_serves_healthz() {
+        run_until_serves_healthz(|addr, _hk| cfg_advisory(addr, other_hotkey())).await;
+    }
+
+    async fn run_until_serves_healthz(
+        make_cfg: impl FnOnce(SocketAddr, [u8; 32]) -> GatewayConfig,
+    ) {
         let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = reserve.local_addr().unwrap();
         drop(reserve);
@@ -675,7 +809,7 @@ mod tests {
             owner_hotkey: owner_hotkey().to_vec(),
             ..FakeChainConfig::default()
         });
-        let config = cfg(addr, owner_hotkey());
+        let config = make_cfg(addr, owner_hotkey());
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -724,7 +858,8 @@ mod tests {
     #[test]
     fn s3_chain_unknown_netuid_does_not_look_like_mismatch() {
         let chain = FakeChain::with_defaults();
-        let err = assert_master_only(&chain, 99, &owner_hotkey()).expect_err("bad netuid");
+        let err = check_master_only(&chain, 99, &owner_hotkey(), OwnerCheck::Required)
+            .expect_err("bad netuid");
         assert!(matches!(err, GatewayError::Chain(_)), "got {err}");
         assert_eq!(err.exit_code(), ExitCode::from(1));
     }

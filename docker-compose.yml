@@ -145,6 +145,10 @@ services:
       target: updater
       args:
         BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
+    # The updater pulls its desired image from a registry, so it is only useful
+    # when BASE_UPDATER_DESIRED_IMAGE is a registry reference. remote-deploy.sh
+    # enables this profile automatically in that case.
+    profiles: ["auto-update"]
     restart: unless-stopped
     depends_on:
       socket-proxy:
@@ -191,6 +195,8 @@ services:
       BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
     volumes:
       - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+      # Persist HuggingFace-pulled task packs across restarts.
+      - agent-pack-source:/var/lib/base/pack-source
     expose:
       - "8090"
     healthcheck:
@@ -257,10 +263,15 @@ services:
     environment:
       BASE_CHALLENGE_BIND: 0.0.0.0:8092
       BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
-      # Force Sim backend in compose (no live Lium GPU in container).
-      PRISM_FORCE_SIM: "true"
+      # Real Lium is used whenever an API key is present. Set PRISM_FORCE_SIM=true
+      # to keep a deployment on the offline deterministic backend (no GPU spend).
+      PRISM_FORCE_SIM: "${PRISM_FORCE_SIM:-false}"
+      LIUM_API_KEY_FILE: /run/base/lium/api_key
+      LIUM_SSH_PRIVATE_KEY: /run/base/lium/ssh_ed25519
+      LIUM_SSH_PUBLIC_KEY_FILE: /run/base/lium/ssh_ed25519.pub
     volumes:
       - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+      - ./deploy/secrets/lium:/run/base/lium:ro
     expose:
       - "8092"
     healthcheck:
@@ -318,6 +329,7 @@ services:
 volumes:
   base-pgdata:
   base-updater-state:
+  agent-pack-source:
 
 networks:
   base:

@@ -109,17 +109,29 @@ fn cmd_identity(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the Lium API key.
+///
+/// Order: `LIUM_API_KEY_FILE` (preferred — keeps the secret out of the process
+/// environment and out of `docker inspect`), then `LIUM_API_KEY`, then the
+/// operator credentials file.
 fn load_lium_api_key() -> Option<String> {
+    if let Some(path) = std::env::var_os("LIUM_API_KEY_FILE") {
+        if let Ok(text) = std::fs::read_to_string(PathBuf::from(path)) {
+            let t = text.trim().to_owned();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+    }
     if let Ok(k) = std::env::var("LIUM_API_KEY") {
         let t = k.trim().to_owned();
         if !t.is_empty() {
             return Some(t);
         }
     }
-    let cred = PathBuf::from("/root/.config/prism-mission/credentials.env");
-    let Ok(text) = std::fs::read_to_string(cred) else {
-        return None;
-    };
+    let cred = std::env::var("LIUM_CREDENTIALS_FILE")
+        .unwrap_or_else(|_| "/root/.config/prism-mission/credentials.env".to_owned());
+    let text = std::fs::read_to_string(PathBuf::from(cred)).ok()?;
     for line in text.lines() {
         let line = line.trim();
         let line = line.strip_prefix("export ").unwrap_or(line);

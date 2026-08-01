@@ -1,15 +1,38 @@
-# Staging environment — Bittensor testnet (Finney).
-# Netuid 541, testnet endpoint, cleartext/IP e2e (no TLS).
+# Staging environment — Bittensor testnet (Finney), netuid 541.
+#
+# Netuid 541 is owned on testnet by the `base-owner` hotkey
+# (5CfjVGG7DaagMUuABNnqQJygLV2xtn3AQ7LnPeFoc5gVK9xo), so the gateway's
+# subnet-owner check passes here for real.
+#
+# Cleartext/IP e2e (no TLS).
 services:
   validator:
     environment:
       BASE_NETUID: "541"
       BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
       BASE_COORDINATION_INTERVAL_SECS: "3"
+      BT_WALLETS_PATH: /run/base/wallets
+      BASE_VALIDATOR_WALLET: base-validator
+    volumes:
+      - ./deploy/secrets/wallets:/run/base/wallets:ro
   gateway:
     environment:
       BASE_NETUID: "541"
-      BASE_CHAIN_BACKEND: "fake_owner"
+      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      BT_WALLETS_PATH: /run/base/wallets
+      BASE_GATEWAY_WALLET: base-owner
+      # We do own netuid 541 on testnet, so the owner check can be strict here.
+      BASE_GATEWAY_REQUIRE_OWNER: "1"
+    volumes:
+      - ./deploy/secrets/wallets:/run/base/wallets:ro
   agent-challenge:
     environment:
       BASE_CHALLENGE_DISPATCH: "0"
+      # Pull the pinned deepagent task packs from HuggingFace on first boot.
+      BASE_HF_AUTO_PULL: "1"
+      BASE_HF_MAX_PACKS: "9"
+  prism-challenge:
+    environment:
+      # Staging exercises the real Lium path only when an API key is present in
+      # deploy/secrets/lium/api_key; otherwise the client falls back to Sim.
+      PRISM_FORCE_SIM: "false"

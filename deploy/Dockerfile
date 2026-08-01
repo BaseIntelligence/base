@@ -33,7 +33,10 @@ COPY bins ./bins
 COPY xtask ./xtask
 # Keep workspace metadata members that Docker context needs
 COPY config ./config
+# validator-bin/dcap turns on real Intel DCAP quote verification; without it the
+# validator parks every attestation instead of verifying it.
 RUN cargo build --release \
+--features validator-bin/dcap \
 -p validator-bin \
 -p gateway-bin \
 -p updater-bin \
@@ -90,7 +93,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 65532 base \
-    && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base
+    && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
+    && mkdir -p /var/lib/base/pack-source \
+    && chown -R base:base /var/lib/base
+# A named volume mounted here inherits this ownership, so the nonroot user can
+# write pulled task packs.
 USER base
 WORKDIR /home/base
 

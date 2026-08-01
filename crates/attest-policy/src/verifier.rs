@@ -35,7 +35,9 @@ pub struct QuoteVerifyError {
 }
 
 /// Abstract quote verifier (mock in tests; dcap-qvl in prod feature).
-pub trait QuoteVerifier {
+///
+/// `Send + Sync` so a boxed verifier can live inside shared validator state.
+pub trait QuoteVerifier: Send + Sync {
     /// Verify quote bytes (and optional collateral material).
     ///
     /// # Errors
@@ -62,13 +64,14 @@ impl QuoteVerifier for MockQuoteVerifier {
     }
 }
 
-#[cfg(feature = "dcap")]
-mod dcap_stub {
-    //! Placeholder for task 35/38: wire `dcap-qvl` here.
-    //!
-    //! Do not enable `dcap` in default CI until collateral + PCS fixtures land.
-    #![allow(dead_code)]
+impl<T: QuoteVerifier + ?Sized> QuoteVerifier for Box<T> {
+    fn verify(&self, quote: &[u8]) -> Result<QuoteVerifyOk, QuoteVerifyError> {
+        (**self).verify(quote)
+    }
+}
 
-    // Re-export version floor for compile-time presence checks.
-    pub use dcap_qvl as qvl;
+impl<T: QuoteVerifier + ?Sized> QuoteVerifier for std::sync::Arc<T> {
+    fn verify(&self, quote: &[u8]) -> Result<QuoteVerifyOk, QuoteVerifyError> {
+        (**self).verify(quote)
+    }
 }

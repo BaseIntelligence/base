@@ -18,10 +18,11 @@ pub use extrinsic::{
     build_and_sign_commit_timelocked, build_and_sign_set_weights, commit_timelocked_call,
     derive_public_key, set_weights_call, Era,
 };
-pub use rpc::{LiveChainRpc, RuntimeVersion};
+pub use rpc::{LiveChainRpc, RuntimeVersion, StorageEntry};
 pub use storage::{
-    decode_bool, decode_hotkey, decode_metagraph, decode_u16, decode_u64, decode_vec_vec_u8,
-    storage_key, storage_map_key, storage_map_key_u16,
+    decode_bool, decode_double_map_k2, decode_hotkey, decode_metagraph, decode_u16, decode_u64,
+    decode_vec_vec_u8, storage_double_map_key_u16_u16, storage_double_map_prefix_u16, storage_key,
+    storage_map_key_identity, storage_map_key_twox64, storage_map_key_u16,
 };
 
 use std::path::Path;
@@ -36,6 +37,12 @@ const COMMIT_REVEAL_VERSION: u16 = 4;
 const DEFAULT_NETUID: u16 = 1;
 /// `SubtensorModule` pallet name.
 const PALLET_SUBTENSOR: &str = "SubtensorModule";
+/// `RevealPeriodEpochs` `ValueQuery` default when the key is absent.
+const DEFAULT_REVEAL_PERIOD_EPOCHS: u16 = 1;
+/// Page size for `state_getKeysPaged` when enumerating a netuid's neurons.
+const KEYS_PAGE_SIZE: u32 = 512;
+/// Upper bound on enumerated neurons, guarding against a runaway pager.
+const MAX_NEURONS: usize = 16_384;
 
 /// Live chain client with sr25519 signed extrinsic submission.
 pub struct LiveChainClient {
@@ -94,6 +101,21 @@ impl LiveChainClient {
         self.netuid = netuid;
     }
 
+    /// Install the sr25519 mini-secret used to sign extrinsics.
+    ///
+    /// Callers typically derive this from a Bittensor wallet mnemonic. Without
+    /// it, `set_weights` and `submit_timelocked_weights` fail closed rather
+    /// than silently doing nothing.
+    pub fn set_signing_key(&mut self, mini_secret: [u8; 32]) {
+        self.signing_key = Some(mini_secret);
+    }
+
+    /// Whether a signing key is loaded. Never exposes the key itself.
+    #[must_use]
+    pub fn can_sign(&self) -> bool {
+        self.signing_key.is_some()
+    }
+
     /// Require a signing key, returning an error if none is loaded.
     fn require_key(&self) -> Result<[u8; 32], ChainError> {
         self.signing_key
@@ -123,22 +145,98 @@ impl LiveChainClient {
         Ok(())
     }
 
-    /// Read a per-netuid u64 storage value.
-    fn read_netuid_u64(&self, item: &str, netuid: u16) -> Result<u64, ChainError> {
+    /// Read a per-netuid `u64`, substituting a `ValueQuery` default when absent.
+    ///
+    /// Substrate omits `ValueQuery` keys whose value equals the pallet default,
+    /// so an absent key is normal and must not be an error.
+    fn read_netuid_u64(&self, item: &str, netuid: u16, default: u64) -> Result<u64, ChainError> {
         let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, item, netuid);
-        let bytes = self.rpc.state_get_storage(&key)?.ok_or_else(|| {
-            ChainError::Other(format!("{PALLET_SUBTENSOR}.{item}({netuid}) not found"))
-        })?;
-        storage::decode_u64(&bytes)
+        match self.rpc.state_get_storage(&key)? {
+            Some(bytes) => storage::decode_u64(&bytes),
+            None => Ok(default),
+        }
     }
 
-    /// Read a per-netuid u16 storage value.
-    fn read_netuid_u16(&self, item: &str, netuid: u16) -> Result<u16, ChainError> {
+    /// Read a per-netuid `u16`, substituting a `ValueQuery` default when absent.
+    fn read_netuid_u16(&self, item: &str, netuid: u16, default: u16) -> Result<u16, ChainError> {
+        let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, item, netuid);
+        match self.rpc.state_get_storage(&key)? {
+            Some(bytes) => storage::decode_u16(&bytes),
+            None => Ok(default),
+        }
+    }
+
+    /// Read a per-netuid `u16` that must exist (no meaningful default).
+    fn read_netuid_u16_required(&self, item: &str, netuid: u16) -> Result<u16, ChainError> {
         let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, item, netuid);
         let bytes = self.rpc.state_get_storage(&key)?.ok_or_else(|| {
             ChainError::Other(format!("{PALLET_SUBTENSOR}.{item}({netuid}) not found"))
         })?;
         storage::decode_u16(&bytes)
+    }
+
+    /// Read `SubnetOwnerHotkey(netuid)`; absent means the subnet does not exist.
+    fn read_owner_hotkey(&self, netuid: u16, at: Option<&[u8; 32]>) -> Result<Vec<u8>, ChainError> {
+        let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "SubnetOwnerHotkey", netuid);
+        let raw = match at {
+            Some(h) => self.rpc.state_get_storage_at(&key, h)?,
+            None => self.rpc.state_get_storage(&key)?,
+        };
+        let bytes = raw.ok_or_else(|| {
+            ChainError::Other(format!(
+                "{PALLET_SUBTENSOR}.SubnetOwnerHotkey({netuid}) not found — subnet does not exist"
+            ))
+        })?;
+        storage::decode_hotkey(&bytes)
+    }
+
+    /// Enumerate `Keys(netuid, uid) -> AccountId32` in ascending `uid` order.
+    ///
+    /// `Keys` is a double map, so the hotkeys are spread across one storage
+    /// entry per neuron rather than a single `Vec`. Pages through
+    /// `state_getKeysPaged` and batch-reads with `state_queryStorageAt`.
+    fn enumerate_hotkeys(
+        &self,
+        netuid: u16,
+        at: Option<&[u8; 32]>,
+    ) -> Result<Vec<Vec<u8>>, ChainError> {
+        let prefix = storage::storage_double_map_prefix_u16(PALLET_SUBTENSOR, "Keys", netuid);
+        let mut start = prefix.clone();
+        let mut all_keys: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let page = self
+                .rpc
+                .state_get_keys_paged(&prefix, KEYS_PAGE_SIZE, &start, at)?;
+            if page.is_empty() {
+                break;
+            }
+            let short = page.len() < KEYS_PAGE_SIZE as usize;
+            if let Some(last) = page.last() {
+                start.clone_from(last);
+            }
+            all_keys.extend(page);
+            if short {
+                break;
+            }
+            if all_keys.len() > MAX_NEURONS {
+                return Err(ChainError::Other(format!(
+                    "{PALLET_SUBTENSOR}.Keys({netuid}) exceeded {MAX_NEURONS} entries"
+                )));
+            }
+        }
+        if all_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut by_uid: std::collections::BTreeMap<u16, Vec<u8>> =
+            std::collections::BTreeMap::new();
+        for chunk in all_keys.chunks(256) {
+            for (key, value) in self.rpc.state_query_storage_at(chunk, at)? {
+                let uid = storage::decode_double_map_k2(&key)?;
+                by_uid.insert(uid, storage::decode_hotkey(&value)?);
+            }
+        }
+        Ok(by_uid.into_values().collect())
     }
 
     /// Submit a signed extrinsic and return the hash/subscription ID.
@@ -187,44 +285,31 @@ impl ChainClient for LiveChainClient {
         self.rpc.chain_get_block_hash(n)
     }
 
-    fn metagraph_at(&self, _block_hash: &[u8; 32]) -> Result<Metagraph, ChainError> {
+    fn metagraph_at(&self, block_hash: &[u8; 32]) -> Result<Metagraph, ChainError> {
         let netuid = self.netuid;
-        let keys_key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "Keys", netuid);
-        let keys_bytes = self.rpc.state_get_storage(&keys_key)?.ok_or_else(|| {
-            ChainError::Other(format!("{PALLET_SUBTENSOR}.Keys({netuid}) not found"))
-        })?;
-        let keys = storage::decode_vec_vec_u8(&keys_bytes)?;
-
-        let owner_key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "SubnetOwnerHotkey", netuid);
-        let owner_bytes = self.rpc.state_get_storage(&owner_key)?.ok_or_else(|| {
-            ChainError::Other(format!(
-                "{PALLET_SUBTENSOR}.SubnetOwnerHotkey({netuid}) not found"
-            ))
-        })?;
-        let owner = storage::decode_hotkey(&owner_bytes)?;
-
+        // A zero hash means "tip"; callers that do not track a block pass it.
+        let at = if block_hash == &[0_u8; 32] {
+            None
+        } else {
+            Some(block_hash)
+        };
+        let keys = self.enumerate_hotkeys(netuid, at)?;
+        let owner = self.read_owner_hotkey(netuid, at)?;
         Ok(storage::decode_metagraph(keys, owner, netuid))
     }
 
     fn subnet_owner_hotkey(&self, netuid: u16) -> Result<Vec<u8>, ChainError> {
-        let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "SubnetOwnerHotkey", netuid);
-        let bytes = self.rpc.state_get_storage(&key)?.ok_or_else(|| {
-            ChainError::Other(format!(
-                "{PALLET_SUBTENSOR}.SubnetOwnerHotkey({netuid}) not found"
-            ))
-        })?;
-        storage::decode_hotkey(&bytes)
+        self.read_owner_hotkey(netuid, None)
     }
 
     fn commit_reveal_enabled(&self, netuid: u16) -> Result<bool, ChainError> {
         let key =
             storage::storage_map_key_u16(PALLET_SUBTENSOR, "CommitRevealWeightsEnabled", netuid);
-        let bytes = self.rpc.state_get_storage(&key)?.ok_or_else(|| {
-            ChainError::Other(format!(
-                "{PALLET_SUBTENSOR}.CommitRevealWeightsEnabled({netuid}) not found"
-            ))
-        })?;
-        storage::decode_bool(&bytes)
+        // `ValueQuery` with a `false` default: an absent key means disabled.
+        match self.rpc.state_get_storage(&key)? {
+            Some(bytes) => storage::decode_bool(&bytes),
+            None => Ok(false),
+        }
     }
 
     fn commit_reveal_version(&self, netuid: u16) -> Result<u16, ChainError> {
@@ -237,11 +322,13 @@ impl ChainClient for LiveChainClient {
     }
 
     fn tempo(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u16("Tempo", netuid).map(u64::from)
+        // No safe default: epoch math is wrong without the real tempo.
+        self.read_netuid_u16_required("Tempo", netuid)
+            .map(u64::from)
     }
 
     fn reveal_period_epochs(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u16("RevealPeriodEpochs", netuid)
+        self.read_netuid_u16("RevealPeriodEpochs", netuid, DEFAULT_REVEAL_PERIOD_EPOCHS)
             .map(u64::from)
     }
 
@@ -251,19 +338,19 @@ impl ChainClient for LiveChainClient {
     }
 
     fn last_epoch_block(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u64("LastEpochBlock", netuid)
+        self.read_netuid_u64("LastEpochBlock", netuid, 0)
     }
 
     fn pending_epoch_at(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u64("PendingEpochAt", netuid)
+        self.read_netuid_u64("PendingEpochAt", netuid, 0)
     }
 
     fn subnet_epoch_index(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u64("SubnetEpochIndex", netuid)
+        self.read_netuid_u64("SubnetEpochIndex", netuid, 0)
     }
 
     fn blocks_since_last_step(&self, netuid: u16) -> Result<u64, ChainError> {
-        self.read_netuid_u64("BlocksSinceLastStep", netuid)
+        self.read_netuid_u64("BlocksSinceLastStep", netuid, 0)
     }
 
     fn submit_timelocked_weights(

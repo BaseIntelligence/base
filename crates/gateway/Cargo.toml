@@ -17,6 +17,7 @@ bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 config = { path = "../config" }
 crypto = { path = "../crypto" }
+keystore = { path = "../keystore" }
 telemetry = { path = "../telemetry" }
 trustroot = { path = "../trustroot" }
 hex = "0.4"

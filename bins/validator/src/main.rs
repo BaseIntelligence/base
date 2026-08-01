@@ -13,9 +13,9 @@
 //! `/v1/weights/latest`, fetches the sealed bundle, runs `compare_bundle`, and
 //! logs a `Match epoch=...` line on success.
 //!
-//! Chain backend (`BASE_CHAIN_BACKEND`):
-//! - default / `"fake"`: [`chain::FakeChain`] aligned with gateway hotkey.
-//! - `"live"`: [`chain_live::LiveChainClient`] reading from `BASE_CHAIN_ENDPOINT`.
+//! Chain backend: always [`chain_live::LiveChainClient`] against
+//! `BASE_CHAIN_ENDPOINT`. There is no in-memory fake; a validator that cannot
+//! reach the chain exits rather than recomputing against invented state.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bundle::LocalTrustRoot;
-use chain::{ChainClient, FakeChain, FakeChainConfig};
+use chain::ChainClient;
 use config::{keys, load, Role};
 use trustroot::{load_config_dir, measurements_digest};
 use validator::{
@@ -75,37 +75,54 @@ async fn main() -> ExitCode {
         }
     };
 
-    let backend = std::env::var("BASE_CHAIN_BACKEND").unwrap_or_else(|_| "fake".to_owned());
-    let backend = backend.to_ascii_lowercase();
-
-    if backend == "live" {
-        tracing::info!(
-            backend = "live",
-            endpoint = %cfg.chain_endpoint,
-            netuid,
-            "validator connecting to live chain"
-        );
-        match chain_live::LiveChainClient::connect(&cfg.chain_endpoint) {
-            Ok(client) => {
-                let chain = Arc::new(SyncChain::new(client));
-                run_validator_main(cfg, listen, netuid, attest, trust, chain).await
-            }
-            Err(e) => {
-                eprintln!("validator: live chain connect failed: {e}");
-                ExitCode::from(1)
-            }
+    tracing::info!(
+        endpoint = %cfg.chain_endpoint,
+        netuid,
+        "validator connecting to live chain"
+    );
+    let mut client = match chain_live::LiveChainClient::connect(&cfg.chain_endpoint) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("validator: live chain connect failed: {e}");
+            return ExitCode::from(1);
         }
-    } else {
-        let fake = match fake_chain_aligned(netuid) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("validator: fake chain build failed: {e}");
-                return ExitCode::from(2);
-            }
-        };
-        let chain = Arc::new(SyncChain::new(fake));
-        run_validator_main(cfg, listen, netuid, attest, trust, chain).await
+    };
+    client.set_netuid(netuid);
+
+    // Weight submission needs the sr25519 secret, not just the public hotkey.
+    match keystore::resolve_keypair_from_env("BASE_VALIDATOR") {
+        Ok(Some(kp)) => {
+            client.set_signing_key(*kp.expose_mini_secret());
+            tracing::info!(
+                hotkey = %kp.ss58_address(),
+                "validator signing key loaded; weight submission enabled"
+            );
+        }
+        Ok(None) => tracing::warn!(
+            "no validator signing key configured; weight submission will fail closed \
+             (set BASE_VALIDATOR_WALLET or BASE_VALIDATOR_MNEMONIC_FILE)"
+        ),
+        Err(e) => {
+            eprintln!("validator: signing key resolution failed: {e}");
+            return ExitCode::from(2);
+        }
     }
+
+    // Fail fast on a misconfigured netuid rather than looping on empty reads.
+    match client.subnet_owner_hotkey(netuid) {
+        Ok(owner) => tracing::info!(
+            netuid,
+            owner = %hex::encode(&owner),
+            "live chain reachable; subnet owner resolved"
+        ),
+        Err(e) => {
+            eprintln!("validator: chain preflight failed for netuid {netuid}: {e}");
+            return ExitCode::from(1);
+        }
+    }
+
+    let chain = Arc::new(SyncChain::new(client));
+    run_validator_main(cfg, listen, netuid, attest, trust, chain).await
 }
 
 /// Generic main body: database, runtime, spawn, coordination loop, ctrl-c, shutdown.
@@ -257,71 +274,24 @@ fn load_attest_and_trust(
     );
 
     let hotkey = validator_hotkey_from_env();
-    let mode = std::env::var("BASE_ATTEST_VERIFIER").unwrap_or_else(|_| "ok".to_owned());
-    let attest = match mode.as_str() {
-        "pcs_timeout" | "park" | "parked" => {
-            tracing::warn!(%mode, "attest verifier = PCS timeout (Parked path)");
-            AttestState::with_pcs_timeout(measurements, hotkey, netuid)
-        }
-        _ => AttestState::with_ok_verifier(measurements, hotkey, netuid),
-    };
+    // Real Intel DCAP when built with `--features dcap`; see BASE_ATTEST_VERIFIER.
+    let attest =
+        AttestState::with_verifier(measurements, hotkey, netuid, validator::verifier_from_env());
 
     Ok((attest, trust))
 }
 
-fn fake_chain_aligned(netuid: u16) -> Result<FakeChain, String> {
-    let owner = parse_hotkey_env("BASE_GATEWAY_HOTKEY")
-        .or_else(|| parse_hotkey_env("BASE_VALIDATOR_HOTKEY_HEX"))
-        .unwrap_or([0xA1; 32]);
-    let hotkeys = parse_fake_metagraph_hotkeys(&owner)?;
-    Ok(FakeChain::new(FakeChainConfig {
-        netuid,
-        owner_hotkey: owner.to_vec(),
-        hotkeys,
-        current_block: 10_000,
-        ..FakeChainConfig::default()
-    }))
-}
-
-fn parse_fake_metagraph_hotkeys(owner: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
-    let Ok(raw) = std::env::var("BASE_FAKE_METAGRAPH_HOTKEYS") else {
-        return Ok(vec![owner.to_vec()]);
-    };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(vec![owner.to_vec()]);
-    }
-    let mut out = Vec::new();
-    for part in raw.split(',') {
-        let h = parse_hotkey_hex(part.trim()).map_err(|e| e.clone())?;
-        out.push(h.to_vec());
-    }
-    if out.is_empty() {
-        out.push(owner.to_vec());
-    }
-    Ok(out)
-}
-
-fn parse_hotkey_env(name: &str) -> Option<[u8; 32]> {
-    let Ok(s) = std::env::var(name) else {
-        return None;
-    };
-    parse_hotkey_hex(s.trim()).ok()
-}
-
-fn parse_hotkey_hex(s: &str) -> Result<[u8; 32], String> {
-    let s = s.trim();
-    let s = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
-    let bytes = hex::decode(s).map_err(|e| format!("hotkey hex: {e}"))?;
-    bytes
-        .try_into()
-        .map_err(|v: Vec<u8>| format!("hotkey must be 32 bytes, got {}", v.len()))
-}
-
-/// Optional 32-byte validator hotkey for D10 `report_data` binding (hex or zeros).
+/// Resolve the validator hotkey used for D10 `report_data` binding.
+///
+/// Order: Bittensor wallet (`BASE_WALLET_NAME` / `BASE_WALLET_HOTKEY`), then a
+/// mnemonic file, then raw hex. Zeros only when nothing is configured.
 fn validator_hotkey_from_env() -> [u8; 32] {
-    parse_hotkey_env("BASE_VALIDATOR_HOTKEY_HEX").unwrap_or([0u8; 32])
+    match keystore::resolve_public_key_from_env("BASE_VALIDATOR") {
+        Ok(Some(pk)) => pk,
+        Ok(None) => [0_u8; 32],
+        Err(e) => {
+            tracing::warn!(error = %e, "validator hotkey resolution failed; using zeros");
+            [0_u8; 32]
+        }
+    }
 }

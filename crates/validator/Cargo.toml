@@ -8,6 +8,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+# Real Intel DCAP quote verification in the attestation endpoint.
+dcap = ["attest-http/dcap"]
+
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 attest-http = { path = "../attest-http" }

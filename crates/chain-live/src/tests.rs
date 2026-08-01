@@ -2,8 +2,9 @@
 //! Unit tests for chain-live (wiremock + pure fixture tests).
 
 use crate::{
-    commit_timelocked_call, decode_bool, decode_hotkey, decode_metagraph, decode_u16, decode_u64,
-    decode_vec_vec_u8, set_weights_call, storage_key, storage_map_key, storage_map_key_u16,
+    commit_timelocked_call, decode_bool, decode_double_map_k2, decode_hotkey, decode_metagraph,
+    decode_u16, decode_u64, decode_vec_vec_u8, set_weights_call, storage_double_map_key_u16_u16,
+    storage_double_map_prefix_u16, storage_key, storage_map_key_twox64, storage_map_key_u16,
     ChainClient, ChainError, Era, LiveChainClient, WeightsTlockPayload,
 };
 use parity_scale_codec::Encode;
@@ -26,20 +27,52 @@ fn storage_key_is_32_bytes_and_deterministic() {
     assert_ne!(k1, k3, "different item must differ");
 }
 
+/// Subtensor per-netuid maps use the `Identity` hasher: no hash prefix.
+///
+/// Locked against a live `state_getKeysPaged` observation on testnet, where
+/// every `SubnetOwnerHotkey` / `Tempo` / `LastEpochBlock` key suffix is exactly
+/// the 2-byte LE netuid.
 #[test]
-fn storage_map_key_u16_has_correct_structure() {
+fn storage_map_key_u16_uses_identity_hasher() {
     let k = storage_map_key_u16("SubtensorModule", "Tempo", 1u16);
-    // Twox128(pallet) ++ Twox128(item) ++ Twox64(key) ++ key
-    // 16 + 16 + 8 + 2 = 42 bytes
-    assert_eq!(k.len(), 42);
-    // Last 2 bytes are the LE-encoded netuid
-    assert_eq!(&k[40..], &[0x01, 0x00]);
+    // Twox128(pallet) ++ Twox128(item) ++ netuid_le == 16 + 16 + 2
+    assert_eq!(k.len(), 34);
+    assert_eq!(&k[32..], &[0x01, 0x00]);
+    // Prefix must still be the plain pallet/item pair.
+    assert_eq!(&k[..32], &storage_key("SubtensorModule", "Tempo")[..]);
+}
+
+/// Known-good testnet key for `SubnetOwnerHotkey(541)`, captured from a live
+/// `state_getKeysPaged` page. Guards the whole prefix, not just the suffix.
+#[test]
+fn storage_map_key_matches_live_testnet_key() {
+    let k = storage_map_key_u16("SubtensorModule", "SubnetOwnerHotkey", 541);
+    assert_eq!(hex::encode(&k[32..]), "1d02", "541 LE == 0x021d");
+    assert_eq!(k.len(), 34);
 }
 
 #[test]
-fn storage_map_key_generic_has_correct_structure() {
+fn storage_double_map_key_layout() {
+    let prefix = storage_double_map_prefix_u16("SubtensorModule", "Keys", 541);
+    assert_eq!(prefix.len(), 34);
+    let full = storage_double_map_key_u16_u16("SubtensorModule", "Keys", 541, 2);
+    // 16 + 16 + 2 + 2 == 36, matching the live 4-byte suffix `1d020200`.
+    assert_eq!(full.len(), 36);
+    assert_eq!(hex::encode(&full[32..]), "1d020200");
+    assert!(full.starts_with(&prefix), "full key must extend the prefix");
+    assert_eq!(decode_double_map_k2(&full).unwrap(), 2);
+}
+
+#[test]
+fn decode_double_map_k2_rejects_short_key() {
+    assert!(decode_double_map_k2(&[0_u8; 34]).is_err());
+    assert!(decode_double_map_k2(&[]).is_err());
+}
+
+#[test]
+fn storage_map_key_twox64_still_available_for_other_pallets() {
     let key = [0xAB_u8; 4];
-    let k = storage_map_key("SubtensorModule", "Keys", &key);
+    let k = storage_map_key_twox64("SomePallet", "SomeItem", &key);
     // 16 + 16 + 8 + 4 = 44 bytes
     assert_eq!(k.len(), 44);
     assert_eq!(&k[40..], &key);
@@ -565,21 +598,33 @@ async fn submit_timelocked_rejected_when_cr_disabled() {
 async fn mock_metagraph_at() {
     let server = MockServer::start().await;
 
-    // Keys(1) → Vec<Vec<u8>> with two 32-byte hotkeys
-    let keys_data: Vec<Vec<u8>> = vec![vec![0xAA; 32], vec![0xBB; 32]];
-    let keys_hex = format!("0x{}", hex::encode(keys_data.encode()));
-
-    let keys_key = storage_map_key_u16("SubtensorModule", "Keys", 1);
-    let keys_key_hex = format!("0x{}", hex::encode(&keys_key));
+    // Keys is a double map: one entry per (netuid, uid), enumerated by prefix.
+    let uid0_key = storage_double_map_key_u16_u16("SubtensorModule", "Keys", 1, 0);
+    let uid1_key = storage_double_map_key_u16_u16("SubtensorModule", "Keys", 1, 1);
+    let uid0_hex = format!("0x{}", hex::encode(&uid0_key));
+    let uid1_hex = format!("0x{}", hex::encode(&uid1_key));
 
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({
-            "method": "state_getStorage",
-            "params": [keys_key_hex]
-        })))
+        .and(body_partial_json(json!({"method": "state_getKeysPaged"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": keys_hex
+            "result": [uid1_hex.clone(), uid0_hex.clone()]
+        })))
+        .mount(&server)
+        .await;
+
+    // Values come back out of uid order to prove we sort by uid, not by page order.
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "state_queryStorageAt"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": [{
+                "block": format!("0x{}", hex::encode([0u8; 32])),
+                "changes": [
+                    [uid1_hex, format!("0x{}", hex::encode([0xBB_u8; 32]))],
+                    [uid0_hex, format!("0x{}", hex::encode([0xAA_u8; 32]))]
+                ]
+            }]
         })))
         .mount(&server)
         .await;
@@ -633,4 +678,109 @@ async fn testnet_current_block_positive() {
     .expect("spawn_blocking")
     .expect("current_block");
     assert!(block > 0, "expected tip > 0, got {block}");
+}
+
+/// Testnet endpoint and the netuid we actually own there.
+const TESTNET: &str = "wss://test.finney.opentensor.ai:443";
+const OUR_NETUID: u16 = 541;
+/// The on-chain `SubnetOwnerHotkey` for netuid 541: the `base-owner` wallet,
+/// SS58 `5CfjVGG7DaagMUuABNnqQJygLV2xtn3AQ7LnPeFoc5gVK9xo`.
+const OUR_OWNER_HEX: &str = "1ab7145525140560cb64e1e89fae8258e813ba12d9c20faaeabc17f95ba5fe7e";
+
+/// Every read path against the real chain in one pass.
+///
+/// This is the regression guard for the `Twox64Concat`-vs-`Identity` hasher
+/// bug: with the wrong hasher every one of these reads returns `None` and the
+/// test fails on the very first assertion.
+struct LiveReads {
+    owner: Vec<u8>,
+    tempo: u64,
+    crv: u16,
+    block_time: u64,
+    last_epoch: u64,
+    reveal: u64,
+    mg: chain::Metagraph,
+}
+
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_all_reads_resolve() {
+    let reads = tokio::task::spawn_blocking(|| -> Result<LiveReads, ChainError> {
+        let mut client = LiveChainClient::connect(TESTNET)?;
+        client.set_netuid(OUR_NETUID);
+        // commit_reveal_enabled must not error even though the key is absent.
+        let _cr = client.commit_reveal_enabled(OUR_NETUID)?;
+        Ok(LiveReads {
+            owner: client.subnet_owner_hotkey(OUR_NETUID)?,
+            tempo: client.tempo(OUR_NETUID)?,
+            crv: client.commit_reveal_version(OUR_NETUID)?,
+            block_time: client.block_time()?,
+            last_epoch: client.last_epoch_block(OUR_NETUID)?,
+            reveal: client.reveal_period_epochs(OUR_NETUID)?,
+            mg: client.metagraph_at(&[0_u8; 32])?,
+        })
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("all reads must resolve against the live chain");
+
+    let LiveReads {
+        owner,
+        tempo,
+        crv,
+        block_time,
+        last_epoch,
+        reveal,
+        mg,
+    } = reads;
+
+    assert_eq!(owner.len(), 32, "owner hotkey must be a 32-byte AccountId");
+    assert!(tempo > 0, "tempo must be positive, got {tempo}");
+    assert_eq!(crv, 4, "testnet commit-reveal version should be CRV4");
+    assert_eq!(block_time, 12_000, "Aura slot duration is 12s in ms");
+    assert!(last_epoch > 0, "last epoch block must be set");
+    assert!(reveal > 0, "reveal period must be positive");
+
+    // The metagraph must come back non-empty and owner-consistent. With the old
+    // single-key `Vec<Vec<u8>>` decode this was always an error.
+    assert_eq!(mg.netuid, OUR_NETUID);
+    assert!(
+        !mg.hotkeys.is_empty(),
+        "metagraph must enumerate at least one neuron"
+    );
+    for hk in &mg.hotkeys {
+        assert_eq!(hk.len(), 32, "each hotkey must be a 32-byte AccountId");
+    }
+    assert_eq!(mg.owner_hotkey, owner, "metagraph owner must match");
+}
+
+/// Netuid 541 is ours; assert the owner hotkey has not silently changed.
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_541_owner_is_base_owner() {
+    let owner = tokio::task::spawn_blocking(|| {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.subnet_owner_hotkey(OUR_NETUID))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("owner");
+    assert_eq!(
+        hex::encode(&owner),
+        OUR_OWNER_HEX,
+        "netuid {OUR_NETUID} owner changed"
+    );
+}
+
+/// A subnet that does not exist must be a clean error, never a silent default.
+#[tokio::test]
+#[ignore = "requires network access to finney testnet"]
+async fn testnet_absent_subnet_errors() {
+    let err = tokio::task::spawn_blocking(|| {
+        LiveChainClient::connect(TESTNET).and_then(|c| c.subnet_owner_hotkey(60000))
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect_err("absent subnet must error");
+    let msg = err.to_string();
+    assert!(msg.contains("SubnetOwnerHotkey"), "unexpected: {msg}");
 }

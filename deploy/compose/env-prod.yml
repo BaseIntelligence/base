@@ -1,15 +1,33 @@
-# Production environment — mainnet.
-# Netuid 100, conservative intervals, no evil-gateway, no e2e overrides.
+# Production environment — Bittensor mainnet (Finney), netuid 100.
+#
+# Netuid 100's on-chain owner is 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At.
+# Drop that wallet into deploy/secrets/wallets/base-owner before deploying, then
+# flip BASE_GATEWAY_REQUIRE_OWNER to "1" to make the owner check fail-closed.
+#
+# Conservative intervals, no evil-gateway, no e2e overrides.
 services:
   validator:
     environment:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
       BASE_COORDINATION_INTERVAL_SECS: "10"
+      BT_WALLETS_PATH: /run/base/wallets
+      BASE_VALIDATOR_WALLET: base-validator
+    volumes:
+      - ./deploy/secrets/wallets:/run/base/wallets:ro
   gateway:
     environment:
       BASE_NETUID: "100"
-      BASE_CHAIN_BACKEND: "fake_owner"
+      BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
+      BT_WALLETS_PATH: /run/base/wallets
+      BASE_GATEWAY_WALLET: base-owner
+      BASE_GATEWAY_REQUIRE_OWNER: "0"
+    volumes:
+      - ./deploy/secrets/wallets:/run/base/wallets:ro
   agent-challenge:
     environment:
       BASE_CHALLENGE_DISPATCH: "0"
+      BASE_HF_AUTO_PULL: "1"
+  prism-challenge:
+    environment:
+      PRISM_FORCE_SIM: "false"

@@ -4,8 +4,8 @@ End-to-end testnet 541 procedure on the 2-host staging pair.
 
 ## Prerequisites
 
-- Staging master (`gbase-staging`, 68.183.23.51 / 10.116.0.2) running master role
-- Staging validator (`gbase-staging-validator`, 142.93.197.253 / 10.116.0.4) running validator role
+- Staging master (`base-staging`, 68.183.23.51 / 10.116.0.2) running master role
+- Staging validator (`base-staging-validator`, 142.93.197.253 / 10.116.0.4) running validator role
 - Both deployed from the same `dev` commit via `deploy-staging.yml` or manual `remote-deploy.sh`
 - `deploy/secrets/challenge_sk` and `deploy/secrets/gateway_sk` present on master (mode 0400, uid 65532)
 - `deploy/env/*.env` materialized on both hosts (mode 0600)

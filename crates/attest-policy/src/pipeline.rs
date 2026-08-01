@@ -17,7 +17,7 @@ use crate::verifier::QuoteVerifier;
 use crate::{AttestOutcome, RejectReason};
 
 /// Inputs for one miner certify submission (quote + event log + D10 claims).
-pub struct SubmissionInput<'a, S: NonceStore, V: QuoteVerifier> {
+pub struct SubmissionInput<'a, S: NonceStore, V: QuoteVerifier + ?Sized> {
     /// Owner-signed measurement allowlist.
     pub measurements: &'a MeasurementsBody,
     /// Raw TDX quote bytes.
@@ -41,7 +41,7 @@ pub struct SubmissionInput<'a, S: NonceStore, V: QuoteVerifier> {
 /// fails before the policy stage. Once policy runs, nonce redeem follows
 /// [`evaluate`] rules (invalid nonce → Reject after attempted redeem).
 #[must_use]
-pub fn verify_submission<S: NonceStore, V: QuoteVerifier>(
+pub fn verify_submission<S: NonceStore, V: QuoteVerifier + ?Sized>(
     input: &mut SubmissionInput<'_, S, V>,
 ) -> AttestOutcome {
     let Ok(parsed) = parse_tdx_quote_v4(input.quote) else {

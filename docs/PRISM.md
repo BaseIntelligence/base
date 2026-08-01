@@ -1,4 +1,4 @@
-# PRISM challenge (Base / gbase)
+# PRISM challenge (Base)
 
 **challenge_id:** `prism`  
 **scoring_version:** `1`  

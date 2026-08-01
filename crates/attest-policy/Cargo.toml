@@ -10,8 +10,9 @@ publish = false
 
 [features]
 default = []
-# Real DCAP path for tasks 35/38. Unit tests use MockQuoteVerifier (no network).
-dcap = ["dep:dcap-qvl"]
+# Real DCAP path (DcapQuoteVerifier). Non-default so plain `cargo test` stays
+# offline; release/container builds must pass `--features dcap`.
+dcap = ["dep:dcap-qvl", "dep:tokio"]
 
 [dependencies]
 crypto = { path = "../crypto" }
@@ -22,8 +23,14 @@ compose-hash = { path = "../compose-hash" }
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
-# Optional real verifier (tasks 35/38). Version floor enforced by deny.toml.
+# Optional real verifier. Version floor enforced by deny.toml.
 dcap-qvl = { version = "0.6.1", optional = true }
+# Dedicated single-worker runtime for dcap-qvl's async collateral client.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "time",
+], optional = true }
 
 [dev-dependencies]
 # none beyond std

@@ -17,6 +17,7 @@ mod catalog;
 mod digest;
 mod error;
 mod export;
+mod hf_pull;
 mod load;
 mod model;
 mod pack_serve;
@@ -34,6 +35,10 @@ pub use digest::{
 pub use error::{CatalogError, PackError};
 pub use export::{
     export_stripped_tar_gz, is_stripped_rel_path, stripped_file_entries, write_stripped_tree,
+};
+pub use hf_pull::{
+    pull_packs, HfPullConfig, HfPullError, DEEPAGENT_HF_REPO, DEEPAGENT_HF_REVISION,
+    DEEPAGENT_HF_SUBDIR, ENV_HF_MAX_PACKS, ENV_HF_REPO, ENV_HF_REVISION, ENV_HF_SUBDIR,
 };
 pub use load::load_pack;
 pub use model::{

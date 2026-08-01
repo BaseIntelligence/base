@@ -1,4 +1,17 @@
-//! Substrate storage key encoding (Twox128/64) and SCALE decode helpers.
+//! Substrate storage key encoding and SCALE decode helpers.
+//!
+//! # Hashers
+//!
+//! Subtensor declares its per-netuid maps with the **`Identity`** hasher, so the
+//! key suffix is the raw SCALE-encoded `netuid` with no hash prefix. This was
+//! verified against `wss://test.finney.opentensor.ai` by enumerating
+//! `state_getKeysPaged` for `SubnetOwnerHotkey`, `Tempo`, `LastEpochBlock` and
+//! `CommitRevealWeightsEnabled`: every suffix is exactly 2 bytes.
+//! `Keys` is a **double map** `(netuid, uid) -> AccountId32` whose suffix is 4
+//! bytes (`netuid_le ++ uid_le`), not a `Vec<AccountId32>` under a single key.
+//!
+//! [`storage_map_key_twox64`] is retained for pallets that do use
+//! `Twox64Concat`; it is not the Subtensor convention.
 
 use chain::{ChainError, Metagraph};
 use parity_scale_codec::Decode;
@@ -26,21 +39,61 @@ pub fn storage_key(pallet: &str, item: &str) -> Vec<u8> {
     key
 }
 
-/// Map storage key (Twox64Concat): `Twox128(pallet) ++ Twox128(item) ++ Twox64(key) ++ key`.
+/// Map key with the `Identity` hasher: `Twox128(pallet) ++ Twox128(item) ++ key`.
 #[must_use]
-pub fn storage_map_key(pallet: &str, item: &str, key: &[u8]) -> Vec<u8> {
+pub fn storage_map_key_identity(pallet: &str, item: &str, key: &[u8]) -> Vec<u8> {
+    let mut k = storage_key(pallet, item);
+    k.extend_from_slice(key);
+    k
+}
+
+/// Map key with the `Twox64Concat` hasher (non-Subtensor pallets).
+#[must_use]
+pub fn storage_map_key_twox64(pallet: &str, item: &str, key: &[u8]) -> Vec<u8> {
     let mut k = storage_key(pallet, item);
     k.extend_from_slice(&twox64(key));
     k.extend_from_slice(key);
     k
 }
 
-/// u16-keyed map key (Twox64Concat):
-/// `Twox128(pallet) ++ Twox128(item) ++ Twox64(netuid_le) ++ netuid_le`.
+/// Per-netuid Subtensor map key (`Identity` hasher over the LE `u16`).
 #[must_use]
 pub fn storage_map_key_u16(pallet: &str, item: &str, netuid: u16) -> Vec<u8> {
-    let encoded = netuid.to_le_bytes();
-    storage_map_key(pallet, item, &encoded)
+    storage_map_key_identity(pallet, item, &netuid.to_le_bytes())
+}
+
+/// Partial key for a `(u16, _)` double map: everything up to and including `k1`.
+///
+/// Used as the `state_getKeysPaged` prefix to enumerate one netuid's entries.
+#[must_use]
+pub fn storage_double_map_prefix_u16(pallet: &str, item: &str, k1: u16) -> Vec<u8> {
+    storage_map_key_identity(pallet, item, &k1.to_le_bytes())
+}
+
+/// Full key for a `(u16, u16)` double map with `Identity` hashers on both keys.
+#[must_use]
+pub fn storage_double_map_key_u16_u16(pallet: &str, item: &str, k1: u16, k2: u16) -> Vec<u8> {
+    let mut k = storage_double_map_prefix_u16(pallet, item, k1);
+    k.extend_from_slice(&k2.to_le_bytes());
+    k
+}
+
+/// Recover the trailing `u16` (e.g. `uid`) from a `(u16, u16)` double-map key.
+///
+/// # Errors
+/// Returns [`ChainError::Other`] when the key is shorter than the 36-byte
+/// `Twox128 ++ Twox128 ++ u16 ++ u16` layout.
+pub fn decode_double_map_k2(key: &[u8]) -> Result<u16, ChainError> {
+    // Layout: Twox128(pallet) ++ Twox128(item) ++ k1_le_u16 ++ k2_le_u16.
+    let Some(tail) = key.get(34..36) else {
+        return Err(ChainError::Other(format!(
+            "double-map key too short: {} bytes (want 36)",
+            key.len()
+        )));
+    };
+    let mut buf = [0_u8; 2];
+    buf.copy_from_slice(tail);
+    Ok(u16::from_le_bytes(buf))
 }
 
 /// Decode a SCALE-encoded `u64`.
@@ -67,7 +120,7 @@ pub fn decode_bool(bytes: &[u8]) -> Result<bool, ChainError> {
     bool::decode(&mut &bytes[..]).map_err(|e| ChainError::Other(format!("decode bool: {e}")))
 }
 
-/// Decode a SCALE-encoded `Vec<Vec<u8>>` (e.g. Subtensor `Keys` storage).
+/// Decode a SCALE-encoded `Vec<Vec<u8>>`.
 ///
 /// # Errors
 /// Decode failure.

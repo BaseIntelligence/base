@@ -114,6 +114,7 @@ dependencies = [
  "flate2",
  "hex",
  "http-body-util",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -323,6 +324,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "trustroot",
 ]
 
@@ -345,6 +347,7 @@ dependencies = [
  "parity-scale-codec",
  "sha2 0.10.9",
  "thiserror 2.0.19",
+ "tokio",
  "trustroot",
 ]
 
@@ -1669,6 +1672,7 @@ dependencies = [
  "crypto",
  "gateway-registry",
  "hex",
+ "keystore",
  "merkle",
  "metrics-exporter-prometheus",
  "parity-scale-codec",
@@ -2435,6 +2439,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
 dependencies = [
  "cpufeatures 0.2.17",
+]
+
+[[package]]
+name = "keystore"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "crypto",
+ "hex",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -5012,6 +5030,7 @@ dependencies = [
  "config",
  "db",
  "hex",
+ "keystore",
  "telemetry",
  "tokio",
  "tracing",
