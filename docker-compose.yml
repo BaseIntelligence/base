@@ -62,7 +62,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8080/healthz || exit 0",
+          "curl -fsS -m 5 http://127.0.0.1:8080/healthz || exit 1",
         ]
       interval: 10s
       timeout: 3s
@@ -99,6 +99,13 @@ services:
       - ./deploy/secrets/gateway_sk:/run/secrets/gateway_sk:ro
     expose:
       - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 5 http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # The gateway resolves the subnet owner from chain before it listens.
+      start_period: 30s
     networks:
       - base
 
@@ -203,7 +210,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8090/healthz || exit 0",
+          "curl -fsS -m 5 http://127.0.0.1:8090/healthz || exit 1",
         ]
       interval: 10s
       timeout: 3s
@@ -238,7 +245,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8091/health || exit 0",
+          "curl -fsS -m 5 http://127.0.0.1:8091/health || exit 1",
         ]
       interval: 10s
       timeout: 3s
@@ -278,7 +285,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8092/health || exit 0",
+          "curl -fsS -m 5 http://127.0.0.1:8092/health || exit 1",
         ]
       interval: 10s
       timeout: 3s

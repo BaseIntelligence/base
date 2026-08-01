@@ -137,18 +137,22 @@ jobs:
             --build-from source \
             "${EXTRA[@]}"
 
+      # Relies on Docker's own health state, which the compose healthchecks now
+      # report honestly (they used to `|| exit 0` when curl was absent).
       - name: Smoke health (fail-closed)
         run: |
           set -euo pipefail
           ssh -i "$HOME/.ssh/staging_ed25519" -o BatchMode=yes \
             "root@${{ steps.host.outputs.value }}" \
-            'cd /opt/base && docker compose ps --format "{{.Service}}\t{{.Status}}" && \
-             for i in $(seq 1 12); do \
-               if docker exec "$(docker ps -q --filter name=validator)" \
-                    curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then \
-                 echo "validator health: ok"; exit 0; \
-               fi; sleep 5; \
-             done; echo "validator health: FAILED"; exit 1'
+            'cd /opt/base && docker compose ps --format "{{.Service}}\t{{.Status}}"; \
+             for i in $(seq 1 24); do \
+               bad=$(for c in $(docker compose ps -q); do \
+                 st=$(docker inspect -f "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "$c"); \
+                 case "$st" in healthy|none) ;; *) echo "$(docker inspect -f "{{.Name}}" "$c")=$st" ;; esac; \
+               done); \
+               if [ -z "$bad" ]; then echo "all containers healthy"; exit 0; fi; \
+               sleep 5; \
+             done; echo "UNHEALTHY: $bad"; exit 1'
 
       - name: Verify live chain (no fake backend)
         run: |

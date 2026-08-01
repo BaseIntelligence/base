@@ -90,7 +90,7 @@ FROM artifacts-${BUILD_FROM} AS artifacts
 # -----------------------------------------------------------------------------
 FROM ${DEBIAN_IMAGE} AS runtime-base
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 65532 base \
     && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
