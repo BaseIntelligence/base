@@ -71,6 +71,7 @@ dependencies = [
  "chain-live",
  "clap",
  "config",
+ "db",
  "hex",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
@@ -330,7 +331,9 @@ version = "0.1.0"
 dependencies = [
  "attest-policy",
  "axum",
+ "chain",
  "crypto",
+ "db",
  "hex",
  "serde",
  "serde_json",
@@ -355,7 +358,9 @@ dependencies = [
  "compose-hash",
  "crypto",
  "dcap-qvl",
+ "hex",
  "parity-scale-codec",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
@@ -2679,6 +2684,7 @@ dependencies = [
  "attest-parse",
  "attest-policy",
  "attest-replay",
+ "chain",
  "compose-hash",
  "crypto",
  "hex",
@@ -2691,6 +2697,7 @@ dependencies = [
  "tokio",
  "trustroot",
  "validator",
+ "validator-sync",
 ]
 
 [[package]]

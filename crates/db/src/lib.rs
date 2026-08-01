@@ -26,9 +26,10 @@ use uuid::Uuid;
 
 pub use sqlx::PgPool;
 pub use store::{
-    count_raw_weights, get_epoch_bundle, get_epoch_bundle_by_root, get_raw_weight,
-    insert_epoch_bundle, insert_raw_weight, latest_bundle_epoch, list_raw_weights_for_epoch,
-    EpochBundleRecord, NewEpochBundle, NewRawWeight, RawWeightRecord,
+    attestation_for_miner, count_raw_weights, get_epoch_bundle, get_epoch_bundle_by_root,
+    get_raw_weight, insert_attestation, insert_epoch_bundle, insert_raw_weight,
+    latest_bundle_epoch, list_raw_weights_for_epoch, AttestationRecord, EpochBundleRecord,
+    NewAttestation, NewEpochBundle, NewRawWeight, RawWeightRecord, RECEIPT_PK_LEN,
 };
 
 /// Tables that the application role may insert into but never update.

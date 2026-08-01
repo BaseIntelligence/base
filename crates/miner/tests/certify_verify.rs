@@ -22,6 +22,8 @@ use validator::{spawn_attest_server, AttestState};
 
 const QUOTE: &[u8] = include_bytes!("../../attest-parse/tests/fixtures/real/quote.bin");
 const EVENT_LOG: &[u8] = include_bytes!("../../attest-parse/tests/fixtures/real/event_log.json");
+const APP_COMPOSE: &[u8] =
+    include_bytes!("../../attest-parse/tests/fixtures/real/app-compose.json");
 
 fn real_measurements() -> MeasurementsBody {
     let parsed = parse_tdx_quote_v4(QUOTE).expect("parse");
@@ -342,6 +344,92 @@ async fn s6_pcs_outage_parked_no_credit() {
     let _ = shutdown.send(true);
 }
 
+/// S7 — `app_compose_json` reaches the policy: the real capture's compose is
+/// the correct preimage but publishes no receipt key → Rejected.
+#[tokio::test]
+async fn s7_compose_without_receipt_key_rejected() {
+    let (addr, shutdown, _state) = boot_ok().await;
+    let compose = String::from_utf8(APP_COMPOSE.to_vec()).unwrap();
+    let v = submit_with_compose(addr, 42, Some(compose)).await;
+    assert_eq!(v["outcome"], "rejected", "resp={v}");
+    assert_eq!(v["reason"], "receipt_key_invalid");
+    assert!(v["receipt_public_key_hex"].is_null());
+    let _ = shutdown.send(true);
+}
+
+/// S8 — a compose that does not hash to the RTMR3 measurement is a hard reject.
+#[tokio::test]
+async fn s8_tampered_compose_rejected() {
+    let (addr, shutdown, state) = boot_ok().await;
+    // Swap in an attacker-chosen receipt key: same document, different digest.
+    let mut compose: serde_json::Value = serde_json::from_slice(APP_COMPOSE).unwrap();
+    let yaml = compose["docker_compose_file"].as_str().unwrap().to_owned();
+    compose["docker_compose_file"] = serde_json::Value::String(format!(
+        "{yaml}    environment:\n      BASE_RECEIPT_PUBLIC_KEY: \"{}\"\n",
+        hex::encode([0xee_u8; KEY_LEN])
+    ));
+    let v = submit_with_compose(addr, 43, Some(compose.to_string())).await;
+    assert_eq!(v["outcome"], "rejected", "resp={v}");
+    assert_eq!(v["reason"], "compose_preimage_mismatch");
+    assert!(v["receipt_public_key_hex"].is_null());
+    let (miner, _) = keys();
+    assert!(!state.has_credit(1, 43, miner).await);
+    let _ = shutdown.send(true);
+}
+
+/// Issue a nonce, bind a quote to it, and submit with `app_compose_json`.
+async fn submit_with_compose(
+    addr: SocketAddr,
+    epoch: u64,
+    app_compose_json: Option<String>,
+) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    let (miner, validator) = keys();
+    let nonce_resp: serde_json::Value = client
+        .post(format!("http://{addr}/v1/attest/nonce"))
+        .json(&serde_json::json!({
+            "miner_hotkey_hex": hex::encode(miner),
+            "epoch": epoch,
+            "netuid": 1,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let nonce_hex = nonce_resp["nonce_hex"].as_str().unwrap().to_owned();
+    let mut nonce = [0u8; KEY_LEN];
+    nonce.copy_from_slice(&hex::decode(&nonce_hex).unwrap());
+    let binding = ReportDataBinding {
+        netuid: 1,
+        epoch,
+        miner_pubkey: miner,
+        nonce,
+        validator_hotkey: validator,
+    };
+    let mut quote = QUOTE.to_vec();
+    patch_report_data(&mut quote, &compute_report_data(&binding)).unwrap();
+    client
+        .post(format!("http://{addr}/v1/attest/submit"))
+        .json(&serde_json::json!({
+            "miner_hotkey_hex": hex::encode(miner),
+            "epoch": epoch,
+            "netuid": 1,
+            "nonce_hex": nonce_hex,
+            "quote_hex": hex::encode(&quote),
+            "event_log_json": String::from_utf8(EVENT_LOG.to_vec()).unwrap(),
+            "app_compose_json": app_compose_json,
+            "validator_hotkey_hex": hex::encode(validator),
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
 /// Pipeline unit: `verify_submission` happy path without HTTP.
 #[test]
 fn s0_pipeline_verify_submission_direct() {
@@ -378,11 +466,60 @@ fn s0_pipeline_verify_submission_direct() {
         quote: &quote,
         event_log_json: EVENT_LOG,
         binding,
+        app_compose: None,
         nonces: &mut nonces,
         now,
         verifier: &verifier,
     });
-    assert_eq!(out, AttestOutcome::Verified);
+    assert_eq!(out.outcome, AttestOutcome::Verified);
+    // No compose preimage supplied ⇒ nothing binds a receipt key.
+    assert_eq!(out.receipt_pk, None);
     let _ = COMPOSE_HASH_LEN;
     let _ = REGISTER_LEN;
+}
+
+/// S9 — a miner may only attest for the chain's current epoch.
+///
+/// The challenge service joins `attestation.epoch` against its own chain-derived
+/// epoch pin, so an unpinned epoch would let a miner bank credit for epochs that
+/// have not happened, and would make an honest miner's off-by-one look like
+/// silence rather than an error.
+#[tokio::test]
+async fn s9_epoch_must_match_the_chain() {
+    use chain::{FakeChain, FakeChainConfig};
+
+    let (_miner, validator) = keys();
+    let state = AttestState::with_ok_verifier(real_measurements(), validator, 1);
+
+    let chain = FakeChain::new(FakeChainConfig {
+        netuid: 1,
+        ..FakeChainConfig::default()
+    });
+    let on_chain_epoch = {
+        let state = chain::gather_schedule_state(&chain, 1).expect("schedule");
+        chain::current_epoch_pre_run_coinbase(&state, state.current_block)
+    };
+
+    state
+        .attach_chain(std::sync::Arc::new(validator_sync::SyncChain::new(chain)))
+        .await;
+    let (addr, tx, _join) = spawn_attest_server(state, SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let future = CertifyParams {
+        epoch: on_chain_epoch + 7,
+        ..base_params(addr)
+    };
+    let err = certify(&future)
+        .await
+        .expect_err("a future epoch must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not the current chain epoch"),
+        "expected an epoch refusal, got: {msg}"
+    );
+
+    let _ = tx.send(true);
 }

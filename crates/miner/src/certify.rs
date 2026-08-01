@@ -41,12 +41,14 @@ pub enum CertifyError {
     },
 }
 
-/// How to obtain the quote + event log.
+/// How to obtain the quote + event log (and, when available, the measured
+/// `app-compose.json` preimage that binds the receipt key).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuoteSource {
     /// Load real fixtures and patch D10 `report_data` (no live CVM).
     Fixture {
-        /// Directory containing `quote.bin` + `event_log.json` (optional).
+        /// Directory containing `quote.bin` + `event_log.json`, and optionally
+        /// the `app-compose.json` those were measured from.
         dir: Option<PathBuf>,
     },
     /// `GET {agent_base}/v1/quote?...` on a live CVM / attest-helper.
@@ -86,6 +88,8 @@ pub struct CertifyResult {
     pub grants_credit: bool,
     /// Always false under D13.
     pub carries_prior_verified: bool,
+    /// Receipt key the validator recovered from the measured compose.
+    pub receipt_public_key_hex: Option<String>,
     /// Validator hotkey used in the D10 binding.
     pub validator_hotkey_hex: String,
     /// Whether fixture mode was used.
@@ -108,12 +112,17 @@ struct SubmitResp {
     reason: Option<String>,
     grants_credit: bool,
     carries_prior_verified: bool,
+    #[serde(default)]
+    receipt_public_key_hex: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct QuoteJson {
     quote_hex: String,
     event_log_json: String,
+    /// dstack `tcb_info.app_compose` — the preimage of the RTMR3 compose hash.
+    #[serde(default)]
+    app_compose: Option<String>,
 }
 
 /// Run the full certify flow (async HTTP).
@@ -172,7 +181,7 @@ pub async fn certify(params: &CertifyParams) -> Result<CertifyResult, CertifyErr
     let report_data = compute_report_data(&binding);
 
     let fixture_mode = matches!(params.quote_source, QuoteSource::Fixture { .. });
-    let (quote, event_log_json) = match &params.quote_source {
+    let evidence = match &params.quote_source {
         QuoteSource::Fixture { dir } => load_fixture_quote(dir.as_deref(), &report_data)?,
         QuoteSource::Live { agent_base } => {
             fetch_live_quote(&client, agent_base, &binding, &report_data).await?
@@ -184,8 +193,9 @@ pub async fn certify(params: &CertifyParams) -> Result<CertifyResult, CertifyErr
         "epoch": params.epoch,
         "netuid": params.netuid,
         "nonce_hex": hex::encode(nonce),
-        "quote_hex": hex::encode(&quote),
-        "event_log_json": event_log_json,
+        "quote_hex": hex::encode(&evidence.quote),
+        "event_log_json": evidence.event_log_json,
+        "app_compose_json": evidence.app_compose_json,
         "validator_hotkey_hex": hex::encode(validator_hotkey),
     });
     let submit_http = client
@@ -217,6 +227,7 @@ pub async fn certify(params: &CertifyParams) -> Result<CertifyResult, CertifyErr
         reason: submit.reason,
         grants_credit: submit.grants_credit,
         carries_prior_verified: submit.carries_prior_verified,
+        receipt_public_key_hex: submit.receipt_public_key_hex,
         validator_hotkey_hex: hex::encode(validator_hotkey),
         fixture_mode,
     })
@@ -227,23 +238,39 @@ const EMBEDDED_QUOTE: &[u8] = include_bytes!("../../attest-parse/tests/fixtures/
 const EMBEDDED_EVENT_LOG: &[u8] =
     include_bytes!("../../attest-parse/tests/fixtures/real/event_log.json");
 
+/// Quote, event log, and (when the source can produce it) the measured
+/// `app-compose.json` preimage.
+struct QuoteEvidence {
+    quote: Vec<u8>,
+    event_log_json: String,
+    app_compose_json: Option<String>,
+}
+
 fn load_fixture_quote(
     dir: Option<&Path>,
     report_data: &[u8; REPORT_DATA_LEN],
-) -> Result<(Vec<u8>, String), CertifyError> {
-    let (mut quote, event_raw) = if let Some(d) = dir {
+) -> Result<QuoteEvidence, CertifyError> {
+    let (mut quote, event_raw, app_compose_json) = if let Some(d) = dir {
         let q = std::fs::read(d.join("quote.bin"))
             .map_err(|e| CertifyError::Fixture(format!("quote.bin: {e}")))?;
         let e = std::fs::read(d.join("event_log.json"))
             .map_err(|e| CertifyError::Fixture(format!("event_log.json: {e}")))?;
-        (q, e)
+        // Optional: pre-receipt-key captures have no compose beside the quote.
+        let c = std::fs::read_to_string(d.join("app-compose.json")).ok();
+        (q, e, c)
     } else {
-        (EMBEDDED_QUOTE.to_vec(), EMBEDDED_EVENT_LOG.to_vec())
+        // The embedded task-34 capture predates BASE_RECEIPT_PUBLIC_KEY, so it
+        // has no receipt key to bind and its compose is deliberately not sent.
+        (EMBEDDED_QUOTE.to_vec(), EMBEDDED_EVENT_LOG.to_vec(), None)
     };
     patch_report_data(&mut quote, report_data).map_err(|e| CertifyError::Quote(e.to_string()))?;
     let event_log_json = String::from_utf8(event_raw)
         .map_err(|e| CertifyError::Fixture(format!("event_log utf8: {e}")))?;
-    Ok((quote, event_log_json))
+    Ok(QuoteEvidence {
+        quote,
+        event_log_json,
+        app_compose_json,
+    })
 }
 
 async fn fetch_live_quote(
@@ -251,7 +278,7 @@ async fn fetch_live_quote(
     agent_base: &str,
     binding: &ReportDataBinding,
     report_data: &[u8; REPORT_DATA_LEN],
-) -> Result<(Vec<u8>, String), CertifyError> {
+) -> Result<QuoteEvidence, CertifyError> {
     let base = agent_base.trim_end_matches('/');
     // Attest-helper contract: GET /v1/quote with binding fields; response JSON.
     let url = format!(
@@ -284,7 +311,11 @@ async fn fetch_live_quote(
         hex::decode(parsed.quote_hex.trim()).map_err(|e| CertifyError::Hex(e.to_string()))?;
     // Ensure D10 binding is present even if helper omitted it.
     patch_report_data(&mut quote, report_data).map_err(|e| CertifyError::Quote(e.to_string()))?;
-    Ok((quote, parsed.event_log_json))
+    Ok(QuoteEvidence {
+        quote,
+        event_log_json: parsed.event_log_json,
+        app_compose_json: parsed.app_compose,
+    })
 }
 
 fn decode_key(s: &str) -> Result<[u8; KEY_LEN], CertifyError> {

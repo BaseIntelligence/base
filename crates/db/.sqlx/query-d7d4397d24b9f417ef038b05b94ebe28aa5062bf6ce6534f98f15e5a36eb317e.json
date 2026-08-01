@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO attestation\n            (epoch, miner_hotkey, validator_hotkey, attempt, nonce, outcome,\n             quote, reason, receipt_pk)\n        SELECT $1, $2, $3,\n               COALESCE((SELECT MAX(attempt) FROM attestation\n                         WHERE epoch = $1 AND miner_hotkey = $2\n                           AND validator_hotkey = $3), 0) + 1,\n               $4, $5, $6, $7, $8\n        RETURNING attempt\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "attempt",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Bytea",
+        "Text",
+        "Bytea",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d7d4397d24b9f417ef038b05b94ebe28aa5062bf6ce6534f98f15e5a36eb317e"
+}

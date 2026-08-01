@@ -13,14 +13,16 @@ use std::time::{Duration, Instant};
 use attest_policy::{
     verify_submission, AttestCreditBook, AttestOutcome, CollateralFreshness, CreditKey,
     MockQuoteVerifier, ParkReason, QuoteVerifier, QuoteVerifyOk, RejectReason, ReportDataBinding,
-    SubmissionInput, TcbStatus, VerifierFailureKind,
+    SubmissionInput, SubmissionVerdict, TcbStatus, VerifierFailureKind,
 };
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use chain::{current_epoch_pre_run_coinbase, gather_schedule_state, ChainClient};
 use crypto::{register_with_ttl, MemoryNonceStore, KEY_LEN};
+use db::{insert_attestation, NewAttestation, PgPool};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use trustroot::MeasurementsBody;
@@ -28,7 +30,10 @@ use trustroot::MeasurementsBody;
 /// Default nonce TTL (must be strictly less than one epoch at the call site).
 pub const DEFAULT_NONCE_TTL: Duration = Duration::from_mins(5);
 
-/// Shared attestation service state (in-memory; postgres wiring is later).
+/// Shared attestation service state.
+///
+/// The credit book is an in-process cache of the current epoch; the durable
+/// record is the `attestation` table, written through [`AttestState::attach_pool`].
 #[derive(Clone)]
 pub struct AttestState {
     inner: Arc<Mutex<AttestInner>>,
@@ -42,7 +47,12 @@ struct AttestInner {
     netuid: u16,
     verifier: Arc<dyn QuoteVerifier>,
     nonce_ttl: Duration,
+    pool: Option<PgPool>,
+    chain: Option<SharedChain>,
 }
+
+/// Chain handle used to pin the epoch a miner may attest for.
+pub type SharedChain = Arc<dyn ChainClient + Send + Sync>;
 
 impl AttestState {
     /// Build state with allowlist + validator identity + any verifier.
@@ -75,6 +85,8 @@ impl AttestState {
                 netuid,
                 verifier: Arc::from(verifier),
                 nonce_ttl: DEFAULT_NONCE_TTL,
+                pool: None,
+                chain: None,
             })),
         }
     }
@@ -147,6 +159,50 @@ impl AttestState {
     /// Validator hotkey bytes.
     pub async fn validator_hotkey(&self) -> [u8; KEY_LEN] {
         self.inner.lock().await.validator_hotkey
+    }
+
+    /// Persist every later outcome to the `attestation` table.
+    ///
+    /// Without a pool the service still serves, but nothing survives a restart
+    /// and no receipt key ever reaches the challenge path.
+    pub async fn attach_pool(&self, pool: PgPool) {
+        self.inner.lock().await.pool = Some(pool);
+    }
+
+    /// Pin attestations to the chain's current epoch.
+    ///
+    /// Without this the epoch is whatever the miner declares. That epoch is the
+    /// join key the challenge service uses to find an attestation, so an
+    /// unpinned epoch lets a miner bank credit for epochs that have not
+    /// happened, and makes an honest miner's off-by-one look like silence.
+    pub async fn attach_chain(&self, chain: SharedChain) {
+        self.inner.lock().await.chain = Some(chain);
+    }
+}
+
+/// Chain epoch a miner is allowed to attest for, if a chain is attached.
+///
+/// Uses the same counter as the challenge daemon's epoch pin so that a
+/// `verified` row is findable at the epoch it will be scored in.
+fn pinned_epoch(g: &AttestInner) -> Result<Option<u64>, ApiError> {
+    let Some(chain) = g.chain.as_ref() else {
+        return Ok(None);
+    };
+    let state = gather_schedule_state(chain.as_ref(), g.netuid)
+        .map_err(|e| ApiError::unavailable(format!("epoch schedule read: {e}")))?;
+    Ok(Some(current_epoch_pre_run_coinbase(
+        &state,
+        state.current_block,
+    )))
+}
+
+/// Reject an attestation aimed at any epoch but the current one.
+fn check_epoch(g: &AttestInner, claimed: u64) -> Result<(), ApiError> {
+    match pinned_epoch(g)? {
+        Some(current) if claimed != current => Err(ApiError::bad(format!(
+            "epoch {claimed} is not the current chain epoch {current}"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -302,6 +358,13 @@ pub struct SubmitRequest {
     pub quote_hex: String,
     /// Event log JSON string.
     pub event_log_json: String,
+    /// Measured `app-compose.json` preimage (the RTMR3 compose-hash preimage).
+    ///
+    /// Optional so a miner that cannot produce it still gets a policy outcome
+    /// instead of a 400, but a submission without it binds no receipt key and
+    /// its work receipts stay unverifiable.
+    #[serde(default)]
+    pub app_compose_json: Option<String>,
     /// Optional claimed validator hotkey (defaults to this validator).
     pub validator_hotkey_hex: Option<String>,
 }
@@ -318,6 +381,9 @@ pub struct SubmitResponse {
     pub grants_credit: bool,
     /// Always false under D13.
     pub carries_prior_verified: bool,
+    /// Receipt key bound by the measured compose (verified submissions only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_public_key_hex: Option<String>,
 }
 
 async fn issue_nonce(
@@ -326,6 +392,8 @@ async fn issue_nonce(
 ) -> Result<Json<NonceResponse>, ApiError> {
     let _miner = parse_key_hex(&body.miner_hotkey_hex)?;
     let mut g = st.inner.lock().await;
+    // Fail here rather than after the miner has built a quote around the nonce.
+    check_epoch(&g, body.epoch)?;
     let netuid = body.netuid.unwrap_or(g.netuid);
     let nonce = random_nonce();
     let now = Instant::now();
@@ -351,8 +419,10 @@ async fn submit_quote(
     let quote =
         hex::decode(body.quote_hex.trim()).map_err(|e| ApiError::bad(format!("quote_hex: {e}")))?;
     let event_log = body.event_log_json.into_bytes();
+    let app_compose = body.app_compose_json.map(String::into_bytes);
 
     let mut g = st.inner.lock().await;
+    check_epoch(&g, body.epoch)?;
     let validator_hotkey = match body.validator_hotkey_hex.as_deref() {
         Some(h) => parse_key_hex(h)?,
         None => g.validator_hotkey,
@@ -369,18 +439,20 @@ async fn submit_quote(
     let now = Instant::now();
     let verifier = Arc::clone(&g.verifier);
     let measurements = g.measurements.clone();
-    let outcome = {
+    let verdict = {
         let nonces = &mut g.nonces;
         verify_submission(&mut SubmissionInput {
             measurements: &measurements,
             quote: &quote,
             event_log_json: &event_log,
             binding,
+            app_compose: app_compose.as_deref(),
             nonces,
             now,
             verifier: &verifier,
         })
     };
+    let outcome = verdict.outcome;
 
     let key = CreditKey {
         netuid: body.netuid,
@@ -393,10 +465,80 @@ async fn submit_quote(
         g.book.record(key, outcome);
     }
 
-    Ok(Json(outcome_response(outcome)))
+    if let Some(pool) = g.pool.clone() {
+        persist_outcome(
+            &pool,
+            &PersistInput {
+                epoch: body.epoch,
+                miner,
+                validator_hotkey,
+                nonce,
+                quote: &quote,
+                verdict,
+            },
+        )
+        .await;
+    }
+
+    Ok(Json(outcome_response(verdict)))
 }
 
-fn outcome_response(outcome: AttestOutcome) -> SubmitResponse {
+/// Row material for one durable attestation record.
+struct PersistInput<'a> {
+    epoch: u64,
+    miner: [u8; KEY_LEN],
+    validator_hotkey: [u8; KEY_LEN],
+    nonce: [u8; KEY_LEN],
+    quote: &'a [u8],
+    verdict: SubmissionVerdict,
+}
+
+/// Append the outcome to `attestation`, logging (never failing) on error.
+///
+/// The nonce is already spent by the time we get here, so a Postgres hiccup
+/// must not turn a completed verification into an HTTP error the miner would
+/// retry with a dead nonce.
+async fn persist_outcome(pool: &PgPool, input: &PersistInput<'_>) {
+    let (outcome, reason) = db_outcome(input.verdict.outcome);
+    let miner_hex = hex::encode(input.miner);
+    let epoch = i64::try_from(input.epoch).unwrap_or(i64::MAX);
+    let row = NewAttestation {
+        epoch,
+        miner_hotkey: &miner_hex,
+        validator_hotkey: &hex::encode(input.validator_hotkey),
+        nonce: &input.nonce,
+        outcome,
+        quote: Some(input.quote),
+        reason: reason.as_deref(),
+        receipt_pk: input
+            .verdict
+            .receipt_pk
+            .as_ref()
+            .map(<[u8; KEY_LEN]>::as_slice),
+    };
+    if let Err(e) = insert_attestation(pool, &row).await {
+        tracing::error!(
+            target: "attest",
+            error = %e,
+            epoch,
+            miner = %miner_hex,
+            outcome,
+            "attestation outcome not persisted; only the in-memory credit book has it"
+        );
+    }
+}
+
+/// Map an outcome onto the `attestation_outcome_check` labels.
+fn db_outcome(outcome: AttestOutcome) -> (&'static str, Option<String>) {
+    match outcome {
+        AttestOutcome::Verified => ("verified", None),
+        AttestOutcome::Rejected { reason } => ("reject", Some(reject_reason_str(reason))),
+        AttestOutcome::Parked { reason } => ("park", Some(park_reason_str(reason))),
+    }
+}
+
+fn outcome_response(verdict: SubmissionVerdict) -> SubmitResponse {
+    let outcome = verdict.outcome;
     let (label, reason) = match outcome {
         AttestOutcome::Verified => ("verified".to_owned(), None),
         AttestOutcome::Rejected { reason } => {
@@ -409,6 +551,7 @@ fn outcome_response(outcome: AttestOutcome) -> SubmitResponse {
         reason,
         grants_credit: outcome.grants_credit(),
         carries_prior_verified: outcome.carries_prior_verified(),
+        receipt_public_key_hex: verdict.receipt_pk.map(hex::encode),
     }
 }
 
@@ -422,6 +565,8 @@ fn reject_reason_str(r: RejectReason) -> String {
         RejectReason::TcbRevoked => "tcb_revoked",
         RejectReason::QuoteMalformed => "quote_malformed",
         RejectReason::EventLogInvalid => "event_log_invalid",
+        RejectReason::ComposePreimageMismatch => "compose_preimage_mismatch",
+        RejectReason::ReceiptKeyInvalid => "receipt_key_invalid",
     }
     .to_owned()
 }
@@ -490,6 +635,13 @@ impl ApiError {
     fn bad(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            msg: msg.into(),
+        }
+    }
+
+    fn unavailable(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
             msg: msg.into(),
         }
     }

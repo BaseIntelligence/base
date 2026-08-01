@@ -32,6 +32,7 @@ mod error;
 mod glue;
 mod pipeline;
 mod policy;
+mod receipt_key;
 mod report_data;
 mod tcb;
 mod verifier;
@@ -48,8 +49,11 @@ pub use dcap_map::{
 };
 pub use error::PolicyError;
 pub use glue::{mr_config_id_matches, replay_compose_hash};
-pub use pipeline::{verify_submission, SubmissionInput};
+pub use pipeline::{verify_submission, SubmissionInput, SubmissionVerdict};
 pub use policy::{evaluate, PolicyInput};
+pub use receipt_key::{
+    receipt_key_from_compose, verify_compose_preimage, ComposeBindError, RECEIPT_PUBLIC_KEY_ENV,
+};
 pub use report_data::{
     compute_report_data, report_data_preimage, verify_report_data, ReportDataBinding,
     REPORT_DATA_LEN,
@@ -115,6 +119,10 @@ pub enum RejectReason {
     QuoteMalformed,
     /// Event log JSON or RTMR3 replay failed.
     EventLogInvalid,
+    /// Supplied `app_compose` does not hash to the RTMR3 compose hash.
+    ComposePreimageMismatch,
+    /// Measured compose carries no usable `BASE_RECEIPT_PUBLIC_KEY`.
+    ReceiptKeyInvalid,
 }
 
 /// Park causes (outage / soft TCB / stale collateral).

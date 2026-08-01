@@ -140,6 +140,9 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
                 if let Err(e) = db::migrate(&pool).await {
                     tracing::warn!(error = %e, "migrate skipped/failed");
                 }
+                // Durable attestation record (receipt keys included); without a
+                // pool the credit book dies with the process.
+                attest.attach_pool(pool.clone()).await;
                 db_ready_from_fn(move || {
                     let pool = pool.clone();
                     async move {
@@ -161,6 +164,12 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
             return ExitCode::from(2);
         }
     };
+
+    // Pin attestations to the chain epoch: the challenge service joins on that
+    // epoch, so a miner-declared one would let it bank credit for future epochs.
+    attest
+        .attach_chain(Arc::clone(&chain) as validator::SharedChain)
+        .await;
 
     let hotkey = validator_hotkey_from_env();
     let registration = match validator::registration::resolve_on_chain(chain.as_ref(), &hotkey) {

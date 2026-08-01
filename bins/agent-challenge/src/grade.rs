@@ -8,13 +8,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use agent_challenge::{
-    grade_to_score_or_absence, ExpectedSet, HarborVerifier, HarborVerifierConfig,
-    MinerEpochOutcome, Verifier,
+    grade_to_score_or_absence, score_from_outcome, verify_intake_receipt, AttestationStatus,
+    CallOutcome, ExpectedReceiptBind, ExpectedSet, HarborVerifier, HarborVerifierConfig,
+    MinerEpochOutcome, ScoreInputs, Verifier,
 };
-use agent_dispatch::{patch_sha256, TaskResultV1, DISPATCH_PROTOCOL};
+use agent_dispatch::TaskResultV1;
 use agent_pack::{load_pack, HarborPack, PACKS_DIR_NAME};
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 
+use crate::attest::EpochAttestations;
 use crate::chainsnap::Hotkey;
 
 /// Where a pack and its verifier come from for one grade.
@@ -85,6 +87,26 @@ impl GradeSource for HarborGradeSource {
     }
 }
 
+/// Everything one epoch's grading pass reads besides the pack source.
+pub struct GradeEpoch<'a> {
+    /// Subnet netuid (bound into the scorer's I1 gate inputs).
+    pub netuid: u16,
+    /// Epoch being graded.
+    pub epoch: u64,
+    /// Challenge id the result envelopes must echo.
+    pub challenge_id: &'a str,
+    /// Scoring version the result envelopes must echo.
+    pub scoring_version: u16,
+    /// Expected set `E` — every participant gets an entry or a fallback.
+    pub expected: &'a ExpectedSet,
+    /// Miner hotkey → dispatch endpoint actually contacted.
+    pub endpoints: &'a BTreeMap<Hotkey, String>,
+    /// Raw dispatch outcomes.
+    pub outcomes: &'a BTreeMap<Hotkey, MinerEpochOutcome>,
+    /// Control-plane attestation snapshot for this epoch.
+    pub attest: &'a EpochAttestations,
+}
+
 /// Grade every outcome that can be graded, keyed by miner hotkey.
 ///
 /// Entries returned here take precedence over the outcome→reason fallback in
@@ -92,19 +114,33 @@ impl GradeSource for HarborGradeSource {
 /// that fallback. Miners with no endpoint are recorded as
 /// [`NoScoreReasonCode::NotAttempted`] — the challenge genuinely never called
 /// them, and that is not an operator fault.
+///
+/// The attestation gate (I1) runs first for every participant, so an
+/// unattested miner is answered before its endpoint, its envelope, or its patch
+/// is looked at (`AGENT_CHALLENGE` §7.3 priority 2).
 #[must_use]
 pub fn grade_outcomes<S: GradeSource + ?Sized>(
     source: &S,
-    epoch: u64,
-    challenge_id: &str,
-    scoring_version: u16,
-    expected: &ExpectedSet,
-    endpoints: &BTreeMap<Hotkey, String>,
-    outcomes: &BTreeMap<Hotkey, MinerEpochOutcome>,
+    ep: &GradeEpoch<'_>,
 ) -> BTreeMap<Hotkey, ScoreOrAbsence> {
     let mut graded = BTreeMap::new();
-    for p in &expected.participants {
-        if !endpoints.contains_key(&p.hotkey) {
+    for p in &ep.expected.participants {
+        let attested = ep.attest.get(&p.hotkey);
+        if let Some(gated) = attestation_gate(ep, p.hotkey, attested.status) {
+            tracing::info!(
+                event = "attestation_gate",
+                hotkey = %hex::encode(p.hotkey),
+                epoch = ep.epoch,
+                status = ?attested.status,
+                "no same-epoch Verified attestation; miner not scored"
+            );
+            graded.insert(p.hotkey, gated);
+            continue;
+        }
+        let Some(receipt_pk) = attested.receipt_pk else {
+            continue;
+        };
+        if !ep.endpoints.contains_key(&p.hotkey) {
             graded.insert(
                 p.hotkey,
                 ScoreOrAbsence::NoScore {
@@ -113,15 +149,17 @@ pub fn grade_outcomes<S: GradeSource + ?Sized>(
             );
             continue;
         }
-        let Some(MinerEpochOutcome::Completed { pack_id, result }) = outcomes.get(&p.hotkey) else {
+        let Some(MinerEpochOutcome::Completed { pack_id, result }) = ep.outcomes.get(&p.hotkey)
+        else {
             continue;
         };
-        let bind = Bind {
-            challenge_id,
-            scoring_version,
-            epoch,
-            hotkey: p.hotkey,
-            pack_id,
+        let bind = ExpectedReceiptBind {
+            challenge_id: ep.challenge_id.to_owned(),
+            scoring_version: ep.scoring_version,
+            epoch: ep.epoch,
+            miner_hotkey: p.hotkey,
+            pack_id: pack_id.clone(),
+            cvm_receipt_pk: receipt_pk,
         };
         graded.insert(
             p.hotkey,
@@ -140,81 +178,79 @@ pub fn grade_outcomes<S: GradeSource + ?Sized>(
     graded
 }
 
-/// Fields a result envelope must echo back before its patch is graded.
-struct Bind<'a> {
-    challenge_id: &'a str,
-    scoring_version: u16,
-    epoch: u64,
+/// I1: `Some(NoScore)` when this miner must not be scored this epoch.
+///
+/// Routed through the pure scorer so the daemon cannot drift from the spec's
+/// attestation precondition; the call outcome is a placeholder because the gate
+/// short-circuits before any of it is read.
+fn attestation_gate(
+    ep: &GradeEpoch<'_>,
     hotkey: Hotkey,
-    pack_id: &'a str,
+    status: AttestationStatus,
+) -> Option<ScoreOrAbsence> {
+    let gated = score_from_outcome(&ScoreInputs {
+        netuid: ep.netuid,
+        epoch: ep.epoch,
+        miner_hotkey: hotkey,
+        pack_id: Vec::new(),
+        expected_model_patch: Vec::new(),
+        attestation: status,
+        duration_ms: 0,
+        outcome: CallOutcome::ChallengeInternal,
+    });
+    matches!(
+        gated,
+        ScoreOrAbsence::NoScore {
+            reason: NoScoreReasonCode::AttestationNotVerified
+        }
+    )
+    .then_some(gated)
 }
 
 fn grade_one<S: GradeSource + ?Sized>(
     source: &S,
-    bind: &Bind<'_>,
+    bind: &ExpectedReceiptBind,
     result: &TaskResultV1,
 ) -> Result<ScoreOrAbsence, (NoScoreReasonCode, String)> {
-    let patch =
-        bound_patch(bind, result).map_err(|why| (NoScoreReasonCode::InvalidResponse, why))?;
+    // A forged or wrong-key receipt is a bad response (§7.3 priority 5), not an
+    // operator fault and not silence: the miner still gets a signed leaf.
+    let patch = verify_intake_receipt(bind, result)
+        .map_err(|e| (NoScoreReasonCode::InvalidResponse, e.to_string()))?
+        .model_patch;
     let pack = source
-        .pack(bind.pack_id)
+        .pack(&bind.pack_id)
         .map_err(|e| (NoScoreReasonCode::ChallengeInternal, e))?;
     let verifier = source
-        .verifier(bind.pack_id)
+        .verifier(&bind.pack_id)
         .map_err(|e| (NoScoreReasonCode::ChallengeInternal, e))?;
     Ok(grade_to_score_or_absence(verifier.as_ref(), &pack, &patch))
-}
-
-/// Check the result echoes the dispatch it answers, and that the patch matches
-/// its own digest.
-///
-/// The work-receipt **signature** is not checked here: the receipt public key is
-/// pinned by attestation and the daemon has no attestation lookup yet, so
-/// binding stops at the envelope fields. Forging them buys nothing — the patch
-/// is still graded by the held-out harness.
-fn bound_patch(bind: &Bind<'_>, result: &TaskResultV1) -> Result<Vec<u8>, String> {
-    if result.protocol != DISPATCH_PROTOCOL {
-        return Err(format!("protocol {}", result.protocol));
-    }
-    if result.challenge_id != bind.challenge_id {
-        return Err(format!("challenge_id {}", result.challenge_id));
-    }
-    if result.scoring_version != bind.scoring_version {
-        return Err(format!("scoring_version {}", result.scoring_version));
-    }
-    if result.epoch != bind.epoch {
-        return Err(format!("epoch {} != {}", result.epoch, bind.epoch));
-    }
-    if result.miner_hotkey_hex != hex::encode(bind.hotkey) {
-        return Err("miner_hotkey_hex mismatch".to_owned());
-    }
-    if result.pack_id != bind.pack_id {
-        return Err(format!("pack_id {}", result.pack_id));
-    }
-    let patch = result
-        .model_patch
-        .as_deref()
-        .unwrap_or_default()
-        .as_bytes()
-        .to_vec();
-    if hex::encode(patch_sha256(&patch)) != result.patch_sha256_hex {
-        return Err("patch_sha256 mismatch".to_owned());
-    }
-    Ok(patch)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_challenge::SIGNATURE_LEN;
     use agent_challenge::{
-        score_map_covering_expected, ExpectedParticipant, Reward, VerifyError, SCORE_MAX,
+        public_key_from_secret, score_map_covering_expected, ExpectedParticipant, Reward,
+        VerifyError, KEY_LEN, SCORE_MAX,
     };
-    use agent_dispatch::{TaskResultV1, TaskStatusV1};
+    use agent_dispatch::DISPATCH_PROTOCOL;
+    use agent_dispatch::{patch_sha256, sign_work_receipt, TaskStatusV1, WorkReceiptBodyV1};
     use agent_pack::HeldOutMaterials;
 
-    const MINER: Hotkey = [0xB1; 32];
-    const ABSENT: Hotkey = [0xC2; 32];
+    use crate::attest::MinerAttestation;
+
+    const MINER: Hotkey = [0xB1; KEY_LEN];
+    const ABSENT: Hotkey = [0xC2; KEY_LEN];
     const PACK: &str = "pack-a";
+    const CVM_SK: [u8; KEY_LEN] = [0x5A; KEY_LEN];
+    const FORGER_SK: [u8; KEY_LEN] = [0x6B; KEY_LEN];
+    const NETUID: u16 = 1;
+    const EPOCH: u64 = 7;
+
+    fn cvm_pk(sk: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
+        public_key_from_secret(sk).expect("receipt pk")
+    }
 
     fn pack() -> HarborPack {
         HarborPack {
@@ -262,6 +298,10 @@ mod tests {
         }
     }
 
+    fn resolves() -> Source {
+        Source::Grades(Ok(Reward::try_new(1).expect("reward")))
+    }
+
     fn expected() -> ExpectedSet {
         ExpectedSet {
             block_hash: [0x11; 32],
@@ -278,7 +318,24 @@ mod tests {
         }
     }
 
-    fn completed(patch: &str) -> BTreeMap<Hotkey, MinerEpochOutcome> {
+    /// Signature the miner CVM would produce over the receipt body.
+    fn receipt_sig(sk: &[u8; KEY_LEN], patch: &[u8]) -> [u8; SIGNATURE_LEN] {
+        sign_work_receipt(
+            sk,
+            WorkReceiptBodyV1 {
+                challenge_id: b"agent-v1".to_vec(),
+                scoring_version: 2,
+                epoch: EPOCH,
+                miner_hotkey: MINER,
+                pack_id: PACK.as_bytes().to_vec(),
+                patch_sha256: patch_sha256(patch),
+            },
+        )
+        .expect("sign receipt")
+        .signature
+    }
+
+    fn completed(patch: &str, sk: &[u8; KEY_LEN]) -> BTreeMap<Hotkey, MinerEpochOutcome> {
         let bytes = patch.as_bytes().to_vec();
         BTreeMap::from([(
             MINER,
@@ -288,31 +345,58 @@ mod tests {
                     protocol: DISPATCH_PROTOCOL.into(),
                     challenge_id: "agent-v1".into(),
                     scoring_version: 2,
-                    epoch: 7,
+                    epoch: EPOCH,
                     miner_hotkey_hex: hex::encode(MINER),
                     pack_id: PACK.into(),
                     status: TaskStatusV1::Completed,
                     model_patch: Some(patch.to_owned()),
                     patch_sha256_hex: hex::encode(patch_sha256(&bytes)),
-                    receipt_sig_hex: hex::encode([0_u8; 64]),
+                    receipt_sig_hex: hex::encode(receipt_sig(sk, &bytes)),
                 },
             },
         )])
     }
 
-    fn run(source: &Source, patch: &str) -> BTreeMap<Hotkey, ScoreOrAbsence> {
+    /// Both participants attested `Verified` against the honest CVM key.
+    fn all_verified() -> EpochAttestations {
+        let a = MinerAttestation::verified(cvm_pk(&CVM_SK));
+        EpochAttestations::new(BTreeMap::from([(MINER, a.clone()), (ABSENT, a)]))
+    }
+
+    fn score(
+        source: &Source,
+        outcomes: &BTreeMap<Hotkey, MinerEpochOutcome>,
+        attest: &EpochAttestations,
+    ) -> BTreeMap<Hotkey, ScoreOrAbsence> {
         let expected = expected();
         let endpoints = BTreeMap::from([(MINER, "http://miner.invalid".to_owned())]);
-        let outcomes = completed(patch);
-        let graded = grade_outcomes(source, 7, "agent-v1", 2, &expected, &endpoints, &outcomes);
-        score_map_covering_expected(&expected.hotkeys(), &graded, &outcomes)
+        let graded = grade_outcomes(
+            source,
+            &GradeEpoch {
+                netuid: NETUID,
+                epoch: EPOCH,
+                challenge_id: "agent-v1",
+                scoring_version: 2,
+                expected: &expected,
+                endpoints: &endpoints,
+                outcomes,
+                attest,
+            },
+        );
+        let scores = score_map_covering_expected(&expected.hotkeys(), &graded, outcomes);
+        assert_eq!(scores.len(), expected.participants.len(), "D24 cover of E");
+        scores
+    }
+
+    fn run(source: &Source, patch: &str) -> BTreeMap<Hotkey, ScoreOrAbsence> {
+        score(source, &completed(patch, &CVM_SK), &all_verified())
     }
 
     /// Regression: the graded map used to be unconditionally empty, so a
     /// resolving patch still scored `NoScore`.
     #[test]
     fn resolving_patch_scores_and_absent_miner_is_not_attempted() {
-        let scores = run(&Source::Grades(Ok(Reward::try_new(1).expect("r"))), "diff");
+        let scores = run(&resolves(), "diff");
         assert_eq!(scores[&MINER], ScoreOrAbsence::Score { value: SCORE_MAX });
         assert_eq!(
             scores[&ABSENT],
@@ -356,33 +440,14 @@ mod tests {
 
     #[test]
     fn envelope_that_does_not_echo_the_dispatch_is_invalid_response() {
-        let bind = Bind {
-            challenge_id: "agent-v1",
-            scoring_version: 2,
-            epoch: 7,
-            hotkey: MINER,
-            pack_id: PACK,
-        };
-        let mut outcomes = completed("diff");
+        let mut outcomes = completed("diff", &CVM_SK);
         let Some(MinerEpochOutcome::Completed { result, .. }) = outcomes.get_mut(&MINER) else {
             panic!("completed");
         };
         result.epoch = 8;
-        let err = bound_patch(&bind, result).expect_err("epoch mismatch");
-        assert!(err.contains("epoch 8"), "{err}");
-
-        let source = Source::Grades(Ok(Reward::try_new(1).expect("r")));
-        let graded = grade_outcomes(
-            &source,
-            7,
-            "agent-v1",
-            2,
-            &expected(),
-            &BTreeMap::from([(MINER, "http://miner.invalid".to_owned())]),
-            &outcomes,
-        );
+        let scores = score(&resolves(), &outcomes, &all_verified());
         assert_eq!(
-            graded[&MINER],
+            scores[&MINER],
             ScoreOrAbsence::NoScore {
                 reason: NoScoreReasonCode::InvalidResponse
             }
@@ -391,19 +456,60 @@ mod tests {
 
     #[test]
     fn tampered_patch_digest_is_invalid_response() {
-        let bind = Bind {
-            challenge_id: "agent-v1",
-            scoring_version: 2,
-            epoch: 7,
-            hotkey: MINER,
-            pack_id: PACK,
-        };
-        let mut outcomes = completed("diff");
+        let mut outcomes = completed("diff", &CVM_SK);
         let Some(MinerEpochOutcome::Completed { result, .. }) = outcomes.get_mut(&MINER) else {
             panic!("completed");
         };
         result.model_patch = Some("other".into());
-        let err = bound_patch(&bind, result).expect_err("digest");
-        assert!(err.contains("patch_sha256"), "{err}");
+        let scores = score(&resolves(), &outcomes, &all_verified());
+        assert_eq!(
+            scores[&MINER],
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::InvalidResponse
+            }
+        );
+    }
+
+    /// A well-formed envelope whose receipt is signed by a key the attestation
+    /// never pinned used to grade and score `SCORE_MAX`.
+    #[test]
+    fn receipt_signed_by_the_wrong_key_is_not_scored() {
+        let scores = score(&resolves(), &completed("diff", &FORGER_SK), &all_verified());
+        assert_eq!(
+            scores[&MINER],
+            ScoreOrAbsence::NoScore {
+                reason: NoScoreReasonCode::InvalidResponse
+            },
+            "unpinned receipt key must not reach the harness"
+        );
+    }
+
+    /// I1: no same-epoch `Verified` attestation, no score — however good the
+    /// patch and however honest the receipt.
+    #[test]
+    fn unattested_miner_is_not_scored_with_a_perfect_patch() {
+        for status in [
+            AttestationStatus::Missing,
+            AttestationStatus::Parked,
+            AttestationStatus::Rejected,
+        ] {
+            let attest = EpochAttestations::new(BTreeMap::from([(
+                MINER,
+                MinerAttestation {
+                    status,
+                    receipt_pk: None,
+                },
+            )]));
+            let scores = score(&resolves(), &completed("diff", &CVM_SK), &attest);
+            for hotkey in [MINER, ABSENT] {
+                assert_eq!(
+                    scores[&hotkey],
+                    ScoreOrAbsence::NoScore {
+                        reason: NoScoreReasonCode::AttestationNotVerified
+                    },
+                    "{status:?} must gate before grading"
+                );
+            }
+        }
     }
 }

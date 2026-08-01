@@ -13,8 +13,10 @@
 //!    expected set `E` (real uid → hotkey), and each miner's published axon.
 //! 2. [`run_epoch_dispatch`] hands the work to [`dispatch::HttpDispatchClient`],
 //!    which talks HTTP to those axons under signed dispatch auth.
-//! 3. [`grade::grade_outcomes`] runs returned patches through the pack's
-//!    held-out Harbor harness.
+//! 3. [`attest::ControlPlane`] reads this epoch's attestation outcomes, and
+//!    [`grade::grade_outcomes`] gates on them (I1) before verifying each work
+//!    receipt against the attested CVM key and running the returned patch
+//!    through the pack's held-out Harbor harness.
 //! 4. [`score_map_covering_expected`] covers all of `E`, [`emit_signed_leaf_set`]
 //!    signs, and [`submit_signed_leaf_set`] POSTs to the gateway.
 //!
@@ -23,6 +25,7 @@
 
 #![forbid(unsafe_code)]
 
+mod attest;
 mod chainsnap;
 mod dispatch;
 mod grade;
@@ -48,9 +51,10 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use trustroot::{encode_hex, ParticipantPolicy};
 
+use attest::ControlPlane;
 use chainsnap::ChainSnapshot;
 use dispatch::HttpDispatchClient;
-use grade::{grade_outcomes, HarborGradeSource};
+use grade::{grade_outcomes, GradeEpoch, HarborGradeSource};
 
 /// Operator challenge service CLI.
 #[derive(Debug, Parser)]
@@ -244,7 +248,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     // Start the background epoch dispatch driver when enabled. Fail-closed if
     // the challenge signing key is missing or unreadable.
-    let dispatch_state = setup_dispatch_driver(&cli, pack_state.as_ref())?;
+    let dispatch_state = setup_dispatch_driver(&cli, pack_state.as_ref()).await?;
 
     let catalog_ready = pack_state.as_ref().is_some_and(|s| s.is_ready());
     let ready = sk_ready && catalog_ready;
@@ -342,6 +346,27 @@ fn resolve_gateway_endpoint(cli: &Cli) -> String {
     "http://gateway:8080".to_owned()
 }
 
+/// Control-plane Postgres URL from the shared operator config, if configured.
+///
+/// # Errors
+///
+/// Unreadable or empty `database_url_file`.
+fn resolve_database_url() -> Result<Option<String>, String> {
+    let cfg = config::load().map_err(|e| e.to_string())?;
+    if let Some(url) = cfg.database_url.as_ref() {
+        return Ok(Some(url.clone()));
+    }
+    let Some(path) = cfg.database_url_file.as_ref() else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let trimmed = raw.trim().to_owned();
+    if trimmed.is_empty() {
+        return Err("database_url_file is empty".into());
+    }
+    Ok(Some(trimmed))
+}
+
 /// Current unix time in milliseconds (best-effort; 0 if the clock is before epoch).
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -372,6 +397,7 @@ struct DriverConfig {
     netuid: u16,
     policy: ParticipantPolicy,
     catalog: Vec<PackId>,
+    attest: ControlPlane,
     gateway: GatewayClient,
     signers: Arc<ActiveSignerRegistry>,
     grade_source: HarborGradeSource,
@@ -384,8 +410,9 @@ struct DriverConfig {
 /// # Errors
 ///
 /// Fail-closed when dispatch is enabled but the challenge signing key, netuid,
-/// pack catalog, docker base, chain connection, or gateway client is missing.
-fn setup_dispatch_driver(
+/// pack catalog, docker base, chain connection, attestation control plane, or
+/// gateway client is missing.
+async fn setup_dispatch_driver(
     cli: &Cli,
     pack_state: Option<&Arc<PackCatalogState>>,
 ) -> Result<Option<Arc<Mutex<DispatchState>>>, String> {
@@ -419,6 +446,13 @@ fn setup_dispatch_driver(
         );
     }
 
+    // I1 has no offline fallback: without the control plane every miner would
+    // be Missing, so refuse to serve rather than zero the whole subnet quietly.
+    let database_url = resolve_database_url()?.ok_or(
+        "BASE_CHALLENGE_DISPATCH=1 requires a control-plane database for attestation outcomes",
+    )?;
+    let attest = ControlPlane::connect(&database_url).await?;
+
     let mut chain = chain_live::LiveChainClient::connect(&cli.chain_endpoint)
         .map_err(|e| format!("chain connect {}: {e}", cli.chain_endpoint))?;
     chain.set_netuid(netuid);
@@ -449,6 +483,7 @@ fn setup_dispatch_driver(
         netuid,
         policy: ParticipantPolicy::AllMetagraphHotkeys,
         catalog,
+        attest,
         gateway,
         signers: ActiveSignerRegistry::new(),
         grade_source: HarborGradeSource {
@@ -497,22 +532,31 @@ async fn run_one_epoch(cfg: &DriverConfig, snap: &ChainSnapshot) -> Result<usize
         .await
         .map_err(|e| e.to_string())?;
 
+    // I1 gate inputs are read once per epoch, before any grading compute.
+    let expected_vec: Vec<_> = expected_keys.iter().copied().collect();
+    let attest = cfg.attest.epoch_attestations(epoch, &expected_vec).await;
+
     // Harbor grading is a long blocking Docker run; keep it off the reactor.
-    let (source, expected, endpoints, outcomes) = (
+    let (source, expected, endpoints, outcomes, netuid) = (
         cfg.grade_source.clone(),
         snap.expected.clone(),
         snap.endpoints.clone(),
         result.outcomes.clone(),
+        cfg.netuid,
     );
     let graded = tokio::task::spawn_blocking(move || {
         grade_outcomes(
             &source,
-            epoch,
-            CHALLENGE_ID,
-            SCORING_VERSION,
-            &expected,
-            &endpoints,
-            &outcomes,
+            &GradeEpoch {
+                netuid,
+                epoch,
+                challenge_id: CHALLENGE_ID,
+                scoring_version: SCORING_VERSION,
+                expected: &expected,
+                endpoints: &endpoints,
+                outcomes: &outcomes,
+                attest: &attest,
+            },
         )
     })
     .await

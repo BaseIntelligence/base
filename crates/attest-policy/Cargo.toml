@@ -20,6 +20,8 @@ trustroot = { path = "../trustroot" }
 attest-parse = { path = "../attest-parse" }
 attest-replay = { path = "../attest-replay" }
 compose-hash = { path = "../compose-hash" }
+hex = "0.4"
+serde_json = "1"
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"

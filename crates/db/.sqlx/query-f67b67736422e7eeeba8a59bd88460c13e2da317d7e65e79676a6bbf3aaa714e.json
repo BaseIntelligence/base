@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT outcome, receipt_pk\n        FROM attestation\n        WHERE epoch = $1 AND miner_hotkey = $2\n        ORDER BY (outcome = 'verified') DESC, attempt DESC, created_at DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outcome",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "receipt_pk",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "f67b67736422e7eeeba8a59bd88460c13e2da317d7e65e79676a6bbf3aaa714e"
+}

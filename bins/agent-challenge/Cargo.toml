@@ -21,6 +21,7 @@ bundle = { path = "../../crates/bundle" }
 chain = { path = "../../crates/chain" }
 chain-live = { path = "../../crates/chain-live" }
 config = { path = "../../crates/config" }
+db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }
 trustroot = { path = "../../crates/trustroot" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }

@@ -323,3 +323,119 @@ pub async fn latest_bundle_epoch(pool: &PgPool) -> Result<Option<i64>, DbError> 
         .await?;
     Ok(epoch)
 }
+
+/// Length of an sr25519 public key stored in `attestation.receipt_pk`.
+pub const RECEIPT_PK_LEN: usize = 32;
+
+/// One attestation outcome to append to `attestation`.
+///
+/// `outcome` must be `verified` | `park` | `reject`
+/// (`attestation_outcome_check`) and `receipt_pk`, when present, must be
+/// [`RECEIPT_PK_LEN`] bytes on a `verified` row only.
+#[derive(Debug, Clone)]
+pub struct NewAttestation<'a> {
+    /// Epoch the quote bound.
+    pub epoch: i64,
+    /// Attested miner hotkey (hex).
+    pub miner_hotkey: &'a str,
+    /// Validator that ran the verification (hex).
+    pub validator_hotkey: &'a str,
+    /// Single-use nonce from the D10 binding (32 bytes).
+    pub nonce: &'a [u8],
+    /// `verified` | `park` | `reject`.
+    pub outcome: &'a str,
+    /// Raw quote bytes kept as evidence.
+    pub quote: Option<&'a [u8]>,
+    /// Machine reason when not verified.
+    pub reason: Option<&'a str>,
+    /// Receipt key read from the measured compose (verified rows only).
+    pub receipt_pk: Option<&'a [u8]>,
+}
+
+/// Latest attestation outcome for a miner at an epoch, across validators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationRecord {
+    /// `verified` | `park` | `reject`.
+    pub outcome: String,
+    /// Receipt key, only ever set on a `verified` outcome.
+    pub receipt_pk: Option<[u8; RECEIPT_PK_LEN]>,
+}
+
+/// Append an attestation outcome as the next attempt for its
+/// `(epoch, miner, validator)` slot.
+///
+/// The attempt is derived in the same statement as the insert, so
+/// `attestation_epoch_miner_validator_attempt_unique` rejects a racing writer
+/// that computed the same next attempt. Returns the attempt that landed.
+///
+/// # Errors
+///
+/// Propagates sqlx query errors, including the schema `CHECK` violations.
+pub async fn insert_attestation(pool: &PgPool, row: &NewAttestation<'_>) -> Result<i32, DbError> {
+    let attempt: i32 = sqlx::query_scalar!(
+        r#"
+        INSERT INTO attestation
+            (epoch, miner_hotkey, validator_hotkey, attempt, nonce, outcome,
+             quote, reason, receipt_pk)
+        SELECT $1, $2, $3,
+               COALESCE((SELECT MAX(attempt) FROM attestation
+                         WHERE epoch = $1 AND miner_hotkey = $2
+                           AND validator_hotkey = $3), 0) + 1,
+               $4, $5, $6, $7, $8
+        RETURNING attempt
+        "#,
+        row.epoch,
+        row.miner_hotkey,
+        row.validator_hotkey,
+        row.nonce,
+        row.outcome,
+        row.quote,
+        row.reason,
+        row.receipt_pk,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(attempt)
+}
+
+/// Latest attestation outcome for a miner at an epoch, across validators.
+/// Returns the receipt key only for a `verified` outcome.
+///
+/// Tie-break across validators and retries: any `verified` row wins over a
+/// `park` / `reject`, then the highest attempt, then the newest row. One
+/// validator verifying a miner is enough to bind its receipt key, and the
+/// binding is measurement-derived, so it cannot differ between validators that
+/// both verified.
+///
+/// # Errors
+///
+/// Propagates sqlx query errors.
+pub async fn attestation_for_miner(
+    pool: &PgPool,
+    epoch: i64,
+    miner_hotkey: &str,
+) -> Result<Option<AttestationRecord>, DbError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT outcome, receipt_pk
+        FROM attestation
+        WHERE epoch = $1 AND miner_hotkey = $2
+        ORDER BY (outcome = 'verified') DESC, attempt DESC, created_at DESC
+        LIMIT 1
+        "#,
+        epoch,
+        miner_hotkey,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        let receipt_pk = r
+            .receipt_pk
+            .filter(|_| r.outcome == "verified")
+            .and_then(|b| <[u8; RECEIPT_PK_LEN]>::try_from(b.as_slice()).ok());
+        AttestationRecord {
+            outcome: r.outcome,
+            receipt_pk,
+        }
+    }))
+}

@@ -25,9 +25,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 attest-parse = { path = "../attest-parse" }
 attest-policy = { path = "../attest-policy" }
 attest-replay = { path = "../attest-replay" }
+chain = { path = "../chain" }
 crypto = { path = "../crypto" }
 trustroot = { path = "../trustroot" }
 validator = { path = "../validator" }
+validator-sync = { path = "../validator-sync" }
 hex = "0.4"
 serde_json = "1"
 tempfile = "3"
