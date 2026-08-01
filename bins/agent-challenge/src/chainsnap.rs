@@ -1,10 +1,11 @@
-//! Per-tick chain snapshot: epoch pin, expected set `E`, and axon endpoints.
+//! Per-tick chain snapshot: epoch pin and expected set `E`.
+//!
+//! Miner endpoints are *not* read here: they are announced to our gateway and
+//! resolved from the control plane by [`crate::registry`].
 //!
 //! Every value here is re-read from Subtensor on every tick. None of it is
 //! configurable: a wrong uid or a stale epoch silently corrupts the weight
 //! vector, so the tick fails rather than falling back to a local guess.
-
-use std::collections::BTreeMap;
 
 use agent_challenge::{expected_set_at_chain, ExpectedSet, PinnedBlockHash, KEY_LEN};
 use chain::{current_epoch_pre_run_coinbase, gather_schedule_state, ChainClient};
@@ -31,8 +32,6 @@ pub struct ChainSnapshot {
     pub pin: EpochPin,
     /// Sealed expected participant set.
     pub expected: ExpectedSet,
-    /// Reachable base URL per hotkey. A hotkey absent here published no axon.
-    pub endpoints: BTreeMap<Hotkey, String>,
 }
 
 /// Read `(epoch, block_B, block_hash)` from the chain.
@@ -61,37 +60,6 @@ pub fn read_epoch_pin<C: ChainClient>(chain: &C, netuid: u16) -> Result<EpochPin
     })
 }
 
-/// Resolve every expected hotkey to its published axon base URL.
-///
-/// A neuron that never called `serve_axon` is simply missing from the result;
-/// per-hotkey read failures are logged and treated the same way, because an
-/// unresolvable endpoint and an unpublished one are the same thing to dispatch.
-fn read_endpoints<C: ChainClient>(
-    chain: &C,
-    netuid: u16,
-    expected: &ExpectedSet,
-) -> BTreeMap<Hotkey, String> {
-    let mut out = BTreeMap::new();
-    for p in &expected.participants {
-        match chain.axon(netuid, &p.hotkey) {
-            Ok(Some(info)) => {
-                if let Some(url) = info.base_url() {
-                    out.insert(p.hotkey, url);
-                }
-            }
-            Ok(None) => {}
-            Err(e) => tracing::warn!(
-                event = "axon_read_failed",
-                uid = p.uid,
-                hotkey = %hex::encode(p.hotkey),
-                error = %e,
-                "axon unresolved; miner treated as not dispatchable"
-            ),
-        }
-    }
-    out
-}
-
 /// Read the full per-tick snapshot at a freshly derived pin.
 ///
 /// # Errors
@@ -105,18 +73,15 @@ pub fn read_snapshot<C: ChainClient>(
     let pin = read_epoch_pin(chain, netuid)?;
     let expected = expected_set_at_chain(policy, PinnedBlockHash::new(pin.block_hash), chain)
         .map_err(|e| format!("expected set at block {}: {e}", pin.block_b))?;
-    let endpoints = read_endpoints(chain, netuid, &expected);
-    Ok(ChainSnapshot {
-        pin,
-        expected,
-        endpoints,
-    })
+    Ok(ChainSnapshot { pin, expected })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use chain::{AxonInfo, FakeChain, FakeChainConfig};
+    use chain::{FakeChain, FakeChainConfig};
 
     const NETUID: u16 = 541;
 
@@ -128,19 +93,6 @@ mod tests {
     }
     fn validator() -> Vec<u8> {
         vec![0xC2; 32]
-    }
-
-    fn axon(ip: u128, port: u16) -> AxonInfo {
-        AxonInfo {
-            block: 1,
-            version: 1,
-            ip,
-            port,
-            ip_type: 4,
-            protocol: 4,
-            placeholder1: 0,
-            placeholder2: 0,
-        }
     }
 
     fn cfg(epoch_index: u64, last_epoch_block: u64) -> FakeChainConfig {
@@ -221,22 +173,6 @@ mod tests {
         assert_eq!(read_epoch_pin(&chain, NETUID).expect("pin").epoch, 8);
     }
 
-    #[test]
-    fn only_published_axons_become_endpoints() {
-        let chain = FakeChain::new(cfg(7, 3_600));
-        chain.set_axon(&miner(), axon(3_717_915_933, 8080));
-        // Served then cleared: stored as all-zero, must not become a dial target.
-        chain.set_axon(&validator(), axon(0, 0));
-
-        let snap =
-            read_snapshot(&chain, NETUID, &ParticipantPolicy::AllMetagraphHotkeys).expect("snap");
-        assert_eq!(snap.endpoints.len(), 1);
-        assert_eq!(
-            snap.endpoints.get(&[0xB1_u8; 32]).map(String::as_str),
-            Some("http://221.154.229.29:8080")
-        );
-    }
-
     /// Live probe that the epoch counter and pin are populated on our subnet.
     ///
     /// `SubnetEpochIndex` is a `ValueQuery` read: an absent key decodes to 0 and
@@ -260,12 +196,14 @@ mod tests {
         assert_ne!(pin.block_hash, [0_u8; 32]);
     }
 
+    /// The snapshot is chain-only: it carries `E`, and nothing about how any
+    /// miner is reached.
     #[test]
-    fn no_axons_at_all_is_an_empty_map_not_an_error() {
+    fn snapshot_seals_the_expected_set_without_touching_endpoints() {
         let chain = FakeChain::new(cfg(7, 3_600));
         let snap =
             read_snapshot(&chain, NETUID, &ParticipantPolicy::AllMetagraphHotkeys).expect("snap");
         assert_eq!(snap.expected.participants.len(), 3);
-        assert!(snap.endpoints.is_empty());
+        assert_eq!(snap.expected.block_hash, snap.pin.block_hash);
     }
 }

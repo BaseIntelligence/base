@@ -147,6 +147,15 @@ impl ControlPlane {
         Ok(Self { pool })
     }
 
+    /// The shared control-plane pool.
+    ///
+    /// Exposed so other control-plane readers (endpoint announcements) reuse
+    /// this pool instead of opening a second one against the same database.
+    #[must_use]
+    pub const fn pool(&self) -> &db::PgPool {
+        &self.pool
+    }
+
     /// Read every expected miner's attestation for `epoch`.
     ///
     /// Per-miner lookup failures are logged and left Missing (§3.3); this call

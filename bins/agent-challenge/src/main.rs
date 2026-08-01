@@ -9,10 +9,12 @@
 //! When `BASE_CHALLENGE_DISPATCH=1`, a background tokio task drives one epoch
 //! per tick, and every input of that tick comes from the chain:
 //!
-//! 1. [`chainsnap::read_snapshot`] re-reads the epoch, the `block_B` pin, the
-//!    expected set `E` (real uid → hotkey), and each miner's published axon.
-//! 2. [`run_epoch_dispatch`] hands the work to [`dispatch::HttpDispatchClient`],
-//!    which talks HTTP to those axons under signed dispatch auth.
+//! 1. [`chainsnap::read_snapshot`] re-reads the epoch, the `block_B` pin, and
+//!    the expected set `E` (real uid → hotkey).
+//! 2. [`registry::EndpointRegistry`] resolves each expected miner's announced
+//!    CVM base URL from the control plane, and [`run_epoch_dispatch`] hands the
+//!    work to [`dispatch::HttpDispatchClient`], which talks HTTPS to those
+//!    endpoints under signed dispatch auth.
 //! 3. [`attest::ControlPlane`] reads this epoch's attestation outcomes, and
 //!    [`grade::grade_outcomes`] gates on them (I1) before verifying each work
 //!    receipt against the attested CVM key and running the returned patch
@@ -29,6 +31,7 @@ mod attest;
 mod chainsnap;
 mod dispatch;
 mod grade;
+mod registry;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -55,6 +58,7 @@ use attest::ControlPlane;
 use chainsnap::ChainSnapshot;
 use dispatch::HttpDispatchClient;
 use grade::{grade_outcomes, GradeEpoch, HarborGradeSource};
+use registry::EndpointRegistry;
 
 /// Operator challenge service CLI.
 #[derive(Debug, Parser)]
@@ -112,7 +116,7 @@ struct Cli {
         global = true
     )]
     challenge_epoch_interval_secs: u64,
-    /// Substrate JSON-RPC endpoint the epoch, pin, `E`, and axons are read from.
+    /// Substrate JSON-RPC endpoint the epoch, pin, and `E` are read from.
     #[arg(
         long,
         env = "BASE_CHAIN_ENDPOINT",
@@ -398,6 +402,7 @@ struct DriverConfig {
     policy: ParticipantPolicy,
     catalog: Vec<PackId>,
     attest: ControlPlane,
+    endpoints: EndpointRegistry,
     gateway: GatewayClient,
     signers: Arc<ActiveSignerRegistry>,
     grade_source: HarborGradeSource,
@@ -452,6 +457,9 @@ async fn setup_dispatch_driver(
         "BASE_CHALLENGE_DISPATCH=1 requires a control-plane database for attestation outcomes",
     )?;
     let attest = ControlPlane::connect(&database_url).await?;
+    // Same control plane, same pool: endpoint announcements live beside the
+    // attestation rows, so a second connection would buy nothing.
+    let endpoints = EndpointRegistry::new(attest.pool().clone(), netuid);
 
     let mut chain = chain_live::LiveChainClient::connect(&cli.chain_endpoint)
         .map_err(|e| format!("chain connect {}: {e}", cli.chain_endpoint))?;
@@ -484,6 +492,7 @@ async fn setup_dispatch_driver(
         policy: ParticipantPolicy::AllMetagraphHotkeys,
         catalog,
         attest,
+        endpoints,
         gateway,
         signers: ActiveSignerRegistry::new(),
         grade_source: HarborGradeSource {
@@ -523,11 +532,8 @@ async fn run_one_epoch(cfg: &DriverConfig, snap: &ChainSnapshot) -> Result<usize
         deadline_unix_ms,
     };
 
-    let client = Arc::new(HttpDispatchClient::new(
-        snap.endpoints.clone(),
-        cfg.sk,
-        cfg.pk,
-    )?);
+    let endpoints = cfg.endpoints.resolve_endpoints(epoch, &snap.expected).await;
+    let client = Arc::new(HttpDispatchClient::new(endpoints.clone(), cfg.sk, cfg.pk).await?);
     let result = run_epoch_dispatch(&dispatch_cfg, client, &cfg.signers)
         .await
         .map_err(|e| e.to_string())?;
@@ -537,10 +543,9 @@ async fn run_one_epoch(cfg: &DriverConfig, snap: &ChainSnapshot) -> Result<usize
     let attest = cfg.attest.epoch_attestations(epoch, &expected_vec).await;
 
     // Harbor grading is a long blocking Docker run; keep it off the reactor.
-    let (source, expected, endpoints, outcomes, netuid) = (
+    let (source, expected, outcomes, netuid) = (
         cfg.grade_source.clone(),
         snap.expected.clone(),
-        snap.endpoints.clone(),
         result.outcomes.clone(),
         cfg.netuid,
     );
@@ -582,8 +587,8 @@ fn set_dispatch_state(state: &Mutex<DispatchState>, s: DispatchState) {
 
 /// Eternal epoch loop: sleep → read chain → dispatch → grade → sign → submit.
 ///
-/// The chain snapshot is taken **inside** the loop: epoch, pin, `E`, and axons
-/// all move as the subnet moves.
+/// The chain snapshot is taken **inside** the loop: epoch, pin, and `E` all
+/// move as the subnet moves, and so do the announced endpoints read per tick.
 async fn epoch_dispatch_driver<C: ChainClient + Send + 'static>(
     cfg: DriverConfig,
     chain: C,
@@ -613,7 +618,6 @@ async fn epoch_dispatch_driver<C: ChainClient + Send + 'static>(
             block_b = snap.pin.block_b,
             block_hash = %hex::encode(snap.pin.block_hash),
             participants = snap.expected.participants.len(),
-            reachable = snap.endpoints.len(),
             "epoch dispatch tick"
         );
 

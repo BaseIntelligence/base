@@ -17,6 +17,7 @@ agent-challenge = { path = "../../crates/agent-challenge" }
 agent-dispatch = { path = "../../crates/agent-dispatch" }
 agent-pack = { path = "../../crates/agent-pack" }
 agent-runner = { path = "../../crates/agent-runner" }
+miner-endpoint = { path = "../../crates/miner-endpoint", default-features = false }
 bundle = { path = "../../crates/bundle" }
 chain = { path = "../../crates/chain" }
 chain-live = { path = "../../crates/chain-live" }

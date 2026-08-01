@@ -28,7 +28,30 @@ const NO_CAPACITY: RunnerCapacity = RunnerCapacity {
     current_load: 0,
 };
 
-/// Dispatch client that talks to the base URL each miner published on chain.
+/// Resolve `base` and return `(host, addr)` when every answer is publicly routable.
+///
+/// One bad answer rejects the whole host rather than picking a good one: a
+/// split answer is how a rebinding attack presents itself.
+async fn pin_public_host(base: &str) -> Result<(String, std::net::SocketAddr), String> {
+    let url = reqwest::Url::parse(base).map_err(|e| format!("parse: {e}"))?;
+    let host = url.host_str().ok_or("no host")?.to_owned();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "no port".to_owned())?;
+    let addrs: Vec<_> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|e| format!("resolve: {e}"))?
+        .collect();
+    for addr in &addrs {
+        if miner_endpoint::is_forbidden_ip(&addr.ip()) {
+            return Err(format!("resolves to a non-public address {}", addr.ip()));
+        }
+    }
+    let first = *addrs.first().ok_or("resolves to no address")?;
+    Ok((host, first))
+}
+
+/// Dispatch client that talks to the base URL each miner announced to the gateway.
 #[derive(Debug)]
 pub struct HttpDispatchClient {
     http: reqwest::Client,
@@ -38,23 +61,71 @@ pub struct HttpDispatchClient {
 }
 
 impl HttpDispatchClient {
-    /// Build a client over already-resolved axon endpoints.
+    /// Build a client over already-resolved announced endpoints.
+    ///
+    /// The announce guard only sees the URL string, so a miner may register a
+    /// public name that resolves into our own network. Every host is resolved
+    /// once here, checked, and then pinned into the client, which both drops
+    /// the offender and closes the DNS-rebinding window between check and
+    /// connect. A host that resolves nowhere usable is simply absent, the same
+    /// as a miner that never announced.
     ///
     /// # Errors
     ///
     /// TLS / HTTP client construction failure.
-    pub fn new(
+    pub async fn new(
         endpoints: BTreeMap<[u8; KEY_LEN], String>,
         secret: [u8; KEY_LEN],
         public: [u8; KEY_LEN],
     ) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
+        Self::build(endpoints, secret, public, true).await
+    }
+
+    /// Same, without the public-address requirement, so tests can point at a
+    /// loopback stub. Never compiled into the shipped binary.
+    #[cfg(test)]
+    async fn new_local(
+        endpoints: BTreeMap<[u8; KEY_LEN], String>,
+        secret: [u8; KEY_LEN],
+        public: [u8; KEY_LEN],
+    ) -> Result<Self, String> {
+        Self::build(endpoints, secret, public, false).await
+    }
+
+    async fn build(
+        endpoints: BTreeMap<[u8; KEY_LEN], String>,
+        secret: [u8; KEY_LEN],
+        public: [u8; KEY_LEN],
+        require_public: bool,
+    ) -> Result<Self, String> {
+        let mut builder = reqwest::Client::builder().timeout(HTTP_TIMEOUT);
+        let mut allowed = BTreeMap::new();
+        for (hotkey, base) in endpoints {
+            if !require_public {
+                allowed.insert(hotkey, base);
+                continue;
+            }
+            match pin_public_host(&base).await {
+                Ok((host, addr)) => {
+                    builder = builder.resolve(&host, addr);
+                    allowed.insert(hotkey, base);
+                }
+                Err(reason) => tracing::warn!(
+                    target: "agent_challenge",
+                    event = "miner_endpoint_unroutable",
+                    miner = %hex::encode(hotkey),
+                    base_url = %base,
+                    reason = %reason,
+                    "announced endpoint refused; miner treated as not dispatchable"
+                ),
+            }
+        }
+        let http = builder
             .build()
             .map_err(|e| format!("dispatch http client: {e}"))?;
         Ok(Self {
             http,
-            endpoints,
+            endpoints: allowed,
             secret,
             public,
         })
@@ -165,7 +236,7 @@ impl EpochDispatchClient for HttpDispatchClient {
         let base = self
             .endpoints
             .get(&miner)
-            .ok_or_else(|| "miner published no axon".to_owned())?
+            .ok_or_else(|| "miner announced no endpoint".to_owned())?
             .clone();
         let task_id = self.submit(&base, descriptor).await?;
         self.poll(&base, &task_id).await
@@ -266,7 +337,8 @@ mod tests {
         let server = runner_with_capacity(2, 0, "diff --git a/x b/x").await;
         let (sk, pk) = keypair();
         let client = Arc::new(
-            HttpDispatchClient::new(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+            HttpDispatchClient::new_local(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+                .await
                 .expect("client"),
         );
 
@@ -305,11 +377,15 @@ mod tests {
         assert_eq!(envelope["descriptor"]["epoch"].as_u64(), Some(7));
     }
 
-    /// No published axon must be an absence, never a fabricated dispatch.
+    /// No announced endpoint must be an absence, never a fabricated dispatch.
     #[tokio::test]
-    async fn miner_without_an_axon_is_capacity_exhausted() {
+    async fn miner_without_an_announced_endpoint_is_capacity_exhausted() {
         let (sk, pk) = keypair();
-        let client = Arc::new(HttpDispatchClient::new(BTreeMap::new(), sk, pk).expect("client"));
+        let client = Arc::new(
+            HttpDispatchClient::new_local(BTreeMap::new(), sk, pk)
+                .await
+                .expect("client"),
+        );
         let out = run_epoch_dispatch(
             &dispatch_cfg(expected_set()),
             client,
@@ -329,7 +405,8 @@ mod tests {
         let server = runner_with_capacity(1, 1, "x").await;
         let (sk, pk) = keypair();
         let client = Arc::new(
-            HttpDispatchClient::new(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+            HttpDispatchClient::new_local(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+                .await
                 .expect("client"),
         );
         let out = run_epoch_dispatch(
@@ -372,7 +449,8 @@ mod tests {
             .await;
         let (sk, pk) = keypair();
         let client = Arc::new(
-            HttpDispatchClient::new(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+            HttpDispatchClient::new_local(BTreeMap::from([(MINER, server.uri())]), sk, pk)
+                .await
                 .expect("client"),
         );
         let out = run_epoch_dispatch(
@@ -388,5 +466,34 @@ mod tests {
             }
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::pin_public_host;
+
+    /// The announce guard sees only the URL text. A name that resolves inward
+    /// must still be refused at dispatch, or a miner reaches our own network.
+    #[tokio::test]
+    async fn a_public_name_resolving_inward_is_refused() {
+        // localtest.me and its subdomains are public names that resolve to 127.0.0.1.
+        let err = pin_public_host("http://miner.localtest.me:8443")
+            .await
+            .expect_err("a name resolving to loopback must be refused");
+        // A sandbox with no resolver refuses it too, just for a different
+        // reason; only that case may skip the stronger assertion.
+        assert!(
+            err.contains("non-public address") || err.starts_with("resolve:"),
+            "expected a non-public-address refusal, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_that_resolves_nowhere_is_refused_not_dispatched() {
+        let err = pin_public_host("https://nx.invalid:8443")
+            .await
+            .expect_err("unresolvable host must be refused");
+        assert!(!err.is_empty(), "refusal must carry a reason");
     }
 }

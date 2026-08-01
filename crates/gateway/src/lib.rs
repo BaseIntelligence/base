@@ -435,6 +435,10 @@ pub fn load_production_trust_root(
 ///
 /// Production path loads owner-signed challenges from [`trust_root_dir`].
 ///
+/// `extra` is merged last: services owned by other crates (the miner endpoint
+/// announce router) mount through it so this crate does not grow a dependency
+/// on each one.
+///
 /// # Errors
 ///
 /// Telemetry, trust-root load, or HTTP client construction failures.
@@ -444,6 +448,7 @@ pub fn build_app(
     chain: SharedChain,
     tls: &TlsConfig,
     stores: Stores,
+    extra: Option<Router>,
 ) -> Result<Router, GatewayError> {
     // Fail closed: an empty trust root would seal bundles with a default
     // measurements digest and no challenges. Tests inject one via `build_app_with`.
@@ -456,7 +461,11 @@ pub fn build_app(
         registry, chain, challenges, stores.0, stores.1, mdigest, netuid,
     )
     .map_err(GatewayError::HttpClient)?;
-    app::build_router(metrics, state, tls)
+    let app = app::build_router(metrics, state, tls)?;
+    Ok(match extra {
+        Some(extra) => app.merge(extra),
+        None => app,
+    })
 }
 
 /// Like [`build_app`] with injected trust root and weight store (tests / hydrate).
@@ -513,13 +522,14 @@ pub async fn run_until<F>(
     config: GatewayConfig,
     chain: SharedChain,
     stores: Stores,
+    extra: Option<Router>,
     shutdown: F,
 ) -> Result<(), GatewayError>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let registry = Registry::shared(config.registry.clone());
-    run_until_with_registry(config, chain, registry, stores, shutdown).await
+    run_until_with_registry(config, chain, registry, stores, extra, shutdown).await
 }
 
 /// Like [`run_until`] but injects a pre-built registry (tests / DB hydrate).
@@ -532,6 +542,7 @@ pub async fn run_until_with_registry<F>(
     chain: SharedChain,
     registry: Arc<Registry>,
     stores: Stores,
+    extra: Option<Router>,
     shutdown: F,
 ) -> Result<(), GatewayError>
 where
@@ -549,7 +560,7 @@ where
     let metrics = init_metrics()?;
     // Prefer registry knobs from config when the shared handle was default-built.
     let _ = &config.registry;
-    let app = build_app(metrics, registry, chain, &config.tls, stores)?;
+    let app = build_app(metrics, registry, chain, &config.tls, stores, extra)?;
 
     let listener = TcpListener::bind(config.listen)
         .await
@@ -583,9 +594,10 @@ pub async fn run(
     config: GatewayConfig,
     chain: SharedChain,
     stores: Stores,
+    extra: Option<Router>,
 ) -> Result<(), GatewayError> {
     let registry = Registry::shared(config.registry.clone());
-    run_until_with_registry(config, chain, registry, stores, shutdown_signal()).await
+    run_until_with_registry(config, chain, registry, stores, extra, shutdown_signal()).await
 }
 
 async fn shutdown_signal() {
@@ -740,7 +752,7 @@ mod tests {
         let chain: SharedChain = Arc::new(SyncChain::new(FakeChain::with_defaults()));
         let config = cfg(listen, other_hotkey());
 
-        let err = run_until(config, chain, mem_stores(), async {})
+        let err = run_until(config, chain, mem_stores(), None, async {})
             .await
             .expect_err("must refuse");
         assert!(
@@ -804,7 +816,7 @@ mod tests {
         local
             .run_until(async move {
                 let server = tokio::task::spawn_local(async move {
-                    run_until(config, chain, mem_stores(), async move {
+                    run_until(config, chain, mem_stores(), None, async move {
                         let _ = shutdown_rx.await;
                     })
                     .await

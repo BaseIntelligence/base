@@ -59,7 +59,39 @@ async fn main() -> ExitCode {
         }
     };
 
-    run_with(config, chain, stores).await
+    // Miners announce their CVM base URL here (AGENT_CHALLENGE.md §9.3 step 5).
+    // Without a database there is nowhere to put an announcement, so the route
+    // is left unmounted rather than accepting POSTs it would silently discard.
+    let announce = match resolve_endpoint_router(&chain, config.netuid).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("gateway: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    run_with(config, chain, stores, announce).await
+}
+
+/// Miner endpoint announce router, when a database is configured.
+async fn resolve_endpoint_router(
+    chain: &gateway::SharedChain,
+    netuid: u16,
+) -> Result<Option<axum::Router>, String> {
+    let base = config::load().map_err(|e| e.to_string())?;
+    let Some(url) = resolve_database_url(&base)? else {
+        tracing::warn!(
+            event = "gateway_miner_endpoint_disabled",
+            "no database configured; {} is not mounted",
+            miner_endpoint::ENDPOINT_ROUTE
+        );
+        return Ok(None);
+    };
+    let pool = db::connect(&url)
+        .await
+        .map_err(|e| format!("miner endpoint pool connect failed: {e}"))?;
+    let state = miner_endpoint::MinerEndpointState::new(Arc::clone(chain), pool, netuid);
+    Ok(Some(miner_endpoint::miner_endpoint_router(state)))
 }
 
 /// Postgres stores when a database is configured, in-memory otherwise.
@@ -109,8 +141,13 @@ fn resolve_database_url(cfg: &config::Config) -> Result<Option<String>, String> 
     Ok(None)
 }
 
-async fn run_with(config: GatewayConfig, chain: gateway::SharedChain, stores: Stores) -> ExitCode {
-    match gateway::run(config, chain, stores).await {
+async fn run_with(
+    config: GatewayConfig,
+    chain: gateway::SharedChain,
+    stores: Stores,
+    extra: Option<axum::Router>,
+) -> ExitCode {
+    match gateway::run(config, chain, stores, extra).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             e.log_fatal();

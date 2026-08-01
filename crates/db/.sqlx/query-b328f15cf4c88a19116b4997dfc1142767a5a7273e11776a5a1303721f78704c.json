@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT ON (miner_hotkey) miner_hotkey, base_url, epoch\n        FROM miner_endpoint\n        WHERE netuid = $1 AND epoch >= $2\n        ORDER BY miner_hotkey, epoch DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "miner_hotkey",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "base_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "epoch",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b328f15cf4c88a19116b4997dfc1142767a5a7273e11776a5a1303721f78704c"
+}

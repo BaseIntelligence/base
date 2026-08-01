@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use crypto::{generate_mini_secret, public_key_from_mini_secret, KEY_LEN};
 use miner::{
-    certify, deploy_or_dry_run, empty_launch_token_hash_hex, parse_hotkey_hex, CertifyParams,
-    DeployMode, DeployParams, QuoteSource, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE,
-    DEFAULT_SOCKET_PROXY_IMAGE,
+    announce, certify, deploy_or_dry_run, empty_launch_token_hash_hex, parse_hotkey_hex,
+    AnnounceParams, CertifyParams, DeployMode, DeployParams, QuoteSource, DEFAULT_AGENT_IMAGE,
+    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_SOCKET_PROXY_IMAGE,
 };
 
 #[derive(Debug, Parser)]
@@ -103,6 +103,21 @@ enum Cmd {
         /// Optional validator hotkey override (defaults to nonce response).
         #[arg(long, env = "BASE_VALIDATOR_HOTKEY_HEX")]
         validator_hotkey_hex: Option<String>,
+    },
+    /// Announce the CVM's public base URL to the gateway (§9.3 step 5).
+    Announce {
+        /// Gateway base URL (`https://host`).
+        #[arg(long, env = "BASE_GATEWAY_URL")]
+        gateway_url: String,
+        /// Subnet netuid.
+        #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
+        netuid: u16,
+        /// Current chain epoch; the gateway rejects any other value.
+        #[arg(long, env = "BASE_EPOCH")]
+        epoch: u64,
+        /// Public CVM base URL to announce (origin only, no path).
+        #[arg(long, env = "BASE_MINER_BASE_URL")]
+        base_url: String,
     },
 }
 
@@ -210,6 +225,55 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("fixture_mode={}", result.fixture_mode);
             Ok(())
         }
+        Cmd::Announce {
+            gateway_url,
+            netuid,
+            epoch,
+            base_url,
+        } => run_announce(gateway_url, netuid, epoch, base_url),
+    }
+}
+
+/// Sign and POST the CVM base URL to the gateway (§9.3 step 5).
+fn run_announce(
+    gateway_url: String,
+    netuid: u16,
+    epoch: u64,
+    base_url: String,
+) -> Result<(), String> {
+    let params = AnnounceParams {
+        gateway_url,
+        netuid,
+        epoch,
+        base_url,
+        hotkey_secret: resolve_miner_hotkey_secret()?,
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let out = rt.block_on(announce(&params)).map_err(|e| e.to_string())?;
+    println!("miner_hotkey={}", out.miner_hotkey_hex);
+    println!("base_url={}", out.base_url);
+    println!("epoch={}", out.epoch);
+    println!("netuid={}", out.netuid);
+    Ok(())
+}
+
+/// Load the miner hotkey mini-secret the same way every other role loads its
+/// signing key: wallet, then mnemonic file, then raw key file.
+///
+/// Unlike `certify`, which only *names* the hotkey, announcing has to sign with
+/// it, so a public-only `BASE_MINER_HOTKEY` is not enough here.
+fn resolve_miner_hotkey_secret() -> Result<[u8; KEY_LEN], String> {
+    match keystore::resolve_keypair_from_env("BASE_MINER") {
+        Ok(Some(kp)) => Ok(*kp.expose_mini_secret()),
+        Ok(None) => Err(
+            "no miner hotkey configured: set BASE_MINER_WALLET (Bittensor wallet), \
+             BASE_MINER_MNEMONIC_FILE, or BASE_MINER_SK_FILE"
+                .to_owned(),
+        ),
+        Err(e) => Err(format!("miner hotkey resolution failed: {e}")),
     }
 }
 

@@ -73,6 +73,7 @@ dependencies = [
  "config",
  "db",
  "hex",
+ "miner-endpoint",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
  "serde_json",
@@ -1715,11 +1716,13 @@ dependencies = [
 name = "gateway-bin"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "chain-live",
  "config",
  "db",
  "gateway",
  "gateway-store-pg",
+ "miner-endpoint",
  "telemetry",
  "tokio",
  "tracing",
@@ -2688,6 +2691,7 @@ dependencies = [
  "compose-hash",
  "crypto",
  "hex",
+ "miner-endpoint",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2710,10 +2714,31 @@ dependencies = [
  "clap",
  "crypto",
  "hex",
+ "keystore",
  "miner",
  "tokio",
  "trustroot",
  "validator",
+]
+
+[[package]]
+name = "miner-endpoint"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chain",
+ "crypto",
+ "db",
+ "hex",
+ "parity-scale-codec",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "validator-sync",
 ]
 
 [[package]]

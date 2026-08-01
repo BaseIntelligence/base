@@ -58,9 +58,11 @@ pub mod domain {
     pub const WORK_RECEIPT: DomainTag = DomainTag::new(b"base-agent-work-receipt-v1");
     /// Orchestrator → runner signed dispatch (single-use nonce envelope).
     pub const DISPATCH: DomainTag = DomainTag::new(b"base-agent-dispatch-v1");
+    /// Miner-signed announcement of its public CVM base URL.
+    pub const MINER_ENDPOINT: DomainTag = DomainTag::new(b"base-miner-endpoint-v1");
 
     /// All canonical tags (stable order for tests / enumeration).
-    pub const ALL: [DomainTag; 8] = [
+    pub const ALL: [DomainTag; 9] = [
         BUNDLE,
         RAW_WEIGHT,
         DISSENT,
@@ -69,6 +71,7 @@ pub mod domain {
         TRUST_ROOT,
         WORK_RECEIPT,
         DISPATCH,
+        MINER_ENDPOINT,
     ];
 }
 
@@ -515,7 +518,7 @@ mod tests {
                 std::str::from_utf8(label)
             );
         }
-        assert_eq!(labels.len(), 8);
+        assert_eq!(labels.len(), 9);
 
         assert_eq!(domain::BUNDLE.as_bytes(), b"base-bundle-v1");
         assert_eq!(domain::RAW_WEIGHT.as_bytes(), b"base-rawweight-v1");
@@ -528,6 +531,7 @@ mod tests {
             b"base-agent-work-receipt-v1"
         );
         assert_eq!(domain::DISPATCH.as_bytes(), b"base-agent-dispatch-v1");
+        assert_eq!(domain::MINER_ENDPOINT.as_bytes(), b"base-miner-endpoint-v1");
     }
 
     /// S6b — different payloads under same domain do not verify.

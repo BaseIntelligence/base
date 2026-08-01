@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO miner_endpoint (epoch, netuid, miner_hotkey, base_url, signature)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (epoch, netuid, miner_hotkey) DO UPDATE\n            SET base_url = EXCLUDED.base_url,\n                signature = EXCLUDED.signature,\n                updated_at = now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Text",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "27cefe83d2fffbabb638da51d90733d8f90474e9690bfb23245f56d37142dcfb"
+}

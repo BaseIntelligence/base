@@ -439,3 +439,96 @@ pub async fn attestation_for_miner(
         }
     }))
 }
+
+/// One miner-signed base-URL announcement to store in `miner_endpoint`.
+///
+/// `miner_hotkey` must be lowercase unprefixed 64-hex
+/// (`miner_endpoint_miner_hotkey_hex`) so it joins `attestation.miner_hotkey`.
+#[derive(Debug, Clone)]
+pub struct NewMinerEndpoint<'a> {
+    /// Chain epoch the announcement was signed for.
+    pub epoch: i64,
+    /// Subnet netuid.
+    pub netuid: i32,
+    /// Miner hotkey hex (64 lowercase chars).
+    pub miner_hotkey: &'a str,
+    /// Validated public base URL.
+    pub base_url: &'a str,
+    /// sr25519 signature over the SCALE body (64 bytes).
+    pub signature: &'a [u8],
+}
+
+/// A miner's current endpoint as the challenge service consumes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MinerEndpointRow {
+    /// Miner hotkey hex (64 lowercase chars).
+    pub miner_hotkey: String,
+    /// Announced public base URL.
+    pub base_url: String,
+    /// Epoch the winning announcement was signed for.
+    pub epoch: i64,
+}
+
+/// Store one announcement, replacing any earlier one for the same epoch.
+///
+/// Unlike the append-only tables, a repeat within an epoch is an `UPDATE`: a
+/// miner that redeploys mid-epoch must be able to move its URL, and a retried
+/// POST after a lost response must not look like a conflict.
+///
+/// # Errors
+///
+/// Propagates sqlx query errors, including the hotkey-format and URL-shape
+/// `CHECK` violations.
+pub async fn upsert_miner_endpoint(
+    pool: &PgPool,
+    row: &NewMinerEndpoint<'_>,
+) -> Result<(), DbError> {
+    sqlx::query!(
+        r#"
+        INSERT INTO miner_endpoint (epoch, netuid, miner_hotkey, base_url, signature)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (epoch, netuid, miner_hotkey) DO UPDATE
+            SET base_url = EXCLUDED.base_url,
+                signature = EXCLUDED.signature,
+                updated_at = now()
+        "#,
+        row.epoch,
+        row.netuid,
+        row.miner_hotkey,
+        row.base_url,
+        row.signature,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Highest-epoch announcement per hotkey with `epoch >= min_epoch`.
+///
+/// A miner that announced in several epochs appears once, at its newest URL.
+/// `min_epoch` is the caller's staleness floor: an endpoint announced long ago
+/// and never renewed is simply absent rather than dispatched to.
+///
+/// # Errors
+///
+/// Propagates sqlx query errors.
+pub async fn miner_endpoints(
+    pool: &PgPool,
+    netuid: i32,
+    min_epoch: i64,
+) -> Result<Vec<MinerEndpointRow>, DbError> {
+    let rows = sqlx::query_as!(
+        MinerEndpointRow,
+        r#"
+        SELECT DISTINCT ON (miner_hotkey) miner_hotkey, base_url, epoch
+        FROM miner_endpoint
+        WHERE netuid = $1 AND epoch >= $2
+        ORDER BY miner_hotkey, epoch DESC
+        "#,
+        netuid,
+        min_epoch,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}

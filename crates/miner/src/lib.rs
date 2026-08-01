@@ -15,11 +15,13 @@
 
 #![forbid(unsafe_code)]
 
+mod announce;
 mod certify;
 mod deploy;
 mod inspect;
 mod template;
 
+pub use announce::{announce, AnnounceError, AnnounceOutcome, AnnounceParams};
 pub use certify::{
     certify, parse_hotkey_hex, CertifyError, CertifyParams, CertifyResult, QuoteSource,
 };

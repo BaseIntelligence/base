@@ -13,7 +13,9 @@ name = "gateway"
 path = "src/main.rs"
 
 [dependencies]
+axum = { version = "0.8", default-features = false }
 gateway = { path = "../../crates/gateway" }
+miner-endpoint = { path = "../../crates/miner-endpoint" }
 gateway-store-pg = { path = "../../crates/gateway-store-pg" }
 db = { path = "../../crates/db" }
 chain-live = { path = "../../crates/chain-live" }
