@@ -57,8 +57,7 @@ pub fn dataset_len_bytes() -> u64 {
 /// by downloading the pin once and hashing; the upload path re-verifies.
 ///
 /// See `docs/PRISM_RECIPE.md` for the update ceremony.
-pub const DATASET_SHA256: &str =
-    "e5a2eae25f057f0856a10bfae314c6ca8ea8bb08456d2131e9e89b2b8305e2f6";
+pub const DATASET_SHA256: &str = "e5a2eae25f057f0856a10bfae314c6ca8ea8bb08456d2131e9e89b2b8305e2f6";
 
 /// Overrideable SHA-256 (`PRISM_DATASET_SHA256`); defaults to the build pin.
 #[must_use]
