@@ -657,30 +657,26 @@ impl EvalJobBackend for LiumClient {
             self.ensure_ssh_key(pk, Some(key_name)).await?;
         }
 
-        let offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
-        let selected = if let Some(pref) = &spec.preferred_offer_id {
-            offers
+        let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
+        offers.sort_by(|a, b| {
+            a.price_per_hour
+                .partial_cmp(&b.price_per_hour)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let candidates: Vec<Offer> = match &spec.preferred_offer_id {
+            Some(pref) => offers
                 .into_iter()
-                .find(|o| &o.id == pref)
-                .ok_or(CostGuardrailError::NoCapacity)?
-        } else {
-            offers
+                .filter(|o| &o.id == pref)
+                .take(1)
+                .collect(),
+            None => offers
                 .into_iter()
                 .filter(|o| o.gpu_count >= spec.gpu_count)
-                .min_by(|a, b| {
-                    a.price_per_hour
-                        .partial_cmp(&b.price_per_hour)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .ok_or(CostGuardrailError::NoCapacity)?
+                .take(3)
+                .collect(),
         };
-
-        if selected.price_per_hour > spec.max_price_per_hour {
-            return Err(CostGuardrailError::PriceExceeded {
-                offer_price: selected.price_per_hour,
-                max_price: spec.max_price_per_hour,
-            }
-            .into());
+        if candidates.is_empty() {
+            return Err(CostGuardrailError::NoCapacity.into());
         }
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
@@ -693,66 +689,71 @@ impl EvalJobBackend for LiumClient {
             "template_id": template_id,
         });
 
-        info!(
-            offer_id = %selected.id,
-            gpu = %selected.gpu_type,
-            price = selected.price_per_hour,
-            %template_id,
-            "lium rent"
-        );
-
-        let rent = self
-            .request_json_body(
-                reqwest::Method::POST,
-                &format!("/executors/{}/rent", selected.id),
-                &body,
-            )
-            .await;
-
-        let mut pod_id: Option<String> = None;
-        match rent {
-            Ok(v) => {
-                pod_id = extract_pod_id(&v);
-                if pod_id.is_none() {
-                    if let Ok(pods) = self.list_pods_raw().await {
-                        for p in pods {
-                            let name = p
-                                .get("pod_name")
-                                .or_else(|| p.get("name"))
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("");
-                            if name == spec.name {
-                                if let Some(id) = p.get("id").and_then(|x| x.as_str()) {
-                                    pod_id = Some(id.to_owned());
-                                    break;
+        let mut last_err = String::from("no offer tried");
+        for selected in &candidates {
+            if selected.price_per_hour > spec.max_price_per_hour {
+                continue;
+            }
+            info!(
+                offer_id = %selected.id,
+                gpu = %selected.gpu_type,
+                price = selected.price_per_hour,
+                %template_id,
+                "lium rent"
+            );
+            let rent = self
+                .request_json_body(
+                    reqwest::Method::POST,
+                    &format!("/executors/{}/rent", selected.id),
+                    &body,
+                )
+                .await;
+            let mut pod_id: Option<String> = None;
+            match rent {
+                Ok(v) => {
+                    pod_id = extract_pod_id(&v);
+                    if pod_id.is_none() {
+                        if let Ok(pods) = self.list_pods_raw().await {
+                            for p in pods {
+                                let name = p
+                                    .get("pod_name")
+                                    .or_else(|| p.get("name"))
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("");
+                                if name == spec.name {
+                                    if let Some(id) = p.get("id").and_then(|x| x.as_str()) {
+                                        pod_id = Some(id.to_owned());
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
+                    let Some(id) = pod_id.clone() else {
+                        last_err = "could not determine provisioned pod id from rent".into();
+                        self.cleanup_after_rent(None).await;
+                        continue;
+                    };
+                    // Wait for RUNNING here so a CREATION_FAILED offer falls
+                    // through to the next candidate instead of poisoning exec.
+                    match self.wait_until_running(&id).await {
+                        Ok(inst) => return Ok(inst),
+                        Err(e) => {
+                            last_err = format!("offer {} wait_running: {e}", selected.id);
+                            self.cleanup_after_rent(Some(&id)).await;
+                        }
+                    }
                 }
-                let Some(id) = pod_id.clone() else {
-                    self.cleanup_after_rent(None).await;
-                    return Err(LiumError::Api(
-                        "could not determine provisioned pod id from rent response".into(),
-                    ));
-                };
-                // Best-effort status; don't fail provision if status lag
-                match self.status(&id).await {
-                    Ok(inst) => Ok(inst),
-                    Err(_) => Ok(Instance {
-                        id,
-                        status: "RENTED".into(),
-                        provider: "lium".into(),
-                        gpu_type: Some(selected.gpu_type),
-                        ssh_connect_cmd: None,
-                    }),
+                Err(e) => {
+                    last_err = e.to_string();
+                    self.cleanup_after_rent(pod_id.as_deref()).await;
                 }
-            }
-            Err(e) => {
-                self.cleanup_after_rent(pod_id.as_deref()).await;
-                Err(e)
             }
         }
+        if last_err == "no offer tried" {
+            return Err(CostGuardrailError::NoCapacity.into());
+        }
+        Err(LiumError::Api(last_err))
     }
 
     async fn terminate(&self, instance_id: &str) -> Result<(), LiumError> {
