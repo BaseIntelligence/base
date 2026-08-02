@@ -188,6 +188,15 @@ fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
     }
     let api_key = load_lium_api_key().ok_or_else(|| "LIUM_API_KEY missing".to_string())?;
     let mut ssh = LiumSshConfig::default_live();
+    if let Ok(v) = std::env::var("PRISM_SSH_ATTEMPTS") {
+        ssh.ssh_attempts = v.parse().unwrap_or(ssh.ssh_attempts);
+    }
+    if let Ok(v) = std::env::var("PRISM_SSH_RETRY_SECS") {
+        ssh.ssh_retry_secs = v.parse().unwrap_or(ssh.ssh_retry_secs);
+    }
+    if let Ok(v) = std::env::var("PRISM_SSH_RUNNING_TIMEOUT_SECS") {
+        ssh.running_timeout_secs = v.parse().unwrap_or(ssh.running_timeout_secs);
+    }
     if let Ok(p) = std::env::var("LIUM_SSH_PRIVATE_KEY") {
         ssh.private_key_path = Some(PathBuf::from(p));
     } else {
