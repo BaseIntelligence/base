@@ -13,10 +13,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use crypto::{generate_mini_secret, public_key_from_mini_secret, KEY_LEN};
 use miner::{
-    announce, certify, deploy_or_dry_run, empty_launch_token_hash_hex, launch_token_hash_hex,
-    parse_hotkey_hex, AnnounceParams, CertifyParams, DeployMode, DeployParams, DeploySecrets,
-    QuoteSource, DEFAULT_AGENT_IMAGE, DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE,
-    DEFAULT_PACK_CATALOG_URL, DEFAULT_SOCKET_PROXY_IMAGE,
+    announce, attest_grant, certify, deploy_or_dry_run, empty_launch_token_hash_hex,
+    launch_token_hash_hex, parse_hotkey_hex, AnnounceParams, AttestGrantParams, CertifyParams,
+    DeployMode, DeployParams, DeploySecrets, QuoteSource, DEFAULT_AGENT_IMAGE,
+    DEFAULT_ATTEST_HELPER_IMAGE, DEFAULT_ENVIRONMENT_IMAGE, DEFAULT_PACK_CATALOG_URL,
+    DEFAULT_SOCKET_PROXY_IMAGE,
 };
 
 #[derive(Debug, Parser)]
@@ -144,12 +145,30 @@ enum Cmd {
         /// Subnet netuid.
         #[arg(long, default_value_t = 1, env = "BASE_NETUID")]
         netuid: u16,
-        /// Current chain epoch; the gateway rejects any other value.
+        /// Current chain epoch; the gate rejects any other value.
         #[arg(long, env = "BASE_EPOCH")]
         epoch: u64,
         /// Public CVM base URL to announce (origin only, no path).
         #[arg(long, env = "BASE_MINER_BASE_URL")]
         base_url: String,
+    },
+    /// Owner-issued credit for a non-TEE runtime (§9.6, master only).
+    AttestGrant {
+        /// Master gateway base URL (internal network / VPC only).
+        #[arg(long, env = "BASE_GATEWAY_URL")]
+        gateway_url: String,
+        /// Epoch the credit binds to (attestation rows are epoch-keyed).
+        #[arg(long, env = "BASE_EPOCH")]
+        epoch: u64,
+        /// Miner hotkey (64 hex). Defaults to the keystore's public key.
+        #[arg(long, env = "BASE_MINER_HOTKEY_HEX")]
+        miner_hotkey_hex: Option<String>,
+        /// Host path of the receipt mini-secret (raw 32 bytes or hex, mode 0600).
+        #[arg(long, env = "BASE_RECEIPT_SK_FILE", default_value = "receipt_sk")]
+        receipt_sk_file: PathBuf,
+        /// Mandatory audit note stored as `reason: admin-exempt: …`.
+        #[arg(long, env = "BASE_ATTEST_GRANT_REASON")]
+        reason: String,
     },
 }
 
@@ -222,7 +241,64 @@ fn run(cli: Cli) -> Result<(), String> {
             epoch,
             base_url,
         } => run_announce(gateway_url, netuid, epoch, base_url),
+        Cmd::AttestGrant {
+            gateway_url,
+            epoch,
+            miner_hotkey_hex,
+            receipt_sk_file,
+            reason,
+        } => run_attest_grant(
+            &gateway_url,
+            epoch,
+            miner_hotkey_hex,
+            &receipt_sk_file,
+            &reason,
+        ),
     }
+}
+
+/// POST the owner grant for the local (non-TEE) runtime (§9.6).
+fn run_attest_grant(
+    gateway_url: &str,
+    epoch: u64,
+    miner_hotkey_hex: Option<String>,
+    receipt_sk_file: &PathBuf,
+    reason: &str,
+) -> Result<(), String> {
+    let miner_hotkey = if let Some(h) = miner_hotkey_hex {
+        parse_hotkey_hex(&h.trim().to_ascii_lowercase()).map_err(|e| e.to_string())?
+    } else {
+        let sk = resolve_miner_hotkey_secret()?;
+        public_key_from_mini_secret(&sk).map_err(|e| e.to_string())?
+    };
+    let raw = std::fs::read(receipt_sk_file)
+        .map_err(|e| format!("receipt secret {}: {e}", receipt_sk_file.display()))?;
+    let receipt_secret = parse_mini_secret(&raw)?;
+    let receipt_public_key =
+        public_key_from_mini_secret(&receipt_secret).map_err(|e| e.to_string())?;
+    if reason.trim().is_empty() {
+        return Err("--reason must be a non-empty audit note".to_owned());
+    }
+    let params = AttestGrantParams {
+        gateway_url: gateway_url.to_owned(),
+        epoch,
+        miner_hotkey,
+        receipt_public_key,
+        reason: reason.trim().to_owned(),
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let out = rt
+        .block_on(attest_grant(&params))
+        .map_err(|e| e.to_string())?;
+    println!("miner_hotkey={}", out.miner_hotkey_hex);
+    println!("receipt_pk={}", out.receipt_pk_hex);
+    println!("epoch={}", out.epoch);
+    println!("attempt={}", out.attempt);
+    println!("outcome={}", out.outcome);
+    Ok(())
 }
 
 /// Render the measured compose, then optionally hand the secrets to Phala.

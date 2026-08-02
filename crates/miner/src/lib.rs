@@ -18,12 +18,15 @@
 #![forbid(unsafe_code)]
 
 mod announce;
+mod attest_grant;
 mod certify;
 mod deploy;
 mod inspect;
+mod local_stack;
 mod template;
 
 pub use announce::{announce, AnnounceError, AnnounceOutcome, AnnounceParams};
+pub use attest_grant::{attest_grant, AttestGrantError, AttestGrantOutcome, AttestGrantParams};
 pub use certify::{
     certify, parse_hotkey_hex, CertifyError, CertifyParams, CertifyResult, QuoteSource,
 };
@@ -38,6 +41,7 @@ pub use inspect::{
     agent_service_mounts_docker_sock, docker_compose_from_app_compose_json,
     environment_block_has_no_secrets, reject_raw_docker_sock_on_agent, RawDockerSockOnAgent,
 };
+pub use local_stack::{local_compose_yaml, LocalComposeInput};
 pub use template::{
     docker_compose_yaml, pre_launch_script, ComposeTemplateInput, AGENT_CMD_ENV, AGENT_PORT,
     AGENT_SERVICE, ATTEST_HELPER_PORT, ATTEST_HELPER_SERVICE, CVM_BIND_SOURCE_DIR,

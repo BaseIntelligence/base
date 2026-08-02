@@ -12,11 +12,13 @@ publish = false
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 bytes = "1"
 aggregate = { path = "../aggregate" }
+gateway-core = { path = "../gateway-core" }
 gateway-registry = { path = "../gateway-registry" }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 config = { path = "../config" }
 crypto = { path = "../crypto" }
+db = { path = "../db" }
 keystore = { path = "../keystore" }
 telemetry = { path = "../telemetry" }
 trustroot = { path = "../trustroot" }

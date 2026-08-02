@@ -1689,6 +1689,8 @@ dependencies = [
  "chain",
  "config",
  "crypto",
+ "db",
+ "gateway-core",
  "gateway-registry",
  "hex",
  "keystore",
@@ -1727,6 +1729,21 @@ dependencies = [
  "telemetry",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "gateway-core"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "crypto",
+ "db",
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "uuid",
 ]
 
 [[package]]
@@ -2721,6 +2738,7 @@ dependencies = [
  "tokio",
  "trustroot",
  "validator",
+ "wiremock",
 ]
 
 [[package]]

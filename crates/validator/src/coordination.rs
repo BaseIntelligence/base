@@ -15,6 +15,7 @@ use thiserror::Error;
 /// for these and assert zero hits + empty unmatched log.
 pub const MASTER_ONLY_PATHS: &[&str] = &[
     "/v1/admin/seal",
+    "/v1/admin/attest-grant",
     "/v1/admin/backends",
     "/v1/weights/raw",
     "/v1/master/status",
@@ -296,6 +297,7 @@ mod tests {
     fn master_only_paths_detected() {
         assert!(is_master_only_path("/v1/weights/raw"));
         assert!(is_master_only_path("/v1/admin/seal"));
+        assert!(is_master_only_path("/v1/admin/attest-grant"));
         assert!(is_master_only_path("/v1/admin/backends"));
         assert!(is_master_only_path("/v1/master/status"));
         assert!(is_master_only_path("/challenge/foo/score"));

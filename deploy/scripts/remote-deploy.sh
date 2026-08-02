@@ -121,6 +121,18 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' '$REM
 # uid as owner, or 'docker compose' would auto-create it root-owned and every
 # grade would fail on staging I/O.
 ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/verify'"
+# Local miner runtime staging root — same daemon bind-source contract.
+ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/agent-work'"
+
+# Local miner runtime secret (receipt mini-secret, raw 32 bytes). Generated on
+# first boot only; the value is never printed or transferred.
+ssh_h "mkdir -p '$REMOTE_DIR/deploy/secrets/agent' && chmod 700 '$REMOTE_DIR/deploy/secrets/agent' \
+  && if [[ ! -s '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' ]]; then \
+       umask 077 && head -c 32 /dev/urandom > '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' \
+       && echo 'remote-deploy: generated secrets/agent/receipt_sk (first boot)'; \
+     fi \
+  && chmod 400 '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' \
+  && chown 65532:65532 '$REMOTE_DIR/deploy/secrets/agent/receipt_sk'"
 
 
 # Materialize missing env from examples (dev-safe placeholders) if absent

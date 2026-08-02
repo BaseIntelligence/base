@@ -70,7 +70,52 @@ async fn main() -> ExitCode {
         }
     };
 
-    run_with(config, chain, stores, announce).await
+    // Owner-issued credit for runtimes without a TEE (AGENT_CHALLENGE.md
+    // §9.6). Same mounting rule as the endpoint route: no database, no route.
+    let attest_grant = match resolve_attest_grant_router(config.hotkey).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("gateway: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let extra = merge_optional_routers(announce, attest_grant);
+
+    run_with(config, chain, stores, extra).await
+}
+
+/// Owner-issued attestation-grant router, when a database is configured.
+async fn resolve_attest_grant_router(
+    gateway_hotkey: [u8; 32],
+) -> Result<Option<axum::Router>, String> {
+    let base = config::load().map_err(|e| e.to_string())?;
+    let Some(url) = resolve_database_url(&base)? else {
+        tracing::warn!(
+            event = "gateway_attest_grant_disabled",
+            "no database configured; {} is not mounted",
+            gateway::ATTEST_GRANT_ROUTE
+        );
+        return Ok(None);
+    };
+    let pool = db::connect(&url)
+        .await
+        .map_err(|e| format!("attest-grant pool connect failed: {e}"))?;
+    Ok(Some(gateway::admin_attest_grant_router(
+        gateway::AttestGrantState::new(pool, gateway_hotkey),
+    )))
+}
+
+/// Merge up to two optional extra routers into one.
+fn merge_optional_routers(
+    announce: Option<axum::Router>,
+    attest_grant: Option<axum::Router>,
+) -> Option<axum::Router> {
+    match (announce, attest_grant) {
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(g)) => Some(g),
+        (Some(a), Some(g)) => Some(a.merge(g)),
+    }
 }
 
 /// Miner endpoint announce router, when a database is configured.
