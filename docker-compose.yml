@@ -279,6 +279,9 @@ services:
       args:
         BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       BASE_CHALLENGE_BIND: 0.0.0.0:8092
       BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
@@ -288,9 +291,19 @@ services:
       LIUM_API_KEY_FILE: /run/base/lium/api_key
       LIUM_SSH_PRIVATE_KEY: /run/base/lium/ssh_ed25519
       LIUM_SSH_PUBLIC_KEY_FILE: /run/base/lium/ssh_ed25519.pub
+      OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
+      BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
+      PRISM_MAX_CONCURRENT_EVALS: "${PRISM_MAX_CONCURRENT_EVALS:-1}"
+      PRISM_LLM_WEIGHT: "${PRISM_LLM_WEIGHT:-0.3}"
+    env_file:
+      # Host file provides BASE_DATABASE_URL + BASE_NETUID (+ knobs); same
+      # pattern as agent-challenge: deployments without the file still boot.
+      - path: ./deploy/env/prism-challenge.env
+        required: false
     volumes:
       - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
       - ./deploy/secrets/lium:/run/base/lium:ro
+      - ./deploy/secrets/openrouter:/run/base/openrouter:ro
     expose:
       - "8092"
     healthcheck:

@@ -9,12 +9,19 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+agent-challenge = { path = "../agent-challenge" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 bundle = { path = "../bundle" }
+chain = { path = "../chain" }
 crypto = { path = "../crypto" }
+db = { path = "../db" }
 hex = "0.4"
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
+prism-recipe = { path = "../prism-recipe" }
+prism-review = { path = "../prism-review" }
+prism-store = { path = "../prism-store" }
+trustroot = { path = "../trustroot" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

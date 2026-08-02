@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod prism_store;
 mod store;
 
 use std::str::FromStr;

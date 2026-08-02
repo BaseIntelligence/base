@@ -14,9 +14,15 @@ path = "src/main.rs"
 
 [dependencies]
 agent-challenge-keys = { path = "../../crates/agent-challenge-keys" }
+chain = { path = "../../crates/chain" }
+chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }
 prism-challenge = { path = "../../crates/prism-challenge" }
+prism-lium = { path = "../../crates/prism-lium" }
+prism-recipe = { path = "../../crates/prism-recipe" }
+prism-review = { path = "../../crates/prism-review" }
 crypto = { path = "../../crates/crypto" }
+db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 trustroot = { path = "../../crates/trustroot" }

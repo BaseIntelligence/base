@@ -1,29 +1,34 @@
 //! `prism-challenge` — operator-side PRISM challenge service.
 //!
-//! Listens on `:8092` for liveness (`GET /health`) and miner submit
-//! (`POST /v1/submissions`). Challenge secret from `BASE_CHALLENGE_SK_FILE` or
-//! `PRISM_CHALLENGE_SK_FILE`. **No Phala CVM** — master evals on Lium (or Sim).
+//! API: miner submit + full progression surface (AGENT-style list/detail/
+//! status/jobs/recipe). Orchestrator: DB-backed Lium job runner + master-side
+//! LLM review/similarity + close-loop exact-E leaf submit. **No Phala CVM.**
 //!
-//! When `LIUM_API_KEY` is set, the background worker rents live Lium GPUs.
-//! Otherwise it uses [`SimLiumBackend`] (CI / local).
+//! Backend selection (fail-closed concept, never invented):
+//! - Lium backend: `LIUM_API_KEY` (or credentials file) present and
+//!   `PRISM_FORCE_SIM=false` → real pods; otherwise Sim.
+//! - LLM reviewer: `OPENROUTER_API_KEY_FILE` present → real `OpenRouter`;
+//!   otherwise `SimReviewer` (deterministic hash-lattice).
+//! - Store: `BASE_DATABASE_URL` present → Postgres (`prism_submission` +
+//!   `prism_stage_event`); otherwise in-memory (dev/sim only).
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
 use agent_challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
-use crypto::KEY_LEN;
 use prism_challenge::{
-    emit_signed_leaf_set, public_key_from_secret, run_eval_pipeline, submission_router,
-    EvalJobBackend, LiumClient, LiumSshConfig, PipelineInput, PrismConfig, SimLiumBackend,
-    SubmissionService, CHALLENGE_ID, SCORING_VERSION,
+    submission_router, AppState, DbPrismStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
+    PrismStore, CHALLENGE_ID, SCORING_VERSION,
 };
+use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
+use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use trustroot::encode_hex;
@@ -32,7 +37,7 @@ use trustroot::encode_hex;
 #[derive(Debug, Parser)]
 #[command(
     name = "prism-challenge",
-    about = "PRISM challenge service (port 8092, master→Lium, no Phala CVM)"
+    about = "PRISM challenge service (port 8092, master→Lium, orchestrated, LLM-reviewed)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -45,22 +50,44 @@ struct Cli {
         global = true
     )]
     bind: SocketAddr,
-    /// Path to challenge mini-secret (32 raw bytes or hex / age).
+    /// Challenge mini-secret file.
     #[arg(long, env = "BASE_CHALLENGE_SK_FILE", global = true)]
     challenge_sk_file: Option<PathBuf>,
-    /// Force Sim backend even if `LIUM_API_KEY` is present.
+    /// Force Sim backends (local dev).
     #[arg(long, env = "PRISM_FORCE_SIM", default_value_t = false, global = true)]
     force_sim: bool,
-    /// Epoch stamped on emitted leaves (operator-set; default 0).
-    #[arg(long, env = "PRISM_EPOCH", default_value_t = 0, global = true)]
-    epoch: u64,
+    /// Netuid.
+    #[arg(long, env = "BASE_NETUID", default_value_t = 1, global = true)]
+    netuid: u16,
+    /// Max concurrent Lium evals (workers).
+    #[arg(
+        long,
+        env = "PRISM_MAX_CONCURRENT_EVALS",
+        default_value_t = 1,
+        global = true
+    )]
+    max_concurrent_evals: u32,
+    /// LLM quality weight (0..1); bpb gets the rest.
+    #[arg(long, env = "PRISM_LLM_WEIGHT", default_value_t = 0.3, global = true)]
+    llm_weight: f64,
+    /// Chain WS endpoint (epoch/E resolution).
+    #[arg(long, env = "BASE_CHAIN_ENDPOINT", global = true)]
+    chain_endpoint: Option<String>,
+    /// Gateway base URL for leaf submit.
+    #[arg(
+        long,
+        env = "BASE_CHALLENGE_GATEWAY_ENDPOINT",
+        default_value = "http://gateway:8080",
+        global = true
+    )]
+    gateway_endpoint: String,
 }
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Print challenge id, scoring version, and public key.
+    /// Print identity.
     Identity,
-    /// Run HTTP server + eval worker (default).
+    /// Run server + workers (default).
     Serve,
 }
 
@@ -94,7 +121,7 @@ fn resolve_sk_path(cli_path: Option<&PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os("PRISM_CHALLENGE_SK_FILE") {
         return Ok(PathBuf::from(p));
     }
-    Err("BASE_CHALLENGE_SK_FILE or PRISM_CHALLENGE_SK_FILE / --challenge-sk-file required".into())
+    Err("BASE_CHALLENGE_SK_FILE or PRISM_CHALLENGE_SK_FILE required".into())
 }
 
 fn cmd_identity(path: &Path) -> Result<(), String> {
@@ -102,20 +129,16 @@ fn cmd_identity(path: &Path) -> Result<(), String> {
         return Err(format!("challenge secret file missing: {}", path.display()));
     }
     let sk = load_challenge_secret(path).map_err(|e| e.to_string())?;
-    let pk = public_key_from_secret(&sk)?;
+    let pk = prism_challenge::public_key_from_secret(&sk)?;
     println!("challenge_id={CHALLENGE_ID}");
     println!("scoring_version={SCORING_VERSION}");
     println!("public_key={}", encode_hex(&pk));
     Ok(())
 }
 
-/// Resolve the Lium API key.
-///
-/// Order: `LIUM_API_KEY_FILE` (preferred — keeps the secret out of the process
-/// environment and out of `docker inspect`), then `LIUM_API_KEY`, then the
-/// operator credentials file.
+/// Resolve the Lium API key (file/env/credentials — never logged).
 fn load_lium_api_key() -> Option<String> {
-    if let Some(path) = std::env::var_os("LIUM_API_KEY_FILE") {
+    if let Ok(path) = std::env::var("LIUM_API_KEY_FILE") {
         if let Ok(text) = std::fs::read_to_string(PathBuf::from(path)) {
             let t = text.trim().to_owned();
             if !t.is_empty() {
@@ -133,8 +156,7 @@ fn load_lium_api_key() -> Option<String> {
         .unwrap_or_else(|_| "/root/.config/prism-mission/credentials.env".to_owned());
     let text = std::fs::read_to_string(PathBuf::from(cred)).ok()?;
     for line in text.lines() {
-        let line = line.trim();
-        let line = line.strip_prefix("export ").unwrap_or(line);
+        let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
         if let Some(rest) = line.strip_prefix("LIUM_API_KEY=") {
             let v = rest.trim().trim_matches('"').trim_matches('\'');
             if !v.is_empty() {
@@ -146,23 +168,21 @@ fn load_lium_api_key() -> Option<String> {
 }
 
 fn load_ssh_public_key() -> Option<String> {
-    let p = match std::env::var("LIUM_SSH_PUBLIC_KEY_FILE") {
-        Ok(v) => PathBuf::from(v),
-        Err(_) => PathBuf::from("/root/.config/prism-mission/lium_ssh_ed25519.pub"),
-    };
+    let p = std::env::var("LIUM_SSH_PUBLIC_KEY_FILE").map_or_else(
+        |_| PathBuf::from("/root/.config/prism-mission/lium_ssh_ed25519.pub"),
+        PathBuf::from,
+    );
     std::fs::read_to_string(p)
         .ok()
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
 }
 
-fn build_backend(
-    force_sim: bool,
-) -> Result<(Arc<dyn EvalJobBackend>, PrismConfig, &'static str), String> {
+type BackendBundle = (Arc<dyn EvalJobBackend>, String, Vec<String>, f64);
+
+fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
     if force_sim || load_lium_api_key().is_none() {
-        let cfg = PrismConfig::sim();
-        let backend: Arc<dyn EvalJobBackend> = Arc::new(SimLiumBackend::new());
-        return Ok((backend, cfg, "sim"));
+        return Ok((Arc::new(SimLiumBackend::new()), "sim".into(), vec![], 0.0));
     }
     let api_key = load_lium_api_key().ok_or_else(|| "LIUM_API_KEY missing".to_string())?;
     let mut ssh = LiumSshConfig::default_live();
@@ -176,16 +196,50 @@ fn build_backend(
     }
     let client = LiumClient::with_config(api_key, prism_challenge::LIUM_API_BASE_URL, ssh)
         .map_err(|e| e.to_string())?;
-    let mut cfg = PrismConfig::live_smoke();
-    if let Some(pk) = load_ssh_public_key() {
-        cfg = cfg.with_ssh_public_keys(vec![pk]);
-    } else {
-        return Err(
-            "live Lium requires SSH public key (LIUM_SSH_PUBLIC_KEY_FILE or default path)".into(),
-        );
+    let pk = load_ssh_public_key()
+        .ok_or("live Lium requires SSH public key (LIUM_SSH_PUBLIC_KEY_FILE or default)")?;
+    Ok((
+        Arc::new(client),
+        "lium".into(),
+        vec![pk],
+        1.0, // not used by orchestrator.
+    ))
+}
+
+/// Reviewer from `OPENROUTER_API_KEY_FILE`, else sim (deterministic).
+#[must_use]
+pub(crate) fn build_reviewer() -> (Arc<dyn ReviewBackend>, &'static str) {
+    let path = std::env::var("OPENROUTER_API_KEY_FILE").map(PathBuf::from);
+    let key_path = match path {
+        Ok(p) if p.is_file() => p,
+        _ => PathBuf::from("/run/base/openrouter/api_key"),
+    };
+    if let Ok(key) = prism_review::load_api_key_file(&key_path) {
+        if let Ok(c) = OpenRouterClient::new(key) {
+            return (Arc::new(c), "openrouter");
+        }
     }
-    let backend: Arc<dyn EvalJobBackend> = Arc::new(client);
-    Ok((backend, cfg, "lium"))
+    (Arc::new(SimReviewer::new()), "sim")
+}
+
+async fn build_store() -> (Arc<dyn PrismStore>, String) {
+    if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
+        if !url.trim().is_empty() {
+            let pool = match db::connect(&url).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("prism-challenge: db connect {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = db::migrate(&pool).await {
+                eprintln!("prism-challenge: db migrate {e}");
+                std::process::exit(1);
+            }
+            return (Arc::new(DbPrismStore::new(pool)), "postgres".into());
+        }
+    }
+    (Arc::new(MemoryPrismStore::new()), "memory".into())
 }
 
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
@@ -193,31 +247,61 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     if !path.is_file() {
         return Err(format!("challenge secret file missing: {}", path.display()));
     }
-    // Load secret to fail-closed at boot; do not log it.
     let sk = load_challenge_secret(&path).map_err(|e| e.to_string())?;
-    let (backend, cfg, mode) = build_backend(cli.force_sim)?;
-    let state = Arc::new(SubmissionService::new());
+    let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
+    let (reviewer, reviewer_mode) = build_reviewer();
+    let (store, store_mode) = build_store().await;
+    let gateway = Arc::new(
+        prism_challenge::GatewayClient::new(prism_challenge::GatewayClientConfig {
+            base_url: cli.gateway_endpoint.clone(),
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?,
+    );
+
+    let state = Arc::new(AppState {
+        store: Arc::clone(&store),
+        epoch: AtomicU64::new(0),
+        netuid: cli.netuid,
+        backend_mode: Box::leak(
+            format!("{backend_mode}/{reviewer_mode}/{store_mode}").into_boxed_str(),
+        ),
+    });
     let app = submission_router(Arc::clone(&state));
 
-    // Single-flight eval worker (max_concurrent_evals = 1).
-    let permits = cfg.max_concurrent_evals.max(1);
-    let sem = Arc::new(Semaphore::new(permits as usize));
-    let worker_state = Arc::clone(&state);
-    let worker_backend = Arc::clone(&backend);
-    let worker_cfg = cfg.clone();
-    let worker_sk = sk;
-    let epoch = cli.epoch;
-    tokio::spawn(async move {
-        eval_worker_loop(
-            worker_state,
-            worker_backend,
-            worker_cfg,
-            worker_sk,
-            epoch,
-            sem,
-        )
-        .await;
-    });
+    // Chain (for epoch/E): live only when endpoint configured; otherwise a
+    // fixed epoch-0 (local sim posture documented in PRISM.md).
+    let chain_ep = cli
+        .chain_endpoint
+        .clone()
+        .unwrap_or_else(|| "wss://test.finney.opentensor.ai:443".to_string());
+    let mut chain = chain_live::LiveChainClient::connect(&chain_ep).map_err(|e| e.to_string())?;
+    chain.set_netuid(cli.netuid);
+
+    spawn_epoch_feed(&chain_ep, &state);
+
+    let oc = OrchestratorConfig {
+        netuid: cli.netuid,
+        max_price_per_hour: 2.5,
+        max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
+        ssh_public_keys: ssh_pks,
+        image_digest: None,
+        claim_poll: Duration::from_millis(750),
+        max_attempts: 2,
+        similarity_corpus_limit: 6,
+        llm_weight: cli.llm_weight,
+        stuck_grace_secs: 7 * 3600,
+    };
+    let orchestrator = Arc::new(Orchestrator::new(
+        oc,
+        store,
+        backend,
+        reviewer,
+        gateway,
+        Arc::new(chain),
+        sk,
+    ));
+    spawn_orchestrator(&cli, &orchestrator);
 
     let listener = TcpListener::bind(cli.bind)
         .await
@@ -225,7 +309,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     tracing::info!(
         %cli.bind,
         challenge_id = CHALLENGE_ID,
-        eval_backend = mode,
+        eval_backend = %backend_mode,
         "prism-challenge listening"
     );
     axum::serve(listener, app)
@@ -234,85 +318,46 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-async fn eval_worker_loop(
-    svc: Arc<SubmissionService>,
-    backend: Arc<dyn EvalJobBackend>,
-    cfg: PrismConfig,
-    sk: [u8; KEY_LEN],
-    epoch: u64,
-    sem: Arc<Semaphore>,
-) {
-    loop {
-        let Some(queued) = svc.pop() else {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            continue;
-        };
-        let Ok(permit) = sem.clone().acquire_owned().await else {
-            tracing::error!("eval semaphore closed");
-            return;
-        };
-        let backend = Arc::clone(&backend);
-        let cfg = cfg.clone();
-        let sid = queued.id.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            tracing::info!(submission_id = %sid, "prism eval start");
-            let input = PipelineInput {
-                request: queued.request.clone(),
-            };
-            match run_eval_pipeline(backend, &cfg, input).await {
-                Ok(result) => {
-                    // Best-effort single-hotkey leaf set for operator logs / gateway handoff.
-                    if let Ok(hk) = hotkey_from_hex(&queued.request.miner_hotkey) {
-                        let mut expected = BTreeSet::new();
-                        expected.insert(hk);
-                        let mut scores = BTreeMap::new();
-                        scores.insert(hk, result.score.clone());
-                        match emit_signed_leaf_set(&sk, epoch, &expected, &scores) {
-                            Ok(leaves) => {
-                                tracing::info!(
-                                    submission_id = %sid,
-                                    pod_id = %result.pod_id,
-                                    bpb = ?result.bpb,
-                                    termination_verified = result.receipt.termination_verified,
-                                    leaves = leaves.len(),
-                                    "prism eval complete"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    submission_id = %sid,
-                                    error = %e,
-                                    "leaf emit failed after eval"
-                                );
-                            }
-                        }
-                    } else {
-                        tracing::info!(
-                            submission_id = %sid,
-                            pod_id = %result.pod_id,
-                            bpb = ?result.bpb,
-                            "prism eval complete (no leaf; bad hotkey hex)"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(submission_id = %sid, error = %e, "prism eval failed");
+fn spawn_epoch_feed(chain_ep: &str, state: &Arc<AppState>) {
+    let st_for_feed = Arc::clone(state);
+    let ep = chain_ep.to_owned();
+    tokio::spawn(async move {
+        loop {
+            let netuid = st_for_feed.netuid;
+            let ep2 = ep.clone();
+            let epoch = tokio::task::spawn_blocking(move || {
+                let Ok(mut c) = chain_live::LiveChainClient::connect(&ep2) else {
+                    return Err("connect".to_string());
+                };
+                c.set_netuid(netuid);
+                chain::gather_schedule_state(&c, netuid)
+                    .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+            match epoch {
+                Ok(Ok(e)) => prism_challenge::record_epoch(&st_for_feed, e),
+                _ => {
+                    tracing::warn!("epoch feed read failed; epoch unchanged");
                 }
             }
-        });
-    }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
 }
 
-fn hotkey_from_hex(s: &str) -> Result<[u8; KEY_LEN], ()> {
-    let s = s.trim();
-    if s.len() != 64 {
-        return Err(());
+fn spawn_orchestrator(cli: &Cli, orchestrator: &Arc<Orchestrator<chain_live::LiveChainClient>>) {
+    let permits = cli.max_concurrent_evals.max(1) as usize;
+    let sem = Arc::new(Semaphore::new(permits));
+    for i in 0..permits {
+        let o = Arc::clone(orchestrator);
+        let s = Arc::clone(&sem);
+        tokio::spawn(async move {
+            let _permit = s.acquire_owned().await.ok();
+            tracing::info!(worker = i, "orchestrator worker up");
+            o.run_worker().await;
+        });
     }
-    let mut out = [0u8; KEY_LEN];
-    for i in 0..KEY_LEN {
-        let byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| ())?;
-        out[i] = byte;
-    }
-    Ok(out)
+    let o = Arc::clone(orchestrator);
+    tokio::spawn(async move { o.run_sweeper().await });
 }

@@ -102,6 +102,10 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 |-----------|--------|-------|
 | deepagent task packs | done | Real pinned HuggingFace download of `BaseIntelligence/deepagent@5fe4e783` `tasks/` (9 packs). Path-traversal rejection, exec-bit preservation, `Link` pagination, LFS sha256 checks. Persisted in the `agent-pack-source` volume. |
 | prism Lium backend | done | `PRISM_FORCE_SIM=false` in staging; the binary logs `eval_backend=lium`. API key is mounted from a file so it never appears in `docker inspect`. |
+| prism orchestration | done | DB-backed claim/execute/review/similarity/score state machine (`prism_submission` + append-only `prism_stage_event`), sweeper (7h grace), boot recovery, exact-E close-loop leaf submit. |
+| prism recipe v1 | done | `prism-recipe` contract, fineweb-edu pinned shard (URL + SHA-256, harness re-verifies), 6h train / 7h pod caps, baseline sources, recipe pin hex on the API. |
+| prism LLM review | done | `prism-review` quality + similarity prompts (versioned), OpenRouter client (key file only, never env), deterministic sim fallback; anti-copy forces `Copied`/`Suspicious` → Score 0. |
+| prism API | done | Full status surface: submissions list/detail/events/status/jobs/recipe/baseline, idempotent accept. |
 | Phala deploy | done | Invokes the real `phala` CLI. |
 
 ## Known gaps

@@ -139,6 +139,8 @@ pub struct LiumSshConfig {
     pub ssh_attempts: u32,
     /// Seconds between SSH retries.
     pub ssh_retry_secs: u64,
+    /// Kitchen-timer training cap (hours) the harness enforces in-pod.
+    pub train_hours_cap: f64,
 }
 
 impl LiumSshConfig {
@@ -150,6 +152,7 @@ impl LiumSshConfig {
             running_timeout_secs: 300,
             ssh_attempts: 8,
             ssh_retry_secs: 5,
+            train_hours_cap: prism_recipe::TRAIN_HOURS_CAP,
         }
     }
 }

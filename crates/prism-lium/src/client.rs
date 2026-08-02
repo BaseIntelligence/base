@@ -1,12 +1,11 @@
 //! Real Lium HTTPS client + SSH-backed live eval.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
@@ -14,6 +13,17 @@ use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, SshTarget};
 use crate::types::{Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+
+/// Pod image carrying torch for the recipe (pinned by name+tag; digest pin
+/// sits on `InstanceSpec::image_digest` when operators want it hard-pinned).
+const RECIPES_TEMPLATE_IMAGE: &str = "pytorch/pytorch";
+const RECIPES_TEMPLATE_TAG: &str = "2.4.1-cuda12.4-cudnn9-runtime";
+/// Fresh template id namespace (the old `nvidia/cuda` one can't run the recipe).
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v1";
+/// One-shot dependency pin install at container start (keeps the image pin
+/// readable; the command itself is metachar-free).
+const RECIPES_TEMPLATE_STARTUP: &str =
+    "pip install --quiet \"transformers==4.44.2\" \"datasets==3.0.2\" \"pyarrow==17.0.0\"";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
@@ -311,12 +321,12 @@ impl LiumClient {
             .template_name
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or("prism-mission-e2e");
+            .unwrap_or(RECIPES_TEMPLATE_NAME);
         self.ensure_template(
             name,
-            "nvidia/cuda",
-            Some("12.4.1-base-ubuntu22.04"),
-            Some("tail -f /dev/null"),
+            RECIPES_TEMPLATE_IMAGE,
+            Some(RECIPES_TEMPLATE_TAG),
+            Some(RECIPES_TEMPLATE_STARTUP),
         )
         .await
     }
@@ -386,11 +396,11 @@ impl LiumClient {
         })
     }
 
-    /// Live GPU-attested eval: wait RUNNING → SSH nvidia-smi → sealed metrics.
+    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → upload harness +
+    /// miner sources → run [`prism_recipe`] harness → parse `METRICS_JSON`.
     ///
-    /// Metrics BPB is deterministic from submission bytes (same lattice as Sim) but
-    /// **only emitted after live GPU attestation** via `nvidia-smi`. Full prequential
-    /// harness can replace the remote payload later without changing the trait.
+    /// The harness trains the miner's code on the pinned fineweb-edu shard and
+    /// scores the frozen val cut; no metric comes from hashing sources.
     async fn exec_eval_live(
         &self,
         instance_id: &str,
@@ -401,9 +411,72 @@ impl LiumClient {
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
 
-        let smoke = ssh_exec(
+        let gpu_type = self.gpu_smoke(&target, &key).await?;
+
+        let arch_b64 = base64_encode(architecture_py.as_bytes());
+        let train_b64 = base64_encode(training_py.as_bytes());
+        let harness_b64 = base64_encode(prism_recipe::HARNESS_PY.as_bytes());
+        let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
+        let remote = format!(
+            "set -e\nmkdir -p /tmp/prism_eval
+echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
+echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
+echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
+cd /tmp/prism_eval
+PRISM_DATASET_URL='{dataset_url}' \
+PRISM_DATASET_SHA256='{dataset_sha}' \
+PRISM_MAX_TRAIN_STEPS='{steps}' \
+PRISM_TRAIN_HOURS_CAP='{train_hours}' \
+PRISM_GPU_TYPE='{gpu_type}' \
+timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
+            harness_b64 = harness_b64,
+            arch_b64 = arch_b64,
+            train_b64 = train_b64,
+            dataset_url = prism_recipe::DATASET_URL,
+            dataset_sha = prism_recipe::dataset_sha256(),
+            steps = prism_recipe::MAX_TRAIN_STEPS,
+            train_hours = self.ssh.train_hours_cap,
+            gpu_type = gpu_type.replace('\'', ""),
+            timeout_secs = train_cap_secs.saturating_add(3600),
+        );
+
+        let out = ssh_exec_allow_fail(
             &target,
             &key,
+            &remote,
+            1,
+            self.ssh.ssh_retry_secs,
+            train_cap_secs.saturating_add(3900),
+        )
+        .await
+        .map_err(|e| LiumError::Exec(format!("harness transport: {e}")))?;
+        if !out.stdout.contains("EVAL_OK") {
+            return Err(LiumError::Exec(format!(
+                "harness failed (code {}): {}",
+                out.returncode,
+                truncate(&out.stderr, 240)
+            )));
+        }
+        let line = out
+            .stdout
+            .lines()
+            .find(|l| l.starts_with("METRICS_JSON="))
+            .ok_or_else(|| LiumError::Exec("harness EVAL_OK without METRICS_JSON".into()))?;
+        let v: RemoteExecResult = serde_json::from_str(&line["METRICS_JSON=".len()..])
+            .map_err(|e| LiumError::Exec(format!("metrics json: {e}")))?;
+        if !v.bpb.is_finite() || v.bpb <= 0.0 {
+            return Err(LiumError::Exec(format!(
+                "harness bpb not finite: {}",
+                v.bpb
+            )));
+        }
+        Ok(v)
+    }
+
+    async fn gpu_smoke(&self, target: &SshTarget, key: &Path) -> Result<String, LiumError> {
+        let smoke = ssh_exec(
+            target,
+            key,
             "nvidia-smi -L && echo SMOKE_OK",
             self.ssh.ssh_attempts,
             self.ssh.ssh_retry_secs,
@@ -416,123 +489,13 @@ impl LiumClient {
                 truncate(&smoke.stderr, 200)
             )));
         }
-
-        let gpu_line = smoke
+        Ok(smoke
             .stdout
             .lines()
             .find(|l| l.contains("GPU") || l.contains("NVIDIA") || l.contains("RTX"))
             .unwrap_or("GPU unknown")
             .trim()
-            .to_owned();
-
-        // After GPU smoke: torch-free remote source check; fall back to master-side
-        // GPU-attested metrics on any remote failure (smoke already proved GPU).
-        let arch_b64 = base64_encode(architecture_py.as_bytes());
-        let train_b64 = base64_encode(training_py.as_bytes());
-        let remote = format!(
-            r#"set -e
-mkdir -p /tmp/prism_eval
-echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
-echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
-python3 - <<'PY'
-import hashlib, json, time
-t0 = time.time()
-root = "/tmp/prism_eval"
-arch = open(root + "/architecture.py", encoding="utf-8", errors="replace").read()
-train = open(root + "/training.py", encoding="utf-8", errors="replace").read()
-assert "build_model" in arch, "missing build_model"
-assert "train" in train, "missing train"
-h = hashlib.sha256()
-h.update(arch.encode()); h.update(train.encode())
-n = int.from_bytes(h.digest()[:8], "big")
-bpb = 1.0 + (n % 4000) / 1000.0
-out = {{
-  "bpb": bpb,
-  "tokens_seen": 1024,
-  "wall_clock_seconds": time.time() - t0,
-  "gpu_type": {gpu_json},
-  "notes": "live-gpu-attested-v1",
-}}
-print("METRICS_JSON=" + json.dumps(out))
-print("EVAL_OK")
-PY
-"#,
-            arch_b64 = arch_b64,
-            train_b64 = train_b64,
-            gpu_json = serde_json::to_string(&gpu_line).unwrap_or_else(|_| "\"unknown\"".into()),
-        );
-
-        match ssh_exec_allow_fail(
-            &target,
-            &key,
-            &remote,
-            self.ssh.ssh_attempts.min(3).max(1),
-            self.ssh.ssh_retry_secs,
-            90,
-        )
-        .await
-        {
-            Ok(eval_out) if eval_out.stdout.contains("EVAL_OK") => {
-                if let Some(line) = eval_out
-                    .stdout
-                    .lines()
-                    .find(|l| l.starts_with("METRICS_JSON="))
-                {
-                    let json_str = &line["METRICS_JSON=".len()..];
-                    if let Ok(v) = serde_json::from_str::<RemoteExecResult>(json_str) {
-                        if v.bpb.is_finite() {
-                            return Ok(v);
-                        }
-                    }
-                }
-                warn!("remote EVAL_OK without parseable metrics; master-side attested");
-                Ok(attested_metrics(
-                    architecture_py,
-                    training_py,
-                    Some(gpu_line),
-                ))
-            }
-            Ok(eval_out) => {
-                warn!(
-                    code = eval_out.returncode,
-                    stderr = %truncate(&eval_out.stderr, 120),
-                    "remote sealed eval failed; using master-side GPU-attested metrics"
-                );
-                Ok(attested_metrics(
-                    architecture_py,
-                    training_py,
-                    Some(gpu_line),
-                ))
-            }
-            Err(e) => {
-                warn!(error = %e, "remote sealed eval transport failed; master-side attested");
-                Ok(attested_metrics(
-                    architecture_py,
-                    training_py,
-                    Some(gpu_line),
-                ))
-            }
-        }
-    }
-}
-
-fn attested_metrics(
-    architecture_py: &str,
-    training_py: &str,
-    gpu_type: Option<String>,
-) -> RemoteExecResult {
-    let mut h = Sha256::new();
-    h.update(architecture_py.as_bytes());
-    h.update(training_py.as_bytes());
-    let dig = h.finalize();
-    let n = u64::from_be_bytes(dig[0..8].try_into().unwrap_or([0; 8]));
-    let bpb = 1.0 + (n as f64 % 4000.0) / 1000.0;
-    RemoteExecResult {
-        bpb,
-        tokens_seen: 1024,
-        wall_clock_seconds: 0.0,
-        gpu_type,
-        notes: "live-gpu-attested-master-hash".into(),
+            .to_owned())
     }
 }
 

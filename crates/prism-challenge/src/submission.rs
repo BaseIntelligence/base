@@ -105,7 +105,11 @@ impl SubmissionService {
     }
 }
 
-fn validate(req: &SubmissionRequest) -> Result<(), SubmissionError> {
+/// Validate contract-shape of an incoming submission (pre-queue).
+///
+/// # Errors
+/// Schema/contract failures.
+pub fn validate(req: &SubmissionRequest) -> Result<(), SubmissionError> {
     if req.miner_hotkey.trim().is_empty() {
         return Err(SubmissionError::EmptyField("miner_hotkey"));
     }
@@ -128,7 +132,9 @@ fn validate(req: &SubmissionRequest) -> Result<(), SubmissionError> {
     Ok(())
 }
 
-fn submission_id(req: &SubmissionRequest) -> SubmissionId {
+/// Deterministic submission id (sha256 of the contract bytes).
+#[must_use]
+pub fn submission_id(req: &SubmissionRequest) -> SubmissionId {
     let mut h = Sha256::new();
     h.update(req.miner_hotkey.as_bytes());
     h.update(req.architecture_py.as_bytes());
