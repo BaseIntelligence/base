@@ -672,7 +672,7 @@ impl EvalJobBackend for LiumClient {
             None => offers
                 .into_iter()
                 .filter(|o| o.gpu_count >= spec.gpu_count)
-                .take(5)
+                .take(10)
                 .collect(),
         };
         if candidates.is_empty() {
