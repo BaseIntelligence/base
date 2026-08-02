@@ -183,7 +183,12 @@ def main():
             guard = None
             out = model(ids[:, :-1]) if hasattr(model, "forward") else model(ids[:, :-1])
             logits = out.logits if hasattr(out, "logits") else out
-            tgt = ids[:, 1:]
+            # Miner architectures may self-truncate to a shorter context
+            # (baseline block=512): align the target window to the positions
+            # the model actually scored (last t logits).
+            if logits.shape[1] < 1:
+                continue
+            tgt = ids[:, 1:][:, -logits.shape[1]:]
             loss_fn = torch.nn.functional.cross_entropy
             l = loss_fn(logits.reshape(-1, logits.shape[-1]), tgt.reshape(-1), reduction="mean")
             losses.append(l.item())
