@@ -21,13 +21,13 @@ use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 /// (that's how all `verify_ssh_connection` templates pass).
 const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
 const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda12.8-devel-ubuntu24.04-dind";
-/// Recipe template namespace (v3: daturaai base; v1 lacked sshd, v2 was
-/// rejected by the metachar filter).
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v3";
-/// One-shot dependency pin install at container start (single command;
-/// metachar policy blocks `&&`/`;` chains).
-const RECIPES_TEMPLATE_STARTUP: &str =
-    "pip install --quiet \"transformers==4.44.2\" \"datasets==3.0.2\" \"pyarrow==17.0.0\"";
+/// Recipe template namespace (v4: daturaai dinD + `service ssh start` as the
+/// one legal startup command — the metachar filter rejects `&&`/`;` chains,
+/// and even Lium's own dinD images need the explicit start).
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v4";
+/// Boot: start sshd (single command; deps are installed post-ssh by the exec
+/// phase, where shell chaining over ssh is fine).
+const RECIPES_TEMPLATE_STARTUP: &str = "service ssh start";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
@@ -422,7 +422,10 @@ impl LiumClient {
         let harness_b64 = base64_encode(prism_recipe::HARNESS_PY.as_bytes());
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
         let remote = format!(
-            "set -e\nmkdir -p /tmp/prism_eval
+            "set -e
+python3 -c 'import transformers' 2>/dev/null || pip install --quiet \
+  'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
+mkdir -p /tmp/prism_eval
 echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
 echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
 echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
