@@ -286,7 +286,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             ssh_key_name: Some("prism-mission-worker".into()),
             preferred_offer_id: None,
             template_id: None,
-            template_name: Some("prism-recipe-v1".into()),
+            template_name: None, // default recipe template (prism-recipe-v2 w/ sshd)
         };
         self.to_stage(id, Stage::Running).await?;
 
