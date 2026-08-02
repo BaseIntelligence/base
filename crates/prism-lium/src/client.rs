@@ -673,7 +673,7 @@ impl EvalJobBackend for LiumClient {
             None => offers
                 .into_iter()
                 .filter(|o| o.gpu_count >= spec.gpu_count)
-                .take(3)
+                .take(5)
                 .collect(),
         };
         if candidates.is_empty() {
@@ -682,13 +682,15 @@ impl EvalJobBackend for LiumClient {
 
         let lifetime = spec.max_lifetime_hours.ceil() as u64;
         let template_id = self.resolve_template_id(spec).await?;
-        let body = serde_json::json!({
-            "pod_name": spec.name,
-            "user_public_key": spec.ssh_public_keys,
-            "termination_hours": lifetime.max(1),
-            "gpu_count": spec.gpu_count,
-            "template_id": template_id,
-        });
+        let make_body = |gpu_count: u32| {
+            serde_json::json!({
+                "pod_name": spec.name,
+                "user_public_key": spec.ssh_public_keys,
+                "termination_hours": lifetime.max(1),
+                "gpu_count": gpu_count,
+                "template_id": template_id,
+            })
+        };
 
         let mut last_err = String::from("no offer tried");
         for selected in &candidates {
@@ -702,15 +704,30 @@ impl EvalJobBackend for LiumClient {
                 %template_id,
                 "lium rent"
             );
-            let rent = self
-                .request_json_body(
-                    reqwest::Method::POST,
-                    &format!("/executors/{}/rent", selected.id),
-                    &body,
-                )
-                .await;
+            // Try the requested split first; on "no GPU splitting allowed"
+            // retry the whole node (per-GPU price is unchanged).
+            let mut split_choices = vec![spec.gpu_count];
+            if selected.gpu_count != spec.gpu_count {
+                split_choices.push(selected.gpu_count);
+            }
+            let mut rented: Result<Value, LiumError> = Err(LiumError::Api("unrented".into()));
+            for gcount in split_choices {
+                rented = self
+                    .request_json_body(
+                        reqwest::Method::POST,
+                        &format!("/executors/{}/rent", selected.id),
+                        &make_body(gcount),
+                    )
+                    .await;
+                if let Err(e) = &rented {
+                    if e.to_string().contains("splitting") {
+                        continue;
+                    }
+                }
+                break;
+            }
             let mut pod_id: Option<String> = None;
-            match rent {
+            match rented {
                 Ok(v) => {
                     pod_id = extract_pod_id(&v);
                     if pod_id.is_none() {
