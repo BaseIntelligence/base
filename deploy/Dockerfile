@@ -127,8 +127,13 @@ FROM runtime-base AS hypertraining-challenge
 COPY --from=artifacts --chown=base:base /out/hypertraining-challenge /usr/local/bin/hypertraining-challenge
 ENTRYPOINT ["/usr/local/bin/hypertraining-challenge"]
 
-# Miner runner binary (agent-runner) published as image target base-agent.
 FROM runtime-base AS prism-challenge
+# prism-lium drives pod exec over the `ssh` binary; runtime-base has none.
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+USER base
 COPY --from=artifacts --chown=base:base /out/prism-challenge /usr/local/bin/prism-challenge
 ENTRYPOINT ["/usr/local/bin/prism-challenge"]
 
