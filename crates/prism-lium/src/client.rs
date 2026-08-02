@@ -18,12 +18,18 @@ use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 /// sits on `InstanceSpec::image_digest` when operators want it hard-pinned).
 const RECIPES_TEMPLATE_IMAGE: &str = "pytorch/pytorch";
 const RECIPES_TEMPLATE_TAG: &str = "2.4.1-cuda12.4-cudnn9-runtime";
-/// Fresh template id namespace (the old `nvidia/cuda` one can't run the recipe).
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v1";
-/// One-shot dependency pin install at container start (keeps the image pin
-/// readable; the command itself is metachar-free).
-const RECIPES_TEMPLATE_STARTUP: &str =
-    "pip install --quiet \"transformers==4.44.2\" \"datasets==3.0.2\" \"pyarrow==17.0.0\"";
+/// Fresh template namespace: v1 had no sshd in-container — Lium maps the
+/// host ssh port to container :22, so the container must run sshd itself.
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v2";
+/// Boot chain: sshd first (pod access), pinned recipe deps once, then a
+/// keep-alive tail (pods are terminated by the orchestrator, never left
+/// idling on the bill).
+const RECIPES_TEMPLATE_STARTUP: &str = "bash -c \"apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server \
+    && mkdir -p /run/sshd && service ssh start \
+    && pip install --quiet --root-user-action=ignore \
+    'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0' \
+    && tail -f /dev/null\"";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
