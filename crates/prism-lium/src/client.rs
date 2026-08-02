@@ -424,6 +424,7 @@ impl LiumClient {
         let remote = format!(
             "set -e
 python3 -c 'import transformers' 2>/dev/null || pip install --quiet \
+  --break-system-packages --root-user-action=ignore \
   'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
 mkdir -p /tmp/prism_eval
 echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
