@@ -14,22 +14,20 @@ use crate::ssh::{parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow
 use crate::types::{Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
-/// Pod image carrying torch for the recipe (pinned by name+tag; digest pin
-/// sits on `InstanceSpec::image_digest` when operators want it hard-pinned).
-const RECIPES_TEMPLATE_IMAGE: &str = "pytorch/pytorch";
-const RECIPES_TEMPLATE_TAG: &str = "2.4.1-cuda12.4-cudnn9-runtime";
-/// Fresh template namespace: v1 had no sshd in-container — Lium maps the
-/// host ssh port to container :22, so the container must run sshd itself.
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v2";
-/// Boot chain: sshd first (pod access), pinned recipe deps once, then a
-/// keep-alive tail (pods are terminated by the orchestrator, never left
-/// idling on the bill).
-const RECIPES_TEMPLATE_STARTUP: &str = "bash -c \"apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server \
-    && mkdir -p /run/sshd && service ssh start \
-    && pip install --quiet --root-user-action=ignore \
-    'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0' \
-    && tail -f /dev/null\"";
+/// Pod image carrying torch for the recipe: **Lium-owned daturaai build**.
+/// Rationale: the API rejects shell metacharacters in startup_commands, so a
+/// vanilla pytorch image can't `apt install openssh-server` at boot; the
+/// official `daturaai/*-dind` images ship Lium's agent + sshd natively
+/// (that's how all `verify_ssh_connection` templates pass).
+const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
+const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda12.8-devel-ubuntu24.04-dind";
+/// Recipe template namespace (v3: daturaai base; v1 lacked sshd, v2 was
+/// rejected by the metachar filter).
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v3";
+/// One-shot dependency pin install at container start (single command;
+/// metachar policy blocks `&&`/`;` chains).
+const RECIPES_TEMPLATE_STARTUP: &str =
+    "pip install --quiet \"transformers==4.44.2\" \"datasets==3.0.2\" \"pyarrow==17.0.0\"";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
