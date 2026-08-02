@@ -464,7 +464,7 @@ timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
             return Err(LiumError::Exec(format!(
                 "harness failed (code {}): {}",
                 out.returncode,
-                truncate(&out.stderr, 1200)
+                truncate(&out.stderr, 4000)
             )));
         }
         let line = out
