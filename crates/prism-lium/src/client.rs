@@ -15,16 +15,18 @@ use crate::types::{Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResul
 use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
 /// Pod image: Lium-owned DinD variant pulses its own dockerd init and never
-/// Vanilla `pytorch/pytorch` pods have no sshd; `daturaai/*-dind` images are
-/// the only ones verified to boot AND ssh on this marketplace (nvidia/cuda
-/// was CREATION_FAILED on 4/4 probed nodes). Deps install over ssh post-boot.
+/// Only `daturaai/*-dind` pods deliver a reachable sshd on this marketplace
+/// (vanilla pytorch has none; cu12.8-dinD needs `service ssh start`, whose
+/// process-exit kills sshd when the startup job ends — metachar rejection
+/// makes keep-alive chains impossible). The cuda**13.0.2**-dinD tag runs sshd
+/// from its own init: sleeps keep ssh alive across verify + exec phases.
 const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
-const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda12.8-devel-ubuntu24.04-dind";
-/// Recipe template ns (v7). Ssh hardening lives in client-side keepalive + a
-/// chatty (non-quiet) pip install rather than any in-image magic.
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v7";
-/// Boot: start sshd (single metachar-free command; the rest happens over ssh).
-const RECIPES_TEMPLATE_STARTUP: &str = "service ssh start";
+const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
+/// Recipe template ns (v9: the cu13 DinD shape that ssh-verifies with an
+/// EMPTY startup script; proven ssh-stable ≥7 min on a 5070 Ti pod).
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
+/// Boot: nothing — sshd comes up by itself in the cu13 dinD image.
+const RECIPES_TEMPLATE_STARTUP: &str = "";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
 const TERMINAL_FAIL_STATUSES: &[&str] = &[
