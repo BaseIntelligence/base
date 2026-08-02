@@ -424,9 +424,10 @@ impl LiumClient {
             "set -e
 command -v pip >/dev/null 2>&1 || apt-get update -q
 command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip
+python3 -c 'import torch' 2>/dev/null || echo 'torch stopping'
 python3 -c 'import transformers' 2>/dev/null || pip install \
   --break-system-packages --root-user-action=ignore \
-  torch==2.4.1 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
+  'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
 mkdir -p /tmp/prism_eval
 echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
 echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
