@@ -15,13 +15,14 @@ use crate::types::{Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResul
 use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
 /// Pod image: Lium-owned DinD variant pulses its own dockerd init and never
-/// runs `startup_commands` (probed live), while vanilla `pytorch/pytorch`
-/// pods have no sshd. `nvidia/cuda:12.4.1-devel` is what Lium verifies SSH
-/// against on their own CUDA template; torch/deps install over ssh post-boot.
-const RECIPES_TEMPLATE_IMAGE: &str = "nvidia/cuda";
-const RECIPES_TEMPLATE_TAG: &str = "12.4.1-devel-ubuntu22.04";
-/// Recipe template ns (v6: nvidia/cuda + `service ssh start`).
-const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v6";
+/// Vanilla `pytorch/pytorch` pods have no sshd; `daturaai/*-dind` images are
+/// the only ones verified to boot AND ssh on this marketplace (nvidia/cuda
+/// was CREATION_FAILED on 4/4 probed nodes). Deps install over ssh post-boot.
+const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
+const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda12.8-devel-ubuntu24.04-dind";
+/// Recipe template ns (v7). Ssh hardening lives in client-side keepalive + a
+/// chatty (non-quiet) pip install rather than any in-image magic.
+const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v7";
 /// Boot: start sshd (single metachar-free command; the rest happens over ssh).
 const RECIPES_TEMPLATE_STARTUP: &str = "service ssh start";
 
@@ -421,11 +422,9 @@ impl LiumClient {
             "set -e
 command -v pip >/dev/null 2>&1 || apt-get update -q
 command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip
-python3 -c 'import torch' 2>/dev/null || pip install --quiet \
-  --root-user-action=ignore torch==2.4.1
-python3 -c 'import transformers' 2>/dev/null || pip install --quiet \
-  --root-user-action=ignore \
-  'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
+python3 -c 'import transformers' 2>/dev/null || pip install \
+  --break-system-packages --root-user-action=ignore \
+  torch==2.4.1 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
 mkdir -p /tmp/prism_eval
 echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
 echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
