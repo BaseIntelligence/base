@@ -43,6 +43,8 @@ pub struct AppState {
     pub netuid: u16,
     /// Eval backend label (`lium` / `sim`) for the status view.
     pub backend_mode: &'static str,
+    /// Max orchestrator attempts per submission (retry guard).
+    pub retry_max: u32,
 }
 
 /// Router over the full API surface.
@@ -53,6 +55,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
         .route("/v1/submissions/{id}/events", get(get_events))
+        .route("/v1/submissions/{id}/retry", post(post_retry))
         .route("/v1/status", get(get_status))
         .route("/v1/jobs", get(get_jobs))
         .route("/v1/recipe", get(get_recipe))
@@ -161,6 +164,37 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
 async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match st.store.events(&id).await {
         Ok(evs) => Json(json!({ "events": evs })).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    }
+}
+
+/// `POST /v1/submissions/{id}/retry` — requeue a failed row (guard: max attempts).
+async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let row = match st.store.get(&id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, "unknown_submission", &id),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    if row.status != Stage::Failed {
+        return json_err(
+            StatusCode::CONFLICT,
+            "not_failed",
+            &format!("status={}", row.status.as_str()),
+        );
+    }
+    if row.retry_count >= st.retry_max {
+        return json_err(
+            StatusCode::CONFLICT,
+            "retry_exhausted",
+            &format!("retry_count={} max={}", row.retry_count, st.retry_max),
+        );
+    }
+    match st.store.reset_for_retry(&id).await {
+        Ok(_row) => (
+            StatusCode::ACCEPTED,
+            Json(json!({"submission_id": id, "status": "queued"})),
+        )
+            .into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -331,7 +365,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
-    use prism_store::MemoryPrismStore;
+    use prism_store::{MemoryPrismStore, StatePatch};
     use tower::ServiceExt;
 
     fn state() -> Arc<AppState> {
@@ -340,7 +374,85 @@ mod tests {
             epoch: std::sync::atomic::AtomicU64::new(7),
             netuid: 541,
             backend_mode: "sim",
+            retry_max: 2,
         })
+    }
+
+    #[tokio::test]
+    async fn retry_requeues_failed_then_guard_blocks() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = crate::submission::submission_id(&crate::example_valid_request());
+        // Seed via POST.
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (_s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(v["submission_id"], id);
+        // Force failed.
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        // Re-fail and retry again → retry_max=2 blocks the third.
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let (s, _v) = call(
+            app.clone(),
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED);
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let (s, _v) = call(
+            app,
+            Request::post(format!("/v1/submissions/{id}/retry"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT);
     }
 
     async fn call(app: Router, req: Request<Body>) -> (StatusCode, Value) {

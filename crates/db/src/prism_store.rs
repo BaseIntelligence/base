@@ -215,6 +215,25 @@ pub async fn update_prism_submission(
     Ok(row)
 }
 
+/// Reset a failed row for a retry: clears all execution/score fields and
+/// re-queues it. `retry_count` is bumped (policy enforced by the caller).
+///
+/// # Errors
+/// SQL error / 0 rows for id.
+pub async fn reset_prism_submission_for_retry(
+    pool: &PgPool,
+    id: &str,
+) -> Result<PrismSubmissionRow, DbError> {
+    let q = format!(
+        "UPDATE prism_submission SET            status = 'queued', pod_id = NULL, pod_provider = NULL,            receipt_json = NULL, metrics_json = NULL, bpb = NULL,            review_json = NULL, similarity_json = NULL,            kind = NULL, score = NULL, absence_reason = NULL,            error_detail = NULL, retry_count = retry_count + 1, updated_at = now()          WHERE id = $1 RETURNING {COLS}"
+    );
+    let row = sqlx::query_as::<_, PrismSubmissionRow>(&q)
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row)
+}
+
 /// Append a stage event.
 ///
 /// # Errors

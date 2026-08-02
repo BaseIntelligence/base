@@ -196,6 +196,11 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError>;
 
+    /// Retry reset: clears exec/score fields and re-queues a failed row.
+    /// Implementations MUST actually null the pod/receipt/score columns
+    /// (SQL) or reset the in-memory row mirror-equivalently.
+    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError>;
+
     /// Newsfeed listing for the API.
     async fn list(
         &self,
@@ -323,6 +328,29 @@ impl PrismStore for MemoryPrismStore {
                 .push((id.to_owned(), e.clone()));
         }
         Ok(out)
+    }
+
+    async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError> {
+        let mut rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let row = rows
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or(StoreError::NotFound)?;
+        row.status = Stage::Queued;
+        row.pod_id = None;
+        row.pod_provider = None;
+        row.receipt = None;
+        row.bpb = None;
+        row.review = None;
+        row.similarity = None;
+        row.final_score = None;
+        row.error_detail = None;
+        row.retry_count = row.retry_count.saturating_add(1);
+        row.updated_at_ms = now_ms();
+        Ok(row.clone())
     }
 
     async fn list(

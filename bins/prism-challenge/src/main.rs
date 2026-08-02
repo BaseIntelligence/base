@@ -29,6 +29,8 @@ use prism_challenge::{
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
+const MAX_ATTEMPTS: u32 = 2;
+
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use trustroot::encode_hex;
@@ -266,6 +268,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         backend_mode: Box::leak(
             format!("{backend_mode}/{reviewer_mode}/{store_mode}").into_boxed_str(),
         ),
+        retry_max: MAX_ATTEMPTS,
     });
     let app = submission_router(Arc::clone(&state));
 
@@ -287,7 +290,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         ssh_public_keys: ssh_pks,
         image_digest: None,
         claim_poll: Duration::from_millis(750),
-        max_attempts: 2,
+        max_attempts: MAX_ATTEMPTS,
         similarity_corpus_limit: 6,
         llm_weight: cli.llm_weight,
         stuck_grace_secs: 7 * 3600,
