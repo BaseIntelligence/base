@@ -301,7 +301,9 @@ services:
       - path: ./deploy/env/prism-challenge.env
         required: false
     volumes:
-      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
+      # prism signs with its OWN mini secret (not agent-v1's `challenge_sk`):
+      # the gateway verifies leaves against the trust root per-challenge key.
+      - ./deploy/secrets/prism_sk:/run/base/challenge_sk:ro
       - ./deploy/secrets/lium:/run/base/lium:ro
       - ./deploy/secrets/openrouter:/run/base/openrouter:ro
     expose:

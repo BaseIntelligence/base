@@ -191,10 +191,25 @@ impl<C: ChainClient + Send> Orchestrator<C> {
 
         // Phase 1: provision + recipe exec + terminate (always verified).
         let measured = self.measure(&id, &row).await;
-        let (bpb, receipt) = match &measured {
-            Ok((m, r)) => (Some(m.bpb), Some(r.clone())),
-            Err(_) => (None, None),
+        let (bpb, receipt, measure_err) = match &measured {
+            Ok((m, r)) => (Some(m.bpb), Some(r.clone()), None),
+            Err(e) => {
+                warn!(submission_id = %id, error = %e, "measure phase failed");
+                let _ = self
+                    .store
+                    .apply(
+                        &id,
+                        &StatePatch {
+                            error_detail: Some(format!("measure: {e}")),
+                            ..StatePatch::default()
+                        },
+                        None,
+                    )
+                    .await;
+                (None, None, Some(e.clone()))
+            }
         };
+        let _ = measure_err;
 
         // Phase 2: review (fail → row becomes failed with ChallengeInternal).
         let review = match self.review_step(&id, &row).await {
