@@ -195,7 +195,7 @@ pub async fn ssh_exec(
                     return Ok(SshExecOutput {
                         returncode: out.status.code().unwrap_or(0),
                         stdout,
-                        stderr: truncate_str(&stderr, 500),
+                        stderr: truncate_str(&stderr, 2000),
                     });
                 }
                 last_err = format!(
@@ -266,7 +266,7 @@ pub async fn ssh_exec_allow_fail(
                 return Ok(SshExecOutput {
                     returncode: out.status.code().unwrap_or(-1),
                     stdout,
-                    stderr: truncate_str(&stderr, 500),
+                    stderr: truncate_str(&stderr, 2000),
                 });
             }
             Ok(Err(e)) => {
