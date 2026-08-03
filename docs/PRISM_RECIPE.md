@@ -1,4 +1,4 @@
-# PRISM recipe v1 — `prism-recipe-v1`
+# PRISM recipe v1.0.1 — `prism-recipe-v1`
 
 The official execution contract every miner submission is verified inside.
 Miners ship **two scripts only** (`architecture.py` + `training.py`); the
@@ -52,6 +52,16 @@ score.
 budget, caps, harness bytes, recipe version) — surfaced on `GET /v1/recipe`
 and `GET /v1/status`. Any change to this file's parameters **must** bump
 `prism-recipe`'s version string so old leaves stay unambiguous.
+
+## Context-window rule (harness)
+
+Architectures may self-truncate their context (the baseline applies
+`block=512` internally at inference). At scoring time the harness aligns the
+target window to the logits the model actually produced
+(`tgt = ids[:, 1:][:, -logits.shape[1]:]`) so long validation texts never
+fault against shorter model windows. Miners still train and score against
+the same frozen texts; the rule only protects against an architecture's own
+context clamp.
 
 ## Scoring v2
 

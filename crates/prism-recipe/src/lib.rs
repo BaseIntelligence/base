@@ -33,8 +33,11 @@ pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architectur
 /// Baseline submission: `training.py`.
 pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
-/// Recipe semantic version (surfaced through the API).
-pub const RECIPE_VERSION: &str = "1.0.0";
+/// Recipe semantic version (surfaced through the API). Bumped to 1.0.1 for
+/// the harness context-window alignment (target = last scored positions) —
+/// harness bytes changed, so the recipe pin moved and old leaves remain
+/// attributable to their original pin.
+pub const RECIPE_VERSION: &str = "1.0.1";
 
 /// Pinned pretraining shard: fineweb-edu sample-10BT, single parquet shard.
 ///

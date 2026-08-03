@@ -204,7 +204,7 @@ def main():
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
         "notes": "recipe-v1 val_ce->bpb",
         "val_rows": VAL_ROWS,
-        "recipe": "1.0.0",
+        "recipe": "1.0.1",
     }
     print("METRICS_JSON=" + json.dumps(out))
     print("EVAL_OK")
