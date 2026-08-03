@@ -65,7 +65,7 @@ mod tests {
     fn identity() {
         assert_eq!(crate_name(), "prism-challenge");
         assert_eq!(CHALLENGE_ID, "prism");
-        assert_eq!(SCORING_VERSION, 1);
+        assert_eq!(SCORING_VERSION, 2);
         assert_ne!(CHALLENGE_ID, "agent-v1");
         assert_ne!(CHALLENGE_ID, "hypertraining");
     }

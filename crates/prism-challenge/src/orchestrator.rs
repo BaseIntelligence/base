@@ -44,8 +44,6 @@ pub struct OrchestratorConfig {
     pub max_attempts: u32,
     /// Similarity corpus size (recent submissions + baseline).
     pub similarity_corpus_limit: u32,
-    /// LLM quality weight (0..1); bpb gets the rest.
-    pub llm_weight: f64,
     /// Stuck sweep grace (seconds).
     pub stuck_grace_secs: u64,
 }
@@ -61,7 +59,6 @@ impl Default for OrchestratorConfig {
             claim_poll: Duration::from_millis(750),
             max_attempts: 2,
             similarity_corpus_limit: 6,
-            llm_weight: 0.3,
             stuck_grace_secs: 7 * 3600,
         }
     }
@@ -228,7 +225,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             },
             _ => FinalOutcome::ChallengeInternal,
         };
-        let final_score = combine_final(&outcome, self.cfg.llm_weight);
+        let final_score = combine_final(&outcome);
         let status = if matches!(outcome, FinalOutcome::ChallengeInternal) {
             Stage::Failed
         } else {

@@ -1,10 +1,10 @@
 //! PRISM challenge identity constants.
 //!
-//! Normative pins (`scoring_version = 1`):
+//! Normative pins (`scoring_version = 2`):
 //!
 //! ```text
 //! challenge_id     = "prism"
-//! scoring_version  = 1
+//! scoring_version  = 2
 //! task_id domain   = b"base-prism-task-id-v1"
 //! task_blob domain = b"base-prism-task-blob-v1"
 //! answer domain    = b"base-prism-answer-v1"
@@ -22,8 +22,14 @@ pub const CHALLENGE_ID: &str = "prism";
 /// UTF-8 bytes of [`CHALLENGE_ID`].
 pub const CHALLENGE_ID_BYTES: &[u8] = b"prism";
 
-/// Live `challenge_scoring_version` for PRISM (integer score map v1).
-pub const SCORING_VERSION: u16 = 1;
+/// Live `challenge_scoring_version` for PRISM (integer score map).
+///
+/// v1 blended measured bpb with an LLM quality vote (0.7/0.3). v2 drops the
+/// LLM vote from the number entirely: the score is **pure bpb**, and the
+/// LLM/coherence review is an anti-cheat GATE recording an audit event
+/// (`Copied`/`Suspicious` still hard-zero). Older v1 leaves stay attributable
+/// under their version tag.
+pub const SCORING_VERSION: u16 = 2;
 
 /// Domain tag for PRISM task id digests.
 pub const TASK_ID_DOMAIN: &[u8] = b"base-prism-task-id-v1";
@@ -54,7 +60,7 @@ mod tests {
 
     #[test]
     fn scoring_version_and_score_max() {
-        assert_eq!(SCORING_VERSION, 1);
+        assert_eq!(SCORING_VERSION, 2);
         assert_eq!(SCORE_MAX, 1_000_000);
     }
 

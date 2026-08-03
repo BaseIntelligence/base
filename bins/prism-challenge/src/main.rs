@@ -69,9 +69,6 @@ struct Cli {
         global = true
     )]
     max_concurrent_evals: u32,
-    /// LLM quality weight (0..1); bpb gets the rest.
-    #[arg(long, env = "PRISM_LLM_WEIGHT", default_value_t = 0.3, global = true)]
-    llm_weight: f64,
     /// Chain WS endpoint (epoch/E resolution).
     #[arg(long, env = "BASE_CHAIN_ENDPOINT", global = true)]
     chain_endpoint: Option<String>,
@@ -301,7 +298,6 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         claim_poll: Duration::from_millis(750),
         max_attempts: MAX_ATTEMPTS,
         similarity_corpus_limit: 6,
-        llm_weight: cli.llm_weight,
         stuck_grace_secs: 7 * 3600,
     };
     let orchestrator = Arc::new(Orchestrator::new(

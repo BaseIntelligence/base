@@ -63,10 +63,14 @@ fault against shorter model windows. Miners still train and score against
 the same frozen texts; the rule only protects against an architecture's own
 context clamp.
 
-## Scoring v2
+## Scoring v2 (bpb-only)
 
-`final_score = 0.7·bpb_score + 0.3·llm_quality_score`
-(`PRISM_LLM_WEIGHT` tunes the 0.3 at deploy). Anti-copy cups:
+`final_score = score_from_bpb(measured_bpb)` — the integer lattice is
+**pure bpb**. The LLM/coherence review is **not a grader**: it only verifies
+that the miner is not cheating and that the submission is coherent. Its
+verdict, quality notes and issues are kept as audit records
+(`prism_stage_event`), never added nor subtracted from the score. The
+review still gates eligibility:
 
 - similarity verdict `Copied` → hard **Score 0**
 - similarity verdict `Suspicious` → hard **Score 0** until reviewed

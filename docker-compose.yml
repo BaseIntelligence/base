@@ -294,7 +294,6 @@ services:
       OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
       BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
       PRISM_MAX_CONCURRENT_EVALS: "${PRISM_MAX_CONCURRENT_EVALS:-1}"
-      PRISM_LLM_WEIGHT: "${PRISM_LLM_WEIGHT:-0.3}"
       # Pods need a while for sshd after RUNNING on the control plane.
       PRISM_SSH_ATTEMPTS: "${PRISM_SSH_ATTEMPTS:-30}"
       PRISM_SSH_RETRY_SECS: "${PRISM_SSH_RETRY_SECS:-10}"

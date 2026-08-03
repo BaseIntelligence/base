@@ -1,7 +1,7 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
-**scoring_version:** `1`  
+**scoring_version:** `2` (pb-only; v1 blended a 0.3 LLM quality vote)  
 **port:** `8092`  
 **emission_share_bps:** `0` (until owner ceremony)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
@@ -12,10 +12,11 @@ PRISM on Base accepts miner two-script submissions (`architecture.py` +
 `training.py`) under the official [`recipe v1`](PRISM_RECIPE.md) contract.
 Each evaluation is executed for real on a Lium GPU pod rented by the
 operator master (Sim backend in CI only), then the code is LLM-reviewed for
-quality **and** similarity to the baseline + all prior submissions. Final
-scores combine bpb (0.7) + LLM quality (0.3), with hard-zero on
-`Copied`/`Suspicious`, and emit D24-complete signed leaves at the exact live
-chain epoch for gateway ingest.
+coherence and similarity to the baseline + all prior submissions. The LLM
+review is a **coherence / anti-cheat gate, never a grader**: the final
+score is pure bpb, with hard-zero on `Copied`/`Suspicious` verdicts, and
+emit D24-complete signed leaves at the exact live chain epoch for gateway
+ingest. Review findings are stored as audit events, not points.
 
 This is **not** agent-challenge Phala/TDX attestation and **not**
 hypertraining B300 tournament code.

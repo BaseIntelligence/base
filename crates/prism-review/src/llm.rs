@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 
 use crate::prompts::{
-    REVIEW_PROMPT_V1, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V1, SIMILARITY_PROMPT_VERSION,
+    REVIEW_PROMPT_V2, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V1, SIMILARITY_PROMPT_VERSION,
 };
 use crate::types::{
     truncate_source, ReviewError, ReviewVerdict, SimilarityKind, SimilarityVerdict, SourceSnippet,
@@ -276,7 +276,7 @@ impl ReviewBackend for OpenRouterClient {
         architecture_py: &str,
         training_py: &str,
     ) -> Result<ReviewVerdict, ReviewError> {
-        let prompt = REVIEW_PROMPT_V1
+        let prompt = REVIEW_PROMPT_V2
             .replace("{ARCH}", &truncate_source(architecture_py))
             .replace("{TRAIN}", &truncate_source(training_py));
         let answer = self.chat(&prompt).await?;

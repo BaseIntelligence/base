@@ -69,26 +69,25 @@ pub enum FinalOutcome {
     ChallengeInternal,
 }
 
-/// Combine the three signals into the integer lattice (scoring v2).
+/// Map the measured outcome into the integer lattice (scoring v2).
 ///
-/// `quality_part = quality/1000`, `bpb_part = 1/(1+bpb)`; combined as
-/// `w_llm * quality_part + (1 - w_llm) * bpb_part`, clamped [0,1].
-/// Similarity `Copied`/`Suspicious` IS a hard gate handled by the caller
-/// (miner-attributable `Score{0}`), documented in `docs/PRISM.md`.
+/// The score is **pure bpb**: the LLM review is an anti-cheat / coherence
+/// GATE, never a grader — its quality vote and issues are recorded as audit
+/// events but never add nor remove points. Similarity `Copied`/`Suspicious`
+/// is the hard gate (miner-attributable `Score{0}`).
 ///
 /// # Panics
-/// Never; weights are clamped.
+/// Never.
 #[must_use]
-pub fn combine_final(outcome: &FinalOutcome, llm_weight: f64) -> prism_store::FinalScore {
+pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
     use prism_store::FinalScore;
-    let w = llm_weight.clamp(0.0, 1.0);
     match outcome {
         FinalOutcome::ChallengeInternal => {
             FinalScore::NoScore(NoScoreReasonCode::ChallengeInternal as u8)
         }
         FinalOutcome::Measured {
             bpb,
-            quality,
+            quality: _,
             similarity,
         } => {
             if matches!(
@@ -97,10 +96,7 @@ pub fn combine_final(outcome: &FinalOutcome, llm_weight: f64) -> prism_store::Fi
             ) {
                 return FinalScore::Score(0);
             }
-            let q_bpb = score_from_bpb(*bpb) as f64 / (SCORE_MAX as f64);
-            let q_llm = f64::from(*quality) / 1000.0;
-            let q = (w * q_llm + (1.0 - w) * q_bpb).clamp(0.0, 1.0);
-            FinalScore::Score((q * SCORE_MAX as f64).round() as u64)
+            FinalScore::Score(score_from_bpb(*bpb))
         }
     }
 }
@@ -118,31 +114,37 @@ mod final_tests {
             quality: 900,
             similarity: Copied,
         };
-        assert_eq!(combine_final(&o, 0.3), prism_store::FinalScore::Score(0));
+        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
     }
 
     #[test]
-    fn combine_uses_both_signals() {
+    fn quality_never_moves_the_score() {
+        // Anti-cheat review gates eligibility only; the quality vote must not
+        // shift the integer score by a single point.
         let hi = FinalOutcome::Measured {
             bpb: 0.5,
             quality: 900,
             similarity: Original,
         };
-        let lo = FinalOutcome::Measured {
-            bpb: 4.0,
-            quality: 100,
+        let lo_same_bpb = FinalOutcome::Measured {
+            bpb: 0.5,
+            quality: 0,
             similarity: Original,
         };
-        let hi_s = match combine_final(&hi, 0.3) {
-            prism_store::FinalScore::Score(v) => v,
-            prism_store::FinalScore::NoScore(_) => panic!("unexpected no_score"),
+        assert_eq!(combine_final(&hi), combine_final(&lo_same_bpb));
+
+        let worse_bpb = FinalOutcome::Measured {
+            bpb: 4.0,
+            quality: 1000,
+            similarity: Original,
         };
-        let lo_s = match combine_final(&lo, 0.3) {
-            prism_store::FinalScore::Score(v) => v,
-            prism_store::FinalScore::NoScore(_) => panic!("unexpected no_score"),
-        };
-        assert!(hi_s > lo_s);
-        assert!(hi_s <= SCORE_MAX);
+        match (combine_final(&hi), combine_final(&worse_bpb)) {
+            (prism_store::FinalScore::Score(a), prism_store::FinalScore::Score(b)) => {
+                assert!(a > b);
+                assert!(a <= SCORE_MAX);
+            }
+            _ => panic!("unexpected no_score"),
+        }
     }
 }
 
