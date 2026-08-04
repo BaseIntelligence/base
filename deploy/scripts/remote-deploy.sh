@@ -184,6 +184,10 @@ rsync -az --delete \
 # deploy/secrets/lium is bind-mounted by prism-challenge, so it must be a real
 # directory with real files: compose would otherwise create directories where
 # the container expects files.
+# Same footgun for file mounts: if prism_sk / design_sk are missing, Docker
+# creates *directories* at those paths and the challenge bins fail with
+# "Is a directory" / "secret file missing". Materialize empty files when
+# absent; if a directory already poisoned the path, replace it with a file.
 ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
   '$REMOTE_DIR/deploy/secrets/openrouter' '$REMOTE_DIR/deploy/secrets/design' \
   '$REMOTE_DIR/deploy/secrets/wallets' \
@@ -193,6 +197,12 @@ ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
      done \
   && [ -e '$REMOTE_DIR/deploy/secrets/openrouter/api_key' ] || : > '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
   && [ -e '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' ] || : > '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
+  && for sk in prism_sk design_sk; do \
+       p='$REMOTE_DIR/deploy/secrets/'\$sk; \
+       if [ -d \"\$p\" ]; then rm -rf \"\$p\"; fi; \
+       [ -e \"\$p\" ] || : > \"\$p\"; \
+       chmod 400 \"\$p\"; chown 65532:65532 \"\$p\"; \
+     done \
   && chmod 400 '$REMOTE_DIR/deploy/secrets/lium/'* \
        '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
        '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
@@ -377,6 +387,14 @@ if [[ "\$BUILD_FROM" == "registry" ]]; then
   UP_ARGS+=(--no-build)
 fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE "\${UP_ARGS[@]}"
+# Profile-disabled services are not started, but an older compose project may
+# still be running them. On validator, force-remove master-only challenge
+# surfaces so smoke health does not see stale unhealthy containers.
+if [[ '$ROLE' == 'validator' ]]; then
+  docker compose ${COMPOSE_FILES[*]} rm -sf \
+    prism-challenge design-challenge design-egress-proxy socket-proxy \
+    >/dev/null 2>&1 || true
+fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
 # Local health probes via published tunnels if present, else container exec.
 sleep 5
