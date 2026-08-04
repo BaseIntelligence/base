@@ -9,8 +9,22 @@ Offline, operator-only. Never commit secrets. Prefer `/root/.base-secrets/` (mod
 | `config/owner.pubkey` | 32-byte owner public key (hex). **Throwaway for tests** — not the production `base-owner` coldkey mnemonic. |
 | `config/challenges.toml` | Challenge id, public key, emission bps (sum = 10000), participant policy. |
 | `config/challenges.toml.sig` | Detached sr25519 signature under `base-trustroot-v1`. |
-| `config/measurements.toml` | Measurement allowlist (real Phala fixtures, task 35); empty = fail-closed. |
+| `config/measurements.toml` | Measurement allowlist; empty = fail-closed (base-agent CVM path removed). |
 | `config/measurements.toml.sig` | Detached owner signature. |
+
+### Design challenge enablement (post agent/hypertraining removal)
+
+Current committed `challenges.toml` has **two** rows: `prism` @ 10000 bps and `design` @ 0 bps.
+The `design` public key was generated with the **dev throwaway** `challenge-design.age` under
+`~/.base-secrets/`. Before production emission moves to design:
+
+1. Keygen a production `design_sk` (keep off-git; materialize as `deploy/secrets/design_sk`).
+2. Replace the `design` `public_key` row in `config/challenges.toml`.
+3. Optionally move bps from `prism` → `design` (sum must remain 10000).
+4. Re-sign with the **production** owner key (`sign --kind challenges`).
+5. Verify under `config/owner.pubkey` (or the production owner pubkey after rotation).
+
+Until that ceremony, prism alone covers E; design leaves (when the service ships) carry 0 weight.
 
 ## Secret layout (never git)
 

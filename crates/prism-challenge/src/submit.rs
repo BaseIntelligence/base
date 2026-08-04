@@ -1,20 +1,24 @@
-//! Gateway raw-weights submit client (hypertraining-compatible leaf JSON).
+//! Gateway raw-weights submit client (thin wrap over `challenge-common`).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use bundle::{LeafV1, NoScoreReasonCode, ScoreOrAbsence};
+use bundle::LeafV1;
+use challenge_common::{
+    submit_signed_leaf_set as submit_common, GatewayClient as CommonGatewayClient,
+    GatewayClientConfig as CommonGatewayClientConfig, SubmitError as CommonSubmitError,
+    SubmitOutcome as CommonSubmitOutcome, DEFAULT_MAX_RETRIES, DRY_RUN_BASE_URL,
+};
 use crypto::KEY_LEN;
-use serde::Serialize;
 use thiserror::Error;
 
-/// Default retry budget.
-pub const DEFAULT_MAX_RETRIES: u32 = 3;
-
-/// Gateway client config.
+/// Gateway client config (prism-facing field names).
 #[derive(Debug, Clone)]
 pub struct GatewayClientConfig {
+    /// Base URL, or [`DRY_RUN_BASE_URL`] for no network.
     pub base_url: String,
+    /// Max retries after the first attempt. Converted to common `max_attempts = max_retries + 1`
+    /// to match the prior `0..=max_retries` loop.
     pub max_retries: u32,
 }
 
@@ -27,7 +31,17 @@ impl Default for GatewayClientConfig {
     }
 }
 
-/// Submit errors.
+impl From<GatewayClientConfig> for CommonGatewayClientConfig {
+    fn from(cfg: GatewayClientConfig) -> Self {
+        CommonGatewayClientConfig {
+            base_url: cfg.base_url,
+            max_attempts: cfg.max_retries.saturating_add(1).max(1),
+            backoff: Duration::from_millis(50),
+        }
+    }
+}
+
+/// Submit errors (prism-facing).
 #[derive(Debug, Error)]
 pub enum SubmitError {
     #[error("http: {0}")]
@@ -38,7 +52,19 @@ pub enum SubmitError {
     Serialize(String),
 }
 
-/// Outcome of a submit attempt.
+impl From<CommonSubmitError> for SubmitError {
+    fn from(err: CommonSubmitError) -> Self {
+        match err {
+            CommonSubmitError::Transport(s) => Self::Http(s),
+            CommonSubmitError::Http { status, body } => {
+                Self::Rejected(format!("status {status}: {body}"))
+            }
+            CommonSubmitError::Serialize(s) => Self::Serialize(s),
+        }
+    }
+}
+
+/// Outcome of a submit attempt (prism-facing aggregate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitOutcome {
     Accepted,
@@ -48,8 +74,7 @@ pub enum SubmitOutcome {
 /// Thin HTTP client for `POST /v1/weights/raw`.
 #[derive(Debug, Clone)]
 pub struct GatewayClient {
-    pub(crate) cfg: GatewayClientConfig,
-    http: reqwest::Client,
+    inner: CommonGatewayClient,
 }
 
 impl GatewayClient {
@@ -58,62 +83,32 @@ impl GatewayClient {
     /// # Errors
     /// HTTP client build failure.
     pub fn new(cfg: GatewayClientConfig) -> Result<Self, SubmitError> {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| SubmitError::Http(e.to_string()))?;
-        Ok(Self { cfg, http })
+        let inner = CommonGatewayClient::new(cfg.into())?;
+        Ok(Self { inner })
     }
 
     /// Dry-run: no network, reports leaf count.
     #[must_use]
     pub fn dry_run(leaves: &BTreeMap<[u8; KEY_LEN], LeafV1>) -> SubmitOutcome {
-        SubmitOutcome::DryRun {
-            leaf_count: leaves.len(),
+        match CommonGatewayClient::dry_run(leaves) {
+            CommonSubmitOutcome::DryRun { leaf_count } => SubmitOutcome::DryRun { leaf_count },
+            _ => SubmitOutcome::DryRun {
+                leaf_count: leaves.len(),
+            },
         }
+    }
+
+    /// Whether this client skips network I/O.
+    #[must_use]
+    pub fn is_dry_run(&self) -> bool {
+        self.inner.is_dry_run()
     }
 }
 
-#[derive(Serialize)]
-struct RawWeightJson<'a> {
-    challenge_id: &'a str,
-    miner_hotkey: String,
-    epoch: u64,
-    score_or_absence: ScoreOrAbsenceJson,
-    challenge_sig: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ScoreOrAbsenceJson {
-    Score { value: u64 },
-    NoScore { reason: u8 },
-}
-
-fn reason_code_u8(r: NoScoreReasonCode) -> u8 {
-    r as u8
-}
-
-fn leaf_to_json(leaf: &LeafV1) -> Result<serde_json::Value, String> {
-    let challenge_id =
-        std::str::from_utf8(&leaf.challenge_id).map_err(|e| format!("challenge_id utf8: {e}"))?;
-    let soa = match &leaf.score_or_absence {
-        ScoreOrAbsence::Score { value } => ScoreOrAbsenceJson::Score { value: *value },
-        ScoreOrAbsence::NoScore { reason } => ScoreOrAbsenceJson::NoScore {
-            reason: reason_code_u8(*reason),
-        },
-    };
-    let req = RawWeightJson {
-        challenge_id,
-        miner_hotkey: hex::encode(leaf.miner_hotkey),
-        epoch: leaf.epoch,
-        score_or_absence: soa,
-        challenge_sig: hex::encode(leaf.challenge_sig),
-    };
-    serde_json::to_value(req).map_err(|e| e.to_string())
-}
-
 /// Submit signed leaves (or dry-run when `base_url` is `dry-run`).
+///
+/// `challenge_id` / `epoch` are accepted for call-site compatibility; leaves already
+/// carry both.
 ///
 /// # Errors
 /// HTTP / rejection.
@@ -123,34 +118,10 @@ pub async fn submit_signed_leaf_set(
     _epoch: u64,
     leaves: &BTreeMap<[u8; KEY_LEN], LeafV1>,
 ) -> Result<SubmitOutcome, SubmitError> {
-    if client.cfg.base_url == "dry-run" {
+    if client.is_dry_run() || client.inner.base_url() == DRY_RUN_BASE_URL {
         return Ok(GatewayClient::dry_run(leaves));
     }
-    let url = format!(
-        "{}/v1/weights/raw",
-        client.cfg.base_url.trim_end_matches('/')
-    );
-    let mut last_err = String::new();
-    for leaf in leaves.values() {
-        let body = leaf_to_json(leaf).map_err(SubmitError::Serialize)?;
-        let mut ok = false;
-        for _ in 0..=client.cfg.max_retries {
-            match client.http.post(&url).json(&body).send().await {
-                Ok(resp) if resp.status().as_u16() == 202 || resp.status().as_u16() == 409 => {
-                    ok = true;
-                    break;
-                }
-                Ok(resp) => {
-                    last_err = format!("status {}", resp.status());
-                }
-                Err(e) => last_err = e.to_string(),
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if !ok {
-            return Err(SubmitError::Rejected(last_err));
-        }
-    }
+    let _outcomes = submit_common(&client.inner, leaves).await?;
     Ok(SubmitOutcome::Accepted)
 }
 

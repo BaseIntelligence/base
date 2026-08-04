@@ -1,0 +1,85 @@
+# Local developer overlay — always stack ON TOP of env-staging.yml.
+#
+# Reuses testnet 541 / Finney knobs from env-staging; only adjusts bind,
+# smoke/live operator knobs, optional tunnel env_file, and local probe ports.
+#
+# Used by: deploy/scripts/local-e2e.sh
+#   docker compose -f docker-compose.yml \
+#     -f deploy/compose/role-master.yml \
+#     -f deploy/compose/env-staging.yml \
+#     -f deploy/compose/env-local.yml \
+#     --profile master up -d
+#
+# Do NOT use on DigitalOcean droplets (remote-deploy never selects this file).
+services:
+  gateway:
+    # Keep host :8080 for cloudflared; override only if LOCAL_GATEWAY_HOST_PORT set.
+    ports: !override
+      - "${LOCAL_GATEWAY_HOST_PORT:-8080}:8080"
+    env_file:
+      - path: ./deploy/env/local-tunnel.env
+        required: false
+    environment:
+      # Placeholder until ACME; tunnel hostname is advertised separately.
+      BASE_DOMAIN: ${BASE_DOMAIN:-localhost}
+      # Prefer URL derived from postgres.env (script sets LOCAL_DATABASE_URL).
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      # smoke → 0 (advisory); live → 1 (fail-closed owner check)
+      BASE_GATEWAY_REQUIRE_OWNER: "${LOCAL_REQUIRE_OWNER:-0}"
+      # smoke empties wallet so BASE_GATEWAY_HOTKEY can apply; live uses base-owner
+      BASE_GATEWAY_WALLET: "${LOCAL_GATEWAY_WALLET-}"
+      BASE_GATEWAY_WALLET_HOTKEY: "${LOCAL_GATEWAY_WALLET_HOTKEY:-default}"
+      BASE_GATEWAY_HOTKEY: "${LOCAL_GATEWAY_HOTKEY-}"
+      # Ephemeral local trust root (host .local/trust-root → see volumes).
+      BASE_TRUST_ROOT_DIR: /etc/base/config
+    volumes:
+      # local-e2e.sh writes owner-signed root under .local/trust-root; do not
+      # pass the host path as BASE_TRUST_ROOT_DIR (containers cannot see it).
+      - ./.local/trust-root:/etc/base/config:ro
+
+  validator:
+    # Avoid role-master 18080 — often taken by staging SSH tunnels on laptops.
+    ports: !override
+      - "127.0.0.1:${LOCAL_VALIDATOR_HOST_PORT:-28080}:8080"
+    env_file:
+      - path: ./deploy/env/local-tunnel.env
+        required: false
+    environment:
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      # Co-located master: stay on the compose network (not the tunnel URL).
+      BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://gateway:8080}
+      BASE_VALIDATOR_WALLET: "${LOCAL_VALIDATOR_WALLET-}"
+      BASE_VALIDATOR_WALLET_HOTKEY: "${LOCAL_VALIDATOR_WALLET_HOTKEY:-default}"
+      # Offline-friendly attest unless operator opts into DCAP.
+      BASE_ATTEST_VERIFIER: "${LOCAL_ATTEST_VERIFIER:-mock_ok}"
+      BASE_TRUST_ROOT_DIR: /etc/base/config
+    volumes:
+      - ./.local/trust-root:/etc/base/config:ro
+
+  prism-challenge:
+    ports:
+      - "127.0.0.1:${LOCAL_PRISM_HOST_PORT:-28092}:8092"
+    environment:
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      # No Lium spend on a laptop unless operator opts in.
+      PRISM_FORCE_SIM: "${LOCAL_PRISM_FORCE_SIM:-true}"
+
+  design-challenge:
+    ports:
+      - "127.0.0.1:${LOCAL_DESIGN_HOST_PORT:-28093}:8093"
+    environment:
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      # Host SimSandbox only on this local overlay (never staging/prod).
+      # Requires BASE_ALLOW_HOST_SIM=1; bin refuses Sim on mainnet / prod.
+      BASE_ALLOW_HOST_SIM: "${BASE_ALLOW_HOST_SIM:-1}"
+      # Offline sandbox on a laptop unless operator opts into Docker runtime.
+      DESIGN_FORCE_SIM: "${LOCAL_DESIGN_FORCE_SIM:-true}"
+      # Deterministic AST agentic for local e2e; OpenRouter when false + key mounted.
+      DESIGN_FORCE_AGENTIC_SIM: "${LOCAL_DESIGN_FORCE_AGENTIC_SIM:-false}"
+
+  design-egress-proxy:
+    ports:
+      - "127.0.0.1:${LOCAL_DESIGN_EGRESS_HOST_PORT:-28094}:8094"
+    environment:
+      # No OpenRouter spend locally unless a real key is mounted.
+      DESIGN_EGRESS_SIM: "${LOCAL_DESIGN_EGRESS_SIM:-true}"

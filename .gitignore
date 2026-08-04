@@ -45,6 +45,9 @@ handoffs/
 deploy/env/*.env
 !deploy/env/*.env.example
 
+# Local e2e runtime (state + cloudflared pid/log); tunnel URL is under deploy/env/
+.local/
+
 # Terraform local state / vars (deploy/terraform also has its own .gitignore)
 deploy/terraform/.terraform/
 deploy/terraform/*.tfstate
@@ -59,6 +62,9 @@ deploy/pins/*.desired.env
 # Miner self-deploy runtime (install.sh)
 miner-runtime/
 /receipt_sk
+# **/*secret* above matches the directory name "secrets"; un-ignore the tree
+# then keep only README tracked (materialized key files stay ignored).
+!deploy/secrets/
 deploy/secrets/*
 !deploy/secrets/README.md
 

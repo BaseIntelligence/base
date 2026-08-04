@@ -39,6 +39,18 @@ docker compose ps
 docker compose --profile master up -d
 ```
 
+### Full local testnet E2E (recommended)
+
+Master + gateway + validator + challenges on **testnet 541**, with an ephemeral
+cloudflared public URL for the gateway. Procedure:
+[`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-testnet-e2e.md).
+
+```bash
+./deploy/scripts/local-e2e.sh --help
+./deploy/scripts/local-e2e.sh --dry-run
+./deploy/scripts/local-e2e.sh --smoke    # or --live when wallets are present
+```
+
 ## Age secrets (production)
 
 ```bash
@@ -54,8 +66,10 @@ export AGE_IDENTITY=/etc/base/age-identity.txt
 
 | Host | Droplet | VPC IP | Role | Hotkey | Gateway |
 |------|---------|--------|------|--------|---------|
-| staging master | `base-staging` | 10.116.0.2 | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) |
+| staging master | `base-staging` (`68.183.23.51`) | 10.116.0.2 | owner control plane | **yes** (`BASE_GATEWAY_HOTKEY`) | **yes** (`--profile master`) — public API **`staging.api.joinbase.ai`** (`BASE_DOMAIN`, cleartext `:80`/`:8080`) |
 | staging validator | `base-staging-validator` | 10.116.0.4 | normal validator | **no** | **no** — uses master gateway over VPC `:8080` |
+
+DNS (operator): `staging.api.joinbase.ai` **A** → staging master public IPv4 (`STAGING_MASTER_HOST` / `68.183.23.51`).
 | prod master | `base-prod` | 10.116.0.3 | owner control plane | yes | yes |
 | prod validator | `base-prod-validator` | 10.116.0.5 (assigned) | normal validator | **no** | **no** — uses prod master gateway over VPC `:8080` |
 
@@ -95,7 +109,7 @@ export BASE_SSH_IDENTITY=~/.ssh/id_ed25519
 | `deploy/compose/role-validator.yml` | gateway disabled, VPC gateway endpoint |
 | `deploy/compose/env-staging.yml` | testnet 541, `wss://test.finney.opentensor.ai:443`, 3s coordination |
 | `deploy/compose/env-prod.yml` | mainnet, conservative intervals |
-
+| `deploy/compose/env-local.yml` | local-only overlay (on top of staging); used by `local-e2e.sh` |
 `remote-deploy.sh --env staging|prod --role master|validator` selects the correct
 combination. Verify locally: `./deploy/scripts/assert-compose-matrix.sh`.
 

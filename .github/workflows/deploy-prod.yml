@@ -118,7 +118,7 @@ jobs:
           set -euo pipefail
           git fetch origin dev
           git show origin/dev:deploy/pins/staging.json > deploy/pins/staging.json
-          # Digests manifest (optional pulls for hypertraining/prism) when present.
+          # Digests manifest (optional pulls for prism/attest-helper) when present.
           SHA="${{ needs.preflight.outputs.commit_sha }}"
           if git show "origin/dev:deploy/digests/${SHA}.json" > "deploy/digests/${SHA}.json" 2>/dev/null; then
             echo "Loaded deploy/digests/${SHA}.json from origin/dev"

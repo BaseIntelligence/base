@@ -185,7 +185,7 @@ mod tests {
     async fn tick_sealed_latest_yields_match() {
         let csk = sk(1);
         let gsk = sk(2);
-        let cid = b"agent-v1";
+        let cid = b"prism";
         let miner = [0xA1u8; 32];
         let epoch = 77u64;
         let block_b = 500u64;
@@ -219,7 +219,7 @@ mod tests {
         weights
             .insert(RawWeightRow {
                 id: Uuid::new_v4(),
-                challenge_id: "agent-v1".into(),
+                challenge_id: "prism".into(),
                 epoch,
                 miner_hotkey: hex::encode(miner),
                 kind: "score".into(),

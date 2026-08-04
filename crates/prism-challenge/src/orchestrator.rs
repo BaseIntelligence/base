@@ -1,17 +1,19 @@
 //! Lium job orchestrator: DB-backed state machine, recovery, close-loop leaves.
 //!
 //! Workers claim `queued` rows, rent + run the recipe, run master-side LLM
-//! review + similarity review, compute the chain-facing score, and emit +
-//! submit the exact-E leaf set for the current chain epoch. All state lives
-//! in the store, so the API is a pure projection and restarts sweep orphans.
+//! review + cheap similarity + agentic anti-cheat, compute the chain-facing
+//! score, and emit + submit the exact-E leaf set for the current chain epoch.
+//! All state lives in the store, so the API is a pure projection and restarts
+//! sweep orphans.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_challenge::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use chain::ChainClient;
+use challenge_agentic::{AgenticBackend, AgenticVerdict};
+use challenge_common::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_lium::{EvalJobBackend, InstanceSpec};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
@@ -19,6 +21,7 @@ use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
+use crate::agentic::{build_review_request, corpus_from_rows};
 use crate::leaf_emit::emit_signed_leaf_set;
 use crate::score::{combine_final, FinalOutcome};
 use crate::submit::{submit_signed_leaf_set, GatewayClient};
@@ -70,6 +73,7 @@ pub struct Orchestrator<C: ChainClient + Send> {
     store: Arc<dyn PrismStore>,
     backend: Arc<dyn EvalJobBackend>,
     reviewer: Arc<dyn ReviewBackend>,
+    agentic: Arc<dyn AgenticBackend>,
     gateway: Arc<GatewayClient>,
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
@@ -78,11 +82,13 @@ pub struct Orchestrator<C: ChainClient + Send> {
 impl<C: ChainClient + Send> Orchestrator<C> {
     /// Construct.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cfg: OrchestratorConfig,
         store: Arc<dyn PrismStore>,
         backend: Arc<dyn EvalJobBackend>,
         reviewer: Arc<dyn ReviewBackend>,
+        agentic: Arc<dyn AgenticBackend>,
         gateway: Arc<GatewayClient>,
         chain: Arc<C>,
         sk: [u8; KEY_LEN],
@@ -92,6 +98,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             store,
             backend,
             reviewer,
+            agentic,
             gateway,
             chain,
             sk,
@@ -188,8 +195,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
 
         // Phase 1: provision + recipe exec + terminate (always verified).
         let measured = self.measure(&id, &row).await;
-        let (bpb, receipt, measure_err) = match &measured {
-            Ok((m, r)) => (Some(m.bpb), Some(r.clone()), None),
+        let (metrics, receipt) = match &measured {
+            Ok((m, r)) => (Some(m.clone()), Some(r.clone())),
             Err(e) => {
                 warn!(submission_id = %id, error = %e, "measure phase failed");
                 let _ = self
@@ -203,25 +210,34 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                         None,
                     )
                     .await;
-                (None, None, Some(e.clone()))
+                (None, None)
             }
         };
-        let _ = measure_err;
+        let bpb = metrics.as_ref().map(|m| m.bpb);
 
-        // Phase 2: review (fail → row becomes failed with ChallengeInternal).
+        // Phase 2: cheap review (fail → row becomes failed with ChallengeInternal).
         let review = match self.review_step(&id, &row).await {
             Some(v) => Some(v),
             None => return Ok(()), // already failed+finalized
         };
 
-        // Phase 3: similarity.
+        // Phase 3: cheap similarity (first filter; agentic is primary judge).
         let similarity = self.similarity_step(&id, &row).await?;
+
+        // Phase 4: agentic anti-cheat (NoVerdict → ChallengeInternal).
+        let Some(agentic) = self
+            .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
+            .await
+        else {
+            return Ok(());
+        };
 
         let outcome = match (bpb, &review) {
             (Some(b), Some(r)) => FinalOutcome::Measured {
                 bpb: b,
                 quality: r.quality_score,
                 similarity: similarity.kind,
+                agentic: agentic.verdict,
             },
             _ => FinalOutcome::ChallengeInternal,
         };
@@ -248,7 +264,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 },
                 Some(&StageEvent {
                     stage: status,
-                    detail: None,
+                    detail: Some(serde_json::json!({
+                        "agentic": serde_json::to_value(&agentic).unwrap_or_default()
+                    })),
                     at_ms: 0,
                 }),
             )
@@ -402,6 +420,68 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .similarity(&row.architecture_py, &row.training_py, &corpus)
             .await
             .map_err(|e| format!("similarity: {e}"))
+    }
+
+    /// Agentic anti-cheat on sources + metrics/receipt. Fail-closed on error.
+    async fn agentic_step(
+        &self,
+        id: &str,
+        row: &SubmissionState,
+        metrics: Option<&prism_lium::RemoteExecResult>,
+        receipt: Option<&prism_lium::EvalReceipt>,
+    ) -> Option<AgenticVerdict> {
+        if self.to_stage(id, Stage::Scoring).await.is_err() {
+            return None;
+        }
+        let dir = match tempfile::tempdir() {
+            Ok(d) => d,
+            Err(e) => {
+                self.fail_agentic(id, &format!("workdir: {e}")).await;
+                return None;
+            }
+        };
+        let recent = self
+            .store
+            .list(Some("terminated"), self.cfg.similarity_corpus_limit)
+            .await
+            .unwrap_or_default();
+        let corpus = corpus_from_rows(id, &recent);
+        let req = match build_review_request(dir.path(), row, metrics, receipt, corpus) {
+            Ok(r) => r,
+            Err(e) => {
+                self.fail_agentic(id, &e).await;
+                return None;
+            }
+        };
+        match self.agentic.review(&req).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.fail_agentic(id, &e.to_string()).await;
+                None
+            }
+        }
+    }
+
+    async fn fail_agentic(&self, id: &str, err: &str) {
+        let _ = self
+            .store
+            .apply(
+                id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    error_detail: Some(format!("agentic: {err}")),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: Stage::Failed,
+                    detail: Some(serde_json::json!({"where": "agentic", "error": err})),
+                    at_ms: 0,
+                }),
+            )
+            .await;
     }
 
     async fn similarity_corpus(&self, current_id: &str) -> Vec<SourceSnippet> {

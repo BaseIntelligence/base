@@ -1,6 +1,6 @@
 # PRISM — enable Real Lium + emission unlock
 
-## Live Lium (no emission)
+## Live Lium (no emission change)
 
 1. Rotate any leaked API key; set `LIUM_API_KEY` in operator env only.
 2. Mount SSH key for pod access (`~/.config/prism-mission/lium_ssh_ed25519`).
@@ -8,11 +8,19 @@
 4. Run inventory probe → single rent smoke → terminate → `verify_terminated`.
 5. Keep `max_concurrent_evals=1` until lease proven.
 
-## Emission ceremony (separate)
+## Emission ceremony (shared with design)
 
-1. Choose `emission_share_bps` for `prism` such that sum with `agent-v1` (+ hypertraining) = **10000**.
-2. Edit `config/challenges.toml`, re-sign with owner key.
-3. Roll validators with new trust root (dual-accept if rotating).
-4. Do **not** change agent-v1 freeze beyond the bps line.
+Trust root today: **`prism = 10000` bps**, **`design = 0` bps** (sum must stay
+exactly `10000`). See [`config/challenges.toml`](../../config/challenges.toml).
 
-Default until ceremony: **prism = 0 bps**.
+To rebalance shares:
+
+1. Choose `emission_share_bps` for `prism` and `design` such that the sum is
+   **10000**.
+2. Edit `config/challenges.toml`, re-sign with owner key
+   ([`trust-root-rotation.md`](./trust-root-rotation.md)).
+3. Roll validators with the new trust root (dual-accept if rotating).
+4. Prefer the design-facing checklist when unlocking design emission:
+   [`design-enable-and-emission.md`](./design-enable-and-emission.md).
+
+Default until a design unlock ceremony: **prism = 10000 bps**, **design = 0 bps**.

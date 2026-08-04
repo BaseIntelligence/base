@@ -31,7 +31,7 @@ REMOTE_DIR="${BASE_REMOTE_DIR:-/opt/base}"
 # bind source and the container's BASE_VERIFY_WORK_ROOT byte-for-byte.
 STATE_ROOT="${BASE_STATE_DIR:-/var/lib/base}"
 GHCR_PREFIX="${BASE_GHCR_PREFIX:-ghcr.io/baseintelligence/base}"
-PIN_SERVICES=(validator gateway updater agent-challenge)
+PIN_SERVICES=(validator gateway updater prism-challenge design-challenge)
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 if [[ -n "${BASE_SSH_IDENTITY:-}" ]]; then
   SSH_OPTS+=(-i "$BASE_SSH_IDENTITY")
@@ -80,7 +80,7 @@ for svc in services:
             f"registry mode: placeholder digest for {svc} in {path} "
             f"(promote real GHCR digests before --build-from registry)"
         )
-# hypertraining/prism are default compose services. Prod registry deploys require
+# prism is a default compose service. Prod registry deploys require
 # deploy/digests/<sha>.json (committed by images.yml). Staging may omit it when
 # still using --build-from source.
 dp = Path(digests_path) if digests_path else None
@@ -92,7 +92,7 @@ if dp is not None and not dp.is_file():
         )
     print(
         f"registry mode: WARNING: missing {dp} — "
-        "hypertraining/prism/base-agent will not be pulled",
+        "prism/base-attest-helper will not be pulled",
         file=sys.stderr,
     )
 print(f"registry pins ok env={env_name} commit={commit} services={','.join(services)}")
@@ -160,8 +160,8 @@ fi
 
 echo "remote-deploy: rsync tree"
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
-  for b in validator gateway updater agent-challenge hypertraining-challenge prism-challenge agent-runner; do
-    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p agent-challenge-bin -p hypertraining-challenge-bin -p prism-challenge-bin -p agent-runner-bin"
+  for b in validator gateway updater prism-challenge design-challenge design-egress-proxy; do
+    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p prism-challenge-bin -p design-challenge-bin -p design-egress-proxy-bin"
   done
 fi
 
@@ -184,34 +184,30 @@ rsync -az --delete \
 # deploy/secrets/lium is bind-mounted by prism-challenge, so it must be a real
 # directory with real files: compose would otherwise create directories where
 # the container expects files.
-ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' '$REMOTE_DIR/deploy/secrets/wallets' \
+ssh_h "mkdir -p '$REMOTE_DIR/deploy/env' '$REMOTE_DIR/deploy/secrets/lium' \
+  '$REMOTE_DIR/deploy/secrets/openrouter' '$REMOTE_DIR/deploy/secrets/design' \
+  '$REMOTE_DIR/deploy/secrets/wallets' \
   && chmod 700 '$REMOTE_DIR/deploy/secrets' '$REMOTE_DIR/deploy/secrets/lium' \
   && for f in api_key ssh_ed25519 ssh_ed25519.pub; do \
        [ -e '$REMOTE_DIR/deploy/secrets/lium/'\$f ] || : > '$REMOTE_DIR/deploy/secrets/lium/'\$f; \
      done \
+  && [ -e '$REMOTE_DIR/deploy/secrets/openrouter/api_key' ] || : > '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
+  && [ -e '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' ] || : > '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
   && chmod 400 '$REMOTE_DIR/deploy/secrets/lium/'* \
+       '$REMOTE_DIR/deploy/secrets/openrouter/api_key' \
+       '$REMOTE_DIR/deploy/secrets/design/annotator_tokens' \
   && chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/lium' \
+       '$REMOTE_DIR/deploy/secrets/openrouter' \
+       '$REMOTE_DIR/deploy/secrets/design' \
   && chmod -R a-w '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; \
   chown -R 65532:65532 '$REMOTE_DIR/deploy/secrets/wallets' 2>/dev/null; true"
 
-# Held-out verifier staging root. The challenge container stages bind sources
+# Design sandbox staging root. The challenge container stages bind sources
 # here and hands them to the host's Docker daemon, which resolves bind sources
 # on the host filesystem, so the path must exist on the host with the container
 # uid as owner, or 'docker compose' would auto-create it root-owned and every
-# grade would fail on staging I/O.
-ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/verify'"
-# Local miner runtime staging root — same daemon bind-source contract.
-ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/agent-work'"
-
-# Local miner runtime secret (receipt mini-secret, raw 32 bytes). Generated on
-# first boot only; the value is never printed or transferred.
-ssh_h "mkdir -p '$REMOTE_DIR/deploy/secrets/agent' && chmod 700 '$REMOTE_DIR/deploy/secrets/agent' \
-  && if [[ ! -s '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' ]]; then \
-       umask 077 && head -c 32 /dev/urandom > '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' \
-       && echo 'remote-deploy: generated secrets/agent/receipt_sk (first boot)'; \
-     fi \
-  && chmod 400 '$REMOTE_DIR/deploy/secrets/agent/receipt_sk' \
-  && chown 65532:65532 '$REMOTE_DIR/deploy/secrets/agent/receipt_sk'"
+# run would fail on staging I/O.
+ssh_h "install -d -m 0775 -o 65532 -g 65532 '$STATE_ROOT/design/staging'"
 
 
 # Materialize missing env from examples (dev-safe placeholders) if absent
@@ -256,7 +252,14 @@ fi
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
   echo "remote-deploy: sync release binaries"
   ssh_h "mkdir -p '$REMOTE_DIR/target/release'"
-  rsync -az -e "$RSYNC_SSH"     "$ROOT/target/release/validator"     "$ROOT/target/release/gateway"     "$ROOT/target/release/updater"     "$ROOT/target/release/agent-challenge"     "$ROOT/target/release/hypertraining-challenge"     "$ROOT/target/release/prism-challenge"     "$ROOT/target/release/agent-runner"     "$HOST:$REMOTE_DIR/target/release/"
+  rsync -az -e "$RSYNC_SSH" \
+    "$ROOT/target/release/validator" \
+    "$ROOT/target/release/gateway" \
+    "$ROOT/target/release/updater" \
+    "$ROOT/target/release/prism-challenge" \
+    "$ROOT/target/release/design-challenge" \
+    "$ROOT/target/release/design-egress-proxy" \
+    "$HOST:$REMOTE_DIR/target/release/"
 fi
 
 echo "remote-deploy: build + up"
@@ -315,9 +318,10 @@ PY
     python3 - "\$DIGESTS_FILE" <<'PY' | while IFS=\$'\t' read -r service image digest tag; do
 import json, sys
 optional = {
-    "hypertraining-challenge",
     "prism-challenge",
-    "base-agent",
+    "design-challenge",
+    "design-egress-proxy",
+    "design-runtime",
     "base-attest-helper",
 }
 data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -341,12 +345,15 @@ PY
       pull_retag "\$ref" "\$tag"
     done
   else
-    echo "remote-deploy: no \$DIGESTS_FILE — skipping optional hypertraining/prism/base-agent pulls"
+    echo "remote-deploy: no \$DIGESTS_FILE — skipping optional design/prism/attest-helper pulls"
     echo "remote-deploy: (those images are only required for staging --build-from source)"
   fi
+  # design-runtime is not a compose service; retag for sandbox pulls when present.
 else
   # Build service images from current tree (source) or prebuilt binaries.
   docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
+  # Sandbox runtime image (not a long-running compose service).
+  docker build -f deploy/Dockerfile --target design-runtime -t design-runtime:0.1.0 .
 fi
 
 # The updater can only pull from a registry. Enable it only when the desired

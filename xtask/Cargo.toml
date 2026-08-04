@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Workspace maintenance: LOC cap, consensus lint, metadata drift, bundle spec-check"
+description = "Workspace maintenance: LOC cap, consensus lint, metadata drift, bundle/design/external-docs checks"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

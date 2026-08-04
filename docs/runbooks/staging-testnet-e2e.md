@@ -47,12 +47,14 @@ docker exec $(docker ps -q --filter name=gateway) curl -fsS http://127.0.0.1:808
 # Returns SCALE-encoded sealed bundle
 ```
 
-## Verify agent-challenge identity
+## Verify challenge identities
 
 ```bash
 ssh root@68.183.23.51
-docker exec $(docker ps -q --filter name=agent-challenge) /usr/local/bin/agent-challenge identity
-# Prints: challenge_id=agent-v1 scoring_version=2 public_key=...
+docker exec $(docker ps -q --filter name=prism-challenge) /usr/local/bin/prism-challenge identity
+# Prints: challenge_id=prism scoring_version=2 public_key=...
+# When design-challenge is wired:
+# docker exec $(docker ps -q --filter name=design-challenge) /usr/local/bin/design-challenge identity
 ```
 
 ## Testnet chain (read-only smoke)

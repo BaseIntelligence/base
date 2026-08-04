@@ -115,7 +115,7 @@ async fn s1_admin_seal_happy_latest_200() {
     std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
     let _ = init_metrics();
     let csk = sk(1);
-    let cid = b"agent-v1";
+    let cid = b"prism";
     let miners = [hk(1), hk(2), hk(3)];
     let epoch = 91u64;
     let block_b = 920u64;
@@ -205,7 +205,7 @@ async fn s2_admin_seal_incomplete_409() {
     std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
     let _ = init_metrics();
     let csk = sk(1);
-    let cid = b"agent-v1";
+    let cid = b"prism";
     let epoch = 92u64;
     let challenges = Arc::new(ChallengesBody {
         challenges: vec![ChallengeEntry {
@@ -252,7 +252,7 @@ async fn s3_admin_seal_pins_injected_chain() {
     std::env::set_var("BASE_GATEWAY_SK", hex::encode(sk(9)));
     let _ = init_metrics();
     let csk = sk(1);
-    let cid = b"agent-v1";
+    let cid = b"prism";
     let epoch = 93u64;
     let tip = 777u64;
     // Deliberately not sorted: a fabricated metagraph would not reproduce it.

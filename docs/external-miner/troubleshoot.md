@@ -1,101 +1,32 @@
-# Miner troubleshooting
-
 <!-- protocol_version: 1 -->
 
-**Bundle `protocol_version`:** `1` · **Challenge `scoring_version`:** `2`
+# External miner — troubleshoot (HTTP)
 
----
+**Path:** HTTP submit to **design** / **prism** only — **no Phala/CVM**
 
-## `install.sh` (one-command self-deploy)
+## Design
 
-| Symptom | Likely cause | What to do |
-|---------|--------------|------------|
-| Exit **2**, `missing prerequisite: \`docker\`` | Docker not installed / not on PATH | Install Docker Engine; re-run `./install.sh` |
-| Exit **2**, daemon not reachable | Docker installed but service down / permissions | Start Docker; add user to `docker` group |
-| Exit **2**, Compose missing | No `docker compose` / `docker-compose` | Install Compose v2 |
-| Exit **3**, model key not found / not readable / empty | Bad `BASE_MODEL_KEY_FILE` | Create mode-`0600` file with provider key; pass path only (Q3=A) |
-| Exit **3**, invalid hotkey | Not 64 lowercase hex | Export 32-byte **public** hotkey as lowercase hex |
-| Exit **3**, invalid max_concurrency | Outside `1..5` | Set `BASE_MAX_CONCURRENCY` / `--max-concurrency` to 1–5 |
-| Exit **3**, image not digest-pinned | `:latest` or bare tag | Use `repo@sha256:<64 hex>` |
-| Exit **4**, image pull / not present | Registry unreachable or `BASE_SKIP_PULL=1` without local image | Load `base/base-agent:test` or pull the pin; offline: `BASE_SKIP_PULL=1` |
-| Exit **4**, capacity timeout | Runner failed to start | `docker compose -f <install-dir>/state/docker-compose.runner.yml logs` |
-| Secrets appear in logs | Misconfiguration | `install.sh` never echoes key/hotkey bytes — do not `cat` secret files into tickets |
+| Symptom | Likely cause | What to check |
+|---------|--------------|---------------|
+| `400` on `POST /v1/harness` | Invalid bundle | `agent.py` defines `run`, `pyproject.toml` non-empty, size limits |
+| Quota exhausted | Daily cap 10 | `GET /v1/quota/{hotkey}`; wait until next UTC day |
+| Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
+| Pages look empty in viewer | Sanitize stripped content | Scripts/`on*` handlers are removed; use static HTML/CSS |
+| Eliminated | Bottom 20% last round | Cooldown 4 rounds; leaves are still `Score(0)` |
+| `503` / ChallengeInternal | Operator infra | Retry later; not a miner signing issue |
 
-```bash
-# Fail-closed smoke (expect non-zero; nothing half-installed)
-./install.sh --model-key-file /no/such/key 2>&1 | head -5; echo exit=$?
+## Prism
 
-# Happy path capacity (after successful install)
-curl -sS -o /tmp/cap.json -w '%{http_code}\n' http://127.0.0.1:8080/v1/capacity
-cat /tmp/cap.json
-```
+| Symptom | Likely cause | What to check |
+|---------|--------------|---------------|
+| Rejected submit | Recipe contract | `GET /v1/recipe` + baseline; follow [`PRISM_RECIPE.md`](../PRISM_RECIPE.md) |
+| Score 0 after review | `Copied` / `Suspicious` | Similarity gate; rewrite; do not paste baseline wholesale |
+| Stuck `Provisioning` | Lium market thinness | Ops-side; watch `GET /v1/jobs` / events |
+| Idempotent replay | Same `submission_id` | Expected — returns prior row |
 
-Re-run is **idempotent**: same env refreshes compose and restarts cleanly.
+## Shared
 
----
-
-## Deploy
-
-| Symptom | Likely cause | What to do |
-|---------|--------------|------------|
-| `deploy --no-deploy` non-zero | Bad image ref / hash format | Use `repo@sha256:` + 64 hex; check `--launch-token-hash` is 64 hex |
-| `phala` not found with `--deploy` | CLI missing | Install Phala CLI; or pass `--phala-bin` |
-| Deploy fails: insufficient balance | Unfunded account | [funding-phala.md](./funding-phala.md) |
-| Compose-hash differs from operator expect | Image/tag drift or template skew | Rebuild from same base commit; compare AGENT_CHALLENGE image pins |
-
-```bash
-cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
-echo exit=$?
-# or after install.sh:
-grep '^compose-hash=' miner-runtime/state/compose-hash.txt
-```
-
----
-
-## Certify
-
-| Symptom | Likely cause | What to do |
-|---------|--------------|------------|
-| HTTP errors to validator | Wrong URL / TLS / firewall | Confirm operator URL; curl `/healthz` if exposed |
-| `Rejected` | Quote/event-log/policy | Check measurements allowlist rotation; redeploy measured image |
-| `Parked` | Collateral/TCB outage | Wait; do not expect prior Verified to carry forward |
-| Missing `--agent-url` | Live mode without URL | Pass `--agent-url` or use `--fixture-mode` only for smoke |
-| Hotkey parse error | Not 64 hex | Export raw 32-byte public key as lowercase hex |
-
----
-
-## Scoring / packs (scoring_version 2)
-
-| Symptom | Notes |
-|---------|--------|
-| You are up but weight is zero | Challenge may emit `NoScore`; attestation Parked; or you are outside expected set (stake/policy) |
-| Expecting echo-answer / latency decay | **Retired** (scoring_version 1). Live path is Harbor packs → `model.patch` → operator grade |
-| Pack env cannot pull images | Agent must use measured **socket-proxy** only — raw `docker.sock` on agent is forbidden |
-| Model calls fail | Miner-funded key missing/invalid (`BASE_MODEL_KEY_FILE`); subnet does not pay LLM bills (Q3=A) |
-| Gateway "looks wrong" | Validators recompute from local trust roots; deviant gateway is validator-side (D19) |
-
-Miners do not re-run aggregation. Bundle math is validator-side per BUNDLE_SPEC (**protocol_version 1**).
-
-Default egress is **OPEN**; stripping protects grading-channel integrity, not miner honesty (D19).
-
----
-
-## Protocol version mismatch
-
-If operators announce a new bundle `protocol_version` and your docs/binary lag:
-
-1. Upgrade base to the release validators run.
-2. Confirm badge in [`README.md`](./README.md) matches (**bundle stays 1** unless leaf bytes change).
-3. Redeploy CVM if the challenge compose contract changed (`challenge_scoring_version` bump — currently **2**).
-
-```bash
-# From repo: must exit 0
-cargo run -q -p xtask -- external-docs-check
-```
-
----
-
-## Getting help
-
-Provide: base git SHA, `compose-hash=`, certify `outcome=`, netuid, epoch, **public** hotkey hex only.  
-Never send mnemonics, age identities, Phala API keys, model keys, receipt secrets, or coldkey files.
+- Wrong host: use gateway `/challenge/{id}/…` in staging/prod; direct `:2809x` only for local.
+- Auth: miner routes are hotkey-identified in the JSON body — do not send challenge keys.
+- Bundle axis: leaf bytes follow [`BUNDLE_SPEC.md`](../BUNDLE_SPEC.md) `protocol_version = 1` regardless of challenge scoring version.
+- If docs still mention agent-v1 CVM steps, they are stale — this tree is HTTP-only.

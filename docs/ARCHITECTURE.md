@@ -5,7 +5,8 @@ Operator-facing map of the control plane. Normative byte contracts live in the f
 | Spec | Status | Role |
 |------|--------|------|
 | [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) | **FROZEN** | Epoch bundle SCALE layout, merkle, aggregation, on-chain payload bounds |
-| [`AGENT_CHALLENGE.md`](./AGENT_CHALLENGE.md) | **FROZEN** | `agent-v1` challenge topology, scoring, Phala compose contract |
+| [`DESIGN_CHALLENGE.md`](./DESIGN_CHALLENGE.md) | **FROZEN** | `design` challenge: harness sandbox, agentic review, admin winners, D24 leaves |
+| [`PRISM.md`](./PRISM.md) | live | `prism` Lium GPU recipe challenge (HTTP submit) |
 
 Do not restate those contracts here. Link them.
 
@@ -22,7 +23,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 - Gateway runs **only** as subnet owner (master). Startup asserts hotkey == on-chain `SubnetOwnerHotkey` or exits `2` before bind.
 - Validators **recompute** the weight vector from a signed, merkle-rooted epoch bundle. Challenge keys and measurements come from **owner-signed local files**, never from gateway HTTP.
 - CRV4 timelock commit-reveal on Bittensor testnet/mainnet as configured. Reveal is automatic on-chain.
-- Agent Challenge on Phala TDX: miners self-deploy and certify; validators verify attestation policy offline-testably.
+- Challenges accept miner work over **HTTP** (design Python harness sandbox; prism Lium GPU eval). No miner Phala/CVM path.
 
 ---
 
@@ -33,19 +34,21 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
                     │  Master host (compose profile master) │
                     │  postgres · gateway · validator ·     │
                     │  updater · socket-proxy ·             │
-                    │  agent-challenge backend(s)           │
+                    │  prism-challenge · design-challenge · │
+                    │  design-egress-proxy                  │
                     └───────────────┬─────────────────────┘
                                     │ TLS terminates in gateway (D20)
                                     │ /challenge/{id}/*  /v1/bundle/*
                     ┌───────────────▼─────────────────────┐
-                    │  Other validator hosts (no gateway)  │
+                    │  Other validator hosts (no gateway,   │
+                    │  no challenge services / socket-proxy)│
                     │  validator · local trust roots        │
                     │  peer root exchange (HTTPS + hotkey)  │
                     └───────────────┬─────────────────────┘
-                                    │ certify / nonces
+                                    │ HTTP submit
                     ┌───────────────▼─────────────────────┐
-                    │  Miner Phala TDX CVM                  │
-                    │  measured agent + report_data path    │
+                    │  Miner clients (no TEE required)     │
+                    │  design harness / prism scripts       │
                     └─────────────────────────────────────┘
 ```
 
@@ -53,18 +56,19 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 |----------------|------|
 | `gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner |
 | `validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
-| `agent-challenge` | Challenge service: score, sign leaves, POST raw weights |
-| `miner` | Miner CLI: dry-run compose-hash, `phala deploy`, certify |
-| `updater` | Digest-pinned rollouts via `docker-socket-proxy` |
+| `design-challenge` | **Master-only:** sandbox harness runs, sanitize/viewer, scoring, sign leaves |
+| `design-egress-proxy` | **Master-only:** allowlisted PyPI/LLM egress for sandboxes |
+| `prism-challenge` | **Master-only:** Lium (or sim) recipe eval, review gate, sign leaves |
+| `updater` | Digest-pinned rollouts via `docker-socket-proxy` (master) |
 | `trustroot` | Offline keygen / sign / verify for owner-signed TOML |
 | `bundle` | SCALE types, seal, verify (`PROTOCOL_VERSION`) |
 | `aggregate` | Integer aggregation (Hamilton house 65535) |
 | `chain` | Chain client trait + SDK wiring |
 | `trustroot` (lib) | Load local signed challenges/measurements; dual-accept rotation |
-| `base-attest-*` | Parse / replay / policy for TDX quotes |
+| `base-attest-*` | Parse / replay / policy for TDX quotes (bundle measurement pin) |
 | `crosscheck` / `dissent` | Peer roots and three-outcome policy |
-| `db` | Postgres persistence (bundles, evidence, dissent) |
-| `xtask` | loc-cap, consensus-lint, metadata-snapshot, spec gates |
+| `db` | Postgres persistence (bundles, evidence, dissent, challenge tables) |
+| `xtask` | loc-cap, consensus-lint, metadata-snapshot, spec / design / external-docs gates |
 
 ---
 
@@ -91,10 +95,13 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `config/measurements.toml` + `.sig` | yes | every validator from **disk** |
 | Challenge / owner mini-secrets | **never** | challenge service / offline ceremony only |
 
+Current emission posture (until design ceremony): `prism = 10000` bps, `design = 0` bps.
+
 Gateway DB is **routing only**. It is never a source of challenge keys, emission shares, or measurements (D18, D23).
 
 Ceremony: [`config/CEREMONY.md`](../config/CEREMONY.md).  
-Rotation: [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) (D21).
+Rotation: [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) (D21).  
+Design emission unlock: [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md).
 
 ---
 
@@ -102,8 +109,9 @@ Rotation: [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md)
 
 | Profile | Services |
 |---------|----------|
-| default | postgres, validator, updater, socket-proxy |
-| `master` | + gateway (owner host only) |
+| default | postgres, validator, updater, socket-proxy, challenge backends |
+| `master` | + gateway (owner host only); challenges stay on master |
+| `role-validator` overlay | disables gateway, updater, challenges, socket-proxy |
 | `evil-gateway` | **test-only** adversarial harness (task 48). Never prod. |
 
 See [`deploy/README.md`](../deploy/README.md) and root [`docker-compose.yml`](../docker-compose.yml).
@@ -130,5 +138,6 @@ See D19 in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Short form:
 | [`runbooks/trust-root-rotation.md`](./runbooks/trust-root-rotation.md) | D21 dual-accept |
 | [`runbooks/promote-rollback-restore.md`](./runbooks/promote-rollback-restore.md) | Digest promote, rollback, `pg_dump` |
 | [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md) | Manual failover (R9) |
-| [`external-miner/README.md`](./external-miner/README.md) | Miner path + `protocol_version` badge |
+| [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md) | Design keygen + emission |
+| [`external-miner/README.md`](./external-miner/README.md) | Miner HTTP path + `protocol_version` badge |
 | [`../README.md`](../README.md) | Repo bootstrap |

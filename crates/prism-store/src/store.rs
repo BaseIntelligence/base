@@ -246,10 +246,16 @@ fn now_ms() -> u64 {
 #[async_trait]
 impl PrismStore for MemoryPrismStore {
     async fn insert_queued(&self, row: &SubmissionState) -> Result<(), StoreError> {
-        self.rows
+        let mut rows = self
+            .rows
             .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .push_back(row.clone());
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        // Match Postgres unique(id): reject duplicates so a second POST cannot
+        // enqueue another billable Lium claim for the same submission_id.
+        if rows.iter().any(|r| r.id == row.id) {
+            return Err(StoreError::Backend("duplicate submission_id".into()));
+        }
+        rows.push_back(row.clone());
         Ok(())
     }
 
@@ -457,6 +463,18 @@ mod tests {
         assert_eq!(first.status, Stage::Provisioning);
         let row = s.get("a").await.unwrap().unwrap();
         assert_eq!(row.status, Stage::Provisioning);
+    }
+
+    #[tokio::test]
+    async fn insert_queued_rejects_duplicate_id() {
+        let s = MemoryPrismStore::new();
+        s.insert_queued(&row("a", "11")).await.unwrap();
+        let err = s.insert_queued(&row("a", "11")).await.unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate"),
+            "expected duplicate error, got {err}"
+        );
+        assert_eq!(s.list(None, 10).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

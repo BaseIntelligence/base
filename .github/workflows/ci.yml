@@ -52,11 +52,8 @@ jobs:
       - name: xtask spec-check
         run: cargo run -p xtask -- spec-check
 
-      - name: xtask agent-challenge-check
-        run: cargo run -p xtask -- agent-challenge-check
-
-      - name: xtask hypertraining-check
-        run: cargo run -p xtask -- hypertraining-check
+      - name: xtask design-check
+        run: cargo run -p xtask -- design-check
 
       - name: xtask external-docs-check
         run: cargo run -p xtask -- external-docs-check

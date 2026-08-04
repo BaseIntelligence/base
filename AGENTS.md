@@ -23,6 +23,32 @@ Working branch: **`dev`**. Prod ships from annotated tags `v*.*.*` cut on `dev`.
 - **`evil-gateway` is test-only** — never enable on prod hosts; assert with `deploy/scripts/assert-evil-gateway-not-default.sh`.
 - Platform is **DigitalOcean Droplets + Docker Compose**, not App Platform / DOKS.
 
+## Wallet / key roles (do not conflate)
+
+| Key | Who | Needed for |
+|-----|-----|------------|
+| `gateway_sk` | Gateway | Bundle **seal** signatures (`POST /v1/admin/seal`) |
+| `prism_sk` / `design_sk` | Challenge / smoke | Signed leaves (`POST /v1/weights/raw`); pubs must match trust root |
+| Gateway owner wallet + `BASE_GATEWAY_REQUIRE_OWNER` | Gateway | Master-only **identity** check (live/prod). **Not** required to seal or serve `/v1/weights/latest` |
+| Validator wallet | Validator | On-chain weight **submit** only — validators *fetch* sealed weights; they do not need a gateway wallet |
+
+A `404` on `/v1/weights/latest` means **no sealed bundle yet** (missing leaves and/or seal), not “missing gateway wallet”.
+
+## Challenge verification (mandatory path coverage)
+
+When verifying a challenge (local-e2e, staging, or focused tests), **simulate a submission** end-to-end — do not stop at process healthz. Challenges evaluate on **master only**; the validator has **no challenge exec** (fetch sealed weights only).
+
+1. Happy-path harness / intake POST (or equivalent) through the challenge service on master.
+2. Edge / failure probes: bad harness, sanitize reject, quota, wrong routes/auth.
+3. **Design — baseline:** submit the reference agent at [`docs/external-miner/examples/design-baseline/`](docs/external-miner/examples/design-baseline/) (`agent.py` + `pyproject.toml`). After `POST /v1/harness`, poll `GET /v1/runs/{id}` + `/events` + `/logs?since=` until `awaiting_admin` / terminal; assert `GET /v1/runs/{id}/pages` lists `index.html`, `pricing.html`, `components.html` and `GET /v1/view/{run_id}/{page}` returns **200**; probe `GET /v1/stats` and `GET /v1/dashboard`.
+4. **Design — cheat:** submit a malicious/copy harness; expect agentic `cheat`/`suspicious` → `Score(0)` (not admin-eligible). Poll events/logs the same way.
+5. **Design — admin winners:** with operator bearer (`deploy/secrets/design/annotator_tokens`), `GET /v1/admin/rounds/{id}/candidates` then `POST /v1/admin/rounds/{id}/winners` with 1 or 2 clean harness ids (`SCORE_MAX` or `SCORE_MAX/2`).
+6. Leaf emission → `POST /v1/weights/raw` → seal → `GET /v1/weights/latest` **≠ 404**.
+
+**Never host Sim in staging/prod** — Docker sandbox only there. `SimSandbox` / `BASE_ALLOW_HOST_SIM=1` is CI/local opt-in only; do **not** treat stub pages (`sim-install-ok` / `sim-run-ok` without executing `agent.py`) as proof. Prefer `DESIGN_FORCE_SIM=false` + OpenRouter when `deploy/secrets/openrouter/api_key` is present.
+
+Local smoke automates the weights seal step via `weights-smoke` inside `./deploy/scripts/local-e2e.sh --smoke` (see [`deploy/AGENTS.md`](deploy/AGENTS.md) and [`docs/runbooks/local-testnet-e2e.md`](docs/runbooks/local-testnet-e2e.md)).
+
 ## Required gates (before merge)
 
 Match CI (`.github/workflows/ci.yml`):
@@ -33,7 +59,8 @@ Match CI (`.github/workflows/ci.yml`):
 - `cargo run -p xtask -- loc-cap`
 - `cargo run -p xtask -- consensus-lint`
 - `cargo run -p xtask -- spec-check`
-- plus challenge/docs xtasks wired in CI (`agent-challenge-check`, `hypertraining-check`, `external-docs-check`)
+- `cargo run -p xtask -- design-check`
+- `cargo run -p xtask -- external-docs-check`
 
 ## Where to read what
 
@@ -41,9 +68,11 @@ Match CI (`.github/workflows/ci.yml`):
 |------|------------|
 | System map / process topology | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Deploy / Compose / DO topology | [`deploy/README.md`](deploy/README.md) + [`deploy/AGENTS.md`](deploy/AGENTS.md) |
+| **Local full-subnet test** (master+gateway+validator on testnet 541 + tunnel) | [`docs/runbooks/local-testnet-e2e.md`](docs/runbooks/local-testnet-e2e.md) · [`deploy/AGENTS.md`](deploy/AGENTS.md) § Local testnet E2E · `./deploy/scripts/local-e2e.sh --help` |
 | Doc authority vs evidence | [`docs/AGENTS.md`](docs/AGENTS.md) |
 | Component status | [`docs/COMPLETENESS.md`](docs/COMPLETENESS.md) |
-| Frozen contracts | [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md), [`docs/AGENT_CHALLENGE.md`](docs/AGENT_CHALLENGE.md) |
+| Frozen contracts | [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md), [`docs/DESIGN_CHALLENGE.md`](docs/DESIGN_CHALLENGE.md), [`docs/PRISM.md`](docs/PRISM.md) |
+| Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) |
 | Threat / operator checklist | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/OPERATOR_SECURITY.md`](docs/OPERATOR_SECURITY.md) |
 
 ## Do not commit

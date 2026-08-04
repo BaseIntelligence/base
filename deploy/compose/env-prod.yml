@@ -24,10 +24,13 @@ services:
       BASE_GATEWAY_REQUIRE_OWNER: "0"
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
-  agent-challenge:
-    environment:
-      BASE_CHALLENGE_DISPATCH: "0"
-      BASE_HF_AUTO_PULL: "1"
   prism-challenge:
     environment:
       PRISM_FORCE_SIM: "false"
+  design-challenge:
+    environment:
+      # Docker-only on prod. Never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM here.
+      DESIGN_FORCE_SIM: "false"
+  design-egress-proxy:
+    environment:
+      DESIGN_EGRESS_SIM: "false"

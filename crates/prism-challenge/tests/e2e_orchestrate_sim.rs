@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use chain::{AxonInfo, ChainError, Metagraph, WeightsTlockPayload};
 use chain::{ChainClient, FakeChain, FakeChainConfig};
+use challenge_agentic::SimAgent;
 use crypto::KEY_LEN;
 use prism_challenge::FinalScore;
 use prism_challenge::{
@@ -107,6 +108,7 @@ fn mk_orchestrator(
         Arc::clone(store) as Arc<dyn PrismStore>,
         backend,
         Arc::new(SimReviewer::new()),
+        Arc::new(SimAgent::new()),
         gateway,
         Arc::clone(chain),
         sk(),
@@ -192,10 +194,10 @@ async fn emit_and_submit_covers_expected_set() {
         .await
         .unwrap();
 
-    let expected = agent_challenge::ExpectedSet {
+    let expected = challenge_common::ExpectedSet {
         participants: vec![
-            agent_challenge::ExpectedParticipant { hotkey: hk, uid: 0 },
-            agent_challenge::ExpectedParticipant {
+            challenge_common::ExpectedParticipant { hotkey: hk, uid: 0 },
+            challenge_common::ExpectedParticipant {
                 hotkey: [0xCDu8; 32],
                 uid: 1,
             },

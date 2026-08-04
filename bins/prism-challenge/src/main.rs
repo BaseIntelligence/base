@@ -2,13 +2,14 @@
 //!
 //! API: miner submit + full progression surface (AGENT-style list/detail/
 //! status/jobs/recipe). Orchestrator: DB-backed Lium job runner + master-side
-//! LLM review/similarity + close-loop exact-E leaf submit. **No Phala CVM.**
+//! LLM review/similarity + agentic anti-cheat + close-loop exact-E leaf submit.
+//! **No Phala CVM.**
 //!
 //! Backend selection (fail-closed concept, never invented):
 //! - Lium backend: `LIUM_API_KEY` (or credentials file) present and
 //!   `PRISM_FORCE_SIM=false` → real pods; otherwise Sim.
-//! - LLM reviewer: `OPENROUTER_API_KEY_FILE` present → real `OpenRouter`;
-//!   otherwise `SimReviewer` (deterministic hash-lattice).
+//! - LLM reviewer / agentic: `OPENROUTER_API_KEY_FILE` present → real
+//!   `OpenRouter`; otherwise `SimReviewer` / `SimAgent` (deterministic).
 //! - Store: `BASE_DATABASE_URL` present → Postgres (`prism_submission` +
 //!   `prism_stage_event`); otherwise in-memory (dev/sim only).
 
@@ -21,7 +22,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_challenge_keys::load_challenge_secret;
+use challenge_agentic::{AgenticBackend, OpenRouterAgent, SimAgent};
+use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
 use prism_challenge::{
     submission_router, AppState, DbPrismStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
@@ -214,20 +216,36 @@ fn build_backend(force_sim: bool) -> Result<BackendBundle, String> {
     ))
 }
 
+fn openrouter_key_path() -> PathBuf {
+    let path = std::env::var("OPENROUTER_API_KEY_FILE").map(PathBuf::from);
+    match path {
+        Ok(p) if p.is_file() => p,
+        _ => PathBuf::from("/run/base/openrouter/api_key"),
+    }
+}
+
 /// Reviewer from `OPENROUTER_API_KEY_FILE`, else sim (deterministic).
 #[must_use]
 pub(crate) fn build_reviewer() -> (Arc<dyn ReviewBackend>, &'static str) {
-    let path = std::env::var("OPENROUTER_API_KEY_FILE").map(PathBuf::from);
-    let key_path = match path {
-        Ok(p) if p.is_file() => p,
-        _ => PathBuf::from("/run/base/openrouter/api_key"),
-    };
+    let key_path = openrouter_key_path();
     if let Ok(key) = prism_review::load_api_key_file(&key_path) {
         if let Ok(c) = OpenRouterClient::new(key) {
             return (Arc::new(c), "openrouter");
         }
     }
     (Arc::new(SimReviewer::new()), "sim")
+}
+
+/// Agentic anti-cheat: `OpenRouter` tool loop when key present, else `SimAgent`.
+#[must_use]
+pub(crate) fn build_agentic() -> (Arc<dyn AgenticBackend>, &'static str) {
+    let key_path = openrouter_key_path();
+    if let Ok(key) = challenge_agentic::load_api_key_file(&key_path) {
+        if let Ok(a) = OpenRouterAgent::new(key) {
+            return (Arc::new(a), "openrouter");
+        }
+    }
+    (Arc::new(SimAgent::new()), "sim")
 }
 
 async fn build_store() -> (Arc<dyn PrismStore>, String) {
@@ -258,6 +276,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let sk = load_challenge_secret(&path).map_err(|e| e.to_string())?;
     let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
+    let (agentic, agentic_mode) = build_agentic();
     let (store, store_mode) = build_store().await;
     let gateway = Arc::new(
         prism_challenge::GatewayClient::new(prism_challenge::GatewayClientConfig {
@@ -272,7 +291,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         epoch: AtomicU64::new(0),
         netuid: cli.netuid,
         backend_mode: Box::leak(
-            format!("{backend_mode}/{reviewer_mode}/{store_mode}").into_boxed_str(),
+            format!("{backend_mode}/{reviewer_mode}/{agentic_mode}/{store_mode}").into_boxed_str(),
         ),
         retry_max: MAX_ATTEMPTS,
     });
@@ -305,6 +324,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         store,
         backend,
         reviewer,
+        agentic,
         gateway,
         Arc::new(chain),
         sk,

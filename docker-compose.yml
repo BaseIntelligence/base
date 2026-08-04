@@ -1,14 +1,13 @@
-# base control-plane stack (task 40 + agent-challenge todo 31)
+# base control-plane stack
 #
-# Default: postgres + validator + updater + socket-proxy + agent-challenge +
-# hypertraining-challenge (6).
+# Default: postgres + validator + updater + socket-proxy + prism-challenge
+# + design-challenge + design-egress-proxy.
 # Master/owner host only:
 #   docker compose --profile master up -d
-# brings gateway as the 6th service (D3).
+# brings gateway as an additional service (D3).
 #
 # External images are digest-pinned (no floating tags).
 # docker.sock is mounted ONLY on socket-proxy (read-only).
-# agent-challenge reaches Docker via BASE_DOCKER_BASE → socket-proxy (no raw sock).
 # Secrets: age-decrypted env files mode 0600 under deploy/env/ (never baked into images).
 
 name: base
@@ -178,97 +177,10 @@ services:
       - base
     # Talks to Docker Engine only through socket-proxy (allowlisted).
 
-  # ---------------------------------------------------------------------------
-  # agent-challenge — operator Harbor verifier + challenge health (:8090).
-  # Docker ONLY via socket-proxy (BASE_DOCKER_BASE). No raw docker.sock (Metis S5).
-  # ---------------------------------------------------------------------------
-  agent-challenge:
-    image: agent-challenge:0.1.0
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: agent-challenge
-      args:
-        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
-    restart: unless-stopped
-    depends_on:
-      socket-proxy:
-        condition: service_started
-    # Only dispatch needs this file, so a deployment that leaves dispatch off
-    # must still come up without it.
-    env_file:
-      - path: ./deploy/env/agent-challenge.env
-        required: false
-    environment:
-      BASE_CHALLENGE_BIND: 0.0.0.0:8090
-      # Verify-specific Engine route: shared host sock is only on socket-proxy (RO).
-      BASE_DOCKER_BASE: http://socket-proxy:2375
-      # Host file must be owned uid 65532 (base) mode 0400 — see deploy/secrets/README.md
-      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
-      # Staging root for verifier binds. It must equal the bind source below
-      # byte-for-byte: the daemon resolves bind sources on the host, while the
-      # verifier stages them from inside this container, so only an identical
-      # string is seen the same way by both.
-      BASE_VERIFY_WORK_ROOT: ${BASE_STATE_DIR:-/var/lib/base}/verify
-    volumes:
-      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
-      # Persist HuggingFace-pulled task packs across restarts.
-      - agent-pack-source:/var/lib/base/pack-source
-      # Host dir pre-created uid 65532 by deploy/scripts/remote-deploy.sh.
-      - ${BASE_STATE_DIR:-/var/lib/base}/verify:${BASE_STATE_DIR:-/var/lib/base}/verify
-    expose:
-      - "8090"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -fsS -m 5 http://127.0.0.1:8090/healthz || exit 1",
-        ]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-      start_period: 10s
-    networks:
-      - base
-    # No docker.sock — verifier uses Allowlist::verifier over BASE_DOCKER_BASE.
 
-  # ---------------------------------------------------------------------------
-  # hypertraining-challenge — operator hypertraining health + epoch host (:8091).
-  # Distinct from agent-challenge (:8090). Must not share 8090.
-  # ---------------------------------------------------------------------------
-  hypertraining-challenge:
-    image: hypertraining-challenge:0.1.0
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile
-      target: hypertraining-challenge
-      args:
-        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
-    restart: unless-stopped
-    environment:
-      BASE_CHALLENGE_BIND: 0.0.0.0:8091
-      # Host file must be owned uid 65532 (base) mode 0400 — see deploy/secrets/README.md
-      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
-    volumes:
-      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
-    expose:
-      - "8091"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -fsS -m 5 http://127.0.0.1:8091/health || exit 1",
-        ]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-      start_period: 10s
-    networks:
-      - base
 
   # ---------------------------------------------------------------------------
   # prism-challenge — operator PRISM challenge health + miner submit (:8092).
-  # Distinct from agent-challenge (:8090) and hypertraining (:8091).
   # ---------------------------------------------------------------------------
   prism-challenge:
     image: prism-challenge:0.1.0
@@ -300,11 +212,11 @@ services:
       PRISM_SSH_RUNNING_TIMEOUT_SECS: "${PRISM_SSH_RUNNING_TIMEOUT_SECS:-900}"
     env_file:
       # Host file provides BASE_DATABASE_URL + BASE_NETUID (+ knobs); same
-      # pattern as agent-challenge: deployments without the file still boot.
+      # optional env file: deployments without the file still boot.
       - path: ./deploy/env/prism-challenge.env
         required: false
     volumes:
-      # prism signs with its OWN mini secret (not agent-v1's `challenge_sk`):
+      # prism signs with its OWN mini secret:
       # the gateway verifies leaves against the trust root per-challenge key.
       - ./deploy/secrets/prism_sk:/run/base/challenge_sk:ro
       - ./deploy/secrets/lium:/run/base/lium:ro
@@ -324,13 +236,114 @@ services:
     networks:
       - base
 
+  # ---------------------------------------------------------------------------
+  # design-egress-proxy — allowlisted PyPI / OpenRouter egress for sandboxes.
+  # Holds OPENROUTER key; never mount design_sk here. On base + internal
+  # design-sandbox-egress so sandboxes can reach it without internet.
+  # ---------------------------------------------------------------------------
+  design-egress-proxy:
+    image: design-egress-proxy:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: design-egress-proxy
+      args:
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    environment:
+      DESIGN_EGRESS_BIND: 0.0.0.0:8094
+      DESIGN_PROXY_MODE: "${DESIGN_PROXY_MODE:-llm}"
+      OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
+      DESIGN_TOKEN_BUDGET: "${DESIGN_TOKEN_BUDGET:-8000}"
+      DESIGN_EGRESS_SIM: "${DESIGN_EGRESS_SIM:-false}"
+    env_file:
+      - path: ./deploy/env/design-egress-proxy.env
+        required: false
+    volumes:
+      - ./deploy/secrets/openrouter:/run/base/openrouter:ro
+    expose:
+      - "8094"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -m 5 http://127.0.0.1:8094/health || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      - base
+      - design-sandbox-egress
+
+  # ---------------------------------------------------------------------------
+  # design-challenge — miner harness API + sandbox orchestrator (:8093).
+  # Docker ONLY via socket-proxy (DESIGN_DOCKER_BASE). No raw docker.sock.
+  # Sandbox LLM traffic goes through design-egress-proxy (no key in sandbox).
+  # Agentic anti-cheat on this service needs the OpenRouter key at the default
+  # DESIGN_AGENTIC_OPENROUTER_KEY_FILE path (never passed into miner sandboxes).
+  # ---------------------------------------------------------------------------
+  design-challenge:
+    image: design-challenge:0.1.0
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: design-challenge
+      args:
+        BUILD_FROM: ${BASE_DOCKER_BUILD_FROM:-prebuilt}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_started
+      design-egress-proxy:
+        condition: service_healthy
+    environment:
+      BASE_CHALLENGE_BIND: 0.0.0.0:8093
+      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
+      DESIGN_FORCE_SIM: "${DESIGN_FORCE_SIM:-false}"
+      DESIGN_DOCKER_BASE: http://socket-proxy:2375
+      # Host path must equal bind source below (daemon resolves binds on host).
+      DESIGN_STAGING_ROOT: ${BASE_STATE_DIR:-/var/lib/base}/design/staging
+      DESIGN_LLM_PROXY: http://design-egress-proxy:8094
+      DESIGN_ANNOTATOR_TOKENS_FILE: /run/base/design/annotator_tokens
+      DESIGN_AGENTIC_OPENROUTER_KEY_FILE: /run/base/openrouter/api_key
+      DESIGN_MAX_CONCURRENT: "${DESIGN_MAX_CONCURRENT:-2}"
+      BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
+    env_file:
+      - path: ./deploy/env/design-challenge.env
+        required: false
+    volumes:
+      - ./deploy/secrets/design_sk:/run/base/challenge_sk:ro
+      - ./deploy/secrets/design:/run/base/design:ro
+      - ./deploy/secrets/openrouter:/run/base/openrouter:ro
+      - design-artifacts:/var/lib/design
+      - ${BASE_STATE_DIR:-/var/lib/base}/design/staging:${BASE_STATE_DIR:-/var/lib/base}/design/staging
+    expose:
+      - "8093"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -m 5 http://127.0.0.1:8093/health || exit 1",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    networks:
+      - base
+
   socket-proxy:
     image: tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     restart: unless-stopped
     environment:
-      # Shared proxy: updater rolls + agent-challenge Harbor verify. App-level
+      # Shared proxy: updater rolls + design-challenge sandbox. App-level
       # Allowlist::updater / Allowlist::verifier enforce method/path; tecnativa
-      # CONTAINERS includes DELETE needed by verifier cleanup.
+      # CONTAINERS includes DELETE for sandbox cleanup. NETWORKS stays off —
+      # design-sandbox-egress is pre-created by compose (NetworkMode by name).
       CONTAINERS: "1"
       IMAGES: "1"
       POST: "1"
@@ -366,8 +379,16 @@ services:
 volumes:
   base-pgdata:
   base-updater-state:
-  agent-pack-source:
+  design-artifacts:
 
 networks:
   base:
     driver: bridge
+  # Sandbox containers attach here (NetworkMode); only egress member is
+  # design-egress-proxy. internal=true blocks direct internet from sandboxes.
+  # Pin the Docker name so NetworkMode "design-sandbox-egress" matches (no
+  # compose project prefix) — socket-proxy cannot create networks at runtime.
+  design-sandbox-egress:
+    name: design-sandbox-egress
+    driver: bridge
+    internal: true

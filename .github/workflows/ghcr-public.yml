@@ -25,14 +25,14 @@ jobs:
           set -euo pipefail
           # Nested image names: ghcr.io/<owner>/base/<suffix> → package name "base/<suffix>"
           pkgs=(
-            "base/base-agent"
             "base/base-attest-helper"
             "base/gateway"
             "base/validator"
             "base/updater"
-            "base/agent-challenge"
-            "base/hypertraining-challenge"
             "base/prism-challenge"
+            "base/design-challenge"
+            "base/design-egress-proxy"
+            "base/design-runtime"
           )
           ok=0
           # First list packages to Learn exact names (debug)

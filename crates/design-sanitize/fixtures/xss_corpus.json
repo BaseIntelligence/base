@@ -1,0 +1,10 @@
+[
+  {"name": "script_tag", "html": "<html><body><script>alert(1)</script><p>ok</p></body></html>"},
+  {"name": "onerror", "html": "<img src=x onerror=\"alert(1)\">"},
+  {"name": "javascript_href", "html": "<a href=\"javascript:alert(1)\">x</a>"},
+  {"name": "data_html", "html": "<a href=\"data:text/html,<script>alert(1)</script>\">x</a>"},
+  {"name": "css_expression", "html": "<div style=\"width: expression(alert(1))\">x</div>"},
+  {"name": "css_import", "html": "<style>@import url('https://evil.test/x.css');</style><p>x</p>"},
+  {"name": "svg_onload", "html": "<svg onload=\"alert(1)\"><text>x</text></svg>"},
+  {"name": "meta_refresh", "html": "<meta http-equiv=\"refresh\" content=\"0;url=https://evil.test\"><p>x</p>"}
+]

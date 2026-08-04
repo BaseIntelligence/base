@@ -88,13 +88,13 @@ async fn s1_two_wiremock_backends_alternate_round_robin() {
 
     let reg = fast_registry();
     reg.create(&CreateBackend {
-        challenge_id: "agent-v1".into(),
+        challenge_id: "prism".into(),
         base_url: a.uri(),
         weight: 1,
     })
     .unwrap();
     reg.create(&CreateBackend {
-        challenge_id: "agent-v1".into(),
+        challenge_id: "prism".into(),
         base_url: b.uri(),
         weight: 1,
     })
@@ -105,7 +105,7 @@ async fn s1_two_wiremock_backends_alternate_round_robin() {
     let mut bodies = Vec::new();
     for _ in 0..6 {
         let resp = client
-            .get(format!("http://{addr}/challenge/agent-v1/ping"))
+            .get(format!("http://{addr}/challenge/prism/ping"))
             .send()
             .await
             .expect("proxy");

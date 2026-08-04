@@ -1,7 +1,6 @@
 //! Live HTTP client for docker-socket-proxy / Engine HTTP.
 
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +10,7 @@ use crate::allowlist::Allowlist;
 use crate::api::DockerApi;
 use crate::error::DockerError;
 use crate::types::{ContainerSummary, RunResult, RunSpec};
-use crate::OWNED_NAME_PREFIX;
+use crate::{is_owned_name, DESIGN_OWNED_NAME_PREFIX, OWNED_NAME_PREFIX};
 
 /// Live HTTP client restricted by an [`Allowlist`].
 #[derive(Debug, Clone)]
@@ -90,37 +89,28 @@ impl AllowlistClient {
         result
     }
 
-    /// Owned verifier run: name prefix enforced, binds/env supported, always removed.
+    /// Owned verifier/design run: name prefix enforced, binds/env/hardening, always removed.
     ///
     /// # Errors
-    /// [`DockerError::BadName`] when the name lacks [`OWNED_NAME_PREFIX`];
+    /// [`DockerError::BadName`] when the name lacks an owned prefix;
     /// [`DockerError::Timeout`] when `timeout_sec` elapses; other API errors.
     pub fn run_owned(&self, spec: &RunSpec) -> Result<RunResult, DockerError> {
-        if !spec.name.starts_with(OWNED_NAME_PREFIX) {
+        if !is_owned_name(&spec.name) {
             return Err(DockerError::BadName {
                 name: spec.name.clone(),
-                required_prefix: OWNED_NAME_PREFIX.to_owned(),
+                required_prefix: format!("{OWNED_NAME_PREFIX}|{DESIGN_OWNED_NAME_PREFIX}"),
             });
         }
         // Best-effort pull: local digest-pinned images may 404 from registry.
         let _ = self.pull_image(&spec.image);
         let cmd_refs: Vec<&str> = spec.cmd.iter().map(String::as_str).collect();
-        let id = self.create_inner(
-            &spec.name,
-            &spec.image,
-            &HashMap::new(),
-            Some(cmd_refs.as_slice()),
-            Some(spec.binds.as_slice()),
-            spec.env.as_slice(),
-            spec.network_disabled,
-            spec.working_dir.as_deref(),
-        )?;
+        let id = self.create_owned(spec, cmd_refs.as_slice())?;
         let result = self.run_lifecycle(&id, spec.timeout_sec);
         let _ = self.remove_container(&id);
         result
     }
 
-    /// List containers whose name starts with [`OWNED_NAME_PREFIX`].
+    /// List containers whose name starts with an owned prefix.
     ///
     /// # Errors
     /// Propagates list failures.
@@ -128,7 +118,7 @@ impl AllowlistClient {
         Ok(self
             .list_containers()?
             .into_iter()
-            .filter(|c| c.name.starts_with(OWNED_NAME_PREFIX))
+            .filter(|c| is_owned_name(&c.name))
             .collect())
     }
 
@@ -159,24 +149,103 @@ impl AllowlistClient {
     }
 
     fn wait_with_timeout(&self, id: &str, timeout_sec: u64) -> Result<i64, DockerError> {
-        let client = self.clone();
-        let id_owned = id.to_owned();
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = tx.send(client.wait_container(&id_owned));
-        });
-        match rx.recv_timeout(Duration::from_secs(timeout_sec)) {
-            Ok(r) => r,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = self.stop_container(id);
-                // Drain wait so the worker does not linger; ignore exit code.
-                let _ = rx.recv_timeout(Duration::from_secs(15));
-                Err(DockerError::Timeout { timeout_sec })
+        // Poll inspect instead of POST /wait: socket-proxy / HAProxy often
+        // reset long-lived wait streams (~30–60s), which breaks multi-minute
+        // design-runtime LLM runs.
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_sec);
+        loop {
+            let insp = self.request_json("GET", &format!("/containers/{id}/json"), None)?;
+            let running = insp
+                .pointer("/State/Running")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !running {
+                return Ok(insp
+                    .pointer("/State/ExitCode")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(DockerError::Api("wait worker disconnected".into()))
+            if std::time::Instant::now() >= deadline {
+                let _ = self.stop_container(id);
+                return Err(DockerError::Timeout { timeout_sec });
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+    }
+
+    fn create_owned(&self, spec: &RunSpec, cmd: &[&str]) -> Result<String, DockerError> {
+        let mut body = serde_json::json!({
+            "Image": spec.image,
+            "Labels": {},
+            "Cmd": cmd,
+            "Tty": true,
+            "AttachStdout": true,
+            "AttachStderr": true,
+        });
+        if !spec.env.is_empty() {
+            body["Env"] = serde_json::json!(spec.env);
+        }
+        if spec.network_disabled {
+            body["NetworkDisabled"] = Value::Bool(true);
+        }
+        if let Some(wd) = &spec.working_dir {
+            body["WorkingDir"] = Value::String(wd.clone());
+        }
+        if let Some(user) = &spec.user {
+            body["User"] = Value::String(user.clone());
+        }
+        let mut host = serde_json::Map::new();
+        if !spec.binds.is_empty() {
+            host.insert("Binds".into(), serde_json::json!(spec.binds));
+        }
+        if spec.readonly_rootfs {
+            host.insert("ReadonlyRootfs".into(), Value::Bool(true));
+        }
+        if spec.cap_drop_all {
+            host.insert("CapDrop".into(), serde_json::json!(["ALL"]));
+        }
+        if spec.no_new_privileges {
+            host.insert(
+                "SecurityOpt".into(),
+                serde_json::json!(["no-new-privileges:true"]),
+            );
+        }
+        if let Some(n) = spec.pids_limit {
+            host.insert("PidsLimit".into(), Value::Number(n.into()));
+        }
+        if let Some(m) = spec.memory_bytes {
+            host.insert("Memory".into(), Value::Number(m.into()));
+        }
+        if let Some(m) = spec.memory_swap_bytes {
+            host.insert("MemorySwap".into(), Value::Number(m.into()));
+        }
+        if let Some(n) = spec.nano_cpus {
+            host.insert("NanoCpus".into(), Value::Number(n.into()));
+        }
+        if let Some(mode) = &spec.network_mode {
+            if !spec.network_disabled {
+                host.insert("NetworkMode".into(), Value::String(mode.clone()));
             }
         }
+        if !spec.tmpfs.is_empty() {
+            let mut map = serde_json::Map::new();
+            for (path, opts) in &spec.tmpfs {
+                map.insert(path.clone(), Value::String(opts.clone()));
+            }
+            host.insert("Tmpfs".into(), Value::Object(map));
+        }
+        if !host.is_empty() {
+            body["HostConfig"] = Value::Object(host);
+        }
+        let val = self.request_json(
+            "POST",
+            &format!("/containers/create?name={}", spec.name),
+            Some(body),
+        )?;
+        val.get("Id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| DockerError::Json("create response missing Id".into()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -417,8 +486,31 @@ mod tests {
                 network_disabled: false,
                 working_dir: None,
                 timeout_sec: Some(1),
+                readonly_rootfs: false,
+                cap_drop_all: false,
+                no_new_privileges: false,
+                pids_limit: None,
+                memory_bytes: None,
+                memory_swap_bytes: None,
+                nano_cpus: None,
+                network_mode: None,
+                user: None,
+                tmpfs: vec![],
             })
             .expect_err("bad name");
         assert!(matches!(err, DockerError::BadName { .. }));
+    }
+
+    #[test]
+    fn design_prefix_is_owned() {
+        assert!(crate::is_owned_name("base-design-run-1"));
+        let spec = RunSpec::design_hardened(
+            "base-design-x".into(),
+            "img@sha256:ab".into(),
+            vec!["true".into()],
+        );
+        assert!(spec.readonly_rootfs);
+        assert!(spec.cap_drop_all);
+        assert_eq!(spec.user.as_deref(), Some("65532:65532"));
     }
 }

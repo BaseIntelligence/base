@@ -491,42 +491,41 @@ mod tests {
         assert!(obj.contains_key("challenge_id"));
     }
 
-    /// Hypertraining compose registration: `challenge_id` + service `base_url` (todo 15).
+    /// Multi-challenge registration: prism + design coexist (must not hardcode a single id).
     #[test]
-    fn create_hypertraining_backend_compose_url() {
+    fn create_multi_challenge_backends() {
         let reg = Registry::with_defaults();
-        let view = reg
+        let prism = reg
             .create(&CreateBackend {
-                challenge_id: "hypertraining".into(),
-                base_url: "http://hypertraining-challenge:8091/".into(),
+                challenge_id: "prism".into(),
+                base_url: "http://prism-challenge:8092/".into(),
                 weight: 1,
             })
-            .expect("create hypertraining backend");
-        assert_eq!(view.challenge_id, "hypertraining");
-        assert_eq!(view.base_url, "http://hypertraining-challenge:8091");
-        assert!(view.healthy);
-        assert!(!view.ejected);
+            .expect("create prism backend");
+        assert_eq!(prism.challenge_id, "prism");
+        assert_eq!(prism.base_url, "http://prism-challenge:8092");
+        assert!(prism.healthy);
+        assert!(!prism.ejected);
 
-        // Multi-challenge: agent-v1 coexists (must not hardcode a single id).
-        let agent = reg
+        let design = reg
             .create(&CreateBackend {
-                challenge_id: "agent-v1".into(),
-                base_url: "http://agent-challenge:8090".into(),
+                challenge_id: "design".into(),
+                base_url: "http://design-challenge:8093".into(),
                 weight: 1,
             })
-            .expect("create agent-v1 backend");
-        assert_eq!(agent.challenge_id, "agent-v1");
+            .expect("create design backend");
+        assert_eq!(design.challenge_id, "design");
 
-        let listed = reg.list(Some("hypertraining"));
+        let listed = reg.list(Some("prism"));
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, view.id);
+        assert_eq!(listed[0].id, prism.id);
 
-        let picked = reg.pick("hypertraining").expect("pick hypertraining");
-        assert_eq!(picked.id, view.id);
-        assert_eq!(picked.base_url, "http://hypertraining-challenge:8091");
+        let picked = reg.pick("prism").expect("pick prism");
+        assert_eq!(picked.id, prism.id);
+        assert_eq!(picked.base_url, "http://prism-challenge:8092");
 
-        let agent_pick = reg.pick("agent-v1").expect("pick agent-v1");
-        assert_eq!(agent_pick.id, agent.id);
+        let design_pick = reg.pick("design").expect("pick design");
+        assert_eq!(design_pick.id, design.id);
     }
 
     /// PRISM compose registration: `challenge_id` + service `base_url` port 8092 (no Phala CVM).

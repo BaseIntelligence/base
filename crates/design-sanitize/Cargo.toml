@@ -1,0 +1,22 @@
+[package]
+name = "design-sanitize"
+description = "HTML/CSS sanitization + page bundle validation + viewer CSP headers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ammonia = "4"
+design-harness = { path = "../design-harness" }
+hex = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true

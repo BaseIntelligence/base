@@ -11,6 +11,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::doc_markdown)]
 
+mod agentic;
 mod api;
 mod config;
 mod leaf_emit;

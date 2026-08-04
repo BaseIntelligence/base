@@ -53,19 +53,21 @@ pub fn score_from_pipeline(outcome: &PipelineOutcome) -> ScoreOrAbsence {
     }
 }
 
-/// Final outcomes after LLM review + similarity gates (orchestrator v2).
+/// Final outcomes after LLM review + similarity + agentic gates (orchestrator v2).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FinalOutcome {
-    /// Measured bpb + LLM quality (0..1000) + similarity class.
+    /// Measured bpb + LLM quality (0..1000) + similarity + agentic verdict.
     Measured {
         /// Bits-per-byte on the pinned val cut (lower is better).
         bpb: f64,
         /// LLM quality verdict 0..1000.
         quality: u16,
-        /// Similarity class.
+        /// Cheap single-shot similarity class.
         similarity: prism_review::SimilarityKind,
+        /// Agentic anti-cheat verdict (primary gate).
+        agentic: challenge_agentic::VerdictKind,
     },
-    /// Operator fault (any pipeline/review/similarity failure).
+    /// Operator fault (any pipeline/review/similarity/agentic failure).
     ChallengeInternal,
 }
 
@@ -73,13 +75,16 @@ pub enum FinalOutcome {
 ///
 /// The score is **pure bpb**: the LLM review is an anti-cheat / coherence
 /// GATE, never a grader — its quality vote and issues are recorded as audit
-/// events but never add nor remove points. Similarity `Copied`/`Suspicious`
-/// is the hard gate (miner-attributable `Score{0}`).
+/// events but never add nor remove points. Agentic `Cheat`/`Suspicious` and
+/// cheap similarity `Copied`/`Suspicious` are hard gates (miner-attributable
+/// `Score{0}`). Missing agentic verdict is fail-closed upstream as
+/// [`FinalOutcome::ChallengeInternal`].
 ///
 /// # Panics
 /// Never.
 #[must_use]
 pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
+    use challenge_agentic::VerdictKind;
     use prism_store::FinalScore;
     match outcome {
         FinalOutcome::ChallengeInternal => {
@@ -89,7 +94,11 @@ pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
             bpb,
             quality: _,
             similarity,
+            agentic,
         } => {
+            if matches!(agentic, VerdictKind::Cheat | VerdictKind::Suspicious) {
+                return FinalScore::Score(0);
+            }
             if matches!(
                 similarity,
                 prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
@@ -113,6 +122,18 @@ mod final_tests {
             bpb: 1.0,
             quality: 900,
             similarity: Copied,
+            agentic: challenge_agentic::VerdictKind::Clean,
+        };
+        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+    }
+
+    #[test]
+    fn agentic_cheat_is_hard_zero() {
+        let o = FinalOutcome::Measured {
+            bpb: 1.0,
+            quality: 900,
+            similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Cheat,
         };
         assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
     }
@@ -125,11 +146,13 @@ mod final_tests {
             bpb: 0.5,
             quality: 900,
             similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Clean,
         };
         let lo_same_bpb = FinalOutcome::Measured {
             bpb: 0.5,
             quality: 0,
             similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Clean,
         };
         assert_eq!(combine_final(&hi), combine_final(&lo_same_bpb));
 
@@ -137,6 +160,7 @@ mod final_tests {
             bpb: 4.0,
             quality: 1000,
             similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Clean,
         };
         match (combine_final(&hi), combine_final(&worse_bpb)) {
             (prism_store::FinalScore::Score(a), prism_store::FinalScore::Score(b)) => {

@@ -316,25 +316,25 @@ fn s8b_zero_share_row_allowed_when_sum_is_denom() {
     let body = ChallengesBody {
         challenges: vec![
             ChallengeEntry {
-                id: b"agent-v1".to_vec(),
+                id: b"design".to_vec(),
                 public_key: [1u8; 32],
-                emission_share_bps: BPS_DENOM,
+                emission_share_bps: 0,
                 policy: ParticipantPolicy::AllMetagraphHotkeys,
             },
             ChallengeEntry {
-                id: b"hypertraining".to_vec(),
+                id: b"prism".to_vec(),
                 public_key: [2u8; 32],
-                emission_share_bps: 0,
+                emission_share_bps: BPS_DENOM,
                 policy: ParticipantPolicy::AllMetagraphHotkeys,
             },
         ],
     };
-    body.validate().expect("10000+0 must validate");
-    assert!(body.get(b"hypertraining").is_some());
+    body.validate().expect("0+10000 must validate");
+    assert!(body.get(b"design").is_some());
     let shares = body.emission_shares();
     assert_eq!(shares.len(), 2);
-    assert_eq!(shares[0], (b"agent-v1".to_vec(), BPS_DENOM));
-    assert_eq!(shares[1], (b"hypertraining".to_vec(), 0));
+    assert_eq!(shares[0], (b"design".to_vec(), 0));
+    assert_eq!(shares[1], (b"prism".to_vec(), BPS_DENOM));
 }
 
 /// S9 — committed repo config/ loads (if present and signed).
@@ -346,75 +346,35 @@ fn s9_repo_config_loads_when_present() {
     }
     let (ch, ms) = load_config_dir(&root, 0, 3).expect("committed config must verify");
     let primary = ch.primary().unwrap();
-    assert_eq!(primary.body.challenges.len(), 3);
-    let agent = primary.body.get(b"agent-v1").expect("agent-v1 row");
-    assert_eq!(agent.emission_share_bps, BPS_DENOM);
+    assert_eq!(primary.body.challenges.len(), 2);
+    let design = primary.body.get(b"design").expect("design row");
+    assert_eq!(design.emission_share_bps, 0);
     assert_eq!(
-        encode_hex(&agent.public_key),
-        "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
+        encode_hex(&design.public_key),
+        "3e27f87d8330006a73174001120c3455f16b95fee098bb8c2bab9d5053840418"
     );
-    let ht = primary
-        .body
-        .get(b"hypertraining")
-        .expect("hypertraining row");
-    assert_eq!(ht.emission_share_bps, 0);
-    assert_ne!(ht.public_key, agent.public_key);
     let prism = primary.body.get(b"prism").expect("prism row");
-    assert_eq!(prism.emission_share_bps, 0);
+    assert_eq!(prism.emission_share_bps, BPS_DENOM);
     assert_eq!(
         encode_hex(&prism.public_key),
         "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
     );
-    assert_ne!(prism.public_key, agent.public_key);
-    assert_ne!(prism.public_key, ht.public_key);
+    assert_ne!(prism.public_key, design.public_key);
     let shares = primary.body.emission_shares();
-    assert_eq!(shares.len(), 3);
-    assert_eq!(shares[0].0, b"agent-v1");
-    assert_eq!(shares[0].1, BPS_DENOM);
-    assert_eq!(shares[1].0, b"hypertraining");
-    assert_eq!(shares[1].1, 0);
-    assert_eq!(shares[2].0, b"prism");
-    assert_eq!(shares[2].1, 0);
-    // The committed allowlist credits exactly the CVM builds we operate. A test
-    // fixture must never be one of them, so this stays at the live build alone
-    // until a rotation deliberately overlaps two.
+    assert_eq!(shares.len(), 2);
+    assert_eq!(shares[0].0, b"design");
+    assert_eq!(shares[0].1, 0);
+    assert_eq!(shares[1].0, b"prism");
+    assert_eq!(shares[1].1, BPS_DENOM);
+    // base-agent CVM path removed — committed allowlist is empty (fail-closed).
     let entries = &ms.primary().unwrap().body.entries;
-    assert_eq!(entries.len(), 1, "one creditable CVM build");
-    assert_eq!(
-        encode_hex(&entries[0].compose_hash),
-        "6548b5062dbfa96eb9be3e9a41d0f0e12bcdb8883b72e2f7cd5a387fa3e69abd"
+    assert!(
+        entries.is_empty(),
+        "no creditable CVM builds after agent removal"
     );
-    // Both dual-entry profiles must self-match.
-    for e in entries {
-        assert!(ms.allows_quote(
-            &e.mr_td,
-            &e.rtmr0,
-            &e.rtmr1,
-            &e.rtmr2,
-            &e.rtmr3,
-            &e.compose_hash
-        ));
-    }
-    let e = &entries[0];
-    assert!(ms.allows_quote(
-        &e.mr_td,
-        &e.rtmr0,
-        &e.rtmr1,
-        &e.rtmr2,
-        &e.rtmr3,
-        &e.compose_hash
-    ));
-    // Mutated measurement must not match.
-    let mut bad_td = e.mr_td;
-    bad_td[0] ^= 0xff;
-    assert!(!ms.allows_quote(
-        &bad_td,
-        &e.rtmr0,
-        &e.rtmr1,
-        &e.rtmr2,
-        &e.rtmr3,
-        &e.compose_hash
-    ));
+    let zero48 = [0u8; 48];
+    let zero32 = [0u8; 32];
+    assert!(!ms.allows_quote(&zero48, &zero48, &zero48, &zero48, &zero48, &zero32));
 }
 
 /// `filter_active` unit on synthetic `VerifiedRoot` without files.

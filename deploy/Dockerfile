@@ -12,6 +12,8 @@
 
 ARG DEBIAN_IMAGE=debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 ARG RUST_IMAGE=rust@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
+# python:3.12.11-slim-bookworm (multi-arch index digest)
+ARG PYTHON_IMAGE=python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 ARG BUILD_FROM=source
 
 # -----------------------------------------------------------------------------
@@ -36,29 +38,26 @@ COPY config ./config
 # validator-bin/dcap turns on real Intel DCAP quote verification; without it the
 # validator parks every attestation instead of verifying it.
 RUN cargo build --release \
---features validator-bin/dcap \
--p validator-bin \
--p gateway-bin \
--p updater-bin \
-      -p agent-challenge-bin \
-      -p hypertraining-challenge-bin \
+      --features validator-bin/dcap \
+      -p validator-bin \
+      -p gateway-bin \
+      -p updater-bin \
       -p prism-challenge-bin \
--p agent-runner-bin \
-&& strip target/release/validator \
-target/release/gateway \
-target/release/updater \
-              target/release/agent-challenge \
-              target/release/hypertraining-challenge \
-              target/release/prism-challenge \
-target/release/agent-runner \
-&& mkdir -p /out \
-&& cp target/release/validator \
-target/release/gateway \
-target/release/updater \
-          target/release/agent-challenge \
-          target/release/hypertraining-challenge \
-          target/release/prism-challenge \
-target/release/agent-runner /out/
+      -p design-challenge-bin \
+      -p design-egress-proxy-bin \
+ && strip target/release/validator \
+           target/release/gateway \
+           target/release/updater \
+           target/release/prism-challenge \
+           target/release/design-challenge \
+           target/release/design-egress-proxy \
+ && mkdir -p /out \
+ && cp target/release/validator \
+       target/release/gateway \
+       target/release/updater \
+       target/release/prism-challenge \
+       target/release/design-challenge \
+       target/release/design-egress-proxy /out/
 
 # -----------------------------------------------------------------------------
 # Prebuilt path — copy host target/release artifacts (local verify only)
@@ -69,13 +68,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /out
 COPY target/release/validator \
-target/release/gateway \
-target/release/updater \
-target/release/agent-challenge \
-     target/release/hypertraining-challenge \
+     target/release/gateway \
+     target/release/updater \
      target/release/prism-challenge \
-target/release/agent-runner \
-/out/
+     target/release/design-challenge \
+     target/release/design-egress-proxy \
+     /out/
 
 # -----------------------------------------------------------------------------
 # Select artifact source
@@ -94,13 +92,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 65532 base \
     && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
-    && mkdir -p /var/lib/base/pack-source /var/lib/base/packs \
+    && mkdir -p /var/lib/base \
     && chown -R base:base /var/lib/base
-# Docker seeds a named volume from the image directory it covers, ownership
-# included. It only does that when the directory exists: mounting over a path
-# the image never created yields a root-owned empty volume the nonroot user
-# cannot write. agent-challenge mounts pack-source, the miner CVM mounts packs,
-# so both have to be here.
 USER base
 WORKDIR /home/base
 
@@ -119,14 +112,6 @@ FROM runtime-base AS updater
 COPY --from=artifacts --chown=base:base /out/updater /usr/local/bin/updater
 ENTRYPOINT ["/usr/local/bin/updater"]
 
-FROM runtime-base AS agent-challenge
-COPY --from=artifacts --chown=base:base /out/agent-challenge /usr/local/bin/agent-challenge
-ENTRYPOINT ["/usr/local/bin/agent-challenge"]
-
-FROM runtime-base AS hypertraining-challenge
-COPY --from=artifacts --chown=base:base /out/hypertraining-challenge /usr/local/bin/hypertraining-challenge
-ENTRYPOINT ["/usr/local/bin/hypertraining-challenge"]
-
 FROM runtime-base AS prism-challenge
 # prism-lium drives pod exec over the `ssh` binary; runtime-base has none.
 USER root
@@ -137,7 +122,32 @@ USER base
 COPY --from=artifacts --chown=base:base /out/prism-challenge /usr/local/bin/prism-challenge
 ENTRYPOINT ["/usr/local/bin/prism-challenge"]
 
-# Miner runner binary (agent-runner) published as image target base-agent.
-FROM runtime-base AS base-agent
-COPY --from=artifacts --chown=base:base /out/agent-runner /usr/local/bin/agent-runner
-ENTRYPOINT ["/usr/local/bin/agent-runner"]
+FROM runtime-base AS design-challenge
+USER root
+RUN mkdir -p /var/lib/design/staging \
+    && chown -R base:base /var/lib/design
+USER base
+COPY --from=artifacts --chown=base:base /out/design-challenge /usr/local/bin/design-challenge
+ENTRYPOINT ["/usr/local/bin/design-challenge"]
+
+FROM runtime-base AS design-egress-proxy
+COPY --from=artifacts --chown=base:base /out/design-egress-proxy /usr/local/bin/design-egress-proxy
+ENTRYPOINT ["/usr/local/bin/design-egress-proxy"]
+
+# -----------------------------------------------------------------------------
+# design-runtime — pinned Python for design-challenge sandboxes (install/run).
+# No challenge secrets; sandboxes reach egress only via design-sandbox-egress.
+# -----------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS design-runtime
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 65532 base \
+    && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
+    && mkdir -p /work /out \
+    && chown -R base:base /work /out /home/base
+USER base
+WORKDIR /work
+# Harness entry is staged into /work by design-challenge; image only supplies Python.
+CMD ["python", "--version"]

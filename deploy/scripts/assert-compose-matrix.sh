@@ -43,7 +43,7 @@ render() {
   printf '%s\n' "$out"
 }
 
-# --- validator role: no gateway ---
+# --- validator role: no gateway, no challenge execution surface ---
 services=$(render \
   -f docker-compose.yml \
   -f deploy/compose/role-validator.yml \
@@ -51,9 +51,14 @@ services=$(render \
 if echo "$services" | grep -qx "gateway"; then
   fail "validator role renders gateway (must not)"
 fi
-echo "OK: validator role does not render gateway"
+for banned in design-challenge design-egress-proxy prism-challenge socket-proxy; do
+  if echo "$services" | grep -qx "$banned"; then
+    fail "validator role renders $banned (master-only; must not)"
+  fi
+done
+echo "OK: validator role does not render gateway or challenge services"
 
-# --- master role: gateway present ---
+# --- master role: gateway + challenge services present ---
 services=$(render \
   -f docker-compose.yml \
   -f deploy/compose/role-master.yml \
@@ -62,7 +67,12 @@ services=$(render \
 if ! echo "$services" | grep -qx "gateway"; then
   fail "master role does not render gateway (must)"
 fi
-echo "OK: master role renders gateway"
+for required in design-challenge design-egress-proxy prism-challenge socket-proxy; do
+  if ! echo "$services" | grep -qx "$required"; then
+    fail "master role does not render $required (must)"
+  fi
+done
+echo "OK: master role renders gateway and challenge services"
 
 # --- evil-gateway not in default or master ---
 services=$(render \
@@ -82,7 +92,7 @@ if echo "$services" | grep -qx "evil-gateway"; then
 fi
 echo "OK: evil-gateway not under default profile"
 
-# --- prod env + validator: no evil-gateway, no e2e ---
+# --- prod env + validator: no evil-gateway, no e2e, no challenges ---
 services=$(render \
   -f docker-compose.yml \
   -f deploy/compose/role-validator.yml \
@@ -91,16 +101,44 @@ services=$(render \
 if echo "$services" | grep -qx "evil-gateway"; then
   fail "prod validator renders evil-gateway (must not)"
 fi
-echo "OK: prod validator does not render evil-gateway"
+for banned in design-challenge design-egress-proxy prism-challenge socket-proxy; do
+  if echo "$services" | grep -qx "$banned"; then
+    fail "prod validator renders $banned (master-only; must not)"
+  fi
+done
+echo "OK: prod validator does not render evil-gateway or challenge services"
 
-# --- prism-challenge present in default ---
-services=$(render \
+# --- staging/prod never enable host SimSandbox ---
+for env_file in deploy/compose/env-staging.yml deploy/compose/env-prod.yml; do
+  rendered=$(render \
+    -f docker-compose.yml \
+    -f deploy/compose/role-master.yml \
+    -f "$env_file" \
+    --profile master \
+    config)
+  if echo "$rendered" | grep -qE 'BASE_ALLOW_HOST_SIM:[[:space:]]*["'\'']?(1|true|TRUE|yes)["'\'']?'; then
+    fail "$env_file enables BASE_ALLOW_HOST_SIM (host Sim forbidden on droplets)"
+  fi
+  if echo "$rendered" | grep -qE 'DESIGN_FORCE_SIM:[[:space:]]*["'\'']?(1|true|TRUE|yes)["'\'']?'; then
+    fail "$env_file enables DESIGN_FORCE_SIM (Docker-only on droplets)"
+  fi
+done
+echo "OK: staging/prod do not enable host SimSandbox"
+
+# --- prism-challenge + design-challenge present in default ---
+default_services=$(render \
   -f docker-compose.yml \
   config --services)
-if ! echo "$services" | grep -qx "prism-challenge"; then
+if ! echo "$default_services" | grep -qx "prism-challenge"; then
   fail "prism-challenge not in default compose"
 fi
-echo "OK: prism-challenge in default compose"
+if ! echo "$default_services" | grep -qx "design-challenge"; then
+  fail "design-challenge not in default compose"
+fi
+if ! echo "$default_services" | grep -qx "design-egress-proxy"; then
+  fail "design-egress-proxy not in default compose"
+fi
+echo "OK: prism-challenge + design-challenge + design-egress-proxy in default compose"
 
 # --- no fake chain backend survives anywhere in the matrix ---
 for env_file in deploy/compose/env-staging.yml deploy/compose/env-prod.yml; do
@@ -138,5 +176,50 @@ echo "$prod" | grep -q "BASE_NETUID: \"100\"" \
 echo "$prod" | grep -q "test.finney" \
   && fail "prod references the testnet endpoint"
 echo "OK: staging pins testnet/541 and prod pins mainnet/100"
+
+# --- local overlay: still testnet, no fake backend ---
+local_rendered=$(render \
+  -f docker-compose.yml \
+  -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-staging.yml \
+  -f deploy/compose/env-local.yml \
+  --profile master \
+  config)
+if echo "$local_rendered" | grep -qi "fake_owner\|BASE_CHAIN_BACKEND"; then
+  fail "env-local introduces a fake chain backend"
+fi
+echo "$local_rendered" | grep -q "test.finney.opentensor.ai" \
+  || fail "env-local stack lost the testnet endpoint"
+echo "$local_rendered" | grep -q "BASE_NETUID: \"541\"" \
+  || fail "env-local stack lost netuid 541"
+local_services=$(render \
+  -f docker-compose.yml \
+  -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-staging.yml \
+  -f deploy/compose/env-local.yml \
+  --profile master \
+  config --services)
+echo "$local_services" | grep -qx "gateway" \
+  || fail "env-local master stack does not render gateway"
+echo "$local_services" | grep -qx "prism-challenge" \
+  || fail "env-local master stack does not render prism-challenge"
+echo "$local_services" | grep -qx "design-challenge" \
+  || fail "env-local master stack does not render design-challenge"
+echo "$local_services" | grep -qx "design-egress-proxy" \
+  || fail "env-local master stack does not render design-egress-proxy"
+echo "$local_rendered" | grep -qE 'published: "?28093"?' \
+  || fail "env-local does not publish design-challenge on 28093"
+for banned in agent-challenge hypertraining-challenge miner-agent miner-socket-proxy base-agent; do
+  if echo "$local_services" | grep -qx "$banned"; then
+    fail "removed service still rendered: $banned"
+  fi
+done
+# Default compose must also forbid removed services.
+for banned in agent-challenge hypertraining-challenge miner-agent miner-socket-proxy base-agent; do
+  if echo "$default_services" | grep -qx "$banned"; then
+    fail "removed service still in default compose: $banned"
+  fi
+done
+echo "OK: env-local preserves testnet/541; design on 28093; removed agent/hypertraining/miner services"
 
 echo "assert-compose-matrix: all checks passed"

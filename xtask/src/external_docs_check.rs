@@ -1,5 +1,6 @@
 //! Fail if external miner docs drift from `bundle` `PROTOCOL_VERSION`,
-//! or if `docs/THREAT_MODEL.md` D19 claim is not word-for-word vs plan pin.
+//! if design/prism HTTP miner paths are missing, or if `docs/THREAT_MODEL.md`
+//! D19 claim is not word-for-word vs plan pin.
 
 use std::fs;
 use std::path::Path;
@@ -9,6 +10,26 @@ const D19_VERBATIM: &str = "base guarantees *no equivocation between validators*
 
 /// Marker comment required in external miner docs.
 const BADGE_COMMENT_PREFIX: &str = "<!-- protocol_version:";
+
+/// Content pins required across `docs/external-miner/` (design + prism HTTP).
+const EXTERNAL_MINER_PINS: &[(&str, &str)] = &[
+    ("design_challenge", "design"),
+    ("prism_challenge", "prism"),
+    ("http_submit", "HTTP"),
+    ("design_spec_link", "DESIGN_CHALLENGE.md"),
+    ("prism_spec_link", "PRISM.md"),
+    ("no_phala_cvm", "no Phala/CVM"),
+    ("bundle_spec_link", "BUNDLE_SPEC.md"),
+];
+
+/// Substrings that must not appear as live miner guidance (removed path).
+const FORBIDDEN_LIVE_PATHS: &[&str] = &[
+    "phala deploy",
+    "Phala CVM miner",
+    "install.sh",
+    "compose-hash",
+    "funding-phala",
+];
 
 /// Run external-docs + D19 gates.
 ///
@@ -25,7 +46,7 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
 
     if failures.is_empty() {
         println!(
-            "external-docs-check OK (protocol_version={protocol_version}, D19 verbatim match)"
+            "external-docs-check OK (protocol_version={protocol_version}, design/prism HTTP, D19 verbatim match)"
         );
         Ok(())
     } else {
@@ -89,6 +110,24 @@ fn check_external_miner_docs(
         Err(e) => failures.push(format!("docs/external-miner/README.md: {e}")),
     }
 
+    for (name, needle) in EXTERNAL_MINER_PINS {
+        if !readme_body.contains(needle) {
+            failures.push(format!(
+                "docs/external-miner/README.md missing pin {name}: {needle:?}"
+            ));
+        }
+    }
+
+    // Required pages for design/prism HTTP submit.
+    for required in ["design.md", "prism.md", "troubleshoot.md"] {
+        let path = dir.join(required);
+        if !path.is_file() {
+            failures.push(format!(
+                "docs/external-miner/{required} missing (HTTP submit guide required)"
+            ));
+        }
+    }
+
     // Every markdown file under external-miner must declare the same badge comment.
     let entries = fs::read_dir(&dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
     for ent in entries {
@@ -109,6 +148,16 @@ fn check_external_miner_docs(
                 "{}: {e}",
                 path.strip_prefix(workspace_root).unwrap_or(&path).display()
             )),
+        }
+
+        let lower = body.to_ascii_lowercase();
+        for banned in FORBIDDEN_LIVE_PATHS {
+            if lower.contains(&banned.to_ascii_lowercase()) {
+                failures.push(format!(
+                    "{} contains removed miner-path string {banned:?} (use design/prism HTTP only)",
+                    path.strip_prefix(workspace_root).unwrap_or(&path).display()
+                ));
+            }
         }
     }
 
@@ -239,5 +288,18 @@ mod tests {
     fn d19_constant_nonempty() {
         assert!(D19_VERBATIM.contains("no equivocation between validators"));
         assert!(D19_VERBATIM.contains("chain-anchored, third-party-auditable non-equivocation"));
+    }
+
+    #[test]
+    fn external_pins_cover_design_prism() {
+        assert!(EXTERNAL_MINER_PINS
+            .iter()
+            .any(|(n, _)| *n == "design_challenge"));
+        assert!(EXTERNAL_MINER_PINS
+            .iter()
+            .any(|(n, _)| *n == "prism_challenge"));
+        assert!(EXTERNAL_MINER_PINS
+            .iter()
+            .any(|(n, v)| *n == "no_phala_cvm" && *v == "no Phala/CVM"));
     }
 }

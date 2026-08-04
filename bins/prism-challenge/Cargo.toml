@@ -13,7 +13,8 @@ name = "prism-challenge"
 path = "src/main.rs"
 
 [dependencies]
-agent-challenge-keys = { path = "../../crates/agent-challenge-keys" }
+challenge-agentic = { path = "../../crates/challenge-agentic" }
+challenge-keys = { path = "../../crates/challenge-keys" }
 chain = { path = "../../crates/chain" }
 chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }

@@ -1,0 +1,40 @@
+[package]
+name = "design-challenge"
+description = "Design challenge API, orchestrator, scoring, leaf emit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+bundle = { path = "../bundle" }
+challenge-agentic = { path = "../challenge-agentic" }
+challenge-common = { path = "../challenge-common" }
+crypto = { path = "../crypto" }
+design-challenge-task = { path = "../design-challenge-task" }
+design-harness = { path = "../design-harness" }
+design-http = { path = "../design-http" }
+design-prompts = { path = "../design-prompts" }
+design-sandbox = { path = "../design-sandbox" }
+design-sanitize = { path = "../design-sanitize" }
+design-store = { path = "../design-store" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tracing = "0.1"
+chain = { path = "../chain" }
+trustroot = { path = "../trustroot" }
+
+[dev-dependencies]
+challenge-agentic = { path = "../challenge-agentic" }
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

@@ -3,7 +3,7 @@
 #
 #   record-image-digests.sh [--out deploy/digests/<sha>.json] [image:tag ...]
 #
-# Default images: validator:0.1.0 gateway:0.1.0 updater:0.1.0 agent-challenge:0.1.0 base-agent:0.1.0
+# Default images: validator:0.1.0 gateway:0.1.0 updater:0.1.0 prism-challenge:0.1.0 design-challenge:0.1.0
 # Writes JSON:
 #   { "commit_sha", "created_at", "images": { "validator": { "id", "digest", "repo_digest", "tag" } } }
 set -euo pipefail
@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#IMAGES[@]} -eq 0 ]]; then
-  IMAGES=(validator:0.1.0 gateway:0.1.0 updater:0.1.0 agent-challenge:0.1.0 base-agent:0.1.0)
+  IMAGES=(validator:0.1.0 gateway:0.1.0 updater:0.1.0 prism-challenge:0.1.0 design-challenge:0.1.0)
 fi
 
 COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
@@ -63,7 +63,7 @@ def inspect(tag: str) -> dict:
         digest = image_id
     name = tag.split(":")[0]
     # Service key = last path segment. Legacy local tags base-<svc> map to <svc>
-    # for validator/gateway/updater only; base-agent keeps its full name.
+    # for validator/gateway/updater.
     base = name.rsplit("/", 1)[-1]
     legacy = {"base-validator": "validator", "base-gateway": "gateway", "base-updater": "updater"}
     service = legacy.get(base, base)

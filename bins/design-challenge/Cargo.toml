@@ -1,0 +1,34 @@
+[package]
+name = "design-challenge-bin"
+description = "design-challenge operator binary (port 8093)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "design-challenge"
+path = "src/main.rs"
+
+[dependencies]
+challenge-agentic = { path = "../../crates/challenge-agentic" }
+challenge-keys = { path = "../../crates/challenge-keys" }
+chain = { path = "../../crates/chain" }
+chain-live = { path = "../../crates/chain-live" }
+clap = { version = "4", features = ["derive", "env"] }
+design-challenge = { path = "../../crates/design-challenge" }
+design-sandbox = { path = "../../crates/design-sandbox" }
+crypto = { path = "../../crates/crypto" }
+db = { path = "../../crates/db" }
+telemetry = { path = "../../crates/telemetry" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+trustroot = { path = "../../crates/trustroot" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tracing = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+
+[lints]
+workspace = true

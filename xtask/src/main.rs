@@ -5,15 +5,13 @@
 //! - `consensus-lint` — fail if listed consensus crates use forbidden tokens (D8)
 //! - `metadata-snapshot` — fetch testnet metadata + epoch-schedule sources into `metadata/testnet.lock`
 //! - `spec-check` — fail if `docs/BUNDLE_SPEC.md` is missing plan pins (a)–(l)
-//! - `agent-challenge-check` — fail if `docs/AGENT_CHALLENGE.md` is missing plan task 9 pins
-//! - `hypertraining-check` — fail if `docs/HYPERTRAINING.md` is missing plan task 17 pins
+//! - `design-check` — fail if `docs/DESIGN_CHALLENGE.md` is missing freeze pins
 //! - `external-docs-check` — fail if external miner docs `protocol_version` ≠ bundle, or D19 drifts
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-mod agent_challenge_check;
 mod consensus_lint;
+mod design_check;
 mod external_docs_check;
-mod hypertraining_check;
 mod loc_cap;
 mod metadata_snapshot;
 mod spec_check;
@@ -52,10 +50,8 @@ enum Command {
     },
     /// Fail if `docs/BUNDLE_SPEC.md` is missing required (a)–(l) pins (task 8).
     SpecCheck,
-    /// Fail if `docs/AGENT_CHALLENGE.md` is missing required task 9 pins.
-    AgentChallengeCheck,
-    /// Fail if `docs/HYPERTRAINING.md` is missing required task 17 freeze pins.
-    HypertrainingCheck,
+    /// Fail if `docs/DESIGN_CHALLENGE.md` is missing required freeze pins.
+    DesignCheck,
     /// Fail if external miner docs `protocol_version` differs from `bundle`, or `THREAT_MODEL` D19 drifts.
     ExternalDocsCheck,
 }
@@ -95,8 +91,7 @@ fn main() -> ExitCode {
             metadata_snapshot::run(&root, &args)
         }
         Command::SpecCheck => spec_check::run(&root),
-        Command::AgentChallengeCheck => agent_challenge_check::run(&root),
-        Command::HypertrainingCheck => hypertraining_check::run(&root),
+        Command::DesignCheck => design_check::run(&root),
         Command::ExternalDocsCheck => external_docs_check::run(&root),
     };
     match result {

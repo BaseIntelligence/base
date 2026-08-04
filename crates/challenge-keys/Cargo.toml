@@ -1,0 +1,17 @@
+[package]
+name = "challenge-keys"
+description = "Challenge signing key load (BASE_CHALLENGE_SK_FILE, mode 0600)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+crypto = { path = "../crypto" }
+hex = "0.4"
+thiserror = "2"
+
+[lints]
+workspace = true

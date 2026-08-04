@@ -19,27 +19,29 @@ services:
     environment:
       BASE_NETUID: "541"
       BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      # Public staging API hostname (cleartext on :80/:8080 until ACME task 42).
+      BASE_DOMAIN: staging.api.joinbase.ai
       BT_WALLETS_PATH: /run/base/wallets
       BASE_GATEWAY_WALLET: base-owner
       # We do own netuid 541 on testnet, so the owner check can be strict here.
       BASE_GATEWAY_REQUIRE_OWNER: "1"
+    # Serve the public hostname without forcing clients onto :8080.
+    ports:
+      - "8080:8080"
+      - "80:8080"
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
-  agent-challenge:
-    environment:
-      # Dispatch on: the staging host pins verifier images for every pulled
-      # pack via BASE_VERIFY_IMAGE_MAP (deploy/scripts/remote-deploy.sh or
-      # operator file at /var/lib/base/verify/verify-image-map.json), and the
-      # daemon refuses to start without one rather than emit ungradeable
-      # leaves. Epochs 44-63 proved the loop end-to-end (AGENT_CHALLENGE §9.6).
-      BASE_CHALLENGE_DISPATCH: "1"
-      BASE_NETUID: "541"
-      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
-      # Pull the pinned deepagent task packs from HuggingFace on first boot.
-      BASE_HF_AUTO_PULL: "1"
-      BASE_HF_MAX_PACKS: "9"
   prism-challenge:
     environment:
       # Staging exercises the real Lium path only when an API key is present in
       # deploy/secrets/lium/api_key; otherwise the client falls back to Sim.
       PRISM_FORCE_SIM: "false"
+  design-challenge:
+    environment:
+      # Staging uses real Docker via socket-proxy. Host SimSandbox is fail-closed
+      # here (never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM on droplets).
+      DESIGN_FORCE_SIM: "false"
+  design-egress-proxy:
+    environment:
+      # Real OpenRouter when deploy/secrets/openrouter/api_key is non-empty.
+      DESIGN_EGRESS_SIM: "false"

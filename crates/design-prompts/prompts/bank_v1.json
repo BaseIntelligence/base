@@ -1,0 +1,418 @@
+[
+  {
+    "id": "spr01",
+    "category": "saas_pr_review",
+    "title": "Greptile-style AI PR review",
+    "weight": 12,
+    "temperature": 9,
+    "prompt": "Brand: ForgeReview — AI pull-request review for engineering orgs (think Greptile / CodeRabbit). Tone: sharp, developer-trustworthy, slightly irreverent. Hero must sell 'catch bugs before merge' with a fake PR diff card. Highlight: inline comments, custom rule packs, Slack/GitHub notifications for critical findings, SOC2 trust strip. Pricing: Free / Team / Enterprise with seats and private-model add-on. Components: review comment bubbles, severity chips, repo cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "spr02",
+    "category": "saas_pr_review",
+    "title": "Security-focused code review SaaS",
+    "weight": 10,
+    "temperature": 8,
+    "prompt": "Brand: Redline Shield — security-first automated code review. Emphasize SAST+LLM hybrid, secret scanning, dependency CVEs in PRs. Dark navy / signal-red accents. Pricing for startups vs regulated enterprises. Components: vuln cards, CVSS meters, alert toasts. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "spr03",
+    "category": "saas_pr_review",
+    "title": "Open-source maintainer review bot",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: MaintainerOS — PR triage for open-source maintainers drowning in drive-by PRs. Warm editorial feel. Features: contributor reputation, auto-labeling, draft release notes. Pricing freemium with sponsor tiers. Components: contributor avatars, label chips, triage kanban cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "spr04",
+    "category": "saas_pr_review",
+    "title": "Multi-repo platform review",
+    "weight": 9,
+    "temperature": 8,
+    "prompt": "Brand: LatticeDiff — org-wide PR intelligence across hundreds of repos. Dashboard-marketing hybrid: show velocity charts, review SLA heatmaps. Pricing by active repos. Components: heatmap tiles, SLA badges, org switcher. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "mkt01",
+    "category": "marketplace",
+    "title": "Carbon credit marketplace",
+    "weight": 10,
+    "temperature": 8,
+    "prompt": "Brand: Verdant Exchange — marketplace for verified carbon credits. Editorial, earthy palette (sage, charcoal, cream). Trust via methodology badges. Pricing for brokers vs corporates. Components: credit cards, filter chips, impact meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "mkt02",
+    "category": "marketplace",
+    "title": "3D print model marketplace",
+    "weight": 9,
+    "temperature": 7,
+    "prompt": "Brand: LatticeForge — marketplace for printable 3D models. Maker aesthetic: blueprint grids, neon accent on slate. Show STL previews, license tags. Seller/buyer pricing. Components: product grids, license badges, cart mini. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "mkt03",
+    "category": "marketplace",
+    "title": "Freelance design marketplace",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: BriefBoard — marketplace matching startups with product designers. Portfolio-forward, high-contrast. Case study tiles, match score. Pricing for hiring seats. Components: portfolio cards, skill tags, match meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "mkt04",
+    "category": "marketplace",
+    "title": "Local produce marketplace",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Milebasket — hyperlocal farm-to-door marketplace. Warm photography placeholders, seasonal produce. Subscription box pricing. Components: farm cards, freshness chips, delivery timeline. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "mkt05",
+    "category": "marketplace",
+    "title": "API marketplace",
+    "weight": 9,
+    "temperature": 9,
+    "prompt": "Brand: SocketBay — marketplace for metered B2B APIs. Technical but approachable. Show request graphs, SLA seals. Pricing for consumers and publishers. Components: endpoint cards, quota meters, key badges. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "fin01",
+    "category": "fintech",
+    "title": "Neo-bank debit cards",
+    "weight": 11,
+    "temperature": 8,
+    "prompt": "Brand: Halo Card — neo-bank debit for freelancers. Glassmorphic card mockups, midnight + electric lime. Fee transparency. Pricing: free core + metal card tiers. Components: card mockups, fee tables, FX converters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "fin02",
+    "category": "fintech",
+    "title": "SMB invoice financing",
+    "weight": 9,
+    "temperature": 7,
+    "prompt": "Brand: Cashflow Bridge — invoice financing for SMBs. Trust-heavy: navy, gold accents, calculator CTA. Pricing as APR ranges + platform fee. Components: invoice cards, approval timelines, rate tables. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "fin03",
+    "category": "fintech",
+    "title": "Crypto on-ramp compliance",
+    "weight": 8,
+    "temperature": 9,
+    "prompt": "Brand: ClearRail — compliant fiat-to-crypto on-ramp for fintechs. Regulated tone, teal + graphite. KYC partner logos. Pricing per volume bands. Components: flow diagrams as cards, compliance badges, volume sliders. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "fin04",
+    "category": "fintech",
+    "title": "Family wealth dashboard",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Hearth Ledger — shared family wealth planning. Calm serif + soft sage. Goals, allowances, education vault. Pricing household seats. Components: goal rings, allowance cards, document vault tiles. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "fin05",
+    "category": "fintech",
+    "title": "Embedded payroll API",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Payspine — embedded payroll API for vertical SaaS. Developer-product marketing: code snippet hero (static), coverage map. Pricing by employee runs. Components: API status pills, region maps, integration logos. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hlt01",
+    "category": "health",
+    "title": "Clinic scheduling software",
+    "weight": 10,
+    "temperature": 7,
+    "prompt": "Brand: Rivermed Schedule — clinic scheduling for small practices. Clean clinical blues, accessibility-first. Booking, reminders, no-show reduction. Pricing by provider seats. Components: calendar widgets, status chips, patient cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hlt02",
+    "category": "health",
+    "title": "Mental health journaling app",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Quietline — guided mental health journaling (B2C + EAP). Soft gradients, generous whitespace, calm typography. Privacy-first messaging. Pricing individual + employer EAP. Components: mood chips, streak widgets, prompt cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hlt03",
+    "category": "health",
+    "title": "Remote patient monitoring",
+    "weight": 9,
+    "temperature": 7,
+    "prompt": "Brand: PulseKeep — RPM platform for cardiology clinics. Medical device trust: white + crimson accent. Device kit + clinician dashboard story. Pricing device + monitoring. Components: vitals tiles, alert banners, device cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hlt04",
+    "category": "health",
+    "title": "Dental practice growth",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Brightbay Dental OS — growth OS for dental practices. Bright, friendly, teal. Reviews, recalls, treatment plans. Pricing by chairs. Components: treatment plan cards, review stars, recall timelines. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "crt01",
+    "category": "creative_portfolio",
+    "title": "Studio portfolio for motion designers",
+    "weight": 9,
+    "temperature": 9,
+    "prompt": "Brand: Afterglow Studio — portfolio site product for motion designers. Bold cinematic layouts, oversized type, reel placeholders. Pricing for freelancers vs studios. Components: project frames, reel tiles, type specimens. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "crt02",
+    "category": "creative_portfolio",
+    "title": "Photographer client galleries",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Darkroom Host — client galleries for wedding photographers. High-contrast black/white with warm gold. Proofing, downloads, print store. Pricing storage tiers. Components: gallery grids, proof stamps, print SKU cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "crt03",
+    "category": "creative_portfolio",
+    "title": "Architecture case studies",
+    "weight": 7,
+    "temperature": 8,
+    "prompt": "Brand: Plinth — portfolio CMS for architecture firms. Editorial grid, serif headlines, material swatches. Pricing project seats. Components: plan drawing cards, material chips, award ribbons. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "crt04",
+    "category": "creative_portfolio",
+    "title": "Indie game presskit",
+    "weight": 8,
+    "temperature": 9,
+    "prompt": "Brand: Presscrate — automated presskits for indie games. Playful but premium: ink + neon. Trailer embeds (static), factsheets, GIFs. Pricing per title. Components: factsheet blocks, media kits, platform badges. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dev01",
+    "category": "devops",
+    "title": "Open-source project hosting",
+    "weight": 10,
+    "temperature": 7,
+    "prompt": "Brand: Forgeyard — hosting for open-source projects with CI minutes. Terminal-inspired but friendly. Deploy cards, status badges, sponsor walls. Pricing free OSS + paid private. Components: status badges, deploy cards, pipeline steps. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dev02",
+    "category": "devops",
+    "title": "Ephemeral preview environments",
+    "weight": 9,
+    "temperature": 8,
+    "prompt": "Brand: Sandbox Orbit — ephemeral preview envs per PR. Orbit/space visual metaphor without cliché purple. TTL meters, URL cards. Pricing concurrent envs. Components: env cards, TTL meters, log snippets. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dev03",
+    "category": "devops",
+    "title": "Observability for edge workers",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Edgeglass — observability for edge workers and WASM. Cool cyan on charcoal. Flamegraphs as marketing art. Pricing by ingest GB. Components: trace waterfalls, region pills, alert rules. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dev04",
+    "category": "devops",
+    "title": "Secrets rotation platform",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Keyturn — secrets rotation for multi-cloud teams. Serious security aesthetic. Rotation timelines, audit trails. Pricing vaults. Components: key cards, rotation timelines, policy toggles. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dev05",
+    "category": "devops",
+    "title": "Incident command console",
+    "weight": 9,
+    "temperature": 8,
+    "prompt": "Brand: Nightbridge — incident command for on-call teams. War-room UI marketing: severity timeline, runbooks. Pricing seats + SMS. Components: severity badges, timeline rails, runbook cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "anl01",
+    "category": "analytics",
+    "title": "B2B product analytics SaaS",
+    "weight": 11,
+    "temperature": 8,
+    "prompt": "Brand: Signalstack — B2B product analytics for PLG teams. Chart-forward hero, crisp indigo on off-white (avoid purple clichés — use ink + coral). Pricing events/mo. Components: chart cards, funnel tiles, cohort tables. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "anl02",
+    "category": "analytics",
+    "title": "Privacy-first web analytics",
+    "weight": 9,
+    "temperature": 7,
+    "prompt": "Brand: CookieNone — privacy-first web analytics (no PII). Scandinavian minimal. Cookie-free trust. Pricing sites. Components: sparkline cards, geo heat tiles, goal chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "anl03",
+    "category": "analytics",
+    "title": "Warehouse-native BI",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Snowlane BI — warehouse-native BI on Snowflake/BigQuery. SQL-literate tone. Semantic layer story. Pricing viewers/editors. Components: model graphs, dashboard tiles, SQL chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "anl04",
+    "category": "analytics",
+    "title": "Retail footfall analytics",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Aislemetrics — in-store footfall analytics for retailers. Warm retail photography placeholders, heatmaps. Pricing stores. Components: floorplan heatmaps, conversion tiles, camera status. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "edt01",
+    "category": "edtech",
+    "title": "Kids adaptive learning",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Sparkwell — adaptive learning for ages 6–10. Bright but not childish; playful geometry. Parent trust. Pricing family + school. Components: lesson cards, streak widgets, mastery rings. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "edt02",
+    "category": "edtech",
+    "title": "Language immersion app",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: EchoNative — immersive language learning. Travel-poster energy, bold photography. Pricing monthly/annual. Components: lesson cards, streak, pronunciation meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "edt03",
+    "category": "edtech",
+    "title": "Corporate upskilling LMS",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Skillrail — LMS for corporate upskilling. Enterprise calm: slate + amber. Paths, certifications. Pricing seats. Components: path rails, cert badges, cohort tables. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "iot01",
+    "category": "iot_climate",
+    "title": "Farm sensor IoT",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Rootfield Sensors — IoT for regenerative farms. Soil-rich palette, map cards, moisture metrics. Pricing sensors + gateway. Components: metric tiles, map cards, alert chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "iot02",
+    "category": "iot_climate",
+    "title": "Building energy twin",
+    "weight": 7,
+    "temperature": 8,
+    "prompt": "Brand: Kilowatt Twin — digital twin for building energy. Architectural blueprint meets dashboard. Pricing sqft. Components: twin 3D placeholders, kWh cards, anomaly banners. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "leg01",
+    "category": "legal",
+    "title": "Litigation brief AI",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Counselcraft — AI for litigation brief drafting. Serious typography, ink black, parchment accents. Cite discipline. Pricing seats + matter packs. Components: citation cards, matter timelines, redline tiles. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "leg02",
+    "category": "legal",
+    "title": "Contract CLM startup",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Clauseharbor — lightweight CLM for startups. Friendly legaltech. Template library + e-sign. Pricing docs/mo. Components: clause chips, approval flows, template cards. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hr01",
+    "category": "hr_remote",
+    "title": "Distributed HROS",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Atlas Crew — HROS for distributed teams. Global map motif, soft teal. PTO, org charts, payroll hooks. Pricing seats. Components: org charts, PTO cards, timezone strips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hr02",
+    "category": "hr_remote",
+    "title": "Contractor compliance",
+    "weight": 7,
+    "temperature": 8,
+    "prompt": "Brand: Workright — contractor compliance for global hire. Trust seals, country coverage. Pricing contractors. Components: country flags as chips, contract cards, risk meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "med01",
+    "category": "media",
+    "title": "Remote music collab",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Overdub Room — remote music collaboration studio. Dark studio UI marketing, waveform art. Pricing seats + storage. Components: waveform tiles, artist cards, take lists. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "med02",
+    "category": "media",
+    "title": "Podcast hosting studio",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Micdrop Host — podcast hosting with dynamic ads. Bold type, mic silhouette art. Pricing shows. Components: episode cards, download charts, ad insertion chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "prv01",
+    "category": "privacy",
+    "title": "Consumer privacy VPN",
+    "weight": 9,
+    "temperature": 7,
+    "prompt": "Brand: Northveil VPN — consumer VPN with strong privacy messaging. Arctic blues, no neon clichés. Audit reports, no-logs. Pricing tiers + family. Components: server lists, protocol chips, speed meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "prv02",
+    "category": "privacy",
+    "title": "Passwordless identity",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Passkey Bay — passwordless identity for SMBs. Friendly security. Passkey education. Pricing MAU. Components: passkey cards, device lists, policy toggles. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dsg01",
+    "category": "design_systems",
+    "title": "Design system audit agency",
+    "weight": 8,
+    "temperature": 9,
+    "prompt": "Brand: Tokenwright — agency selling design-system audits. Token swatches as hero art, precise type. Pricing audit packages. Components: token swatches, type specimens, severity of debt meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dsg02",
+    "category": "design_systems",
+    "title": "Component marketplace for React",
+    "weight": 7,
+    "temperature": 8,
+    "prompt": "Brand: Nestkit — marketplace of accessible React components. Docs-site aesthetic. Accessibility first. Pricing library seats. Components: component previews, a11y badges, install chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hw01",
+    "category": "hardware",
+    "title": "Consumer robotics kit",
+    "weight": 8,
+    "temperature": 8,
+    "prompt": "Brand: Boltling Kit — DTC robotics kit for teens/makers. Playful but precise: safety orange + graphite. Spec tables. Pricing kit SKUs. Components: spec tables, feature tiles, unboxing steps. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "hw02",
+    "category": "hardware",
+    "title": "Edge inference SDK",
+    "weight": 9,
+    "temperature": 9,
+    "prompt": "Brand: Onsilicon — on-device ML inference SDK. Technical tone, silicon die photography placeholders, benchmarks. Pricing runtime licenses. Components: benchmark tables, board cards, FPS meters. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "lfe01",
+    "category": "lifestyle",
+    "title": "Collaborative wedding planner",
+    "weight": 7,
+    "temperature": 6,
+    "prompt": "Brand: Vowsync — collaborative wedding planning. Romantic but modern: blush + ink (not cream-terracotta cliché). Pricing couples + vendors. Components: timeline, checklist cards, guest RSVP chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "lfe02",
+    "category": "lifestyle",
+    "title": "Independent local news",
+    "weight": 7,
+    "temperature": 7,
+    "prompt": "Brand: Blockline Press — product for independent local newsrooms. Broadsheet-adjacent but avoid dense newspaper cliché — airy magazine. Subscription pricing. Components: article cards, membership tiers, tip jar. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dvp01",
+    "category": "developer_platforms",
+    "title": "DevRel platform",
+    "weight": 8,
+    "temperature": 7,
+    "prompt": "Brand: Advocate Hub — platform for developer relations teams. Community energy: docs cards, ambassador programs. Pricing workspaces. Components: docs cards, CTA strips, event tiles. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  },
+  {
+    "id": "dvp02",
+    "category": "developer_platforms",
+    "title": "Internal developer portal",
+    "weight": 9,
+    "temperature": 8,
+    "prompt": "Brand: Backstage Lite — opinionated internal developer portal SaaS. Catalog of services, scorecards, golden paths. Pricing engineers. Components: service catalog cards, scorecard meters, plugin chips. Deliver a complete three-page marketing site as static HTML: index.html (full landing with hero, value props, social proof, CTA), pricing.html (clear tiers, feature comparison, FAQ), and components.html (reusable UI kit: buttons, cards, nav, forms, badges, tables). No JavaScript required for core content. Distinctive, finished visual design — not a generic template. Match typography, color, and spacing to the brand brief."
+  }
+]

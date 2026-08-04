@@ -1,107 +1,58 @@
-# base miner docs (external-facing)
-
 <!-- protocol_version: 1 -->
+
+# External miner docs
+
 **Bundle `protocol_version`:** `1`  
-**Challenge `scoring_version`:** `2` (Harbor SWE packs — **not** the same axis as bundle protocol)
+**Miner path:** HTTP submit only — **no Phala/CVM**
 
 This badge must match `bundle::PROTOCOL_VERSION` in crate `bundle`.  
 CI gate: `cargo run -p xtask -- external-docs-check`.
 
-Do **not** conflate the two version numbers (Metis S4):
+Agent-v1 / Phala CVM / hypertraining miner paths are **removed**. Miners submit
+over HTTP to the live challenges:
+
+| Challenge | `challenge_id` | Scoring | Guide |
+|-----------|----------------|---------|-------|
+| Design | `design` | `challenge_scoring_version` **1** (admin winners + agentic) | [design.md](./design.md) |
+| Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) |
+
+Do **not** conflate version axes:
 
 | Axis | Value | Meaning |
 |------|-------|---------|
 | Bundle `protocol_version` | **1** | Leaf / merkle / weight bytes ([`BUNDLE_SPEC.md`](../BUNDLE_SPEC.md)) |
-| `challenge_scoring_version` | **2** | Pack dispatch, `model.patch`, pure correctness ([`AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md)) |
-
-Scoring_version **1** (SHA-256 echo answer + latency decay) is **retired**. Live scoring is pack-based only.
-
-These pages are the miner-facing guide (funding Phala, deploy, certify, troubleshoot).  
-Normative challenge contract: [`../AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md) (**FROZEN**, scoring_version 2).  
-Normative bundle bytes: [`../BUNDLE_SPEC.md`](../BUNDLE_SPEC.md) (**FROZEN**, protocol_version 1).  
-Security claim (what validators prove, and what they do not): [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §1 (D19).
+| Design scoring | **1** | Agentic anti-cheat + admin winners 1\|2 ([`DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md)) |
+| Prism scoring | **2** | Pure bpb + agentic/AST/metrics anti-cheat ([`PRISM.md`](../PRISM.md)) |
 
 | Page | Topic |
-|------|--------|
-| [funding-phala.md](./funding-phala.md) | Fund your own Phala account + miner-funded model key |
-| [deploy.md](./deploy.md) | `install.sh`, compose-hash, CVM deploy, concurrency |
-| [certify.md](./certify.md) | Bind quote and submit to validator |
-| [troubleshoot.md](./troubleshoot.md) | Common failures |
+|------|-------|
+| [design.md](./design.md) | Design harness (`agent.py` + `pyproject.toml`) HTTP submit |
+| [examples/design-baseline/](./examples/design-baseline/) | Reference design miner (`llm.chat` → required HTML pages) |
+| [prism.md](./prism.md) | Prism recipe scripts HTTP submit |
+| [troubleshoot.md](./troubleshoot.md) | Common HTTP / quota / scoring failures |
 
----
+Normative contracts:
 
-## Quick path (recommended): one-command self-deploy
+- Design freeze: [`../DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md)
+- Prism: [`../PRISM.md`](../PRISM.md) + [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md)
+- Bundle bytes: [`../BUNDLE_SPEC.md`](../BUNDLE_SPEC.md)
+- Threat claim (D19): [`../THREAT_MODEL.md`](../THREAT_MODEL.md) §1
 
-From a clean box with Docker Compose:
+## Gateway base URL
 
-```bash
-# Public hotkey only (64 lowercase hex). Never paste mnemonics.
-export BASE_MINER_HOTKEY_HEX='<64 hex>'
+Production/staging miners call the **gateway** reverse proxy:
 
-# Miner-funded inference key (Q3=A) — file path only; never put key bytes in env.
-umask 077
-printf '%s' "$YOUR_PROVIDER_API_KEY" > /secure/model_key
-chmod 0600 /secure/model_key
-export BASE_MODEL_KEY_FILE=/secure/model_key
-
-# Concurrency knob (clamped 1..=5 on the runner)
-export BASE_MAX_CONCURRENCY=2
-
-# Digest-pinned agent image (operators publish pins; local dev may use preloaded images)
-# export BASE_AGENT_IMAGE='ghcr.io/baseintelligence/base/base-agent@sha256:<64 hex>'
-
-./install.sh
-# → prints compose-hash=…, starts local agent-runner
-curl -sS http://127.0.0.1:8080/v1/capacity
-# → {"max_concurrency":2,"current_load":0}
+```text
+https://<gateway>/challenge/design/...
+https://<gateway>/challenge/prism/...
 ```
 
-`install.sh` is **idempotent**, **fail-closed** on missing Docker / unreadable model-key / bad hotkey, and **never echoes secrets**.
-
----
-
-## Pack flow (scoring_version 2)
-
-1. **Deploy** measured CVM (`agent` + measured `socket-proxy` + `attest-helper`) — see [deploy.md](./deploy.md).  
-2. **Certify** each epoch — [certify.md](./certify.md).  
-3. Orchestrator **dispatches** a stripped Harbor pack (`base-agent-dispatch-v1`, `scoring_version: 2`).  
-4. Your runner pulls the digest-pinned environment image **through the measured socket-proxy**, runs the agent with **OPEN egress** (default), and returns `model.patch` + a signed work receipt.  
-5. Operator grades offline with held-out tests; pure correctness → leaf `Score` / `NoScore`. Bundle leaves stay on **protocol_version 1**.
-
-Miner inference is **miner-funded** (your model key file). The subnet owner does not pay your LLM bill or your Phala CVM bill.
-
-### Egress posture (todo 21 — LOCKED default)
-
-**OPEN** by default: the pack-environment container may use the network. Honest claim: stripping protects **grading-channel integrity** (held-out `solution/` / `tests/` / `grader.py` never reach the miner), **not** miner honesty. D19 already disclaims score honesty. Optional allowlisted proxy is off unless you set it explicitly.
-
----
-
-## CLI path (compose-hash / Phala)
+Local smoke (host ports from `env-local.yml`):
 
 ```bash
-# From base repo root (Rust 1.96 toolchain) — offline compose-hash
-cargo build -q -p miner-bin
-cargo run -q -p miner-bin -- deploy --no-deploy --netuid 1
-
-# After funding Phala and installing `phala` CLI — real deploy
-# cargo run -q -p miner-bin -- deploy --deploy --netuid 1
-
-# Certify (fixture mode for offline smoke; live needs agent URL + validator)
-# cargo run -q -p miner-bin -- certify \
-#   --fixture-mode \
-#   --validator-url http://127.0.0.1:8081 \
-#   --epoch 0 \
-#   --miner-hotkey-hex <64 hex>
+curl -sS http://127.0.0.1:28093/health   # design-challenge
+curl -sS http://127.0.0.1:28092/health   # prism-challenge
 ```
 
----
-
-## Version pin
-
-When `protocol_version` bumps in `bundle`, update:
-
-1. The HTML comment and bold badge at the top of **this file**.  
-2. Any copy in sibling pages that states the bundle protocol version.  
-3. Re-run `cargo run -p xtask -- external-docs-check`.
-
-When only challenge scoring changes, bump `challenge_scoring_version` in [`AGENT_CHALLENGE.md`](../AGENT_CHALLENGE.md) — **leave** bundle `protocol_version` at **1** unless leaf bytes change.
+Never paste mnemonics or challenge signing keys into miner clients. Hotkeys are
+public 64-hex identifiers only.

@@ -1,6 +1,5 @@
-# task-47 / todo-33 cleartext e2e — publish HTTP on host (no Cloudflare/TLS)
+# Cleartext e2e — publish HTTP on host (no Cloudflare/TLS).
 # BASE_CHAIN_BACKEND=fake_owner for gateway master check.
-# socket-proxy :2375 on localhost so host-side Harbor grade / runner Docker work.
 services:
   gateway:
     ports:
@@ -13,12 +12,22 @@ services:
       - "8089:8080"
     environment:
       BASE_ROLE: validator
-  agent-challenge:
+  prism-challenge:
     ports:
-      - "8090:8090"
+      - "8092:8092"
     environment:
-      BASE_CHALLENGE_BIND: 0.0.0.0:8090
-      BASE_DOCKER_BASE: http://socket-proxy:2375
+      BASE_CHALLENGE_BIND: 0.0.0.0:8092
+  design-challenge:
+    ports:
+      - "8093:8093"
+    environment:
+      BASE_CHALLENGE_BIND: 0.0.0.0:8093
+      # Test-only host Sim (never set on staging/prod overlays).
+      BASE_ALLOW_HOST_SIM: "1"
+      DESIGN_FORCE_SIM: "true"
+  design-egress-proxy:
+    environment:
+      DESIGN_EGRESS_SIM: "true"
   socket-proxy:
     ports:
       - "2375:2375"

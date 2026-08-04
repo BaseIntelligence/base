@@ -1,0 +1,765 @@
+//! Round + run orchestrator: sandbox, agentic review, admin award, leaf emit.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chain::ChainClient;
+use challenge_agentic::{AgenticBackend, AgenticVerdict, CorpusEntry, ReviewRequest, VerdictKind};
+use challenge_common::{
+    emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, ExpectedSet,
+    GatewayClient, PinnedBlockHash,
+};
+use crypto::KEY_LEN;
+use design_challenge_task::{round_id_at, ROUND_SECS, SCORING_VERSION};
+use design_harness::HarnessBundle;
+use design_http::{mark_awaiting_admin, AdminAwardHook};
+use design_prompts::{prompt_set_digest, select_prompts_for_round};
+use design_sandbox::{SandboxBackend, SandboxError};
+use design_sanitize::sanitize_bundle;
+use design_store::{
+    DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
+};
+use serde_json::json;
+use tokio::time::sleep;
+use tracing::{info, warn};
+
+use crate::score::{not_attempted, score_round, to_leaf, ScorePlan};
+use crate::CHALLENGE_ID;
+
+/// Cap harness log payload stored in stage-event detail (JSON).
+const MAX_LOG_CHARS: usize = 65_536;
+
+/// Design domain rules appended to the agentic system prompt.
+const DESIGN_AGENTIC_RULES: &str = r"
+Design challenge rules:
+- Allowed: PyPI via egress, Mobbin/Dribbble inspiration, image generation, UI libs.
+- Cheat: near-identical harness copy, trivial HTML republish, scrape-clone of a real site,
+  sanitize bypass / JS exfil, obfuscation to hide a copy.
+- suspicious and cheat both → Score(0), not eligible for admin winner selection.
+";
+
+/// Orchestrator config.
+#[derive(Debug, Clone)]
+pub struct OrchestratorConfig {
+    /// Netuid.
+    pub netuid: u16,
+    /// Claim poll.
+    pub claim_poll: Duration,
+    /// Stuck grace secs.
+    pub stuck_grace_secs: u64,
+    /// LLM proxy URL for sandbox.
+    pub llm_proxy: String,
+    /// Staging root for agentic workdirs.
+    pub staging_root: PathBuf,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            netuid: 1,
+            claim_poll: Duration::from_millis(750),
+            stuck_grace_secs: 3600,
+            llm_proxy: "http://design-egress-proxy:8094".into(),
+            staging_root: PathBuf::from("/var/lib/design/staging"),
+        }
+    }
+}
+
+/// Orchestrator handle.
+pub struct Orchestrator<C: ChainClient + Send + Sync> {
+    cfg: OrchestratorConfig,
+    store: Arc<dyn DesignStore>,
+    sandbox: Arc<dyn SandboxBackend>,
+    agentic: Arc<dyn AgenticBackend>,
+    gateway: Arc<GatewayClient>,
+    chain: Arc<C>,
+    sk: [u8; KEY_LEN],
+}
+
+impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Orchestrator")
+            .field("netuid", &self.cfg.netuid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
+    /// Construct.
+    #[must_use]
+    pub fn new(
+        cfg: OrchestratorConfig,
+        store: Arc<dyn DesignStore>,
+        sandbox: Arc<dyn SandboxBackend>,
+        agentic: Arc<dyn AgenticBackend>,
+        gateway: Arc<GatewayClient>,
+        chain: Arc<C>,
+        sk: [u8; KEY_LEN],
+    ) -> Self {
+        Self {
+            cfg,
+            store,
+            sandbox,
+            agentic,
+            gateway,
+            chain,
+            sk,
+        }
+    }
+
+    /// Worker loop.
+    pub async fn run_worker(self: Arc<Self>) {
+        loop {
+            match self.cycle_once().await {
+                Ok(true) => {}
+                Ok(false) => sleep(self.cfg.claim_poll).await,
+                Err(e) => {
+                    warn!(error = %e, "design worker error");
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+
+    /// Round closer + leaf emitter loop.
+    pub async fn run_round_loop(self: Arc<Self>) {
+        let mut last_closed = 0u64;
+        loop {
+            sleep(Duration::from_secs(30)).await;
+            let rid = round_id_at(now_secs());
+            // Close previous round when we enter a new one.
+            if rid > 0 {
+                let prev = rid - 1;
+                if prev != last_closed {
+                    if let Err(e) = self.close_round(prev).await {
+                        warn!(error = %e, round = prev, "close_round failed");
+                    } else {
+                        last_closed = prev;
+                    }
+                }
+            }
+            // Ensure current round row exists.
+            let _ = self.ensure_round(rid).await;
+        }
+    }
+
+    /// Stuck sweeper.
+    pub async fn run_sweeper(self: Arc<Self>) {
+        loop {
+            sleep(Duration::from_secs(60)).await;
+            if let Ok(stuck) = self.store.list_stuck_runs(self.cfg.stuck_grace_secs).await {
+                for r in stuck {
+                    let _ = self
+                        .store
+                        .apply_run(
+                            &r.id,
+                            &StorePatch {
+                                status: Some(RunStage::Failed),
+                                error_detail: Some("stuck timeout".into()),
+                                final_score: Some(FinalScore::Score(0)),
+                                ..StorePatch::default()
+                            },
+                            Some(&StageEvent {
+                                stage: "failed".into(),
+                                detail: Some(serde_json::json!({"reason":"stuck"})),
+                                at_ms: now_ms(),
+                            }),
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// Award winners (admin API) or timeout close: score + emit leaves.
+    pub async fn award_round(&self, rid: u64) -> Result<(), String> {
+        let _ = self.ensure_round(rid).await;
+        let _ = self.store.set_round_status(rid, "scoring").await;
+
+        let runs = self
+            .store
+            .runs_for_round(rid)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut miners_with_harness = BTreeSet::new();
+        let mut miners_clean = BTreeSet::new();
+        let mut cheat_miners = BTreeSet::new();
+        let mut harness_to_miner = BTreeMap::new();
+
+        for r in &runs {
+            let Some(h) = self
+                .store
+                .get_harness(&r.harness_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            harness_to_miner.insert(r.harness_id.clone(), h.miner_hotkey.clone());
+            miners_with_harness.insert(h.miner_hotkey.clone());
+
+            let verdict = r
+                .agentic_verdict
+                .as_ref()
+                .and_then(|v| v.get("verdict").and_then(|x| x.as_str()));
+            match (r.status, verdict) {
+                (RunStage::AwaitingAdmin, _) => {
+                    miners_clean.insert(h.miner_hotkey.clone());
+                }
+                (_, Some("cheat" | "suspicious")) => {
+                    cheat_miners.insert(h.miner_hotkey.clone());
+                }
+                (RunStage::Scored, Some(_))
+                    if matches!(r.final_score, Some(FinalScore::Score(0))) =>
+                {
+                    cheat_miners.insert(h.miner_hotkey.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let award = self
+            .store
+            .get_round_award(rid)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut winner_miners = Vec::new();
+        if let Some(a) = &award {
+            for hid in &a.winner_harness_ids {
+                if let Some(hk) = harness_to_miner.get(hid) {
+                    winner_miners.push(hk.clone());
+                }
+            }
+            winner_miners.sort();
+            winner_miners.dedup();
+        }
+
+        let plan = ScorePlan {
+            miners_with_harness: miners_with_harness.iter().cloned().collect(),
+            miners_clean: miners_clean.iter().cloned().collect(),
+            winner_miners,
+            cheat_miners: cheat_miners.iter().cloned().collect(),
+        };
+        let scores = score_round(&plan);
+
+        for (hk, fs) in &scores {
+            let _ = self
+                .store
+                .upsert_rating(&RatingRow {
+                    round_id: rid,
+                    miner_hotkey: hk.clone(),
+                    rating: match fs {
+                        FinalScore::Score(v) => i32::try_from(*v / 1000).unwrap_or(0),
+                        FinalScore::NoScore(_) => 0,
+                    },
+                    wins: 0,
+                    losses: 0,
+                    final_score: Some(fs.clone()),
+                })
+                .await;
+        }
+
+        // Mark awaiting_admin runs scored.
+        for r in &runs {
+            if r.status == RunStage::AwaitingAdmin {
+                let hk = harness_to_miner.get(&r.harness_id);
+                let fs = hk
+                    .and_then(|h| scores.get(h))
+                    .cloned()
+                    .unwrap_or(FinalScore::Score(0));
+                let _ = self
+                    .store
+                    .apply_run(
+                        &r.id,
+                        &StorePatch {
+                            status: Some(RunStage::Scored),
+                            final_score: Some(fs),
+                            ..StorePatch::default()
+                        },
+                        Some(&StageEvent {
+                            stage: "scored".into(),
+                            detail: None,
+                            at_ms: now_ms(),
+                        }),
+                    )
+                    .await;
+            }
+        }
+
+        self.emit_leaves().await?;
+        let _ = self.store.set_round_status(rid, "emitted").await;
+        Ok(())
+    }
+
+    async fn cycle_once(&self) -> Result<bool, String> {
+        let Some(run) = self
+            .store
+            .claim_next_run()
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(false);
+        };
+        info!(run_id = %run.id, "claimed design run");
+        let _ = self
+            .store
+            .apply_run(
+                &run.id,
+                &StorePatch {
+                    status: Some(RunStage::Installing),
+                    ..StorePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: "installing".into(),
+                    detail: Some(json!({"prompt_id": run.prompt_id})),
+                    at_ms: now_ms(),
+                }),
+            )
+            .await;
+        if let Err(e) = self.execute_run(&run).await {
+            warn!(run_id = %run.id, error = %e, "run failed");
+            let _ = self
+                .store
+                .apply_run(
+                    &run.id,
+                    &StorePatch {
+                        status: Some(RunStage::Failed),
+                        error_detail: Some(e),
+                        final_score: Some(FinalScore::Score(0)),
+                        ..StorePatch::default()
+                    },
+                    Some(&StageEvent {
+                        stage: "failed".into(),
+                        detail: None,
+                        at_ms: now_ms(),
+                    }),
+                )
+                .await;
+        }
+        Ok(true)
+    }
+
+    async fn append_log(
+        &self,
+        run_id: &str,
+        phase: &str,
+        seq: u32,
+        text: &str,
+    ) -> Result<(), String> {
+        let clipped = clip_logs(text);
+        self.store
+            .apply_run(
+                run_id,
+                &StorePatch::default(),
+                Some(&StageEvent {
+                    stage: "log".into(),
+                    detail: Some(json!({
+                        "phase": phase,
+                        "stream": "combined",
+                        "seq": seq,
+                        "text": clipped,
+                        "bytes": text.len(),
+                        "truncated": text.len() > MAX_LOG_CHARS,
+                    })),
+                    at_ms: now_ms(),
+                }),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn execute_run(&self, run: &design_store::RunState) -> Result<(), String> {
+        let harness = self
+            .store
+            .get_harness(&run.harness_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "harness missing".to_owned())?;
+        if harness.eliminated_until_round > run.round_id {
+            return Err("harness eliminated".into());
+        }
+        let prompts = select_prompts_for_round(run.round_id).map_err(|e| e.to_string())?;
+        let prompt = prompts
+            .iter()
+            .find(|p| p.id == run.prompt_id)
+            .map(|p| p.prompt.clone())
+            .unwrap_or_default();
+        let bundle = HarnessBundle {
+            miner_hotkey: harness.miner_hotkey,
+            agent_py: harness.agent_py.clone(),
+            pyproject_toml: harness.pyproject_toml,
+            extra_files: harness.extra_files,
+        };
+        let sandbox = Arc::clone(&self.sandbox);
+        let llm = self.cfg.llm_proxy.clone();
+        let run_id = run.id.clone();
+        let round_id = run.round_id;
+        let prompt_c = prompt.clone();
+        let bundle_c = bundle.clone();
+        let install_res = tokio::task::spawn_blocking({
+            let sandbox = Arc::clone(&sandbox);
+            let run_id = run_id.clone();
+            move || sandbox.install(&bundle_c, round_id, &run_id, &prompt_c, &llm)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let session = match install_res {
+            Ok(s) => s,
+            Err(e) => {
+                if let SandboxError::PhaseFailed { phase, logs, .. } = &e {
+                    let _ = self.append_log(&run.id, phase, 0, logs).await;
+                }
+                return Err(map_sandbox_err(&e));
+            }
+        };
+        self.append_log(&run.id, "install", 0, &session.install_logs)
+            .await?;
+
+        let _ = self
+            .store
+            .apply_run(
+                &run.id,
+                &StorePatch {
+                    status: Some(RunStage::Running),
+                    ..StorePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: "running".into(),
+                    detail: Some(json!({"phase": "run"})),
+                    at_ms: now_ms(),
+                }),
+            )
+            .await;
+
+        let llm = self.cfg.llm_proxy.clone();
+        let run_id = run.id.clone();
+        let run_res = tokio::task::spawn_blocking(move || {
+            sandbox.run_session(session, round_id, &run_id, &prompt, &llm)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let out = match run_res {
+            Ok(o) => o,
+            Err(e) => {
+                if let SandboxError::PhaseFailed { phase, logs, .. } = &e {
+                    let _ = self.append_log(&run.id, phase, 1, logs).await;
+                }
+                return Err(map_sandbox_err(&e));
+            }
+        };
+        self.append_log(&run.id, "run", 1, &out.run_logs).await?;
+
+        let _ = self
+            .store
+            .apply_run(
+                &run.id,
+                &StorePatch {
+                    status: Some(RunStage::Sanitizing),
+                    ..StorePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: "sanitizing".into(),
+                    detail: Some(json!({"pages": out.pages.len()})),
+                    at_ms: now_ms(),
+                }),
+            )
+            .await;
+        let sanitized = sanitize_bundle(&out.pages).map_err(|e| e.to_string())?;
+        let pages: Vec<_> = sanitized
+            .pages
+            .iter()
+            .map(|p| {
+                (
+                    p.path.clone(),
+                    p.sanitized_html.clone(),
+                    p.raw_html.clone(),
+                    p.raw_sha256.clone(),
+                    p.bytes,
+                )
+            })
+            .collect();
+        self.store
+            .put_artifacts(&run.id, &pages)
+            .await
+            .map_err(|e| e.to_string())?;
+        let report = serde_json::to_value(&sanitized.report).unwrap_or_default();
+
+        // Agentic anti-cheat review.
+        let _ = self
+            .store
+            .apply_run(
+                &run.id,
+                &StorePatch {
+                    status: Some(RunStage::AgenticReview),
+                    artifact_digest: Some(sanitized.artifact_digest.clone()),
+                    sanitize_report: Some(report.clone()),
+                    ..StorePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: "agentic_review".into(),
+                    detail: None,
+                    at_ms: now_ms(),
+                }),
+            )
+            .await;
+
+        match self
+            .run_agentic_review(run, &harness.agent_py, &pages, &report)
+            .await
+        {
+            Ok(verdict) => {
+                let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
+                match verdict.verdict {
+                    VerdictKind::Clean => {
+                        mark_awaiting_admin(
+                            self.store.as_ref(),
+                            &run.id,
+                            &sanitized.artifact_digest,
+                            report,
+                            verdict_json,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    }
+                    VerdictKind::Cheat | VerdictKind::Suspicious => {
+                        let _ = self
+                            .store
+                            .apply_run(
+                                &run.id,
+                                &StorePatch {
+                                    status: Some(RunStage::Scored),
+                                    artifact_digest: Some(sanitized.artifact_digest.clone()),
+                                    sanitize_report: Some(report),
+                                    agentic_verdict: Some(verdict_json.clone()),
+                                    final_score: Some(FinalScore::Score(0)),
+                                    ..StorePatch::default()
+                                },
+                                Some(&StageEvent {
+                                    stage: "scored".into(),
+                                    detail: Some(json!({
+                                        "reason": "agentic",
+                                        "verdict": verdict_json.get("verdict"),
+                                    })),
+                                    at_ms: now_ms(),
+                                }),
+                            )
+                            .await;
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Fail-closed already persisted; do not re-fail in cycle_once.
+                warn!(run_id = %run.id, error = %e, "agentic fail-closed");
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_agentic_review(
+        &self,
+        run: &design_store::RunState,
+        agent_py: &str,
+        pages: &[(String, String, String, String, u32)],
+        sanitize_report: &serde_json::Value,
+    ) -> Result<AgenticVerdict, String> {
+        let work = self.cfg.staging_root.join("agentic").join(&run.id);
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(work.join("pages")).map_err(|e| e.to_string())?;
+        std::fs::write(work.join("agent.py"), agent_py).map_err(|e| e.to_string())?;
+        for (path, sanitized, _, _, _) in pages {
+            let name = path.rsplit('/').next().unwrap_or(path.as_str());
+            std::fs::write(work.join("pages").join(name), sanitized).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(
+            work.join("sanitize_report.json"),
+            sanitize_report.to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let recent = self
+            .store
+            .list_recent_harnesses(64)
+            .await
+            .map_err(|e| e.to_string())?;
+        let corpus: Vec<CorpusEntry> = recent
+            .into_iter()
+            .filter(|h| h.id != run.harness_id)
+            .map(|h| CorpusEntry {
+                id: format!("harness:{}", h.id),
+                source: h.agent_py,
+            })
+            .collect();
+
+        let req = ReviewRequest {
+            workdir: work.clone(),
+            primary_relpaths: vec!["agent.py".into()],
+            corpus,
+            metrics_relpath: None,
+            pages_relpath: Some("pages".into()),
+            sanitize_report_relpath: Some("sanitize_report.json".into()),
+            domain_rules: DESIGN_AGENTIC_RULES.into(),
+        };
+
+        let result = self.agentic.review(&req).await;
+        let _ = std::fs::remove_dir_all(&work);
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let msg = format!("agentic: {e}");
+                let _ = self
+                    .store
+                    .apply_run(
+                        &run.id,
+                        &StorePatch {
+                            status: Some(RunStage::Failed),
+                            error_detail: Some(msg.clone()),
+                            final_score: Some(FinalScore::NoScore(
+                                bundle::NoScoreReasonCode::ChallengeInternal as u8,
+                            )),
+                            agentic_verdict: Some(json!({"error": msg})),
+                            ..StorePatch::default()
+                        },
+                        Some(&StageEvent {
+                            stage: "failed".into(),
+                            detail: Some(json!({"reason": "agentic_fail_closed"})),
+                            at_ms: now_ms(),
+                        }),
+                    )
+                    .await;
+                Err(msg)
+            }
+        }
+    }
+
+    async fn ensure_round(&self, rid: u64) -> Result<(), String> {
+        if self
+            .store
+            .get_round(rid)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
+            .unwrap_or(0);
+        let opens = rid * ROUND_SECS;
+        self.store
+            .insert_round(&RoundRow {
+                round_id: rid,
+                epoch,
+                netuid: self.cfg.netuid,
+                prompt_set_digest: prompt_set_digest(),
+                status: "open".into(),
+                opens_at_secs: opens,
+                closes_at_secs: opens + ROUND_SECS,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Close round: if winners already awarded/emitted, no-op; else award (timeout zeros).
+    async fn close_round(&self, rid: u64) -> Result<(), String> {
+        if let Ok(Some(r)) = self.store.get_round(rid).await {
+            if r.status == "emitted" {
+                return Ok(());
+            }
+        }
+        // Timeout without admin winners → Score(0) for all with harness; still emit.
+        self.award_round(rid).await
+    }
+
+    async fn emit_leaves(&self) -> Result<(), String> {
+        let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map_err(|e| format!("schedule: {e}"))?;
+        let epoch = chain::current_epoch_pre_run_coinbase(&state, state.current_block);
+        let block_hash = self
+            .chain
+            .block_hash(state.last_epoch_block)
+            .map_err(|e| format!("block_hash: {e}"))?;
+        let expected: ExpectedSet = expected_set_at_chain(
+            &trustroot::ParticipantPolicy::AllMetagraphHotkeys,
+            PinnedBlockHash::new(block_hash),
+            self.chain.as_ref(),
+        )
+        .map_err(|e| format!("expected set: {e}"))?;
+        let stored = self
+            .store
+            .scores_for_epoch(self.cfg.netuid, epoch)
+            .await
+            .map_err(|e| e.to_string())?;
+        let by_miner: BTreeMap<String, FinalScore> = stored.into_iter().collect();
+        let mut scores = BTreeMap::new();
+        let mut expected_set: BTreeSet<[u8; KEY_LEN]> = BTreeSet::new();
+        for p in &expected.participants {
+            expected_set.insert(p.hotkey);
+            let leaf = match by_miner.get(&hex::encode(p.hotkey)) {
+                Some(fs) => to_leaf(fs),
+                None => to_leaf(&not_attempted()),
+            };
+            scores.insert(p.hotkey, leaf);
+        }
+        let signed = emit_signed_leaf_set(
+            &self.sk,
+            CHALLENGE_ID.as_bytes(),
+            epoch,
+            &expected_set,
+            &scores,
+        )
+        .map_err(|e| e.to_string())?;
+        let _ = SCORING_VERSION;
+        submit_signed_leaf_set(self.gateway.as_ref(), &signed)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<C: ChainClient + Send + Sync + 'static> AdminAwardHook for Orchestrator<C> {
+    async fn on_winners(&self, round_id: u64, _harness_ids: &[String]) -> Result<(), String> {
+        self.award_round(round_id).await
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn clip_logs(text: &str) -> String {
+    if text.len() <= MAX_LOG_CHARS {
+        return text.to_owned();
+    }
+    let mut out = text[text.len() - MAX_LOG_CHARS..].to_owned();
+    out.insert_str(0, "...[truncated]\n");
+    out
+}
+
+fn map_sandbox_err(e: &SandboxError) -> String {
+    match e {
+        SandboxError::PhaseFailed {
+            phase,
+            status,
+            logs,
+        } => {
+            format!("phase {phase}: exit={status}: {}", clip_logs(logs))
+        }
+        other => other.to_string(),
+    }
+}

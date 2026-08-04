@@ -7,7 +7,13 @@ use std::time::Duration;
 ///
 /// Keep in lockstep with `deploy/scripts/promote.sh` `--service` allowlist and
 /// keys under `deploy/pins/{staging,prod}.json` (D8 packaging).
-pub const ROLLABLE_SERVICES: &[&str] = &["validator", "gateway", "updater", "agent-challenge"];
+pub const ROLLABLE_SERVICES: &[&str] = &[
+    "validator",
+    "gateway",
+    "updater",
+    "prism-challenge",
+    "design-challenge",
+];
 
 /// Runtime configuration for one updater target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,11 +107,20 @@ mod tests {
     use super::{is_rollable_service, ROLLABLE_SERVICES};
 
     #[test]
-    fn rollable_services_include_agent_challenge() {
+    fn rollable_services_include_prism_and_design() {
         assert_eq!(
             ROLLABLE_SERVICES,
-            &["validator", "gateway", "updater", "agent-challenge"]
+            &[
+                "validator",
+                "gateway",
+                "updater",
+                "prism-challenge",
+                "design-challenge"
+            ]
         );
-        assert!(is_rollable_service("agent-challenge"));
+        assert!(is_rollable_service("prism-challenge"));
+        assert!(is_rollable_service("design-challenge"));
+        assert!(!is_rollable_service("agent-challenge"));
+        assert!(!is_rollable_service("design-egress-proxy"));
     }
 }

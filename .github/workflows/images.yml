@@ -48,17 +48,17 @@ jobs:
           - target: updater
             image_suffix: updater
             dockerfile: deploy/Dockerfile
-          - target: agent-challenge
-            image_suffix: agent-challenge
-            dockerfile: deploy/Dockerfile
-          - target: hypertraining-challenge
-            image_suffix: hypertraining-challenge
-            dockerfile: deploy/Dockerfile
           - target: prism-challenge
             image_suffix: prism-challenge
             dockerfile: deploy/Dockerfile
-          - target: base-agent
-            image_suffix: base-agent
+          - target: design-challenge
+            image_suffix: design-challenge
+            dockerfile: deploy/Dockerfile
+          - target: design-egress-proxy
+            image_suffix: design-egress-proxy
+            dockerfile: deploy/Dockerfile
+          - target: design-runtime
+            image_suffix: design-runtime
             dockerfile: deploy/Dockerfile
           - target: ""
             image_suffix: base-attest-helper
@@ -161,10 +161,10 @@ jobs:
               "validator",
               "gateway",
               "updater",
-              "agent-challenge",
-              "hypertraining-challenge",
               "prism-challenge",
-              "base-agent",
+              "design-challenge",
+              "design-egress-proxy",
+              "design-runtime",
               "base-attest-helper",
           }
           assert set(images) == expected, (set(images), expected)
@@ -232,10 +232,10 @@ jobs:
           cp "$SRC" "deploy/digests/${SHA}.json"
           echo "Recorded digest manifest: deploy/digests/${SHA}.json"
           chmod +x deploy/scripts/promote.sh
-          # Pin services only (validator/gateway/updater/agent-challenge).
+          # Pin services only (validator/gateway/updater/prism-challenge/design-challenge).
           # --skip-backup: this job records CI digests; Spaces/PG backup runs at
           # prod promote (deploy-prod.yml, fail-closed).
-          for svc in validator gateway updater agent-challenge; do
+          for svc in validator gateway updater prism-challenge design-challenge; do
             IMAGE=$(python3 -c '
           import json, sys
           d = json.load(open(sys.argv[1]))
@@ -254,7 +254,7 @@ jobs:
           import json, sys
           p = json.load(open("deploy/pins/staging.json"))
           assert p["commit_sha"] == sys.argv[1], (p["commit_sha"], sys.argv[1])
-          for s in ("validator", "gateway", "updater", "agent-challenge"):
+          for s in ("validator", "gateway", "updater", "prism-challenge", "design-challenge"):
               assert s in p["services"], s
               assert p["services"][s]["digest"].startswith("sha256:")
           print("staging pins ok", p["commit_sha"])
@@ -297,14 +297,14 @@ jobs:
           set -euo pipefail
           # Nested image names: ghcr.io/<owner>/base/<suffix> → package name "base/<suffix>"
           pkgs=(
-            "base/base-agent"
             "base/base-attest-helper"
             "base/gateway"
             "base/validator"
             "base/updater"
-            "base/agent-challenge"
-            "base/hypertraining-challenge"
             "base/prism-challenge"
+            "base/design-challenge"
+            "base/design-egress-proxy"
+            "base/design-runtime"
           )
           ok=0
           # First list packages to Learn exact names (debug)

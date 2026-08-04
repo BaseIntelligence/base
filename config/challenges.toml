@@ -1,23 +1,21 @@
 # Owner-signed challenges trust root (D18/D23/D24).
 # Signed with throwaway owner key (see owner.pubkey). Production rotation: CEREMONY.md.
+#
+# Emission: prism = 10000 bps (sole weight source until design enablement ceremony).
+# design = 0 bps placeholder until owner re-signs with production keys.
+# design public_key matches ~/.base-secrets/challenge-design.age (dev throwaway).
+# OWNER MUST re-generate design_sk for prod and re-sign this file (CEREMONY.md).
 version = 1
 introduced_epoch = 0
 
 [[challenges]]
-id = "agent-v1"
-public_key = "f2e4965a6a99b75b4212bd45790c496e9665c0e1247e373d9dca3b36413fbd45"
-emission_share_bps = 10000
-policy = "all_metagraph_hotkeys"
-
-[[challenges]]
-id = "hypertraining"
-public_key = "f63d946c180535574b9fe79c6c75d3ca6fd51f7cde47267a679d9d6e05d0294c"
+id = "design"
+public_key = "3e27f87d8330006a73174001120c3455f16b95fee098bb8c2bab9d5053840418"
 emission_share_bps = 0
 policy = "all_metagraph_hotkeys"
 
 [[challenges]]
 id = "prism"
 public_key = "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
-emission_share_bps = 0
+emission_share_bps = 10000
 policy = "all_metagraph_hotkeys"
-

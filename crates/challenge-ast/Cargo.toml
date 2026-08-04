@@ -1,0 +1,18 @@
+[package]
+name = "challenge-ast"
+description = "Python AST fingerprint + integer structural similarity (bps) for challenge anti-cheat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rustpython-parser = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true

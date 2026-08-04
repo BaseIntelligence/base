@@ -9,10 +9,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-agent-challenge = { path = "../agent-challenge" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
+challenge-agentic = { path = "../challenge-agentic" }
+challenge-common = { path = "../challenge-common" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 hex = "0.4"
@@ -26,15 +27,20 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "0.1"
 async-trait = "0.1"
 
 [dev-dependencies]
+challenge-common = { path = "../challenge-common" }
 http-body-util = "0.1"
+prism-recipe = { path = "../prism-recipe" }
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+async-trait = "0.1"
 
 [lints]
 workspace = true

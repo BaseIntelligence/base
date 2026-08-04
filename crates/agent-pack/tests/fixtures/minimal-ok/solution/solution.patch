@@ -1,5 +1,0 @@
-diff --git a/fix.py b/fix.py
---- a/fix.py
-+++ b/fix.py
-@@ -0,0 +1 @@
-+SECRET_SOLUTION

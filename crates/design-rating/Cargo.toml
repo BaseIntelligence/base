@@ -1,0 +1,18 @@
+[package]
+name = "design-rating"
+description = "Integer Elo, pairing, bottom-20% elimination for design challenge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+design-challenge-task = { path = "../design-challenge-task" }
+hex = "0.4"
+sha2 = "0.10"
+thiserror = "2"
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-# Validator role — NO gateway, NO owner hotkey.
+# Validator role — NO gateway, NO owner hotkey, NO challenge execution.
 # Points at the master gateway over the DO VPC private IP.
 # Used with: docker compose -f docker-compose.yml -f deploy/compose/role-validator.yml
 services:
@@ -8,16 +8,20 @@ services:
       BASE_COORDINATION_INTERVAL_SECS: "3"
     volumes:
       - ./config:/etc/base/config:ro
-  agent-challenge:
-    environment:
-      BASE_CHALLENGE_SK_FILE: /run/base/challenge_sk
-      BASE_CHALLENGE_BIND: 0.0.0.0:8090
-      BASE_DOCKER_BASE: http://socket-proxy:2375
-    volumes:
-      - ./deploy/secrets/challenge_sk:/run/base/challenge_sk:ro
   # Gateway must not run on the validator host.
   gateway:
     profiles: ["never"]
   # Updater disabled on validator until GHCR pins wired.
   updater:
+    profiles: ["never"]
+  # Challenges + Docker sock proxy are master-only (harness eval / sandbox).
+  # Validators fetch sealed weights from the master gateway; they do not run
+  # miner code or hold challenge mini-secrets.
+  prism-challenge:
+    profiles: ["never"]
+  design-challenge:
+    profiles: ["never"]
+  design-egress-proxy:
+    profiles: ["never"]
+  socket-proxy:
     profiles: ["never"]

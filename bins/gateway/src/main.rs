@@ -59,27 +59,16 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Miners announce their CVM base URL here (AGENT_CHALLENGE.md §9.3 step 5).
-    // Without a database there is nowhere to put an announcement, so the route
-    // is left unmounted rather than accepting POSTs it would silently discard.
-    let announce = match resolve_endpoint_router(&chain, config.netuid).await {
+    // Owner-issued credit for runtimes without a TEE (legacy admin grant).
+    // Without a database there is nowhere to put a grant, so the route is left
+    // unmounted rather than accepting POSTs it would silently discard.
+    let extra = match resolve_attest_grant_router(config.hotkey).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("gateway: {e}");
             return ExitCode::from(1);
         }
     };
-
-    // Owner-issued credit for runtimes without a TEE (AGENT_CHALLENGE.md
-    // §9.6). Same mounting rule as the endpoint route: no database, no route.
-    let attest_grant = match resolve_attest_grant_router(config.hotkey).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("gateway: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let extra = merge_optional_routers(announce, attest_grant);
 
     run_with(config, chain, stores, extra).await
 }
@@ -103,40 +92,6 @@ async fn resolve_attest_grant_router(
     Ok(Some(gateway::admin_attest_grant_router(
         gateway::AttestGrantState::new(pool, gateway_hotkey),
     )))
-}
-
-/// Merge up to two optional extra routers into one.
-fn merge_optional_routers(
-    announce: Option<axum::Router>,
-    attest_grant: Option<axum::Router>,
-) -> Option<axum::Router> {
-    match (announce, attest_grant) {
-        (None, None) => None,
-        (Some(a), None) => Some(a),
-        (None, Some(g)) => Some(g),
-        (Some(a), Some(g)) => Some(a.merge(g)),
-    }
-}
-
-/// Miner endpoint announce router, when a database is configured.
-async fn resolve_endpoint_router(
-    chain: &gateway::SharedChain,
-    netuid: u16,
-) -> Result<Option<axum::Router>, String> {
-    let base = config::load().map_err(|e| e.to_string())?;
-    let Some(url) = resolve_database_url(&base)? else {
-        tracing::warn!(
-            event = "gateway_miner_endpoint_disabled",
-            "no database configured; {} is not mounted",
-            miner_endpoint::ENDPOINT_ROUTE
-        );
-        return Ok(None);
-    };
-    let pool = db::connect(&url)
-        .await
-        .map_err(|e| format!("miner endpoint pool connect failed: {e}"))?;
-    let state = miner_endpoint::MinerEndpointState::new(Arc::clone(chain), pool, netuid);
-    Ok(Some(miner_endpoint::miner_endpoint_router(state)))
 }
 
 /// Postgres stores when a database is configured, in-memory otherwise.
