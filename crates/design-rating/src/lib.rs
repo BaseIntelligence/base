@@ -331,8 +331,9 @@ mod tests {
             .collect();
         let elim = elimination_set(&ratings, 5);
         assert_eq!(elim.len(), 2); // 20% of 10
-        assert!(elim.contains(&("m00".into(), 9)));
-        assert!(elim.contains(&("m01".into(), 9)));
+        let until = 5 + ELIMINATION_COOLDOWN_ROUNDS;
+        assert!(elim.contains(&("m00".into(), until)));
+        assert!(elim.contains(&("m01".into(), until)));
     }
 
     #[test]
