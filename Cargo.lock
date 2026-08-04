@@ -4449,10 +4449,19 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "site-types",
  "tokio",
  "tower",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "site-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

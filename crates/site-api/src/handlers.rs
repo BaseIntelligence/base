@@ -10,18 +10,18 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::frames::coding_arena;
 use crate::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
     list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_window,
 };
-use crate::paginate::page_slice;
 use crate::state::SiteState;
-use crate::types::{
+use crate::upstream::{self, DESIGN, PRISM};
+use site_types::coding_arena;
+use site_types::page_slice;
+use site_types::{
     ArenaSlug, Governance, LandingSummary, MetricsEmission, MetricsPassRate, MetricsPopulation,
     NetworkMetrics, NetworkStats, ResultsMatrix, Validator,
 };
-use crate::upstream::{self, DESIGN, PRISM};
 
 /// Mount marketing site routes under `/v1/site`.
 pub fn site_router(state: SiteState) -> Router {
@@ -213,7 +213,7 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
 }
 
 fn empty_leaderboard_json(page: u32, page_size: u32) -> Value {
-    let empty = page_slice::<crate::types::LeaderboardRow>(&[], page, page_size);
+    let empty = page_slice::<crate::LeaderboardRow>(&[], page, page_size);
     json!({
         "items": empty.items,
         "page": empty.page,
@@ -350,7 +350,7 @@ async fn get_submissions(
     let status_filter = q.status.as_deref();
     match slug {
         ArenaSlug::Coding => {
-            Json(page_slice::<crate::types::Submission>(&[], page, page_size)).into_response()
+            Json(page_slice::<crate::Submission>(&[], page, page_size)).into_response()
         }
         ArenaSlug::Design => design_submissions_page(&st, page, page_size, status_filter).await,
         ArenaSlug::Prism => {
@@ -364,9 +364,9 @@ async fn get_submissions(
             let mut items: Vec<_> = rows.iter().filter_map(prism_submission).collect();
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
-                    "scored" => s.status == crate::types::SubmissionStatus::Scored,
-                    "pending" => s.status == crate::types::SubmissionStatus::Pending,
-                    "failed" => s.status == crate::types::SubmissionStatus::Failed,
+                    "scored" => s.status == crate::SubmissionStatus::Scored,
+                    "pending" => s.status == crate::SubmissionStatus::Pending,
+                    "failed" => s.status == crate::SubmissionStatus::Failed,
                     _ => true,
                 });
             }
@@ -432,9 +432,9 @@ async fn design_submissions_page(
     }
     if let Some(st_f) = status_filter {
         items.retain(|s| match st_f {
-            "scored" => s.status == crate::types::SubmissionStatus::Scored,
-            "pending" => s.status == crate::types::SubmissionStatus::Pending,
-            "failed" => s.status == crate::types::SubmissionStatus::Failed,
+            "scored" => s.status == crate::SubmissionStatus::Scored,
+            "pending" => s.status == crate::SubmissionStatus::Pending,
+            "failed" => s.status == crate::SubmissionStatus::Failed,
             _ => true,
         });
     }

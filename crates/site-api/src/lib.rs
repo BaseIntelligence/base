@@ -12,17 +12,14 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::doc_markdown)]
 
-mod frames;
 mod handlers;
 mod map;
-mod paginate;
 mod state;
-mod types;
 mod upstream;
 
 pub use handlers::site_router;
+pub use site_types::*;
 pub use state::SiteState;
-pub use types::*;
 
 /// Crate identity smoke.
 #[must_use]

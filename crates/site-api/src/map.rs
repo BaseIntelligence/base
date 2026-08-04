@@ -4,8 +4,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde_json::Value;
 
-use crate::frames::{coding_arena, design_frame, prism_frame};
-use crate::types::{
+use site_types::{coding_arena, design_frame, prism_frame};
+use site_types::{
     ActivityEvent, ActivitySeverity, Agent, Arena, ArenaSlug, LeaderboardRow, LossPoint,
     LossSeries, PrismWindow, RulesGate, SealedPaths, Submission, SubmissionStatus,
 };
