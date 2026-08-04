@@ -1,63 +1,63 @@
 {
-  "commit_sha": "49a161252e6123dd6e73cc2ebaf81a392294d645",
+  "commit_sha": "affabd629ef5dd39198daab2c1c6038b2975cab8",
   "env": "staging",
   "previous": {
-    "commit_sha": "0000000000000000000000000000000000000000",
+    "commit_sha": "affabd629ef5dd39198daab2c1c6038b2975cab8",
     "services": {
+      "design-challenge": {
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        "image": "design-challenge@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        "repository": "design-challenge"
+      },
       "gateway": {
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "image": "gateway@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "repository": "gateway"
-      },
-      "updater": {
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "image": "updater@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "repository": "updater"
-      },
-      "validator": {
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "image": "validator@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "repository": "validator"
+        "digest": "sha256:5faf304b08d61249afa9507cf8bcb17ee7e3ad6bbcf46419fd01c86b87d99d64",
+        "image": "ghcr.io/baseintelligence/base/gateway@sha256:5faf304b08d61249afa9507cf8bcb17ee7e3ad6bbcf46419fd01c86b87d99d64",
+        "repository": "ghcr.io/baseintelligence/base/gateway"
       },
       "prism-challenge": {
-        "repository": "prism-challenge",
-        "image": "prism-challenge@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        "digest": "sha256:138fa38cf91c01fc03fcd47027b210b75d9a2445b5b890fbdd8ae686d4322dfc",
+        "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:138fa38cf91c01fc03fcd47027b210b75d9a2445b5b890fbdd8ae686d4322dfc",
+        "repository": "ghcr.io/baseintelligence/base/prism-challenge"
       },
-      "design-challenge": {
-        "repository": "design-challenge",
-        "image": "design-challenge@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+      "updater": {
+        "digest": "sha256:5fcc8df50abbaba369df1b04289deb46c41f1edc0d8d53c3980d5a2faa658adf",
+        "image": "ghcr.io/baseintelligence/base/updater@sha256:5fcc8df50abbaba369df1b04289deb46c41f1edc0d8d53c3980d5a2faa658adf",
+        "repository": "ghcr.io/baseintelligence/base/updater"
+      },
+      "validator": {
+        "digest": "sha256:4ac9f6538ec6baaf461b231390c4b1add3967c6781894189a315c600cd44d68d",
+        "image": "ghcr.io/baseintelligence/base/validator@sha256:4ac9f6538ec6baaf461b231390c4b1add3967c6781894189a315c600cd44d68d",
+        "repository": "ghcr.io/baseintelligence/base/validator"
       }
     },
-    "updated_at": "1970-01-01T00:00:00Z"
+    "updated_at": "2026-08-04T12:51:58Z"
   },
   "services": {
+    "design-challenge": {
+      "digest": "sha256:97d0e6d94281fb7e0b7165a38558ff19501719db8f92cddd65e164fe32604164",
+      "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:97d0e6d94281fb7e0b7165a38558ff19501719db8f92cddd65e164fe32604164",
+      "repository": "ghcr.io/baseintelligence/base/design-challenge"
+    },
     "gateway": {
-      "digest": "sha256:5c3d428e93f31f81d3c371ede7c0244e303d5828ebdac4469d5364f30c07f512",
-      "image": "gateway@sha256:5c3d428e93f31f81d3c371ede7c0244e303d5828ebdac4469d5364f30c07f512",
-      "repository": "gateway"
-    },
-    "updater": {
-      "digest": "sha256:49e08e7b5b722779d6000933e4d5a0ea7202ac89a664c9a001a5820fc783b631",
-      "image": "updater@sha256:49e08e7b5b722779d6000933e4d5a0ea7202ac89a664c9a001a5820fc783b631",
-      "repository": "updater"
-    },
-    "validator": {
-      "digest": "sha256:b9fade2f42dfc91b7f9cda99ffdce5006fed90eef0858d78c7f570bc3a6969c8",
-      "image": "validator@sha256:b9fade2f42dfc91b7f9cda99ffdce5006fed90eef0858d78c7f570bc3a6969c8",
-      "repository": "validator"
+      "digest": "sha256:5faf304b08d61249afa9507cf8bcb17ee7e3ad6bbcf46419fd01c86b87d99d64",
+      "image": "ghcr.io/baseintelligence/base/gateway@sha256:5faf304b08d61249afa9507cf8bcb17ee7e3ad6bbcf46419fd01c86b87d99d64",
+      "repository": "ghcr.io/baseintelligence/base/gateway"
     },
     "prism-challenge": {
-      "repository": "prism-challenge",
-      "image": "prism-challenge@sha256:9ae6ea9ba1b489800da699e5975a5c5feca625b10c931082a83a002ba9be3680",
-      "digest": "sha256:9ae6ea9ba1b489800da699e5975a5c5feca625b10c931082a83a002ba9be3680"
+      "digest": "sha256:138fa38cf91c01fc03fcd47027b210b75d9a2445b5b890fbdd8ae686d4322dfc",
+      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:138fa38cf91c01fc03fcd47027b210b75d9a2445b5b890fbdd8ae686d4322dfc",
+      "repository": "ghcr.io/baseintelligence/base/prism-challenge"
     },
-    "design-challenge": {
-      "repository": "design-challenge",
-      "image": "design-challenge@sha256:0000000000000000000000000000000000000000000000000000000000000001",
-      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    "updater": {
+      "digest": "sha256:5fcc8df50abbaba369df1b04289deb46c41f1edc0d8d53c3980d5a2faa658adf",
+      "image": "ghcr.io/baseintelligence/base/updater@sha256:5fcc8df50abbaba369df1b04289deb46c41f1edc0d8d53c3980d5a2faa658adf",
+      "repository": "ghcr.io/baseintelligence/base/updater"
+    },
+    "validator": {
+      "digest": "sha256:4ac9f6538ec6baaf461b231390c4b1add3967c6781894189a315c600cd44d68d",
+      "image": "ghcr.io/baseintelligence/base/validator@sha256:4ac9f6538ec6baaf461b231390c4b1add3967c6781894189a315c600cd44d68d",
+      "repository": "ghcr.io/baseintelligence/base/validator"
     }
   },
-  "updated_at": "2026-07-30T23:00:16Z"
+  "updated_at": "2026-08-04T12:51:58Z"
 }
