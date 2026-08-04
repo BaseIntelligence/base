@@ -27,6 +27,8 @@ allow = [
     "MIT",
     # Transitive via ammonia → cssparser / dtoa-short (design-sanitize).
     "MPL-2.0",
+    # Transitive via rustpython-parser → malachite* (challenge-ast anti-cheat).
+    "LGPL-3.0-only",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
