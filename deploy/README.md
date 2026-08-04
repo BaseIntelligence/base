@@ -106,11 +106,13 @@ combination. Verify locally: `./deploy/scripts/assert-compose-matrix.sh`.
 
 **Prod release flow (tag-based):**
 1. CI passes on `dev` for commit X.
-2. `deploy-staging.yml` auto-deploys X to staging; staging pins recorded.
-3. Operator cuts `git tag vX.Y.Z` on commit X and pushes the tag.
-4. `deploy-prod.yml` preflight verifies: tag commit is on `dev`, CI passed for that SHA, staging pins match.
-5. `environment: production` (enable required reviewers in GitHub UI).
-6. Both prod hosts deployed with the same digest-pinned images.
+2. `images.yml` builds/pushes GHCR digests for X, promotes pin services into `deploy/pins/staging.json`, commits digests + pins to `dev`.
+3. Staging droplets may still deploy with `--build-from source` (iteration); the pin ladder is what authorizes prod.
+4. Operator cuts `git tag vX.Y.Z` on commit X and pushes the tag.
+5. `deploy-prod.yml` preflight: CI green for X; `origin/dev` staging pins `commit_sha == X`.
+6. Fail-closed Postgres backup (SSH dump on prod master → DO Spaces), then `promote.sh --env prod --confirm-prod` per service.
+7. Both prod hosts: `remote-deploy.sh --build-from registry` (pull GHCR `@sha256`, retag to Compose tags, `up --no-build`).
+8. Smoke `/healthz`. `environment: production` (enable required reviewers in GitHub UI).
 
 Required GitHub secrets:
 
@@ -124,6 +126,10 @@ Required GitHub secrets:
 | `PROD_SSH_KEY` | optional override of staging key |
 | `PROD_VALIDATOR_HOST` | public IPv4 of `base-prod-validator` |
 | `PROD_MASTER_GATEWAY_URL` | optional, default `http://10.116.0.3:8080` |
+| `BASE_BACKUP_ENDPOINT` | DO Spaces endpoint (e.g. `https://nyc3.digitaloceanspaces.com`) — **required for prod promote (fail-closed)** |
+| `SPACES_ACCESS_KEY_ID` | Spaces access key (fallback: `AWS_ACCESS_KEY_ID`) |
+| `SPACES_SECRET_ACCESS_KEY` | Spaces secret (fallback: `AWS_SECRET_ACCESS_KEY`) |
+| `BASE_BACKUP_BUCKET` | optional, default `base-backups` |
 
 > **Not AWS EKS.** Control plane stays Docker Compose on DigitalOcean droplets (existing design). A separate DOKS cluster on this account (`basecrawl-prod-nyc3`) is unrelated and must not host base.
 

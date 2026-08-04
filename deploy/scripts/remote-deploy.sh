@@ -2,6 +2,13 @@
 # remote-deploy.sh — rsync control-plane tree to a droplet and restart compose.
 #
 #   remote-deploy.sh --host root@IP --role master|validator [--gateway-endpoint URL]
+#                     [--build-from source|prebuilt|registry]
+#
+# --build-from:
+#   source   — docker compose build on the droplet (Rust compile in Docker)
+#   prebuilt — rsync target/release binaries, compose build with BUILD_FROM=prebuilt
+#   registry — pull GHCR digest pins from deploy/pins/<env>.json, retag to local
+#              Compose tags (validator:0.1.0, …), compose up --no-build
 #
 # Does NOT copy secrets from the operator machine by default. Secrets must
 # already exist on the host under deploy/env/*.env and deploy/secrets/* (age path).
@@ -10,6 +17,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# shellcheck source=lib-promote.sh
+source "${SCRIPT_DIR}/lib-promote.sh"
 
 HOST=""
 ROLE=""
@@ -21,12 +30,74 @@ REMOTE_DIR="${BASE_REMOTE_DIR:-/opt/base}"
 # Host-side staging root for held-out verifier binds; must match the compose
 # bind source and the container's BASE_VERIFY_WORK_ROOT byte-for-byte.
 STATE_ROOT="${BASE_STATE_DIR:-/var/lib/base}"
+GHCR_PREFIX="${BASE_GHCR_PREFIX:-ghcr.io/baseintelligence/base}"
+PIN_SERVICES=(validator gateway updater agent-challenge)
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 if [[ -n "${BASE_SSH_IDENTITY:-}" ]]; then
   SSH_OPTS+=(-i "$BASE_SSH_IDENTITY")
 fi
 
+# lib-promote.sh defines die() with a promote: prefix — restore ours.
 die() { echo "remote-deploy: $*" >&2; exit 1; }
+
+# Validate deploy/pins/<env>.json for registry mode (fail-closed).
+validate_registry_pins() {
+  local pin_path="$1"
+  local env_name="$2"
+  local digests_path=""
+  [[ -f "$pin_path" ]] || die "missing pin file: $pin_path"
+  digests_path="$(python3 - "$pin_path" "$ROOT" <<'PY'
+import json, sys
+from pathlib import Path
+pin = json.load(open(sys.argv[1], encoding="utf-8"))
+root = Path(sys.argv[2])
+commit = (pin.get("commit_sha") or "").strip()
+print(root / "deploy" / "digests" / f"{commit}.json" if commit else "")
+PY
+)"
+  python3 - "$pin_path" "$env_name" "$digests_path" "${PIN_SERVICES[@]}" <<'PY'
+import json, re, sys
+from pathlib import Path
+path, env_name, digests_path, *services = sys.argv[1:]
+with open(path, encoding="utf-8") as f:
+    pin = json.load(f)
+digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
+def placeholder(d: str) -> bool:
+    h = d.removeprefix("sha256:").lower()
+    return bool(re.fullmatch(r"0+", h) or re.fullmatch(r"0+1", h))
+commit = (pin.get("commit_sha") or "").strip().lower()
+if not commit or re.fullmatch(r"0+", commit):
+    raise SystemExit(f"registry mode: pin commit_sha missing or placeholder in {path}")
+svcs = pin.get("services") or {}
+for svc in services:
+    if svc not in svcs:
+        raise SystemExit(f"registry mode: missing service {svc!r} in {path}")
+    d = (svcs[svc].get("digest") or "").strip().lower()
+    if not digest_re.match(d):
+        raise SystemExit(f"registry mode: invalid digest for {svc}: {d!r}")
+    if placeholder(d):
+        raise SystemExit(
+            f"registry mode: placeholder digest for {svc} in {path} "
+            f"(promote real GHCR digests before --build-from registry)"
+        )
+# hypertraining/prism are default compose services. Prod registry deploys require
+# deploy/digests/<sha>.json (committed by images.yml). Staging may omit it when
+# still using --build-from source.
+dp = Path(digests_path) if digests_path else None
+if dp is not None and not dp.is_file():
+    if env_name == "prod":
+        raise SystemExit(
+            f"registry mode: prod requires digest manifest {dp} "
+            "(images.yml must commit deploy/digests/<sha>.json)"
+        )
+    print(
+        f"registry mode: WARNING: missing {dp} — "
+        "hypertraining/prism/base-agent will not be pulled",
+        file=sys.stderr,
+    )
+print(f"registry pins ok env={env_name} commit={commit} services={','.join(services)}")
+PY
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,7 +108,7 @@ while [[ $# -gt 0 ]]; do
     --bootstrap-secrets-from) BOOTSTRAP_FROM="${2:-}"; shift 2 ;;
     --build-from) BUILD_FROM="${2:-}"; shift 2 ;;
     --remote-dir) REMOTE_DIR="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
@@ -45,11 +116,19 @@ done
 [[ -n "$HOST" ]] || die "--host required"
 case "$ROLE" in master|validator) ;; *) die "--role master|validator required" ;; esac
 case "$ENV" in staging|prod) ;; *) die "--env staging|prod required" ;; esac
+case "$BUILD_FROM" in source|prebuilt|registry) ;; *)
+  die "--build-from must be source|prebuilt|registry (got: $BUILD_FROM)"
+esac
 
 ssh_h() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 scp_h() { scp "${SSH_OPTS[@]}" "$@"; }
 
 echo "remote-deploy: host=$HOST role=$ROLE env=$ENV remote=$REMOTE_DIR build_from=$BUILD_FROM"
+
+if [[ "$BUILD_FROM" == "registry" ]]; then
+  PIN_PATH="$(pin_path_for_env "$ROOT" "$ENV")"
+  validate_registry_pins "$PIN_PATH" "$ENV"
+fi
 
 ssh_h "mkdir -p '$REMOTE_DIR' && command -v docker >/dev/null"
 
@@ -188,13 +267,96 @@ cd '$REMOTE_DIR'
 $GE_EXPORT
 export BASE_DOCKER_BUILD_FROM='$BUILD_FROM'
 export COMPOSE_PROJECT_NAME=base
-# Build service images from current tree (source) unless prebuilt binaries exist.
-docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
+GHCR_PREFIX='${GHCR_PREFIX}'
+BUILD_FROM='$BUILD_FROM'
+ENV_NAME='$ENV'
+PIN_PATH="deploy/pins/\${ENV_NAME}.json"
+
+pull_retag() {
+  local pull_ref="\$1"
+  local local_tag="\$2"
+  echo "remote-deploy: docker pull \$pull_ref"
+  docker pull "\$pull_ref"
+  docker tag "\$pull_ref" "\$local_tag"
+  echo "remote-deploy: retagged → \$local_tag"
+}
+
+ghcr_pull_ref() {
+  # Prefer full registry image from pin; else GHCR prefix + service@digest.
+  local service="\$1"
+  local image="\$2"
+  local digest="\$3"
+  if [[ "\$image" == */*@sha256:* ]]; then
+    printf '%s' "\$image"
+  else
+    printf '%s/%s@%s' "\$GHCR_PREFIX" "\$service" "\$digest"
+  fi
+}
+
+if [[ "\$BUILD_FROM" == "registry" ]]; then
+  echo "remote-deploy: registry mode — pull GHCR digests (no compose build)"
+  [[ -f "\$PIN_PATH" ]] || { echo "missing \$PIN_PATH" >&2; exit 1; }
+  COMMIT_SHA=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("commit_sha",""))' "\$PIN_PATH")
+  # Required pin services → local Compose tags (<svc>:0.1.0).
+  python3 - "\$PIN_PATH" <<'PY' | while IFS=\$'\t' read -r service image digest; do
+import json, sys
+pin = json.load(open(sys.argv[1], encoding="utf-8"))
+for svc, meta in sorted((pin.get("services") or {}).items()):
+    print(f"{svc}\t{meta.get('image','')}\t{meta.get('digest','')}")
+PY
+    [[ -n "\$service" ]] || continue
+    ref=\$(ghcr_pull_ref "\$service" "\$image" "\$digest")
+    pull_retag "\$ref" "\${service}:0.1.0"
+  done
+  # Optional challenge / agent images from deploy/digests/<sha>.json when present.
+  DIGESTS_FILE="deploy/digests/\${COMMIT_SHA}.json"
+  if [[ -f "\$DIGESTS_FILE" ]]; then
+    echo "remote-deploy: optional pulls from \$DIGESTS_FILE"
+    python3 - "\$DIGESTS_FILE" <<'PY' | while IFS=\$'\t' read -r service image digest tag; do
+import json, sys
+optional = {
+    "hypertraining-challenge",
+    "prism-challenge",
+    "base-agent",
+    "base-attest-helper",
+}
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+images = data.get("images") or {}
+for svc in sorted(optional):
+    meta = images.get(svc) or {}
+    digest = (meta.get("digest") or "").strip()
+    if not digest.startswith("sha256:"):
+        continue
+    image = (meta.get("image") or "").strip()
+    tag = (meta.get("tag") or f"{svc}:0.1.0").strip()
+    # Prefer local compose tag name (last path segment) when tag is a registry ref.
+    if "/" in tag and ":" in tag:
+        tag = tag.rsplit("/", 1)[-1]
+    if ":" not in tag:
+        tag = f"{svc}:0.1.0"
+    print(f"{svc}\t{image}\t{digest}\t{tag}")
+PY
+      [[ -n "\$service" ]] || continue
+      ref=\$(ghcr_pull_ref "\$service" "\$image" "\$digest")
+      pull_retag "\$ref" "\$tag"
+    done
+  else
+    echo "remote-deploy: no \$DIGESTS_FILE — skipping optional hypertraining/prism/base-agent pulls"
+    echo "remote-deploy: (those images are only required for staging --build-from source)"
+  fi
+else
+  # Build service images from current tree (source) or prebuilt binaries.
+  docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
+fi
+
 # The updater can only pull from a registry. Enable it only when the desired
 # image is a registry reference (host/path@sha256:…), otherwise every tick 404s
 # trying to pull a locally-built tag from Docker Hub.
 UP_PROFILE=""
 desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' deploy/env/updater.env 2>/dev/null | tail -1)
+if [[ -z "\$desired" && -f "deploy/pins/\${ENV_NAME}.desired.env" ]]; then
+  desired=\$(sed -n 's/^BASE_UPDATER_DESIRED_IMAGE=//p' "deploy/pins/\${ENV_NAME}.desired.env" | tail -1)
+fi
 case "\$desired" in
   */*) UP_PROFILE="--profile auto-update"; echo "updater enabled (registry image)" ;;
   *)
@@ -203,7 +365,11 @@ case "\$desired" in
     docker compose ${COMPOSE_FILES[*]} --profile auto-update rm -sf updater >/dev/null 2>&1 || true
     ;;
 esac
-docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE up -d --remove-orphans
+UP_ARGS=(up -d --remove-orphans)
+if [[ "\$BUILD_FROM" == "registry" ]]; then
+  UP_ARGS+=(--no-build)
+fi
+docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE "\${UP_ARGS[@]}"
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
 # Local health probes via published tunnels if present, else container exec.
 sleep 5

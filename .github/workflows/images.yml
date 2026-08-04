@@ -2,6 +2,8 @@ name: images
 
 # Build service images, push by commit SHA + branch tag, record digests as an artifact.
 # Digests-only pins are consumed by deploy/scripts/promote.sh.
+# After merge: promote pin services into deploy/pins/staging.json and commit so
+# deploy-prod preflight can match staging.json.commit_sha to the image SHA.
 # Registry: GHCR only (never AWS ECR).
 
 on:
@@ -23,6 +25,10 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-push-digests:
@@ -180,6 +186,95 @@ jobs:
           name: base-image-digests-${{ github.sha }}
           path: deploy/digests/${{ github.sha }}.json
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Close the staging → prod ladder: write deploy/digests/<sha>.json and promote
+  # pin services into deploy/pins/staging.json, then commit/push to origin/dev.
+  # Staging droplet deploy remains --build-from source (deploy-staging / ci.yml).
+  # ---------------------------------------------------------------------------
+  update-staging-pins:
+    name: update · commit staging pins
+    needs: merge-digests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download merged digests
+        uses: actions/download-artifact@v4
+        with:
+          name: base-image-digests-${{ github.sha }}
+          path: /tmp/digests-in
+
+      - name: Record digests + promote staging pins
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          mkdir -p deploy/digests
+          # Artifact may be the file itself or nested under deploy/digests/
+          SRC=""
+          if [[ -f "/tmp/digests-in/${SHA}.json" ]]; then
+            SRC="/tmp/digests-in/${SHA}.json"
+          elif [[ -f "/tmp/digests-in/deploy/digests/${SHA}.json" ]]; then
+            SRC="/tmp/digests-in/deploy/digests/${SHA}.json"
+          else
+            SRC=$(find /tmp/digests-in -name "${SHA}.json" -type f | head -1)
+          fi
+          test -n "$SRC" && test -f "$SRC"
+          cp "$SRC" "deploy/digests/${SHA}.json"
+          echo "Recorded digest manifest: deploy/digests/${SHA}.json"
+          chmod +x deploy/scripts/promote.sh
+          # Pin services only (validator/gateway/updater/agent-challenge).
+          # --skip-backup: this job records CI digests; Spaces/PG backup runs at
+          # prod promote (deploy-prod.yml, fail-closed).
+          for svc in validator gateway updater agent-challenge; do
+            IMAGE=$(python3 -c '
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          meta = d["images"][sys.argv[2]]
+          print(meta["image"])
+          ' "deploy/digests/${SHA}.json" "$svc")
+            echo "staging promote $svc → $IMAGE"
+            ./deploy/scripts/promote.sh \
+              --env staging \
+              --service "$svc" \
+              --image "$IMAGE" \
+              --commit "$SHA" \
+              --skip-backup
+          done
+          python3 -c '
+          import json, sys
+          p = json.load(open("deploy/pins/staging.json"))
+          assert p["commit_sha"] == sys.argv[1], (p["commit_sha"], sys.argv[1])
+          for s in ("validator", "gateway", "updater", "agent-challenge"):
+              assert s in p["services"], s
+              assert p["services"][s]["digest"].startswith("sha256:")
+          print("staging pins ok", p["commit_sha"])
+          ' "$SHA"
+
+      - name: Commit and push staging pins
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "deploy/digests/${SHA}.json" deploy/pins/staging.json
+          if git diff --cached --quiet; then
+            echo "No pin/digest changes to commit"
+            exit 0
+          fi
+          git commit -m "deploy: staging pins for ${SHA}"
+          # Rebase onto latest dev in case another pin commit landed.
+          git pull --rebase origin dev
+          git push origin HEAD:dev
 
   # ---------------------------------------------------------------------------
   # Make GHCR packages public so unauthenticated / Phala pulls work. Lives here

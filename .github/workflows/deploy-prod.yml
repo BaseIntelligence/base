@@ -5,12 +5,14 @@ name: deploy-prod
 # Trigger: push tag v*.*.* (cut from dev) or manual workflow_dispatch.
 # NEVER triggers on push to main (main holds the legacy pre-Rust stack).
 #
-# Preflight: tag commit must be an ancestor of origin/dev, CI must have
-# concluded success for that SHA, and staging pins must carry that commit's
-# digests (staging ladder enforced).
-#
-# Deploys master (PROD_HOST) + validator (PROD_VALIDATOR_HOST) in parallel.
-# Uses promote.sh with --confirm-prod (no source builds in prod).
+# Steps:
+#   1. Preflight — CI green for the tag SHA; origin/dev staging pins carry
+#      that commit_sha (ladder tip may be a later pin-commit on dev).
+#   2. Fail-closed Postgres backup to DO Spaces, then promote.sh --env prod
+#      --confirm-prod for each pin service (staging.json → prod.json).
+#   3. Deploy master + validator with remote-deploy.sh --build-from registry
+#      (GHCR digest pull + retag; no Rust compile on the droplet).
+#   4. Smoke /healthz (fail-closed).
 
 on:
   push:
@@ -23,7 +25,7 @@ on:
         required: false
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 concurrency:
@@ -57,6 +59,8 @@ jobs:
           echo "Resolved commit: $SHA"
 
       - name: Verify CI succeeded for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           SHA="${{ steps.resolve.outputs.commit_sha }}"
@@ -79,24 +83,231 @@ jobs:
         run: |
           set -euo pipefail
           SHA="${{ steps.resolve.outputs.commit_sha }}"
-          if [[ ! -f deploy/pins/staging.json ]]; then
-            echo "deploy/pins/staging.json not found — staging must be deployed first"
+          # Pin commits land on origin/dev after images.yml; the tag may point at
+          # the image SHA while staging.json lives on a later pin commit.
+          git fetch origin dev
+          if ! git show origin/dev:deploy/pins/staging.json > /tmp/staging-pins.json 2>/dev/null; then
+            echo "deploy/pins/staging.json not found on origin/dev — staging pins must be committed first"
             exit 1
           fi
           pin_sha=$(python3 -c \
-            "import json; print(json.load(open('deploy/pins/staging.json')).get('commit_sha',''))")
+            "import json; print(json.load(open('/tmp/staging-pins.json')).get('commit_sha',''))")
           if [[ "$pin_sha" != "$SHA" ]]; then
             echo "Staging pins commit_sha=$pin_sha, expected $SHA"
-            echo "Staging must be deployed with this commit before promoting to prod."
+            echo "Staging must record digests for this commit before promoting to prod."
             exit 1
           fi
-          echo "Staging pins match commit $SHA"
+          echo "Staging pins on origin/dev match commit $SHA"
+
+  promote:
+    name: promote staging → prod pins
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      pins_artifact: prod-pins-${{ needs.preflight.outputs.commit_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Load staging pins from origin/dev
+        run: |
+          set -euo pipefail
+          git fetch origin dev
+          git show origin/dev:deploy/pins/staging.json > deploy/pins/staging.json
+          # Digests manifest (optional pulls for hypertraining/prism) when present.
+          SHA="${{ needs.preflight.outputs.commit_sha }}"
+          if git show "origin/dev:deploy/digests/${SHA}.json" > "deploy/digests/${SHA}.json" 2>/dev/null; then
+            echo "Loaded deploy/digests/${SHA}.json from origin/dev"
+          else
+            echo "WARNING: deploy/digests/${SHA}.json missing on origin/dev"
+          fi
+
+      - name: Fail-closed — require Spaces backup credentials
+        env:
+          BASE_BACKUP_ENDPOINT: ${{ secrets.BASE_BACKUP_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${BASE_BACKUP_ENDPOINT:-}" ]] || missing+=("BASE_BACKUP_ENDPOINT")
+          [[ -n "${AWS_ACCESS_KEY_ID:-}" ]] || missing+=("SPACES_ACCESS_KEY_ID (or AWS_ACCESS_KEY_ID)")
+          [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || missing+=("SPACES_SECRET_ACCESS_KEY (or AWS_SECRET_ACCESS_KEY)")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Prod promote is fail-closed: missing GitHub secrets: ${missing[*]}"
+            echo "Set DO Spaces credentials before cutting a prod tag."
+            echo "See deploy/README.md § Promotion pipeline (BASE_BACKUP_ENDPOINT + Spaces keys)."
+            echo "Postgres dump runs on the prod master host via SSH; Spaces upload runs here."
+            exit 1
+          fi
+          echo "Spaces backup credentials present"
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          KEY="${{ secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}"
+          test -n "$KEY" || { echo "missing PROD_SSH_KEY (or STAGING_SSH_KEY fallback)"; exit 1; }
+          mkdir -p ~/.ssh
+          echo "$KEY" > ~/.ssh/deploy_ed25519
+          chmod 600 ~/.ssh/deploy_ed25519
+          echo "StrictHostKeyChecking accept-new" > ~/.ssh/config
+
+      - name: Open firewall for this runner
+        id: fw
+        uses: ./.github/actions/do-firewall
+        with:
+          action: open
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Backup prod Postgres (SSH) → Spaces
+        id: backup
+        env:
+          BASE_BACKUP_ENDPOINT: ${{ secrets.BASE_BACKUP_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+          BASE_BACKUP_BUCKET: ${{ secrets.BASE_BACKUP_BUCKET || 'base-backups' }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'nyc3' }}
+        run: |
+          set -euo pipefail
+          command -v aws >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq awscli; }
+          HOST="root@${{ secrets.PROD_HOST }}"
+          test -n "${{ secrets.PROD_HOST }}" || { echo "missing PROD_HOST"; exit 1; }
+          export BASE_SSH_IDENTITY="$HOME/.ssh/deploy_ed25519"
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          DUMP="/tmp/base-prod-${STAMP}.sql.gz"
+          META="/tmp/base-prod-${STAMP}.meta.json"
+          # Postgres is not published on the host; dump inside the container.
+          ssh -i "$BASE_SSH_IDENTITY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "$HOST" \
+            'set -euo pipefail
+             cd /opt/base
+             cid=$(docker compose -f docker-compose.yml -f deploy/compose/role-master.yml -f deploy/compose/env-prod.yml ps -q postgres)
+             test -n "$cid"
+             docker exec "$cid" sh -c "pg_dump -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" --format=plain --no-owner --no-acl"' \
+            | gzip -n > "$DUMP"
+          BYTES=$(wc -c < "$DUMP")
+          SUM=$(sha256sum "$DUMP" | awk '{print $1}')
+          test "$BYTES" -gt 32
+          python3 - "$META" "$STAMP" "$SUM" "$BYTES" <<'PY'
+          import json, sys
+          path, stamp, digest, nbytes = sys.argv[1:5]
+          json.dump({
+              "ok": True,
+              "env": "prod",
+              "stamp": stamp,
+              "sha256": digest,
+              "bytes": int(nbytes),
+              "source": "ssh+docker-exec",
+          }, open(path, "w"), indent=2, sort_keys=True)
+          open(path, "a").write("\n")
+          PY
+          URI="s3://${BASE_BACKUP_BUCKET}/pg/prod/base-prod-${STAMP}.sql.gz"
+          aws --endpoint-url "$BASE_BACKUP_ENDPOINT" s3 cp "$DUMP" "$URI" --only-show-errors
+          aws --endpoint-url "$BASE_BACKUP_ENDPOINT" s3 cp "$META" "${URI%.sql.gz}.meta.json" --only-show-errors
+          echo "backup_uri=$URI" >> "$GITHUB_OUTPUT"
+          echo "Backup ok: $URI ($BYTES bytes, sha256=$SUM)"
+
+      - name: Close firewall for promote runner
+        if: always() && steps.fw.outputs.ip != ''
+        uses: ./.github/actions/do-firewall
+        with:
+          action: close
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          ip: ${{ steps.fw.outputs.ip }}
+          firewall-id: ${{ steps.fw.outputs.firewall-id }}
+
+      - name: Promote each service staging → prod
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.preflight.outputs.commit_sha }}"
+          chmod +x deploy/scripts/promote.sh
+          # Backup already succeeded above (fail-closed). promote.sh --skip-backup
+          # is used only because Postgres is not reachable as PGHOST from the runner;
+          # we never skip the Spaces backup step itself.
+          mapfile -t SERVICES < <(python3 -c '
+          import json
+          for s in sorted(json.load(open("deploy/pins/staging.json"))["services"]):
+              print(s)
+          ')
+          for svc in "${SERVICES[@]}"; do
+            IMAGE=$(python3 -c '
+          import json, sys
+          meta = json.load(open("deploy/pins/staging.json"))["services"][sys.argv[1]]
+          img = meta.get("image") or ""
+          digest = meta["digest"]
+          if "/" in img and "@sha256:" in img:
+              print(img)
+          else:
+              print(f"ghcr.io/baseintelligence/base/{sys.argv[1]}@{digest}")
+          ' "$svc")
+            echo "Promoting $svc → $IMAGE"
+            ./deploy/scripts/promote.sh \
+              --env prod \
+              --service "$svc" \
+              --image "$IMAGE" \
+              --confirm-prod \
+              --commit "$SHA" \
+              --skip-backup
+          done
+          python3 -c 'import json; p=json.load(open("deploy/pins/prod.json")); assert p["commit_sha"]; print(p["commit_sha"], list(p["services"]))'
+
+      - name: Stage pins artifact
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.preflight.outputs.commit_sha }}"
+          STAGE="/tmp/prod-pins-artifact"
+          mkdir -p "$STAGE/deploy/pins" "$STAGE/deploy/digests"
+          cp deploy/pins/prod.json "$STAGE/deploy/pins/prod.json"
+          cp deploy/pins/staging.json "$STAGE/deploy/pins/staging.json"
+          if [[ -f "deploy/digests/${SHA}.json" ]]; then
+            cp "deploy/digests/${SHA}.json" "$STAGE/deploy/digests/${SHA}.json"
+          fi
+
+      - name: Upload promoted pins artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-pins-${{ needs.preflight.outputs.commit_sha }}
+          path: /tmp/prod-pins-artifact
+          if-no-files-found: error
+
+      - name: Commit prod pins to origin/dev
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.preflight.outputs.commit_sha }}"
+          mkdir -p /tmp/prod-pin-commit
+          cp deploy/pins/prod.json /tmp/prod-pin-commit/prod.json
+          if [[ -f "deploy/digests/${SHA}.json" ]]; then
+            cp "deploy/digests/${SHA}.json" "/tmp/prod-pin-commit/${SHA}.json"
+          fi
+          git fetch origin dev
+          git checkout -B dev origin/dev
+          cp /tmp/prod-pin-commit/prod.json deploy/pins/prod.json
+          if [[ -f "/tmp/prod-pin-commit/${SHA}.json" ]]; then
+            mkdir -p deploy/digests
+            cp "/tmp/prod-pin-commit/${SHA}.json" "deploy/digests/${SHA}.json"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/pins/prod.json
+          if [[ -f "deploy/digests/${SHA}.json" ]]; then
+            git add "deploy/digests/${SHA}.json"
+          fi
+          if git diff --cached --quiet; then
+            echo "No pin changes to commit"
+            exit 0
+          fi
+          git commit -m "deploy: promote prod pins for ${SHA}"
+          git push origin dev
 
   deploy:
     name: deploy prod ${{ matrix.role }}
-    needs: preflight
+    needs: [preflight, promote]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     environment: production
     strategy:
       fail-fast: false
@@ -111,6 +322,39 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.commit_sha }}
+
+      - name: Download promoted pins
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-pins-${{ needs.preflight.outputs.commit_sha }}
+          path: /tmp/prod-pins
+
+      - name: Install promoted pins into tree
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.preflight.outputs.commit_sha }}"
+          if [[ -f /tmp/prod-pins/deploy/pins/prod.json ]]; then
+            BASE=/tmp/prod-pins/deploy
+          elif [[ -f /tmp/prod-pins/pins/prod.json ]]; then
+            BASE=/tmp/prod-pins
+          else
+            echo "unexpected artifact layout:"; find /tmp/prod-pins -type f | head -50
+            exit 1
+          fi
+          mkdir -p deploy/pins deploy/digests
+          cp "$BASE/pins/prod.json" deploy/pins/prod.json
+          cp "$BASE/pins/staging.json" deploy/pins/staging.json
+          if [[ -f "$BASE/digests/${SHA}.json" ]]; then
+            cp "$BASE/digests/${SHA}.json" "deploy/digests/${SHA}.json"
+          fi
+          python3 -c '
+          import json, re
+          p = json.load(open("deploy/pins/prod.json"))
+          d = p["services"]["validator"]["digest"]
+          h = d.split(":", 1)[-1].lower()
+          assert not re.fullmatch(r"0+", h) and not re.fullmatch(r"0+1", h), d
+          print("prod pins ready", p["commit_sha"])
+          '
 
       - name: Install SSH key
         run: |
@@ -141,7 +385,7 @@ jobs:
           action: open
           token: ${{ secrets.DIGITALOCEAN_TOKEN }}
 
-      - name: Deploy
+      - name: Deploy (registry digests)
         run: |
           set -euo pipefail
           chmod +x deploy/scripts/remote-deploy.sh
@@ -156,7 +400,7 @@ jobs:
             --host "root@${{ steps.host.outputs.value }}" \
             --role "${{ matrix.role }}" \
             --env prod \
-            --build-from source \
+            --build-from registry \
             "${EXTRA[@]}"
 
       - name: Smoke health (fail-closed)

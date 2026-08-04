@@ -34,6 +34,12 @@ tmp/
 .cache/
 coverage/
 lcov.info
+.omo/
+handoffs/
+
+# Accidental local design/junk at repo root
+/test-hero-*.png
+/humane-ui-digest.md
 
 # Materialized local env (age-decrypted or copied examples); keep *.env.example
 deploy/env/*.env
@@ -55,6 +61,7 @@ miner-runtime/
 /receipt_sk
 deploy/secrets/*
 !deploy/secrets/README.md
+
 
 __pycache__/
 *.pyc

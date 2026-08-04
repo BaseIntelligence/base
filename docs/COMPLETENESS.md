@@ -20,8 +20,8 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 | `ChainClient` trait | done | 14 methods, full trait surface. |
 | `FakeChain` | test-only | Deterministic in-memory. No longer reachable from any binary; used by unit and adversarial tests. |
 | `NotImplementedChain` | stub | Every method returns `Err(NotImplemented)`. |
-| `LiveRpcChain` (feature `live`) | stub | `current_block` + `block_hash` only; `metagraph_at`, `set_weights`, `submit_timelocked_weights` all `NotImplemented`. |
-| `chain-live` crate | **done** | Full JSON-RPC reads (`Identity` hasher, `Keys` double-map enumeration, `ValueQuery` defaults) + sr25519 signed `set_weights` / `commit_timelocked_mechanism_weights`. The **only** backend in `bins/validator` and `bins/gateway`; both fail fast if the chain is unreachable. Four `#[ignore]` tests read live testnet 541. |
+| `LiveRpcChain` (feature `live` on older chain helpers) | stub | Legacy stub surface: `current_block` + `block_hash` only; metagraph / weight submit paths `NotImplemented`. **Not** the production backend. |
+| `chain-live` crate (`LiveChainClient`) | **done** | Production chain client: full JSON-RPC reads (`Identity` hasher, `Keys` double-map enumeration, `ValueQuery` defaults) + sr25519 signed `set_weights` / `commit_timelocked_mechanism_weights`. The **only** backend in `bins/validator` and `bins/gateway`; both fail fast if the chain is unreachable. Four `#[ignore]` tests read live testnet 541. Do not confuse with stub `LiveRpcChain` above. |
 | `BASE_CHAIN_ENDPOINT` | done | Read by `config::Config`; consumed by `chain-live::LiveChainClient::connect`. |
 | CRV4 tlock encryption | **deferred** | Drand BLS12-381 IBE not in the dependency graph. Extrinsic path ships; encryption is a spike issue. |
 
@@ -76,15 +76,18 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 
 ## Infrastructure
 
+Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`](../deploy/AGENTS.md), [`docs/AGENTS.md`](AGENTS.md). Deploy detail remains in [`deploy/README.md`](../deploy/README.md).
+
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Terraform droplets | done | 4 of 4: staging master, staging validator, prod master, prod validator. |
 | Staging master | done | Migrated to `/opt/base` CI-managed; old `/opt/gbase` stack torn down. |
 | Staging validator | done | Redeployed from same commit; `bundle gateway signature invalid` resolved. |
 | Prod master | pending | Droplet up, awaiting the mainnet owner wallet and the first `v*.*.*` tag. |
-| `deploy-staging.yml` | done | Auto on CI green; passes `--env staging`, fail-closed health gate. |
-| `deploy-prod.yml` | done | Tag-based (`v*.*.*`); preflight checks CI + staging pins; `environment: production`. |
-| GitHub secrets | done | All 8 secrets set (staging + prod master + prod validator + gateway URLs). |
+| `deploy-staging.yml` | done | Auto on CI green; `--build-from source` for fast iteration; fail-closed health gate. |
+| `deploy-prod.yml` | done | Tag-based (`v*.*.*`); preflight (CI green + `origin/dev` staging pins `commit_sha`); fail-closed Spaces backup; `promote.sh --confirm-prod`; `--build-from registry` (GHCR digest pull, no Rust compile on droplet). |
+| `images.yml` pin ladder | done | After GHCR push: write `deploy/digests/<sha>.json`, `promote.sh --env staging` for pin services, commit/push so prod preflight can match. |
+| GitHub secrets | done | Host/SSH/gateway secrets set. Prod promote also needs Spaces: `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (fail-closed if absent). |
 
 ## Keys and identity
 
@@ -117,3 +120,7 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 | DCAP error classification | Matches on `anyhow` message text; re-run `cargo test -p attest-policy --features dcap` after any `dcap-qvl` bump. |
 | `agent-pack` LOC | 1496 of a 1500 cap; the next addition needs a crate split. |
 | Mainnet (netuid 100) | Owner wallet not yet on this machine, so prod runs with `BASE_GATEWAY_REQUIRE_OWNER=0`. |
+| Prod pin placeholders | `deploy/pins/prod.json` still ships zero-digests until the first successful promote; registry mode rejects placeholders. |
+| Spaces backup secrets | First prod promote is fail-closed without `BASE_BACKUP_ENDPOINT` + `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (or AWS_* fallbacks) in GitHub. |
+| GitHub `production` environment | Enable required reviewers (and branch protection on `dev` as desired) before relying on tag-driven prod; workflow already sets `environment: production`. |
+| TLS ACME | Ports 80/443 open on the firewall; gateway TLS termination not shipped yet. |
