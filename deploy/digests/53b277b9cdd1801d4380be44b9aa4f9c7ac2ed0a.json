@@ -1,0 +1,71 @@
+{
+  "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+  "created_at": "2026-08-04T17:03:47Z",
+  "images": {
+    "base-attest-helper": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:77d4e40f7729fa6a5c3a38077fb9a932eb2cd606cfce394d326939f6ccdeb764",
+      "image": "ghcr.io/baseintelligence/base/base-attest-helper@sha256:77d4e40f7729fa6a5c3a38077fb9a932eb2cd606cfce394d326939f6ccdeb764",
+      "repository": "ghcr.io/baseintelligence/base/base-attest-helper",
+      "service": "base-attest-helper",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "design-challenge": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:cdc2b4a67f922a4f12334dcde81905f79899533e8d097cdf37f476064c8edf64",
+      "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:cdc2b4a67f922a4f12334dcde81905f79899533e8d097cdf37f476064c8edf64",
+      "repository": "ghcr.io/baseintelligence/base/design-challenge",
+      "service": "design-challenge",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "design-egress-proxy": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:38ecd01e8b728fa13ae21556b44a53446e2d9175242da5b8676dc02bfe3a5a31",
+      "image": "ghcr.io/baseintelligence/base/design-egress-proxy@sha256:38ecd01e8b728fa13ae21556b44a53446e2d9175242da5b8676dc02bfe3a5a31",
+      "repository": "ghcr.io/baseintelligence/base/design-egress-proxy",
+      "service": "design-egress-proxy",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "design-runtime": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:8e3f8bf529f6a9046174c4e2d19510944c17ebb2eaa57da63e0646b7ecf65679",
+      "image": "ghcr.io/baseintelligence/base/design-runtime@sha256:8e3f8bf529f6a9046174c4e2d19510944c17ebb2eaa57da63e0646b7ecf65679",
+      "repository": "ghcr.io/baseintelligence/base/design-runtime",
+      "service": "design-runtime",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "gateway": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:682d8a4c5d1965262e08b36d6eaecf9fa1d69739f75bd644985c12d7b269ee2d",
+      "image": "ghcr.io/baseintelligence/base/gateway@sha256:682d8a4c5d1965262e08b36d6eaecf9fa1d69739f75bd644985c12d7b269ee2d",
+      "repository": "ghcr.io/baseintelligence/base/gateway",
+      "service": "gateway",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "prism-challenge": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:20d9af76e826b567f9e9839c05461cba2ee1ac7ecffd7d08c37957cb1b025d30",
+      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:20d9af76e826b567f9e9839c05461cba2ee1ac7ecffd7d08c37957cb1b025d30",
+      "repository": "ghcr.io/baseintelligence/base/prism-challenge",
+      "service": "prism-challenge",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "updater": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:e2e611cd578fb926e3c15e005a41d48ea25285b2efe5d5cd19363cc3a9912e02",
+      "image": "ghcr.io/baseintelligence/base/updater@sha256:e2e611cd578fb926e3c15e005a41d48ea25285b2efe5d5cd19363cc3a9912e02",
+      "repository": "ghcr.io/baseintelligence/base/updater",
+      "service": "updater",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    },
+    "validator": {
+      "commit_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a",
+      "digest": "sha256:dd7d9e5666e3ede4eb2004678119dd53f750a7446e21e98a1a473c8fda9719a5",
+      "image": "ghcr.io/baseintelligence/base/validator@sha256:dd7d9e5666e3ede4eb2004678119dd53f750a7446e21e98a1a473c8fda9719a5",
+      "repository": "ghcr.io/baseintelligence/base/validator",
+      "service": "validator",
+      "tag_sha": "53b277b9cdd1801d4380be44b9aa4f9c7ac2ed0a"
+    }
+  },
+  "registry": "ghcr.io"
+}
