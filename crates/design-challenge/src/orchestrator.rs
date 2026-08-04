@@ -13,8 +13,9 @@ use challenge_common::{
     GatewayClient, PinnedBlockHash,
 };
 use crypto::KEY_LEN;
-use design_challenge_task::{round_id_at, ROUND_SECS, SCORING_VERSION};
-use design_harness::HarnessBundle;
+use design_challenge_task::{
+    day_index_for_round, round_id_at, rounds_for_day, ROUND_SECS, SCORING_VERSION,
+};
 use design_http::{mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
@@ -26,7 +27,7 @@ use serde_json::json;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::score::{not_attempted, score_round, to_leaf, ScorePlan};
+use crate::score::{not_attempted, score_day, to_leaf, DayScorePlan};
 use crate::CHALLENGE_ID;
 
 /// Cap harness log payload stored in stage-event detail (JSON).
@@ -249,15 +250,62 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             winner_miners.dedup();
         }
 
-        let plan = ScorePlan {
-            miners_with_harness: miners_with_harness.iter().cloned().collect(),
-            miners_clean: miners_clean.iter().cloned().collect(),
-            winner_miners,
-            cheat_miners: cheat_miners.iter().cloned().collect(),
-        };
-        let scores = score_round(&plan);
+        let _ = (miners_clean, winner_miners);
+
+        // Aggregate UTC-day round wins → share SCORE_MAX among miners with ≥2 wins.
+        let (day_start, day_end) = rounds_for_day(day_index_for_round(rid));
+        let day_awards = self
+            .store
+            .list_round_awards(day_start, day_end)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut win_counts: BTreeMap<String, u32> = BTreeMap::new();
+        let mut day_miners = miners_with_harness.clone();
+        let mut day_cheat = cheat_miners.clone();
+        for a in &day_awards {
+            for hid in &a.winner_harness_ids {
+                let hk = if let Some(h) = harness_to_miner.get(hid) {
+                    h.clone()
+                } else if let Some(h) = self
+                    .store
+                    .get_harness(hid)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    day_miners.insert(h.miner_hotkey.clone());
+                    h.miner_hotkey
+                } else {
+                    continue;
+                };
+                *win_counts.entry(hk).or_insert(0) += 1;
+            }
+            // Pull miners/cheats from other rounds in the day for leaf projection.
+            if a.round_id != rid {
+                if let Ok(other_runs) = self.store.runs_for_round(a.round_id).await {
+                    for r in other_runs {
+                        if let Ok(Some(h)) = self.store.get_harness(&r.harness_id).await {
+                            day_miners.insert(h.miner_hotkey.clone());
+                            let verdict = r
+                                .agentic_verdict
+                                .as_ref()
+                                .and_then(|v| v.get("verdict").and_then(|x| x.as_str()));
+                            if matches!(verdict, Some("cheat" | "suspicious")) {
+                                day_cheat.insert(h.miner_hotkey);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let scores = score_day(&DayScorePlan {
+            win_counts: win_counts.clone(),
+            miners_with_harness: day_miners,
+            cheat_miners: day_cheat,
+        });
 
         for (hk, fs) in &scores {
+            let wins = win_counts.get(hk).copied().unwrap_or(0);
             let _ = self
                 .store
                 .upsert_rating(&RatingRow {
@@ -267,7 +315,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                         FinalScore::Score(v) => i32::try_from(*v / 1000).unwrap_or(0),
                         FinalScore::NoScore(_) => 0,
                     },
-                    wins: 0,
+                    wins,
                     losses: 0,
                     final_score: Some(fs.clone()),
                 })
@@ -401,12 +449,12 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .find(|p| p.id == run.prompt_id)
             .map(|p| p.prompt.clone())
             .unwrap_or_default();
-        let bundle = HarnessBundle {
-            miner_hotkey: harness.miner_hotkey,
-            agent_py: harness.agent_py.clone(),
-            pyproject_toml: harness.pyproject_toml,
-            extra_files: harness.extra_files,
-        };
+        let bundle = design_harness::bundle_from_stored(
+            harness.miner_hotkey,
+            harness.agent_py.clone(),
+            harness.pyproject_toml,
+            harness.extra_files,
+        );
         let sandbox = Arc::clone(&self.sandbox);
         let llm = self.cfg.llm_proxy.clone();
         let run_id = run.id.clone();

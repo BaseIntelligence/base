@@ -4,10 +4,10 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use design_challenge::score::{score_round, ScorePlan};
+use design_challenge::score::{score_day, score_round, DayScorePlan, ScorePlan};
 use design_challenge::SCORE_MAX;
 use design_harness::{harness_id, validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
@@ -27,6 +27,7 @@ async fn sim_pipeline_pages_and_admin_score() {
         agent_py: BASELINE_AGENT.into(),
         pyproject_toml: BASELINE_PYPROJECT.into(),
         extra_files: BTreeMap::new(),
+        env_vars: BTreeMap::new(),
     };
     validate_bundle(&bundle).unwrap();
     let hid = harness_id(&bundle);
@@ -69,6 +70,7 @@ async fn sim_pipeline_pages_and_admin_score() {
     let sanitized = sanitize_bundle(&out.pages).unwrap();
     assert_eq!(sanitized.pages.len(), 3);
 
+    // scoring_version=2: single-round wins do not qualify (≥2/day required).
     let plan = ScorePlan {
         miners_with_harness: vec!["aa".into(), "bb".into()],
         miners_clean: vec!["aa".into(), "bb".into()],
@@ -76,25 +78,22 @@ async fn sim_pipeline_pages_and_admin_score() {
         cheat_miners: vec![],
     };
     let scores = score_round(&plan);
-    assert_eq!(
-        scores.get("aa"),
-        Some(&design_store::FinalScore::Score(SCORE_MAX / 2))
-    );
-    assert_eq!(
-        scores.get("bb"),
-        Some(&design_store::FinalScore::Score(SCORE_MAX / 2))
-    );
+    assert_eq!(scores.get("aa"), Some(&design_store::FinalScore::Score(0)));
+    assert_eq!(scores.get("bb"), Some(&design_store::FinalScore::Score(0)));
 }
 
 #[tokio::test]
-async fn admin_two_winners_half_scores() {
-    let plan = ScorePlan {
-        miners_with_harness: vec!["m1".into(), "m2".into(), "m3".into()],
-        miners_clean: vec!["m1".into(), "m2".into(), "m3".into()],
-        winner_miners: vec!["m1".into(), "m2".into()],
-        cheat_miners: vec![],
-    };
-    let scores = score_round(&plan);
+async fn daily_two_wins_share_scores() {
+    let mut win_counts = BTreeMap::new();
+    win_counts.insert("m1".into(), 2);
+    win_counts.insert("m2".into(), 2);
+    let scores = score_day(&DayScorePlan {
+        win_counts,
+        miners_with_harness: ["m1".into(), "m2".into(), "m3".into()]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        cheat_miners: BTreeSet::new(),
+    });
     assert_eq!(
         scores.get("m1"),
         Some(&design_store::FinalScore::Score(SCORE_MAX / 2))

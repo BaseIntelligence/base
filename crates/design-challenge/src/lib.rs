@@ -39,7 +39,7 @@ pub use host_sim::{
     force_sim_refusal_reason, host_sim_allowed, is_prod_env, require_host_sim_for_force,
 };
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
-pub use score::{score_round, ScorePlan};
+pub use score::{round_win_delta, score_day, score_round, DayScorePlan, ScorePlan};
 
 /// Crate identity smoke.
 #[must_use]
@@ -55,6 +55,6 @@ mod tests {
     fn identity() {
         assert_eq!(crate_name(), "design-challenge");
         assert_eq!(CHALLENGE_ID, "design");
-        assert_eq!(SCORING_VERSION, 1);
+        assert_eq!(SCORING_VERSION, 2);
     }
 }

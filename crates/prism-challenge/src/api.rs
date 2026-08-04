@@ -70,17 +70,46 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-/// POST body accepted shape == historical [`SubmissionRequest`].
+fn parse_submission_body(
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> Result<SubmissionRequest, String> {
+    let ct = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if ct.contains("application/zip") || ct.contains("application/x-zip-compressed") {
+        let hk = headers
+            .get("x-miner-hotkey")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "X-Miner-Hotkey required for application/zip".to_owned())?;
+        let (architecture_py, training_py) =
+            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?;
+        return Ok(SubmissionRequest {
+            miner_hotkey: hk.to_owned(),
+            architecture_py,
+            training_py,
+            zip_base64: None,
+            label: None,
+        });
+    }
+    serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
+}
+
+/// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
+/// with `X-Miner-Hotkey`.
 async fn post_submission(
     State(st): State<Arc<AppState>>,
-    body: Result<Json<SubmissionRequest>, axum::extract::rejection::JsonRejection>,
+    headers: axum::http::HeaderMap,
+    body: bytes::Bytes,
 ) -> Response {
-    let Json(req) = match body {
-        Ok(j) => j,
-        Err(rej) => {
-            return json_err(StatusCode::BAD_REQUEST, "invalid_json", &rej.body_text());
-        }
+    let mut req = match parse_submission_body(&headers, body.as_ref()) {
+        Ok(r) => r,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
     };
+    if let Err(e) = crate::submission::expand_zip_fields(&mut req) {
+        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
+    }
     if let Err(e) = crate::submission::validate(&req) {
         return map_submission_err(&e);
     }

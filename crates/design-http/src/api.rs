@@ -9,7 +9,11 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use design_harness::{harness_id, validate_bundle, HarnessBundle};
+use base64::Engine;
+use bytes::Bytes;
+use design_harness::{
+    encode_env_into_extras, harness_from_zip, harness_id, validate_bundle, HarnessBundle,
+};
 use design_prompts::{load_prompt_set, prompt_set_digest, select_prompts_for_round};
 use design_sanitize::viewer_headers;
 use design_store::{
@@ -219,24 +223,85 @@ async fn get_jobs(State(st): State<Arc<AppState>>) -> Response {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HarnessSubmitJson {
+    miner_hotkey: String,
+    #[serde(default)]
+    agent_py: Option<String>,
+    #[serde(default)]
+    pyproject_toml: Option<String>,
+    #[serde(default)]
+    extra_files: BTreeMap<String, String>,
+    /// Optional base64-encoded ZIP (`agent.py` + `pyproject.toml`).
+    #[serde(default)]
+    zip_base64: Option<String>,
+    #[serde(default)]
+    env_vars: BTreeMap<String, String>,
+}
+
+fn parse_harness_body(headers: &HeaderMap, body: &[u8]) -> Result<HarnessBundle, String> {
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if ct.contains("application/zip") || ct.contains("application/x-zip-compressed") {
+        let hk = headers
+            .get("x-miner-hotkey")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "X-Miner-Hotkey required for application/zip".to_owned())?;
+        let env_vars = match headers.get("x-env-json").and_then(|v| v.to_str().ok()) {
+            Some(raw) => {
+                serde_json::from_str(raw).map_err(|e| format!("X-Env-Json invalid: {e}"))?
+            }
+            None => BTreeMap::new(),
+        };
+        return harness_from_zip(hk, body, env_vars).map_err(|e| e.to_string());
+    }
+    let submit: HarnessSubmitJson =
+        serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))?;
+    if let Some(b64) = submit.zip_base64.as_deref().filter(|s| !s.is_empty()) {
+        let zip = base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("zip_base64: {e}"))?;
+        return harness_from_zip(&submit.miner_hotkey, &zip, submit.env_vars)
+            .map_err(|e| e.to_string());
+    }
+    let bundle = HarnessBundle {
+        miner_hotkey: submit.miner_hotkey,
+        agent_py: submit
+            .agent_py
+            .ok_or_else(|| "agent_py required (or zip_base64 / application/zip)".to_owned())?,
+        pyproject_toml: submit.pyproject_toml.ok_or_else(|| {
+            "pyproject_toml required (or zip_base64 / application/zip)".to_owned()
+        })?,
+        extra_files: submit.extra_files,
+        env_vars: submit.env_vars,
+    };
+    validate_bundle(&bundle).map_err(|e| e.to_string())?;
+    Ok(bundle)
+}
+
 async fn post_harness(
     State(st): State<Arc<AppState>>,
-    body: Result<Json<HarnessBundle>, axum::extract::rejection::JsonRejection>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
-    let Json(req) = match body {
-        Ok(j) => j,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_json", &e.body_text()),
+    let req = match parse_harness_body(&headers, body.as_ref()) {
+        Ok(b) => b,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_harness", &e),
     };
     if let Err(e) = validate_bundle(&req) {
         return json_err(StatusCode::BAD_REQUEST, "invalid_harness", &e.to_string());
     }
     let id = harness_id(&req);
+    let mut extras = req.extra_files;
+    encode_env_into_extras(&mut extras, &req.env_vars);
     let row = HarnessRow {
         id: id.clone(),
         miner_hotkey: req.miner_hotkey.trim().to_ascii_lowercase(),
         agent_py: req.agent_py,
         pyproject_toml: req.pyproject_toml,
-        extra_files: req.extra_files,
+        extra_files: extras,
         active: true,
         eliminated_until_round: 0,
     };

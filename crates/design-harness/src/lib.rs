@@ -3,12 +3,21 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
 
+mod env;
+mod zip_bundle;
+
 use std::collections::BTreeMap;
 
 use design_challenge_task::SUBMISSION_DOMAIN;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+pub use env::{
+    decode_env_from_extras, encode_env_into_extras, peek_env_from_extras, validate_env_vars,
+    EnvError, ENV_EXTRA_KEY, MAX_ENV_KEYS,
+};
+pub use zip_bundle::{harness_from_zip, ZipBundleError};
 
 /// Embedded operator harness entrypoint.
 pub const HARNESS_PY: &str = include_str!("../python/design_harness.py");
@@ -40,6 +49,9 @@ pub struct HarnessBundle {
     /// Additional files (relative path → utf-8 or base64 text).
     #[serde(default)]
     pub extra_files: BTreeMap<String, String>,
+    /// Miner launch env for sandbox run phase (API keys, etc.). Never logged.
+    #[serde(default)]
+    pub env_vars: BTreeMap<String, String>,
 }
 
 /// Validation / digest errors.
@@ -48,6 +60,12 @@ pub enum HarnessError {
     /// Structural validation failed.
     #[error("invalid harness: {0}")]
     Invalid(String),
+}
+
+impl From<EnvError> for HarnessError {
+    fn from(e: EnvError) -> Self {
+        Self::Invalid(e.to_string())
+    }
 }
 
 /// Validate size/shape limits and required entrypoints.
@@ -63,6 +81,11 @@ pub fn validate_bundle(b: &HarnessBundle) -> Result<(), HarnessError> {
     }
     if b.pyproject_toml.trim().is_empty() {
         return Err(HarnessError::Invalid("pyproject.toml required".into()));
+    }
+    if b.extra_files.contains_key(ENV_EXTRA_KEY) {
+        return Err(HarnessError::Invalid(format!(
+            "reserved extra path: {ENV_EXTRA_KEY}"
+        )));
     }
     if b.extra_files.len() > MAX_EXTRA_FILES {
         return Err(HarnessError::Invalid(format!(
@@ -82,10 +105,14 @@ pub fn validate_bundle(b: &HarnessBundle) -> Result<(), HarnessError> {
     if total > MAX_BUNDLE_BYTES {
         return Err(HarnessError::Invalid("bundle exceeds 1 MiB".into()));
     }
+    validate_env_vars(&b.env_vars)?;
     Ok(())
 }
 
-/// Content digest id: `sha256(domain || hotkey || agent || pyproject || extras)`.
+/// Content digest id: `sha256(domain || hotkey || agent || pyproject || extras || env_keys)`.
+///
+/// Env **values** are included so distinct secrets yield distinct digests, but
+/// callers must never log the digest inputs.
 #[must_use]
 pub fn harness_id(b: &HarnessBundle) -> String {
     let mut h = Sha256::new();
@@ -94,6 +121,13 @@ pub fn harness_id(b: &HarnessBundle) -> String {
     h.update(b.agent_py.as_bytes());
     h.update(b.pyproject_toml.as_bytes());
     for (k, v) in &b.extra_files {
+        if k == ENV_EXTRA_KEY {
+            continue;
+        }
+        h.update(k.as_bytes());
+        h.update(v.as_bytes());
+    }
+    for (k, v) in &b.env_vars {
         h.update(k.as_bytes());
         h.update(v.as_bytes());
     }
@@ -114,11 +148,40 @@ pub fn stage_work_files(b: &HarnessBundle) -> StagedFiles {
     files.insert("agent.py".into(), b.agent_py.clone());
     files.insert("pyproject.toml".into(), b.pyproject_toml.clone());
     for (k, v) in &b.extra_files {
+        if k == ENV_EXTRA_KEY {
+            continue;
+        }
         files.insert(k.clone(), v.clone());
     }
     files.insert("design_harness.py".into(), HARNESS_PY.into());
     files.insert("base_design/__init__.py".into(), BASE_DESIGN_INIT_PY.into());
     StagedFiles { files }
+}
+
+/// Persistable extras map including reserved env slot.
+#[must_use]
+pub fn extras_for_store(b: &HarnessBundle) -> BTreeMap<String, String> {
+    let mut extras = b.extra_files.clone();
+    encode_env_into_extras(&mut extras, &b.env_vars);
+    extras
+}
+
+/// Reconstruct bundle fields from a stored harness row.
+#[must_use]
+pub fn bundle_from_stored(
+    miner_hotkey: String,
+    agent_py: String,
+    pyproject_toml: String,
+    mut extra_files: BTreeMap<String, String>,
+) -> HarnessBundle {
+    let env_vars = decode_env_from_extras(&mut extra_files);
+    HarnessBundle {
+        miner_hotkey,
+        agent_py,
+        pyproject_toml,
+        extra_files,
+        env_vars,
+    }
 }
 
 #[cfg(test)]
@@ -134,6 +197,7 @@ mod tests {
                     .into(),
             pyproject_toml: "[project]\nname='x'\nversion='0.1.0'\n".into(),
             extra_files: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
         }
     }
 
@@ -154,5 +218,16 @@ mod tests {
         let mut b = sample();
         b.agent_py = "x = 1\n".into();
         assert!(validate_bundle(&b).is_err());
+    }
+
+    #[test]
+    fn env_changes_digest() {
+        let mut a = sample();
+        let mut b = sample();
+        b.env_vars.insert("FOO".into(), "1".into());
+        validate_bundle(&b).unwrap();
+        assert_ne!(harness_id(&a), harness_id(&b));
+        a.env_vars.insert("FOO".into(), "1".into());
+        assert_eq!(harness_id(&a), harness_id(&b));
     }
 }

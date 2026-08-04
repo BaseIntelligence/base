@@ -3,14 +3,14 @@
 # Design challenge — HTTP harness submit
 
 **challenge_id:** `design`  
-**scoring_version:** `1`  
+**scoring_version:** `2`  
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative freeze: [`../DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md).
 
 ## What you submit
 
-A Python harness bundle (source, not a container image):
+A Python harness bundle (source, not a container image) — prefer a **ZIP**:
 
 | File | Required |
 |------|----------|
@@ -18,9 +18,12 @@ A Python harness bundle (source, not a container image):
 | `pyproject.toml` | deps installed in the operator sandbox |
 | Extra files | ≤ 16, ≤ 256 KiB each, total ≤ 1 MiB |
 
+Optional `env_vars` (API keys, etc.) are injected into the sandbox **run**
+phase only. Do not use `DESIGN_*` / proxy / Python runtime keys.
+
 The operator injects a non-modifiable `base_design` SDK and runs your harness
-inside a hardened Docker sandbox. You never receive the OpenRouter key or the
-challenge signing key.
+inside a hardened Docker sandbox (run timeout **30 minutes**). You never
+receive the OpenRouter key or the challenge signing key.
 
 ### Required pages
 
@@ -35,7 +38,14 @@ Missing pages → automatic `Score(0)`.
 ## Submit
 
 ```bash
-# Via gateway proxy (preferred)
+# ZIP via gateway (preferred)
+curl -sS -X POST "$BASE_GATEWAY/challenge/design/v1/harness" \
+  -H 'content-type: application/zip' \
+  -H "X-Miner-Hotkey: <64 lowercase hex>" \
+  -H 'X-Env-Json: {"OPENAI_API_KEY":"..."}' \
+  --data-binary @harness.zip
+
+# JSON + zip_base64
 curl -sS -X POST "$BASE_GATEWAY/challenge/design/v1/harness" \
   -H 'content-type: application/json' \
   -d @harness.json
@@ -51,15 +61,15 @@ Reference baseline (normative example miners should start from):
 `llm.chat` and writes `index.html` / `pricing.html` / `components.html` via
 `out.write_page`.
 
-Minimal `harness.json` shape (prefer packing the baseline files rather than a
-stub that skips the LLM):
+Minimal `harness.json` shape:
 
 ```json
 {
   "miner_hotkey": "<64 lowercase hex>",
   "agent_py": "<contents of examples/design-baseline/agent.py>",
   "pyproject_toml": "<contents of examples/design-baseline/pyproject.toml>",
-  "extra_files": {}
+  "extra_files": {},
+  "env_vars": {}
 }
 ```
 
@@ -67,7 +77,8 @@ stub that skips the LLM):
 
 ## Quotas and rounds
 
-- Rounds are **6h** UTC (`round_id = floor(unix / 21600)`).
+- **10 rounds per UTC day** (`ROUND_SECS = 8640`; `round_id = floor(unix / 8640)`).
+- Sandbox **run** timeout is **30 minutes** (`AGENT_RUN_TIMEOUT_SECS = 1800`).
 - **10** sandboxed runs per hotkey per UTC day.
 - Each round picks **3** prompts via deterministic weighted draw for all harnesses.
 
@@ -77,10 +88,13 @@ Check quota: `GET /v1/quota/{hotkey}`.
 
 After sanitize, master-side **agentic anti-cheat** runs; `cheat` /
 `suspicious` → `Score(0)`. Clean runs await **admin winners** (1 or 2 harnesses
-per 6h round): one winner → `SCORE_MAX`, two → each `SCORE_MAX / 2`; others
-`Score(0)`. Prompt bank is automatic (`bank_v1.json` — no human prompt
-approval). Inspiration (Mobbin, image gen, UI libs) is allowed; near-identical
-corpus copies / scrape-clones are not. Full rules in the freeze doc.
+per round). Rewards are **not** winner-take-all on a single round: miners need
+**≥ 2 round wins in the UTC day** to qualify, then **share `SCORE_MAX` equally**
+among that day's qualified winners. Prompt bank is automatic (`bank_v1.json`).
+Inspiration (Mobbin, image gen, UI libs) is allowed; near-identical corpus
+copies / scrape-clones are not. Full rules in the freeze doc.
+
+Admin APIs are **master-local only** (not proxied on the public gateway).
 
 ## Viewer
 
@@ -98,5 +112,5 @@ scripts). Raw HTML is never served.
 | `GET /v1/runs/{id}/events` | Stage timeline |
 | `GET /v1/runs/{id}/pages` | Sanitized page list |
 | `GET /v1/view/{run_id}/{page}` | CSP viewer (sanitized HTML) |
-| `GET /v1/stats` | Operator stats |
-| `GET /v1/dashboard` | Dashboard JSON |
+| `GET /v1/stats` | Aggregate stats |
+| `GET /v1/dashboard` | Operator dashboard JSON |

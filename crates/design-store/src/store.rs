@@ -360,6 +360,12 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn set_round_award(&self, award: &RoundAward) -> Result<(), StoreError>;
     /// Load award if present.
     async fn get_round_award(&self, round_id: u64) -> Result<Option<RoundAward>, StoreError>;
+    /// Awards with `round_id` in inclusive `[from_round, to_round]`.
+    async fn list_round_awards(
+        &self,
+        from_round: u64,
+        to_round: u64,
+    ) -> Result<Vec<RoundAward>, StoreError>;
 
     /// Quota get.
     async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError>;
@@ -855,6 +861,23 @@ impl DesignStore for MemoryDesignStore {
             .map_err(|_| StoreError::Backend("poison".into()))?
             .get(&round_id)
             .cloned())
+    }
+
+    async fn list_round_awards(
+        &self,
+        from_round: u64,
+        to_round: u64,
+    ) -> Result<Vec<RoundAward>, StoreError> {
+        let mut out: Vec<_> = self
+            .awards
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .values()
+            .filter(|a| a.round_id >= from_round && a.round_id <= to_round)
+            .cloned()
+            .collect();
+        out.sort_by_key(|a| a.round_id);
+        Ok(out)
     }
 
     async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError> {

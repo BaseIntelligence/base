@@ -552,6 +552,23 @@ impl DesignStore for DbDesignStore {
         .map_err(map_db)
     }
 
+    async fn list_round_awards(
+        &self,
+        from_round: u64,
+        to_round: u64,
+    ) -> Result<Vec<RoundAward>, StoreError> {
+        Ok(dbs::list_design_round_awards(
+            &self.pool,
+            i64::try_from(from_round).unwrap_or(0),
+            i64::try_from(to_round).unwrap_or(i64::MAX),
+        )
+        .await
+        .map_err(map_db)?
+        .into_iter()
+        .map(award_from)
+        .collect())
+    }
+
     async fn get_round_award(&self, round_id: u64) -> Result<Option<RoundAward>, StoreError> {
         Ok(
             dbs::design_round_award(&self.pool, i64::try_from(round_id).unwrap_or(i64::MAX))

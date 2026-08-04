@@ -1,4 +1,4 @@
-# PRISM recipe v1.0.1 — `prism-recipe-v1`
+# PRISM recipe v1.0.2 — `prism-recipe-v1`
 
 The official execution contract every miner submission is verified inside.
 Miners ship **two scripts only** (`architecture.py` + `training.py`); the
@@ -45,6 +45,7 @@ score.
 | Pod lifetime | 7.0 h (train + bootstrap margin) |
 | Hard step cap | 20 000 (config may only lower) |
 | Source size | 128 KiB per script |
+| Model parameters | ≤ **350 000 000** after `build_model` (`MAX_PARAMS`) |
 
 ## Recipe pin
 

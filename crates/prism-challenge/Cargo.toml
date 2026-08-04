@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+base64 = "0.22"
+bytes = "1"
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 challenge-agentic = { path = "../challenge-agentic" }

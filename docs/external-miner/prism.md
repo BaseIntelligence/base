@@ -10,10 +10,13 @@ Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../P
 
 ## What you submit
 
-Two Python scripts under the official recipe contract:
+A **ZIP** (preferred) containing two Python scripts under the official recipe
+contract, or JSON with the same fields / `zip_base64`:
 
 - `architecture.py`
 - `training.py`
+
+Models must stay **≤ 350M parameters** after `build_model` (hard fail otherwise).
 
 Evaluation runs on operator-rented Lium GPU pods (or `SimLiumBackend` in CI).
 You do **not** deploy a miner CVM.
@@ -21,6 +24,13 @@ You do **not** deploy a miner CVM.
 ## Submit
 
 ```bash
+# ZIP via gateway (preferred)
+curl -sS -X POST "$BASE_GATEWAY/challenge/prism/v1/submissions" \
+  -H 'content-type: application/zip' \
+  -H "X-Miner-Hotkey: <64 lowercase hex>" \
+  --data-binary @submission.zip
+
+# JSON sources (local/CI convenience)
 curl -sS -X POST "$BASE_GATEWAY/challenge/prism/v1/submissions" \
   -H 'content-type: application/json' \
   -d @submission.json

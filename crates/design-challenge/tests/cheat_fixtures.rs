@@ -5,13 +5,13 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use challenge_agentic::{
     AgenticBackend, CheatCode, CorpusEntry, ReviewRequest, SimAgent, VerdictKind,
 };
-use design_challenge::score::{score_round, ScorePlan};
+use design_challenge::score::{score_day, score_round, DayScorePlan, ScorePlan};
 use design_challenge::{host_sim_allowed, require_host_sim_for_force, SCORE_MAX};
 use design_harness::{validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
@@ -163,6 +163,7 @@ def train(xs):
         agent_py: BASELINE_AGENT.into(),
         pyproject_toml: BASELINE_PYPROJECT.into(),
         extra_files: BTreeMap::new(),
+        env_vars: BTreeMap::new(),
     };
     validate_bundle(&bundle).unwrap();
     let out = SimSandbox::new()
@@ -171,6 +172,7 @@ def train(xs):
     let sanitized = sanitize_bundle(&out.pages).unwrap();
     assert_eq!(sanitized.pages.len(), 3);
 
+    // One round win alone does not qualify under scoring_version=2.
     let plan = ScorePlan {
         miners_with_harness: vec!["ab".repeat(32)],
         miners_clean: vec!["ab".repeat(32)],
@@ -179,24 +181,39 @@ def train(xs):
     };
     assert_eq!(
         score_round(&plan).get(&"ab".repeat(32)),
+        Some(&FinalScore::Score(0))
+    );
+
+    let mut win_counts = BTreeMap::new();
+    win_counts.insert("ab".repeat(32), 2);
+    assert_eq!(
+        score_day(&DayScorePlan {
+            win_counts,
+            miners_with_harness: ["ab".repeat(32)].into_iter().collect(),
+            cheat_miners: BTreeSet::new(),
+        })
+        .get(&"ab".repeat(32)),
         Some(&FinalScore::Score(SCORE_MAX))
     );
 }
 
 #[test]
-fn admin_two_winners_half_score_and_cheat_ineligible() {
+fn daily_share_and_cheat_ineligible() {
     let clean_a = "aa".repeat(32);
     let clean_b = "bb".repeat(32);
     let cheat_c = "cc".repeat(32);
 
-    // Mirror orchestrator award scoring (two admin winners + one cheat).
-    let plan = ScorePlan {
-        miners_with_harness: vec![clean_a.clone(), clean_b.clone(), cheat_c.clone()],
-        miners_clean: vec![clean_a.clone(), clean_b.clone()],
-        winner_miners: vec![clean_a.clone(), clean_b.clone()],
-        cheat_miners: vec![cheat_c.clone()],
-    };
-    let scores = score_round(&plan);
+    let mut win_counts = BTreeMap::new();
+    win_counts.insert(clean_a.clone(), 2);
+    win_counts.insert(clean_b.clone(), 2);
+    win_counts.insert(cheat_c.clone(), 5);
+    let scores = score_day(&DayScorePlan {
+        win_counts,
+        miners_with_harness: [clean_a.clone(), clean_b.clone(), cheat_c.clone()]
+            .into_iter()
+            .collect(),
+        cheat_miners: [cheat_c.clone()].into_iter().collect::<BTreeSet<_>>(),
+    });
     assert_eq!(
         scores.get(&clean_a),
         Some(&FinalScore::Score(SCORE_MAX / 2))

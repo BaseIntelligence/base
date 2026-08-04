@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -11,14 +12,22 @@ use thiserror::Error;
 pub type SubmissionId = String;
 
 /// Miner submit body — architecture + training sources (agent-challenge-like UX).
+///
+/// Prefer ZIP (`application/zip` or `zip_base64`); raw source fields remain
+/// accepted for local/CI convenience.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionRequest {
     /// Miner hotkey hex (64 hex chars = 32 bytes).
     pub miner_hotkey: String,
     /// `architecture.py` source (must define `build_model`).
+    #[serde(default)]
     pub architecture_py: String,
     /// `training.py` source (must define `train`).
+    #[serde(default)]
     pub training_py: String,
+    /// Optional base64-encoded ZIP containing `architecture.py` + `training.py`.
+    #[serde(default)]
+    pub zip_base64: Option<String>,
     /// Optional human label.
     #[serde(default)]
     pub label: Option<String>,
@@ -105,6 +114,28 @@ impl SubmissionService {
     }
 }
 
+/// Expand optional `zip_base64` into source fields (mutates `req`).
+///
+/// # Errors
+/// ZIP / decode failures.
+pub fn expand_zip_fields(req: &mut SubmissionRequest) -> Result<(), String> {
+    let Some(b64) = req
+        .zip_base64
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(());
+    };
+    let zip = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("zip_base64: {e}"))?;
+    let (arch, train) = prism_recipe::sources_from_zip(&zip).map_err(|e| e.to_string())?;
+    req.architecture_py = arch;
+    req.training_py = train;
+    Ok(())
+}
+
 /// Validate contract-shape of an incoming submission (pre-queue).
 ///
 /// # Errors
@@ -150,6 +181,7 @@ pub fn example_valid_request() -> SubmissionRequest {
         architecture_py: "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n"
             .into(),
         training_py: "def train(model, ctx):\n    return {'loss': 1.0}\n".into(),
+        zip_base64: None,
         label: Some("tiny".into()),
     }
 }

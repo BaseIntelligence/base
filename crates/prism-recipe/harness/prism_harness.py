@@ -150,6 +150,12 @@ def main():
         assert isinstance(model, torch.nn.Module), "build_model must return nn.Module"
         n_params = sum(p.numel() for p in model.parameters())
         log(f"model params: {n_params/1e6:.1f}M")
+        # Product hard cap: ≤350M parameters (fail before CUDA / train).
+        MAX_PARAMS = int(os.environ.get("PRISM_MAX_PARAMS", "350000000"))
+        if n_params > MAX_PARAMS:
+            raise RuntimeError(
+                f"model exceeds parameter cap: {n_params} > {MAX_PARAMS}"
+            )
         model = model.to(device)
         class CapExceeded(Exception):
             pass
@@ -204,7 +210,8 @@ def main():
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
         "notes": "recipe-v1 val_ce->bpb",
         "val_rows": VAL_ROWS,
-        "recipe": "1.0.1",
+        "n_params": int(n_params),
+        "recipe": "1.0.2",
     }
     print("METRICS_JSON=" + json.dumps(out))
     print("EVAL_OK")

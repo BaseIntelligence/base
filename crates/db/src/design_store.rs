@@ -29,7 +29,7 @@ pub struct DesignHarnessRow {
 /// `design_round` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DesignRoundRow {
-    /// Round id (`floor(unix/21600)`).
+    /// Round id (`floor(unix/8640)`).
     pub round_id: i64,
     /// Chain epoch at open.
     pub epoch: i64,
@@ -951,5 +951,28 @@ pub async fn design_round_award(
     )
     .bind(round_id)
     .fetch_optional(pool)
+    .await?)
+}
+
+/// Awards with `round_id` in inclusive `[from_round, to_round]`.
+///
+/// # Errors
+/// SQL error.
+pub async fn list_design_round_awards(
+    pool: &PgPool,
+    from_round: i64,
+    to_round: i64,
+) -> Result<Vec<DesignRoundAwardRow>, DbError> {
+    Ok(sqlx::query_as::<_, DesignRoundAwardRow>(
+        "SELECT round_id, winner_harness_ids, \
+            (EXTRACT(EPOCH FROM awarded_at)::BIGINT) AS awarded_at_secs, \
+            admin_token_hash \
+         FROM design_round_award \
+         WHERE round_id >= $1 AND round_id <= $2 \
+         ORDER BY round_id ASC",
+    )
+    .bind(from_round)
+    .bind(to_round)
+    .fetch_all(pool)
     .await?)
 }

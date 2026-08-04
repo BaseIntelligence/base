@@ -13,7 +13,7 @@ over HTTP to the live challenges:
 
 | Challenge | `challenge_id` | Scoring | Guide |
 |-----------|----------------|---------|-------|
-| Design | `design` | `challenge_scoring_version` **1** (admin winners + agentic) | [design.md](./design.md) |
+| Design | `design` | `challenge_scoring_version` **2** (daily share ≥2 wins + agentic) | [design.md](./design.md) |
 | Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) |
 
 Do **not** conflate version axes:

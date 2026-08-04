@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+design-challenge-task = { path = "../design-challenge-task" }
 design-harness = { path = "../design-harness" }
 docker-engine = { path = "../docker-engine" }
 hex = "0.4"

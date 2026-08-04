@@ -142,7 +142,7 @@ impl DockerSandbox {
             image: DEFAULT_RUNTIME_IMAGE.into(),
             network_mode: "design-sandbox-egress".into(),
             install_timeout_sec: 180,
-            run_timeout_sec: 600,
+            run_timeout_sec: design_challenge_task::AGENT_RUN_TIMEOUT_SECS,
             staging_root,
         })
     }
@@ -159,6 +159,12 @@ impl DockerSandbox {
                 fs::create_dir_all(parent)?;
             }
             fs::write(path, body)?;
+        }
+        // Side-channel for run-phase injection; removed after apply (never logged).
+        if !bundle.env_vars.is_empty() {
+            let raw = serde_json::to_vec(&bundle.env_vars)
+                .map_err(|e| SandboxError::Docker(format!("env encode: {e}")))?;
+            fs::write(work.join(".miner_env.json"), raw)?;
         }
         Ok(work)
     }
@@ -276,6 +282,31 @@ PY"#
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let run_name = format!("{DESIGN_OWNED_NAME_PREFIX}run-{run_id}-{ns}");
+        // Miner env is applied only on the run phase. Values are never logged.
+        let mut env = vec![
+            format!("DESIGN_LLM_PROXY={llm_proxy}"),
+            format!("DESIGN_RUN_ID={run_id}"),
+            format!("DESIGN_ROUND_ID={round_id}"),
+            format!("DESIGN_PROMPT={prompt}"),
+            "DESIGN_WORK_ROOT=/work".into(),
+            "DESIGN_OUT_ROOT=/work/out".into(),
+            "DESIGN_PROXY_MODE=llm".into(),
+            "HTTP_PROXY=http://design-egress-proxy:8094".into(),
+            "HTTPS_PROXY=http://design-egress-proxy:8094".into(),
+        ];
+        // Re-read env from staged files is not possible; callers must put
+        // validated env on the bundle before install/run. We pass via a
+        // side channel file written at stage time when present.
+        if let Ok(raw) = fs::read_to_string(work.join(".miner_env.json")) {
+            if let Ok(map) =
+                serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw)
+            {
+                for (k, v) in map {
+                    env.push(format!("{k}={v}"));
+                }
+            }
+            let _ = fs::remove_file(work.join(".miner_env.json"));
+        }
         let run = self.run_phase(
             &run_name,
             &work,
@@ -284,17 +315,7 @@ PY"#
                 "-lc".into(),
                 "/work/.venv/bin/python /work/design_harness.py".into(),
             ],
-            vec![
-                format!("DESIGN_LLM_PROXY={llm_proxy}"),
-                format!("DESIGN_RUN_ID={run_id}"),
-                format!("DESIGN_ROUND_ID={round_id}"),
-                format!("DESIGN_PROMPT={prompt}"),
-                "DESIGN_WORK_ROOT=/work".into(),
-                "DESIGN_OUT_ROOT=/work/out".into(),
-                "DESIGN_PROXY_MODE=llm".into(),
-                "HTTP_PROXY=http://design-egress-proxy:8094".into(),
-                "HTTPS_PROXY=http://design-egress-proxy:8094".into(),
-            ],
+            env,
             self.run_timeout_sec,
             true,
         )?;
@@ -338,6 +359,11 @@ impl SimSandbox {
                 fs::create_dir_all(parent)?;
             }
             fs::write(path, body)?;
+        }
+        if !bundle.env_vars.is_empty() {
+            let raw = serde_json::to_vec(&bundle.env_vars)
+                .map_err(|e| SandboxError::Docker(format!("env encode: {e}")))?;
+            fs::write(root.join(".miner_env.json"), raw)?;
         }
         Ok(root)
     }
@@ -388,15 +414,26 @@ impl SandboxBackend for SimSandbox {
         }
         let (proxy_url, stub) = spawn_stub_llm_proxy()?;
         let py = Self::python_bin()?;
-        let out = std::process::Command::new(py)
-            .current_dir(&work)
+        let mut cmd = std::process::Command::new(py);
+        cmd.current_dir(&work)
             .env("PYTHONPATH", &work)
             .env("DESIGN_WORK_ROOT", &work)
             .env("DESIGN_OUT_ROOT", work.join("out"))
             .env("DESIGN_LLM_PROXY", &proxy_url)
             .env("DESIGN_RUN_ID", run_id)
             .env("DESIGN_ROUND_ID", round_id.to_string())
-            .env("DESIGN_PROMPT", prompt)
+            .env("DESIGN_PROMPT", prompt);
+        if let Ok(raw) = fs::read_to_string(work.join(".miner_env.json")) {
+            if let Ok(map) =
+                serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw)
+            {
+                for (k, v) in map {
+                    cmd.env(k, v);
+                }
+            }
+            let _ = fs::remove_file(work.join(".miner_env.json"));
+        }
+        let out = cmd
             .arg(work.join("design_harness.py"))
             .output()
             .map_err(|e| SandboxError::Docker(format!("spawn python: {e}")))?;
@@ -504,6 +541,7 @@ mod tests {
             agent_py: BASELINE_AGENT.into(),
             pyproject_toml: BASELINE_PYPROJECT.into(),
             extra_files: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
         };
         let out = SimSandbox::new()
             .execute(

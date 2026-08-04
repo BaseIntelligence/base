@@ -64,6 +64,14 @@ async fn proxy_inner(
     query: Option<String>,
     req: Request,
 ) -> Response {
+    if is_admin_path(&rest) {
+        return (
+            StatusCode::FORBIDDEN,
+            "admin API is not exposed via gateway; use master-local challenge port",
+        )
+            .into_response();
+    }
+
     let method = req.method().clone();
     let headers = req.headers().clone();
     let body = match axum::body::to_bytes(req.into_body(), 16 * 1024 * 1024).await {
@@ -208,6 +216,13 @@ pub fn upstream_uri(base: &str, rest: &str, original: &Uri) -> String {
     upstream_url(base, rest, original.query())
 }
 
+/// Operator admin surfaces are master-local only (not on the public miner path).
+#[must_use]
+pub fn is_admin_path(rest: &str) -> bool {
+    let rest_norm = rest.trim_start_matches('/');
+    rest_norm.starts_with("v1/admin/") || rest_norm == "v1/admin"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +239,13 @@ mod tests {
         let u: Uri = "http://gw/challenge/c1/v1/score?x=1".parse().unwrap();
         let out = upstream_uri("http://127.0.0.1:9", "v1/score", &u);
         assert_eq!(out, "http://127.0.0.1:9/v1/score?x=1");
+    }
+
+    #[test]
+    fn admin_paths_blocked_from_gateway() {
+        assert!(is_admin_path("v1/admin/rounds/1/winners"));
+        assert!(is_admin_path("/v1/admin/rounds/1/candidates"));
+        assert!(!is_admin_path("v1/harness"));
+        assert!(!is_admin_path("v1/runs/abc"));
     }
 }

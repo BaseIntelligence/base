@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+base64 = "0.22"
+bytes = "1"
 design-challenge-task = { path = "../design-challenge-task" }
 design-harness = { path = "../design-harness" }
 design-prompts = { path = "../design-prompts" }

@@ -24,6 +24,10 @@
 
 #![forbid(unsafe_code)]
 
+mod zip_submit;
+
+pub use zip_submit::{sources_from_zip, ZipSubmitError};
+
 /// Harness source executed inside the pod (uploaded over SSH, no secrets).
 pub const HARNESS_PY: &str = include_str!("../harness/prism_harness.py");
 
@@ -33,11 +37,12 @@ pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architectur
 /// Baseline submission: `training.py`.
 pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
-/// Recipe semantic version (surfaced through the API). Bumped to 1.0.1 for
-/// the harness context-window alignment (target = last scored positions) —
-/// harness bytes changed, so the recipe pin moved and old leaves remain
-/// attributable to their original pin.
-pub const RECIPE_VERSION: &str = "1.0.1";
+/// Recipe semantic version (surfaced through the API). Bumped to 1.0.2 for
+/// the ≤350M parameter hard cap enforced in-pod after `build_model`.
+pub const RECIPE_VERSION: &str = "1.0.2";
+
+/// Maximum model parameters allowed after `build_model` (350M).
+pub const MAX_PARAMS: u64 = 350_000_000;
 
 /// Pinned pretraining shard: fineweb-edu sample-10BT, single parquet shard.
 ///
@@ -137,6 +142,7 @@ pub fn recipe_pin_hex() -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(RECIPE_VERSION.as_bytes());
+    h.update(MAX_PARAMS.to_le_bytes());
     h.update(DATASET_URL.as_bytes());
     h.update(dataset_sha256().as_bytes());
     h.update(HARNESS_PY.as_bytes());
@@ -170,6 +176,8 @@ pub struct RecipeDescriptor {
     pub train_rows: usize,
     /// Per-source byte cap.
     pub max_source_bytes: usize,
+    /// Maximum model parameters after `build_model`.
+    pub max_params: u64,
     /// Recipe contract pin (sha256 hex over the tuple).
     pub pin_hex: String,
 }
@@ -190,6 +198,7 @@ pub fn descriptor() -> RecipeDescriptor {
         val_rows: VAL_ROWS,
         train_rows: TRAIN_ROWS,
         max_source_bytes: MAX_SOURCE_BYTES,
+        max_params: MAX_PARAMS,
         pin_hex: recipe_pin_hex(),
     }
 }
@@ -239,6 +248,9 @@ mod tests {
         let a = POD_LIFETIME_HOURS_CAP;
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);
+        assert_eq!(MAX_PARAMS, 350_000_000);
+        assert!(HARNESS_PY.contains("350000000") || HARNESS_PY.contains("PRISM_MAX_PARAMS"));
+        assert!(HARNESS_PY.contains("parameter cap"));
     }
 
     #[test]

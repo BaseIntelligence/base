@@ -1,6 +1,6 @@
 # Design Challenge (Base)
 
-**Status: FROZEN** for `challenge_id = "design"`, `challenge_scoring_version` **u16 = 1**.
+**Status: FROZEN** for `challenge_id = "design"`, `challenge_scoring_version` **u16 = 2**.
 
 Normative contract for the design challenge on Base. Byte-level epoch bundle
 rules live in [`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md) (`protocol_version = 1`).
@@ -17,7 +17,7 @@ Python harness source over HTTP — no miner-provided Docker image, no Phala/CVM
 ```text
 Miner  --POST /v1/harness-->  design-challenge (:8093)
                                   |
-                    round clock (6h UTC) + quota
+                    round clock (10/day UTC) + quota
                                   |
                     +-------------v--------------+
                     | design-sandbox (two phase) |
@@ -64,15 +64,17 @@ Sandbox containers attach only to the internal Docker network
 | Field | Value |
 |-------|-------|
 | `challenge_id` | `design` |
-| `challenge_scoring_version` | **u16 = 1** |
+| `challenge_scoring_version` | **u16 = 2** |
 | `SCORE_MAX` | `1_000_000` |
 | Listen port | `8093` (local overlay `28093`) |
 | Gateway proxy prefix | `/challenge/design/*` |
 | Bundle `protocol_version` | `1` ([`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md)) |
 | `emission_share_bps` | **0** until owner ceremony (prism holds `10000`) |
 | Policy | `all_metagraph_hotkeys` |
-| Round length | 6h = `ROUND_SECS = 21_600` |
-| `round_id` | `floor(unix_secs / 21600)` |
+| Round length | `ROUND_SECS = 8_640` (10 rounds / UTC day) |
+| Agent run timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 min; distinct from round length) |
+| Daily qualification | `MIN_DAILY_WINS = 2` |
+| `round_id` | `floor(unix_secs / 8640)` |
 | Domain `round_id` | `base-design-round-id-v1` |
 | Domain submission | `base-design-submission-v1` |
 | Domain pair | `base-design-pair-id-v1` |
@@ -87,7 +89,14 @@ Until then prism is the sole non-zero share (`10000` bps).
 
 ## 3. Miner harness contract
 
-Miners submit **source**, not images.
+Miners submit **source**, not images. Preferred transport is **ZIP**
+(`Content-Type: application/zip` + `X-Miner-Hotkey`, or JSON `zip_base64`).
+JSON with inline `agent_py` / `pyproject_toml` remains accepted for local/CI.
+
+Optional `env_vars` (JSON map or `X-Env-Json` on ZIP) are injected into the
+sandbox **run** phase only. Keys must match `[A-Z][A-Z0-9_]*`; operator /
+proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
+**never logged**.
 
 ### Bundle
 
@@ -97,7 +106,7 @@ Miners submit **source**, not images.
 | `pyproject.toml` | Required; deps installed in sandbox install phase |
 | Extra files | ≤ 16 files, ≤ 256 KiB each, total bundle ≤ 1 MiB |
 
-`harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras)`.
+`harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras || env)`.
 `POST /v1/harness` is idempotent on that digest.
 
 ### Required output (`/out/pages/`)
@@ -183,7 +192,10 @@ omits the iframe `sandbox` attribute. Integrators should still use
 
 ## 7. Rounds and quotas
 
-- **Round** every 6h UTC: `round_id = floor(unix_secs / 21600)`.
+- **Round** every `ROUND_SECS = 8_640` (10 rounds / UTC day):
+  `round_id = floor(unix_secs / 8640)`.
+- **Agent run timeout**: `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 minutes wall clock
+  for the sandbox run phase — not the round length).
 - **Prompts**: repo-pinned bank (`bank_v1.json`, no human approval API);
   deterministic weighted draw
   `SHA256(domain || round_id || bank_digest)` → 3 prompts per round;
@@ -225,17 +237,21 @@ and UI libraries are **allowed** when the output is substantially transformed.
 
 `suspicious` → also `Score(0)` (same policy as Prism); rationale stored for admin.
 
-### Score semantics (`challenge_scoring_version = 1`)
+### Score semantics (`challenge_scoring_version = 2`)
+
+Admin still picks **1 or 2** winner harnesses **per round**. Leaf mass is
+**not** WTA on that round alone:
 
 | Situation | Leaf |
 |-----------|------|
-| 1 admin winner (clean) | `Score(SCORE_MAX)` |
-| 2 admin winners (clean) | each `Score(SCORE_MAX / 2)` |
-| Clean non-winner | `Score(0)` |
-| Cheat / suspicious | `Score(0)` |
-| Round timeout, no winners set | `Score(0)` for miners with harness |
+| Miner with ≥ `MIN_DAILY_WINS = 2` round wins that UTC day (clean) | share SCORE_MAX equally among that day's qualified winners |
+| Miner with fewer than 2 round wins that day | `Score(0)` |
+| Cheat / suspicious | `Score(0)` (never qualifies) |
+| Round timeout, no winners set | no new win; day projection unchanged / zeros |
 | No harness | `NoScore(NotAttempted)` |
 | Agentic / infra failure | `NoScore(ChallengeInternal)` |
+
+Equal share uses integer division (`SCORE_MAX / n_qualified`).
 
 ---
 
@@ -244,7 +260,7 @@ and UI libraries are **allowed** when the output is substantially transformed.
 After round close: eliminate the **bottom 20%** of rated miners
 (`ELIMINATION_BOTTOM_BPS = 2000`), at least **1** miner when the set is non-empty.
 
-`eliminated_until_round = round + 4` (`ELIMINATION_COOLDOWN_ROUNDS = 4` → 1 day).
+`eliminated_until_round = round + 10` (`ELIMINATION_COOLDOWN_ROUNDS = 10` → 1 day).
 
 During cooldown: no new sandbox runs, no pairing — but D24 still requires a leaf:
 emit `Score(0)`. Silence is a bug.
@@ -312,7 +328,7 @@ Harness stdout/stderr is appended as `stage = "log"` events with
 
 | Route | Purpose |
 |-------|---------|
-| `POST /v1/harness` | Submit harness (idempotent by digest); returns `run_ids` + poll paths |
+| `POST /v1/harness` | Submit harness JSON, `zip_base64`, or `application/zip` (idempotent by digest); optional `env_vars`; returns `run_ids` + poll paths |
 | `GET /v1/harness/{id}` | Harness detail |
 | `GET /v1/harness?miner=` | List by miner |
 | `GET /v1/quota/{hotkey}` | Daily quota remaining |
@@ -331,7 +347,11 @@ Harness stdout/stderr is appended as `stage = "log"` events with
 | `GET /v1/view/{id}/{page}` | Sanitized HTML + hardened headers |
 | `GET /v1/runs/{id}/bundle.json` | Sanitized bundle JSON |
 
-### Admin winners (operator bearer)
+### Admin winners (operator bearer; master-local — not exposed via gateway)
+
+Admin routes are **not exposed via gateway** (`/challenge/design/v1/admin/*`
+returns 403). Operators hit `design-challenge:8093` on the master host
+(SSH/VPC). Bearer tokens still required.
 
 | Route | Purpose |
 |-------|---------|
