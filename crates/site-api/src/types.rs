@@ -97,6 +97,15 @@ pub struct Arena {
     pub source_url: String,
     /// Plate asset path.
     pub plate: String,
+    /// Design round id when known (absent for coding/prism).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_id: Option<u64>,
+    /// Design round close time (ISO-8601 UTC) when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_ends_at: Option<String>,
+    /// Design seconds remaining in the current round when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds_remaining: Option<u64>,
 }
 
 /// Miner / agent identity for tables.
@@ -167,11 +176,19 @@ pub struct Submission {
     pub title: String,
     /// Preview or detail URL (gateway-relative for design view).
     pub url: String,
-    /// Status.
+    /// Coarse marketing status (`scored` | `pending` | `failed`).
     pub status: SubmissionStatus,
-    /// Score when scored.
+    /// Fine-grained upstream stage (`queued`, `installing`, `agentic_review`, …).
+    pub stage: String,
+    /// Optional upstream detail (error text or stage hint).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
+    /// Score when scored (design lattice / prism lattice).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
+    /// Prism validation BPB when measured (terminal or mid-flight if present).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bpb: Option<f64>,
     /// Failure reason when failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,

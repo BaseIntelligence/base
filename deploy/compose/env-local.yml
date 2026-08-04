@@ -63,6 +63,8 @@ services:
       BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
       # No Lium spend on a laptop unless operator opts in.
       PRISM_FORCE_SIM: "${LOCAL_PRISM_FORCE_SIM:-true}"
+      # Hold after each stage so visual A→Z can photograph mid-flight (0 = off).
+      PRISM_SIM_STAGE_DELAY_MS: "${LOCAL_PRISM_SIM_STAGE_DELAY_MS:-0}"
 
   design-challenge:
     ports:
@@ -76,6 +78,8 @@ services:
       DESIGN_FORCE_SIM: "${LOCAL_DESIGN_FORCE_SIM:-true}"
       # Deterministic AST agentic for local e2e; OpenRouter when false + key mounted.
       DESIGN_FORCE_AGENTIC_SIM: "${LOCAL_DESIGN_FORCE_AGENTIC_SIM:-false}"
+      # Hold after each stage so visual A→Z can photograph mid-flight (0 = off).
+      DESIGN_SIM_STAGE_DELAY_MS: "${LOCAL_DESIGN_SIM_STAGE_DELAY_MS:-0}"
 
   design-egress-proxy:
     ports:

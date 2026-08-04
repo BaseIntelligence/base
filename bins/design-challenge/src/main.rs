@@ -119,6 +119,15 @@ struct Cli {
         global = true
     )]
     llm_proxy: String,
+    /// Local/e2e: ms to hold after each published stage (photograph mid-flight).
+    /// Default 0 — never enable on staging/prod.
+    #[arg(
+        long,
+        env = "DESIGN_SIM_STAGE_DELAY_MS",
+        default_value_t = 0,
+        global = true
+    )]
+    sim_stage_delay_ms: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -304,6 +313,13 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         chain_live::LiveChainClient::connect(&cli.chain_endpoint).map_err(|e| e.to_string())?;
     chain.set_netuid(cli.netuid);
 
+    let stage_delay = Duration::from_millis(cli.sim_stage_delay_ms);
+    if !stage_delay.is_zero() {
+        tracing::info!(
+            delay_ms = cli.sim_stage_delay_ms,
+            "design sim stage delay enabled (local evidence only)"
+        );
+    }
     let orch = Arc::new(Orchestrator::new(
         OrchestratorConfig {
             netuid: cli.netuid,
@@ -311,6 +327,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             stuck_grace_secs: 3600,
             llm_proxy: cli.llm_proxy.clone(),
             staging_root: cli.staging_root.clone(),
+            stage_delay,
         },
         Arc::clone(&store),
         sandbox,

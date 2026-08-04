@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::frames::coding_arena;
 use crate::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
-    list_arenas, prism_arena_from_live, prism_submission, prism_window,
+    list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_window,
 };
 use crate::paginate::page_slice;
 use crate::state::SiteState;
@@ -212,6 +212,110 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
     Json(arena).into_response()
 }
 
+fn empty_leaderboard_json(page: u32, page_size: u32) -> Value {
+    let empty = page_slice::<crate::types::LeaderboardRow>(&[], page, page_size);
+    json!({
+        "items": empty.items,
+        "page": empty.page,
+        "pageSize": empty.page_size,
+        "total": empty.total,
+        "pageCount": empty.page_count,
+        "epoch": 0,
+        "updatedAt": now_iso(),
+    })
+}
+
+async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+    let dash = fetch_design_dash(st).await;
+    let round_id = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/leaderboard/current_round"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            dash.as_ref()
+                .and_then(|d| d.pointer("/round/round_id"))
+                .and_then(Value::as_u64)
+        });
+    let lb = if let Some(rid) = round_id {
+        upstream::get_json_opt(st, DESIGN, &format!("/v1/rounds/{rid}/leaderboard")).await
+    } else {
+        None
+    };
+    let ratings = lb
+        .as_ref()
+        .and_then(|v| v.get("ratings"))
+        .and_then(Value::as_array)
+        .cloned()
+        .or_else(|| {
+            dash.as_ref()
+                .and_then(|d| d.pointer("/leaderboard/ratings"))
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default();
+    let previous = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/leaderboard/previous_ratings"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let epoch = dash
+        .as_ref()
+        .and_then(|d| d.get("epoch"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let rows = design_leaderboard(&ratings, &previous, epoch);
+    let page_out = page_slice(&rows, page, page_size);
+    let seconds_remaining = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/round/seconds_remaining"))
+        .and_then(Value::as_u64);
+    let round_ends_at = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/round/closes_at_secs"))
+        .and_then(Value::as_u64)
+        .map(|s| crate::map::ms_to_iso(s.saturating_mul(1000)));
+    json!({
+        "items": page_out.items,
+        "page": page_out.page,
+        "pageSize": page_out.page_size,
+        "total": page_out.total,
+        "pageCount": page_out.page_count,
+        "epoch": epoch,
+        "roundId": round_id,
+        "roundEndsAt": round_ends_at,
+        "secondsRemaining": seconds_remaining,
+        "updatedAt": now_iso(),
+    })
+}
+
+async fn prism_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+    let status = fetch_prism_status(st).await;
+    let epoch = status
+        .as_ref()
+        .and_then(|s| s.get("epoch").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let raw = fetch_prism_subs(st, 500).await;
+    let rows = raw
+        .as_ref()
+        .and_then(|v| v.get("submissions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let board = prism_bpb_leaderboard(&rows, epoch);
+    let page_out = page_slice(&board, page, page_size);
+    json!({
+        "items": page_out.items,
+        "page": page_out.page,
+        "pageSize": page_out.page_size,
+        "total": page_out.total,
+        "pageCount": page_out.page_count,
+        "epoch": epoch,
+        "metric": "bpb",
+        "updatedAt": now_iso(),
+    })
+}
+
 async fn get_leaderboard(
     State(st): State<SiteState>,
     Path(slug): Path<String>,
@@ -223,89 +327,9 @@ async fn get_leaderboard(
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(24);
     match slug {
-        ArenaSlug::Coding => {
-            let empty = page_slice::<crate::types::LeaderboardRow>(&[], page, page_size);
-            Json(json!({
-                "items": empty.items,
-                "page": empty.page,
-                "pageSize": empty.page_size,
-                "total": empty.total,
-                "pageCount": empty.page_count,
-                "epoch": 0,
-                "updatedAt": now_iso(),
-            }))
-            .into_response()
-        }
-        ArenaSlug::Design => {
-            let dash = fetch_design_dash(&st).await;
-            let round_id = dash
-                .as_ref()
-                .and_then(|d| d.pointer("/leaderboard/current_round"))
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    dash.as_ref()
-                        .and_then(|d| d.pointer("/round/round_id"))
-                        .and_then(Value::as_u64)
-                });
-            let lb = if let Some(rid) = round_id {
-                upstream::get_json_opt(&st, DESIGN, &format!("/v1/rounds/{rid}/leaderboard")).await
-            } else {
-                None
-            };
-            let ratings = lb
-                .as_ref()
-                .and_then(|v| v.get("ratings"))
-                .and_then(Value::as_array)
-                .cloned()
-                .or_else(|| {
-                    dash.as_ref()
-                        .and_then(|d| d.pointer("/leaderboard/ratings"))
-                        .and_then(Value::as_array)
-                        .cloned()
-                })
-                .unwrap_or_default();
-            let previous = dash
-                .as_ref()
-                .and_then(|d| d.pointer("/leaderboard/previous_ratings"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let epoch = dash
-                .as_ref()
-                .and_then(|d| d.get("epoch"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let rows = design_leaderboard(&ratings, &previous, epoch);
-            let page_out = page_slice(&rows, page, page_size);
-            Json(json!({
-                "items": page_out.items,
-                "page": page_out.page,
-                "pageSize": page_out.page_size,
-                "total": page_out.total,
-                "pageCount": page_out.page_count,
-                "epoch": epoch,
-                "updatedAt": now_iso(),
-            }))
-            .into_response()
-        }
-        ArenaSlug::Prism => {
-            // Prism has no Elo board — empty honest list (series live on /window).
-            let empty = page_slice::<crate::types::LeaderboardRow>(&[], page, page_size);
-            let epoch = fetch_prism_status(&st)
-                .await
-                .and_then(|s| s.get("epoch").and_then(Value::as_u64))
-                .unwrap_or(0);
-            Json(json!({
-                "items": empty.items,
-                "page": empty.page,
-                "pageSize": empty.page_size,
-                "total": empty.total,
-                "pageCount": empty.page_count,
-                "epoch": epoch,
-                "updatedAt": now_iso(),
-            }))
-            .into_response()
-        }
+        ArenaSlug::Coding => Json(empty_leaderboard_json(page, page_size)).into_response(),
+        ArenaSlug::Design => Json(design_leaderboard_json(&st, page, page_size).await).into_response(),
+        ArenaSlug::Prism => Json(prism_leaderboard_json(&st, page, page_size).await).into_response(),
     }
 }
 
@@ -392,12 +416,11 @@ async fn design_submissions_page(
             m
         };
         let run_id = run.get("id").and_then(Value::as_str).unwrap_or("");
-        let detail = if run.get("status").and_then(Value::as_str) == Some("scored")
-            || run.get("status").and_then(Value::as_str) == Some("failed")
-        {
-            upstream::get_json_opt(st, DESIGN, &format!("/v1/runs/{run_id}")).await
-        } else {
+        // Refresh stage from run detail for in-flight + terminal rows.
+        let detail = if run_id.is_empty() {
             None
+        } else {
+            upstream::get_json_opt(st, DESIGN, &format!("/v1/runs/{run_id}")).await
         };
         if let Some(sub) = design_submission(run, &miner, detail.as_ref(), epoch) {
             items.push(sub);
@@ -565,18 +588,20 @@ mod tests {
         (status, v)
     }
 
-    #[tokio::test]
-    async fn arenas_and_design_submissions_from_mocks() {
-        let (design, prism, st) = setup().await;
+    async fn mount_site_mocks(design: &MockServer, prism: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/v1/dashboard"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "epoch": 3,
-                "round": {"round_id": 9},
                 "leaderboard": {
                     "current_round": 9,
                     "ratings": [{"miner_hotkey":"aa","rating":1300,"wins":1,"losses":0}],
                     "previous_ratings": []
+                },
+                "round": {
+                    "round_id": 9,
+                    "closes_at_secs": 1_700_000_100_u64,
+                    "seconds_remaining": 120
                 },
                 "recent_runs": [{
                     "id": "run1",
@@ -588,7 +613,7 @@ mod tests {
                     "updated_at_ms": 1_700_000_000_000_u64
                 }]
             })))
-            .mount(&design)
+            .mount(design)
             .await;
         Mock::given(method("GET"))
             .and(path("/v1/harness/h1"))
@@ -596,7 +621,7 @@ mod tests {
                 "id": "h1",
                 "miner_hotkey": "aa".repeat(32)
             })))
-            .mount(&design)
+            .mount(design)
             .await;
         Mock::given(method("GET"))
             .and(path("/v1/runs/run1"))
@@ -605,7 +630,7 @@ mod tests {
                 "status": "scored",
                 "final_score": {"score": 1000}
             })))
-            .mount(&design)
+            .mount(design)
             .await;
         Mock::given(method("GET"))
             .and(path("/v1/status"))
@@ -613,7 +638,7 @@ mod tests {
                 "epoch": 3,
                 "backend": "sim"
             })))
-            .mount(&prism)
+            .mount(prism)
             .await;
         Mock::given(method("GET"))
             .and(path("/v1/submissions"))
@@ -630,36 +655,46 @@ mod tests {
                     "updated_at_ms": 1_700_000_000_000_u64
                 }]
             })))
-            .mount(&prism)
+            .mount(prism)
             .await;
+    }
 
+    #[tokio::test]
+    async fn arenas_and_design_submissions_from_mocks() {
+        let (design, prism, st) = setup().await;
+        mount_site_mocks(&design, &prism).await;
         let app = site_router(st);
+
         let (s, v) = call(app.clone(), "/v1/site/arenas").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v.as_array().unwrap().len(), 3);
         assert_eq!(v[0]["slug"], "coding");
-        assert_eq!(v[0]["status"], "paused");
-        assert_eq!(v[1]["slug"], "design");
         assert_eq!(v[1]["bestScore"], "1,300");
+        assert_eq!(v[1]["roundId"], 9);
+        assert_eq!(v[1]["secondsRemaining"], 120);
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/design/submissions").await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        assert_eq!(v["items"][0]["stage"], "scored");
+        assert_eq!(v["items"][0]["score"], 1000.0);
         assert_eq!(
             v["items"][0]["url"],
             "/challenge/design/v1/view/run1/index.html"
         );
-        assert_eq!(v["items"][0]["status"], "scored");
-        assert_eq!(v["items"][0]["score"], 1000.0);
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/design/duels").await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v.as_array().unwrap().len(), 0);
+        assert!(v.as_array().unwrap().is_empty());
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/submissions").await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["items"][0]["arena"], "prism");
-        assert_eq!(v["items"][0]["status"], "scored");
+        assert_eq!(v["items"][0]["stage"], "terminated");
+        assert_eq!(v["items"][0]["bpb"], 1.25);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["metric"], "bpb");
+        assert_eq!(v["items"][0]["elo"], 1.25);
 
         let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);

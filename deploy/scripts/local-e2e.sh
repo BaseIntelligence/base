@@ -92,6 +92,8 @@ Environment knobs (optional):
   LOCAL_PRISM_FORCE_SIM       default true
   LOCAL_DESIGN_FORCE_SIM      default true
   LOCAL_DESIGN_EGRESS_SIM     default true
+  LOCAL_DESIGN_SIM_STAGE_DELAY_MS  ms pause after each design stage (default 0)
+  LOCAL_PRISM_SIM_STAGE_DELAY_MS   ms pause after each prism stage (default 0)
   LOCAL_ATTEST_VERIFIER       default mock_ok
 
 Wallet roles:

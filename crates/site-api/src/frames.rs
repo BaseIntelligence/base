@@ -26,6 +26,9 @@ pub fn coding_arena() -> Arena {
         references: Vec::new(),
         source_url: "https://github.com/BaseIntelligence/base".into(),
         plate: "/plates/coding.svg".into(),
+        round_id: None,
+        round_ends_at: None,
+        seconds_remaining: None,
     }
 }
 
@@ -57,6 +60,9 @@ pub fn design_frame() -> Arena {
         }],
         source_url: "https://github.com/BaseIntelligence/base".into(),
         plate: "/plates/design.svg".into(),
+        round_id: None,
+        round_ends_at: None,
+        seconds_remaining: None,
     }
 }
 
@@ -88,5 +94,8 @@ pub fn prism_frame() -> Arena {
         }],
         source_url: "https://github.com/BaseIntelligence/base".into(),
         plate: "/plates/prism.svg".into(),
+        round_id: None,
+        round_ends_at: None,
+        seconds_remaining: None,
     }
 }

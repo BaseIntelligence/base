@@ -122,6 +122,29 @@ pub fn design_arena_from_dashboard(dash: Option<&Value>) -> Arena {
     if let Some(b) = best {
         a.best_score = format_elo(b);
     }
+    // Round clock from dashboard `/round` (same shape as `/v1/stats`).
+    if let Some(rid) = dash
+        .pointer("/round/round_id")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            dash.pointer("/leaderboard/current_round")
+                .and_then(Value::as_u64)
+        })
+    {
+        a.round_id = Some(rid);
+    }
+    if let Some(closes) = dash
+        .pointer("/round/closes_at_secs")
+        .and_then(Value::as_u64)
+    {
+        a.round_ends_at = Some(ms_to_iso(closes.saturating_mul(1000)));
+    }
+    if let Some(rem) = dash
+        .pointer("/round/seconds_remaining")
+        .and_then(Value::as_u64)
+    {
+        a.seconds_remaining = Some(rem);
+    }
     a
 }
 
@@ -251,10 +274,12 @@ pub fn design_submission(
     epoch: u64,
 ) -> Option<Submission> {
     let id = run.get("id")?.as_str()?;
-    let status_s = run
-        .get("status")
+    let status_s = run_detail
+        .and_then(|d| d.get("status"))
         .and_then(Value::as_str)
+        .or_else(|| run.get("status").and_then(Value::as_str))
         .unwrap_or("queued");
+    let stage = status_s.to_owned();
     let status = map_design_status(status_s);
     let prompt_id = run
         .get("prompt_id")
@@ -286,6 +311,15 @@ pub fn design_submission(
                 .map(str::to_owned);
         }
     }
+    let status_detail = failure_reason.clone().or_else(|| match status_s {
+        "awaiting_admin" => Some("awaiting admin winners".into()),
+        "awaiting_annotation" => Some("awaiting annotation".into()),
+        "agentic_review" => Some("agentic anti-cheat review".into()),
+        "installing" => Some("installing harness".into()),
+        "running" => Some("running agent".into()),
+        "sanitizing" => Some("sanitizing pages".into()),
+        _ => None,
+    });
     Some(Submission {
         id: id.to_owned(),
         arena: ArenaSlug::Design,
@@ -294,11 +328,14 @@ pub fn design_submission(
         title: format!("design run {id}"),
         url: design_view_url(id),
         status,
+        stage,
+        status_detail,
         score: if status == SubmissionStatus::Scored {
             score
         } else {
             None
         },
+        bpb: None,
         failure_reason: if status == SubmissionStatus::Failed {
             failure_reason
         } else {
@@ -320,6 +357,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("queued");
+    let stage = status_s.to_owned();
     let status = map_prism_status(status_s);
     let epoch = row.get("epoch").and_then(Value::as_u64).unwrap_or(0);
     let ms = row
@@ -336,6 +374,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
             score = s.get("value").and_then(num_f64_val);
         }
     }
+    let bpb = row.get("bpb").and_then(Value::as_f64);
     let failure_reason = if status == SubmissionStatus::Failed {
         row.get("error_detail")
             .and_then(Value::as_str)
@@ -343,6 +382,15 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
     } else {
         None
     };
+    let status_detail = failure_reason.clone().or_else(|| match status_s {
+        "provisioning" => Some("provisioning eval pod".into()),
+        "running" => Some("training on recipe".into()),
+        "llm_review" => Some("LLM review".into()),
+        "similarity" => Some("similarity check".into()),
+        "scoring" => Some("scoring".into()),
+        "terminated" => bpb.map(|b| format!("bpb={b:.4}")),
+        _ => None,
+    });
     Some(Submission {
         id: id.to_owned(),
         arena: ArenaSlug::Prism,
@@ -351,14 +399,69 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         title: label.to_owned(),
         url: format!("/challenge/prism/v1/submissions/{id}"),
         status,
+        stage,
+        status_detail,
         score: if status == SubmissionStatus::Scored {
             score
         } else {
             None
         },
+        bpb,
         failure_reason,
         submitted_at: ms_to_iso(ms),
     })
+}
+
+/// Prism BPB leaderboard from terminal submissions (lower BPB ranks better).
+///
+/// `elo` carries the BPB value so the existing leaderboard row contract can
+/// surface rankings without inventing Elo/duels.
+#[must_use]
+pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> {
+    let mut best: HashMap<String, f64> = HashMap::new();
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for row in subs {
+        if row.get("status").and_then(Value::as_str) != Some("terminated") {
+            continue;
+        }
+        let Some(bpb) = row.get("bpb").and_then(Value::as_f64) else {
+            continue;
+        };
+        let hk = row
+            .get("miner_hotkey")
+            .and_then(Value::as_str)
+            .unwrap_or("—")
+            .to_owned();
+        *counts.entry(hk.clone()).or_insert(0) += 1;
+        best.entry(hk)
+            .and_modify(|b| {
+                if bpb < *b {
+                    *b = bpb;
+                }
+            })
+            .or_insert(bpb);
+    }
+    let mut rows: Vec<(f64, String, u32)> = best
+        .into_iter()
+        .map(|(hk, bpb)| {
+            let n = counts.get(&hk).copied().unwrap_or(1);
+            (bpb, hk, n)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, (bpb, hk, submissions))| LeaderboardRow {
+            rank: u32::try_from(i + 1).unwrap_or(u32::MAX),
+            agent: agent_from_hotkey(&hk, epoch),
+            elo: bpb,
+            wins: 0,
+            losses: 0,
+            win_rate: 0.0,
+            submissions,
+            delta7d: 0.0,
+        })
+        .collect()
 }
 
 /// Prism window from recipe + terminal scored submissions (minimal series).
@@ -572,5 +675,71 @@ mod tests {
         assert_eq!(w.series[0].points.len(), 1);
         assert_eq!(w.offset, "pinned");
         assert_eq!(w.token_budget, 0);
+    }
+
+    #[test]
+    fn design_submission_exposes_fine_stage() {
+        let run = json!({
+            "id": "r1",
+            "status": "agentic_review",
+            "prompt_id": "p1",
+            "updated_at_ms": 1_700_000_000_000_u64
+        });
+        let sub = design_submission(&run, "aabbccdd", None, 1).unwrap();
+        assert_eq!(sub.status, SubmissionStatus::Pending);
+        assert_eq!(sub.stage, "agentic_review");
+        assert!(sub.status_detail.as_deref().unwrap().contains("agentic"));
+        assert!(sub.bpb.is_none());
+    }
+
+    #[test]
+    fn prism_submission_surfaces_bpb_and_stage() {
+        let row = json!({
+            "id": "s1",
+            "miner_hotkey": "bb".repeat(32),
+            "epoch": 2,
+            "status": "terminated",
+            "label": "base",
+            "bpb": 1.25,
+            "score": {"kind":"score","value": 900},
+            "created_at_ms": 1_700_000_000_000_u64
+        });
+        let sub = prism_submission(&row).unwrap();
+        assert_eq!(sub.status, SubmissionStatus::Scored);
+        assert_eq!(sub.stage, "terminated");
+        assert!((sub.bpb.unwrap() - 1.25).abs() < f64::EPSILON);
+        assert!((sub.score.unwrap() - 900.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn prism_bpb_leaderboard_ranks_lower_first() {
+        let subs = vec![
+            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa"}),
+            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb"}),
+            json!({"id":"c","status":"queued","bpb":0.1,"miner_hotkey":"cc"}),
+            json!({"id":"d","status":"terminated","bpb":0.5,"miner_hotkey":"aa"}),
+        ];
+        let rows = prism_bpb_leaderboard(&subs, 3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].rank, 1);
+        assert!((rows[0].elo - 0.5).abs() < f64::EPSILON);
+        assert_eq!(rows[0].submissions, 2);
+        assert!((rows[1].elo - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn design_arena_round_clock_from_dashboard() {
+        let dash = json!({
+            "round": {
+                "round_id": 42,
+                "closes_at_secs": 1_700_000_100_u64,
+                "seconds_remaining": 99
+            },
+            "leaderboard": {"ratings": []}
+        });
+        let a = design_arena_from_dashboard(Some(&dash));
+        assert_eq!(a.round_id, Some(42));
+        assert_eq!(a.seconds_remaining, Some(99));
+        assert!(a.round_ends_at.as_ref().unwrap().starts_with("20"));
     }
 }

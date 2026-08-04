@@ -49,6 +49,9 @@ pub struct OrchestratorConfig {
     pub similarity_corpus_limit: u32,
     /// Stuck sweep grace (seconds).
     pub stuck_grace_secs: u64,
+    /// Local/e2e only: pause after each published stage so mid-flight is
+    /// photographable. Zero in production (default).
+    pub stage_delay: Duration,
 }
 
 impl Default for OrchestratorConfig {
@@ -63,6 +66,7 @@ impl Default for OrchestratorConfig {
             max_attempts: 2,
             similarity_corpus_limit: 6,
             stuck_grace_secs: 7 * 3600,
+            stage_delay: Duration::ZERO,
         }
     }
 }
@@ -523,8 +527,12 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 }),
             )
             .await
-            .map(|_| ())
-            .map_err(|e| format!("stage {stage:?}: {e}"))
+            .map_err(|e| format!("stage {stage:?}: {e}"))?;
+        // Hold after publish so local evidence can photograph mid-flight stages.
+        if !self.cfg.stage_delay.is_zero() {
+            sleep(self.cfg.stage_delay).await;
+        }
+        Ok(())
     }
 
     /// Emit + POST the exact-E leaf set for the chain's current epoch.

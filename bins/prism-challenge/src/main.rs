@@ -82,6 +82,15 @@ struct Cli {
         global = true
     )]
     gateway_endpoint: String,
+    /// Local/e2e: ms to hold after each published stage (photograph mid-flight).
+    /// Default 0 — never enable on staging/prod.
+    #[arg(
+        long,
+        env = "PRISM_SIM_STAGE_DELAY_MS",
+        default_value_t = 0,
+        global = true
+    )]
+    sim_stage_delay_ms: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -308,6 +317,13 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     spawn_epoch_feed(&chain_ep, &state);
 
+    let stage_delay = Duration::from_millis(cli.sim_stage_delay_ms);
+    if !stage_delay.is_zero() {
+        tracing::info!(
+            delay_ms = cli.sim_stage_delay_ms,
+            "prism sim stage delay enabled (local evidence only)"
+        );
+    }
     let oc = OrchestratorConfig {
         netuid: cli.netuid,
         max_price_per_hour: 2.5,
@@ -318,6 +334,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         max_attempts: MAX_ATTEMPTS,
         similarity_corpus_limit: 6,
         stuck_grace_secs: 7 * 3600,
+        stage_delay,
     };
     let orchestrator = Arc::new(Orchestrator::new(
         oc,

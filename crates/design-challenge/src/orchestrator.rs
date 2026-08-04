@@ -54,6 +54,9 @@ pub struct OrchestratorConfig {
     pub llm_proxy: String,
     /// Staging root for agentic workdirs.
     pub staging_root: PathBuf,
+    /// Local/e2e only: pause after each published stage so mid-flight is
+    /// photographable. Zero in production (default).
+    pub stage_delay: Duration,
 }
 
 impl Default for OrchestratorConfig {
@@ -64,6 +67,7 @@ impl Default for OrchestratorConfig {
             stuck_grace_secs: 3600,
             llm_proxy: "http://design-egress-proxy:8094".into(),
             staging_root: PathBuf::from("/var/lib/design/staging"),
+            stage_delay: Duration::ZERO,
         }
     }
 }
@@ -107,6 +111,13 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             gateway,
             chain,
             sk,
+        }
+    }
+
+    /// Local/e2e: hold after publishing a stage so polls can photograph it.
+    async fn pause_stage(&self) {
+        if !self.cfg.stage_delay.is_zero() {
+            sleep(self.cfg.stage_delay).await;
         }
     }
 
@@ -320,6 +331,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 }),
             )
             .await;
+        self.pause_stage().await;
         if let Err(e) = self.execute_run(&run).await {
             warn!(run_id = %run.id, error = %e, "run failed");
             let _ = self
@@ -435,6 +447,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 }),
             )
             .await;
+        self.pause_stage().await;
 
         let llm = self.cfg.llm_proxy.clone();
         let run_id = run.id.clone();
@@ -469,6 +482,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 }),
             )
             .await;
+        self.pause_stage().await;
         let sanitized = sanitize_bundle(&out.pages).map_err(|e| e.to_string())?;
         let pages: Vec<_> = sanitized
             .pages
@@ -507,6 +521,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 }),
             )
             .await;
+        self.pause_stage().await;
 
         match self
             .run_agentic_review(run, &harness.agent_py, &pages, &report)
