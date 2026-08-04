@@ -47,14 +47,38 @@ docker exec $(docker ps -q --filter name=gateway) curl -fsS http://127.0.0.1:808
 # Returns SCALE-encoded sealed bundle
 ```
 
+## Register challenge backends (required after gateway restart)
+
+The gateway registry is **in-memory**. After every redeploy/restart, challenge
+proxy routes return `503 no healthy backends for challenge_id=…` until backends
+are registered. `remote-deploy.sh` (master) re-seeds automatically; to do it by
+hand:
+
+```bash
+# From this repo (against a reachable gateway):
+GATEWAY_URL=http://staging.api.joinbase.ai ./deploy/scripts/register-challenge-backends.sh
+
+# Or on the droplet:
+curl -fsS -X POST http://127.0.0.1:8080/v1/admin/backends \
+  -H 'content-type: application/json' \
+  -d '{"challenge_id":"prism","base_url":"http://prism-challenge:8092","weight":1}'
+curl -fsS -X POST http://127.0.0.1:8080/v1/admin/backends \
+  -H 'content-type: application/json' \
+  -d '{"challenge_id":"design","base_url":"http://design-challenge:8093","weight":1}'
+curl -fsS http://staging.api.joinbase.ai/challenge/prism/health
+curl -fsS http://staging.api.joinbase.ai/challenge/design/health
+```
+
+Public staging API: cleartext **`http://staging.api.joinbase.ai`** (`/healthz`,
+`/challenge/{prism|design}/v1/...`). Challenge liveness is `/health` (not `/healthz`).
+
 ## Verify challenge identities
 
 ```bash
 ssh root@68.183.23.51
 docker exec $(docker ps -q --filter name=prism-challenge) /usr/local/bin/prism-challenge identity
 # Prints: challenge_id=prism scoring_version=2 public_key=...
-# When design-challenge is wired:
-# docker exec $(docker ps -q --filter name=design-challenge) /usr/local/bin/design-challenge identity
+docker exec $(docker ps -q --filter name=design-challenge) /usr/local/bin/design-challenge identity
 ```
 
 ## Testnet chain (read-only smoke)

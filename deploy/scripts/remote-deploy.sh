@@ -411,6 +411,38 @@ if [[ '$ROLE' == 'master' ]]; then
   else
     echo "gateway health: probe deferred"
   fi
+  # Registry is in-memory — re-seed challenge backends after every redeploy.
+  echo "remote-deploy: registering challenge backends"
+  python3 - <<'PY'
+import json, urllib.request, urllib.error
+backends = [
+    ("prism", "http://prism-challenge:8092"),
+    ("design", "http://design-challenge:8093"),
+]
+for cid, url in backends:
+    payload = json.dumps({"challenge_id": cid, "base_url": url, "weight": 1}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:8080/v1/admin/backends",
+        data=payload,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"backend {cid} → {url} (HTTP {resp.status})")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        if e.code == 409:
+            print(f"backend {cid} → {url} (HTTP 409 already present)")
+        else:
+            print(f"backend {cid} register failed HTTP {e.code}: {body}", flush=True)
+    except Exception as e:
+        print(f"backend {cid} register failed: {e}", flush=True)
+PY
+  curl -fsS -m 5 http://127.0.0.1:8080/challenge/prism/health >/dev/null \
+    && curl -fsS -m 5 http://127.0.0.1:8080/challenge/design/health >/dev/null \
+    && echo "challenge proxy health: ok" \
+    || echo "challenge proxy health: deferred (backends may still be starting)"
 fi
 EOS
 
