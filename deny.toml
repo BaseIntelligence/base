@@ -29,6 +29,8 @@ allow = [
     "MPL-2.0",
     # Transitive via rustpython-parser → malachite* (challenge-ast anti-cheat).
     "LGPL-3.0-only",
+    # Transitive via rustpython-parser (build) → tiny-keccak.
+    "CC0-1.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
