@@ -4,7 +4,7 @@
 //! |-------|---------|
 //! | `GET  /health` | liveness |
 //! | `POST /v1/submissions` | accept a two-script recipe |
-//! | `GET  /v1/submissions` | list (status filter, limit) |
+//! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
 //! | `GET  /v1/submissions/{id}` | full detail + event timeline |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
 //! | `GET  /v1/status` | queue sizes + backend + recipe pin |
@@ -132,12 +132,15 @@ async fn post_submission(
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     status: Option<String>,
+    /// Miner hotkey filter (case-insensitive).
+    miner: Option<String>,
     limit: Option<u32>,
 }
 
 async fn list_submissions(State(st): State<Arc<AppState>>, Query(q): Query<ListQuery>) -> Response {
     let limit = q.limit.unwrap_or(50).min(500);
-    match st.store.list(q.status.as_deref(), limit).await {
+    let miner = q.miner.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    match st.store.list(q.status.as_deref(), miner, limit).await {
         Ok(rows) => Json(json!({
             "submissions": rows.iter().map(list_view).collect::<Vec<_>>()
         }))
@@ -202,21 +205,21 @@ async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
 async fn get_status(State(st): State<Arc<AppState>>) -> Response {
     let queued = st
         .store
-        .list(Some("queued"), 1000)
+        .list(Some("queued"), None, 1000)
         .await
         .map_or(0, |v| v.len());
     let active = st
         .store
-        .list(Some("running"), 1000)
+        .list(Some("running"), None, 1000)
         .await
         .map_or(0, |v| v.len())
         + st.store
-            .list(Some("provisioning"), 1000)
+            .list(Some("provisioning"), None, 1000)
             .await
             .map_or(0, |v| v.len());
     let done_24h = st
         .store
-        .list(None, 200)
+        .list(None, None, 200)
         .await
         .map_or(0, |v| v.iter().filter(|r| r.status.is_terminal()).count());
     Json(json!({
@@ -233,7 +236,7 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
 
 /// Orchestrator job view: one row per active/recent pod (for ops).
 async fn get_jobs(State(st): State<Arc<AppState>>) -> Response {
-    let rows = match st.store.list(None, 200).await {
+    let rows = match st.store.list(None, None, 200).await {
         Ok(v) => v,
         Err(e) => {
             return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string());
@@ -465,6 +468,42 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap_or(Value::Null)
         };
         (status, v)
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_miner() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let mut req_a = crate::example_valid_request();
+        req_a.miner_hotkey = "aa".repeat(32);
+        let mut req_b = crate::example_valid_request();
+        // Distinct sources so submission ids differ.
+        req_b.architecture_py = format!("{}\n#b", req_b.architecture_py);
+        req_b.miner_hotkey = "bb".repeat(32);
+        for req in [&req_a, &req_b] {
+            let body = serde_json::to_vec(req).unwrap();
+            let (s, _) = call(
+                app.clone(),
+                Request::post("/v1/submissions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(s, StatusCode::ACCEPTED);
+        }
+        let miner = "aa".repeat(32);
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/submissions?miner={miner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let rows = v["submissions"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["miner_hotkey"], miner);
     }
 
     #[tokio::test]

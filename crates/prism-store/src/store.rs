@@ -201,10 +201,11 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// (SQL) or reset the in-memory row mirror-equivalently.
     async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError>;
 
-    /// Newsfeed listing for the API.
+    /// Newsfeed listing for the API (`status` / `miner` optional filters).
     async fn list(
         &self,
         status: Option<&str>,
+        miner: Option<&str>,
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError>;
 
@@ -362,15 +363,22 @@ impl PrismStore for MemoryPrismStore {
     async fn list(
         &self,
         status: Option<&str>,
+        miner: Option<&str>,
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError> {
         let st = status.and_then(Stage::parse);
+        let miner_norm = miner.map(|m| m.trim().to_ascii_lowercase());
         let mut v: Vec<_> = self
             .rows
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .iter()
             .filter(|r| st.is_none() || Some(r.status) == st)
+            .filter(|r| {
+                miner_norm
+                    .as_ref()
+                    .is_none_or(|m| r.miner_hotkey.to_ascii_lowercase() == *m)
+            })
             .cloned()
             .collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
@@ -474,7 +482,17 @@ mod tests {
             err.to_string().contains("duplicate"),
             "expected duplicate error, got {err}"
         );
-        assert_eq!(s.list(None, 10).await.unwrap().len(), 1);
+        assert_eq!(s.list(None, None, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_miner_case_insensitive() {
+        let s = MemoryPrismStore::new();
+        s.insert_queued(&row("a", "AABBCC")).await.unwrap();
+        s.insert_queued(&row("b", "ddeeff")).await.unwrap();
+        let only_a = s.list(None, Some("aabbcc"), 10).await.unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].id, "a");
     }
 
     #[tokio::test]

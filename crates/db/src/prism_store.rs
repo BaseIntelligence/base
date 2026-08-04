@@ -251,22 +251,29 @@ pub async fn insert_prism_stage_event(
     Ok(())
 }
 
-/// List recent rows (newest first), optionally by status.
+/// List recent rows (newest first), optionally by status and/or miner hotkey.
 ///
 /// # Errors
 /// SQL error.
 pub async fn list_prism_submissions(
     pool: &PgPool,
     status: Option<&str>,
+    miner: Option<&str>,
     limit: i64,
 ) -> Result<Vec<PrismSubmissionRow>, DbError> {
+    let miner = miner
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase);
     let q = format!(
         "SELECT {COLS} FROM prism_submission \
          WHERE ($1::TEXT IS NULL OR status = $1) \
-         ORDER BY created_at DESC LIMIT $2"
+           AND ($2::TEXT IS NULL OR lower(miner_hotkey) = $2) \
+         ORDER BY created_at DESC LIMIT $3"
     );
     let rows = sqlx::query_as::<_, PrismSubmissionRow>(&q)
         .bind(status)
+        .bind(miner)
         .bind(limit)
         .fetch_all(pool)
         .await?;

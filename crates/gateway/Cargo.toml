@@ -20,6 +20,7 @@ config = { path = "../config" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 keystore = { path = "../keystore" }
+site-api = { path = "../site-api" }
 telemetry = { path = "../telemetry" }
 trustroot = { path = "../trustroot" }
 weights-api = { path = "../weights-api" }

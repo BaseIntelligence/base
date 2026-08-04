@@ -1,4 +1,6 @@
-//! Composed axum application: health + registry API + challenge proxy + raw weights + bundles.
+//! Composed axum application: health + registry API + challenge proxy + raw weights + bundles + site.
+
+use std::sync::Arc;
 
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -10,7 +12,7 @@ use crate::tls::TlsConfig;
 use crate::weights::weights_router;
 use crate::GatewayError;
 
-/// Build the full gateway router (health + registry + proxy + raw weights + bundles).
+/// Build the full gateway router (health + registry + proxy + raw weights + bundles + site).
 ///
 /// # Errors
 ///
@@ -27,12 +29,20 @@ pub fn build_router(
         "TLS ownership is this process only (D20); ACME via rustls-acme is task 42"
     );
 
+    let site = site_api::site_router(site_api::SiteState::new(
+        Arc::clone(&state.registry),
+        state.client.clone(),
+        Some(Arc::clone(&state.chain)),
+        state.seal_netuid,
+    ));
+
     let health = telemetry::health_router(metrics)?;
     let app = health
         .merge(registry_router(state.clone()))
         .merge(weights_router(state.clone()))
         .merge(bundle_router(state.clone()))
         .merge(admin_seal_router(state.clone()))
+        .merge(site)
         .merge(proxy_router(state));
     Ok(app)
 }

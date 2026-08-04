@@ -442,7 +442,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         };
         let recent = self
             .store
-            .list(Some("terminated"), self.cfg.similarity_corpus_limit)
+            .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
             .await
             .unwrap_or_default();
         let corpus = corpus_from_rows(id, &recent);
@@ -487,7 +487,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     async fn similarity_corpus(&self, current_id: &str) -> Vec<SourceSnippet> {
         let recent = self
             .store
-            .list(Some("terminated"), self.cfg.similarity_corpus_limit)
+            .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
             .await
             .unwrap_or_default();
         let mut v = vec![SourceSnippet {

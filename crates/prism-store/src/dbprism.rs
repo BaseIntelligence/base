@@ -257,9 +257,10 @@ impl PrismStore for DbPrismStore {
     async fn list(
         &self,
         status: Option<&str>,
+        miner: Option<&str>,
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError> {
-        dbs::list_prism_submissions(&self.pool, status, i64::from(limit))
+        dbs::list_prism_submissions(&self.pool, status, miner, i64::from(limit))
             .await
             .map(|v| v.into_iter().map(row_to_state).collect())
             .map_err(|e| StoreError::Backend(e.to_string()))

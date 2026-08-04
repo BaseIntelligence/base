@@ -54,7 +54,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 
 | Binary / crate | Role |
 |----------------|------|
-| `gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner |
+| `gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner; mounts marketing [`SITE_API.md`](./SITE_API.md) (`GET /v1/site/*`) |
 | `validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
 | `design-challenge` | **Master-only:** sandbox harness runs, sanitize/viewer, scoring, sign leaves |
 | `design-egress-proxy` | **Master-only:** allowlisted PyPI/LLM egress for sandboxes |
