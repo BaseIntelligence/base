@@ -506,7 +506,7 @@ pub(crate) fn parse_verdict(args: &Value) -> Result<AgenticVerdict, AgenticError
     }))
 }
 
-/// Align OpenRouter `submit_verdict` with SimAgent AST bands when the only
+/// Align `OpenRouter` `submit_verdict` with `SimAgent` AST bands when the only
 /// signal is AST / near-identical copy (non-AST cheat codes are left alone).
 fn normalize_ast_thresholds(mut v: AgenticVerdict) -> AgenticVerdict {
     let has_non_ast = v.cheat_codes.iter().any(|c| {
