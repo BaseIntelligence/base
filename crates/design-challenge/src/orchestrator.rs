@@ -120,6 +120,9 @@ fn classify_agentic(e: &AgenticError) -> RunFailure {
 const DESIGN_AGENTIC_RULES: &str = r"
 Design challenge rules:
 - Allowed: PyPI via egress, Mobbin/Dribbble inspiration, image generation, UI libs.
+- The corpus entry labeled `baseline` is the published reference miner: starting
+  from it is explicitly allowed and is NOT a copy. Copying ANOTHER MINER's
+  harness is what counts as a copy.
 - Cheat: near-identical harness copy, trivial HTML republish, scrape-clone of a real site,
   sanitize bypass / JS exfil, obfuscation to hide a copy.
 - suspicious and cheat both → Score(0), not eligible for admin winner selection.
@@ -902,19 +905,28 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .find(|h| h.id == run.harness_id)
             .map(|h| h.created_at_ms)
             .unwrap_or(0);
-        let corpus: Vec<CorpusEntry> = recent
-            .into_iter()
-            .filter(|h| h.id != run.harness_id)
-            // Prior art only (created_at ordered like the pre-LLM gate): a
-            // later byte-copy must never poison the original's review.
-            .filter(|h| {
-                cand_created == 0 || (h.created_at_ms > 0 && h.created_at_ms < cand_created)
-            })
-            .map(|h| CorpusEntry {
-                id: format!("harness:{}", h.id),
-                source: h.agent_py,
-            })
-            .collect();
+        let mut corpus: Vec<CorpusEntry> = vec![CorpusEntry {
+            // The published baseline is always in the corpus (same as prism):
+            // it anchors originality judgments and keeps an empty recent-set
+            // from producing incoherent verdicts.
+            id: "baseline".into(),
+            source: include_str!("../../../docs/external-miner/examples/design-baseline/agent.py")
+                .to_owned(),
+        }];
+        corpus.extend(
+            recent
+                .into_iter()
+                .filter(|h| h.id != run.harness_id)
+                // Prior art only (created_at ordered like the pre-LLM gate): a
+                // later byte-copy must never poison the original's review.
+                .filter(|h| {
+                    cand_created == 0 || (h.created_at_ms > 0 && h.created_at_ms < cand_created)
+                })
+                .map(|h| CorpusEntry {
+                    id: format!("harness:{}", h.id),
+                    source: h.agent_py,
+                }),
+        );
 
         let req = ReviewRequest {
             workdir: work.clone(),
