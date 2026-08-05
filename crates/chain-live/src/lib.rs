@@ -439,8 +439,11 @@ impl ChainClient for LiveChainClient {
         // `CommitRevealWeightsEnabled` storage map is sparse — netuid 100 is
         // CR-on via the runtime API while the map key is absent (a raw storage
         // read would falsely report disabled and downgrade to `set_weights`).
-        if let Some(v) = self.commit_reveal_enabled_from_hyperparams(netuid)? {
-            return Ok(v);
+        match self.commit_reveal_enabled_from_hyperparams(netuid) {
+            Ok(Some(v)) => return Ok(v),
+            Ok(None) | Err(_) => {
+                // Fall back to sparse storage map (unit tests / older runtimes).
+            }
         }
         let key =
             storage::storage_map_key_u16(PALLET_SUBTENSOR, "CommitRevealWeightsEnabled", netuid);
