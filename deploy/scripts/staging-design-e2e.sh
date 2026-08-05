@@ -83,7 +83,9 @@ api_admin() { # api_admin METHOD PATH [json-data] → body on stdout
   echo "${out%$'\n'*}"
 }
 psql() { # psql SQL → host postgres via ssh (evidence only)
-  ssh -o BatchMode=yes "$SSH_HOST" "docker exec base-postgres-1 psql -U postgres -d base -Atc \"$1\"" 2>/dev/null || echo "(psql unavailable)"
+  local sql="$1" cmd
+  cmd="psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc $(printf %q "$sql")"
+  ssh -o BatchMode=yes "$SSH_HOST" "docker exec base-postgres-1 sh -c $(printf %q "$cmd")" 2>/dev/null || echo "(psql unavailable)"
 }
 
 # ---------------------------------------------------------------- assets

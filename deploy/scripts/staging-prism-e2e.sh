@@ -64,142 +64,347 @@ api() {
 }
 last_http() { cat "$EVIDENCE/.last_http" 2>/dev/null || echo 000; }
 psql() {
-  ssh -o BatchMode=yes "$SSH_HOST" "docker exec base-postgres-1 sh -c 'psql -U \$POSTGRES_USER -d \$POSTGRES_DB -Atc \"$1\"'" 2>/dev/null || echo "(psql unavailable)"
+  local sql="$1" cmd
+  cmd="psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc $(printf %q "$sql")"
+  ssh -o BatchMode=yes "$SSH_HOST" "docker exec base-postgres-1 sh -c $(printf %q "$cmd")" 2>/dev/null || echo "(psql unavailable)"
 }
 
 # ---------------------------------------------------------------- assets
-# Miner A architecture: compact numpy 2-layer transformer-ish net (distinct
-# from baseline + earlier submissions).
+# Miner A architecture: MLP-Mixer language model (torch) — genuinely distinct
+# from the baseline causal transformer (no attention at all), real nn.Module.
 cat > "$EVIDENCE/assets/architecture_a.py" <<'PY'
-"""Staging e2e miner A architecture: tiny gated MLP language model (numpy)."""
+"""Staging e2e miner A architecture: MLP-Mixer LM (token/channel mixing, no attention)."""
+
+import torch
+import torch.nn as nn
+
+
+class MixerBlock(nn.Module):
+    def __init__(self, d: int, block: int, mlp_ratio: int = 2):
+        super().__init__()
+        self.ln_t = nn.LayerNorm(d)
+        self.ln_c = nn.LayerNorm(d)
+        self.t_mix = nn.Sequential(
+            nn.Linear(block, block * mlp_ratio), nn.GELU(), nn.Linear(block * mlp_ratio, block)
+        )
+        self.c_mix = nn.Sequential(
+            nn.Linear(d, d * mlp_ratio), nn.GELU(), nn.Linear(d * mlp_ratio, d)
+        )
+
+    def forward(self, x):
+        h = self.ln_t(x)
+        h = h.transpose(1, 2)
+        h = self.t_mix(h)
+        x = x + h.transpose(1, 2)
+        return x + self.c_mix(self.ln_c(x))
+
+
+class MixerLM(nn.Module):
+    def __init__(self, vocab=50257, d=192, n_layer=3, block=512):
+        super().__init__()
+        self.block = block
+        self.tok_emb = nn.Embedding(vocab, d)
+        self.pos_emb = nn.Embedding(block, d)
+        self.blocks = nn.ModuleList([MixerBlock(d, block) for _ in range(n_layer)])
+        self.ln = nn.LayerNorm(d)
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.head.weight = self.tok_emb.weight
+        self.logits = None
+
+    def forward(self, ids):
+        b, t = ids.shape
+        t = min(t, self.block)
+        ids = ids[:, -t:]
+        pos = torch.arange(t, device=ids.device)
+        x = self.tok_emb(ids) + self.pos_emb(pos)[None, :, :]
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.ln(x)
+        logits = self.head(x)
+        self.logits = logits
+        return logits
 
 
 def build_model(ctx):
-    dims = ctx["dims"] if isinstance(ctx, dict) else getattr(ctx, "dims", {})
-    vocab = int(dims.get("vocab", 256))
-    d_model = 64
-    seed = int(dims.get("seed", 1234))
-
-    class GatedMLPLM:
-        def __init__(self):
-            import numpy as np
-
-            rng = np.random.default_rng(seed)
-            self.np = np
-            self.embed = rng.normal(0, 0.02, (vocab, d_model))
-            self.w_gate = rng.normal(0, 0.02, (d_model, d_model))
-            self.w_val = rng.normal(0, 0.02, (d_model, d_model))
-            self.w_out = rng.normal(0, 0.02, (d_model, vocab))
-
-        def forward(self, ids):
-            np = self.np
-            h = self.embed[ids]
-            g = 1.0 / (1.0 + np.exp(-(h @ self.w_gate)))
-            h = g * (h @ self.w_val)
-            return h @ self.w_out
-
-        def parameters(self):
-            return [self.embed, self.w_gate, self.w_val, self.w_out]
-
-    return GatedMLPLM()
+    """Recipe contract entrypoint. ctx carries device/seed/caps (unused here)."""
+    torch.manual_seed(int(ctx.get("seed", 0)))
+    return MixerLM()
 PY
-# Miner A training: hooks contract (report every N steps + finish_evaluation).
+# Miner A training: real AdamW loop on the pinned shard with hooks + cosine LR
+# + label smoothing (training.py is similarity-exempt; must still really train).
 cat > "$EVIDENCE/assets/training_a.py" <<'PY'
-"""Staging e2e miner A training: respects budget, reports telemetry, stops early."""
+"""Staging e2e miner A training: cosine LR + label smoothing on the pinned shard."""
 
-import prism_telemetry
+import math
+import time
+
+import pyarrow.parquet as pq
+import torch
+from transformers import GPT2TokenizerFast
+
+try:
+    import prism_telemetry
+except ImportError:
+    class _TelemetryFallback:
+        @staticmethod
+        def report(**_kwargs):
+            return None
+
+        @staticmethod
+        def finish_evaluation():
+            return None
+
+    prism_telemetry = _TelemetryFallback()
+
+
+def _texts(path, n):
+    table = pq.read_table(path, columns=["text"])
+    xs = [t for t in table.column("text").to_pylist() if isinstance(t, str) and len(t) >= 200]
+    return xs[:n]
 
 
 def train(model, ctx):
-    budget = ctx["budget"]() if isinstance(ctx, dict) else ctx.budget()
-    max_steps = min(int(getattr(budget, "max_steps", 20000)), 20000)
-    loss = 4.2
-    for step in range(1, max_steps + 1):
-        loss = loss * 0.92 + 0.05
-        if step % 16 == 0:
+    """Recipe contract entrypoint: returns a metrics dict (val is harness-side)."""
+    device = ctx["device"]
+    torch.manual_seed(int(ctx["seed"]))
+    guard = ctx.get("guard", lambda: None)
+
+    tok = GPT2TokenizerFast.from_pretrained("gpt2")
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    texts = _texts(ctx["dataset_path"], int(ctx.get("train_rows", 2048)))
+    block = model.block if hasattr(model, "block") else 512
+
+    g = torch.Generator().manual_seed(int(ctx["seed"]))
+    perm = torch.randperm(len(texts), generator=g).tolist()
+
+    max_steps = int(ctx.get("max_train_steps", 20000))
+    opt = torch.optim.AdamW(model.parameters(), lr=6e-4, weight_decay=0.05)
+    model.train()
+    steps = 0
+    bs = 8
+    last = 0.0
+    t0 = time.time()
+    for i in range(0, min(2000, len(perm) - bs), bs):
+        guard()
+        lr_scale = 0.5 * (1.0 + math.cos(math.pi * min(1.0, steps / max(1, 500))))
+        for group in opt.param_groups:
+            group["lr"] = 6e-4 * lr_scale
+        batch_txt = [texts[j] for j in perm[i : i + bs]]
+        enc = tok(
+            batch_txt, return_tensors="pt", truncation=True, max_length=block, padding=True
+        ).to(device)
+        ids = enc.input_ids
+        out = model(ids[:, :-1])
+        logits = out.logits if hasattr(out, "logits") else out
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            ids[:, 1:].reshape(-1),
+            ignore_index=tok.pad_token_id,
+            label_smoothing=0.05,
+        )
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
+        opt.step()
+        last = float(loss.item())
+        steps += 1
+        if steps == 1 or steps % 10 == 0:
             prism_telemetry.report(
-                loss=loss,
-                step=step,
-                grad_norm=1.0 / step,
-                layer_stats={"embed": {"grad": 1.0 / step}},
+                loss=last,
+                step=steps,
+                grad_norm=grad_norm,
+                layer_stats={"mixer_head": {"grad_norm": grad_norm}},
             )
-        if step >= 96 and loss < 1.35:
+        if steps >= max_steps:
+            break
+        if steps >= 300 and last < 4.0:
             # Early stop: score the model as-is before the cap.
-            prism_telemetry.finish_evaluation()
-    return {"final_loss": loss, "steps": max_steps}
+            break
+    prism_telemetry.finish_evaluation()
+    return {"train_loss": last, "train_steps": steps, "train_seconds": time.time() - t0}
 PY
-# Miner B training-only: hooks present, different loop (training is similarity-exempt).
+# Miner B training-only: real loop (different optimizer schedule), hooks intact.
 cat > "$EVIDENCE/assets/training_b.py" <<'PY'
-"""Staging e2e miner B training-only entry: hooks intact, challenger loop."""
+"""Staging e2e miner B training-only entry: SGD momentum challenger loop with hooks."""
 
-import prism_telemetry
+import time
+
+import pyarrow.parquet as pq
+import torch
+from transformers import GPT2TokenizerFast
+
+try:
+    import prism_telemetry
+except ImportError:
+    class _TelemetryFallback:
+        @staticmethod
+        def report(**_kwargs):
+            return None
+
+        @staticmethod
+        def finish_evaluation():
+            return None
+
+    prism_telemetry = _TelemetryFallback()
+
+
+def _texts(path, n):
+    table = pq.read_table(path, columns=["text"])
+    xs = [t for t in table.column("text").to_pylist() if isinstance(t, str) and len(t) >= 200]
+    return xs[:n]
 
 
 def train(model, ctx):
-    budget = ctx["budget"]() if isinstance(ctx, dict) else ctx.budget()
-    max_steps = min(int(getattr(budget, "max_steps", 20000)), 20000)
-    loss = 3.6
-    step = 0
-    while step < max_steps:
-        step += 1
-        loss = loss * 0.90 + 0.04
-        if step % 8 == 0:
+    """Recipe contract entrypoint: returns a metrics dict (val is harness-side)."""
+    device = ctx["device"]
+    torch.manual_seed(int(ctx["seed"]))
+    guard = ctx.get("guard", lambda: None)
+
+    tok = GPT2TokenizerFast.from_pretrained("gpt2")
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    texts = _texts(ctx["dataset_path"], int(ctx.get("train_rows", 2048)))
+    block = model.block if hasattr(model, "block") else 512
+
+    g = torch.Generator().manual_seed(int(ctx["seed"]))
+    perm = torch.randperm(len(texts), generator=g).tolist()
+
+    max_steps = int(ctx.get("max_train_steps", 20000))
+    opt = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9, nesterov=True)
+    model.train()
+    steps = 0
+    bs = 4
+    last = 0.0
+    t0 = time.time()
+    for i in range(0, min(2000, len(perm) - bs), bs):
+        guard()
+        batch_txt = [texts[j] for j in perm[i : i + bs]]
+        enc = tok(
+            batch_txt, return_tensors="pt", truncation=True, max_length=block, padding=True
+        ).to(device)
+        ids = enc.input_ids
+        out = model(ids[:, :-1])
+        logits = out.logits if hasattr(out, "logits") else out
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), ids[:, 1:].reshape(-1), ignore_index=tok.pad_token_id
+        )
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
+        opt.step()
+        last = float(loss.item())
+        steps += 1
+        if steps == 1 or steps % 8 == 0:
             prism_telemetry.report(
-                loss=loss,
-                step=step,
-                grad_norm=0.5 / step,
-                layer_stats={"w_out": {"grad": 0.5 / step}},
+                loss=last,
+                step=steps,
+                grad_norm=grad_norm,
+                layer_stats={"head": {"grad_norm": grad_norm}},
             )
-        if step >= 64 and loss < 1.30:
-            prism_telemetry.finish_evaluation()
-    return {"final_loss": loss, "steps": step}
+        if steps >= max_steps:
+            break
+    prism_telemetry.finish_evaluation()
+    return {"train_loss": last, "train_steps": steps, "train_seconds": time.time() - t0}
 PY
 # Miner D: missing hooks (no prism_telemetry anywhere) → hard review reject.
 cat > "$EVIDENCE/assets/training_d.py" <<'PY'
 """Staging e2e miner D training: deliberately missing telemetry hooks."""
 
+import time
+
+import pyarrow.parquet as pq
+import torch
+from transformers import GPT2TokenizerFast
+
+
+def _texts(path, n):
+    table = pq.read_table(path, columns=["text"])
+    xs = [t for t in table.column("text").to_pylist() if isinstance(t, str) and len(t) >= 200]
+    return xs[:n]
+
 
 def train(model, ctx):
-    budget = ctx["budget"]() if isinstance(ctx, dict) else ctx.budget()
-    max_steps = min(int(getattr(budget, "max_steps", 20000)), 20000)
-    loss = 4.0
-    for step in range(1, max_steps + 1):
-        loss *= 0.95
-    return {"final_loss": loss}
+    """Trains without ever reporting telemetry (contract violation on purpose)."""
+    device = ctx["device"]
+    torch.manual_seed(int(ctx["seed"]))
+    guard = ctx.get("guard", lambda: None)
+
+    tok = GPT2TokenizerFast.from_pretrained("gpt2")
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    texts = _texts(ctx["dataset_path"], int(ctx.get("train_rows", 2048)))
+    block = model.block if hasattr(model, "block") else 512
+
+    g = torch.Generator().manual_seed(int(ctx["seed"]))
+    perm = torch.randperm(len(texts), generator=g).tolist()
+
+    opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1)
+    model.train()
+    steps = 0
+    bs = 4
+    last = 0.0
+    t0 = time.time()
+    for i in range(0, min(2000, len(perm) - bs), bs):
+        guard()
+        batch_txt = [texts[j] for j in perm[i : i + bs]]
+        enc = tok(
+            batch_txt, return_tensors="pt", truncation=True, max_length=block, padding=True
+        ).to(device)
+        ids = enc.input_ids
+        out = model(ids[:, :-1])
+        logits = out.logits if hasattr(out, "logits") else out
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), ids[:, 1:].reshape(-1), ignore_index=tok.pad_token_id
+        )
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        last = float(loss.item())
+        steps += 1
+        if steps >= int(ctx.get("max_train_steps", 20000)):
+            break
+    return {"train_loss": last, "train_steps": steps, "train_seconds": time.time() - t0}
 PY
 # Miner D architecture (distinct — the reject must come from hooks, not copy gate).
 cat > "$EVIDENCE/assets/architecture_d.py" <<'PY'
-"""Staging e2e miner D architecture: single-head attention toy (numpy)."""
+"""Staging e2e miner D architecture: causal LSTM LM (torch, no attention)."""
+
+import torch
+import torch.nn as nn
+
+
+class CausalLSTMLM(nn.Module):
+    def __init__(self, vocab=50257, d=160, block=512):
+        super().__init__()
+        self.block = block
+        self.tok_emb = nn.Embedding(vocab, d)
+        self.rnn = nn.LSTM(d, d, num_layers=2, batch_first=True)
+        self.ln = nn.LayerNorm(d)
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.head.weight = self.tok_emb.weight
+        self.logits = None
+
+    def forward(self, ids):
+        b, t = ids.shape
+        t = min(t, self.block)
+        ids = ids[:, -t:]
+        x = self.tok_emb(ids)
+        x, _ = self.rnn(x)
+        x = self.ln(x)
+        logits = self.head(x)
+        self.logits = logits
+        return logits
 
 
 def build_model(ctx):
-    dims = ctx["dims"] if isinstance(ctx, dict) else getattr(ctx, "dims", {})
-    vocab = int(dims.get("vocab", 256))
-    d_model = 48
-
-    class TinyAttnLM:
-        def __init__(self):
-            import numpy as np
-
-            rng = np.random.default_rng(7)
-            self.np = np
-            self.embed = rng.normal(0, 0.05, (vocab, d_model))
-            self.wq = rng.normal(0, 0.05, (d_model, d_model))
-            self.wk = rng.normal(0, 0.05, (d_model, d_model))
-            self.wv = rng.normal(0, 0.05, (d_model, d_model))
-            self.wo = rng.normal(0, 0.05, (d_model, vocab))
-
-        def forward(self, ids):
-            np = self.np
-            x = self.embed[ids]
-            q, k, v = x @ self.wq, x @ self.wk, x @ self.wv
-            att = np.softmax((q @ k.transpose(0, 2, 1)) / max(1, q.shape[-1]) ** 0.5, axis=-1)
-            return (att @ v) @ self.wo
-
-        def parameters(self):
-            return [self.embed, self.wq, self.wk, self.wv, self.wo]
-
-    return TinyAttnLM()
+    """Recipe contract entrypoint. ctx carries device/seed/caps (unused here)."""
+    torch.manual_seed(int(ctx.get("seed", 0)))
+    return CausalLSTMLM()
 PY
 
 jq_field() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null || true; }
