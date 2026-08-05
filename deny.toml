@@ -57,5 +57,5 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Git deps (e.g. bittensor-core) will be allow-listed when task 7/13 lands.
-allow-git = []
+# Subtensor / bittensor_drand pin for CRV4 Drand TLE (ideal-lab5 package name `tle`).
+allow-git = ["https://github.com/ideal-lab5/timelock"]

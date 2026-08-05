@@ -32,7 +32,7 @@ pub use epoch_schedule::{
     advance_blocks, block_time_ms_to_secs, compute_reveal_round, current_epoch_pre_run_coinbase,
     gather_schedule_state, max_simulation_blocks, predict_first_reveal_block, should_run_epoch,
     simulate_run_coinbase, EpochScheduleError, EpochScheduleState, COMMIT_INCLUSION_BLOCK_OFFSET,
-    DRAND_PERIOD, GENESIS_TIME, MAX_TEMPO, MAX_TEMPO_U64, SECURITY_BLOCK_OFFSET,
+    DRAND_PERIOD, DRAND_PUBLIC_KEY, GENESIS_TIME, MAX_TEMPO, MAX_TEMPO_U64, SECURITY_BLOCK_OFFSET,
 };
 
 use std::cell::RefCell;

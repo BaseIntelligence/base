@@ -9,6 +9,7 @@
 mod extrinsic;
 mod rpc;
 mod storage;
+mod tlock;
 
 #[cfg(test)]
 mod tests;
@@ -27,8 +28,11 @@ pub use storage::{
     storage_double_map_prefix_u16, storage_key, storage_map_key_identity, storage_map_key_twox64,
     storage_map_key_u16, ACCOUNT_ID_LEN,
 };
+pub use tlock::encrypt_commit;
 
 use std::path::Path;
+
+use parity_scale_codec::Encode;
 
 /// Lockfile-pinned spec version (`metadata/testnet.lock` → 443).
 const SPEC_VERSION: u32 = 443;
@@ -334,7 +338,10 @@ impl LiveChainClient {
 
     /// Submit a signed extrinsic and return the extrinsic hash.
     fn submit_extrinsic(&self, ext: &[u8]) -> Result<String, ChainError> {
-        tracing::debug!(len = ext.len(), "submitting extrinsic via author_submitExtrinsic");
+        tracing::debug!(
+            len = ext.len(),
+            "submitting extrinsic via author_submitExtrinsic"
+        );
         self.rpc.author_submit_extrinsic(ext)
     }
 }
@@ -439,12 +446,10 @@ impl ChainClient for LiveChainClient {
         // `CommitRevealWeightsEnabled` storage map is sparse — netuid 100 is
         // CR-on via the runtime API while the map key is absent (a raw storage
         // read would falsely report disabled and downgrade to `set_weights`).
-        match self.commit_reveal_enabled_from_hyperparams(netuid) {
-            Ok(Some(v)) => return Ok(v),
-            Ok(None) | Err(_) => {
-                // Fall back to sparse storage map (unit tests / older runtimes).
-            }
+        if let Ok(Some(v)) = self.commit_reveal_enabled_from_hyperparams(netuid) {
+            return Ok(v);
         }
+        // Fall back to sparse storage map (unit tests / older runtimes).
         let key =
             storage::storage_map_key_u16(PALLET_SUBTENSOR, "CommitRevealWeightsEnabled", netuid);
         match self.rpc.state_get_storage(&key)? {
@@ -505,18 +510,44 @@ impl ChainClient for LiveChainClient {
                 alternate: "set_weights",
             });
         }
-        // CRV4 on Finney requires a drand-timelock ciphertext in `commit`
-        // (`bittensor_drand.get_encrypted_commit_v2`). Encryption is still
-        // deferred in-tree — fail closed rather than submit a decode-poisoning
-        // payload that panics `validate_transaction`.
-        let _ = (mecid, payload, reveal_round);
-        Err(ChainError::Other(
-            "CRV4 tlock encryption not implemented: cannot build \
-             commit_timelocked_mechanism_weights commit blob \
-             (need get_encrypted_commit_v2 / TLE); Match→submit wired but \
-             extrinsic submit blocked until encryption lands"
-                .into(),
-        ))
+        self.check_runtime_version()?;
+        let key = self.require_key()?;
+
+        // CRV4: encrypt SCALE WeightsTlockPayload with Drand TLE (same wire
+        // format as `bittensor_drand.get_encrypted_commit_v2`). Fail closed —
+        // never submit plaintext or downgrade to set_weights while CR is on.
+        let plaintext = payload.encode();
+        let commit = tlock::encrypt_commit(&plaintext, reveal_round).map_err(|e| {
+            ChainError::Other(format!(
+                "CRV4 tlock encrypt failed (fail-closed, no set_weights): {e}"
+            ))
+        })?;
+
+        let genesis_hash = self.block_hash(0)?;
+        let pubkey = extrinsic::derive_public_key(&key)?;
+        let nonce = self.rpc.system_account_next_index(pubkey)?;
+        let ext = extrinsic::build_and_sign_commit_timelocked(
+            &key,
+            nonce,
+            &Era::Immortal,
+            &genesis_hash,
+            &genesis_hash,
+            self.spec_version,
+            self.tx_version,
+            self.netuid,
+            mecid,
+            &commit,
+            reveal_round,
+            COMMIT_REVEAL_VERSION,
+        )?;
+        tracing::info!(
+            mecid,
+            reveal_round,
+            commit_len = commit.len(),
+            "submitting commit_timelocked_mechanism_weights"
+        );
+        self.submit_extrinsic(&ext)?;
+        Ok(())
     }
 
     fn set_weights(

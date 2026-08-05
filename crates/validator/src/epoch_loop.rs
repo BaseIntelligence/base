@@ -64,10 +64,7 @@ impl EpochSubmitDedupe {
     /// Whether this epoch already completed a submit attempt successfully.
     #[must_use]
     pub fn already_submitted(&self, epoch: u64) -> bool {
-        self.last_ok
-            .lock()
-            .ok()
-            .is_some_and(|g| *g == Some(epoch))
+        self.last_ok.lock().ok().is_some_and(|g| *g == Some(epoch))
     }
 
     /// Mark epoch as submitted (or intentionally skipped).
@@ -190,11 +187,10 @@ pub fn maybe_submit_match<C, D>(
         }
         Err(e) => {
             let msg = e.to_string();
-            // Permanent gaps (missing tlock encrypt, wrong CR version) — do not
-            // hammer the RPC every coordination tick.
-            let permanent = msg.contains("tlock encryption not implemented")
-                || msg.contains("commit_reveal_version")
-                || msg.contains("WrongCommitRevealVersion");
+            // Permanent gaps (wrong CR version) — do not hammer the RPC every
+            // coordination tick. Transient tlock/RPC failures retry next tick.
+            let permanent =
+                msg.contains("commit_reveal_version") || msg.contains("WrongCommitRevealVersion");
             if permanent {
                 warn!(
                     event = "validator_submit_error",

@@ -114,4 +114,4 @@ git checkout <good-sha>
 
 - `FakeChain` is the default backend; `BASE_CHAIN_BACKEND=live` switches to `chain-live` (Phase 6).
 - `agent-challenge` epoch dispatch is opt-in via `BASE_CHALLENGE_DISPATCH=1` (Phase 7).
-- CRV4 tlock encryption is deferred; `set_weights` works when commit-reveal is off.
+- CRV4 tlock encryption is implemented (`tle` / Drand Quicknet); when commit-reveal is off, `set_weights` is used instead.

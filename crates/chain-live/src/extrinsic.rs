@@ -312,13 +312,7 @@ pub fn build_and_sign_commit_timelocked(
     reveal_round: u64,
     commit_reveal_version: u16,
 ) -> Result<Vec<u8>, ChainError> {
-    let call = commit_timelocked_call(
-        netuid,
-        mecid,
-        commit,
-        reveal_round,
-        commit_reveal_version,
-    );
+    let call = commit_timelocked_call(netuid, mecid, commit, reveal_round, commit_reveal_version);
     build_signed_extrinsic(
         key,
         era,

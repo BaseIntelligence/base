@@ -957,7 +957,10 @@ fn parse_commit_reveal_enabled_v3_bool() {
     // Minimal synthetic fragment: name + Bool(true/false).
     let mut true_bytes = b"commit_reveal_weights_enabled".to_vec();
     true_bytes.extend_from_slice(&[0, 1]);
-    assert_eq!(crate::parse_commit_reveal_enabled_v3(&true_bytes), Some(true));
+    assert_eq!(
+        crate::parse_commit_reveal_enabled_v3(&true_bytes),
+        Some(true)
+    );
     let mut false_bytes = b"commit_reveal_weights_enabled".to_vec();
     false_bytes.extend_from_slice(&[0, 0]);
     assert_eq!(
