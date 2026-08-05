@@ -148,6 +148,18 @@ impl LiveChainClient {
         Ok(())
     }
 
+    /// Read `commit_reveal_weights_enabled` from hyperparams v3 runtime API.
+    fn commit_reveal_enabled_from_hyperparams(
+        &self,
+        netuid: u16,
+    ) -> Result<Option<bool>, ChainError> {
+        let bytes = self.rpc.state_call(
+            "SubnetInfoRuntimeApi_get_subnet_hyperparams_v3",
+            &netuid.to_le_bytes(),
+        )?;
+        Ok(parse_commit_reveal_enabled_v3(&bytes))
+    }
+
     /// Read a per-netuid `u64`, substituting a `ValueQuery` default when absent.
     ///
     /// Substrate omits `ValueQuery` keys whose value equals the pallet default,
@@ -327,6 +339,27 @@ impl LiveChainClient {
     }
 }
 
+/// Extract `commit_reveal_weights_enabled` from SCALE hyperparams v3 bytes.
+///
+/// v3 is `Option<Vec<{name: String, value: Enum}>>`. We locate the UTF-8 field
+/// name and read the following `Bool` variant (`0x00` tag + `u8` value).
+pub(crate) fn parse_commit_reveal_enabled_v3(bytes: &[u8]) -> Option<bool> {
+    const NEEDLE: &[u8] = b"commit_reveal_weights_enabled";
+    let pos = bytes.windows(NEEDLE.len()).position(|w| w == NEEDLE)?;
+    let after = pos.checked_add(NEEDLE.len())?;
+    let tag = *bytes.get(after)?;
+    let val = *bytes.get(after.checked_add(1)?)?;
+    // Variant 0 = Bool in the hyperparam value enum (verified on Finney v443).
+    if tag != 0 {
+        return None;
+    }
+    match val {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 fn account_id(hotkey: &[u8]) -> Result<[u8; storage::ACCOUNT_ID_LEN], ChainError> {
     hotkey.try_into().map_err(|_| {
         ChainError::Other(format!(
@@ -402,9 +435,15 @@ impl ChainClient for LiveChainClient {
     }
 
     fn commit_reveal_enabled(&self, netuid: u16) -> Result<bool, ChainError> {
+        // Authoritative source is `SubnetInfoRuntimeApi` hyperparams. The
+        // `CommitRevealWeightsEnabled` storage map is sparse — netuid 100 is
+        // CR-on via the runtime API while the map key is absent (a raw storage
+        // read would falsely report disabled and downgrade to `set_weights`).
+        if let Some(v) = self.commit_reveal_enabled_from_hyperparams(netuid)? {
+            return Ok(v);
+        }
         let key =
             storage::storage_map_key_u16(PALLET_SUBTENSOR, "CommitRevealWeightsEnabled", netuid);
-        // `ValueQuery` with a `false` default: an absent key means disabled.
         match self.rpc.state_get_storage(&key)? {
             Some(bytes) => storage::decode_bool(&bytes),
             None => Ok(false),
