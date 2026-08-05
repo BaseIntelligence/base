@@ -38,6 +38,11 @@ services:
       - "80:8080"
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
+      # The sealer must sign with the same staging trust root the validator
+      # verifies against (design 2000 bps), or /v1/weights/latest never shows
+      # design weight and the validator flags emission share mismatch (D23).
+      - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
+      - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   prism-challenge:
     environment:
       BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
