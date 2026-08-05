@@ -15,11 +15,20 @@ pub type SubmissionId = String;
 ///
 /// Prefer ZIP (`application/zip` or `zip_base64`); raw source fields remain
 /// accepted for local/CI convenience.
+///
+/// Two kinds:
+/// - **architecture submission**: `architecture.py` + `training.py`
+///   (`arch_id` absent). One per hotkey; publishes the architecture to the
+///   registry once it survives every gate and scores.
+/// - **training-only submission**: `training.py` + `arch_id` of an already
+///   published architecture (`architecture_py` must be empty — the source is
+///   pulled from the registry at intake). Gated per `(hotkey, arch_id)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionRequest {
     /// Miner hotkey hex (64 hex chars = 32 bytes).
     pub miner_hotkey: String,
-    /// `architecture.py` source (must define `build_model`).
+    /// `architecture.py` source (must define `build_model`). Empty for
+    /// training-only submissions (`arch_id` set): pulled from the registry.
     #[serde(default)]
     pub architecture_py: String,
     /// `training.py` source (must define `train`).
@@ -28,6 +37,9 @@ pub struct SubmissionRequest {
     /// Optional base64-encoded ZIP containing `architecture.py` + `training.py`.
     #[serde(default)]
     pub zip_base64: Option<String>,
+    /// Published architecture id (`arch_<hex16>`) for training-only entries.
+    #[serde(default)]
+    pub arch_id: Option<String>,
     /// Optional human label.
     #[serde(default)]
     pub label: Option<String>,
@@ -58,6 +70,10 @@ pub enum SubmissionError {
     MissingBuildModel,
     #[error("training_py must contain train")]
     MissingTrain,
+    #[error("arch_id must match arch_<16 lowercase hex>")]
+    InvalidArchId,
+    #[error("architecture_py must be empty when arch_id is set (pulled from registry)")]
+    ArchIdWithSource,
 }
 
 /// In-memory queue service (v1).
@@ -130,22 +146,28 @@ pub fn expand_zip_fields(req: &mut SubmissionRequest) -> Result<(), String> {
     let zip = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| format!("zip_base64: {e}"))?;
-    let (arch, train) = prism_recipe::sources_from_zip(&zip).map_err(|e| e.to_string())?;
-    req.architecture_py = arch;
-    req.training_py = train;
+    if req.arch_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        req.training_py = prism_recipe::training_from_zip(&zip).map_err(|e| e.to_string())?;
+        req.architecture_py = String::new();
+    } else {
+        let (arch, train) = prism_recipe::sources_from_zip(&zip).map_err(|e| e.to_string())?;
+        req.architecture_py = arch;
+        req.training_py = train;
+    }
     Ok(())
 }
 
 /// Validate contract-shape of an incoming submission (pre-queue).
+///
+/// Training-only submissions set `arch_id` and leave `architecture_py`
+/// empty; the intake materializes the source from the registry afterwards
+/// (contract check runs on the materialized source).
 ///
 /// # Errors
 /// Schema/contract failures.
 pub fn validate(req: &SubmissionRequest) -> Result<(), SubmissionError> {
     if req.miner_hotkey.trim().is_empty() {
         return Err(SubmissionError::EmptyField("miner_hotkey"));
-    }
-    if req.architecture_py.trim().is_empty() {
-        return Err(SubmissionError::EmptyField("architecture_py"));
     }
     if req.training_py.trim().is_empty() {
         return Err(SubmissionError::EmptyField("training_py"));
@@ -154,13 +176,65 @@ pub fn validate(req: &SubmissionRequest) -> Result<(), SubmissionError> {
     if hk.len() != 64 || !hk.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(SubmissionError::InvalidHotkey);
     }
-    if !req.architecture_py.contains("build_model") {
-        return Err(SubmissionError::MissingBuildModel);
-    }
     if !req.training_py.contains("def train") && !req.training_py.contains("train(") {
         return Err(SubmissionError::MissingTrain);
     }
+    match req.arch_id.as_deref().map(str::trim) {
+        // Architecture submission: full source required.
+        None | Some("") => {
+            if req.architecture_py.trim().is_empty() {
+                return Err(SubmissionError::EmptyField("architecture_py"));
+            }
+            if !req.architecture_py.contains("build_model") {
+                return Err(SubmissionError::MissingBuildModel);
+            }
+        }
+        // Training-only: registry reference, no inline source.
+        Some(id) => {
+            if !is_arch_id(id) {
+                return Err(SubmissionError::InvalidArchId);
+            }
+            if !req.architecture_py.trim().is_empty() {
+                return Err(SubmissionError::ArchIdWithSource);
+            }
+        }
+    }
     Ok(())
+}
+
+/// `arch_<16 lowercase hex>` shape.
+#[must_use]
+pub fn is_arch_id(s: &str) -> bool {
+    s.len() == 21
+        && s.starts_with("arch_")
+        && s[5..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Registry id for an architecture source (`arch_` + first 16 hex of sha256).
+#[must_use]
+pub fn arch_id_for(architecture_py: &str) -> String {
+    let digest = hex::encode(Sha256::digest(architecture_py.as_bytes()));
+    format!("arch_{}", &digest[..16])
+}
+
+/// Full sha256 hex digest of an architecture source (registry unique key).
+#[must_use]
+pub fn arch_digest(architecture_py: &str) -> String {
+    hex::encode(Sha256::digest(architecture_py.as_bytes()))
+}
+
+/// Submission-gating challenge key: `prism` for architecture submissions
+/// (1-max per hotkey), `prism:train:<arch_id>` for training-only entries
+/// (1 accepted entry per `(hotkey, arch_id)` — fits the 32-char gating
+/// challenge CHECK). Same retry classes and watcher resets either way.
+#[must_use]
+pub fn gating_key(arch_id: Option<&str>) -> String {
+    match arch_id {
+        Some(id) => format!("prism:train:{id}"),
+        None => "prism".to_owned(),
+    }
 }
 
 /// Deterministic submission id (sha256 of the contract bytes).
@@ -189,6 +263,7 @@ pub fn example_valid_request() -> SubmissionRequest {
         )
         .into(),
         zip_base64: None,
+        arch_id: None,
         label: Some("tiny".into()),
     }
 }

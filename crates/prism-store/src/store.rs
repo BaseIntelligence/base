@@ -53,6 +53,10 @@ pub struct SubmissionState {
     pub metrics_json: Option<serde_json::Value>,
     /// Measured bpb.
     pub bpb: Option<f64>,
+    /// Registry architecture this row trains (`None` = architecture
+    /// submission pre-publish / legacy). Set at intake for training-only
+    /// entries; back-linked on publish for architecture submissions.
+    pub arch_id: Option<String>,
     /// LLM review verdict.
     pub review: Option<ReviewVerdict>,
     /// Similarity verdict.
@@ -98,7 +102,7 @@ pub enum Stage {
     /// Failure path.
     Failed,
     /// Pre-LLM copy gate: byte/AST copy of a strictly-earlier architecture
-    /// (created_at ordered) — terminal, LLM review skipped, Score(0).
+    /// (`created_at` ordered) — terminal, LLM review skipped, Score(0).
     Rejected,
 }
 
@@ -180,6 +184,8 @@ pub struct StatePatch {
     pub metrics_json: Option<serde_json::Value>,
     /// bpb.
     pub bpb: Option<f64>,
+    /// Registry architecture link (set-once at intake / publish back-link).
+    pub arch_id: Option<String>,
     /// Review verdict.
     pub review: Option<ReviewVerdict>,
     /// Similarity verdict.
@@ -190,6 +196,62 @@ pub struct StatePatch {
     pub error_detail: Option<String>,
     /// Bump retry counter.
     pub retry_bump: u32,
+}
+
+/// Published architecture (migration 0010 `prism_architecture`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchitectureRecord {
+    /// `arch_<hex16>`.
+    pub arch_id: String,
+    /// Owner miner hotkey (64 hex).
+    pub owner_hotkey: String,
+    /// Full sha256 hex of `architecture_py` (unique).
+    pub arch_digest: String,
+    /// Architecture source (contract-validated at publish).
+    pub architecture_py: String,
+    /// Originating `prism_submission.id`.
+    pub source_submission: String,
+    /// Best measured bpb on this arch across all trainers (lower is better).
+    pub best_bpb: Option<f64>,
+    /// Creation unix ms.
+    pub created_at_ms: u64,
+}
+
+/// Outcome of an architecture publish attempt (idempotent on digest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishArchOutcome {
+    /// New row inserted.
+    Published,
+    /// Same digest already registered (simultaneous duplicate) — existing id.
+    Duplicate(String),
+}
+
+/// One scored row inside an epoch (competition scoring input).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpochScoreRow {
+    /// Miner hotkey.
+    pub miner_hotkey: String,
+    /// Registry arch this row trained (when linked).
+    pub arch_id: Option<String>,
+    /// Final lattice score (or absence).
+    pub final_score: FinalScore,
+}
+
+/// Top-model publication journal row (migration 0010).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopModelPublication {
+    /// Submission that set the global best.
+    pub submission_id: String,
+    /// Registry arch (when linked).
+    pub arch_id: Option<String>,
+    /// Miner hotkey that set the best.
+    pub owner_hotkey: String,
+    /// Global-best bpb at publish time.
+    pub bpb: f64,
+    /// Repo path published (`top-model/`).
+    pub repo_path: String,
+    /// GitHub commit sha of the publish (`None` = dry-run).
+    pub commit_sha: Option<String>,
 }
 
 /// Async persistence contract (production + sim).
@@ -233,12 +295,44 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// by step. Empty when the harness reported nothing (pre-1.1.0 recipes).
     async fn telemetry(&self, id: &str) -> Result<Vec<TelemetryPoint>, StoreError>;
 
-    /// Latest final score per miner (for D24 leaf emission), epoch-filtered.
-    async fn scores_for_epoch(
+    /// All scored rows for `(netuid, epoch)` — one entry per submission (NOT
+    /// collapsed per miner: competition scoring aggregates credits).
+    async fn epoch_scored_rows(
         &self,
         netuid: u16,
         epoch: u64,
-    ) -> Result<Vec<(String, FinalScore)>, StoreError>;
+    ) -> Result<Vec<EpochScoreRow>, StoreError>;
+
+    /// Publish an architecture into the registry (idempotent on digest).
+    async fn publish_arch(
+        &self,
+        rec: &ArchitectureRecord,
+    ) -> Result<PublishArchOutcome, StoreError>;
+
+    /// Fetch one registered architecture.
+    async fn get_arch(&self, arch_id: &str) -> Result<Option<ArchitectureRecord>, StoreError>;
+
+    /// Newest-first registry listing (leaderboard source).
+    async fn list_archs(&self, limit: u32) -> Result<Vec<ArchitectureRecord>, StoreError>;
+
+    /// Lower-wins update of the arch's best bpb. Returns `true` when the
+    /// record improved.
+    async fn note_arch_best_bpb(&self, arch_id: &str, bpb: f64) -> Result<bool, StoreError>;
+
+    /// `(arch_id, owner_hotkey)` for every registered architecture
+    /// (competition scoring ownership map).
+    async fn arch_owners(&self) -> Result<Vec<(String, String)>, StoreError>;
+
+    /// Journal one top-model publication.
+    async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError>;
+
+    /// bpb of the most recent publication (idempotency guard; `None` = never
+    /// published).
+    async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError>;
+
+    /// Best (lowest) bpb across all scored submissions ever (global top-model
+    /// trigger baseline).
+    async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError>;
 
     /// Non-terminal rows beyond grace — for the stuck sweep.
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError>;
@@ -250,6 +344,8 @@ pub struct MemoryPrismStore {
     rows: Mutex<VecDeque<SubmissionState>>,
     events: Mutex<Vec<(String, StageEvent)>>,
     telemetry: Mutex<std::collections::HashMap<String, Vec<TelemetryPoint>>>,
+    archs: Mutex<std::collections::HashMap<String, ArchitectureRecord>>,
+    publications: Mutex<Vec<TopModelPublication>>,
 }
 
 impl MemoryPrismStore {
@@ -347,6 +443,9 @@ impl PrismStore for MemoryPrismStore {
         }
         if let Some(v) = update.bpb {
             row.bpb = Some(v);
+        }
+        if let Some(v) = &update.arch_id {
+            row.arch_id = Some(v.clone());
         }
         if let Some(v) = &update.review {
             row.review = Some(v.clone());
@@ -459,26 +558,113 @@ impl PrismStore for MemoryPrismStore {
             .unwrap_or_default())
     }
 
-    async fn scores_for_epoch(
+    async fn epoch_scored_rows(
         &self,
         netuid: u16,
         epoch: u64,
-    ) -> Result<Vec<(String, FinalScore)>, StoreError> {
-        let mut by_miner: std::collections::BTreeMap<String, FinalScore> =
-            std::collections::BTreeMap::new();
-        for r in self
+    ) -> Result<Vec<EpochScoreRow>, StoreError> {
+        Ok(self
             .rows
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .iter()
-        {
-            if r.netuid == netuid && r.epoch == epoch {
-                if let Some(fs) = &r.final_score {
-                    by_miner.insert(r.miner_hotkey.clone(), fs.clone());
-                }
-            }
+            .filter(|r| r.netuid == netuid && r.epoch == epoch && r.final_score.is_some())
+            .map(|r| EpochScoreRow {
+                miner_hotkey: r.miner_hotkey.clone(),
+                arch_id: r.arch_id.clone(),
+                final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
+            })
+            .collect())
+    }
+
+    async fn publish_arch(
+        &self,
+        rec: &ArchitectureRecord,
+    ) -> Result<PublishArchOutcome, StoreError> {
+        let mut archs = self
+            .archs
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        if let Some(existing) = archs.values().find(|a| a.arch_digest == rec.arch_digest) {
+            return Ok(PublishArchOutcome::Duplicate(existing.arch_id.clone()));
         }
-        Ok(by_miner.into_iter().collect())
+        archs.insert(rec.arch_id.clone(), rec.clone());
+        Ok(PublishArchOutcome::Published)
+    }
+
+    async fn get_arch(&self, arch_id: &str) -> Result<Option<ArchitectureRecord>, StoreError> {
+        Ok(self
+            .archs
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(arch_id)
+            .cloned())
+    }
+
+    async fn list_archs(&self, limit: u32) -> Result<Vec<ArchitectureRecord>, StoreError> {
+        let mut v: Vec<_> = self
+            .archs
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .values()
+            .cloned()
+            .collect();
+        v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
+        v.truncate(limit as usize);
+        Ok(v)
+    }
+
+    async fn note_arch_best_bpb(&self, arch_id: &str, bpb: f64) -> Result<bool, StoreError> {
+        let mut archs = self
+            .archs
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let Some(rec) = archs.get_mut(arch_id) else {
+            return Ok(false);
+        };
+        if rec.best_bpb.is_some_and(|b| b <= bpb) {
+            return Ok(false);
+        }
+        rec.best_bpb = Some(bpb);
+        Ok(true)
+    }
+
+    async fn arch_owners(&self) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(self
+            .archs
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .values()
+            .map(|a| (a.arch_id.clone(), a.owner_hotkey.clone()))
+            .collect())
+    }
+
+    async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError> {
+        self.publications
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .push(p.clone());
+        Ok(())
+    }
+
+    async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError> {
+        Ok(self
+            .publications
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .last()
+            .map(|p| p.bpb))
+    }
+
+    async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {
+        Ok(self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .iter()
+            .filter(|r| matches!(r.final_score, Some(FinalScore::Score(v)) if v > 0))
+            .filter_map(|r| r.bpb)
+            .min_by(f64::total_cmp))
     }
 
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError> {
@@ -514,6 +700,7 @@ mod tests {
             receipt: None,
             metrics_json: None,
             bpb: None,
+            arch_id: None,
             review: None,
             similarity: None,
             final_score: None,

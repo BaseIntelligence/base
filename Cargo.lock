@@ -3711,6 +3711,7 @@ dependencies = [
  "prism-lium",
  "prism-pipeline",
  "prism-recipe",
+ "prism-registry",
  "prism-review",
  "prism-store",
  "reqwest 0.12.28",
@@ -3743,6 +3744,7 @@ dependencies = [
  "prism-challenge",
  "prism-lium",
  "prism-recipe",
+ "prism-registry",
  "prism-review",
  "submission-gating",
  "telemetry",
@@ -3801,6 +3803,22 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "zip",
+]
+
+[[package]]
+name = "prism-registry"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "prism-pipeline",
+ "prism-store",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

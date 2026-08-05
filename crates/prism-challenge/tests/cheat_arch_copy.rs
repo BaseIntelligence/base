@@ -121,6 +121,7 @@ async fn baseline_arch_train_copy_scores_zero() {
             receipt: None,
             metrics_json: None,
             bpb: None,
+            arch_id: None,
             review: None,
             similarity: None,
             final_score: None,

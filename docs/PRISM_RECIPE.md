@@ -23,6 +23,34 @@ which imports both scripts, downloads the **pinned** fineweb-edu shard,
 verifies its SHA-256, times the run, and reports `METRICS_JSON` (bpb,
 tokens_seen, steps, wall-clock seconds, gpu type) back to the master.
 
+## Miner telemetry hooks (required since recipe 1.1.0)
+
+The harness registers a `prism_telemetry` module before miner code loads
+(also at `ctx["telemetry"]`). `training.py` MUST:
+
+```python
+import prism_telemetry
+
+prism_telemetry.report(loss=..., step=..., grad_norm=..., layer_stats=...)  # every N steps
+prism_telemetry.finish_evaluation()  # optional early stop: score the model as-is
+```
+
+The harness captures the series into `METRICS_JSON.telemetry.loss_series`
+(persisted master-side in `prism_telemetry` and surfaced on the site).
+`finish_evaluation()` raises a `BaseException` through `train()`, so miner
+`except Exception` blocks cannot swallow it; without it the eval ends when
+`train()` returns or the wall-clock cap fires. **Missing hooks are a hard
+contract violation**: review fails the submission
+(`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
+
+## Training-only submissions (recipe 1.2.0)
+
+Instead of shipping both scripts, a miner may submit `training.py` +
+`arch_id` referencing an already-**published** architecture (see
+[`PRISM.md`](PRISM.md) § Architecture registry + competition). The master
+pulls `architecture.py` from the registry; the same harness contract applies
+unchanged. Published archs: `GET /v1/architectures`.
+
 ## Pinned dataset
 
 | Field | Value |
@@ -79,9 +107,19 @@ review still gates eligibility:
 
 ## Anti-copy review
 
-Each submission faces an LLM review on the master (`OpenRouter` when the key
-file `/run/base/openrouter/api_key` exists, else the deterministic
-`SimReviewer`) over its source vs. the recipe **baseline plus every earlier
-submission** (`prism_submission` history, capped at the 6 most recent
-records). Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity
-score and evidence line — all stored append-only in `prism_stage_event`.
+A **pre-LLM copy gate** first compares the candidate `architecture.py`
+against recent submissions (byte hash + AST fingerprints, `created_at`
+ordered): a byte/AST copy of a strictly-earlier architecture is terminal
+`rejected` with zero score — no pod time, no LLM spend. The baseline is
+exempt (everyone may start from it); created_at ties fall through to the LLM
+path below.
+
+Each remaining submission then faces an LLM review on the master
+(`OpenRouter` when the key file `/run/base/openrouter/api_key` exists, else
+the deterministic `SimReviewer`) over its **architecture only** vs. the
+recipe **baseline plus every earlier submission** (`prism_submission`
+history, capped at the 6 most recent records). Since similarity v2,
+`training.py` is exempt from both candidate and corpus: the same training
+script on two different architectures is legitimate. Verdicts: `Original` /
+`Suspicious` / `Copied`, with a similarity score and evidence line — all
+stored append-only in `prism_stage_event`.

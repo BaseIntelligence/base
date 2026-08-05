@@ -1,5 +1,5 @@
 //! Prism pre-LLM copy gate: byte/AST copy of a strictly-earlier
-//! `architecture.py` (created_at ordered) → terminal `rejected` + Score(0),
+//! `architecture.py` (`created_at` ordered) → terminal `rejected` + Score(0),
 //! no pod, no LLM. Simultaneous/original architectures pass through.
 
 #![forbid(unsafe_code)]
@@ -86,7 +86,14 @@ const TRAIN_OK: &str = concat!(
     "    return {'loss': 1.0}\n",
 );
 
-fn row(id: &str, hotkey: &str, arch: &str, train: &str, status: Stage, created_ms: u64) -> SubmissionState {
+fn row(
+    id: &str,
+    hotkey: &str,
+    arch: &str,
+    train: &str,
+    status: Stage,
+    created_ms: u64,
+) -> SubmissionState {
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
@@ -101,6 +108,7 @@ fn row(id: &str, hotkey: &str, arch: &str, train: &str, status: Stage, created_m
         receipt: None,
         metrics_json: None,
         bpb: None,
+        arch_id: None,
         review: None,
         similarity: None,
         final_score: None,
@@ -146,24 +154,45 @@ async fn byte_copy_of_earlier_arch_is_rejected_without_pod() {
 
     // Miner A's submission already terminated (prior art).
     store
-        .insert_queued(&row("a-prior-subm-0001", &"aa".repeat(32), ARCH_A, TRAIN_OK, Stage::Terminated, 1_000))
+        .insert_queued(&row(
+            "a-prior-subm-0001",
+            &"aa".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Terminated,
+            1_000,
+        ))
         .await
         .unwrap();
     // Miner B byte-copies A's architecture later.
     store
-        .insert_queued(&row("b-copy-subm-00001", &"bb".repeat(32), ARCH_A, TRAIN_OK, Stage::Queued, 2_000))
+        .insert_queued(&row(
+            "b-copy-subm-00001",
+            &"bb".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Queued,
+            2_000,
+        ))
         .await
         .unwrap();
 
     assert!(orch.cycle_once().await.unwrap());
-    let b = store.get("b-copy-subm-00001").await.unwrap().expect("row b");
+    let b = store
+        .get("b-copy-subm-00001")
+        .await
+        .unwrap()
+        .expect("row b");
     assert_eq!(b.status, Stage::Rejected, "status={:?}", b.status);
     assert_eq!(b.final_score, Some(FinalScore::Score(0)));
     assert!(b.pod_id.is_none(), "copy gate must skip pod provisioning");
     assert!(b.review.is_none(), "copy gate must skip the LLM review");
     let sim = b.similarity.expect("similarity verdict recorded");
     assert!(matches!(sim.kind, prism_review::SimilarityKind::Copied));
-    assert!(sim.closest.as_deref().is_some_and(|c| c.contains("a-prior-subm-0001")));
+    assert!(sim
+        .closest
+        .as_deref()
+        .is_some_and(|c| c.contains("a-prior-subm-0001")));
     assert!(b.status.is_terminal());
 }
 
@@ -176,16 +205,34 @@ async fn ast_copy_with_renames_is_rejected() {
     // Cosmetic whitespace shuffle: same AST, not byte-identical.
     let renamed = ARCH_A.replace("torch.nn.Linear(16, 16)", "torch.nn.Linear(16,16)");
     store
-        .insert_queued(&row("a-prior-subm-0001", &"aa".repeat(32), ARCH_A, TRAIN_OK, Stage::Terminated, 1_000))
+        .insert_queued(&row(
+            "a-prior-subm-0001",
+            &"aa".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Terminated,
+            1_000,
+        ))
         .await
         .unwrap();
     store
-        .insert_queued(&row("b-ast-subm-000001", &"bb".repeat(32), &renamed, TRAIN_OK, Stage::Queued, 2_000))
+        .insert_queued(&row(
+            "b-ast-subm-000001",
+            &"bb".repeat(32),
+            &renamed,
+            TRAIN_OK,
+            Stage::Queued,
+            2_000,
+        ))
         .await
         .unwrap();
 
     assert!(orch.cycle_once().await.unwrap());
-    let b = store.get("b-ast-subm-000001").await.unwrap().expect("row b");
+    let b = store
+        .get("b-ast-subm-000001")
+        .await
+        .unwrap()
+        .expect("row b");
     assert_eq!(b.status, Stage::Rejected, "status={:?}", b.status);
     assert_eq!(b.final_score, Some(FinalScore::Score(0)));
 }
@@ -199,16 +246,34 @@ async fn same_arch_same_timestamp_passes_the_gate() {
     let orch = Arc::new(mk_orchestrator(&store, &chain));
 
     store
-        .insert_queued(&row("a-prior-subm-0001", &"aa".repeat(32), ARCH_A, TRAIN_OK, Stage::Terminated, 1_000))
+        .insert_queued(&row(
+            "a-prior-subm-0001",
+            &"aa".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Terminated,
+            1_000,
+        ))
         .await
         .unwrap();
     store
-        .insert_queued(&row("b-tie-subm-000001", &"bb".repeat(32), ARCH_A, TRAIN_OK, Stage::Queued, 1_000))
+        .insert_queued(&row(
+            "b-tie-subm-000001",
+            &"bb".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Queued,
+            1_000,
+        ))
         .await
         .unwrap();
 
     assert!(orch.cycle_once().await.unwrap());
-    let b = store.get("b-tie-subm-000001").await.unwrap().expect("row b");
+    let b = store
+        .get("b-tie-subm-000001")
+        .await
+        .unwrap()
+        .expect("row b");
     assert_ne!(b.status, Stage::Rejected, "tie must not hard-reject");
     // The LLM similarity path (SimReviewer, arch-only) still judges the copy.
     assert_eq!(b.final_score, Some(FinalScore::Score(0)));
@@ -225,16 +290,34 @@ async fn same_training_on_different_arch_is_not_similarity_copy() {
 
     let arch_b = "import torch\ndef build_model(ctx):\n    return torch.nn.Sequential(\n        torch.nn.Linear(32, 64), torch.nn.ReLU(), torch.nn.Linear(64, 32))\n";
     store
-        .insert_queued(&row("a-prior-subm-0001", &"aa".repeat(32), ARCH_A, TRAIN_OK, Stage::Terminated, 1_000))
+        .insert_queued(&row(
+            "a-prior-subm-0001",
+            &"aa".repeat(32),
+            ARCH_A,
+            TRAIN_OK,
+            Stage::Terminated,
+            1_000,
+        ))
         .await
         .unwrap();
     store
-        .insert_queued(&row("b-orig-subm-00001", &"bb".repeat(32), arch_b, TRAIN_OK, Stage::Queued, 2_000))
+        .insert_queued(&row(
+            "b-orig-subm-00001",
+            &"bb".repeat(32),
+            arch_b,
+            TRAIN_OK,
+            Stage::Queued,
+            2_000,
+        ))
         .await
         .unwrap();
 
     assert!(orch.cycle_once().await.unwrap());
-    let b = store.get("b-orig-subm-00001").await.unwrap().expect("row b");
+    let b = store
+        .get("b-orig-subm-00001")
+        .await
+        .unwrap()
+        .expect("row b");
     assert_eq!(b.status, Stage::Terminated, "status={:?}", b.status);
     let sim = b.similarity.expect("similarity verdict");
     assert!(matches!(sim.kind, prism_review::SimilarityKind::Original));

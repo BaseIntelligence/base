@@ -345,6 +345,16 @@ fn spawn_gating_watcher(
     });
 }
 
+/// Top-model GitHub publisher: graceful no-op (`None`) unless
+/// `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` points at a readable token file.
+fn build_topmodel() -> Option<Arc<prism_registry::TopModelPublisher>> {
+    let p = prism_registry::TopModelPublisher::from_env().map(Arc::new);
+    if p.is_none() {
+        tracing::info!("top-model publish disabled (PRISM_TOPMODEL_GITHUB_TOKEN_FILE unset/empty)");
+    }
+    p
+}
+
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     if !path.is_file() {
@@ -415,6 +425,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         stage_delay,
         auto_retry_max: cli.auto_retry_max,
     };
+    let topmodel = build_topmodel();
     let mut orchestrator = Orchestrator::new(
         oc,
         store,
@@ -424,7 +435,8 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         gateway,
         Arc::new(chain),
         sk,
-    );
+    )
+    .with_topmodel(topmodel);
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
         spawn_gating_watcher(

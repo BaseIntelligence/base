@@ -26,7 +26,7 @@
 
 mod zip_submit;
 
-pub use zip_submit::{sources_from_zip, ZipSubmitError};
+pub use zip_submit::{sources_from_zip, training_from_zip, ZipSubmitError};
 
 /// Harness source executed inside the pod (uploaded over SSH, no secrets).
 pub const HARNESS_PY: &str = include_str!("../harness/prism_harness.py");
@@ -39,8 +39,10 @@ pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
 /// Recipe semantic version (surfaced through the API). Bumped to 1.1.0 for
 /// the miner telemetry hook contract (`prism_telemetry.report` /
-/// `finish_evaluation`) captured by the harness into `metrics_json`.
-pub const RECIPE_VERSION: &str = "1.1.0";
+/// `finish_evaluation`) captured by the harness into `metrics_json`, to
+/// 1.2.0 for the architecture registry + training-only submission type
+/// (telemetry hooks now hard-enforced at review).
+pub const RECIPE_VERSION: &str = "1.2.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;

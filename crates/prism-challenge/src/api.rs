@@ -66,6 +66,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         .route("/v1/jobs", get(get_jobs))
         .route("/v1/recipe", get(get_recipe))
         .route("/v1/recipe/baseline", get(get_recipe_baseline))
+        .route("/v1/architectures", get(get_architectures))
         .with_state(state)
 }
 
@@ -89,13 +90,24 @@ fn parse_submission_body(
             .get("x-miner-hotkey")
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| "X-Miner-Hotkey required for application/zip".to_owned())?;
-        let (architecture_py, training_py) =
-            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?;
+        let arch_id = headers
+            .get("x-prism-arch-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let (architecture_py, training_py) = if arch_id.is_some() {
+            (
+                String::new(),
+                prism_recipe::training_from_zip(body).map_err(|e| e.to_string())?,
+            )
+        } else {
+            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?
+        };
         return Ok(SubmissionRequest {
             miner_hotkey: hk.to_owned(),
             architecture_py,
             training_py,
             zip_base64: None,
+            arch_id,
             label: None,
         });
     }
@@ -104,8 +116,15 @@ fn parse_submission_body(
 
 /// Intake gates for a fresh submission: metagraph membership (fail closed
 /// when the cache has no snapshot) + one accepted submission per
-/// `(challenge, hotkey)`. Returns the metagraph uid on pass.
-async fn intake_gates(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
+/// `(challenge, hotkey)`. `challenge` is `prism` for architecture
+/// submissions (1-max per hotkey) or `prism:train:<arch_id>` for
+/// training-only entries (1 accepted entry per `(hotkey, arch_id)`).
+/// Returns the metagraph uid on pass.
+async fn intake_gates(
+    st: &AppState,
+    hotkey: &str,
+    challenge: &str,
+) -> Result<Option<u32>, Response> {
     let mut uid = None;
     if let Some(cache) = &st.metagraph {
         match cache.snapshot() {
@@ -128,15 +147,19 @@ async fn intake_gates(st: &AppState, hotkey: &str) -> Result<Option<u32>, Respon
             }
         }
     }
-    gate_one_max(st, hotkey).await?;
+    gate_one_max(st, hotkey, challenge).await?;
     Ok(uid)
 }
 
 /// The 1-max gating check alone (metagraph not consulted when no cache is
 /// configured, e.g. unit tests).
-async fn gate_one_max(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
+async fn gate_one_max(
+    st: &AppState,
+    hotkey: &str,
+    challenge: &str,
+) -> Result<Option<u32>, Response> {
     if let Some(g) = &st.gating {
-        match g.get(CHALLENGE_ID, hotkey).await {
+        match g.get(challenge, hotkey).await {
             Ok(Some(row)) if row.state != GatingState::Open => {
                 return Err(json_err(
                     StatusCode::CONFLICT,
@@ -160,6 +183,36 @@ async fn gate_one_max(st: &AppState, hotkey: &str) -> Result<Option<u32>, Respon
     Ok(None)
 }
 
+/// Materialize a training-only request's architecture from the registry
+/// (`Ok(())` for architecture submissions — nothing to pull).
+async fn materialize_arch(st: &AppState, req: &mut SubmissionRequest) -> Result<(), Response> {
+    let Some(arch_id) = req
+        .arch_id
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+    else {
+        return Ok(());
+    };
+    match st.store.get_arch(&arch_id).await {
+        Ok(Some(rec)) => {
+            req.architecture_py = rec.architecture_py;
+            req.arch_id = Some(arch_id);
+            Ok(())
+        }
+        Ok(None) => Err(json_err(
+            StatusCode::NOT_FOUND,
+            "unknown_arch",
+            "arch_id is not in the published architecture registry",
+        )),
+        Err(e) => Err(json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store",
+            &e.to_string(),
+        )),
+    }
+}
+
 /// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
 /// with `X-Miner-Hotkey`.
 async fn post_submission(
@@ -177,12 +230,20 @@ async fn post_submission(
     if let Err(e) = prism_pipeline::validate(&req) {
         return map_submission_err(&e);
     }
+    // Training-only: pull the architecture from the registry (miner-sent
+    // source is rejected by validate above, so the registry is the only
+    // source of truth — this is what makes the pre-LLM copy gate safe to
+    // skip on these rows).
+    if let Err(resp) = materialize_arch(&st, &mut req).await {
+        return resp;
+    }
     if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
         return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
     }
     // Normalize hotkey case so gating + ids are case-stable.
     req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
     let id = prism_pipeline::submission_id(&req);
+    let gate_challenge = prism_pipeline::gating_key(req.arch_id.as_deref());
 
     // Idempotent duplicate: identical contract bytes never conflict gating.
     let exists = match st.store.get(&id).await {
@@ -192,7 +253,7 @@ async fn post_submission(
     let uid = if exists {
         None
     } else {
-        match intake_gates(&st, &req.miner_hotkey).await {
+        match intake_gates(&st, &req.miner_hotkey, &gate_challenge).await {
             Ok(u) => u,
             Err(resp) => return resp,
         }
@@ -212,6 +273,7 @@ async fn post_submission(
         receipt: None,
         metrics_json: None,
         bpb: None,
+        arch_id: req.arch_id.clone(),
         review: None,
         similarity: None,
         final_score: None,
@@ -228,7 +290,7 @@ async fn post_submission(
             if !exists {
                 if let Some(g) = &st.gating {
                     if let Err(e) = g
-                        .mark_registered(CHALLENGE_ID, &req.miner_hotkey, uid)
+                        .mark_registered(&gate_challenge, &req.miner_hotkey, uid)
                         .await
                     {
                         return json_err(
@@ -399,6 +461,25 @@ async fn get_recipe_baseline() -> impl IntoResponse {
     }))
 }
 
+/// `GET /v1/architectures` — published architecture registry (leaderboard
+/// source: per-arch best bpb across all trainers).
+async fn get_architectures(State(st): State<Arc<AppState>>) -> Response {
+    match st.store.list_archs(200).await {
+        Ok(rows) => Json(json!({
+            "architectures": rows.iter().map(|a| json!({
+                "arch_id": a.arch_id,
+                "owner_hotkey": a.owner_hotkey,
+                "arch_digest": a.arch_digest,
+                "source_submission": a.source_submission,
+                "best_bpb": a.best_bpb,
+                "created_at_ms": a.created_at_ms,
+            })).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    }
+}
+
 /// Feed cache: call this from the worker loop every tick.
 pub fn record_epoch(st: &AppState, epoch: u64) {
     st.epoch.store(epoch, std::sync::atomic::Ordering::Relaxed);
@@ -412,6 +493,7 @@ fn list_view(r: &SubmissionState) -> Value {
         "status": r.status.as_str(),
         "label": r.label,
         "bpb": r.bpb,
+        "arch_id": r.arch_id,
         "n_params": r.n_params(),
         "score": r.final_score.as_ref().map(|f| match f {
             FinalScore::Score(v) => json!({"kind":"score","value":v}),
@@ -614,6 +696,166 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::CONFLICT);
+    }
+
+    fn arch_fixture() -> (String, String) {
+        let arch_src =
+            "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(16, 16)\n".to_owned();
+        let arch = prism_pipeline::arch_id_for(&arch_src);
+        (arch, arch_src)
+    }
+
+    async fn seed_arch(st: &AppState, arch: &str, arch_src: &str) {
+        st.store
+            .publish_arch(&prism_store::ArchitectureRecord {
+                arch_id: arch.to_owned(),
+                owner_hotkey: "aa".repeat(32),
+                arch_digest: prism_pipeline::arch_digest(arch_src),
+                architecture_py: arch_src.to_owned(),
+                source_submission: "src".into(),
+                best_bpb: Some(2.0),
+                created_at_ms: 1,
+            })
+            .await
+            .unwrap();
+    }
+
+    fn training_body(hotkey: &str, train: &str, arch: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "miner_hotkey": hotkey,
+            "training_py": train,
+            "arch_id": arch,
+        }))
+        .unwrap()
+    }
+
+    const TRAIN_HOOKED: &str = concat!(
+        "import prism_telemetry\n",
+        "def train(model, ctx):\n",
+        "    prism_telemetry.report(loss=1.0, step=1)\n",
+        "    prism_telemetry.finish_evaluation()\n",
+        "    return {'loss': 1.0}\n",
+    );
+
+    #[tokio::test]
+    async fn training_only_intake_materializes_arch_and_gates_per_arch() {
+        let hk = [0x11; 32];
+        let (st, gating) = gated_state(&[hk]);
+        let (arch, arch_src) = arch_fixture();
+        seed_arch(&st, &arch, &arch_src).await;
+        let app = submission_router(Arc::clone(&st));
+        let hotkey_hex = hex::encode(hk);
+
+        // Accept: 202, materialized source, composite gating key registered.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(training_body(&hotkey_hex, TRAIN_HOOKED, &arch)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let id = v["submission_id"].as_str().unwrap().to_owned();
+        let row = st.store.get(&id).await.unwrap().expect("row");
+        assert_eq!(row.architecture_py, arch_src, "arch pulled from registry");
+        assert_eq!(row.arch_id.as_deref(), Some(arch.as_str()));
+        let gate_key = prism_pipeline::gating_key(Some(&arch));
+        let g = gating
+            .get(&gate_key, &hotkey_hex)
+            .await
+            .unwrap()
+            .expect("gating row");
+        assert_eq!(g.state, GatingState::Registered);
+        // The plain 1-max architecture gate is untouched.
+        assert!(gating
+            .get(CHALLENGE_ID, &hotkey_hex)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Idempotent: identical bytes → already-queued, no gate conflict.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(training_body(&hotkey_hex, TRAIN_HOOKED, &arch)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["status"], "already-queued");
+
+        // Different training on the same (hotkey, arch) → gated 409.
+        let other_train = TRAIN_HOOKED.replace("loss=1.0", "loss=0.9");
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(training_body(&hotkey_hex, &other_train, &arch)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "submission_gated");
+
+        // A different published arch has an independent gate slot.
+        let second_src =
+            "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n".to_owned();
+        let second = prism_pipeline::arch_id_for(&second_src);
+        seed_arch(&st, &second, &second_src).await;
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(training_body(
+                    &hotkey_hex,
+                    &other_train,
+                    &second,
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    }
+
+    #[tokio::test]
+    async fn training_only_unknown_arch_404_and_source_rejected() {
+        let hk = [0x22; 32];
+        let (st, _g) = gated_state(&[hk]);
+        let (arch, _src) = arch_fixture();
+        let app = submission_router(Arc::clone(&st));
+        let hotkey_hex = hex::encode(hk);
+
+        // Unknown registry id → 404.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(training_body(&hotkey_hex, TRAIN_HOOKED, &arch)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(v["code"], "unknown_arch");
+
+        // arch_id + inline source → 400 (registry is the only arch source).
+        let body = serde_json::to_vec(&json!({
+            "miner_hotkey": hotkey_hex,
+            "architecture_py": "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n",
+            "training_py": TRAIN_HOOKED,
+            "arch_id": arch,
+        }))
+        .unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     }
 
     async fn call(app: Router, req: Request<Body>) -> (StatusCode, Value) {

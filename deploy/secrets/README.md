@@ -39,3 +39,8 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
 
 - `lium/` — prism Lium API + SSH keys (see prism runbook)
 - `wallets/` — btcli wallet trees for gateway owner / validator hotkeys
+- `github/token` — prism-challenge top-model publisher: fine-grained GitHub
+  token with **contents:write** on `BaseIntelligence/prism` only. Read via
+  `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`/run/base/github/token`); missing or
+  empty file = top-model publish silently disabled. Mode **0400**, uid
+  **65532** — never commit it.

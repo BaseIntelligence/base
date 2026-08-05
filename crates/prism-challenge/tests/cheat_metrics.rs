@@ -126,6 +126,7 @@ def train(model, ctx):
             receipt: None,
             metrics_json: None,
             bpb: None,
+            arch_id: None,
             review: None,
             similarity: None,
             final_score: None,

@@ -6,8 +6,10 @@ use db::PgPool;
 use prism_lium::EvalReceipt;
 use prism_review::{ReviewVerdict, SimilarityKind, SimilarityVerdict};
 
+use crate::arch;
 use crate::store::{
-    FinalScore, PrismStore, Stage, StageEvent, StatePatch, StoreError, SubmissionState,
+    ArchitectureRecord, EpochScoreRow, FinalScore, PrismStore, PublishArchOutcome, Stage,
+    StageEvent, StatePatch, StoreError, SubmissionState, TopModelPublication,
 };
 
 /// SQL-backed production store.
@@ -67,14 +69,25 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
         receipt,
         metrics_json: r.metrics_json,
         bpb: r.bpb,
+        arch_id: None, // filled by arch::fill_arch_meta at the read sites
         review,
         similarity,
         final_score,
         retry_count: u32::try_from(r.retry_count.max(0)).unwrap_or(u32::MAX),
         error_detail: r.error_detail,
-        created_at_ms: 0,
+        created_at_ms: 0, // filled by arch::fill_arch_meta
         updated_at_ms: 0,
     }
+}
+
+/// Map + fill migration-0010 columns (`arch_id`, `created_at`) on reads.
+async fn states_filled(
+    pool: &PgPool,
+    rows: Vec<dbs::PrismSubmissionRow>,
+) -> Result<Vec<SubmissionState>, StoreError> {
+    let mut out: Vec<SubmissionState> = rows.into_iter().map(row_to_state).collect();
+    arch::fill_arch_meta(pool, &mut out).await?;
+    Ok(out)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -169,21 +182,31 @@ impl PrismStore for DbPrismStore {
             },
         )
         .await
-        .map_err(|e| StoreError::Backend(e.to_string()))
+        .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if let Some(a) = &row.arch_id {
+            arch::set_row_arch_id(&self.pool, &row.id, a).await?;
+        }
+        Ok(())
     }
 
     async fn get(&self, id: &str) -> Result<Option<SubmissionState>, StoreError> {
-        dbs::prism_submission(&self.pool, id)
+        let row = dbs::prism_submission(&self.pool, id)
             .await
-            .map(|o| o.map(row_to_state))
-            .map_err(|e| StoreError::Backend(e.to_string()))
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        match row {
+            Some(r) => Ok(states_filled(&self.pool, vec![r]).await?.into_iter().next()),
+            None => Ok(None),
+        }
     }
 
     async fn claim_next(&self) -> Result<Option<SubmissionState>, StoreError> {
-        dbs::claim_prism_submission(&self.pool)
+        let row = dbs::claim_prism_submission(&self.pool)
             .await
-            .map(|o| o.map(row_to_state))
-            .map_err(|e| StoreError::Backend(e.to_string()))
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        match row {
+            Some(r) => Ok(states_filled(&self.pool, vec![r]).await?.into_iter().next()),
+            None => Ok(None),
+        }
     }
 
     async fn apply(
@@ -223,6 +246,9 @@ impl PrismStore for DbPrismStore {
         )
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if let Some(a) = &update.arch_id {
+            arch::set_row_arch_id(&self.pool, id, a).await?;
+        }
         if let Some(e) = event {
             dbs::insert_prism_stage_event(
                 &self.pool,
@@ -246,7 +272,11 @@ impl PrismStore for DbPrismStore {
                 }
             }
         }
-        Ok(row_to_state(row))
+        Ok(states_filled(&self.pool, vec![row])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(StoreError::NotFound)?)
     }
 
     async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError> {
@@ -266,7 +296,11 @@ impl PrismStore for DbPrismStore {
         )
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
-        Ok(row_to_state(row))
+        Ok(states_filled(&self.pool, vec![row])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(StoreError::NotFound)?)
     }
 
     async fn list(
@@ -275,10 +309,10 @@ impl PrismStore for DbPrismStore {
         miner: Option<&str>,
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError> {
-        dbs::list_prism_submissions(&self.pool, status, miner, i64::from(limit))
+        let rows = dbs::list_prism_submissions(&self.pool, status, miner, i64::from(limit))
             .await
-            .map(|v| v.into_iter().map(row_to_state).collect())
-            .map_err(|e| StoreError::Backend(e.to_string()))
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        states_filled(&self.pool, rows).await
     }
 
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError> {
@@ -300,29 +334,52 @@ impl PrismStore for DbPrismStore {
         crate::telemetry::telemetry_for(&self.pool, id).await
     }
 
-    async fn scores_for_epoch(
+    async fn epoch_scored_rows(
         &self,
         netuid: u16,
         epoch: u64,
-    ) -> Result<Vec<(String, FinalScore)>, StoreError> {
-        dbs::prism_scores_for_epoch(
+    ) -> Result<Vec<EpochScoreRow>, StoreError> {
+        arch::epoch_scored_rows(
             &self.pool,
             i32::from(netuid),
             i64::try_from(epoch).unwrap_or(i64::MAX),
         )
         .await
-        .map(|v| {
-            v.into_iter()
-                .filter_map(|(hk, kind, score, absence)| match kind.as_str() {
-                    "score" => score.map(|s| (hk, FinalScore::Score(s.cast_unsigned()))),
-                    "no_score" => {
-                        absence.map(|a| (hk, FinalScore::NoScore(u8::try_from(a).unwrap_or(0))))
-                    }
-                    _ => None,
-                })
-                .collect()
-        })
-        .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn publish_arch(
+        &self,
+        rec: &ArchitectureRecord,
+    ) -> Result<PublishArchOutcome, StoreError> {
+        arch::insert_arch(&self.pool, rec).await
+    }
+
+    async fn get_arch(&self, arch_id: &str) -> Result<Option<ArchitectureRecord>, StoreError> {
+        arch::get_arch(&self.pool, arch_id).await
+    }
+
+    async fn list_archs(&self, limit: u32) -> Result<Vec<ArchitectureRecord>, StoreError> {
+        arch::list_archs(&self.pool, i64::from(limit)).await
+    }
+
+    async fn note_arch_best_bpb(&self, arch_id: &str, bpb: f64) -> Result<bool, StoreError> {
+        arch::note_arch_best_bpb(&self.pool, arch_id, bpb).await
+    }
+
+    async fn arch_owners(&self) -> Result<Vec<(String, String)>, StoreError> {
+        arch::arch_owners(&self.pool).await
+    }
+
+    async fn record_publication(&self, p: &TopModelPublication) -> Result<(), StoreError> {
+        arch::record_publication(&self.pool, p).await
+    }
+
+    async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError> {
+        arch::last_publication_bpb(&self.pool).await
+    }
+
+    async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {
+        arch::best_scored_bpb(&self.pool).await
     }
 
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError> {
@@ -341,6 +398,7 @@ impl PrismStore for DbPrismStore {
                 out.push(row_to_state(r));
             }
         }
+        arch::fill_arch_meta(&self.pool, &mut out).await?;
         Ok(out)
     }
 }

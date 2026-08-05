@@ -12,12 +12,11 @@ use std::time::Duration;
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use chain::ChainClient;
-use challenge_agentic::{
-    copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEntry, VerdictKind,
-};
+use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEntry, VerdictKind};
 use challenge_common::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_lium::{EvalJobBackend, InstanceSpec};
+use prism_pipeline::gating_key;
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
 use submission_gating::{GatingState, GatingStore};
@@ -89,6 +88,7 @@ pub struct Orchestrator<C: ChainClient + Send> {
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
     gating: Option<Arc<dyn GatingStore>>,
+    topmodel: Option<Arc<prism_registry::TopModelPublisher>>,
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
@@ -115,6 +115,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             chain,
             sk,
             gating: None,
+            topmodel: None,
         }
     }
 
@@ -122,6 +123,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     #[must_use]
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
+        self
+    }
+
+    /// Attach the top-model GitHub publisher (absent = publish step no-ops).
+    #[must_use]
+    pub fn with_topmodel(
+        mut self,
+        publisher: Option<Arc<prism_registry::TopModelPublisher>>,
+    ) -> Self {
+        self.topmodel = publisher;
         self
     }
 
@@ -241,9 +252,30 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             )
             .await;
         if let Some(g) = &self.gating {
-            let _ = g.bump_attempt(CHALLENGE_ID, &row.miner_hotkey, class).await;
+            let _ = g
+                .bump_attempt(
+                    &gating_key(row.arch_id.as_deref()),
+                    &row.miner_hotkey,
+                    class,
+                )
+                .await;
         }
         true
+    }
+
+    /// Gating `rejected` for cheat-class terminals (composite key for
+    /// training-only rows, `prism` otherwise).
+    async fn reject_gating(&self, row: &SubmissionState) {
+        if let Some(g) = &self.gating {
+            let _ = g
+                .set_terminal(
+                    &gating_key(row.arch_id.as_deref()),
+                    &row.miner_hotkey,
+                    GatingState::Rejected,
+                    None,
+                )
+                .await;
+        }
     }
 
     /// Terminal failure: `failed` row + gating `blocked`, then best-effort leaf
@@ -271,7 +303,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         if let Some(g) = &self.gating {
             let _ = g
                 .set_terminal(
-                    CHALLENGE_ID,
+                    &gating_key(row.arch_id.as_deref()),
                     &row.miner_hotkey,
                     GatingState::Blocked,
                     Some(class),
@@ -343,11 +375,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             agentic.verdict,
             VerdictKind::Cheat | VerdictKind::Suspicious
         ) {
-            if let Some(g) = &self.gating {
-                let _ = g
-                    .set_terminal(CHALLENGE_ID, &row.miner_hotkey, GatingState::Rejected, None)
-                    .await;
-            }
+            self.reject_gating(&row).await;
         }
 
         let outcome = match bpb {
@@ -398,6 +426,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             Ok(n) => info!(submission_id = %id, leaves = n, stage = ?status, "leaf set submitted"),
             Err(e) => warn!(submission_id = %id, error = %e, "leaf submission deferred"),
         }
+        // Registry + top-model bookkeeping (arch publish, arch best, GitHub
+        // top-model). After leaf emission: publishing must not delay weights.
+        if let Ok(Some(scored)) = self.store.get(&id).await {
+            prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored).await;
+        }
         let _ = final_score;
         Ok(())
     }
@@ -408,8 +441,12 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     /// The corpus is recent submissions (any status — prior art is prior art)
     /// ordered by store `created_at`; the published baseline is exempt by id
     /// prefix inside [`copy_gate`]. Ties / unknown timestamps fall through to
-    /// the LLM similarity review.
+    /// the LLM similarity review. Training-only rows (`arch_id` set) skip the
+    /// gate entirely: their architecture is registry-identical by design.
     async fn copy_gate_step(&self, row: &SubmissionState) -> bool {
+        if row.arch_id.is_some() {
+            return false;
+        }
         let recent = self.store.list(None, None, 64).await.unwrap_or_default();
         let corpus: Vec<GateCorpusEntry> = recent
             .into_iter()
@@ -470,7 +507,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         if let Some(g) = &self.gating {
             let _ = g
                 .set_terminal(
-                    CHALLENGE_ID,
+                    &gating_key(row.arch_id.as_deref()),
                     &row.miner_hotkey,
                     GatingState::Rejected,
                     None,
@@ -601,6 +638,20 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         row: &SubmissionState,
     ) -> Result<SimilarityVerdict, String> {
         self.to_stage(id, Stage::Similarity).await?;
+        // Training-only rows train a registry architecture: similarity is
+        // exempt by definition (the arch copy judgment happened when the
+        // owner's architecture submission was reviewed).
+        if let Some(a) = &row.arch_id {
+            return Ok(SimilarityVerdict {
+                kind: prism_review::SimilarityKind::Original,
+                score: 0.0,
+                closest: Some(a.clone()),
+                evidence: vec![
+                    "training-only: architecture from registry (similarity-exempt)".into(),
+                ],
+                prompt_version: prism_review::SIMILARITY_PROMPT_VERSION,
+            });
+        }
         let corpus = self.similarity_corpus(id).await;
         self.reviewer
             .similarity(&row.architecture_py, &corpus)
@@ -631,7 +682,15 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
             .await
             .unwrap_or_default();
-        let corpus = corpus_from_rows(id, &recent);
+        // Training-only rows: drop the referenced registry arch from the
+        // corpus (byte-identity with it is by design, not a copy).
+        let corpus = corpus_from_rows(
+            id,
+            &recent,
+            row.arch_id
+                .is_some()
+                .then_some(row.architecture_py.as_str()),
+        );
         let req = match build_review_request(dir.path(), row, metrics, receipt, corpus) {
             Ok(r) => r,
             Err(e) => {
@@ -650,7 +709,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if let Some(g) = &self.gating {
                     let _ = g
                         .set_terminal(
-                            CHALLENGE_ID,
+                            &gating_key(row.arch_id.as_deref()),
                             &row.miner_hotkey,
                             GatingState::Blocked,
                             Some("llm_infra"),
@@ -760,10 +819,20 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Result<usize, String> {
         let rows = self
             .store
-            .scores_for_epoch(self.cfg.netuid, epoch)
+            .epoch_scored_rows(self.cfg.netuid, epoch)
             .await
             .map_err(|e| e.to_string())?;
-        let by_miner: BTreeMap<String, FinalScore> = rows.into_iter().collect();
+        let owners: BTreeMap<String, String> = self
+            .store
+            .arch_owners()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        // Architecture competition: owner/challenger credits, max-aggregated
+        // per hotkey (SCORE_MAX lattice preserved — docs/PRISM.md).
+        let by_miner: BTreeMap<String, FinalScore> =
+            prism_registry::competition_scores(&rows, &owners);
 
         let mut scores: BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> = BTreeMap::new();
         let mut expected_set: BTreeSet<[u8; KEY_LEN]> = BTreeSet::new();

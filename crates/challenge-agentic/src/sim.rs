@@ -46,6 +46,23 @@ impl SimAgent {
     }
 }
 
+/// Primaries in scope for corpus comparison. Prism compares `architecture.py`
+/// ONLY (similarity v2: training.py is exempt from corpus/candidate); other
+/// domains use every primary.
+fn scoped_primaries<'a>(req: &ReviewRequest, primaries: &'a [(String, String)]) -> Vec<&'a str> {
+    if req.domain_rules.contains("Prism domain") {
+        let arch: Vec<&str> = primaries
+            .iter()
+            .filter(|(p, _)| p.ends_with("architecture.py"))
+            .map(|(_, s)| s.as_str())
+            .collect();
+        if !arch.is_empty() {
+            return arch;
+        }
+    }
+    primaries.iter().map(|(_, s)| s.as_str()).collect()
+}
+
 #[async_trait]
 impl AgenticBackend for SimAgent {
     async fn review(&self, req: &ReviewRequest) -> Result<AgenticVerdict, AgenticError> {
@@ -66,25 +83,9 @@ impl AgenticBackend for SimAgent {
             return Ok(v);
         }
 
-        // Concatenate primaries for hash / fingerprint (stable order from
-        // request). Prism compares architecture.py ONLY (similarity v2:
-        // training.py is exempt from corpus/candidate); other domains use
-        // every primary.
-        let scoped: Vec<&str> = if req.domain_rules.contains("Prism domain") {
-            let arch: Vec<&str> = primaries
-                .iter()
-                .filter(|(p, _)| p.ends_with("architecture.py"))
-                .map(|(_, s)| s.as_str())
-                .collect();
-            if arch.is_empty() {
-                primaries.iter().map(|(_, s)| s.as_str()).collect()
-            } else {
-                arch
-            }
-        } else {
-            primaries.iter().map(|(_, s)| s.as_str()).collect()
-        };
-        let joined = scoped.join("\n#--\n");
+        // Concatenate the in-scope primaries for hash / fingerprint (stable
+        // order from request).
+        let joined = scoped_primaries(req, &primaries).join("\n#--\n");
         let cand_hash = source_hash_hex(&joined);
 
         for entry in &req.corpus {
@@ -185,9 +186,7 @@ fn telemetry_hooks_verdict(
     if !req.domain_rules.contains("Prism domain") {
         return None;
     }
-    let Some((path, src)) = primaries.iter().find(|(p, _)| p.ends_with("training.py")) else {
-        return None;
-    };
+    let (path, src) = primaries.iter().find(|(p, _)| p.ends_with("training.py"))?;
     let imports_shim = src.contains("prism_telemetry")
         || src.contains("ctx[\"telemetry\"]")
         || src.contains("ctx['telemetry']");

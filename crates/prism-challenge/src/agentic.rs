@@ -52,17 +52,20 @@ pub fn build_review_request(
 /// Corpus entries are **architecture.py only** (similarity v2): `training.py`
 /// is exempt from every copy/similarity comparison — the same training
 /// script on two different architectures is legitimate competition behavior.
+/// `exempt_arch` drops entries byte-equal to that source (training-only
+/// submissions on a registry architecture: the identity is by design).
 #[must_use]
 pub fn corpus_from_rows(
     current_id: &str,
     recent: &[prism_store::SubmissionState],
+    exempt_arch: Option<&str>,
 ) -> Vec<CorpusEntry> {
     let mut v = vec![CorpusEntry {
         id: "baseline".into(),
         source: BASELINE_ARCHITECTURE_PY.into(),
     }];
     for r in recent {
-        if r.id == current_id {
+        if r.id == current_id || Some(r.architecture_py.as_str()) == exempt_arch {
             continue;
         }
         let label = if r.id.len() >= 8 {

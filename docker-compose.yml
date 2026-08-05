@@ -210,6 +210,9 @@ services:
       PRISM_SSH_ATTEMPTS: "${PRISM_SSH_ATTEMPTS:-30}"
       PRISM_SSH_RETRY_SECS: "${PRISM_SSH_RETRY_SECS:-10}"
       PRISM_SSH_RUNNING_TIMEOUT_SECS: "${PRISM_SSH_RUNNING_TIMEOUT_SECS:-900}"
+      # Top-model GitHub publish (BaseIntelligence/prism top-model/): no-op
+      # when the token file is absent/empty.
+      PRISM_TOPMODEL_GITHUB_TOKEN_FILE: /run/base/github/token
     env_file:
       # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose
       # fails closed (binaries would otherwise fall back to in-memory store).
@@ -221,6 +224,7 @@ services:
       - ./deploy/secrets/prism_sk:/run/base/challenge_sk:ro
       - ./deploy/secrets/lium:/run/base/lium:ro
       - ./deploy/secrets/openrouter:/run/base/openrouter:ro
+      - ./deploy/secrets/github:/run/base/github:ro
     expose:
       - "8092"
     healthcheck:

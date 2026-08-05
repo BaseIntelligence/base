@@ -23,6 +23,7 @@ prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-recipe = { path = "../prism-recipe" }
+prism-registry = { path = "../prism-registry" }
 prism-review = { path = "../prism-review" }
 prism-store = { path = "../prism-store" }
 trustroot = { path = "../trustroot" }

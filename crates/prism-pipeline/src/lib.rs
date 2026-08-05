@@ -20,6 +20,7 @@ pub use pipeline::{
 };
 pub use score::{score_from_bpb, score_from_pipeline, PipelineOutcome};
 pub use submission::{
-    example_valid_request, expand_zip_fields, submission_id, validate, QueuedSubmission,
-    SubmissionAccepted, SubmissionError, SubmissionId, SubmissionRequest, SubmissionService,
+    arch_digest, arch_id_for, example_valid_request, expand_zip_fields, gating_key, is_arch_id,
+    submission_id, validate, QueuedSubmission, SubmissionAccepted, SubmissionError, SubmissionId,
+    SubmissionRequest, SubmissionService,
 };

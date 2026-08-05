@@ -298,30 +298,6 @@ pub async fn prism_stage_events(
     Ok(rows)
 }
 
-/// Latest final score per miner for `(netuid, epoch)`.
-///
-/// Rows without `kind` (not scored yet) do not appear.
-///
-/// # Errors
-/// SQL error.
-pub async fn prism_scores_for_epoch(
-    pool: &PgPool,
-    netuid: i32,
-    epoch: i64,
-) -> Result<Vec<(String, String, Option<i64>, Option<i16>)>, DbError> {
-    let rows: Vec<(String, String, Option<i64>, Option<i16>)> = sqlx::query_as(
-        "SELECT DISTINCT ON (miner_hotkey) miner_hotkey, kind, score, absence_reason \
-         FROM prism_submission \
-         WHERE netuid = $1 AND epoch = $2 AND kind IS NOT NULL \
-         ORDER BY miner_hotkey, updated_at DESC",
-    )
-    .bind(netuid)
-    .bind(epoch)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
-}
-
 /// Stage statuses stuck non-terminal beyond the grace window (restart sweep).
 ///
 /// # Errors

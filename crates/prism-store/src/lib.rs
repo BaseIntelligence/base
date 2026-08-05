@@ -1,12 +1,14 @@
 //! `prism-store` — persistence surface for the PRISM orchestrator.
 //!
-//! Single source of truth for submission rows + stage events. Two impls:
+//! Single source of truth for submission rows + stage events + the
+//! architecture registry / top-model journal (migration 0010). Two impls:
 //! [`MemoryPrismStore`] (offline tests/sim) and [`DbPrismStore`] (production
 //! SQL via `db`).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
+mod arch;
 mod dbprism;
 mod store;
 mod telemetry;
@@ -14,6 +16,7 @@ mod telemetry;
 pub use dbprism::DbPrismStore;
 pub use prism_lium::TelemetryPoint;
 pub use store::{
-    FinalScore, MemoryPrismStore, PrismStore, Stage, StageEvent, StatePatch, StoreError,
-    SubmissionState,
+    ArchitectureRecord, EpochScoreRow, FinalScore, MemoryPrismStore, PrismStore,
+    PublishArchOutcome, Stage, StageEvent, StatePatch, StoreError, SubmissionState,
+    TopModelPublication,
 };

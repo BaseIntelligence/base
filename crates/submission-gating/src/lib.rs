@@ -247,10 +247,16 @@ impl GatingStore for MemoryGatingStore {
             .lock()
             .map_err(|_| GatingError::Backend("poison".into()))?
             .values()
-            .filter(|r| r.challenge == challenge && r.state != GatingState::Open)
+            .filter(|r| challenge_matches(&r.challenge, challenge) && r.state != GatingState::Open)
             .cloned()
             .collect())
     }
+}
+
+/// Reconciliation is prefix-scoped: `prism` also matches composite keys like
+/// `prism:train:<arch_id>` so watcher resets cover training-only entries.
+fn challenge_matches(row_challenge: &str, query: &str) -> bool {
+    row_challenge == query || row_challenge.starts_with(&format!("{query}:"))
 }
 
 /// Postgres-backed store over the shared `submission_gating` table (migration
@@ -393,7 +399,8 @@ impl GatingStore for PgGatingStore {
     async fn list_non_open(&self, challenge: &str) -> Result<Vec<GatingRow>, GatingError> {
         let q = format!(
             "SELECT {GATING_COLS} FROM submission_gating \
-             WHERE challenge = $1 AND state <> 'open' ORDER BY updated_at ASC"
+             WHERE (challenge = $1 OR challenge LIKE $1 || ':%') AND state <> 'open' \
+             ORDER BY updated_at ASC"
         );
         let rows = sqlx::query(&q)
             .bind(challenge)

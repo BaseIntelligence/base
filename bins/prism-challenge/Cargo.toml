@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive", "env"] }
 prism-challenge = { path = "../../crates/prism-challenge" }
 prism-lium = { path = "../../crates/prism-lium" }
 prism-recipe = { path = "../../crates/prism-recipe" }
+prism-registry = { path = "../../crates/prism-registry" }
 prism-review = { path = "../../crates/prism-review" }
 submission-gating = { path = "../../crates/submission-gating" }
 crypto = { path = "../../crates/crypto" }

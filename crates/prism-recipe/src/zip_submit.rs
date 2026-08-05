@@ -78,6 +78,67 @@ pub fn sources_from_zip(zip_bytes: &[u8]) -> Result<(String, String), ZipSubmitE
     Ok((architecture_py, training_py))
 }
 
+/// Unpack ZIP bytes into `training.py` only — training-only submissions on a
+/// published registry architecture. Archives carrying `architecture.py` are
+/// rejected: the architecture source comes from the registry, never from the
+/// miner (copy-gate integrity).
+///
+/// # Errors
+/// Archive or contract failures.
+pub fn training_from_zip(zip_bytes: &[u8]) -> Result<String, ZipSubmitError> {
+    if zip_bytes.len() > MAX_SOURCE_BYTES.saturating_mul(4) {
+        return Err(ZipSubmitError::Invalid("zip exceeds size budget".into()));
+    }
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))
+        .map_err(|e| ZipSubmitError::Invalid(format!("zip open: {e}")))?;
+    let mut training_py = None;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| ZipSubmitError::Invalid(format!("zip entry: {e}")))?;
+        if file.is_dir() {
+            continue;
+        }
+        #[allow(deprecated)]
+        if file.unix_mode().is_some_and(|m| m & 0o170_000 == 0o120_000) {
+            return Err(ZipSubmitError::Invalid("symlinks forbidden".into()));
+        }
+        let name = file
+            .enclosed_name()
+            .ok_or_else(|| ZipSubmitError::Invalid("unsafe zip path".into()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let name = name.trim_start_matches("./");
+        if name.is_empty() || name.contains("..") || name.starts_with('/') {
+            return Err(ZipSubmitError::Invalid(format!("bad path: {name}")));
+        }
+        let rel = normalize_rel(name);
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|e| ZipSubmitError::Invalid(format!("zip read: {e}")))?;
+        if data.len() > MAX_SOURCE_BYTES {
+            return Err(ZipSubmitError::Invalid(format!("file too large: {rel}")));
+        }
+        let text = String::from_utf8(data)
+            .map_err(|_| ZipSubmitError::Invalid(format!("non-utf8: {rel}")))?;
+        match rel.as_str() {
+            "architecture.py" => {
+                return Err(ZipSubmitError::Invalid(
+                    "architecture.py forbidden in training-only submission".into(),
+                ));
+            }
+            "training.py" => training_py = Some(text),
+            _ => {}
+        }
+    }
+    let training_py =
+        training_py.ok_or_else(|| ZipSubmitError::Invalid("training.py missing".into()))?;
+    if !training_py.contains("def train(") {
+        return Err(ZipSubmitError::Contract(ContractError::MissingTrain));
+    }
+    Ok(training_py)
+}
+
 fn normalize_rel(name: &str) -> String {
     let parts: Vec<&str> = name.split('/').filter(|p| !p.is_empty()).collect();
     match parts.as_slice() {
