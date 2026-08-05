@@ -373,7 +373,7 @@ RUN_D="$(echo "${RUNS_D:-}" | awk '{print $1}')"
 if [[ -n "$RUN_D" ]]; then
   final_d="$(poll_run "$RUN_D" "failed" "$RETRY_WAIT_SECS")" || true
   api GET "/challenge/design/v1/runs/$RUN_D/events" > "$EVIDENCE/06-run-d-events.json"
-  retries="$(grep -c '"stage": *"auto_retry"' "$EVIDENCE/06-run-d-events.json" || true)"
+  retries="$(grep -o '"stage": *"auto_retry"' "$EVIDENCE/06-run-d-events.json" | wc -l)"
   gate="$(psql "SELECT state||' attempts='||attempt_count||' class='||coalesce(last_error_class,'-') FROM submission_gating WHERE challenge='design' AND hotkey='$HKD';")"
   echo "$gate" > "$EVIDENCE/06-gating-d.txt"
   if [[ "$final_d" = "failed" && "$retries" -ge 3 ]] && echo "$gate" | grep -q blocked; then

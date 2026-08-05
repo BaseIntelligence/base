@@ -279,7 +279,10 @@ mod tests {
         // original 32-char submission_gating.challenge CHECK (500 at intake).
         let key = gating_key(Some("arch_d50dcfef6eaf5f04"));
         assert_eq!(key, "prism:train:arch_d50dcfef6eaf5f04");
-        assert!(key.len() <= 64, "gating key fits migration 0011 CHECK: {key}");
+        assert!(
+            key.len() <= 64,
+            "gating key fits migration 0011 CHECK: {key}"
+        );
     }
 
     #[test]
