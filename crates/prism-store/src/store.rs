@@ -97,6 +97,9 @@ pub enum Stage {
     Terminated,
     /// Failure path.
     Failed,
+    /// Pre-LLM copy gate: byte/AST copy of a strictly-earlier architecture
+    /// (created_at ordered) — terminal, LLM review skipped, Score(0).
+    Rejected,
 }
 
 impl Stage {
@@ -112,6 +115,7 @@ impl Stage {
             Self::Scoring => "scoring",
             Self::Terminated => "terminated",
             Self::Failed => "failed",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -127,6 +131,7 @@ impl Stage {
             "scoring" => Some(Self::Scoring),
             "terminated" => Some(Self::Terminated),
             "failed" => Some(Self::Failed),
+            "rejected" => Some(Self::Rejected),
             _ => None,
         }
     }
@@ -134,7 +139,7 @@ impl Stage {
     /// Terminal (replay writes a new row).
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Terminated | Self::Failed)
+        matches!(self, Self::Terminated | Self::Failed | Self::Rejected)
     }
 }
 

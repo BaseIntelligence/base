@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use chain::ChainClient;
-use challenge_agentic::{AgenticBackend, AgenticVerdict, VerdictKind};
+use challenge_agentic::{
+    copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEntry, VerdictKind,
+};
 use challenge_common::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_lium::{EvalJobBackend, InstanceSpec};
@@ -287,6 +289,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         let id = row.id.clone();
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
+        // Phase 0: pre-LLM copy gate on architecture.py (created_at ordered).
+        // A byte/AST copy of a strictly-earlier architecture is terminal
+        // `rejected` with Score(0) — no pod time, no LLM spend.
+        if self.copy_gate_step(&row).await {
+            return Ok(());
+        }
+
         // Phase 1: provision + recipe exec + terminate (always verified).
         // Lium/infra failures auto-retry (install class); budget exhaustion is
         // terminal with NoScore(ChallengeInternal), never a miner zero.
@@ -391,6 +400,89 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
         let _ = final_score;
         Ok(())
+    }
+
+    /// Pre-LLM copy gate on `architecture.py`. Returns `true` when the row was
+    /// finalized terminal `rejected` (caller must stop processing).
+    ///
+    /// The corpus is recent submissions (any status — prior art is prior art)
+    /// ordered by store `created_at`; the published baseline is exempt by id
+    /// prefix inside [`copy_gate`]. Ties / unknown timestamps fall through to
+    /// the LLM similarity review.
+    async fn copy_gate_step(&self, row: &SubmissionState) -> bool {
+        let recent = self.store.list(None, None, 64).await.unwrap_or_default();
+        let corpus: Vec<GateCorpusEntry> = recent
+            .into_iter()
+            .filter(|r| r.id != row.id)
+            .map(|r| GateCorpusEntry {
+                id: format!("subm:{}", r.id),
+                source: r.architecture_py,
+                created_at_ms: r.created_at_ms,
+            })
+            .collect();
+        let Some(hit) = copy_gate(&row.architecture_py, row.created_at_ms, &corpus) else {
+            return false;
+        };
+        warn!(
+            submission_id = %row.id,
+            nearest = %hit.nearest_id,
+            similarity_bps = hit.similarity_bps,
+            byte_identical = hit.byte_identical,
+            "copy gate rejected architecture (created_at ordered, LLM + pod skipped)"
+        );
+        let similarity = SimilarityVerdict {
+            kind: prism_review::SimilarityKind::Copied,
+            score: f64::from(hit.similarity_bps) / 10_000.0,
+            closest: Some(hit.nearest_id.clone()),
+            evidence: vec![if hit.byte_identical {
+                "pre-LLM copy gate: byte-identical earlier architecture".into()
+            } else {
+                "pre-LLM copy gate: AST copy of earlier architecture".into()
+            }],
+            prompt_version: prism_review::SIMILARITY_PROMPT_VERSION,
+        };
+        let _ = self
+            .store
+            .apply(
+                &row.id,
+                &StatePatch {
+                    status: Some(Stage::Rejected),
+                    final_score: Some(FinalScore::Score(0)),
+                    similarity: Some(similarity),
+                    error_detail: Some(format!(
+                        "copy gate: architecture clones {} (bps={})",
+                        hit.nearest_id, hit.similarity_bps
+                    )),
+                    ..StatePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: Stage::Rejected,
+                    detail: Some(serde_json::json!({
+                        "gate": "copy_created_at",
+                        "nearest_id": hit.nearest_id,
+                        "similarity_bps": hit.similarity_bps,
+                        "byte_identical": hit.byte_identical,
+                    })),
+                    at_ms: 0,
+                }),
+            )
+            .await;
+        if let Some(g) = &self.gating {
+            let _ = g
+                .set_terminal(
+                    CHALLENGE_ID,
+                    &row.miner_hotkey,
+                    GatingState::Rejected,
+                    None,
+                )
+                .await;
+        }
+        // Close the loop: the Score(0) must reach the current epoch leaf set.
+        match self.emit_and_submit_epoch().await {
+            Ok(n) => info!(submission_id = %row.id, leaves = n, "leaf set submitted"),
+            Err(e) => warn!(submission_id = %row.id, error = %e, "leaf submission deferred"),
+        }
+        true
     }
 
     /// Pod phase. Returns `(bpb, receipt)` on full success.
@@ -511,7 +603,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         self.to_stage(id, Stage::Similarity).await?;
         let corpus = self.similarity_corpus(id).await;
         self.reviewer
-            .similarity(&row.architecture_py, &row.training_py, &corpus)
+            .similarity(&row.architecture_py, &corpus)
             .await
             .map_err(|e| format!("similarity: {e}"))
     }

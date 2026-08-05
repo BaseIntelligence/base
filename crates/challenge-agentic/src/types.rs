@@ -63,6 +63,9 @@ pub enum CheatCode {
     EvalShortCircuit,
     /// AST copy of another miner's architecture/training.
     AstArchitectureCopy,
+    /// Prism `training.py` does not call the harness telemetry hooks
+    /// (`prism_telemetry.report` + `prism_telemetry.finish_evaluation`).
+    MissingTelemetryHooks,
 }
 
 /// One prior corpus submission for AST nearest-neighbor tools.

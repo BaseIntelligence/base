@@ -44,15 +44,17 @@ pub trait ReviewBackend: Send + Sync {
         training_py: &str,
     ) -> Result<ReviewVerdict, ReviewError>;
 
-    /// Compare the submission against the baseline + known historical
-    /// submissions. `corpus` is pre-selected by the caller (top-k).
+    /// Compare the submission **architecture** against the baseline + known
+    /// historical submissions. `corpus` is pre-selected by the caller
+    /// (top-k). Architecture-only by contract (similarity v2): `training.py`
+    /// is exempt from both candidate and corpus — the same training script
+    /// on two different architectures is legitimate.
     ///
     /// # Errors
     /// Transport / quota / parse failure.
     async fn similarity(
         &self,
         architecture_py: &str,
-        training_py: &str,
         corpus: &[SourceSnippet],
     ) -> Result<SimilarityVerdict, ReviewError>;
 }

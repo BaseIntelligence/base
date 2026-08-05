@@ -173,14 +173,21 @@ pub fn submission_id(req: &SubmissionRequest) -> SubmissionId {
     hex::encode(h.finalize())
 }
 
-/// Fixture request for tests.
+/// Fixture request for tests (contract-conformant incl. telemetry hooks).
 #[must_use]
 pub fn example_valid_request() -> SubmissionRequest {
     SubmissionRequest {
         miner_hotkey: "11".repeat(32),
         architecture_py: "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n"
             .into(),
-        training_py: "def train(model, ctx):\n    return {'loss': 1.0}\n".into(),
+        training_py: concat!(
+            "import prism_telemetry\n",
+            "def train(model, ctx):\n",
+            "    prism_telemetry.report(loss=1.0, step=1)\n",
+            "    prism_telemetry.finish_evaluation()\n",
+            "    return {'loss': 1.0}\n",
+        )
+        .into(),
         zip_base64: None,
         label: Some("tiny".into()),
     }

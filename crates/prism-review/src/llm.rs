@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 
 use crate::prompts::{
-    REVIEW_PROMPT_V2, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V1, SIMILARITY_PROMPT_VERSION,
+    REVIEW_PROMPT_V3, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V2, SIMILARITY_PROMPT_VERSION,
 };
 use crate::types::{
     truncate_source, ReviewError, ReviewVerdict, SimilarityKind, SimilarityVerdict, SourceSnippet,
@@ -253,16 +253,17 @@ fn parse_similarity(text: &str) -> Result<SimilarityVerdict, ReviewError> {
     })
 }
 
+/// Corpus rendering for the similarity prompt: **architectures only**
+/// (similarity v2 — training.py is exempt from the corpus).
 fn corpus_block(corpus: &[SourceSnippet]) -> String {
     corpus
         .iter()
         .take(MAX_CORPUS_SNIPPETS)
         .map(|s| {
             format!(
-                "--- {label} architecture.py ---\n{arch}\n\n--- {label} training.py ---\n{train}\n",
+                "--- {label} architecture.py ---\n{arch}\n",
                 label = s.label,
                 arch = truncate_source(&s.architecture_py),
-                train = truncate_source(&s.training_py),
             )
         })
         .collect::<Vec<_>>()
@@ -276,7 +277,7 @@ impl ReviewBackend for OpenRouterClient {
         architecture_py: &str,
         training_py: &str,
     ) -> Result<ReviewVerdict, ReviewError> {
-        let prompt = REVIEW_PROMPT_V2
+        let prompt = REVIEW_PROMPT_V3
             .replace("{ARCH}", &truncate_source(architecture_py))
             .replace("{TRAIN}", &truncate_source(training_py));
         let answer = self.chat(&prompt).await?;
@@ -286,12 +287,10 @@ impl ReviewBackend for OpenRouterClient {
     async fn similarity(
         &self,
         architecture_py: &str,
-        training_py: &str,
         corpus: &[SourceSnippet],
     ) -> Result<SimilarityVerdict, ReviewError> {
-        let prompt = SIMILARITY_PROMPT_V1
+        let prompt = SIMILARITY_PROMPT_V2
             .replace("{ARCH}", &truncate_source(architecture_py))
-            .replace("{TRAIN}", &truncate_source(training_py))
             .replace("{CORPUS}", &corpus_block(corpus));
         let answer = self.chat(&prompt).await?;
         parse_similarity(&answer)

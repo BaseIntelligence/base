@@ -52,32 +52,24 @@ impl ReviewBackend for SimReviewer {
         })
     }
 
+    /// Architecture-only similarity (similarity v2): the candidate and every
+    /// corpus entry are hashed/compared on `architecture.py` bytes alone;
+    /// `training.py` never influences the verdict.
     async fn similarity(
         &self,
         architecture_py: &str,
-        training_py: &str,
         corpus: &[SourceSnippet],
     ) -> Result<SimilarityVerdict, ReviewError> {
-        let arch_bytes = architecture_py.as_bytes();
-        let train_bytes = training_py.as_bytes();
-        let mut h = Sha256::new();
-        h.update(arch_bytes);
-        h.update([0xff]);
-        h.update(train_bytes);
-        let cand = hex::encode(h.finalize());
+        let cand = hex::encode(Sha256::digest(architecture_py.as_bytes()));
 
-        let mut h2 = Sha256::new();
         for s in corpus {
-            h2.update(s.architecture_py.as_bytes());
-            h2.update([0xff]);
-            h2.update(s.training_py.as_bytes());
-            let d = hex::encode(h2.finalize_reset());
+            let d = hex::encode(Sha256::digest(s.architecture_py.as_bytes()));
             if cand == d {
                 return Ok(SimilarityVerdict {
                     kind: SimilarityKind::Copied,
                     score: 1.0,
                     closest: Some(s.label.clone()),
-                    evidence: vec!["byte-identical".into()],
+                    evidence: vec!["byte-identical architecture".into()],
                     prompt_version: SIMILARITY_PROMPT_VERSION,
                 });
             }
@@ -125,8 +117,40 @@ mod tests {
             architecture_py: arch.into(),
             training_py: train.into(),
         }];
-        let v = r.similarity(arch, train, &corpus).await.unwrap();
+        let v = r.similarity(arch, &corpus).await.unwrap();
         assert!(matches!(v.kind, SimilarityKind::Copied));
         assert_eq!(v.closest.as_deref(), Some("baseline"));
+    }
+
+    #[tokio::test]
+    async fn sim_training_py_is_exempt() {
+        // Same training script, different architecture → original.
+        let r = SimReviewer::new();
+        let train = "def train(m,c):\n    return {}\n";
+        let corpus = vec![SourceSnippet {
+            label: "subm:aa".into(),
+            architecture_py: "def build_model(ctx):\n    return 1\n".into(),
+            training_py: train.into(),
+        }];
+        let v = r
+            .similarity("def build_model(ctx):\n    return 2\n", &corpus)
+            .await
+            .unwrap();
+        assert!(matches!(v.kind, SimilarityKind::Original));
+    }
+
+    #[tokio::test]
+    async fn sim_same_arch_new_training_is_copied() {
+        // Same architecture, different training script → still an arch copy.
+        let r = SimReviewer::new();
+        let arch = "def build_model(ctx):\n    return 1\n";
+        let corpus = vec![SourceSnippet {
+            label: "subm:aa".into(),
+            architecture_py: arch.into(),
+            training_py: "def train(m,c):\n    return {'a': 1}\n".into(),
+        }];
+        let v = r.similarity(arch, &corpus).await.unwrap();
+        assert!(matches!(v.kind, SimilarityKind::Copied));
+        assert_eq!(v.closest.as_deref(), Some("subm:aa"));
     }
 }

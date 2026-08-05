@@ -70,9 +70,11 @@ pub struct SimilarityVerdict {
 pub struct SourceSnippet {
     /// Label: `baseline` or `subm:<id-prefix>`.
     pub label: String,
-    /// architecture.py source (truncated to cap).
+    /// architecture.py source (truncated to cap). This is the only field the
+    /// similarity judgment consumes (similarity v2).
     pub architecture_py: String,
-    /// training.py source (truncated to cap).
+    /// training.py source (truncated to cap). Exempt from similarity; carried
+    /// for review/corpus completeness only.
     pub training_py: String,
 }
 

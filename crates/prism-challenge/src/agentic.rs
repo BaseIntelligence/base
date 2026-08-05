@@ -5,14 +5,8 @@ use std::path::Path;
 
 use challenge_agentic::{CorpusEntry, ReviewRequest, PRISM_DOMAIN_RULES};
 use prism_lium::{EvalReceipt, RemoteExecResult};
-use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
+use prism_recipe::BASELINE_ARCHITECTURE_PY;
 use prism_store::SubmissionState;
-
-/// Join architecture + training the same way [`challenge_agentic::SimAgent`] fingerprints.
-#[must_use]
-pub fn join_sources(architecture_py: &str, training_py: &str) -> String {
-    format!("{architecture_py}\n#--\n{training_py}")
-}
 
 /// Build a temp workdir + [`ReviewRequest`] for one Prism submission.
 ///
@@ -54,6 +48,10 @@ pub fn build_review_request(
 }
 
 /// Baseline + recent terminated submissions as agentic corpus entries.
+///
+/// Corpus entries are **architecture.py only** (similarity v2): `training.py`
+/// is exempt from every copy/similarity comparison — the same training
+/// script on two different architectures is legitimate competition behavior.
 #[must_use]
 pub fn corpus_from_rows(
     current_id: &str,
@@ -61,7 +59,7 @@ pub fn corpus_from_rows(
 ) -> Vec<CorpusEntry> {
     let mut v = vec![CorpusEntry {
         id: "baseline".into(),
-        source: join_sources(BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY),
+        source: BASELINE_ARCHITECTURE_PY.into(),
     }];
     for r in recent {
         if r.id == current_id {
@@ -74,7 +72,7 @@ pub fn corpus_from_rows(
         };
         v.push(CorpusEntry {
             id: label,
-            source: join_sources(&r.architecture_py, &r.training_py),
+            source: r.architecture_py.clone(),
         });
     }
     v

@@ -1,9 +1,9 @@
 //! Deterministic offline agentic verifier (CI / local sim, no network).
 //!
-//! Heuristics: metrics forge / `METRICS_JSON` short-circuit → cheat; scrape-style
-//! famous-site HTML clones → cheat; byte-identical corpus hash → cheat; extreme
-//! AST similarity → cheat/suspicious; otherwise clean. Never invents scores —
-//! only verdicts.
+//! Heuristics: metrics forge / `METRICS_JSON` short-circuit → cheat; Prism
+//! training.py missing telemetry hooks → cheat; scrape-style famous-site HTML
+//! clones → cheat; byte-identical corpus hash → cheat; extreme AST similarity
+//! → cheat/suspicious; otherwise clean. Never invents scores — only verdicts.
 
 use std::fs;
 use std::path::Path;
@@ -58,16 +58,33 @@ impl AgenticBackend for SimAgent {
             return Ok(v);
         }
 
+        if let Some(v) = telemetry_hooks_verdict(req, &primaries) {
+            return Ok(v);
+        }
+
         if let Some(v) = pages_scrape_cheat_verdict(req)? {
             return Ok(v);
         }
 
-        // Concatenate primaries for hash / fingerprint (stable order from request).
-        let joined = primaries
-            .iter()
-            .map(|(_, s)| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n#--\n");
+        // Concatenate primaries for hash / fingerprint (stable order from
+        // request). Prism compares architecture.py ONLY (similarity v2:
+        // training.py is exempt from corpus/candidate); other domains use
+        // every primary.
+        let scoped: Vec<&str> = if req.domain_rules.contains("Prism domain") {
+            let arch: Vec<&str> = primaries
+                .iter()
+                .filter(|(p, _)| p.ends_with("architecture.py"))
+                .map(|(_, s)| s.as_str())
+                .collect();
+            if arch.is_empty() {
+                primaries.iter().map(|(_, s)| s.as_str()).collect()
+            } else {
+                arch
+            }
+        } else {
+            primaries.iter().map(|(_, s)| s.as_str()).collect()
+        };
+        let joined = scoped.join("\n#--\n");
         let cand_hash = source_hash_hex(&joined);
 
         for entry in &req.corpus {
@@ -155,6 +172,37 @@ impl AgenticBackend for SimAgent {
             rationale: format!("sim: ast similarity_bps={bps} below thresholds"),
         })
     }
+}
+
+/// Prism telemetry-hook contract (recipe >= 1.1.0): `training.py` must call
+/// the harness-provided hooks (`report` + `finish_evaluation`). Deterministic
+/// mirror of [`crate::PRISM_DOMAIN_RULES`] for the sim backend — the live LLM
+/// judges aliasing nuances; the sim requires the documented call shape.
+fn telemetry_hooks_verdict(
+    req: &ReviewRequest,
+    primaries: &[(String, String)],
+) -> Option<AgenticVerdict> {
+    if !req.domain_rules.contains("Prism domain") {
+        return None;
+    }
+    let Some((path, src)) = primaries.iter().find(|(p, _)| p.ends_with("training.py")) else {
+        return None;
+    };
+    let imports_shim = src.contains("prism_telemetry")
+        || src.contains("ctx[\"telemetry\"]")
+        || src.contains("ctx['telemetry']");
+    let calls_report = src.contains(".report(");
+    let calls_finish = src.contains("finish_evaluation(");
+    if imports_shim && calls_report && calls_finish {
+        return None;
+    }
+    Some(AgenticVerdict {
+        verdict: VerdictKind::Cheat,
+        cheat_codes: vec![CheatCode::MissingTelemetryHooks],
+        nearest_id: None,
+        similarity_bps: 0,
+        rationale: format!("sim: {path} missing prism_telemetry report/finish_evaluation hooks"),
+    })
 }
 
 /// Brand clusters for scrape-style famous-site clones (≥2 hits in one cluster).
@@ -588,6 +636,48 @@ def run(task, llm, out):
         let v = SimAgent::new().review(&req).await.unwrap();
         assert_eq!(v.verdict, VerdictKind::Cheat);
         assert!(v.cheat_codes.contains(&CheatCode::ScrapedSiteClone));
+    }
+
+    #[tokio::test]
+    async fn sim_prism_missing_telemetry_hooks_is_cheat() {
+        let dir = tempdir().unwrap();
+        let body = r#"
+def train(model, ctx):
+    model.zero_grad()
+    return {"loss": 1.0}
+"#;
+        let mut req = write_primary(dir.path(), "training.py", body);
+        req.domain_rules = crate::PRISM_DOMAIN_RULES.into();
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+        assert!(v.cheat_codes.contains(&CheatCode::MissingTelemetryHooks));
+    }
+
+    #[tokio::test]
+    async fn sim_prism_with_telemetry_hooks_not_flagged() {
+        let dir = tempdir().unwrap();
+        let body = r#"
+import prism_telemetry
+
+def train(model, ctx):
+    prism_telemetry.report(loss=1.0, step=1)
+    prism_telemetry.finish_evaluation()
+    return {"loss": 1.0}
+"#;
+        let mut req = write_primary(dir.path(), "training.py", body);
+        req.domain_rules = crate::PRISM_DOMAIN_RULES.into();
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Clean);
+    }
+
+    #[tokio::test]
+    async fn sim_design_training_py_not_hooks_checked() {
+        // Hooks rule is Prism-only; design primaries never trip it.
+        let dir = tempdir().unwrap();
+        let mut req = write_primary(dir.path(), "training.py", "def train():\n    pass\n");
+        req.domain_rules = "design".into();
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Clean);
     }
 
     #[tokio::test]
