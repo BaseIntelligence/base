@@ -583,7 +583,7 @@ fi
 
 # ---------------------------------------------------------------- 4: top-model publish
 step "4 top-model publish → $GITHUB_REPO top-model/ + journal"
-pub="$(psql "SELECT submission_id, arch_id, bpb, repo_path, commit_sha FROM prism_topmodel_publication ORDER BY created_at DESC LIMIT 1;")"
+pub="$(psql "SELECT submission_id, arch_id, bpb, repo_path, commit_sha FROM prism_topmodel_publication ORDER BY published_at DESC LIMIT 1;")"
 echo "$pub" > "$EVIDENCE/04-publication-db.txt"
 if echo "$pub" | grep -q "$SUB_A"; then
   pass "4 prism_topmodel_publication row for A"
