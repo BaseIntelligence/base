@@ -99,19 +99,47 @@ pub fn derive_public_key(secret: &[u8; 32]) -> Result<[u8; 32], ChainError> {
         .to_bytes())
 }
 
+/// Blake2b-256 — Substrate hashes signing payloads longer than 256 bytes.
+fn blake2_256(data: &[u8]) -> [u8; 32] {
+    use blake2::digest::{consts::U32, Digest};
+    use blake2::Blake2b;
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 /// Sign a payload with sr25519 under the `"substrate"` context.
+///
+/// When `payload.len() > 256`, Substrate signs `blake2_256(payload)` (same as
+/// polkadot.js / `sp_runtime::generic::UncheckedExtrinsic`).
 fn sign_payload(secret: &[u8; 32], payload: &[u8]) -> Result<[u8; 64], ChainError> {
     let mini = MiniSecretKey::from_bytes(secret)
         .map_err(|e| ChainError::Other(format!("invalid secret key: {e}")))?;
     let keypair = mini.expand(ExpansionMode::Ed25519).to_keypair();
     let ctx = signing_context(b"substrate");
-    Ok(keypair.sign(ctx.bytes(payload)).to_bytes())
+    if payload.len() > 256 {
+        let hash = blake2_256(payload);
+        Ok(keypair.sign(ctx.bytes(&hash)).to_bytes())
+    } else {
+        Ok(keypair.sign(ctx.bytes(payload)).to_bytes())
+    }
 }
+
+/// `CheckMetadataHash` mode: `Disabled` (Finney / subtensor `TxExtension`).
+///
+/// Encoded in the signed extrinsic after tip; additional-signed appends
+/// `Option<MetadataHash>::None` (`0x00`) when disabled.
+const METADATA_HASH_MODE_DISABLED: u8 = 0x00;
 
 /// Build the signing payload for a V4 extrinsic.
 ///
-/// Substrate order: `Call` ++ signed extras (`era`, `nonce`, `tip`) ++
-/// additional signed (`spec_version`, `tx_version`, `genesis_hash`, `block_hash`).
+/// Substrate / subtensor order:
+/// `Call` ++ signed extras (`era`, `nonce`, `tip`, `CheckMetadataHash` mode) ++
+/// additional signed (`spec_version`, `tx_version`, `genesis_hash`, `block_hash`,
+/// `Option::None` metadata hash).
 #[allow(clippy::too_many_arguments)]
 fn signing_payload(
     era: &Era,
@@ -128,10 +156,13 @@ fn signing_payload(
     payload.extend_from_slice(&era.encode_era());
     Compact(nonce).encode_to(&mut payload);
     Compact(tip).encode_to(&mut payload);
+    payload.push(METADATA_HASH_MODE_DISABLED);
     payload.extend_from_slice(&spec_version.to_le_bytes());
     payload.extend_from_slice(&tx_version.to_le_bytes());
     payload.extend_from_slice(genesis_hash);
     payload.extend_from_slice(block_hash);
+    // CheckMetadataHash additional signed: None when mode is Disabled.
+    payload.push(0x00);
     payload
 }
 
@@ -170,6 +201,7 @@ fn build_signed_extrinsic(
     ext.extend_from_slice(&era.encode_era());
     Compact(nonce).encode_to(&mut ext);
     Compact(tip).encode_to(&mut ext);
+    ext.push(METADATA_HASH_MODE_DISABLED);
     ext.extend_from_slice(call);
     Ok(ext)
 }

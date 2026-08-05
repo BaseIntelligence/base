@@ -241,7 +241,14 @@ impl LiveChainRpc {
     /// # Errors
     /// Transport failure or pool rejection.
     pub fn author_submit_extrinsic(&self, extrinsic: &[u8]) -> Result<String, ChainError> {
-        let hex_ext = format!("0x{}", hex::encode(extrinsic));
+        // RPC expects OpaqueExtrinsic = Compact(len) ++ UncheckedExtrinsic body.
+        let len = u32::try_from(extrinsic.len()).map_err(|_| {
+            ChainError::Other(format!("extrinsic length {} exceeds u32", extrinsic.len()))
+        })?;
+        let mut opaque = Vec::with_capacity(extrinsic.len() + 4);
+        parity_scale_codec::Encode::encode_to(&parity_scale_codec::Compact(len), &mut opaque);
+        opaque.extend_from_slice(extrinsic);
+        let hex_ext = format!("0x{}", hex::encode(&opaque));
         let result = self.rpc("author_submitExtrinsic", &json!([hex_ext]))?;
         match result {
             Value::String(s) => Ok(s),

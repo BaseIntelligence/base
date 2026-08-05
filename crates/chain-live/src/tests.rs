@@ -247,8 +247,8 @@ fn build_and_sign_set_weights_structure() {
     .unwrap();
 
     // 0x84 (version) + 0x00 (MultiAddress::Id) + 32 (pubkey) + 0x01 (Sr25519) + 64 (sig)
-    // + 0x00 (era) + 0x00 (nonce) + 0x00 (tip) + 22 (call) = 124
-    assert_eq!(ext.len(), 124);
+    // + 0x00 (era) + 0x00 (nonce) + 0x00 (tip) + 0x00 (metadata-hash mode) + 22 (call) = 125
+    assert_eq!(ext.len(), 125);
     assert_eq!(ext[0], 0x84);
     assert_eq!(ext[1], 0x00);
     assert_eq!(ext[34], 0x01); // MultiSignature::Sr25519
@@ -257,12 +257,13 @@ fn build_and_sign_set_weights_structure() {
     let pubkey = crate::derive_public_key(&key).unwrap();
     assert_eq!(&ext[2..34], &pubkey);
 
-    // Verify era + nonce + tip + call suffix
+    // Verify era + nonce + tip + CheckMetadataHash mode + call suffix
     assert_eq!(ext[99], 0x00); // Immortal era
     assert_eq!(ext[100], 0x00); // Compact(0) nonce
     assert_eq!(ext[101], 0x00); // Compact(0) tip
+    assert_eq!(ext[102], 0x00); // CheckMetadataHash::Disabled
     let expected_call = set_weights_call(1, &[0, 1], &[100, 200], 0);
-    assert_eq!(&ext[102..], &expected_call[..]);
+    assert_eq!(&ext[103..], &expected_call[..]);
 }
 
 #[test]
@@ -286,17 +287,18 @@ fn build_and_sign_commit_timelocked_structure() {
     )
     .unwrap();
 
-    // 1 + 1 + 32 + 1 + 64 + 1 + 1(nonce=5: Compact(5)=0x14) + 1 + 20(call) = 122
-    assert_eq!(ext.len(), 122);
+    // 1+1+32+1+64 + era + nonce(5=0x14) + tip + mode + 20(call) = 123
+    assert_eq!(ext.len(), 123);
     assert_eq!(ext[0], 0x84);
     assert_eq!(ext[1], 0x00);
     assert_eq!(ext[34], 0x01); // Sr25519
     assert_eq!(ext[99], 0x00); // Immortal era
     assert_eq!(ext[100], 0x14); // Compact(5) nonce
     assert_eq!(ext[101], 0x00); // Compact(0) tip
+    assert_eq!(ext[102], 0x00); // CheckMetadataHash::Disabled
 
     let expected_call = commit_timelocked_call(100, 0, &commit, 99, 4);
-    assert_eq!(&ext[102..], &expected_call[..]);
+    assert_eq!(&ext[103..], &expected_call[..]);
 }
 
 #[test]
