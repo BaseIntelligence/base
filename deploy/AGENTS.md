@@ -87,6 +87,8 @@ cargo run -q --release -p weights-smoke -- \
 
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
+**Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Sole on-chain submitter for hotkey `5Gzi…` is the Rust validator on `192.81.218.11` — do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.
+
 **Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → seal → `GET /v1/weights/latest` **`sealed: true`**. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
 
 Tunnel writes gitignored `deploy/env/local-tunnel.env` (`BASE_GATEWAY_PUBLIC_URL`). Co-located validator stays on `http://gateway:8080`; external clients use the tunnel URL. Host probe ports default to `2808x` (avoid staging SSH on `1808x`).
