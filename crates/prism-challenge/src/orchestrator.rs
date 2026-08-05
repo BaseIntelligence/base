@@ -264,6 +264,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     pod_id: receipt.as_ref().map(|r| r.pod_id.clone()),
                     pod_provider: receipt.as_ref().map(|r| r.provider.clone()),
                     receipt,
+                    metrics_json: metrics.as_ref().and_then(|m| serde_json::to_value(m).ok()),
                     ..StatePatch::default()
                 },
                 Some(&StageEvent {

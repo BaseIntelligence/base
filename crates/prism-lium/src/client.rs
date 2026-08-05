@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, SshTarget};
-use crate::types::{Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
+use crate::types::{GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
 /// Pod image: Lium-owned DinD variant pulses its own dockerd init and never
@@ -438,7 +438,7 @@ PRISM_DATASET_SHA256='{dataset_sha}' \
 PRISM_MAX_TRAIN_STEPS='{steps}' \
 PRISM_TRAIN_HOURS_CAP='{train_hours}' \
 PRISM_GPU_TYPE='{gpu_type}' \
-timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
+{test_env}timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
             harness_b64 = harness_b64,
             arch_b64 = arch_b64,
             train_b64 = train_b64,
@@ -447,6 +447,7 @@ timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
             steps = prism_recipe::MAX_TRAIN_STEPS,
             train_hours = self.ssh.train_hours_cap,
             gpu_type = gpu_type.replace('\'', ""),
+            test_env = test_mode_env(),
             timeout_secs = train_cap_secs.saturating_add(3600),
         );
 
@@ -507,6 +508,28 @@ timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
             .trim()
             .to_owned())
     }
+}
+
+/// Optional test-mode env lines for the pod harness (`KEY='v' \\\n` pairs).
+///
+/// Forwards `PRISM_TEST_TRAIN_MINUTES` / `PRISM_TEST_MAX_PARAMS` from the
+/// master process env so staging can run short/tiny evals. Values are
+/// forwarded only when they parse as plain numerics — the remote string is
+/// shell, so anything else would be an injection vector.
+fn test_mode_env() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if let Ok(v) = std::env::var("PRISM_TEST_TRAIN_MINUTES") {
+        if v.trim().parse::<f64>().is_ok() {
+            let _ = writeln!(out, "PRISM_TEST_TRAIN_MINUTES='{}' \\", v.trim());
+        }
+    }
+    if let Ok(v) = std::env::var("PRISM_TEST_MAX_PARAMS") {
+        if v.trim().parse::<u64>().is_ok() {
+            let _ = writeln!(out, "PRISM_TEST_MAX_PARAMS='{}' \\", v.trim());
+        }
+    }
+    out
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -661,10 +684,18 @@ impl EvalJobBackend for LiumClient {
         }
 
         let mut offers = self.list_offers(Some(spec.max_price_per_hour)).await?;
+        // GPU pin first (RTX 5090 → ordered fallback), price only breaks ties
+        // within the same rank: cheapest-first would silently drift evals
+        // onto weaker GPUs whenever the pinned SKU is not the cheapest offer.
+        let pref = GpuPreference::default_prism();
         offers.sort_by(|a, b| {
-            a.price_per_hour
-                .partial_cmp(&b.price_per_hour)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            pref.rank(&a.gpu_type)
+                .cmp(&pref.rank(&b.gpu_type))
+                .then_with(|| {
+                    a.price_per_hour
+                        .partial_cmp(&b.price_per_hour)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
         let candidates: Vec<Offer> = match &spec.preferred_offer_id {
             Some(pref) => offers
@@ -879,6 +910,123 @@ mod tests {
         let offers = c.list_offers(Some(1.0)).await.unwrap();
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].id, "a");
+    }
+
+    fn provision_spec() -> InstanceSpec {
+        InstanceSpec {
+            name: "x".into(),
+            max_lifetime_hours: 1.0,
+            max_price_per_hour: 2.5,
+            gpu_count: 1,
+            image_digest: None,
+            ssh_public_keys: vec!["ssh-ed25519 AAAA".into()],
+            ssh_key_name: None,
+            preferred_offer_id: None,
+            template_id: None,
+            template_name: None,
+        }
+    }
+
+    async fn mount_rent_path(server: &MockServer, offer_id: &str, pod_id: &str) {
+        Mock::given(method("POST"))
+            .and(path(format!("/executors/{offer_id}/rent")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": pod_id})),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/pods/{pod_id}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"id": pod_id, "status": "RUNNING"})),
+            )
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_common(server: &MockServer, offers: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path("/ssh-keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/ssh-keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "k"})))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/templates"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!([{"name": RECIPES_TEMPLATE_NAME, "id": "tmpl1"}]),
+                ),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/executors"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(offers))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn provision_prefers_5090_over_cheaper_a100() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "cheap-a100", "gpu_type": "NVIDIA A100-SXM4-80GB", "gpu_count": 1, "price_per_hour": 0.5},
+                {"id": "pin-5090", "gpu_type": "NVIDIA GeForce RTX 5090", "gpu_count": 1, "price_per_hour": 2.0},
+                {"id": "mid-h100", "gpu_type": "NVIDIA H100", "gpu_count": 1, "price_per_hour": 1.5}
+            ]),
+        )
+        .await;
+        // Every candidate rents fine: the returned pod proves which offer the
+        // sort put first (5090 despite being the priciest within the cap).
+        mount_rent_path(&server, "pin-5090", "pod-5090").await;
+        mount_rent_path(&server, "cheap-a100", "pod-a100").await;
+        mount_rent_path(&server, "mid-h100", "pod-h100").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let inst = c.provision(&provision_spec()).await.unwrap();
+        assert_eq!(inst.id, "pod-5090");
+    }
+
+    #[tokio::test]
+    async fn provision_falls_back_in_declared_order_when_no_5090() {
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([
+                {"id": "cheap-a100", "gpu_type": "NVIDIA A100-SXM4-80GB", "gpu_count": 1, "price_per_hour": 0.5},
+                {"id": "mid-h100", "gpu_type": "NVIDIA H100", "gpu_count": 1, "price_per_hour": 1.5},
+                {"id": "weak-l4", "gpu_type": "NVIDIA L4", "gpu_count": 1, "price_per_hour": 0.2}
+            ]),
+        )
+        .await;
+        mount_rent_path(&server, "cheap-a100", "pod-a100").await;
+        mount_rent_path(&server, "mid-h100", "pod-h100").await;
+        mount_rent_path(&server, "weak-l4", "pod-l4").await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let inst = c.provision(&provision_spec()).await.unwrap();
+        assert_eq!(inst.id, "pod-h100");
+    }
+
+    #[test]
+    fn test_mode_env_forwards_numeric_values_only() {
+        std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
+        std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
+        let out = test_mode_env();
+        assert!(out.contains("PRISM_TEST_TRAIN_MINUTES='15'"), "{out}");
+        assert!(out.contains("PRISM_TEST_MAX_PARAMS='2000000'"), "{out}");
+        std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
+        let out = test_mode_env();
+        assert!(!out.contains("rm -rf"), "{out}");
+        std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");
+        std::env::remove_var("PRISM_TEST_MAX_PARAMS");
+        assert!(test_mode_env().is_empty());
     }
 
     #[test]

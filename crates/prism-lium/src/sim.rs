@@ -118,12 +118,31 @@ impl EvalJobBackend for SimLiumBackend {
         let n = u64::from_be_bytes(dig[0..8].try_into().unwrap_or([0; 8]));
         // Map to BPB in (1.0, 5.0)
         let bpb = 1.0 + (n as f64 % 4000.0) / 1000.0;
+        // Synthetic decaying loss series so sim e2e exercises the same
+        // telemetry plumbing (store rows, site-api series) as real Lium runs.
+        let start = bpb + 2.0;
+        let loss_series = (1..=5u64)
+            .map(|step| crate::types::TelemetryPoint {
+                step,
+                loss: start - (start - bpb) * (step as f64 / 5.0),
+                grad_norm: Some(1.0 / step as f64),
+                at_secs: Some(step as f64 * 2.0),
+                layer_stats: None,
+            })
+            .collect();
         Ok(RemoteExecResult {
             bpb,
             tokens_seen: 1024,
             wall_clock_seconds: 12.0,
             gpu_type: Some("SIM".into()),
             notes: "sim-eval".into(),
+            n_params: Some(12_000_000),
+            val_rows: Some(256),
+            telemetry: Some(crate::types::EvalTelemetry {
+                loss_series,
+                finish_reason: Some("finish_evaluation".into()),
+                report_count: 5,
+            }),
         })
     }
 }

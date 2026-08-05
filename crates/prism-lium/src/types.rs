@@ -86,15 +86,20 @@ pub struct GpuPreference {
 }
 
 impl GpuPreference {
-    /// Default preference: Blackwell → H100 → A100 (any match).
+    /// Default PRISM pin: **RTX 5090 first**, then an explicit ordered
+    /// fallback. The 5090 (Blackwell, 32 GB) is the price/performance sweet
+    /// spot for the ≤350M-param recipe; the fallback chain orders by
+    /// capability so provisioning never silently lands on whatever happens
+    /// to be cheapest when the pin is out of capacity.
     #[must_use]
     pub fn default_prism() -> Self {
         Self {
             prefer: vec![
-                "BLACKWELL".into(),
+                "RTX 5090".into(),
                 "B200".into(),
                 "H100".into(),
                 "A100".into(),
+                "RTX 4090".into(),
             ],
         }
     }
@@ -112,6 +117,41 @@ impl GpuPreference {
     }
 }
 
+/// One telemetry point reported by the miner's `training.py` through the
+/// harness-provided `prism_telemetry` shim (`report(loss=, step=, …)`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TelemetryPoint {
+    /// Optimizer step index reported by the miner.
+    pub step: u64,
+    /// Training loss at `step`.
+    pub loss: f64,
+    /// Global gradient norm when the miner reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grad_norm: Option<f64>,
+    /// Seconds since train start on the pod clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_secs: Option<f64>,
+    /// Per-layer gradient/activation stats (miner-declared, bounded in-pod).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_stats: Option<serde_json::Value>,
+}
+
+/// Telemetry bundle captured by the harness for one eval.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvalTelemetry {
+    /// Loss series (decimated in-pod to a bounded length).
+    #[serde(default)]
+    pub loss_series: Vec<TelemetryPoint>,
+    /// Why training ended: `finish_evaluation` (miner signal) or
+    /// `train_returned`. The wall-clock cap is a failure path, not an end
+    /// reason, so it never appears here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    /// Total `report()` calls, including decimated-away points.
+    #[serde(default)]
+    pub report_count: u64,
+}
+
 /// Result of a remote (or sim) PRISM eval execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteExecResult {
@@ -126,6 +166,15 @@ pub struct RemoteExecResult {
     pub gpu_type: Option<String>,
     /// Free-form notes (no secrets).
     pub notes: String,
+    /// Model parameter count measured in-pod after `build_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_params: Option<u64>,
+    /// Frozen val rows scored by the harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub val_rows: Option<u64>,
+    /// Miner-reported training telemetry (recipe ≥1.1.0 harnesses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<EvalTelemetry>,
 }
 
 /// Optional Real-client SSH configuration (paths only; never logs key material).
@@ -152,7 +201,56 @@ impl LiumSshConfig {
             running_timeout_secs: 300,
             ssh_attempts: 8,
             ssh_retry_secs: 5,
-            train_hours_cap: prism_recipe::TRAIN_HOURS_CAP,
+            train_hours_cap: prism_recipe::train_hours_cap(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn default_prism_pins_5090_first_with_ordered_fallback() {
+        let p = GpuPreference::default_prism();
+        assert_eq!(p.prefer.first().map(String::as_str), Some("RTX 5090"));
+        assert!(p.rank("NVIDIA GeForce RTX 5090") < p.rank("NVIDIA B200"));
+        assert!(p.rank("NVIDIA B200") < p.rank("NVIDIA H100-SXM5-80GB"));
+        assert!(p.rank("NVIDIA H100") < p.rank("NVIDIA A100-SXM4-80GB"));
+        assert!(p.rank("NVIDIA A100") < p.rank("NVIDIA GeForce RTX 4090"));
+        assert!(p.rank("NVIDIA GeForce RTX 4090") < p.rank("NVIDIA L4"));
+    }
+
+    #[test]
+    fn remote_exec_result_parses_pre_telemetry_harness_json() {
+        // Recipe ≤1.0.2 harnesses print neither telemetry nor n_params.
+        let v: RemoteExecResult = serde_json::from_str(
+            r#"{"bpb":1.5,"tokens_seen":2048,"wall_clock_seconds":12.0,
+                "gpu_type":"NVIDIA A100","notes":"recipe-v1","recipe":"1.0.2"}"#,
+        )
+        .unwrap();
+        assert!(v.telemetry.is_none());
+        assert!(v.n_params.is_none());
+        assert!(v.val_rows.is_none());
+    }
+
+    #[test]
+    fn remote_exec_result_parses_telemetry_payload() {
+        let v: RemoteExecResult = serde_json::from_str(
+            r#"{"bpb":1.5,"tokens_seen":2048,"wall_clock_seconds":12.0,
+                "gpu_type":"NVIDIA RTX 5090","notes":"recipe-v1","n_params":12400000,
+                "val_rows":256,
+                "telemetry":{"finish_reason":"finish_evaluation","report_count":2,
+                  "loss_series":[{"step":1,"loss":4.0,"grad_norm":0.5,"at_secs":0.2,
+                    "layer_stats":{"head":0.1}},{"step":2,"loss":3.0}]}}"#,
+        )
+        .unwrap();
+        let t = v.telemetry.expect("telemetry");
+        assert_eq!(t.finish_reason.as_deref(), Some("finish_evaluation"));
+        assert_eq!(t.loss_series.len(), 2);
+        assert_eq!(t.loss_series[0].step, 1);
+        assert!(t.loss_series[1].grad_norm.is_none());
+        assert_eq!(v.n_params, Some(12_400_000));
     }
 }

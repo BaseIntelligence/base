@@ -65,6 +65,7 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
         pod_id: r.pod_id,
         pod_provider: r.pod_provider,
         receipt,
+        metrics_json: r.metrics_json,
         bpb: r.bpb,
         review,
         similarity,
@@ -202,7 +203,7 @@ impl PrismStore for DbPrismStore {
                 .receipt
                 .as_ref()
                 .and_then(|r| serde_json::to_value(r).ok()),
-            None,
+            update.metrics_json.clone(),
             update.bpb,
             update
                 .review
@@ -234,6 +235,17 @@ impl PrismStore for DbPrismStore {
             .await
             .map_err(|e2| StoreError::Backend(e2.to_string()))?;
         }
+        // Fan the miner-reported series out to `prism_telemetry`. Best-effort:
+        // the row's `metrics_json` (written above) is the authoritative copy,
+        // so a telemetry-table hiccup must not fail the scoring apply.
+        if let Some(m) = &update.metrics_json {
+            let series = crate::store::telemetry_from_metrics(m);
+            if !series.is_empty() {
+                if let Err(e) = crate::telemetry::replace_telemetry(&self.pool, id, &series).await {
+                    tracing::warn!(submission_id = %id, error = %e, "prism telemetry write failed");
+                }
+            }
+        }
         Ok(row_to_state(row))
     }
 
@@ -241,6 +253,9 @@ impl PrismStore for DbPrismStore {
         let row = dbs::reset_prism_submission_for_retry(&self.pool, id)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if let Err(e) = crate::telemetry::delete_telemetry(&self.pool, id).await {
+            tracing::warn!(submission_id = %id, error = %e, "prism telemetry delete failed");
+        }
         dbs::insert_prism_stage_event(
             &self.pool,
             &dbs::NewPrismStageEvent {
@@ -279,6 +294,10 @@ impl PrismStore for DbPrismStore {
                     .collect()
             })
             .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    async fn telemetry(&self, id: &str) -> Result<Vec<prism_lium::TelemetryPoint>, StoreError> {
+        crate::telemetry::telemetry_for(&self.pool, id).await
     }
 
     async fn scores_for_epoch(

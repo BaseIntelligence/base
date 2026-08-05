@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 use crate::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
-    list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_window,
+    list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_telemetry,
+    prism_window,
 };
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
@@ -38,6 +39,10 @@ pub fn site_router(state: SiteState) -> Router {
             get(get_results_matrix),
         )
         .route("/v1/site/arenas/prism/window", get(get_prism_window))
+        .route(
+            "/v1/site/arenas/prism/submissions/{id}/telemetry",
+            get(get_prism_submission_telemetry),
+        )
         .route("/v1/site/validators", get(get_validators))
         .route("/v1/site/activity", get(get_activity))
         .route("/v1/site/metrics", get(get_metrics))
@@ -455,6 +460,9 @@ async fn get_results_matrix() -> impl IntoResponse {
     })
 }
 
+/// Max per-submission detail fetches the window fans out for loss curves.
+const PRISM_WINDOW_TELEMETRY_FANOUT: usize = 8;
+
 async fn get_prism_window(State(st): State<SiteState>) -> impl IntoResponse {
     let recipe = fetch_prism_recipe(&st).await;
     let status = fetch_prism_status(&st).await;
@@ -465,7 +473,53 @@ async fn get_prism_window(State(st): State<SiteState>) -> impl IntoResponse {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    Json(prism_window(recipe.as_ref(), status.as_ref(), &rows))
+    // Fan out to submission details for the best terminal runs so the window
+    // renders real loss curves; bounded, and every miss falls back to the
+    // single-point bpb curve in `prism_window`.
+    let mut ids: Vec<(f64, String)> = rows
+        .iter()
+        .filter(|r| r.get("status").and_then(Value::as_str) == Some("terminated"))
+        .filter_map(|r| {
+            Some((
+                r.get("bpb").and_then(Value::as_f64)?,
+                r.get("id")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    ids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ids.truncate(PRISM_WINDOW_TELEMETRY_FANOUT);
+    let mut telemetry = HashMap::new();
+    for (_, id) in ids {
+        if let Some(detail) =
+            upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await
+        {
+            if let Some(t) = prism_telemetry(&detail) {
+                telemetry.insert(id, t);
+            }
+        }
+    }
+    Json(prism_window(
+        recipe.as_ref(),
+        status.as_ref(),
+        &rows,
+        &telemetry,
+    ))
+}
+
+/// Full telemetry for one prism submission (loss series + gradient stats).
+async fn get_prism_submission_telemetry(
+    State(st): State<SiteState>,
+    Path(id): Path<String>,
+) -> Response {
+    let detail = upstream::get_json_opt(&st, PRISM, &format!("/v1/submissions/{id}")).await;
+    match detail.as_ref().and_then(prism_telemetry) {
+        Some(t) => Json(t).into_response(),
+        None => json_err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "unknown prism submission",
+        ),
+    }
 }
 
 async fn get_validators(
@@ -654,10 +708,48 @@ mod tests {
                     "status": "terminated",
                     "label": "base",
                     "bpb": 1.25,
+                    "n_params": 12_000_000_u64,
                     "score": {"kind":"score","value": 900},
                     "created_at_ms": 1_700_000_000_000_u64,
                     "updated_at_ms": 1_700_000_000_000_u64
                 }]
+            })))
+            .mount(prism)
+            .await;
+        mount_prism_detail_mock(prism).await;
+    }
+
+    async fn mount_prism_detail_mock(prism: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/sub1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission": {
+                    "id": "sub1",
+                    "miner_hotkey": "bb".repeat(32),
+                    "epoch": 3,
+                    "status": "terminated",
+                    "label": "base",
+                    "bpb": 1.25,
+                    "n_params": 12_000_000_u64,
+                    "metrics": {
+                        "bpb": 1.25,
+                        "tokens_seen": 2048,
+                        "wall_clock_seconds": 12.0,
+                        "gpu_type": "SIM",
+                        "n_params": 12_000_000_u64,
+                        "val_rows": 256,
+                        "telemetry": {
+                            "finish_reason": "finish_evaluation",
+                            "report_count": 5,
+                            "loss_series": [
+                                {"step": 1, "loss": 3.9, "grad_norm": 1.0, "at_secs": 2.0},
+                                {"step": 2, "loss": 3.1, "grad_norm": 0.5, "at_secs": 4.0},
+                                {"step": 3, "loss": 2.5, "grad_norm": 0.33, "at_secs": 6.0}
+                            ]
+                        }
+                    }
+                },
+                "events": []
             })))
             .mount(prism)
             .await;
@@ -699,6 +791,30 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["metric"], "bpb");
         assert_eq!(v["items"][0]["elo"], 1.25);
+        assert_eq!(v["items"][0]["bpb"], 1.25);
+        assert_eq!(v["items"][0]["paramsM"], 12.0);
+
+        let (s, v) = call(
+            app.clone(),
+            "/v1/site/arenas/prism/submissions/sub1/telemetry",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["submissionId"], "sub1");
+        assert_eq!(v["finishReason"], "finish_evaluation");
+        assert_eq!(v["reportCount"], 5);
+        assert_eq!(v["nParams"], 12_000_000_u64);
+        let pts = v["points"].as_array().unwrap();
+        assert_eq!(pts.len(), 3);
+        assert_eq!(pts[0]["step"], 1);
+        assert_eq!(pts[1]["gradNorm"], 0.5);
+
+        let (s, v) = call(
+            app.clone(),
+            "/v1/site/arenas/prism/submissions/nope/telemetry",
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
 
         let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);
@@ -734,12 +850,39 @@ mod tests {
             })))
             .mount(&prism)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/submissions/x2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "submission": {
+                    "id": "x2",
+                    "bpb": 1.0,
+                    "metrics": {
+                        "bpb": 1.0,
+                        "n_params": 12_000_000_u64,
+                        "telemetry": {
+                            "finish_reason": "finish_evaluation",
+                            "report_count": 2,
+                            "loss_series": [
+                                {"step": 1, "loss": 4.0},
+                                {"step": 2, "loss": 2.0}
+                            ]
+                        }
+                    }
+                },
+                "events": []
+            })))
+            .mount(&prism)
+            .await;
         let app = site_router(st);
         let (s, v) = call(app, "/v1/site/arenas/prism/window").await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["dataset"], "ds@pin");
         assert_eq!(v["series"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["finalLoss"], 1.0);
-        assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 1);
+        // x2 has a detail payload → real curve + params; x1 (no detail mock)
+        // falls back to the single-point bpb curve.
+        assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 2);
+        assert_eq!(v["series"][0]["params"], 12.0);
+        assert_eq!(v["series"][1]["points"].as_array().unwrap().len(), 1);
     }
 }

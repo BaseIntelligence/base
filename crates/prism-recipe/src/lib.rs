@@ -37,9 +37,10 @@ pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architectur
 /// Baseline submission: `training.py`.
 pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 
-/// Recipe semantic version (surfaced through the API). Bumped to 1.0.2 for
-/// the ≤350M parameter hard cap enforced in-pod after `build_model`.
-pub const RECIPE_VERSION: &str = "1.0.2";
+/// Recipe semantic version (surfaced through the API). Bumped to 1.1.0 for
+/// the miner telemetry hook contract (`prism_telemetry.report` /
+/// `finish_evaluation`) captured by the harness into `metrics_json`.
+pub const RECIPE_VERSION: &str = "1.1.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;
@@ -82,6 +83,29 @@ pub const TRAIN_HOURS_CAP: f64 = 6.0;
 
 /// Pod lifetime cap total (seconds): train cap + bootstrap margin (1h).
 pub const POD_LIFETIME_HOURS_CAP: f64 = 7.0;
+
+/// Effective train wall-clock cap (hours). Production is always
+/// [`TRAIN_HOURS_CAP`]; `PRISM_TEST_TRAIN_MINUTES` (staging/e2e only, works
+/// for Sim and real Lium) shrinks it so a full eval fits in minutes.
+#[must_use]
+pub fn train_hours_cap() -> f64 {
+    std::env::var("PRISM_TEST_TRAIN_MINUTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|m| *m > 0.0)
+        .map_or(TRAIN_HOURS_CAP, |m| m / 60.0)
+}
+
+/// Effective parameter cap. Production is always [`MAX_PARAMS`];
+/// `PRISM_TEST_MAX_PARAMS` (staging/e2e only) selects a tiny-model profile.
+#[must_use]
+pub fn max_params() -> u64 {
+    std::env::var("PRISM_TEST_MAX_PARAMS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(MAX_PARAMS)
+}
 
 /// Steps hard stop inside `train` (belt + clock). Config overrides only down.
 pub const MAX_TRAIN_STEPS: u32 = 20_000;
@@ -251,6 +275,33 @@ mod tests {
         assert_eq!(MAX_PARAMS, 350_000_000);
         assert!(HARNESS_PY.contains("350000000") || HARNESS_PY.contains("PRISM_MAX_PARAMS"));
         assert!(HARNESS_PY.contains("parameter cap"));
+    }
+
+    #[test]
+    fn test_mode_env_overrides_caps_and_restores() {
+        // Single test touches these process-global vars; no other test in
+        // this binary reads them, so there is no parallel-test race.
+        assert!((train_hours_cap() - TRAIN_HOURS_CAP).abs() < f64::EPSILON);
+        assert_eq!(max_params(), MAX_PARAMS);
+        std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
+        std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
+        assert!((train_hours_cap() - 0.25).abs() < f64::EPSILON);
+        assert_eq!(max_params(), 2_000_000);
+        std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "nope");
+        std::env::set_var("PRISM_TEST_MAX_PARAMS", "-5");
+        assert!((train_hours_cap() - TRAIN_HOURS_CAP).abs() < f64::EPSILON);
+        assert_eq!(max_params(), MAX_PARAMS);
+        std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");
+        std::env::remove_var("PRISM_TEST_MAX_PARAMS");
+    }
+
+    #[test]
+    fn harness_documents_telemetry_hook_contract() {
+        assert!(HARNESS_PY.contains("prism_telemetry"));
+        assert!(HARNESS_PY.contains("finish_evaluation"));
+        assert!(HARNESS_PY.contains("report("));
+        assert!(HARNESS_PY.contains("PRISM_TEST_TRAIN_MINUTES"));
+        assert!(HARNESS_PY.contains("PRISM_TEST_MAX_PARAMS"));
     }
 
     #[test]

@@ -124,6 +124,7 @@ def train(model, ctx):
             pod_id: None,
             pod_provider: None,
             receipt: None,
+            metrics_json: None,
             bpb: None,
             review: None,
             similarity: None,

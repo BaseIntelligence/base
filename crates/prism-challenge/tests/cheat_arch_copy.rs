@@ -119,6 +119,7 @@ async fn baseline_arch_train_copy_scores_zero() {
             pod_id: None,
             pod_provider: None,
             receipt: None,
+            metrics_json: None,
             bpb: None,
             review: None,
             similarity: None,
