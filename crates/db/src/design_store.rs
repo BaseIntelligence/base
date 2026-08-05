@@ -24,6 +24,8 @@ pub struct DesignHarnessRow {
     pub active: bool,
     /// Cooldown: eliminated until this round id.
     pub eliminated_until_round: i64,
+    /// Creation unix ms (copy-gate ordering).
+    pub created_at_ms: i64,
 }
 
 /// `design_round` row.
@@ -253,7 +255,8 @@ pub struct NewDesignStageEvent<'a> {
 }
 
 const HARNESS_COLS: &str =
-    "id, miner_hotkey, agent_py, pyproject_toml, extra_files, active, eliminated_until_round";
+    "id, miner_hotkey, agent_py, pyproject_toml, extra_files, active, eliminated_until_round, \
+     (EXTRACT(EPOCH FROM created_at)::BIGINT * 1000) AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
     sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count";
@@ -436,19 +439,24 @@ pub async fn design_run(pool: &PgPool, id: &str) -> Result<Option<DesignRunRow>,
         .await?)
 }
 
-/// Claim next queued run (`SKIP LOCKED` → installing).
+/// Claim next queued run (`SKIP LOCKED` → installing). Runs registered for a
+/// future round (`round_id > max_round`) are not claimable yet.
 ///
 /// # Errors
 /// SQL error.
-pub async fn claim_design_run(pool: &PgPool) -> Result<Option<DesignRunRow>, DbError> {
+pub async fn claim_design_run(
+    pool: &PgPool,
+    max_round: i64,
+) -> Result<Option<DesignRunRow>, DbError> {
     let q = format!(
         "UPDATE design_run SET status = 'installing', updated_at = now() \
          WHERE id = ( \
-           SELECT id FROM design_run WHERE status = 'queued' \
+           SELECT id FROM design_run WHERE status = 'queued' AND round_id <= $1 \
            ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED \
          ) RETURNING {RUN_COLS}"
     );
     Ok(sqlx::query_as::<_, DesignRunRow>(&q)
+        .bind(max_round)
         .fetch_optional(pool)
         .await?)
 }

@@ -18,7 +18,11 @@ use design_challenge::{
     Orchestrator, OrchestratorConfig, CHALLENGE_ID, SCORING_VERSION,
 };
 use design_sandbox::{DockerSandbox, SandboxBackend, SimSandbox};
+use review_docker::{DockerAgent, DockerAgentConfig};
 use sha2::{Digest, Sha256};
+use submission_gating::{
+    watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
+};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use trustroot::encode_hex;
@@ -128,6 +132,39 @@ struct Cli {
         global = true
     )]
     sim_stage_delay_ms: u64,
+    /// Review backend: `docker` (containerized design-review image) or
+    /// `inline` (in-process agent; local/CI).
+    #[arg(
+        long,
+        env = "DESIGN_REVIEW_BACKEND",
+        default_value = "docker",
+        global = true
+    )]
+    review_backend: String,
+    /// Review image ref (digest-pinned in deploy).
+    #[arg(
+        long,
+        env = "DESIGN_REVIEW_IMAGE",
+        default_value = "design-review:0.1.0",
+        global = true
+    )]
+    review_image: String,
+    /// Auto-retry budget for infra-class run failures (install/AST/LLM).
+    #[arg(
+        long,
+        env = "DESIGN_AUTO_RETRY_MAX",
+        default_value_t = 3,
+        global = true
+    )]
+    auto_retry_max: u32,
+    /// Metagraph watcher cadence (gating eligibility resets).
+    #[arg(
+        long,
+        env = "BASE_GATING_WATCH_SECS",
+        default_value_t = 120,
+        global = true
+    )]
+    gating_watch_secs: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -221,6 +258,83 @@ fn select_agentic(cli: &Cli) -> (Arc<dyn AgenticBackend>, &'static str) {
     }
 }
 
+/// Review backend: containerized `design-review` image (default, same Docker
+/// pattern as the sandbox) or the legacy in-process agent (`inline`).
+fn select_review(cli: &Cli) -> Result<(Arc<dyn AgenticBackend>, &'static str), String> {
+    if cli.review_backend != "docker" {
+        let (agentic, _) = select_agentic(cli);
+        return Ok((agentic, "inline"));
+    }
+    let key = load_api_key_file(&cli.agentic_openrouter_key_file).ok();
+    if key.is_none() {
+        tracing::info!(
+            path = %cli.agentic_openrouter_key_file.display(),
+            "no OpenRouter key; review containers will run SimAgent offline"
+        );
+    }
+    let agent = DockerAgent::new(DockerAgentConfig {
+        docker_base: cli.docker_base.clone(),
+        image: cli.review_image.clone(),
+        openrouter_key: key,
+        ..DockerAgentConfig::default()
+    })
+    .map_err(|e| e.to_string())?;
+    // Fail closed at boot when the engine is unreachable (no silent inline).
+    if let Err(e) = agent.client.list_owned() {
+        return Err(format!(
+            "docker review unavailable (fail-closed; set DESIGN_REVIEW_BACKEND=inline \
+             only on local/CI): {e}"
+        ));
+    }
+    Ok((Arc::new(agent), "docker"))
+}
+
+/// Spawn the metagraph watcher: refresh the cached snapshot and reconcile
+/// gating eligibility (hotkey deregistered/replaced → back to `open`).
+fn spawn_gating_watcher(
+    chain_ep: &str,
+    netuid: u16,
+    cache: Arc<MetagraphCache>,
+    gating: Arc<dyn GatingStore>,
+    poll: Duration,
+) {
+    let ep = chain_ep.to_owned();
+    tokio::spawn(async move {
+        let mut client: Option<chain_live::LiveChainClient> = None;
+        let stores = vec![(CHALLENGE_ID.to_owned(), gating)];
+        loop {
+            if client.is_none() {
+                let ep2 = ep.clone();
+                client = match tokio::task::spawn_blocking(move || {
+                    let mut c =
+                        chain_live::LiveChainClient::connect(&ep2).map_err(|e| e.to_string())?;
+                    c.set_netuid(netuid);
+                    Ok::<_, String>(c)
+                })
+                .await
+                {
+                    Ok(Ok(c)) => Some(c),
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "gating watcher: chain connect failed");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "gating watcher: join failed");
+                        None
+                    }
+                };
+            }
+            if let Some(c) = &client {
+                if let Err(e) = watch_once(c, netuid, &cache, &stores).await {
+                    tracing::warn!(error = %e, "gating watcher tick failed (cache kept)");
+                    client = None; // reconnect next tick on persistent errors
+                }
+            }
+            tokio::time::sleep(poll).await;
+        }
+    });
+}
+
 fn env_truthy(name: &str) -> bool {
     matches!(
         std::env::var(name).as_deref(),
@@ -285,21 +399,106 @@ fn select_sandbox(cli: &Cli) -> Result<(Arc<dyn SandboxBackend>, &'static str), 
     }
 }
 
+/// Orchestrator + shared HTTP state (award hook wires back into the orchestrator).
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn build_app_state(
+    cli: &Cli,
+    store: Arc<dyn DesignStore>,
+    gating: Arc<dyn GatingStore>,
+    gating_enabled: bool,
+    sandbox: Arc<dyn SandboxBackend>,
+    agentic: Arc<dyn AgenticBackend>,
+    gateway: Arc<GatewayClient>,
+    chain: chain_live::LiveChainClient,
+    sk: [u8; crypto::KEY_LEN],
+    backend_mode: &'static str,
+    stage_delay: Duration,
+) -> (
+    Arc<AppState>,
+    Arc<Orchestrator<chain_live::LiveChainClient>>,
+) {
+    let mut orch = Orchestrator::new(
+        OrchestratorConfig {
+            netuid: cli.netuid,
+            claim_poll: Duration::from_millis(750),
+            stuck_grace_secs: 3600,
+            llm_proxy: cli.llm_proxy.clone(),
+            staging_root: cli.staging_root.clone(),
+            stage_delay,
+            auto_retry_max: cli.auto_retry_max,
+        },
+        Arc::clone(&store),
+        sandbox,
+        agentic,
+        gateway,
+        Arc::new(chain),
+        sk,
+    );
+    if gating_enabled {
+        orch = orch.with_gating(Arc::clone(&gating));
+    }
+    let orch = Arc::new(orch);
+
+    // Metagraph cache + watcher feed the intake membership check.
+    let metagraph = Arc::new(MetagraphCache::new());
+    if gating_enabled {
+        spawn_gating_watcher(
+            &cli.chain_endpoint,
+            cli.netuid,
+            Arc::clone(&metagraph),
+            Arc::clone(&gating),
+            Duration::from_secs(cli.gating_watch_secs.max(15)),
+        );
+    }
+
+    let annotator_hashes = load_token_hashes(cli.annotator_tokens_file.as_ref());
+    let admin_hashes = load_token_hashes(cli.admin_tokens_file.as_ref());
+    let state = Arc::new(AppState {
+        store,
+        epoch: AtomicU64::new(0),
+        netuid: cli.netuid,
+        backend_mode,
+        annotator_token_hashes: annotator_hashes,
+        admin_token_hashes: admin_hashes,
+        frame_ancestors: std::env::var("DESIGN_FRAME_ANCESTORS")
+            .unwrap_or_else(|_| "'none'".into()),
+        retry_max: 2,
+        award_hook: Some(Arc::clone(&orch) as Arc<dyn design_challenge::AdminAwardHook>),
+        gating: gating_enabled.then(|| Arc::clone(&gating)),
+        metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
+    });
+    (state, orch)
+}
+
+async fn build_stores() -> Result<(Arc<dyn DesignStore>, Arc<dyn GatingStore>), String> {
+    if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
+        let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+        db::migrate(&pool).await.map_err(|e| e.to_string())?;
+        return Ok((
+            Arc::new(DbDesignStore::new(pool.clone())),
+            Arc::new(PgGatingStore::new(pool)) as Arc<dyn GatingStore>,
+        ));
+    }
+    tracing::warn!("no BASE_DATABASE_URL; using MemoryDesignStore + MemoryGatingStore");
+    Ok((
+        Arc::new(MemoryDesignStore::new()),
+        Arc::new(MemoryGatingStore::new()) as Arc<dyn GatingStore>,
+    ))
+}
+
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let sk_path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     let sk = load_challenge_secret(&sk_path).map_err(|e| e.to_string())?;
 
-    let store: Arc<dyn DesignStore> = if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
-        let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
-        db::migrate(&pool).await.map_err(|e| e.to_string())?;
-        Arc::new(DbDesignStore::new(pool))
-    } else {
-        tracing::warn!("no BASE_DATABASE_URL; using MemoryDesignStore");
-        Arc::new(MemoryDesignStore::new())
-    };
+    let (store, gating) = build_stores().await?;
+    // BASE_SUBMISSION_GATING=0 disables intake gating (local dev only).
+    let gating_enabled = !matches!(std::env::var("BASE_SUBMISSION_GATING").as_deref(), Ok("0"));
+    if !gating_enabled {
+        tracing::warn!("BASE_SUBMISSION_GATING=0: intake metagraph/1-max checks disabled");
+    }
 
     let (sandbox, backend_mode) = select_sandbox(&cli)?;
-    let (agentic, agentic_mode) = select_agentic(&cli);
+    let (agentic, agentic_mode) = select_review(&cli)?;
 
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
@@ -320,38 +519,25 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             "design sim stage delay enabled (local evidence only)"
         );
     }
-    let orch = Arc::new(Orchestrator::new(
-        OrchestratorConfig {
-            netuid: cli.netuid,
-            claim_poll: Duration::from_millis(750),
-            stuck_grace_secs: 3600,
-            llm_proxy: cli.llm_proxy.clone(),
-            staging_root: cli.staging_root.clone(),
-            stage_delay,
-        },
-        Arc::clone(&store),
+    let (state, orch) = build_app_state(
+        &cli,
+        store,
+        gating,
+        gating_enabled,
         sandbox,
         agentic,
         gateway,
-        Arc::new(chain),
+        chain,
         sk,
-    ));
-
-    let annotator_hashes = load_token_hashes(cli.annotator_tokens_file.as_ref());
-    let admin_hashes = load_token_hashes(cli.admin_tokens_file.as_ref());
-    let state = Arc::new(AppState {
-        store,
-        epoch: AtomicU64::new(0),
-        netuid: cli.netuid,
         backend_mode,
-        annotator_token_hashes: annotator_hashes,
-        admin_token_hashes: admin_hashes,
-        frame_ancestors: std::env::var("DESIGN_FRAME_ANCESTORS")
-            .unwrap_or_else(|_| "'none'".into()),
-        retry_max: 2,
-        award_hook: Some(Arc::clone(&orch) as Arc<dyn design_challenge::AdminAwardHook>),
-    });
-    tracing::info!(backend_mode, agentic_mode, "design backends selected");
+        stage_delay,
+    );
+    tracing::info!(
+        backend_mode,
+        agentic_mode,
+        gating_enabled,
+        "design backends selected"
+    );
 
     let permits = cli.max_concurrent.max(1) as usize;
     let sem = Arc::new(Semaphore::new(permits));

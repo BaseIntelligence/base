@@ -9,7 +9,10 @@ use std::fs;
 use std::path::Path;
 
 use async_trait::async_trait;
-use challenge_ast::{fingerprint_source, similarity_bps, top_k_nearest};
+use challenge_ast::{
+    fingerprint_source, similarity_bps, top_k_nearest, AST_CHEAT_BPS, AST_SUSPICIOUS_BPS,
+    BASELINE_CORPUS_PREFIX,
+};
 use serde_json::Value;
 
 use crate::tools::{load_primary_sources, resolve_rel, source_hash_hex};
@@ -21,9 +24,13 @@ use crate::types::{
 const SIM_IMPOSSIBLE_BPB: f64 = 0.2;
 
 /// AST similarity ≥ this → `cheat` (with corpus nearest).
-pub const SIM_CHEAT_BPS: u16 = 9_500;
+pub const SIM_CHEAT_BPS: u16 = AST_CHEAT_BPS;
 /// AST similarity ≥ this (and < cheat) → `suspicious`.
-pub const SIM_SUSPICIOUS_BPS: u16 = 8_500;
+pub const SIM_SUSPICIOUS_BPS: u16 = AST_SUSPICIOUS_BPS;
+
+fn is_baseline_entry(id: &str) -> bool {
+    id.starts_with(BASELINE_CORPUS_PREFIX)
+}
 
 /// Offline deterministic agentic backend.
 #[derive(Debug, Default)]
@@ -64,6 +71,9 @@ impl AgenticBackend for SimAgent {
         let cand_hash = source_hash_hex(&joined);
 
         for entry in &req.corpus {
+            if is_baseline_entry(&entry.id) {
+                continue;
+            }
             if source_hash_hex(&entry.source) == cand_hash
                 || primaries
                     .iter()
@@ -88,6 +98,9 @@ impl AgenticBackend for SimAgent {
 
         let mut corpus_fps = Vec::new();
         for entry in &req.corpus {
+            if is_baseline_entry(&entry.id) {
+                continue;
+            }
             if let Ok(fp) = fingerprint_source(&entry.source) {
                 corpus_fps.push((entry.id.clone(), fp));
             }
@@ -437,13 +450,27 @@ def train(model, data):
         let dir = tempdir().unwrap();
         let mut req = write_primary(dir.path(), "agent.py", BASELINE);
         req.corpus = vec![CorpusEntry {
-            id: "baseline".into(),
+            id: "harness:victim".into(),
             source: BASELINE.into(),
         }];
         let v = SimAgent::new().review(&req).await.unwrap();
         assert_eq!(v.verdict, VerdictKind::Cheat);
         assert_eq!(v.similarity_bps, 10_000);
-        assert_eq!(v.nearest_id.as_deref(), Some("baseline"));
+        assert_eq!(v.nearest_id.as_deref(), Some("harness:victim"));
+    }
+
+    #[tokio::test]
+    async fn sim_baseline_byte_copy_is_clean() {
+        // Baseline-zeroing fix: starting from the published baseline is not a
+        // cheat, even byte-for-byte vs the reference corpus entry.
+        let dir = tempdir().unwrap();
+        let mut req = write_primary(dir.path(), "agent.py", BASELINE);
+        req.corpus = vec![CorpusEntry {
+            id: "baseline".into(),
+            source: BASELINE.into(),
+        }];
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Clean);
     }
 
     #[tokio::test]

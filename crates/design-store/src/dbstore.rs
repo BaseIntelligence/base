@@ -53,6 +53,7 @@ fn harness_from(r: dbs::DesignHarnessRow) -> HarnessRow {
         extra_files: extras_from_value(&r.extra_files),
         active: r.active,
         eliminated_until_round: r.eliminated_until_round.cast_unsigned(),
+        created_at_ms: r.created_at_ms.max(0).cast_unsigned(),
     }
 }
 
@@ -245,11 +246,13 @@ impl DesignStore for DbDesignStore {
             .map(run_from))
     }
 
-    async fn claim_next_run(&self) -> Result<Option<RunState>, StoreError> {
-        Ok(dbs::claim_design_run(&self.pool)
-            .await
-            .map_err(map_db)?
-            .map(run_from))
+    async fn claim_next_run(&self, max_round: u64) -> Result<Option<RunState>, StoreError> {
+        Ok(
+            dbs::claim_design_run(&self.pool, i64::try_from(max_round).unwrap_or(i64::MAX))
+                .await
+                .map_err(map_db)?
+                .map(run_from),
+        )
     }
 
     async fn apply_run(

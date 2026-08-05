@@ -160,8 +160,8 @@ fi
 
 echo "remote-deploy: rsync tree"
 if [[ "$BUILD_FROM" == "prebuilt" ]]; then
-  for b in validator gateway updater prism-challenge design-challenge design-egress-proxy; do
-    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p prism-challenge-bin -p design-challenge-bin -p design-egress-proxy-bin"
+  for b in validator gateway updater prism-challenge design-challenge design-egress-proxy challenge-review; do
+    [[ -x "$ROOT/target/release/$b" ]] || die "missing prebuilt binary target/release/$b — run: cargo build --release --features validator-bin/dcap -p validator-bin -p gateway-bin -p updater-bin -p prism-challenge-bin -p design-challenge-bin -p design-egress-proxy-bin && cargo build --release -p challenge-review-bin"
   done
 fi
 
@@ -332,6 +332,7 @@ optional = {
     "design-challenge",
     "design-egress-proxy",
     "design-runtime",
+    "design-review",
     "base-attest-helper",
 }
 data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -364,6 +365,8 @@ else
   docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
   # Sandbox runtime image (not a long-running compose service).
   docker build -f deploy/Dockerfile --target design-runtime -t design-runtime:0.1.0 .
+  # Anti-cheat review image (one-shot containers spawned by design-challenge).
+  docker build -f deploy/Dockerfile --target design-review -t design-review:0.1.0 .
 fi
 
 # The updater can only pull from a registry. Enable it only when the desired

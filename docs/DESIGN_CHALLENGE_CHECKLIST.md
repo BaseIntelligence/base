@@ -19,7 +19,7 @@ pins without bumping `challenge_scoring_version`.
 | (Z) | Sanitize rules | ## 5. Sanitize rules | `## 5. Sanitize rules` |
 | (V) | Viewer headers / CSP sandbox | ## 6. Viewer headers and CSP | `## 6. Viewer headers and CSP` |
 | (R) | Rounds 8_640s (10/day) + bank_v1 auto + quota 10/day | ## 7. Rounds and quotas | `## 7. Rounds and quotas` |
-| (L) | Admin winners 1\|2 + daily share ≥2 wins + AgenticReview | ## 8. Admin winners + agentic anti-cheat | `## 8. Admin winners + agentic anti-cheat` |
+| (L) | Admin winners 1\|2 + rolling 10-round points share + AgenticReview | ## 8. Admin winners + agentic anti-cheat | `## 8. Admin winners + agentic anti-cheat` |
 | (X) | Elimination bottom 20% + 10-round cooldown | ## 9. Elimination | `## 9. Elimination` |
 | (D) | D24 exact-E participant set | ## 10. Declared participant set and `NoScore` reasons (D24) | `## 10. Declared participant set and` |
 | (K) | Key custody | ## 11. Key custody (challenge signing key) | `## 11. Key custody (challenge signing key)` |
@@ -33,7 +33,7 @@ pins without bumping `challenge_scoring_version`.
 | challenge_id | `design` |
 | challenge_id_field | `challenge_id` |
 | scoring_version | `challenge_scoring_version` |
-| scoring_version_2 | `u16 = 2` |
+| scoring_version_3 | `u16 = 3` |
 | bundle_protocol_version | `protocol_version = 1` |
 | emission_zero | `emission_share_bps = 0` |
 | prism_bps_sole | `10000` |
@@ -43,7 +43,7 @@ pins without bumping `challenge_scoring_version`.
 | round_id_floor | `floor(unix_secs / 8640)` |
 | rounds_per_day | `10 rounds` |
 | agent_run_timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` |
-| min_daily_wins | `MIN_DAILY_WINS = 2` |
+| scoring_window | `SCORING_WINDOW_ROUNDS = 10` |
 | daily_quota | `DAILY_RUN_QUOTA = 10` |
 | prompts_per_round | `3 prompts` |
 | bank_v1 | `bank_v1.json` |
@@ -64,7 +64,7 @@ pins without bumping `challenge_scoring_version`.
 | agentic_review_stage | `AgenticReview` |
 | admin_winners_route | `/v1/admin/rounds/{id}/winners` |
 | admin_not_gateway | `not exposed via gateway` |
-| daily_share | `share SCORE_MAX equally` |
+| window_share | `SCORE_MAX × p / total_window_points` |
 | allowed_inspiration | `Mobbin` |
 | master_only | `master-only` |
 | no_prompt_validation | `no human prompt validation` |

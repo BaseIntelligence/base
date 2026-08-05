@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use design_challenge::score::{score_day, score_round, DayScorePlan, ScorePlan};
+use design_challenge::score::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_challenge::SCORE_MAX;
 use design_harness::{harness_id, validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
@@ -40,6 +40,7 @@ async fn sim_pipeline_pages_and_admin_score() {
             extra_files: BTreeMap::new(),
             active: true,
             eliminated_until_round: 0,
+            created_at_ms: 0,
         })
         .await
         .unwrap();
@@ -70,29 +71,29 @@ async fn sim_pipeline_pages_and_admin_score() {
     let sanitized = sanitize_bundle(&out.pages).unwrap();
     assert_eq!(sanitized.pages.len(), 3);
 
-    // scoring_version=2: single-round wins do not qualify (≥2/day required).
+    // scoring_version=3: each winner banks one window point; equal points →
+    // equal split of SCORE_MAX.
     let plan = ScorePlan {
         miners_with_harness: vec!["aa".into(), "bb".into()],
         miners_clean: vec!["aa".into(), "bb".into()],
         winner_miners: vec!["aa".into(), "bb".into()],
         cheat_miners: vec![],
     };
-    let scores = score_round(&plan);
-    assert_eq!(scores.get("aa"), Some(&design_store::FinalScore::Score(0)));
-    assert_eq!(scores.get("bb"), Some(&design_store::FinalScore::Score(0)));
+    let delta = round_win_delta(&plan);
+    assert_eq!(delta.get("aa"), Some(&1));
+    assert_eq!(delta.get("bb"), Some(&1));
 }
 
 #[tokio::test]
-async fn daily_two_wins_share_scores() {
-    let mut win_counts = BTreeMap::new();
-    win_counts.insert("m1".into(), 2);
-    win_counts.insert("m2".into(), 2);
-    let scores = score_day(&DayScorePlan {
-        win_counts,
+async fn window_two_winners_share_scores() {
+    let scores = score_window(&WindowScorePlan {
+        win_counts: [("m1".to_owned(), 2_u32), ("m2".to_owned(), 2_u32)]
+            .into_iter()
+            .collect(),
         miners_with_harness: ["m1".into(), "m2".into(), "m3".into()]
             .into_iter()
-            .collect::<BTreeSet<_>>(),
-        cheat_miners: BTreeSet::new(),
+            .collect(),
+        cheat_miners: BTreeSet::default(),
     });
     assert_eq!(
         scores.get("m1"),

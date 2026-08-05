@@ -45,19 +45,22 @@ RUN cargo build --release \
       -p prism-challenge-bin \
       -p design-challenge-bin \
       -p design-egress-proxy-bin \
+ && cargo build --release -p challenge-review-bin \
  && strip target/release/validator \
            target/release/gateway \
            target/release/updater \
            target/release/prism-challenge \
            target/release/design-challenge \
            target/release/design-egress-proxy \
+           target/release/challenge-review \
  && mkdir -p /out \
  && cp target/release/validator \
        target/release/gateway \
        target/release/updater \
        target/release/prism-challenge \
        target/release/design-challenge \
-       target/release/design-egress-proxy /out/
+       target/release/design-egress-proxy \
+       target/release/challenge-review /out/
 
 # -----------------------------------------------------------------------------
 # Prebuilt path — copy host target/release artifacts (local verify only)
@@ -73,6 +76,7 @@ COPY target/release/validator \
      target/release/prism-challenge \
      target/release/design-challenge \
      target/release/design-egress-proxy \
+     target/release/challenge-review \
      /out/
 
 # -----------------------------------------------------------------------------
@@ -151,3 +155,23 @@ USER base
 WORKDIR /work
 # Harness entry is staged into /work by design-challenge; image only supplies Python.
 CMD ["python", "--version"]
+
+# -----------------------------------------------------------------------------
+# design-review — containerized anti-cheat review (challenge-agentic + AST).
+# design-challenge stages /work (submitted agent + _similar harness, read-only)
+# and /out (verdict) per run; the OpenRouter key arrives via container env.
+# Python is present so the sandboxed run_command tool can run AST probes.
+# -----------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS design-review
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 65532 base \
+    && useradd --system --uid 65532 --gid base --home-dir /home/base --create-home base \
+    && mkdir -p /work /out \
+    && chown -R base:base /work /out /home/base
+USER base
+WORKDIR /work
+COPY --from=artifacts --chown=base:base /out/challenge-review /usr/local/bin/challenge-review
+ENTRYPOINT ["/usr/local/bin/challenge-review"]

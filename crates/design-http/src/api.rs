@@ -22,9 +22,10 @@ use design_store::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use submission_gating::{GatingState, GatingStore, MetagraphCache};
 
 use design_challenge_task::{
-    round_id_at, CHALLENGE_ID, DAILY_RUN_QUOTA, MIN_ANNOTATIONS_PER_PAIR, ROUND_SECS, RUN_ID_DOMAIN,
+    round_id_at, round_secs, CHALLENGE_ID, DAILY_RUN_QUOTA, MIN_ANNOTATIONS_PER_PAIR, RUN_ID_DOMAIN,
 };
 
 /// Hook invoked after admin persists winners (score + leaf emit).
@@ -54,6 +55,11 @@ pub struct AppState {
     pub retry_max: u32,
     /// Optional award hook (orchestrator).
     pub award_hook: Option<Arc<dyn AdminAwardHook>>,
+    /// Submission gating (1-max). `None` disables intake gating (tests/dev).
+    pub gating: Option<Arc<dyn GatingStore>>,
+    /// Cached metagraph snapshot for intake membership. `None` disables the
+    /// membership check (tests/dev).
+    pub metagraph: Option<Arc<MetagraphCache>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -294,16 +300,71 @@ async fn post_harness(
         return json_err(StatusCode::BAD_REQUEST, "invalid_harness", &e.to_string());
     }
     let id = harness_id(&req);
+    let hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
+
+    // Idempotent duplicate: identical digest re-POST never conflicts gating.
+    let exists = match st.store.get_harness(&id).await {
+        Ok(h) => h.is_some(),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+
+    let mut uid = None;
+    if !exists {
+        // Metagraph membership (fail closed when a cache is configured but has
+        // no snapshot yet).
+        if let Some(cache) = &st.metagraph {
+            match cache.snapshot() {
+                Some(view) => match view.uid_of_hex(&hotkey) {
+                    Some(u) => uid = Some(u),
+                    None => {
+                        return json_err(
+                            StatusCode::FORBIDDEN,
+                            "hotkey_not_in_metagraph",
+                            "miner hotkey is not registered on this subnet",
+                        );
+                    }
+                },
+                None => {
+                    return json_err(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "metagraph_unavailable",
+                        "metagraph snapshot not ready; retry shortly",
+                    );
+                }
+            }
+        }
+        // One accepted submission per (challenge, hotkey).
+        if let Some(g) = &st.gating {
+            match g.get(CHALLENGE_ID, &hotkey).await {
+                Ok(Some(row)) if row.state != GatingState::Open => {
+                    return json_err(
+                        StatusCode::CONFLICT,
+                        "submission_gated",
+                        &format!(
+                            "hotkey is '{}' for this challenge; one accepted submission max",
+                            row.state.as_str()
+                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return json_err(StatusCode::INTERNAL_SERVER_ERROR, "gating", &e.to_string());
+                }
+            }
+        }
+    }
+
     let mut extras = req.extra_files;
     encode_env_into_extras(&mut extras, &req.env_vars);
     let row = HarnessRow {
         id: id.clone(),
-        miner_hotkey: req.miner_hotkey.trim().to_ascii_lowercase(),
+        miner_hotkey: hotkey.clone(),
         agent_py: req.agent_py,
         pyproject_toml: req.pyproject_toml,
         extra_files: extras,
         active: true,
         eliminated_until_round: 0,
+        created_at_ms: 0,
     };
     let fresh = match st.store.insert_harness(&row).await {
         Ok(()) => true,
@@ -315,11 +376,20 @@ async fn post_harness(
         Ok(None) => row,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
-    let run_ids = match schedule_runs(&st, &harness).await {
+    let run_ids = match schedule_runs(&st, &harness, fresh).await {
         Ok(ids) => ids,
         Err(e) => return json_err(StatusCode::CONFLICT, "schedule", &e),
     };
-    let rid = round_id_at(now_secs());
+    // Registration finalizes only after runs are scheduled so scheduling
+    // failures (quota) never consume the miner's single slot.
+    if fresh {
+        if let Some(g) = &st.gating {
+            if let Err(e) = g.mark_registered(CHALLENGE_ID, &hotkey, uid).await {
+                return json_err(StatusCode::INTERNAL_SERVER_ERROR, "gating", &e.to_string());
+            }
+        }
+    }
+    let rid = round_id_at(now_secs()).saturating_add(1);
     let status = if fresh { "accepted" } else { "already-queued" };
     let code = if fresh {
         StatusCode::ACCEPTED
@@ -332,6 +402,7 @@ async fn post_harness(
             "harness_id": id,
             "status": status,
             "round_id": rid,
+            "round_opens_at_secs": rid.saturating_mul(round_secs()),
             "run_ids": run_ids,
             "poll": {
                 "run": "/v1/runs/{id}",
@@ -344,14 +415,34 @@ async fn post_harness(
         .into_response()
 }
 
-async fn schedule_runs(st: &AppState, harness: &HarnessRow) -> Result<Vec<String>, String> {
+/// Schedule this harness for the **next** round. Accepted harnesses wait for
+/// the upcoming round — they never join the round already in flight.
+/// `create=false` (idempotent re-POST) only lists existing run ids.
+async fn schedule_runs(
+    st: &AppState,
+    harness: &HarnessRow,
+    create: bool,
+) -> Result<Vec<String>, String> {
     let secs = now_secs();
-    let rid = round_id_at(secs);
+    let rid = round_id_at(secs).saturating_add(1);
     if harness.eliminated_until_round > rid {
         return Err(format!(
             "eliminated until round {}",
             harness.eliminated_until_round
         ));
+    }
+    let existing = st
+        .store
+        .runs_for_round(rid)
+        .await
+        .map_err(|e| e.to_string())?;
+    let run_ids: Vec<String> = existing
+        .iter()
+        .filter(|r| r.harness_id == harness.id)
+        .map(|r| r.id.clone())
+        .collect();
+    if !run_ids.is_empty() || !create {
+        return Ok(run_ids);
     }
     let day = utc_day(secs);
     let used = st
@@ -367,7 +458,7 @@ async fn schedule_runs(st: &AppState, harness: &HarnessRow) -> Result<Vec<String
         .map_err(|e| e.to_string())?
         .is_none()
     {
-        let opens = rid * ROUND_SECS;
+        let opens = rid * round_secs();
         let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
         st.store
             .insert_round(&design_store::RoundRow {
@@ -377,25 +468,13 @@ async fn schedule_runs(st: &AppState, harness: &HarnessRow) -> Result<Vec<String
                 prompt_set_digest: prompt_set_digest(),
                 status: "open".into(),
                 opens_at_secs: opens,
-                closes_at_secs: opens + ROUND_SECS,
+                closes_at_secs: opens + round_secs(),
             })
             .await
             .map_err(|e| e.to_string())?;
     }
     let prompts = select_prompts_for_round(rid).map_err(|e| e.to_string())?;
-    let existing = st
-        .store
-        .runs_for_round(rid)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut run_ids: Vec<String> = existing
-        .iter()
-        .filter(|r| r.harness_id == harness.id)
-        .map(|r| r.id.clone())
-        .collect();
-    if !run_ids.is_empty() {
-        return Ok(run_ids);
-    }
+    let mut run_ids: Vec<String> = Vec::new();
     if used >= DAILY_RUN_QUOTA {
         return Err("daily quota exceeded".into());
     }
@@ -937,4 +1016,150 @@ async fn admin_winners(
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use design_store::MemoryDesignStore;
+    use http_body_util::BodyExt;
+    use submission_gating::MemoryGatingStore;
+    use tower::ServiceExt;
+
+    fn hk(byte: u8) -> String {
+        hex::encode([byte; 32])
+    }
+
+    fn app_state(
+        metagraph_hotkeys: Option<Vec<[u8; 32]>>,
+    ) -> (Arc<AppState>, Arc<MemoryGatingStore>) {
+        let gating = Arc::new(MemoryGatingStore::new());
+        let metagraph = metagraph_hotkeys.map(|keys| {
+            let cache = Arc::new(MetagraphCache::new());
+            cache.update(541, &keys.iter().map(|h| h.to_vec()).collect::<Vec<_>>());
+            cache
+        });
+        (
+            Arc::new(AppState {
+                store: Arc::new(MemoryDesignStore::new()),
+                epoch: std::sync::atomic::AtomicU64::new(0),
+                netuid: 541,
+                backend_mode: "memory",
+                annotator_token_hashes: vec![],
+                admin_token_hashes: vec![],
+                frame_ancestors: "'none'".into(),
+                retry_max: 2,
+                award_hook: None,
+                gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
+                metagraph,
+            }),
+            gating,
+        )
+    }
+
+    fn submit_body(hotkey: &str, marker: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "miner_hotkey": hotkey,
+            "agent_py": format!("def run(task, llm, out):\n    out.write_page('index.html', '<html>{marker}</html>')\n"),
+            "pyproject_toml": "[project]\nname='x'\nversion='0.1.0'\n",
+        }))
+        .unwrap()
+    }
+
+    async fn call(app: Router, req: Request<Body>) -> (StatusCode, Value) {
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn post(app: Router, body: Vec<u8>) -> (StatusCode, Value) {
+        call(
+            app,
+            Request::post("/v1/harness")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn accepted_runs_target_next_round() {
+        let (st, _g) = app_state(None);
+        let app = design_router(Arc::clone(&st));
+        let (s, v) = post(app, submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        assert_eq!(v["status"], "accepted");
+        let expected = round_id_at(now_secs()) + 1;
+        assert_eq!(v["round_id"], expected);
+        let run_ids = v["run_ids"].as_array().unwrap();
+        assert_eq!(run_ids.len(), design_challenge_task::prompts_per_round());
+        // Runs are queued for the *next* round, not the current one.
+        let run = st
+            .store
+            .get_run(run_ids[0].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.round_id, expected);
+        assert_eq!(run.status, RunStage::Queued);
+        assert!(v["round_opens_at_secs"].as_u64().unwrap() > now_secs());
+    }
+
+    #[tokio::test]
+    async fn gating_metagraph_and_one_max() {
+        let (st, gating) = app_state(Some(vec![[0xAA; 32]]));
+        let app = design_router(Arc::clone(&st));
+
+        // Hotkey not in metagraph → 403.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xBB), "b")).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert_eq!(v["error"], "hotkey_not_in_metagraph");
+
+        // Member hotkey → accepted; gating row registered with uid.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let row = gating.get(CHALLENGE_ID, &hk(0xAA)).await.unwrap().unwrap();
+        assert_eq!(row.state, GatingState::Registered);
+        assert_eq!(row.uid, Some(0));
+
+        // A different harness from the same hotkey → 409.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xAA), "v2")).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["error"], "submission_gated");
+
+        // Identical re-POST stays idempotent.
+        let (s, v) = post(app, submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["status"], "already-queued");
+    }
+
+    #[tokio::test]
+    async fn gating_503_until_snapshot_ready() {
+        let gating = Arc::new(MemoryGatingStore::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryDesignStore::new()),
+            epoch: std::sync::atomic::AtomicU64::new(0),
+            netuid: 541,
+            backend_mode: "memory",
+            annotator_token_hashes: vec![],
+            admin_token_hashes: vec![],
+            frame_ancestors: "'none'".into(),
+            retry_max: 2,
+            award_hook: None,
+            gating: Some(gating as Arc<dyn GatingStore>),
+            metagraph: Some(Arc::new(MetagraphCache::new())),
+        });
+        let app = design_router(st);
+        let (s, v) = post(app, submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert_eq!(v["error"], "metagraph_unavailable");
+    }
 }

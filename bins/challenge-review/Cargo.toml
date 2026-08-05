@@ -1,0 +1,21 @@
+[package]
+name = "challenge-review-bin"
+description = "challenge-review container entrypoint (design-review image): staged request → agentic loop → verdict json"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "challenge-review"
+path = "src/main.rs"
+
+[dependencies]
+challenge-agentic = { path = "../../crates/challenge-agentic" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

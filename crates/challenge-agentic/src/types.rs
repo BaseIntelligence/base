@@ -66,7 +66,7 @@ pub enum CheatCode {
 }
 
 /// One prior corpus submission for AST nearest-neighbor tools.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CorpusEntry {
     /// Stable id (`baseline`, `harness:<hex>`, …).
     pub id: String,
@@ -106,6 +106,55 @@ pub struct AgenticVerdict {
     pub similarity_bps: u16,
     /// Audit rationale (truncated on ingest).
     pub rationale: String,
+}
+
+/// Serializable request mirror for the containerized reviewer
+/// (`challenge-review` bin reads this from `/work/_review_request.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerReviewRequest {
+    /// Relative Python paths under `/work` to prioritize.
+    pub primary_relpaths: Vec<String>,
+    /// Historical / baseline corpus for AST nearest.
+    pub corpus: Vec<CorpusEntry>,
+    /// Optional relative metrics JSON (Prism).
+    pub metrics_relpath: Option<String>,
+    /// Optional relative pages directory (Design sanitized output).
+    pub pages_relpath: Option<String>,
+    /// Optional relative sanitize report JSON.
+    pub sanitize_report_relpath: Option<String>,
+    /// Extra domain rules appended to the system prompt.
+    pub domain_rules: String,
+}
+
+impl ContainerReviewRequest {
+    /// Rebuild the full request with the in-container workdir (`/work`).
+    #[must_use]
+    pub fn into_request(self, workdir: PathBuf) -> ReviewRequest {
+        ReviewRequest {
+            workdir,
+            primary_relpaths: self.primary_relpaths,
+            corpus: self.corpus,
+            metrics_relpath: self.metrics_relpath,
+            pages_relpath: self.pages_relpath,
+            sanitize_report_relpath: self.sanitize_report_relpath,
+            domain_rules: self.domain_rules,
+        }
+    }
+}
+
+impl ReviewRequest {
+    /// Strip the host workdir for container transport.
+    #[must_use]
+    pub fn to_container(&self) -> ContainerReviewRequest {
+        ContainerReviewRequest {
+            primary_relpaths: self.primary_relpaths.clone(),
+            corpus: self.corpus.clone(),
+            metrics_relpath: self.metrics_relpath.clone(),
+            pages_relpath: self.pages_relpath.clone(),
+            sanitize_report_relpath: self.sanitize_report_relpath.clone(),
+            domain_rules: self.domain_rules.clone(),
+        }
+    }
 }
 
 /// One code review pass producing a fail-closed verdict.

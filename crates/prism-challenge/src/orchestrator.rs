@@ -12,12 +12,13 @@ use std::time::Duration;
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
 use chain::ChainClient;
-use challenge_agentic::{AgenticBackend, AgenticVerdict};
+use challenge_agentic::{AgenticBackend, AgenticVerdict, VerdictKind};
 use challenge_common::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_lium::{EvalJobBackend, InstanceSpec};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
+use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -52,6 +53,9 @@ pub struct OrchestratorConfig {
     /// Local/e2e only: pause after each published stage so mid-flight is
     /// photographable. Zero in production (default).
     pub stage_delay: Duration,
+    /// Auto-retry budget for infra-class failures (Lium install / AST / LLM).
+    /// Default 3; cheat / rejected verdicts are always terminal.
+    pub auto_retry_max: u32,
 }
 
 impl Default for OrchestratorConfig {
@@ -67,6 +71,7 @@ impl Default for OrchestratorConfig {
             similarity_corpus_limit: 6,
             stuck_grace_secs: 7 * 3600,
             stage_delay: Duration::ZERO,
+            auto_retry_max: 3,
         }
     }
 }
@@ -81,6 +86,7 @@ pub struct Orchestrator<C: ChainClient + Send> {
     gateway: Arc<GatewayClient>,
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
+    gating: Option<Arc<dyn GatingStore>>,
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
@@ -106,7 +112,15 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             gateway,
             chain,
             sk,
+            gating: None,
         }
+    }
+
+    /// Attach the submission gating store (terminal states + retry attempts).
+    #[must_use]
+    pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
+        self.gating = Some(gating);
+        self
     }
 
     /// Config getter (API views).
@@ -192,43 +206,122 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(true)
     }
 
+    /// Requeue on infra-class failures while the auto-retry budget lasts
+    /// (`false` → caller finalizes terminal). Records the gating attempt.
+    async fn maybe_auto_retry(&self, row: &SubmissionState, class: &str, msg: &str) -> bool {
+        if row.retry_count >= self.cfg.auto_retry_max {
+            return false;
+        }
+        warn!(
+            submission_id = %row.id,
+            class,
+            attempt = row.retry_count + 1,
+            max = self.cfg.auto_retry_max,
+            error = %msg,
+            "auto-retrying submission after infra failure"
+        );
+        let _ = self.store.reset_for_retry(&row.id).await;
+        let _ = self
+            .store
+            .apply(
+                &row.id,
+                &StatePatch::default(),
+                Some(&StageEvent {
+                    stage: Stage::Queued,
+                    detail: Some(serde_json::json!({
+                        "auto_retry": true,
+                        "class": class,
+                        "attempt": row.retry_count + 1,
+                        "error": msg,
+                    })),
+                    at_ms: 0,
+                }),
+            )
+            .await;
+        if let Some(g) = &self.gating {
+            let _ = g.bump_attempt(CHALLENGE_ID, &row.miner_hotkey, class).await;
+        }
+        true
+    }
+
+    /// Terminal failure: `failed` row + gating `blocked`, then best-effort leaf
+    /// emit (same close-the-loop posture as the happy path).
+    async fn fail_terminal(&self, row: &SubmissionState, class: &str, msg: &str) {
+        let _ = self
+            .store
+            .apply(
+                &row.id,
+                &StatePatch {
+                    status: Some(Stage::Failed),
+                    error_detail: Some(msg.to_owned()),
+                    final_score: Some(FinalScore::NoScore(
+                        NoScoreReasonCode::ChallengeInternal as u8,
+                    )),
+                    ..StatePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: Stage::Failed,
+                    detail: Some(serde_json::json!({"class": class, "error": msg})),
+                    at_ms: 0,
+                }),
+            )
+            .await;
+        if let Some(g) = &self.gating {
+            let _ = g
+                .set_terminal(
+                    CHALLENGE_ID,
+                    &row.miner_hotkey,
+                    GatingState::Blocked,
+                    Some(class),
+                )
+                .await;
+        }
+        match self.emit_and_submit_epoch().await {
+            Ok(n) => info!(submission_id = %row.id, leaves = n, "leaf set submitted"),
+            Err(e) => warn!(submission_id = %row.id, error = %e, "leaf submission deferred"),
+        }
+    }
+
     /// Process one submission end-to-end.
     pub async fn run_row(&self, row: SubmissionState) -> Result<(), String> {
         let id = row.id.clone();
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
         // Phase 1: provision + recipe exec + terminate (always verified).
+        // Lium/infra failures auto-retry (install class); budget exhaustion is
+        // terminal with NoScore(ChallengeInternal), never a miner zero.
         let measured = self.measure(&id, &row).await;
-        let (metrics, receipt) = match &measured {
-            Ok((m, r)) => (Some(m.clone()), Some(r.clone())),
+        let (metrics, receipt) = match measured {
+            Ok((m, r)) => (Some(m), Some(r)),
             Err(e) => {
-                warn!(submission_id = %id, error = %e, "measure phase failed");
-                let _ = self
-                    .store
-                    .apply(
-                        &id,
-                        &StatePatch {
-                            error_detail: Some(format!("measure: {e}")),
-                            ..StatePatch::default()
-                        },
-                        None,
-                    )
-                    .await;
-                (None, None)
+                let msg = format!("measure: {e}");
+                if self.maybe_auto_retry(&row, "install", &msg).await {
+                    return Ok(());
+                }
+                self.fail_terminal(&row, "install", &msg).await;
+                return Ok(());
             }
         };
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
-        // Phase 2: cheap review (fail → row becomes failed with ChallengeInternal).
-        let review = match self.review_step(&id, &row).await {
-            Some(v) => Some(v),
-            None => return Ok(()), // already failed+finalized
+        // Phase 2: cheap review (LLM infra → auto-retry, then terminal).
+        let Some(review) = self.review_step(&id, &row).await else {
+            return Ok(());
         };
 
-        // Phase 3: cheap similarity (first filter; agentic is primary judge).
-        let similarity = self.similarity_step(&id, &row).await?;
+        // Phase 3: cheap similarity (AST infra → auto-retry, then terminal).
+        let similarity = match self.similarity_step(&id, &row).await {
+            Ok(v) => v,
+            Err(e) => {
+                if self.maybe_auto_retry(&row, "ast_infra", &e).await {
+                    return Ok(());
+                }
+                self.fail_terminal(&row, "ast_infra", &e).await;
+                return Ok(());
+            }
+        };
 
-        // Phase 4: agentic anti-cheat (NoVerdict → ChallengeInternal).
+        // Phase 4: agentic anti-cheat (LLM infra → auto-retry, then terminal).
         let Some(agentic) = self
             .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
             .await
@@ -236,14 +329,26 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             return Ok(());
         };
 
-        let outcome = match (bpb, &review) {
-            (Some(b), Some(r)) => FinalOutcome::Measured {
+        // Cheat / suspicious is terminal: no retry, gating rejected.
+        if matches!(
+            agentic.verdict,
+            VerdictKind::Cheat | VerdictKind::Suspicious
+        ) {
+            if let Some(g) = &self.gating {
+                let _ = g
+                    .set_terminal(CHALLENGE_ID, &row.miner_hotkey, GatingState::Rejected, None)
+                    .await;
+            }
+        }
+
+        let outcome = match bpb {
+            Some(b) => FinalOutcome::Measured {
                 bpb: b,
-                quality: r.quality_score,
+                quality: review.quality_score,
                 similarity: similarity.kind,
                 agentic: agentic.verdict,
             },
-            _ => FinalOutcome::ChallengeInternal,
+            None => FinalOutcome::ChallengeInternal,
         };
         let final_score = combine_final(&outcome);
         let status = if matches!(outcome, FinalOutcome::ChallengeInternal) {
@@ -259,7 +364,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     status: Some(status),
                     final_score: Some(final_score.clone()),
                     bpb: outcome.bpb().copied(),
-                    review,
+                    review: Some(review),
                     similarity: Some(similarity),
                     pod_id: receipt.as_ref().map(|r| r.pod_id.clone()),
                     pod_provider: receipt.as_ref().map(|r| r.provider.clone()),
@@ -387,27 +492,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         {
             Ok(v) => Some(v),
             Err(e) => {
-                let _ = self
-                    .store
-                    .apply(
-                        id,
-                        &StatePatch {
-                            status: Some(Stage::Failed),
-                            error_detail: Some(format!("llm review: {e}")),
-                            final_score: Some(FinalScore::NoScore(
-                                NoScoreReasonCode::ChallengeInternal as u8,
-                            )),
-                            ..StatePatch::default()
-                        },
-                        Some(&StageEvent {
-                            stage: Stage::Failed,
-                            detail: Some(
-                                serde_json::json!({"where": "review", "error": e.to_string()}),
-                            ),
-                            at_ms: 0,
-                        }),
-                    )
-                    .await;
+                let msg = format!("llm review: {e}");
+                if self.maybe_auto_retry(row, "llm_infra", &msg).await {
+                    return None;
+                }
+                self.fail_terminal(row, "llm_infra", &msg).await;
                 None
             }
         }
@@ -460,7 +549,21 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         match self.agentic.review(&req).await {
             Ok(v) => Some(v),
             Err(e) => {
-                self.fail_agentic(id, &e.to_string()).await;
+                let msg = format!("agentic: {e}");
+                if self.maybe_auto_retry(row, "llm_infra", &msg).await {
+                    return None;
+                }
+                self.fail_agentic(id, &msg).await;
+                if let Some(g) = &self.gating {
+                    let _ = g
+                        .set_terminal(
+                            CHALLENGE_ID,
+                            &row.miner_hotkey,
+                            GatingState::Blocked,
+                            Some("llm_infra"),
+                        )
+                        .await;
+                }
                 None
             }
         }

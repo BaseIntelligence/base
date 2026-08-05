@@ -1,0 +1,23 @@
+[package]
+name = "review-docker"
+description = "Containerized challenge review backend (design-review image): DockerAgent over docker-engine with both harnesses mounted"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+challenge-agentic = { path = "../challenge-agentic" }
+challenge-ast = { path = "../challenge-ast" }
+docker-engine = { path = "../docker-engine" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

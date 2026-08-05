@@ -22,6 +22,7 @@ prism-challenge = { path = "../../crates/prism-challenge" }
 prism-lium = { path = "../../crates/prism-lium" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-review = { path = "../../crates/prism-review" }
+submission-gating = { path = "../../crates/submission-gating" }
 crypto = { path = "../../crates/crypto" }
 db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }

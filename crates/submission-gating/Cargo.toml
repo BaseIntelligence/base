@@ -1,0 +1,26 @@
+[package]
+name = "submission-gating"
+description = "Cross-challenge submission gating (metagraph membership, 1-max, retry budget, hotkey-change watcher)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+chain = { path = "../chain" }
+hex = "0.4"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+] }
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
