@@ -256,7 +256,7 @@ pub struct NewDesignStageEvent<'a> {
 
 const HARNESS_COLS: &str =
     "id, miner_hotkey, agent_py, pyproject_toml, extra_files, active, eliminated_until_round, \
-     (EXTRACT(EPOCH FROM created_at)::BIGINT * 1000) AS created_at_ms";
+     (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
     sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count";

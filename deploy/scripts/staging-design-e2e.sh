@@ -325,8 +325,13 @@ echo "$lb" | grep -qi "$HKA" && pass "3 leaderboard shows miner A points" || fai
 
 # ---------------------------------------------------------------- 4: weights seal
 step "4 leaves → seal → /v1/weights/latest sealed:true contains A"
+# The design service has no epoch feed (status epoch stays 0); the prism
+# service feeds its epoch from the chain — use it as the seal epoch source.
 epoch="$(api GET /challenge/design/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["epoch"])' 2>/dev/null || echo 0)"
-note "sealing epoch=$epoch (design status epoch at award time)"
+if ! [[ "$epoch" =~ ^[0-9]+$ && "$epoch" -gt 0 ]]; then
+  epoch="$(api GET /challenge/prism/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["epoch"])' 2>/dev/null || echo 0)"
+fi
+note "sealing epoch=$epoch (status epoch at award time)"
 sealed_ok=0
 for try_epoch in "$epoch" "$((epoch - 1))" "$((epoch + 1))"; do
   seal="$(api POST /v1/admin/seal -H 'content-type: application/json' -d "{\"epoch\":$try_epoch,\"netuid\":$NETUID}")"

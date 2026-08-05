@@ -30,7 +30,7 @@ pub(crate) async fn fill_arch_meta(
     }
     let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     let meta: Vec<(String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT id, arch_id, (EXTRACT(EPOCH FROM created_at)::BIGINT) \
+        "SELECT id, arch_id, (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT \
          FROM prism_submission WHERE id = ANY($1)",
     )
     .bind(&ids)
@@ -42,7 +42,7 @@ pub(crate) async fn fill_arch_meta(
     for r in rows.iter_mut() {
         if let Some((arch, ms)) = map.get(&r.id) {
             r.arch_id = arch.clone();
-            r.created_at_ms = (*ms).max(0).cast_unsigned().saturating_mul(1000);
+            r.created_at_ms = (*ms).max(0).cast_unsigned();
         }
     }
     Ok(())
@@ -68,7 +68,7 @@ type ArchSqlRow = (String, String, String, String, String, Option<f64>, i64);
 
 const ARCH_COLS: &str =
     "arch_id, owner_hotkey, arch_digest, architecture_py, source_submission, best_bpb, \
-     (EXTRACT(EPOCH FROM created_at)::BIGINT) AS created_secs";
+     (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_ms";
 
 fn arch_from_sql(r: ArchSqlRow) -> ArchitectureRecord {
     ArchitectureRecord {
@@ -78,7 +78,7 @@ fn arch_from_sql(r: ArchSqlRow) -> ArchitectureRecord {
         architecture_py: r.3,
         source_submission: r.4,
         best_bpb: r.5,
-        created_at_ms: r.6.max(0).cast_unsigned().saturating_mul(1000),
+        created_at_ms: r.6.max(0).cast_unsigned(),
     }
 }
 
