@@ -27,6 +27,17 @@ When a spike or evidence report conflicts with a frozen spec or runbook, the nor
 Deploy topology and CI lanes: [`../deploy/README.md`](../deploy/README.md) and [`../deploy/AGENTS.md`](../deploy/AGENTS.md).  
 Repo-wide agent contract: [`../AGENTS.md`](../AGENTS.md).
 
+## Challenge public miner repos
+
+Public miner docs live **outside** this monorepo (examples + human guides only — no control-plane code):
+
+| Challenge | Repo |
+|-----------|------|
+| Design | [`BaseIntelligence/design-challenge`](https://github.com/BaseIntelligence/design-challenge) |
+| Prism | [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) |
+
+`docs/external-miner/` remains the in-repo mirror for CI (`external-docs-check`) and operators. When challenge APIs or rules change, update **both** the public repo and `external-miner/` (see root [`../AGENTS.md`](../AGENTS.md) § Challenge public docs).
+
 ## Challenge / local E2E verification
 
 When updating challenge or local-subnet docs/runbooks, keep these invariants:

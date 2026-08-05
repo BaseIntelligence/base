@@ -34,6 +34,24 @@ Working branch: **`dev`**. Prod ships from annotated tags `v*.*.*` cut on `dev`.
 
 `GET /v1/weights/latest` is **fail-closed**: with no sealed bundle (or decode error) the gateway serves a **burn vector** (uid 0 = 100%, `sealed: false`) rather than 404. A missing gateway wallet is unrelated.
 
+## Challenge public docs (miner-facing repos)
+
+Each live challenge has a **separate public GitHub repo** for miners. Those repos must contain **only** human miner documentation plus example / test harness code — **never** control-plane, gateway, validator, or orchestrator source.
+
+| Challenge | Public repo | Role |
+|-----------|-------------|------|
+| Design | [`BaseIntelligence/design-challenge`](https://github.com/BaseIntelligence/design-challenge) | Miner docs + baseline harness |
+| Prism | [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) | Miner docs + recipe examples (publish / keep in sync; no control-plane code) |
+
+Monorepo mirror for CI and operators: [`docs/external-miner/`](docs/external-miner/). Frozen contracts stay in this repo (`docs/DESIGN_CHALLENGE.md`, `docs/PRISM.md`, …).
+
+**When a challenge product or public API changes**, agents **must** update:
+
+1. The challenge’s public miner repo (README / examples), and
+2. [`docs/external-miner/`](docs/external-miner/) in this monorepo as needed.
+
+Do not leave miner-facing docs stale after shipping API, quota, round, or scoring changes.
+
 ## Challenge verification (mandatory path coverage)
 
 When verifying a challenge (local-e2e, staging, or focused tests), **simulate a submission** end-to-end — do not stop at process healthz. Challenges evaluate on **master only**; the validator has **no challenge exec** (fetch sealed weights only).
@@ -72,7 +90,7 @@ Match CI (`.github/workflows/ci.yml`):
 | Doc authority vs evidence | [`docs/AGENTS.md`](docs/AGENTS.md) |
 | Component status | [`docs/COMPLETENESS.md`](docs/COMPLETENESS.md) |
 | Frozen contracts | [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md), [`docs/DESIGN_CHALLENGE.md`](docs/DESIGN_CHALLENGE.md), [`docs/PRISM.md`](docs/PRISM.md) |
-| Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) |
+| Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) · public: [design-challenge](https://github.com/BaseIntelligence/design-challenge), [prism](https://github.com/BaseIntelligence/prism) |
 | Threat / operator checklist | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/OPERATOR_SECURITY.md`](docs/OPERATOR_SECURITY.md) |
 
 ## Do not commit

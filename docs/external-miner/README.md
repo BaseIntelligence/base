@@ -11,10 +11,10 @@ CI gate: `cargo run -p xtask -- external-docs-check`.
 Agent-v1 / Phala CVM / hypertraining miner paths are **removed**. Miners submit
 over HTTP to the live challenges:
 
-| Challenge | `challenge_id` | Scoring | Guide |
-|-----------|----------------|---------|-------|
-| Design | `design` | `challenge_scoring_version` **2** (daily share ≥2 wins + agentic) | [design.md](./design.md) |
-| Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) |
+| Challenge | `challenge_id` | Scoring | Guide | Public miner repo |
+|-----------|----------------|---------|-------|-------------------|
+| Design | `design` | `challenge_scoring_version` **2** (daily share ≥2 wins + agentic) | [design.md](./design.md) | [BaseIntelligence/design-challenge](https://github.com/BaseIntelligence/design-challenge) |
+| Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) | [BaseIntelligence/prism](https://github.com/BaseIntelligence/prism) (miner docs forthcoming) |
 
 Do **not** conflate version axes:
 
