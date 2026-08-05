@@ -2057,6 +2057,7 @@ dependencies = [
  "config",
  "crypto",
  "db",
+ "gateway-compat",
  "gateway-core",
  "gateway-registry",
  "hex",
@@ -2096,6 +2097,25 @@ dependencies = [
  "telemetry",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "gateway-compat"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "http-body-util",
+ "keystore",
+ "parking_lot",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tower",
+ "trustroot",
 ]
 
 [[package]]

@@ -13,6 +13,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 bytes = "1"
 aggregate = { path = "../aggregate" }
 gateway-core = { path = "../gateway-core" }
+gateway-compat = { path = "../gateway-compat" }
 gateway-registry = { path = "../gateway-registry" }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }

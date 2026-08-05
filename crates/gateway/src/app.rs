@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use axum::Router;
+use gateway_compat::{compat_router, CompatState};
 use metrics_exporter_prometheus::PrometheusHandle;
 
 use crate::api::{registry_router, GatewayState};
@@ -36,12 +37,16 @@ pub fn build_router(
         state.seal_netuid,
     ));
 
+    // Legacy Python validator coordination surface (register/heartbeat/pull/registry).
+    let py_compat = compat_router(CompatState::new(Arc::clone(&state.challenges)));
+
     let health = telemetry::health_router(metrics)?;
     let app = health
         .merge(registry_router(state.clone()))
         .merge(weights_router(state.clone()))
         .merge(bundle_router(state.clone()))
         .merge(admin_seal_router(state.clone()))
+        .merge(py_compat)
         .merge(site)
         .merge(proxy_router(state));
     Ok(app)
