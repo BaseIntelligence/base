@@ -4,7 +4,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::cast_possible_truncation)]
 
-use design_challenge_task::{PROMPTS_PER_ROUND, ROUND_ID_DOMAIN};
+use design_challenge_task::{prompts_per_round, ROUND_ID_DOMAIN};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -73,7 +73,7 @@ pub fn prompt_set_digest() -> String {
     bank_digest()
 }
 
-/// Deterministic weighted selection of [`PROMPTS_PER_ROUND`] prompts for `round_id`.
+/// Deterministic weighted selection of [`prompts_per_round`] prompts for `round_id`.
 ///
 /// Seed: `SHA256(ROUND_ID_DOMAIN || round_id_be || bank_digest_bytes)`.
 /// Draws without replacement; unseen categories are boosted by `temperature`.
@@ -94,9 +94,10 @@ pub fn select_from(
     round_id: u64,
     digest_hex: &str,
 ) -> Result<Vec<Prompt>, PromptError> {
-    if bank.len() < PROMPTS_PER_ROUND {
+    let per_round = prompts_per_round();
+    if bank.len() < per_round {
         return Err(PromptError::TooSmall {
-            need: PROMPTS_PER_ROUND,
+            need: per_round,
             have: bank.len(),
         });
     }
@@ -109,9 +110,9 @@ pub fn select_from(
 
     let mut available: Vec<usize> = (0..bank.len()).collect();
     let mut selected_categories: Vec<String> = Vec::new();
-    let mut out = Vec::with_capacity(PROMPTS_PER_ROUND);
+    let mut out = Vec::with_capacity(per_round);
 
-    for draw in 0..PROMPTS_PER_ROUND {
+    for draw in 0..per_round {
         let weights: Vec<u64> = available
             .iter()
             .map(|&i| effective_weight(&bank[i], &selected_categories))
@@ -155,6 +156,7 @@ fn effective_weight(p: &Prompt, selected_categories: &[String]) -> u64 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use design_challenge_task::PROMPTS_PER_ROUND;
     use std::collections::BTreeSet;
 
     #[test]

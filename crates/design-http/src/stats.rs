@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use design_challenge_task::{round_id_at, CHALLENGE_ID, DAILY_RUN_QUOTA, ROUND_SECS};
+use design_challenge_task::{round_id_at, round_secs, CHALLENGE_ID, DAILY_RUN_QUOTA};
 use design_prompts::prompt_set_digest;
 use design_store::{DesignStore, RunStage};
 use serde_json::{json, Value};
@@ -63,7 +63,7 @@ pub async fn get_stats(State(st): State<Arc<AppState>>) -> Response {
             r.rating == 0 && r.wins + r.losses > 0
         })
         .count();
-    let opens = rid * ROUND_SECS;
+    let opens = rid * round_secs();
     Json(json!({
         "challenge_id": CHALLENGE_ID,
         "backend": st.backend_mode,
@@ -73,8 +73,8 @@ pub async fn get_stats(State(st): State<Arc<AppState>>) -> Response {
             "round_id": rid,
             "status": round.as_ref().map(|r| r.status.clone()).unwrap_or_else(|| "open".into()),
             "opens_at_secs": opens,
-            "closes_at_secs": opens + ROUND_SECS,
-            "seconds_remaining": opens.saturating_add(ROUND_SECS).saturating_sub(secs),
+            "closes_at_secs": opens + round_secs(),
+            "seconds_remaining": opens.saturating_add(round_secs()).saturating_sub(secs),
             "prompt_set_digest": prompt_set_digest(),
         },
         "queue": {
@@ -112,7 +112,7 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
     } else {
         vec![]
     };
-    let opens = rid * ROUND_SECS;
+    let opens = rid * round_secs();
     let jobs: Vec<Value> = runs
         .iter()
         .take(40)
@@ -154,8 +154,8 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
             "round_id": rid,
             "status": round.as_ref().map(|r| r.status.clone()).unwrap_or_else(|| "open".into()),
             "opens_at_secs": opens,
-            "closes_at_secs": opens + ROUND_SECS,
-            "seconds_remaining": opens.saturating_add(ROUND_SECS).saturating_sub(secs),
+            "closes_at_secs": opens + round_secs(),
+            "seconds_remaining": opens.saturating_add(round_secs()).saturating_sub(secs),
             "prompt_set_digest": prompt_set_digest(),
         },
         "queue": by_status,

@@ -142,7 +142,7 @@ impl DockerSandbox {
             image: DEFAULT_RUNTIME_IMAGE.into(),
             network_mode: "design-sandbox-egress".into(),
             install_timeout_sec: 180,
-            run_timeout_sec: design_challenge_task::AGENT_RUN_TIMEOUT_SECS,
+            run_timeout_sec: design_challenge_task::agent_run_timeout_secs(),
             staging_root,
         })
     }

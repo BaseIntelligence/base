@@ -15,6 +15,10 @@ services:
       BASE_VALIDATOR_WALLET: base-validator
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
+      # Staging-only trust root: design emission share enabled (2000 bps) so
+      # the e2e lifecycle proof can see design weights. Prod keeps 0 bps.
+      - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
+      - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   gateway:
     environment:
       BASE_NETUID: "541"
@@ -41,6 +45,13 @@ services:
       # Staging uses real Docker via socket-proxy. Host SimSandbox is fail-closed
       # here (never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM on droplets).
       DESIGN_FORCE_SIM: "false"
+      # Compressed lifecycle for the staging e2e: ~15-minute rounds (prod
+      # defaults stay 8640s / 1800s when these are unset).
+      DESIGN_ROUND_SECS: "900"
+      DESIGN_AGENT_RUN_TIMEOUT_SECS: "600"
+      # Containerized anti-cheat review (design-review one-shot image).
+      DESIGN_REVIEW_BACKEND: "docker"
+      DESIGN_REVIEW_IMAGE: "design-review:0.1.0"
   design-egress-proxy:
     environment:
       # Real OpenRouter when deploy/secrets/openrouter/api_key is non-empty.
