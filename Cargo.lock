@@ -6034,6 +6034,7 @@ dependencies = [
  "trustroot",
  "uuid",
  "validator-sync",
+ "validator-verify",
  "weights-api",
  "wiremock",
 ]
@@ -6061,6 +6062,29 @@ name = "validator-sync"
 version = "0.1.0"
 dependencies = [
  "chain",
+]
+
+[[package]]
+name = "validator-verify"
+version = "0.1.0"
+dependencies = [
+ "aggregate",
+ "axum",
+ "bundle",
+ "chain",
+ "crosscheck",
+ "crypto",
+ "hex",
+ "parity-scale-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "trustroot",
+ "wiremock",
 ]
 
 [[package]]

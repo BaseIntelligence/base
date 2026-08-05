@@ -19,15 +19,15 @@
 
 pub mod app;
 pub mod attest;
-pub mod coordination;
-pub mod crosscheck;
 pub mod epoch;
 mod epoch_loop;
 pub mod error;
-pub mod mirror;
-pub mod peers;
-pub mod recompute;
 pub mod registration;
+
+// Verification stack (coordination / crosscheck / mirror / peers / recompute)
+// lives in the `validator-verify` crate (per-crate LOC cap); re-export the
+// modules so `crate::recompute::…` paths keep resolving.
+pub use validator_verify::{coordination, crosscheck, mirror, peers, recompute};
 
 pub use app::{
     build_health_router, chain_ready_check, db_ready_from_fn, db_ready_ok, spawn_validator,

@@ -20,6 +20,7 @@ aggregate = { path = "../aggregate" }
 bundle = { path = "../bundle" }
 chain = { path = "../chain" }
 validator-sync = { path = "../validator-sync" }
+validator-verify = { path = "../validator-verify" }
 config = { path = "../config" }
 crosscheck = { path = "../crosscheck" }
 crypto = { path = "../crypto" }
