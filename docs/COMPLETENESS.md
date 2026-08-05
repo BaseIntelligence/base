@@ -32,6 +32,7 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 | Health endpoints (`/healthz`, `/readyz`, `/metrics`) | done | |
 | Attestation (`/v1/attest/*`) | done | Real Intel DCAP via `dcap-qvl` when built `--features dcap` (the container default). Verified against live Intel PCS; a tampered quote yields `CryptoInvalid`. Mock verifiers remain for tests only. |
 | Bundle fetch + `compare_bundle` | done | Continuous coordination loop. |
+| Match → `submit_intent` | done | `spawn_coordination_loop` submits on Match with per-epoch in-memory dedupe; CR enabled → `submit_timelocked_weights` (never downgrades to `set_weights`). Requires validator signing key. |
 | `set_weights` / `submit_timelocked_weights` | done | Live extrinsics. The signing key is derived from the Bittensor wallet mnemonic via `keystore` and installed with `LiveChainClient::set_signing_key`; without it submission fails closed. |
 | Chain backend | done | Live only. `FakeChain` was removed from `bins/validator`; there is no switch left to misconfigure. |
 

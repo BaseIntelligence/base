@@ -107,7 +107,8 @@ staging SSH tunnels on `18080`/`18090`. Override with `LOCAL_*_HOST_PORT`.
 | prism | `http://127.0.0.1:28092/health` |
 | design | `http://127.0.0.1:28093/health` |
 
-Look for validator coordination (`Match epoch=`) in logs when the gateway seal path is healthy:
+Look for validator coordination (`Match epoch=`) and, when a signing key is loaded,
+`Match → submit_intent` / `submit_timelocked ok` (or `set_weights ok` if CR is off):
 
 ```bash
 docker compose \

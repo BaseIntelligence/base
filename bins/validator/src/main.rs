@@ -3,7 +3,8 @@
 //! Listens for `/healthz`, `/readyz`, `/metrics`. Epoch clock from chain tip.
 //! Coordination client talks only to allowlisted gateway paths.
 //! Bundle fetch/recompute/compare (task 29) and verified-bundle mirror/peer fetch
-//! (task 30) live in the library; CRV4 submit and dissent are later tasks.
+//! (task 30) live in the library. Continuous Match → CRV4 `submit_intent` is
+//! wired in `spawn_coordination_loop` when a signing key is loaded.
 //!
 //! Attestation (`/v1/attest/*`) is always mounted. Measurements allowlist is
 //! loaded from `BASE_TRUST_ROOT_DIR` (default `./config` then `/etc/base/config`)
@@ -29,7 +30,7 @@ use config::{keys, load, Role};
 use trustroot::{load_config_dir, measurements_digest};
 use validator::{
     db_ready_from_fn, db_ready_ok, spawn_coordination_loop, spawn_validator, AttestState,
-    RegistrationStub, SyncChain, ValidatorRuntime,
+    CoordinationSubmitConfig, RegistrationStub, SyncChain, ValidatorRuntime,
 };
 
 #[tokio::main]
@@ -90,23 +91,28 @@ async fn main() -> ExitCode {
     client.set_netuid(netuid);
 
     // Weight submission needs the sr25519 secret, not just the public hotkey.
-    match keystore::resolve_keypair_from_env("BASE_VALIDATOR") {
+    let submit_hotkey = match keystore::resolve_keypair_from_env("BASE_VALIDATOR") {
         Ok(Some(kp)) => {
             client.set_signing_key(*kp.expose_mini_secret());
+            let hotkey = kp.public_key().to_vec();
             tracing::info!(
                 hotkey = %kp.ss58_address(),
                 "validator signing key loaded; weight submission enabled"
             );
+            Some(hotkey)
         }
-        Ok(None) => tracing::warn!(
-            "no validator signing key configured; weight submission will fail closed \
-             (set BASE_VALIDATOR_WALLET or BASE_VALIDATOR_MNEMONIC_FILE)"
-        ),
+        Ok(None) => {
+            tracing::warn!(
+                "no validator signing key configured; Match will not submit weights \
+                 (set BASE_VALIDATOR_WALLET or BASE_VALIDATOR_MNEMONIC_FILE)"
+            );
+            None
+        }
         Err(e) => {
             eprintln!("validator: signing key resolution failed: {e}");
             return ExitCode::from(2);
         }
-    }
+    };
 
     // Fail fast on a misconfigured netuid rather than looping on empty reads.
     match client.subnet_owner_hotkey(netuid) {
@@ -122,7 +128,7 @@ async fn main() -> ExitCode {
     }
 
     let chain = Arc::new(SyncChain::new(client));
-    run_validator_main(cfg, listen, netuid, attest, trust, chain).await
+    run_validator_main(cfg, listen, netuid, attest, trust, chain, submit_hotkey).await
 }
 
 /// Generic main body: database, runtime, spawn, coordination loop, ctrl-c, shutdown.
@@ -133,6 +139,7 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
     attest: AttestState,
     trust: LocalTrustRoot,
     chain: Arc<SyncChain<C>>,
+    submit_hotkey: Option<Vec<u8>>,
 ) -> ExitCode {
     let db_check = match resolve_database_url(&cfg) {
         Ok(Some(url)) => match db::connect(&url).await {
@@ -213,11 +220,13 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
         .and_then(|s| s.parse().ok())
         .unwrap_or(5)
         .max(1);
+    let submit = coordination_submit_config(netuid, cfg.epoch_length, submit_hotkey);
     let _coord_loop = spawn_coordination_loop(
         Arc::clone(&running.coordination),
         Arc::clone(&chain),
         trust,
         Duration::from_secs(interval_secs),
+        submit,
     );
 
     tokio::select! {
@@ -231,6 +240,32 @@ async fn run_validator_main<C: ChainClient + Send + 'static>(
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+fn coordination_submit_config(
+    netuid: u16,
+    epoch_length: u64,
+    submit_hotkey: Option<Vec<u8>>,
+) -> Option<CoordinationSubmitConfig> {
+    let version_key: u64 = std::env::var("BASE_WEIGHTS_VERSION_KEY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let submit = submit_hotkey.map(|hotkey| CoordinationSubmitConfig {
+        netuid,
+        hotkey,
+        version_key,
+        epoch_length,
+    });
+    if submit.is_some() {
+        tracing::info!(
+            netuid,
+            version_key,
+            epoch_length,
+            "coordination loop will submit_intent on Match (CRV4 when CR enabled)"
+        );
+    }
+    submit
 }
 
 fn resolve_database_url(cfg: &config::Config) -> Result<Option<String>, String> {

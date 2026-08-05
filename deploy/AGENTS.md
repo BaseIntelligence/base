@@ -76,7 +76,16 @@ Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-te
 | `base-validator` wallet | **no** (fetch-only) | for on-chain weight submit |
 | Fresh `target/release/{gateway,validator,…}` (or `BASE_DOCKER_BUILD_FROM=source`) | recommended | **required** for real chain |
 
-**Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200** with **`sealed: true`**. Skip with `--no-weights-smoke`. Pre-seal, latest is **200 burn** (`sealed: false`, uid 0 = 100%) — never 404; that is unrelated to a missing gateway owner wallet.
+**Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200** with **`sealed: true`**. Skip with `--no-weights-smoke`. Pre-seal, latest is **200 burn** (`sealed: false`, uid 0 = 100%) — never 404; that is unrelated to a missing gateway owner wallet. Prefer `--burn` on mainnet when sealing without real challenge scores (all `NoScore` → uid 0).
+
+**Interim prod burn seal (until prism auto-emits):** keep a fresh sealed bundle on the master gateway so validators can Match + CRV4 submit. Re-run when TTL/epoch advances, e.g. from an operator host with secrets:
+
+```bash
+cargo run -q --release -p weights-smoke -- \
+  --gateway https://chain.joinbase.ai --burn
+```
+
+Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
 **Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → seal → `GET /v1/weights/latest` **`sealed: true`**. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
 
@@ -110,7 +119,7 @@ Ladder: CI → GHCR digests → `deploy/pins/staging.json` (committed by `images
 
 ## Out of scope for agents (ops)
 
-- DO Spaces credentials in GitHub — set `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` (optional `BASE_BACKUP_BUCKET`, default `base-backups`). DO Spaces API create currently blocked (team locked); keys not found on operator/hosts.
+- DO Spaces backup credentials — set in GitHub (repo + `production` env): `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`, `BASE_BACKUP_BUCKET` (bucket `base-intelligence-backups` in nyc3; name `base-backups` was globally taken). Prod promote dumps Postgres over SSH then uploads from the runner (`deploy-prod.yml`).
 - GitHub `production` environment required reviewers / `dev` branch protection
 - Gateway in-process TLS ACME (task 42 / `rustls-acme`) — **interim:** prod `chain.joinbase.ai` HTTPS via host Caddy on `:443` (TLS-ALPN-01) → `127.0.0.1:8080`; cleartext `:80` still docker→gateway
 - Terraform remote state backend (recommended, not blocking app deploy)

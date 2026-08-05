@@ -1,13 +1,16 @@
-//! Periodic gateway latest → bundle fetch → compare → Match log (F3 continuous path).
+//! Periodic gateway latest → bundle fetch → compare → Match log → CRV4 submit (F3).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bundle::LocalTrustRoot;
 use chain::ChainClient;
+use dissent::{SubmissionIntent, SubmissionSource};
+use submit::{submit_intent, DrandClient, ReadyDrand, SubmitConfig, SubmitOutcome, SystemClock};
 use tracing::{info, warn};
 
 use crate::coordination::{CoordinationClient, CoordinationError};
+use crate::epoch::epoch_from_block;
 use crate::recompute::{fetch_and_compare, ComparisonOutcome};
 
 /// Format Match line identical to `full_local_e2e` `VALIDATOR_LOG` shape.
@@ -26,7 +29,177 @@ pub fn format_match_line(
     )
 }
 
-/// One coordination compare cycle: latest → bundle → `compare_bundle`.
+/// On-chain submit parameters for the coordination loop (task 33 wiring).
+///
+/// When present, a [`ComparisonOutcome::Match`] builds a [`SubmissionIntent`] and
+/// calls [`submit_intent`] (CRV4 timelocked when commit-reveal is enabled).
+#[derive(Debug, Clone)]
+pub struct CoordinationSubmitConfig {
+    /// Subnet netuid.
+    pub netuid: u16,
+    /// Validator hotkey public key bytes (payload field).
+    pub hotkey: Vec<u8>,
+    /// Weights `version_key`.
+    pub version_key: u64,
+    /// Epoch length in blocks (drand / submit deadline = current epoch end).
+    pub epoch_length: u64,
+}
+
+/// In-memory per-epoch submit dedupe for the coordination loop.
+///
+/// Records epochs that successfully submitted (or intentionally skipped drand).
+/// Failures leave the epoch unmarked so the next tick can retry.
+#[derive(Debug, Default)]
+pub struct EpochSubmitDedupe {
+    last_ok: Mutex<Option<u64>>,
+}
+
+impl EpochSubmitDedupe {
+    /// Empty dedupe state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether this epoch already completed a submit attempt successfully.
+    #[must_use]
+    pub fn already_submitted(&self, epoch: u64) -> bool {
+        self.last_ok
+            .lock()
+            .ok()
+            .is_some_and(|g| *g == Some(epoch))
+    }
+
+    /// Mark epoch as submitted (or intentionally skipped).
+    pub fn mark_submitted(&self, epoch: u64) {
+        if let Ok(mut g) = self.last_ok.lock() {
+            *g = Some(epoch);
+        }
+    }
+}
+
+/// Build a recompute [`SubmissionIntent`] from a Match outcome.
+#[must_use]
+pub fn intent_from_match(outcome: &ComparisonOutcome) -> Option<SubmissionIntent> {
+    match outcome {
+        ComparisonOutcome::Match {
+            epoch,
+            local_vector,
+            ..
+        } => Some(SubmissionIntent {
+            epoch: *epoch,
+            vector: local_vector.clone(),
+            source: SubmissionSource::Recompute,
+        }),
+        _ => None,
+    }
+}
+
+/// Submit Match vector via [`submit_intent`] with per-epoch dedupe.
+///
+/// No-op when `submit` is `None`, outcome is not Match, or epoch already submitted.
+/// Submit errors are logged and do **not** mark the epoch (retry next tick).
+pub fn maybe_submit_match<C, D>(
+    outcome: &ComparisonOutcome,
+    chain: &C,
+    drand: &D,
+    submit: Option<&CoordinationSubmitConfig>,
+    dedupe: &EpochSubmitDedupe,
+) where
+    C: ChainClient + ?Sized,
+    D: DrandClient + ?Sized,
+{
+    let Some(cfg) = submit else {
+        return;
+    };
+    let Some(intent) = intent_from_match(outcome) else {
+        return;
+    };
+    if dedupe.already_submitted(intent.epoch) {
+        info!(
+            event = "validator_submit_deduped",
+            epoch = intent.epoch,
+            "submit skipped: epoch already submitted"
+        );
+        return;
+    }
+
+    let tip = match chain.current_block() {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, epoch = intent.epoch, "submit skipped: tip read failed");
+            return;
+        }
+    };
+    let deadline = match epoch_from_block(tip, cfg.epoch_length) {
+        Ok(snap) => snap.epoch_end_block,
+        Err(e) => {
+            warn!(error = %e, epoch = intent.epoch, "submit skipped: epoch clock failed");
+            return;
+        }
+    };
+
+    let submit_cfg = SubmitConfig {
+        netuid: cfg.netuid,
+        mecid: submit::MECID_MAIN,
+        version_key: cfg.version_key,
+        hotkey: cfg.hotkey.clone(),
+        epoch_deadline_block: deadline,
+        max_rate_limit_retries: 8,
+        max_drand_retries: 32,
+    };
+
+    info!(
+        event = "validator_submit_attempt",
+        epoch = intent.epoch,
+        netuid = cfg.netuid,
+        vector_len = intent.vector.len(),
+        "Match → submit_intent"
+    );
+
+    match submit_intent(&intent, chain, drand, &SystemClock, &submit_cfg) {
+        Ok(SubmitOutcome::SubmittedTimelocked {
+            reveal_round,
+            mecid,
+        }) => {
+            info!(
+                event = "validator_submit_timelocked",
+                epoch = intent.epoch,
+                reveal_round,
+                mecid,
+                "submit_timelocked ok"
+            );
+            dedupe.mark_submitted(intent.epoch);
+        }
+        Ok(SubmitOutcome::SubmittedSetWeights) => {
+            info!(
+                event = "validator_submit_set_weights",
+                epoch = intent.epoch,
+                "set_weights ok (CR disabled)"
+            );
+            dedupe.mark_submitted(intent.epoch);
+        }
+        Ok(SubmitOutcome::SkippedDrand { epoch }) => {
+            warn!(
+                event = "validator_submit_skipped_drand",
+                epoch,
+                "drand unavailable through deadline; epoch skipped (no set_weights downgrade)"
+            );
+            // Intentional skip — do not retry forever within the same epoch.
+            dedupe.mark_submitted(epoch);
+        }
+        Err(e) => {
+            warn!(
+                event = "validator_submit_error",
+                epoch = intent.epoch,
+                error = %e,
+                "submit_intent failed (will retry next tick)"
+            );
+        }
+    }
+}
+
+/// One coordination compare cycle: latest → bundle → `compare_bundle` → optional submit.
 ///
 /// Soft-ok when gateway missing, latest 404 (legacy), or unsealed burn fallback.
 ///
@@ -37,7 +210,25 @@ pub async fn coordination_compare_once<C: ChainClient>(
     client: &CoordinationClient,
     chain: &C,
     trust: &LocalTrustRoot,
+    submit: Option<&CoordinationSubmitConfig>,
+    dedupe: &EpochSubmitDedupe,
 ) -> Result<Option<ComparisonOutcome>, CoordinationError> {
+    coordination_compare_once_with_drand(client, chain, trust, submit, dedupe, &ReadyDrand).await
+}
+
+/// Same as [`coordination_compare_once`] with an injectable [`DrandClient`].
+pub async fn coordination_compare_once_with_drand<C, D>(
+    client: &CoordinationClient,
+    chain: &C,
+    trust: &LocalTrustRoot,
+    submit: Option<&CoordinationSubmitConfig>,
+    dedupe: &EpochSubmitDedupe,
+    drand: &D,
+) -> Result<Option<ComparisonOutcome>, CoordinationError>
+where
+    C: ChainClient,
+    D: DrandClient + ?Sized,
+{
     if !client.has_gateway() {
         return Ok(None);
     }
@@ -78,6 +269,7 @@ pub async fn coordination_compare_once<C: ChainClient>(
                 gateway_vector_len = gateway_vector.len(),
                 "{line}"
             );
+            maybe_submit_match(&outcome, chain, drand, submit, dedupe);
         }
         ComparisonOutcome::VectorMismatch { epoch, .. } => {
             warn!(epoch, "coordination compare VectorMismatch");
@@ -93,25 +285,44 @@ pub async fn coordination_compare_once<C: ChainClient>(
 }
 
 /// Spawn a background loop that periodically runs [`coordination_compare_once`].
+///
+/// When `submit` is `Some`, Match outcomes call [`submit_intent`] once per epoch.
 pub fn spawn_coordination_loop<C>(
     client: Arc<CoordinationClient>,
     chain: Arc<C>,
     trust: LocalTrustRoot,
     interval: Duration,
+    submit: Option<CoordinationSubmitConfig>,
 ) -> tokio::task::JoinHandle<()>
 where
     C: ChainClient + Send + Sync + 'static,
 {
+    let dedupe = Arc::new(EpochSubmitDedupe::new());
     tokio::spawn(async move {
         // Immediate first attempt (covers seal-before-start and seal-soon-after).
-        if let Err(e) = coordination_compare_once(client.as_ref(), chain.as_ref(), &trust).await {
+        if let Err(e) = coordination_compare_once(
+            client.as_ref(),
+            chain.as_ref(),
+            &trust,
+            submit.as_ref(),
+            dedupe.as_ref(),
+        )
+        .await
+        {
             warn!(error = %e, "coordination compare tick failed (non-fatal)");
         }
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if let Err(e) = coordination_compare_once(client.as_ref(), chain.as_ref(), &trust).await
+            if let Err(e) = coordination_compare_once(
+                client.as_ref(),
+                chain.as_ref(),
+                &trust,
+                submit.as_ref(),
+                dedupe.as_ref(),
+            )
+            .await
             {
                 warn!(error = %e, "coordination compare tick failed (non-fatal)");
             }
@@ -126,7 +337,7 @@ mod tests {
     use super::*;
     use crate::coordination::CoordinationClient;
     use bundle::{make_signed_leaf, LocalTrustRoot, ScoreOrAbsence};
-    use chain::{FakeChain, FakeChainConfig};
+    use chain::{ChainCall, FakeChain, FakeChainConfig};
     use crypto::{secret_from_bytes, KEY_LEN};
     use gateway::{
         seal_epoch, BundleStore, ChallengeEntry, ChallengesBody, MemoryBundleStore,
@@ -162,6 +373,15 @@ mod tests {
         assert!(line.contains("gateway_vector_len=3"));
     }
 
+    #[test]
+    fn dedupe_marks_and_checks_epoch() {
+        let d = EpochSubmitDedupe::new();
+        assert!(!d.already_submitted(7));
+        d.mark_submitted(7);
+        assert!(d.already_submitted(7));
+        assert!(!d.already_submitted(8));
+    }
+
     #[tokio::test]
     async fn tick_404_is_soft_none() {
         let server = MockServer::start().await;
@@ -178,7 +398,8 @@ mod tests {
             challenges: ChallengesBody::default(),
             measurements_digest: measurements_digest(&MeasurementsBody::default()),
         };
-        let out = coordination_compare_once(&client, &chain, &trust)
+        let dedupe = EpochSubmitDedupe::new();
+        let out = coordination_compare_once(&client, &chain, &trust, None, &dedupe)
             .await
             .expect("soft");
         assert!(out.is_none());
@@ -204,20 +425,28 @@ mod tests {
             challenges: ChallengesBody::default(),
             measurements_digest: measurements_digest(&MeasurementsBody::default()),
         };
-        let out = coordination_compare_once(&client, &chain, &trust)
+        let dedupe = EpochSubmitDedupe::new();
+        let out = coordination_compare_once(&client, &chain, &trust, None, &dedupe)
             .await
             .expect("soft");
         assert!(out.is_none());
     }
 
-    #[tokio::test]
+    /// Seal a one-miner prism epoch and mount gateway latest + bundle routes.
     #[allow(clippy::too_many_lines)]
-    async fn tick_sealed_latest_yields_match() {
+    async fn sealed_match_fixture(
+        epoch: u64,
+    ) -> (
+        CoordinationClient,
+        FakeChain,
+        LocalTrustRoot,
+        [u8; 32],
+        Vec<(u16, u16)>,
+    ) {
         let csk = sk(1);
         let gsk = sk(2);
         let cid = b"prism";
         let miner = [0xA1u8; 32];
-        let epoch = 77u64;
         let block_b = 500u64;
         let ch_body = ChallengesBody {
             challenges: vec![ChallengeEntry {
@@ -265,6 +494,7 @@ mod tests {
             current_block: block_b.max(10),
             hotkeys: vec![miner.to_vec()],
             owner_hotkey: miner.to_vec(),
+            commit_reveal_enabled: true,
             ..FakeChainConfig::default()
         });
         let bundle = seal_epoch(
@@ -289,6 +519,7 @@ mod tests {
                 "epoch": epoch,
                 "merkle_root": hex::encode(bundle.body.merkle_root),
                 "final_vector": bundle.body.final_vector,
+                "sealed": true,
             })))
             .mount(&server)
             .await;
@@ -306,22 +537,109 @@ mod tests {
             challenges: ch_body,
             measurements_digest: mdigest,
         };
-        let out = coordination_compare_once(&client, &chain, &trust)
+        (
+            client,
+            chain,
+            trust,
+            bundle.body.merkle_root,
+            bundle.body.final_vector,
+        )
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn tick_sealed_latest_yields_match() {
+        let epoch = 77u64;
+        let (client, chain, trust, merkle_root, _) = sealed_match_fixture(epoch).await;
+        let dedupe = EpochSubmitDedupe::new();
+        let out = coordination_compare_once(&client, &chain, &trust, None, &dedupe)
             .await
             .expect("ok")
             .expect("some");
         match out {
             ComparisonOutcome::Match {
                 epoch: e,
-                merkle_root,
+                merkle_root: root,
                 ..
             } => {
                 assert_eq!(e, epoch);
-                assert_eq!(merkle_root, bundle.body.merkle_root);
-                let line = format_match_line(e, &merkle_root, &[0u8; 32], 1, 1);
+                assert_eq!(root, merkle_root);
+                let line = format_match_line(e, &root, &[0u8; 32], 1, 1);
                 assert!(line.contains("Match epoch=77"));
             }
             other => panic!("expected Match, got {other:?}"),
         }
+        assert!(
+            chain.call_log().is_empty(),
+            "no submit when submit cfg is None"
+        );
+    }
+
+    #[test]
+    fn maybe_submit_match_timelocked_once_per_epoch() {
+        let epoch = 88u64;
+        let outcome = ComparisonOutcome::Match {
+            epoch,
+            local_vector: vec![(0, 65535)],
+            gateway_vector: vec![(0, 65535)],
+            vector_hash: [0x11; 32],
+            merkle_root: [0x22; 32],
+        };
+        let chain = FakeChain::new(FakeChainConfig {
+            current_block: 500,
+            commit_reveal_enabled: true,
+            ..FakeChainConfig::default()
+        });
+        let submit = CoordinationSubmitConfig {
+            netuid: 1,
+            hotkey: vec![0xBBu8; 32],
+            version_key: 3,
+            epoch_length: 360,
+        };
+        let dedupe = EpochSubmitDedupe::new();
+
+        maybe_submit_match(&outcome, &chain, &ReadyDrand, Some(&submit), &dedupe);
+        let log = chain.call_log();
+        assert_eq!(log.len(), 1, "exactly one extrinsic after first Match");
+        match &log[0] {
+            ChainCall::SubmitTimelocked(sub) => {
+                assert_eq!(sub.mecid, 0);
+                assert_eq!(sub.payload.hotkey, vec![0xBBu8; 32]);
+                assert_eq!(sub.payload.version_key, 3);
+                assert_eq!(sub.payload.uids, vec![0]);
+                assert_eq!(sub.payload.values, vec![65535]);
+                assert!(
+                    chain.set_weights_log().is_empty(),
+                    "CR on → never set_weights"
+                );
+            }
+            other @ ChainCall::SetWeights(_) => {
+                panic!("expected SubmitTimelocked, got {other:?}")
+            }
+        }
+        assert!(dedupe.already_submitted(epoch));
+
+        // Second attempt: dedupe must suppress another extrinsic.
+        maybe_submit_match(&outcome, &chain, &ReadyDrand, Some(&submit), &dedupe);
+        assert_eq!(
+            chain.call_log().len(),
+            1,
+            "dedupe: still one submit after second Match"
+        );
+    }
+
+    #[test]
+    fn maybe_submit_match_noop_without_config() {
+        let outcome = ComparisonOutcome::Match {
+            epoch: 1,
+            local_vector: vec![(0, 1)],
+            gateway_vector: vec![(0, 1)],
+            vector_hash: [0; 32],
+            merkle_root: [0; 32],
+        };
+        let chain = FakeChain::with_defaults();
+        let dedupe = EpochSubmitDedupe::new();
+        maybe_submit_match(&outcome, &chain, &ReadyDrand, None, &dedupe);
+        assert!(chain.call_log().is_empty());
     }
 }

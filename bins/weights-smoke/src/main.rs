@@ -64,6 +64,11 @@ struct Args {
     /// Optional inclusive seal block (default: chain tip).
     #[arg(long)]
     block_b: Option<u64>,
+
+    /// Emit all `NoScore` leaves so aggregation burns 100% to uid 0.
+    /// Prefer this on mainnet when sealing without real challenge scores.
+    #[arg(long)]
+    burn: bool,
 }
 
 #[tokio::main]
@@ -108,17 +113,21 @@ fn load_tip_meta(args: &Args) -> Result<TipMeta, String> {
     Ok(TipMeta { tip, expected })
 }
 
-fn score_map(expected: &BTreeSet<[u8; KEY_LEN]>) -> BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> {
+fn score_map(
+    expected: &BTreeSet<[u8; KEY_LEN]>,
+    burn: bool,
+) -> BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> {
     let mut scores = BTreeMap::new();
     for (i, hk) in expected.iter().enumerate() {
-        // Mix score + absence so seal path is not score-only.
-        let soa = if i == 0 {
-            ScoreOrAbsence::Score {
-                value: 1_000 + u64::try_from(i).unwrap_or(0),
-            }
-        } else {
+        // Burn path: all absence → aggregation sinks 100% to uid 0.
+        // Default smoke: mix score + absence so the seal path is not score-only.
+        let soa = if burn || i != 0 {
             ScoreOrAbsence::NoScore {
                 reason: NoScoreReasonCode::NotAttempted,
+            }
+        } else {
+            ScoreOrAbsence::Score {
+                value: 1_000 + u64::try_from(i).unwrap_or(0),
             }
         };
         scores.insert(*hk, soa);
@@ -202,7 +211,10 @@ async fn run() -> Result<(), String> {
         expected.len()
     );
 
-    let scores = score_map(&expected);
+    let scores = score_map(&expected, args.burn);
+    if args.burn {
+        eprintln!("weights-smoke: burn mode (all NoScore → uid0)");
+    }
     let leaves = emit_signed_leaf_set(&sk, args.challenge_id.as_bytes(), epoch, &expected, &scores)
         .map_err(|e| e.to_string())?;
 

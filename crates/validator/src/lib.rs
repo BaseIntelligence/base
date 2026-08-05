@@ -13,6 +13,7 @@
 //! Task 32: three-outcome policy (class A / quarantine / class B), `DissentV1`,
 //! `GET /v1/dissent/{epoch}`, `base_challenge_quarantined_total`.
 //! Task 33: CRV4 timelocked submission via `submit` (`SubmissionIntent` → chain).
+//! Continuous path: `spawn_coordination_loop` Match → `submit_intent` (epoch dedupe).
 
 #![forbid(unsafe_code)]
 
@@ -49,7 +50,10 @@ pub use dissent::{
     SharedDissentStore, SubmissionIntent, SubmissionSource,
 };
 pub use epoch::{epoch_from_block, epoch_from_chain, EpochSnapshot};
-pub use epoch_loop::{coordination_compare_once, format_match_line, spawn_coordination_loop};
+pub use epoch_loop::{
+    coordination_compare_once, format_match_line, intent_from_match, maybe_submit_match,
+    spawn_coordination_loop, CoordinationSubmitConfig, EpochSubmitDedupe,
+};
 pub use error::ValidatorError;
 pub use mirror::{
     bundle_identity, mirror_router, parse_root_hex, root_hex, MemoryMirrorStore, SharedMirrorStore,
