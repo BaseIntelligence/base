@@ -246,7 +246,7 @@ fn build_and_sign_set_weights_structure() {
         &Era::Immortal,
         &genesis,
         &genesis,
-        440,
+        443,
         1,
         1,
         &[0, 1],
@@ -290,7 +290,7 @@ fn build_and_sign_commit_timelocked_structure() {
         &Era::Immortal,
         &genesis,
         &genesis,
-        440,
+        443,
         1,
         0,
         &payload,
@@ -387,7 +387,7 @@ async fn mock_runtime_version_ok() {
             "jsonrpc": "2.0", "id": 1,
             "result": {
                 "specName": "node-subtensor",
-                "specVersion": 440,
+                "specVersion": 443,
                 "transactionVersion": 1
             }
         })))
@@ -402,7 +402,7 @@ async fn mock_runtime_version_ok() {
     .await
     .expect("spawn_blocking")
     .expect("runtime version");
-    assert_eq!(rt.spec_version, 440);
+    assert_eq!(rt.spec_version, 443);
     assert_eq!(rt.transaction_version, 1);
 }
 
@@ -514,7 +514,7 @@ async fn set_weights_refuses_on_spec_version_mismatch() {
         .mount(&server)
         .await;
 
-    // Mock runtime version with mismatched spec_version (441 instead of 440)
+    // Mock runtime version with mismatched spec_version (441 instead of 443)
     Mock::given(method("POST"))
         .and(body_partial_json(
             json!({"method": "state_getRuntimeVersion"}),
@@ -748,7 +748,7 @@ fn serve_axon_extrinsic_is_signed_and_carries_the_call() {
         &Era::Immortal,
         &[0x11; 32],
         &[0x11; 32],
-        440,
+        443,
         1,
         &params,
     )

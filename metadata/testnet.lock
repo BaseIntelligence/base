@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "endpoint": "wss://test.finney.opentensor.ai:443",
+  "endpoint": "wss://entrypoint-finney.opentensor.ai:443",
   "sdk_pin": "e4ffa2e1325c6c7db618dbceaf396310a170990c",
   "snapshot_netuid": 1,
   "chain": {
     "spec_name": "node-subtensor",
-    "spec_version": 440,
+    "spec_version": 443,
     "transaction_version": 1,
     "ss58_prefix": 42
   },
-  "metadata_digest": "0x60bd8ab8e9708f9e0dde451e2855215d8915cc816ff4e77c5538a52bebd8b2fa",
+  "metadata_digest": "0x5d603ac2a84552035cc0434cd7a7b56781a26eab47245542dd43ef1c8ce9b046",
   "call_indices": {
     "set_weights": {
       "pallet": "SubtensorModule",

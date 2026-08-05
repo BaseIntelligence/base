@@ -30,8 +30,8 @@ pub use storage::{
 
 use std::path::Path;
 
-/// Lockfile-pinned spec version (`metadata/testnet.lock` → 440).
-const SPEC_VERSION: u32 = 440;
+/// Lockfile-pinned spec version (`metadata/testnet.lock` → 443).
+const SPEC_VERSION: u32 = 443;
 /// Lockfile-pinned transaction version (1).
 const TRANSACTION_VERSION: u32 = 1;
 /// Lockfile-pinned commit-reveal version (CRV4 = 4).
