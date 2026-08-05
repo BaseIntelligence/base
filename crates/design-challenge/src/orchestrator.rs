@@ -897,9 +897,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .list_recent_harnesses(64)
             .await
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
+        let cand_created = recent
+            .iter()
+            .find(|h| h.id == run.harness_id)
+            .map(|h| h.created_at_ms)
+            .unwrap_or(0);
         let corpus: Vec<CorpusEntry> = recent
             .into_iter()
             .filter(|h| h.id != run.harness_id)
+            // Prior art only (created_at ordered like the pre-LLM gate): a
+            // later byte-copy must never poison the original's review.
+            .filter(|h| {
+                cand_created == 0 || (h.created_at_ms > 0 && h.created_at_ms < cand_created)
+            })
             .map(|h| CorpusEntry {
                 id: format!("harness:{}", h.id),
                 source: h.agent_py,
