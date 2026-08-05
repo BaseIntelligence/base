@@ -1,6 +1,6 @@
 //! sr25519 signed Substrate extrinsic builder (V4 format).
 
-use chain::{ChainError, WeightsTlockPayload};
+use chain::ChainError;
 use parity_scale_codec::{Compact, Encode};
 use schnorrkel::{signing_context, ExpansionMode, MiniSecretKey};
 
@@ -109,6 +109,9 @@ fn sign_payload(secret: &[u8; 32], payload: &[u8]) -> Result<[u8; 64], ChainErro
 }
 
 /// Build the signing payload for a V4 extrinsic.
+///
+/// Substrate order: `Call` ++ signed extras (`era`, `nonce`, `tip`) ++
+/// additional signed (`spec_version`, `tx_version`, `genesis_hash`, `block_hash`).
 #[allow(clippy::too_many_arguments)]
 fn signing_payload(
     era: &Era,
@@ -121,10 +124,10 @@ fn signing_payload(
     block_hash: &[u8; 32],
 ) -> Vec<u8> {
     let mut payload = Vec::new();
+    payload.extend_from_slice(call);
     payload.extend_from_slice(&era.encode_era());
     Compact(nonce).encode_to(&mut payload);
     Compact(tip).encode_to(&mut payload);
-    payload.extend_from_slice(call);
     payload.extend_from_slice(&spec_version.to_le_bytes());
     payload.extend_from_slice(&tx_version.to_le_bytes());
     payload.extend_from_slice(genesis_hash);
@@ -185,18 +188,30 @@ pub fn set_weights_call(netuid: u16, uids: &[u16], values: &[u16], version_key: 
 }
 
 /// SCALE-encode the `commit_timelocked_mechanism_weights` call bytes.
+///
+/// Runtime args (pallet 7 / call 118):
+/// `netuid`, `mecid`, `commit` (`BoundedVec<u8>`), `reveal_round`, `commit_reveal_version`.
+///
+/// `commit` must be the **drand-timelock encrypted** blob (SDK
+/// `get_encrypted_commit_v2`). Passing a raw [`WeightsTlockPayload`] SCALE blob
+/// is only for unit fixtures — Finney will reject it at validation.
 #[must_use]
 pub fn commit_timelocked_call(
+    netuid: u16,
     mecid: u8,
-    payload: &WeightsTlockPayload,
+    commit: &[u8],
     reveal_round: u64,
+    commit_reveal_version: u16,
 ) -> Vec<u8> {
     let mut call = Vec::new();
     call.push(PALLET_INDEX);
     call.push(CALL_COMMIT_MECHANISM_WEIGHTS);
+    netuid.encode_to(&mut call);
     mecid.encode_to(&mut call);
-    payload.encode_to(&mut call);
+    // BoundedVec<u8, N> encodes identically to Vec<u8> (compact len + bytes).
+    commit.to_vec().encode_to(&mut call);
     reveal_round.encode_to(&mut call);
+    commit_reveal_version.encode_to(&mut call);
     call
 }
 
@@ -291,11 +306,19 @@ pub fn build_and_sign_commit_timelocked(
     block_hash: &[u8; 32],
     spec_version: u32,
     tx_version: u32,
+    netuid: u16,
     mecid: u8,
-    payload: &WeightsTlockPayload,
+    commit: &[u8],
     reveal_round: u64,
+    commit_reveal_version: u16,
 ) -> Result<Vec<u8>, ChainError> {
-    let call = commit_timelocked_call(mecid, payload, reveal_round);
+    let call = commit_timelocked_call(
+        netuid,
+        mecid,
+        commit,
+        reveal_round,
+        commit_reveal_version,
+    );
     build_signed_extrinsic(
         key,
         era,

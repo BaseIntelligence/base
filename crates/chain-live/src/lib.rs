@@ -463,25 +463,18 @@ impl ChainClient for LiveChainClient {
                 alternate: "set_weights",
             });
         }
-        self.check_runtime_version()?;
-        let key = self.require_key()?;
-        let genesis_hash = self.block_hash(0)?;
-        let pubkey = extrinsic::derive_public_key(&key)?;
-        let nonce = self.rpc.system_account_next_index(pubkey)?;
-        let ext = extrinsic::build_and_sign_commit_timelocked(
-            &key,
-            nonce,
-            &Era::Immortal,
-            &genesis_hash,
-            &genesis_hash,
-            self.spec_version,
-            self.tx_version,
-            mecid,
-            &payload,
-            reveal_round,
-        )?;
-        self.submit_extrinsic(&ext)?;
-        Ok(())
+        // CRV4 on Finney requires a drand-timelock ciphertext in `commit`
+        // (`bittensor_drand.get_encrypted_commit_v2`). Encryption is still
+        // deferred in-tree — fail closed rather than submit a decode-poisoning
+        // payload that panics `validate_transaction`.
+        let _ = (mecid, payload, reveal_round);
+        Err(ChainError::Other(
+            "CRV4 tlock encryption not implemented: cannot build \
+             commit_timelocked_mechanism_weights commit blob \
+             (need get_encrypted_commit_v2 / TLE); Match→submit wired but \
+             extrinsic submit blocked until encryption lands"
+                .into(),
+        ))
     }
 
     fn set_weights(

@@ -189,12 +189,28 @@ pub fn maybe_submit_match<C, D>(
             dedupe.mark_submitted(epoch);
         }
         Err(e) => {
-            warn!(
-                event = "validator_submit_error",
-                epoch = intent.epoch,
-                error = %e,
-                "submit_intent failed (will retry next tick)"
-            );
+            let msg = e.to_string();
+            // Permanent gaps (missing tlock encrypt, wrong CR version) — do not
+            // hammer the RPC every coordination tick.
+            let permanent = msg.contains("tlock encryption not implemented")
+                || msg.contains("commit_reveal_version")
+                || msg.contains("WrongCommitRevealVersion");
+            if permanent {
+                warn!(
+                    event = "validator_submit_error",
+                    epoch = intent.epoch,
+                    error = %e,
+                    "submit_intent failed permanently for epoch (deduped)"
+                );
+                dedupe.mark_submitted(intent.epoch);
+            } else {
+                warn!(
+                    event = "validator_submit_error",
+                    epoch = intent.epoch,
+                    error = %e,
+                    "submit_intent failed (will retry next tick)"
+                );
+            }
         }
     }
 }

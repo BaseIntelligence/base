@@ -207,33 +207,24 @@ fn set_weights_call_bytes_known_fixture() {
 
 #[test]
 fn commit_timelocked_call_bytes_known_fixture() {
-    let payload = WeightsTlockPayload {
-        hotkey: vec![0xAA; 32],
-        uids: vec![0, 1],
-        values: vec![100, 200],
-        version_key: 0,
-    };
-    let call = commit_timelocked_call(0, &payload, 99);
+    // commit blob is opaque BoundedVec bytes (encrypted in production).
+    let commit = [0xABu8; 4];
+    let call = commit_timelocked_call(100, 0, &commit, 99, 4);
 
-    // Expected structure:
-    // 0x07 (pallet 7), 0x76 (call 118), 0x00 (mecid 0)
-    // payload: Compact(32)=0x80, [0xAA;32], Compact(2)=0x08, [0,0,1,0], 0x08, [100,0,200,0], [0;8]
-    // reveal_round: 99 LE = [0x63, 0, 0, 0, 0, 0, 0, 0]
+    // 0x07 pallet, 0x76 call 118, netuid=100 LE, mecid=0,
+    // Compact(4)=0x10 + 4 commit bytes, reveal_round=99 LE, version=4 LE.
     assert_eq!(call[0], 0x07);
     assert_eq!(call[1], 0x76);
-    assert_eq!(call[2], 0x00);
-    assert_eq!(call[3], 0x80); // Compact(32)
-    assert_eq!(&call[4..36], &[0xAA; 32]); // hotkey
-    assert_eq!(call[36], 0x08); // Compact(2) uids
-    assert_eq!(&call[37..41], &[0x00, 0x00, 0x01, 0x00]); // uids
-    assert_eq!(call[41], 0x08); // Compact(2) values
-    assert_eq!(&call[42..46], &[0x64, 0x00, 0xc8, 0x00]); // values
-    assert_eq!(&call[46..54], &[0x00; 8]); // version_key
+    assert_eq!(&call[2..4], &[100, 0]); // netuid u16 LE
+    assert_eq!(call[4], 0x00); // mecid
+    assert_eq!(call[5], 0x10); // Compact(4)
+    assert_eq!(&call[6..10], &[0xAB; 4]);
     assert_eq!(
-        &call[54..62],
+        &call[10..18],
         &[0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     ); // reveal_round=99
-    assert_eq!(call.len(), 62);
+    assert_eq!(&call[18..20], &[0x04, 0x00]); // commit_reveal_version=4
+    assert_eq!(call.len(), 20);
 }
 
 #[test]
@@ -278,12 +269,7 @@ fn build_and_sign_set_weights_structure() {
 fn build_and_sign_commit_timelocked_structure() {
     let key = test_secret();
     let genesis = [0x22_u8; 32];
-    let payload = WeightsTlockPayload {
-        hotkey: vec![0xAA; 32],
-        uids: vec![0, 1],
-        values: vec![100, 200],
-        version_key: 0,
-    };
+    let commit = [0xABu8; 4];
     let ext = crate::build_and_sign_commit_timelocked(
         &key,
         5,
@@ -292,15 +278,16 @@ fn build_and_sign_commit_timelocked_structure() {
         &genesis,
         443,
         1,
+        100,
         0,
-        &payload,
+        &commit,
         99,
+        4,
     )
     .unwrap();
 
-    // 1 + 1 + 32 + 1 + 64 + 1 + 1(nonce=5: Compact(5)=0x14) + 1 + 62 = 164
-    // Wait: Compact(5) = 5*4 = 20 = 0x14 (single byte since 5 < 64)
-    assert_eq!(ext.len(), 164);
+    // 1 + 1 + 32 + 1 + 64 + 1 + 1(nonce=5: Compact(5)=0x14) + 1 + 20(call) = 122
+    assert_eq!(ext.len(), 122);
     assert_eq!(ext[0], 0x84);
     assert_eq!(ext[1], 0x00);
     assert_eq!(ext[34], 0x01); // Sr25519
@@ -308,7 +295,7 @@ fn build_and_sign_commit_timelocked_structure() {
     assert_eq!(ext[100], 0x14); // Compact(5) nonce
     assert_eq!(ext[101], 0x00); // Compact(0) tip
 
-    let expected_call = commit_timelocked_call(0, &payload, 99);
+    let expected_call = commit_timelocked_call(100, 0, &commit, 99, 4);
     assert_eq!(&ext[102..], &expected_call[..]);
 }
 

@@ -32,8 +32,8 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 | Health endpoints (`/healthz`, `/readyz`, `/metrics`) | done | |
 | Attestation (`/v1/attest/*`) | done | Real Intel DCAP via `dcap-qvl` when built `--features dcap` (the container default). Verified against live Intel PCS; a tampered quote yields `CryptoInvalid`. Mock verifiers remain for tests only. |
 | Bundle fetch + `compare_bundle` | done | Continuous coordination loop. |
-| Match → `submit_intent` | done | `spawn_coordination_loop` submits on Match with per-epoch in-memory dedupe; CR enabled → `submit_timelocked_weights` (never downgrades to `set_weights`). Requires validator signing key. |
-| `set_weights` / `submit_timelocked_weights` | done | Live extrinsics. The signing key is derived from the Bittensor wallet mnemonic via `keystore` and installed with `LiveChainClient::set_signing_key`; without it submission fails closed. |
+| Match → `submit_intent` | done | `spawn_coordination_loop` submits on Match with per-epoch in-memory dedupe; CR enabled → timelocked path (never downgrades to `set_weights`). Requires validator signing key. |
+| `set_weights` / `submit_timelocked_weights` | partial | Live `set_weights` + call scaffolding for `commit_timelocked_mechanism_weights` (5-arg: netuid/mecid/commit/reveal_round/version). **CRV4 tlock encrypt** (`get_encrypted_commit_v2`) still deferred — LiveChainClient fail-closes on timelocked submit until encryption lands. Signing key via `keystore`. |
 | Chain backend | done | Live only. `FakeChain` was removed from `bins/validator`; there is no switch left to misconfigure. |
 
 ## Gateway
@@ -114,7 +114,7 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 
 | Gap | Impact |
 |-----|--------|
-| CRV4 tlock encryption | Drand BLS12-381 IBE is still absent; the extrinsic path ships without it. |
+| CRV4 tlock encryption | Drand BLS12-381 IBE / `get_encrypted_commit_v2` still absent; Match→submit is wired but mainnet CR (netuid 100) fail-closes before signing a timelocked extrinsic. |
 | DCAP verify holds the attest mutex | A cold Intel PCS fetch (up to 20 s) serialises attestation submissions. |
 | DCAP error classification | Matches on `anyhow` message text; re-run `cargo test -p attest-policy --features dcap` after any `dcap-qvl` bump. |
 | Design compose/images | deploy-wiring in progress; local port `28093` documented. |
