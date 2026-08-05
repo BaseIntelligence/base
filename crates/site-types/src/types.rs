@@ -146,6 +146,12 @@ pub struct LeaderboardRow {
     pub submissions: u32,
     /// Real delta vs previous round when available; else 0.
     pub delta7d: f64,
+    /// Prism validation BPB when the arena ranks on BPB (absent for design).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpb: Option<f64>,
+    /// Model parameters in millions when the submission measured them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_m: Option<f64>,
 }
 
 /// Submission status.
@@ -246,6 +252,59 @@ pub struct PrismWindow {
     pub param_ceiling: u64,
     /// Series from terminal scored submissions.
     pub series: Vec<LossSeries>,
+}
+
+/// One miner-reported telemetry point (prism recipe ≥1.1.0).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismTelemetryPoint {
+    /// Optimizer step index reported by the miner.
+    pub step: u64,
+    /// Train loss at `step`.
+    pub loss: f64,
+    /// Global gradient norm when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grad_norm: Option<f64>,
+    /// Seconds since train start (pod clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_secs: Option<f64>,
+    /// Per-layer gradient/activation stats when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_stats: Option<serde_json::Value>,
+}
+
+/// Full telemetry payload for one prism submission.
+///
+/// `points` is empty while the eval has not produced harness metrics yet
+/// (in-flight or pre-1.1.0 recipe); `finishReason` tells how training ended
+/// (`finish_evaluation` miner signal vs `train_returned`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismTelemetry {
+    /// Submission id.
+    pub submission_id: String,
+    /// Validation BPB when measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpb: Option<f64>,
+    /// Model parameters measured in-pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_params: Option<u64>,
+    /// Frozen val rows scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub val_rows: Option<u64>,
+    /// GPU type used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_type: Option<String>,
+    /// Train wall-clock seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock_seconds: Option<f64>,
+    /// `finish_evaluation` | `train_returned` when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    /// Total miner `report()` calls (including decimated points).
+    pub report_count: u64,
+    /// Loss series (harness-decimated to a bounded length).
+    pub points: Vec<PrismTelemetryPoint>,
 }
 
 /// Rules gate chip.

@@ -9,8 +9,10 @@
 
 mod dbprism;
 mod store;
+mod telemetry;
 
 pub use dbprism::DbPrismStore;
+pub use prism_lium::TelemetryPoint;
 pub use store::{
     FinalScore, MemoryPrismStore, PrismStore, Stage, StageEvent, StatePatch, StoreError,
     SubmissionState,

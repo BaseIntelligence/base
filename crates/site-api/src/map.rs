@@ -7,7 +7,8 @@ use serde_json::Value;
 use site_types::{coding_arena, design_frame, prism_frame};
 use site_types::{
     ActivityEvent, ActivitySeverity, Agent, Arena, ArenaSlug, LeaderboardRow, LossPoint,
-    LossSeries, PrismWindow, RulesGate, SealedPaths, Submission, SubmissionStatus,
+    LossSeries, PrismTelemetry, PrismTelemetryPoint, PrismWindow, RulesGate, SealedPaths,
+    Submission, SubmissionStatus,
 };
 
 /// Truncated hotkey → agent shell (no invented miner numbers / models).
@@ -260,6 +261,8 @@ pub fn design_leaderboard(
                 win_rate,
                 submissions: wins.saturating_add(losses),
                 delta7d,
+                bpb: None,
+                params_m: None,
             },
         )
         .collect()
@@ -415,10 +418,11 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
 /// Prism BPB leaderboard from terminal submissions (lower BPB ranks better).
 ///
 /// `elo` carries the BPB value so the existing leaderboard row contract can
-/// surface rankings without inventing Elo/duels.
+/// surface rankings without inventing Elo/duels; `bpb` / `paramsM` mirror the
+/// measured values explicitly for telemetry-aware clients.
 #[must_use]
 pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> {
-    let mut best: HashMap<String, f64> = HashMap::new();
+    let mut best: HashMap<String, (f64, Option<u64>)> = HashMap::new();
     let mut counts: HashMap<String, u32> = HashMap::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
@@ -427,6 +431,7 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
         let Some(bpb) = row.get("bpb").and_then(Value::as_f64) else {
             continue;
         };
+        let n_params = row.get("n_params").and_then(Value::as_u64);
         let hk = row
             .get("miner_hotkey")
             .and_then(Value::as_str)
@@ -434,24 +439,25 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             .to_owned();
         *counts.entry(hk.clone()).or_insert(0) += 1;
         best.entry(hk)
-            .and_modify(|b| {
+            .and_modify(|(b, p)| {
                 if bpb < *b {
                     *b = bpb;
+                    *p = n_params;
                 }
             })
-            .or_insert(bpb);
+            .or_insert((bpb, n_params));
     }
-    let mut rows: Vec<(f64, String, u32)> = best
+    let mut rows: Vec<(f64, String, u32, Option<u64>)> = best
         .into_iter()
-        .map(|(hk, bpb)| {
+        .map(|(hk, (bpb, n_params))| {
             let n = counts.get(&hk).copied().unwrap_or(1);
-            (bpb, hk, n)
+            (bpb, hk, n, n_params)
         })
         .collect();
     rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     rows.into_iter()
         .enumerate()
-        .map(|(i, (bpb, hk, submissions))| LeaderboardRow {
+        .map(|(i, (bpb, hk, submissions, n_params))| LeaderboardRow {
             rank: u32::try_from(i + 1).unwrap_or(u32::MAX),
             agent: agent_from_hotkey(&hk, epoch),
             elo: bpb,
@@ -460,13 +466,81 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             win_rate: 0.0,
             submissions,
             delta7d: 0.0,
+            bpb: Some(bpb),
+            params_m: n_params.map(|p| p as f64 / 1e6),
         })
         .collect()
 }
 
-/// Prism window from recipe + terminal scored submissions (minimal series).
+/// Map one prism submission detail payload (`GET /v1/submissions/{id}`) to the
+/// site telemetry contract. `None` when the payload has no `submission` object;
+/// the series is empty until the harness publishes `metrics.telemetry`.
 #[must_use]
-pub fn prism_window(recipe: Option<&Value>, status: Option<&Value>, subs: &[Value]) -> PrismWindow {
+pub fn prism_telemetry(detail: &Value) -> Option<PrismTelemetry> {
+    let sub = detail.get("submission")?;
+    let id = sub.get("id")?.as_str()?;
+    let metrics = sub.get("metrics").filter(|m| !m.is_null());
+    let tele = metrics.and_then(|m| m.get("telemetry"));
+    let points = tele
+        .and_then(|t| t.get("loss_series"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    Some(PrismTelemetryPoint {
+                        step: p.get("step")?.as_u64()?,
+                        loss: p.get("loss")?.as_f64()?,
+                        grad_norm: p.get("grad_norm").and_then(Value::as_f64),
+                        at_secs: p.get("at_secs").and_then(Value::as_f64),
+                        layer_stats: p.get("layer_stats").cloned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(PrismTelemetry {
+        submission_id: id.to_owned(),
+        bpb: sub
+            .get("bpb")
+            .and_then(Value::as_f64)
+            .or_else(|| metrics.and_then(|m| m.get("bpb")).and_then(Value::as_f64)),
+        n_params: metrics
+            .and_then(|m| m.get("n_params"))
+            .and_then(Value::as_u64),
+        val_rows: metrics
+            .and_then(|m| m.get("val_rows"))
+            .and_then(Value::as_u64),
+        gpu_type: metrics
+            .and_then(|m| m.get("gpu_type"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        wall_clock_seconds: metrics
+            .and_then(|m| m.get("wall_clock_seconds"))
+            .and_then(Value::as_f64),
+        finish_reason: tele
+            .and_then(|t| t.get("finish_reason"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        report_count: tele
+            .and_then(|t| t.get("report_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        points,
+    })
+}
+
+/// Prism window from recipe + terminal scored submissions.
+///
+/// Series carry the real miner-reported loss curves when `telemetry` has a
+/// payload for the submission id; otherwise they fall back to the minimal
+/// single-point `[final_bpb]` curve (pre-telemetry recipes, upstream miss).
+#[must_use]
+pub fn prism_window(
+    recipe: Option<&Value>,
+    status: Option<&Value>,
+    subs: &[Value],
+    telemetry: &HashMap<String, PrismTelemetry>,
+) -> PrismWindow {
     let dataset = recipe
         .and_then(|r| r.get("dataset_ref"))
         .and_then(Value::as_str)
@@ -493,7 +567,7 @@ pub fn prism_window(recipe: Option<&Value>, status: Option<&Value>, subs: &[Valu
         .and_then(Value::as_str)
         .unwrap_or("—");
     let mut series: Vec<(f64, LossSeries)> = Vec::new();
-    for (i, row) in subs.iter().enumerate() {
+    for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
             continue;
         }
@@ -505,17 +579,32 @@ pub fn prism_window(recipe: Option<&Value>, status: Option<&Value>, subs: &[Valu
             .get("label")
             .and_then(Value::as_str)
             .map_or_else(|| format!("run:{}", &id[..id.len().min(8)]), str::to_owned);
+        let tele = telemetry.get(id);
+        let points = tele
+            .map(|t| {
+                t.points
+                    .iter()
+                    .map(|p| LossPoint {
+                        step: u32::try_from(p.step).unwrap_or(u32::MAX),
+                        loss: p.loss,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|pts| !pts.is_empty())
+            .unwrap_or_else(|| vec![LossPoint { step: 0, loss: bpb }]);
+        let params = tele
+            .and_then(|t| t.n_params)
+            .map_or(0.0, |p| p as f64 / 1e6);
         series.push((
             bpb,
             LossSeries {
                 architecture: label,
-                params: 0.0,
+                params,
                 final_loss: bpb,
                 rank: 0,
-                points: vec![LossPoint { step: 0, loss: bpb }],
+                points,
             },
         ));
-        let _ = i;
     }
     series.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let series: Vec<LossSeries> = series
@@ -668,13 +757,128 @@ mod tests {
             json!({"id":"cafebabe02","status":"queued","bpb":0.1,"label":"b"}),
             json!({"id":"facefeed03","status":"terminated","bpb":1.1,"label":"c"}),
         ];
-        let w = prism_window(Some(&recipe), None, &subs);
+        let w = prism_window(Some(&recipe), None, &subs, &HashMap::new());
         assert_eq!(w.series.len(), 2);
         assert_eq!(w.series[0].rank, 1);
         assert!((w.series[0].final_loss - 1.1).abs() < f64::EPSILON);
         assert_eq!(w.series[0].points.len(), 1);
         assert_eq!(w.offset, "pinned");
         assert_eq!(w.token_budget, 0);
+    }
+
+    #[test]
+    fn prism_window_uses_real_telemetry_series_when_present() {
+        let subs = vec![
+            json!({"id":"deadbeef01","status":"terminated","bpb":1.5,"label":"a"}),
+            json!({"id":"facefeed03","status":"terminated","bpb":1.1,"label":"c"}),
+        ];
+        let mut telemetry = HashMap::new();
+        telemetry.insert(
+            "facefeed03".to_owned(),
+            PrismTelemetry {
+                submission_id: "facefeed03".into(),
+                bpb: Some(1.1),
+                n_params: Some(12_000_000),
+                val_rows: Some(256),
+                gpu_type: Some("SIM".into()),
+                wall_clock_seconds: Some(12.0),
+                finish_reason: Some("finish_evaluation".into()),
+                report_count: 3,
+                points: vec![
+                    PrismTelemetryPoint {
+                        step: 1,
+                        loss: 4.0,
+                        grad_norm: Some(1.0),
+                        at_secs: Some(0.5),
+                        layer_stats: None,
+                    },
+                    PrismTelemetryPoint {
+                        step: 2,
+                        loss: 2.0,
+                        grad_norm: None,
+                        at_secs: None,
+                        layer_stats: None,
+                    },
+                ],
+            },
+        );
+        let w = prism_window(None, None, &subs, &telemetry);
+        assert_eq!(w.series.len(), 2);
+        // Rank 1 (bpb 1.1) carries the real curve + params; rank 2 falls back.
+        assert_eq!(w.series[0].points.len(), 2);
+        assert!((w.series[0].points[0].loss - 4.0).abs() < f64::EPSILON);
+        assert_eq!(w.series[0].points[0].step, 1);
+        assert!((w.series[0].params - 12.0).abs() < f64::EPSILON);
+        assert_eq!(w.series[1].points.len(), 1);
+        assert!((w.series[1].params - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn prism_telemetry_parses_detail_payload() {
+        let detail = json!({
+            "submission": {
+                "id": "sub1",
+                "bpb": 1.25,
+                "metrics": {
+                    "bpb": 1.25,
+                    "wall_clock_seconds": 12.0,
+                    "gpu_type": "NVIDIA RTX 5090",
+                    "n_params": 12_000_000_u64,
+                    "val_rows": 256,
+                    "telemetry": {
+                        "finish_reason": "finish_evaluation",
+                        "report_count": 2,
+                        "loss_series": [
+                            {"step": 1, "loss": 4.0, "grad_norm": 0.9, "at_secs": 0.5,
+                             "layer_stats": {"head": 0.1}},
+                            {"step": 2, "loss": 3.5}
+                        ]
+                    }
+                }
+            },
+            "events": []
+        });
+        let t = prism_telemetry(&detail).unwrap();
+        assert_eq!(t.submission_id, "sub1");
+        assert!((t.bpb.unwrap() - 1.25).abs() < f64::EPSILON);
+        assert_eq!(t.n_params, Some(12_000_000));
+        assert_eq!(t.finish_reason.as_deref(), Some("finish_evaluation"));
+        assert_eq!(t.report_count, 2);
+        assert_eq!(t.points.len(), 2);
+        assert_eq!(t.points[0].step, 1);
+        assert!(t.points[0].layer_stats.is_some());
+        assert!(t.points[1].grad_norm.is_none());
+    }
+
+    #[test]
+    fn prism_telemetry_handles_missing_metrics() {
+        let detail = json!({"submission": {"id": "sub1", "bpb": null, "metrics": null}});
+        let t = prism_telemetry(&detail).unwrap();
+        assert!(t.points.is_empty());
+        assert!(t.bpb.is_none());
+        assert!(t.finish_reason.is_none());
+        assert!(prism_telemetry(&json!({"events": []})).is_none());
+    }
+
+    #[test]
+    fn prism_leaderboard_exposes_bpb_and_params_fields() {
+        let subs = vec![
+            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa","n_params":12_000_000_u64}),
+            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb"}),
+        ];
+        let rows = prism_bpb_leaderboard(&subs, 3);
+        assert_eq!(rows.len(), 2);
+        assert!((rows[0].bpb.unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!(rows[0].params_m.is_none());
+        assert!((rows[1].params_m.unwrap() - 12.0).abs() < f64::EPSILON);
+        // Backwards compat: old payloads without the new fields still decode.
+        let old: LeaderboardRow = serde_json::from_value(json!({
+            "rank": 1,
+            "agent": {"slug":"a","handle":"@a","minerNumber":"—","model":"—","operator":"a","joinedEpoch":0},
+            "elo": 1.0, "wins": 0, "losses": 0, "winRate": 0.0, "submissions": 1, "delta7d": 0.0
+        }))
+        .unwrap();
+        assert!(old.bpb.is_none());
     }
 
     #[test]

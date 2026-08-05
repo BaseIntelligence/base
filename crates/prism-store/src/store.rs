@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use prism_lium::EvalReceipt;
+use prism_lium::{EvalReceipt, TelemetryPoint};
 use prism_review::{ReviewVerdict, SimilarityVerdict};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -49,6 +49,8 @@ pub struct SubmissionState {
     pub pod_provider: Option<String>,
     /// Receipt set once the pod phase completes.
     pub receipt: Option<EvalReceipt>,
+    /// Full harness metrics blob (`RemoteExecResult` JSON, incl. telemetry).
+    pub metrics_json: Option<serde_json::Value>,
     /// Measured bpb.
     pub bpb: Option<f64>,
     /// LLM review verdict.
@@ -65,6 +67,14 @@ pub struct SubmissionState {
     pub created_at_ms: u64,
     /// Updated at (unix ms).
     pub updated_at_ms: u64,
+}
+
+impl SubmissionState {
+    /// Model parameter count from the harness metrics blob, when measured.
+    #[must_use]
+    pub fn n_params(&self) -> Option<u64> {
+        self.metrics_json.as_ref()?.get("n_params")?.as_u64()
+    }
 }
 
 /// Lifecycle (the DB CHECK mirrors this list — keep in sync).
@@ -161,6 +171,8 @@ pub struct StatePatch {
     pub pod_provider: Option<String>,
     /// Receipt.
     pub receipt: Option<EvalReceipt>,
+    /// Full harness metrics blob (carries telemetry for the per-step table).
+    pub metrics_json: Option<serde_json::Value>,
     /// bpb.
     pub bpb: Option<f64>,
     /// Review verdict.
@@ -212,6 +224,10 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// Ascending journal.
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError>;
 
+    /// Per-step telemetry series (migration 0009 `prism_telemetry`), ordered
+    /// by step. Empty when the harness reported nothing (pre-1.1.0 recipes).
+    async fn telemetry(&self, id: &str) -> Result<Vec<TelemetryPoint>, StoreError>;
+
     /// Latest final score per miner (for D24 leaf emission), epoch-filtered.
     async fn scores_for_epoch(
         &self,
@@ -228,6 +244,7 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
 pub struct MemoryPrismStore {
     rows: Mutex<VecDeque<SubmissionState>>,
     events: Mutex<Vec<(String, StageEvent)>>,
+    telemetry: Mutex<std::collections::HashMap<String, Vec<TelemetryPoint>>>,
 }
 
 impl MemoryPrismStore {
@@ -242,6 +259,17 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Extract the miner-reported loss series from a `RemoteExecResult` JSON blob
+/// (`telemetry.loss_series`). Empty when absent or malformed — the harness
+/// controls the shape, so a parse miss means a pre-telemetry recipe.
+pub(crate) fn telemetry_from_metrics(metrics_json: &serde_json::Value) -> Vec<TelemetryPoint> {
+    metrics_json
+        .get("telemetry")
+        .and_then(|t| t.get("loss_series"))
+        .and_then(|s| serde_json::from_value::<Vec<TelemetryPoint>>(s.clone()).ok())
+        .unwrap_or_default()
 }
 
 #[async_trait]
@@ -309,6 +337,9 @@ impl PrismStore for MemoryPrismStore {
         if let Some(v) = &update.receipt {
             row.receipt = Some(v.clone());
         }
+        if let Some(v) = &update.metrics_json {
+            row.metrics_json = Some(v.clone());
+        }
         if let Some(v) = update.bpb {
             row.bpb = Some(v);
         }
@@ -328,6 +359,15 @@ impl PrismStore for MemoryPrismStore {
         row.updated_at_ms = now_ms();
         let out = row.clone();
         drop(rows);
+        if let Some(m) = &update.metrics_json {
+            let series = telemetry_from_metrics(m);
+            if !series.is_empty() {
+                self.telemetry
+                    .lock()
+                    .map_err(|_| StoreError::Backend("poison".into()))?
+                    .insert(id.to_owned(), series);
+            }
+        }
         if let Some(e) = event {
             self.events
                 .lock()
@@ -350,6 +390,7 @@ impl PrismStore for MemoryPrismStore {
         row.pod_id = None;
         row.pod_provider = None;
         row.receipt = None;
+        row.metrics_json = None;
         row.bpb = None;
         row.review = None;
         row.similarity = None;
@@ -357,7 +398,13 @@ impl PrismStore for MemoryPrismStore {
         row.error_detail = None;
         row.retry_count = row.retry_count.saturating_add(1);
         row.updated_at_ms = now_ms();
-        Ok(row.clone())
+        let out = row.clone();
+        drop(rows);
+        self.telemetry
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .remove(id);
+        Ok(out)
     }
 
     async fn list(
@@ -395,6 +442,16 @@ impl PrismStore for MemoryPrismStore {
             .filter(|(k, _)| k == id)
             .map(|(_, e)| e.clone())
             .collect())
+    }
+
+    async fn telemetry(&self, id: &str) -> Result<Vec<TelemetryPoint>, StoreError> {
+        Ok(self
+            .telemetry
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn scores_for_epoch(
@@ -450,6 +507,7 @@ mod tests {
             pod_id: None,
             pod_provider: None,
             receipt: None,
+            metrics_json: None,
             bpb: None,
             review: None,
             similarity: None,
@@ -517,5 +575,75 @@ mod tests {
         assert_eq!(s.events("a").await.unwrap().len(), 1);
         let row = s.get("a").await.unwrap().unwrap();
         assert_eq!(row.status, Stage::Running);
+    }
+
+    #[tokio::test]
+    async fn metrics_json_populates_telemetry_and_n_params() {
+        let s = MemoryPrismStore::new();
+        s.insert_queued(&row("a", "11")).await.unwrap();
+        let metrics = serde_json::json!({
+            "bpb": 1.5,
+            "tokens_seen": 2048,
+            "wall_clock_seconds": 12.0,
+            "gpu_type": "SIM",
+            "notes": "sim-eval",
+            "n_params": 12_000_000_u64,
+            "telemetry": {
+                "finish_reason": "finish_evaluation",
+                "report_count": 2,
+                "loss_series": [
+                    {"step": 1, "loss": 4.0, "grad_norm": 1.0, "at_secs": 0.5},
+                    {"step": 2, "loss": 3.0}
+                ]
+            }
+        });
+        s.apply(
+            "a",
+            &StatePatch {
+                metrics_json: Some(metrics),
+                ..StatePatch::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let row = s.get("a").await.unwrap().unwrap();
+        assert_eq!(row.n_params(), Some(12_000_000));
+        let series = s.telemetry("a").await.unwrap();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].step, 1);
+        assert!((series[1].loss - 3.0).abs() < f64::EPSILON);
+        // Retry clears both the blob and the derived series.
+        s.apply(
+            "a",
+            &StatePatch {
+                status: Some(Stage::Failed),
+                ..StatePatch::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        s.reset_for_retry("a").await.unwrap();
+        assert!(s.telemetry("a").await.unwrap().is_empty());
+        assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn metrics_without_telemetry_leaves_series_empty() {
+        let s = MemoryPrismStore::new();
+        s.insert_queued(&row("a", "11")).await.unwrap();
+        s.apply(
+            "a",
+            &StatePatch {
+                metrics_json: Some(serde_json::json!({"bpb": 2.0})),
+                ..StatePatch::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(s.telemetry("a").await.unwrap().is_empty());
+        assert!(s.get("a").await.unwrap().unwrap().n_params().is_none());
     }
 }

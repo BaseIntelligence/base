@@ -3829,8 +3829,10 @@ dependencies = [
  "prism-review",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

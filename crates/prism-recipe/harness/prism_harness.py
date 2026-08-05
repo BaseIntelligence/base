@@ -18,10 +18,23 @@ Contract recap (docs/PRISM_RECIPE.md):
     "val_rows": VAL_ROWS,
     "train_rows": TRAIN_ROWS,
     "device": "cuda",
+    "telemetry": <prism_telemetry module>,
   }
   model = build_model(ctx)   # torch.nn.Module
   metrics = train(model, ctx)  # must return dict with optional 'train_loss'
   harness scores val CE itself; miner cannot touch val rows.
+
+Miner telemetry hook contract (recipe >= 1.1.0): training.py should
+    import prism_telemetry            # provided by this harness
+    prism_telemetry.report(loss=..., step=..., grad_norm=..., layer_stats=...)
+    prism_telemetry.finish_evaluation()   # end the eval now, score as-is
+`report` is best-effort (call every N steps); the harness captures the full
+series into METRICS_JSON.telemetry.loss_series (decimated past
+MAX_TELEMETRY_POINTS, oldest coverage preserved). `finish_evaluation()`
+raises FinishEvaluation (a BaseException) through train(): miner-side
+`except Exception` cannot swallow the stop signal, and the harness scores
+the in-memory model immediately. Without it the eval ends when train()
+returns ("train_returned") or fails when the wall-clock cap is exceeded.
 """
 import hashlib
 import json
@@ -31,10 +44,40 @@ import time
 
 RECIPE_SEED = 0x00505249534D
 MAX_TRAIN_STEPS = int(os.environ.get("PRISM_MAX_TRAIN_STEPS", "20000"))
-TRAIN_HOURS_CAP = float(os.environ.get("PRISM_TRAIN_HOURS_CAP", "6.0"))
 VAL_ROWS = 256
 TRAIN_ROWS = 2048
 TOKENIZER = "gpt2"
+MAX_TELEMETRY_POINTS = 2048
+MAX_LAYER_STAT_KEYS = 64
+
+
+def _float_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _int_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+TRAIN_HOURS_CAP = _float_env("PRISM_TRAIN_HOURS_CAP", 6.0)
+# Test-mode knobs (staging/e2e; sim or real Lium): shrink the wall cap and
+# the parameter cap so a full lifecycle fits in minutes on tiny models.
+_TEST_TRAIN_MINUTES = _float_env("PRISM_TEST_TRAIN_MINUTES", 0.0)
+if _TEST_TRAIN_MINUTES > 0:
+    TRAIN_HOURS_CAP = _TEST_TRAIN_MINUTES / 60.0
+MAX_PARAMS = _int_env("PRISM_TEST_MAX_PARAMS", _int_env("PRISM_MAX_PARAMS", 350000000))
 
 
 def log(msg):
@@ -45,6 +88,65 @@ def fail(stage, exc):
     print(json.dumps({"stage": stage, "error": str(exc)[:400]}))
     print("EVAL_FAIL")
     sys.exit(3)
+
+
+class FinishEvaluation(BaseException):
+    """Stop signal raised through train() by finish_evaluation()."""
+
+
+def _sanitize_layer_stats(stats):
+    if not isinstance(stats, dict):
+        return None
+    out = {}
+    for k, v in stats.items():
+        if len(out) >= MAX_LAYER_STAT_KEYS:
+            break
+        key = str(k)[:64]
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            out[key] = float(v)
+        elif isinstance(v, str):
+            out[key] = v[:128]
+    return out
+
+
+def build_telemetry_module():
+    """Create the miner-facing `prism_telemetry` shim module + its state."""
+    import types
+
+    state = {"series": [], "reports": 0, "t0": time.time()}
+    mod = types.ModuleType("prism_telemetry")
+    mod.__doc__ = "PRISM miner telemetry hook (harness-provided)."
+    mod.FinishEvaluation = FinishEvaluation
+
+    def report(loss=None, step=None, grad_norm=None, layer_stats=None):
+        state["reports"] += 1
+        if loss is None or step is None:
+            raise ValueError("prism_telemetry.report requires loss= and step=")
+        pt = {
+            "step": int(step),
+            "loss": float(loss),
+            "at_secs": round(time.time() - state["t0"], 3),
+        }
+        if grad_norm is not None:
+            pt["grad_norm"] = float(grad_norm)
+        clean = _sanitize_layer_stats(layer_stats)
+        if clean:
+            pt["layer_stats"] = clean
+        series = state["series"]
+        series.append(pt)
+        if len(series) > MAX_TELEMETRY_POINTS:
+            # Decimate instead of truncating: keep the first point and halve
+            # the rest so the stored curve still spans the whole run.
+            del series[1::2]
+
+    def finish_evaluation():
+        raise FinishEvaluation("prism_telemetry.finish_evaluation() called")
+
+    mod.report = report
+    mod.finish_evaluation = finish_evaluation
+    return mod, state
 
 
 def materialize_dataset(url, sha256_hex):
@@ -113,6 +215,11 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    # Miner-facing telemetry shim: registered before miner code loads so a
+    # top-level `import prism_telemetry` in training.py resolves.
+    telemetry_mod, telemetry_state = build_telemetry_module()
+    sys.modules["prism_telemetry"] = telemetry_mod
+
     ctx = {
         "dataset_path": parquet,
         "dataset_sha256": dataset_sha,
@@ -122,6 +229,7 @@ def main():
         "val_rows": VAL_ROWS,
         "train_rows": TRAIN_ROWS,
         "device": device,
+        "telemetry": telemetry_mod,
     }
 
     # Load miner code in-pod (authoritative contract screen).
@@ -144,6 +252,7 @@ def main():
         fail("contract", exc)
 
     # Miner train path (cap enforced here, not by miners).
+    finish_reason = "train_returned"
     t0 = time.time()
     try:
         model = arch.build_model(ctx)
@@ -151,7 +260,6 @@ def main():
         n_params = sum(p.numel() for p in model.parameters())
         log(f"model params: {n_params/1e6:.1f}M")
         # Product hard cap: ≤350M parameters (fail before CUDA / train).
-        MAX_PARAMS = int(os.environ.get("PRISM_MAX_PARAMS", "350000000"))
         if n_params > MAX_PARAMS:
             raise RuntimeError(
                 f"model exceeds parameter cap: {n_params} > {MAX_PARAMS}"
@@ -165,13 +273,18 @@ def main():
                 raise CapExceeded("train time cap exceeded")
 
         ctx["guard"] = guard
-        metrics = train_mod.train(model, ctx)
+        try:
+            metrics = train_mod.train(model, ctx)
+        except FinishEvaluation:
+            # Miner-signalled stop: fall through and score the model as-is.
+            metrics = {}
+            finish_reason = "finish_evaluation"
         if not isinstance(metrics, dict):
             raise TypeError("train must return dict")
     except Exception as exc:  # noqa: BLE001
         fail("train", exc)
     train_s = time.time() - t0
-    log(f"train done in {train_s:.0f}s")
+    log(f"train done in {train_s:.0f}s ({finish_reason})")
 
     # Frozen val cut (miners never see these 256 texts at train time only
     # in the sense that the *harness* picks them; nothing secret).
@@ -211,7 +324,12 @@ def main():
         "notes": "recipe-v1 val_ce->bpb",
         "val_rows": VAL_ROWS,
         "n_params": int(n_params),
-        "recipe": "1.0.2",
+        "recipe": "1.1.0",
+        "telemetry": {
+            "finish_reason": finish_reason,
+            "report_count": telemetry_state["reports"],
+            "loss_series": telemetry_state["series"],
+        },
     }
     print("METRICS_JSON=" + json.dumps(out))
     print("EVAL_OK")

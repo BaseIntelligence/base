@@ -136,6 +136,7 @@ async fn orchestrator_completes_one_submission_and_emits() {
             pod_id: None,
             pod_provider: None,
             receipt: None,
+            metrics_json: None,
             bpb: None,
             review: None,
             similarity: None,
@@ -158,6 +159,99 @@ async fn orchestrator_completes_one_submission_and_emits() {
     assert!(row.final_score.is_some(), "final score must be set");
     let events = store.events(&id).await.unwrap();
     assert!(events.len() >= 4, "events={events:?}");
+    // Sim backend emits telemetry: it must land on the row blob + series.
+    let metrics = row.metrics_json.as_ref().expect("metrics_json populated");
+    assert!(metrics
+        .get("bpb")
+        .and_then(serde_json::Value::as_f64)
+        .is_some());
+    assert_eq!(
+        metrics
+            .pointer("/telemetry/finish_reason")
+            .and_then(|v| v.as_str()),
+        Some("finish_evaluation")
+    );
+    let series = store.telemetry(&id).await.unwrap();
+    assert_eq!(series.len(), 5, "sim loss series, got {series:?}");
+    assert!(series[0].loss > series[4].loss, "series decays");
+}
+
+#[tokio::test]
+async fn submission_detail_exposes_metrics_over_http() {
+    let store = Arc::new(MemoryPrismStore::new());
+    let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
+    let orch = Arc::new(mk_orchestrator(&store, &chain));
+
+    let req = example_valid_request();
+    let id = submission_id(&req);
+    store
+        .insert_queued(&SubmissionState {
+            id: id.clone(),
+            miner_hotkey: req.miner_hotkey.clone(),
+            epoch: 7,
+            netuid: 541,
+            status: Stage::Queued,
+            architecture_py: req.architecture_py.clone(),
+            training_py: req.training_py.clone(),
+            label: req.label,
+            pod_id: None,
+            pod_provider: None,
+            receipt: None,
+            metrics_json: None,
+            bpb: None,
+            review: None,
+            similarity: None,
+            final_score: None,
+            retry_count: 0,
+            error_detail: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        })
+        .await
+        .unwrap();
+    assert!(orch.cycle_once().await.unwrap());
+
+    let state = Arc::new(prism_challenge::AppState {
+        store: Arc::clone(&store) as Arc<dyn PrismStore>,
+        epoch: std::sync::atomic::AtomicU64::new(7),
+        netuid: 541,
+        backend_mode: "sim",
+        retry_max: 2,
+        gating: None,
+        metagraph: None,
+    });
+    let app = prism_challenge::submission_router(state);
+    let res = tower::ServiceExt::oneshot(
+        app,
+        axum::http::Request::get(format!("/v1/submissions/{id}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let bytes = http_body_util::BodyExt::collect(res.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        v.pointer("/submission/metrics/telemetry/loss_series")
+            .and_then(|s| s.as_array())
+            .is_some_and(|a| !a.is_empty()),
+        "detail exposes telemetry series: {v}"
+    );
+    assert_eq!(
+        v.pointer("/submission/metrics/n_params")
+            .and_then(serde_json::Value::as_u64),
+        Some(12_000_000)
+    );
+    assert_eq!(
+        v.pointer("/submission/n_params")
+            .and_then(serde_json::Value::as_u64),
+        Some(12_000_000),
+        "list-view n_params surfaces in the detail payload"
+    );
 }
 
 #[tokio::test]
@@ -182,6 +276,7 @@ async fn emit_and_submit_covers_expected_set() {
             pod_id: None,
             pod_provider: None,
             receipt: None,
+            metrics_json: None,
             bpb: Some(2.0),
             review: None,
             similarity: None,

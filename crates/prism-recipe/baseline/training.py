@@ -3,6 +3,12 @@
 Reads `ctx["train_rows"]` texts from the pinned shard, runs AdamW at a modest
 LR for a small fixed step budget (baseline is deliberately mediocre: it is
 the calibration anchor, not a competitive recipe).
+
+Telemetry hook contract (recipe >= 1.1.0): the harness provides a
+`prism_telemetry` module (also at `ctx["telemetry"]`). Call
+`report(loss=..., step=..., grad_norm=..., layer_stats=...)`
+periodically and `finish_evaluation()` to end the eval early — the harness
+scores the in-memory model either way.
 """
 
 import time
@@ -10,6 +16,21 @@ import time
 import pyarrow.parquet as pq
 import torch
 from transformers import GPT2TokenizerFast
+
+try:
+    import prism_telemetry
+except ImportError:
+    # Local dev outside the operator harness: no-op stand-in, same API.
+    class _TelemetryFallback:
+        @staticmethod
+        def report(**_kwargs):
+            return None
+
+        @staticmethod
+        def finish_evaluation():
+            return None
+
+    prism_telemetry = _TelemetryFallback()
 
 
 def _texts(path, n):
@@ -54,12 +75,17 @@ def train(model, ctx):
         )
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
         opt.step()
         last = float(loss.item())
         steps += 1
+        if steps == 1 or steps % 10 == 0:
+            prism_telemetry.report(loss=last, step=steps, grad_norm=grad_norm)
         if steps >= int(ctx.get("max_train_steps", 20000)):
             break
+    # Signal the harness to stop the eval now (raises through train() under
+    # the harness; the return below only runs under the local fallback shim).
+    prism_telemetry.finish_evaluation()
     return {
         "train_loss": last,
         "train_steps": steps,

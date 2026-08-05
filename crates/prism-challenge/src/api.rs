@@ -210,6 +210,7 @@ async fn post_submission(
         pod_id: None,
         pod_provider: None,
         receipt: None,
+        metrics_json: None,
         bpb: None,
         review: None,
         similarity: None,
@@ -411,6 +412,7 @@ fn list_view(r: &SubmissionState) -> Value {
         "status": r.status.as_str(),
         "label": r.label,
         "bpb": r.bpb,
+        "n_params": r.n_params(),
         "score": r.final_score.as_ref().map(|f| match f {
             FinalScore::Score(v) => json!({"kind":"score","value":v}),
             FinalScore::NoScore(c) => json!({"kind":"no_score","reason":c}),
@@ -434,6 +436,7 @@ fn detail_view(r: &SubmissionState) -> Value {
             "receipt".into(),
             r.receipt.as_ref().map_or(Value::Null, |x| json!(x)),
         );
+        m.insert("metrics".into(), json!(r.metrics_json));
         m.insert(
             "review".into(),
             r.review.as_ref().map_or(Value::Null, |x| {
