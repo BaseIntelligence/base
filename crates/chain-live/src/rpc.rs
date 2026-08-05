@@ -233,20 +233,31 @@ impl LiveChainRpc {
         self.rpc("chain_getHeader", &json!([]))
     }
 
-    /// `author_submitAndWatchExtrinsic` — returns extrinsic hash or subscription ID.
+    /// `author_submitExtrinsic` — fire-and-forget over HTTPS JSON-RPC.
+    ///
+    /// Prefer this over `author_submitAndWatchExtrinsic`, which requires a
+    /// WebSocket subscription and returns Internal error on HTTP endpoints.
     ///
     /// # Errors
-    /// Transport failure.
-    pub fn author_submit_and_watch_extrinsic(
-        &self,
-        extrinsic: &[u8],
-    ) -> Result<String, ChainError> {
+    /// Transport failure or pool rejection.
+    pub fn author_submit_extrinsic(&self, extrinsic: &[u8]) -> Result<String, ChainError> {
         let hex_ext = format!("0x{}", hex::encode(extrinsic));
-        let result = self.rpc("author_submitAndWatchExtrinsic", &json!([hex_ext]))?;
+        let result = self.rpc("author_submitExtrinsic", &json!([hex_ext]))?;
         match result {
             Value::String(s) => Ok(s),
             other => Ok(other.to_string()),
         }
+    }
+
+    /// Deprecated alias kept for call-site clarity during the HTTP submit fix.
+    ///
+    /// # Errors
+    /// Transport failure or pool rejection.
+    pub fn author_submit_and_watch_extrinsic(
+        &self,
+        extrinsic: &[u8],
+    ) -> Result<String, ChainError> {
+        self.author_submit_extrinsic(extrinsic)
     }
 
     /// `state_getRuntimeVersion`.

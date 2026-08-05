@@ -320,10 +320,10 @@ impl LiveChainClient {
         self.submit_extrinsic(&ext)
     }
 
-    /// Submit a signed extrinsic and return the hash/subscription ID.
+    /// Submit a signed extrinsic and return the extrinsic hash.
     fn submit_extrinsic(&self, ext: &[u8]) -> Result<String, ChainError> {
-        tracing::debug!(len = ext.len(), "submitting extrinsic");
-        self.rpc.author_submit_and_watch_extrinsic(ext)
+        tracing::debug!(len = ext.len(), "submitting extrinsic via author_submitExtrinsic");
+        self.rpc.author_submit_extrinsic(ext)
     }
 }
 
