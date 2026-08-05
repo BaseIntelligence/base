@@ -112,6 +112,7 @@ for architectures people win with. The global-best model is published to
 | `GET /v1/submissions/{id}` | Detail + receipt + scores |
 | `GET /v1/submissions/{id}/events` | Stage timeline |
 | `GET /v1/architectures` | Published archs + per-arch best bpb |
+| `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Miner-reported loss curve / gradients / layer stats (from `prism_telemetry.report`) |
 | `GET /v1/jobs` | Active/recent pods (ops) |
 | `GET /health` | Liveness |
 
