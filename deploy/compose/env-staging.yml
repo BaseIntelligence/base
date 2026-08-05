@@ -9,10 +9,11 @@ services:
   validator:
     environment:
       BASE_NETUID: "541"
-      # Alternate public testnet RPC: the default test.finney host 429s this
-      # droplet (per-source policy), starving the watchers + coordination loop.
-      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
-      BASE_COORDINATION_INTERVAL_SECS: "3"
+      # Public testnet RPCs 429 by source rate; spread services across both
+      # hosts (validator alone on test.finney) and keep the coordination tick
+      # at 30s so the droplet's aggregate request rate fits the public budget.
+      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      BASE_COORDINATION_INTERVAL_SECS: "30"
       BT_WALLETS_PATH: /run/base/wallets
       BASE_VALIDATOR_WALLET: base-validator
     volumes:
