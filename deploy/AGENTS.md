@@ -110,9 +110,8 @@ Ladder: CI → GHCR digests → `deploy/pins/staging.json` (committed by `images
 
 ## Out of scope for agents (ops)
 
-- DO Spaces credentials in GitHub (`BASE_BACKUP_ENDPOINT`, `SPACES_*`) for fail-closed prod backup
-- Mainnet owner wallet + `BASE_GATEWAY_REQUIRE_OWNER=1`
+- DO Spaces credentials in GitHub — set `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` (optional `BASE_BACKUP_BUCKET`, default `base-backups`). DO Spaces API create currently blocked (team locked); keys not found on operator/hosts.
 - GitHub `production` environment required reviewers / `dev` branch protection
-- TLS ACME termination (ports 80/443 open; ACME not fully shipped)
+- Gateway in-process TLS ACME (task 42 / `rustls-acme`) — **interim:** prod `chain.joinbase.ai` HTTPS via host Caddy on `:443` (TLS-ALPN-01) → `127.0.0.1:8080`; cleartext `:80` still docker→gateway
 - Terraform remote state backend (recommended, not blocking app deploy)
 - Bootstrap of age/secrets on brand-new droplets (OOB)
