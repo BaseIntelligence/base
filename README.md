@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/github/license/BaseIntelligence/base)](https://github.com/BaseIntelligence/base/blob/dev/LICENSE)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
 
+![BASE Banner](assets/banner.jpg)
+
 </div>
 
 ## What it is
