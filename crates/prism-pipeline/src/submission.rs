@@ -227,8 +227,9 @@ pub fn arch_digest(architecture_py: &str) -> String {
 
 /// Submission-gating challenge key: `prism` for architecture submissions
 /// (1-max per hotkey), `prism:train:<arch_id>` for training-only entries
-/// (1 accepted entry per `(hotkey, arch_id)` — fits the 32-char gating
-/// challenge CHECK). Same retry classes and watcher resets either way.
+/// (1 accepted entry per `(hotkey, arch_id)` — 33 chars with the canonical
+/// `arch_<16 hex>` id; fits the 64-char gating challenge CHECK, migration
+/// 0011). Same retry classes and watcher resets either way.
 #[must_use]
 pub fn gating_key(arch_id: Option<&str>) -> String {
     match arch_id {
@@ -271,6 +272,15 @@ pub fn example_valid_request() -> SubmissionRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gating_key_fits_challenge_check() {
+        // Regression: `prism:train:arch_<16 hex>` is 33 chars — exceeded the
+        // original 32-char submission_gating.challenge CHECK (500 at intake).
+        let key = gating_key(Some("arch_d50dcfef6eaf5f04"));
+        assert_eq!(key, "prism:train:arch_d50dcfef6eaf5f04");
+        assert!(key.len() <= 64, "gating key fits migration 0011 CHECK: {key}");
+    }
 
     #[test]
     fn accepts_valid() {
