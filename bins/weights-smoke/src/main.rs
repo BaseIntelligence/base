@@ -22,7 +22,7 @@ use crypto::KEY_LEN;
 #[derive(Debug, Parser)]
 #[command(
     name = "weights-smoke",
-    about = "Submit D24 leaves, admin-seal, assert GET /v1/weights/latest ≠ 404"
+    about = "Submit D24 leaves, admin-seal, assert GET /v1/weights/latest sealed:true"
 )]
 struct Args {
     /// Gateway base URL (no trailing slash required).
@@ -163,18 +163,23 @@ async fn admin_seal_and_check_latest(
     let latest_text = latest.text().await.unwrap_or_default();
     if latest_status != 200 {
         return Err(format!(
-            "weights/latest HTTP {latest_status} (want 200; 404 means no sealed bundle): {latest_text}"
+            "weights/latest HTTP {latest_status} (want 200): {latest_text}"
         ));
     }
     let json: serde_json::Value =
         serde_json::from_str(&latest_text).map_err(|e| format!("latest json: {e}"))?;
+    if json.get("sealed") != Some(&serde_json::Value::Bool(true)) {
+        return Err(format!(
+            "weights/latest not sealed (want sealed:true; burn fallback is not a real seal): {latest_text}"
+        ));
+    }
     let got_epoch = json.get("epoch").and_then(serde_json::Value::as_u64);
     if got_epoch != Some(epoch) {
         return Err(format!(
             "weights/latest epoch mismatch: got {got_epoch:?} want {epoch}"
         ));
     }
-    eprintln!("weights-smoke: GET /v1/weights/latest OK epoch={epoch}");
+    eprintln!("weights-smoke: GET /v1/weights/latest OK sealed epoch={epoch}");
     println!("{latest_text}");
     Ok(())
 }

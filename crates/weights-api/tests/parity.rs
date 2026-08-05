@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use weights_api::{build_latest, SealRecord};
 
 /// Keys we add on top of the reference contract.
-const RUST_ONLY_KEYS: [&str; 2] = ["merkle_root", "final_vector"];
+const RUST_ONLY_KEYS: [&str; 3] = ["merkle_root", "final_vector", "sealed"];
 
 fn reference() -> Value {
     let raw = include_str!("fixtures/reference_weights_latest.json");
@@ -144,15 +144,18 @@ fn rust_only_extras_are_additive() {
 /// deserializing from the widened body.
 #[derive(serde::Deserialize)]
 struct WeightsLatestView {
-    epoch: u64,
+    epoch: Option<u64>,
     merkle_root: String,
+    #[serde(default)]
+    sealed: Option<bool>,
 }
 
 #[test]
 fn validator_view_still_deserializes() {
     let view: WeightsLatestView = serde_json::from_value(ours()).expect("validator view parses");
-    assert_eq!(view.epoch, 4_960_002);
+    assert_eq!(view.epoch, Some(4_960_002));
     assert_eq!(view.merkle_root.len(), 64);
+    assert_eq!(view.sealed, Some(true));
 }
 
 #[test]

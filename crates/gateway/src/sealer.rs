@@ -19,7 +19,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use trustroot::ChallengesBody;
-use weights_api::{build_latest, SealRecord};
+use weights_api::{build_burn_fallback, build_latest, SealRecord};
 
 use crate::api::GatewayState;
 use crate::weights::{RawWeightRow, RawWeightStore};
@@ -243,19 +243,15 @@ async fn get_weights_latest(State(st): State<GatewayState>) -> Response {
         ))
     });
     let Some((bytes, seal)) = sealed else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "no sealed bundle" })),
-        )
-            .into_response();
+        // Fail-closed: never 404 — serve uid-0 burn until a real seal exists.
+        return (StatusCode::OK, Json(build_burn_fallback(st.seal_netuid))).into_response();
     };
     match EpochBundleV1::decode_bytes(&bytes) {
         Ok(bundle) => (StatusCode::OK, Json(build_latest(&bundle, seal))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(_) => {
+            // Corrupt sealed bytes: still burn rather than 5xx/404.
+            (StatusCode::OK, Json(build_burn_fallback(st.seal_netuid))).into_response()
+        }
     }
 }
 

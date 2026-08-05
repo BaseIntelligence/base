@@ -264,14 +264,30 @@ impl CoordinationClient {
 /// Parsed `GET /v1/weights/latest` JSON (gateway `WeightsLatestResponse`).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WeightsLatestView {
-    /// Sealed epoch.
-    pub epoch: u64,
-    /// Merkle root hex.
+    /// Sealed epoch (`None` on the fail-closed burn fallback).
+    pub epoch: Option<u64>,
+    /// Merkle root hex (empty when `sealed` is false).
     pub merkle_root: String,
+    /// Gateway reports `false` for the unsealed burn fallback; older gateways omit it.
+    #[serde(default)]
+    pub sealed: Option<bool>,
+}
+
+impl WeightsLatestView {
+    /// Whether this response is backed by a sealed epoch bundle (Match path).
+    #[must_use]
+    pub fn is_sealed_bundle(&self) -> bool {
+        match self.sealed {
+            Some(false) => false,
+            Some(true) => self.epoch.is_some(),
+            // Pre-burn-fallback gateways: epoch + non-empty root ⇒ sealed.
+            None => self.epoch.is_some() && !self.merkle_root.is_empty(),
+        }
+    }
 }
 
 impl CoordinationClient {
-    /// GET `/v1/weights/latest` and parse epoch when sealed (200).
+    /// GET `/v1/weights/latest` and parse the body (200, including burn fallback).
     ///
     /// # Errors
     ///

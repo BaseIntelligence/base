@@ -422,9 +422,11 @@ async fn s4_http_bundle_routes_and_weights_latest() {
         "metagraph_block",
         "burn_outcome",
         "metagraph_updated_at",
+        "sealed",
     ] {
         assert!(json.get(key).is_some(), "missing {key} in served body");
     }
+    assert_eq!(json["sealed"], true);
     assert_eq!(json["revision"], 1);
     assert!(json["computed_at"].as_str().unwrap().ends_with('Z'));
 

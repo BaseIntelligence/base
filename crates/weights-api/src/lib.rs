@@ -5,14 +5,17 @@
 //! plus the two Rust-only extras (`merkle_root`, `final_vector`) that the
 //! validator already consumes, so the body stays a strict superset.
 //!
-//! Every field is derived from the sealed [`EpochBundleV1`] and the seal record
-//! captured by the bundle store at seal time — there are no synthetic values.
+//! Sealed fields are derived from the [`EpochBundleV1`] and the seal record
+//! captured by the bundle store at seal time. When no sealed bundle is available
+//! (or decode fails), the gateway serves [`build_burn_fallback`] — uid 0 at 100%
+//! under `burn-uid0.v1` — rather than 404, so validators never see an empty
+//! weights endpoint.
 
 #![forbid(unsafe_code)]
 
 mod vector;
 
-pub use vector::build_latest;
+pub use vector::{build_burn_fallback, build_latest};
 
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
@@ -205,6 +208,9 @@ pub struct WeightsLatestResponse {
     pub merkle_root: String,
     /// Chain-scale `(uid, weight)` pairs (Rust-only extra).
     pub final_vector: Vec<(u16, u16)>,
+    /// `true` when backed by a sealed [`EpochBundleV1`]; `false` for the
+    /// fail-closed burn fallback (Rust-only extra).
+    pub sealed: bool,
 }
 
 #[cfg(test)]

@@ -136,6 +136,7 @@ fn vector_identity_is_deterministic() {
     let second = build_latest(&bundle(), record());
     assert_eq!(first.vector_digest, second.vector_digest);
     assert_eq!(first.vector_id, second.vector_id);
+    assert!(first.sealed);
     let mut altered = bundle();
     altered.body.epoch = 8;
     assert_ne!(
@@ -154,4 +155,23 @@ fn all_zero_epoch_serves_the_burn_vector() {
     assert_eq!(resp.uids, vec![0]);
     assert_eq!(resp.weights, vec![1.0]);
     assert!(resp.hotkey_weights.entries().is_empty());
+    assert!(resp.sealed);
+}
+
+#[test]
+fn no_sealed_bundle_serves_fail_closed_burn_fallback() {
+    let resp = crate::build_burn_fallback(100);
+    assert!(!resp.sealed);
+    assert_eq!(resp.epoch, None);
+    assert_eq!(resp.uids, vec![0]);
+    assert_eq!(resp.weights, vec![1.0]);
+    assert_eq!(resp.final_vector, vec![(0, 65_535)]);
+    assert_eq!(resp.burn_outcome, Some(true));
+    assert_eq!(
+        resp.burn_policy_version.as_deref(),
+        Some(crate::BURN_POLICY_VERSION)
+    );
+    assert!(resp.merkle_root.is_empty());
+    assert!(resp.hotkey_weights.entries().is_empty());
+    assert_eq!(resp.netuid, 100);
 }

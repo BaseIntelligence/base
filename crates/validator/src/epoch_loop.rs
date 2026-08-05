@@ -28,7 +28,7 @@ pub fn format_match_line(
 
 /// One coordination compare cycle: latest → bundle → `compare_bundle`.
 ///
-/// Soft-ok when gateway missing or latest 404 (no sealed bundle yet).
+/// Soft-ok when gateway missing, latest 404 (legacy), or unsealed burn fallback.
 ///
 /// # Errors
 ///
@@ -48,7 +48,11 @@ pub async fn coordination_compare_once<C: ChainClient>(
         }
         Err(e) => return Err(e),
     };
-    let outcome = fetch_and_compare(client, latest.epoch, chain, trust).await;
+    let Some(epoch) = latest.epoch.filter(|_| latest.is_sealed_bundle()) else {
+        // Fail-closed burn (sealed=false) or incomplete legacy body — no Match path.
+        return Ok(None);
+    };
+    let outcome = fetch_and_compare(client, epoch, chain, trust).await;
     match &outcome {
         ComparisonOutcome::Match {
             epoch,
@@ -165,6 +169,32 @@ mod tests {
             .and(path("/v1/weights/latest"))
             .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                 "error": "no sealed bundle"
+            })))
+            .mount(&server)
+            .await;
+        let client = CoordinationClient::new(Some(server.uri())).unwrap();
+        let chain = FakeChain::with_defaults();
+        let trust = LocalTrustRoot {
+            challenges: ChallengesBody::default(),
+            measurements_digest: measurements_digest(&MeasurementsBody::default()),
+        };
+        let out = coordination_compare_once(&client, &chain, &trust)
+            .await
+            .expect("soft");
+        assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn tick_burn_fallback_is_soft_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/weights/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "epoch": null,
+                "merkle_root": "",
+                "sealed": false,
+                "uids": [0],
+                "weights": [1.0]
             })))
             .mount(&server)
             .await;

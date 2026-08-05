@@ -12,6 +12,9 @@ use crate::{
     FRESHNESS_SECONDS, MAPPING_POLICY_VERSION, OUTCOME_ACCEPTED, OUTCOME_MISSING, PROTOCOL_VERSION,
 };
 
+/// Full chain-scale weight for a pure burn vector (`65535/65535 == 1.0`).
+const CHAIN_U16_MAX: u16 = 65_535;
+
 /// Project a sealed bundle plus its seal record into the validator response.
 #[must_use]
 pub fn build_latest(bundle: &EpochBundleV1, seal: SealRecord) -> WeightsLatestResponse {
@@ -80,6 +83,58 @@ pub fn build_latest(bundle: &EpochBundleV1, seal: SealRecord) -> WeightsLatestRe
         metagraph_updated_at: computed_at,
         merkle_root: hex::encode(body.merkle_root),
         final_vector: body.final_vector.clone(),
+        sealed: true,
+    }
+}
+
+/// Fail-closed burn vector when no sealed bundle is available (or decode fails).
+///
+/// Serves `{uid: 0 → 1.0}` under `burn-uid0.v1` so `GET /v1/weights/latest` never
+/// 404s. `sealed` is `false`; validators must not treat this as a Match path.
+#[must_use]
+pub fn build_burn_fallback(netuid: u16) -> WeightsLatestResponse {
+    let seal = SealRecord::now(0);
+    let uids = vec![BURN_UID];
+    let weights = vec![1.0];
+    let computed_at = iso8601_micros(seal.sealed_at_micros);
+    let expires_at = iso8601_micros(
+        seal.sealed_at_micros
+            .saturating_add(FRESHNESS_SECONDS * 1_000_000),
+    );
+    WeightsLatestResponse {
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        vector_id: None,
+        vector_digest: None,
+        epoch: None,
+        revision: 0,
+        netuid,
+        chain_endpoint: std::env::var(config::keys::CHAIN_ENDPOINT).unwrap_or_default(),
+        uids: uids.clone(),
+        weights: weights.clone(),
+        hotkey_weights: FloatMap::default(),
+        chain_domain_bytes: Some(chain_domain_bytes(netuid, &uids, &weights)),
+        computed_at: computed_at.clone(),
+        expires_at,
+        source_challenges: Vec::new(),
+        source_snapshots: Vec::new(),
+        source_outcomes: Vec::new(),
+        emission_policy_version: Some(EMISSION_POLICY_VERSION.to_owned()),
+        emission_shares: FloatMap::default(),
+        burn_policy_version: Some(BURN_POLICY_VERSION.to_owned()),
+        mapping_policy_version: Some(MAPPING_POLICY_VERSION.to_owned()),
+        metagraph_identity: MetagraphIdentity {
+            hash: None,
+            block: None,
+            uid_count: 0,
+            burn_uid: BURN_UID,
+        },
+        metagraph_hash: None,
+        metagraph_block: None,
+        burn_outcome: Some(true),
+        metagraph_updated_at: computed_at,
+        merkle_root: String::new(),
+        final_vector: vec![(BURN_UID, CHAIN_U16_MAX)],
+        sealed: false,
     }
 }
 

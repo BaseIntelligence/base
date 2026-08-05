@@ -218,16 +218,26 @@ start_tunnel() {
 }
 
 ensure_env_files() {
-  if [[ ! -f deploy/env/postgres.env || ! -f deploy/env/gateway.env || ! -f deploy/env/validator.env ]]; then
+  # Challenge env files are required by compose (BASE_DATABASE_URL → Postgres).
+  if [[ ! -f deploy/env/postgres.env || ! -f deploy/env/gateway.env \
+    || ! -f deploy/env/validator.env || ! -f deploy/env/design-challenge.env \
+    || ! -f deploy/env/prism-challenge.env ]]; then
     log "materializing deploy/env/*.env from examples"
     ./deploy/scripts/materialize-env.sh
   fi
-  # Align DATABASE_URL with postgres.env example defaults when operators only
-  # have placeholders (common after materialize-env on a fresh checkout).
-  if grep -q 'postgres://base:base@postgres:5432/base' deploy/env/gateway.env 2>/dev/null \
-    || grep -q 'POSTGRES_PASSWORD=base_dev_only_change_me' deploy/env/postgres.env; then
-    :
-  fi
+  # Keep app URLs in lockstep with postgres.env (avoids stale example passwords
+  # like base:base or user:pass after a fresh materialize).
+  local url
+  url="$(database_url_from_postgres_env)"
+  for f in deploy/env/gateway.env deploy/env/validator.env \
+    deploy/env/design-challenge.env deploy/env/prism-challenge.env; do
+    if grep -q '^BASE_DATABASE_URL=' "$f" 2>/dev/null; then
+      sed -i "s|^BASE_DATABASE_URL=.*|BASE_DATABASE_URL=${url}|" "$f"
+    else
+      printf '\nBASE_DATABASE_URL=%s\n' "$url" >>"$f"
+    fi
+    chmod 0600 "$f" 2>/dev/null || true
+  done
 }
 
 ensure_state_dirs() {
@@ -590,7 +600,7 @@ probe_weights_latest() {
   local pre
   pre="$(curl -sS -m 5 -o /tmp/local-e2e-weights-pre.json -w '%{http_code}' \
     "${gw}/v1/weights/latest" || true)"
-  log "pre-seal GET /v1/weights/latest → HTTP ${pre:-?} (404 no sealed bundle is expected before smoke)"
+  log "pre-seal GET /v1/weights/latest → HTTP ${pre:-?} (200 burn sealed=false expected before smoke)"
 
   log "building weights-smoke helper"
   cargo build -q -p weights-smoke --release

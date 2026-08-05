@@ -211,10 +211,10 @@ services:
       PRISM_SSH_RETRY_SECS: "${PRISM_SSH_RETRY_SECS:-10}"
       PRISM_SSH_RUNNING_TIMEOUT_SECS: "${PRISM_SSH_RUNNING_TIMEOUT_SECS:-900}"
     env_file:
-      # Host file provides BASE_DATABASE_URL + BASE_NETUID (+ knobs); same
-      # optional env file: deployments without the file still boot.
+      # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose
+      # fails closed (binaries would otherwise fall back to in-memory store).
       - path: ./deploy/env/prism-challenge.env
-        required: false
+        required: true
     volumes:
       # prism signs with its OWN mini secret:
       # the gateway verifies leaves against the trust root per-challenge key.
@@ -313,8 +313,10 @@ services:
       DESIGN_MAX_CONCURRENT: "${DESIGN_MAX_CONCURRENT:-2}"
       BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
     env_file:
+      # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose
+      # fails closed (binaries would otherwise fall back to in-memory store).
       - path: ./deploy/env/design-challenge.env
-        required: false
+        required: true
     volumes:
       - ./deploy/secrets/design_sk:/run/base/challenge_sk:ro
       - ./deploy/secrets/design:/run/base/design:ro

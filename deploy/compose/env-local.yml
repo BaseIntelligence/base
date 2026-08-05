@@ -22,8 +22,9 @@ services:
     environment:
       # Placeholder until ACME; tunnel hostname is advertised separately.
       BASE_DOMAIN: ${BASE_DOMAIN:-localhost}
-      # Prefer URL derived from postgres.env (script sets LOCAL_DATABASE_URL).
-      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      # Prefer URL derived from postgres.env (local-e2e sets LOCAL_DATABASE_URL).
+      # Non-empty default avoids blank override wiping env_file BASE_DATABASE_URL.
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL:-postgres://base:base_dev_only_change_me@postgres:5432/base}
       # smoke → 0 (advisory); live → 1 (fail-closed owner check)
       BASE_GATEWAY_REQUIRE_OWNER: "${LOCAL_REQUIRE_OWNER:-0}"
       # smoke empties wallet so BASE_GATEWAY_HOTKEY can apply; live uses base-owner
@@ -45,7 +46,7 @@ services:
       - path: ./deploy/env/local-tunnel.env
         required: false
     environment:
-      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL:-postgres://base:base_dev_only_change_me@postgres:5432/base}
       # Co-located master: stay on the compose network (not the tunnel URL).
       BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://gateway:8080}
       BASE_VALIDATOR_WALLET: "${LOCAL_VALIDATOR_WALLET-}"
@@ -60,7 +61,7 @@ services:
     ports:
       - "127.0.0.1:${LOCAL_PRISM_HOST_PORT:-28092}:8092"
     environment:
-      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL:-postgres://base:base_dev_only_change_me@postgres:5432/base}
       # No Lium spend on a laptop unless operator opts in.
       PRISM_FORCE_SIM: "${LOCAL_PRISM_FORCE_SIM:-true}"
       # Hold after each stage so visual A→Z can photograph mid-flight (0 = off).
@@ -70,7 +71,7 @@ services:
     ports:
       - "127.0.0.1:${LOCAL_DESIGN_HOST_PORT:-28093}:8093"
     environment:
-      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL}
+      BASE_DATABASE_URL: ${LOCAL_DATABASE_URL:-postgres://base:base_dev_only_change_me@postgres:5432/base}
       # Host SimSandbox only on this local overlay (never staging/prod).
       # Requires BASE_ALLOW_HOST_SIM=1; bin refuses Sim on mainnet / prod.
       BASE_ALLOW_HOST_SIM: "${BASE_ALLOW_HOST_SIM:-1}"

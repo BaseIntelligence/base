@@ -29,6 +29,31 @@ Verify: `./deploy/scripts/assert-compose-matrix.sh`.
 Root `docker-compose.staging-*.yml` overrides are **obsolete** — use `deploy/compose/` only.  
 `remote-deploy.sh` never selects `env-local*.yml`.
 
+## Postgres vs ephemeral state
+
+Compose always runs a digest-pinned `postgres` service (`base-pgdata` volume, healthcheck, `deploy/env/postgres.env`). App `BASE_DATABASE_URL` must match that file (materialize via `./deploy/scripts/materialize-env.sh`; local-e2e also injects `LOCAL_DATABASE_URL` from it).
+
+| Data | Store |
+|------|--------|
+| Design harnesses / runs / stages / artifacts metadata / admin rounds | **Postgres** (`design_*`) |
+| Prism submissions / stage events | **Postgres** (`prism_*`) |
+| Gateway raw weight leaves + sealed bundles | **Postgres** (`raw_weight_snapshot`, `epoch_bundle`, …) |
+| Validator attestations (when DB configured) | **Postgres** |
+| Design sandbox staging files | volume `${BASE_STATE_DIR}/design/staging` + `design-artifacts` |
+| Gateway challenge **backend registry** | **in-memory** — re-seed after gateway restart (`remote-deploy.sh` does this on master) |
+| site-api (`GET /v1/site/*`) | no DB — proxies challenge upstreams via gateway |
+| Unit/integration tests | may construct `Memory*Store` directly; omit `BASE_DATABASE_URL` only there |
+
+Migrations (`crates/db/migrations`) run on boot in gateway / design-challenge / prism-challenge when `BASE_DATABASE_URL` is set. Compose requires `deploy/env/{design,prism}-challenge.env` so challenges cannot silently boot on memory.
+
+Verify rows (local master stack):
+
+```bash
+docker compose -f docker-compose.yml exec -T postgres \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT COUNT(*) FROM design_harness; SELECT COUNT(*) FROM prism_submission;"'
+```
+
 ## Local testnet E2E
 
 Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-testnet-e2e.md).
@@ -51,9 +76,9 @@ Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-te
 | `base-validator` wallet | **no** (fetch-only) | for on-chain weight submit |
 | Fresh `target/release/{gateway,validator,…}` (or `BASE_DOCKER_BUILD_FROM=source`) | recommended | **required** for real chain |
 
-**Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200**. Skip with `--no-weights-smoke`. A pre-seal **404** (`no sealed bundle`) is expected; it is **not** caused by a missing gateway owner wallet.
+**Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200** with **`sealed: true`**. Skip with `--no-weights-smoke`. Pre-seal, latest is **200 burn** (`sealed: false`, uid 0 = 100%) — never 404; that is unrelated to a missing gateway owner wallet.
 
-**Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → `GET /v1/weights/latest` ≠ 404. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
+**Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → seal → `GET /v1/weights/latest` **`sealed: true`**. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
 
 Tunnel writes gitignored `deploy/env/local-tunnel.env` (`BASE_GATEWAY_PUBLIC_URL`). Co-located validator stays on `http://gateway:8080`; external clients use the tunnel URL. Host probe ports default to `2808x` (avoid staging SSH on `1808x`).
 

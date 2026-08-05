@@ -19,9 +19,17 @@ services:
     environment:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
+      # Public API hostname (cleartext on :80/:8080 until ACME).
+      BASE_DOMAIN: chain.joinbase.ai
       BT_WALLETS_PATH: /run/base/wallets
       BASE_GATEWAY_WALLET: base-owner
-      BASE_GATEWAY_REQUIRE_OWNER: "0"
+      BASE_GATEWAY_WALLET_HOTKEY: default
+      # Owner hotkey 5Gzi… installed; fail-closed master-only check.
+      BASE_GATEWAY_REQUIRE_OWNER: "1"
+    # Serve chain.joinbase.ai without forcing clients onto :8080 (8080 is VPC-only).
+    ports:
+      - "8080:8080"
+      - "80:8080"
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
   prism-challenge:

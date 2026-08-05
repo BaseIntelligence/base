@@ -102,7 +102,7 @@ staging SSH tunnels on `18080`/`18090`. Override with `LOCAL_*_HOST_PORT`.
 | Service | URL |
 |---------|-----|
 | gateway | `http://127.0.0.1:8080/healthz` |
-| sealed weights | `http://127.0.0.1:8080/v1/weights/latest` (200 after smoke seal; 404 before) |
+| sealed weights | `http://127.0.0.1:8080/v1/weights/latest` (200 burn `sealed:false` before smoke; `sealed:true` after) |
 | validator | `http://127.0.0.1:28080/healthz` |
 | prism | `http://127.0.0.1:28092/health` |
 | design | `http://127.0.0.1:28093/health` |

@@ -35,5 +35,5 @@ When updating challenge or local-subnet docs/runbooks, keep these invariants:
 - **Simulate submissions** — submit baseline **and** a cheat fixture through the challenge service; poll `/events` + `/logs`; do not treat `/health` alone as proof.
 - **Design admin winners** — after clean `awaiting_admin`, operator bearer awards 1|2 winners; then leaf → seal path.
 - **No host Sim in staging/prod** — Docker only; `SimSandbox` / `BASE_ALLOW_HOST_SIM` are CI/local opt-in.
-- **Seal path** — `POST /v1/weights/raw` → seal → `GET /v1/weights/latest` ≠ 404. That path needs `challenge_sk` + `gateway_sk`, **not** a gateway owner wallet. Validator wallets are for on-chain submit only.
+- **Seal path** — `POST /v1/weights/raw` → seal → `GET /v1/weights/latest` with `sealed: true` (unsealed burn fallback is always available). That path needs `challenge_sk` + `gateway_sk`, **not** a gateway owner wallet. Validator wallets are for on-chain submit only.
 - Normative local procedure: [`runbooks/local-testnet-e2e.md`](runbooks/local-testnet-e2e.md). Repo contract: [`../AGENTS.md`](../AGENTS.md) § Challenge verification.

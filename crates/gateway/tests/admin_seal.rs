@@ -161,7 +161,12 @@ async fn s1_admin_seal_happy_latest_200() {
         .send()
         .await
         .unwrap();
-    assert_eq!(pre.status().as_u16(), 404);
+    // Fail-closed burn when nothing is sealed yet (never 404).
+    assert_eq!(pre.status().as_u16(), 200);
+    let pre_json: serde_json::Value = pre.json().await.unwrap();
+    assert_eq!(pre_json["sealed"], false);
+    assert_eq!(pre_json["uids"], serde_json::json!([0]));
+    assert_eq!(pre_json["weights"], serde_json::json!([1.0]));
 
     let seal = client
         .post(format!("http://{addr}/v1/admin/seal"))

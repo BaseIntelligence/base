@@ -37,7 +37,9 @@ materialize_one() {
   echo "materialized $out from example (0600)"
 }
 
-for svc in postgres validator gateway updater; do
+# Challenge env files carry BASE_DATABASE_URL (must match postgres.env).
+# Without them, compose refuses to start design/prism (no silent memory store).
+for svc in postgres validator gateway updater design-challenge prism-challenge design-egress-proxy; do
   materialize_one "$svc"
 done
 

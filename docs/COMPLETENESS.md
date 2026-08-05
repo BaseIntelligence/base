@@ -41,7 +41,7 @@ Honest per-component status as of `dev` HEAD. Updated as phases land.
 |-----------|--------|-------|
 | Master check (`SubnetOwnerHotkey`) | done | Read from the live chain. Advisory by default; `BASE_GATEWAY_REQUIRE_OWNER=1` makes it fail-closed (set in staging). |
 | Registry + proxy | done | |
-| Bundle seal (`POST /v1/weights/raw` → `GET /v1/weights/latest`) | done | |
+| Bundle seal (`POST /v1/weights/raw` → `GET /v1/weights/latest`) | done | Unsealed: fail-closed burn (`sealed: false`, uid 0 = 100%) instead of 404. |
 | Chain backend | done | Live only. `fake_owner` was removed from `bins/gateway`. |
 
 ## agent-challenge / hypertraining-challenge

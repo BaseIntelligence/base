@@ -32,7 +32,7 @@ Working branch: **`dev`**. Prod ships from annotated tags `v*.*.*` cut on `dev`.
 | Gateway owner wallet + `BASE_GATEWAY_REQUIRE_OWNER` | Gateway | Master-only **identity** check (live/prod). **Not** required to seal or serve `/v1/weights/latest` |
 | Validator wallet | Validator | On-chain weight **submit** only — validators *fetch* sealed weights; they do not need a gateway wallet |
 
-A `404` on `/v1/weights/latest` means **no sealed bundle yet** (missing leaves and/or seal), not “missing gateway wallet”.
+`GET /v1/weights/latest` is **fail-closed**: with no sealed bundle (or decode error) the gateway serves a **burn vector** (uid 0 = 100%, `sealed: false`) rather than 404. A missing gateway wallet is unrelated.
 
 ## Challenge verification (mandatory path coverage)
 
@@ -43,7 +43,7 @@ When verifying a challenge (local-e2e, staging, or focused tests), **simulate a 
 3. **Design — baseline:** submit the reference agent at [`docs/external-miner/examples/design-baseline/`](docs/external-miner/examples/design-baseline/) (`agent.py` + `pyproject.toml`). After `POST /v1/harness`, poll `GET /v1/runs/{id}` + `/events` + `/logs?since=` until `awaiting_admin` / terminal; assert `GET /v1/runs/{id}/pages` lists `index.html`, `pricing.html`, `components.html` and `GET /v1/view/{run_id}/{page}` returns **200**; probe `GET /v1/stats` and `GET /v1/dashboard`.
 4. **Design — cheat:** submit a malicious/copy harness; expect agentic `cheat`/`suspicious` → `Score(0)` (not admin-eligible). Poll events/logs the same way.
 5. **Design — admin winners:** with operator bearer (`deploy/secrets/design/annotator_tokens`), `GET /v1/admin/rounds/{id}/candidates` then `POST /v1/admin/rounds/{id}/winners` with 1 or 2 clean harness ids (`SCORE_MAX` or `SCORE_MAX/2`).
-6. Leaf emission → `POST /v1/weights/raw` → seal → `GET /v1/weights/latest` **≠ 404**.
+6. Leaf emission → `POST /v1/weights/raw` → seal → `GET /v1/weights/latest` with **`sealed: true`** (burn fallback alone is not a real seal).
 
 **Never host Sim in staging/prod** — Docker sandbox only there. `SimSandbox` / `BASE_ALLOW_HOST_SIM=1` is CI/local opt-in only; do **not** treat stub pages (`sim-install-ok` / `sim-run-ok` without executing `agent.py`) as proof. Prefer `DESIGN_FORCE_SIM=false` + OpenRouter when `deploy/secrets/openrouter/api_key` is present.
 
