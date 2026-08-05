@@ -39,6 +39,8 @@ pub enum RunStage {
     Scored,
     /// Terminal failed.
     Failed,
+    /// Terminal rejected (pre-LLM copy gate; no LLM review ran).
+    Rejected,
 }
 
 impl RunStage {
@@ -55,6 +57,7 @@ impl RunStage {
             Self::AwaitingAnnotation => "awaiting_annotation",
             Self::Scored => "scored",
             Self::Failed => "failed",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -71,6 +74,7 @@ impl RunStage {
             "awaiting_annotation" => Some(Self::AwaitingAnnotation),
             "scored" => Some(Self::Scored),
             "failed" => Some(Self::Failed),
+            "rejected" => Some(Self::Rejected),
             _ => None,
         }
     }
@@ -78,7 +82,7 @@ impl RunStage {
     /// Terminal.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Scored | Self::Failed)
+        matches!(self, Self::Scored | Self::Failed | Self::Rejected)
     }
 }
 
@@ -99,6 +103,8 @@ pub struct HarnessRow {
     pub active: bool,
     /// Eliminated until round.
     pub eliminated_until_round: u64,
+    /// Store-assigned creation unix ms (ordering input for the copy gate).
+    pub created_at_ms: u64,
 }
 
 /// Round row.
@@ -286,8 +292,9 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn insert_run(&self, row: &RunState) -> Result<(), StoreError>;
     /// Get run.
     async fn get_run(&self, id: &str) -> Result<Option<RunState>, StoreError>;
-    /// Claim next queued → installing.
-    async fn claim_next_run(&self) -> Result<Option<RunState>, StoreError>;
+    /// Claim next queued → installing. Runs registered for a future round
+    /// (`round_id > max_round`) are not claimable yet.
+    async fn claim_next_run(&self, max_round: u64) -> Result<Option<RunState>, StoreError>;
     /// Apply patch + optional event.
     async fn apply_run(
         &self,
@@ -406,7 +413,11 @@ impl DesignStore for MemoryDesignStore {
         if m.contains_key(&row.id) {
             return Err(StoreError::Duplicate);
         }
-        m.insert(row.id.clone(), row.clone());
+        let mut row = row.clone();
+        if row.created_at_ms == 0 {
+            row.created_at_ms = now_ms();
+        }
+        m.insert(row.id.clone(), row);
         Ok(())
     }
 
@@ -515,12 +526,14 @@ impl DesignStore for MemoryDesignStore {
             .cloned())
     }
 
-    async fn claim_next_run(&self) -> Result<Option<RunState>, StoreError> {
+    async fn claim_next_run(&self, max_round: u64) -> Result<Option<RunState>, StoreError> {
         let mut rows = self
             .runs
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
-        let pos = rows.iter().position(|r| r.status == RunStage::Queued);
+        let pos = rows
+            .iter()
+            .position(|r| r.status == RunStage::Queued && r.round_id <= max_round);
         let Some(i) = pos else { return Ok(None) };
         let mut row = rows.remove(i).ok_or(StoreError::Backend("pop".into()))?;
         row.status = RunStage::Installing;
@@ -908,9 +921,9 @@ mod tests {
     #[tokio::test]
     async fn claim_and_quota() {
         let s = MemoryDesignStore::new();
-        s.insert_run(&RunState {
-            id: "r1".into(),
-            round_id: 1,
+        let run = |id: &str, round_id: u64| RunState {
+            id: id.into(),
+            round_id,
             harness_id: "h".into(),
             prompt_id: "p01".into(),
             status: RunStage::Queued,
@@ -922,11 +935,16 @@ mod tests {
             retry_count: 0,
             created_at_ms: 1,
             updated_at_ms: 1,
-        })
-        .await
-        .unwrap();
-        let claimed = s.claim_next_run().await.unwrap().unwrap();
+        };
+        s.insert_run(&run("r1", 1)).await.unwrap();
+        // Future-round run is not claimable until its round opens.
+        s.insert_run(&run("r2", 5)).await.unwrap();
+        let claimed = s.claim_next_run(1).await.unwrap().unwrap();
+        assert_eq!(claimed.id, "r1");
         assert_eq!(claimed.status, RunStage::Installing);
+        assert!(s.claim_next_run(1).await.unwrap().is_none());
+        let future = s.claim_next_run(5).await.unwrap().unwrap();
+        assert_eq!(future.id, "r2");
         assert_eq!(s.quota_bump("aa", "2026-08-04", 1).await.unwrap(), 1);
     }
 }

@@ -6,17 +6,13 @@ use std::path::{Component, Path, PathBuf};
 
 use challenge_ast::{
     fingerprint_source, structural_diff_summary, summarize_fingerprint, top_k_nearest, Fingerprint,
+    AST_CHEAT_BPS, AST_SUSPICIOUS_BPS,
 };
 use serde_json::{json, Value};
 
 use crate::types::{
     AgenticError, AgenticVerdict, CheatCode, CorpusEntry, ReviewRequest, VerdictKind,
 };
-
-/// Must match [`crate::sim::SIM_CHEAT_BPS`] (kept local to avoid mod cycle).
-const AST_CHEAT_BPS: u16 = 9_500;
-/// Must match [`crate::sim::SIM_SUSPICIOUS_BPS`].
-const AST_SUSPICIOUS_BPS: u16 = 8_500;
 
 /// Precomputed corpus fingerprints for AST tools.
 #[derive(Debug, Clone)]
@@ -26,6 +22,7 @@ pub(crate) struct ToolContext {
     pub metrics_relpath: Option<String>,
     pub pages_relpath: Option<String>,
     pub sanitize_report_relpath: Option<String>,
+    pub enable_run_command: bool,
 }
 
 impl ToolContext {
@@ -47,12 +44,19 @@ impl ToolContext {
                 }
             }
         }
+        // `run_command` exists only inside the hardened review container (the
+        // `challenge-review` image sets this); never on the master process.
+        let enable_run_command = matches!(
+            std::env::var("AGENTIC_ENABLE_RUN_COMMAND").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        );
         Ok(Self {
             workdir,
             corpus,
             metrics_relpath: req.metrics_relpath.clone(),
             pages_relpath: req.pages_relpath.clone(),
             sanitize_report_relpath: req.sanitize_report_relpath.clone(),
+            enable_run_command,
         })
     }
 }
@@ -102,6 +106,14 @@ pub(crate) fn tool_schemas() -> Value {
             "k": {"type": "integer", "minimum": 1, "maximum": 10}
         },
         "required": ["path"]
+    });
+    let run_command = json!({
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Shell command run by bash inside the hardened review sandbox (cwd = workdir, scrubbed env, 15s cap, truncated output)."},
+            "path": {"type": "string", "description": "Relative cwd under the workdir (default \".\")."}
+        },
+        "required": ["command"]
     });
     let empty = json!({"type": "object", "properties": {}, "required": []});
     let submit = json!({
@@ -172,6 +184,11 @@ pub(crate) fn tool_schemas() -> Value {
             &empty
         ),
         fn_tool(
+            "run_command",
+            "Run a short shell command inside the review sandbox (both agents mounted). Use for diffs, grep, python AST probes.",
+            &run_command
+        ),
+        fn_tool(
             "submit_verdict",
             "MANDATORY final call. Emit the anti-cheat verdict. No further tools after this.",
             &submit,
@@ -205,6 +222,7 @@ pub(crate) fn dispatch(
         "ast_diff_nearest" => Ok(Ok(tool_ast_diff(ctx, args)?)),
         "read_metrics" => Ok(Ok(tool_read_metrics(ctx)?)),
         "read_pages" => Ok(Ok(tool_read_pages(ctx)?)),
+        "run_command" => Ok(Ok(tool_run_command(ctx, args)?)),
         "submit_verdict" => Ok(Err(parse_verdict(args)?)),
         other => Err(AgenticError::Tool(format!("unknown tool: {other}"))),
     }
@@ -415,6 +433,80 @@ fn tool_read_pages(ctx: &ToolContext) -> Result<String, AgenticError> {
     Ok(out)
 }
 
+/// Wall-clock cap for one `run_command` call.
+const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Output cap (combined stdout+stderr).
+const RUN_COMMAND_MAX_OUT: usize = 16 * 1024;
+
+/// Sandboxed shell for the review container: fixed workdir cwd, scrubbed env
+/// (no API keys), hard timeout, truncated output. The container itself (no
+/// capabilities, read-only rootfs, no writable mounts besides /out + /tmp) is
+/// the security boundary; this tool adds cwd/env/time/output limits.
+fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
+    if !ctx.enable_run_command {
+        return Err(AgenticError::Tool(
+            "run_command disabled outside the review container".into(),
+        ));
+    }
+    let cmd = args
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AgenticError::Tool("run_command: command required".into()))?;
+    if cmd.is_empty() || cmd.len() > 1_000 || cmd.contains('\0') {
+        return Err(AgenticError::Tool("run_command: bad command".into()));
+    }
+    let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let cwd = resolve_rel(&ctx.workdir, rel)?;
+    if !cwd.is_dir() {
+        return Err(AgenticError::Tool(
+            "run_command: cwd not a directory".into(),
+        ));
+    }
+    let mut child = std::process::Command::new("bash")
+        .arg("-lc")
+        .arg(cmd)
+        .current_dir(&cwd)
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("HOME", "/tmp")
+        .env("TMPDIR", "/tmp")
+        .env("LANG", "C.UTF-8")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| AgenticError::Tool(format!("run_command spawn: {e}")))?;
+    let deadline = std::time::Instant::now() + RUN_COMMAND_TIMEOUT;
+    let mut timed_out = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                timed_out = true;
+                let _ = child.kill();
+                break;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(e) => {
+                let _ = child.kill();
+                return Err(AgenticError::Tool(format!("run_command wait: {e}")));
+            }
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| AgenticError::Tool(format!("run_command output: {e}")))?;
+    let status = out.status.code().unwrap_or(-1);
+    let mut text = format!(
+        "exit={status} timed_out={timed_out}\n$ {cmd}\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if text.len() > RUN_COMMAND_MAX_OUT {
+        text = truncate(&text, RUN_COMMAND_MAX_OUT);
+    }
+    Ok(text)
+}
+
 fn read_py(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
     let rel = args
         .get("path")
@@ -610,6 +702,51 @@ mod tests {
         let wd = dir.path().canonicalize().unwrap();
         assert!(resolve_rel(&wd, "../etc/passwd").is_err());
         assert!(resolve_rel(&wd, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn run_command_executes_in_sandboxed_cwd() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
+        std::env::set_var("AGENTIC_ENABLE_RUN_COMMAND", "1");
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["agent.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: String::new(),
+        };
+        let ctx = ToolContext::from_request(&req).unwrap();
+        std::env::remove_var("AGENTIC_ENABLE_RUN_COMMAND");
+        assert!(ctx.enable_run_command);
+        let out = tool_run_command(&ctx, &json!({"command": "cat agent.py"})).unwrap();
+        assert!(out.contains("x = 1"), "out={out}");
+        assert!(out.contains("exit=0"), "out={out}");
+        // Env is scrubbed for children.
+        let out = tool_run_command(&ctx, &json!({"command": "env | wc -l"})).unwrap();
+        assert!(out.contains("exit=0"), "out={out}");
+        // Escape attempts fail via resolve_rel on cwd.
+        assert!(tool_run_command(&ctx, &json!({"command": "ls", "path": ".."})).is_err());
+    }
+
+    #[test]
+    fn run_command_disabled_without_container_env() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["agent.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: String::new(),
+        };
+        let ctx = ToolContext::from_request(&req).unwrap();
+        assert!(!ctx.enable_run_command);
+        assert!(tool_run_command(&ctx, &json!({"command": "true"})).is_err());
     }
 
     #[test]

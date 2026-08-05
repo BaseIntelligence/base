@@ -13,35 +13,28 @@
 
 mod agentic;
 mod api;
-mod config;
 mod leaf_emit;
 pub mod orchestrator;
-mod pipeline;
 mod score;
-mod submission;
 mod submit;
 
 pub use api::{record_epoch, submission_router, AppState};
-pub use config::PrismConfig;
 pub use leaf_emit::{emit_signed_leaf_set, public_key_from_secret, verify_leaf_sig, LeafEmitError};
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
-pub use pipeline::{
-    run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
-};
 pub use prism_challenge_task::{
     CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN,
+};
+pub use prism_pipeline::{
+    example_valid_request, expand_zip_fields, run_eval_pipeline, run_sim_pipeline, score_from_bpb,
+    score_from_pipeline, submission_id, validate, PipelineError, PipelineInput, PipelineOutcome,
+    PipelineResult, PrismConfig, QueuedSubmission, SubmissionAccepted, SubmissionError,
+    SubmissionId, SubmissionRequest, SubmissionService,
 };
 pub use prism_store::{
     DbPrismStore, FinalScore, MemoryPrismStore, PrismStore, Stage, StageEvent, StatePatch,
     StoreError, SubmissionState,
 };
-pub use score::{
-    combine_final, score_from_bpb, score_from_pipeline, FinalOutcome, PipelineOutcome,
-};
-pub use submission::{
-    example_valid_request, submission_id, QueuedSubmission, SubmissionAccepted, SubmissionError,
-    SubmissionId, SubmissionRequest, SubmissionService,
-};
+pub use score::{combine_final, FinalOutcome};
 pub use submit::{
     submit_signed_leaf_set, GatewayClient, GatewayClientConfig, SubmitError, SubmitOutcome,
 };

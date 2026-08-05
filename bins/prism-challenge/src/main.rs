@@ -31,6 +31,9 @@ use prism_challenge::{
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
+use submission_gating::{
+    watch_once, GatingStore, MemoryGatingStore, MetagraphCache, PgGatingStore,
+};
 const MAX_ATTEMPTS: u32 = 2;
 
 use tokio::net::TcpListener;
@@ -91,6 +94,17 @@ struct Cli {
         global = true
     )]
     sim_stage_delay_ms: u64,
+    /// Auto-retry budget for infra-class failures (Lium install/AST/LLM).
+    #[arg(long, env = "PRISM_AUTO_RETRY_MAX", default_value_t = 3, global = true)]
+    auto_retry_max: u32,
+    /// Metagraph watcher cadence (gating eligibility resets).
+    #[arg(
+        long,
+        env = "BASE_GATING_WATCH_SECS",
+        default_value_t = 120,
+        global = true
+    )]
+    gating_watch_secs: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -257,7 +271,7 @@ pub(crate) fn build_agentic() -> (Arc<dyn AgenticBackend>, &'static str) {
     (Arc::new(SimAgent::new()), "sim")
 }
 
-async fn build_store() -> (Arc<dyn PrismStore>, String) {
+async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
     if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
         if !url.trim().is_empty() {
             let pool = match db::connect(&url).await {
@@ -271,10 +285,64 @@ async fn build_store() -> (Arc<dyn PrismStore>, String) {
                 eprintln!("prism-challenge: db migrate {e}");
                 std::process::exit(1);
             }
-            return (Arc::new(DbPrismStore::new(pool)), "postgres".into());
+            return (
+                Arc::new(DbPrismStore::new(pool.clone())),
+                Arc::new(PgGatingStore::new(pool)) as Arc<dyn GatingStore>,
+                "postgres".into(),
+            );
         }
     }
-    (Arc::new(MemoryPrismStore::new()), "memory".into())
+    (
+        Arc::new(MemoryPrismStore::new()),
+        Arc::new(MemoryGatingStore::new()) as Arc<dyn GatingStore>,
+        "memory".into(),
+    )
+}
+
+/// Spawn the metagraph watcher: refresh the cached snapshot and reconcile
+/// gating eligibility (hotkey deregistered/replaced → back to `open`).
+fn spawn_gating_watcher(
+    chain_ep: &str,
+    netuid: u16,
+    cache: Arc<MetagraphCache>,
+    gating: Arc<dyn GatingStore>,
+    poll: Duration,
+) {
+    let ep = chain_ep.to_owned();
+    tokio::spawn(async move {
+        let mut client: Option<chain_live::LiveChainClient> = None;
+        let stores = vec![(CHALLENGE_ID.to_owned(), gating)];
+        loop {
+            if client.is_none() {
+                let ep2 = ep.clone();
+                client = match tokio::task::spawn_blocking(move || {
+                    let mut c =
+                        chain_live::LiveChainClient::connect(&ep2).map_err(|e| e.to_string())?;
+                    c.set_netuid(netuid);
+                    Ok::<_, String>(c)
+                })
+                .await
+                {
+                    Ok(Ok(c)) => Some(c),
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "gating watcher: chain connect failed");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "gating watcher: join failed");
+                        None
+                    }
+                };
+            }
+            if let Some(c) = &client {
+                if let Err(e) = watch_once(c, netuid, &cache, &stores).await {
+                    tracing::warn!(error = %e, "gating watcher tick failed (cache kept)");
+                    client = None; // reconnect next tick on persistent errors
+                }
+            }
+            tokio::time::sleep(poll).await;
+        }
+    });
 }
 
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
@@ -286,7 +354,12 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
     let (agentic, agentic_mode) = build_agentic();
-    let (store, store_mode) = build_store().await;
+    let (store, gating, store_mode) = build_store().await;
+    // BASE_SUBMISSION_GATING=0 disables intake gating (local dev only).
+    let gating_enabled = !matches!(std::env::var("BASE_SUBMISSION_GATING").as_deref(), Ok("0"));
+    if !gating_enabled {
+        tracing::warn!("BASE_SUBMISSION_GATING=0: intake metagraph/1-max checks disabled");
+    }
     let gateway = Arc::new(
         prism_challenge::GatewayClient::new(prism_challenge::GatewayClientConfig {
             base_url: cli.gateway_endpoint.clone(),
@@ -294,6 +367,9 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         })
         .map_err(|e| e.to_string())?,
     );
+
+    // Metagraph cache + watcher feed the intake membership check.
+    let metagraph = Arc::new(MetagraphCache::new());
 
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
@@ -303,6 +379,8 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             format!("{backend_mode}/{reviewer_mode}/{agentic_mode}/{store_mode}").into_boxed_str(),
         ),
         retry_max: MAX_ATTEMPTS,
+        gating: gating_enabled.then(|| Arc::clone(&gating)),
+        metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
     });
     let app = submission_router(Arc::clone(&state));
 
@@ -335,8 +413,9 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         similarity_corpus_limit: 6,
         stuck_grace_secs: 7 * 3600,
         stage_delay,
+        auto_retry_max: cli.auto_retry_max,
     };
-    let orchestrator = Arc::new(Orchestrator::new(
+    let mut orchestrator = Orchestrator::new(
         oc,
         store,
         backend,
@@ -345,7 +424,18 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         gateway,
         Arc::new(chain),
         sk,
-    ));
+    );
+    if gating_enabled {
+        orchestrator = orchestrator.with_gating(Arc::clone(&gating));
+        spawn_gating_watcher(
+            &chain_ep,
+            cli.netuid,
+            Arc::clone(&metagraph),
+            Arc::clone(&gating),
+            Duration::from_secs(cli.gating_watch_secs.max(15)),
+        );
+    }
+    let orchestrator = Arc::new(orchestrator);
     spawn_orchestrator(&cli, &orchestrator);
 
     let listener = TcpListener::bind(cli.bind)

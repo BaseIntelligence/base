@@ -25,11 +25,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use submission_gating::{GatingState, GatingStore, MetagraphCache};
 
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
-use crate::submission::{SubmissionError, SubmissionRequest};
 use crate::CHALLENGE_ID;
+use prism_pipeline::{SubmissionError, SubmissionRequest};
 use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
@@ -45,6 +46,11 @@ pub struct AppState {
     pub backend_mode: &'static str,
     /// Max orchestrator attempts per submission (retry guard).
     pub retry_max: u32,
+    /// Submission gating (1-max). `None` disables intake gating (tests/dev).
+    pub gating: Option<Arc<dyn GatingStore>>,
+    /// Cached metagraph snapshot for intake membership. `None` disables the
+    /// membership check (tests/dev).
+    pub metagraph: Option<Arc<MetagraphCache>>,
 }
 
 /// Router over the full API surface.
@@ -96,6 +102,64 @@ fn parse_submission_body(
     serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
 }
 
+/// Intake gates for a fresh submission: metagraph membership (fail closed
+/// when the cache has no snapshot) + one accepted submission per
+/// `(challenge, hotkey)`. Returns the metagraph uid on pass.
+async fn intake_gates(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
+    let mut uid = None;
+    if let Some(cache) = &st.metagraph {
+        match cache.snapshot() {
+            Some(view) => match view.uid_of_hex(hotkey) {
+                Some(u) => uid = Some(u),
+                None => {
+                    return Err(json_err(
+                        StatusCode::FORBIDDEN,
+                        "hotkey_not_in_metagraph",
+                        "miner hotkey is not registered on this subnet",
+                    ));
+                }
+            },
+            None => {
+                return Err(json_err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "metagraph_unavailable",
+                    "metagraph snapshot not ready; retry shortly",
+                ));
+            }
+        }
+    }
+    gate_one_max(st, hotkey).await?;
+    Ok(uid)
+}
+
+/// The 1-max gating check alone (metagraph not consulted when no cache is
+/// configured, e.g. unit tests).
+async fn gate_one_max(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
+    if let Some(g) = &st.gating {
+        match g.get(CHALLENGE_ID, hotkey).await {
+            Ok(Some(row)) if row.state != GatingState::Open => {
+                return Err(json_err(
+                    StatusCode::CONFLICT,
+                    "submission_gated",
+                    &format!(
+                        "hotkey is '{}' for this challenge; one accepted submission max",
+                        row.state.as_str()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(json_err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "gating",
+                    &e.to_string(),
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
 /// with `X-Miner-Hotkey`.
 async fn post_submission(
@@ -107,16 +171,32 @@ async fn post_submission(
         Ok(r) => r,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
     };
-    if let Err(e) = crate::submission::expand_zip_fields(&mut req) {
+    if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
         return json_err(StatusCode::BAD_REQUEST, "zip", &e);
     }
-    if let Err(e) = crate::submission::validate(&req) {
+    if let Err(e) = prism_pipeline::validate(&req) {
         return map_submission_err(&e);
     }
     if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
         return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
     }
-    let id = crate::submission::submission_id(&req);
+    // Normalize hotkey case so gating + ids are case-stable.
+    req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
+    let id = prism_pipeline::submission_id(&req);
+
+    // Idempotent duplicate: identical contract bytes never conflict gating.
+    let exists = match st.store.get(&id).await {
+        Ok(r) => r.is_some(),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let uid = if exists {
+        None
+    } else {
+        match intake_gates(&st, &req.miner_hotkey).await {
+            Ok(u) => u,
+            Err(resp) => return resp,
+        }
+    };
     let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
     let row = SubmissionState {
         id: id.clone(),
@@ -141,14 +221,32 @@ async fn post_submission(
     };
     // Idempotent no-op duplicate accepted (same id → 200 OK {status:"already-queued"}).
     match st.store.insert_queued(&row).await {
-        Ok(()) => (
-            StatusCode::ACCEPTED,
-            Json(crate::submission::SubmissionAccepted {
-                submission_id: id,
-                status: "accepted".into(),
-            }),
-        )
-            .into_response(),
+        Ok(()) => {
+            // Registration finalizes only after the row is queued so intake
+            // failures never consume the miner's single slot.
+            if !exists {
+                if let Some(g) = &st.gating {
+                    if let Err(e) = g
+                        .mark_registered(CHALLENGE_ID, &req.miner_hotkey, uid)
+                        .await
+                    {
+                        return json_err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "gating",
+                            &e.to_string(),
+                        );
+                    }
+                }
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(prism_pipeline::SubmissionAccepted {
+                    submission_id: id,
+                    status: "accepted".into(),
+                }),
+            )
+                .into_response()
+        }
         Err(StoreError::Backend(e)) if e.contains("duplicate") || e.contains("unique") => (
             StatusCode::OK,
             Json(json!({"submission_id": id, "status": "already-queued"})),
@@ -407,14 +505,42 @@ mod tests {
             netuid: 541,
             backend_mode: "sim",
             retry_max: 2,
+            gating: None,
+            metagraph: None,
         })
+    }
+
+    fn gated_state(
+        metagraph_hotkeys: &[[u8; 32]],
+    ) -> (Arc<AppState>, Arc<submission_gating::MemoryGatingStore>) {
+        let gating = Arc::new(submission_gating::MemoryGatingStore::new());
+        let cache = Arc::new(MetagraphCache::new());
+        cache.update(
+            541,
+            &metagraph_hotkeys
+                .iter()
+                .map(|h| h.to_vec())
+                .collect::<Vec<_>>(),
+        );
+        (
+            Arc::new(AppState {
+                store: Arc::new(MemoryPrismStore::new()),
+                epoch: std::sync::atomic::AtomicU64::new(7),
+                netuid: 541,
+                backend_mode: "sim",
+                retry_max: 2,
+                gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
+                metagraph: Some(cache),
+            }),
+            gating,
+        )
     }
 
     #[tokio::test]
     async fn retry_requeues_failed_then_guard_blocks() {
         let st = state();
         let app = submission_router(Arc::clone(&st));
-        let id = crate::submission::submission_id(&crate::example_valid_request());
+        let id = prism_pipeline::submission_id(&crate::example_valid_request());
         // Seed via POST.
         let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
         let (_s, v) = call(
@@ -616,5 +742,102 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn gated_intake_requires_metagraph_membership() {
+        // Metagraph has 0x22 but the submission hotkey is 0x11 → 403.
+        let (st, _g) = gated_state(&[[0x22; 32]]);
+        let app = submission_router(st);
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert_eq!(v["code"], "hotkey_not_in_metagraph");
+    }
+
+    #[tokio::test]
+    async fn gated_intake_one_max_then_conflict() {
+        let (st, gating) = gated_state(&[[0x11; 32]]);
+        let app = submission_router(Arc::clone(&st));
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, _v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED);
+        // Gating row is registered with the metagraph uid.
+        let row = gating
+            .get("prism", &"11".repeat(32))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, submission_gating::GatingState::Registered);
+        assert_eq!(row.uid, Some(0));
+
+        // A *different* submission from the same hotkey → 409.
+        let mut other = crate::example_valid_request();
+        other.architecture_py.push_str("\n# v2\n");
+        let body = serde_json::to_vec(&other).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "submission_gated");
+
+        // The identical re-POST stays idempotent (200 already-queued).
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["status"], "already-queued");
+    }
+
+    #[tokio::test]
+    async fn gated_intake_503_until_first_snapshot() {
+        // Cache configured but never refreshed → fail closed with 503.
+        let gating = Arc::new(submission_gating::MemoryGatingStore::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryPrismStore::new()),
+            epoch: std::sync::atomic::AtomicU64::new(7),
+            netuid: 541,
+            backend_mode: "sim",
+            retry_max: 2,
+            gating: Some(gating as Arc<dyn GatingStore>),
+            metagraph: Some(Arc::new(MetagraphCache::new())),
+        });
+        let app = submission_router(st);
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert_eq!(v["code"], "metagraph_unavailable");
     }
 }

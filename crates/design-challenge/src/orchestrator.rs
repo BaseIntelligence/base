@@ -7,15 +7,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chain::ChainClient;
-use challenge_agentic::{AgenticBackend, AgenticVerdict, CorpusEntry, ReviewRequest, VerdictKind};
+use challenge_agentic::{
+    copy_gate, AgenticBackend, AgenticError, AgenticVerdict, CorpusEntry, GateCorpusEntry,
+    ReviewRequest, VerdictKind,
+};
 use challenge_common::{
     emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, ExpectedSet,
     GatewayClient, PinnedBlockHash,
 };
 use crypto::KEY_LEN;
-use design_challenge_task::{
-    day_index_for_round, round_id_at, rounds_for_day, ROUND_SECS, SCORING_VERSION,
-};
+use design_challenge_task::{round_id_at, round_secs};
 use design_http::{mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
@@ -24,14 +25,96 @@ use design_store::{
     DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
 };
 use serde_json::json;
+use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::score::{not_attempted, score_day, to_leaf, DayScorePlan};
+use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 use crate::CHALLENGE_ID;
 
 /// Cap harness log payload stored in stage-event detail (JSON).
 const MAX_LOG_CHARS: usize = 65_536;
+
+/// Classified run failure: retryable infra classes vs terminal miner errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// Package install / Docker engine infra (auto-retryable).
+    Install,
+    /// AST / workdir / store infra (auto-retryable).
+    AstInfra,
+    /// LLM transport / provider / verdict parse (auto-retryable).
+    LlmInfra,
+    /// Miner-caused failure: agent crash, sanitize reject, missing output
+    /// (terminal — no auto-retry).
+    Miner,
+}
+
+impl ErrorClass {
+    /// DB / gating label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::AstInfra => "ast_infra",
+            Self::LlmInfra => "llm_infra",
+            Self::Miner => "miner",
+        }
+    }
+
+    /// Auto-retry budget applies (initial attempt + up to 3 retries).
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        !matches!(self, Self::Miner)
+    }
+}
+
+/// One failed run attempt with its error class.
+#[derive(Debug)]
+struct RunFailure {
+    class: ErrorClass,
+    msg: String,
+}
+
+impl RunFailure {
+    fn new(class: ErrorClass, msg: impl Into<String>) -> Self {
+        Self {
+            class,
+            msg: msg.into(),
+        }
+    }
+}
+
+fn classify_sandbox(e: &SandboxError) -> RunFailure {
+    match e {
+        SandboxError::PhaseFailed {
+            phase,
+            status,
+            logs,
+        } => {
+            let class = if *phase == "install" {
+                ErrorClass::Install
+            } else {
+                ErrorClass::Miner
+            };
+            RunFailure::new(
+                class,
+                format!("phase {phase}: exit={status}: {}", clip_logs(logs)),
+            )
+        }
+        SandboxError::Docker(msg) => RunFailure::new(ErrorClass::Install, format!("docker: {msg}")),
+        SandboxError::Io(e) => RunFailure::new(ErrorClass::AstInfra, format!("io: {e}")),
+        SandboxError::MissingOutput(m) => {
+            RunFailure::new(ErrorClass::Miner, format!("missing output: {m}"))
+        }
+    }
+}
+
+fn classify_agentic(e: &AgenticError) -> RunFailure {
+    match e {
+        AgenticError::Tool(m) => RunFailure::new(ErrorClass::AstInfra, format!("agentic: {m}")),
+        other => RunFailure::new(ErrorClass::LlmInfra, format!("agentic: {other}")),
+    }
+}
 
 /// Design domain rules appended to the agentic system prompt.
 const DESIGN_AGENTIC_RULES: &str = r"
@@ -58,6 +141,9 @@ pub struct OrchestratorConfig {
     /// Local/e2e only: pause after each published stage so mid-flight is
     /// photographable. Zero in production (default).
     pub stage_delay: Duration,
+    /// Auto-retry budget for infra-class failures (initial attempt + this
+    /// many retries). Default 3; `cheat` / `rejected` are always terminal.
+    pub auto_retry_max: u32,
 }
 
 impl Default for OrchestratorConfig {
@@ -69,6 +155,7 @@ impl Default for OrchestratorConfig {
             llm_proxy: "http://design-egress-proxy:8094".into(),
             staging_root: PathBuf::from("/var/lib/design/staging"),
             stage_delay: Duration::ZERO,
+            auto_retry_max: 3,
         }
     }
 }
@@ -82,6 +169,7 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     gateway: Arc<GatewayClient>,
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
+    gating: Option<Arc<dyn GatingStore>>,
 }
 
 impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
@@ -112,7 +200,15 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             gateway,
             chain,
             sk,
+            gating: None,
         }
+    }
+
+    /// Attach the submission gating store (terminal states + retry attempts).
+    #[must_use]
+    pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
+        self.gating = Some(gating);
+        self
     }
 
     /// Local/e2e: hold after publishing a stage so polls can photograph it.
@@ -252,17 +348,18 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
 
         let _ = (miners_clean, winner_miners);
 
-        // Aggregate UTC-day round wins → share SCORE_MAX among miners with ≥2 wins.
-        let (day_start, day_end) = rounds_for_day(day_index_for_round(rid));
-        let day_awards = self
+        // Aggregate rolling-window round wins → proportional SCORE_MAX share
+        // (scoring_version 3, cheat excluded).
+        let ws = window_start(rid);
+        let window_awards = self
             .store
-            .list_round_awards(day_start, day_end)
+            .list_round_awards(ws, rid)
             .await
             .map_err(|e| e.to_string())?;
         let mut win_counts: BTreeMap<String, u32> = BTreeMap::new();
-        let mut day_miners = miners_with_harness.clone();
-        let mut day_cheat = cheat_miners.clone();
-        for a in &day_awards {
+        let mut window_miners = miners_with_harness.clone();
+        let mut window_cheat = cheat_miners.clone();
+        for a in &window_awards {
             for hid in &a.winner_harness_ids {
                 let hk = if let Some(h) = harness_to_miner.get(hid) {
                     h.clone()
@@ -272,25 +369,25 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                     .await
                     .map_err(|e| e.to_string())?
                 {
-                    day_miners.insert(h.miner_hotkey.clone());
+                    window_miners.insert(h.miner_hotkey.clone());
                     h.miner_hotkey
                 } else {
                     continue;
                 };
                 *win_counts.entry(hk).or_insert(0) += 1;
             }
-            // Pull miners/cheats from other rounds in the day for leaf projection.
+            // Pull miners/cheats from other window rounds for leaf projection.
             if a.round_id != rid {
                 if let Ok(other_runs) = self.store.runs_for_round(a.round_id).await {
                     for r in other_runs {
                         if let Ok(Some(h)) = self.store.get_harness(&r.harness_id).await {
-                            day_miners.insert(h.miner_hotkey.clone());
+                            window_miners.insert(h.miner_hotkey.clone());
                             let verdict = r
                                 .agentic_verdict
                                 .as_ref()
                                 .and_then(|v| v.get("verdict").and_then(|x| x.as_str()));
                             if matches!(verdict, Some("cheat" | "suspicious")) {
-                                day_cheat.insert(h.miner_hotkey);
+                                window_cheat.insert(h.miner_hotkey);
                             }
                         }
                     }
@@ -298,10 +395,10 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             }
         }
 
-        let scores = score_day(&DayScorePlan {
+        let scores = score_window(&WindowScorePlan {
             win_counts: win_counts.clone(),
-            miners_with_harness: day_miners,
-            cheat_miners: day_cheat,
+            miners_with_harness: window_miners,
+            cheat_miners: window_cheat,
         });
 
         for (hk, fs) in &scores {
@@ -354,10 +451,14 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    async fn cycle_once(&self) -> Result<bool, String> {
+    /// One claim→execute cycle; `Ok(true)` when one run was worked.
+    ///
+    /// # Errors
+    /// Claim fault only; per-run failures are retried or finalized inline.
+    pub async fn cycle_once(&self) -> Result<bool, String> {
         let Some(run) = self
             .store
-            .claim_next_run()
+            .claim_next_run(round_id_at(now_secs()))
             .await
             .map_err(|e| e.to_string())?
         else {
@@ -380,27 +481,88 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             )
             .await;
         self.pause_stage().await;
-        if let Err(e) = self.execute_run(&run).await {
-            warn!(run_id = %run.id, error = %e, "run failed");
+        if let Err(f) = self.execute_run(&run).await {
+            self.handle_run_failure(&run, f).await;
+        }
+        Ok(true)
+    }
+
+    /// Auto-retry retryable infra classes up to `auto_retry_max`; otherwise
+    /// finalize `failed` and block the hotkey in the gating store.
+    async fn handle_run_failure(&self, run: &design_store::RunState, f: RunFailure) {
+        let hotkey = self
+            .store
+            .get_harness(&run.harness_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|h| h.miner_hotkey);
+        if f.class.retryable() && run.retry_count < self.cfg.auto_retry_max {
+            warn!(
+                run_id = %run.id,
+                class = f.class.as_str(),
+                attempt = run.retry_count + 1,
+                error = %f.msg,
+                "auto-retrying run after infra failure"
+            );
+            let _ = self.store.reset_run(&run.id).await;
             let _ = self
                 .store
                 .apply_run(
                     &run.id,
-                    &StorePatch {
-                        status: Some(RunStage::Failed),
-                        error_detail: Some(e),
-                        final_score: Some(FinalScore::Score(0)),
-                        ..StorePatch::default()
-                    },
+                    &StorePatch::default(),
                     Some(&StageEvent {
-                        stage: "failed".into(),
-                        detail: None,
+                        stage: "auto_retry".into(),
+                        detail: Some(json!({
+                            "class": f.class.as_str(),
+                            "attempt": run.retry_count + 1,
+                            "max": self.cfg.auto_retry_max,
+                            "error": clip_logs(&f.msg),
+                        })),
                         at_ms: now_ms(),
                     }),
                 )
                 .await;
+            if let (Some(g), Some(hk)) = (&self.gating, hotkey) {
+                let _ = g.bump_attempt(CHALLENGE_ID, &hk, f.class.as_str()).await;
+            }
+            return;
         }
-        Ok(true)
+        warn!(run_id = %run.id, class = f.class.as_str(), error = %f.msg, "run failed (terminal)");
+        // Retryable classes that exhausted the budget are internal, not miner
+        // fault: NoScore(ChallengeInternal). Miner errors stay Score(0).
+        let final_score = if f.class.retryable() {
+            FinalScore::NoScore(bundle::NoScoreReasonCode::ChallengeInternal as u8)
+        } else {
+            FinalScore::Score(0)
+        };
+        let _ = self
+            .store
+            .apply_run(
+                &run.id,
+                &StorePatch {
+                    status: Some(RunStage::Failed),
+                    error_detail: Some(f.msg.clone()),
+                    final_score: Some(final_score),
+                    ..StorePatch::default()
+                },
+                Some(&StageEvent {
+                    stage: "failed".into(),
+                    detail: Some(json!({"class": f.class.as_str()})),
+                    at_ms: now_ms(),
+                }),
+            )
+            .await;
+        if let (Some(g), Some(hk)) = (&self.gating, hotkey) {
+            let _ = g
+                .set_terminal(
+                    CHALLENGE_ID,
+                    &hk,
+                    GatingState::Blocked,
+                    Some(f.class.as_str()),
+                )
+                .await;
+        }
     }
 
     async fn append_log(
@@ -433,27 +595,28 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    async fn execute_run(&self, run: &design_store::RunState) -> Result<(), String> {
+    async fn execute_run(&self, run: &design_store::RunState) -> Result<(), RunFailure> {
         let harness = self
             .store
             .get_harness(&run.harness_id)
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "harness missing".to_owned())?;
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?
+            .ok_or_else(|| RunFailure::new(ErrorClass::Miner, "harness missing"))?;
         if harness.eliminated_until_round > run.round_id {
-            return Err("harness eliminated".into());
+            return Err(RunFailure::new(ErrorClass::Miner, "harness eliminated"));
         }
-        let prompts = select_prompts_for_round(run.round_id).map_err(|e| e.to_string())?;
+        let prompts = select_prompts_for_round(run.round_id)
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let prompt = prompts
             .iter()
             .find(|p| p.id == run.prompt_id)
             .map(|p| p.prompt.clone())
             .unwrap_or_default();
         let bundle = design_harness::bundle_from_stored(
-            harness.miner_hotkey,
+            harness.miner_hotkey.clone(),
             harness.agent_py.clone(),
-            harness.pyproject_toml,
-            harness.extra_files,
+            harness.pyproject_toml.clone(),
+            harness.extra_files.clone(),
         );
         let sandbox = Arc::clone(&self.sandbox);
         let llm = self.cfg.llm_proxy.clone();
@@ -467,18 +630,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             move || sandbox.install(&bundle_c, round_id, &run_id, &prompt_c, &llm)
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let session = match install_res {
             Ok(s) => s,
             Err(e) => {
                 if let SandboxError::PhaseFailed { phase, logs, .. } = &e {
                     let _ = self.append_log(&run.id, phase, 0, logs).await;
                 }
-                return Err(map_sandbox_err(&e));
+                return Err(classify_sandbox(&e));
             }
         };
         self.append_log(&run.id, "install", 0, &session.install_logs)
-            .await?;
+            .await
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e))?;
 
         let _ = self
             .store
@@ -503,17 +667,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             sandbox.run_session(session, round_id, &run_id, &prompt, &llm)
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let out = match run_res {
             Ok(o) => o,
             Err(e) => {
                 if let SandboxError::PhaseFailed { phase, logs, .. } = &e {
                     let _ = self.append_log(&run.id, phase, 1, logs).await;
                 }
-                return Err(map_sandbox_err(&e));
+                return Err(classify_sandbox(&e));
             }
         };
-        self.append_log(&run.id, "run", 1, &out.run_logs).await?;
+        self.append_log(&run.id, "run", 1, &out.run_logs)
+            .await
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e))?;
 
         let _ = self
             .store
@@ -531,7 +697,9 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             )
             .await;
         self.pause_stage().await;
-        let sanitized = sanitize_bundle(&out.pages).map_err(|e| e.to_string())?;
+        // Sanitize reject is the miner's fault: terminal, no auto-retry.
+        let sanitized = sanitize_bundle(&out.pages)
+            .map_err(|e| RunFailure::new(ErrorClass::Miner, e.to_string()))?;
         let pages: Vec<_> = sanitized
             .pages
             .iter()
@@ -548,8 +716,66 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         self.store
             .put_artifacts(&run.id, &pages)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let report = serde_json::to_value(&sanitized.report).unwrap_or_default();
+
+        // Pre-LLM copy gate: byte/AST copy of an *earlier* harness → terminal
+        // `rejected` without spending the LLM review.
+        let gate_corpus = self.gate_corpus(&run.harness_id).await;
+        if let Some(hit) = copy_gate(&harness.agent_py, harness.created_at_ms, &gate_corpus) {
+            warn!(
+                run_id = %run.id,
+                nearest = %hit.nearest_id,
+                similarity_bps = hit.similarity_bps,
+                "copy gate rejected harness (created_at ordered, LLM skipped)"
+            );
+            let verdict_json = json!({
+                "verdict": "cheat",
+                "cheat_codes": [if hit.byte_identical {
+                    "near_identical_harness_copy"
+                } else {
+                    "ast_architecture_copy"
+                }],
+                "nearest_id": hit.nearest_id,
+                "similarity_bps": hit.similarity_bps,
+                "rationale": "pre-LLM copy gate: byte/AST copy of an earlier harness",
+                "gate": "copy_created_at",
+            });
+            let _ = self
+                .store
+                .apply_run(
+                    &run.id,
+                    &StorePatch {
+                        status: Some(RunStage::Rejected),
+                        artifact_digest: Some(sanitized.artifact_digest.clone()),
+                        sanitize_report: Some(report),
+                        agentic_verdict: Some(verdict_json),
+                        final_score: Some(FinalScore::Score(0)),
+                        ..StorePatch::default()
+                    },
+                    Some(&StageEvent {
+                        stage: "rejected".into(),
+                        detail: Some(json!({
+                            "gate": "copy_created_at",
+                            "nearest_id": hit.nearest_id,
+                            "similarity_bps": hit.similarity_bps,
+                        })),
+                        at_ms: now_ms(),
+                    }),
+                )
+                .await;
+            if let Some(g) = &self.gating {
+                let _ = g
+                    .set_terminal(
+                        CHALLENGE_ID,
+                        &harness.miner_hotkey,
+                        GatingState::Rejected,
+                        None,
+                    )
+                    .await;
+            }
+            return Ok(());
+        }
 
         // Agentic anti-cheat review.
         let _ = self
@@ -571,57 +797,75 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .await;
         self.pause_stage().await;
 
-        match self
+        let verdict = self
             .run_agentic_review(run, &harness.agent_py, &pages, &report)
-            .await
-        {
-            Ok(verdict) => {
-                let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
-                match verdict.verdict {
-                    VerdictKind::Clean => {
-                        mark_awaiting_admin(
-                            self.store.as_ref(),
-                            &run.id,
-                            &sanitized.artifact_digest,
-                            report,
-                            verdict_json,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
-                    VerdictKind::Cheat | VerdictKind::Suspicious => {
-                        let _ = self
-                            .store
-                            .apply_run(
-                                &run.id,
-                                &StorePatch {
-                                    status: Some(RunStage::Scored),
-                                    artifact_digest: Some(sanitized.artifact_digest.clone()),
-                                    sanitize_report: Some(report),
-                                    agentic_verdict: Some(verdict_json.clone()),
-                                    final_score: Some(FinalScore::Score(0)),
-                                    ..StorePatch::default()
-                                },
-                                Some(&StageEvent {
-                                    stage: "scored".into(),
-                                    detail: Some(json!({
-                                        "reason": "agentic",
-                                        "verdict": verdict_json.get("verdict"),
-                                    })),
-                                    at_ms: now_ms(),
-                                }),
-                            )
-                            .await;
-                    }
-                }
-                Ok(())
+            .await?;
+        let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
+        match verdict.verdict {
+            VerdictKind::Clean => {
+                mark_awaiting_admin(
+                    self.store.as_ref(),
+                    &run.id,
+                    &sanitized.artifact_digest,
+                    report,
+                    verdict_json,
+                )
+                .await
+                .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
             }
-            Err(e) => {
-                // Fail-closed already persisted; do not re-fail in cycle_once.
-                warn!(run_id = %run.id, error = %e, "agentic fail-closed");
-                Ok(())
+            VerdictKind::Cheat | VerdictKind::Suspicious => {
+                let _ = self
+                    .store
+                    .apply_run(
+                        &run.id,
+                        &StorePatch {
+                            status: Some(RunStage::Scored),
+                            artifact_digest: Some(sanitized.artifact_digest.clone()),
+                            sanitize_report: Some(report),
+                            agentic_verdict: Some(verdict_json.clone()),
+                            final_score: Some(FinalScore::Score(0)),
+                            ..StorePatch::default()
+                        },
+                        Some(&StageEvent {
+                            stage: "scored".into(),
+                            detail: Some(json!({
+                                "reason": "agentic",
+                                "verdict": verdict_json.get("verdict"),
+                            })),
+                            at_ms: now_ms(),
+                        }),
+                    )
+                    .await;
+                // Cheat / suspicious is terminal: no retry, gating rejected.
+                if let Some(g) = &self.gating {
+                    let _ = g
+                        .set_terminal(
+                            CHALLENGE_ID,
+                            &harness.miner_hotkey,
+                            GatingState::Rejected,
+                            None,
+                        )
+                        .await;
+                }
             }
         }
+        Ok(())
+    }
+
+    /// Corpus for the pre-LLM copy gate (recent harnesses minus the candidate).
+    async fn gate_corpus(&self, exclude_harness_id: &str) -> Vec<GateCorpusEntry> {
+        self.store
+            .list_recent_harnesses(64)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|h| h.id != exclude_harness_id)
+            .map(|h| GateCorpusEntry {
+                id: format!("harness:{}", h.id),
+                source: h.agent_py,
+                created_at_ms: h.created_at_ms,
+            })
+            .collect()
     }
 
     async fn run_agentic_review(
@@ -630,26 +874,29 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         agent_py: &str,
         pages: &[(String, String, String, String, u32)],
         sanitize_report: &serde_json::Value,
-    ) -> Result<AgenticVerdict, String> {
+    ) -> Result<AgenticVerdict, RunFailure> {
         let work = self.cfg.staging_root.join("agentic").join(&run.id);
         let _ = std::fs::remove_dir_all(&work);
-        std::fs::create_dir_all(work.join("pages")).map_err(|e| e.to_string())?;
-        std::fs::write(work.join("agent.py"), agent_py).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(work.join("pages"))
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
+        std::fs::write(work.join("agent.py"), agent_py)
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         for (path, sanitized, _, _, _) in pages {
             let name = path.rsplit('/').next().unwrap_or(path.as_str());
-            std::fs::write(work.join("pages").join(name), sanitized).map_err(|e| e.to_string())?;
+            std::fs::write(work.join("pages").join(name), sanitized)
+                .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         }
         std::fs::write(
             work.join("sanitize_report.json"),
             sanitize_report.to_string(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
 
         let recent = self
             .store
             .list_recent_harnesses(64)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let corpus: Vec<CorpusEntry> = recent
             .into_iter()
             .filter(|h| h.id != run.harness_id)
@@ -674,28 +921,21 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         match result {
             Ok(v) => Ok(v),
             Err(e) => {
-                let msg = format!("agentic: {e}");
+                let f = classify_agentic(&e);
+                // Record the verdict error for audit; the retry/terminal
+                // decision (status) belongs to `handle_run_failure`.
                 let _ = self
                     .store
                     .apply_run(
                         &run.id,
                         &StorePatch {
-                            status: Some(RunStage::Failed),
-                            error_detail: Some(msg.clone()),
-                            final_score: Some(FinalScore::NoScore(
-                                bundle::NoScoreReasonCode::ChallengeInternal as u8,
-                            )),
-                            agentic_verdict: Some(json!({"error": msg})),
+                            agentic_verdict: Some(json!({"error": f.msg})),
                             ..StorePatch::default()
                         },
-                        Some(&StageEvent {
-                            stage: "failed".into(),
-                            detail: Some(json!({"reason": "agentic_fail_closed"})),
-                            at_ms: now_ms(),
-                        }),
+                        None,
                     )
                     .await;
-                Err(msg)
+                Err(f)
             }
         }
     }
@@ -713,7 +953,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
             .unwrap_or(0);
-        let opens = rid * ROUND_SECS;
+        let opens = rid * round_secs();
         self.store
             .insert_round(&RoundRow {
                 round_id: rid,
@@ -722,7 +962,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 prompt_set_digest: prompt_set_digest(),
                 status: "open".into(),
                 opens_at_secs: opens,
-                closes_at_secs: opens + ROUND_SECS,
+                closes_at_secs: opens + round_secs(),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -778,7 +1018,6 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             &scores,
         )
         .map_err(|e| e.to_string())?;
-        let _ = SCORING_VERSION;
         submit_signed_leaf_set(self.gateway.as_ref(), &signed)
             .await
             .map_err(|e| e.to_string())?;
@@ -812,17 +1051,4 @@ fn clip_logs(text: &str) -> String {
     let mut out = text[text.len() - MAX_LOG_CHARS..].to_owned();
     out.insert_str(0, "...[truncated]\n");
     out
-}
-
-fn map_sandbox_err(e: &SandboxError) -> String {
-    match e {
-        SandboxError::PhaseFailed {
-            phase,
-            status,
-            logs,
-        } => {
-            format!("phase {phase}: exit={status}: {}", clip_logs(logs))
-        }
-        other => other.to_string(),
-    }
 }

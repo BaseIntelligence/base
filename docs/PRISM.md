@@ -54,6 +54,18 @@ interrupted rows.
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.
 
+## Submission gating (shared with design)
+
+Intake requires the miner hotkey **in the metagraph** (cached snapshot) and
+enforces **one accepted submission per `(prism, hotkey)`**
+(`submission_gating` table): non-`open` rows → `409 submission_gated`;
+unknown hotkey → `403 hotkey_not_in_metagraph`. Infra-class failures
+(`install` = Lium/pod, `ast_infra` = similarity, `llm_infra` = review/agentic)
+**auto-retry up to 3 times** before a terminal `blocked`; cheat / suspicious
+verdicts are terminal `rejected` (no retry). A metagraph **watcher** reopens
+eligibility when the hotkey leaves the metagraph (uid deregistered or hotkey
+replaced). Manual `POST /v1/submissions/{id}/retry` is unchanged.
+
 ## Agentic anti-cheat + AST + metrics gate
 
 After measure and cheap `prism-review` similarity/quality filters, the shared

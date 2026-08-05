@@ -7,10 +7,15 @@
 #![forbid(unsafe_code)]
 
 mod fingerprint;
+mod gate;
 mod similarity;
 mod walk;
 
 pub use fingerprint::{fingerprint_source, AstError, Fingerprint};
+pub use gate::{
+    copy_gate, CopyGateHit, GateCorpusEntry, AST_CHEAT_BPS, AST_SUSPICIOUS_BPS,
+    BASELINE_CORPUS_PREFIX,
+};
 pub use similarity::{
     similarity_bps, structural_diff_summary, summarize_fingerprint, top_k_nearest, Neighbor,
 };

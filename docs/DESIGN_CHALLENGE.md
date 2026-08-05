@@ -64,7 +64,7 @@ Sandbox containers attach only to the internal Docker network
 | Field | Value |
 |-------|-------|
 | `challenge_id` | `design` |
-| `challenge_scoring_version` | **u16 = 2** |
+| `challenge_scoring_version` | **u16 = 3** |
 | `SCORE_MAX` | `1_000_000` |
 | Listen port | `8093` (local overlay `28093`) |
 | Gateway proxy prefix | `/challenge/design/*` |
@@ -73,13 +73,18 @@ Sandbox containers attach only to the internal Docker network
 | Policy | `all_metagraph_hotkeys` |
 | Round length | `ROUND_SECS = 8_640` (10 rounds / UTC day) |
 | Agent run timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 min; distinct from round length) |
-| Daily qualification | `MIN_DAILY_WINS = 2` |
+| Scoring window | `SCORING_WINDOW_ROUNDS = 10` (rolling round-win points share) |
 | `round_id` | `floor(unix_secs / 8640)` |
 | Domain `round_id` | `base-design-round-id-v1` |
 | Domain submission | `base-design-submission-v1` |
 | Domain pair | `base-design-pair-id-v1` |
 | Domain run | `base-design-run-id-v1` |
 | Raw-weight domain | `base-rawweight-v1` (via bundle) |
+
+Staging knobs (defaults above are the prod pins and never change implicitly):
+`DESIGN_ROUND_SECS`, `DESIGN_AGENT_RUN_TIMEOUT_SECS`, `DESIGN_PROMPTS_PER_ROUND`
+override round length / run timeout / prompts per round (staging uses ~15-minute
+rounds; `env-staging.yml`).
 
 Emission posture: `emission_share_bps = 0` for design until the owner ceremony
 documented in [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md).
@@ -108,6 +113,25 @@ proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
 
 `harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras || env)`.
 `POST /v1/harness` is idempotent on that digest.
+
+### Submission gating (1-max)
+
+- The miner hotkey must be **in the metagraph** (cached snapshot; no signature
+  added). Unknown hotkey → `403 hotkey_not_in_metagraph`; snapshot not ready →
+  `503 metagraph_unavailable`.
+- **One accepted submission per `(challenge, hotkey)`** (`submission_gating`
+  table). While the row is `registered` / `blocked` / `rejected`, a *different*
+  harness from the same hotkey → `409 submission_gated`. The identical re-POST
+  stays idempotent (`200 already-queued`).
+- **Auto-retry**: infra-class failures (`install`, `ast_infra`, `llm_infra`)
+  requeue automatically up to **3** times; `cheat` / `rejected` are terminal.
+  Budget exhaustion → `failed` + gating `blocked`. Manual
+  `POST /v1/runs/{id}/retry` is unchanged.
+- A metagraph **watcher** reopens eligibility (`open`) when the hotkey leaves
+  the metagraph (uid deregistered or hotkey replaced), so the owner may
+  resubmit under a new uid.
+- Miner env (`env_vars`) is **locked at submission** into the stored bundle;
+  changing it requires a new digest (and a free gating slot).
 
 ### Required output (`/out/pages/`)
 
@@ -194,6 +218,9 @@ omits the iframe `sandbox` attribute. Integrators should still use
 
 - **Round** every `ROUND_SECS = 8_640` (10 rounds / UTC day):
   `round_id = floor(unix_secs / 8640)`.
+- **Registration waits for the next round**: an accepted harness is scheduled
+  into `round_id(now) + 1` and its runs only become claimable once that round
+  opens — never into the round already in flight.
 - **Agent run timeout**: `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 minutes wall clock
   for the sandbox run phase — not the round length).
 - **Prompts**: repo-pinned bank (`bank_v1.json`, no human approval API);
@@ -201,6 +228,9 @@ omits the iframe `sandbox` attribute. Integrators should still use
   `SHA256(domain || round_id || bank_digest)` → 3 prompts per round;
   identical for every harness in that round.
 - **Quota**: **10** runs/day/hotkey (`DAILY_RUN_QUOTA = 10`; ~2–3 prompts/round × harness).
+- **Auto-retry**: infra-class failures (`install` / `ast_infra` / `llm_infra`)
+  requeue up to 3 times (`DESIGN_AUTO_RETRY_MAX`), then terminal
+  `NoScore(ChallengeInternal)` + gating `blocked`.
 - Automatic gates → `Score(0)`: invalid bundle, missing pages, timeout, crash.
 - Operator / infra fault → `NoScore(ChallengeInternal)`.
 
@@ -220,6 +250,27 @@ Shared verifier: `challenge-agentic` (tools + `challenge-ast` + pages /
 `sanitize_report`; OpenRouter when keyed, `SimAgent` in CI). Fail-closed:
 unparseable verdict → `NoScore(ChallengeInternal)`.
 
+### Containerized review (`design-review` image)
+
+The review itself runs in a one-shot Docker container (same hardening pattern
+as the sandbox: `ReadonlyRootfs`, `CapDrop`, `no-new-privileges:true`, uid
+65532) built from `deploy/Dockerfile` target `design-review`
+(`challenge-agentic` + `challenge-ast`). The container mounts the submitted
+agent **and** the most-similar harness (`_similar/`) read-only; the LLM may
+use the sandboxed `run_command` tool (scrubbed env, cwd-pinned, 15s cap) for
+diffs / grep / AST probes. `DESIGN_REVIEW_BACKEND=inline` keeps the legacy
+in-process path for local/CI only.
+
+### Pre-LLM copy gate (`created_at` ordered)
+
+Before any LLM call the orchestrator scores the candidate against the recent
+harness corpus (byte hash + AST fingerprint). A byte/AST copy
+(`similarity ≥ 9500 bps`) of a harness with **strictly earlier `created_at`**
+→ run status **`rejected`** (terminal, `Score(0)`, gating `rejected`) and the
+LLM review is **skipped**. Unknown timestamps (baseline, legacy rows) fall
+through to the LLM. Starting from the published miner **baseline** is never a
+cheat signal (baseline-zeroing fix); copying another *miner's* harness is.
+
 ### Allowed inspiration
 
 Internet + PyPI via egress, Mobbin / Dribbble / design refs, image generation,
@@ -237,21 +288,22 @@ and UI libraries are **allowed** when the output is substantially transformed.
 
 `suspicious` → also `Score(0)` (same policy as Prism); rationale stored for admin.
 
-### Score semantics (`challenge_scoring_version = 2`)
+### Score semantics (`challenge_scoring_version = 3`)
 
-Admin still picks **1 or 2** winner harnesses **per round**. Leaf mass is
-**not** WTA on that round alone:
+Admin still picks **1 or 2** winner harnesses **per round**; each round win is
+one **point**. The leaf projection uses a **rolling window of the last
+`SCORING_WINDOW_ROUNDS = 10` rounds** (replaces the v2 daily ≥2-wins rule):
 
 | Situation | Leaf |
 |-----------|------|
-| Miner with ≥ `MIN_DAILY_WINS = 2` round wins that UTC day (clean) | share SCORE_MAX equally among that day's qualified winners |
-| Miner with fewer than 2 round wins that day | `Score(0)` |
-| Cheat / suspicious | `Score(0)` (never qualifies) |
-| Round timeout, no winners set | no new win; day projection unchanged / zeros |
+| Miner with `p` window points (clean) | `Score(SCORE_MAX × p / total_window_points)` — proportional share, integer floor |
+| Miner without window wins | `Score(0)` |
+| Cheat / suspicious / copy-gate rejected | `Score(0)` (wins excluded from the pool) |
+| Round timeout, no winners set | no new points; window projection unchanged |
 | No harness | `NoScore(NotAttempted)` |
-| Agentic / infra failure | `NoScore(ChallengeInternal)` |
+| Agentic / infra failure (retry budget spent) | `NoScore(ChallengeInternal)` |
 
-Equal share uses integer division (`SCORE_MAX / n_qualified`).
+Proportional share uses integer floor division; the remainder is unassigned.
 
 ---
 

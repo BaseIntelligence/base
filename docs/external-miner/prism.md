@@ -50,6 +50,21 @@ curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe/baseline"
 
 `POST /v1/submissions` is idempotent by `submission_id`.
 
+## Submission gating (1-max)
+
+- Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
+  → `403 hotkey_not_in_metagraph`; a fresh registration may lag the snapshot
+  (`503 metagraph_unavailable` → retry shortly).
+- **One accepted submission per hotkey.** While yours is
+  `registered` / `blocked` / `rejected`, a *different* submission gets
+  `409 submission_gated`. Re-POSTing the **identical** sources is always safe
+  (idempotent `200 already-queued`).
+- If your hotkey **leaves the metagraph**, the watcher reopens your slot
+  automatically — resubmit under your new uid.
+- Infra failures (Lium pod, review/similarity/LLM infra) **auto-retry up to 3
+  times**; cheat / rejected verdicts are terminal. Manual retry:
+  `POST /v1/submissions/{id}/retry`.
+
 ## Scoring (summary)
 
 Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.

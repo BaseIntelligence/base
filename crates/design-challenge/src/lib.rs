@@ -26,8 +26,9 @@ pub use challenge_common::{
     GatewayClient, GatewayClientConfig, LeafEmitError,
 };
 pub use design_challenge_task::{
-    round_id_at, CHALLENGE_ID, CHALLENGE_ID_BYTES, DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUND_SECS,
-    SCORE_MAX, SCORING_VERSION,
+    agent_run_timeout_secs, prompts_per_round, round_id_at, round_secs, CHALLENGE_ID,
+    CHALLENGE_ID_BYTES, DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUND_SECS, SCORE_MAX, SCORING_VERSION,
+    SCORING_WINDOW_ROUNDS,
 };
 pub use design_http::{
     design_router, mark_awaiting, mark_awaiting_admin, record_epoch, AdminAwardHook, AppState,
@@ -38,8 +39,8 @@ pub use design_store::{
 pub use host_sim::{
     force_sim_refusal_reason, host_sim_allowed, is_prod_env, require_host_sim_for_force,
 };
-pub use orchestrator::{Orchestrator, OrchestratorConfig};
-pub use score::{round_win_delta, score_day, score_round, DayScorePlan, ScorePlan};
+pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
+pub use score::{round_win_delta, score_window, window_start, ScorePlan, WindowScorePlan};
 
 /// Crate identity smoke.
 #[must_use]
@@ -55,6 +56,6 @@ mod tests {
     fn identity() {
         assert_eq!(crate_name(), "design-challenge");
         assert_eq!(CHALLENGE_ID, "design");
-        assert_eq!(SCORING_VERSION, 2);
+        assert_eq!(SCORING_VERSION, 3);
     }
 }

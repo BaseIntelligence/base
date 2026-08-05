@@ -49,6 +49,7 @@ async fn setup() -> (Arc<MemoryDesignStore>, Arc<AppState>) {
                 extra_files: BTreeMap::default(),
                 active: true,
                 eliminated_until_round: 0,
+                created_at_ms: 0,
             })
             .await
             .unwrap();
@@ -95,6 +96,8 @@ async fn setup() -> (Arc<MemoryDesignStore>, Arc<AppState>) {
         frame_ancestors: "'none'".into(),
         retry_max: 2,
         award_hook: None,
+        gating: None,
+        metagraph: None,
     });
     (store, state)
 }
