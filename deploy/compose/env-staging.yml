@@ -9,7 +9,9 @@ services:
   validator:
     environment:
       BASE_NETUID: "541"
-      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      # Alternate public testnet RPC: the default test.finney host 429s this
+      # droplet (per-source policy), starving the watchers + coordination loop.
+      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
       BASE_COORDINATION_INTERVAL_SECS: "3"
       BT_WALLETS_PATH: /run/base/wallets
       BASE_VALIDATOR_WALLET: base-validator
@@ -22,7 +24,7 @@ services:
   gateway:
     environment:
       BASE_NETUID: "541"
-      BASE_CHAIN_ENDPOINT: "wss://test.finney.opentensor.ai:443"
+      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
       # Public staging API hostname (cleartext on :80/:8080 until ACME task 42).
       BASE_DOMAIN: staging.api.joinbase.ai
       BT_WALLETS_PATH: /run/base/wallets
@@ -37,11 +39,17 @@ services:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
   prism-challenge:
     environment:
-      # Staging exercises the real Lium path only when an API key is present in
-      # deploy/secrets/lium/api_key; otherwise the client falls back to Sim.
-      PRISM_FORCE_SIM: "false"
+      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
+      # Compressed e2e proof: offline deterministic backend (no GPU spend) +
+      # tiny model / short train cap. A real Lium RTX 5090 run stays a
+      # follow-up validation (flip PRISM_FORCE_SIM to "false" and unset the
+      # PRISM_TEST_* knobs).
+      PRISM_FORCE_SIM: "true"
+      PRISM_TEST_TRAIN_MINUTES: "15"
+      PRISM_TEST_MAX_PARAMS: "2000000"
   design-challenge:
     environment:
+      BASE_CHAIN_ENDPOINT: "wss://test.chain.opentensor.ai:443"
       # Staging uses real Docker via socket-proxy. Host SimSandbox is fail-closed
       # here (never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM on droplets).
       DESIGN_FORCE_SIM: "false"
