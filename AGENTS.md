@@ -36,7 +36,7 @@ Working branch: **`dev`**. Prod ships from annotated tags `v*.*.*` cut on `dev`.
 
 ## Challenge public docs (miner-facing repos)
 
-Each live challenge has a **separate public GitHub repo** for miners. Those repos must contain **only** human miner documentation plus example / test harness code — **never** control-plane, gateway, validator, or orchestrator source.
+Each live challenge has a **separate public GitHub repo** for miners. Those repos must contain **only** human miner documentation plus example / test harness code — **never** control-plane, gateway, validator, or orchestrator source. Public repos use a `docs/` layout (hero README + banner under `assets/`).
 
 | Challenge | Public repo | Role |
 |-----------|-------------|------|
