@@ -342,17 +342,47 @@ async fn registry(State(st): State<CompatState>) -> Json<Value> {
 }
 
 async fn submission_observation(headers: HeaderMap, body: axum::body::Bytes) -> Response {
-    if let Err(r) = verify_signed(
+    let hotkey = match verify_signed(
         "POST",
         "/v1/weights/submission-observations",
         &headers,
         &body,
     ) {
-        return *r;
-    }
+        Ok(h) => h,
+        Err(r) => return *r,
+    };
+    // Soft-accept: Python clients only require HTTP 2xx + JSON. Mirror the
+    // fields `ValidatorSubmissionObservationResponse` documents.
+    let payload: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let vector_id = payload
+        .get("vector_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_owned();
+    let vector_digest = payload
+        .get("vector_digest")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let outcome = payload
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_owned();
+    let attempt = payload.get("attempt").and_then(Value::as_i64).unwrap_or(1);
     (
         StatusCode::CREATED,
-        Json(json!({ "accepted": true, "idempotent": true })),
+        Json(json!({
+            "observation_id": format!("compat-{hotkey}-{vector_id}"),
+            "validator_hotkey": hotkey,
+            "vector_id": vector_id,
+            "vector_digest": vector_digest,
+            "outcome": outcome,
+            "attempt": attempt,
+            "created_at": iso8601_now(),
+            "idempotent": true,
+            "accepted": true,
+        })),
     )
         .into_response()
 }

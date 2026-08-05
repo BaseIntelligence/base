@@ -55,6 +55,25 @@ fn datetime_matches_pydantic_rendering() {
     assert_eq!(resp.metagraph_updated_at, resp.computed_at);
 }
 
+#[test]
+fn refresh_serve_freshness_slides_wall_clock_only() {
+    let mut resp = build_latest(&bundle(), record());
+    let digest = resp.vector_digest.clone();
+    let vector_id = resp.vector_id.clone();
+    let uids = resp.uids.clone();
+    let weights = resp.weights.clone();
+    refresh_serve_freshness(&mut resp);
+    assert_ne!(resp.computed_at, "2026-08-01T08:22:45.992448Z");
+    assert_eq!(resp.metagraph_updated_at, resp.computed_at);
+    // expires_at is computed_at + 720s
+    assert!(resp.expires_at > resp.computed_at);
+    assert_eq!(resp.vector_digest, digest);
+    assert_eq!(resp.vector_id, vector_id);
+    assert_eq!(resp.uids, uids);
+    assert_eq!(resp.weights, weights);
+    assert!(resp.sealed);
+}
+
 /// Python authority for this body (`aggregate_challenge_weights`, both challenges at
 /// 50%, hotkey `0xBB…` the sole scorer in each): uids `[157]`, weights `[1.0]`,
 /// `hotkey_weights {bb…: 1.0}`. uid 0's hotkey never scored, so nothing burns.

@@ -87,6 +87,21 @@ pub fn build_latest(bundle: &EpochBundleV1, seal: SealRecord) -> WeightsLatestRe
     }
 }
 
+/// Slide wall-clock freshness to *now* for HTTP serve.
+///
+/// Python `MasterWeightsResponse` rejects `expires_at <= now` at parse time, and
+/// `validate_master_weights_payload` rejects `computed_at` older than the
+/// client's `weights_freshness_seconds`. Seal identity (`vector_id`,
+/// `vector_digest`, epoch, revision, weight vectors) is unchanged.
+pub fn refresh_serve_freshness(resp: &mut WeightsLatestResponse) {
+    let now = SealRecord::now(resp.revision).sealed_at_micros;
+    let computed_at = iso8601_micros(now);
+    let expires_at = iso8601_micros(now.saturating_add(FRESHNESS_SECONDS * 1_000_000));
+    resp.computed_at.clone_from(&computed_at);
+    resp.expires_at = expires_at;
+    resp.metagraph_updated_at = computed_at;
+}
+
 /// Fail-closed burn vector when no sealed bundle is available (or decode fails).
 ///
 /// Serves `{uid: 0 → 1.0}` under `burn-uid0.v1` so `GET /v1/weights/latest` never

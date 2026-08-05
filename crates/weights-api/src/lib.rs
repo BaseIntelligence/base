@@ -10,12 +10,16 @@
 //! (or decode fails), the gateway serves [`build_burn_fallback`] — uid 0 at 100%
 //! under `burn-uid0.v1` — rather than 404, so validators never see an empty
 //! weights endpoint.
+//!
+//! HTTP serve applies [`refresh_serve_freshness`] so wall-clock fields stay
+//! inside the Python client's pydantic / stale checks even when the underlying
+//! seal is older than [`FRESHNESS_SECONDS`] (immutable seal content unchanged).
 
 #![forbid(unsafe_code)]
 
 mod vector;
 
-pub use vector::{build_burn_fallback, build_latest};
+pub use vector::{build_burn_fallback, build_latest, refresh_serve_freshness};
 
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};

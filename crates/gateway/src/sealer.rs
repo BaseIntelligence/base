@@ -19,7 +19,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use trustroot::ChallengesBody;
-use weights_api::{build_burn_fallback, build_latest, SealRecord};
+use weights_api::{build_burn_fallback, build_latest, refresh_serve_freshness, SealRecord};
 
 use crate::api::GatewayState;
 use crate::weights::{RawWeightRow, RawWeightStore};
@@ -247,7 +247,13 @@ async fn get_weights_latest(State(st): State<GatewayState>) -> Response {
         return (StatusCode::OK, Json(build_burn_fallback(st.seal_netuid))).into_response();
     };
     match EpochBundleV1::decode_bytes(&bytes) {
-        Ok(bundle) => (StatusCode::OK, Json(build_latest(&bundle, seal))).into_response(),
+        Ok(bundle) => {
+            // Refresh wall-clock fields so Python clients keep accepting the
+            // immutable sealed vector after the original 720s seal window.
+            let mut resp = build_latest(&bundle, seal);
+            refresh_serve_freshness(&mut resp);
+            (StatusCode::OK, Json(resp)).into_response()
+        }
         Err(_) => {
             // Corrupt sealed bytes: still burn rather than 5xx/404.
             (StatusCode::OK, Json(build_burn_fallback(st.seal_netuid))).into_response()
