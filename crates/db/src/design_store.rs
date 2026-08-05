@@ -830,12 +830,17 @@ pub async fn design_scores_for_epoch(
     netuid: i32,
     epoch: i64,
 ) -> Result<Vec<(String, String, Option<i64>, Option<i16>)>, DbError> {
+    // Window semantics (scoring v3): each miner's *latest* rating is the
+    // rolling 10-round window projection, so "scores for this chain epoch"
+    // means the newest rating per miner — never filter by the round's epoch.
+    // Filtering by round epoch zero-locks every chain epoch: the first close
+    // inside it emits before any of its rounds is awarded.
     let rows: Vec<(String, String, Option<i64>, Option<i16>)> = sqlx::query_as(
         "SELECT DISTINCT ON (r.miner_hotkey) r.miner_hotkey, r.kind, r.score, r.absence_reason \
          FROM design_rating r \
          JOIN design_round dr ON dr.round_id = r.round_id \
-         WHERE dr.netuid = $1 AND dr.epoch = $2 AND r.kind IS NOT NULL \
-         ORDER BY r.miner_hotkey, r.updated_at DESC",
+         WHERE dr.netuid = $1 AND dr.epoch <= $2 AND r.kind IS NOT NULL \
+         ORDER BY r.miner_hotkey, r.round_id DESC",
     )
     .bind(netuid)
     .bind(epoch)
