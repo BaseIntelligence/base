@@ -189,11 +189,13 @@ impl LiveChainRpc {
 
     /// `system_accountNextIndex`.
     ///
+    /// Finney JSON-RPC expects an SS58 address (prefix 42), not a hex `AccountId`.
+    ///
     /// # Errors
     /// Transport or parse failure.
     pub fn system_account_next_index(&self, account_id: [u8; 32]) -> Result<u64, ChainError> {
-        let hex_addr = format!("0x{}", hex::encode(account_id));
-        let result = self.rpc("system_accountNextIndex", &json!([hex_addr]))?;
+        let ss58 = keystore::ss58_encode(&account_id, keystore::BITTENSOR_SS58_PREFIX);
+        let result = self.rpc("system_accountNextIndex", &json!([ss58]))?;
         result
             .as_u64()
             .ok_or_else(|| ChainError::Other("accountNextIndex not u64".into()))

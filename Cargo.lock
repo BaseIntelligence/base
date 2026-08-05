@@ -551,6 +551,7 @@ dependencies = [
  "chain",
  "crypto",
  "hex",
+ "keystore",
  "parity-scale-codec",
  "reqwest 0.12.28",
  "schnorrkel",
