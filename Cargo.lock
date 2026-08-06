@@ -3714,6 +3714,7 @@ dependencies = [
  "http-body-util",
  "prism-challenge-task",
  "prism-emit",
+ "prism-eval-store",
  "prism-lium",
  "prism-pipeline",
  "prism-recipe",
@@ -3781,10 +3782,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-eval-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "db",
+ "hex",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-store",
+ "prism-zoneb",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "prism-lium"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "hex",
  "prism-recipe",
  "reqwest 0.12.28",
@@ -3807,12 +3829,14 @@ dependencies = [
  "prism-challenge-task",
  "prism-lium",
  "prism-recipe",
+ "prism-zoneb",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]
@@ -3867,12 +3891,22 @@ dependencies = [
  "db",
  "prism-lium",
  "prism-review",
+ "prism-zoneb",
  "serde",
  "serde_json",
  "sqlx",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "prism-zoneb"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -26,8 +26,8 @@ use challenge_agentic::{AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
 use prism_challenge::{
-    submission_router, AppState, DbPrismStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
-    PrismStore, CHALLENGE_ID, SCORING_VERSION,
+    submission_router, AppState, DbEvalStore, DbPrismStore, EvalStore, MemoryEvalStore,
+    MemoryPrismStore, Orchestrator, OrchestratorConfig, PrismStore, CHALLENGE_ID, SCORING_VERSION,
 };
 use prism_lium::{EvalJobBackend, LiumClient, LiumSshConfig, SimLiumBackend};
 use prism_review::{OpenRouterClient, ReviewBackend, SimReviewer};
@@ -277,7 +277,13 @@ pub(crate) fn build_agentic() -> (Arc<dyn AgenticBackend>, &'static str) {
     (Arc::new(SimAgent::new()), "sim")
 }
 
-async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
+#[allow(clippy::type_complexity)]
+async fn build_store() -> (
+    Arc<dyn PrismStore>,
+    Arc<dyn GatingStore>,
+    Arc<dyn EvalStore>,
+    String,
+) {
     if let Ok(url) = std::env::var("BASE_DATABASE_URL") {
         if !url.trim().is_empty() {
             let pool = match db::connect(&url).await {
@@ -293,7 +299,8 @@ async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
             }
             return (
                 Arc::new(DbPrismStore::new(pool.clone())),
-                Arc::new(PgGatingStore::new(pool)) as Arc<dyn GatingStore>,
+                Arc::new(PgGatingStore::new(pool.clone())) as Arc<dyn GatingStore>,
+                Arc::new(DbEvalStore::new(pool)) as Arc<dyn EvalStore>,
                 "postgres".into(),
             );
         }
@@ -301,6 +308,7 @@ async fn build_store() -> (Arc<dyn PrismStore>, Arc<dyn GatingStore>, String) {
     (
         Arc::new(MemoryPrismStore::new()),
         Arc::new(MemoryGatingStore::new()) as Arc<dyn GatingStore>,
+        Arc::new(MemoryEvalStore::new()) as Arc<dyn EvalStore>,
         "memory".into(),
     )
 }
@@ -361,6 +369,27 @@ fn build_topmodel() -> Option<Arc<prism_registry::TopModelPublisher>> {
     p
 }
 
+fn orchestrator_config(
+    cli: &Cli,
+    ssh_pks: Vec<String>,
+    stage_delay: Duration,
+) -> OrchestratorConfig {
+    OrchestratorConfig {
+        netuid: cli.netuid,
+        max_price_per_hour: 2.5,
+        max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
+        ssh_public_keys: ssh_pks,
+        image_digest: None,
+        claim_poll: Duration::from_millis(750),
+        emit_poll: Duration::from_secs(15),
+        max_attempts: MAX_ATTEMPTS,
+        similarity_corpus_limit: 6,
+        stuck_grace_secs: 7 * 3600,
+        stage_delay,
+        auto_retry_max: cli.auto_retry_max,
+    }
+}
+
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     if !path.is_file() {
@@ -370,7 +399,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let (backend, backend_mode, ssh_pks, _) = build_backend(cli.force_sim)?;
     let (reviewer, reviewer_mode) = build_reviewer();
     let (agentic, agentic_mode) = build_agentic();
-    let (store, gating, store_mode) = build_store().await;
+    let (store, gating, eval_store, store_mode) = build_store().await;
     // BASE_SUBMISSION_GATING=0 disables intake gating (local dev only).
     let gating_enabled = !matches!(std::env::var("BASE_SUBMISSION_GATING").as_deref(), Ok("0"));
     if !gating_enabled {
@@ -389,6 +418,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
 
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
+        eval_store: Arc::clone(&eval_store),
         epoch: AtomicU64::new(0),
         netuid: cli.netuid,
         backend_mode: Box::leak(
@@ -418,20 +448,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             "prism sim stage delay enabled (local evidence only)"
         );
     }
-    let oc = OrchestratorConfig {
-        netuid: cli.netuid,
-        max_price_per_hour: 2.5,
-        max_lifetime_hours: prism_recipe::POD_LIFETIME_HOURS_CAP,
-        ssh_public_keys: ssh_pks,
-        image_digest: None,
-        claim_poll: Duration::from_millis(750),
-        emit_poll: Duration::from_secs(15),
-        max_attempts: MAX_ATTEMPTS,
-        similarity_corpus_limit: 6,
-        stuck_grace_secs: 7 * 3600,
-        stage_delay,
-        auto_retry_max: cli.auto_retry_max,
-    };
+    let oc = orchestrator_config(&cli, ssh_pks, stage_delay);
     let topmodel = build_topmodel();
     let mut orchestrator = Orchestrator::new(
         oc,

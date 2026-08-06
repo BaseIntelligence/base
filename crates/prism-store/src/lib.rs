@@ -11,10 +11,12 @@
 mod arch;
 mod dbprism;
 mod emit;
+pub mod eval;
 mod store;
 mod telemetry;
 
 pub use dbprism::DbPrismStore;
+pub use eval::EvalStore;
 pub use prism_lium::TelemetryPoint;
 pub use store::{
     ArchitectureRecord, EpochScoreRow, FinalScore, MemoryPrismStore, PrismStore,

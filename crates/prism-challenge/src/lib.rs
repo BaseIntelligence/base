@@ -13,6 +13,7 @@
 
 mod agentic;
 mod api;
+pub mod eval_finalize;
 mod leaf_emit;
 pub mod orchestrator;
 mod score;
@@ -25,12 +26,17 @@ pub use prism_challenge_task::{
     CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN,
 };
 pub use prism_emit::{EmitError, EmitSummary, EpochEmitter};
+pub use prism_eval_store::{DbEvalStore, MemoryEvalStore};
+pub use prism_store::eval::EvalStore;
+// 2×2 attribution matrix (module lives in prism-recipe beside SourceTree for
+// the per-crate LOC cap; conceptually prism_challenge::attribution).
 pub use prism_pipeline::{
     example_valid_request, expand_zip_fields, run_eval_pipeline, run_sim_pipeline, score_from_bpb,
     score_from_pipeline, submission_id, validate, PipelineError, PipelineInput, PipelineOutcome,
     PipelineResult, PrismConfig, QueuedSubmission, SubmissionAccepted, SubmissionError,
     SubmissionId, SubmissionRequest, SubmissionService,
 };
+pub use prism_recipe::attribution;
 pub use prism_store::{
     DbPrismStore, FinalScore, MemoryPrismStore, PrismStore, Stage, StageEvent, StatePatch,
     StoreError, SubmissionState,

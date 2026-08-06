@@ -15,6 +15,7 @@ hex = "0.4"
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-recipe = { path = "../prism-recipe" }
+prism-zoneb = { path = "../prism-zoneb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -24,6 +25,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

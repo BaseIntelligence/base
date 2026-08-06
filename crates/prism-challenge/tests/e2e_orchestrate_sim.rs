@@ -215,6 +215,7 @@ async fn submission_detail_exposes_metrics_over_http() {
 
     let state = Arc::new(prism_challenge::AppState {
         store: Arc::clone(&store) as Arc<dyn PrismStore>,
+        eval_store: Arc::new(prism_challenge::MemoryEvalStore::new()),
         epoch: std::sync::atomic::AtomicU64::new(7),
         netuid: 541,
         backend_mode: "sim",

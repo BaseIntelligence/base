@@ -1,20 +1,24 @@
 [package]
-name = "prism-store"
-description = "prism orchestrator persistence (submission rows + stage events)"
+name = "prism-eval-store"
+description = "PRISM v3 eval persistence (memory + Postgres EvalStore impls), measurement->composite finalize glue, and API views"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 async-trait = "0.1"
 db = { path = "../db" }
-prism-lium = { path = "../prism-lium" }
-prism-review = { path = "../prism-review" }
+hex = "0.4"
+prism-pipeline = { path = "../prism-pipeline" }
+prism-recipe = { path = "../prism-recipe" }
+prism-store = { path = "../prism-store" }
 prism-zoneb = { path = "../prism-zoneb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "postgres",
@@ -24,7 +28,7 @@ thiserror = "2"
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

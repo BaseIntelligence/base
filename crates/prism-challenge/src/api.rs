@@ -5,8 +5,11 @@
 //! | `GET  /health` | liveness |
 //! | `POST /v1/submissions` | accept a two-script recipe |
 //! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
-//! | `GET  /v1/submissions/{id}` | full detail + event timeline |
+//! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
+//! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
+//! | `GET  /v1/anchors` | anchor-set registry with status |
+//! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |
 //! | `GET  /v1/status` | queue sizes + backend + recipe pin |
 //! | `GET  /v1/jobs` | orchestrator jobs view (active/last per pod) |
 //! | `GET  /v1/recipe` | recipe descriptor (full data contract) |
@@ -30,7 +33,9 @@ use submission_gating::{GatingState, GatingStore, MetagraphCache};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
 use crate::CHALLENGE_ID;
+use prism_eval_store::{anchors_view, eval_detail, prereg_view, zone_a_view, zone_b_view};
 use prism_pipeline::{SubmissionError, SubmissionRequest};
+use prism_store::eval::EvalStore;
 use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
@@ -38,6 +43,8 @@ use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 pub struct AppState {
     /// Store.
     pub store: Arc<dyn PrismStore>,
+    /// Eval store (v3 composite runs, anchor registry, Zone B reports).
+    pub eval_store: Arc<dyn EvalStore>,
     /// Current chain epoch cache (advanced by the worker loop).
     pub epoch: std::sync::atomic::AtomicU64,
     /// Netuid.
@@ -61,7 +68,10 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
         .route("/v1/submissions/{id}/events", get(get_events))
+        .route("/v1/submissions/{id}/metrics", get(get_submission_metrics))
         .route("/v1/submissions/{id}/retry", post(post_retry))
+        .route("/v1/anchors", get(get_anchors))
+        .route("/v1/preregistration", get(get_preregistration))
         .route("/v1/status", get(get_status))
         .route("/v1/jobs", get(get_jobs))
         .route("/v1/recipe", get(get_recipe))
@@ -343,13 +353,96 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
     match st.store.get(&id).await {
         Ok(Some(row)) => {
             let events = st.store.events(&id).await.unwrap_or_default();
+            let mut detail = detail_view(&row);
+            if let Value::Object(m) = &mut detail {
+                m.insert("eval".into(), eval_json(&st, &id).await);
+            }
             Json(json!({
-                "submission": detail_view(&row),
+                "submission": detail,
                 "events": events,
             }))
             .into_response()
         }
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    }
+}
+
+/// The `eval` field for the detail view: the stored composite outcome +
+/// run provenance, `null` when the run has no finalized eval (v2 path).
+async fn eval_json(st: &AppState, id: &str) -> Value {
+    let Ok(Some(run)) = st.eval_store.eval_run(id).await else {
+        return Value::Null;
+    };
+    let groups = st
+        .eval_store
+        .eval_groups(&run.run_id)
+        .await
+        .unwrap_or_default();
+    eval_detail(&run, &groups)
+}
+
+#[derive(Debug, Deserialize)]
+struct MetricsQuery {
+    /// `a` (organizer-measured `org.*` rows) | `b` (participant-reported
+    /// chain); default `a`.
+    zone: Option<String>,
+}
+
+/// `GET /v1/submissions/{id}/metrics?zone=a|b` — raw metric rows. Zone B is
+/// always labelled participant-reported and never feeds scoring.
+async fn get_submission_metrics(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<MetricsQuery>,
+) -> Response {
+    match st.store.get(&id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    }
+    match q.zone.as_deref().unwrap_or("a") {
+        "a" => {
+            let run = st.eval_store.eval_run(&id).await;
+            let (metrics, mirrors) = match run {
+                Ok(Some(r)) => (
+                    st.eval_store
+                        .eval_metrics(&r.run_id)
+                        .await
+                        .unwrap_or_default(),
+                    st.eval_store
+                        .eval_mirrors(&r.run_id)
+                        .await
+                        .unwrap_or_default(),
+                ),
+                _ => (Vec::new(), Vec::new()),
+            };
+            Json(zone_a_view(&metrics, &mirrors)).into_response()
+        }
+        "b" => match st.eval_store.metric_reports(&id).await {
+            Ok(reports) => Json(zone_b_view(&reports)).into_response(),
+            Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+        },
+        other => json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_zone",
+            &format!("zone must be 'a' or 'b', got '{other}'"),
+        ),
+    }
+}
+
+/// `GET /v1/anchors` — every known anchor set with status.
+async fn get_anchors(State(st): State<Arc<AppState>>) -> Response {
+    match st.eval_store.anchor_sets().await {
+        Ok(sets) => Json(anchors_view(&sets)).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    }
+}
+
+/// `GET /v1/preregistration` — anchor pre-registration hash-commits.
+async fn get_preregistration(State(st): State<Arc<AppState>>) -> Response {
+    match st.eval_store.preregistrations().await {
+        Ok(entries) => Json(prereg_view(&entries)).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -586,6 +679,7 @@ mod tests {
     fn state() -> Arc<AppState> {
         Arc::new(AppState {
             store: Arc::new(MemoryPrismStore::new()),
+            eval_store: Arc::new(crate::MemoryEvalStore::new()),
             epoch: std::sync::atomic::AtomicU64::new(7),
             netuid: 541,
             backend_mode: "sim",
@@ -610,6 +704,7 @@ mod tests {
         (
             Arc::new(AppState {
                 store: Arc::new(MemoryPrismStore::new()),
+                eval_store: Arc::new(crate::MemoryEvalStore::new()),
                 epoch: std::sync::atomic::AtomicU64::new(7),
                 netuid: 541,
                 backend_mode: "sim",
@@ -1065,6 +1160,7 @@ mod tests {
         let gating = Arc::new(submission_gating::MemoryGatingStore::new());
         let st = Arc::new(AppState {
             store: Arc::new(MemoryPrismStore::new()),
+            eval_store: Arc::new(crate::MemoryEvalStore::new()),
             epoch: std::sync::atomic::AtomicU64::new(7),
             netuid: 541,
             backend_mode: "sim",
@@ -1084,5 +1180,172 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
         assert_eq!(v["code"], "metagraph_unavailable");
+    }
+
+    async fn post_one(app: &Router) -> String {
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        v["submission_id"].as_str().unwrap().to_owned()
+    }
+
+    fn eval_blob() -> Value {
+        json!({
+            "bpb": 1.0,
+            "tokens_seen": 1_000_000_000_u64,
+            "tokens_seen_source": "train_stream",
+            "wall_clock_seconds": 3600.0,
+            "gpu_type": "H100",
+            "n_params": 125_000_000_u64,
+            "recipe": "1.3.0",
+            "train_metrics": { "miner.train.loss": 0.7 },
+            "battery": { "metrics": { "org.g1.bpb_code": 1.0 } },
+        })
+    }
+
+    #[tokio::test]
+    async fn detail_eval_null_then_populated() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["submission"]["eval"], Value::Null, "no eval pre-finalize");
+
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let eval = &v["submission"]["eval"];
+        assert_eq!(eval["scoring_mode"], "shadow");
+        assert_eq!(
+            eval["status"], "ineligible",
+            "partial battery is ineligible"
+        );
+        assert_eq!(eval["groups"].as_array().unwrap().len(), 8);
+        assert_eq!(eval["anchor_version"], 0);
+        assert_eq!(eval["prereg_hash"].as_str().unwrap().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn metrics_zone_a_and_b_and_bad_zone() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=a"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "organizer-measured");
+        assert_eq!(v["metrics"][0]["key"], "org.g1.bpb_code");
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=b"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "participant-reported");
+        assert_eq!(v["reports"][0]["verdict"], "ok");
+        assert_eq!(v["reports"][0]["seq"], 0);
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/metrics?zone=c"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["code"], "invalid_zone");
+
+        let (s, _) = call(
+            app,
+            Request::get("/v1/submissions/nope/metrics?zone=a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn anchors_and_preregistration_views() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        prism_eval_store::finalize_composite(
+            &st.eval_store,
+            &id,
+            &eval_blob(),
+            &prism_eval_store::AnchorInput::v0_placeholder(),
+        )
+        .await
+        .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get("/v1/anchors").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let anchors = v["anchors"].as_array().unwrap();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0]["version"], 0);
+        assert_eq!(anchors[0]["status"], "placeholder");
+
+        let (s, v) = call(
+            app,
+            Request::get("/v1/preregistration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let regs = v["preregistrations"].as_array().unwrap();
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0]["hash"], anchors[0]["prereg_hash"]);
     }
 }
