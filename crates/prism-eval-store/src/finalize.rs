@@ -220,8 +220,11 @@ async fn ingest_zone_b(
 /// Organizer ground truth from the METRICS_JSON v2 blob. Every field is
 /// optional — missing values degrade the affected checks to `flagged`
 /// (never crash); `tokens_seen` is authoritative only when the harness
-/// counted it from the train stream.
-fn ground_truth(v: &Value) -> GroundTruth {
+/// counted it from the train stream. Public for the external Zone B POST
+/// route (`prism-attribution`), which validates miner self-reports against
+/// the same organizer facts as the internal `train_metrics` lift.
+#[must_use]
+pub fn ground_truth(v: &Value) -> GroundTruth {
     let train_stream = v.get("tokens_seen_source").and_then(Value::as_str) == Some("train_stream");
     GroundTruth {
         bpb: v.get("bpb").and_then(Value::as_f64),

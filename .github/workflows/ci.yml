@@ -64,6 +64,41 @@ jobs:
       - name: compose matrix assertions
         run: bash deploy/scripts/assert-compose-matrix.sh
 
+  # Prism v3 harness smokes: fixture-size, G4 tuple concat, and torch-seed
+  # overflow class bugs shipped once because CI never ran the harness
+  # end-to-end. CPU wheels keep the runner cheap; both smokes must pass
+  # (they assert all 8 battery groups ok + the flat org.* / mirrors blob
+  # the Rust composite ingests).
+  harness-smoke:
+    name: prism harness smokes (cpu torch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: crates/prism-recipe/harness
+
+      - name: Install cpu torch + transformers + pyarrow
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers pyarrow
+
+      - name: python -m compileall
+        run: python -m compileall crates/prism-recipe/harness
+
+      - name: smoke_local (v1 contract flow)
+        run: python crates/prism-recipe/harness/tests/smoke_local.py
+
+      - name: smoke_battery (v3 G1-G8 battery + rollup contract)
+        run: python crates/prism-recipe/harness/tests/smoke_battery.py
+
   # ---------------------------------------------------------------------------
   # Auto-deploy staging. Lives here rather than in deploy-staging.yml so that
   # `needs: ci` keeps the CI-green ordering on every push to main.
@@ -71,7 +106,7 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-staging:
     name: deploy staging ${{ matrix.role }}
-    needs: ci
+    needs: [ci, harness-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120

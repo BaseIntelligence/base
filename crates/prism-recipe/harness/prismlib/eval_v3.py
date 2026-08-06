@@ -159,6 +159,11 @@ def _run(cfg, st):
 
     eval_ctx["items"] = ItemRecorder()
     battery = battery_pkg.run_battery(model, eval_ctx)
+    # Composite contract view: flat canonical org.* metrics + mirror pairs
+    # beside the nested per-group debug view (eval/rollup.py).
+    from eval import rollup as battery_rollup
+
+    battery = battery_rollup.rollup_battery(battery, eval_ctx, model=model)
 
     st["stage"] = "score"
     ce, bpb, val_tokens = val_ce_bpb(model, tok, val_texts, device)

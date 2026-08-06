@@ -60,7 +60,7 @@ def run(model, ctx):
         [("t1", {"tier": 1}), ("t2", {"tier": 2}), ("t3", {"tier": 3})]
         + ([] if tiny else [("noop", {"tier": 2, "noop": True}), ("extrap", {"tier": 2, "extrap": True})]),
     )
-    sweep("proof", gr.proofwriter, [(f"d{d}", {"depth": d}) for d in (0, 1) + ([] if tiny else [2, 3])])
+    sweep("proof", gr.proofwriter, [(f"d{d}", {"depth": d}) for d in [0, 1] + ([] if tiny else [2, 3])])
     sweep("bool", gr.boolean_expr, [("base", {"depth": 2})])
     sweep(
         "dyck",

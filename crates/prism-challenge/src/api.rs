@@ -8,6 +8,7 @@
 //! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
 //! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
+//! | `POST /v1/submissions/{id}/zone-b` | Zone B self-report intake (mounted by the service bin from `prism-attribution`) |
 //! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
 //! | `GET  /v1/anchors` | anchor-set registry with status |
 //! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |

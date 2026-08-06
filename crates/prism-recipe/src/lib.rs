@@ -156,6 +156,7 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         "eval/public_dev/seeds.json",
         include_str!("../harness/eval/public_dev/seeds.json"),
     ),
+    ("eval/rollup.py", include_str!("../harness/eval/rollup.py")),
     ("main.py", include_str!("../harness/main.py")),
     (
         "prismlib/__init__.py",
@@ -505,6 +506,7 @@ mod tests {
             "eval/g6_curve.py",
             "eval/g7_inference.py",
             "eval/g8_stability.py",
+            "eval/rollup.py",
             "eval/public_dev/seeds.json",
             "eval/public_dev/README.md",
             "prismlib/__init__.py",
@@ -581,6 +583,11 @@ mod tests {
             "cantor",
             "prism_width_multiplier",
             "cheatguard",
+            "org.g1.bpb_code",
+            "mirrors",
+            "PRISM_TEST_TRAIN_ROWS",
+            "PRISM_TEST_VAL_ROWS",
+            "torch_seed",
         ] {
             assert!(all.contains(marker), "harness package missing {marker}");
         }

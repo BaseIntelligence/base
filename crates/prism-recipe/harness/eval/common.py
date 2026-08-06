@@ -56,6 +56,22 @@ def task_seed(secret_seed, task_id):
     return cantor(cantor(RECIPE_SEED, int(secret_seed)), tid)
 
 
+# torch seeding APIs take a signed int64; the raw Cantor lattice value is a
+# ~190-bit integer and overflows (`Overflow when unpacking long long`).
+TORCH_SEED_MODULUS = (1 << 63) - 1
+
+
+def torch_seed(secret_seed, task_id):
+    """Lattice seed reduced into torch's int64 range.
+
+    Python's `random` keeps the full Cantor value (the determinism
+    contract); torch's `manual_seed` / `torch.Generator` get the same
+    lattice point reduced mod 2^63-1 — deterministic across platforms for
+    the same (secret, task) pair.
+    """
+    return task_seed(secret_seed, task_id) % TORCH_SEED_MODULUS
+
+
 def resolve_secret_seed(ctx):
     """Private seed from ctx (injected from env by eval_v3) else public dev."""
     s = ctx.get("eval_secret_seed")

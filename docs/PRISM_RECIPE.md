@@ -103,6 +103,23 @@ netns facts), `netns`, `harness_files_sha256`, and on v3 runs `flow`,
 Cap breach: `cap_exceeded: true` + `n_params` with the `CAP_EXCEEDED`
 terminal line instead of `EVAL_OK`.
 
+**`battery` (v3 composite contract)**: an object with four members —
+`groups` (nested per-group debug view `{status, module, metrics}` with
+internal `gN.family.tag` keys), `metrics` (the **flat canonical map** the
+composite ingests: `org.<group>.<name>` → bare float or
+`{value, clusters}` where `clusters` are per-template means — the units of
+randomization for the clustered bootstrap; a metric that was never
+measured is **absent**, never fabricated), `mirrors` (contamination-gap
+pairs `[{group, metric, public, mirror}]` for `g2`/`g4`: the same metric
+scored on the public dev-seed/asset family vs the private mirror family;
+in the `public_dev` tier no private assets exist so each pair is
+degenerate — gap 0, honestly labelled), and `tier` (echoes `eval_tier`).
+`eval/rollup.py` is the single reconciliation point between internal
+metric names and the anchor set's `org.*` keys
+(`crates/prism-recipe/anchors/v0.json`); ingestion
+(`prism-eval-store/src/finalize.rs`) requires the flat map and skips the
+composite when it is absent (fail-closed in composite mode).
+
 ## Reference baselines (recipe 1.3.0 — v3 anchors)
 
 Two reference submissions ship in-repo (`crates/prism-recipe/baselines/`,

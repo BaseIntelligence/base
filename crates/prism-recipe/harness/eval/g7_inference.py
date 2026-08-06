@@ -124,7 +124,7 @@ def run(model, ctx):
     tiny = common.tiny_caps()
     grid = _GRID_TINY if tiny else _GRID_FULL
     decode_k = 8 if tiny else 32
-    rng = torch.Generator(device="cpu").manual_seed(common.task_seed(
+    rng = torch.Generator(device="cpu").manual_seed(common.torch_seed(
         common.resolve_secret_seed(ctx), "g7/shapes"
     ))
     vocab = _vocab_size(model, tok)

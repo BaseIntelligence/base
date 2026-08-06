@@ -90,6 +90,9 @@ def train(model, ctx):
 STEPS = 8
 SEQ_LEN = 64
 BATCH_SIZE = 2
+# Test-mode row contract: the 400-row fixture must cover train+val+probes.
+TEST_TRAIN_ROWS = 256
+TEST_VAL_ROWS = 64
 
 
 def _make_fixture(path):
@@ -146,6 +149,10 @@ def main():
                 "PRISM_WORKDIR": str(work),
                 "PRISM_TEST_TRAIN_MINUTES": "2",
                 "PRISM_TEST_MAX_PARAMS": "2000000",
+                # The 400-row fixture cannot cover the production 2048+256
+                # slice; test-mode row overrides shrink the contract cut.
+                "PRISM_TEST_TRAIN_ROWS": str(TEST_TRAIN_ROWS),
+                "PRISM_TEST_VAL_ROWS": str(TEST_VAL_ROWS),
                 "PRISM_ALLOW_CPU": "1",
                 "PRISM_PROBE_EVERY": "2",
                 "PRISM_SEQ_LEN": str(SEQ_LEN),
@@ -189,7 +196,7 @@ def main():
         ):
             assert key in m, f"missing v1 key {key}"
         assert m["recipe"] == "1.3.0"
-        assert m["val_rows"] == 256
+        assert m["val_rows"] == TEST_VAL_ROWS
 
         # v2 keys.
         assert m["metrics_version"] == 2

@@ -53,7 +53,9 @@ import json
 import os
 import time
 
-from prismlib import RECIPE_SEED, RECIPE_VERSION, TOKENIZER, TRAIN_ROWS, VAL_ROWS
+from prismlib import RECIPE_SEED, RECIPE_VERSION, TOKENIZER
+from prismlib import TRAIN_ROWS as _RECIPE_TRAIN_ROWS
+from prismlib import VAL_ROWS as _RECIPE_VAL_ROWS
 from prismlib import dataset
 from prismlib import manifest as manifest_mod
 from prismlib.envutil import fail, float_env, int_env, log
@@ -67,6 +69,11 @@ _TEST_TRAIN_MINUTES = float_env("PRISM_TEST_TRAIN_MINUTES", 0.0)
 if _TEST_TRAIN_MINUTES > 0:
     TRAIN_HOURS_CAP = _TEST_TRAIN_MINUTES / 60.0
 MAX_PARAMS = int_env("PRISM_TEST_MAX_PARAMS", int_env("PRISM_MAX_PARAMS", 350000000))
+# Test-mode row overrides (staging/e2e only): shrink the train slice and the
+# frozen val cut so small procedural fixtures satisfy the harness contract.
+# Production is always the prismlib constants (2048 train / 256 val).
+VAL_ROWS = int_env("PRISM_TEST_VAL_ROWS", _RECIPE_VAL_ROWS)
+TRAIN_ROWS = int_env("PRISM_TEST_TRAIN_ROWS", _RECIPE_TRAIN_ROWS)
 SEQ_LEN = int_env("PRISM_SEQ_LEN", 512)
 BATCH_SIZE = int_env("PRISM_TRAIN_BATCH_SIZE", 8)
 PROBE_EVERY = int_env("PRISM_PROBE_EVERY", 25)

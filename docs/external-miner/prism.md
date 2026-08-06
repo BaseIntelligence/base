@@ -135,6 +135,16 @@ Your `train()` return dict (`train_metrics` in METRICS_JSON v2) is
 ingest (scalars/series/histograms under `miner.<group>.<name>`, caps
 64 scalars / 16 series / 10k points / 1 MB), and **never scored**. Do not
 emit `org.*` keys — that quarantines the report as anti-cheat evidence.
+You can also post additional self-reports out-of-band:
+`POST /v1/submissions/{id}/zone-b` with a JSON envelope
+`{"schema_version": "<recipe version>", "prev_hash": <previous report_hash,
+optional>, "metrics": {"miner.<group>.<name>": {"kind": "scalar"|"series"|
+"histogram", ...}}}`. Reports chain per submission (`prev_hash` → previous
+`report_hash`; omit it for master-chained ingest), are validated against
+organizer ground truth (token/step/wall-clock counters, MFU ceiling,
+terminal-loss band) and the cross-miner cohort, and land a stored verdict
+(`ok` / `flagged` / `quarantined`) — verdicts are evidence, never an
+auto-zero. Malformed or over-cap envelopes reject `422` and store nothing.
 
 While `PRISM_SCORING_MODE=shadow` (default) the leaf score stays pure bpb,
 bit-identical to v2. After the reference baselines (**Transformer++** and
@@ -156,6 +166,7 @@ registry and pre-registration commits at `GET /v1/anchors` and
 | `GET /v1/submissions/{id}` | Detail + receipt + scores + composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Stage timeline |
 | `GET /v1/submissions/{id}/metrics?zone=a\|b` | Zone A battery rows / Zone B self-report chain (v3) |
+| `POST /v1/submissions/{id}/zone-b` | Miner Zone B self-report intake: validated + chained + stored (v3) |
 | `POST /v1/submissions/{id}/attribution` | 2×2 arch/kernel attribution run plans (v3) |
 | `GET /v1/anchors` | v3 anchor-set registry + status |
 | `GET /v1/preregistration` | v3 anchor pre-registration hash-commits |

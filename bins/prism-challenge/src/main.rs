@@ -430,7 +430,14 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         gating: gating_enabled.then(|| Arc::clone(&gating)),
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
     });
-    let app = submission_router(Arc::clone(&state));
+    // Zone B miner self-report intake: split into `prism-attribution` for
+    // the per-crate LOC cap (same pattern as the attribution planner,
+    // which mounts inside `submission_router`); own state, no bearer at
+    // this layer — front at the gateway where the deployment needs it.
+    let app = submission_router(Arc::clone(&state)).route(
+        "/v1/submissions/{id}/zone-b",
+        prism_attribution::zone_b_route(Arc::clone(&store), Arc::clone(&eval_store)),
+    );
 
     // Chain (for epoch/E): live only when endpoint configured; otherwise a
     // fixed epoch-0 (local sim posture documented in PRISM.md).

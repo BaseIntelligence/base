@@ -12,6 +12,8 @@ publish = false
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 base64 = "0.22"
 bytes = "1"
+prism-eval-store = { path = "../prism-eval-store" }
+prism-pipeline = { path = "../prism-pipeline" }
 prism-recipe = { path = "../prism-recipe" }
 prism-store = { path = "../prism-store" }
 serde = { version = "1", features = ["derive"] }

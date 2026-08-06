@@ -23,7 +23,8 @@ mod views;
 
 pub use db::DbEvalStore;
 pub use finalize::{
-    finalize_composite, finalize_for_submission, from_train_metrics, AnchorInput, FinalizeError,
+    finalize_composite, finalize_for_submission, from_train_metrics, ground_truth, AnchorInput,
+    FinalizeError,
 };
 pub use memory::MemoryEvalStore;
 pub use views::{anchors_view, eval_detail, prepare_cohort, prereg_view, zone_a_view, zone_b_view};

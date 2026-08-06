@@ -85,15 +85,25 @@ def _mup_sweep(ctx, budget):
     lrs = [3e-4, 1e-3, 3e-3]
     steps = 4 if common.tiny_caps() else 10
     best_by_width = {}
+    secret = common.resolve_secret_seed(ctx)
     for mult in (1.0, 4.0):
+        bctx = dict(base_ctx)
+        bctx["prism_width_multiplier"] = mult
+        # Seeding is harness-owned: a failure here is our bug — surface it
+        # as seed_error, never hide it behind the miner-facing build_failed.
         try:
-            bctx = dict(base_ctx)
-            bctx["prism_width_multiplier"] = mult
-            torch.manual_seed(common.task_seed(common.resolve_secret_seed(ctx), "g8/mup"))
+            torch.manual_seed(common.torch_seed(secret, "g8/mup"))
+        except Exception as exc:  # noqa: BLE001
+            common.log(f"g8 mup seed failure: {type(exc).__name__}: {str(exc)[:200]}")
+            return None, "seed_error"
+        try:
             m = build(bctx)
             n_params = sum(p.numel() for p in m.parameters())
             m = m.to(device)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — genuinely miner-attributable
+            common.log(
+                f"g8 mup build failed (width x{mult}): {type(exc).__name__}: {str(exc)[:200]}"
+            )
             return None, "build_failed"
         if mult == 1.0:
             base_params = n_params
@@ -106,9 +116,11 @@ def _mup_sweep(ctx, budget):
                 return None, "budget"
             try:
                 # Fresh init per LR point (same seed → comparable draws).
-                torch.manual_seed(common.task_seed(
-                    common.resolve_secret_seed(ctx), f"g8/mup/{mult}/{lr}"
-                ))
+                torch.manual_seed(common.torch_seed(secret, f"g8/mup/{mult}/{lr}"))
+            except Exception as exc:  # noqa: BLE001 — harness-owned; see above
+                common.log(f"g8 mup seed failure: {type(exc).__name__}: {str(exc)[:200]}")
+                return None, "seed_error"
+            try:
                 m2 = build(dict(bctx))
                 m2 = m2.to(device)
                 per_lr.append((_micro_train_steps(m2, stream, lr, steps, device), lr))

@@ -235,6 +235,21 @@ def check_full_battery():
     print("full battery OK: all 8 groups emitted finite metrics on a tiny model")
     print(json.dumps({g: len(results[g]["metrics"]) for g in ok_groups}, indent=2))
 
+    # Rollup contract: the flat canonical org.* map + degenerate public_dev
+    # mirror pairs the Rust composite ingests (eval/rollup.py).
+    from eval import rollup as battery_rollup
+
+    flat = battery_rollup.flatten_metrics(results, ctx["items"])
+    assert flat and all(k.startswith("org.") for k in flat), sorted(flat)
+    assert "org.g3.mqar_acc" in flat and "org.g4.arithmetic_acc" in flat, sorted(flat)
+    assert "org.g6.auc_log_tokens" in flat, sorted(flat)
+    view = battery_rollup.rollup_battery(results, ctx, model=model)
+    assert set(view) >= {"groups", "metrics", "mirrors", "tier"}
+    assert view["tier"] == "public_dev"
+    assert view["mirrors"], "public_dev tier emits degenerate mirror pairs"
+    assert all(set(p) == {"group", "metric", "public", "mirror"} for p in view["mirrors"])
+    print(f"rollup OK: {len(flat)} org.* metrics, {len(view['mirrors'])} mirror pairs")
+
 
 # ---------------------------------------------------------------- v3 flow
 
@@ -332,6 +347,10 @@ def check_v3_flow():
                 "PRISM_TEST_TRAIN_MINUTES": "2",
                 "PRISM_TEST_MAX_PARAMS": "2000000",
                 "PRISM_TEST_EVAL_CAPS": "1",
+                # The 400-row fixture cannot cover the production 2048+256
+                # slice; test-mode row overrides shrink the contract cut.
+                "PRISM_TEST_TRAIN_ROWS": "256",
+                "PRISM_TEST_VAL_ROWS": "64",
                 "PRISM_ALLOW_CPU": "1",
                 "PRISM_PROBE_EVERY": "2",
                 "PRISM_SEQ_LEN": "64",
@@ -362,10 +381,42 @@ def check_v3_flow():
         assert m["tokens_seen"] == 4 * 2 * 64, m["tokens_seen"]
         assert "gate" in m and m["gate"]["survivors_after_train"] is False
         battery = m["battery"]
-        ok = [g for g, e in battery.items() if e.get("status") == "ok"]
-        assert set(ok) == {"g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"}, battery
-        assert "g2.core.mean_acc_norm" in battery["g2"]["metrics"]
+        # Composite contract shape: nested groups (debug) + flat canonical
+        # org.* metrics + mirror pairs + tier (eval/rollup.py; consumed by
+        # prism-eval-store finalize.rs::submission_metrics).
+        assert set(battery) >= {"groups", "metrics", "mirrors", "tier"}, sorted(battery)
+        assert battery["tier"] == "public_dev"
+        groups = battery["groups"]
+        ok = [g for g, e in groups.items() if e.get("status") == "ok"]
+        assert set(ok) == {"g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"}, groups
+        assert "g2.core.mean_acc_norm" in groups["g2"]["metrics"]
+        flat = battery["metrics"]
+        assert flat, "battery.metrics must carry canonical org.* keys"
+        assert all(k.startswith("org.") for k in flat), sorted(flat)
+        # Every anchored metric of the procedural/asset dev-tier groups is
+        # present (g2/g3/g4/g5/g6 complete on a public_dev CPU run).
+        for key in (
+            "org.g2.arc_challenge_acc",
+            "org.g3.mqar_acc",
+            "org.g4.arithmetic_acc",
+            "org.g5.niah_acc",
+            "org.g6.auc_log_tokens",
+        ):
+            assert key in flat, f"missing {key}: {sorted(flat)}"
+        mirrors = battery["mirrors"]
+        assert mirrors, "battery.mirrors must not be empty"
+        for pair in mirrors:
+            assert set(pair) == {"group", "metric", "public", "mirror"}, pair
+            assert pair["group"] in ("g2", "g4") and pair["metric"].startswith("org.")
+            for side in ("public", "mirror"):
+                assert isinstance(pair[side]["value"], (int, float)), pair
+        assert any(p["group"] == "g2" for p in mirrors), mirrors
+        assert any(p["group"] == "g4" for p in mirrors), mirrors
         print("v3 two-phase flow OK: battery + sealed v1 bpb via checkpoint handoff")
+        print(
+            "battery contract OK: %d org.* metrics, %d mirror pairs"
+            % (len(flat), len(mirrors))
+        )
 
 
 def main():
