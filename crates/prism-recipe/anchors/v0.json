@@ -1,0 +1,101 @@
+{
+  "version": 0,
+  "status": "placeholder",
+  "issued": "2026-08-06",
+  "notes": "PLACEHOLDER anchor set for Prism v3 composite scoring (research/12 §7). Every numeric anchor marked placeholder MUST be measured on the E6 reference baselines (Transformer++ and hybrid delta-net, <=350M params, 6h) and hash-committed (pre-registration) before any PRISM_SCORING_MODE=composite governance flip. chance bpb = log2|V| / bytes-per-token estimate; reference bpb = reference architecture bpb per domain; efficiency references/caps = reference-recipe operating points.",
+  "groups": {
+    "g1": {
+      "weight": 0.25,
+      "metrics": {
+        "org.g1.bpb_code": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.05, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
+        "org.g1.bpb_prose": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.0, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
+        "org.g1.bpb_math": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.15, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
+        "org.g1.bpb_fresh_crawl": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.1, "status": "placeholder", "note": "PLACEHOLDER: measure on private fresh-crawl stream" },
+        "org.g1.bpb_key_token": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.2, "status": "placeholder", "note": "PLACEHOLDER: key-token-weighted variant" }
+      }
+    },
+    "g2": {
+      "weight": 0.15,
+      "metrics": {
+        "org.g2.lambada_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g2.hellaswag_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" },
+        "org.g2.piqa_acc": { "kind": "accuracy", "chance": 0.5, "status": "placeholder" },
+        "org.g2.arc_easy_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" },
+        "org.g2.arc_challenge_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" },
+        "org.g2.winogrande_acc": { "kind": "accuracy", "chance": 0.5, "status": "placeholder" },
+        "org.g2.boolq_acc": { "kind": "accuracy", "chance": 0.5, "status": "placeholder" },
+        "org.g2.obqa_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" }
+      }
+    },
+    "g3": {
+      "weight": 0.1,
+      "metrics": {
+        "org.g3.mqar_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g3.copying_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g3.induction_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g3.passkey_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" }
+      }
+    },
+    "g4": {
+      "weight": 0.15,
+      "metrics": {
+        "org.g4.arithmetic_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g4.boolean_logic_acc": { "kind": "accuracy", "chance": 0.5, "status": "placeholder" },
+        "org.g4.dyck_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g4.modular_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g4.knights_knaves_acc": { "kind": "accuracy", "chance": 0.5, "status": "placeholder" },
+        "org.g4.proofwriter_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" }
+      }
+    },
+    "g5": {
+      "weight": 0.15,
+      "metrics": {
+        "org.g5.niah_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g5.variable_tracking_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g5.freq_words_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g5.graphwalks_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" },
+        "org.g5.ordering_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
+        "org.g5.babilong_qa_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" }
+      }
+    },
+    "g6": {
+      "weight": 0.075,
+      "metrics": {
+        "org.g6.auc_log_tokens": { "kind": "efficiency_log_ratio", "reference": 0.5, "cap": 0.95, "status": "placeholder", "note": "PLACEHOLDER: higher-better; probe-curve AUC over log tokens" },
+        "org.g6.tokens_to_threshold": { "kind": "efficiency_log_ratio", "reference": 2000000000.0, "cap": 500000000.0, "status": "placeholder", "note": "PLACEHOLDER: lower-better; cap < reference encodes direction" }
+      }
+    },
+    "g7": {
+      "weight": 0.075,
+      "metrics": {
+        "org.g7.throughput_toks_s": { "kind": "efficiency_log_ratio", "reference": 1500.0, "cap": 30000.0, "status": "placeholder", "note": "PLACEHOLDER: higher-better" },
+        "org.g7.ttft_ms_32k": { "kind": "efficiency_log_ratio", "reference": 4000.0, "cap": 200.0, "status": "placeholder", "note": "PLACEHOLDER: lower-better" },
+        "org.g7.tpot_ms_32k": { "kind": "efficiency_log_ratio", "reference": 120.0, "cap": 8.0, "status": "placeholder", "note": "PLACEHOLDER: lower-better" },
+        "org.g7.state_bytes_per_token_32k": { "kind": "efficiency_log_ratio", "reference": 65536.0, "cap": 2048.0, "status": "placeholder", "note": "PLACEHOLDER: KV/state card, lower-better" },
+        "org.g7.joules_per_token": { "kind": "efficiency_log_ratio", "reference": 0.4, "cap": 0.04, "status": "placeholder", "note": "PLACEHOLDER: nvidia-smi energy, lower-better" }
+      }
+    },
+    "g8": {
+      "weight": 0.05,
+      "metrics": {
+        "org.g8.loss_spike_score": { "kind": "stability_bounded", "status": "placeholder", "note": "PLACEHOLDER: fraction of seeds without divergence minus spike penalty, pre-bounded [0,1]" },
+        "org.g8.mup_lr_stability": { "kind": "stability_bounded", "status": "placeholder", "note": "PLACEHOLDER: muP LR-sweep survival fraction, pre-bounded [0,1]" }
+      }
+    }
+  },
+  "gates": {
+    "g3_min": 0.25,
+    "g8_min": 0.5,
+    "ci_half_width_delta": 0.05,
+    "max_params": 350000000,
+    "max_wall_s": 21600.0
+  },
+  "mirror": {
+    "tau_m": 0.05,
+    "groups": ["g2", "g4"]
+  },
+  "bootstrap": {
+    "b": 1000,
+    "lcb_z": 1.645
+  }
+}

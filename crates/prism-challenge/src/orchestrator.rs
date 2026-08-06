@@ -392,6 +392,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 quality: review.quality_score,
                 similarity: similarity.kind,
                 agentic: agentic.verdict,
+                // v3 composite is attached by the G1–G8 battery integration
+                // (E4); the v2 eval path has none.
+                composite: None,
             },
             None => FinalOutcome::ChallengeInternal,
         };
