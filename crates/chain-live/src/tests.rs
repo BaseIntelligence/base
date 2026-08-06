@@ -1019,7 +1019,12 @@ async fn last_weight_update_reads_uid_entry() {
     let server = MockServer::start().await;
     let hotkey = [0xAA_u8; 32];
     mount_storage(&server, &uids_key(1, &hotkey), json!("0x0200")).await;
-    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[10, 20, 30]))).await;
+    mount_storage(
+        &server,
+        &last_update_key(1),
+        json!(vec_u64_hex(&[10, 20, 30])),
+    )
+    .await;
 
     let uri = server.uri();
     let got = tokio::task::spawn_blocking(move || {
@@ -1137,7 +1142,9 @@ async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
     )
     .await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"method": "state_getRuntimeVersion"})))
+        .and(body_partial_json(
+            json!({"method": "state_getRuntimeVersion"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0", "id": 1,
             "result": {
@@ -1157,7 +1164,9 @@ async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"method": "system_accountNextIndex"})))
+        .and(body_partial_json(
+            json!({"method": "system_accountNextIndex"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0", "id": 1,
             "result": 0
@@ -1165,7 +1174,9 @@ async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"method": "author_submitExtrinsic"})))
+        .and(body_partial_json(
+            json!({"method": "author_submitExtrinsic"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0", "id": 1,
             "result": format!("0x{}", hex::encode([0xEE_u8; 32]))
