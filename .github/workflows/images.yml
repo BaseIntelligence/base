@@ -60,6 +60,9 @@ jobs:
           - target: design-runtime
             image_suffix: design-runtime
             dockerfile: deploy/Dockerfile
+          - target: design-review
+            image_suffix: design-review
+            dockerfile: deploy/Dockerfile
           - target: ""
             image_suffix: base-attest-helper
             dockerfile: deploy/attest-helper/Dockerfile
@@ -165,6 +168,7 @@ jobs:
               "design-challenge",
               "design-egress-proxy",
               "design-runtime",
+              "design-review",
               "base-attest-helper",
           }
           assert set(images) == expected, (set(images), expected)
@@ -305,6 +309,7 @@ jobs:
             "base/design-challenge"
             "base/design-egress-proxy"
             "base/design-runtime"
+            "base/design-review"
           )
           ok=0
           # First list packages to Learn exact names (debug)
