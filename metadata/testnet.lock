@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "endpoint": "wss://entrypoint-finney.opentensor.ai:443",
+  "endpoint": "wss://test.finney.opentensor.ai:443",
   "sdk_pin": "e4ffa2e1325c6c7db618dbceaf396310a170990c",
   "snapshot_netuid": 1,
   "chain": {
