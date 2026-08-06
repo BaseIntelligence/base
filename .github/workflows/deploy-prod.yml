@@ -284,6 +284,11 @@ jobs:
             cp "deploy/digests/${SHA}.json" "/tmp/prod-pin-commit/${SHA}.json"
           fi
           git fetch origin main
+          # Earlier steps rewrite deploy/pins/* and drop deploy/digests/<sha>.json
+          # into the worktree (all preserved under /tmp/prod-pin-commit). Reset so
+          # the checkout to origin/main cannot fail on a dirty tree.
+          git reset --hard HEAD
+          git clean -fd deploy/pins deploy/digests
           git checkout -B main origin/main
           cp /tmp/prod-pin-commit/prod.json deploy/pins/prod.json
           if [[ -f "/tmp/prod-pin-commit/${SHA}.json" ]]; then
