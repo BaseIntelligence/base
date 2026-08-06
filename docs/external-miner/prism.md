@@ -100,7 +100,10 @@ hard-zero on `cheat` / `suspicious` (and cheap `Copied` / `Suspicious`);
 LLM quality is coherence-only, not a grader. **Competition:** per epoch you are
 credited the max of (a) your own best training result and (b) for each arch you
 own, that arch's best result by *any* trainer — architecture owners are rewarded
-for architectures people win with. The global-best model is published to
+for architectures people win with. Scores land in the leaf set emitted at the
+first chain-epoch boundary **after** your run finalizes (a long train that
+crosses epochs is normal — it scores exactly once, in the next boundary's set).
+The global-best model is published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/`. See [`PRISM.md`](../PRISM.md).
 

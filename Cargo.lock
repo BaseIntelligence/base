@@ -3711,6 +3711,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "prism-challenge-task",
+ "prism-emit",
  "prism-lium",
  "prism-pipeline",
  "prism-recipe",
@@ -3760,6 +3761,22 @@ dependencies = [
 [[package]]
 name = "prism-challenge-task"
 version = "0.1.0"
+
+[[package]]
+name = "prism-emit"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "challenge-common",
+ "crypto",
+ "hex",
+ "prism-challenge-task",
+ "prism-registry",
+ "prism-store",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "prism-lium"

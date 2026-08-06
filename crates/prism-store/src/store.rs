@@ -226,7 +226,9 @@ pub enum PublishArchOutcome {
     Duplicate(String),
 }
 
-/// One scored row inside an epoch (competition scoring input).
+/// One scored row inside an emission batch (competition scoring input).
+/// Batches are epoch-close assignments (see [`PrismStore::assign_emit_batch`]),
+/// not acceptance-epoch lookups: a row's acceptance `epoch` is intake metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EpochScoreRow {
     /// Miner hotkey.
@@ -295,13 +297,28 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// by step. Empty when the harness reported nothing (pre-1.1.0 recipes).
     async fn telemetry(&self, id: &str) -> Result<Vec<TelemetryPoint>, StoreError>;
 
-    /// All scored rows for `(netuid, epoch)` — one entry per submission (NOT
-    /// collapsed per miner: competition scoring aggregates credits).
-    async fn epoch_scored_rows(
+    /// Emission outbox step 1: atomically assign every scored row not yet
+    /// emitted (`final_score` set, no `emitted_epoch`) to leaf `epoch` and
+    /// return the batch — one entry per submission (NOT collapsed per miner:
+    /// competition scoring aggregates credits).
+    async fn assign_emit_batch(
         &self,
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<EpochScoreRow>, StoreError>;
+
+    /// Sticky re-read of the batch assigned to `epoch` (recovery resubmit
+    /// after a crash between submit and cursor advance).
+    async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError>;
+
+    /// Highest leaf epoch whose set fully landed (`None` = never emitted).
+    async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError>;
+
+    /// Advance the cursor (monotonic max) after a fully-submitted set.
+    async fn set_emit_cursor(&self, netuid: u16, epoch: u64) -> Result<(), StoreError>;
+
+    /// Assigned-but-not-completed leaf epochs (above the cursor), ascending.
+    async fn pending_emit_epochs(&self, netuid: u16) -> Result<Vec<u64>, StoreError>;
 
     /// Publish an architecture into the registry (idempotent on digest).
     async fn publish_arch(
@@ -346,6 +363,10 @@ pub struct MemoryPrismStore {
     telemetry: Mutex<std::collections::HashMap<String, Vec<TelemetryPoint>>>,
     archs: Mutex<std::collections::HashMap<String, ArchitectureRecord>>,
     publications: Mutex<Vec<TopModelPublication>>,
+    /// Emission outbox watermark: submission id → assigned leaf epoch.
+    emitted: Mutex<std::collections::BTreeMap<SubmissionId, u64>>,
+    /// Emit cursor per netuid (highest fully-submitted leaf epoch).
+    cursors: Mutex<std::collections::BTreeMap<u16, u64>>,
 }
 
 impl MemoryPrismStore {
@@ -508,6 +529,11 @@ impl PrismStore for MemoryPrismStore {
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .remove(id);
+        // A re-scored row must re-enter the emission outbox.
+        self.emitted
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .remove(id);
         Ok(out)
     }
 
@@ -558,22 +584,95 @@ impl PrismStore for MemoryPrismStore {
             .unwrap_or_default())
     }
 
-    async fn epoch_scored_rows(
+    async fn assign_emit_batch(
         &self,
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<EpochScoreRow>, StoreError> {
-        Ok(self
+        let rows = self
             .rows
             .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut emitted = self
+            .emitted
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut out = Vec::new();
+        for r in rows.iter() {
+            if r.netuid == netuid && r.final_score.is_some() && !emitted.contains_key(&r.id) {
+                emitted.insert(r.id.clone(), epoch);
+                out.push(EpochScoreRow {
+                    miner_hotkey: r.miner_hotkey.clone(),
+                    arch_id: r.arch_id.clone(),
+                    final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError> {
+        let rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let emitted = self
+            .emitted
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(rows
             .iter()
-            .filter(|r| r.netuid == netuid && r.epoch == epoch && r.final_score.is_some())
+            .filter(|r| {
+                r.netuid == netuid && r.final_score.is_some() && emitted.get(&r.id) == Some(&epoch)
+            })
             .map(|r| EpochScoreRow {
                 miner_hotkey: r.miner_hotkey.clone(),
                 arch_id: r.arch_id.clone(),
                 final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
             })
+            .collect())
+    }
+
+    async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
+        Ok(self
+            .cursors
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(&netuid)
+            .copied())
+    }
+
+    async fn set_emit_cursor(&self, netuid: u16, epoch: u64) -> Result<(), StoreError> {
+        let mut cursors = self
+            .cursors
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let e = cursors.entry(netuid).or_insert(0);
+        *e = (*e).max(epoch);
+        Ok(())
+    }
+
+    async fn pending_emit_epochs(&self, netuid: u16) -> Result<Vec<u64>, StoreError> {
+        // Epochs strictly above the cursor; no cursor yet → everything assigned.
+        let min = match self.emit_cursor(netuid).await? {
+            Some(c) => c.saturating_add(1),
+            None => 0,
+        };
+        let rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let emitted = self
+            .emitted
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(rows
+            .iter()
+            .filter(|r| r.netuid == netuid)
+            .filter_map(|r| emitted.get(&r.id).copied())
+            .filter(|e| *e >= min)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect())
     }
 
@@ -819,6 +918,31 @@ mod tests {
         s.reset_for_retry("a").await.unwrap();
         assert!(s.telemetry("a").await.unwrap().is_empty());
         assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn emit_outbox_assign_once_cursor_monotonic() {
+        let s = MemoryPrismStore::new();
+        let mut r = row("a", "11");
+        r.final_score = Some(FinalScore::Score(42));
+        s.insert_queued(&r).await.unwrap();
+
+        let batch = s.assign_emit_batch(541, 9).await.unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].final_score, FinalScore::Score(42));
+        // Sticky: re-assign is empty; the assigned epoch re-reads.
+        assert!(s.assign_emit_batch(541, 10).await.unwrap().is_empty());
+        assert_eq!(s.emit_batch(541, 9).await.unwrap().len(), 1);
+        assert_eq!(s.pending_emit_epochs(541).await.unwrap(), vec![9]);
+        s.set_emit_cursor(541, 9).await.unwrap();
+        assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
+        // Monotonic: a stale cursor write never regresses.
+        s.set_emit_cursor(541, 4).await.unwrap();
+        assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
+        assert!(s.pending_emit_epochs(541).await.unwrap().is_empty());
+        // Unscored rows never enter a batch.
+        s.insert_queued(&row("b", "22")).await.unwrap();
+        assert!(s.assign_emit_batch(541, 10).await.unwrap().is_empty());
     }
 
     #[tokio::test]

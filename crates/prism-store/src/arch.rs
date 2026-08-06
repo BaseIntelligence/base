@@ -10,8 +10,7 @@ use std::collections::HashMap;
 use sqlx::PgPool;
 
 use crate::store::{
-    ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome, StoreError, SubmissionState,
-    TopModelPublication,
+    ArchitectureRecord, PublishArchOutcome, StoreError, SubmissionState, TopModelPublication,
 };
 
 #[allow(clippy::needless_pass_by_value)] // map_err passes the error by value
@@ -207,39 +206,4 @@ pub(crate) async fn best_scored_bpb(pool: &PgPool) -> Result<Option<f64>, StoreE
     .await
     .map_err(backend)?;
     Ok(row.0)
-}
-
-type EpochSqlRow = (String, Option<String>, String, Option<i64>, Option<i16>);
-
-/// All scored rows for one epoch (competition scoring input; not collapsed).
-pub(crate) async fn epoch_scored_rows(
-    pool: &PgPool,
-    netuid: i32,
-    epoch: i64,
-) -> Result<Vec<EpochScoreRow>, StoreError> {
-    let rows: Vec<EpochSqlRow> = sqlx::query_as(
-        "SELECT miner_hotkey, arch_id, kind, score, absence_reason \
-         FROM prism_submission \
-         WHERE netuid = $1 AND epoch = $2 AND kind IS NOT NULL",
-    )
-    .bind(netuid)
-    .bind(epoch)
-    .fetch_all(pool)
-    .await
-    .map_err(backend)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(hk, arch_id, kind, score, absence)| {
-            let final_score = match kind.as_str() {
-                "score" => score.map(|s| FinalScore::Score(s.cast_unsigned())),
-                "no_score" => absence.map(|a| FinalScore::NoScore(u8::try_from(a).unwrap_or(0))),
-                _ => None,
-            }?;
-            Some(EpochScoreRow {
-                miner_hotkey: hk,
-                arch_id,
-                final_score,
-            })
-        })
-        .collect())
 }

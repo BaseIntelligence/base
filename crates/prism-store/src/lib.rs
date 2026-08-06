@@ -10,6 +10,7 @@
 
 mod arch;
 mod dbprism;
+mod emit;
 mod store;
 mod telemetry;
 

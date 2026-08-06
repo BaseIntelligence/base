@@ -20,6 +20,7 @@ crypto = { path = "../crypto" }
 db = { path = "../db" }
 hex = "0.4"
 prism-challenge-task = { path = "../prism-challenge-task" }
+prism-emit = { path = "../prism-emit" }
 prism-lium = { path = "../prism-lium" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-recipe = { path = "../prism-recipe" }

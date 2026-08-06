@@ -1,20 +1,25 @@
-//! Lium job orchestrator: DB-backed state machine, recovery, close-loop leaves.
+//! Lium job orchestrator: DB-backed state machine, recovery, epoch emitter.
 //!
 //! Workers claim `queued` rows, rent + run the recipe, run master-side LLM
-//! review + cheap similarity + agentic anti-cheat, compute the chain-facing
-//! score, and emit + submit the exact-E leaf set for the current chain epoch.
+//! review + cheap similarity + agentic anti-cheat, and compute the
+//! chain-facing score. Leaf emission is decoupled from finalizes: the
+//! epoch-close emitter ([`prism_emit::EpochEmitter`], driven by
+//! [`Orchestrator::run_emitter`]) assigns every newly-finalized row to the
+//! next chain-epoch boundary's D24 set via the emission outbox
+//! (`emitted_epoch` watermark + emit cursor), so independent same-epoch
+//! scorers all land and cross-epoch evals score exactly once.
 //! All state lives in the store, so the API is a pure projection and restarts
 //! sweep orphans.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bundle::{NoScoreReasonCode, ScoreOrAbsence};
+use bundle::NoScoreReasonCode;
 use chain::ChainClient;
 use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEntry, VerdictKind};
-use challenge_common::{expected_set_at_chain, ExpectedSet, PinnedBlockHash};
+use challenge_common::{expected_set_at_chain, PinnedBlockHash};
 use crypto::KEY_LEN;
+use prism_emit::EpochEmitter;
 use prism_lium::{EvalJobBackend, InstanceSpec};
 use prism_pipeline::gating_key;
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
@@ -24,10 +29,8 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::agentic::{build_review_request, corpus_from_rows};
-use crate::leaf_emit::emit_signed_leaf_set;
 use crate::score::{combine_final, FinalOutcome};
-use crate::submit::{submit_signed_leaf_set, GatewayClient};
-use crate::CHALLENGE_ID;
+use crate::submit::GatewayClient;
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
 
 /// Worker + emitter settings.
@@ -45,6 +48,8 @@ pub struct OrchestratorConfig {
     pub image_digest: Option<String>,
     /// Queue polling cadence.
     pub claim_poll: Duration,
+    /// Emitter tick cadence (chain-epoch boundary detection lag).
+    pub emit_poll: Duration,
     /// Rent attempt budget before `failed`.
     pub max_attempts: u32,
     /// Similarity corpus size (recent submissions + baseline).
@@ -68,6 +73,7 @@ impl Default for OrchestratorConfig {
             ssh_public_keys: vec![],
             image_digest: None,
             claim_poll: Duration::from_millis(750),
+            emit_poll: Duration::from_secs(15),
             max_attempts: 2,
             similarity_corpus_limit: 6,
             stuck_grace_secs: 7 * 3600,
@@ -77,16 +83,15 @@ impl Default for OrchestratorConfig {
     }
 }
 
-/// Orchestrator handle (workers + sweeper + API may share one instance).
+/// Orchestrator handle (workers + sweeper + emitter + API may share one instance).
 pub struct Orchestrator<C: ChainClient + Send> {
     cfg: OrchestratorConfig,
     store: Arc<dyn PrismStore>,
     backend: Arc<dyn EvalJobBackend>,
     reviewer: Arc<dyn ReviewBackend>,
     agentic: Arc<dyn AgenticBackend>,
-    gateway: Arc<GatewayClient>,
     chain: Arc<C>,
-    sk: [u8; KEY_LEN],
+    emitter: EpochEmitter,
     gating: Option<Arc<dyn GatingStore>>,
     topmodel: Option<Arc<prism_registry::TopModelPublisher>>,
 }
@@ -101,19 +106,19 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         backend: Arc<dyn EvalJobBackend>,
         reviewer: Arc<dyn ReviewBackend>,
         agentic: Arc<dyn AgenticBackend>,
-        gateway: Arc<GatewayClient>,
+        gateway: &GatewayClient,
         chain: Arc<C>,
         sk: [u8; KEY_LEN],
     ) -> Self {
+        let emitter = EpochEmitter::new(Arc::clone(&store), sk, cfg.netuid, gateway.common());
         Self {
             cfg,
             store,
             backend,
             reviewer,
             agentic,
-            gateway,
             chain,
-            sk,
+            emitter,
             gating: None,
             topmodel: None,
         }
@@ -140,6 +145,12 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     #[must_use]
     pub const fn cfg(&self) -> &OrchestratorConfig {
         &self.cfg
+    }
+
+    /// Emitter accessor (tests / diagnostics).
+    #[must_use]
+    pub const fn emitter(&self) -> &EpochEmitter {
+        &self.emitter
     }
 
     /// Claim loop (spawn one per concurrency permit).
@@ -278,8 +289,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
-    /// Terminal failure: `failed` row + gating `blocked`, then best-effort leaf
-    /// emit (same close-the-loop posture as the happy path).
+    /// Terminal failure: `failed` row + gating `blocked`. The
+    /// `NoScore(ChallengeInternal)` enters the emission outbox and lands in
+    /// the next epoch-boundary leaf set (`run_emitter`).
     async fn fail_terminal(&self, row: &SubmissionState, class: &str, msg: &str) {
         let _ = self
             .store
@@ -309,10 +321,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     Some(class),
                 )
                 .await;
-        }
-        match self.emit_and_submit_epoch().await {
-            Ok(n) => info!(submission_id = %row.id, leaves = n, "leaf set submitted"),
-            Err(e) => warn!(submission_id = %row.id, error = %e, "leaf submission deferred"),
         }
     }
 
@@ -420,14 +428,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await
             .map_err(|e| e.to_string())?;
 
-        // Close the loop: exact-E leaf set for the current chain epoch (D24),
-        // idempotent against the gateway's append-only ledger.
-        match self.emit_and_submit_epoch().await {
-            Ok(n) => info!(submission_id = %id, leaves = n, stage = ?status, "leaf set submitted"),
-            Err(e) => warn!(submission_id = %id, error = %e, "leaf submission deferred"),
-        }
-        // Registry + top-model bookkeeping (arch publish, arch best, GitHub
-        // top-model). After leaf emission: publishing must not delay weights.
+        // Leaf emission is decoupled: the epoch-close emitter batches this
+        // score into the next boundary's D24 set (exactly-once outbox), so
+        // the arch publish below lands well before the row's leaf epoch.
         if let Ok(Some(scored)) = self.store.get(&id).await {
             prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored).await;
         }
@@ -514,11 +517,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 )
                 .await;
         }
-        // Close the loop: the Score(0) must reach the current epoch leaf set.
-        match self.emit_and_submit_epoch().await {
-            Ok(n) => info!(submission_id = %row.id, leaves = n, "leaf set submitted"),
-            Err(e) => warn!(submission_id = %row.id, error = %e, "leaf submission deferred"),
-        }
+        // The Score(0) enters the emission outbox; the epoch-close emitter
+        // lands it in the next boundary's D24 set.
         true
     }
 
@@ -790,11 +790,26 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         Ok(())
     }
 
-    /// Emit + POST the exact-E leaf set for the chain's current epoch.
+    /// Emitter loop: one D24-complete leaf set per chain epoch (epoch-close
+    /// batching, exactly-once outbox — see `prism-emit` docs).
+    pub async fn run_emitter(self: Arc<Self>)
+    where
+        C: Sync,
+    {
+        loop {
+            if let Err(e) = self.emitter_tick().await {
+                warn!(error = %e, "emitter tick error");
+            }
+            sleep(self.cfg.emit_poll).await;
+        }
+    }
+
+    /// One emitter tick: read the live chain epoch + expected set, then let
+    /// the outbox recover/emit. `Ok(None)` = this epoch already emitted.
     ///
     /// # Errors
-    /// Chain/read/sign/submit failures (retried on next finalize).
-    pub async fn emit_and_submit_epoch(&self) -> Result<usize, String> {
+    /// Chain / store / sign / submit failures (retried next tick).
+    pub async fn emitter_tick(&self) -> Result<Option<prism_emit::EmitSummary>, String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
         let epoch = chain::current_epoch_pre_run_coinbase(&state, state.current_block);
@@ -808,53 +823,20 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             self.chain.as_ref(),
         )
         .map_err(|e| format!("expected set: {e}"))?;
-        self.emit_and_submit_at(epoch, &expected).await
-    }
-
-    /// Same with an explicit `(epoch, E)` (tests).
-    pub async fn emit_and_submit_at(
-        &self,
-        epoch: u64,
-        expected: &ExpectedSet,
-    ) -> Result<usize, String> {
-        let rows = self
-            .store
-            .epoch_scored_rows(self.cfg.netuid, epoch)
+        let summary = self
+            .emitter
+            .tick(epoch, &expected)
             .await
             .map_err(|e| e.to_string())?;
-        let owners: BTreeMap<String, String> = self
-            .store
-            .arch_owners()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        // Architecture competition: owner/challenger credits, max-aggregated
-        // per hotkey (SCORE_MAX lattice preserved — docs/PRISM.md).
-        let by_miner: BTreeMap<String, FinalScore> =
-            prism_registry::competition_scores(&rows, &owners);
-
-        let mut scores: BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> = BTreeMap::new();
-        let mut expected_set: BTreeSet<[u8; KEY_LEN]> = BTreeSet::new();
-        for p in &expected.participants {
-            expected_set.insert(p.hotkey);
-            let soa = match by_miner.get(&hex::encode(p.hotkey)) {
-                Some(FinalScore::Score(v)) => ScoreOrAbsence::Score { value: *v },
-                Some(FinalScore::NoScore(r)) => ScoreOrAbsence::NoScore {
-                    reason: reason_from_u8(*r),
-                },
-                None => ScoreOrAbsence::NoScore {
-                    reason: NoScoreReasonCode::NotAttempted,
-                },
-            };
-            scores.insert(p.hotkey, soa);
+        if let Some(s) = &summary {
+            info!(
+                epoch = s.epoch,
+                leaves = s.leaves,
+                batch = s.batch,
+                "epoch leaf set emitted"
+            );
         }
-        let leaves = emit_signed_leaf_set(&self.sk, epoch, &expected_set, &scores)
-            .map_err(|e| format!("emit: {e}"))?;
-        submit_signed_leaf_set(&self.gateway, CHALLENGE_ID, epoch, &leaves)
-            .await
-            .map_err(|e| format!("submit: {e}"))?;
-        Ok(leaves.len())
+        Ok(summary)
     }
 }
 
@@ -864,18 +846,5 @@ impl FinalOutcome {
             FinalOutcome::Measured { bpb, .. } => Some(bpb),
             FinalOutcome::ChallengeInternal => None,
         }
-    }
-}
-
-fn reason_from_u8(v: u8) -> NoScoreReasonCode {
-    match v {
-        0 => NoScoreReasonCode::NotAttempted,
-        1 => NoScoreReasonCode::Timeout,
-        2 => NoScoreReasonCode::InvalidResponse,
-        3 => NoScoreReasonCode::AttestationNotVerified,
-        4 => NoScoreReasonCode::MinerError,
-        5 => NoScoreReasonCode::RateLimited,
-        7 => NoScoreReasonCode::PolicySkip,
-        _ => NoScoreReasonCode::ChallengeInternal,
     }
 }

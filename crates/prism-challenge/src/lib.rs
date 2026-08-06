@@ -24,6 +24,7 @@ pub use orchestrator::{Orchestrator, OrchestratorConfig};
 pub use prism_challenge_task::{
     CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN,
 };
+pub use prism_emit::{EmitError, EmitSummary, EpochEmitter};
 pub use prism_pipeline::{
     example_valid_request, expand_zip_fields, run_eval_pipeline, run_sim_pipeline, score_from_bpb,
     score_from_pipeline, submission_id, validate, PipelineError, PipelineInput, PipelineOutcome,

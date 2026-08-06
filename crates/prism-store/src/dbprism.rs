@@ -334,17 +334,43 @@ impl PrismStore for DbPrismStore {
         crate::telemetry::telemetry_for(&self.pool, id).await
     }
 
-    async fn epoch_scored_rows(
+    async fn assign_emit_batch(
         &self,
         netuid: u16,
         epoch: u64,
     ) -> Result<Vec<EpochScoreRow>, StoreError> {
-        arch::epoch_scored_rows(
+        crate::emit::assign_emit_batch(
             &self.pool,
             i32::from(netuid),
             i64::try_from(epoch).unwrap_or(i64::MAX),
         )
         .await
+    }
+
+    async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError> {
+        crate::emit::emit_batch(
+            &self.pool,
+            i32::from(netuid),
+            i64::try_from(epoch).unwrap_or(i64::MAX),
+        )
+        .await
+    }
+
+    async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
+        crate::emit::emit_cursor(&self.pool, i32::from(netuid)).await
+    }
+
+    async fn set_emit_cursor(&self, netuid: u16, epoch: u64) -> Result<(), StoreError> {
+        crate::emit::set_emit_cursor(
+            &self.pool,
+            i32::from(netuid),
+            i64::try_from(epoch).unwrap_or(i64::MAX),
+        )
+        .await
+    }
+
+    async fn pending_emit_epochs(&self, netuid: u16) -> Result<Vec<u64>, StoreError> {
+        crate::emit::pending_emit_epochs(&self.pool, i32::from(netuid)).await
     }
 
     async fn publish_arch(

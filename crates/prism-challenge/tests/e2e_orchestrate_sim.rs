@@ -109,7 +109,7 @@ fn mk_orchestrator(
         backend,
         Arc::new(SimReviewer::new()),
         Arc::new(SimAgent::new()),
-        gateway,
+        &gateway,
         Arc::clone(chain),
         sk(),
     )
@@ -262,14 +262,15 @@ async fn emit_and_submit_covers_expected_set() {
     let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
     let orch = Arc::new(mk_orchestrator(&store, &chain));
 
-    // Seed one finished score for hotkey 0xAB*32.
+    // Seed one finished score for hotkey 0xAB*32 (accepted in an earlier
+    // epoch on purpose: emission is epoch-close batched, not acceptance-E).
     let hk = [0xABu8; 32];
     store.apply("seed", &StatePatch::default(), None).await.ok();
     store
         .insert_queued(&SubmissionState {
             id: "seed".into(),
             miner_hotkey: hex::encode(hk),
-            epoch: 7,
+            epoch: 3,
             netuid: 541,
             status: Stage::Terminated,
             architecture_py: "a".into(),
@@ -302,9 +303,18 @@ async fn emit_and_submit_covers_expected_set() {
         ],
         block_hash: [0x77u8; 32],
     };
-    let n = orch
-        .emit_and_submit_at(7, &expected)
+    let summary = orch
+        .emitter()
+        .emit_new(7, &expected)
         .await
         .expect("emit+submit");
-    assert_eq!(n, expected.participants.len(), "exact-E coverage");
+    assert_eq!(summary.leaves, expected.participants.len(), "D24 coverage");
+    assert_eq!(summary.batch, 1, "the seeded row is the outbox batch");
+    assert!(matches!(
+        summary.signed.get(&hk).map(|l| &l.score_or_absence),
+        Some(prism_challenge::ScoreOrAbsence::Score { value: 500_000 })
+    ));
+    // Cursor advanced; a same-epoch tick is a no-op.
+    assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
+    assert!(orch.emitter().tick(7, &expected).await.unwrap().is_none());
 }

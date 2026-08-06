@@ -103,6 +103,12 @@ impl GatewayClient {
     pub fn is_dry_run(&self) -> bool {
         self.inner.is_dry_run()
     }
+
+    /// Shared-client clone for the epoch emitter (`prism-emit`).
+    #[must_use]
+    pub fn common(&self) -> CommonGatewayClient {
+        self.inner.clone()
+    }
 }
 
 /// Submit signed leaves (or dry-run when `base_url` is `dry-run`).

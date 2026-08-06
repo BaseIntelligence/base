@@ -98,7 +98,7 @@ async fn hardcoded_metrics_json_scores_zero() {
         Arc::new(SimLiumBackend::new()) as Arc<dyn EvalJobBackend>,
         Arc::new(SimReviewer::new()),
         Arc::new(SimAgent::new()),
-        gateway,
+        &gateway,
         Arc::clone(&chain),
         sk,
     ));

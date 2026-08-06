@@ -2,7 +2,7 @@
 //!
 //! API: miner submit + full progression surface (AGENT-style list/detail/
 //! status/jobs/recipe). Orchestrator: DB-backed Lium job runner + master-side
-//! LLM review/similarity + agentic anti-cheat + close-loop exact-E leaf submit.
+//! LLM review/similarity + agentic anti-cheat + epoch-close D24 leaf emitter.
 //! **No Phala CVM.**
 //!
 //! Backend selection (fail-closed concept, never invented):
@@ -419,6 +419,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         ssh_public_keys: ssh_pks,
         image_digest: None,
         claim_poll: Duration::from_millis(750),
+        emit_poll: Duration::from_secs(15),
         max_attempts: MAX_ATTEMPTS,
         similarity_corpus_limit: 6,
         stuck_grace_secs: 7 * 3600,
@@ -432,7 +433,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         backend,
         reviewer,
         agentic,
-        gateway,
+        &gateway,
         Arc::new(chain),
         sk,
     )
@@ -507,4 +508,6 @@ fn spawn_orchestrator(cli: &Cli, orchestrator: &Arc<Orchestrator<chain_live::Liv
     }
     let o = Arc::clone(orchestrator);
     tokio::spawn(async move { o.run_sweeper().await });
+    let o = Arc::clone(orchestrator);
+    tokio::spawn(async move { o.run_emitter().await });
 }

@@ -29,7 +29,8 @@ agentic is the primary anti-cheat judge. The LLM quality vote is a
 **coherence gate, never a grader**: the final score is pure bpb, with
 hard-zero on agentic `cheat`/`suspicious` and cheap `Copied`/`Suspicious`.
 Missing agentic verdict is fail-closed (`ChallengeInternal`). Leaves are
-D24-complete at the exact live chain epoch for gateway ingest. Review
+D24-complete per chain epoch, emitted at epoch close from the finalized-since-
+last-epoch batch (see **Leaf emission** below). Review
 findings are audit events, not points.
 
 This is **not** agent-challenge Phala/TDX attestation and **not**
@@ -46,7 +47,7 @@ stateDiagram-v2
     Running --> Reviewing: METRICS_JSON collected
     Reviewing --> AgenticReview: arch-only similarity + quality
     AgenticReview --> Scoring: submit_verdict
-    Scoring --> Terminated: leaf emitted at epoch
+    Scoring --> Terminated: finalized row enters the emission outbox
     Provisioning --> Failed: offer/rent timeout
     Running --> Failed: harness/exec error
     Reviewing --> Failed: reviewer/gateway error
@@ -109,16 +110,42 @@ the telemetry-hooks rule and metrics forge checks still apply. Gating:
 `prism:train:<arch_id>` as above — one accepted entry per
 `(hotkey, arch_id)`, retries same rules.
 
+**Leaf emission (epoch-close, exactly-once).** A submission row's acceptance
+epoch (`prism_submission.epoch`) is intake metadata only. A dedicated emitter
+loop (`prism-emit`, one tick per chain epoch) emits **one D24-complete leaf
+set per chain epoch**: the first tick that observes epoch `E` assigns every
+submission finalized since the previously emitted epoch — the outbox batch,
+`kind IS NOT NULL AND emitted_epoch IS NULL` — to `E`, signs the full expected
+set (batch scores competition-aggregated; `NoScore(NotAttempted)` for everyone
+else), submits it, and advances the per-netuid emit cursor
+(`prism_emit_cursor`, migration 0012). This fixes the two acceptance-epoch
+bugs: independent scorers finalized in the same epoch used to lock each other
+out (gateway leaves are append-only first-write-wins per
+`(challenge, epoch, hotkey)`), and a submission accepted in epoch `X` but
+finalized in `X+k` (prod trains up to 6h ≫ 72-min epochs) never scored at all.
+
+Exactly-once per scoring run: batch assignment is sticky before submit, the
+cursor advances only after the full set landed, and a crash mid-submit replays
+the identical assigned set on the next tick (first-write-wins with identical
+values converges). A manually retried + re-scored row re-enters the outbox
+(`reset_for_retry` clears the watermark); its old leaf stays immutable history
+in its original epoch. Epochs during a master outage carry no set; the first
+epoch after recovery carries the whole backlog (seals always pin fresh epochs
+— stale bundles can never Match on-chain). Run **exactly one** prism-challenge
+emitter instance per netuid (single master topology).
+
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
 `SCORING_VERSION` stays 2 — the competition reallocates credits inside the
-existing lattice, it does not change leaf format).** Per epoch:
+existing lattice, and epoch-close batching changes only *which* epoch a score
+lands in, not the leaf format or the math).** Per emitted epoch set:
 
-- *challenger credit*: a hotkey's own best lattice score across its rows
-  (its own best training result per arch, then across archs).
-- *architecture-owner credit*: each registered arch's best epoch result
-  (`max(Score)` over all rows linked to that arch, any trainer) is credited
-  to the arch's **owner** — owners are rewarded when anyone trains well on
-  their architecture.
+- *challenger credit*: a hotkey's own best lattice score across its rows in
+  the epoch's batch (its own best training result per arch, then across archs).
+- *architecture-owner credit*: each registered arch's best batch result
+  (`max(Score)` over all batch rows linked to that arch, any trainer) is
+  credited to the arch's **owner** — owners are rewarded when anyone trains
+  well on their architecture, including in a later epoch than their own
+  submission.
 - *emission*: per hotkey `max(own credits, owner credits)` — **max, never
   summed**, so the lattice bound and the no-double-count property hold by
   construction. `Score(0)` rows (cheat/copy-gate) never set an arch's best;
@@ -178,9 +205,10 @@ audit-only for the bpb score (coherence gate, never a grader).
 | `prism-pipeline` | Intake contract (validation, `arch_id` rules, gating keys) + eval pipeline |
 | `prism-review` | OpenRouter LLM (quality + arch-only similarity) + deterministic sim fallback |
 | `challenge-agentic` | Tool-calling anti-cheat (AST + metrics); `SimAgent` for CI |
-| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal) |
+| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal + emission outbox) |
 | `prism-registry` | Competition emission math, post-score hooks, top-model GitHub publisher |
-| `prism-challenge` | API surface, orchestrator, scoring v2, D24 leaves, gateway client |
+| `prism-emit` | Epoch-close D24 leaf emission engine (outbox batching, exactly-once cursor) |
+| `prism-challenge` | API surface, orchestrator, scoring v2, emitter loop, gateway client |
 | `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection) |
 
 ## API
@@ -295,11 +323,14 @@ the per-submission $2.5/h cost guard.
 
 ```bash
 cargo test -p prism-challenge-task -p prism-lium -p prism-recipe \
-  -p prism-review -p prism-store -p prism-challenge -p prism-challenge-bin
+  -p prism-review -p prism-store -p prism-emit -p prism-challenge -p prism-challenge-bin
 ```
 
 Wiremocks: Lium REST client (offers/rent) + OpenRouter chat roundtrip.
-Sim orchestrator e2e: claim → run → review → score → exact-E leaf dry-run.
+Sim orchestrator e2e: claim → run → review → score → epoch-close leaf dry-run.
+Epoch semantics (`prism-emit/tests/epoch_semantics.rs`): independent
+same-epoch scorers co-land, cross-epoch evals score exactly once, no
+double-emission, competition credits intact, crash recovery replays.
 
 ## Must not
 

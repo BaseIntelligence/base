@@ -140,7 +140,7 @@ fn mk_orchestrator(
         Arc::new(SimLiumBackend::new()) as Arc<dyn EvalJobBackend>,
         Arc::new(SimReviewer::new()),
         Arc::new(SimAgent::new()),
-        gateway,
+        &gateway,
         Arc::clone(chain),
         [9u8; KEY_LEN],
     )

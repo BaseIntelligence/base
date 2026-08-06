@@ -151,7 +151,7 @@ fn mk_orchestrator(
         Arc::new(SimLiumBackend::new()) as Arc<dyn EvalJobBackend>,
         Arc::new(SimReviewer::new()),
         Arc::new(SimAgent::new()),
-        gateway,
+        &gateway,
         Arc::clone(chain),
         [3u8; KEY_LEN],
     )
@@ -306,7 +306,7 @@ async fn competition_credits_owner_and_challenger() {
     chall_row.bpb = Some(1.5);
     store.insert_queued(&chall_row).await.unwrap();
 
-    let rows = store.epoch_scored_rows(541, 7).await.unwrap();
+    let rows = store.assign_emit_batch(541, 7).await.unwrap();
     assert_eq!(rows.len(), 2, "one entry per submission (not collapsed)");
     let owners: BTreeMap<String, String> = store.arch_owners().await.unwrap().into_iter().collect();
     let scores = prism_registry::competition_scores(&rows, &owners);
@@ -351,8 +351,8 @@ async fn topmodel_hooks_graceful_without_publisher() {
 }
 
 #[tokio::test]
-async fn epoch_scored_rows_feed_competition_via_store() {
-    // Smoke: EpochScoreRow shape carries arch_id through the store.
+async fn emit_batch_feeds_competition_via_store() {
+    // Smoke: EpochScoreRow shape carries arch_id through the emission outbox.
     let store = Arc::new(MemoryPrismStore::new());
     let mut r = row(
         "challenger-0001",
@@ -365,7 +365,10 @@ async fn epoch_scored_rows_feed_competition_via_store() {
     r.status = Stage::Terminated;
     r.final_score = Some(FinalScore::Score(123));
     store.insert_queued(&r).await.unwrap();
-    let rows: Vec<EpochScoreRow> = store.epoch_scored_rows(541, 7).await.unwrap();
+    let rows: Vec<EpochScoreRow> = store.assign_emit_batch(541, 7).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].arch_id.as_deref(), Some("arch_x"));
+    // Sticky: the assignment is re-readable and never re-assigned.
+    assert_eq!(store.emit_batch(541, 7).await.unwrap().len(), 1);
+    assert!(store.assign_emit_batch(541, 8).await.unwrap().is_empty());
 }

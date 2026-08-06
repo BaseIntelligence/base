@@ -11,20 +11,22 @@
 #      top-model/ + prism_topmodel_publication journal row.
 #   2. Miner B training-only on A's published arch → /v1/architectures lists
 #      A with best_bpb → competition scoring (owner credited per rule).
-#      B is submitted right after an epoch boundary so its finalize is the
-#      first prism emit of the epoch (append-only leaves are first-write-wins;
-#      the owner+challenger credit must land in that first emit).
+#      No epoch choreography needed: the epoch-close emitter batches every
+#      finalized submission into the next boundary's D24 set (exactly-once
+#      outbox), so A and B co-appear regardless of acceptance/finalize timing.
 #   1b. Missing-hooks variant (miner D) → hard reject at review
 #      (missing_telemetry_hooks), Score(0), terminal.
 #   3. Miner C byte copy of A's architecture → rejected pre-measure: no pod,
 #      no LLM review stages.
 #   5. Leaves → admin seal → /v1/weights/latest sealed:true with correct
 #      hotkeys (A + B per competition rule; C/D zero/absent). Waits for the
+#      epoch-close emit (submissions' emitted_epoch watermark), then for the
 #      design leaf set of the same epoch (D24 needs both >0-bps challenges).
 #
 # Required env (hex, no 0x): E2E_HOTKEY_A / _B / _C / _D.
-# Optional: E2E_HOTKEY_U (extra hotkey to reset), E2E_SKIP_BOUNDARY_WAIT=1,
-#           SEAL_WAIT_SECS (design-leaf wait, default 2700).
+# Optional: E2E_HOTKEY_U (extra hotkey to reset), EPOCH_WAIT_SECS (boundary
+#           emit wait, default 6000), SEAL_WAIT_SECS (design-leaf wait,
+#           default 2700).
 set -euo pipefail
 
 BASE_URL="${E2E_BASE_URL:-http://staging.api.joinbase.ai}"
@@ -558,31 +560,9 @@ else
 fi
 echo "arch_id=$ARCH_ID" >> "$EVIDENCE/ids.env"
 
-# Epoch choreography (D24 + append-only leaves): a leaf set is first-write-wins
-# per (challenge, epoch, hotkey) and each finalize emits the full set for the
-# CURRENT chain epoch, scoring only submissions ACCEPTED in that epoch. For the
-# sealed epoch to credit both A (arch-owner) and B (challenger), B's finalize
-# must be the FIRST prism emit of a fresh epoch: wait for the boundary after
-# A's epoch, then submit B immediately (accept + finalize inside it).
-EPOCH_A="$(api GET /challenge/prism/v1/status | jq_field 'd["epoch"]')"
-note "A finalized in epoch $EPOCH_A; waiting for the next epoch boundary before B (E2E_SKIP_BOUNDARY_WAIT=1 to skip)"
-# Idempotent re-runs: if the current epoch's prism leaves already credit A
-# (owner) and B (challenger) from an earlier run, the seal step can target it
-# directly — no boundary wait needed.
-prior="$(psql "SELECT count(*) FROM raw_weight_snapshot WHERE challenge_id='prism' AND epoch=${EPOCH_A:-0} AND kind='score' AND score>0 AND miner_hotkey IN ('$HKA','$HKB');")"
-if [[ "$prior" = "2" ]]; then
-  note "prism|$EPOCH_A leaves already credit A and B (prior run) — skipping boundary wait"
-elif [[ "${E2E_SKIP_BOUNDARY_WAIT:-0}" != 1 ]]; then
-  t0=$SECONDS
-  while (( SECONDS - t0 < 5400 )); do
-    cur_ep="$(api GET /challenge/prism/v1/status | jq_field 'd["epoch"]')"
-    [[ -n "$cur_ep" && "$cur_ep" != "None" && "$cur_ep" -gt "${EPOCH_A:-0}" ]] && break
-    sleep 15
-  done
-fi
-EPOCH_B="$(api GET /challenge/prism/v1/status | jq_field 'd["epoch"]')"
-echo "epoch_a=$EPOCH_A epoch_b=$EPOCH_B" >> "$EVIDENCE/ids.env"
-note "submitting B in epoch $EPOCH_B (must be first prism emit of the epoch)"
+# No epoch choreography (post epoch-close emission fix): whenever B finalizes,
+# the next boundary's batched set credits A (arch-owner) + B (challenger).
+note "submitting B training-only on $ARCH_ID (emission is epoch-close batched)"
 body="$(submit_json "$HKB" "" "$EVIDENCE/assets/training_b.py" "$ARCH_ID")"
 echo "$body" > "$EVIDENCE/02-submit-b.json"
 SUB_B="$(echo "$body" | jq_field 'd["submission_id"]')"
@@ -606,9 +586,8 @@ if [[ -n "$SUB_B" ]]; then
 fi
 
 # ---------------------------------------------------------------- 1b: missing hooks (D)
-# Runs AFTER B: D's rejected finalize re-emits the full leaf set for the epoch,
-# but every leaf is already stored (first-write-wins) — D stays no_score, which
-# is exactly what the sealed weights must show for a hooks violator.
+# D's rejected finalize joins the same epoch-close batch as A/B; its leaf is
+# Score(0) — exactly what the sealed weights must show for a hooks violator.
 step "1b miner D missing-hooks → hard reject (missing_telemetry_hooks)"
 body="$(submit_json "$HKD" "$EVIDENCE/assets/architecture_d.py" "$EVIDENCE/assets/training_d.py")"
 echo "$body" > "$EVIDENCE/01b-submit-d.json"
@@ -650,29 +629,53 @@ if [[ -n "$SUB_C" ]]; then
 fi
 
 # ---------------------------------------------------------------- 5: weights
-# Seal B's epoch: prism leaves are complete from B's finalize emit (A credited
-# as arch owner, B as challenger); design leaves appear at the first design
-# emit of the epoch (round award/close, ≤ round_secs). Wait for both, then seal.
+# Epoch-close emission: every finalized submission carries an `emitted_epoch`
+# watermark set by the first boundary tick after its finalize. Wait until A..D
+# are all emitted, then seal the epoch that batches A+B (max of the two — if a
+# boundary split them, the later batch credits A via arch-owner credit).
+# Design leaves must exist at the SAME epoch (D24 needs both challenges).
 step "5 leaves → seal → /v1/weights/latest (prism share)"
-META_N="$(psql "SELECT count(DISTINCT miner_hotkey) FROM raw_weight_snapshot WHERE challenge_id='prism' AND epoch=${EPOCH_B:-0};")"
+ids_sql="'$SUB_A'"
+for s in "${SUB_B:-}" "${SUB_C:-}" "${SUB_D:-}"; do [[ -n "$s" ]] && ids_sql="$ids_sql,'$s'"; done
+note "waiting for epoch-close emit of $ids_sql (emitted_epoch watermark)"
+PRISM_EPOCH=""
+t0=$SECONDS
+while (( SECONDS - t0 < ${EPOCH_WAIT_SECS:-6000} )); do
+  pending="$(psql "SELECT count(*) FROM prism_submission WHERE id IN ($ids_sql) AND emitted_epoch IS NULL;")"
+  echo "$(date +%T) pending-emit=$pending" >> "$EVIDENCE/05-wait.log"
+  if [[ "$pending" = "0" ]]; then
+    PRISM_EPOCH="$(psql "SELECT max(emitted_epoch) FROM prism_submission WHERE id IN ('$SUB_A','$SUB_B');")"
+    [[ -n "$PRISM_EPOCH" && "$PRISM_EPOCH" != "None" ]] && break
+  fi
+  sleep 30
+done
+if [[ -z "$PRISM_EPOCH" || "$PRISM_EPOCH" == "None" ]]; then
+  fail "5 epoch-close emit" "submissions never watermark-emitted — see 05-wait.log"
+  PRISM_EPOCH=0
+fi
+echo "prism_epoch=$PRISM_EPOCH" >> "$EVIDENCE/ids.env"
+# The gateway must actually hold the batched score leaves at that epoch.
+ab="$(psql "SELECT count(DISTINCT miner_hotkey) FROM raw_weight_snapshot WHERE challenge_id='prism' AND epoch=${PRISM_EPOCH:-0} AND kind='score' AND score>0 AND miner_hotkey IN ('$HKA','$HKB');")"
+[[ "$ab" = "2" ]] && note "prism|$PRISM_EPOCH leaves credit A and B" \
+  || note "WARN: prism|$PRISM_EPOCH missing A/B score leaves (count=$ab)"
+META_N="$(psql "SELECT count(DISTINCT miner_hotkey) FROM raw_weight_snapshot WHERE challenge_id='prism' AND epoch=${PRISM_EPOCH:-0};")"
 [[ "$META_N" =~ ^[0-9]+$ && "$META_N" -gt 0 ]] || META_N=8
-note "metagraph size proxy from prism|${EPOCH_B} leaves: $META_N"
+note "metagraph size proxy from prism|${PRISM_EPOCH} leaves: $META_N"
 design_ready=0
 sealed_ok=0
 SEALED_EPOCH=""
 t0=$SECONDS
 while (( SECONDS - t0 < ${SEAL_WAIT_SECS:-2700} )); do
-  n="$(psql "SELECT count(*) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=${EPOCH_B:-0};")"
-  a_des="$(psql "SELECT coalesce(max(score),-1) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=${EPOCH_B:-0} AND miner_hotkey='$HKA';")"
-  echo "$(date +%T) design|${EPOCH_B} rows=$n A_score=$a_des" >> "$EVIDENCE/05-wait.log"
+  n="$(psql "SELECT count(*) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=${PRISM_EPOCH:-0};")"
+  a_des="$(psql "SELECT coalesce(max(score),-1) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=${PRISM_EPOCH:-0} AND miner_hotkey='$HKA';")"
+  echo "$(date +%T) design|${PRISM_EPOCH} rows=$n A_score=$a_des" >> "$EVIDENCE/05-wait.log"
   [[ "$n" = "$META_N" && "$a_des" != "-1" && -n "$n" ]] && design_ready=1
   if [[ "$design_ready" = 1 ]]; then
-    for try_epoch in "$EPOCH_B" "$((EPOCH_B - 1))" "$((EPOCH_B + 1))"; do
-      seal="$(api POST /v1/admin/seal -H 'content-type: application/json' -d "{\"epoch\":$try_epoch,\"netuid\":$NETUID}")"
-      echo "seal epoch=$try_epoch → HTTP $(last_http) $seal" >> "$EVIDENCE/05-seal.log"
-      latest="$(api GET /v1/weights/latest)"
-      echo "$latest" > "$EVIDENCE/05-weights-latest.json"
-      if echo "$latest" | python3 -c "
+    seal="$(api POST /v1/admin/seal -H 'content-type: application/json' -d "{\"epoch\":$PRISM_EPOCH,\"netuid\":$NETUID}")"
+    echo "seal epoch=$PRISM_EPOCH → HTTP $(last_http) $seal" >> "$EVIDENCE/05-seal.log"
+    latest="$(api GET /v1/weights/latest)"
+    echo "$latest" > "$EVIDENCE/05-weights-latest.json"
+    if echo "$latest" | python3 -c "
 import json, sys
 sys.path.insert(0, '$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)')
 from e2e_ss58 import hotkey_weight_map
@@ -681,16 +684,15 @@ hw = hotkey_weight_map(d)
 a = hw.get('$HKA', 0.0)
 b = hw.get('$HKB', 0.0)
 c = hw.get('$HKC', 0.0)
-ok = d.get('sealed') is True and d.get('epoch') == $try_epoch and a > 0 and b > 0 and c == 0
+ok = d.get('sealed') is True and d.get('epoch') == $PRISM_EPOCH and a > 0 and b > 0 and c == 0
 sys.exit(0 if ok else 1)
-" 2>/dev/null; then sealed_ok=1; SEALED_EPOCH=$try_epoch; note "sealed at epoch=$try_epoch: A>0 B>0 C=0"; break; fi
-    done
+" 2>/dev/null; then sealed_ok=1; SEALED_EPOCH=$PRISM_EPOCH; note "sealed at epoch=$PRISM_EPOCH: A>0 B>0 C=0"; break; fi
   fi
   [[ "$sealed_ok" = 1 ]] && break
   sleep 60
 done
-[[ "$design_ready" = 1 ]] || note "WARN: design leaves incomplete at $EPOCH_B (seal may fail D24)"
-psql "SELECT challenge_id, miner_hotkey, kind, score FROM raw_weight_snapshot WHERE epoch=${SEALED_EPOCH:-$EPOCH_B} ORDER BY challenge_id, miner_hotkey;" > "$EVIDENCE/05-leaves.txt" 2>/dev/null || true
+[[ "$design_ready" = 1 ]] || note "WARN: design leaves incomplete at $PRISM_EPOCH (seal may fail D24)"
+psql "SELECT challenge_id, miner_hotkey, kind, score FROM raw_weight_snapshot WHERE epoch=${SEALED_EPOCH:-$PRISM_EPOCH} ORDER BY challenge_id, miner_hotkey;" > "$EVIDENCE/05-leaves.txt" 2>/dev/null || true
 [[ "$sealed_ok" = 1 ]] && pass "5 weights sealed:true with A,B per competition rule (C,D zero)" \
   || fail "5 weights seal" "see 05-seal.log / 05-weights-latest.json"
 
