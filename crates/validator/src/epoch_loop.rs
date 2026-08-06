@@ -142,7 +142,10 @@ pub fn maybe_submit_match<C, D>(
         version_key: cfg.version_key,
         hotkey: cfg.hotkey.clone(),
         epoch_deadline_block: deadline,
-        max_rate_limit_retries: 8,
+        // Live submits are dispatch-confirmed via `LastUpdate`; a rate-limited
+        // commit fails ~100 blocks early, so an immediate in-call burst only
+        // spams doomed extrinsics. The coordination tick is the retry loop.
+        max_rate_limit_retries: 0,
         max_drand_retries: 32,
     };
 

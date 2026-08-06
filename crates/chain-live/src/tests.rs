@@ -971,3 +971,249 @@ fn parse_commit_reveal_enabled_v3_bool() {
     );
     assert_eq!(crate::parse_commit_reveal_enabled_v3(b"nope"), None);
 }
+
+// ---------------------------------------------------------------------------
+// wiremock: weight-submit dispatch confirmation via LastUpdate
+// ---------------------------------------------------------------------------
+
+async fn mount_storage(server: &MockServer, key: &[u8], value: serde_json::Value) {
+    let key_hex = format!("0x{}", hex::encode(key));
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "method": "state_getStorage",
+            "params": [key_hex]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": value
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_tip(server: &MockServer, tip: u64) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "chain_getHeader"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "number": format!("0x{tip:x}") }
+        })))
+        .mount(server)
+        .await;
+}
+
+fn uids_key(netuid: u16, hotkey: &[u8; 32]) -> Vec<u8> {
+    storage_double_map_key_u16_account("SubtensorModule", "Uids", netuid, hotkey)
+}
+
+fn last_update_key(netuid: u16) -> Vec<u8> {
+    storage_map_key_u16("SubtensorModule", "LastUpdate", netuid)
+}
+
+fn vec_u64_hex(v: &[u64]) -> String {
+    format!("0x{}", hex::encode(v.encode()))
+}
+
+#[tokio::test]
+async fn last_weight_update_reads_uid_entry() {
+    let server = MockServer::start().await;
+    let hotkey = [0xAA_u8; 32];
+    mount_storage(&server, &uids_key(1, &hotkey), json!("0x0200")).await;
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[10, 20, 30]))).await;
+
+    let uri = server.uri();
+    let got = tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(&uri)?.last_weight_update(1, &[0xAA_u8; 32])
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("read");
+    assert_eq!(got, Some(30));
+}
+
+#[tokio::test]
+async fn last_weight_update_none_when_unregistered() {
+    let server = MockServer::start().await;
+    let hotkey = [0xEE_u8; 32];
+    mount_storage(&server, &uids_key(1, &hotkey), serde_json::Value::Null).await;
+
+    let uri = server.uri();
+    let got = tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(&uri)?.last_weight_update(1, &[0xEE_u8; 32])
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("read");
+    assert_eq!(got, None);
+}
+
+#[tokio::test]
+async fn confirm_weight_update_ok_when_last_update_advances() {
+    let server = MockServer::start().await;
+    let hotkey = [0xAA_u8; 32];
+    mount_tip(&server, 1000).await;
+    mount_storage(&server, &uids_key(1, &hotkey), json!("0x0000")).await;
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[999]))).await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(&uri)?.confirm_weight_update(1, &[0xAA_u8; 32], Some(900), 999)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("advanced LastUpdate must confirm");
+}
+
+#[tokio::test]
+async fn confirm_weight_update_rate_limited_inside_window() {
+    let server = MockServer::start().await;
+    let hotkey = [0xAA_u8; 32];
+    mount_tip(&server, 1000).await;
+    mount_storage(&server, &uids_key(1, &hotkey), json!("0x0000")).await;
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[950]))).await;
+    // WeightsSetRateLimit absent → default 100.
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "WeightsSetRateLimit", 1),
+        serde_json::Value::Null,
+    )
+    .await;
+
+    let uri = server.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(&uri)?.confirm_weight_update(1, &[0xAA_u8; 32], Some(950), 996)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect_err("static LastUpdate inside the window must be RateLimited");
+    assert_eq!(
+        err,
+        ChainError::RateLimited {
+            retry_after_blocks: Some(50)
+        }
+    );
+}
+
+#[tokio::test]
+async fn confirm_weight_update_unconfirmed_outside_window_is_transient() {
+    let server = MockServer::start().await;
+    let hotkey = [0xAA_u8; 32];
+    mount_tip(&server, 2000).await;
+    mount_storage(&server, &uids_key(1, &hotkey), json!("0x0000")).await;
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[950]))).await;
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "WeightsSetRateLimit", 1),
+        serde_json::Value::Null,
+    )
+    .await;
+
+    let uri = server.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        LiveChainClient::connect(&uri)?.confirm_weight_update(1, &[0xAA_u8; 32], Some(950), 1996)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect_err("static LastUpdate outside the window is not RateLimited");
+    match err {
+        ChainError::Other(msg) => assert!(msg.contains("unconfirmed"), "msg: {msg}"),
+        other => panic!("expected Other, got {other}"),
+    }
+}
+
+/// Full submit path: pool acceptance is not enough — the method must keep
+/// reading `LastUpdate` until it advances, and only then report success.
+#[tokio::test]
+async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
+    let server = MockServer::start().await;
+    let sk = [0x42_u8; 32];
+    let pk = crate::derive_public_key(&sk).expect("pk");
+
+    // CR on via sparse storage (hyperparams state_call is unmocked → falls back).
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "CommitRevealWeightsEnabled", 1),
+        json!("0x01"),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "state_getRuntimeVersion"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "specName": "node-subtensor",
+                "specVersion": 443,
+                "transactionVersion": 1
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "chain_getBlockHash"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": format!("0x{}", hex::encode([0x11_u8; 32]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "system_accountNextIndex"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "author_submitExtrinsic"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": format!("0x{}", hex::encode([0xEE_u8; 32]))
+        })))
+        .mount(&server)
+        .await;
+    mount_tip(&server, 500).await;
+    mount_storage(&server, &uids_key(1, &pk), json!("0x0000")).await;
+    // Pre-submit read sees the old block; confirmation reads see the advance.
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "method": "state_getStorage",
+            "params": [format!("0x{}", hex::encode(last_update_key(1)))]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": vec_u64_hex(&[400])
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "method": "state_getStorage",
+            "params": [format!("0x{}", hex::encode(last_update_key(1)))]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": vec_u64_hex(&[501])
+        })))
+        .with_priority(5)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let payload = WeightsTlockPayload {
+        hotkey: pk.to_vec(),
+        uids: vec![0],
+        values: vec![65535],
+        version_key: 0,
+    };
+    tokio::task::spawn_blocking(move || {
+        let mut client = LiveChainClient::connect(&uri)?;
+        client.set_signing_key(sk);
+        client.submit_timelocked_weights(0, payload, 99)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("dispatch-confirmed submit must succeed");
+}

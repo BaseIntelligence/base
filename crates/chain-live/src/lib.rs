@@ -23,7 +23,7 @@ pub use extrinsic::{
 pub use rpc::{LiveChainRpc, RuntimeVersion, StorageEntry};
 pub use storage::{
     decode_axon_info, decode_bool, decode_double_map_account_k2, decode_double_map_k2,
-    decode_hotkey, decode_metagraph, decode_u16, decode_u64, decode_vec_vec_u8,
+    decode_hotkey, decode_metagraph, decode_u16, decode_u64, decode_vec_u64, decode_vec_vec_u8,
     storage_double_map_key_u16_account, storage_double_map_key_u16_u16,
     storage_double_map_prefix_u16, storage_key, storage_map_key_identity, storage_map_key_twox64,
     storage_map_key_u16, ACCOUNT_ID_LEN,
@@ -50,6 +50,15 @@ const DEFAULT_REVEAL_PERIOD_EPOCHS: u16 = 1;
 const KEYS_PAGE_SIZE: u32 = 512;
 /// Upper bound on enumerated neurons, guarding against a runaway pager.
 const MAX_NEURONS: usize = 16_384;
+/// `WeightsSetRateLimit` fallback when the sparse storage key is absent
+/// (Finney netuid 100 observes 100 via hyperparams with an empty map).
+const DEFAULT_WEIGHTS_RATE_LIMIT: u64 = 100;
+/// Blocks to wait for a weight extrinsic to advance `LastUpdate` before
+/// declaring the submit unconfirmed. A failed dispatch (e.g. rate limit) is
+/// included in a block but never advances `LastUpdate`.
+const WEIGHT_CONFIRM_BLOCKS: u64 = 4;
+/// Poll interval while waiting for weight-submit dispatch confirmation.
+const WEIGHT_CONFIRM_POLL: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Live chain client with sr25519 signed extrinsic submission.
 pub struct LiveChainClient {
@@ -344,6 +353,92 @@ impl LiveChainClient {
         );
         self.rpc.author_submit_extrinsic(ext)
     }
+
+    /// `LastUpdate[netuid][uid_of(hotkey)]` — block of the hotkey's last
+    /// successful weight dispatch. `None` when the hotkey is unregistered or
+    /// has never set weights.
+    ///
+    /// # Errors
+    /// Transport or decode failure.
+    fn last_weight_update(&self, netuid: u16, hotkey: &[u8]) -> Result<Option<u64>, ChainError> {
+        let account = account_id(hotkey)?;
+        let uid_key =
+            storage::storage_double_map_key_u16_account(PALLET_SUBTENSOR, "Uids", netuid, &account);
+        let Some(uid_bytes) = self.rpc.state_get_storage(&uid_key)? else {
+            return Ok(None);
+        };
+        let uid = storage::decode_u16(&uid_bytes)?;
+        let lu_key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "LastUpdate", netuid);
+        let Some(lu_bytes) = self.rpc.state_get_storage(&lu_key)? else {
+            return Ok(None);
+        };
+        let blocks = storage::decode_vec_u64(&lu_bytes)?;
+        Ok(blocks.get(usize::from(uid)).copied())
+    }
+
+    /// `WeightsSetRateLimit(netuid)` with the chain-wide default when the
+    /// sparse storage key is absent. Heuristic — only used to classify an
+    /// unconfirmed submit for logs/backoff, never to gate submission.
+    fn weights_rate_limit(&self, netuid: u16) -> u64 {
+        let key = storage::storage_map_key_u16(PALLET_SUBTENSOR, "WeightsSetRateLimit", netuid);
+        self.rpc
+            .state_get_storage(&key)
+            .ok()
+            .flatten()
+            .and_then(|b| storage::decode_u64(&b).ok())
+            .unwrap_or(DEFAULT_WEIGHTS_RATE_LIMIT)
+    }
+
+    /// Prove a weight extrinsic dispatched successfully by waiting for the
+    /// hotkey's `LastUpdate` entry to advance. `author_submitExtrinsic` is
+    /// fire-and-forget: a dispatch failure (e.g. `WeightsSetRateLimited`) is
+    /// still included in a block, so pool acceptance alone is not evidence.
+    ///
+    /// An unchanged `LastUpdate` inside the rate-limit window maps to
+    /// [`ChainError::RateLimited`] so callers back off instead of reporting a
+    /// false success; any other unchanged outcome is a transient error.
+    ///
+    /// # Errors
+    /// [`ChainError::RateLimited`] inside the rate-limit window,
+    /// [`ChainError::Other`] on transport failure or missing confirmation.
+    fn confirm_weight_update(
+        &self,
+        netuid: u16,
+        hotkey: &[u8],
+        before: Option<u64>,
+        start_tip: u64,
+    ) -> Result<(), ChainError> {
+        let deadline = start_tip.saturating_add(WEIGHT_CONFIRM_BLOCKS);
+        loop {
+            std::thread::sleep(WEIGHT_CONFIRM_POLL);
+            let tip = self.current_block()?;
+            let now = self.last_weight_update(netuid, hotkey)?;
+            if now != before {
+                tracing::info!(
+                    ?before,
+                    ?now,
+                    tip,
+                    "weight extrinsic confirmed: LastUpdate advanced"
+                );
+                return Ok(());
+            }
+            if tip >= deadline {
+                let window = self.weights_rate_limit(netuid);
+                if let Some(b) = before {
+                    let elapsed = tip.saturating_sub(b);
+                    if elapsed < window {
+                        return Err(ChainError::RateLimited {
+                            retry_after_blocks: Some(window - elapsed),
+                        });
+                    }
+                }
+                return Err(ChainError::Other(format!(
+                    "weight extrinsic unconfirmed: LastUpdate still {before:?} \
+                     {WEIGHT_CONFIRM_BLOCKS} blocks after submit (tip {tip})"
+                )));
+            }
+        }
+    }
 }
 
 /// Extract `commit_reveal_weights_enabled` from SCALE hyperparams v3 bytes.
@@ -546,7 +641,11 @@ impl ChainClient for LiveChainClient {
             commit_len = commit.len(),
             "submitting commit_timelocked_mechanism_weights"
         );
-        self.submit_extrinsic(&ext)?;
+        let before = self.last_weight_update(self.netuid, &payload.hotkey)?;
+        let start_tip = self.current_block()?;
+        let tx_hash = self.submit_extrinsic(&ext)?;
+        tracing::info!(%tx_hash, "commit accepted by pool; awaiting dispatch confirmation");
+        self.confirm_weight_update(self.netuid, &payload.hotkey, before, start_tip)?;
         Ok(())
     }
 
@@ -580,7 +679,12 @@ impl ChainClient for LiveChainClient {
             &values,
             version_key,
         )?;
-        self.submit_extrinsic(&ext)?;
+        let hotkey = extrinsic::derive_public_key(&key)?;
+        let before = self.last_weight_update(netuid, &hotkey)?;
+        let start_tip = self.current_block()?;
+        let tx_hash = self.submit_extrinsic(&ext)?;
+        tracing::info!(%tx_hash, "set_weights accepted by pool; awaiting dispatch confirmation");
+        self.confirm_weight_update(netuid, &hotkey, before, start_tip)?;
         Ok(())
     }
 }

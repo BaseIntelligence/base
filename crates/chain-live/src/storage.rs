@@ -183,6 +183,16 @@ pub fn decode_vec_vec_u8(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ChainError> {
         .map_err(|e| ChainError::Other(format!("decode Vec<Vec<u8>>: {e}")))
 }
 
+/// Decode a SCALE-encoded `Vec<u64>` (`SubtensorModule.LastUpdate` value:
+/// one block number per uid, `u64` LE — verified against Finney mainnet).
+///
+/// # Errors
+/// Decode failure.
+pub fn decode_vec_u64(bytes: &[u8]) -> Result<Vec<u64>, ChainError> {
+    Vec::<u64>::decode(&mut &bytes[..])
+        .map_err(|e| ChainError::Other(format!("decode Vec<u64>: {e}")))
+}
+
 /// Decode a SCALE-encoded [`AxonInfo`] (`SubtensorModule.Axons` value).
 ///
 /// # Errors
