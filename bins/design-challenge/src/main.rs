@@ -476,7 +476,7 @@ fn build_app_state(
         annotator_token_hashes: annotator_hashes,
         admin_token_hashes: admin_hashes,
         frame_ancestors: std::env::var("DESIGN_FRAME_ANCESTORS")
-            .unwrap_or_else(|_| design_sanitize::default_frame_ancestors().into()),
+            .unwrap_or_else(|_| "'none'".into()),
         retry_max: 2,
         award_hook: Some(Arc::clone(&orch) as Arc<dyn design_challenge::AdminAwardHook>),
         gating: gating_enabled.then(|| Arc::clone(&gating)),
