@@ -4,6 +4,9 @@
 services:
   validator:
     environment:
+      # Default is the STAGING master VPC IP; env-prod.yml pins the prod master
+      # (http://10.116.0.3:8080). Never carry this pin in a shell var or an
+      # uncommitted .env — a bare `docker compose up` silently drops it.
       BASE_GATEWAY_ENDPOINT: ${BASE_GATEWAY_ENDPOINT:-http://10.116.0.2:8080}
       BASE_COORDINATION_INTERVAL_SECS: "3"
     volumes:

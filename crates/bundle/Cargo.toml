@@ -16,6 +16,7 @@ merkle = { path = "../merkle" }
 trustroot = { path = "../trustroot" }
 parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
 sha2 = "0.10"
+hex = "0.4"
 thiserror = "2"
 
 [dev-dependencies]

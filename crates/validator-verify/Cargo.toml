@@ -28,6 +28,7 @@ crypto = { path = "../crypto" }
 trustroot = { path = "../trustroot" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
 wiremock = "0.6"
+chain-live = { path = "../chain-live" }
 
 [lints]
 workspace = true

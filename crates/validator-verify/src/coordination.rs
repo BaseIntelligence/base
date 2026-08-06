@@ -271,6 +271,11 @@ pub struct WeightsLatestView {
     /// Gateway reports `false` for the unsealed burn fallback; older gateways omit it.
     #[serde(default)]
     pub sealed: Option<bool>,
+    /// Netuid the gateway seals for. Checked against the validator's own
+    /// netuid so a wrong-gateway misconfiguration (e.g. staging vs prod VPC
+    /// IP) fails loudly instead of surfacing as an opaque bundle verify error.
+    #[serde(default)]
+    pub netuid: Option<u16>,
 }
 
 impl WeightsLatestView {

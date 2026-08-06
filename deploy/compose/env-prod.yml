@@ -11,6 +11,11 @@ services:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
       BASE_COORDINATION_INTERVAL_SECS: "10"
+      # Prod master gateway over VPC. Pin here — never rely on the
+      # role-validator.yml default (that IP is the *staging* master; pointing
+      # prod at it makes the validator verify testnet-541 bundles against
+      # mainnet and every tick fails `BlockHashMismatch`).
+      BASE_GATEWAY_ENDPOINT: "http://10.116.0.3:8080"
       BT_WALLETS_PATH: /run/base/wallets
       BASE_VALIDATOR_WALLET: base-validator
     volumes:

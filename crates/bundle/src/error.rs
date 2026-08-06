@@ -36,8 +36,15 @@ pub enum BundleError {
     #[error("metagraph root mismatch")]
     MetagraphRootMismatch,
     /// `block_hash` ≠ chain.
-    #[error("block hash mismatch")]
-    BlockHashMismatch,
+    #[error("block hash mismatch: block_b={block_b} chain={chain} bundle={bundle}")]
+    BlockHashMismatch {
+        /// `block_b` the bundle pinned.
+        block_b: u64,
+        /// Hash the chain reports for `block_b` (hex).
+        chain: String,
+        /// Hash inside the bundle body (hex).
+        bundle: String,
+    },
     /// Measurements digest mismatch.
     #[error("measurements digest mismatch")]
     MeasurementsDigestMismatch,

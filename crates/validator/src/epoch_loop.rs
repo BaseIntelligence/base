@@ -254,6 +254,18 @@ where
         }
         Err(e) => return Err(e),
     };
+    // Wrong-network guard: a gateway serving another netuid's seal (staging vs
+    // prod VPC mix-up) must fail loudly here, not as a bundle verify error.
+    if let (Some(gateway_netuid), Some(cfg)) = (latest.netuid, submit) {
+        if gateway_netuid != cfg.netuid {
+            warn!(
+                gateway_netuid,
+                validator_netuid = cfg.netuid,
+                "coordination compare skipped: gateway serves a different netuid"
+            );
+            return Ok(None);
+        }
+    }
     let Some(epoch) = latest.epoch.filter(|_| latest.is_sealed_bundle()) else {
         // Fail-closed burn (sealed=false) or incomplete legacy body — no Match path.
         return Ok(None);
@@ -445,6 +457,45 @@ mod tests {
             .await
             .expect("soft");
         assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn tick_wrong_gateway_netuid_skips_before_bundle_fetch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/weights/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "epoch": 77,
+                "netuid": 541,
+                "merkle_root": hex::encode([0xabu8; 32]),
+                "final_vector": [[0, 65535]],
+                "sealed": true,
+            })))
+            .mount(&server)
+            .await;
+        let client = CoordinationClient::new(Some(server.uri())).unwrap();
+        let chain = FakeChain::with_defaults();
+        let trust = LocalTrustRoot {
+            challenges: ChallengesBody::default(),
+            measurements_digest: measurements_digest(&MeasurementsBody::default()),
+        };
+        let dedupe = EpochSubmitDedupe::new();
+        let submit = CoordinationSubmitConfig {
+            netuid: 100,
+            hotkey: vec![0xBBu8; 32],
+            version_key: 3,
+            epoch_length: 360,
+        };
+        let out = coordination_compare_once(&client, &chain, &trust, Some(&submit), &dedupe)
+            .await
+            .expect("soft");
+        assert!(out.is_none(), "wrong-netuid gateway must skip the tick");
+        let received = server.received_requests().await.expect("log");
+        assert_eq!(
+            received.len(),
+            1,
+            "must not fetch the bundle from a wrong-netuid gateway"
+        );
     }
 
     /// Seal a one-miner prism epoch and mount gateway latest + bundle routes.

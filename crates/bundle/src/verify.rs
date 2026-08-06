@@ -62,7 +62,11 @@ pub fn verify_bundle<C: ChainClient>(
         .block_hash(body.block_b)
         .map_err(|e| BundleError::Chain(e.to_string()))?;
     if chain_hash != body.block_hash {
-        return Err(BundleError::BlockHashMismatch);
+        return Err(BundleError::BlockHashMismatch {
+            block_b: body.block_b,
+            chain: hex::encode(chain_hash),
+            bundle: hex::encode(body.block_hash),
+        });
     }
 
     let mg = chain

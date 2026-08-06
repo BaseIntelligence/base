@@ -175,10 +175,15 @@ fn r2_block_hash_mismatch() {
     let (mut bundle, trust, chain) = valid_bundle(&sk(1), &sk(2), b"dummy", &[(0xA1, 1)], 50);
     bundle.body.block_hash[0] ^= 0xff;
     bundle = sign_bundle(&sk(2), bundle.body).unwrap();
-    assert_eq!(
-        bundle.verify(&chain, &trust).unwrap_err(),
-        BundleError::BlockHashMismatch
+    let err = bundle.verify(&chain, &trust).unwrap_err();
+    assert!(
+        matches!(err, BundleError::BlockHashMismatch { block_b: 50, .. }),
+        "got {err:?}"
     );
+    // The error must carry both hashes so operators can see what diverged.
+    let msg = err.to_string();
+    assert!(msg.contains("chain="), "msg: {msg}");
+    assert!(msg.contains("bundle="), "msg: {msg}");
 }
 
 #[test]

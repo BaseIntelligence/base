@@ -372,7 +372,7 @@ fn reason_from_bundle_error(e: &BundleError) -> DissentReasonCode {
         }
         BundleError::UidMapMismatch => DissentReasonCode::UidMapMismatch,
         BundleError::MetagraphRootMismatch => DissentReasonCode::MetagraphRootMismatch,
-        BundleError::BlockHashMismatch => DissentReasonCode::BlockHashMismatch,
+        BundleError::BlockHashMismatch { .. } => DissentReasonCode::BlockHashMismatch,
         BundleError::MeasurementsDigestMismatch => DissentReasonCode::MeasurementsDigestMismatch,
         BundleError::DuplicateLeaf | BundleError::LeafSortOrder => DissentReasonCode::DuplicateLeaf,
         BundleError::Aggregation(_) => DissentReasonCode::AggregationOverflow,
