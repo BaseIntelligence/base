@@ -169,6 +169,7 @@ RSYNC_SSH="ssh ${SSH_OPTS[*]}"
 rsync -az --delete \
   -e "$RSYNC_SSH" \
   --exclude '.git/' \
+  --exclude '/bin/' \
   --exclude 'target/' \
   --exclude 'deploy/terraform/.terraform/' \
   --exclude 'deploy/terraform/terraform.tfstate*' \

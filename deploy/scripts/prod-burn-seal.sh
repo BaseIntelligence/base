@@ -42,7 +42,9 @@ fi
   # set" on its seal attempt is expected until the prism pass seals.
   dout="$("${BIN}" --gateway "${GATEWAY}" --burn --netuid "${NETUID}" \
     --chain-endpoint "${CHAIN}" --challenge-id design --challenge-sk "${DESIGN_SK}" 2>&1 || true)"
-  echo "${dout}" | grep -E 'submitted|seal ok|latest OK|incomplete' | tail -2
+  # grep under `set -euo pipefail`: no-match must not kill the script before
+  # the explicit failure path below can log the design output.
+  echo "${dout}" | grep -E 'submitted|seal ok|latest OK|incomplete' | tail -2 || true
   if ! echo "${dout}" | grep -qE 'submitted|seal ok'; then
     echo "$(date -Is) design leaves FAILED (no submission)"
     echo "${dout}" | tail -5
