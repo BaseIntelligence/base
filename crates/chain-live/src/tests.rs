@@ -1380,3 +1380,140 @@ fn connect_rejects_empty_endpoint_list() {
         assert!(err.to_string().contains("no chain endpoint"), "err: {err}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pre-submit rate-limit window check (no doomed extrinsic, no confirm wait)
+// ---------------------------------------------------------------------------
+
+/// Mount the common signing-path mocks (runtime version, genesis hash, nonce).
+async fn mount_signing_path(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"method": "state_getRuntimeVersion"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"specName": "node-subtensor", "specVersion": 443, "transactionVersion": 1}
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "chain_getBlockHash"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": format!("0x{}", hex::encode([0x11_u8; 32]))
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"method": "system_accountNextIndex"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": 0
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn assert_no_extrinsic_submitted(server: &MockServer) {
+    let reqs = server.received_requests().await.expect("requests");
+    let submits = reqs
+        .iter()
+        .filter(|r| String::from_utf8_lossy(&r.body).contains("author_submitExtrinsic"))
+        .count();
+    assert_eq!(
+        submits, 0,
+        "no extrinsic may reach the pool inside the window"
+    );
+}
+
+#[tokio::test]
+async fn submit_timelocked_skips_pool_inside_rate_limit_window() {
+    let server = MockServer::start().await;
+    let sk = [0x42_u8; 32];
+    let pk = crate::derive_public_key(&sk).expect("pk");
+    // CR on via sparse storage (hyperparams state_call unmocked → falls back).
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "CommitRevealWeightsEnabled", 1),
+        json!("0x01"),
+    )
+    .await;
+    mount_signing_path(&server).await;
+    mount_tip(&server, 1000).await;
+    mount_storage(&server, &uids_key(1, &pk), json!("0x0000")).await;
+    // Last update at block 990, tip 1000 → 10 blocks into the 100-block window.
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[990]))).await;
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "WeightsSetRateLimit", 1),
+        serde_json::Value::Null,
+    )
+    .await;
+
+    let uri = server.uri();
+    let payload = WeightsTlockPayload {
+        hotkey: pk.to_vec(),
+        uids: vec![0],
+        values: vec![65535],
+        version_key: 0,
+    };
+    let err = tokio::task::spawn_blocking(move || {
+        let mut client = LiveChainClient::connect(&uri)?;
+        client.set_signing_key(sk);
+        client.submit_timelocked_weights(0, payload, 99)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect_err("inside the window must fail fast with RateLimited");
+    assert_eq!(
+        err,
+        ChainError::RateLimited {
+            retry_after_blocks: Some(90)
+        }
+    );
+    assert_no_extrinsic_submitted(&server).await;
+}
+
+#[tokio::test]
+async fn set_weights_skips_pool_inside_rate_limit_window() {
+    let server = MockServer::start().await;
+    let sk = [0x42_u8; 32];
+    let pk = crate::derive_public_key(&sk).expect("pk");
+    // CR off via sparse storage → set_weights path allowed.
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "CommitRevealWeightsEnabled", 1),
+        json!("0x00"),
+    )
+    .await;
+    mount_signing_path(&server).await;
+    mount_tip(&server, 1000).await;
+    mount_storage(&server, &uids_key(1, &pk), json!("0x0000")).await;
+    mount_storage(&server, &last_update_key(1), json!(vec_u64_hex(&[990]))).await;
+    mount_storage(
+        &server,
+        &storage_map_key_u16("SubtensorModule", "WeightsSetRateLimit", 1),
+        serde_json::Value::Null,
+    )
+    .await;
+
+    let uri = server.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        let mut client = LiveChainClient::connect(&uri)?;
+        client.set_signing_key(sk);
+        client.set_weights(1, vec![0], vec![65535], 0)
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect_err("inside the window must fail fast with RateLimited");
+    assert_eq!(
+        err,
+        ChainError::RateLimited {
+            retry_after_blocks: Some(90)
+        }
+    );
+    assert_no_extrinsic_submitted(&server).await;
+}
