@@ -4,6 +4,22 @@
 > Branch: prism-better. Date: 2026-08-06.
 > Research base: 13 appendices in research/ (12 external-research + 1 codebase state).
 
+> **Implementation status (2026-08-06, branch `prism-better`):** the proposal
+> is implemented behind `PRISM_SCORING_MODE` (default `shadow` — v2 leaf
+> score bit-identical). Steps: **E1** multi-file harness + netns miner
+> subprocess + seeded train stream + METRICS_JSON v2 (`RECIPE_VERSION
+> 1.3.0`); **E2** G1–G8 battery + `eval/public_dev/` anchors family +
+> cheatguard patterns; **E3** `prism-pipeline::composite` + `ScoringMode` +
+> `FinalOutcome::Measured.composite`; **E4** migration 0013 + `prism-zoneb`
+> + `prism-eval-store` + API extensions; **E5** source-tree intake +
+> post-train asset staging + `prismlib/cheatguard.py` +
+> `prism_recipe::attribution`; **E6** reference baselines
+> (`transformer_pp`, `hybrid_delta`); **E7** integration: harness-file /
+> baseline registration, orchestrator composite wiring + `CAP_EXCEEDED`
+> terminal path, attribution route, docs, CI gates. Remaining before any
+> `composite` flip: measure the placeholder anchors on the baselines and
+> pre-register the hash-committed set (governance action).
+
 This document is the single synthesis of the thirteen research appendices under
 `research/`. It recommends **one** concrete scoring mechanism for Prism v3. It
 changes nothing by itself: `docs/PRISM.md` (scoring_version 2, pure bpb) remains

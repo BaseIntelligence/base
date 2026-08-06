@@ -7,6 +7,7 @@
 //! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
 //! | `GET  /v1/submissions/{id}` | full detail + event timeline + `eval` |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
+//! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
 //! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
 //! | `GET  /v1/anchors` | anchor-set registry with status |
 //! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |
@@ -69,6 +70,13 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         .route("/v1/submissions/{id}", get(get_submission))
         .route("/v1/submissions/{id}/events", get(get_events))
         .route("/v1/submissions/{id}/metrics", get(get_submission_metrics))
+        // Attribution planner (2×2 matrix run plans): split into the
+        // `prism-attribution` crate for the per-crate LOC cap; the route
+        // carries its own state (the submission store).
+        .route(
+            "/v1/submissions/{id}/attribution",
+            prism_attribution::attribution_route(Arc::clone(&state.store)),
+        )
         .route("/v1/submissions/{id}/retry", post(post_retry))
         .route("/v1/anchors", get(get_anchors))
         .route("/v1/preregistration", get(get_preregistration))

@@ -14,9 +14,9 @@
 //! [`build_attribution_runs`] is an operator-triggered job builder: given the
 //! parent submission's validated [`SourceTree`] and the reference tree, it
 //! assembles the two new cells as seam-validated trees ready for the normal
-//! eval pipeline (the integration pass wires
-//! `POST /v1/admin/attribution/{id}` to fetch the stored tree + reference
-//! and enqueue these plans). The kernel swap is a wholesale `kernels/`
+//! eval pipeline (`POST /v1/submissions/{id}/attribution` returns these
+//! plans as JSON; executing them stays an operator action). The kernel swap
+//! is a wholesale `kernels/`
 //! directory replacement, sound because both sides implement the stable
 //! [`KERNEL_INTERFACE_MD`] contract. Swapped cells are gated on the
 //! [`HIDDEN_SHAPE_SUITE_SPEC`] correctness battery before scoring.

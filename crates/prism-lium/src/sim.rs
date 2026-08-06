@@ -137,6 +137,7 @@ impl EvalJobBackend for SimLiumBackend {
         let fake_assets = std::env::var("PRISM_EVAL_ASSETS_DIR")
             .ok()
             .is_some_and(|v| !v.trim().is_empty());
+        let note_suffix = ["", " (fake private assets staged)"][usize::from(fake_assets)];
         Ok(RemoteExecResult {
             bpb,
             // Budget-plausible shape (not a stub): a 12M model early-stopping
@@ -145,11 +146,7 @@ impl EvalJobBackend for SimLiumBackend {
             tokens_seen: 1_048_576,
             wall_clock_seconds: 780.0,
             gpu_type: Some("SIM".into()),
-            notes: if fake_assets {
-                "sim-eval (fake private assets staged)".into()
-            } else {
-                "sim-eval".into()
-            },
+            notes: format!("sim-eval{note_suffix}"),
             n_params: Some(12_000_000),
             val_rows: Some(256),
             telemetry: Some(crate::types::EvalTelemetry {
@@ -165,11 +162,8 @@ impl EvalJobBackend for SimLiumBackend {
             pod_manifest: None,
             netns: None,
             harness_files_sha256: None,
-            eval_tier: if fake_assets {
-                Some("private".into())
-            } else {
-                None
-            },
+            eval_tier: fake_assets.then_some("private".into()),
+            extra: std::collections::BTreeMap::new(),
         })
     }
 }

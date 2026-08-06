@@ -3,7 +3,7 @@
 # Prism challenge — HTTP script submit
 
 **challenge_id:** `prism`  
-**scoring_version:** `2` (bpb-only; LLM review is an anti-cheat gate, not a grader)  
+**scoring_version:** `2` live (bpb-only; LLM review is an anti-cheat gate, not a grader). **v3 (opt-in, shadow-by-default):** composite scoring runs alongside — your run is also measured on the G1–G8 battery; see *v3 scoring* below.  
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md).
@@ -16,7 +16,18 @@ contract, or JSON with the same fields / `zip_base64`:
 - `architecture.py`
 - `training.py`
 
-Models must stay **≤ 350M parameters** after `build_model` (hard fail otherwise).
+Since recipe **1.3.0** you may instead submit a **source-tree ZIP**: the two
+seam files plus optional extras — a `prism.toml` manifest (entry point),
+`count_params.py`, a `kernels/` directory of custom ops implementing
+`KERNEL_INTERFACE.md` (pure Python + torch; no prebuilt binaries, no
+`ctypes`, no I/O or threads — intake scans for banned patterns and the
+in-pod **cheatguard** AST audit re-checks them), and a `vendor.lock`. Trees
+with `kernels/` are eligible for the 2×2 **attribution** decomposition
+(`POST /v1/submissions/{id}/attribution`) with a hidden-shape correctness
+gate on kernel-swapped cells.
+
+Models must stay **≤ 350M parameters** after `build_model` — since 1.3.0 a
+breach is a **terminal Score(0)** (`CAP_EXCEEDED`), not a retryable failure.
 
 **Telemetry hooks (required, recipe ≥ 1.1.0).** Your `training.py` MUST import
 the harness-provided `prism_telemetry` module and call
@@ -107,13 +118,47 @@ The global-best model is published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/`. See [`PRISM.md`](../PRISM.md).
 
+## v3 scoring (shadow-by-default)
+
+Recipe 1.3.0 harnesses run a **two-phase pod flow**: your code trains
+(`phase=train`), checkpoints, and only then does the operator stage private
+eval assets — the eval phase (`phase=eval`) is a fresh subprocess that runs
+the frozen-val bpb plus the **G1–G8 battery**: intrinsic fit (G1),
+commonsense/reading (G2), retrieval/recall (G3), reasoning (G4),
+long-context (G5), sample efficiency from the train probe curve (G6),
+inference efficiency (G7), and training stability/µP (G8). Everything the
+battery reports is organizer-measured (**Zone A**, `org.*`) and is computed
+inside the harness — your code never emits it.
+
+Your `train()` return dict (`train_metrics` in METRICS_JSON v2) is
+**Zone B**: participant-reported, displayed-but-labelled, validated at
+ingest (scalars/series/histograms under `miner.<group>.<name>`, caps
+64 scalars / 16 series / 10k points / 1 MB), and **never scored**. Do not
+emit `org.*` keys — that quarantines the report as anti-cheat evidence.
+
+While `PRISM_SCORING_MODE=shadow` (default) the leaf score stays pure bpb,
+bit-identical to v2. After the reference baselines (**Transformer++** and
+**hybrid delta** — published in-repo under `crates/prism-recipe/baselines/`)
+are measured and the anchor set is pre-registered, governance may flip to
+`composite`: group scores are anchor-normalized, gate-filtered
+(`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget + CI gates), combined as a weighted
+geometric mean, and ranked by the bootstrap lower-confidence bound
+(`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`). Inspect the anchor
+registry and pre-registration commits at `GET /v1/anchors` and
+`GET /v1/preregistration`; per-run Zone A / Zone B rows at
+`GET /v1/submissions/{id}/metrics?zone=a|b`.
+
 ## Useful routes
 
 | Route | Use |
 |-------|-----|
 | `GET /v1/status` | Backend mode, epoch, queue |
-| `GET /v1/submissions/{id}` | Detail + receipt + scores |
+| `GET /v1/submissions/{id}` | Detail + receipt + scores + composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Stage timeline |
+| `GET /v1/submissions/{id}/metrics?zone=a\|b` | Zone A battery rows / Zone B self-report chain (v3) |
+| `POST /v1/submissions/{id}/attribution` | 2×2 arch/kernel attribution run plans (v3) |
+| `GET /v1/anchors` | v3 anchor-set registry + status |
+| `GET /v1/preregistration` | v3 anchor pre-registration hash-commits |
 | `GET /v1/architectures` | Published archs + per-arch best bpb |
 | `GET /v1/site/arenas/prism/submissions/{id}/telemetry` | Miner-reported loss curve / gradients / layer stats (from `prism_telemetry.report`) |
 | `GET /v1/jobs` | Active/recent pods (ops) |

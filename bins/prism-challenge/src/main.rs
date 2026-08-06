@@ -387,6 +387,8 @@ fn orchestrator_config(
         stuck_grace_secs: 7 * 3600,
         stage_delay,
         auto_retry_max: cli.auto_retry_max,
+        // scoring_mode from PRISM_SCORING_MODE (default shadow).
+        ..Default::default()
     }
 }
 
@@ -460,7 +462,11 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         Arc::new(chain),
         sk,
     )
-    .with_topmodel(topmodel);
+    .with_topmodel(topmodel)
+    // v3: persist the METRICS_JSON v2 battery + compute the composite
+    // (scoring mode from PRISM_SCORING_MODE; default shadow keeps the v2
+    // score bit-identical).
+    .with_eval_store(Some(eval_store));
     if gating_enabled {
         orchestrator = orchestrator.with_gating(Arc::clone(&gating));
         spawn_gating_watcher(

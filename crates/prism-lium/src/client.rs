@@ -664,7 +664,10 @@ fn parse_metrics_output(
     returncode: i32,
     stderr_tail: &str,
 ) -> Result<RemoteExecResult, LiumError> {
-    if !stdout.contains("EVAL_OK") {
+    // Miner-attributable param-cap breach: the harness emits the exact
+    // `CAP_EXCEEDED` line + a minimal METRICS_JSON (bpb sentinel 0) instead
+    // of measuring. Not EVAL_OK — but a valid terminal parse.
+    if !stdout.contains("EVAL_OK") && !stdout.contains("CAP_EXCEEDED") {
         return Err(LiumError::Exec(format!(
             "harness failed (code {}): {}",
             returncode,
@@ -677,6 +680,10 @@ fn parse_metrics_output(
         .ok_or_else(|| LiumError::Exec("harness EVAL_OK without METRICS_JSON".into()))?;
     let v: RemoteExecResult = serde_json::from_str(&line["METRICS_JSON=".len()..])
         .map_err(|e| LiumError::Exec(format!("metrics json: {e}")))?;
+    // Terminal cap payload: skip the bpb gate (sentinel 0 by design).
+    if v.extra.get("cap_exceeded").and_then(Value::as_bool) == Some(true) {
+        return Ok(v);
+    }
     if !v.bpb.is_finite() || v.bpb <= 0.0 {
         return Err(LiumError::Exec(format!(
             "harness bpb not finite: {}",
@@ -1187,6 +1194,26 @@ mod tests {
             .contains("harness failed"));
         let bad = "METRICS_JSON={\"bpb\":-1.0,\"tokens_seen\":1,\"wall_clock_seconds\":1.0,\"gpu_type\":null,\"notes\":\"n\"}\nEVAL_OK\n";
         assert!(parse_metrics_output(bad, 0, "")
+            .unwrap_err()
+            .to_string()
+            .contains("not finite"));
+    }
+
+    #[test]
+    fn parse_metrics_output_accepts_cap_exceeded_terminal() {
+        // No EVAL_OK; the exact CAP_EXCEEDED line + JSON flag skip the bpb
+        // gate (the cap payload carries a bpb sentinel 0 by design).
+        let out = "noise\nMETRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"parameter cap exceeded\",\"n_params\":999000000,\"cap_exceeded\":true}\nCAP_EXCEEDED\n";
+        let v = parse_metrics_output(out, 3, "").unwrap();
+        assert_eq!(
+            v.extra.get("cap_exceeded").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(v.n_params, Some(999_000_000));
+        // The bare line without the JSON flag is not a terminal parse: it
+        // falls through to the bpb gate and is rejected (forge/incomplete).
+        let missing_flag = "METRICS_JSON={\"bpb\":0.0,\"tokens_seen\":0,\"wall_clock_seconds\":3.0,\"gpu_type\":null,\"notes\":\"n\"}\nCAP_EXCEEDED\n";
+        assert!(parse_metrics_output(missing_flag, 3, "")
             .unwrap_err()
             .to_string()
             .contains("not finite"));

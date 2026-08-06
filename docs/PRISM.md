@@ -1,8 +1,8 @@
 # PRISM challenge (Base)
 
 **challenge_id:** `prism`  
-**scoring_version:** `2` (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change)  
-**recipe_version:** `1.2.0` (telemetry hooks 1.1.0 + architecture registry / training-only submissions 1.2.0)  
+**scoring_version:** `2` live (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change). **v3 addition (opt-in):** composite scoring ships behind `PRISM_SCORING_MODE` (`shadow` default — v2 score bit-identical, composite observed; `composite` — v3 lattice becomes the score, rows carry `scoring_version 3`). See **v3 composite scoring** below.  
+**recipe_version:** `1.3.0` (telemetry hooks 1.1.0 + architecture registry 1.2.0 + **v3:** multi-file harness, source-tree submissions, G1–G8 eval battery, two-phase pod flow, cheatguard)  
 **port:** `8092`  
 **emission_share_bps:** `10000` (sole share until design enablement ceremony; then rebalanced with `design`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
@@ -161,6 +161,100 @@ under `top-model/` via the GitHub contents API, and journals the publication
 file `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
 absent/empty → publishing is a graceful no-op, scoring is unaffected.
 
+## v3 composite scoring (versioned addition — opt-in)
+
+Everything in this section is a **versioned addition**: the live leaf score
+stays v2 pure-bpb until governance flips `PRISM_SCORING_MODE=composite`
+after the placeholder anchors are measured on the E6 baselines and
+hash-committed. Modes (`prism-pipeline::ScoringMode`):
+
+| Mode | Leaf score | `scoring_version` on rows |
+|------|-----------|---------------------------|
+| `shadow` (default; the v2/"legacy" behavior) | v2 `score_from_bpb` — **bit-identical** | `2` |
+| `composite` | v3 lattice (fail-closed `0` without a scored composite) | `3` |
+
+**Source-tree submissions (v3).** In addition to the two-script intake,
+miners may submit a full source tree as a ZIP (`zip_base64` JSON field or
+`application/zip` with a `prism.toml` manifest naming the entry;
+`train.py`, or `training.py` for the legacy layout, is the default entry).
+The tree is validated at intake (file count/size budgets, banned-pattern
+scan shared with the harness-side `prismlib/cheatguard.py` AST audit,
+canonical sha-256) and may carry a `kernels/` directory implementing the
+stable `KERNEL_INTERFACE.md` contract for custom ops (mechanically
+swappable for attribution, gated on a hidden-shape correctness suite).
+
+**Two-phase pod flow (v3).** The multi-file harness (`main.py` +
+`prismlib/`, miner code in an `unshare --net` subprocess) runs two fresh
+subprocesses: `phase=train` trains and checkpoints, prints the
+`PHASE_TRAIN_DONE` marker, and the parent then holds on
+`$PRISM_EVAL_ASSETS_DIR/.ready` — the operator stages private eval assets
+plus the secret generator seed **only after** the train phase completes
+(over SSH on real Lium; a local dir on Sim). The eval phase starts as a
+fresh subprocess with `PRISM_EVAL_SECRET_SEED` in env only (never on disk;
+unset immediately after reading). No `.ready` within the wait budget →
+fail-closed error, **never** a silent downgrade to public anchors. Relevant
+env: `PRISM_PHASE`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED`.
+
+**Private tier (fail-closed).** With staged assets the battery realizes the
+`private` tier (held-out multi-domain bpb + fresh-crawl stream — the
+unmemorizable-by-construction component); without them it runs the
+`public_dev` tier on the published anchor family. The realized tier is
+recorded on the run (`eval_tier`).
+
+**The G1–G8 battery** (harness `eval/` package, all organizer-measured —
+Zone A `org.*` metrics):
+
+| Group | Axis | Weight |
+|-------|------|--------|
+| G1 | intrinsic fit (frozen-val bpb + multi-domain/fresh-crawl bpb + key-token variant) | 0.25 |
+| G2 | commonsense/reading 0-shot core (LAMBADA, HellaSwag, PIQA, ARC, Winogrande, BoolQ, OBQA) | 0.15 |
+| G3 | retrieval/associative recall (MQAR, copying, induction, passkey — procedural, memorization-proof) | 0.10 |
+| G4 | reasoning at small scale (S5 permutations, arithmetic, ProofWriter, Dyck-k, modular, K&K) | 0.15 |
+| G5 | long-context (NIAH, RULER, BABILong, GraphWalks, MRCR, NoLiMa; self-normalized L*) | 0.15 |
+| G6 | sample efficiency from the train-phase probe curve (AUC over log-tokens, tokens-to-threshold) | 0.075 |
+| G7 | inference efficiency (TTFT/TPOT/throughput, state card, joules/token) | 0.075 |
+| G8 | training stability + µP LR-transfer | 0.05 |
+
+**Composite math** (`prism-pipeline::composite`, research/12 §7 steps 0–6):
+per-metric fixed-anchor normalization clipped to `[0,1]` against the
+pre-registered anchor set (`prism-recipe/anchors/v0.json`; versioned,
+hash-committed via `/v1/preregistration`, placeholder until measured on the
+baselines); two-level means → group scores; mirror-gap penalty
+`max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4; lexicographic
+gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `350M` params / `6h`, CI
+half-width ≤ `0.05`); weighted geometric mean `C = ∏ g_k^{w_k}`; clustered
+bootstrap (B = 1000) → `SE(C)`; **LCB ranking**:
+`lattice = round(SCORE_MAX × max(0, C − 1.645·SE))`.
+
+**Zone A vs Zone B.** Every metric lives in exactly one zone. Zone A
+(`org.*`) is organizer-measured and feeds scoring. Zone B
+(`miner.<group>.<name>`) is participant-reported (OTel-shaped envelope:
+scalars/series/histograms, caps 64 scalars / 16 series / 10k points /
+1 MB), displayed-but-labeled, validated at ingest, and **never reaches the
+scoring path**; miner-emitted `org.*` keys quarantine the report as
+anti-cheat evidence. Read paths: `GET /v1/submissions/{id}/metrics?zone=a|b`.
+
+**Attribution (v3).** `POST /v1/submissions/{id}/attribution` builds the
+2×2 matrix off-diagonal run plans (`submission arch × reference kernels`,
+`reference arch × submission kernels`) via `prism_recipe::attribution`,
+decomposing a kernel-carrying submission's gain into architecture and
+kernel deltas. The plans are returned as JSON (operator-triggered
+execution via the normal intake); swapped cells are gated on the
+hidden-shape correctness suite before scoring.
+
+**Parameter cap (v3 semantics).** A model over `max_params` is a
+miner-attributable breach machine-verified at build: the harness emits a
+terminal `CAP_EXCEEDED` payload and the orchestrator finalizes
+`Score(0)` / `rejected` — never a measured score, no review/agentic spend,
+no auto-retry.
+
+**Migration note.** No chain-facing change in `shadow`: scoring stays
+`scoring_version 2` and the v2 number is bit-identical. The flip to
+`composite` is a governance action that requires the anchor set to be
+measured (no `placeholder` statuses) and pre-registered; from then rows
+carry `scoring_version 3` (`SCORING_VERSION_V3`). The v2 bpb column is
+still recorded on every v3 run (it is a G1 input and the shadow score).
+
 ## Agentic anti-cheat + AST + metrics gate
 
 Before any pod or LLM spend, the **pre-LLM copy gate** compares the
@@ -199,26 +293,33 @@ audit-only for the bpb score (coherence gate, never a grader).
 
 | Crate | Role |
 |-------|------|
-| `prism-challenge-task` | Identity constants / domains |
-| `prism-lium` | Lium REST client, real recipe exec over SSH, `SimLiumBackend`, `EvalReceipt` |
-| `prism-recipe` | Contract validation, dataset pin, harness, baseline sources |
-| `prism-pipeline` | Intake contract (validation, `arch_id` rules, gating keys) + eval pipeline |
+| `prism-challenge-task` | Identity constants / domains (`SCORING_VERSION` 2, `SCORING_VERSION_V3` 3) |
+| `prism-lium` | Lium REST client, real recipe exec over SSH, post-train asset staging, `SimLiumBackend`, `EvalReceipt` |
+| `prism-recipe` | Contract validation, dataset pin, multi-file harness + G1–G8 battery + cheatguard, baseline sources, source-tree intake (`zip_submit`), attribution, anchor sets, v3 baselines |
+| `prism-pipeline` | Intake contract (validation, `arch_id` rules, gating keys) + eval pipeline + composite scoring + `ScoringMode` + Zone B validation |
 | `prism-review` | OpenRouter LLM (quality + arch-only similarity) + deterministic sim fallback |
 | `challenge-agentic` | Tool-calling anti-cheat (AST + metrics); `SimAgent` for CI |
-| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal + emission outbox) |
+| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal + emission outbox) + `eval::EvalStore` trait (v3) |
 | `prism-registry` | Competition emission math, post-score hooks, top-model GitHub publisher |
 | `prism-emit` | Epoch-close D24 leaf emission engine (outbox batching, exactly-once cursor) |
-| `prism-challenge` | API surface, orchestrator, scoring v2, emitter loop, gateway client |
-| `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection) |
+| `prism-zoneb` | Zone B contract types (envelope, metric kinds, verdicts) — v3 |
+| `prism-eval-store` | `EvalStore` memory/Postgres impls + composite finalization glue — v3 |
+| `prism-attribution` | `POST /v1/submissions/{id}/attribution` planner route (2×2 run plans as JSON) — v3; split for the per-crate LOC cap |
+| `prism-challenge` | API surface, orchestrator, scoring v2 + v3 finalize wiring, emitter loop, gateway client |
+| `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection, `PRISM_SCORING_MODE`) |
 
 ## API
 
 | Route | Purpose |
 |-------|---------|
-| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py` |
+| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py`; **v3:** source-tree ZIP via `zip_base64` or `application/zip` + `prism.toml` |
 | `GET /v1/submissions` | List (filter `?status=`, `?miner=`) — rows carry `arch_id` |
-| `GET /v1/submissions/{id}` | Full detail + receipt + scores |
+| `GET /v1/submissions/{id}` | Full detail + receipt + scores + `eval` composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Append-only transition timeline |
+| `GET /v1/submissions/{id}/metrics?zone=a\|b` | **v3:** Zone A organizer rows / Zone B participant-reported chain (labelled; never scored) |
+| `POST /v1/submissions/{id}/attribution` | **v3:** 2×2 attribution run plans (JSON; operator-triggered execution) |
+| `GET /v1/anchors` | **v3:** anchor-set registry with status (`placeholder` / `active`) |
+| `GET /v1/preregistration` | **v3:** anchor pre-registration hash-commits |
 | `GET /v1/architectures` | Published architecture registry (owner, digest, per-arch best bpb) |
 | `GET /v1/status` | Backend mode, epoch, queue depths, recipe pin |
 | `GET /v1/jobs` | One row per active/recent pod (ops) |

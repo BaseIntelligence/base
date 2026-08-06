@@ -29,8 +29,9 @@ pub enum FinalOutcome {
     ChallengeInternal,
 }
 
-/// Map the measured outcome into the integer lattice (scoring v2; v3
-/// composite only under `PRISM_SCORING_MODE=composite`).
+/// Map the measured outcome into the integer lattice under `mode`
+/// (`OrchestratorConfig.scoring_mode`; v2 bit-identical under
+/// [`ScoringMode::Shadow`]).
 ///
 /// The score is **pure bpb** in shadow mode: the LLM review is an
 /// anti-cheat / coherence GATE, never a grader — its quality vote and issues
@@ -43,7 +44,7 @@ pub enum FinalOutcome {
 /// # Panics
 /// Never.
 #[must_use]
-pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
+pub fn combine_final(outcome: &FinalOutcome, mode: ScoringMode) -> prism_store::FinalScore {
     use challenge_agentic::VerdictKind;
     use prism_store::FinalScore;
     match outcome {
@@ -66,11 +67,7 @@ pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
             ) {
                 return FinalScore::Score(0);
             }
-            FinalScore::Score(final_lattice(
-                *bpb,
-                composite.as_ref(),
-                ScoringMode::from_env(),
-            ))
+            FinalScore::Score(final_lattice(*bpb, composite.as_ref(), mode))
         }
     }
 }
@@ -91,7 +88,10 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
         };
-        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+        assert_eq!(
+            combine_final(&o, ScoringMode::Shadow),
+            prism_store::FinalScore::Score(0)
+        );
     }
 
     #[test]
@@ -103,7 +103,10 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Cheat,
             composite: None,
         };
-        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+        assert_eq!(
+            combine_final(&o, ScoringMode::Shadow),
+            prism_store::FinalScore::Score(0)
+        );
     }
 
     #[test]
@@ -117,13 +120,16 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: Some(scored_composite(999_999)),
         };
-        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+        assert_eq!(
+            combine_final(&o, ScoringMode::Composite),
+            prism_store::FinalScore::Score(0)
+        );
     }
 
     #[test]
     fn shadow_mode_ignores_attached_composite() {
-        // Default env (PRISM_SCORING_MODE unset → shadow): the v2 number is
-        // bit-identical whether or not a composite is attached.
+        // Shadow (the default): the v2 number is bit-identical whether or
+        // not a composite is attached.
         let bare = FinalOutcome::Measured {
             bpb: 0.5,
             quality: 900,
@@ -138,10 +144,40 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: Some(scored_composite(1)),
         };
-        assert_eq!(combine_final(&bare), combine_final(&with));
         assert_eq!(
-            combine_final(&with),
+            combine_final(&bare, ScoringMode::Shadow),
+            combine_final(&with, ScoringMode::Shadow)
+        );
+        assert_eq!(
+            combine_final(&with, ScoringMode::Shadow),
             prism_store::FinalScore::Score(prism_pipeline::score_from_bpb(0.5))
+        );
+    }
+
+    #[test]
+    fn composite_mode_uses_attached_lattice_else_zero() {
+        let o = FinalOutcome::Measured {
+            bpb: 0.5,
+            quality: 900,
+            similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Clean,
+            composite: Some(scored_composite(777)),
+        };
+        assert_eq!(
+            combine_final(&o, ScoringMode::Composite),
+            prism_store::FinalScore::Score(777)
+        );
+        // Missing composite fails closed to 0 under composite mode.
+        let bare = FinalOutcome::Measured {
+            bpb: 0.5,
+            quality: 900,
+            similarity: Original,
+            agentic: challenge_agentic::VerdictKind::Clean,
+            composite: None,
+        };
+        assert_eq!(
+            combine_final(&bare, ScoringMode::Composite),
+            prism_store::FinalScore::Score(0)
         );
     }
 
@@ -163,7 +199,10 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
         };
-        assert_eq!(combine_final(&hi), combine_final(&lo_same_bpb));
+        assert_eq!(
+            combine_final(&hi, ScoringMode::Shadow),
+            combine_final(&lo_same_bpb, ScoringMode::Shadow)
+        );
 
         let worse_bpb = FinalOutcome::Measured {
             bpb: 4.0,
@@ -172,7 +211,10 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
             composite: None,
         };
-        match (combine_final(&hi), combine_final(&worse_bpb)) {
+        match (
+            combine_final(&hi, ScoringMode::Shadow),
+            combine_final(&worse_bpb, ScoringMode::Shadow),
+        ) {
             (prism_store::FinalScore::Score(a), prism_store::FinalScore::Score(b)) => {
                 assert!(a > b);
                 assert!(a <= SCORE_MAX);

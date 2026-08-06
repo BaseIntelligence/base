@@ -82,6 +82,15 @@ impl ScoringMode {
             Self::Composite => SCORING_VERSION_V3,
         }
     }
+
+    /// Stable label for logs, run rows, and terminal events.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::Composite => "composite",
+        }
+    }
 }
 
 /// Final integer lattice score after the (caller-applied) hard-zero gates,

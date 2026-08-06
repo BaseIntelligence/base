@@ -1,9 +1,11 @@
-# PRISM recipe v1.0.2 — `prism-recipe-v1`
+# PRISM recipe v1.0.2 — `prism-recipe-v1` (current harness `RECIPE_VERSION 1.3.0`)
 
 The official execution contract every miner submission is verified inside.
-Miners ship **two scripts only** (`architecture.py` + `training.py`); the
-harness and data pin are operator-owned. No third source file, no offline
-weights, no network reach at pod runtime beyond the pinned dataset pull.
+Miners ship **two scripts only** (`architecture.py` + `training.py`) — or,
+since recipe **1.3.0**, a **source-tree ZIP** (see *Source-tree
+submissions* below); the harness and data pin are operator-owned. No
+offline weights, no network reach at pod runtime beyond the pinned dataset
+pull.
 
 ## Contract
 
@@ -51,6 +53,68 @@ Instead of shipping both scripts, a miner may submit `training.py` +
 pulls `architecture.py` from the registry; the same harness contract applies
 unchanged. Published archs: `GET /v1/architectures`.
 
+## Source-tree submissions (recipe 1.3.0 — v3)
+
+A miner may submit the full program as a ZIP instead of two scripts:
+`zip_base64` in the JSON intake body, or `application/zip` with the
+`X-Miner-Hotkey` header (source-tree ZIPs are rejected on the raw-zip path
+with a pointer to `zip_base64`, which validates and retains the full tree).
+
+Layout:
+
+```text
+prism.toml            # optional manifest: entry = "train.py" (default entry;
+                      #   `training.py` keeps the legacy two-script layout valid)
+architecture.py       # seam: def build_model(ctx)
+train.py              # seam: def train(model, ctx) (or training.py)
+count_params.py       # optional static parameter-count check (prints one int)
+kernels/<op>.py       # optional custom ops per KERNEL_INTERFACE.md
+vendor.lock           # optional vendored-dependency hash lock
+```
+
+Validation at intake (`prism_recipe::zip_submit`): file count / per-file /
+total-size budgets, UTF-8 seam projections (`architecture.py` must define
+`build_model(`, the entry must define `train(`), and a **banned-pattern
+scan** (prebuilt binaries, `ctypes`, network/process/threads escapes, …) —
+one shared list with the harness-side `prismlib/cheatguard.py` AST audit,
+which re-screens the tree in-pod before train and again post-eval. The
+canonical tree sha-256 is recorded; `kernels/` trees are attribution- and
+hidden-shape-suite eligible.
+
+## Two-phase pod flow + eval battery (recipe 1.3.0 — v3)
+
+The multi-file harness (`main.py` entrypoint + `prismlib/` modules, miner
+code inside an `unshare --net` subprocess) runs two fresh phases:
+
+| Phase | Env | What happens |
+|-------|-----|--------------|
+| `train` | `PRISM_PHASE=train` | contract checks → `build_model` (**350M param cap**: breach → terminal `CAP_EXCEEDED` payload, `Score(0)`) → seeded train stream (authoritative token counter) → G6 probe curve → checkpoint |
+| (gate) | — | parent prints `PHASE_TRAIN_DONE`, then holds on `$PRISM_EVAL_ASSETS_DIR/.ready`; the operator stages private eval assets + the secret seed **post-train only** (fail-closed: no `.ready` → error, never a silent public downgrade) |
+| `eval` | `PRISM_PHASE=eval`, `PRISM_EVAL_ASSETS_DIR`, `PRISM_EVAL_SECRET_SEED` (env only, never on disk) | fresh subprocess → frozen-val bpb + the **G1–G8 battery** (`eval/` package: intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) → `METRICS_JSON` v2 |
+
+**METRICS_JSON v2** (`metrics_version: 2`): every v1 key (`bpb`,
+`tokens_seen`, `wall_clock_seconds`, `gpu_type`, `notes`, `val_rows`,
+`n_params`, `recipe`, `telemetry`) plus `tokens_seen_source`
+(`"train_stream"` | `"legacy"`), `probe_curve` (G6), `train_metrics`
+(miner-returned flat scalar dict — the **Zone B** self-report source,
+sanitized master-side, never scored), `pod_manifest` (nvidia-smi -q +
+netns facts), `netns`, `harness_files_sha256`, and on v3 runs `flow`,
+`eval_tier` (`"private"` | `"public_dev"`), `gate`, `battery`, `items`.
+Cap breach: `cap_exceeded: true` + `n_params` with the `CAP_EXCEEDED`
+terminal line instead of `EVAL_OK`.
+
+## Reference baselines (recipe 1.3.0 — v3 anchors)
+
+Two reference submissions ship in-repo (`crates/prism-recipe/baselines/`,
+embedded as `prism_recipe::baselines`): **Transformer++**
+(`transformer_pp`: modern GPT at the 350M cap) and **hybrid delta**
+(`hybrid_delta`: 3:1 gated delta-net/attention hybrid). Each tree carries
+`architecture.py` + `training.py` (contract-satisfying), `count_params.py`
+(prints the static parameter count as a single integer), and `NOTES.md`.
+They are the reference points the v3 anchor set (`anchors/v0.json`,
+currently placeholder) is measured against before any
+`PRISM_SCORING_MODE=composite` flip, and the attribution reference family.
+
 ## Pinned dataset
 
 | Field | Value |
@@ -72,8 +136,12 @@ score.
 | Train wall clock | 6.0 h per submission |
 | Pod lifetime | 7.0 h (train + bootstrap margin) |
 | Hard step cap | 20 000 (config may only lower) |
-| Source size | 128 KiB per script |
+| Source size | 128 KiB per script (two-script intake); tree budgets per `zip_submit` |
 | Model parameters | ≤ **350 000 000** after `build_model` (`MAX_PARAMS`) |
+
+Caps are **unchanged** in v3 (350M params, 6h). The parameter-cap breach
+semantics changed in 1.3.0: it is a terminal `Score(0)` (`CAP_EXCEEDED`),
+not an infra retry.
 
 ## Recipe pin
 

@@ -16,11 +16,16 @@ with a loud warning) -> read its one-line JSON result from the dedicated FD
 v3 flow (`PRISM_FLOW=v3`, or auto when eval assets / a secret seed are
 staged): TRAIN-phase child (`prismlib.train_v3`, saves
 `$PRISM_WORKDIR/checkpoint.pt`, no scoring) -> parent gate (process group
-hard-killed + survivor check, JIT caches reset, asset tier detection:
-`$PRISM_EVAL_ASSETS_DIR` -> "private", else "public_dev") -> fresh
-EVAL-phase child (`prismlib.eval_v3`, rebuilds the model from the miner's
-architecture.py + checkpoint, runs the G1–G8 battery + v1 bpb; the secret
-generator seed arrives via env only) -> METRICS_JSON v2 + `flow`/
+hard-killed + survivor check, JIT caches reset). With
+`$PRISM_EVAL_ASSETS_DIR` set (private tier) the gate then prints the bare
+`PHASE_TRAIN_DONE` marker line (the Lium client stages the assets tar +
+`SECRET_SEED` + `.ready` on it) and holds for the `.ready` sentinel —
+fail-closed, never a silent public-tier downgrade — before spawning a
+fresh EVAL-phase child (`prismlib.eval_v3`, rebuilds the model from the
+miner's architecture.py + checkpoint, runs the G1–G8 battery + v1 bpb; the
+secret generator seed is read from the staged hex file and handed to the
+eval child via env only). Without the assets env the tier is `public_dev`
+(same battery, published dev seed). -> METRICS_JSON v2 + `flow`/
 `eval_tier`/`gate`/`battery`/`items`. The v1 path is byte-identical in
 behavior.
 
@@ -70,6 +75,12 @@ BUILD_TIMEOUT_S = float_env("PRISM_BUILD_TIMEOUT_S", 900.0)
 SCORE_TIMEOUT_S = float_env("PRISM_SCORE_TIMEOUT_S", 1800.0)
 EVAL_TIMEOUT_S = float_env("PRISM_EVAL_TIMEOUT_S", 3 * 3600.0)
 WORKDIR = os.environ.get("PRISM_WORKDIR", "/tmp/prism_eval")
+# Two-phase private-tier staging (E5): with `$PRISM_EVAL_ASSETS_DIR` set the
+# parent announces train-done by printing this exact bare line (the Lium
+# client matches it as a raw line — a `log()` prefix would not match) and
+# then holds the post-train gate on `$PRISM_EVAL_ASSETS_DIR/.ready`.
+TRAIN_DONE_MARKER = os.environ.get("PRISM_TRAIN_DONE_MARKER", "PHASE_TRAIN_DONE")
+ASSETS_WAIT_S = float_env("PRISM_ASSETS_WAIT_S", 900.0)
 
 
 def _eval_battery_status():
@@ -139,9 +150,71 @@ def _jit_caches_reset():
         pass
 
 
+def _cap_exceeded_out(payload, manifest, t_start):
+    """Miner-attributable parameter-cap breach: machine-readable terminal.
+
+    Emits a minimal METRICS_JSON v2 (bpb sentinel 0 — gated off client-side
+    by the flag) plus the exact `CAP_EXCEEDED` line the Lium client matches;
+    the orchestrator maps this to a terminal Score(0), never a measured
+    score. Deliberately no EVAL_OK: the run is not a measurement.
+    """
+    out = {
+        "bpb": 0.0,
+        "tokens_seen": 0,
+        "wall_clock_seconds": time.time() - t_start,
+        "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
+        "notes": "parameter cap exceeded",
+        "val_rows": 0,
+        "n_params": payload.get("n_params"),
+        "recipe": RECIPE_VERSION,
+        "metrics_version": 2,
+        "cap_exceeded": True,
+        "pod_manifest": manifest,
+        "harness_files_sha256": manifest_mod.harness_files_sha256(),
+    }
+    print("METRICS_JSON=" + json.dumps(out))
+    print("CAP_EXCEEDED")
+    log(f"parameter cap exceeded: {payload.get('error', '')[:200]}")
+
+
+def _await_eval_assets(assets_dir):
+    """Hold the post-train gate until the master stages private eval assets.
+
+    Emits the bare train-done marker (exact raw line — the Lium client
+    matches it to trigger staging over a second SSH channel), then polls for
+    the `.ready` sentinel. Fail-closed: no `.ready` within `ASSETS_WAIT_S`
+    is terminal, never a public-tier downgrade. Returns the staged
+    `SECRET_SEED` (128-bit hex file) as a decimal string for the eval
+    child's `PRISM_EVAL_SECRET_SEED` env — file-only delivery keeps the
+    train-phase child from ever inheriting it.
+    """
+    print(TRAIN_DONE_MARKER, flush=True)
+    ready = os.path.join(assets_dir, ".ready")
+    deadline = time.monotonic() + ASSETS_WAIT_S
+    while not os.path.exists(ready):
+        if time.monotonic() > deadline:
+            fail(
+                "assets",
+                RuntimeError(
+                    f"eval assets .ready not staged within {ASSETS_WAIT_S:.0f}s ({assets_dir})"
+                ),
+            )
+        time.sleep(1.0)
+    log(f"eval assets staged (.ready) — private tier in {assets_dir}")
+    try:
+        with open(os.path.join(assets_dir, "SECRET_SEED"), "r", encoding="utf-8") as f:
+            hex_seed = f.read().strip()
+    except OSError as exc:
+        fail("assets", RuntimeError(f"staged assets missing SECRET_SEED: {exc}"))
+    try:
+        return str(int(hex_seed, 16))
+    except ValueError:
+        fail("assets", RuntimeError("staged SECRET_SEED is not a hex string"))
+
+
 def _run_v3(ctx, ctx_path, manifest, t_start, netns):
     """Two-phase v3 flow: train child -> gate (dead miners, JIT reset,
-    asset tier) -> fresh eval child (battery + v1 bpb) -> METRICS_JSON."""
+    asset staging) -> fresh eval child (battery + v1 bpb) -> METRICS_JSON."""
     from prismlib import v3flow
 
     train_res = v3flow.run_phase(
@@ -160,6 +233,9 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
             RuntimeError(f"v3 train phase timeout: {train_res['killed_phase']}"),
         )
     tpayload = train_res.get("payload")
+    if tpayload and tpayload.get("cap_exceeded"):
+        _cap_exceeded_out(tpayload, manifest, t_start)
+        return
     if tpayload is None or tpayload.get("status") != "ok":
         tail = " | ".join(train_res.get("tail", [])[-5:])
         fail(
@@ -177,9 +253,12 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
         log("WARNING: train-phase survivor processes detected (recorded in gate)")
 
     assets_dir = os.environ.get("PRISM_EVAL_ASSETS_DIR", "").strip() or None
-    if assets_dir and not os.path.isdir(assets_dir):
-        log(f"WARNING: PRISM_EVAL_ASSETS_DIR={assets_dir} is not a directory — public_dev tier")
-        assets_dir = None
+    staged_seed = None
+    if assets_dir:
+        # Private tier (E5): the train-phase process group is dead; announce
+        # train-done so the master stages the assets + SECRET_SEED, then
+        # hold on `.ready` (fail-closed — never a silent public downgrade).
+        staged_seed = _await_eval_assets(assets_dir)
     eval_tier = "private" if assets_dir else "public_dev"
 
     eval_ctx = dict(ctx)
@@ -199,11 +278,16 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
         json.dump(eval_ctx, f)
 
     _cheatguard_call("pre_eval", eval_ctx)
+    # Staged seed rides the eval child's env only (decimal string; the
+    # hex file stays in the assets dir for cheatguard). An operator-preset
+    # `PRISM_EVAL_SECRET_SEED` (local runs) is inherited instead.
+    eval_extra = {"PRISM_EVAL_SECRET_SEED": staged_seed} if staged_seed else None
     eval_res = v3flow.run_phase(
         "prismlib.eval_v3",
         WORKDIR,
         eval_ctx_path,
         budgets={"eval": EVAL_TIMEOUT_S, "build": BUILD_TIMEOUT_S, "battery": EVAL_TIMEOUT_S, "score": SCORE_TIMEOUT_S},
+        extra_env=eval_extra,
     )
     # Secret seed was passed through the child env; drop it from ours now.
     os.environ.pop("PRISM_EVAL_SECRET_SEED", None)
@@ -349,6 +433,9 @@ def main():
             "subprocess",
             RuntimeError(f"no result from miner subprocess (rc={res.get('rc')}): {tail[:300]}"),
         )
+    if payload.get("cap_exceeded"):
+        _cap_exceeded_out(payload, manifest, t_start)
+        return
     if payload.get("status") != "ok":
         fail(
             str(payload.get("stage", "subprocess")),

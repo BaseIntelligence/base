@@ -13,9 +13,13 @@
 //!
 //! The same objects are exposed to miners over `GET /v1/recipe` and
 //! `GET /v1/recipe/baseline` so they can run the harness locally before
-//! submitting. Nothing secret: there are no held-out private rows — the val
-//! stream is part of the published pin (ephemeral-attempt safety comes from
-//! the seed lattice + similarity review, not data secrecy).
+//! submitting. The v3 flow adds a **private eval tier**: after the train
+//! phase completes, the operator stages held-out eval assets plus a secret
+//! eval seed onto the pod (post-train, over SSH) and the battery runs
+//! against them. The private tier is fail-closed — if the assets cannot be
+//! staged or verified, the eval terminates rather than falling back to
+//! public rows. Public anchors (`eval/public_dev/`) remain published for
+//! local miner reproduction.
 //!
 //! The harness itself is a multi-file Python package embedded at build time
 //! ([`HARNESS_FILES`]) and uploaded file-by-file to the pod over SSH by
@@ -28,7 +32,9 @@
 
 mod zip_submit;
 
+pub mod anchors;
 pub mod attribution;
+pub mod baselines;
 
 pub use attribution::{build_attribution_runs, AttributionCell, AttributionError, AttributionRun};
 pub use zip_submit::{
@@ -41,12 +47,18 @@ pub use zip_submit::{
 /// file-by-file by `prism-lium` into the pod workdir. Layout: `main.py`
 /// (parent entrypoint), `prismlib/*.py` (library modules: miner subprocess
 /// runner, seeded train stream, G6 probes, harness-owned scoring, pod
-/// manifest, v3 two-phase entries), `eval/` (G1–G8 battery registry +
-/// battery modules + procedural generators + the public dev family).
+/// manifest, v3 two-phase entries, cheatguard screening), plus the
+/// `cheatguard_patterns.json` banned-pattern list, and `eval/` (G1–G8
+/// battery registry + battery modules + procedural generators + the
+/// public dev family).
 ///
 /// Keep sorted by path — [`harness_files_sha256`] and [`recipe_pin_hex`]
 /// hash the set in sorted-path order.
 pub const HARNESS_FILES: &[(&str, &str)] = &[
+    (
+        "cheatguard_patterns.json",
+        include_str!("../harness/cheatguard_patterns.json"),
+    ),
     (
         "eval/__init__.py",
         include_str!("../harness/eval/__init__.py"),
@@ -148,6 +160,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
     (
         "prismlib/__init__.py",
         include_str!("../harness/prismlib/__init__.py"),
+    ),
+    (
+        "prismlib/cheatguard.py",
+        include_str!("../harness/prismlib/cheatguard.py"),
     ),
     (
         "prismlib/dataset.py",
@@ -475,6 +491,7 @@ mod tests {
         assert_eq!(dedup.len(), sorted.len(), "duplicate harness paths");
         for required in [
             "main.py",
+            "cheatguard_patterns.json",
             "eval/__init__.py",
             "eval/common.py",
             "eval/generators.py",
@@ -491,6 +508,7 @@ mod tests {
             "eval/public_dev/seeds.json",
             "eval/public_dev/README.md",
             "prismlib/__init__.py",
+            "prismlib/cheatguard.py",
             "prismlib/runner.py",
             "prismlib/miner_entry.py",
             "prismlib/stream.py",
@@ -555,6 +573,8 @@ mod tests {
             "PRISM_FLOW",
             "PRISM_EVAL_ASSETS_DIR",
             "PRISM_EVAL_SECRET_SEED",
+            "PHASE_TRAIN_DONE",
+            "CAP_EXCEEDED",
             "eval_tier",
             "checkpoint.pt",
             "run_battery",

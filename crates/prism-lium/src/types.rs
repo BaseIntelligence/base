@@ -218,6 +218,13 @@ pub struct RemoteExecResult {
     /// otherwise. Absent on v1 payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval_tier: Option<String>,
+    /// Forward-compatible passthrough of METRICS_JSON v2+ fields this crate
+    /// keeps opaque (`battery`, `train_metrics`, `cap_exceeded`, …): keys
+    /// not modeled above are retained verbatim so master-side consumers
+    /// (`prism-eval-store::finalize_composite`, the orchestrator cap guard)
+    /// read them from the re-serialized blob. Absent on v1 payloads.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Optional Real-client SSH configuration (paths only; never logs key material).

@@ -121,6 +121,28 @@ pub async fn finalize_composite(
     Ok(Some(outcome))
 }
 
+/// Orchestrator-facing wrapper (E7): `None` when no store is attached (the
+/// default — the v2 path stays bit-identical) or the blob is absent, and
+/// warn + `None` on store/finalize faults — shadow mode is unaffected and
+/// composite mode fails closed to 0 in `final_lattice` by design. Uses the
+/// embedded v0 placeholder anchor set until registry-driven anchors land.
+pub async fn finalize_for_submission(
+    store: Option<&Arc<dyn EvalStore>>,
+    submission_id: &str,
+    metrics_v2: Option<&Value>,
+) -> Option<CompositeOutcome> {
+    let (Some(store), Some(blob)) = (store, metrics_v2) else {
+        return None;
+    };
+    match finalize_composite(store, submission_id, blob, &AnchorInput::v0_placeholder()).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(submission_id, error = %e, "composite finalize failed (skipped)");
+            None
+        }
+    }
+}
+
 /// Lift the sanitized miner-returned `train_metrics` dict (METRICS_JSON v2)
 /// into Zone B metric entries: flat finite scalars under `miner.*` (and
 /// `org.*`, which the validator strips into a quarantine finding — forgery

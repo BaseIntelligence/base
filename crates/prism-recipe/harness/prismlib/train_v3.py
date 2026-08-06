@@ -64,6 +64,17 @@ class _CapExceeded(Exception):
     pass
 
 
+class _ParamCapExceeded(Exception):
+    """Miner-attributable parameter-cap breach (n_params > max_params).
+
+    Carries the measured count so the fail payload can flag it
+    machine-readably (`cap_exceeded`) for the parent's terminal path."""
+
+    def __init__(self, n_params, max_params):
+        super().__init__(f"model exceeds parameter cap: {n_params} > {max_params}")
+        self.n_params = n_params
+
+
 def _save_checkpoint(model, workdir, meta):
     """state_dict (CPU tensors) + build metadata; sharded when large."""
     import torch
@@ -159,7 +170,8 @@ def _run(cfg, st):
     _log(f"model params: {n_params/1e6:.1f}M")
     max_params = int(cfg.get("max_params", 350000000))
     if n_params > max_params:
-        raise RuntimeError(f"model exceeds parameter cap: {n_params} > {max_params}")
+        # Product hard cap: fail before CUDA / train (machine-readable).
+        raise _ParamCapExceeded(n_params, max_params)
     model = model.to(device)
 
     train_hours_cap = float(cfg.get("train_hours_cap", 6.0))
@@ -256,6 +268,17 @@ def main():
                 "status": "fail",
                 "stage": st["stage"],
                 "error": "finish_evaluation raised outside train()",
+            }
+        )
+        return 3
+    except _ParamCapExceeded as exc:
+        _emit(
+            {
+                "status": "fail",
+                "stage": st["stage"],
+                "error": str(exc)[:400],
+                "cap_exceeded": True,
+                "n_params": int(exc.n_params),
             }
         )
         return 3

@@ -20,8 +20,8 @@ use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEnt
 use challenge_common::{expected_set_at_chain, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
-use prism_lium::{EvalJobBackend, InstanceSpec};
-use prism_pipeline::gating_key;
+use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
+use prism_pipeline::{gating_key, ScoringMode};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
 use submission_gating::{GatingState, GatingStore};
@@ -31,6 +31,8 @@ use tracing::{info, warn};
 use crate::agentic::{build_review_request, corpus_from_rows};
 use crate::score::{combine_final, FinalOutcome};
 use crate::submit::GatewayClient;
+use prism_eval_store::finalize_for_submission;
+use prism_store::eval::EvalStore;
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
 
 /// Worker + emitter settings.
@@ -62,6 +64,11 @@ pub struct OrchestratorConfig {
     /// Auto-retry budget for infra-class failures (Lium install / AST / LLM).
     /// Default 3; cheat / rejected verdicts are always terminal.
     pub auto_retry_max: u32,
+    /// Scoring mode for finalized rows: `Shadow` (default; the v2 score is
+    /// bit-identical and the composite is observed only) or `Composite`
+    /// (the v3 lattice becomes the score, fail-closed to 0 without a scored
+    /// composite). Defaults to `PRISM_SCORING_MODE` at config build.
+    pub scoring_mode: ScoringMode,
 }
 
 impl Default for OrchestratorConfig {
@@ -79,6 +86,7 @@ impl Default for OrchestratorConfig {
             stuck_grace_secs: 7 * 3600,
             stage_delay: Duration::ZERO,
             auto_retry_max: 3,
+            scoring_mode: ScoringMode::from_env(),
         }
     }
 }
@@ -94,6 +102,7 @@ pub struct Orchestrator<C: ChainClient + Send> {
     emitter: EpochEmitter,
     gating: Option<Arc<dyn GatingStore>>,
     topmodel: Option<Arc<prism_registry::TopModelPublisher>>,
+    eval_store: Option<Arc<dyn EvalStore>>,
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
@@ -121,6 +130,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             emitter,
             gating: None,
             topmodel: None,
+            eval_store: None,
         }
     }
 
@@ -128,6 +138,15 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     #[must_use]
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
+        self
+    }
+
+    /// Attach the v3 eval store (composite runs + Zone B ingest). Default
+    /// `None` skips the composite path entirely — legacy behavior is
+    /// bit-identical (no battery parse, no eval rows, `composite: None`).
+    #[must_use]
+    pub fn with_eval_store(mut self, eval_store: Option<Arc<dyn EvalStore>>) -> Self {
+        self.eval_store = eval_store;
         self
     }
 
@@ -324,6 +343,49 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
     }
 
+    /// Returns `true` (row finalized terminal — caller stops) on a
+    /// harness-flagged parameter-cap breach: the row goes terminal
+    /// `rejected` Score(0) and the miner is gating-rejected. The breach is
+    /// miner-attributable and machine-verified at build time, so there is
+    /// no measured score and no review/similarity/agentic spend.
+    async fn cap_terminal(&self, row: &SubmissionState, m: Option<&RemoteExecResult>) -> bool {
+        let Some(m) = m.filter(|m| cap_flag(m)) else {
+            return false;
+        };
+        let n_params = m.n_params;
+        warn!(submission_id = %row.id, ?n_params, "parameter cap exceeded — terminal Score(0)");
+        let patch = StatePatch {
+            status: Some(Stage::Rejected),
+            final_score: Some(FinalScore::Score(0)),
+            error_detail: Some(format!("parameter cap exceeded: n_params={n_params:?}")),
+            metrics_json: serde_json::to_value(m).ok(),
+            ..StatePatch::default()
+        };
+        let event = StageEvent {
+            stage: Stage::Rejected,
+            detail: Some(serde_json::json!({ "gate": "parameter_cap", "n_params": n_params })),
+            at_ms: 0,
+        };
+        let _ = self.store.apply(&row.id, &patch, Some(&event)).await;
+        self.reject_gating(row).await;
+        true
+    }
+
+    /// Terminal stage event for a finalized row: agentic audit blob plus the
+    /// scoring mode + version the final score was computed under (v2 shadow,
+    /// v3 composite).
+    fn terminal_event(&self, status: Stage, agentic: &AgenticVerdict) -> StageEvent {
+        StageEvent {
+            stage: status,
+            detail: Some(serde_json::json!({
+                "agentic": serde_json::to_value(agentic).unwrap_or_default(),
+                "scoring_mode": self.cfg.scoring_mode.name(),
+                "scoring_version": self.cfg.scoring_mode.scoring_version(),
+            })),
+            at_ms: 0,
+        }
+    }
+
     /// Process one submission end-to-end.
     pub async fn run_row(&self, row: SubmissionState) -> Result<(), String> {
         let id = row.id.clone();
@@ -351,6 +413,12 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 return Ok(());
             }
         };
+
+        // Miner-attributable parameter-cap breach (machine-verified by the
+        // harness): terminal Score(0) — never a measured score, no LLM spend.
+        if self.cap_terminal(&row, metrics.as_ref()).await {
+            return Ok(());
+        }
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
         // Phase 2: cheap review (LLM infra → auto-retry, then terminal).
@@ -386,19 +454,27 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             self.reject_gating(&row).await;
         }
 
+        // v3 composite finalize (E7): with an EvalStore attached, persist
+        // the METRICS_JSON v2 battery + Zone B lift and compute the
+        // composite against the active anchor set; `None` (default) skips
+        // this entirely. The hard gates above fire first in `combine_final`
+        // regardless of the attached outcome.
+        let blob = metrics
+            .as_ref()
+            .map(|m| serde_json::to_value(m).unwrap_or_default());
+        let composite = finalize_for_submission(self.eval_store.as_ref(), &id, blob.as_ref()).await;
+
         let outcome = match bpb {
             Some(b) => FinalOutcome::Measured {
                 bpb: b,
                 quality: review.quality_score,
                 similarity: similarity.kind,
                 agentic: agentic.verdict,
-                // v3 composite is attached by the G1–G8 battery integration
-                // (E4); the v2 eval path has none.
-                composite: None,
+                composite,
             },
             None => FinalOutcome::ChallengeInternal,
         };
-        let final_score = combine_final(&outcome);
+        let final_score = combine_final(&outcome, self.cfg.scoring_mode);
         let status = if matches!(outcome, FinalOutcome::ChallengeInternal) {
             Stage::Failed
         } else {
@@ -420,13 +496,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                     metrics_json: metrics.as_ref().and_then(|m| serde_json::to_value(m).ok()),
                     ..StatePatch::default()
                 },
-                Some(&StageEvent {
-                    stage: status,
-                    detail: Some(serde_json::json!({
-                        "agentic": serde_json::to_value(&agentic).unwrap_or_default()
-                    })),
-                    at_ms: 0,
-                }),
+                Some(&self.terminal_event(status, &agentic)),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -861,4 +931,14 @@ impl FinalOutcome {
             FinalOutcome::ChallengeInternal => None,
         }
     }
+}
+
+/// Harness terminal payload flag: a miner-attributable parameter-cap breach
+/// (the harness refused the model at build and emitted a minimal
+/// METRICS_JSON instead of measuring; recipe ≥1.3.0).
+fn cap_flag(m: &RemoteExecResult) -> bool {
+    m.extra
+        .get("cap_exceeded")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }

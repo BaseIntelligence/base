@@ -3697,6 +3697,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-attribution"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "http-body-util",
+ "prism-recipe",
+ "prism-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "zip",
+]
+
+[[package]]
 name = "prism-challenge"
 version = "0.1.0"
 dependencies = [
@@ -3712,6 +3729,7 @@ dependencies = [
  "db",
  "hex",
  "http-body-util",
+ "prism-attribution",
  "prism-challenge-task",
  "prism-emit",
  "prism-eval-store",
