@@ -78,12 +78,23 @@ Full procedure: [`docs/runbooks/local-testnet-e2e.md`](../docs/runbooks/local-te
 
 **Weights seal smoke (default on `--smoke`):** after healthz, `local-e2e.sh` runs `weights-smoke` — signed prism leaves for the live metagraph → `POST /v1/admin/seal` → assert `GET /v1/weights/latest` is **200** with **`sealed: true`**. Skip with `--no-weights-smoke`. Pre-seal, latest is **200 burn** (`sealed: false`, uid 0 = 100%) — never 404; that is unrelated to a missing gateway owner wallet. Prefer `--burn` on mainnet when sealing without real challenge scores (all `NoScore` → uid 0).
 
-**Interim prod burn seal (until prism auto-emits):** keep a fresh sealed bundle on the master gateway so validators can Match + CRV4 submit. Re-run when TTL/epoch advances, e.g. from an operator host with secrets:
+**Interim prod burn seal (until prism auto-emits):** keep a fresh sealed bundle on the master gateway so validators can Match + CRV4 submit. On the prod master this runs as a **systemd timer** (`base-burn-seal.timer`, every 21 min — above the 100-block `WeightsSetRateLimit`, inside the ~256-block Finney state-pruning window) driving [`scripts/prod-burn-seal.sh`](scripts/prod-burn-seal.sh); units live in [`systemd/`](systemd/). Install:
+
+```bash
+install -m 0755 target/release/weights-smoke /opt/base/bin/weights-smoke
+install -m 0755 deploy/scripts/prod-burn-seal.sh /opt/base/deploy/scripts/prod-burn-seal.sh
+install -m 0644 deploy/systemd/base-burn-seal.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now base-burn-seal.timer
+```
+
+Manual one-shot (from an operator host with secrets) is still:
 
 ```bash
 cargo run -q --release -p weights-smoke -- \
   --gateway https://chain.joinbase.ai --burn
 ```
+
+A seal older than ~256 blocks can never be verified by the validator (public RPC prunes state) — if `GET /v1/weights/latest` shows `metagraph_block` lagging tip by thousands of blocks, check `systemctl status base-burn-seal.timer` and `/var/log/base-burn-seal.log` on the master.
 
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 

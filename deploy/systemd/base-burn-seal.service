@@ -1,0 +1,11 @@
+[Unit]
+Description=BASE interim prod burn-seal (fresh sealed weights bundle on master gateway)
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/base/bin/weights-smoke
+
+[Service]
+Type=oneshot
+ExecStart=/opt/base/deploy/scripts/prod-burn-seal.sh
+Nice=10
+TimeoutStartSec=180

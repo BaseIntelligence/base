@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh prod sealed weights bundle (interim burn seal)
+
+[Timer]
+# First seal 3 min after boot, then every 21 min. 21 min (~105 blocks) sits
+# just above the 100-block WeightsSetRateLimit so each seal yields exactly one
+# CRV4 commit, and well inside the ~256-block (~51 min) Finney RPC state
+# pruning window so the validator can always verify the latest seal.
+OnBootSec=3min
+OnUnitActiveSec=21min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
