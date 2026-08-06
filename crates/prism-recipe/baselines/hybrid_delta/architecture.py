@@ -17,8 +17,14 @@ algorithm (chunk size 64) in PURE torch — no FLA / mamba / Triton deps.
 Within a chunk all rank-1 updates are composed in parallel via one unit
 lower-triangular solve; the sequential state is carried across chunks only
 (n/chunk sequential steps). The recurrence core runs in fp32 for state
-stability under bf16 autocast. Peak extra memory is O(batch * heads *
-chunk^2 * dk) — see NOTES.md for the slowdown analysis vs fused kernels.
+stability under bf16 autocast. The per-chunk pairwise decay tensor is
+O(batch * heads * chunk^2 * dk) fp32 (128 MiB at the anchor train shape),
+and autograd must keep one per chunk per delta block for backward — that
+is ~5.8 GiB per delta block at batch 8 x seq 512, which OOMs a 32 GiB card
+if saved. Training therefore runs every block under activation
+checkpointing (`grad_checkpoint` default True): only block inputs persist,
+chunk internals are recomputed in backward (~+30% step time). Eval/probes
+run under no_grad and bypass checkpointing entirely — see NOTES.md.
 
 Length generalization: no learned positions anywhere (RoPE in attention
 blocks, recurrence elsewhere); the chunk loop and the windowed attention
@@ -34,6 +40,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as _activation_checkpoint
 
 # Anchor configuration: 341,309,696 params (see NOTES.md for the math).
 DEFAULTS = {
@@ -52,6 +59,11 @@ DEFAULTS = {
     # Target per-token forget rate at init: alpha = exp(-0.02) ~ 0.98.
     "decay_init": 0.02,
     "init_std": 0.02,
+    # Activation-checkpoint every block while grads are enabled (train).
+    # Without it the fp32 chunked-delta intermediates (~5.8 GiB per delta
+    # block at batch 8 x seq 512) are all saved for backward and OOM a
+    # 32 GiB card. No effect under no_grad (eval/probes) or on numerics.
+    "grad_checkpoint": True,
 }
 
 _OVERRIDE_KEYS = tuple(DEFAULTS.keys())
@@ -208,8 +220,11 @@ class GatedDeltaMixer(nn.Module):
           S   <- S Diag(e^{L_c}) + U^T (k e^{L_c - L})
         The pairwise tensor is materialized per chunk (never factored as
         e^{L_t} * e^{-L_i}, which can overflow fp32): every entry is <= 1,
-        masked to 0 above the diagonal via -inf before exp. Peak extra
-        memory is O(b * h * chunk^2 * dk) — see NOTES.md.
+        masked to 0 above the diagonal via -inf before exp. Peak working
+        memory per chunk is O(b * h * chunk^2 * dk); under autograd those
+        tensors are SAVED for backward, so without activation checkpointing
+        the total is O(n_delta_blocks * (t/chunk) * b * h * chunk^2 * dk)
+        — see NOTES.md.
         """
         in_dtype = q.dtype
         q, k, v, beta, la = (t_.float() for t_ in (q, k, v, beta, la))
@@ -334,6 +349,7 @@ class HybridDelta(nn.Module):
         self.head = nn.Linear(d, int(cfg["vocab_size"]), bias=False)
         self.head.weight = self.tok_emb.weight  # tied embeddings
         self.logits = None
+        self.grad_checkpoint = bool(cfg.get("grad_checkpoint", True))
         self._init_weights(float(cfg["init_std"]))
 
     def _init_weights(self, std):
@@ -348,8 +364,14 @@ class HybridDelta(nn.Module):
 
     def forward(self, ids):
         x = self.tok_emb(ids)
+        # Checkpoint only when a backward graph is actually being built:
+        # probes/scoring run under no_grad and must not pay recompute.
+        ckpt = self.grad_checkpoint and torch.is_grad_enabled()
         for block in self.blocks:
-            x = block(x)
+            if ckpt:
+                x = _activation_checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.norm(x)
         logits = self.head(x)
         self.logits = logits

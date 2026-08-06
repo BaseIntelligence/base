@@ -20,6 +20,7 @@ longer informative".
 | MLP | SwiGLU, hidden 2048 (= 2·d) |
 | chunk | 64 |
 | decay init | α ≈ e^−0.02 ≈ 0.98 per token (`softplus(a_bias) = 0.02`) |
+| grad_checkpoint | True — activation-checkpoint every block when grads are enabled (see E11 fix below); no params, no numerics change |
 
 Exact parameter math (verified by `count_params.py`, static == torch build):
 
@@ -68,18 +69,60 @@ entries are ≤ 1 by construction, masked via −inf before `exp`. Per-step
 log-decay is clamped at −2 (α ≥ 0.135/token — beyond that is instant
 forgetting anyway).
 
-**Cost vs fused kernels (expected slowdown):** peak extra memory is
-O(b·h·chunk²·d_k) per layer — 134 MB transient per chunk at the anchor
+**Cost vs fused kernels (expected slowdown):** peak working memory is
+O(b·h·chunk²·d_k) per chunk — 134 MB transient per chunk at the anchor
 train shape (8×8×64²×128 fp32) vs O(b·h·chunk·d_k) for FLA's fused Triton
 kernels, and the einsum-heavy inner loop is memory-bound where fused
 kernels use tensor-core matmuls plus recomputation. Expect roughly a
 **2–4× training slowdown** vs an FLA `chunk_gated_delta_rule`
-implementation at equal config (worse at long eval contexts). This is the
-documented v0 tradeoff: the recipe forbids non-torch deps in the two-file
-submission contract, and a fused/Triton kernel is an explicitly anticipated
+implementation at equal config (worse at long eval contexts), plus the
+activation-checkpointing recompute below. This is the documented v0
+tradeoff: the recipe forbids non-torch deps in the two-file submission
+contract, and a fused/Triton kernel is an explicitly anticipated
 miner-side optimization (E5 source-tree submissions make it practical).
 The recurrence core runs in fp32 (state stability); projections run under
 bf16 autocast on CUDA.
+
+### Activation checkpointing (E11 memory fix, 2026-08-06)
+
+**Bug:** the v0 shipped without checkpointing and OOMed deterministically
+on the first training forward on the real Lium pod (RTX 5090, 31.36 GiB:
+`CUDA out of memory`, ~30.55 GiB requested). Root cause: the "transient
+per chunk" analysis above ignored autograd. The fp32 pairwise decay tensor
+`dec` (b,h,c,c,dk) = (8,8,64,64,128) = 128 MiB, its einsum bmm operands
+(262144×128 fp32, 128 MiB each), and the broadcast mask are **saved for
+backward** for every chunk of every delta block: measured 5.81 GiB saved
+per delta block at the production train shape (batch 8 × seq 512, the
+harness defaults `PRISM_TRAIN_BATCH_SIZE=8` / `PRISM_SEQ_LEN=512`), i.e.
+18 × 5.81 ≈ 104.5 GiB total (measured full-model forward peak RSS on
+CPU: 79.3 GiB — the pod allocator gives up at 30.55 GiB).
+
+**Fix:** every block runs under `torch.utils.checkpoint.checkpoint`
+(`use_reentrant=False`) whenever grads are enabled (`grad_checkpoint`
+config flag, default True; ctx-overridable like every DEFAULTS key). Only
+block inputs persist across the forward; chunk internals are recomputed
+block-by-block in backward. Eval/probes/scoring run under `no_grad` and
+bypass checkpointing entirely (no recompute cost, no behavior change;
+G8's `enable_grad` micro-steps get the memory-safe path automatically).
+
+**Numerics:** unchanged. Checkpointed vs plain gradients are bitwise
+identical (max |Δgrad| = 0.0, same seed, multi-chunk + window-crossing
+shapes); the recompute runs the same kernels under the same autocast
+state. Params unchanged: 341,309,696 ≤ 350M.
+
+**Memory after fix** (measured, CPU RSS, default config, batch 8 × seq
+512): 5.5 GiB after forward, 9.3 GiB after forward+backward (was 79.3 /
+80.2 GiB). Estimated pod peak (RTX 5090, bf16 autocast): params fp32
+1.28 + grads 1.28 + AdamW m/v 2.56 + block inputs bf16 0.19 + one delta
+block's recompute graph 5.81 + logits/CE chain ~2.0 + CUDA context &
+fragmentation ~1 ≈ **~14 GiB peak**, vs the 31.36 GiB card — comfortable
+margin (target was ≤ ~24 GiB).
+
+**Throughput impact:** one extra forward per block per step → step time
+× ~4/3 at equal FLOPs; expect **~25–35% fewer tokens** inside the 6h wall
+cap vs the (non-fitting) uncheckpointed run. The wall cap is unchanged and
+self-monitored (`WALL_MARGIN_S`); fewer steps just means fewer tokens_seen,
+not a cap violation.
 
 ### Sliding-window attention (exact)
 
@@ -127,3 +170,23 @@ the copy gate exempt).
 - Default config CPU forward at t=64 and t=1536: finite logits.
 - `train()` 2 steps via fake `train_stream` (exact token accounting) and
   via the legacy `dataset_path` fallback.
+
+### E11 checkpoint fix evidence (2026-08-06, CPU, torch 2.13.0+cpu)
+
+- Saved-for-backward diagnostic (autograd hooks, production shape 8×512):
+  one `GatedDeltaMixer` saves 5.81 GiB (top tensors: (8,8,64,64,128) fp32
+  `dec` + (262144,128,1)/(262144,1,128) fp32 einsum operands, 128 MiB
+  each); ×18 delta blocks ≈ 104.5 GiB — the OOM root cause.
+- Tiny config (d=64, L=4, chunk 16, window 64): forward+backward, finite
+  loss, grads flow to every parameter with checkpointing engaged.
+- Checkpointed vs plain (same seed, t=100 multi-chunk + window crossing):
+  identical loss, max |Δgrad| = 0.0 (bitwise).
+- Production batch/seq shape (b=8, t=512) on tiny config: forward+backward
+  executes (chunked + checkpointed paths shape-correct).
+- no_grad eval at t=1030 (crosses window 64 and chunk 16): finite logits,
+  checkpoint bypassed.
+- `train()` 2 steps via fake `train_stream`: exact token accounting
+  (tokens_seen = 2·b·t), finite loss.
+- Default config, production shape 8×512, CPU RSS: 5.5 GiB after forward,
+  9.3 GiB after forward+backward (pre-fix: 79.3 / 80.2 GiB).
+- `grad_checkpoint=False` escape hatch still builds and runs.
