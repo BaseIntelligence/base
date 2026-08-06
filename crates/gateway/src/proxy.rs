@@ -107,7 +107,7 @@ async fn proxy_inner(
 
         let url = upstream_url(&backend.base_url, &rest, query.as_deref());
         match forward(&st.client, method.clone(), &url, &headers, body.clone()).await {
-            ForwardResult::Ok(upstream_resp) => {
+            ForwardResult::Ok(mut upstream_resp) => {
                 let status = upstream_resp.status();
                 if status.is_server_error() {
                     st.registry.record_failure(backend.id);
@@ -116,6 +116,9 @@ async fn proxy_inner(
                     continue;
                 }
                 st.registry.record_success(backend.id);
+                if is_view_path(&rest) {
+                    apply_view_lockdown(&mut upstream_resp, &st.view_frame_ancestors);
+                }
                 return upstream_resp;
             }
             ForwardResult::Err(msg) => {
@@ -223,6 +226,27 @@ pub fn is_admin_path(rest: &str) -> bool {
     rest_norm.starts_with("v1/admin/") || rest_norm == "v1/admin"
 }
 
+/// Miner-controlled HTML viewer paths (`/challenge/{id}/v1/view/{run}/{page}`).
+#[must_use]
+pub fn is_view_path(rest: &str) -> bool {
+    rest.trim_start_matches('/').starts_with("v1/view/")
+}
+
+/// Re-apply the viewer lockdown header floor at the last serving layer
+/// (defense in depth): even a stale or misbehaving challenge upstream cannot
+/// serve miner HTML through the gateway without the CSP `sandbox` (opaque
+/// origin, no scripts), and `Set-Cookie` is stripped so these public
+/// capability-URL responses never touch origin cookies.
+fn apply_view_lockdown(resp: &mut Response, frame_ancestors: &str) {
+    let headers = resp.headers_mut();
+    headers.remove(header::SET_COOKIE);
+    for (k, v) in design_sanitize::viewer_headers(frame_ancestors) {
+        if let (Ok(name), Ok(val)) = (HeaderName::try_from(k), HeaderValue::try_from(v.as_str())) {
+            headers.insert(name, val);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +271,41 @@ mod tests {
         assert!(is_admin_path("/v1/admin/rounds/1/candidates"));
         assert!(!is_admin_path("v1/harness"));
         assert!(!is_admin_path("v1/runs/abc"));
+    }
+
+    #[test]
+    fn view_paths_detected() {
+        assert!(is_view_path("v1/view/abc/index.html"));
+        assert!(is_view_path("/v1/view/abc/pricing.html"));
+        assert!(!is_view_path("v1/runs/abc"));
+        assert!(!is_view_path("v1/viewx/abc"));
+        assert!(!is_view_path("v1/admin/view"));
+    }
+
+    #[test]
+    fn view_lockdown_overwrites_weak_upstream_and_strips_cookie() {
+        let mut resp = Response::new(Body::from("<html>miner</html>"));
+        let h = resp.headers_mut();
+        h.insert(header::SET_COOKIE, HeaderValue::from_static("session=evil"));
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src *"),
+        );
+        apply_view_lockdown(&mut resp, "'none'");
+        let h = resp.headers();
+        assert!(h.get(header::SET_COOKIE).is_none());
+        let csp = h
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(csp.starts_with("sandbox;"), "{csp}");
+        assert!(!csp.contains("allow-scripts"), "{csp}");
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert_eq!(
+            h.get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
     }
 }

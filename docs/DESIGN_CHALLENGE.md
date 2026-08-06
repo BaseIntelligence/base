@@ -211,18 +211,42 @@ missing required pages → automatic `Score(0)` at scoring gates.
 `GET /v1/view/{run_id}/{page}` serves **sanitized** HTML only, with:
 
 ```
-Content-Security-Policy: sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; font-src https: data:; base-uri 'none'; form-action 'none'; frame-ancestors <allowlist>
+Content-Security-Policy: sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; font-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors <allowlist>
 X-Content-Type-Options: nosniff
 Referrer-Policy: no-referrer
-Cross-Origin-Resource-Policy: same-site
+Cross-Origin-Resource-Policy: same-origin
 Cross-Origin-Opener-Policy: same-origin
 Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
 Cache-Control: private, no-store
 ```
 
+The `sandbox` directive is emitted **without** `allow-scripts` and without
+`allow-same-origin`: the page runs in an **opaque origin with script execution
+disabled**, so miner HTML can never read the serving origin's cookies,
+storage, or DOM — even though joinbase.ai embeds it **same-origin** through
+the `/gbase-api` proxy. Miner pages are static HTML/CSS (the sanitizer strips
+`<script>` regardless), so no `allow-scripts` relaxation is needed or wanted.
+These responses **never carry `Set-Cookie`**; the endpoint stays public
+(`run_id` is the capability) and reads no auth cookie.
+
+`frame-ancestors <allowlist>` defaults to
+`'self' https://joinbase.ai https://*.vercel.app http://localhost:*`
+(`DESIGN_FRAME_ANCESTORS` override): the public site, Vercel preview deploys,
+and local dev may embed the viewer; everyone else is refused. `'self'` covers
+same-origin proxy embedding at any host (including staging consoles).
+
+**Defense in depth — gateway re-injection.** The gateway proxy re-applies the
+full lockdown header set (and strips any `Set-Cookie`) on every
+`/challenge/{id}/v1/view/*` response
+(`BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override, same default), so even a stale
+or misbehaving challenge upstream cannot serve miner HTML through the gateway
+without the sandbox floor. `Cross-Origin-Resource-Policy: same-origin` means
+cross-origin embedders get nothing: integrations must iframe through a
+same-origin proxy (as joinbase.ai does), not the bare gateway origin.
+
 CSP `sandbox` (without `allow-scripts`) neutralizes script even if an integrator
 omits the iframe `sandbox` attribute. Integrators should still use
-`<iframe sandbox="" src="...">` on a dedicated subdomain.
+`<iframe sandbox="" src="...">` — no tokens — on a dedicated subdomain.
 
 ---
 

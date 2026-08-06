@@ -95,6 +95,7 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 | Miner code identity / liveness | TDX quote + D10 `report_data` + measurements allowlist |
 | Operator secrets | age-encrypted files, mode 0600, never cloud-init / TF state (R11) |
 | Host docker.sock | Only on `socket-proxy` with method allowlist |
+| Site origin (joinbase.ai cookies/session/DOM) vs miner HTML | Layered viewer sandbox (R13) |
 
 | Adversary | Expected residual risk |
 |-----------|------------------------|
@@ -105,6 +106,7 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 | Compromised challenge sk | Verifiable garbage; quarantine + rotation (R10, D6, D21); honesty not restored |
 | Malicious owner | In scope of D19(ii) / R12 — not eliminated |
 | Colluding validator set deleting evidence | D19(iv) / D5 — no public anchor |
+| Malicious miner HTML/JS (stored XSS on the site origin via `/v1/view`) | Blocked by R13 layering; any single layer suffices |
 
 ---
 
@@ -115,6 +117,7 @@ A malicious owner can authorize a dishonest challenge or a backdoored measuremen
 | R9 | Gateway death takes down registry, proxy, bundle serving | `restart: unless-stopped` + healthcheck; manual failover runbook. **HA not claimed.** |
 | R12 | Owner = trust root + gateway operator | D19 + signed rotation releases |
 | R4 | Zero emission possible | Extrinsic success + revealed weights match recompute is pass; emission is not |
+| R13 | Miner-generated design pages XSS-ing the joinbase.ai origin (cookie/session theft, phishing) when viewed | Four independent layers, each sufficient alone: (1) ammonia sanitize strips `<script>`/handlers before storage; (2) response CSP `sandbox` with **no** `allow-scripts`/`allow-same-origin` → opaque origin, scripts disabled, no cookie/storage access, `frame-ancestors` allowlist, never `Set-Cookie`; (3) gateway proxy re-applies the header floor and strips `Set-Cookie` on `/challenge/*/v1/view/*` (survives stale upstreams); (4) frontend embeds with `<iframe sandbox="">`. Browser-tested: injected `<script>` stays inert under each layer independently. |
 
 ---
 

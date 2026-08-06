@@ -20,6 +20,7 @@ chain = { path = "../chain" }
 config = { path = "../config" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
+design-sanitize = { path = "../design-sanitize" }
 keystore = { path = "../keystore" }
 site-api = { path = "../site-api" }
 telemetry = { path = "../telemetry" }

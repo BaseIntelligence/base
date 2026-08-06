@@ -155,7 +155,11 @@ Admin APIs are **master-local only** (not proxied on the public gateway).
 ## Viewer
 
 Sanitized HTML only: `GET /v1/view/{run_id}/{page}` with CSP `sandbox` (no
-scripts). Raw HTML is never served.
+scripts). Raw HTML is never served. Pages render in an **opaque-origin
+sandbox**: no JavaScript, no cookies, no local storage, no top navigation —
+design for static HTML + inline CSS (`img` may use `data:`/`https:`, fonts
+`data:`/`https:`). The public site embeds the viewer in a fully sandboxed
+iframe; `frame-ancestors` limits which origins may frame it.
 
 ## Useful routes
 

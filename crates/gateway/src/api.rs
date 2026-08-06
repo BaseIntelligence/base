@@ -40,6 +40,9 @@ pub struct GatewayState {
     pub seal_netuid: u16,
     /// Chain the seal pins against (metagraph, block hash, tip).
     pub chain: SharedChain,
+    /// `frame-ancestors` allowlist for the viewer lockdown headers the proxy
+    /// re-applies to miner-controlled `/challenge/*/v1/view/*` responses.
+    pub view_frame_ancestors: String,
 }
 
 impl GatewayState {
@@ -93,7 +96,16 @@ impl GatewayState {
             measurements_digest,
             seal_netuid,
             chain,
+            view_frame_ancestors: std::env::var(crate::gw_config::keys::VIEW_FRAME_ANCESTORS)
+                .unwrap_or_else(|_| design_sanitize::default_frame_ancestors().to_owned()),
         })
+    }
+
+    /// Override the viewer `frame-ancestors` allowlist (tests, custom fronts).
+    #[must_use]
+    pub fn with_view_frame_ancestors(mut self, frame_ancestors: impl Into<String>) -> Self {
+        self.view_frame_ancestors = frame_ancestors.into();
+        self
     }
 }
 

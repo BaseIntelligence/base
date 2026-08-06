@@ -20,6 +20,7 @@ chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }
 design-challenge = { path = "../../crates/design-challenge" }
 design-sandbox = { path = "../../crates/design-sandbox" }
+design-sanitize = { path = "../../crates/design-sanitize" }
 review-docker = { path = "../../crates/review-docker" }
 submission-gating = { path = "../../crates/submission-gating" }
 crypto = { path = "../../crates/crypto" }

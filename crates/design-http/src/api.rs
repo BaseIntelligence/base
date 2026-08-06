@@ -1142,6 +1142,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn view_page_serves_lockdown_headers_and_no_cookies() {
+        let (st, _g) = app_state(None);
+        let run_id = "a".repeat(64);
+        // Store a script-laden page directly: even if sanitization were
+        // bypassed, the response headers must keep the payload inert.
+        st.store
+            .put_artifacts(
+                &run_id,
+                &[(
+                    "index.html".to_owned(),
+                    "<html><script>alert(1)</script>miner</html>".to_owned(),
+                    "raw".to_owned(),
+                    "00".repeat(32),
+                    42_u32,
+                )],
+            )
+            .await
+            .unwrap();
+        let app = design_router(Arc::clone(&st));
+        for url in [
+            format!("/v1/view/{run_id}/index.html"),
+            format!("/v1/view/{run_id}/index"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::get(&url).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{url}");
+            let h = res.headers().clone();
+            let csp = h
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(csp.starts_with("sandbox;"), "{csp}");
+            assert!(!csp.contains("allow-scripts"), "{csp}");
+            assert!(!csp.contains("allow-same-origin"), "{csp}");
+            assert!(csp.contains("default-src 'none'"), "{csp}");
+            // app_state pins 'none'; prod default allows the public site.
+            assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+            assert_eq!(
+                h.get(header::X_CONTENT_TYPE_OPTIONS)
+                    .and_then(|v| v.to_str().ok()),
+                Some("nosniff")
+            );
+            assert_eq!(
+                h.get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
+                Some("no-referrer")
+            );
+            assert_eq!(
+                h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                Some("text/html; charset=utf-8")
+            );
+            assert!(h.get(header::SET_COOKIE).is_none(), "{url} sets a cookie");
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            assert!(std::str::from_utf8(&bytes).unwrap().contains("miner"));
+        }
+    }
+
+    #[tokio::test]
     async fn gating_503_until_snapshot_ready() {
         let gating = Arc::new(MemoryGatingStore::new());
         let st = Arc::new(AppState {

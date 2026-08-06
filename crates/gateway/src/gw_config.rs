@@ -27,6 +27,10 @@ pub mod keys {
     pub const GATEWAY_SK: &str = "BASE_GATEWAY_SK";
     /// Path to gateway mini-secret (32 raw bytes or 64 hex).
     pub const GATEWAY_SK_FILE: &str = "BASE_GATEWAY_SK_FILE";
+    /// `frame-ancestors` allowlist for the viewer lockdown CSP the gateway
+    /// re-applies to `/challenge/*/v1/view/*` responses (defense in depth).
+    /// Defaults to [`design_sanitize::default_frame_ancestors`].
+    pub const VIEW_FRAME_ANCESTORS: &str = "BASE_GATEWAY_VIEW_FRAME_ANCESTORS";
 
     pub use crate::tls::keys as tls;
 }

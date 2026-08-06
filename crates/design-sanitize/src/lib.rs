@@ -192,18 +192,35 @@ pub fn sanitize_bundle(pages: &HashMap<String, String>) -> Result<SanitizeResult
     })
 }
 
+/// Default `frame-ancestors` allowlist for the viewer CSP: the public site,
+/// Vercel preview deploys (staging frontend), and local dev servers. View
+/// pages are public capability URLs with no cookies or session state, so
+/// framing risk is clickjacking-only; the CSP `sandbox` (opaque origin, no
+/// scripts) is the primary XSS control.
+#[must_use]
+pub fn default_frame_ancestors() -> &'static str {
+    "'self' https://joinbase.ai https://*.vercel.app http://localhost:*"
+}
+
 /// Viewer response headers (CSP sandbox is the key guarantee).
+///
+/// The `sandbox` directive is emitted **without** `allow-scripts` and without
+/// `allow-same-origin`: the document runs in an opaque origin with script
+/// execution disabled, so miner HTML can never touch the serving origin's
+/// cookies, storage, or DOM — even when embedded same-origin through a proxy.
 #[must_use]
 pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
     let csp = format!(
-        "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; \
-         font-src https: data:; base-uri 'none'; form-action 'none'; frame-ancestors {frame_ancestors}"
+        "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; \
+         font-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors {frame_ancestors}"
     );
     vec![
         ("Content-Security-Policy", csp),
         ("X-Content-Type-Options", "nosniff".into()),
         ("Referrer-Policy", "no-referrer".into()),
-        ("Cross-Origin-Resource-Policy", "same-site".into()),
+        // Viewer responses are only ever embedded same-origin (site proxies
+        // the gateway under its own origin); cross-origin embedders get nothing.
+        ("Cross-Origin-Resource-Policy", "same-origin".into()),
         ("Cross-Origin-Opener-Policy", "same-origin".into()),
         (
             "Permissions-Policy",
@@ -261,5 +278,42 @@ mod tests {
         let csp = &h[0].1;
         assert!(csp.starts_with("sandbox;"));
         assert!(csp.contains("default-src 'none'"));
+    }
+
+    #[test]
+    fn viewer_csp_never_allows_scripts_or_same_origin() {
+        // The whole point of the viewer: opaque origin, zero script execution.
+        // Regression guard — never relax these without an owner directive.
+        let h = viewer_headers(default_frame_ancestors());
+        let csp = &h[0].1;
+        assert!(!csp.contains("allow-scripts"), "{csp}");
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(csp.contains("style-src 'unsafe-inline' https:"), "{csp}");
+        assert!(csp.contains("font-src data: https:"), "{csp}");
+        assert!(csp.contains("base-uri 'none'"), "{csp}");
+        assert!(csp.contains("form-action 'none'"), "{csp}");
+        assert!(
+            csp.contains(&format!("frame-ancestors {}", default_frame_ancestors())),
+            "{csp}"
+        );
+    }
+
+    #[test]
+    fn viewer_headers_lockdown_set() {
+        let h = viewer_headers("'none'");
+        let get = |name: &str| h.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("X-Content-Type-Options"), Some("nosniff"));
+        assert_eq!(get("Referrer-Policy"), Some("no-referrer"));
+        assert_eq!(get("Cross-Origin-Resource-Policy"), Some("same-origin"));
+        // No cookie may ever be set on miner-content responses.
+        assert!(get("Set-Cookie").is_none());
+    }
+
+    #[test]
+    fn default_frame_ancestors_allowlist() {
+        let fa = default_frame_ancestors();
+        assert!(fa.contains("https://joinbase.ai"), "{fa}");
+        assert!(fa.contains("https://*.vercel.app"), "{fa}");
+        assert!(!fa.contains("'none'"), "{fa}");
     }
 }
