@@ -647,6 +647,19 @@ impl ChainClient for LiveChainClient {
         );
         let before = self.last_weight_update(self.netuid, &payload.hotkey)?;
         let start_tip = self.current_block()?;
+        // Inside WeightsSetRateLimit the dispatch is guaranteed to fail, so
+        // return fast instead of pool-submitting a doomed extrinsic and
+        // blocking ~4 blocks in confirm. The post-submit confirm stays the
+        // source of truth when the window opens mid-flight.
+        if let Some(b) = before {
+            let window = self.weights_rate_limit(self.netuid);
+            let elapsed = start_tip.saturating_sub(b);
+            if elapsed < window {
+                return Err(ChainError::RateLimited {
+                    retry_after_blocks: Some(window - elapsed),
+                });
+            }
+        }
         let tx_hash = self.submit_extrinsic(&ext)?;
         tracing::info!(%tx_hash, "commit accepted by pool; awaiting dispatch confirmation");
         self.confirm_weight_update(self.netuid, &payload.hotkey, before, start_tip)?;
@@ -686,6 +699,17 @@ impl ChainClient for LiveChainClient {
         let hotkey = extrinsic::derive_public_key(&key)?;
         let before = self.last_weight_update(netuid, &hotkey)?;
         let start_tip = self.current_block()?;
+        // Same pre-submit window check as the timelocked path: fail fast
+        // instead of pool-submitting a dispatch that cannot land.
+        if let Some(b) = before {
+            let window = self.weights_rate_limit(netuid);
+            let elapsed = start_tip.saturating_sub(b);
+            if elapsed < window {
+                return Err(ChainError::RateLimited {
+                    retry_after_blocks: Some(window - elapsed),
+                });
+            }
+        }
         let tx_hash = self.submit_extrinsic(&ext)?;
         tracing::info!(%tx_hash, "set_weights accepted by pool; awaiting dispatch confirmation");
         self.confirm_weight_update(netuid, &hotkey, before, start_tip)?;

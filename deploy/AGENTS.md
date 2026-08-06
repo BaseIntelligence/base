@@ -106,7 +106,9 @@ Public Finney RPCs rate-limit per source IP (entrypoint-finney: HTTP 429 `http_6
 | `BASE_CHAIN_ENDPOINT` | same | Single endpoint; also accepts a comma list (legacy path). |
 | Cooldown | — | Fixed 60s in `chain-live` (matches the Finney `retry_after_seconds: 60`). |
 
-Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary, entrypoint-finney fallback — entrypoint 429'd the prod master IP on 2026-08-06. Flip the order back once entrypoint recovers (probe: `curl -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader","params":[]}' https://entrypoint-finney.opentensor.ai:443` from the host). Failover events surface as `chain endpoint fault; failing over` WARN lines in service logs.
+Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary, entrypoint-finney fallback — entrypoint 429'd the prod master IP on 2026-08-06. Flip the order back once entrypoint recovers (probe: `curl -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader","params":[]}' https://entrypoint-finney.opentensor.ai:443` from the host). Failover events surface as `chain endpoint fault; failing over` WARN lines in service logs. Staging (`env-staging.yml`): each service keeps its current primary and gains the other testnet host as fallback (validator: test.finney→test.chain; gateway/challenges: reverse).
+
+**On-chain WeightsSetRateLimit vs smoke:** validators fail fast with `RateLimited` *before* pool-submitting when the hotkey is inside its 100-block window (no doomed extrinsic, no ~45s confirm block of the async runtime). Previously a restart inside the window re-stormed every tick and wedged `/healthz` past the healthcheck's retry budget — the staging validator smoke failure mode. A validator that logs `weights rate limited; retry after N blocks` immediately after a Match is inside the window, not broken; it submits when the window opens.
 
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
