@@ -57,7 +57,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `gateway` | Master-only: registry, reverse proxy, bundle seal/serve, sole TLS owner; mounts marketing [`SITE_API.md`](./SITE_API.md) (`GET /v1/site/*`) |
 | `validator` | Fetch/mirror bundle, verify, recompute, peer cross-check, CRV4 submit, dissent |
 | `design-challenge` | **Master-only:** sandbox harness runs, sanitize/viewer, scoring, sign leaves |
-| `design-egress-proxy` | **Master-only:** allowlisted PyPI/LLM egress for sandboxes |
+| `design-egress-proxy` | **Master-only:** open sandbox egress (internal-target blocklist) + budgeted LLM path |
 | `prism-challenge` | **Master-only:** Lium (or sim) recipe eval, review gate, sign leaves |
 | `updater` | Digest-pinned rollouts via `docker-socket-proxy` (master) |
 | `trustroot` | Offline keygen / sign / verify for owner-signed TOML |

@@ -157,6 +157,14 @@ struct Cli {
         global = true
     )]
     auto_retry_max: u32,
+    /// Install-phase timeout in seconds (`pip install` from `pyproject.toml`).
+    #[arg(
+        long,
+        env = "DESIGN_INSTALL_TIMEOUT_SECS",
+        default_value_t = design_sandbox::DEFAULT_INSTALL_TIMEOUT_SECS,
+        global = true
+    )]
+    install_timeout_secs: u64,
     /// Metagraph watcher cadence (gating eligibility resets).
     #[arg(
         long,
@@ -365,7 +373,8 @@ fn select_sandbox(cli: &Cli) -> Result<(Arc<dyn SandboxBackend>, &'static str), 
     }
 
     match DockerSandbox::new(&cli.docker_base, cli.staging_root.clone()) {
-        Ok(docker) => {
+        Ok(mut docker) => {
+            docker.install_timeout_sec = cli.install_timeout_secs;
             // Fail closed at boot if the engine/proxy is unreachable — no silent Sim.
             if let Err(e) = docker.client.list_owned() {
                 if host_sim_ok(cli.netuid) {

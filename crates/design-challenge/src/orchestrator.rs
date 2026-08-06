@@ -119,7 +119,9 @@ fn classify_agentic(e: &AgenticError) -> RunFailure {
 /// Design domain rules appended to the agentic system prompt.
 const DESIGN_AGENTIC_RULES: &str = r"
 Design challenge rules:
-- Allowed: PyPI via egress, Mobbin/Dribbble inspiration, image generation, UI libs.
+- Allowed: PyPI deps via pyproject.toml, external APIs / MCP servers over the
+  sandbox egress proxy at run time (network use itself is NEVER a cheat signal),
+  Mobbin/Dribbble inspiration, image generation, UI libs.
 - The corpus entry labeled `baseline` is the published reference miner: starting
   from it is explicitly allowed and is NOT a copy. Copying ANOTHER MINER's
   harness is what counts as a copy.

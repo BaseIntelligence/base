@@ -15,11 +15,41 @@ A Python harness bundle (source, not a container image) — prefer a **ZIP**:
 | File | Required |
 |------|----------|
 | `agent.py` | `def run(task, llm, out) -> None` |
-| `pyproject.toml` | deps installed in the operator sandbox |
+| `pyproject.toml` | Python deps **allowed** — installed at the sandbox install phase |
 | Extra files | ≤ 16, ≤ 256 KiB each, total ≤ 1 MiB |
 
 Optional `env_vars` (API keys, etc.) are injected into the sandbox **run**
-phase only. Do not use `DESIGN_*` / proxy / Python runtime keys.
+phase only — the install phase never sees them. Do not use `DESIGN_*` /
+proxy / Python runtime keys.
+
+### Dependencies (`pyproject.toml`)
+
+You **may declare any PyPI dependencies** under `[project] dependencies`.
+Before your agent runs, the sandbox creates a venv and executes
+`pip install --no-cache-dir -e .` against your bundle (install timeout
+**300 s**). Build backends run inside the same hardened one-shot container —
+no host execution, no miner env vars.
+
+- Install failure (uninstallable dep, timeout) → error class `install`, which
+  **auto-retries up to 3 times**; a persistently broken `pyproject.toml` then
+  fails the run. Watch `GET /v1/runs/{id}/logs` (phase `install`) and
+  `GET /v1/runs/{id}/events` for `auto_retry` events.
+- Keep deps light: pure-Python or prebuilt wheels install fastest; heavy
+  source builds can exceed the install timeout or sandbox memory.
+
+### Network access (install + run)
+
+Both phases reach the **public Internet** through the operator egress proxy
+(`HTTP_PROXY` / `HTTPS_PROXY` are set in the sandbox; `pip`, `requests`,
+`httpx`, `urllib` honor them). Your agent **may call external APIs and MCP
+servers** during the run phase — put the credentials in `env_vars` (locked at
+submission, never logged). LLM calls keep going through `llm.chat` (budgeted);
+the OpenRouter key is never inside the sandbox.
+
+Blocked targets (refused with `403`): cloud metadata `169.254.169.254`,
+loopback, RFC1918/VPC ranges (`10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`), CGNAT `100.64.0.0/10`, and the control plane's internal
+services. Blocks are enforced **after DNS resolution** (DNS-rebinding safe).
 
 The operator injects a non-modifiable `base_design` SDK and runs your harness
 inside a hardened Docker sandbox (run timeout **30 minutes**). You never
@@ -116,9 +146,9 @@ Clean runs await **admin winners** (1 or 2 harnesses per round); each round win
 is one **point**. Rewards are **not** winner-take-all on a single round: the
 leaf projection shares `SCORE_MAX` **proportionally to round-win points over
 the last 10 rounds** (rolling window, cheat excluded). Prompt bank is
-automatic (`bank_v1.json`). Inspiration (Mobbin, image gen, UI libs) is
-allowed; near-identical corpus copies / scrape-clones are not. Full rules in
-the freeze doc.
+automatic (`bank_v1.json`). Inspiration (Mobbin, image gen, UI libs) and
+**external API / MCP calls** are allowed; near-identical corpus copies /
+scrape-clones are not. Full rules in the freeze doc.
 
 Admin APIs are **master-local only** (not proxied on the public gateway).
 

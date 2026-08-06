@@ -55,7 +55,7 @@ Removed (replaced by design + prism HTTP paths; no Phala/CVM miner).
 |-----------|--------|-------|
 | Crates (`crates/design-*`) | done | task, harness, prompts, sandbox, sanitize, rating, store, egress-proxy, challenge. |
 | Binary (`bins/design-challenge`) | done | HTTP API on `:8093`. |
-| Binary (`bins/design-egress-proxy`) | done | Allowlisted PyPI/LLM proxy. |
+| Binary (`bins/design-egress-proxy`) | done | Open egress proxy (internal blocklist) + budgeted LLM path. |
 | Spec + checklist | done | [`DESIGN_CHALLENGE.md`](DESIGN_CHALLENGE.md) + checklist; `xtask design-check`. |
 | Compose / images | in progress | deploy-wiring todo (port `28093` local). |
 | Emission | **0 bps** | Until owner ceremony; prism holds `10000` bps. |
@@ -104,7 +104,7 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | design rating / elimination | done | Integer Elo (K=32), bottom 20% / 4-round cooldown, exact-E leaves. |
 | design API | done | Harness/quota/runs/viewer/annotate/ops on `:8093`. |
 | prism Lium backend | done | `PRISM_FORCE_SIM=false` in staging; the binary logs `eval_backend=lium`. API key is mounted from a file so it never appears in `docker inspect`. |
-| prism orchestration | done | DB-backed claim/execute/review/similarity/score state machine (`prism_submission` + append-only `prism_stage_event`), sweeper (7h grace), boot recovery, exact-E close-loop leaf submit. |
+| prism orchestration | done | DB-backed claim/execute/review/similarity/score state machine (`prism_submission` + append-only `prism_stage_event`), sweeper (7h grace), boot recovery, epoch-close batched D24 leaf emission (`prism-emit` outbox: `emitted_epoch` watermark + `prism_emit_cursor`, migration 0012). |
 | prism recipe v1 | done | `prism-recipe` contract, fineweb-edu pinned shard (URL + SHA-256, harness re-verifies), 6h train / 7h pod caps, baseline sources, recipe pin hex on the API. |
 | prism LLM review | done | `prism-review` quality + similarity prompts (versioned), OpenRouter client (key file only, never env), deterministic sim fallback; anti-copy forces `Copied`/`Suspicious` → Score 0. |
 | prism API | done | Full status surface: submissions list/detail/events/status/jobs/recipe/baseline, idempotent accept. |

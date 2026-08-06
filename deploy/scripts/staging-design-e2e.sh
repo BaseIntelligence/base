@@ -5,9 +5,10 @@
 #
 # Proves, with per-step evidence files + PASS/FAIL summary:
 #   1. Miner A multi-file ZIP (+ X-Env-Json) → accepted → next round →
-#      install/run in Docker → sanitize → agentic review (Docker backend) →
-#      awaiting_admin; pages served (index/pricing/components) and the
-#      submit-time env is the one the run sees (env lock).
+#      install/run in Docker (real PyPI dep `cowsay` installed via egress
+#      proxy; agent probes a public HTTP endpoint) → sanitize → agentic review
+#      (Docker backend) → awaiting_admin; pages served (index/pricing/
+#      components) and the submit-time env is the one the run sees (env lock).
 #   1b. Post-submit env change re-POST → 409 submission_gated (env locked at
 #      submit; also the 1-max gating proof).
 #   2. Round waits: accepted harness runs in the NEXT round, not the current.
@@ -91,11 +92,15 @@ psql() { # psql SQL → host postgres via ssh (evidence only)
 # ---------------------------------------------------------------- assets
 mkdir -p "$EVIDENCE/assets"
 cat > "$EVIDENCE/assets/agent.py" <<'PY'
-"""Staging e2e miner A: multi-file harness (imports helpers, reads locked env)."""
+"""Staging e2e miner A: multi-file harness (imports helpers, reads locked env,
+uses a real PyPI dep, probes open egress)."""
 from __future__ import annotations
 
 import html
 import os
+import urllib.request
+
+import cowsay
 
 import helpers
 
@@ -106,12 +111,23 @@ PAGES = (
 )
 
 
+def _probe(url: str, timeout: int = 20):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status
+    except Exception:
+        return "refused"
+
+
 def run(task, llm, out) -> None:
     prompt = getattr(task, "prompt", "") or "staging e2e product"
     brand = os.environ.get("BRAND_MARK", "env-missing")
+    dep_mark = cowsay.get_output_string("cow", "cowsay-dep-ok").splitlines()[1]
+    ext_mark = _probe("http://example.com/")
     for page, focus in PAGES:
         body = helpers.render_page(page, focus, prompt, brand)
-        out.write_page(page, body)
+        marker = f'<p class="e2e-marks">dep:{html.escape(dep_mark)} ext-http:{ext_mark}</p>'
+        out.write_page(page, body.replace("</body>", marker + "</body>"))
 PY
 cat > "$EVIDENCE/assets/helpers.py" <<'PY'
 """Extra module proving multi-file ZIP support in the sandbox."""
@@ -146,7 +162,7 @@ build-backend = "setuptools.build_meta"
 name = "staging-e2e-miner-a"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["cowsay==6.1"]
 
 [tool.setuptools]
 py-modules = ["agent", "helpers"]
@@ -306,6 +322,13 @@ if grep -q "locked-alpha" "$EVIDENCE/02-view-index.html" 2>/dev/null && ! grep -
   pass "2c env lock: run used submit-time env (locked-alpha)"
 else
   fail "2c env lock" "index.html brand marker mismatch"
+fi
+# deps + open egress markers (cowsay installed from PyPI; example.com via proxy)
+if grep -q "dep:.*cowsay-dep-ok" "$EVIDENCE/02-view-index.html" 2>/dev/null \
+  && grep -q "ext-http:200" "$EVIDENCE/02-view-index.html" 2>/dev/null; then
+  pass "2d deps installed via PyPI + open egress (cowsay, ext-http:200)"
+else
+  fail "2d deps/egress markers" "see 02-view-index.html (dep/ext-http markers)"
 fi
 
 # ---------------------------------------------------------------- 3: admin winners

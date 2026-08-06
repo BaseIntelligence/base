@@ -28,8 +28,8 @@ Miner  --POST /v1/harness-->  design-challenge (:8093)
                            | HTTP only
                     +------v---------------------+
                     | design-egress-proxy         |
-                    |  install: PyPI allowlist    |
-                    |  run: OpenRouter + key      |
+                    |  open egress, internal      |
+                    |  blocklist; OpenRouter key  |
                     +----------------------------+
                            |
                     /out/pages/*.html
@@ -154,8 +154,20 @@ Operator entrypoint `design_harness.py` loads miner `agent.py` after install.
 
 Two phases on pinned `design-runtime`:
 
-1. **install** — `pip install` into work-root venv; proxy in PyPI mode; no LLM; short timeout.
-2. **run** — same work root; venv read-oriented; proxy in LLM mode with per-run budget; loads `design_harness.py`.
+1. **install** — `pip install --no-cache-dir -e /work` into a work-root venv,
+   resolving `pyproject.toml` deps from PyPI via the egress proxy (open
+   Internet; internal-target blocklist). Miner env is **not** injected in this
+   phase. Timeout `DESIGN_INSTALL_TIMEOUT_SECS` (default 300s); non-zero exit
+   or timeout → error class `install` (auto-retry ≤ 3, then `failed` with
+   `NoScore(ChallengeInternal)`).
+2. **run** — same work root; open egress via the proxy for external APIs /
+   MCP servers (same blocklist); `llm.chat` rides the budgeted `/v1/chat`
+   path; miner env injected; loads `design_harness.py`.
+
+The egress proxy blocklist refuses cloud metadata (`169.254.169.254`),
+loopback, RFC1918/VPC (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`),
+CGNAT (`100.64.0.0/10`), and control-plane service names, enforced **after
+DNS resolution** (DNS-rebinding safe).
 
 `docker-engine` `RunSpec` hardening for design (prefix `base-design-`):
 
@@ -273,8 +285,11 @@ cheat signal (baseline-zeroing fix); copying another *miner's* harness is.
 
 ### Allowed inspiration
 
-Internet + PyPI via egress, Mobbin / Dribbble / design refs, image generation,
-and UI libraries are **allowed** when the output is substantially transformed.
+Internet + PyPI via egress, external APIs / MCP servers at run time, Mobbin /
+Dribbble / design refs, image generation, and UI libraries are **allowed**
+when the output is substantially transformed. Network use itself is never a
+cheat signal; copying another *miner's* harness or scrape-cloning a real site
+is.
 
 ### Cheat → `Score(0)` (before admin)
 
@@ -442,7 +457,7 @@ returns 403). Operators hit `design-challenge:8093` on the master host
 | `design-sanitize` | HTML/CSS sanitize + viewer headers |
 | `design-rating` | Legacy Elo helpers (not on leaf path) |
 | `design-store` | `DesignStore` trait, memory + DB adapter |
-| `design-egress-proxy` | Allowlisted HTTP proxy |
+| `design-egress-proxy` | Open egress proxy (internal blocklist) + budgeted LLM path |
 | `design-http` | Miner/viewer/admin winners/stats HTTP API |
 | `design-challenge` | Orchestrator, agentic, scoring, leaf emit |
 | `challenge-agentic` | Shared OpenRouter/Sim anti-cheat verifier |

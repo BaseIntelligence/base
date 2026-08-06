@@ -17,7 +17,7 @@ pub const PRISM_DOMAIN_RULES: &str = r"Prism domain:
 pub const DESIGN_DOMAIN_RULES: &str = r"Design domain:
 - Primary: agent.py (+ pages / sanitize_report when present).
 - Cheat: near-identical harness copy, trivial HTML republish wrapper, scrape-clone of a real site, sanitize bypass / JS exfil, obfuscation to hide a copy.
-- Inspiration (Mobbin, image gen, UI libs) is allowed when the output is substantially transformed.
+- Inspiration (Mobbin, image gen, UI libs) is allowed when the output is substantially transformed; calling external APIs / MCP servers at run time is allowed and is NOT a cheat signal.
 - suspicious: strong overlap without byte-identity — still Score(0).";
 
 /// Base system instructions. Domain-specific rules are appended by the caller.

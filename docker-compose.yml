@@ -241,9 +241,12 @@ services:
       - base
 
   # ---------------------------------------------------------------------------
-  # design-egress-proxy — allowlisted PyPI / OpenRouter egress for sandboxes.
-  # Holds OPENROUTER key; never mount design_sk here. On base + internal
-  # design-sandbox-egress so sandboxes can reach it without internet.
+  # design-egress-proxy — open Internet egress for sandboxes (install + run)
+  # with an internal-target blocklist (metadata / loopback / RFC1918 / CGNAT /
+  # control-plane names, enforced post-DNS-resolution) plus the budgeted
+  # OpenRouter chat path. Holds OPENROUTER key; never mount design_sk here.
+  # On base + internal design-sandbox-egress so sandboxes can reach it without
+  # direct internet.
   # ---------------------------------------------------------------------------
   design-egress-proxy:
     image: design-egress-proxy:0.1.0
@@ -256,7 +259,6 @@ services:
     restart: unless-stopped
     environment:
       DESIGN_EGRESS_BIND: 0.0.0.0:8094
-      DESIGN_PROXY_MODE: "${DESIGN_PROXY_MODE:-llm}"
       OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
       DESIGN_TOKEN_BUDGET: "${DESIGN_TOKEN_BUDGET:-8000}"
       DESIGN_EGRESS_SIM: "${DESIGN_EGRESS_SIM:-false}"
@@ -315,6 +317,7 @@ services:
       DESIGN_ANNOTATOR_TOKENS_FILE: /run/base/design/annotator_tokens
       DESIGN_AGENTIC_OPENROUTER_KEY_FILE: /run/base/openrouter/api_key
       DESIGN_MAX_CONCURRENT: "${DESIGN_MAX_CONCURRENT:-2}"
+      DESIGN_INSTALL_TIMEOUT_SECS: "${DESIGN_INSTALL_TIMEOUT_SECS:-300}"
       BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
     env_file:
       # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose

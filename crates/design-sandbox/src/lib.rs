@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,10 @@ use thiserror::Error;
 
 /// Default design-runtime image (compose / local tag; digest pins via GHCR).
 pub const DEFAULT_RUNTIME_IMAGE: &str = "design-runtime:0.1.0";
+
+/// Default install-phase timeout (`pip install` from `pyproject.toml`).
+/// Env-tunable on the service via `DESIGN_INSTALL_TIMEOUT_SECS`.
+pub const DEFAULT_INSTALL_TIMEOUT_SECS: u64 = 300;
 
 /// Sandbox errors.
 #[derive(Debug, Error)]
@@ -63,7 +68,8 @@ pub struct SandboxSession {
 
 /// Execution backend.
 pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
-    /// Install phase (venv + pip). Emits progress between phases when used by orchestrator.
+    /// Install phase (venv + `pip install` from `pyproject.toml`). Miner env is
+    /// NEVER injected here — env vars are run-phase only (env-lock semantics).
     ///
     /// # Errors
     /// Backend failures.
@@ -73,7 +79,7 @@ pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
         round_id: u64,
         run_id: &str,
         prompt: &str,
-        llm_proxy: &str,
+        egress_proxy: &str,
     ) -> Result<SandboxSession, SandboxError>;
 
     /// Run phase on a prepared session.
@@ -86,7 +92,7 @@ pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
         round_id: u64,
         run_id: &str,
         prompt: &str,
-        llm_proxy: &str,
+        egress_proxy: &str,
     ) -> Result<SandboxOutput, SandboxError>;
 
     /// Install then run (convenience for tests).
@@ -99,11 +105,11 @@ pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
         round_id: u64,
         run_id: &str,
         prompt: &str,
-        llm_proxy: &str,
+        egress_proxy: &str,
     ) -> Result<SandboxOutput, SandboxError> {
-        let session = self.install(bundle, round_id, run_id, prompt, llm_proxy)?;
+        let session = self.install(bundle, round_id, run_id, prompt, egress_proxy)?;
         let install_logs = session.install_logs.clone();
-        let mut out = self.run_session(session, round_id, run_id, prompt, llm_proxy)?;
+        let mut out = self.run_session(session, round_id, run_id, prompt, egress_proxy)?;
         if out.install_logs.is_empty() {
             out.install_logs = install_logs;
         }
@@ -141,10 +147,21 @@ impl DockerSandbox {
             client,
             image: DEFAULT_RUNTIME_IMAGE.into(),
             network_mode: "design-sandbox-egress".into(),
-            install_timeout_sec: 180,
+            install_timeout_sec: DEFAULT_INSTALL_TIMEOUT_SECS,
             run_timeout_sec: design_challenge_task::agent_run_timeout_secs(),
             staging_root,
         })
+    }
+
+    /// Install-phase env: egress proxy + pip knobs only. Miner env vars are
+    /// run-phase only and never enter this list (env-lock semantics).
+    fn install_env(egress_proxy: &str) -> Vec<String> {
+        vec![
+            format!("HTTP_PROXY={egress_proxy}"),
+            format!("HTTPS_PROXY={egress_proxy}"),
+            "PIP_DISABLE_PIP_VERSION_CHECK=1".into(),
+            "PIP_NO_INPUT=1".into(),
+        ]
     }
 
     fn stage(&self, bundle: &HarnessBundle, run_id: &str) -> Result<PathBuf, SandboxError> {
@@ -152,6 +169,16 @@ impl DockerSandbox {
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(work.join("out/pages"))?;
         fs::create_dir_all(work.join("out/assets"))?;
+        // The sandbox container writes here as uid 65532 regardless of the
+        // service uid (production runs as 65532; tests/operators may not).
+        for d in [
+            &work,
+            &work.join("out"),
+            &work.join("out/pages"),
+            &work.join("out/assets"),
+        ] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o777))?;
+        }
         let staged = stage_work_files(bundle);
         for (rel, body) in staged.files {
             let path = work.join(&rel);
@@ -210,50 +237,32 @@ impl SandboxBackend for DockerSandbox {
         _round_id: u64,
         run_id: &str,
         _prompt: &str,
-        _llm_proxy: &str,
+        egress_proxy: &str,
     ) -> Result<SandboxSession, SandboxError> {
         let work = self.stage(bundle, run_id)?;
         let ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let install_name = format!("{DESIGN_OWNED_NAME_PREFIX}inst-{run_id}-{ns}");
-        // Create a venv, then `pip install -e`. When the harness declares no
-        // third-party deps, allow install to succeed even if PyPI egress is
-        // unavailable — `design_harness.py` loads `agent.py` by path.
+        // Strict dependency install: any pyproject-declared dep must install
+        // via the egress proxy; non-zero exit / timeout → `install` error
+        // class (auto-retryable). Build backends run miner-controlled code, so
+        // this phase keeps the full one-shot container hardening.
         let install = self.run_phase(
             &install_name,
             &work,
             vec![
                 "bash".into(),
                 "-lc".into(),
-                r#"set -e
+                r"set -e
 python -m venv /work/.venv
-if /work/.venv/bin/pip install -e /work; then
-  echo pip-install-ok
-  exit 0
-fi
-python - <<'PY'
-import pathlib, sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
-raw = pathlib.Path("/work/pyproject.toml").read_bytes()
-deps = tomllib.loads(raw.decode()).get("project", {}).get("dependencies") or []
-if deps:
-    print("pip-install-failed with dependencies:", deps, file=sys.stderr)
-    sys.exit(1)
-print("pip-install-skipped-no-deps")
-PY"#
-                .into(),
+/work/.venv/bin/pip install --no-cache-dir -e /work
+echo pip-install-ok"
+                    .into(),
             ],
-            vec![
-                "HTTP_PROXY=http://design-egress-proxy:8094".into(),
-                "HTTPS_PROXY=http://design-egress-proxy:8094".into(),
-                "DESIGN_PROXY_MODE=pypi".into(),
-            ],
+            Self::install_env(egress_proxy),
             self.install_timeout_sec,
-            false,
+            true,
         )?;
         if install.status_code != 0 {
             return Err(SandboxError::PhaseFailed {
@@ -274,7 +283,7 @@ PY"#
         round_id: u64,
         run_id: &str,
         prompt: &str,
-        llm_proxy: &str,
+        egress_proxy: &str,
     ) -> Result<SandboxOutput, SandboxError> {
         let install_logs = session.install_logs;
         let work = session.work_root;
@@ -283,16 +292,17 @@ PY"#
             .map_or(0, |d| d.as_nanos());
         let run_name = format!("{DESIGN_OWNED_NAME_PREFIX}run-{run_id}-{ns}");
         // Miner env is applied only on the run phase. Values are never logged.
+        // Open egress (external APIs / MCP servers) rides the same proxy;
+        // the internal-target blocklist is enforced proxy-side.
         let mut env = vec![
-            format!("DESIGN_LLM_PROXY={llm_proxy}"),
+            format!("DESIGN_LLM_PROXY={egress_proxy}"),
             format!("DESIGN_RUN_ID={run_id}"),
             format!("DESIGN_ROUND_ID={round_id}"),
             format!("DESIGN_PROMPT={prompt}"),
             "DESIGN_WORK_ROOT=/work".into(),
             "DESIGN_OUT_ROOT=/work/out".into(),
-            "DESIGN_PROXY_MODE=llm".into(),
-            "HTTP_PROXY=http://design-egress-proxy:8094".into(),
-            "HTTPS_PROXY=http://design-egress-proxy:8094".into(),
+            format!("HTTP_PROXY={egress_proxy}"),
+            format!("HTTPS_PROXY={egress_proxy}"),
         ];
         // Re-read env from staged files is not possible; callers must put
         // validated env on the bundle before install/run. We pass via a
@@ -391,12 +401,13 @@ impl SandboxBackend for SimSandbox {
         _round_id: u64,
         run_id: &str,
         _prompt: &str,
-        _llm_proxy: &str,
+        _egress_proxy: &str,
     ) -> Result<SandboxSession, SandboxError> {
         let work = Self::stage(bundle, run_id)?;
         Ok(SandboxSession {
             work_root: work,
-            install_logs: "sim-install-ok (staged agent.py + base_design)".into(),
+            install_logs:
+                "sim-install-ok (deps NOT installed in sim; staged agent.py + base_design)".into(),
         })
     }
 
@@ -406,7 +417,7 @@ impl SandboxBackend for SimSandbox {
         round_id: u64,
         run_id: &str,
         prompt: &str,
-        _llm_proxy: &str,
+        _egress_proxy: &str,
     ) -> Result<SandboxOutput, SandboxError> {
         let work = session.work_root;
         if work.as_os_str().is_empty() {
@@ -533,6 +544,31 @@ mod tests {
         include_str!("../../../docs/external-miner/examples/design-baseline/agent.py");
     const BASELINE_PYPROJECT: &str =
         include_str!("../../../docs/external-miner/examples/design-baseline/pyproject.toml");
+
+    #[test]
+    fn install_env_carries_no_miner_secrets() {
+        let env = DockerSandbox::install_env("http://proxy:1");
+        let keys: Vec<&str> = env.iter().filter_map(|e| e.split('=').next()).collect();
+        assert_eq!(
+            keys,
+            [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "PIP_DISABLE_PIP_VERSION_CHECK",
+                "PIP_NO_INPUT"
+            ]
+        );
+        // Miner env keys are structurally absent (env-lock: run phase only).
+        for banned in [
+            "SECRET",
+            "API_KEY",
+            "TOKEN",
+            "DESIGN_LLM_PROXY",
+            "DESIGN_PROMPT",
+        ] {
+            assert!(!env.iter().any(|e| e.starts_with(banned)), "{banned}");
+        }
+    }
 
     #[test]
     fn sim_runs_baseline_agent_py() {

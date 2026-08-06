@@ -1,6 +1,6 @@
 [package]
 name = "design-egress-proxy-bin"
-description = "design-egress-proxy binary (PyPI / OpenRouter allowlist)"
+description = "design-egress-proxy binary (open egress, internal blocklist + OpenRouter chat)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
