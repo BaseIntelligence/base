@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "comment": "Shared banned-pattern list for Prism v3 untrusted-code screening. Read by BOTH sides: (1) the Rust intake scanner in crates/prism-recipe/src/zip_submit.rs (include_str!, hard reject at submission intake) and (2) the harness-side AST audit in prismlib/cheatguard.py (soft flag into the run report under cheatguard.ast_findings). Keep both consumers in sync when editing; unknown keys must be ignored by readers.",
+  "banned_extensions": [".so", ".pyd", ".cubin", ".dll", ".pyc", ".pyo"],
+  "banned_substrings": ["ctypes", "cuModuleLoadData"],
+  "banned_call_strings": ["torch.utils.cpp_extension.load"],
+  "banned_call_allowed_suffixes": ["_inline"],
+  "base64_decode_marker": "base64.b64decode(",
+  "base64_blob_min_len": 256,
+  "ast_banned_import_roots": ["ctypes"],
+  "ast_forbidden_print_markers": ["METRICS_JSON", "EVAL_OK", "EVAL_FAIL"]
+}

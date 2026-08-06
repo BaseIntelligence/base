@@ -28,14 +28,21 @@
 
 mod zip_submit;
 
-pub use zip_submit::{sources_from_zip, training_from_zip, ZipSubmitError};
+pub mod attribution;
+
+pub use attribution::{build_attribution_runs, AttributionCell, AttributionError, AttributionRun};
+pub use zip_submit::{
+    probe_zip_kind, sources_from_zip, training_from_zip, tree_from_zip, SourceTree, ZipKind,
+    ZipSubmitError, DEFAULT_TREE_ENTRY, MAX_TREE_FILES, MAX_TREE_FILE_BYTES, MAX_TREE_TOTAL_BYTES,
+    TREE_MANIFEST_FILE, VENDOR_LOCK_FILE,
+};
 
 /// Embedded harness package: pod-relative path → file contents, uploaded
 /// file-by-file by `prism-lium` into the pod workdir. Layout: `main.py`
 /// (parent entrypoint), `prismlib/*.py` (library modules: miner subprocess
 /// runner, seeded train stream, G6 probes, harness-owned scoring, pod
-/// manifest), `eval/__init__.py` (G1–G8 battery registry; battery modules
-/// land in a later recipe step).
+/// manifest, v3 two-phase entries), `eval/` (G1–G8 battery registry +
+/// battery modules + procedural generators + the public dev family).
 ///
 /// Keep sorted by path — [`harness_files_sha256`] and [`recipe_pin_hex`]
 /// hash the set in sorted-path order.
@@ -43,6 +50,99 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
     (
         "eval/__init__.py",
         include_str!("../harness/eval/__init__.py"),
+    ),
+    ("eval/common.py", include_str!("../harness/eval/common.py")),
+    (
+        "eval/g1_intrinsic.py",
+        include_str!("../harness/eval/g1_intrinsic.py"),
+    ),
+    (
+        "eval/g2_downstream.py",
+        include_str!("../harness/eval/g2_downstream.py"),
+    ),
+    (
+        "eval/g3_recall.py",
+        include_str!("../harness/eval/g3_recall.py"),
+    ),
+    (
+        "eval/g4_reasoning.py",
+        include_str!("../harness/eval/g4_reasoning.py"),
+    ),
+    (
+        "eval/g5_longctx.py",
+        include_str!("../harness/eval/g5_longctx.py"),
+    ),
+    (
+        "eval/g6_curve.py",
+        include_str!("../harness/eval/g6_curve.py"),
+    ),
+    (
+        "eval/g7_inference.py",
+        include_str!("../harness/eval/g7_inference.py"),
+    ),
+    (
+        "eval/g8_stability.py",
+        include_str!("../harness/eval/g8_stability.py"),
+    ),
+    (
+        "eval/gen_longctx.py",
+        include_str!("../harness/eval/gen_longctx.py"),
+    ),
+    (
+        "eval/gen_reasoning.py",
+        include_str!("../harness/eval/gen_reasoning.py"),
+    ),
+    (
+        "eval/generators.py",
+        include_str!("../harness/eval/generators.py"),
+    ),
+    (
+        "eval/public_dev/README.md",
+        include_str!("../harness/eval/public_dev/README.md"),
+    ),
+    (
+        "eval/public_dev/g1/domains/code.jsonl",
+        include_str!("../harness/eval/public_dev/g1/domains/code.jsonl"),
+    ),
+    (
+        "eval/public_dev/g1/domains/news.jsonl",
+        include_str!("../harness/eval/public_dev/g1/domains/news.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/arc_challenge.jsonl",
+        include_str!("../harness/eval/public_dev/g2/arc_challenge.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/arc_easy.jsonl",
+        include_str!("../harness/eval/public_dev/g2/arc_easy.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/boolq.jsonl",
+        include_str!("../harness/eval/public_dev/g2/boolq.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/hellaswag.jsonl",
+        include_str!("../harness/eval/public_dev/g2/hellaswag.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/lambada.jsonl",
+        include_str!("../harness/eval/public_dev/g2/lambada.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/openbookqa.jsonl",
+        include_str!("../harness/eval/public_dev/g2/openbookqa.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/piqa.jsonl",
+        include_str!("../harness/eval/public_dev/g2/piqa.jsonl"),
+    ),
+    (
+        "eval/public_dev/g2/winogrande.jsonl",
+        include_str!("../harness/eval/public_dev/g2/winogrande.jsonl"),
+    ),
+    (
+        "eval/public_dev/seeds.json",
+        include_str!("../harness/eval/public_dev/seeds.json"),
     ),
     ("main.py", include_str!("../harness/main.py")),
     (
@@ -56,6 +156,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
     (
         "prismlib/envutil.py",
         include_str!("../harness/prismlib/envutil.py"),
+    ),
+    (
+        "prismlib/eval_v3.py",
+        include_str!("../harness/prismlib/eval_v3.py"),
     ),
     (
         "prismlib/manifest.py",
@@ -84,6 +188,14 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
     (
         "prismlib/telemetry.py",
         include_str!("../harness/prismlib/telemetry.py"),
+    ),
+    (
+        "prismlib/train_v3.py",
+        include_str!("../harness/prismlib/train_v3.py"),
+    ),
+    (
+        "prismlib/v3flow.py",
+        include_str!("../harness/prismlib/v3flow.py"),
     ),
 ];
 
@@ -364,6 +476,20 @@ mod tests {
         for required in [
             "main.py",
             "eval/__init__.py",
+            "eval/common.py",
+            "eval/generators.py",
+            "eval/gen_reasoning.py",
+            "eval/gen_longctx.py",
+            "eval/g1_intrinsic.py",
+            "eval/g2_downstream.py",
+            "eval/g3_recall.py",
+            "eval/g4_reasoning.py",
+            "eval/g5_longctx.py",
+            "eval/g6_curve.py",
+            "eval/g7_inference.py",
+            "eval/g8_stability.py",
+            "eval/public_dev/seeds.json",
+            "eval/public_dev/README.md",
             "prismlib/__init__.py",
             "prismlib/runner.py",
             "prismlib/miner_entry.py",
@@ -374,8 +500,27 @@ mod tests {
             "prismlib/manifest.py",
             "prismlib/dataset.py",
             "prismlib/envutil.py",
+            "prismlib/train_v3.py",
+            "prismlib/eval_v3.py",
+            "prismlib/v3flow.py",
         ] {
             assert!(paths.contains(&required), "missing harness file {required}");
+        }
+        for required_g2 in [
+            "lambada",
+            "hellaswag",
+            "piqa",
+            "arc_easy",
+            "arc_challenge",
+            "winogrande",
+            "boolq",
+            "openbookqa",
+        ] {
+            let rel = format!("eval/public_dev/g2/{required_g2}.jsonl");
+            assert!(
+                paths.contains(&rel.as_str()),
+                "missing public dev anchor {rel}"
+            );
         }
         let main = HARNESS_FILES
             .iter()
@@ -407,6 +552,15 @@ mod tests {
             "harness_files_sha256",
             "parameter cap",
             "probe_curve",
+            "PRISM_FLOW",
+            "PRISM_EVAL_ASSETS_DIR",
+            "PRISM_EVAL_SECRET_SEED",
+            "eval_tier",
+            "checkpoint.pt",
+            "run_battery",
+            "cantor",
+            "prism_width_multiplier",
+            "cheatguard",
         ] {
             assert!(all.contains(marker), "harness package missing {marker}");
         }
