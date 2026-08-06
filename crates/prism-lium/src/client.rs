@@ -385,9 +385,10 @@ impl LiumClient {
         })
     }
 
-    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → upload the harness
-    /// package ([`prism_recipe::HARNESS_FILES`]) + miner sources → run
-    /// `main.py` → parse `METRICS_JSON` (v1 and v2 payloads both accepted).
+    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → stage the harness
+    /// package ([`prism_recipe::HARNESS_FILES`]) + miner sources as a tar
+    /// over ssh stdin → run `main.py` → parse `METRICS_JSON` (v1 and v2
+    /// payloads both accepted).
     ///
     /// The harness trains the miner's code on the pinned fineweb-edu shard and
     /// scores the frozen val cut; no metric comes from hashing sources.
@@ -421,7 +422,11 @@ impl LiumClient {
 
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
         let timeout_secs = train_cap_secs.saturating_add(3600);
-        let setup = harness_setup_script(architecture_py, training_py);
+        // Stage the harness tar over ssh stdin before the run: argv-embedded
+        // base64 payloads exceeded MAX_ARG_STRLEN at local spawn (BUG-5).
+        let tar = harness_upload_tar(architecture_py, training_py)?;
+        let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
+        ssh_exec_stdin(&target, &key, HARNESS_EXTRACT_CMD, &tar, att, rty, 300).await?;
         let assets = eval_assets_dir();
         let pairs = harness_env_pairs(self.ssh.train_hours_cap, &gpu_type, assets.is_some());
         #[allow(clippy::format_collect)]
@@ -430,7 +435,7 @@ impl LiumClient {
             .map(|(k, v)| format!("{k}='{v}' \\\n"))
             .collect();
         let remote =
-            format!("{setup}cd /tmp/prism_eval\n{env}timeout --kill-after=60 {timeout_secs} python3 main.py");
+            format!("{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 {timeout_secs} python3 main.py");
 
         self.exec_eval_stream(
             &target,
@@ -559,36 +564,57 @@ impl LiumClient {
     }
 }
 
-/// Shell lines uploading every embedded harness file
-/// ([`prism_recipe::HARNESS_FILES`]) into the pod workdir, preserving the
-/// package layout (`prismlib/`, `eval/`). Paths and base64 payloads are
-/// static/safe: base64 never contains a single quote, paths are
-/// compile-time constants.
-fn harness_upload_script() -> String {
-    use std::fmt::Write as _;
-    let mut out = String::from("mkdir -p /tmp/prism_eval/prismlib /tmp/prism_eval/eval\n");
-    for (path, contents) in prism_recipe::HARNESS_FILES {
-        let b64 = base64_encode(contents.as_bytes());
-        let _ = writeln!(out, "echo '{b64}' | base64 -d > /tmp/prism_eval/{path}");
-    }
-    out
-}
+/// Pod bootstrap prepended to the run command: dependency check only (the
+/// harness package + miner sources are staged separately, see below).
+/// Static and small — argv-safe under the kernel `MAX_ARG_STRLEN`.
+const HARNESS_BOOTSTRAP: &str = "set -e\ncommand -v pip >/dev/null 2>&1 || apt-get update -q; command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip; python3 -c 'import torch' 2>/dev/null || echo 'torch stopping'; python3 -c 'import transformers' 2>/dev/null || pip install --break-system-packages --root-user-action=ignore 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'; mkdir -p /tmp/prism_eval\n";
 
-/// Pod bootstrap + uploads shared by both run modes: dependency check, the
-/// harness package upload, and the miner source files. Ends inside
-/// `/tmp/prism_eval` setup (callers append the run command).
-fn harness_setup_script(architecture_py: &str, training_py: &str) -> String {
-    let deps = "command -v pip >/dev/null 2>&1 || apt-get update -q; \
-command -v pip >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-pip; \
-python3 -c 'import torch' 2>/dev/null || echo 'torch stopping'; \
-python3 -c 'import transformers' 2>/dev/null || pip install --break-system-packages --root-user-action=ignore 'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'; \
-mkdir -p /tmp/prism_eval\n";
-    format!(
-        "set -e\n{deps}{upload}echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py\necho '{train_b64}' | base64 -d > /tmp/prism_eval/training.py\n",
-        upload = harness_upload_script(),
-        arch_b64 = base64_encode(architecture_py.as_bytes()),
-        train_b64 = base64_encode(training_py.as_bytes()),
-    )
+/// Remote extract command for the harness tar (same convention as
+/// `stage_eval_assets`): fixed size regardless of payload, so the ssh argv
+/// stays tiny while the archive rides stdin. GNU tar auto-detects the
+/// uncompressed stream and creates `prismlib/`, `eval/` parents itself.
+const HARNESS_EXTRACT_CMD: &str = "set -e; mkdir -p /tmp/prism_eval; tar -x -C /tmp/prism_eval";
+
+/// Deterministic uncompressed ustar of the harness package
+/// ([`prism_recipe::HARNESS_FILES`]) plus the miner sources
+/// (`architecture.py`, `training.py`), streamed to the pod over ssh stdin —
+/// never argv (BUG-5: base64-in-argv hit 239 KB vs the 128 KB
+/// `MAX_ARG_STRLEN`). Entries sorted by path, metadata normalized (zeroed
+/// uid/gid/mtime/uname/gname via the zero-initialized block, mode 0644), so
+/// two builds are byte-identical and the pod layout matches the old upload
+/// (`main.py`, `prismlib/*.py`, `eval/**`, `cheatguard_patterns.json`,
+/// `architecture.py`, `training.py` at the workdir root).
+fn harness_upload_tar(architecture_py: &str, training_py: &str) -> Result<Vec<u8>, LiumError> {
+    let mut files: Vec<(&str, &[u8])> = prism_recipe::HARNESS_FILES
+        .iter()
+        .map(|(p, c)| (*p, c.as_bytes()))
+        .collect();
+    files.push(("architecture.py", architecture_py.as_bytes()));
+    files.push(("training.py", training_py.as_bytes()));
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    let mut out = Vec::new();
+    for (path, contents) in files {
+        if path.len() > 100 {
+            return Err(LiumError::Exec(format!(
+                "harness path exceeds ustar: {path}"
+            )));
+        }
+        let mut h = [0u8; 512];
+        h[..path.len()].copy_from_slice(path.as_bytes());
+        h[100..107].copy_from_slice(b"0000644");
+        h[124..135].copy_from_slice(format!("{:011o}", contents.len()).as_bytes());
+        h[156] = b'0';
+        h[257..262].copy_from_slice(b"ustar");
+        h[263..265].copy_from_slice(b"00");
+        h[148..156].fill(b' ');
+        let sum: u32 = h.iter().map(|b| u32::from(*b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        out.extend_from_slice(&h);
+        out.extend_from_slice(contents);
+        out.resize(out.len() + (512 - contents.len() % 512) % 512, 0);
+    }
+    out.extend_from_slice(&[0u8; 1024]);
+    Ok(out)
 }
 
 /// Harness env pairs for the pod run. `PRISM_TEST_TRAIN_MINUTES` /
@@ -600,28 +626,21 @@ fn harness_env_pairs(
     gpu_type: &str,
     assets_pending: bool,
 ) -> Vec<(&'static str, String)> {
+    let max_steps = prism_recipe::MAX_TRAIN_STEPS.to_string();
+    let harness_sha = prism_recipe::harness_files_sha256();
     let mut v = vec![
         ("PRISM_DATASET_URL", prism_recipe::DATASET_URL.to_owned()),
         ("PRISM_DATASET_SHA256", prism_recipe::dataset_sha256()),
-        (
-            "PRISM_MAX_TRAIN_STEPS",
-            prism_recipe::MAX_TRAIN_STEPS.to_string(),
-        ),
+        ("PRISM_MAX_TRAIN_STEPS", max_steps),
         ("PRISM_TRAIN_HOURS_CAP", train_hours_cap.to_string()),
         ("PRISM_GPU_TYPE", gpu_type.replace('\'', "")),
-        (
-            "PRISM_HARNESS_FILES_SHA256",
-            prism_recipe::harness_files_sha256(),
-        ),
+        ("PRISM_HARNESS_FILES_SHA256", harness_sha),
     ];
-    if let Ok(val) = std::env::var("PRISM_TEST_TRAIN_MINUTES") {
-        if val.trim().parse::<f64>().is_ok() {
-            v.push(("PRISM_TEST_TRAIN_MINUTES", val.trim().to_owned()));
-        }
-    }
-    if let Ok(val) = std::env::var("PRISM_TEST_MAX_PARAMS") {
-        if val.trim().parse::<u64>().is_ok() {
-            v.push(("PRISM_TEST_MAX_PARAMS", val.trim().to_owned()));
+    for key in ["PRISM_TEST_TRAIN_MINUTES", "PRISM_TEST_MAX_PARAMS"] {
+        if let Ok(val) = std::env::var(key) {
+            if val.trim().parse::<f64>().is_ok() {
+                v.push((key, val.trim().to_owned()));
+            }
         }
     }
     if assets_pending {
@@ -636,12 +655,8 @@ fn harness_env_pairs(
 /// Master-side operator env: private eval-assets directory to stage
 /// post-train. Absent / not a directory → legacy single-shot public run.
 fn eval_assets_dir() -> Option<PathBuf> {
-    let p = PathBuf::from(
-        std::env::var("PRISM_EVAL_ASSETS_DIR")
-            .ok()?
-            .trim()
-            .to_owned(),
-    );
+    let v = std::env::var("PRISM_EVAL_ASSETS_DIR").ok()?;
+    let p = PathBuf::from(v.trim());
     p.is_dir().then_some(p)
 }
 
@@ -650,10 +665,13 @@ fn eval_assets_dir() -> Option<PathBuf> {
 /// inherits the parent env for the train-phase child, so env delivery
 /// would leak the secret to miner code).
 fn random_seed_hex() -> Result<String, LiumError> {
-    let b = std::fs::read("/dev/urandom").map_err(|e| LiumError::Exec(format!("entropy: {e}")))?;
-    b.get(..16)
-        .map(hex::encode)
-        .ok_or_else(|| LiumError::Exec("entropy short read".into()))
+    use std::io::Read as _;
+    // Fixed-size read: fs::read on a char device blocks forever (no EOF).
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .map_err(|e| LiumError::Exec(format!("entropy: {e}")))?;
+    Ok(hex::encode(b))
 }
 
 /// Parse the harness run output: `EVAL_OK` gate, `METRICS_JSON=` line, bpb
@@ -691,11 +709,6 @@ fn parse_metrics_output(
         )));
     }
     Ok(v)
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// First string value found at any of `keys` (top-level object lookups).
@@ -1227,54 +1240,116 @@ mod tests {
         assert!(s.contains("<redacted>"));
     }
 
+    /// Minimal ustar reader for assertions: validates magic + checksum per
+    /// header and returns the regular-file entries `(path, contents)`.
+    fn parse_tar_files(tar: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut off = 0;
+        while off + 512 <= tar.len() {
+            let h = &tar[off..off + 512];
+            if h.iter().all(|&b| b == 0) {
+                break;
+            }
+            assert_eq!(&h[257..262], b"ustar", "bad ustar magic");
+            let sum: usize = h
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| {
+                    if (148..156).contains(&i) {
+                        32
+                    } else {
+                        b as usize
+                    }
+                })
+                .sum();
+            let stored =
+                usize::from_str_radix(std::str::from_utf8(&h[148..154]).unwrap(), 8).unwrap();
+            assert_eq!(stored, sum, "ustar checksum mismatch");
+            let end = h[..100].iter().position(|&b| b == 0).unwrap_or(100);
+            let name = std::str::from_utf8(&h[..end]).unwrap().to_owned();
+            let size = usize::from_str_radix(
+                std::str::from_utf8(&h[124..135])
+                    .unwrap()
+                    .trim_end_matches('\0'),
+                8,
+            )
+            .unwrap();
+            assert_eq!(h[156], b'0', "only regular files are archived");
+            off += 512;
+            out.push((name, tar[off..off + size].to_vec()));
+            off += size.div_ceil(512) * 512;
+        }
+        out
+    }
+
     #[test]
-    fn harness_upload_script_covers_every_embedded_file() {
-        let s = harness_upload_script();
-        assert!(s.contains("mkdir -p /tmp/prism_eval/prismlib /tmp/prism_eval/eval"));
-        for (path, _) in prism_recipe::HARNESS_FILES {
-            assert!(
-                s.contains(&format!("| base64 -d > /tmp/prism_eval/{path}")),
-                "upload script missing {path}"
+    fn harness_upload_tar_has_exact_files_with_identical_contents() {
+        let files = parse_tar_files(&harness_upload_tar("# arch", "# train").unwrap());
+        let got: std::collections::BTreeMap<&str, &[u8]> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_slice()))
+            .collect();
+        assert_eq!(got.len(), prism_recipe::HARNESS_FILES.len() + 2);
+        for (path, contents) in prism_recipe::HARNESS_FILES {
+            assert_eq!(
+                got.get(path).copied(),
+                Some(contents.as_bytes()),
+                "tar entry {path} mismatch"
             );
         }
-        // The entrypoint is main.py (recipe 1.3.0 multi-file package).
-        assert!(prism_recipe::HARNESS_FILES
-            .iter()
-            .any(|(p, _)| *p == "main.py"));
-    }
-
-    #[test]
-    fn harness_upload_script_payloads_are_valid_base64() {
-        // Spot-check that the embedded main.py upload line round-trips.
-        let s = harness_upload_script();
-        let line = s
-            .lines()
-            .find(|l| l.ends_with("> /tmp/prism_eval/main.py"))
-            .unwrap();
-        let b64 = line
-            .strip_prefix("echo '")
-            .and_then(|l| l.split('\'').next())
-            .unwrap();
-        // base64 alphabet only (safe inside single quotes, decodable by
-        // `base64 -d`); contents match the embedded file.
-        assert!(!b64.is_empty());
-        assert!(b64
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
-        let expected = base64_encode(
-            prism_recipe::HARNESS_FILES
-                .iter()
-                .find(|(p, _)| *p == "main.py")
-                .unwrap()
-                .1
-                .as_bytes(),
+        assert_eq!(
+            got.get("architecture.py").copied(),
+            Some(b"# arch".as_slice())
         );
-        assert_eq!(b64, expected);
+        assert_eq!(got.get("training.py").copied(), Some(b"# train".as_slice()));
+        // Pod layout anchors at the workdir root (byte-identical to the old
+        // base64 upload): entrypoint + package dirs + banned-pattern list.
+        assert!(got.contains_key("main.py"));
+        assert!(got.contains_key("cheatguard_patterns.json"));
+        assert!(got.keys().any(|p| p.starts_with("prismlib/")));
+        assert!(got.keys().any(|p| p.starts_with("eval/")));
     }
 
     #[test]
-    fn base64_roundtrip_smoke() {
-        let s = base64_encode(b"hello");
-        assert_eq!(s, "aGVsbG8=");
+    fn harness_upload_tar_is_byte_deterministic() {
+        let a = harness_upload_tar("arch", "train").unwrap();
+        let b = harness_upload_tar("arch", "train").unwrap();
+        assert_eq!(a, b, "two builds must produce identical bytes");
+        assert!(a.len() > 100_000, "the real harness set is large");
+    }
+
+    #[test]
+    fn ssh_argv_stays_small_regardless_of_harness_size() {
+        // BUG-5 regression: the harness payload (~240 KB as base64) blew the
+        // 128 KB MAX_ARG_STRLEN when embedded in the remote command. It must
+        // ride ssh stdin as a tar; argv holds only fixed-size commands.
+        use std::fmt::Write as _;
+        assert!(HARNESS_EXTRACT_CMD.len() < 1024);
+        let mut env = String::new();
+        for (k, v) in harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", true) {
+            let _ = writeln!(env, "{k}='{v}' \\");
+        }
+        let remote = format!(
+            "{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 25200 python3 main.py"
+        );
+        assert!(
+            remote.len() < 8 * 1024,
+            "run argv is {} bytes",
+            remote.len()
+        );
+        assert!(!remote.contains("base64"), "no payload embedding in argv");
+        // The stdin payload scales with miner size; argv never does.
+        let big = harness_upload_tar(&"a".repeat(200_000), &"t".repeat(200_000)).unwrap();
+        assert!(big.len() > 400_000);
+        assert!(HARNESS_EXTRACT_CMD.len() < 1024);
+    }
+
+    #[test]
+    fn random_seed_hex_reads_exactly_16_bytes() {
+        // Regression: fs::read("/dev/urandom") blocks forever on a char
+        // device (no EOF) — the seed path must complete with 16 bytes.
+        let s = random_seed_hex().unwrap();
+        assert_eq!(s.len(), 32);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

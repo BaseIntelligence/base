@@ -22,8 +22,8 @@
 //! local miner reproduction.
 //!
 //! The harness itself is a multi-file Python package embedded at build time
-//! ([`HARNESS_FILES`]) and uploaded file-by-file to the pod over SSH by
-//! `prism-lium`. No `PyPI` packages at runtime: it only uses stdlib +
+//! ([`HARNESS_FILES`]) and streamed to the pod over SSH by `prism-lium` as
+//! one deterministic tar on stdin. No `PyPI` packages at runtime: it only uses stdlib +
 //! `torch` + `transformers` + `datasets` preinstalled in the pinned pod
 //! image. [`HARNESS_PY`] remains as a legacy single-file view (the package
 //! entrypoint `main.py`).
