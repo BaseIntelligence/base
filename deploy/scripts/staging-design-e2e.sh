@@ -323,32 +323,6 @@ fi
 lb="$(api GET "/challenge/design/v1/rounds/$ROUND_A/leaderboard")"; echo "$lb" > "$EVIDENCE/03-leaderboard.json"
 echo "$lb" | grep -qi "$HKA" && pass "3 leaderboard shows miner A points" || fail "3 leaderboard" "$lb"
 
-# ---------------------------------------------------------------- 4: weights seal
-step "4 leaves → seal → /v1/weights/latest sealed:true contains A"
-# The design service has no epoch feed (status epoch stays 0); the prism
-# service feeds its epoch from the chain — use it as the seal epoch source.
-epoch="$(api GET /challenge/design/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["epoch"])' 2>/dev/null || echo 0)"
-if ! [[ "$epoch" =~ ^[0-9]+$ && "$epoch" -gt 0 ]]; then
-  epoch="$(api GET /challenge/prism/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["epoch"])' 2>/dev/null || echo 0)"
-fi
-note "sealing epoch=$epoch (status epoch at award time)"
-sealed_ok=0
-for try_epoch in "$epoch" "$((epoch - 1))" "$((epoch + 1))"; do
-  seal="$(api POST /v1/admin/seal -H 'content-type: application/json' -d "{\"epoch\":$try_epoch,\"netuid\":$NETUID}")"
-  echo "seal epoch=$try_epoch → HTTP $(last_http) $seal" >> "$EVIDENCE/04-seal.log"
-  latest="$(api GET /v1/weights/latest)"
-  echo "$latest" > "$EVIDENCE/04-weights-latest.json"
-  if echo "$latest" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-hw = d.get('hotkey_weights') or {}
-hk = '$HKA'.lower()
-hit = any(k.lower().lstrip('0x') == hk and float(v) > 0 for k, v in hw.items())
-sys.exit(0 if (d.get('sealed') is True and hit) else 1)
-" 2>/dev/null; then sealed_ok=1; note "sealed at epoch=$try_epoch with A present"; break; fi
-done
-[[ "$sealed_ok" = 1 ]] && pass "4 weights sealed:true with A's hotkey + design share" || fail "4 weights seal" "see 04-seal.log / 04-weights-latest.json"
-
 # ---------------------------------------------------------------- 5b: B copy-gate outcome
 step "5b miner B run outcome: rejected, no agentic_review event"
 RUN_B="$(echo "${RUNS_B:-}" | awk '{print $1}')"
@@ -387,23 +361,27 @@ fi
 
 # ---------------------------------------------------------------- 7: hotkey-change reset
 step "7 hotkey-change reset (watcher reconciliation)"
+# Three modes:
+#   a) E2E_SWAP_OLD_SS58 + E2E_SWAP_NEW_SS58 set → real on-chain swap_hotkey
+#      (subnet enforces a 7200-block (~24h) interval per (netuid, coldkey)).
+#   b) E2E_SKIP_SWAP=1 → documented no-op (FAIL).
+#   c) default: seed a `rejected` gating row for a hotkey that REALLY left the
+#      metagraph (E2E_DEPARTED_HOTKEY; default = miner B's pre-swap hotkey,
+#      swapped away on-chain 2026-08-05 18:56 UTC — see evidence
+#      hotkey-reset/METHOD.md) and watch the production metagraph watcher
+#      reconcile it back to `open`. The seeded precondition is the only
+#      scripted part; the reset itself is the live watcher.
+DEPARTED="${E2E_DEPARTED_HOTKEY:-183bf07d0280c71f053553049f1fd19691cf0bcadb35363bad48511a5fdccb11}"
 if [[ "${E2E_SKIP_SWAP:-0}" = 1 ]]; then
   note "E2E_SKIP_SWAP=1 — no on-chain swap; current gating row for B:"
   psql "SELECT challenge,hotkey,uid,state FROM submission_gating WHERE hotkey='$HKB';" | tee "$EVIDENCE/07-gating-b-skipped.txt"
   fail "7 hotkey-change reset" "skipped via E2E_SKIP_SWAP=1 (documented no-op)"
-else
+elif [[ -n "${E2E_SWAP_OLD_SS58:-}" && -n "${E2E_SWAP_NEW_SS58:-}" && -f "${E2E_SWAP_HELPER:-/root/gbase-e2e/swap-hotkey.py}" ]]; then
   before="$(psql "SELECT state FROM submission_gating WHERE challenge='design' AND hotkey='$HKB';")"
   echo "before_swap=$before" > "$EVIDENCE/07-swap.log"
-  # Real on-chain hotkey swap (old hotkey leaves the metagraph → watcher must
-  # reopen the gating row). Helper composes swap_hotkey(_v2) with the neuron
-  # owner's coldkey; E2E_SWAP_OLD_SS58 / E2E_SWAP_NEW_SS58 required.
-  if [[ -n "${E2E_SWAP_OLD_SS58:-}" && -n "${E2E_SWAP_NEW_SS58:-}" && -f "${E2E_SWAP_HELPER:-/root/gbase-e2e/swap-hotkey.py}" ]]; then
-    "${E2E_SWAP_PY:-/root/btcli-venv/bin/python}" "${E2E_SWAP_HELPER:-/root/gbase-e2e/swap-hotkey.py}" \
-      "$E2E_SWAP_OLD_SS58" "$E2E_SWAP_NEW_SS58" >> "$EVIDENCE/07-swap.log" 2>&1 \
-      || note "WARN: swap-hotkey helper failed (see log)"
-  else
-    note "WARN: swap helper/ss58 envs missing — swap not performed"
-  fi
+  "${E2E_SWAP_PY:-/root/btcli-venv/bin/python}" "${E2E_SWAP_HELPER:-/root/gbase-e2e/swap-hotkey.py}" \
+    "$E2E_SWAP_OLD_SS58" "$E2E_SWAP_NEW_SS58" >> "$EVIDENCE/07-swap.log" 2>&1 \
+    || note "WARN: swap-hotkey helper failed (see log)"
   t0=$SECONDS; reopened=0
   while (( SECONDS - t0 < WATCHER_WAIT_SECS )); do
     st="$(psql "SELECT state FROM submission_gating WHERE challenge='design' AND hotkey='$HKB';")"
@@ -413,7 +391,70 @@ else
   done
   [[ "$reopened" = 1 ]] && pass "7 watcher reset B gating row to open after hotkey swap" \
     || fail "7 hotkey-change reset" "state stayed $(psql "SELECT state FROM submission_gating WHERE challenge='design' AND hotkey='$HKB';")"
+else
+  note "mode c: seed departed hotkey $DEPARTED (left metagraph via real on-chain swap 2026-08-05) as rejected; watch the live watcher"
+  psql "DELETE FROM submission_gating WHERE hotkey='$DEPARTED';" >> "$EVIDENCE/07-swap.log" 2>&1 || true
+  psql "INSERT INTO submission_gating (challenge, hotkey, uid, state, attempt_count) VALUES ('design', '$DEPARTED', 4, 'rejected', 0);" >> "$EVIDENCE/07-swap.log" 2>&1 || true
+  before="$(psql "SELECT challenge,hotkey,uid,state FROM submission_gating WHERE hotkey='$DEPARTED';")"
+  echo "seeded: $before" >> "$EVIDENCE/07-swap.log"
+  t0=$SECONDS; reopened=0
+  while (( SECONDS - t0 < WATCHER_WAIT_SECS )); do
+    st="$(psql "SELECT state FROM submission_gating WHERE challenge='design' AND hotkey='$DEPARTED';")"
+    echo "$(date +%T) state=$st" >> "$EVIDENCE/07-swap.log"
+    [[ "$st" = "open" ]] && { reopened=1; break; }
+    sleep 20
+  done
+  if [[ "$reopened" = 1 ]]; then
+    pass "7 watcher reset departed-hotkey gating row to open (live reconciliation)"
+  else
+    fail "7 hotkey-change reset" "state stayed $st (see 07-swap.log)"
+  fi
 fi
+
+# ---------------------------------------------------------------- 4: weights seal
+# Runs last: the seal needs a complete prism leaf set for the same epoch (D24),
+# which the concurrently-running prism e2e produces — B/D/watcher evidence
+# above does not depend on the seal, so collect it first.
+step "4 leaves → seal → /v1/weights/latest sealed:true contains A"
+# D24 needs a complete leaf set from EVERY >0-bps challenge (design 2000 +
+# prism 8000 on staging) against the seal epoch's metagraph. The award's emit
+# covers design for the current epoch; prism leaves appear when a prism
+# submission finalizes in that epoch (the prism e2e runs concurrently). Sweep
+# {current, current-1}: prefer the epoch of this run's award, fall back to the
+# previous one. Leaves are append-only, so a sealed epoch stays sealed.
+epoch_of() { api GET /challenge/prism/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["epoch"])' 2>/dev/null || echo 0; }
+leaf_state() { # leaf_state EPOCH → "design_rows design_A_score prism_rows"
+  psql "SELECT (SELECT count(*) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=$1), (SELECT coalesce(max(score),-1) FROM raw_weight_snapshot WHERE challenge_id='design' AND epoch=$1 AND miner_hotkey='$HKA'), (SELECT count(*) FROM raw_weight_snapshot WHERE challenge_id='prism' AND epoch=$1);" | awk -F'|' '{print $1, $2, $3}'
+}
+sealed_ok=0
+SEALED_EPOCH=""
+t0=$SECONDS
+while (( SECONDS - t0 < ${SEAL_WAIT_SECS:-6000} )); do
+  epoch="$(epoch_of)"
+  for try_epoch in "$epoch" "$((epoch - 1))"; do
+    read -r d_rows a_score p_rows <<< "$(leaf_state "$try_epoch")"
+    echo "$(date +%T) epoch=$try_epoch design_rows=$d_rows A_design_score=$a_score prism_rows=$p_rows" >> "$EVIDENCE/04-wait.log"
+    [[ "$d_rows" -ge 8 && "$a_score" -gt 0 && "$p_rows" -ge 8 ]] 2>/dev/null || continue
+    seal="$(api POST /v1/admin/seal -H 'content-type: application/json' -d "{\"epoch\":$try_epoch,\"netuid\":$NETUID}")"
+    echo "seal epoch=$try_epoch → HTTP $(last_http) $seal" >> "$EVIDENCE/04-seal.log"
+    latest="$(api GET /v1/weights/latest)"
+    echo "$latest" > "$EVIDENCE/04-weights-latest.json"
+    if echo "$latest" | python3 -c "
+import json, sys
+sys.path.insert(0, '$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)')
+from e2e_ss58 import hotkey_weight_map
+d = json.load(sys.stdin)
+hw = hotkey_weight_map(d)
+hk = '$HKA'.lower()
+hit = hw.get(hk, 0.0) > 0
+sys.exit(0 if (d.get('sealed') is True and d.get('epoch') == $try_epoch and hit) else 1)
+" 2>/dev/null; then sealed_ok=1; SEALED_EPOCH=$try_epoch; note "sealed at epoch=$try_epoch with A present"; break; fi
+  done
+  [[ "$sealed_ok" = 1 ]] && break
+  sleep 60
+done
+psql "SELECT challenge_id, miner_hotkey, kind, score FROM raw_weight_snapshot WHERE epoch=${SEALED_EPOCH:-0} ORDER BY challenge_id, miner_hotkey;" > "$EVIDENCE/04-leaves.txt" 2>/dev/null || true
+[[ "$sealed_ok" = 1 ]] && pass "4 weights sealed:true with A's hotkey + design share (epoch $SEALED_EPOCH)" || fail "4 weights seal" "see 04-wait.log / 04-seal.log / 04-weights-latest.json"
 
 # ---------------------------------------------------------------- summary
 {
