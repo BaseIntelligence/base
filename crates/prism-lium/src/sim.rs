@@ -130,6 +130,13 @@ impl EvalJobBackend for SimLiumBackend {
                 layer_stats: None,
             })
             .collect();
+        // Optional fake-assets mode (E5): when the operator eval-assets env
+        // is set master-side, the sim mirrors the two-phase outcome
+        // (private tier) so staging control-flow is testable offline.
+        // Default stays v1-shaped.
+        let fake_assets = std::env::var("PRISM_EVAL_ASSETS_DIR")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty());
         Ok(RemoteExecResult {
             bpb,
             // Budget-plausible shape (not a stub): a 12M model early-stopping
@@ -138,7 +145,11 @@ impl EvalJobBackend for SimLiumBackend {
             tokens_seen: 1_048_576,
             wall_clock_seconds: 780.0,
             gpu_type: Some("SIM".into()),
-            notes: "sim-eval".into(),
+            notes: if fake_assets {
+                "sim-eval (fake private assets staged)".into()
+            } else {
+                "sim-eval".into()
+            },
             n_params: Some(12_000_000),
             val_rows: Some(256),
             telemetry: Some(crate::types::EvalTelemetry {
@@ -154,6 +165,11 @@ impl EvalJobBackend for SimLiumBackend {
             pod_manifest: None,
             netns: None,
             harness_files_sha256: None,
+            eval_tier: if fake_assets {
+                Some("private".into())
+            } else {
+                None
+            },
         })
     }
 }
@@ -187,6 +203,28 @@ mod tests {
         assert!(r.bpb > 1.0);
         b.terminate(&inst.id).await.unwrap();
         assert!(b.verify_terminated(&inst.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env mutation must be serialized across the awaits
+    async fn sim_fake_assets_mode_mirrors_private_tier() {
+        let _guard = crate::ASSETS_ENV_LOCK.lock().unwrap();
+        let b = SimLiumBackend::new();
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
+        let r = b
+            .exec_eval("pod", "def build_model(c): pass", "def train(m,c): pass")
+            .await
+            .unwrap();
+        assert!(r.eval_tier.is_none());
+        assert_eq!(r.notes, "sim-eval");
+        std::env::set_var("PRISM_EVAL_ASSETS_DIR", "/tmp/sim-assets");
+        let r = b
+            .exec_eval("pod", "def build_model(c): pass", "def train(m,c): pass")
+            .await
+            .unwrap();
+        assert_eq!(r.eval_tier.as_deref(), Some("private"));
+        assert!(r.notes.contains("fake private assets"));
+        std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
-//! Miner submission accept path (two-script PRISM contract).
+//! Miner submission accept path (two-script PRISM contract + v3 source
+//! trees via `zip_base64`; see `prism_recipe::zip_submit` module docs).
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -34,7 +35,12 @@ pub struct SubmissionRequest {
     /// `training.py` source (must define `train`).
     #[serde(default)]
     pub training_py: String,
-    /// Optional base64-encoded ZIP containing `architecture.py` + `training.py`.
+    /// Optional base64-encoded ZIP: either the v1 two-script layout
+    /// (`architecture.py` + `training.py`) or a v3 source tree (`prism.toml`
+    /// manifest / subdirectories — full validation in
+    /// `prism_recipe::tree_from_zip`). For trees, [`expand_zip_fields`]
+    /// projects the `build_model`/`train` seams (resolving re-exports) into
+    /// the source fields and [`submission_id`] hashes the canonical tree.
     #[serde(default)]
     pub zip_base64: Option<String>,
     /// Published architecture id (`arch_<hex16>`) for training-only entries.
@@ -147,14 +153,55 @@ pub fn expand_zip_fields(req: &mut SubmissionRequest) -> Result<(), String> {
         .decode(b64)
         .map_err(|e| format!("zip_base64: {e}"))?;
     if req.arch_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        // `training_from_zip` rejects source-tree archives with a clear
+        // message (training-only intake keeps the two-script layout in v3).
         req.training_py = prism_recipe::training_from_zip(&zip).map_err(|e| e.to_string())?;
         req.architecture_py = String::new();
+    } else if let Some(tree) = tree_from_zip_bytes(&zip)? {
+        // v3 source tree: fully validated by `tree_from_zip`; project the
+        // seams (resolving re-exports to their defining modules) so the
+        // legacy contract/copy-gate checks downstream keep working.
+        req.architecture_py = tree.architecture_projection().map_err(|e| e.to_string())?;
+        req.training_py = tree.training_projection().map_err(|e| e.to_string())?;
     } else {
         let (arch, train) = prism_recipe::sources_from_zip(&zip).map_err(|e| e.to_string())?;
         req.architecture_py = arch;
         req.training_py = train;
     }
     Ok(())
+}
+
+/// Validated source-tree view of the request, when `zip_base64` carries a
+/// v3 tree (`Ok(None)` for legacy/absent zips). Intake calls
+/// [`expand_zip_fields`] first; it surfaces the same errors to the miner.
+///
+/// # Errors
+/// ZIP / decode / tree-contract failures.
+pub fn source_tree(req: &SubmissionRequest) -> Result<Option<prism_recipe::SourceTree>, String> {
+    let Some(b64) = req
+        .zip_base64
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    let zip = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("zip_base64: {e}"))?;
+    tree_from_zip_bytes(&zip)
+}
+
+fn tree_from_zip_bytes(zip: &[u8]) -> Result<Option<prism_recipe::SourceTree>, String> {
+    if matches!(
+        prism_recipe::probe_zip_kind(zip).map_err(|e| e.to_string())?,
+        prism_recipe::ZipKind::Tree
+    ) {
+        return prism_recipe::tree_from_zip(zip)
+            .map(Some)
+            .map_err(|e| e.to_string());
+    }
+    Ok(None)
 }
 
 /// Validate contract-shape of an incoming submission (pre-queue).
@@ -238,13 +285,24 @@ pub fn gating_key(arch_id: Option<&str>) -> String {
     }
 }
 
-/// Deterministic submission id (sha256 of the contract bytes).
+/// Deterministic submission id.
+///
+/// Legacy two-script submissions keep the exact v1 formula
+/// (`sha256(hotkey ‖ architecture_py ‖ training_py)`). Source-tree
+/// submissions (`zip_base64` probing as a tree) are content-addressed over
+/// the canonical tree hash, domain-separated:
+/// `sha256(hotkey ‖ "prism-tree-v1\0" ‖ tree.canonical_sha256())`.
 #[must_use]
 pub fn submission_id(req: &SubmissionRequest) -> SubmissionId {
     let mut h = Sha256::new();
     h.update(req.miner_hotkey.as_bytes());
-    h.update(req.architecture_py.as_bytes());
-    h.update(req.training_py.as_bytes());
+    if let Ok(Some(tree)) = source_tree(req) {
+        h.update(b"prism-tree-v1\0");
+        h.update(tree.canonical_sha256().as_bytes());
+    } else {
+        h.update(req.architecture_py.as_bytes());
+        h.update(req.training_py.as_bytes());
+    }
     hex::encode(h.finalize())
 }
 
@@ -299,5 +357,118 @@ mod tests {
         r.architecture_py = "x = 1".into();
         let e = SubmissionService::new().accept(r).unwrap_err();
         assert!(matches!(e, SubmissionError::MissingBuildModel));
+    }
+
+    fn zip_b64(files: &[(&str, &str)]) -> String {
+        use base64::Engine;
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            for (n, b) in files {
+                w.start_file(*n, opts).unwrap();
+                w.write_all(b.as_bytes()).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        base64::engine::general_purpose::STANDARD.encode(buf.into_inner())
+    }
+
+    const TREE_ARCH: &str = "from model.core import build_model\n";
+    const TREE_CORE: &str =
+        "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
+    const TREE_LOOP: &str = "import prism_telemetry\ndef train(model, ctx):\n    prism_telemetry.report(loss=1.0, step=1)\n    return {}\n";
+
+    fn tree_request() -> SubmissionRequest {
+        SubmissionRequest {
+            zip_base64: Some(zip_b64(&[
+                ("architecture.py", TREE_ARCH),
+                ("train.py", TREE_LOOP),
+                ("model/core.py", TREE_CORE),
+            ])),
+            ..example_valid_request()
+        }
+    }
+
+    #[test]
+    fn tree_zip_intake_projects_seams() {
+        let mut req = tree_request();
+        expand_zip_fields(&mut req).unwrap();
+        // Projections resolve to the defining modules (real code downstream).
+        assert!(req.architecture_py.contains("def build_model("));
+        assert!(req.training_py.contains("def train("));
+        validate(&req).unwrap();
+        assert!(SubmissionService::new().accept(req).is_ok());
+    }
+
+    #[test]
+    fn tree_submission_id_is_canonical_and_domain_separated() {
+        let req = tree_request();
+        let reordered = SubmissionRequest {
+            zip_base64: Some(zip_b64(&[
+                ("model/core.py", TREE_CORE),
+                ("train.py", TREE_LOOP),
+                ("architecture.py", TREE_ARCH),
+            ])),
+            ..example_valid_request()
+        };
+        assert_eq!(submission_id(&req), submission_id(&reordered));
+        // Exact formula: sha256(hotkey ‖ "prism-tree-v1\0" ‖ canonical tree hash).
+        let tree = source_tree(&req).unwrap().unwrap();
+        let mut h = Sha256::new();
+        h.update(req.miner_hotkey.as_bytes());
+        h.update(b"prism-tree-v1\0");
+        h.update(tree.canonical_sha256().as_bytes());
+        assert_eq!(submission_id(&req), hex::encode(h.finalize()));
+        // … and distinct from the legacy formula over the projections.
+        let mut req2 = req.clone();
+        expand_zip_fields(&mut req2).unwrap();
+        req2.zip_base64 = None;
+        assert_ne!(submission_id(&req), submission_id(&req2));
+    }
+
+    #[test]
+    fn legacy_two_script_zip_id_unchanged() {
+        // v1 hash-compat: a two-script ZIP (via zip_base64) keeps the exact
+        // legacy formula over the expanded sources.
+        let arch = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
+        let train = "def train(model, ctx):\n    return {}\n";
+        let mut req = SubmissionRequest {
+            zip_base64: Some(zip_b64(&[
+                ("architecture.py", arch),
+                ("training.py", train),
+            ])),
+            ..example_valid_request()
+        };
+        expand_zip_fields(&mut req).unwrap();
+        let mut h = Sha256::new();
+        h.update(req.miner_hotkey.as_bytes());
+        h.update(arch.as_bytes());
+        h.update(train.as_bytes());
+        assert_eq!(submission_id(&req), hex::encode(h.finalize()));
+        assert!(source_tree(&req).unwrap().is_none());
+    }
+
+    #[test]
+    fn tree_zip_rejected_for_training_only() {
+        let mut req = tree_request();
+        req.arch_id = Some("arch_d50dcfef6eaf5f04".into());
+        let err = expand_zip_fields(&mut req).unwrap_err();
+        assert!(err.contains("two-script"), "{err}");
+    }
+
+    #[test]
+    fn tree_zip_banned_patterns_rejected_at_intake() {
+        let mut req = SubmissionRequest {
+            zip_base64: Some(zip_b64(&[
+                ("architecture.py", TREE_CORE),
+                ("train.py", TREE_LOOP),
+                ("ops/ffi.py", "import ctypes\n"),
+            ])),
+            ..example_valid_request()
+        };
+        let err = expand_zip_fields(&mut req).unwrap_err();
+        assert!(err.contains("ctypes"), "{err}");
     }
 }

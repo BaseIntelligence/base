@@ -22,30 +22,19 @@ pub struct SshTarget {
 /// Parse `ssh_connect_cmd` and optional `ports_mapping` from pod JSON.
 #[must_use]
 pub fn parse_ssh_target(ssh_connect_cmd: &str, raw: &Value) -> Option<SshTarget> {
-    let user_host = regex_user_host(ssh_connect_cmd);
+    let (user, host) = regex_user_host(ssh_connect_cmd)?;
     let mut port = regex_port(ssh_connect_cmd);
     if port.is_none() {
-        if let Some(mapping) = raw.get("ports_mapping") {
-            let external = mapping
-                .get("22")
-                .or_else(|| mapping.get(22.to_string().as_str()));
-            // serde_json object keys are strings; also try numeric-as-string
-            let external = external.or_else(|| {
-                mapping.as_object().and_then(|m| {
-                    m.iter()
-                        .find(|(k, _)| k == &"22" || k.as_str() == "22")
-                        .map(|(_, v)| v)
-                })
-            });
-            if let Some(ext) = external {
-                port = ext
-                    .as_u64()
+        // serde_json object keys are strings; `/ports_mapping/22` covers both
+        // numeric and string-typed external port values.
+        port = raw
+            .pointer("/ports_mapping/22")
+            .and_then(|ext| {
+                ext.as_u64()
                     .or_else(|| ext.as_str().and_then(|s| s.parse().ok()))
-                    .map(|p| p as u16);
-            }
-        }
+            })
+            .map(|p| p as u16);
     }
-    let (user, host) = user_host?;
     Some(SshTarget {
         user,
         host,
@@ -115,73 +104,90 @@ fn regex_port(cmd: &str) -> Option<u16> {
 
 /// Resolve private key path from explicit path or `LIUM_SSH_PRIVATE_KEY` env.
 pub fn resolve_private_key(explicit: Option<&Path>) -> Result<PathBuf, LiumError> {
-    if let Some(p) = explicit {
-        if p.is_file() {
-            return Ok(p.to_path_buf());
-        }
+    let env = std::env::var("LIUM_SSH_PRIVATE_KEY").ok();
+    let candidate = explicit
+        .map(Path::to_path_buf)
+        .or_else(|| env.as_deref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/root/.config/prism-mission/lium_ssh_ed25519"));
+    if candidate.is_file() {
+        return Ok(candidate);
+    }
+    if explicit.is_some() || env.is_some() {
         return Err(LiumError::Exec(format!(
             "ssh private key missing: {}",
-            p.display()
+            candidate.display()
         )));
-    }
-    if let Ok(p) = std::env::var("LIUM_SSH_PRIVATE_KEY") {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Ok(pb);
-        }
-        return Err(LiumError::Exec(format!(
-            "LIUM_SSH_PRIVATE_KEY not a file: {}",
-            pb.display()
-        )));
-    }
-    let default = PathBuf::from("/root/.config/prism-mission/lium_ssh_ed25519");
-    if default.is_file() {
-        return Ok(default);
     }
     Err(LiumError::Exec(
         "no SSH private key: set LIUM_SSH_PRIVATE_KEY or pass path".into(),
     ))
 }
 
-/// Run a remote command over SSH with retries.
-pub async fn ssh_exec(
+/// Shared ssh invocation (BatchMode, keepalives, piped stdout/stderr).
+fn ssh_command(target: &SshTarget, private_key: &Path, remote_cmd: &str) -> Command {
+    let port = target.port.to_string();
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-i").arg(private_key).args([
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=60",
+        "-o",
+        "TCPKeepAlive=yes",
+        "-o",
+        "BatchMode=yes",
+        "-p",
+        &port,
+    ]);
+    cmd.arg(format!("{}@{}", target.user, target.host))
+        .arg(remote_cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    cmd
+}
+
+/// Retry driver shared by the exec variants. `stdin` is streamed to the
+/// child (then closed) when present — keep remote stdout/stderr small while
+/// stdin is in flight (no concurrent drain until the write finishes).
+async fn exec_with_retries(
     target: &SshTarget,
     private_key: &Path,
     remote_cmd: &str,
+    stdin: Option<&[u8]>,
     attempts: u32,
     retry_secs: u64,
     timeout_secs: u64,
 ) -> Result<SshExecOutput, LiumError> {
     let mut last_err = String::new();
     for attempt in 1..=attempts.max(1) {
-        let mut cmd = Command::new("ssh");
-        cmd.arg("-i")
-            .arg(private_key)
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("UserKnownHostsFile=/dev/null")
-            .arg("-o")
-            .arg("ConnectTimeout=15")
-            .arg("-o")
-            .arg("ServerAliveInterval=10")
-            .arg("-o")
-            .arg("ServerAliveCountMax=60")
-            .arg("-o")
-            .arg("TCPKeepAlive=yes")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-p")
-            .arg(target.port.to_string())
-            .arg(format!("{}@{}", target.user, target.host))
-            .arg(remote_cmd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let fut = cmd.output();
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await;
-        match result {
+        let mut cmd = ssh_command(target, private_key, remote_cmd);
+        if stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let run = async move {
+            let mut child = cmd.spawn().map_err(|e| format!("ssh spawn: {e}"))?;
+            if let Some(bytes) = stdin {
+                if let Some(mut pipe) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt as _;
+                    pipe.write_all(bytes)
+                        .await
+                        .map_err(|e| format!("ssh stdin: {e}"))?;
+                    drop(pipe);
+                }
+            }
+            child
+                .wait_with_output()
+                .await
+                .map_err(|e| format!("ssh wait: {e}"))
+        };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), run).await {
             Ok(Ok(out)) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -204,12 +210,8 @@ pub async fn ssh_exec(
                     truncate_str(&stderr, 200)
                 );
             }
-            Ok(Err(e)) => {
-                last_err = format!("ssh spawn: {e}");
-            }
-            Err(_) => {
-                last_err = "ssh timed out".into();
-            }
+            Ok(Err(e)) => last_err = e,
+            Err(_) => last_err = "ssh timed out".into(),
         }
         if attempt < attempts {
             sleep(Duration::from_secs(retry_secs)).await;
@@ -218,11 +220,8 @@ pub async fn ssh_exec(
     Err(LiumError::Exec(last_err))
 }
 
-/// Run SSH and return stdout/stderr even when the remote exit code is non-zero.
-///
-/// Still errors on spawn failure / timeout after retries. Used when the caller
-/// wants to interpret remote failure (e.g. missing torch) and fall back.
-pub async fn ssh_exec_allow_fail(
+/// Run a remote command over SSH with retries.
+pub async fn ssh_exec(
     target: &SshTarget,
     private_key: &Path,
     remote_cmd: &str,
@@ -230,57 +229,81 @@ pub async fn ssh_exec_allow_fail(
     retry_secs: u64,
     timeout_secs: u64,
 ) -> Result<SshExecOutput, LiumError> {
-    let mut last_err = String::new();
-    for attempt in 1..=attempts.max(1) {
-        let mut cmd = Command::new("ssh");
-        cmd.arg("-i")
-            .arg(private_key)
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("UserKnownHostsFile=/dev/null")
-            .arg("-o")
-            .arg("ConnectTimeout=15")
-            .arg("-o")
-            .arg("ServerAliveInterval=10")
-            .arg("-o")
-            .arg("ServerAliveCountMax=60")
-            .arg("-o")
-            .arg("TCPKeepAlive=yes")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-p")
-            .arg(target.port.to_string())
-            .arg(format!("{}@{}", target.user, target.host))
-            .arg(remote_cmd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+    exec_with_retries(
+        target,
+        private_key,
+        remote_cmd,
+        None,
+        attempts,
+        retry_secs,
+        timeout_secs,
+    )
+    .await
+}
 
-        let fut = cmd.output();
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), fut).await;
-        match result {
-            Ok(Ok(out)) => {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                return Ok(SshExecOutput {
-                    returncode: out.status.code().unwrap_or(-1),
-                    stdout,
-                    stderr: truncate_str(&stderr, 4000),
-                });
-            }
-            Ok(Err(e)) => {
-                last_err = format!("ssh spawn: {e}");
-            }
-            Err(_) => {
-                last_err = "ssh timed out".into();
-            }
+/// Run a remote command streaming `stdin` bytes (e.g. a tar archive for
+/// post-train eval-asset staging); errors on non-zero exit after retries.
+pub async fn ssh_exec_stdin(
+    target: &SshTarget,
+    private_key: &Path,
+    remote_cmd: &str,
+    stdin: &[u8],
+    attempts: u32,
+    retry_secs: u64,
+    timeout_secs: u64,
+) -> Result<SshExecOutput, LiumError> {
+    exec_with_retries(
+        target,
+        private_key,
+        remote_cmd,
+        Some(stdin),
+        attempts,
+        retry_secs,
+        timeout_secs,
+    )
+    .await
+}
+
+/// Run a remote command invoking `on_line` for each stdout line as it
+/// arrives (merge stderr into stdout remote-side with `2>&1`). Single
+/// attempt; the full output is returned and a non-zero exit is NOT an
+/// error — the caller interprets the payload (harness run pattern).
+pub async fn ssh_exec_streaming(
+    target: &SshTarget,
+    private_key: &Path,
+    remote_cmd: &str,
+    timeout_secs: u64,
+    on_line: &mut (dyn FnMut(&str) + Send),
+) -> Result<SshExecOutput, LiumError> {
+    use tokio::io::AsyncBufReadExt as _;
+    let run = async {
+        let mut child = ssh_command(target, private_key, remote_cmd)
+            .spawn()
+            .map_err(|e| format!("ssh spawn: {e}"))?;
+        let stdout = child.stdout.take().ok_or("ssh stdout pipe")?;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut acc = String::new();
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|e| format!("ssh read: {e}"))?
+        {
+            on_line(&line);
+            acc.push_str(&line);
+            acc.push('\n');
         }
-        if attempt < attempts {
-            sleep(Duration::from_secs(retry_secs)).await;
-        }
+        let status = child.wait().await.map_err(|e| format!("ssh wait: {e}"))?;
+        Ok((acc, status.code().unwrap_or(-1)))
+    };
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), run).await {
+        Ok(Ok((stdout, returncode))) => Ok(SshExecOutput {
+            returncode,
+            stdout,
+            stderr: String::new(),
+        }),
+        Ok(Err(e)) => Err(LiumError::Exec(e)),
+        Err(_) => Err(LiumError::Exec("ssh timed out".into())),
     }
-    Err(LiumError::Exec(last_err))
 }
 
 /// Successful SSH run output.

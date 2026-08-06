@@ -80,6 +80,10 @@ pub const LIUM_API_BASE_URL: &str = "https://lium.io/api";
 /// Floor for `max_lifetime_hours` (Lium `termination_hours` is 1-hour granularity).
 pub const MIN_LIFETIME_HOURS: f64 = 1.0;
 
+/// Serializes tests that mutate `PRISM_EVAL_ASSETS_DIR` (client + sim).
+#[cfg(test)]
+pub(crate) static ASSETS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Crate identity smoke.
 #[must_use]
 pub fn crate_name() -> &'static str {

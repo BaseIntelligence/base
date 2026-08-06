@@ -213,6 +213,11 @@ pub struct RemoteExecResult {
     /// SHA-256 hex of the harness file set uploaded to the pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_files_sha256: Option<String>,
+    /// Eval tier realized by the v3 two-phase harness flow: `"private"`
+    /// when operator eval assets were staged post-train, `"public_dev"`
+    /// otherwise. Absent on v1 payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_tier: Option<String>,
 }
 
 /// Optional Real-client SSH configuration (paths only; never logs key material).
