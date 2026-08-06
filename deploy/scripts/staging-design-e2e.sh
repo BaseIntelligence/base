@@ -213,6 +213,8 @@ if [[ "$RESET" = 1 ]]; then
   step "0 reset e2e state for test hotkeys (operator only)"
   for hk in "$HKA" "$HKB" "$HKD" "$HKU"; do
     psql "DELETE FROM submission_gating WHERE hotkey='$hk';" >>"$EVIDENCE/reset.log" 2>&1 || true
+    # Daily quota rows survive harness/run deletion and exhaust re-runs.
+    psql "DELETE FROM design_quota WHERE miner_hotkey='$hk';" >>"$EVIDENCE/reset.log" 2>&1 || true
     psql "DELETE FROM design_run WHERE harness_id IN (SELECT id FROM design_harness WHERE miner_hotkey='$hk');" >>"$EVIDENCE/reset.log" 2>&1 || true
     psql "DELETE FROM design_harness WHERE miner_hotkey='$hk';" >>"$EVIDENCE/reset.log" 2>&1 || true
   done

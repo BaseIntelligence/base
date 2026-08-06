@@ -364,10 +364,33 @@ PY
 else
   # Build service images from current tree (source) or prebuilt binaries.
   docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
+  # Sandbox runtime + anti-cheat review images are not compose services; build
+  # them explicitly. BUILD_FROM must match the compose build — without it these
+  # silently fell back to a source compile even on prebuilt deploys, so the
+  # review image could stay byte-identical (BuildKit cache) while the rest of
+  # the stack moved to new binaries. --iidfile + inspect prove the tag moved
+  # to the just-built image; a no-op build that leaves the tag on an old image
+  # must fail the deploy, not report success.
+  build_local_image() {
+    local target="\$1" tag="\$2" iid before after built
+    iid="\$(mktemp)"
+    before="\$(docker image inspect "\$tag" --format '{{.Id}}' 2>/dev/null || echo none)"
+    docker build -f deploy/Dockerfile --target "\$target" \
+      --build-arg BUILD_FROM="\$BUILD_FROM" \
+      --iidfile "\$iid" -t "\$tag" .
+    built="\$(cat "\$iid")"
+    rm -f "\$iid"
+    after="\$(docker image inspect "\$tag" --format '{{.Id}}')"
+    echo "remote-deploy: \$tag \$before -> \$after"
+    if [[ -z "\$built" || "\$after" != "\$built" ]]; then
+      echo "remote-deploy: ERROR: \$tag resolves to \$after but the build produced \$built — refusing to continue" >&2
+      exit 1
+    fi
+  }
   # Sandbox runtime image (not a long-running compose service).
-  docker build -f deploy/Dockerfile --target design-runtime -t design-runtime:0.1.0 .
+  build_local_image design-runtime design-runtime:0.1.0
   # Anti-cheat review image (one-shot containers spawned by design-challenge).
-  docker build -f deploy/Dockerfile --target design-review -t design-review:0.1.0 .
+  build_local_image design-review design-review:0.1.0
 fi
 
 # The updater can only pull from a registry. Enable it only when the desired
@@ -416,13 +439,19 @@ if [[ '$ROLE' == 'master' ]]; then
     echo "gateway health: probe deferred"
   fi
   # Registry is in-memory — re-seed challenge backends after every redeploy.
+  # The gateway races this script on boot, so retry until registration sticks,
+  # then prove proxy routing end-to-end: a missed reseed leaves /challenge/*
+  # at 503 while /healthz stays green. Both must fail the deploy loudly.
   echo "remote-deploy: registering challenge backends"
-  python3 - <<'PY'
-import json, urllib.request, urllib.error
+  reseed_ok=0
+  for attempt in \$(seq 1 15); do
+    if python3 - <<'PY'
+import json, sys, urllib.request, urllib.error
 backends = [
     ("prism", "http://prism-challenge:8092"),
     ("design", "http://design-challenge:8093"),
 ]
+failed = False
 for cid, url in backends:
     payload = json.dumps({"challenge_id": cid, "base_url": url, "weight": 1}).encode()
     req = urllib.request.Request(
@@ -440,13 +469,40 @@ for cid, url in backends:
             print(f"backend {cid} → {url} (HTTP 409 already present)")
         else:
             print(f"backend {cid} register failed HTTP {e.code}: {body}", flush=True)
+            failed = True
     except Exception as e:
         print(f"backend {cid} register failed: {e}", flush=True)
+        failed = True
+sys.exit(1 if failed else 0)
 PY
-  curl -fsS -m 5 http://127.0.0.1:8080/challenge/prism/health >/dev/null \
-    && curl -fsS -m 5 http://127.0.0.1:8080/challenge/design/health >/dev/null \
-    && echo "challenge proxy health: ok" \
-    || echo "challenge proxy health: deferred (backends may still be starting)"
+    then
+      reseed_ok=1
+      echo "remote-deploy: challenge backends registered (attempt \$attempt)"
+      break
+    fi
+    echo "remote-deploy: reseed attempt \$attempt failed; retrying in 5s"
+    sleep 5
+  done
+  if [[ "\$reseed_ok" != 1 ]]; then
+    echo "remote-deploy: ERROR: challenge backend reseed failed after 15 attempts" >&2
+    exit 1
+  fi
+  route_ok=0
+  for attempt in \$(seq 1 15); do
+    prism_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/prism/health 2>/dev/null || echo 000)
+    design_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/design/health 2>/dev/null || echo 000)
+    echo "remote-deploy: challenge routing probe prism=\$prism_code design=\$design_code (attempt \$attempt)"
+    if [[ "\$prism_code" == "200" && "\$design_code" == "200" ]]; then
+      route_ok=1
+      break
+    fi
+    sleep 5
+  done
+  if [[ "\$route_ok" != 1 ]]; then
+    echo "remote-deploy: ERROR: challenge routing smoke failed (want 200/200; 503 = backends not registered)" >&2
+    exit 1
+  fi
+  echo "challenge proxy health: ok"
 fi
 EOS
 
