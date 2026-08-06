@@ -48,9 +48,19 @@ fi
     echo "${dout}" | tail -5
     exit 1
   fi
-  # Prism pass: seals the now-complete D24 set at the tip.
+  # D24 completeness is per-epoch: the prism pass must emit at the SAME epoch
+  # the design pass used (each run otherwise self-derives a fresh tip and the
+  # sets never intersect). Parse the design epoch and pin both epoch + block_b.
+  depoch="$(printf '%s\n' "${dout}" | sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' | head -1)"
+  if [[ -z "${depoch}" ]]; then
+    echo "$(date -Is) could not parse design epoch from weights-smoke output"
+    exit 1
+  fi
+  echo "pinning prism pass to design epoch=${depoch}"
+  # Prism pass: seals the now-complete D24 set at the pinned epoch.
   if out="$("${BIN}" --gateway "${GATEWAY}" --burn --netuid "${NETUID}" \
-      --chain-endpoint "${CHAIN}" --challenge-sk "${SK}" 2>&1)"; then
+      --chain-endpoint "${CHAIN}" --challenge-sk "${SK}" \
+      --epoch "${depoch}" --block-b "${depoch}" 2>&1)"; then
     echo "${out}" | grep -E 'seal ok|latest OK' || echo "${out}" | tail -3
     echo "$(date -Is) seal ok"
   else
