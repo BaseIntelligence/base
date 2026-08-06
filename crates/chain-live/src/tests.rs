@@ -1228,3 +1228,155 @@ async fn submit_timelocked_ok_only_after_dispatch_confirmation() {
     .expect("spawn_blocking")
     .expect("dispatch-confirmed submit must succeed");
 }
+
+// ---------------------------------------------------------------------------
+// wiremock: ordered endpoint failover (BASE_CHAIN_ENDPOINTS)
+// ---------------------------------------------------------------------------
+
+/// Mount a `chain_getHeader` responder returning block 1000.
+async fn mount_header_ok(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "chain_getHeader"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"number": "0x3e8"}
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn request_count(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("request recording")
+        .len()
+}
+
+#[tokio::test]
+async fn failover_http_429_primary_cools_and_fallback_serves() {
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": "Too many requests from this source.",
+            "policy": "http_60s",
+            "reason": "rate_exceeded",
+            "retry_after_seconds": 60
+        })))
+        .mount(&bad)
+        .await;
+    let good = MockServer::start().await;
+    mount_header_ok(&good).await;
+
+    let uri = format!("{},{}", bad.uri(), good.uri());
+    tokio::task::spawn_blocking(move || {
+        let client = LiveChainClient::connect(&uri)?;
+        assert_eq!(client.current_block()?, 1000);
+        // Second call must skip the still-cooling primary entirely.
+        assert_eq!(client.current_block()?, 1000);
+        Ok::<_, ChainError>(())
+    })
+    .await
+    .expect("spawn_blocking")
+    .expect("failover to secondary");
+    assert_eq!(request_count(&bad).await, 1, "primary cooled after 429");
+    assert_eq!(request_count(&good).await, 2, "fallback served both calls");
+}
+
+#[tokio::test]
+async fn failover_rpc_error_string_too_many_requests() {
+    let bad = MockServer::start().await;
+    // Finney entrypoint also returns HTTP 200 with a bare-string error payload.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": "Too many requests from this source."
+        })))
+        .mount(&bad)
+        .await;
+    let good = MockServer::start().await;
+    mount_header_ok(&good).await;
+
+    let uri = format!("{},{}", bad.uri(), good.uri());
+    let block =
+        tokio::task::spawn_blocking(move || LiveChainClient::connect(&uri)?.current_block())
+            .await
+            .expect("spawn_blocking")
+            .expect("string rate-limit error must fail over");
+    assert_eq!(block, 1000);
+    assert_eq!(request_count(&good).await, 1);
+}
+
+#[tokio::test]
+async fn failover_rpc_error_object_minus_32005() {
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32005, "message": "rate limit exceeded"}
+        })))
+        .mount(&bad)
+        .await;
+    let good = MockServer::start().await;
+    mount_header_ok(&good).await;
+
+    let uri = format!("{},{}", bad.uri(), good.uri());
+    let block =
+        tokio::task::spawn_blocking(move || LiveChainClient::connect(&uri)?.current_block())
+            .await
+            .expect("spawn_blocking")
+            .expect("-32005 must fail over");
+    assert_eq!(block, 1000);
+    assert_eq!(request_count(&good).await, 1);
+}
+
+#[tokio::test]
+async fn no_failover_on_request_level_error() {
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32602, "message": "Invalid params"}
+        })))
+        .mount(&bad)
+        .await;
+    let good = MockServer::start().await;
+    mount_header_ok(&good).await;
+
+    let uri = format!("{},{}", bad.uri(), good.uri());
+    let err = tokio::task::spawn_blocking(move || LiveChainClient::connect(&uri)?.current_block())
+        .await
+        .expect("spawn_blocking")
+        .expect_err("request-level error must not fail over");
+    assert!(err.to_string().contains("Invalid params"), "err: {err}");
+    assert_eq!(
+        request_count(&good).await,
+        0,
+        "fallback untouched on request-level error"
+    );
+}
+
+#[tokio::test]
+async fn all_endpoints_faulting_returns_last_error() {
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": "Too many requests from this source."
+        })))
+        .mount(&bad)
+        .await;
+    let uri = bad.uri();
+    let err = tokio::task::spawn_blocking(move || LiveChainClient::connect(&uri)?.current_block())
+        .await
+        .expect("spawn_blocking")
+        .expect_err("single faulting endpoint must error");
+    assert!(err.to_string().contains("http 429"), "err: {err}");
+}
+
+#[test]
+fn connect_rejects_empty_endpoint_list() {
+    for raw in ["", " , ", ","] {
+        let err = crate::LiveChainRpc::connect(raw).expect_err("empty list must fail");
+        assert!(err.to_string().contains("no chain endpoint"), "err: {err}");
+    }
+}

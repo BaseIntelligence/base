@@ -41,6 +41,9 @@ pub mod keys {
     pub const NETUID: &str = "BASE_NETUID";
     /// Chain WebSocket URL.
     pub const CHAIN_ENDPOINT: &str = "BASE_CHAIN_ENDPOINT";
+    /// Ordered comma-separated chain WebSocket URLs (failover list). Wins over
+    /// [`CHAIN_ENDPOINT`] when set; the singular var is the fallback.
+    pub const CHAIN_ENDPOINTS: &str = "BASE_CHAIN_ENDPOINTS";
     /// Gateway base URL (validators / miners).
     pub const GATEWAY_ENDPOINT: &str = "BASE_GATEWAY_ENDPOINT";
     /// Postgres URL.
@@ -184,7 +187,10 @@ impl Builder {
             netuid: env
                 .get(keys::NETUID)
                 .and_then(|s| parse_u64_field("netuid", s, &mut self.early_issues)),
-            chain_endpoint: env.get(keys::CHAIN_ENDPOINT).cloned(),
+            chain_endpoint: env
+                .get(keys::CHAIN_ENDPOINTS)
+                .or_else(|| env.get(keys::CHAIN_ENDPOINT))
+                .cloned(),
             gateway_endpoint: env.get(keys::GATEWAY_ENDPOINT).cloned(),
             database_url: env.get(keys::DATABASE_URL).cloned(),
             database_url_file: env.get(keys::DATABASE_URL_FILE).cloned(),

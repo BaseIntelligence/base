@@ -96,6 +96,18 @@ cargo run -q --release -p weights-smoke -- \
 
 A seal older than ~256 blocks can never be verified by the validator (public RPC prunes state) — if `GET /v1/weights/latest` shows `metagraph_block` lagging tip by thousands of blocks, check `systemctl status base-burn-seal.timer` and `/var/log/base-burn-seal.log` on the master.
 
+## Chain endpoint failover (`BASE_CHAIN_ENDPOINTS`)
+
+Public Finney RPCs rate-limit per source IP (entrypoint-finney: HTTP 429 `http_60s` policy, or HTTP 200 with `"Too many requests from this source."`). Every Rust consumer (gateway, validator, both challenges, `weights-smoke`) goes through `chain-live`, which accepts an **ordered comma-separated endpoint list** and cools a faulted endpoint (429 / `-32005` / transport error) for 60s before retrying it; request-level JSON-RPC errors never fail over.
+
+| Knob | Where | Notes |
+|------|-------|-------|
+| `BASE_CHAIN_ENDPOINTS` | compose `env-*.yml` / host `deploy/env/*.env` | Ordered list, primary first. **Wins over** `BASE_CHAIN_ENDPOINT`; the singular var is the fallback. |
+| `BASE_CHAIN_ENDPOINT` | same | Single endpoint; also accepts a comma list (legacy path). |
+| Cooldown | — | Fixed 60s in `chain-live` (matches the Finney `retry_after_seconds: 60`). |
+
+Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary, entrypoint-finney fallback — entrypoint 429'd the prod master IP on 2026-08-06. Flip the order back once entrypoint recovers (probe: `curl -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader","params":[]}' https://entrypoint-finney.opentensor.ai:443` from the host). Failover events surface as `chain endpoint fault; failing over` WARN lines in service logs.
+
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
 **Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Sole on-chain submitter for hotkey `5Gzi…` is the Rust validator on `192.81.218.11` — do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.

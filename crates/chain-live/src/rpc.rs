@@ -1,10 +1,18 @@
 //! Blocking JSON-RPC client for Substrate-based chains.
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use chain::ChainError;
 use serde_json::{json, Value};
 
 /// One `(storage_key, raw_value)` pair returned by a batched storage read.
 pub type StorageEntry = (Vec<u8>, Vec<u8>);
+
+/// How long a faulted endpoint is skipped before it is retried. Matches the
+/// 60s window Finney public endpoints advertise on HTTP 429
+/// (`retry_after_seconds: 60`, `policy: http_60s`).
+const ENDPOINT_COOLDOWN: Duration = Duration::from_mins(1);
 
 /// Runtime version fields checked against the lockfile before signing.
 #[derive(Debug, Clone)]
@@ -17,30 +25,49 @@ pub struct RuntimeVersion {
     pub spec_name: String,
 }
 
-/// Blocking HTTPS JSON-RPC client.
+/// Blocking HTTPS JSON-RPC client with ordered endpoint failover.
 #[derive(Debug)]
 pub struct LiveChainRpc {
     http: reqwest::blocking::Client,
-    endpoint: String,
+    /// Ordered endpoints; index 0 is preferred, later entries are fallbacks.
+    endpoints: Vec<String>,
+    /// Per-endpoint "cooling until" instants, parallel to `endpoints`.
+    cooling: Mutex<Vec<Option<Instant>>>,
 }
 
 impl LiveChainRpc {
     /// Create a client. `wss://` is rewritten to `https://`.
     ///
+    /// `endpoint` may be a comma-separated ordered list (e.g. from
+    /// `BASE_CHAIN_ENDPOINTS`). On a rate-limit (HTTP 429 / `-32005` /
+    /// "Too many requests") or transport fault the failing endpoint cools for
+    /// [`ENDPOINT_COOLDOWN`] and the call retries the next endpoint in order.
+    ///
     /// # Errors
-    /// HTTP client build failure.
+    /// HTTP client build failure, or an empty endpoint list.
     pub fn connect(endpoint: &str) -> Result<Self, ChainError> {
+        let endpoints: Vec<String> = endpoint
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(http_endpoint)
+            .collect();
+        if endpoints.is_empty() {
+            return Err(ChainError::Other("no chain endpoint configured".into()));
+        }
         let http = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| ChainError::Other(format!("http client: {e}")))?;
+        let cooling = Mutex::new(vec![None; endpoints.len()]);
         Ok(Self {
             http,
-            endpoint: http_endpoint(endpoint),
+            endpoints,
+            cooling,
         })
     }
 
-    /// Raw JSON-RPC call.
+    /// Raw JSON-RPC call with ordered failover across the endpoint list.
     fn rpc(&self, method: &str, params: &Value) -> Result<Value, ChainError> {
         let body = json!({
             "jsonrpc": "2.0",
@@ -48,21 +75,105 @@ impl LiveChainRpc {
             "method": method,
             "params": params,
         });
+        let mut last_fault = None;
+        for idx in self.try_order() {
+            match self.rpc_once(idx, method, &body) {
+                Ok(v) => return Ok(v),
+                Err((error, endpoint_level)) => {
+                    // Request-level errors (bad params, pool rejection) are
+                    // deterministic across endpoints — do not fail over.
+                    if !endpoint_level {
+                        return Err(error);
+                    }
+                    self.mark_cooling(idx);
+                    tracing::warn!(
+                        endpoint = %self.endpoints[idx],
+                        %method,
+                        %error,
+                        "chain endpoint fault; failing over"
+                    );
+                    last_fault = Some(error);
+                }
+            }
+        }
+        Err(last_fault.unwrap_or_else(|| ChainError::Other("no chain endpoints configured".into())))
+    }
+
+    /// Endpoint indices in try order: non-cooling first (configured order),
+    /// then cooling ones so an all-cooling call still attempts every endpoint.
+    fn try_order(&self) -> Vec<usize> {
+        let now = Instant::now();
+        let cooling = self
+            .cooling
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ready = Vec::with_capacity(cooling.len());
+        let mut cooled = Vec::new();
+        for (idx, until) in cooling.iter().enumerate() {
+            match until {
+                Some(t) if *t > now => cooled.push(idx),
+                _ => ready.push(idx),
+            }
+        }
+        ready.extend_from_slice(&cooled);
+        ready
+    }
+
+    fn mark_cooling(&self, idx: usize) {
+        let mut cooling = self
+            .cooling
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(slot) = cooling.get_mut(idx) {
+            *slot = Some(Instant::now() + ENDPOINT_COOLDOWN);
+        }
+    }
+
+    /// One attempt against `endpoints[idx]`. The flag is `true` when the
+    /// failure is endpoint-level (transport, HTTP 429/5xx, rate-limit payload)
+    /// and the call should fail over to the next endpoint.
+    fn rpc_once(
+        &self,
+        idx: usize,
+        method: &str,
+        body: &Value,
+    ) -> Result<Value, (ChainError, bool)> {
         let resp = self
             .http
-            .post(&self.endpoint)
-            .json(&body)
+            .post(&self.endpoints[idx])
+            .json(body)
             .send()
-            .map_err(|e| ChainError::Other(format!("rpc {method}: {e}")))?;
+            .map_err(|e| (ChainError::Other(format!("rpc {method}: {e}")), true))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            let text = resp.text().unwrap_or_default();
+            let snippet: String = text.trim().chars().take(200).collect();
+            return Err((
+                ChainError::Other(format!("rpc {method}: http {status} {snippet}")),
+                true,
+            ));
+        }
+        if !status.is_success() {
+            return Err((
+                ChainError::Other(format!("rpc {method}: http {status}")),
+                false,
+            ));
+        }
         let v: Value = resp
             .json()
-            .map_err(|e| ChainError::Other(format!("rpc {method} json: {e}")))?;
+            .map_err(|e| (ChainError::Other(format!("rpc {method} json: {e}")), true))?;
         if let Some(err) = v.get("error") {
-            return Err(ChainError::Other(format!("rpc {method} error: {err}")));
+            return Err((
+                ChainError::Other(format!("rpc {method} error: {err}")),
+                is_rate_limit(err),
+            ));
         }
-        v.get("result")
-            .cloned()
-            .ok_or_else(|| ChainError::Other(format!("rpc {method}: missing result")))
+        v.get("result").cloned().ok_or_else(|| {
+            (
+                ChainError::Other(format!("rpc {method}: missing result")),
+                false,
+            )
+        })
     }
 
     /// `state_getStorage` — returns `None` if the key has no value.
@@ -296,6 +407,25 @@ fn http_endpoint(endpoint: &str) -> String {
     } else {
         endpoint.to_owned()
     }
+}
+
+/// `true` for rate-limit JSON-RPC errors: code `-32005`, or a message in the
+/// "too many requests / rate limited" family. Finney public endpoints return
+/// either an error object or the bare string
+/// `"Too many requests from this source."` with HTTP 200.
+fn is_rate_limit(err: &Value) -> bool {
+    if err.get("code").and_then(Value::as_i64) == Some(-32005) {
+        return true;
+    }
+    let msg = match err {
+        Value::String(s) => s.as_str(),
+        other => other
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    };
+    let msg = msg.to_lowercase();
+    msg.contains("too many requests") || msg.contains("rate limit") || msg.contains("429")
 }
 
 fn json_u32(value: &Value, field: &str) -> Result<u32, ChainError> {

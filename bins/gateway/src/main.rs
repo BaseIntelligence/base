@@ -32,8 +32,12 @@ async fn main() -> ExitCode {
         }
     };
 
-    let endpoint = std::env::var(keys::CHAIN_ENDPOINT)
-        .unwrap_or_else(|_| config::DEFAULT_CHAIN_ENDPOINT.to_owned());
+    // Ordered failover list (BASE_CHAIN_ENDPOINTS) wins over the singular var.
+    let endpoint = std::env::var(keys::CHAIN_ENDPOINTS)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var(keys::CHAIN_ENDPOINT).ok())
+        .unwrap_or_else(|| config::DEFAULT_CHAIN_ENDPOINT.to_owned());
     tracing::info!(
         endpoint = %endpoint,
         netuid = config.netuid,

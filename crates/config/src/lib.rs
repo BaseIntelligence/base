@@ -37,7 +37,9 @@ pub struct Config {
     pub role: Role,
     /// Subnet netuid.
     pub netuid: NetUid,
-    /// Chain WebSocket endpoint.
+    /// Chain WebSocket endpoint. May hold a comma-separated ordered failover
+    /// list (`BASE_CHAIN_ENDPOINTS` wins over `BASE_CHAIN_ENDPOINT`);
+    /// `chain-live` splits on `,` and tries endpoints in order.
     pub chain_endpoint: String,
     /// Optional gateway base URL (used by validators / miners).
     pub gateway_endpoint: Option<String>,
@@ -174,6 +176,32 @@ epoch_length = 100
         assert_eq!(cfg.epoch_length, 100);
         assert_eq!(cfg.chain_endpoint, DEFAULT_CHAIN_ENDPOINT);
         assert_eq!(cfg.min_share_mass_bps, DEFAULT_MIN_SHARE_MASS_BPS);
+    }
+
+    #[test]
+    fn s1_chain_endpoints_list_wins_over_singular() {
+        let mut env = base_env();
+        env.insert(
+            keys::CHAIN_ENDPOINT.to_owned(),
+            "wss://one.example/ws".to_owned(),
+        );
+        env.insert(
+            keys::CHAIN_ENDPOINTS.to_owned(),
+            "wss://a.example/ws, wss://b.example/ws".to_owned(),
+        );
+        let cfg = load_from_toml_str(None, &env).expect("load");
+        assert_eq!(cfg.chain_endpoint, "wss://a.example/ws, wss://b.example/ws");
+    }
+
+    #[test]
+    fn s1_chain_endpoint_singular_when_list_absent() {
+        let mut env = base_env();
+        env.insert(
+            keys::CHAIN_ENDPOINT.to_owned(),
+            "wss://one.example/ws".to_owned(),
+        );
+        let cfg = load_from_toml_str(None, &env).expect("load");
+        assert_eq!(cfg.chain_endpoint, "wss://one.example/ws");
     }
 
     #[test]

@@ -89,8 +89,12 @@ impl LiveChainClient {
     /// `wss://` is rewritten to `https://`. Read-only methods work immediately;
     /// `set_weights` / `submit_timelocked_weights` require [`Self::with_signing_key`].
     ///
+    /// `endpoint` may be a comma-separated ordered failover list (see
+    /// [`LiveChainRpc::connect`]); each call tries endpoints in order and
+    /// cools rate-limited / unreachable ones.
+    ///
     /// # Errors
-    /// HTTP client build failure.
+    /// HTTP client build failure, or an empty endpoint list.
     pub fn connect(endpoint: &str) -> Result<Self, ChainError> {
         let rpc = LiveChainRpc::connect(endpoint)?;
         Ok(Self {

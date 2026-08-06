@@ -117,7 +117,13 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let _ = telemetry::init_tracing();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Ordered failover list wins over the single-endpoint flag/env.
+    if let Ok(list) = std::env::var("BASE_CHAIN_ENDPOINTS") {
+        if !list.trim().is_empty() {
+            cli.chain_endpoint = Some(list);
+        }
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {

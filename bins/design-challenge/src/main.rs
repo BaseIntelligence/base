@@ -185,7 +185,13 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let _ = telemetry::init_tracing();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Ordered failover list wins over the single-endpoint flag/env.
+    if let Ok(list) = std::env::var("BASE_CHAIN_ENDPOINTS") {
+        if !list.trim().is_empty() {
+            cli.chain_endpoint = list;
+        }
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
@@ -470,7 +476,7 @@ fn build_app_state(
         annotator_token_hashes: annotator_hashes,
         admin_token_hashes: admin_hashes,
         frame_ancestors: std::env::var("DESIGN_FRAME_ANCESTORS")
-            .unwrap_or_else(|_| "'none'".into()),
+            .unwrap_or_else(|_| design_sanitize::default_frame_ancestors().into()),
         retry_max: 2,
         award_hook: Some(Arc::clone(&orch) as Arc<dyn design_challenge::AdminAwardHook>),
         gating: gating_enabled.then(|| Arc::clone(&gating)),

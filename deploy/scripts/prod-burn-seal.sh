@@ -23,7 +23,9 @@ set -euo pipefail
 BASE_HOME="${BASE_HOME:-/opt/base}"
 GATEWAY="${BASE_GATEWAY_ENDPOINT:-http://127.0.0.1:8080}"
 NETUID="${BASE_NETUID:-100}"
-CHAIN="${BASE_CHAIN_ENDPOINT:-wss://entrypoint-finney.opentensor.ai:443}"
+# Ordered failover list wins; weights-smoke passes it straight to
+# chain-live, which cools a rate-limited endpoint and tries the next.
+CHAIN="${BASE_CHAIN_ENDPOINTS:-${BASE_CHAIN_ENDPOINT:-wss://entrypoint-finney.opentensor.ai:443}}"
 SK="${BASE_CHALLENGE_SK_FILE:-${BASE_HOME}/deploy/secrets/prism_sk}"
 DESIGN_SK="${BASE_DESIGN_SK_FILE:-${BASE_HOME}/deploy/secrets/design_sk}"
 BIN="${WEIGHTS_SMOKE_BIN:-${BASE_HOME}/bin/weights-smoke}"
