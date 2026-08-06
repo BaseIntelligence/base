@@ -8,7 +8,7 @@ name: images
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
     paths:
       - "crates/**"
       - "bins/**"
@@ -189,13 +189,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Close the staging → prod ladder: write deploy/digests/<sha>.json and promote
-  # pin services into deploy/pins/staging.json, then commit/push to origin/dev.
+  # pin services into deploy/pins/staging.json, then commit/push to origin/main.
   # Staging droplet deploy remains --build-from source (deploy-staging / ci.yml).
   # ---------------------------------------------------------------------------
   update-staging-pins:
     name: update · commit staging pins
     needs: merge-digests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -204,7 +204,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -272,18 +272,18 @@ jobs:
             exit 0
           fi
           git commit -m "deploy: staging pins for ${SHA}"
-          # Rebase onto latest dev in case another pin commit landed.
-          git pull --rebase origin dev
-          git push origin HEAD:dev
+          # Rebase onto latest main in case another pin commit landed.
+          git pull --rebase origin main
+          git push origin HEAD:main
 
   # ---------------------------------------------------------------------------
   # Make GHCR packages public so unauthenticated / Phala pulls work. Lives here
-  # rather than in ghcr-public.yml because a `workflow_run` trigger is only read
-  # from the default branch (main) and these workflows live on dev.
+  # rather than in ghcr-public.yml so it runs inline right after digests merge;
+  # ghcr-public.yml remains for manual re-runs.
   # ---------------------------------------------------------------------------
   ghcr-public:
     needs: merge-digests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

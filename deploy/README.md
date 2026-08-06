@@ -115,15 +115,15 @@ combination. Verify locally: `./deploy/scripts/assert-compose-matrix.sh`.
 
 ### Auto CI deploy
 
-- `.github/workflows/deploy-staging.yml` — after successful `ci` on `dev` (and manual dispatch)
-- `.github/workflows/deploy-prod.yml` — on push of `v*.*.*` tags from `dev` (and manual dispatch with SHA)
+- `.github/workflows/deploy-staging.yml` — after successful `ci` on `main` (and manual dispatch)
+- `.github/workflows/deploy-prod.yml` — on push of `v*.*.*` tags from `main` (and manual dispatch with SHA)
 
 **Prod release flow (tag-based):**
-1. CI passes on `dev` for commit X.
-2. `images.yml` builds/pushes GHCR digests for X, promotes pin services into `deploy/pins/staging.json`, commits digests + pins to `dev`.
+1. CI passes on `main` for commit X.
+2. `images.yml` builds/pushes GHCR digests for X, promotes pin services into `deploy/pins/staging.json`, commits digests + pins to `main`.
 3. Staging droplets may still deploy with `--build-from source` (iteration); the pin ladder is what authorizes prod.
 4. Operator cuts `git tag vX.Y.Z` on commit X and pushes the tag.
-5. `deploy-prod.yml` preflight: CI green for X; `origin/dev` staging pins `commit_sha == X`.
+5. `deploy-prod.yml` preflight: CI green for X; `origin/main` staging pins `commit_sha == X`.
 6. Fail-closed Postgres backup (SSH dump on prod master → DO Spaces), then `promote.sh --env prod --confirm-prod` per service.
 7. Both prod hosts: `remote-deploy.sh --build-from registry` (pull GHCR `@sha256`, retag to Compose tags, `up --no-build`).
 8. Smoke `/healthz`. `environment: production` (enable required reviewers in GitHub UI).

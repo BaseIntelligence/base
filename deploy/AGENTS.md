@@ -108,8 +108,8 @@ Tunnel writes gitignored `deploy/env/local-tunnel.env` (`BASE_GATEWAY_PUBLIC_URL
 
 | Lane | Trigger | Build stance |
 |------|---------|--------------|
-| Staging | CI green on `dev` (`deploy-staging.yml`) | `--build-from source` on droplet OK for iteration |
-| Images | Push to `dev` (`images.yml`) | Build/push GHCR digests; promote + **commit** `deploy/pins/staging.json` + `deploy/digests/<sha>.json` |
+| Staging | CI green on `main` (`deploy-staging.yml`) | `--build-from source` on droplet OK for iteration |
+| Images | Push to `main` (`images.yml`) | Build/push GHCR digests; promote + **commit** `deploy/pins/staging.json` + `deploy/digests/<sha>.json` |
 | Prod | Tag `v*.*.*` (`deploy-prod.yml`) | **`--build-from registry` only** — promote staging→prod pins, pull GHCR digests; no Rust source build on prod hosts |
 
 Ladder: CI → GHCR digests → `deploy/pins/staging.json` (committed by `images.yml`) → tag → preflight (CI + staging pins match tag SHA) → `promote.sh` → `remote-deploy.sh --build-from registry`. Details: [`README.md`](README.md) § Auto CI deploy and § Promotion pipeline.
@@ -127,13 +127,13 @@ Ladder: CI → GHCR digests → `deploy/pins/staging.json` (committed by `images
 2. Digests recorded / promoted for services you will ship (`promote.sh`, `verify-task-43.sh` locally if needed).
 3. Age identity + env ages present on both prod hosts; wallets hotkeys under `deploy/secrets/wallets/` (0400 / 65532).
 4. Mainnet owner wallet placed; set `BASE_GATEWAY_REQUIRE_OWNER=1` when ready (ops gap until then — see [`docs/COMPLETENESS.md`](../docs/COMPLETENESS.md)).
-5. Cut `vX.Y.Z` on `dev`, push tag; pass `deploy-prod` preflight + `environment: production` reviewers.
+5. Cut `vX.Y.Z` on `main`, push tag; pass `deploy-prod` preflight + `environment: production` reviewers.
 6. Smoke `/healthz` on both prod hosts; confirm `evil-gateway` absent.
 
 ## Out of scope for agents (ops)
 
 - DO Spaces backup credentials — set in GitHub (repo + `production` env): `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY`, `BASE_BACKUP_BUCKET` (bucket `base-intelligence-backups` in nyc3; name `base-backups` was globally taken). Prod promote dumps Postgres over SSH then uploads from the runner (`deploy-prod.yml`).
-- GitHub `production` environment required reviewers / `dev` branch protection
+- GitHub `production` environment required reviewers / `main` branch protection
 - Gateway in-process TLS ACME (task 42 / `rustls-acme`) — **interim:** prod `chain.joinbase.ai` HTTPS via host Caddy on `:443` (TLS-ALPN-01) → `127.0.0.1:8080`; cleartext `:80` still docker→gateway
 - Terraform remote state backend (recommended, not blocking app deploy)
 - Bootstrap of age/secrets on brand-new droplets (OOB)

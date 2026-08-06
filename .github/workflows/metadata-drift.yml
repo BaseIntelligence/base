@@ -7,9 +7,9 @@ on:
     # 06:17 UTC daily
     - cron: "17 6 * * *"
   workflow_dispatch:
-  # Optional: also on push to reborn when lockfile/xtask changes
+  # Optional: also on push to main when lockfile/xtask changes
   push:
-    branches: [dev]
+    branches: [main]
     paths:
       - "metadata/**"
       - "xtask/**"

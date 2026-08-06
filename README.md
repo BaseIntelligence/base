@@ -5,7 +5,7 @@
 **Multi-challenge Bittensor subnet control plane (Rust).**
 
 [![CI](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml/badge.svg)](https://github.com/BaseIntelligence/base/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/BaseIntelligence/base)](https://github.com/BaseIntelligence/base/blob/dev/LICENSE)
+[![License](https://img.shields.io/github/license/BaseIntelligence/base)](https://github.com/BaseIntelligence/base/blob/main/LICENSE)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
 
 ![BASE Banner](assets/banner.jpg)
@@ -14,8 +14,8 @@
 
 ## What it is
 
-BASE is the Bittensor subnet control plane for BaseIntelligence. This branch (`dev`)
-is the **Rust greenfield** workspace: gateway, validator, agent-challenge, miner
+BASE is the Bittensor subnet control plane for BaseIntelligence. This branch (`main`)
+is the **Rust** workspace: gateway, validator, agent-challenge, miner
 CVM templates, and shared crates. It coordinates agent challenges (native pack
 executor — no Harbor product CLI), seals a final weight vector, and serves it to
 validators. The gateway is the sole TLS / public edge process.
@@ -32,8 +32,9 @@ validators. The gateway is the sole TLS / public edge process.
 
 | Branch | Role |
 |--------|------|
-| **`dev`** | Active Rust control plane (this tree). PRs target `dev`. |
-| `main` | Legacy / prior stack — do not mix secret material across histories. |
+| **`main`** | Active Rust control plane (this tree). PRs target `main`. |
+| `dev` | Kept alive for in-flight work; merges back into `main`. |
+| `legacy/main-pre-rust` (tag) | Legacy / prior stack — do not mix secret material across histories. |
 
 ## Miners
 

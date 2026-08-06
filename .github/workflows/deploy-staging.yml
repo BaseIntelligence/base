@@ -1,6 +1,6 @@
 name: deploy-staging
 
-# Auto-deploy control plane to DigitalOcean staging after CI is green on dev.
+# Auto-deploy control plane to DigitalOcean staging after CI is green on main.
 # Roles:
 #   - staging master  = validator + gateway + hotkey (owner)
 #   - staging validator = validator only (no hotkey / no gateway)
@@ -10,9 +10,7 @@ name: deploy-staging
 # tolerates a brief gateway outage, so parallel is safe.
 
 # Manual re-deploy only. The automatic post-CI deploy is the `deploy-staging`
-# job in ci.yml — a `workflow_run` trigger here would never fire, because
-# GitHub only reads that trigger from the default branch (main) and these
-# workflows live on dev.
+# job in ci.yml, which runs on every green push to main.
 on:
   workflow_dispatch:
     inputs:

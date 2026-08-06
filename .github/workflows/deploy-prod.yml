@@ -2,12 +2,12 @@ name: deploy-prod
 
 # Promote digest-pinned images to prod droplets on signed version tags.
 #
-# Trigger: push tag v*.*.* (cut from dev) or manual workflow_dispatch.
-# NEVER triggers on push to main (main holds the legacy pre-Rust stack).
+# Trigger: push tag v*.*.* (cut from main) or manual workflow_dispatch.
+# Triggers on version tags only — never on branch pushes.
 #
 # Steps:
-#   1. Preflight — CI green for the tag SHA; origin/dev staging pins carry
-#      that commit_sha (ladder tip may be a later pin-commit on dev).
+#   1. Preflight — CI green for the tag SHA; origin/main staging pins carry
+#      that commit_sha (ladder tip may be a later pin-commit on main).
 #   2. Fail-closed Postgres backup to DO Spaces, then promote.sh --env prod
 #      --confirm-prod for each pin service (staging.json → prod.json).
 #   3. Deploy master + validator with remote-deploy.sh --build-from registry
@@ -64,16 +64,16 @@ jobs:
         run: |
           set -euo pipefail
           SHA="${{ steps.resolve.outputs.commit_sha }}"
-          # Check that the ci workflow passed for this commit on dev
+          # Check that the ci workflow passed for this commit on main
           conclusion=$(gh run list \
             --workflow ci.yml \
-            --branch dev \
+            --branch main \
             --commit "$SHA" \
             --status completed \
             --json conclusion \
             --jq '.[0].conclusion // empty' 2>/dev/null || true)
           if [[ "$conclusion" != "success" ]]; then
-            echo "CI has not passed for commit $SHA on dev (conclusion: ${conclusion:-none})"
+            echo "CI has not passed for commit $SHA on main (conclusion: ${conclusion:-none})"
             echo "Failing — prod deploy requires a green CI run for this exact commit."
             exit 1
           fi
@@ -83,11 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           SHA="${{ steps.resolve.outputs.commit_sha }}"
-          # Pin commits land on origin/dev after images.yml; the tag may point at
+          # Pin commits land on origin/main after images.yml; the tag may point at
           # the image SHA while staging.json lives on a later pin commit.
-          git fetch origin dev
-          if ! git show origin/dev:deploy/pins/staging.json > /tmp/staging-pins.json 2>/dev/null; then
-            echo "deploy/pins/staging.json not found on origin/dev — staging pins must be committed first"
+          git fetch origin main
+          if ! git show origin/main:deploy/pins/staging.json > /tmp/staging-pins.json 2>/dev/null; then
+            echo "deploy/pins/staging.json not found on origin/main — staging pins must be committed first"
             exit 1
           fi
           pin_sha=$(python3 -c \
@@ -97,7 +97,7 @@ jobs:
             echo "Staging must record digests for this commit before promoting to prod."
             exit 1
           fi
-          echo "Staging pins on origin/dev match commit $SHA"
+          echo "Staging pins on origin/main match commit $SHA"
 
   promote:
     name: promote staging → prod pins
@@ -113,17 +113,17 @@ jobs:
           ref: ${{ needs.preflight.outputs.commit_sha }}
           fetch-depth: 0
 
-      - name: Load staging pins from origin/dev
+      - name: Load staging pins from origin/main
         run: |
           set -euo pipefail
-          git fetch origin dev
-          git show origin/dev:deploy/pins/staging.json > deploy/pins/staging.json
+          git fetch origin main
+          git show origin/main:deploy/pins/staging.json > deploy/pins/staging.json
           # Digests manifest (optional pulls for prism/attest-helper) when present.
           SHA="${{ needs.preflight.outputs.commit_sha }}"
-          if git show "origin/dev:deploy/digests/${SHA}.json" > "deploy/digests/${SHA}.json" 2>/dev/null; then
-            echo "Loaded deploy/digests/${SHA}.json from origin/dev"
+          if git show "origin/main:deploy/digests/${SHA}.json" > "deploy/digests/${SHA}.json" 2>/dev/null; then
+            echo "Loaded deploy/digests/${SHA}.json from origin/main"
           else
-            echo "WARNING: deploy/digests/${SHA}.json missing on origin/dev"
+            echo "WARNING: deploy/digests/${SHA}.json missing on origin/main"
           fi
 
       - name: Fail-closed — require Spaces backup credentials
@@ -274,7 +274,7 @@ jobs:
           path: /tmp/prod-pins-artifact
           if-no-files-found: error
 
-      - name: Commit prod pins to origin/dev
+      - name: Commit prod pins to origin/main
         run: |
           set -euo pipefail
           SHA="${{ needs.preflight.outputs.commit_sha }}"
@@ -283,8 +283,8 @@ jobs:
           if [[ -f "deploy/digests/${SHA}.json" ]]; then
             cp "deploy/digests/${SHA}.json" "/tmp/prod-pin-commit/${SHA}.json"
           fi
-          git fetch origin dev
-          git checkout -B dev origin/dev
+          git fetch origin main
+          git checkout -B main origin/main
           cp /tmp/prod-pin-commit/prod.json deploy/pins/prod.json
           if [[ -f "/tmp/prod-pin-commit/${SHA}.json" ]]; then
             mkdir -p deploy/digests
@@ -301,7 +301,7 @@ jobs:
             exit 0
           fi
           git commit -m "deploy: promote prod pins for ${SHA}"
-          git push origin dev
+          git push origin main
 
   deploy:
     name: deploy prod ${{ matrix.role }}

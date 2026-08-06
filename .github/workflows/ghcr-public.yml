@@ -3,9 +3,7 @@
 name: ghcr-public
 
 # Manual re-run only. The automatic pass is the `ghcr-public` job in
-# images.yml — a `workflow_run` trigger here would never fire, because GitHub
-# only reads that trigger from the default branch (main) and these workflows
-# live on dev.
+# images.yml, which runs on every push to main that rebuilds images.
 on:
   workflow_dispatch:
 

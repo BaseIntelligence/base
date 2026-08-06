@@ -1,6 +1,6 @@
 # Base completeness matrix
 
-Honest per-component status as of `dev` HEAD. Updated as phases land.
+Honest per-component status as of `main` HEAD. Updated as phases land.
 
 ## Legend
 
@@ -82,7 +82,7 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | Staging validator | done | Redeployed from same commit; `bundle gateway signature invalid` resolved. |
 | Prod master | pending | Droplet up, awaiting the mainnet owner wallet and the first `v*.*.*` tag. |
 | `deploy-staging.yml` | done | Auto on CI green; `--build-from source` for fast iteration; fail-closed health gate. |
-| `deploy-prod.yml` | done | Tag-based (`v*.*.*`); preflight (CI green + `origin/dev` staging pins `commit_sha`); fail-closed Spaces backup; `promote.sh --confirm-prod`; `--build-from registry` (GHCR digest pull, no Rust compile on droplet). |
+| `deploy-prod.yml` | done | Tag-based (`v*.*.*`); preflight (CI green + `origin/main` staging pins `commit_sha`); fail-closed Spaces backup; `promote.sh --confirm-prod`; `--build-from registry` (GHCR digest pull, no Rust compile on droplet). |
 | `images.yml` pin ladder | done | After GHCR push: write `deploy/digests/<sha>.json`, `promote.sh --env staging` for pin services, commit/push so prod preflight can match. |
 | GitHub secrets | done | Host/SSH/gateway secrets set. Prod promote also needs Spaces: `BASE_BACKUP_ENDPOINT`, `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (fail-closed if absent). |
 
@@ -121,5 +121,5 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | Mainnet (netuid 100) | Owner wallet not yet on this machine, so prod runs with `BASE_GATEWAY_REQUIRE_OWNER=0`. |
 | Prod pin placeholders | `deploy/pins/prod.json` still ships zero-digests until the first successful promote; registry mode rejects placeholders. |
 | Spaces backup secrets | First prod promote is fail-closed without `BASE_BACKUP_ENDPOINT` + `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (or AWS_* fallbacks) in GitHub. |
-| GitHub `production` environment | Enable required reviewers (and branch protection on `dev` as desired) before relying on tag-driven prod; workflow already sets `environment: production`. |
+| GitHub `production` environment | Enable required reviewers (and branch protection on `main` as desired) before relying on tag-driven prod; workflow already sets `environment: production`. |
 | TLS ACME | Ports 80/443 open on the firewall; gateway TLS termination not shipped yet. |

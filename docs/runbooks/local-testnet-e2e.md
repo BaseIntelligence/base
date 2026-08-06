@@ -163,5 +163,5 @@ rm -f deploy/env/local-tunnel.env
 - `env-staging` sets `BASE_GATEWAY_REQUIRE_OWNER=1`; `env-local` overrides via `LOCAL_REQUIRE_OWNER` (smoke defaults to `0`).
 - Host probe ports default to `2808x` (not role-master `1808x`) to avoid staging SSH tunnels.
 - `BASE_DOCKER_BUILD_FROM=prebuilt` copies host `target/release/*` into a Debian bookworm image. Binaries built on a newer glibc host (e.g. needing `GLIBC_2.39`) will crash in-container — use `BASE_DOCKER_BUILD_FROM=source` or rebuild on bookworm. `local-e2e.sh` may treat prism/design health as soft-fail so gateway+validator smoke can still complete while deploy-wiring finishes.
-- Rebuild gateway/validator from **current** `dev` before `--live`: stale `target/release/gateway` may still contain the removed `fake_owner` path and will not exercise real testnet owner checks.
+- Rebuild gateway/validator from **current** `main` before `--live`: stale `target/release/gateway` may still contain the removed `fake_owner` path and will not exercise real testnet owner checks.
 - If the host runs a system named tunnel (`/etc/cloudflared/config.yml`), `local-e2e.sh` passes a dedicated `--config` under `.local/` so the named-tunnel catch-all cannot 404 the quick URL.

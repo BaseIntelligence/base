@@ -13,7 +13,7 @@ Short contract for agents and operators. Prefer linking over restating runbooks.
 | `docs/` | Architecture, frozen specs, runbooks, completeness |
 | `config/` | Shared non-secret configuration |
 
-Working branch: **`dev`**. Prod ships from annotated tags `v*.*.*` cut on `dev`.
+Working branch: **`main`**. Prod ships from annotated tags `v*.*.*` cut on `main`.
 
 ## Non-negotiables
 

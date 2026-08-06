@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
   pull_request:
-    branches: [dev]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,15 +65,14 @@ jobs:
         run: bash deploy/scripts/assert-compose-matrix.sh
 
   # ---------------------------------------------------------------------------
-  # Auto-deploy staging. Lives here rather than in deploy-staging.yml because a
-  # `workflow_run` trigger is only read from the default branch (main), and
-  # these workflows live on dev. `needs: ci` keeps the CI-green ordering.
+  # Auto-deploy staging. Lives here rather than in deploy-staging.yml so that
+  # `needs: ci` keeps the CI-green ordering on every push to main.
   # deploy-staging.yml remains for manual re-deploys.
   # ---------------------------------------------------------------------------
   deploy-staging:
     name: deploy staging ${{ matrix.role }}
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     concurrency:
