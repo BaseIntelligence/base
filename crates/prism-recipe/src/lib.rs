@@ -17,10 +17,12 @@
 //! stream is part of the published pin (ephemeral-attempt safety comes from
 //! the seed lattice + similarity review, not data secrecy).
 //!
-//! The harness itself is a single Python file embedded at build time
-//! ([`HARNESS_PY`]) uploaded to the pod over SSH by `prism-lium`. No `PyPI` packages at
-//! runtime: it only uses stdlib + `torch` + `transformers` + `datasets`
-//! preinstalled in the pinned pod image.
+//! The harness itself is a multi-file Python package embedded at build time
+//! ([`HARNESS_FILES`]) and uploaded file-by-file to the pod over SSH by
+//! `prism-lium`. No `PyPI` packages at runtime: it only uses stdlib +
+//! `torch` + `transformers` + `datasets` preinstalled in the pinned pod
+//! image. [`HARNESS_PY`] remains as a legacy single-file view (the package
+//! entrypoint `main.py`).
 
 #![forbid(unsafe_code)]
 
@@ -28,8 +30,66 @@ mod zip_submit;
 
 pub use zip_submit::{sources_from_zip, training_from_zip, ZipSubmitError};
 
-/// Harness source executed inside the pod (uploaded over SSH, no secrets).
-pub const HARNESS_PY: &str = include_str!("../harness/prism_harness.py");
+/// Embedded harness package: pod-relative path → file contents, uploaded
+/// file-by-file by `prism-lium` into the pod workdir. Layout: `main.py`
+/// (parent entrypoint), `prismlib/*.py` (library modules: miner subprocess
+/// runner, seeded train stream, G6 probes, harness-owned scoring, pod
+/// manifest), `eval/__init__.py` (G1–G8 battery registry; battery modules
+/// land in a later recipe step).
+///
+/// Keep sorted by path — [`harness_files_sha256`] and [`recipe_pin_hex`]
+/// hash the set in sorted-path order.
+pub const HARNESS_FILES: &[(&str, &str)] = &[
+    (
+        "eval/__init__.py",
+        include_str!("../harness/eval/__init__.py"),
+    ),
+    ("main.py", include_str!("../harness/main.py")),
+    (
+        "prismlib/__init__.py",
+        include_str!("../harness/prismlib/__init__.py"),
+    ),
+    (
+        "prismlib/dataset.py",
+        include_str!("../harness/prismlib/dataset.py"),
+    ),
+    (
+        "prismlib/envutil.py",
+        include_str!("../harness/prismlib/envutil.py"),
+    ),
+    (
+        "prismlib/manifest.py",
+        include_str!("../harness/prismlib/manifest.py"),
+    ),
+    (
+        "prismlib/miner_entry.py",
+        include_str!("../harness/prismlib/miner_entry.py"),
+    ),
+    (
+        "prismlib/probes.py",
+        include_str!("../harness/prismlib/probes.py"),
+    ),
+    (
+        "prismlib/runner.py",
+        include_str!("../harness/prismlib/runner.py"),
+    ),
+    (
+        "prismlib/scoring.py",
+        include_str!("../harness/prismlib/scoring.py"),
+    ),
+    (
+        "prismlib/stream.py",
+        include_str!("../harness/prismlib/stream.py"),
+    ),
+    (
+        "prismlib/telemetry.py",
+        include_str!("../harness/prismlib/telemetry.py"),
+    ),
+];
+
+/// Legacy single-file view of the harness: the `main.py` parent entrypoint.
+/// Kept for consumers written against the pre-1.3.0 single-file harness.
+pub const HARNESS_PY: &str = include_str!("../harness/main.py");
 
 /// Baseline submission: `architecture.py`.
 pub const BASELINE_ARCHITECTURE_PY: &str = include_str!("../baseline/architecture.py");
@@ -40,9 +100,15 @@ pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 /// Recipe semantic version (surfaced through the API). Bumped to 1.1.0 for
 /// the miner telemetry hook contract (`prism_telemetry.report` /
 /// `finish_evaluation`) captured by the harness into `metrics_json`, to
-/// 1.2.0 for the architecture registry + training-only submission type
-/// (telemetry hooks now hard-enforced at review).
-pub const RECIPE_VERSION: &str = "1.2.0";
+/// 1.2.0 for the architecture registry and training-only submission type
+/// (telemetry hooks now hard-enforced at review), to 1.3.0 for the v3
+/// harness foundations: multi-file harness package (`main.py`, `prismlib/`,
+/// `eval/` registry), miner code executed in an `unshare --net` subprocess
+/// with harness-owned scoring (the parent never imports miner code), seeded
+/// `ctx["train_stream"]` with an authoritative tokens-seen counter, G6
+/// intermediate probes fired from `prism_telemetry.report`, and
+/// `METRICS_JSON` v2 (additive over v1).
+pub const RECIPE_VERSION: &str = "1.3.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;
@@ -162,7 +228,29 @@ pub fn check_contract(architecture_py: &str, training_py: &str) -> Result<(), Co
     Ok(())
 }
 
-/// SHA-256 hex of the recipe contract tuple surfaced via the API.
+/// SHA-256 hex over the embedded harness file set ([`HARNESS_FILES`]),
+/// sorted by pod-relative path: for each file, `path bytes || 0x00 ||
+/// contents || 0xff` feed one SHA-256. Forwarded to the pod by `prism-lium`
+/// as `PRISM_HARNESS_FILES_SHA256` and echoed back in `METRICS_JSON` v2 as
+/// `harness_files_sha256` (the harness Python fallback recomputes it from
+/// the uploaded files with the same algorithm).
+#[must_use]
+pub fn harness_files_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut files: Vec<&(&str, &str)> = HARNESS_FILES.iter().collect();
+    files.sort_by(|a, b| a.0.cmp(b.0));
+    for (path, contents) in files {
+        h.update(path.as_bytes());
+        h.update([0x00]);
+        h.update(contents.as_bytes());
+        h.update([0xff]);
+    }
+    hex::encode(h.finalize())
+}
+
+/// SHA-256 hex of the recipe contract tuple surfaced via the API. Covers
+/// the full harness file set (via [`harness_files_sha256`]) since 1.3.0.
 #[must_use]
 pub fn recipe_pin_hex() -> String {
     use sha2::{Digest, Sha256};
@@ -171,7 +259,7 @@ pub fn recipe_pin_hex() -> String {
     h.update(MAX_PARAMS.to_le_bytes());
     h.update(DATASET_URL.as_bytes());
     h.update(dataset_sha256().as_bytes());
-    h.update(HARNESS_PY.as_bytes());
+    h.update(harness_files_sha256().as_bytes());
     hex::encode(h.finalize())
 }
 
@@ -252,9 +340,86 @@ mod tests {
 
     #[test]
     fn harness_embedded_and_nonempty() {
-        assert!(HARNESS_PY.contains("build_model"));
+        // HARNESS_PY is the multi-file package entrypoint (main.py).
         assert!(HARNESS_PY.contains("METRICS_JSON="));
-        assert!(HARNESS_PY.contains("fineweb") || HARNESS_PY.contains("DATASET_URL"));
+        assert!(HARNESS_PY.contains("prismlib"));
+        let all = harness_concat();
+        assert!(all.contains("build_model"));
+        assert!(all.contains("fineweb") || all.contains("DATASET_URL"));
+    }
+
+    fn harness_concat() -> String {
+        HARNESS_FILES.iter().map(|(_, c)| *c).collect()
+    }
+
+    #[test]
+    fn harness_files_layout_is_sorted_and_complete() {
+        let paths: Vec<&str> = HARNESS_FILES.iter().map(|(p, _)| *p).collect();
+        let mut sorted = paths.clone();
+        sorted.sort_unstable();
+        assert_eq!(paths, sorted, "HARNESS_FILES must stay sorted by path");
+        let mut dedup = sorted.clone();
+        dedup.dedup();
+        assert_eq!(dedup.len(), sorted.len(), "duplicate harness paths");
+        for required in [
+            "main.py",
+            "eval/__init__.py",
+            "prismlib/__init__.py",
+            "prismlib/runner.py",
+            "prismlib/miner_entry.py",
+            "prismlib/stream.py",
+            "prismlib/probes.py",
+            "prismlib/scoring.py",
+            "prismlib/telemetry.py",
+            "prismlib/manifest.py",
+            "prismlib/dataset.py",
+            "prismlib/envutil.py",
+        ] {
+            assert!(paths.contains(&required), "missing harness file {required}");
+        }
+        let main = HARNESS_FILES
+            .iter()
+            .find(|(p, _)| *p == "main.py")
+            .map(|(_, c)| *c);
+        assert_eq!(main, Some(HARNESS_PY), "HARNESS_PY must alias main.py");
+    }
+
+    #[test]
+    fn harness_files_cover_v2_contract_markers() {
+        let all = harness_concat();
+        for marker in [
+            "build_model",
+            "train_stream",
+            "tokens_seen_source",
+            "prism_telemetry",
+            "finish_evaluation",
+            "report(",
+            "PRISM_TEST_TRAIN_MINUTES",
+            "PRISM_TEST_MAX_PARAMS",
+            "PRISM_PROBE_EVERY",
+            "PRISM_PROBE_TIME_BUDGET_S",
+            "unshare",
+            "PRISM_DISABLE_NETNS",
+            "PRISM_RESULT_FD",
+            "PRISM_PHASE=",
+            "metrics_version",
+            "pod_manifest",
+            "harness_files_sha256",
+            "parameter cap",
+            "probe_curve",
+        ] {
+            assert!(all.contains(marker), "harness package missing {marker}");
+        }
+        assert!(all.contains("350000000") || all.contains("PRISM_MAX_PARAMS"));
+    }
+
+    #[test]
+    fn harness_files_sha256_is_deterministic_hex() {
+        let a = harness_files_sha256();
+        let b = harness_files_sha256();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -275,8 +440,9 @@ mod tests {
         let b = TRAIN_HOURS_CAP;
         assert!(a > b);
         assert_eq!(MAX_PARAMS, 350_000_000);
-        assert!(HARNESS_PY.contains("350000000") || HARNESS_PY.contains("PRISM_MAX_PARAMS"));
-        assert!(HARNESS_PY.contains("parameter cap"));
+        let all = harness_concat();
+        assert!(all.contains("350000000") || all.contains("PRISM_MAX_PARAMS"));
+        assert!(all.contains("parameter cap"));
     }
 
     #[test]
@@ -299,11 +465,12 @@ mod tests {
 
     #[test]
     fn harness_documents_telemetry_hook_contract() {
-        assert!(HARNESS_PY.contains("prism_telemetry"));
-        assert!(HARNESS_PY.contains("finish_evaluation"));
-        assert!(HARNESS_PY.contains("report("));
-        assert!(HARNESS_PY.contains("PRISM_TEST_TRAIN_MINUTES"));
-        assert!(HARNESS_PY.contains("PRISM_TEST_MAX_PARAMS"));
+        let all = harness_concat();
+        assert!(all.contains("prism_telemetry"));
+        assert!(all.contains("finish_evaluation"));
+        assert!(all.contains("report("));
+        assert!(all.contains("PRISM_TEST_TRAIN_MINUTES"));
+        assert!(all.contains("PRISM_TEST_MAX_PARAMS"));
     }
 
     #[test]

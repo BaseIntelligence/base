@@ -152,7 +152,25 @@ pub struct EvalTelemetry {
     pub report_count: u64,
 }
 
+/// One G6 intermediate-probe point captured by the harness during training
+/// (recipe ≥1.3.0): the harness evaluates its fixed probe texts on the
+/// in-memory model every `PRISM_PROBE_EVERY`-th telemetry report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProbePoint {
+    /// Optimizer step at probe time (as reported by the miner).
+    pub step: u64,
+    /// Harness-counted train tokens consumed at probe time.
+    pub tokens_seen: u64,
+    /// Wall seconds since train start (pod clock).
+    pub wall_s: f64,
+    /// Teacher-forced CE on the harness-held probe texts.
+    pub probe_loss: f64,
+}
+
 /// Result of a remote (or sim) PRISM eval execution.
+///
+/// Deserialization accepts both METRICS_JSON v1 (recipe ≤1.2.x) and v2
+/// (recipe ≥1.3.0): every v2 field is optional and defaults to `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteExecResult {
     /// Finite quality metric used for scoring (higher is better after inversion if needed).
@@ -175,6 +193,26 @@ pub struct RemoteExecResult {
     /// Miner-reported training telemetry (recipe ≥1.1.0 harnesses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<EvalTelemetry>,
+    /// METRICS_JSON schema version (`2` for recipe ≥1.3.0 harnesses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_version: Option<u32>,
+    /// Where `tokens_seen` came from: `"train_stream"` (authoritative
+    /// harness counter) or `"legacy"` (miner bypassed the stream; the
+    /// pre-1.3.0 row-count fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_seen_source: Option<String>,
+    /// G6 intermediate-probe curve (loss vs tokens during training).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_curve: Option<Vec<ProbePoint>>,
+    /// Pod manifest: nvidia-smi -q snapshot, versions, netns/unshare facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_manifest: Option<serde_json::Value>,
+    /// Whether the miner subprocess ran inside an empty network namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub netns: Option<bool>,
+    /// SHA-256 hex of the harness file set uploaded to the pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_files_sha256: Option<String>,
 }
 
 /// Optional Real-client SSH configuration (paths only; never logs key material).
@@ -252,5 +290,55 @@ mod tests {
         assert_eq!(t.loss_series[0].step, 1);
         assert!(t.loss_series[1].grad_norm.is_none());
         assert_eq!(v.n_params, Some(12_400_000));
+    }
+
+    #[test]
+    fn remote_exec_result_parses_metrics_v2_payload() {
+        let v: RemoteExecResult = serde_json::from_str(
+            r#"{"bpb":2.5,"tokens_seen":1048576,"wall_clock_seconds":780.0,
+                "gpu_type":"NVIDIA GeForce RTX 5090","notes":"recipe-v2 val_ce->bpb",
+                "val_rows":256,"n_params":12400000,"recipe":"1.3.0",
+                "metrics_version":2,"tokens_seen_source":"train_stream","netns":true,
+                "harness_files_sha256":"91a8737e",
+                "probe_curve":[{"step":25,"tokens_seen":102400,"wall_s":12.5,"probe_loss":4.25}],
+                "train_metrics":{"train_loss":3.1,"train_steps":500},
+                "pod_manifest":{"python":"3.12.3","netns":true,
+                  "unshare":{"available":true,"detail":"probe ok"}},
+                "telemetry":{"finish_reason":"train_returned","report_count":20,
+                  "loss_series":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(v.metrics_version, Some(2));
+        assert_eq!(v.tokens_seen_source.as_deref(), Some("train_stream"));
+        assert_eq!(v.netns, Some(true));
+        assert_eq!(v.harness_files_sha256.as_deref(), Some("91a8737e"));
+        let curve = v.probe_curve.expect("probe_curve");
+        assert_eq!(curve.len(), 1);
+        assert_eq!(curve[0].step, 25);
+        assert_eq!(curve[0].tokens_seen, 102_400);
+        assert!(curve[0].probe_loss > 0.0);
+        let pm = v.pod_manifest.expect("pod_manifest");
+        assert_eq!(pm["python"], "3.12.3");
+        // v1 keys still intact on the v2 payload.
+        assert!(v.bpb.is_finite() && v.bpb > 0.0);
+        assert_eq!(v.tokens_seen, 1_048_576);
+        assert!(v.telemetry.is_some());
+    }
+
+    #[test]
+    fn remote_exec_result_v2_fields_default_absent() {
+        // Mixed-version payloads (e.g. metrics_version set, other v2 keys
+        // absent) must still parse — every v2 field is optional.
+        let v: RemoteExecResult = serde_json::from_str(
+            r#"{"bpb":1.5,"tokens_seen":2048,"wall_clock_seconds":12.0,
+                "gpu_type":"SIM","notes":"sim-eval","metrics_version":2}"#,
+        )
+        .unwrap();
+        assert_eq!(v.metrics_version, Some(2));
+        assert!(v.tokens_seen_source.is_none());
+        assert!(v.probe_curve.is_none());
+        assert!(v.pod_manifest.is_none());
+        assert!(v.netns.is_none());
+        assert!(v.harness_files_sha256.is_none());
     }
 }

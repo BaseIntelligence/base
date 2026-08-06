@@ -399,8 +399,9 @@ impl LiumClient {
         })
     }
 
-    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → upload harness +
-    /// miner sources → run [`prism_recipe`] harness → parse `METRICS_JSON`.
+    /// Live recipe eval: wait RUNNING → SSH nvidia-smi → upload the harness
+    /// package ([`prism_recipe::HARNESS_FILES`]) + miner sources → run
+    /// `main.py` → parse `METRICS_JSON` (v1 and v2 payloads both accepted).
     ///
     /// The harness trains the miner's code on the pinned fineweb-edu shard and
     /// scores the frozen val cut; no metric comes from hashing sources.
@@ -418,7 +419,7 @@ impl LiumClient {
 
         let arch_b64 = base64_encode(architecture_py.as_bytes());
         let train_b64 = base64_encode(training_py.as_bytes());
-        let harness_b64 = base64_encode(prism_recipe::HARNESS_PY.as_bytes());
+        let upload = harness_upload_script();
         let train_cap_secs = (self.ssh.train_hours_cap * 3600.0) as u64;
         let remote = format!(
             "set -e
@@ -429,8 +430,7 @@ python3 -c 'import transformers' 2>/dev/null || pip install \
   --break-system-packages --root-user-action=ignore \
   'transformers==4.44.2' 'datasets==3.0.2' 'pyarrow==17.0.0'
 mkdir -p /tmp/prism_eval
-echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
-echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
+{upload}echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
 echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
 cd /tmp/prism_eval
 PRISM_DATASET_URL='{dataset_url}' \
@@ -438,8 +438,9 @@ PRISM_DATASET_SHA256='{dataset_sha}' \
 PRISM_MAX_TRAIN_STEPS='{steps}' \
 PRISM_TRAIN_HOURS_CAP='{train_hours}' \
 PRISM_GPU_TYPE='{gpu_type}' \
-{test_env}timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
-            harness_b64 = harness_b64,
+PRISM_HARNESS_FILES_SHA256='{harness_sha}' \
+{test_env}timeout --kill-after=60 {timeout_secs} python3 main.py\n",
+            upload = upload,
             arch_b64 = arch_b64,
             train_b64 = train_b64,
             dataset_url = prism_recipe::DATASET_URL,
@@ -447,6 +448,7 @@ PRISM_GPU_TYPE='{gpu_type}' \
             steps = prism_recipe::MAX_TRAIN_STEPS,
             train_hours = self.ssh.train_hours_cap,
             gpu_type = gpu_type.replace('\'', ""),
+            harness_sha = prism_recipe::harness_files_sha256(),
             test_env = test_mode_env(),
             timeout_secs = train_cap_secs.saturating_add(3600),
         );
@@ -508,6 +510,21 @@ PRISM_GPU_TYPE='{gpu_type}' \
             .trim()
             .to_owned())
     }
+}
+
+/// Shell lines uploading every embedded harness file
+/// ([`prism_recipe::HARNESS_FILES`]) into the pod workdir, preserving the
+/// package layout (`prismlib/`, `eval/`). Paths and base64 payloads are
+/// static/safe: base64 never contains a single quote, paths are
+/// compile-time constants.
+fn harness_upload_script() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("mkdir -p /tmp/prism_eval/prismlib /tmp/prism_eval/eval\n");
+    for (path, contents) in prism_recipe::HARNESS_FILES {
+        let b64 = base64_encode(contents.as_bytes());
+        let _ = writeln!(out, "echo '{b64}' | base64 -d > /tmp/prism_eval/{path}");
+    }
+    out
 }
 
 /// Optional test-mode env lines for the pod harness (`KEY='v' \\\n` pairs).
@@ -1035,6 +1052,51 @@ mod tests {
         let s = format!("{c:?}");
         assert!(!s.contains("super-secret"));
         assert!(s.contains("<redacted>"));
+    }
+
+    #[test]
+    fn harness_upload_script_covers_every_embedded_file() {
+        let s = harness_upload_script();
+        assert!(s.contains("mkdir -p /tmp/prism_eval/prismlib /tmp/prism_eval/eval"));
+        for (path, _) in prism_recipe::HARNESS_FILES {
+            assert!(
+                s.contains(&format!("| base64 -d > /tmp/prism_eval/{path}")),
+                "upload script missing {path}"
+            );
+        }
+        // The entrypoint is main.py (recipe 1.3.0 multi-file package).
+        assert!(prism_recipe::HARNESS_FILES
+            .iter()
+            .any(|(p, _)| *p == "main.py"));
+    }
+
+    #[test]
+    fn harness_upload_script_payloads_are_valid_base64() {
+        // Spot-check that the embedded main.py upload line round-trips.
+        let s = harness_upload_script();
+        let line = s
+            .lines()
+            .find(|l| l.ends_with("> /tmp/prism_eval/main.py"))
+            .unwrap();
+        let b64 = line
+            .strip_prefix("echo '")
+            .and_then(|l| l.split('\'').next())
+            .unwrap();
+        // base64 alphabet only (safe inside single quotes, decodable by
+        // `base64 -d`); contents match the embedded file.
+        assert!(!b64.is_empty());
+        assert!(b64
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+        let expected = base64_encode(
+            prism_recipe::HARNESS_FILES
+                .iter()
+                .find(|(p, _)| *p == "main.py")
+                .unwrap()
+                .1
+                .as_bytes(),
+        );
+        assert_eq!(b64, expected);
     }
 
     #[test]

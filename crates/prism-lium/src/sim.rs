@@ -146,6 +146,14 @@ impl EvalJobBackend for SimLiumBackend {
                 finish_reason: Some("finish_evaluation".into()),
                 report_count: 5,
             }),
+            // Sim stays v1-shaped: v2 fields are exercised by the receipt
+            // parsing tests and real Lium runs, not the offline backend.
+            metrics_version: None,
+            tokens_seen_source: None,
+            probe_curve: None,
+            pod_manifest: None,
+            netns: None,
+            harness_files_sha256: None,
         })
     }
 }

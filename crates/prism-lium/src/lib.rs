@@ -41,8 +41,8 @@ pub use receipt::{EvalReceipt, NoScoreGate};
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, SshTarget};
 pub use types::{
-    EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
-    TelemetryPoint,
+    EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, ProbePoint,
+    RemoteExecResult, TelemetryPoint,
 };
 
 use async_trait::async_trait;
