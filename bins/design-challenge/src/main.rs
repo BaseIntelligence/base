@@ -12,6 +12,7 @@ use std::time::Duration;
 use challenge_agentic::{load_api_key_file, AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
+use design_challenge_bin::resanitize;
 use design_challenge::{
     design_router, force_sim_refusal_reason, host_sim_allowed, public_key_from_secret, AppState,
     DbDesignStore, DesignStore, GatewayClient, GatewayClientConfig, MemoryDesignStore,
@@ -293,7 +294,7 @@ async fn cmd_backfill_resanitize(
         .map_err(|_| "backfill-resanitize requires BASE_DATABASE_URL".to_owned())?;
     let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
     let store = DbDesignStore::new(pool);
-    let s = design_challenge::backfill::backfill_resanitize(
+    let s = resanitize::backfill_resanitize(
         &store,
         &cli.staging_root,
         limit,

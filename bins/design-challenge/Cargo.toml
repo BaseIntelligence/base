@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "design_challenge_bin"
+path = "src/lib.rs"
+
 [[bin]]
 name = "design-challenge"
 path = "src/main.rs"
@@ -21,6 +25,9 @@ clap = { version = "4", features = ["derive", "env"] }
 design-challenge = { path = "../../crates/design-challenge" }
 design-sandbox = { path = "../../crates/design-sandbox" }
 design-sanitize = { path = "../../crates/design-sanitize" }
+serde_json = "1"
+design-store = { path = "../../crates/design-store" }
+design-harness = { path = "../../crates/design-harness" }
 review-docker = { path = "../../crates/review-docker" }
 submission-gating = { path = "../../crates/submission-gating" }
 crypto = { path = "../../crates/crypto" }
@@ -32,6 +39,11 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 tracing = "0.1"
 sha2 = "0.10"
 hex = "0.4"
+base64 = "0.22"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
