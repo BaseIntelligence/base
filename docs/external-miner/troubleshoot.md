@@ -22,6 +22,9 @@
 | Symptom | Likely cause | What to check |
 |---------|--------------|---------------|
 | Rejected submit | Recipe contract | `GET /v1/recipe` + baseline; follow [`PRISM_RECIPE.md`](../PRISM_RECIPE.md) |
+| Source-tree rejected on raw ZIP | Need `zip_base64` JSON intake | Multi-file trees (helpers/`kernels/`/`tokenizer/`) must use JSON `zip_base64`, not raw `application/zip` |
+| Tokenizer / hub errors on pod | No network; wrong declaration | Use `ctx["tokenizer"]`; declare via `tokenizer/` or `build_tokenizer` in `architecture.py` (not `training.py`). GPT-2 is fallback only |
+| `CAP_EXCEEDED` / Score 0 | Model > 350M params | Terminal — resize `build_model`; not auto-retried |
 | Score 0 after review | `Copied` / `Suspicious` | Similarity gate; rewrite; do not paste baseline wholesale |
 | Stuck `Provisioning` | Lium market thinness | Ops-side; watch `GET /v1/jobs` / events |
 | Idempotent replay | Same `submission_id` | Expected — returns prior row |

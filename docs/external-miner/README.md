@@ -14,7 +14,7 @@ over HTTP to the live challenges:
 | Challenge | `challenge_id` | Scoring | Guide | Public miner repo |
 |-----------|----------------|---------|-------|-------------------|
 | Design | `design` | `challenge_scoring_version` **2** (daily share ≥2 wins + agentic) | [design.md](./design.md) | [BaseIntelligence/design-challenge](https://github.com/BaseIntelligence/design-challenge) |
-| Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) | [BaseIntelligence/prism](https://github.com/BaseIntelligence/prism) (miner docs forthcoming) |
+| Prism | `prism` | `challenge_scoring_version` **2** (bpb-only) | [prism.md](./prism.md) | [BaseIntelligence/prism](https://github.com/BaseIntelligence/prism) |
 
 Do **not** conflate version axes:
 
