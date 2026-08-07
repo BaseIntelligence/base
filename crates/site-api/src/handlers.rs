@@ -308,12 +308,25 @@ async fn design_leaderboard_json(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let previous_round = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/leaderboard/previous_round"))
+        .and_then(Value::as_u64)
+        .or_else(|| round_id.map(|r| r.saturating_sub(1)));
     let epoch = dash
         .as_ref()
         .and_then(|d| d.get("epoch"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let mut rows = design_leaderboard(&ratings, &previous, epoch);
+    // Mid-round before admin winners: current ratings are empty. Surface the
+    // previous round's standings so the marketing board is not blank.
+    let (board_ratings, board_previous, board_round_id) =
+        if ratings.is_empty() && !previous.is_empty() {
+            (previous.as_slice(), &[][..], previous_round)
+        } else {
+            (ratings.as_slice(), previous.as_slice(), round_id)
+        };
+    let mut rows = design_leaderboard(board_ratings, board_previous, epoch);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
         rows.retain(|r| leaderboard_matches_query(r, needle));
     }
@@ -334,7 +347,7 @@ async fn design_leaderboard_json(
         "total": page_out.total,
         "pageCount": page_out.page_count,
         "epoch": epoch,
-        "roundId": round_id,
+        "roundId": board_round_id,
         "roundEndsAt": round_ends_at,
         "secondsRemaining": seconds_remaining,
         "updatedAt": now_iso(),
@@ -1026,6 +1039,39 @@ mod tests {
             items[0]["screenshotUrl"],
             "/challenge/design/v1/view/ok1/index.png"
         );
+    }
+
+    #[tokio::test]
+    async fn design_leaderboard_falls_back_to_previous_round() {
+        let (design, _prism, st) = setup().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/dashboard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "epoch": 3,
+                "leaderboard": {
+                    "current_round": 9,
+                    "previous_round": 8,
+                    "ratings": [],
+                    "previous_ratings": [
+                        {"miner_hotkey": "aa".repeat(32), "rating": 250, "wins": 1, "losses": 0}
+                    ]
+                },
+                "round": {
+                    "round_id": 9,
+                    "closes_at_secs": 1_700_000_100_u64,
+                    "seconds_remaining": 120
+                },
+                "recent_runs": []
+            })))
+            .mount(&design)
+            .await;
+        let app = site_router(st);
+
+        let (s, v) = call(app, "/v1/site/arenas/design/leaderboard").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        assert_eq!(v["roundId"], 8, "{v}");
+        assert_eq!(v["items"][0]["elo"], 250.0);
     }
 
     #[tokio::test]
