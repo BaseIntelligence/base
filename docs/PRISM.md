@@ -74,7 +74,10 @@ enforces **one accepted submission per `(prism, hotkey)`**
 unknown hotkey → `403 hotkey_not_in_metagraph`. Infra-class failures
 (`install` = Lium/pod, `ast_infra` = similarity, `llm_infra` = review/agentic)
 **auto-retry up to 3 times** before a terminal `blocked`; cheat / suspicious
-verdicts are terminal `rejected` (no retry). A metagraph **watcher** reopens
+verdicts are terminal `rejected` (no retry). Retries of a **post-run** failure
+(`llm_infra` / `ast_infra` after the pod job completed) resume from the
+persisted measurement — the train+eval job is never re-run for a master-side
+review failure; only `install` retries re-provision. A metagraph **watcher** reopens
 eligibility when the hotkey leaves the metagraph (uid deregistered or hotkey
 replaced). Manual `POST /v1/submissions/{id}/retry` is unchanged.
 

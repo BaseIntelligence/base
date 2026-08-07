@@ -23,7 +23,8 @@ pub use composite::{
 };
 pub use config::PrismConfig;
 pub use pipeline::{
-    run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
+    measurement_patch, resume_measurement, run_eval_pipeline, run_sim_pipeline, PipelineError,
+    PipelineInput, PipelineResult,
 };
 pub use score::{final_lattice, score_from_bpb, score_from_pipeline, PipelineOutcome, ScoringMode};
 pub use submission::{

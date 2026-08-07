@@ -152,6 +152,32 @@ pub async fn run_eval_pipeline(
     }
 }
 
+/// Post-run retry resume: a row still carrying its completed measurement
+/// (receipt + metrics survive `reset_for_retry`) decodes back into the
+/// measure-phase products — an infra retry of a review/similarity/agentic
+/// stage must never re-provision a pod for an already-measured run. Decode
+/// drift falls back to `None` (caller re-measures).
+#[must_use]
+pub fn resume_measurement(
+    row: &prism_store::SubmissionState,
+) -> Option<(RemoteExecResult, EvalReceipt)> {
+    let receipt = row.receipt.clone()?;
+    let metrics = serde_json::from_value::<RemoteExecResult>(row.metrics_json.clone()?).ok()?;
+    Some((metrics, receipt))
+}
+
+/// Store patch persisting a completed measurement (receipt + metrics + bpb);
+/// the metrics blob also lands the per-step telemetry series master-side.
+#[must_use]
+pub fn measurement_patch(m: &RemoteExecResult, r: &EvalReceipt) -> prism_store::StatePatch {
+    prism_store::StatePatch {
+        receipt: Some(r.clone()),
+        metrics_json: serde_json::to_value(m).ok(),
+        bpb: Some(m.bpb),
+        ..prism_store::StatePatch::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

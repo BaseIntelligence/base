@@ -283,9 +283,6 @@ impl PrismStore for DbPrismStore {
         let row = dbs::reset_prism_submission_for_retry(&self.pool, id)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
-        if let Err(e) = crate::telemetry::delete_telemetry(&self.pool, id).await {
-            tracing::warn!(submission_id = %id, error = %e, "prism telemetry delete failed");
-        }
         dbs::insert_prism_stage_event(
             &self.pool,
             &dbs::NewPrismStageEvent {

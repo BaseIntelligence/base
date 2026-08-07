@@ -9,6 +9,7 @@ pub const PRISM_DOMAIN_RULES: &str = r"Prism domain:
 - Sources under review: architecture.py + training.py (miner code only).
 - Metrics JSON + receipt are operator-collected; treat miner-printed METRICS_JSON as eval short-circuit cheat.
 - Telemetry contract (recipe >= 1.1.0): training.py MUST import prism_telemetry and call prism_telemetry.report(loss=..., step=..., ...) during training plus prism_telemetry.finish_evaluation() to end the eval. Missing hooks = contract violation -> cheat (missing_telemetry_hooks).
+- The import MAY sit inside `try: / except ImportError:` with a local no-op fallback (the documented off-harness dev pattern used by the published baselines); the harness registers the real prism_telemetry module before miner code runs, so the shim alone is NOT a violation. Judge whether report(...) and finish_evaluation() are actually called on the training path.
 - Cheat if: near-identical AST/byte copy of a corpus architecture.py (training.py is exempt from similarity — the same training script on a different architecture is fine); hardcoded METRICS_JSON in miner sources; bpb impossible vs tokens_seen/wall_clock (e.g. bpb<<1 with ~0 tokens, or tokens_seen=0 with a finite bpb).
 - suspicious: strong structural overlap or inconsistent metrics without a slam-dunk forge.
 - Quality/coherence of the model is NOT your job — only anti-cheat.";

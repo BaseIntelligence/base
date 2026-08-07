@@ -10,9 +10,7 @@ use challenge_ast::{
 };
 use serde_json::{json, Value};
 
-use crate::types::{
-    AgenticError, AgenticVerdict, CheatCode, CorpusEntry, ReviewRequest, VerdictKind,
-};
+use crate::types::{AgenticError, AgenticVerdict, CheatCode, ReviewRequest, VerdictKind};
 
 /// Precomputed corpus fingerprints for AST tools.
 #[derive(Debug, Clone)]
@@ -132,7 +130,8 @@ pub(crate) fn tool_schemas() -> Value {
                         "obfuscation_to_hide_copy",
                         "inconsistent_metrics",
                         "eval_short_circuit",
-                        "ast_architecture_copy"
+                        "ast_architecture_copy",
+                        "missing_telemetry_hooks"
                     ]
                 }
             },
@@ -546,24 +545,34 @@ pub(crate) fn resolve_rel(workdir: &Path, rel: &str) -> Result<PathBuf, AgenticE
 }
 
 pub(crate) fn parse_verdict(args: &Value) -> Result<AgenticVerdict, AgenticError> {
-    let verdict = match args.get("verdict").and_then(Value::as_str).unwrap_or("") {
+    let verdict_raw = args.get("verdict").and_then(Value::as_str).unwrap_or("");
+    let verdict = match verdict_raw.to_ascii_lowercase().as_str() {
         "clean" => VerdictKind::Clean,
         "suspicious" => VerdictKind::Suspicious,
         "cheat" => VerdictKind::Cheat,
-        other => {
-            return Err(AgenticError::Parse(format!("verdict: {other:?}")));
+        _ => {
+            return Err(AgenticError::Parse(format!("verdict: {verdict_raw:?}")));
         }
     };
+    // A cheat_code outside the taxonomy must never fail the parse (that
+    // classed as llm_infra and re-ran whole pod jobs): coerce to `Other` —
+    // a non-AST code, so `normalize_ast_thresholds` preserves the verdict —
+    // and keep the raw strings in the rationale for audit.
+    let mut unrecognized: Vec<String> = Vec::new();
     let cheat_codes = args
         .get("cheat_codes")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str())
-                .map(parse_cheat_code)
-                .collect::<Result<Vec<_>, _>>()
+                .map(|s| {
+                    parse_cheat_code(s).unwrap_or_else(|_| {
+                        unrecognized.push(s.chars().take(64).collect());
+                        CheatCode::Other
+                    })
+                })
+                .collect::<Vec<_>>()
         })
-        .transpose()?
         .unwrap_or_default();
     let nearest_id = args.get("nearest_id").and_then(|v| {
         if v.is_null() {
@@ -579,7 +588,7 @@ pub(crate) fn parse_verdict(args: &Value) -> Result<AgenticVerdict, AgenticError
     if similarity_bps > 10_000 {
         return Err(AgenticError::Parse("similarity_bps > 10000".into()));
     }
-    let rationale = args
+    let mut rationale = args
         .get("rationale")
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -588,6 +597,13 @@ pub(crate) fn parse_verdict(args: &Value) -> Result<AgenticVerdict, AgenticError
         .collect::<String>();
     if rationale.is_empty() {
         return Err(AgenticError::Parse("rationale empty".into()));
+    }
+    if !unrecognized.is_empty() {
+        let _ = write!(
+            rationale,
+            " [unrecognized cheat_codes coerced to other: {}]",
+            unrecognized.join(",")
+        );
     }
     Ok(normalize_ast_thresholds(AgenticVerdict {
         verdict,
@@ -640,6 +656,7 @@ fn parse_cheat_code(s: &str) -> Result<CheatCode, AgenticError> {
         "inconsistent_metrics" => CheatCode::InconsistentMetrics,
         "eval_short_circuit" => CheatCode::EvalShortCircuit,
         "ast_architecture_copy" => CheatCode::AstArchitectureCopy,
+        "missing_telemetry_hooks" => CheatCode::MissingTelemetryHooks,
         other => return Err(AgenticError::Parse(format!("cheat_code: {other:?}"))),
     })
 }
@@ -680,14 +697,6 @@ pub(crate) fn load_primary_sources(
         out.push((rel.clone(), text));
     }
     Ok(out)
-}
-
-#[allow(dead_code)] // used by sim + tests via CorpusEntry
-pub(crate) fn corpus_hashes(corpus: &[CorpusEntry]) -> Vec<(String, String)> {
-    corpus
-        .iter()
-        .map(|c| (c.id.clone(), source_hash_hex(&c.source)))
-        .collect()
 }
 
 #[cfg(test)]
@@ -787,5 +796,54 @@ mod tests {
         .unwrap();
         assert_eq!(v.verdict, VerdictKind::Clean);
         assert!(v.cheat_codes.is_empty());
+    }
+
+    #[test]
+    fn parse_verdict_accepts_missing_telemetry_hooks() {
+        // Normative taxonomy code the prompt advertises but the hand parser
+        // once rejected — the live `hybrid_delta` failure class (E12).
+        let v = parse_verdict(&json!({
+            "verdict": "cheat",
+            "cheat_codes": ["missing_telemetry_hooks"],
+            "nearest_id": null,
+            "similarity_bps": 0,
+            "rationale": "training.py never calls prism_telemetry.report"
+        }))
+        .unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+        assert_eq!(v.cheat_codes, vec![CheatCode::MissingTelemetryHooks]);
+    }
+
+    #[test]
+    fn parse_verdict_unknown_code_coerces_to_other_keeps_cheat() {
+        // Unknown codes must not explode into llm_infra (a full pod retrain)
+        // nor be dropped so completely that AST normalization downgrades the
+        // verdict below the suspicious band (fail-open). Case is normalized.
+        let v = parse_verdict(&json!({
+            "verdict": "Cheat",
+            "cheat_codes": ["magic_forge_v9"],
+            "nearest_id": null,
+            "similarity_bps": 0,
+            "rationale": "model saw something odd"
+        }))
+        .unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+        assert_eq!(v.cheat_codes, vec![CheatCode::Other]);
+        assert!(v.rationale.contains("magic_forge_v9"), "{}", v.rationale);
+    }
+
+    #[test]
+    fn parse_verdict_mixed_known_and_unknown_codes() {
+        let v = parse_verdict(&json!({
+            "verdict": "suspicious",
+            "cheat_codes": ["inconsistent_metrics", "totally_new_code"],
+            "nearest_id": null,
+            "similarity_bps": 9000,
+            "rationale": "odd metrics"
+        }))
+        .unwrap();
+        assert_eq!(v.verdict, VerdictKind::Suspicious);
+        assert!(v.cheat_codes.contains(&CheatCode::InconsistentMetrics));
+        assert!(v.cheat_codes.contains(&CheatCode::Other));
     }
 }

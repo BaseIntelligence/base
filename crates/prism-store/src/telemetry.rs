@@ -51,19 +51,6 @@ pub async fn replace_telemetry(
     Ok(())
 }
 
-/// Delete the series for one submission (retry reset path).
-///
-/// # Errors
-/// SQL error.
-pub async fn delete_telemetry(pool: &PgPool, submission_id: &str) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM prism_telemetry WHERE submission_id = $1")
-        .bind(submission_id)
-        .execute(pool)
-        .await
-        .map_err(|e| StoreError::Backend(e.to_string()))?;
-    Ok(())
-}
-
 /// Raw `prism_telemetry` row (`step`, `loss`, `grad_norm`, `layer_stats`, `at_secs`).
 type TelemetryRow = (
     i64,

@@ -277,9 +277,11 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         event: Option<&StageEvent>,
     ) -> Result<SubmissionState, StoreError>;
 
-    /// Retry reset: clears exec/score fields and re-queues a failed row.
-    /// Implementations MUST actually null the pod/receipt/score columns
-    /// (SQL) or reset the in-memory row mirror-equivalently.
+    /// Retry reset: clears review/score fields and the emission watermark,
+    /// and re-queues a failed row. A completed measurement (pod id/provider,
+    /// receipt, metrics, bpb, telemetry series) is RETAINED so a post-run
+    /// infra retry resumes without re-measure; a measure-phase failure never
+    /// persisted one, so install retries still re-provision from scratch.
     async fn reset_for_retry(&self, id: &str) -> Result<SubmissionState, StoreError>;
 
     /// Newsfeed listing for the API (`status` / `miner` optional filters).
@@ -511,12 +513,11 @@ impl PrismStore for MemoryPrismStore {
             .iter_mut()
             .find(|r| r.id == id)
             .ok_or(StoreError::NotFound)?;
+        // A completed measurement (pod id/provider, receipt, metrics, bpb and
+        // the derived telemetry series) is RETAINED: post-run infra retries
+        // resume from it instead of re-measuring. A measure-phase failure
+        // never persisted one, so install retries still re-provision.
         row.status = Stage::Queued;
-        row.pod_id = None;
-        row.pod_provider = None;
-        row.receipt = None;
-        row.metrics_json = None;
-        row.bpb = None;
         row.review = None;
         row.similarity = None;
         row.final_score = None;
@@ -525,10 +526,6 @@ impl PrismStore for MemoryPrismStore {
         row.updated_at_ms = now_ms();
         let out = row.clone();
         drop(rows);
-        self.telemetry
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .remove(id);
         // A re-scored row must re-enter the emission outbox.
         self.emitted
             .lock()
@@ -904,7 +901,8 @@ mod tests {
         assert_eq!(series.len(), 2);
         assert_eq!(series[0].step, 1);
         assert!((series[1].loss - 3.0).abs() < f64::EPSILON);
-        // Retry clears both the blob and the derived series.
+        // Post-run retry retains the completed measurement + derived series
+        // (only review/score fields reset), so retries never re-measure.
         s.apply(
             "a",
             &StatePatch {
@@ -915,9 +913,11 @@ mod tests {
         )
         .await
         .unwrap();
-        s.reset_for_retry("a").await.unwrap();
-        assert!(s.telemetry("a").await.unwrap().is_empty());
-        assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_none());
+        let retried = s.reset_for_retry("a").await.unwrap();
+        assert_eq!(retried.status, Stage::Queued);
+        assert_eq!(retried.retry_count, 1);
+        assert_eq!(s.telemetry("a").await.unwrap().len(), 2);
+        assert!(s.get("a").await.unwrap().unwrap().metrics_json.is_some());
     }
 
     #[tokio::test]

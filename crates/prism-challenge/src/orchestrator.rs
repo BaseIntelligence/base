@@ -21,7 +21,7 @@ use challenge_common::{expected_set_at_chain, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
 use prism_lium::{EvalJobBackend, InstanceSpec, RemoteExecResult};
-use prism_pipeline::{gating_key, ScoringMode};
+use prism_pipeline::{gating_key, measurement_patch, resume_measurement, ScoringMode};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 use prism_review::{ReviewBackend, SimilarityVerdict, SourceSnippet};
 use submission_gating::{GatingState, GatingStore};
@@ -400,8 +400,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
 
         // Phase 1: provision + recipe exec + terminate (always verified).
         // Lium/infra failures auto-retry (install class); budget exhaustion is
-        // terminal with NoScore(ChallengeInternal), never a miner zero.
-        let measured = self.measure(&id, &row).await;
+        // terminal with NoScore(ChallengeInternal), never a miner zero. A retry
+        // of a post-run stage (review/similarity/agentic) resumes from the
+        // persisted measurement — the multi-hour pod job is never re-run for
+        // a master-side review failure.
+        let (measured, fresh) = match resume_measurement(&row) {
+            Some(mr) => (Ok(mr), false),
+            None => (self.measure(&id, &row).await, true),
+        };
         let (metrics, receipt) = match measured {
             Ok((m, r)) => (Some(m), Some(r)),
             Err(e) => {
@@ -418,6 +424,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         // harness): terminal Score(0) — never a measured score, no LLM spend.
         if self.cap_terminal(&row, metrics.as_ref()).await {
             return Ok(());
+        }
+        // Persist a fresh measurement at once (best-effort; the metrics blob
+        // also lands the telemetry series) so a post-run infra retry resumes
+        // at the review stages instead of re-provisioning. Cap-breach refusals
+        // are not measurements and are never persisted.
+        if let (true, Some(m), Some(r)) = (fresh, metrics.as_ref(), receipt.as_ref()) {
+            let _ = self.store.apply(&id, &measurement_patch(m, r), None).await;
         }
         let bpb = metrics.as_ref().map(|m| m.bpb);
 
@@ -487,7 +500,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 &StatePatch {
                     status: Some(status),
                     final_score: Some(final_score.clone()),
-                    bpb: outcome.bpb().copied(),
+                    bpb: match &outcome {
+                        FinalOutcome::Measured { bpb, .. } => Some(*bpb),
+                        FinalOutcome::ChallengeInternal => None,
+                    },
                     review: Some(review),
                     similarity: Some(similarity),
                     pod_id: receipt.as_ref().map(|r| r.pod_id.clone()),
@@ -507,7 +523,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         if let Ok(Some(scored)) = self.store.get(&id).await {
             prism_registry::post_score_hooks(&self.store, self.topmodel.as_deref(), &scored).await;
         }
-        let _ = final_score;
         Ok(())
     }
 
@@ -789,17 +804,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 if self.maybe_auto_retry(row, "llm_infra", &msg).await {
                     return None;
                 }
-                self.fail_agentic(id, &msg).await;
-                if let Some(g) = &self.gating {
-                    let _ = g
-                        .set_terminal(
-                            &gating_key(row.arch_id.as_deref()),
-                            &row.miner_hotkey,
-                            GatingState::Blocked,
-                            Some("llm_infra"),
-                        )
-                        .await;
-                }
+                self.fail_terminal(row, "llm_infra", &msg).await;
                 None
             }
         }
@@ -921,15 +926,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             );
         }
         Ok(summary)
-    }
-}
-
-impl FinalOutcome {
-    fn bpb(&self) -> Option<&f64> {
-        match self {
-            FinalOutcome::Measured { bpb, .. } => Some(bpb),
-            FinalOutcome::ChallengeInternal => None,
-        }
     }
 }
 

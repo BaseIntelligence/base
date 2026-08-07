@@ -66,6 +66,10 @@ pub enum CheatCode {
     /// Prism `training.py` does not call the harness telemetry hooks
     /// (`prism_telemetry.report` + `prism_telemetry.finish_evaluation`).
     MissingTelemetryHooks,
+    /// Fallback for reviewer-emitted codes outside the normative taxonomy:
+    /// parsing coerces unknown strings here (never a parse error) and notes
+    /// the raw code in the rationale. Non-AST; the verdict is preserved.
+    Other,
 }
 
 /// One prior corpus submission for AST nearest-neighbor tools.
