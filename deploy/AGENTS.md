@@ -96,6 +96,14 @@ cargo run -q --release -p weights-smoke -- \
 
 A seal older than ~256 blocks can never be verified by the validator (public RPC prunes state) — if `GET /v1/weights/latest` shows `metagraph_block` lagging tip by thousands of blocks, check `systemctl status base-burn-seal.timer` and `/var/log/base-burn-seal.log` on the master.
 
+**Real-epoch sealer (post burn-seal retirement):** `base-real-seal.timer` (every 10 min) drives [`scripts/prod-real-seal.sh`](scripts/prod-real-seal.sh), which seals the **current chain epoch** with `block_b = LastEpochBlock` (the epoch's start block — exactly the metagraph both challenges pin their leaf sets against, so D24 participant matching holds by construction). The attempt 409s until both challenges have emitted for that epoch; that is the expected steady state. The gateway prefers chain-scale bundles over the reserved smoke range (`>= 8_000_000`), so once a real seal lands it outranks every interim burn bundle — retire the burn timer (`systemctl disable --now base-burn-seal.timer`) after the first real seal verifies end-to-end. Install:
+
+```bash
+install -m 0755 deploy/scripts/prod-real-seal.sh /opt/base/deploy/scripts/prod-real-seal.sh
+install -m 0644 deploy/systemd/base-real-seal.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now base-real-seal.timer
+```
+
 ## Chain endpoint failover (`BASE_CHAIN_ENDPOINTS`)
 
 Public Finney RPCs rate-limit per source IP (entrypoint-finney: HTTP 429 `http_60s` policy, or HTTP 200 with `"Too many requests from this source."`). Every Rust consumer (gateway, validator, both challenges, `weights-smoke`) goes through `chain-live`, which accepts an **ordered comma-separated endpoint list** and cools a faulted endpoint (429 / `-32005` / transport error) for 60s before retrying it; request-level JSON-RPC errors never fail over.

@@ -812,7 +812,14 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     pub async fn emitter_tick(&self) -> Result<Option<prism_emit::EmitSummary>, String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        let epoch = chain::current_epoch_pre_run_coinbase(&state, state.current_block);
+        // Label with the *current* chain epoch, not the pre-coinbase +1: the
+        // expected set below is pinned at `last_epoch_block` (the current
+        // epoch's start block), so a pre-run +1 label attaches the *previous*
+        // boundary's metagraph to the new epoch number. The other >0-bps
+        // challenge pins the same way, and D24 requires both same-label sets
+        // to cover the seal block's metagraph exactly — the +1 skew made
+        // every boundary churn a permanent 409 (`IncompleteParticipantSet`).
+        let epoch = state.subnet_epoch_index;
         let block_hash = self
             .chain
             .block_hash(state.last_epoch_block)

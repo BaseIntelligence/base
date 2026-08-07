@@ -318,9 +318,18 @@ pub async fn get_epoch_bundle_by_root(
 ///
 /// Propagates sqlx query errors.
 pub async fn latest_bundle_epoch(pool: &PgPool) -> Result<Option<i64>, DbError> {
-    let epoch: Option<i64> = sqlx::query_scalar!(r#"SELECT MAX(epoch) FROM epoch_bundle"#)
-        .fetch_one(pool)
-        .await?;
+    // Smoke/burn seals live in the reserved block-scale range
+    // (`weights-smoke`: 8_000_000 + tip % 1_000_000). Once a real chain-epoch
+    // bundle exists it must outrank those, or the interim burn-seal shadows
+    // real weights forever (gateway serves `latest_epoch`).
+    let epoch: Option<i64> = sqlx::query_scalar!(
+        r#"SELECT COALESCE(
+               (SELECT MAX(epoch) FROM epoch_bundle WHERE epoch < 8000000),
+               (SELECT MAX(epoch) FROM epoch_bundle)
+           )"#
+    )
+    .fetch_one(pool)
+    .await?;
     Ok(epoch)
 }
 
