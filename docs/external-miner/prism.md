@@ -29,6 +29,39 @@ gate on kernel-swapped cells.
 Models must stay **≤ 350M parameters** after `build_model` — since 1.3.0 a
 breach is a **terminal Score(0)** (`CAP_EXCEEDED`), not a retryable failure.
 
+**The tokenizer is yours (no hardcoded GPT-2).** The harness resolves one
+tokenizer per run and injects it as `ctx["tokenizer"]`, with its vocab at
+`ctx["vocab_size"]` — size your embedding/head from that key. Declare yours by
+exporting `build_tokenizer(ctx)` from `architecture.py`, beside `build_model`
+(it must live there: the eval phase imports that module only, and a hook found
+in `training.py` is rejected instead of silently falling back). Declare nothing
+and you get the pinned `gpt2` fallback, exactly like earlier submissions.
+
+```python
+# architecture.py
+def build_tokenizer(ctx):
+    """Anything offline: train a BPE on ctx["dataset_path"], wrap a vendored
+    implementation, or hand-roll a byte-level tokenizer. Must satisfy:
+
+        tok(text, add_special_tokens=False)["input_ids"] -> list[int]
+        tok.decode(ids) -> str            # roundtrips plain ASCII
+        len(tok) or tok.vocab_size -> int # 256 .. 262144
+        tok.eos_token_id -> int | None
+    """
+```
+
+Your pod has **no network** (`unshare --net`), so `from_pretrained("<hub id>")`
+inside your code fails closed — build the tokenizer from the pinned shard or
+from files in your own submission. The harness validates it (vocab bounds,
+probe ids in range, encode/decode roundtrip) and fingerprints it: the eval
+phase re-resolves it and refuses to score a run whose tokenizer does not
+reconstruct identically, so `build_tokenizer` must be deterministic. Shipping
+raw `tokenizer/` files in a source-tree ZIP is specified but not staged on the
+pod yet — intake refuses it and points you back at the hook. Fairness note:
+different vocabs change tokenization, not the unit — `bits_per_byte` (bits over
+UTF-8 bytes) is the tokenizer-neutral anchor, while the legacy `bpb` key is
+bits per *token* and only comparable at equal tokenizers.
+
 **Telemetry hooks (required, recipe ≥ 1.1.0).** Your `training.py` MUST import
 the harness-provided `prism_telemetry` module and call
 `prism_telemetry.report(loss=..., step=..., ...)` during training plus

@@ -39,25 +39,31 @@ ctx contract (JSON file -> subprocess; miner-visible keys):
   val_rows, train_rows, device, seq_len (default 512), batch_size,
   probe_every, probe_time_budget_s — plus in-process objects added by the
   subprocess entry: telemetry (prism_telemetry shim), guard(), tokenizer
-  (GPT-2, loaded once by the harness), train_stream (SeededTrainStream
-  yielding (input_ids, labels) batches; .tokens_seen is the authoritative
-  harness token counter).
+  (the SUBMITTED tokenizer, resolved and validated once per phase by
+  prismlib.tokenizer: `tokenizer/` files, a `build_tokenizer(ctx)` hook in
+  architecture.py, else the pinned fallback), vocab_size (of that
+  tokenizer — size embeddings from it, not from a hardcoded constant),
+  train_stream (SeededTrainStream yielding (input_ids, labels) batches;
+  .tokens_seen is the authoritative harness token counter).
 
 METRICS_JSON v2: every v1 key (bpb, tokens_seen, wall_clock_seconds,
 gpu_type, notes, val_rows, n_params, recipe, telemetry) plus
 metrics_version=2, tokens_seen_source ("train_stream" | "legacy"),
-probe_curve, train_metrics, pod_manifest, netns, harness_files_sha256.
+probe_curve, train_metrics, pod_manifest, netns, harness_files_sha256,
+tokenizer (resolved spec: source, vocab_size, fingerprint) and
+bits_per_byte (tokenizer-neutral unit beside the per-token `bpb`).
 """
 import importlib
 import json
 import os
 import time
 
-from prismlib import RECIPE_SEED, RECIPE_VERSION, TOKENIZER
+from prismlib import RECIPE_SEED, RECIPE_VERSION
 from prismlib import TRAIN_ROWS as _RECIPE_TRAIN_ROWS
 from prismlib import VAL_ROWS as _RECIPE_VAL_ROWS
 from prismlib import dataset
 from prismlib import manifest as manifest_mod
+from prismlib import tokenizer as tok_contract
 from prismlib.envutil import fail, float_env, int_env, log
 from prismlib.runner import probe_unshare, run_miner_subprocess
 
@@ -315,6 +321,7 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
 
     out = {
         "bpb": epayload["bpb"],
+        "bits_per_byte": epayload.get("bits_per_byte"),
         "tokens_seen": tpayload["tokens_seen"],
         "wall_clock_seconds": tpayload["wall_clock_seconds"],
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
@@ -330,6 +337,7 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
         "pod_manifest": manifest,
         "netns": train_res["netns"],
         "harness_files_sha256": manifest_mod.harness_files_sha256(),
+        "tokenizer": epayload.get("tokenizer") or tpayload.get("tokenizer") or {},
         "flow": "v3",
         "eval_tier": eval_tier,
         "gate": gate,
@@ -377,14 +385,21 @@ def main():
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
+    arch_path = os.path.join(WORKDIR, "architecture.py")
+    train_path = os.path.join(WORKDIR, "training.py")
     # Warm the HF cache from the parent (which has network) so the isolated
-    # child resolves the tokenizer offline from the same cache.
+    # child can resolve the PINNED FALLBACK tokenizer offline from the same
+    # cache. A submission that declares its own tokenizer (files in the
+    # source tree or a `build_tokenizer(ctx)` hook — probed by string scan,
+    # the parent never imports miner code) needs no network at all, so a
+    # warm failure is only fatal when the fallback is the only option.
+    declares_tok = tok_contract.declared(WORKDIR, arch_path, train_path)
     try:
-        from transformers import GPT2TokenizerFast
-
-        GPT2TokenizerFast.from_pretrained(TOKENIZER)
+        tok_contract.warm_default_cache()
     except Exception as exc:  # noqa: BLE001
-        fail("tokenizer", exc)
+        if not declares_tok:
+            fail("tokenizer", exc)
+        log(f"WARNING: default tokenizer warm failed ({exc}); submission declares its own")
 
     ctx = {
         "dataset_path": parquet,
@@ -401,8 +416,8 @@ def main():
         "probe_every": PROBE_EVERY,
         "probe_time_budget_s": PROBE_TIME_BUDGET_S,
         "workdir": WORKDIR,
-        "arch_path": os.path.join(WORKDIR, "architecture.py"),
-        "train_path": os.path.join(WORKDIR, "training.py"),
+        "arch_path": arch_path,
+        "train_path": train_path,
     }
     ctx_path = os.path.join(WORKDIR, "prism_ctx.json")
     with open(ctx_path, "w", encoding="utf-8") as f:
@@ -451,6 +466,7 @@ def main():
 
     out = {
         "bpb": payload["bpb"],
+        "bits_per_byte": payload.get("bits_per_byte"),
         "tokens_seen": payload["tokens_seen"],
         "wall_clock_seconds": payload["wall_clock_seconds"],
         "gpu_type": os.environ.get("PRISM_GPU_TYPE", "unknown"),
@@ -466,6 +482,7 @@ def main():
         "pod_manifest": manifest,
         "netns": res["netns"],
         "harness_files_sha256": manifest_mod.harness_files_sha256(),
+        "tokenizer": payload.get("tokenizer", {}),
     }
     print("METRICS_JSON=" + json.dumps(out))
     print("EVAL_OK")

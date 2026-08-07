@@ -23,6 +23,12 @@ smooth at 100M–350M scale (Schaeffer 2304.15004 design rule). The
 per-item side channel (ItemRecorder) stores {cluster, value} records —
 cluster = template/variant id, the unit of randomization for the
 clustered bootstrap in the Rust composite.
+
+Every length in this battery is measured in tokens of the **submitted**
+tokenizer (`prismlib.tokenizer`), reached through [`tokenizer_of`] /
+[`encode`] / [`token_len`]; [`fit_to_tokens`] is the one place that builds
+a context of an exact token budget. Nothing here may assume GPT-2 or
+approximate token counts from word counts.
 """
 
 import hashlib
@@ -32,6 +38,7 @@ import os
 import time
 
 from prismlib import LN2, RECIPE_SEED
+from prismlib import tokenizer as tok_contract
 from prismlib.envutil import float_env, int_env, log
 
 PUBLIC_DEV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public_dev")
@@ -184,11 +191,126 @@ def load_jsonl(path, cap=None):
     return rows
 
 
-# ---------------------------------------------------------------- scoring
+# ---------------------------------------------------------- tokenizer contract
+
+
+def tokenizer_of(ctx):
+    """The submitted tokenizer from the eval ctx (fail-closed).
+
+    The harness resolves and validates it once per phase
+    (`prismlib.tokenizer`); battery modules never load a tokenizer
+    themselves and never assume GPT-2.
+    """
+    tok = ctx.get("tokenizer")
+    if tok is None:
+        raise RuntimeError(
+            "ctx['tokenizer'] missing — the harness injects the submitted tokenizer"
+        )
+    return tok
 
 
 def encode(tok, text):
-    return tok(text, add_special_tokens=False)["input_ids"]
+    """Token ids of `text` without special tokens (the battery length unit)."""
+    return tok_contract.encode(tok, text)
+
+
+def decode(tok, ids):
+    """Text of `ids` — required by the tokenizer contract."""
+    return tok_contract.decode(tok, ids)
+
+
+def token_len(tok, text):
+    """Length of `text` in tokens of the submitted tokenizer."""
+    return len(encode(tok, text))
+
+
+def vocab_size(tok, model=None):
+    """Vocab size: the model's own declaration first, the tokenizer's next."""
+    for attr in ("vocab_size", "n_vocab"):
+        v = getattr(model, attr, None) or getattr(getattr(model, "config", None), attr, None)
+        if isinstance(v, int) and v > 0:
+            return v
+    return tok_contract.vocab_size(tok)
+
+
+def truncate_tokens(tok, text, max_tokens):
+    """`text` cut to at most `max_tokens` tokens (decode of the id prefix)."""
+    ids = encode(tok, text)
+    if len(ids) <= max_tokens:
+        return text
+    return decode(tok, ids[: max(0, int(max_tokens))])
+
+
+def utf8_bytes(text):
+    """UTF-8 byte length — the denominator of the tokenizer-neutral unit."""
+    return len(text.encode("utf-8", errors="replace"))
+
+
+def fit_to_tokens(
+    tok, segments, target_tokens, filler, rng=None, suffix="", joiner=" ", max_rounds=64
+):
+    """Build a context of `target_tokens` tokens of the SUBMITTED tokenizer.
+
+    `segments` are the load-bearing sentences (needles, facts, edges): kept
+    verbatim, never truncated. `filler()` returns one distractor sentence
+    and is called as often as needed; fillers are spliced at random
+    positions when `rng` is given (Context-Rot / BABILong rule: distractors
+    share the task grammar and the needle depth is randomized) and appended
+    otherwise. `suffix` (the query / answer cue) always stays at the tail
+    and counts against the budget.
+
+    Growth is estimated in batches from the measured tokens-per-filler, so
+    a 32k context costs a handful of encodes rather than one per sentence.
+    Overshoot is absorbed by truncating or dropping **trailing filler
+    only**, so the returned text is exactly `target_tokens` tokens whenever
+    the tokenizer decode is lossless (byte-level BPE) and the segments plus
+    suffix fit at all.
+
+    Returns `(text, n_tokens)` — `n_tokens` is the measured length, so
+    callers can assert instead of trusting the target.
+    """
+    target = max(1, int(target_tokens))
+    parts = [[str(s), False] for s in segments]
+
+    def text_of():
+        return joiner.join(p for p, _ in parts) + suffix
+
+    n = token_len(tok, text_of())
+    per_filler, rounds = None, 0
+    while n < target and rounds < max_rounds:
+        deficit = target - n
+        # 0.9 biases toward undershoot: the trim path below only ever eats
+        # trailing filler, so a small final overshoot is cheaper than a big one.
+        batch = 1 if per_filler is None else max(1, min(4096, int(0.9 * deficit / per_filler)))
+        for _ in range(batch):
+            pos = rng.randrange(len(parts) + 1) if rng is not None else len(parts)
+            parts.insert(pos, [str(filler()), True])
+        prev, n = n, token_len(tok, text_of())
+        if n > prev:
+            per_filler = (n - prev) / float(batch)
+        rounds += 1
+
+    guard = len(parts) + max_rounds
+    while n > target and guard > 0:
+        guard -= 1
+        idx = next((i for i in range(len(parts) - 1, -1, -1) if parts[i][1]), None)
+        if idx is None:
+            break  # segments + suffix alone exceed the budget: report honestly
+        ids = encode(tok, parts[idx][0])
+        over = n - target
+        if len(ids) >= over:
+            # Shrink in place (possibly to ""), so the joiner count — and
+            # therefore the token delta — stays exactly `over`.
+            parts[idx][0] = decode(tok, ids[: len(ids) - over])
+        else:
+            del parts[idx]
+        prev, n = n, token_len(tok, text_of())
+        if n == prev:
+            break  # decode is not lossless here; stop instead of spinning
+    return text_of(), n
+
+
+# ---------------------------------------------------------------- scoring
 
 
 def _logits_of(out):
@@ -265,17 +387,21 @@ def is_key_token_id(tok, tok_id, _cache={}):
 
 
 def doc_loss_stats(model, tok, text, device, position_edges=(128, 256, 384, 512)):
-    """One teacher-forced pass over a doc -> mean CE, key-token CE, and
-    per-position-bucket CE (self-truncation aligned, v1 semantics)."""
+    """One teacher-forced pass over a doc -> mean CE, key-token CE,
+    per-position-bucket CE (self-truncation aligned, v1 semantics) and the
+    tokenizer-neutral `bits_per_byte` (total bits over the UTF-8 bytes of
+    the scored region — the unit that stays comparable across submitted
+    tokenizers, where CE per token does not)."""
     import torch
 
-    ids = tok(text, return_tensors="pt").input_ids.to(device)
+    ids = tok_contract.encode_tensor(tok, text, device)
     if ids.shape[1] < 2:
         return None
     with torch.no_grad():
         logits = _logits_of(model(ids[:, :-1]))
     if logits.shape[1] < 1:
         return None
+    avail = max(1, ids.shape[1] - 1)
     tgt = ids[:, 1:][:, -logits.shape[1] :]
     losses = torch.nn.functional.cross_entropy(
         logits.reshape(-1, logits.shape[-1]).float(),
@@ -301,7 +427,16 @@ def doc_loss_stats(model, tok, text, device, position_edges=(128, 256, 384, 512)
     m = pos >= lo
     if m.any():
         buckets[f"p{lo}_end"] = float(losses[m].mean().item())
-    return {"ce": mean_ce, "key_ce": key_ce, "buckets": buckets, "n_tokens": n}
+    # Bytes of the scored region: the model may self-truncate, so the doc's
+    # UTF-8 length is prorated by the fraction of targets actually scored.
+    scored_bytes = utf8_bytes(text) * (n / float(avail))
+    return {
+        "ce": mean_ce,
+        "key_ce": key_ce,
+        "buckets": buckets,
+        "n_tokens": n,
+        "bits_per_byte": float(losses.sum().item()) / LN2 / max(1.0, scored_bytes),
+    }
 
 
 def mean(xs):
@@ -322,4 +457,7 @@ def emit(out, key, value):
 
 
 def bpb(ce):
+    """CE (nats/token) -> bits/token. Historical `g1.bpb.*` /
+    `org.g1.bpb_*` unit; comparable only within one tokenizer. The
+    tokenizer-neutral number is `doc_loss_stats(...)["bits_per_byte"]`."""
     return ce / LN2 if ce is not None else None

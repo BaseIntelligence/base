@@ -91,6 +91,24 @@ def _stream_batches(stream):
         yield next(stream)
 
 
+def _tokenizer(ctx):
+    """The submitted tokenizer, via the contract — never a bare `from_pretrained`.
+
+    `ctx["tokenizer"]` is what the harness resolved for this submission
+    (recipe >= 1.3.0). This baseline declares no tokenizer of its own, so it
+    gets the pinned default; under an older harness (no `ctx["tokenizer"]`)
+    we ask the contract for that same default. The pin is *our* choice, not a
+    challenge rule — a submission may ship `tokenizer/` files or a
+    `build_tokenizer(ctx)` hook instead.
+    """
+    tok = ctx.get("tokenizer")
+    if tok is not None:
+        return tok
+    from prismlib.tokenizer import load_default
+
+    return load_default()
+
+
 def _legacy_batches(ctx):
     """Pre-1.3.0 fallback: tokenize the pinned shard directly.
 
@@ -104,11 +122,7 @@ def _legacy_batches(ctx):
     seed = int(ctx.get("seed", 0))
     seq_len = int(ctx.get("seq_len", 512))
     batch_size = int(ctx.get("batch_size", 8))
-    tok = ctx.get("tokenizer")
-    if tok is None:
-        from transformers import GPT2TokenizerFast
-
-        tok = GPT2TokenizerFast.from_pretrained("gpt2")
+    tok = _tokenizer(ctx)
     table = pq.read_table(ctx["dataset_path"], columns=["text"])
     texts = [t for t in table.column("text").to_pylist() if isinstance(t, str) and len(t) >= 200]
     texts = texts[: int(ctx.get("train_rows", 2048))]

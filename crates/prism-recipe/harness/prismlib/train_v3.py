@@ -4,10 +4,11 @@ Usage: `python3 -m prismlib.train_v3 <ctx.json>` (usually wrapped in
 `unshare --net --`; no eval assets exist on disk yet — the operator
 stages them only after this process group is dead).
 
-Mirrors `prismlib.miner_entry` for build/train (telemetry shim, G6
-probes, seeded train stream, per-phase markers) but, per the v3
-architecture, does **not** score: it ends by saving the trained
-`state_dict` + build metadata to `$PRISM_WORKDIR/checkpoint.pt`
+Mirrors `prismlib.miner_entry` for build/train (telemetry shim, submitted
+tokenizer, G6 probes, seeded train stream, per-phase markers) but, per the
+v3 architecture, does **not** score: it ends by saving the trained
+`state_dict` + build metadata (including the resolved tokenizer spec, which
+`eval_v3` re-checks) to `$PRISM_WORKDIR/checkpoint.pt`
 (sharded into `checkpoint.shardNN.pt` + `checkpoint.index.json` when a
 single file would exceed ~1.5 GiB) and reporting train telemetry. The
 v1 bpb scoring happens in the EVAL-phase child (`eval_v3`) — the trained
@@ -21,7 +22,7 @@ import sys
 import time
 import traceback
 
-from . import RECIPE_SEED, TOKENIZER, TRAIN_ROWS, VAL_ROWS
+from . import RECIPE_SEED, TRAIN_ROWS, VAL_ROWS, tokenizer as tok_contract
 from .dataset import load_texts
 from .probes import ProbeRunner, select_probe_texts
 from .stream import SeededTrainStream
@@ -119,12 +120,27 @@ def _run(cfg, st):
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
-    st["stage"] = "tokenizer"
-    from transformers import GPT2TokenizerFast
+    telemetry_mod, state = build_telemetry_module(log=_log)
+    sys.modules["prism_telemetry"] = telemetry_mod
 
-    tok = GPT2TokenizerFast.from_pretrained(TOKENIZER)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
+    st["stage"] = "contract"
+    arch = _load_mod("miner_architecture", cfg["arch_path"])
+    if not hasattr(arch, "build_model"):
+        raise RuntimeError("build_model missing")
+    train_mod = _load_mod("miner_training", cfg["train_path"])
+    if not hasattr(train_mod, "train"):
+        raise RuntimeError("train missing")
+
+    # Submitted tokenizer; the spec goes into the checkpoint meta so the
+    # EVAL child can prove it rebuilt the very same tokenizer.
+    st["stage"] = "tokenizer"
+    tok, tok_spec = tok_contract.resolve(
+        cfg, device, arch_mod=arch, train_mod=train_mod, telemetry=telemetry_mod, log=_log
+    )
+    _log(
+        f"tokenizer: source={tok_spec['source']} vocab={tok_spec['vocab_size']} "
+        f"fp={tok_spec['fingerprint'][:16]}"
+    )
 
     st["stage"] = "dataset"
     texts = load_texts(cfg["dataset_path"])
@@ -144,22 +160,12 @@ def _run(cfg, st):
         seed=int(cfg.get("seed", RECIPE_SEED)),
     )
 
-    telemetry_mod, state = build_telemetry_module(log=_log)
-    sys.modules["prism_telemetry"] = telemetry_mod
-
     ctx = {k: v for k, v in cfg.items() if k not in _HARNESS_CTX_KEYS}
     ctx["device"] = device
     ctx["telemetry"] = telemetry_mod
     ctx["tokenizer"] = tok
+    ctx["vocab_size"] = tok_spec["vocab_size"]
     ctx["train_stream"] = stream
-
-    st["stage"] = "contract"
-    arch = _load_mod("miner_architecture", cfg["arch_path"])
-    if not hasattr(arch, "build_model"):
-        raise RuntimeError("build_model missing")
-    train_mod = _load_mod("miner_training", cfg["train_path"])
-    if not hasattr(train_mod, "train"):
-        raise RuntimeError("train missing")
 
     st["stage"] = "build"
     t0 = time.time()
@@ -218,6 +224,7 @@ def _run(cfg, st):
         "saved_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "finish_reason": finish_reason,
         "torch": torch.__version__,
+        "tokenizer": tok_spec,
     }
     ckpt = _save_checkpoint(model, cfg["workdir"], meta)
     _log(f"checkpoint saved: {ckpt['path']} ({ckpt['bytes']/1e6:.0f} MB)")
@@ -238,6 +245,7 @@ def _run(cfg, st):
             "tokens_seen_source": tokens_seen_source,
             "wall_clock_seconds": train_s,
             "finish_reason": finish_reason,
+            "tokenizer": tok_spec,
             "checkpoint": ckpt,
             "telemetry": {
                 "finish_reason": finish_reason,

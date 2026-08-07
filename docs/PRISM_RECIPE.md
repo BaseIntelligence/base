@@ -45,6 +45,53 @@ The harness captures the series into `METRICS_JSON.telemetry.loss_series`
 contract violation**: review fails the submission
 (`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
 
+## Tokenizer (submitted, not imposed)
+
+The tokenizer is **part of the submission**. The harness resolves it once per
+phase and hands it to miner code as `ctx["tokenizer"]`, with its vocab at
+`ctx["vocab_size"]` (size your embedding from that key, not from a constant).
+Resolution order — first match wins, always offline:
+
+| Order | Declaration | Notes |
+|-------|-------------|-------|
+| 1 | `tokenizer/` files in a source-tree ZIP | loaded with `AutoTokenizer.from_pretrained(dir, local_files_only=True)`; ≤ 8 files, ≤ 1 MiB total, extensions `json/txt/model/vocab/merges/bpe`. **Not yet staged on the pod** — intake refuses it today and points at the hook below (only the two seams are shipped to the pod, so accepting the directory would silently score the fallback tokenizer) |
+| 2 | `def build_tokenizer(ctx)` in `architecture.py` | the live path. Must sit beside `build_model`: the eval phase imports that module only, so a hook in `training.py` is a hard intake and in-pod error, never a silent fallback. Gets a ctx without harness internals; build/train/wrap whatever you like, offline |
+| 3 | pinned fallback `gpt2` | what pre-1.4 submissions already got — a **default**, not a rule. Warmed into the pod HF cache by the parent before the netns child starts |
+
+The miner subprocess runs under `unshare --net`: a tokenizer that would need a
+download fails closed with a clear error instead of stalling inside
+`transformers`. Never call `from_pretrained("<hub id>")` yourself.
+
+Every resolved tokenizer is validated before your code sees it — callable,
+`decode`, vocab in `[256, 262144]`, all probe ids inside that vocab, exact
+encode/decode roundtrip on an ASCII probe — and fingerprinted (sha256 over
+the ids of a fixed probe corpus). The train phase stores that fingerprint in
+the checkpoint; the eval phase re-resolves the tokenizer and refuses to score
+a run whose tokenizer does not reconstruct identically. `METRICS_JSON` carries
+the resulting spec under `tokenizer`
+(`{source, id, class, vocab_size, probe_tokens, fingerprint}`).
+
+Minimal interface a tokenizer must satisfy (a byte-level tokenizer in ~30
+lines qualifies):
+
+```python
+tok(text, add_special_tokens=False)["input_ids"] -> list[int]
+tok.decode(ids) -> str                # roundtrips plain ASCII
+len(tok) or tok.vocab_size -> int     # 256 .. 262144
+tok.eos_token_id -> int | None        # document separator in the train stream
+```
+
+**Fairness.** Different vocabularies change how text is split, not the unit of
+comparison: the tokenizer-neutral number is **bits per byte** — total bits
+over the UTF-8 bytes of the scored region — reported as `bits_per_byte` in
+`METRICS_JSON` and as `g1.bits_per_byte.*` beside every `g1.bpb.*` key in the
+battery group view. The scored `bpb` (and the `org.g1.bpb_*` anchor keys)
+stay bits *per token* (`CE / ln 2`) so earlier leaves and the anchor set keep
+their meaning; they are only comparable across submissions that share a
+tokenizer, and promoting the per-byte siblings into the anchor set is an
+anchor-recalibration decision, not a harness one. Long-context length targets
+are counted in tokens of the submitted tokenizer.
+
 ## Training-only submissions (recipe 1.2.0)
 
 Instead of shipping both scripts, a miner may submit `training.py` +
@@ -69,13 +116,15 @@ architecture.py       # seam: def build_model(ctx)
 train.py              # seam: def train(model, ctx) (or training.py)
 count_params.py       # optional static parameter-count check (prints one int)
 kernels/<op>.py       # optional custom ops per KERNEL_INTERFACE.md
+tokenizer/*.json      # tokenizer files (see Tokenizer above; hook path for now)
 vendor.lock           # optional vendored-dependency hash lock
 ```
 
 Validation at intake (`prism_recipe::zip_submit`): file count / per-file /
 total-size budgets, UTF-8 seam projections (`architecture.py` must define
-`build_model(`, the entry must define `train(`), and a **banned-pattern
-scan** (prebuilt binaries, `ctypes`, network/process/threads escapes, …) —
+`build_model(`, the entry must define `train(`), tokenizer declaration rules
+(§ *Tokenizer*), and a **banned-pattern scan** (prebuilt binaries, `ctypes`,
+network/process/threads escapes, …) —
 one shared list with the harness-side `prismlib/cheatguard.py` AST audit,
 which re-screens the tree in-pod before train and again post-eval. The
 canonical tree sha-256 is recorded; `kernels/` trees are attribution- and
@@ -94,7 +143,9 @@ code inside an `unshare --net` subprocess) runs two fresh phases:
 
 **METRICS_JSON v2** (`metrics_version: 2`): every v1 key (`bpb`,
 `tokens_seen`, `wall_clock_seconds`, `gpu_type`, `notes`, `val_rows`,
-`n_params`, `recipe`, `telemetry`) plus `tokens_seen_source`
+`n_params`, `recipe`, `telemetry`) plus `bits_per_byte` (tokenizer-neutral
+frozen-val anchor), `tokenizer` (resolved spec, § *Tokenizer*),
+`tokens_seen_source`
 (`"train_stream"` | `"legacy"`), `probe_curve` (G6), `train_metrics`
 (miner-returned flat scalar dict — the **Zone B** self-report source,
 sanitized master-side, never scored), `pod_manifest` (nvidia-smi -q +
