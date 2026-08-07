@@ -106,7 +106,7 @@ fn rewrite_body_wrapper(html: &str) -> String {
         return html.to_owned();
     };
     let with_open = re_open.replace_all(html, |caps: &regex::Captures<'_>| {
-        let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let attrs = caps.get(1).map_or("", |m| m.as_str());
         // Marker class (ammonia strips unknown data-* attrs by default).
         if attrs.to_ascii_lowercase().contains("class=") {
             format!("<div{attrs}>")
@@ -215,8 +215,7 @@ fn filter_inline_styles(html: &str) -> (String, bool) {
             let val = caps
                 .get(2)
                 .or_else(|| caps.get(3))
-                .map(|m| m.as_str())
-                .unwrap_or("");
+                .map_or("", |m| m.as_str());
             let (filtered, bad) = filter_css(val);
             if bad || filtered.is_empty() && !val.is_empty() {
                 stripped = true;
