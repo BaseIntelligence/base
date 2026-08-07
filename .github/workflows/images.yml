@@ -14,6 +14,9 @@ on:
       - "bins/**"
       - "deploy/Dockerfile"
       - "deploy/attest-helper/**"
+      # Ops scripts (promote/remote-deploy/burn-seal) — keep the
+      # digest → staging-pin ladder reachable for ops-only commits.
+      - "deploy/scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/images.yml"
