@@ -581,6 +581,7 @@ fn telemetry_x(point: &PrismTelemetryPoint) -> u32 {
 /// Params prefer telemetry `n_params`, then the list-row `n_params` so
 /// historical runs still surface a measured size when the detail blob is thin.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn prism_window(
     recipe: Option<&Value>,
     status: Option<&Value>,
@@ -616,8 +617,7 @@ pub fn prism_window(
     let param_ceiling = recipe
         .and_then(|r| r.get("max_params"))
         .and_then(Value::as_u64)
-        .map(|p| p / 1_000_000)
-        .unwrap_or(0);
+        .map_or(0, |p| p / 1_000_000);
     let mut series: Vec<(f64, LossSeries)> = Vec::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
