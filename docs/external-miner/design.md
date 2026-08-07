@@ -154,12 +154,13 @@ Admin APIs are **master-local only** (not proxied on the public gateway).
 
 ## Viewer
 
-Sanitized HTML only: `GET /v1/view/{run_id}/{page}` with CSP `sandbox` (no
-scripts). Raw HTML is never served. Pages render in an **opaque-origin
-sandbox**: no JavaScript, no cookies, no local storage, no top navigation —
-design for static HTML + inline CSS (`img` may use `data:`/`https:`, fonts
-`data:`/`https:`). The public site embeds the viewer in a fully sandboxed
-iframe; `frame-ancestors` limits which origins may frame it.
+Screenshots only: `GET /v1/view/{run_id}/index.png` returns the full-page PNG
+screenshot the orchestrator captures right after sanitize. Produced HTML is
+never served — `.html` requests return `410 Gone` (the gateway still wraps
+view responses in a CSP `sandbox` (no scripts) lockdown as defense in depth).
+Your pages stay static HTML + inline CSS (`img` may use `data:`/`https:`,
+fonts `data:`/`https:`) so the headless capture renders them faithfully.
+`GET /v1/runs/{id}/pages` stays available for page metadata.
 
 ## Useful routes
 
@@ -170,7 +171,7 @@ iframe; `frame-ancestors` limits which origins may frame it.
 | `GET /v1/rounds` | Round list |
 | `GET /v1/runs/{id}` | Run status |
 | `GET /v1/runs/{id}/events` | Stage timeline |
-| `GET /v1/runs/{id}/pages` | Sanitized page list |
-| `GET /v1/view/{run_id}/{page}` | CSP viewer (sanitized HTML) |
+| `GET /v1/runs/{id}/pages` | Page metadata list |
+| `GET /v1/view/{run_id}/index.png` | Full-page PNG screenshot |
 | `GET /v1/stats` | Aggregate stats |
 | `GET /v1/dashboard` | Operator dashboard JSON |

@@ -13,8 +13,10 @@ frontend `BaseApi` contract (`types.ts` / `contract.ts`).
 | `/v1/site/arenas/design/duels` | Always `[]` (admin winners model; no fabricated matchups) |
 | Coding arena | `status: "paused"`, empty submissions / matrix / leaderboard |
 
-Design submission `url` is the public proxy path
-`/challenge/design/v1/view/{runId}/index.html`. Leaderboard `elo` is the design
+Design submissions carry **no `url`** (produced HTML is never served); the
+public preview is `screenshotUrl` → `/challenge/design/v1/view/{runId}/index.png`,
+and runs without a captured screenshot are excluded from the submissions list.
+Leaderboard `elo` is the design
 `rating` field. Prism window series use real terminal `bpb` with a single
 `[final]` point when no step curve is stored.
 
