@@ -602,7 +602,7 @@ fn telemetry_x(point: &PrismTelemetryPoint) -> u32 {
 /// Params prefer telemetry `n_params`, then the list-row `n_params` so
 /// historical runs still surface a measured size when the detail blob is thin.
 #[must_use]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::implicit_hasher)]
 pub fn prism_window(
     recipe: Option<&Value>,
     status: Option<&Value>,
