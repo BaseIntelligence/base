@@ -74,6 +74,30 @@ score.
 | Hard step cap | 20 000 (config may only lower) |
 | Source size | 128 KiB per script |
 | Model parameters | ≤ **350 000 000** after `build_model` (`MAX_PARAMS`) |
+| `train_rows` (descriptor) | **2048** — baseline / default cut advertised on `GET /v1/recipe` |
+| `val_rows` | **256** — frozen val cut scored by the harness (not miner-chosen) |
+
+### What `train_rows` means (and what it does not)
+
+`train_rows: 2048` is the **baseline cut** and the value injected into
+`ctx["train_rows"]`. The sealed baseline (`training.py`) reads that many texts
+from the pinned parquet (~2M GPT-2 tokens for that slice — **not** billions).
+
+Egalitarian constraints are the **pinned shard + seed + wall/step/param caps**.
+The harness hands miners `ctx["dataset_path"]` to the **full** verified
+parquet; competitive `training.py` may stream or multi-pass that shard until
+the 6h / 20k-step guard fires. Token throughput therefore depends on the miner
+loop and the rented GPU — a ~6h RTX 5090 run can report on the order of
+**~2.6B** tokens in telemetry. That figure is **observed throughput**, not a
+recipe-published “2.6B token window.”
+
+Do not treat the marketing site’s loss-chart axis (or a leader’s telemetry
+peak) as the recipe contract — always trust `GET /v1/recipe` + this doc.
+
+**Harness note (follow-up, do not hot-fix mid-flight):** `METRICS_JSON.tokens_seen`
+currently echoes `TRAIN_ROWS` (2048) even when telemetry `layer_stats.tokens`
+shows billions. Changing that field would alter the recipe pin (harness bytes
+are hashed) — coordinate a version bump if/when fixing it.
 
 ## Recipe pin
 

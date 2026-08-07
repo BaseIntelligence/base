@@ -580,8 +580,10 @@ pub fn prism_telemetry(detail: &Value) -> Option<PrismTelemetry> {
 }
 
 /// Chart x-value for one telemetry point: prefer harness `layer_stats.tokens`
-/// (tokens seen) so the window plots against the egalitarian token axis;
-/// fall back to the optimizer step when tokens were not reported.
+/// (miner-reported tokens seen during that run) so curves plot on a shared
+/// observed-token axis; fall back to the optimizer step when tokens were not
+/// reported. This is **not** a recipe-published token budget — recipe v1.2
+/// egalitarianism is the pinned shard + seed + wall/step/param caps.
 fn telemetry_x(point: &PrismTelemetryPoint) -> u32 {
     let tokens = point
         .layer_stats
@@ -690,15 +692,19 @@ pub fn prism_window(
             s
         })
         .collect();
-    // Axis span = max tokens (or steps) observed across curves so lossPath can
-    // draw; single-point historical fallbacks (step 0) move to the right edge.
-    let token_budget = series
+    // Chart axis span = max tokens (or steps) *observed* across curves so
+    // lossPath can draw; single-point historical fallbacks (step 0) move to
+    // the right edge. Do **not** publish that span as `token_budget` — the
+    // recipe does not fix a token quota (miners stream the pinned shard under
+    // the 6h / 20k-step caps), and surfacing a leader's ~2.6B tokens as an
+    // "egalitarian window" misled miners vs `GET /v1/recipe` (`train_rows`).
+    let axis_span = series
         .iter()
         .flat_map(|s| s.points.iter().map(|p| u64::from(p.step)))
         .max()
         .unwrap_or(0);
-    if token_budget > 0 {
-        let end = u32::try_from(token_budget).unwrap_or(u32::MAX);
+    if axis_span > 0 {
+        let end = u32::try_from(axis_span).unwrap_or(u32::MAX);
         for s in &mut series {
             if s.points.len() == 1 && s.points[0].step == 0 {
                 s.points[0].step = end;
@@ -708,7 +714,8 @@ pub fn prism_window(
     PrismWindow {
         dataset,
         revision,
-        token_budget,
+        // Recipe v1.2 publishes row/time/step caps, not a fixed token budget.
+        token_budget: 0,
         offset: "pinned".into(),
         rules_gate: RulesGate {
             provider,
@@ -1112,8 +1119,8 @@ mod tests {
         assert!((w.series[0].params - 12.0).abs() < f64::EPSILON);
         assert_eq!(w.series[1].points.len(), 1);
         assert!((w.series[1].params - 0.0).abs() < f64::EPSILON);
-        // Budget follows the max x across curves; single-point fallback sits at end.
-        assert_eq!(w.token_budget, 2);
+        // Recipe has no fixed token budget; axis remaps single-point fallback.
+        assert_eq!(w.token_budget, 0);
         assert_eq!(w.series[1].points[0].step, 2);
     }
 
@@ -1159,7 +1166,8 @@ mod tests {
         );
         let w = prism_window(Some(&recipe), None, &subs, &telemetry);
         assert_eq!(w.param_ceiling, 350);
-        assert_eq!(w.token_budget, 2_000_000);
+        // Observed tokens appear on the curve axis; they are not a recipe budget.
+        assert_eq!(w.token_budget, 0);
         assert_eq!(w.series[0].points[0].step, 100_000);
         assert_eq!(w.series[0].points[1].step, 2_000_000);
         assert!((w.series[0].params - 24.0).abs() < f64::EPSILON);

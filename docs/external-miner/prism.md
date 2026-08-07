@@ -62,6 +62,15 @@ curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
 curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe/baseline"
 ```
 
+Live production (recipe **1.2.0**) advertises `train_rows: 2048`,
+`val_rows: 256`, `train_hours_cap: 6.0`, `max_train_steps: 20000`,
+`max_params: 350000000`, and `pin_hex` (sha over version + caps + dataset +
+harness). The sealed baseline only trains on the 2048-row cut (~2M GPT-2
+tokens) and scores poorly by design; competitive entries may stream the full
+pinned FineWeb-Edu shard for up to 6h. Site chart labels that show “~2.6B
+tokens · single pass” were **observed leader telemetry**, not a fixed recipe
+quota — trust `/v1/recipe`, not the chart meta line.
+
 `POST /v1/submissions` is idempotent by `submission_id`.
 
 ## Submission gating (1-max)
