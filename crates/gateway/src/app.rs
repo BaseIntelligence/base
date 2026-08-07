@@ -30,12 +30,22 @@ pub fn build_router(
         "TLS ownership is this process only (D20); ACME via rustls-acme is task 42"
     );
 
-    let site = site_api::site_router(site_api::SiteState::new(
-        Arc::clone(&state.registry),
-        state.client.clone(),
-        Some(Arc::clone(&state.chain)),
-        state.seal_netuid,
-    ));
+    let bundles = Arc::clone(&state.bundles);
+    let site = site_api::site_router(
+        site_api::SiteState::new(
+            Arc::clone(&state.registry),
+            state.client.clone(),
+            Some(Arc::clone(&state.chain)),
+            state.seal_netuid,
+        )
+        .with_weights(
+            Arc::clone(&state.challenges),
+            Arc::new(move || {
+                let epoch = bundles.latest_epoch()?;
+                Some((bundles.get_by_epoch(epoch)?, bundles.seal_record(epoch)?))
+            }),
+        ),
+    );
 
     // Legacy Python validator coordination surface (register/heartbeat/pull/registry).
     let py_compat = compat_router(CompatState::new(Arc::clone(&state.challenges)));

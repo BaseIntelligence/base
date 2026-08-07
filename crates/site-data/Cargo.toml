@@ -1,0 +1,25 @@
+[package]
+name = "site-data"
+description = "Live data adapters for the site API: TAO quote cache, sealed weights, metrics frames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+bundle = { path = "../bundle" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1"
+site-types = { path = "../site-types" }
+tokio = { version = "1", features = ["time"] }
+trustroot = { path = "../trustroot" }
+weights-api = { path = "../weights-api" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+
+[lints]
+workspace = true

@@ -1,10 +1,10 @@
-//! `db::design_store` → [`DesignStore`] adapter.
+//! `design-db` row layer → [`DesignStore`] adapter.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use db::design_store as dbs;
 use db::PgPool;
+use design_db as dbs;
 
 use crate::store::{
     ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, RatingRow, RoundAward, RoundRow,
@@ -90,8 +90,8 @@ fn run_from(r: dbs::DesignRunRow) -> RunState {
         error_detail: r.error_detail,
         final_score: final_from(r.kind.as_deref(), r.score, r.absence_reason),
         retry_count: u32::try_from(r.retry_count.max(0)).unwrap_or(u32::MAX),
-        created_at_ms: 0,
-        updated_at_ms: 0,
+        created_at_ms: r.created_at_ms.max(0).cast_unsigned(),
+        updated_at_ms: r.updated_at_ms.max(0).cast_unsigned(),
     }
 }
 
@@ -178,6 +178,16 @@ impl DesignStore for DbDesignStore {
                 .map(harness_from)
                 .collect(),
         )
+    }
+
+    async fn count_harness_miners(&self) -> Result<u64, StoreError> {
+        // `list_active_design_harnesses` returns one row per miner (newest
+        // active); with `i64::MAX` as the round horizon even eliminated rows
+        // qualify, so the row count is the distinct registered-miner count.
+        let rows = dbs::list_active_design_harnesses(&self.pool, i64::MAX)
+            .await
+            .map_err(map_db)?;
+        Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX))
     }
 
     async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError> {

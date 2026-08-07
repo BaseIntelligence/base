@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde_json::Value;
 
+use keystore::{ss58_encode, BITTENSOR_SS58_PREFIX};
 use site_types::{coding_arena, design_frame, prism_frame};
 use site_types::{
     ActivityEvent, ActivitySeverity, Agent, Arena, ArenaSlug, LeaderboardRow, LossPoint,
@@ -11,65 +12,63 @@ use site_types::{
     Submission, SubmissionStatus,
 };
 
-/// Truncated hotkey → agent shell (no invented miner numbers / models).
+/// SS58-encode a 32-byte hex hotkey; `None` for anything else.
+#[must_use]
+fn ss58_from_hex(hk: &str) -> Option<String> {
+    let bytes: [u8; 32] = hex::decode(hk).ok()?.try_into().ok()?;
+    Some(ss58_encode(&bytes, BITTENSOR_SS58_PREFIX))
+}
+
+/// `first…last` middle truncation for display; short values pass through.
+#[must_use]
+fn truncate_middle(v: &str) -> String {
+    if v.chars().count() > 16 {
+        let head: String = v.chars().take(8).collect();
+        let tail: String = v
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{head}…{tail}")
+    } else {
+        v.to_owned()
+    }
+}
+
+/// Hotkey → agent shell (no invented miner numbers / models).
+///
+/// The display identity is the SS58 hotkey when the upstream hex decodes —
+/// `operator` carries the truncated form and `hotkey` the full value so
+/// clients can render a copyable address instead of a bare hex prefix.
 #[must_use]
 pub fn agent_from_hotkey(hotkey: &str, joined_epoch: u64) -> Agent {
     let hk = hotkey.trim();
-    let short = if hk.len() >= 8 { &hk[..8] } else { hk };
-    let slug = short.to_ascii_lowercase();
+    let display = ss58_from_hex(hk).unwrap_or_else(|| hk.to_owned());
+    let known = !display.is_empty() && display != "—";
+    let slug = if known {
+        display
+            .chars()
+            .take(8)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    } else {
+        "unknown".to_owned()
+    };
     Agent {
         slug: slug.clone(),
         handle: format!("@{slug}"),
         miner_number: "—".into(),
         model: "—".into(),
-        operator: if hk.len() > 16 {
-            format!("{}…{}", &hk[..8], &hk[hk.len().saturating_sub(4)..])
-        } else {
-            hk.to_owned()
-        },
+        operator: truncate_middle(&display),
+        hotkey: if known { display } else { "—".into() },
         joined_epoch,
     }
 }
 
-/// ISO-8601 from unix millis (UTC, second precision).
-#[must_use]
-pub fn ms_to_iso(ms: u64) -> String {
-    let secs = ms / 1000;
-    let (year, month, day, hour, minute, second) = civil_parts(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.000Z")
-}
-
-/// `HH:MM:SS` UTC from millis.
-#[must_use]
-pub fn ms_to_clock(ms: u64) -> String {
-    let secs = ms / 1000;
-    let (_, _, _, hour, minute, second) = civil_parts(secs);
-    format!("{hour:02}:{minute:02}:{second:02}")
-}
-
-#[allow(clippy::many_single_char_names)]
-fn civil_parts(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = i64::try_from(secs / 86_400).unwrap_or(0);
-    let rem = secs % 86_400;
-    let hour = u32::try_from(rem / 3600).unwrap_or(0);
-    let minute = u32::try_from((rem % 3600) / 60).unwrap_or(0);
-    let second = u32::try_from(rem % 60).unwrap_or(0);
-    // Howard Hinnant civil-from-days.
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097).cast_unsigned();
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let mut year = yoe.cast_signed() + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
-    let month_raw = if mp < 10 { mp + 3 } else { mp - 9 };
-    if month_raw <= 2 {
-        year += 1;
-    }
-    let month = u32::try_from(month_raw).unwrap_or(1);
-    (year, month, day, hour, minute, second)
-}
+pub use site_data::timefmt::{ms_to_clock, ms_to_iso};
 
 /// Map design run status → site submission status.
 #[must_use]
@@ -125,7 +124,12 @@ pub fn design_arena_from_dashboard(dash: Option<&Value>) -> Arena {
             best = Some(best.map_or(rating, |b| b.max(rating)));
         }
     }
-    a.agents = u32::try_from(miners.len()).unwrap_or(u32::MAX);
+    // Registered agents = distinct miners with a harness (dashboard `agents`);
+    // fall back to rated miners when the field is absent (older design-http).
+    a.agents = dash.get("agents").and_then(Value::as_u64).map_or_else(
+        || u32::try_from(miners.len()).unwrap_or(u32::MAX),
+        |n| u32::try_from(n).unwrap_or(u32::MAX),
+    );
     if let Some(b) = best {
         a.best_score = format_elo(b);
     }
@@ -295,6 +299,22 @@ pub fn design_submission(
         .and_then(Value::as_str)
         .unwrap_or("—")
         .to_owned();
+    // The full English brief is the run's public label; the pinned-bank title
+    // is the short fallback. Run detail carries both (design-http ≥ prompt
+    // fields); the dashboard row carries the title only.
+    let prompt_title = run_detail
+        .and_then(|d| d.get("prompt_title"))
+        .and_then(Value::as_str)
+        .or_else(|| run.get("prompt_title").and_then(Value::as_str))
+        .map(str::to_owned);
+    let prompt_full = run_detail
+        .and_then(|d| d.get("prompt"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let title = prompt_full
+        .clone()
+        .or_else(|| prompt_title.clone())
+        .unwrap_or_else(|| format!("design run {}", &id[..id.len().min(8)]));
     let ms = run
         .get("updated_at_ms")
         .and_then(Value::as_u64)
@@ -349,7 +369,8 @@ pub fn design_submission(
         arena: ArenaSlug::Design,
         agent: agent_from_hotkey(miner_hotkey, epoch),
         prompt_id: format!("#{prompt_id}"),
-        title: format!("design run {id}"),
+        prompt_title,
+        title,
         url: design_view_url(id),
         screenshot_url,
         status,
@@ -426,6 +447,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         arena: ArenaSlug::Prism,
         agent: agent_from_hotkey(hk, epoch),
         prompt_id: format!("#epoch-{epoch}"),
+        prompt_title: None,
         title: label.to_owned(),
         url: format!("/challenge/prism/v1/submissions/{id}"),
         screenshot_url: None,
@@ -719,14 +741,24 @@ pub fn activity_from_lives(
     for r in design_runs {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("?");
         let status = r.get("status").and_then(Value::as_str).unwrap_or("");
-        let ms = r.get("updated_at_ms").and_then(Value::as_u64).unwrap_or(0);
+        let ms = r
+            .get("updated_at_ms")
+            .and_then(Value::as_u64)
+            .or_else(|| r.get("created_at_ms").and_then(Value::as_u64))
+            .unwrap_or(0);
+        // Label by the pinned-bank prompt title when known; else a short run id.
+        let label = r
+            .get("prompt_title")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map_or_else(
+                || format!("design run {}", &id[..id.len().min(8)]),
+                str::to_owned,
+            );
         let (sev, msg) = match status {
-            "scored" => (ActivitySeverity::Score, format!("design run {id} scored")),
-            "failed" => (ActivitySeverity::Fail, format!("design run {id} failed")),
-            "awaiting_admin" => (
-                ActivitySeverity::Settle,
-                format!("design run {id} awaiting admin"),
-            ),
+            "scored" => (ActivitySeverity::Score, format!("{label} scored")),
+            "failed" => (ActivitySeverity::Fail, format!("{label} failed")),
+            "awaiting_admin" => (ActivitySeverity::Settle, format!("{label} awaiting admin")),
             _ => continue,
         };
         events.push((
@@ -747,15 +779,24 @@ pub fn activity_from_lives(
             .and_then(Value::as_u64)
             .or_else(|| r.get("created_at_ms").and_then(Value::as_u64))
             .unwrap_or(0);
+        let label = r
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map_or_else(
+                || format!("prism {}", &id[..id.len().min(8)]),
+                str::to_owned,
+            );
+        let bpb = r.get("bpb").and_then(Value::as_f64);
         let (sev, msg) = match status {
             "terminated" => (
                 ActivitySeverity::Score,
-                format!("prism submission {id} terminated"),
+                bpb.map_or_else(
+                    || format!("{label} terminated"),
+                    |b| format!("{label} bpb {b:.4}"),
+                ),
             ),
-            "failed" => (
-                ActivitySeverity::Fail,
-                format!("prism submission {id} failed"),
-            ),
+            "failed" => (ActivitySeverity::Fail, format!("{label} failed")),
             _ => continue,
         };
         events.push((
@@ -1000,7 +1041,7 @@ mod tests {
         // Backwards compat: old payloads without the new fields still decode.
         let old: LeaderboardRow = serde_json::from_value(json!({
             "rank": 1,
-            "agent": {"slug":"a","handle":"@a","minerNumber":"—","model":"—","operator":"a","joinedEpoch":0},
+            "agent": {"slug":"a","handle":"@a","minerNumber":"—","model":"—","operator":"a","hotkey":"a","joinedEpoch":0},
             "elo": 1.0, "wins": 0, "losses": 0, "winRate": 0.0, "submissions": 1, "delta7d": 0.0
         }))
         .unwrap();
@@ -1041,7 +1082,10 @@ mod tests {
         assert!((sub.bpb.unwrap() - 1.25).abs() < f64::EPSILON);
         assert!((sub.params_m.unwrap() - 12.0).abs() < f64::EPSILON);
         assert!((sub.score.unwrap() - 900.0).abs() < f64::EPSILON);
-        assert_eq!(sub.agent.operator, "bbbbbbbb…bbbb");
+        // 32-byte hex hotkeys surface as full SS58 + truncated operator label.
+        let expected = ss58_encode(&[0xbb; 32], BITTENSOR_SS58_PREFIX);
+        assert_eq!(sub.agent.hotkey, expected);
+        assert_eq!(sub.agent.operator, truncate_middle(&expected));
     }
 
     #[test]

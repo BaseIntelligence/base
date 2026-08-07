@@ -278,6 +278,8 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn set_eliminated(&self, id: &str, until_round: u64) -> Result<(), StoreError>;
     /// Recent harnesses for agentic corpus (newest first).
     async fn list_recent_harnesses(&self, limit: u32) -> Result<Vec<HarnessRow>, StoreError>;
+    /// Distinct miner hotkeys that registered at least one harness.
+    async fn count_harness_miners(&self) -> Result<u64, StoreError>;
     /// Active harnesses for automatic round scheduling (newest per miner).
     ///
     /// Includes rows with `eliminated_until_round <= for_round`.
@@ -449,6 +451,16 @@ impl DesignStore for MemoryDesignStore {
             .filter(|h| h.miner_hotkey == miner)
             .cloned()
             .collect())
+    }
+
+    async fn count_harness_miners(&self) -> Result<u64, StoreError> {
+        let m = self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let miners: std::collections::BTreeSet<&str> =
+            m.values().map(|h| h.miner_hotkey.as_str()).collect();
+        Ok(u64::try_from(miners.len()).unwrap_or(u64::MAX))
     }
 
     async fn set_eliminated(&self, id: &str, until_round: u64) -> Result<(), StoreError> {

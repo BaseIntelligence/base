@@ -91,6 +91,7 @@ pub async fn get_stats(State(st): State<Arc<AppState>>) -> Response {
         },
         "ratings_count": ratings.len(),
         "elimination_signal_count": elim,
+        "agents": st.store.count_harness_miners().await.unwrap_or(0),
         "daily_run_quota": DAILY_RUN_QUOTA,
     }))
     .into_response()
@@ -104,6 +105,7 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
     let by_status = count_by_status(&runs);
     let round = st.store.get_round(rid).await.ok().flatten();
     let ratings = st.store.ratings_for_round(rid).await.unwrap_or_default();
+    let agents = st.store.count_harness_miners().await.unwrap_or(0);
     let prev = if rid > 0 {
         st.store
             .ratings_for_round(rid - 1)
@@ -117,13 +119,16 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
         .iter()
         .take(40)
         .map(|r| {
+            let (prompt_title, _) = prompt_fields(&r.prompt_id);
             json!({
                 "id": r.id,
                 "status": r.status.as_str(),
                 "round_id": r.round_id,
                 "harness_id": r.harness_id,
                 "prompt_id": r.prompt_id,
+                "prompt_title": prompt_title,
                 "error_detail": r.error_detail,
+                "created_at_ms": r.created_at_ms,
                 "updated_at_ms": r.updated_at_ms,
             })
         })
@@ -150,6 +155,7 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
         "backend": st.backend_mode,
         "epoch": st.epoch.load(std::sync::atomic::Ordering::Relaxed),
         "netuid": st.netuid,
+        "agents": agents,
         "round": {
             "round_id": rid,
             "status": round.as_ref().map(|r| r.status.clone()).unwrap_or_else(|| "open".into()),
@@ -238,6 +244,15 @@ pub async fn get_miner(State(st): State<Arc<AppState>>, Path(hotkey): Path<Strin
     .into_response()
 }
 
+/// Pinned-bank prompt for `prompt_id` as `(title, full brief)`; both `None`
+/// when the id is not in the bank (rotated bank / synthetic id).
+fn prompt_fields(prompt_id: &str) -> (Option<String>, Option<String>) {
+    design_prompts::load_bank()
+        .ok()
+        .and_then(|bank| bank.into_iter().find(|p| p.id == prompt_id))
+        .map_or((None, None), |p| (Some(p.title), Some(p.prompt)))
+}
+
 /// Helper used by unit tests / callers that have a store handle.
 pub async fn run_status_json(store: &dyn DesignStore, id: &str) -> Result<Value, String> {
     let r = store
@@ -247,11 +262,14 @@ pub async fn run_status_json(store: &dyn DesignStore, id: &str) -> Result<Value,
         .ok_or_else(|| "not found".to_owned())?;
     let pages = store.list_pages(id).await.unwrap_or_default();
     let events = store.run_events(id).await.unwrap_or_default();
+    let (prompt_title, prompt) = prompt_fields(&r.prompt_id);
     Ok(json!({
         "id": r.id,
         "round_id": r.round_id,
         "harness_id": r.harness_id,
         "prompt_id": r.prompt_id,
+        "prompt_title": prompt_title,
+        "prompt": prompt,
         "status": r.status.as_str(),
         "stage": r.status.as_str(),
         "terminal": r.status.is_terminal(),

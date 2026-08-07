@@ -14,7 +14,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod design_store;
 pub mod prism_store;
 mod store;
 

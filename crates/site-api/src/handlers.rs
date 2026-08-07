@@ -44,6 +44,7 @@ pub fn site_router(state: SiteState) -> Router {
             get(get_prism_submission_telemetry),
         )
         .route("/v1/site/validators", get(get_validators))
+        .route("/v1/site/weights", get(get_site_weights))
         .route("/v1/site/activity", get(get_activity))
         .route("/v1/site/metrics", get(get_metrics))
         .route("/v1/site/governance", get(get_governance))
@@ -96,10 +97,18 @@ async fn fetch_prism_recipe(st: &SiteState) -> Option<Value> {
 }
 
 fn epoch_from_lives(design: Option<&Value>, prism: Option<&Value>, chain_epoch: u64) -> u64 {
+    // Challenge payloads report 0 when their own chain read never hydrated —
+    // treat 0 as "unknown" so the chain-derived epoch wins.
     design
         .and_then(|d| d.get("epoch"))
         .and_then(Value::as_u64)
-        .or_else(|| prism.and_then(|p| p.get("epoch")).and_then(Value::as_u64))
+        .filter(|e| *e > 0)
+        .or_else(|| {
+            prism
+                .and_then(|p| p.get("epoch"))
+                .and_then(Value::as_u64)
+                .filter(|e| *e > 0)
+        })
         .unwrap_or(chain_epoch)
 }
 
@@ -145,19 +154,45 @@ async fn network_stats(st: &SiteState) -> NetworkStats {
     let design = fetch_design_dash(st).await;
     let prism = fetch_prism_status(st).await;
     let prism_subs = fetch_prism_subs(st, 200).await;
-    let arenas = list_arenas(design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let arenas = arenas_with_emission(st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
     let agents: u32 = arenas.iter().map(|a| a.agents).sum();
+    let tao_price = site_data::price::tao_price_usd(&st.client, &st.tao_price).await;
     NetworkStats {
         epoch: epoch_from_lives(design.as_ref(), prism.as_ref(), chain_epoch),
         agents,
         validators: u32::try_from(validators.len()).unwrap_or(0),
         arenas: 3,
         emission_per_day: 0.0,
-        tao_price: 0.0,
+        tao_price,
         block_height: block,
         updated_at: now_iso(),
         total_stake: None,
     }
+}
+
+/// Apply trust-root emission share + sealed-vector weight to one arena.
+fn apply_emission(st: &SiteState, arena: &mut site_types::Arena) {
+    let slug = arena.slug.as_str();
+    let shares = site_data::weights::configured_shares(st.trust_root());
+    if let Some((_, share)) = shares.iter().find(|(s, _)| s == slug) {
+        arena.emission_share = *share;
+    }
+    arena.weight =
+        site_data::weights::arena_weight(st.trust_root(), st.latest_sealed_bundle(), slug);
+}
+
+/// Arena list with trust-root emission shares + sealed-vector weights applied.
+fn arenas_with_emission(
+    st: &SiteState,
+    design: Option<&Value>,
+    prism: Option<&Value>,
+    prism_subs: Option<&Value>,
+) -> Vec<site_types::Arena> {
+    let mut arenas = list_arenas(design, prism, prism_subs);
+    for arena in &mut arenas {
+        apply_emission(st, arena);
+    }
+    arenas
 }
 
 async fn get_network(State(st): State<SiteState>) -> impl IntoResponse {
@@ -169,7 +204,7 @@ async fn get_landing(State(st): State<SiteState>) -> impl IntoResponse {
     let prism = fetch_prism_status(&st).await;
     let prism_subs = fetch_prism_subs(&st, 200).await;
     let stats = network_stats(&st).await;
-    let arenas = list_arenas(design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let arenas = arenas_with_emission(&st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
     let design_runs = design
         .as_ref()
         .and_then(|d| d.get("recent_runs"))
@@ -194,7 +229,8 @@ async fn get_arenas(State(st): State<SiteState>) -> impl IntoResponse {
     let design = fetch_design_dash(&st).await;
     let prism = fetch_prism_status(&st).await;
     let prism_subs = fetch_prism_subs(&st, 200).await;
-    Json(list_arenas(
+    Json(arenas_with_emission(
+        &st,
         design.as_ref(),
         prism.as_ref(),
         prism_subs.as_ref(),
@@ -205,7 +241,7 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
     let Some(slug) = ArenaSlug::parse(&slug) else {
         return json_err(StatusCode::NOT_FOUND, "not_found", "unknown arena");
     };
-    let arena = match slug {
+    let mut arena = match slug {
         ArenaSlug::Coding => coding_arena(),
         ArenaSlug::Design => design_arena_from_dashboard(fetch_design_dash(&st).await.as_ref()),
         ArenaSlug::Prism => {
@@ -214,6 +250,7 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
             prism_arena_from_live(status.as_ref(), subs.as_ref())
         }
     };
+    apply_emission(&st, &mut arena);
     Json(arena).into_response()
 }
 
@@ -531,6 +568,15 @@ async fn get_validators(
     Json(page)
 }
 
+/// Sealed weight vector + configured emission split (trust root + bundle).
+async fn get_site_weights(State(st): State<SiteState>) -> impl IntoResponse {
+    Json(site_data::weights::site_weights(
+        st.netuid,
+        st.trust_root(),
+        st.latest_sealed_bundle(),
+    ))
+}
+
 async fn get_activity(
     State(st): State<SiteState>,
     Query(q): Query<LimitQuery>,
@@ -558,14 +604,26 @@ async fn get_metrics(
     Query(q): Query<MetricsQuery>,
 ) -> impl IntoResponse {
     let range = q.range.unwrap_or_else(|| "30".into());
-    let stats = network_stats(&st).await;
+    let (block, chain_epoch, validators) = chain_snapshot(&st);
+    let design = fetch_design_dash(&st).await;
+    let prism = fetch_prism_status(&st).await;
+    let prism_subs = fetch_prism_subs(&st, 200).await;
+    let arenas = arenas_with_emission(&st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let epoch = epoch_from_lives(design.as_ref(), prism.as_ref(), chain_epoch);
+    let agents: u32 = arenas.iter().map(|a| a.agents).sum();
+    let tao_price = site_data::price::tao_price_usd(&st.client, &st.tao_price).await;
+    let weights =
+        site_data::weights::site_weights(st.netuid, st.trust_root(), st.latest_sealed_bundle());
+
     Json(NetworkMetrics {
         range,
-        epoch: stats.epoch,
-        kpis: Vec::new(),
+        epoch,
+        kpis: site_data::metrics::kpis(agents, validators.len(), tao_price, block, &weights),
         emission: MetricsEmission {
+            // No epoch-close history store yet — points stay empty rather than
+            // invented; the configured split above is the honest current frame.
             points: Vec::new(),
-            shares: Vec::new(),
+            shares: site_data::metrics::emission_shares(&arenas),
             total_this_epoch: 0.0,
         },
         pass_rate: MetricsPassRate {
@@ -573,7 +631,7 @@ async fn get_metrics(
             latest: Vec::new(),
         },
         population: MetricsPopulation {
-            rows: Vec::new(),
+            rows: site_data::metrics::population_rows(&arenas),
             new_this_epoch: 0,
         },
         ledger: Vec::new(),
@@ -686,7 +744,9 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "run1",
                 "status": "scored",
-                "final_score": {"score": 1000}
+                "final_score": {"score": 1000},
+                "prompt_title": "SaaS PR review",
+                "prompt": "Build a three-page marketing site for a SaaS PR review tool."
             })))
             .mount(design)
             .await;
@@ -773,6 +833,12 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["items"][0]["stage"], "scored");
         assert_eq!(v["items"][0]["score"], 1000.0);
+        // The full prompt brief is the public run label, not "design run <id>".
+        assert_eq!(
+            v["items"][0]["title"],
+            "Build a three-page marketing site for a SaaS PR review tool."
+        );
+        assert_eq!(v["items"][0]["promptTitle"], "SaaS PR review");
         assert_eq!(
             v["items"][0]["url"],
             "/challenge/design/v1/view/run1/index.html"
@@ -787,9 +853,15 @@ mod tests {
         assert_eq!(v["items"][0]["stage"], "terminated");
         assert_eq!(v["items"][0]["bpb"], 1.25);
         assert_eq!(v["items"][0]["paramsM"], 12.0);
+        let expected_hk = keystore::ss58_encode(&[0xbb; 32], keystore::BITTENSOR_SS58_PREFIX);
+        assert_eq!(v["items"][0]["agent"]["hotkey"], expected_hk);
         assert_eq!(
             v["items"][0]["agent"]["operator"],
-            format!("{}…{}", "bbbbbbbb", "bbbb")
+            format!(
+                "{}…{}",
+                &expected_hk[..8],
+                &expected_hk[expected_hk.len() - 4..]
+            )
         );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
@@ -824,6 +896,44 @@ mod tests {
         let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn arenas_carry_trust_root_shares_and_weights_endpoint() {
+        use std::sync::Arc;
+        use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
+        let (design, prism, st) = setup().await;
+        mount_site_mocks(&design, &prism).await;
+        let entry = |id: &str, bps: u16| ChallengeEntry {
+            id: id.as_bytes().to_vec(),
+            public_key: [7u8; 32],
+            emission_share_bps: bps,
+            policy: ParticipantPolicy::AllMetagraphHotkeys,
+        };
+        let st = st.with_weights(
+            Arc::new(ChallengesBody {
+                challenges: vec![entry("design", 2_000), entry("prism", 8_000)],
+            }),
+            Arc::new(|| None),
+        );
+        let app = site_router(st);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v[1]["emissionShare"], 0.2);
+        assert_eq!(v[2]["emissionShare"], 0.8);
+        // Unsealed: effective weights stay 0.
+        assert_eq!(v[1]["weight"], 0.0);
+        assert_eq!(v[2]["weight"], 0.0);
+
+        let (s, v) = call(app.clone(), "/v1/site/weights").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["sealed"], false);
+        assert_eq!(v["burnShare"], 1.0);
+        assert_eq!(v["emissionShares"][0]["arena"], "design");
+        assert_eq!(v["emissionShares"][0]["share"], 0.2);
+        assert_eq!(v["emissionShares"][1]["arena"], "prism");
+        assert!(v["hotkeyWeights"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

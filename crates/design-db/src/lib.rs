@@ -5,7 +5,7 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::DbError;
+use db::DbError;
 
 /// `design_harness` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -72,6 +72,10 @@ pub struct DesignRunRow {
     pub absence_reason: Option<i16>,
     /// Retry count.
     pub retry_count: i32,
+    /// Creation unix ms.
+    pub created_at_ms: i64,
+    /// Last update unix ms.
+    pub updated_at_ms: i64,
 }
 
 /// `design_round_award` row.
@@ -259,7 +263,8 @@ const HARNESS_COLS: &str =
      (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
-    sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count";
+    sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count, \
+    (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms, (FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000))::BIGINT AS updated_at_ms";
 const ARTIFACT_COLS: &str = "run_id, path, sanitized_html, raw_html, raw_sha256, bytes";
 const PAIR_COLS: &str = "id, round_id, prompt_id, run_a_id, run_b_id";
 const RATING_COLS: &str =
