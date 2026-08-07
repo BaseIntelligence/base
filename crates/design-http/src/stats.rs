@@ -102,27 +102,38 @@ pub async fn get_stats(State(st): State<Arc<AppState>>) -> Response {
     .into_response()
 }
 
-/// `GET /v1/dashboard` — one-shot UI payload (status + leaderboard + recent jobs).
-pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
-    let secs = now_secs();
-    let rid = round_id_at(secs);
-    let runs = st.store.list_runs(None, 100).await.unwrap_or_default();
-    let by_status = count_by_status(&runs);
-    let round = st.store.get_round(rid).await.ok().flatten();
-    let ratings = st.store.ratings_for_round(rid).await.unwrap_or_default();
-    let agents = st.store.count_harness_miners().await.unwrap_or(0);
-    let prev = if rid > 0 {
-        st.store
-            .ratings_for_round(rid - 1)
-            .await
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
-    let opens = rid * round_secs();
-    let jobs: Vec<Value> = runs
-        .iter()
-        .take(40)
+/// Cap for dashboard `recent_runs` (site gallery + activity feed).
+const RECENT_RUNS_LIMIT: usize = 40;
+/// Wider scan so a queue flood of brand-new rows cannot hide screenshot runs.
+const RECENT_RUNS_SCAN: u32 = 500;
+
+/// Stages that normally carry a captured `index.png` after sanitize.
+fn likely_has_screenshot(status: RunStage) -> bool {
+    matches!(
+        status,
+        RunStage::AgenticReview
+            | RunStage::AwaitingAdmin
+            | RunStage::AwaitingAnnotation
+            | RunStage::Scored
+    )
+}
+
+/// Prefer post-sanitize / scored runs (gallery candidates), then fill with the
+/// newest remaining rows so the feed still reflects live queue activity.
+fn select_recent_runs(runs: &[design_store::RunState], limit: usize) -> Vec<Value> {
+    let mut viewable = Vec::new();
+    let mut other = Vec::new();
+    for r in runs {
+        if likely_has_screenshot(r.status) {
+            viewable.push(r);
+        } else {
+            other.push(r);
+        }
+    }
+    viewable
+        .into_iter()
+        .chain(other)
+        .take(limit)
         .map(|r| {
             let (prompt_title, _) = prompt_fields(&r.prompt_id);
             json!({
@@ -137,7 +148,32 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
                 "updated_at_ms": r.updated_at_ms,
             })
         })
-        .collect();
+        .collect()
+}
+
+/// `GET /v1/dashboard` — one-shot UI payload (status + leaderboard + recent jobs).
+pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
+    let secs = now_secs();
+    let rid = round_id_at(secs);
+    let runs = st
+        .store
+        .list_runs(None, RECENT_RUNS_SCAN)
+        .await
+        .unwrap_or_default();
+    let by_status = count_by_status(&runs);
+    let round = st.store.get_round(rid).await.ok().flatten();
+    let ratings = st.store.ratings_for_round(rid).await.unwrap_or_default();
+    let agents = st.store.count_harness_miners().await.unwrap_or(0);
+    let prev = if rid > 0 {
+        st.store
+            .ratings_for_round(rid - 1)
+            .await
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let opens = rid * round_secs();
+    let jobs = select_recent_runs(&runs, RECENT_RUNS_LIMIT);
     let lb = |rows: &[design_store::RatingRow]| -> Vec<Value> {
         rows.iter()
             .map(|r| {
@@ -314,4 +350,50 @@ pub async fn run_status_json(store: &dyn DesignStore, id: &str) -> Result<Value,
         "admin_ready": r.status == RunStage::AwaitingAdmin,
         "annotation_ready": r.status == RunStage::AwaitingAnnotation,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use design_store::{RunStage, RunState};
+
+    use super::select_recent_runs;
+
+    fn run(id: &str, status: RunStage, created_at_ms: u64) -> RunState {
+        RunState {
+            id: id.into(),
+            round_id: 1,
+            harness_id: "h".into(),
+            prompt_id: "p01".into(),
+            status,
+            artifact_digest: None,
+            sanitize_report: None,
+            agentic_verdict: None,
+            error_detail: None,
+            final_score: None,
+            retry_count: 0,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+        }
+    }
+
+    #[test]
+    fn select_recent_runs_prefers_screenshot_stages() {
+        // Newest-first scan: a flood of queued rows would otherwise fill the
+        // site gallery window and hide the awaiting_admin candidate.
+        let runs = vec![
+            run("q1", RunStage::Queued, 100),
+            run("q2", RunStage::Queued, 99),
+            run("q3", RunStage::Queued, 98),
+            run("a1", RunStage::AwaitingAdmin, 97),
+            run("s1", RunStage::Scored, 96),
+        ];
+        let jobs = select_recent_runs(&runs, 3);
+        let ids: Vec<&str> = jobs
+            .iter()
+            .filter_map(|j| j.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["a1", "s1", "q1"]);
+    }
 }

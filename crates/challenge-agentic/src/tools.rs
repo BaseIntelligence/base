@@ -704,8 +704,15 @@ mod tests {
         assert!(resolve_rel(&wd, "/etc/passwd").is_err());
     }
 
+    /// `AGENTIC_ENABLE_RUN_COMMAND` is process-global; serialize the two tests
+    /// that mutate it so parallel libtest cannot race enable vs disable.
+    static RUN_COMMAND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn run_command_executes_in_sandboxed_cwd() {
+        let _guard = RUN_COMMAND_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
         std::env::set_var("AGENTIC_ENABLE_RUN_COMMAND", "1");
@@ -733,6 +740,10 @@ mod tests {
 
     #[test]
     fn run_command_disabled_without_container_env() {
+        let _guard = RUN_COMMAND_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::remove_var("AGENTIC_ENABLE_RUN_COMMAND");
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("agent.py"), "x = 1\n").unwrap();
         let req = ReviewRequest {
