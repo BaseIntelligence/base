@@ -66,11 +66,14 @@ pub trait EvalJobBackend: Send + Sync {
     ///
     /// Sim backends ignore `instance_id` and compute from payload bytes.
     /// Real backends wait RUNNING, SSH GPU-attest, then emit metrics.
+    /// `tree_blob` is a packed `prism_tree::StagedTree` for v3 source-tree
+    /// submissions (`None` for legacy two-script rows).
     async fn exec_eval(
         &self,
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError>;
 }
 

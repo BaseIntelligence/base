@@ -57,8 +57,8 @@ Resolution order — first match wins, always offline:
 
 | Order | Declaration | Notes |
 |-------|-------------|-------|
-| 1 | `tokenizer/` files in a source-tree ZIP | loaded with `AutoTokenizer.from_pretrained(dir, local_files_only=True)`; ≤ 8 files, ≤ 1 MiB total, extensions `json/txt/model/vocab/merges/bpe`. **Not yet staged on the pod** — intake refuses it today and points at the hook below (only the two seams are shipped to the pod, so accepting the directory would silently score the fallback tokenizer) |
-| 2 | `def build_tokenizer(ctx)` in `architecture.py` | the live path. Must sit beside `build_model`: the eval phase imports that module only, so a hook in `training.py` is a hard intake and in-pod error, never a silent fallback. Gets a ctx without harness internals; build/train/wrap whatever you like, offline |
+| 1 | `tokenizer/` files in a source-tree ZIP | staged under `submission/tokenizer/` on the pod and loaded with `AutoTokenizer.from_pretrained(dir, local_files_only=True)`; ≤ 12 files, ≤ 8 MiB total (admits a real ~1.4 MiB HF `tokenizer.json`), extensions `json/txt/model/vocab/merges/bpe` |
+| 2 | `def build_tokenizer(ctx)` in `architecture.py` | code hook path. Must sit beside `build_model`: the eval phase imports that module only, so a hook in `training.py` is a hard intake and in-pod error, never a silent fallback. Gets a ctx without harness internals; build/train/wrap whatever you like, offline |
 | 3 | pinned fallback `gpt2` | what pre-1.4 submissions already got — a **default**, not a rule. Warmed into the pod HF cache by the parent before the netns child starts |
 
 The miner subprocess runs under `unshare --net`: a tokenizer that would need a
@@ -119,12 +119,19 @@ architecture.py       # seam: def build_model(ctx)
 train.py              # seam: def train(model, ctx) (or training.py)
 count_params.py       # optional static parameter-count check (prints one int)
 kernels/<op>.py       # optional custom ops per KERNEL_INTERFACE.md
-tokenizer/*.json      # tokenizer files (see Tokenizer above; hook path for now)
+tokenizer/*.json      # tokenizer files (see Tokenizer above; staged on the pod)
 vendor.lock           # optional vendored-dependency hash lock
 ```
 
+The validated tree is persisted as a content-addressed USTAR blob and
+staged onto the Lium pod under `submission/` (tar-over-SSH-stdin; never
+base64-in-argv). Seam projections remain in the DB for copy-gate /
+similarity; the harness loads the real tree so sibling imports
+(`import kernels`) and `tokenizer/` resolve.
+
 Validation at intake (`prism_recipe::zip_submit`): file count / per-file /
-total-size budgets, UTF-8 seam projections (`architecture.py` must define
+total-size budgets (128 files, 4 MiB/file, 16 MiB total), UTF-8 seam
+projections (`architecture.py` must define
 `build_model(`, the entry must define `train(`), tokenizer declaration rules
 (§ *Tokenizer*), and a **banned-pattern scan** (prebuilt binaries, `ctypes`,
 network/process/threads escapes, …) —

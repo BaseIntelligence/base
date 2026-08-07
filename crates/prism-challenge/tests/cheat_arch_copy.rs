@@ -115,6 +115,7 @@ async fn baseline_arch_train_copy_scores_zero() {
             // Exact corpus baseline → SimAgent byte-identical cheat.
             architecture_py: BASELINE_ARCHITECTURE_PY.into(),
             training_py: BASELINE_TRAINING_PY.into(),
+            tree_blob: None,
             label: Some("cheat-arch-copy".into()),
             pod_id: None,
             pod_provider: None,

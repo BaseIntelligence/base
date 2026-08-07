@@ -413,6 +413,7 @@ impl LiumClient {
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         let _running = self.wait_until_running(instance_id).await?;
         let target = self.resolve_ssh_target(instance_id).await?;
@@ -424,7 +425,7 @@ impl LiumClient {
         let timeout_secs = train_cap_secs.saturating_add(3600);
         // Stage the harness tar over ssh stdin before the run: argv-embedded
         // base64 payloads exceeded MAX_ARG_STRLEN at local spawn (BUG-5).
-        let tar = harness_upload_tar(architecture_py, training_py)?;
+        let tar = harness_upload_tar(architecture_py, training_py, tree_blob)?;
         let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
         ssh_exec_stdin(&target, &key, HARNESS_EXTRACT_CMD, &tar, att, rty, 300).await?;
         let assets = eval_assets_dir();
@@ -582,45 +583,31 @@ const HARNESS_BOOTSTRAP: &str = "set -e\ncommand -v pip >/dev/null 2>&1 || apt-g
 const HARNESS_EXTRACT_CMD: &str = "set -e; mkdir -p /tmp/prism_eval; tar -x -C /tmp/prism_eval";
 
 /// Deterministic uncompressed ustar of the harness package
-/// ([`prism_recipe::HARNESS_FILES`]) plus the miner sources
-/// (`architecture.py`, `training.py`), streamed to the pod over ssh stdin —
-/// never argv (BUG-5: base64-in-argv hit 239 KB vs the 128 KB
-/// `MAX_ARG_STRLEN`). Entries sorted by path, metadata normalized (zeroed
-/// uid/gid/mtime/uname/gname via the zero-initialized block, mode 0644), so
-/// two builds are byte-identical and the pod layout matches the old upload
-/// (`main.py`, `prismlib/*.py`, `eval/**`, `cheatguard_patterns.json`,
-/// `architecture.py`, `training.py` at the workdir root).
-fn harness_upload_tar(architecture_py: &str, training_py: &str) -> Result<Vec<u8>, LiumError> {
-    let mut files: Vec<(&str, &[u8])> = prism_recipe::HARNESS_FILES
+/// ([`prism_recipe::HARNESS_FILES`]) plus miner sources, streamed to the pod
+/// over ssh stdin — never argv (BUG-5). See [`prism_tree::pack_harness_upload`].
+fn harness_upload_tar(
+    architecture_py: &str,
+    training_py: &str,
+    tree_blob: Option<&[u8]>,
+) -> Result<Vec<u8>, LiumError> {
+    let harness: Vec<(&str, &[u8])> = prism_recipe::HARNESS_FILES
         .iter()
         .map(|(p, c)| (*p, c.as_bytes()))
         .collect();
-    files.push(("architecture.py", architecture_py.as_bytes()));
-    files.push(("training.py", training_py.as_bytes()));
-    files.sort_by(|a, b| a.0.cmp(b.0));
-    let mut out = Vec::new();
-    for (path, contents) in files {
-        if path.len() > 100 {
-            return Err(LiumError::Exec(format!(
-                "harness path exceeds ustar: {path}"
-            )));
-        }
-        let mut h = [0u8; 512];
-        h[..path.len()].copy_from_slice(path.as_bytes());
-        h[100..107].copy_from_slice(b"0000644");
-        h[124..135].copy_from_slice(format!("{:011o}", contents.len()).as_bytes());
-        h[156] = b'0';
-        h[257..262].copy_from_slice(b"ustar");
-        h[263..265].copy_from_slice(b"00");
-        h[148..156].fill(b' ');
-        let sum: u32 = h.iter().map(|b| u32::from(*b)).sum();
-        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
-        out.extend_from_slice(&h);
-        out.extend_from_slice(contents);
-        out.resize(out.len() + (512 - contents.len() % 512) % 512, 0);
-    }
-    out.extend_from_slice(&[0u8; 1024]);
-    Ok(out)
+    let tree = match tree_blob {
+        Some(b) => Some(
+            prism_tree::StagedTree::unpack(b)
+                .map_err(|e| LiumError::Exec(format!("tree blob: {e}")))?,
+        ),
+        None => None,
+    };
+    prism_tree::pack_harness_upload(
+        &harness,
+        architecture_py.as_bytes(),
+        training_py.as_bytes(),
+        tree.as_ref(),
+    )
+    .map_err(|e| LiumError::Exec(e.to_string()))
 }
 
 /// Harness env pairs for the pod run. `PRISM_TEST_TRAIN_MINUTES` /
@@ -972,8 +959,9 @@ impl EvalJobBackend for LiumClient {
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
-        self.exec_eval_live(instance_id, architecture_py, training_py)
+        self.exec_eval_live(instance_id, architecture_py, training_py, tree_blob)
             .await
     }
 }
@@ -1290,7 +1278,7 @@ mod tests {
 
     #[test]
     fn harness_upload_tar_has_exact_files_with_identical_contents() {
-        let files = parse_tar_files(&harness_upload_tar("# arch", "# train").unwrap());
+        let files = parse_tar_files(&harness_upload_tar("# arch", "# train", None).unwrap());
         let got: std::collections::BTreeMap<&str, &[u8]> = files
             .iter()
             .map(|(p, c)| (p.as_str(), c.as_slice()))
@@ -1337,10 +1325,35 @@ mod tests {
 
     #[test]
     fn harness_upload_tar_is_byte_deterministic() {
-        let a = harness_upload_tar("arch", "train").unwrap();
-        let b = harness_upload_tar("arch", "train").unwrap();
+        let a = harness_upload_tar("arch", "train", None).unwrap();
+        let b = harness_upload_tar("arch", "train", None).unwrap();
         assert_eq!(a, b, "two builds must produce identical bytes");
         assert!(a.len() > 100_000, "the real harness set is large");
+    }
+
+    #[test]
+    fn harness_upload_tar_stages_full_source_tree_under_submission() {
+        let mut files = std::collections::BTreeMap::new();
+        files.insert("architecture.py".into(), b"import kernels\n".to_vec());
+        files.insert(
+            "training.py".into(),
+            b"def train(m,c):\n    return {}\n".to_vec(),
+        );
+        files.insert(
+            "kernels/flash.py".into(),
+            b"def attend():\n    return 1\n".to_vec(),
+        );
+        files.insert("tokenizer/tokenizer.json".into(), b"{}".to_vec());
+        let blob = prism_tree::StagedTree::new(files, "training.py".into())
+            .pack()
+            .unwrap();
+        let tar = harness_upload_tar("ignored", "ignored", Some(&blob)).unwrap();
+        let got = parse_tar_files(&tar);
+        let names: std::collections::BTreeSet<_> = got.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.contains("submission/kernels/flash.py"));
+        assert!(names.contains("submission/tokenizer/tokenizer.json"));
+        assert!(names.contains("main.py"));
+        assert!(!names.contains("architecture.py"));
     }
 
     #[test]
@@ -1364,7 +1377,7 @@ mod tests {
         );
         assert!(!remote.contains("base64"), "no payload embedding in argv");
         // The stdin payload scales with miner size; argv never does.
-        let big = harness_upload_tar(&"a".repeat(200_000), &"t".repeat(200_000)).unwrap();
+        let big = harness_upload_tar(&"a".repeat(200_000), &"t".repeat(200_000), None).unwrap();
         assert!(big.len() > 400_000);
         assert!(HARNESS_EXTRACT_CMD.len() < 1024);
     }

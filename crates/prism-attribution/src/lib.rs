@@ -285,6 +285,7 @@ mod tests {
                 status: Stage::Queued,
                 architecture_py: prism_recipe::BASELINE_ARCHITECTURE_PY.to_owned(),
                 training_py: prism_recipe::BASELINE_TRAINING_PY.to_owned(),
+                tree_blob: None,
                 label: None,
                 pod_id: None,
                 pod_provider: None,

@@ -21,23 +21,38 @@
 //! The tokenizer is part of a submission (see the harness contract in
 //! `harness/prismlib/tokenizer.py`): a tree may declare one as a
 //! `build_tokenizer(ctx)` hook beside `build_model`, or as tokenizer files
-//! under `tokenizer/`. Intake bounds that directory with the caps mirrored
-//! from the harness ([`MAX_TOKENIZER_FILES`], [`MAX_TOKENIZER_TOTAL_BYTES`],
-//! [`TOKENIZER_EXTENSIONS`]) and then **rejects it**: the pod today receives
-//! only the two seam projections, so accepting tokenizer files would silently
-//! score the run on the pinned fallback tokenizer instead. The hook is the
-//! live path until the pod materializes whole trees.
+//! under `tokenizer/`. Both are live — the whole validated tree is staged in
+//! the pod workdir under `prism_tree::POD_SUBMISSION_DIR`, so
+//! `tokenizer/tokenizer.json` resolves on the pod exactly as submitted.
+//! Intake bounds that directory with the caps mirrored from the harness
+//! ([`MAX_TOKENIZER_FILES`], [`MAX_TOKENIZER_TOTAL_BYTES`],
+//! [`TOKENIZER_EXTENSIONS`]).
 //!
 //! Vendored pure-Python deps are allowed via a root `vendor.lock`
 //! (sha256sum-style lines: `<64-hex sha256>  <path>`). Every file under
 //! `vendor/` must be locked and must be `*.py`; locked paths must exist and
-//! hash-match at intake. Prebuilt binary artifacts are banned outright
-//! (extension ban) and `.py` sources are scanned against the shared
-//! banned-pattern list ([`CHEATGUARD_PATTERNS_JSON`], also read by the
-//! harness-side `prismlib/cheatguard.py` AST audit): `ctypes`,
-//! `cuModuleLoadData`, `torch.utils.cpp_extension.load` (source-built
-//! `load_inline` remains allowed), and `base64.b64decode(` fed by a long
-//! base64-looking blob (embedded-binary heuristic).
+//! hash-match at intake.
+//!
+//! # What the scan covers
+//!
+//! Every file in the tree, not just the seams — a helper module, a `kernels/`
+//! `.cu`, or a `vendor/` file is exactly as executable as `architecture.py`
+//! once the tree is importable on the pod:
+//!
+//! * prebuilt artifacts are banned by extension *and* by content sniffing
+//!   ([`prism_tree::executable_magic`]), so renaming an ELF does not help;
+//! * files with the executable bit set in the ZIP are rejected;
+//! * binary (non-UTF-8 or NUL-bearing) files are refused outright except as
+//!   bounded `tokenizer/` assets, which are the only opaque bytes a submission
+//!   may carry;
+//! * every text file is scanned against the shared banned-pattern list
+//!   ([`CHEATGUARD_PATTERNS_JSON`], also read by the harness-side
+//!   `prismlib/cheatguard.py` AST audit): `ctypes`, `cuModuleLoadData`,
+//!   `torch.utils.cpp_extension.load` (source-built `load_inline` remains
+//!   allowed), and `base64.b64decode(` fed by a long base64-looking blob
+//!   (embedded-binary heuristic);
+//! * paths that collide with harness module names are refused
+//!   ([`prism_tree::reserved_pod_path`]).
 //!
 //! Zip-slip/path-traversal: `enclosed_name` + explicit rejects (absolute,
 //! `..`, `:` components, symlinks, duplicate normalized paths); macOS/Windows
@@ -67,14 +82,14 @@ pub enum ZipSubmitError {
     Contract(#[from] ContractError),
 }
 
-/// Max files in a source-tree ZIP.
-pub const MAX_TREE_FILES: usize = 64;
+/// Max files in a source-tree ZIP ([`prism_tree::MAX_TREE_FILES`]).
+pub const MAX_TREE_FILES: usize = prism_tree::MAX_TREE_FILES;
 /// Max bytes per tree file (uncompressed).
-pub const MAX_TREE_FILE_BYTES: usize = 256 * 1024;
+pub const MAX_TREE_FILE_BYTES: usize = prism_tree::MAX_TREE_FILE_BYTES;
 /// Max total uncompressed bytes across the tree.
-pub const MAX_TREE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_TREE_TOTAL_BYTES: usize = prism_tree::MAX_TREE_TOTAL_BYTES;
 /// Max compressed ZIP bytes for tree intake (defensive ceiling).
-const MAX_TREE_ZIP_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TREE_ZIP_BYTES: usize = 20 * 1024 * 1024;
 /// Entrypoint manifest filename at the tree root.
 pub const TREE_MANIFEST_FILE: &str = "prism.toml";
 /// Vendor hash-lock manifest filename at the tree root.
@@ -83,9 +98,9 @@ pub const VENDOR_LOCK_FILE: &str = "vendor.lock";
 /// `prismlib.tokenizer.TOKENIZER_DIRNAME`).
 pub const TOKENIZER_DIR: &str = "tokenizer/";
 /// Max files under `tokenizer/` (harness: `MAX_TOKENIZER_FILES`).
-pub const MAX_TOKENIZER_FILES: usize = 8;
+pub const MAX_TOKENIZER_FILES: usize = prism_tree::MAX_TOKENIZER_FILES;
 /// Max total bytes under `tokenizer/` (harness: `MAX_TOKENIZER_BYTES`).
-pub const MAX_TOKENIZER_TOTAL_BYTES: usize = 1024 * 1024;
+pub const MAX_TOKENIZER_TOTAL_BYTES: usize = prism_tree::MAX_TOKENIZER_TOTAL_BYTES;
 /// Allowed tokenizer file extensions (harness: `ALLOWED_EXTENSIONS`).
 pub const TOKENIZER_EXTENSIONS: &[&str] = &["json", "txt", "model", "vocab", "merges", "bpe"];
 /// Miner tokenizer hook (harness: `prismlib.tokenizer.HOOK_NAME`); must sit
@@ -164,18 +179,28 @@ impl SourceTree {
 
     /// Canonical content hash of the tree: for each file in sorted-path
     /// order, `path bytes ‖ 0x00 ‖ contents ‖ 0xff` feed one SHA-256 (same
-    /// framing as `harness_files_sha256`). Zip ordering/metadata differences
-    /// do not change the digest.
+    /// framing as [`prism_tree::StagedTree::tree_sha256`]). Zip
+    /// ordering/metadata differences do not change the digest.
     #[must_use]
     pub fn canonical_sha256(&self) -> String {
-        let mut h = Sha256::new();
-        for (path, bytes) in &self.files {
-            h.update(path.as_bytes());
-            h.update([0x00]);
-            h.update(bytes);
-            h.update([0xff]);
-        }
-        hex::encode(h.finalize())
+        self.to_staged().tree_sha256()
+    }
+
+    /// Convert into the shared staged-tree representation used for
+    /// persistence and pod delivery.
+    #[must_use]
+    pub fn to_staged(&self) -> prism_tree::StagedTree {
+        prism_tree::StagedTree::new(self.files.clone(), self.entry.clone())
+    }
+
+    /// Pack a content-addressed delivery blob ([`prism_tree::StagedTree::pack`]).
+    ///
+    /// # Errors
+    /// USTAR path / framing failures (intake caps prevent these in practice).
+    pub fn pack_blob(&self) -> Result<Vec<u8>, ZipSubmitError> {
+        self.to_staged()
+            .pack()
+            .map_err(|e| ZipSubmitError::Invalid(e.to_string()))
     }
 
     /// Two-script projection of the architecture seam: the root
@@ -244,23 +269,41 @@ impl SourceTree {
                 return Err(ZipSubmitError::Invalid(format!("file too large: {path}")));
             }
             total = total.saturating_add(bytes.len());
+            if prism_tree::reserved_pod_path(path) {
+                return Err(ZipSubmitError::Invalid(format!(
+                    "path collides with harness module name: {path}"
+                )));
+            }
             if has_banned_extension(path, &patterns) {
                 return Err(ZipSubmitError::Invalid(format!(
                     "banned binary extension: {path}"
                 )));
             }
-            if is_python_file(path) {
-                let text = std::str::from_utf8(bytes)
-                    .map_err(|_| ZipSubmitError::Invalid(format!("non-utf8: {path}")))?;
-                if let Some(v) = scan_source(text, path, &patterns).into_iter().next() {
-                    return Err(ZipSubmitError::Invalid(v));
+            if let Some(magic) = prism_tree::executable_magic(bytes) {
+                return Err(ZipSubmitError::Invalid(format!(
+                    "prebuilt artifact ({magic}): {path}"
+                )));
+            }
+            let is_tok = path.starts_with(TOKENIZER_DIR);
+            if prism_tree::looks_binary(bytes) {
+                if !is_tok {
+                    return Err(ZipSubmitError::Invalid(format!(
+                        "binary file outside {TOKENIZER_DIR}: {path}"
+                    )));
                 }
+                continue;
+            }
+            // Every text file — helpers, kernels, vendor, seams — is scanned.
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| ZipSubmitError::Invalid(format!("non-utf8: {path}")))?;
+            if let Some(v) = scan_source(text, path, &patterns).into_iter().next() {
+                return Err(ZipSubmitError::Invalid(v));
             }
         }
         if total > MAX_TREE_TOTAL_BYTES {
-            return Err(ZipSubmitError::Invalid(
-                "tree exceeds 2 MiB total budget".into(),
-            ));
+            return Err(ZipSubmitError::Invalid(format!(
+                "tree exceeds {MAX_TREE_TOTAL_BYTES} byte total budget"
+            )));
         }
         // Seam presence + re-export resolution + v1 per-script caps (the
         // projections flow through legacy downstream contract checks).
@@ -281,8 +324,8 @@ impl SourceTree {
     /// A `build_tokenizer` hook must sit in the architecture seam, never in
     /// the training entry: the eval phase imports the architecture module
     /// only, so a hook hiding in the entry would give train and eval two
-    /// different tokenizers. `tokenizer/` files are bounded and then refused
-    /// while the pod receives seam projections rather than the whole tree.
+    /// different tokenizers. `tokenizer/` files are bounded and delivered
+    /// with the rest of the tree under `submission/tokenizer/` on the pod.
     fn validate_tokenizer(&self, arch: &str, train: &str) -> Result<(), ZipSubmitError> {
         let hook_marker = format!("def {TOKENIZER_HOOK}(");
         if train.contains(&hook_marker) && !arch.contains(&hook_marker) {
@@ -323,11 +366,7 @@ impl SourceTree {
                 "{TOKENIZER_DIR} is {total} bytes (max {MAX_TOKENIZER_TOTAL_BYTES})"
             )));
         }
-        Err(ZipSubmitError::Invalid(format!(
-            "{TOKENIZER_DIR} files do not reach the pod yet (only the architecture and training \
-             seams are staged), so the run would score on the pinned fallback tokenizer: declare \
-             your tokenizer with a {TOKENIZER_HOOK}(ctx) hook in architecture.py instead"
-        )))
+        Ok(())
     }
 
     /// `vendor.lock` coverage: every `vendor/` file locked + hash-matched +
@@ -663,6 +702,13 @@ fn extract_tree_entries(zip_bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Z
         if file.unix_mode().is_some_and(|m| m & 0o170_000 == 0o120_000) {
             return Err(ZipSubmitError::Invalid("symlinks forbidden".into()));
         }
+        #[allow(deprecated)]
+        if file.unix_mode().is_some_and(|m| m & 0o111 != 0) {
+            return Err(ZipSubmitError::Invalid(format!(
+                "executable bit forbidden: {}",
+                file.name()
+            )));
+        }
         let name = file
             .enclosed_name()
             .ok_or_else(|| ZipSubmitError::Invalid("unsafe zip path".into()))?
@@ -702,9 +748,9 @@ fn extract_tree_entries(zip_bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Z
         }
         total = total.saturating_add(data.len());
         if total > MAX_TREE_TOTAL_BYTES {
-            return Err(ZipSubmitError::Invalid(
-                "tree exceeds 2 MiB total budget".into(),
-            ));
+            return Err(ZipSubmitError::Invalid(format!(
+                "tree exceeds {MAX_TREE_TOTAL_BYTES} byte total budget"
+            )));
         }
         files.insert(name.to_owned(), data);
     }
@@ -1117,17 +1163,15 @@ mod tests {
     }
 
     #[test]
-    fn tree_tokenizer_dir_is_bounded_then_refused() {
+    fn tree_tokenizer_dir_is_accepted_and_bounded() {
         let vocab = "{\"a\": 0}\n";
-        // Well-formed but not stageable on the pod: pointed at the hook.
         let z = zip_of(&[
             ("architecture.py", ARCH),
             ("train.py", TRAIN),
             ("tokenizer/tokenizer.json", vocab),
         ]);
-        let err = tree_from_zip(&z).unwrap_err().to_string();
-        assert!(err.contains("build_tokenizer"), "{err}");
-        // Caps are checked first, so a malformed dir reports its own breach.
+        let tree = tree_from_zip(&z).unwrap();
+        assert!(tree.files().contains_key("tokenizer/tokenizer.json"));
         let z = zip_of(&[
             ("architecture.py", ARCH),
             ("train.py", TRAIN),
@@ -1143,7 +1187,49 @@ mod tests {
             files.push((n, b));
         }
         let err = tree_from_zip(&zip_of(&files)).unwrap_err().to_string();
-        assert!(err.contains("max 8"), "{err}");
+        assert!(err.contains(&format!("max {MAX_TOKENIZER_FILES}")), "{err}");
+    }
+
+    #[test]
+    fn tree_accepts_realistic_tokenizer_json() {
+        // ~1.4 MiB HF tokenizer.json must clear the per-file and tokenizer
+        // total caps (the previous 1 MiB tokenizer budget rejected it).
+        let big = format!("{{\"vocab\":{}}}", "x".repeat(1_400_000));
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", TRAIN),
+            ("kernels/flash.py", "def attend():\n    return 1\n"),
+            ("tokenizer/tokenizer.json", &big),
+        ]);
+        let tree = tree_from_zip(&z).unwrap();
+        assert!(tree.files()["tokenizer/tokenizer.json"].len() > 1_400_000);
+        let blob = tree.pack_blob().unwrap();
+        let staged = prism_tree::StagedTree::unpack(&blob).unwrap();
+        assert_eq!(staged.tree_sha256(), tree.canonical_sha256());
+        assert!(staged.get("kernels/flash.py").is_some());
+    }
+
+    #[test]
+    fn tree_rejects_banned_pattern_in_non_seam_helper() {
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", TRAIN),
+            ("kernels/evil.py", "import ctypes\n"),
+        ]);
+        let err = tree_from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("ctypes"), "{err}");
+    }
+
+    #[test]
+    fn tree_rejects_oversize_file() {
+        let huge = "x".repeat(MAX_TREE_FILE_BYTES + 1);
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", TRAIN),
+            ("kernels/big.py", &huge),
+        ]);
+        let err = tree_from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("too large") || err.contains("budget"), "{err}");
     }
 
     #[test]
@@ -1154,7 +1240,7 @@ mod tests {
             ("../evil.py", "x=1"),
         ]);
         assert!(tree_from_zip(&z).is_err());
-        let many: Vec<(String, String)> = (0..65)
+        let many: Vec<(String, String)> = (0..=MAX_TREE_FILES)
             .map(|i| (format!("m/f{i}.py"), "x = 1\n".to_owned()))
             .collect();
         let mut files: Vec<(&str, &str)> = vec![("architecture.py", ARCH), ("train.py", TRAIN)];
@@ -1162,7 +1248,10 @@ mod tests {
             files.push((n, b));
         }
         let z = zip_of(&files);
-        assert!(tree_from_zip(&z).unwrap_err().to_string().contains("64"));
+        assert!(tree_from_zip(&z)
+            .unwrap_err()
+            .to_string()
+            .contains(&MAX_TREE_FILES.to_string()));
     }
 
     #[test]

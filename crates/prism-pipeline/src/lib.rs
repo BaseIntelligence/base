@@ -29,6 +29,6 @@ pub use pipeline::{
 pub use score::{final_lattice, score_from_bpb, score_from_pipeline, PipelineOutcome, ScoringMode};
 pub use submission::{
     arch_digest, arch_id_for, example_valid_request, expand_zip_fields, gating_key, is_arch_id,
-    source_tree, submission_id, validate, QueuedSubmission, SubmissionAccepted, SubmissionError,
-    SubmissionId, SubmissionRequest, SubmissionService,
+    source_tree, submission_id, tree_blob_for, validate, QueuedSubmission, SubmissionAccepted,
+    SubmissionError, SubmissionId, SubmissionRequest, SubmissionService,
 };

@@ -57,8 +57,10 @@ from files in your own submission. The harness validates it (vocab bounds,
 probe ids in range, encode/decode roundtrip) and fingerprints it: the eval
 phase re-resolves it and refuses to score a run whose tokenizer does not
 reconstruct identically, so `build_tokenizer` must be deterministic. Shipping
-raw `tokenizer/` files in a source-tree ZIP is specified but not staged on the
-pod yet — intake refuses it and points you back at the hook. Fairness note:
+raw `tokenizer/` files in a source-tree ZIP is supported: the whole validated
+tree (kernels, helpers, `tokenizer/`) is staged under `submission/` on the
+pod (≤ 12 tokenizer files, ≤ 8 MiB total — enough for a real HF
+`tokenizer.json`). Fairness note:
 different vocabs change tokenization, not the unit — `bits_per_byte` (bits over
 UTF-8 bytes) is the tokenizer-neutral anchor, while the legacy `bpb` key is
 bits per *token* and only comparable at equal tokenizers.

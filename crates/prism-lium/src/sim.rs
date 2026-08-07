@@ -109,11 +109,15 @@ impl EvalJobBackend for SimLiumBackend {
         _instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         // Deterministic fake BPB from code hash: lower is better quality for PRISM.
         let mut h = Sha256::new();
         h.update(architecture_py.as_bytes());
         h.update(training_py.as_bytes());
+        if let Some(b) = tree_blob {
+            h.update(b);
+        }
         let dig = h.finalize();
         let n = u64::from_be_bytes(dig[0..8].try_into().unwrap_or([0; 8]));
         // Map to BPB in (1.0, 5.0)
@@ -191,7 +195,12 @@ mod tests {
         let inst = b.provision(&spec).await.unwrap();
         assert!(!b.verify_terminated(&inst.id).await.unwrap());
         let r = b
-            .exec_eval(&inst.id, "def build_model(c): pass", "def train(m,c): pass")
+            .exec_eval(
+                &inst.id,
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
             .await
             .unwrap();
         assert!(r.bpb > 1.0);
@@ -206,14 +215,24 @@ mod tests {
         let b = SimLiumBackend::new();
         std::env::remove_var("PRISM_EVAL_ASSETS_DIR");
         let r = b
-            .exec_eval("pod", "def build_model(c): pass", "def train(m,c): pass")
+            .exec_eval(
+                "pod",
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
             .await
             .unwrap();
         assert!(r.eval_tier.is_none());
         assert_eq!(r.notes, "sim-eval");
         std::env::set_var("PRISM_EVAL_ASSETS_DIR", "/tmp/sim-assets");
         let r = b
-            .exec_eval("pod", "def build_model(c): pass", "def train(m,c): pass")
+            .exec_eval(
+                "pod",
+                "def build_model(c): pass",
+                "def train(m,c): pass",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(r.eval_tier.as_deref(), Some("private"));

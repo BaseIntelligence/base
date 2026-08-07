@@ -81,7 +81,13 @@ def run_phase(
     env["TRANSFORMERS_OFFLINE"] = "1"
     harness_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     prev_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = harness_root + (os.pathsep + prev_pp if prev_pp else "")
+    parts = [harness_root]
+    submission = os.path.join(workdir, "submission")
+    if os.path.isdir(submission):
+        parts.append(submission)  # last among harness roots: no shadowing
+    if prev_pp:
+        parts.append(prev_pp)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
     r_fd, w_fd, pass_fd, alias_fd = _open_result_channel(env)
 
     proc = subprocess.Popen(

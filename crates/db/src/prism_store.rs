@@ -28,6 +28,8 @@ pub struct PrismSubmissionRow {
     pub architecture_py: String,
     /// training.py.
     pub training_py: String,
+    /// Packed source-tree blob (migration 0014); null for two-script rows.
+    pub tree_blob: Option<Vec<u8>>,
     /// Pod id.
     pub pod_id: Option<String>,
     /// Pod provider.
@@ -71,6 +73,8 @@ pub struct NewPrismSubmission<'a> {
     pub architecture_py: &'a str,
     /// training.py.
     pub training_py: &'a str,
+    /// Packed source-tree blob.
+    pub tree_blob: Option<&'a [u8]>,
 }
 
 /// Stage event entry.
@@ -86,8 +90,8 @@ pub struct NewPrismStageEvent<'a> {
 
 /// Column list shared by all row reads.
 const COLS: &str = "id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py, \
-    pod_id, pod_provider, receipt_json, metrics_json, bpb, review_json, similarity_json, kind, \
-    score, absence_reason, retry_count, error_detail";
+    tree_blob, pod_id, pod_provider, receipt_json, metrics_json, bpb, review_json, similarity_json, \
+    kind, score, absence_reason, retry_count, error_detail";
 
 /// Insert the queued row.
 ///
@@ -98,8 +102,9 @@ pub async fn insert_prism_submission(
     n: &NewPrismSubmission<'_>,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO prism_submission (id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py) \
-         VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7)",
+        "INSERT INTO prism_submission \
+         (id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py, tree_blob) \
+         VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
@@ -108,15 +113,13 @@ pub async fn insert_prism_submission(
     .bind(n.label)
     .bind(n.architecture_py)
     .bind(n.training_py)
+    .bind(n.tree_blob)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-/// Fetch one row.
-///
-/// `query_as` (not the macro) because the workspace denies `sqlx prepare` on
-/// flaky networks: this file uses the runtime-checked lane like `miner_endpoint`.
+/// Fetch one row (`query_as` runtime-checked lane; no sqlx prepare).
 ///
 /// # Errors
 /// SQL error.

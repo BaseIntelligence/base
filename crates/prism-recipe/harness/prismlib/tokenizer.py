@@ -8,8 +8,9 @@ fresh subprocess) reconstructs exactly the tokenizer training used.
 
 Resolution order (first match wins, deterministic, offline):
 
-1. `<workdir>/tokenizer/` — tokenizer files shipped inside the submission
-   source tree, loaded with `AutoTokenizer.from_pretrained(dir,
+1. `<workdir>/submission/tokenizer/` (or `<workdir>/tokenizer/` for the
+   legacy two-script layout) — tokenizer files shipped inside the
+   submission source tree, loaded with `AutoTokenizer.from_pretrained(dir,
    local_files_only=True)`.
 2. `build_tokenizer(ctx)` exported by the miner's `architecture.py` — a
    code hook (train a tokenizer on the pinned shard, wrap a vendored
@@ -60,10 +61,11 @@ HOOK_NAME = "build_tokenizer"
 #: harness-side only.
 MIN_VOCAB = 256
 MAX_VOCAB = 1 << 18
-#: `tokenizer/` caps — mirrored by `prism_recipe::zip_submit` at intake so a
-#: malformed directory fails identically there and in-pod.
-MAX_TOKENIZER_FILES = 8
-MAX_TOKENIZER_BYTES = 1024 * 1024
+#: `tokenizer/` caps — mirrored by `prism_tree` / `prism_recipe::zip_submit`
+#: at intake so a malformed directory fails identically there and in-pod.
+#: Sized to admit a real HF `tokenizer.json` (~1.4 MiB) with headroom.
+MAX_TOKENIZER_FILES = 12
+MAX_TOKENIZER_BYTES = 8 * 1024 * 1024
 ALLOWED_EXTENSIONS = (".json", ".txt", ".model", ".vocab", ".merges", ".bpe")
 #: Fixed probe corpus: the roundtrip smoke AND the cross-phase fingerprint.
 #: The first probe is the ASCII roundtrip contract; the rest only add
@@ -200,7 +202,10 @@ def validate(tok, source, tok_id=None):
 
 
 def tokenizer_dir(workdir):
-    """Validated `<workdir>/tokenizer/`, or None when the miner ships none.
+    """Validated tokenizer directory, or None when the miner ships none.
+
+    Prefers `<workdir>/submission/tokenizer/` (full source-tree delivery),
+    then falls back to `<workdir>/tokenizer/` (legacy two-script layout).
 
     Raises when the directory exists but breaks the caps mirrored from
     `prism_recipe::zip_submit`, so a bad tree fails the same way in-pod as
@@ -208,8 +213,12 @@ def tokenizer_dir(workdir):
     """
     if not workdir:
         return None
-    path = os.path.join(str(workdir), TOKENIZER_DIRNAME)
-    if not os.path.isdir(path):
+    candidates = (
+        os.path.join(str(workdir), "submission", TOKENIZER_DIRNAME),
+        os.path.join(str(workdir), TOKENIZER_DIRNAME),
+    )
+    path = next((p for p in candidates if os.path.isdir(p)), None)
+    if path is None:
         return None
     names = sorted(n for n in os.listdir(path) if not n.startswith("."))
     files = [n for n in names if os.path.isfile(os.path.join(path, n))]

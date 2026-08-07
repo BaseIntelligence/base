@@ -163,6 +163,7 @@ mod tests {
                 status: Stage::Queued,
                 architecture_py: String::new(),
                 training_py: String::new(),
+                tree_blob: None,
                 label: None,
                 pod_id: None,
                 pod_provider: None,

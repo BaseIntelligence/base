@@ -651,20 +651,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             )
             .await;
 
-        // Asset-staging trigger (E5): no orchestrator-side hook needed — the
-        // trigger rides this very call. `LiumClient::exec_eval` streams the
-        // harness output and, when master-side `PRISM_EVAL_ASSETS_DIR` is
-        // set, stages the operator eval assets + `SECRET_SEED` + `.ready`
-        // into the pod at the harness parent's `PHASE_TRAIN_DONE` marker
-        // (train-phase process group already dead), failing closed if the
-        // marker never arrives or the realized tier is not `private`
-        // (`RemoteExecResult.eval_tier`). With the env unset — or under
-        // SimBackend (fake-assets mode mirrors the private tier) — this is
-        // the legacy single-shot public run. The `eval_tier` reached is
-        // carried on the returned metrics for downstream gating.
-        let metrics = self
-            .backend
-            .exec_eval(&pod_id, &row.architecture_py, &row.training_py)
+        #[rustfmt::skip]
+        let metrics = self.backend
+            .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
             .await;
 
         // Always terminate + verify (billing guard, receipt gate).

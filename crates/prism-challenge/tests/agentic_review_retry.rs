@@ -124,10 +124,11 @@ impl EvalJobBackend for CountingBackend {
         instance_id: &str,
         architecture_py: &str,
         training_py: &str,
+        tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         self.exec_calls.fetch_add(1, Ordering::SeqCst);
         self.inner
-            .exec_eval(instance_id, architecture_py, training_py)
+            .exec_eval(instance_id, architecture_py, training_py, tree_blob)
             .await
     }
 }
@@ -187,6 +188,7 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
             status: Stage::Queued,
             architecture_py: architecture_py.into(),
             training_py: training_py.into(),
+            tree_blob: None,
             label: Some("agentic-retry".into()),
             pod_id: None,
             pod_provider: None,

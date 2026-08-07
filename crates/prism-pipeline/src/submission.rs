@@ -171,6 +171,17 @@ pub fn expand_zip_fields(req: &mut SubmissionRequest) -> Result<(), String> {
     Ok(())
 }
 
+/// Pack the request's v3 source tree for persistence / pod delivery.
+///
+/// # Errors
+/// ZIP / decode / tree-contract / pack failures.
+pub fn tree_blob_for(req: &SubmissionRequest) -> Result<Option<Vec<u8>>, String> {
+    match source_tree(req)? {
+        Some(t) => t.pack_blob().map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
 /// Validated source-tree view of the request, when `zip_base64` carries a
 /// v3 tree (`Ok(None)` for legacy/absent zips). Intake calls
 /// [`expand_zip_fields`] first; it surfaces the same errors to the miner.
