@@ -335,9 +335,12 @@ pub fn design_submission(
         .map(str::to_owned)
         .or_else(|| {
             // Prefer explicit pages list from run detail when present.
-            let pages = run_detail.and_then(|d| d.get("pages")).and_then(Value::as_array);
+            let pages = run_detail
+                .and_then(|d| d.get("pages"))
+                .and_then(Value::as_array);
             pages.and_then(|arr| {
-                arr.iter().any(|p| p.get("path").and_then(Value::as_str) == Some("index.png"))
+                arr.iter()
+                    .any(|p| p.get("path").and_then(Value::as_str) == Some("index.png"))
                     .then(|| design_screenshot_url(id))
             })
         });
@@ -1028,6 +1031,7 @@ mod tests {
             "status": "terminated",
             "label": "base",
             "bpb": 1.25,
+            "n_params": 12_000_000_u64,
             "score": {"kind":"score","value": 900},
             "created_at_ms": 1_700_000_000_000_u64
         });
@@ -1035,7 +1039,9 @@ mod tests {
         assert_eq!(sub.status, SubmissionStatus::Scored);
         assert_eq!(sub.stage, "terminated");
         assert!((sub.bpb.unwrap() - 1.25).abs() < f64::EPSILON);
+        assert!((sub.params_m.unwrap() - 12.0).abs() < f64::EPSILON);
         assert!((sub.score.unwrap() - 900.0).abs() < f64::EPSILON);
+        assert_eq!(sub.agent.operator, "bbbbbbbb…bbbb");
     }
 
     #[test]

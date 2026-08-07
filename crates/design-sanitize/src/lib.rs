@@ -71,8 +71,19 @@ fn ammonia_builder() -> ammonia::Builder<'static> {
     // html/head/body wrappers (see `rewrite_body_wrapper`); allow them anyway
     // and keep presentation tags/attrs reviewers need.
     let _ = b.add_tags([
-        "style", "main", "section", "body", "html", "head", "nav", "header", "footer",
-        "article", "aside", "figure", "figcaption",
+        "style",
+        "main",
+        "section",
+        "body",
+        "html",
+        "head",
+        "nav",
+        "header",
+        "footer",
+        "article",
+        "aside",
+        "figure",
+        "figcaption",
     ]);
     // Default clean_content_tags includes `style` (content stripped). Keep the
     // tag and its CSS after our `filter_css` pre-pass.
@@ -396,13 +407,22 @@ mod tests {
 </html>"#;
         let (out, report) = sanitize_html(html);
         let low = out.to_ascii_lowercase();
-        assert!(!report.css_stripped, "safe CSS must not set css_stripped: {report:?}");
+        assert!(
+            !report.css_stripped,
+            "safe CSS must not set css_stripped: {report:?}"
+        );
         assert!(low.contains("<style>"), "style tag kept: {out}");
         assert!(out.contains(".hero"), "CSS rules kept: {out}");
         assert!(low.contains("<main"), "main kept: {out}");
         assert!(low.contains("<section"), "section kept: {out}");
-        assert!(out.contains("class=\"hero\"") || out.contains("class='hero'"), "{out}");
-        assert!(out.contains("id=\"hero\"") || out.contains("id='hero'"), "{out}");
+        assert!(
+            out.contains("class=\"hero\"") || out.contains("class='hero'"),
+            "{out}"
+        );
+        assert!(
+            out.contains("id=\"hero\"") || out.contains("id='hero'"),
+            "{out}"
+        );
         assert!(
             out.contains("style=\"padding:2rem\"") || out.contains("style=\"padding: 2rem\""),
             "inline style kept: {out}"
@@ -425,6 +445,9 @@ mod tests {
         assert!(!low.contains("onclick"), "{out}");
         assert!(!out.contains("@import"), "{out}");
         assert!(report.js_stripped || report.css_stripped);
-        assert!(out.contains("class=\"ok\"") || out.contains("class='ok'"), "{out}");
+        assert!(
+            out.contains("class=\"ok\"") || out.contains("class='ok'"),
+            "{out}"
+        );
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine;
 use chain::ChainClient;
 use challenge_agentic::{
     copy_gate, AgenticBackend, AgenticError, AgenticVerdict, CorpusEntry, GateCorpusEntry,
@@ -17,7 +18,6 @@ use challenge_common::{
 };
 use crypto::KEY_LEN;
 use design_challenge_task::{round_id_at, round_secs};
-use base64::Engine;
 use design_http::{mark_awaiting_admin, schedule_harness_for_round, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
@@ -279,14 +279,8 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
             .unwrap_or(0);
         for h in harnesses {
-            match schedule_harness_for_round(
-                self.store.as_ref(),
-                &h,
-                rid,
-                self.cfg.netuid,
-                epoch,
-            )
-            .await
+            match schedule_harness_for_round(self.store.as_ref(), &h, rid, self.cfg.netuid, epoch)
+                .await
             {
                 Ok(ids) if !ids.is_empty() => {
                     info!(
@@ -782,13 +776,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 let sha = hex::encode(h.finalize());
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
                 let bytes = u32::try_from(png.len()).unwrap_or(u32::MAX);
-                pages.push((
-                    "index.png".into(),
-                    b64,
-                    String::new(),
-                    sha,
-                    bytes,
-                ));
+                pages.push(("index.png".into(), b64, String::new(), sha, bytes));
                 info!(run_id = %run.id, bytes, "captured design page screenshot");
             } else {
                 warn!(run_id = %run.id, "design page screenshot unavailable");

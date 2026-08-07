@@ -786,6 +786,11 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["items"][0]["stage"], "terminated");
         assert_eq!(v["items"][0]["bpb"], 1.25);
+        assert_eq!(v["items"][0]["paramsM"], 12.0);
+        assert_eq!(
+            v["items"][0]["agent"]["operator"],
+            format!("{}…{}", "bbbbbbbb", "bbbb")
+        );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -880,9 +885,12 @@ mod tests {
         assert_eq!(v["series"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["finalLoss"], 1.0);
         // x2 has a detail payload → real curve + params; x1 (no detail mock)
-        // falls back to the single-point bpb curve.
+        // falls back to the single-point bpb curve at the axis end.
         assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["params"], 12.0);
+        assert_eq!(v["series"][0]["submissionId"], "x2");
+        assert_eq!(v["tokenBudget"], 2);
         assert_eq!(v["series"][1]["points"].as_array().unwrap().len(), 1);
+        assert_eq!(v["series"][1]["points"][0]["step"], 2);
     }
 }
