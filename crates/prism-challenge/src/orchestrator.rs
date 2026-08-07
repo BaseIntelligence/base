@@ -7,7 +7,8 @@
 //! [`Orchestrator::run_emitter`]) assigns every newly-finalized row to the
 //! next chain-epoch boundary's D24 set via the emission outbox
 //! (`emitted_epoch` watermark + emit cursor), so independent same-epoch
-//! scorers all land and cross-epoch evals score exactly once.
+//! scorers all land and each scoring run is assigned exactly once. Positive
+//! scores then carry into later epochs' competition sets until superseded.
 //! All state lives in the store, so the API is a pure projection and restarts
 //! sweep orphans.
 
