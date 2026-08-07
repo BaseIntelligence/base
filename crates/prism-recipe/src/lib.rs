@@ -109,6 +109,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/eval/generators.py"),
     ),
     (
+        "eval/natural_docs.py",
+        include_str!("../harness/eval/natural_docs.py"),
+    ),
+    (
         "eval/public_dev/README.md",
         include_str!("../harness/eval/public_dev/README.md"),
     ),
@@ -151,6 +155,22 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
     (
         "eval/public_dev/g2/winogrande.jsonl",
         include_str!("../harness/eval/public_dev/g2/winogrande.jsonl"),
+    ),
+    (
+        "eval/public_dev/g5/natural/README.md",
+        include_str!("../harness/eval/public_dev/g5/natural/README.md"),
+    ),
+    (
+        "eval/public_dev/g5/natural/helmet_rag.demos.jsonl",
+        include_str!("../harness/eval/public_dev/g5/natural/helmet_rag.demos.jsonl"),
+    ),
+    (
+        "eval/public_dev/g5/natural/helmet_rag.jsonl",
+        include_str!("../harness/eval/public_dev/g5/natural/helmet_rag.jsonl"),
+    ),
+    (
+        "eval/public_dev/g5/natural/natural_mcq.jsonl",
+        include_str!("../harness/eval/public_dev/g5/natural/natural_mcq.jsonl"),
     ),
     (
         "eval/public_dev/seeds.json",
@@ -241,6 +261,22 @@ pub const RECIPE_VERSION: &str = "1.3.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;
+
+/// Assets-dir–relative home of the G5 natural-document packs
+/// (LongBench-v2 MCQ + HELMET RAG pools, their disjoint `public_dev`
+/// mirror and the build manifest). Built operator-side by
+/// `cargo run -p xtask -- natural-pack --out "$PRISM_EVAL_ASSETS_DIR"` and
+/// carried to the pod by the existing post-train staging, which tars the
+/// whole assets dir; `eval/natural_docs.py` resolves the same relative
+/// path through `common.assets_path`.
+pub const NATURAL_PACK_REL: &str = "g5/natural";
+
+/// Cap on the packed eval-assets tar `prism-lium` streams to the pod over
+/// ssh stdin. The natural-document pools at [`NATURAL_PACK_REL`] dominate
+/// the assets dir — the G1/G2 mirrors are tiny by comparison — but raw
+/// documents gzip well and a default pack lands around 10 MiB, so the cap
+/// is unchanged and still refuses an assets dir that is obviously wrong.
+pub const MAX_EVAL_ASSETS_PACKED_BYTES: usize = 64 * 1024 * 1024;
 
 /// Pinned pretraining shard: fineweb-edu sample-10BT, single parquet shard.
 ///
@@ -506,6 +542,7 @@ mod tests {
             "eval/g6_curve.py",
             "eval/g7_inference.py",
             "eval/g8_stability.py",
+            "eval/natural_docs.py",
             "eval/rollup.py",
             "eval/public_dev/seeds.json",
             "eval/public_dev/README.md",
@@ -540,6 +577,19 @@ mod tests {
             assert!(
                 paths.contains(&rel.as_str()),
                 "missing public dev anchor {rel}"
+            );
+        }
+        // G5 natural-document format fixtures: the code path must run (and
+        // the mirror gap must degrade honestly) with no staged private pack.
+        for required_natural in [
+            "helmet_rag.demos.jsonl",
+            "helmet_rag.jsonl",
+            "natural_mcq.jsonl",
+        ] {
+            let rel = format!("eval/public_dev/{NATURAL_PACK_REL}/{required_natural}");
+            assert!(
+                paths.contains(&rel.as_str()),
+                "missing natural fixture {rel}"
             );
         }
         let main = HARNESS_FILES
@@ -585,6 +635,8 @@ mod tests {
             "cheatguard",
             "org.g1.bpb_code",
             "mirrors",
+            "natural_mcq",
+            "helmet_rag",
             "PRISM_TEST_TRAIN_ROWS",
             "PRISM_TEST_VAL_ROWS",
             "torch_seed",
