@@ -10,11 +10,12 @@ services:
     environment:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
-      # Ordered failover (comma-separated): onfinality primary — entrypoint
-      # rate-limits this host's IP (HTTP 429, http_60s policy, observed
-      # 2026-08-06). chain-live cools a faulted endpoint for 60s and tries
-      # the next in order. Flip the order once entrypoint recovers.
-      BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+      # Ordered failover (comma-separated): entrypoint primary again —
+      # it rate-limited this host's IP (HTTP 429, http_60s policy) on
+      # 2026-08-06 and recovered by 2026-08-07 (clean probe burst from the
+      # prod master). chain-live cools a faulted endpoint for 60s and tries
+      # the next in order; onfinality public-ws stays as fallback.
+      BASE_CHAIN_ENDPOINTS: "wss://entrypoint-finney.opentensor.ai:443,wss://bittensor-finney.api.onfinality.io/public-ws"
       BASE_COORDINATION_INTERVAL_SECS: "10"
       # Prod master gateway over VPC. Pin here — never rely on the
       # role-validator.yml default (that IP is the *staging* master; pointing
@@ -30,7 +31,7 @@ services:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
       # Same ordered failover list as the validator (see note above).
-      BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+      BASE_CHAIN_ENDPOINTS: "wss://entrypoint-finney.opentensor.ai:443,wss://bittensor-finney.api.onfinality.io/public-ws"
       # Public API hostname (cleartext on :80/:8080 until ACME).
       BASE_DOMAIN: chain.joinbase.ai
       BT_WALLETS_PATH: /run/base/wallets
@@ -48,12 +49,12 @@ services:
     environment:
       PRISM_FORCE_SIM: "false"
       # Emitter/gating/epoch-feed chain reads share the gateway failover list.
-      BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+      BASE_CHAIN_ENDPOINTS: "wss://entrypoint-finney.opentensor.ai:443,wss://bittensor-finney.api.onfinality.io/public-ws"
   design-challenge:
     environment:
       # Docker-only on prod. Never set BASE_ALLOW_HOST_SIM / DESIGN_FORCE_SIM here.
       DESIGN_FORCE_SIM: "false"
-      BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
+      BASE_CHAIN_ENDPOINTS: "wss://entrypoint-finney.opentensor.ai:443,wss://bittensor-finney.api.onfinality.io/public-ws"
   design-egress-proxy:
     environment:
       DESIGN_EGRESS_SIM: "false"

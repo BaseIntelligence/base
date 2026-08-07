@@ -10,5 +10,6 @@ ExecStart=/opt/base/deploy/scripts/prod-burn-seal.sh
 Nice=10
 TimeoutStartSec=180
 # Ordered chain endpoint failover for the weights-smoke tip/metagraph reads
-# (onfinality primary; entrypoint-finney rate-limited this host 2026-08-06).
-Environment=BASE_CHAIN_ENDPOINTS=wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443
+# (entrypoint-finney primary again — recovered 2026-08-07 after the
+# 2026-08-06 429 window; onfinality public-ws is the fallback).
+Environment=BASE_CHAIN_ENDPOINTS=wss://entrypoint-finney.opentensor.ai:443,wss://bittensor-finney.api.onfinality.io/public-ws
