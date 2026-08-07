@@ -95,7 +95,7 @@ Miner-facing docs (version-pinned): [`external-miner/`](./external-miner/).
 | `config/measurements.toml` + `.sig` | yes | every validator from **disk** |
 | Challenge / owner mini-secrets | **never** | challenge service / offline ceremony only |
 
-Current emission posture (until design ceremony): `prism = 10000` bps, `design = 0` bps.
+Current emission posture: `design = 5000` bps, `prism = 5000` bps (50/50; sum = 10000).
 
 Gateway DB is **routing only**. It is never a source of challenge keys, emission shares, or measurements (D18, D23).
 

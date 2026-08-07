@@ -14,17 +14,16 @@ Offline, operator-only. Never commit secrets. Prefer `/root/.base-secrets/` (mod
 
 ### Design challenge enablement (post agent/hypertraining removal)
 
-Current committed `challenges.toml` has **two** rows: `prism` @ 10000 bps and `design` @ 0 bps.
-The `design` public key was generated with the **dev throwaway** `challenge-design.age` under
-`~/.base-secrets/`. Before production emission moves to design:
+Current committed `challenges.toml` has **two** rows: `design` @ 5000 bps and
+`prism` @ 5000 bps (50/50; sum = 10000). The `design` public key was generated
+with the **dev throwaway** `challenge-design.age` under `~/.base-secrets/`.
+A future production owner/key ceremony may still:
 
 1. Keygen a production `design_sk` (keep off-git; materialize as `deploy/secrets/design_sk`).
 2. Replace the `design` `public_key` row in `config/challenges.toml`.
-3. Optionally move bps from `prism` → `design` (sum must remain 10000).
+3. Optionally move bps between `prism` and `design` (sum must remain 10000).
 4. Re-sign with the **production** owner key (`sign --kind challenges`).
 5. Verify under `config/owner.pubkey` (or the production owner pubkey after rotation).
-
-Until that ceremony, prism alone covers E; design leaves (when the service ships) carry 0 weight.
 
 ## Secret layout (never git)
 

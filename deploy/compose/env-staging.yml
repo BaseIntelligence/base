@@ -21,8 +21,7 @@ services:
       BASE_VALIDATOR_WALLET: base-validator
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
-      # Staging-only trust root: design emission share enabled (2000 bps) so
-      # the e2e lifecycle proof can see design weights. Prod keeps 0 bps.
+      # Staging-only trust root: mirrors prod emission (design/prism 5000/5000).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   gateway:
@@ -43,8 +42,8 @@ services:
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
       # The sealer must sign with the same staging trust root the validator
-      # verifies against (design 2000 bps), or /v1/weights/latest never shows
-      # design weight and the validator flags emission share mismatch (D23).
+      # verifies against (design/prism 5000/5000), or /v1/weights/latest never
+      # shows design weight and the validator flags emission share mismatch (D23).
       - ./config/challenges.staging.toml:/etc/base/config/challenges.toml:ro
       - ./config/challenges.staging.toml.sig:/etc/base/config/challenges.toml.sig:ro
   prism-challenge:

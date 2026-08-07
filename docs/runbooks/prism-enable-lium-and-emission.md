@@ -10,7 +10,7 @@
 
 ## Emission ceremony (shared with design)
 
-Trust root today: **`prism = 10000` bps**, **`design = 0` bps** (sum must stay
+Trust root today: **`prism = 5000` bps**, **`design = 5000` bps** (sum must stay
 exactly `10000`). See [`config/challenges.toml`](../../config/challenges.toml).
 
 To rebalance shares:
@@ -20,7 +20,7 @@ To rebalance shares:
 2. Edit `config/challenges.toml`, re-sign with owner key
    ([`trust-root-rotation.md`](./trust-root-rotation.md)).
 3. Roll validators with the new trust root (dual-accept if rotating).
-4. Prefer the design-facing checklist when unlocking design emission:
+4. Prefer the design-facing checklist when changing design emission:
    [`design-enable-and-emission.md`](./design-enable-and-emission.md).
 
-Default until a design unlock ceremony: **prism = 10000 bps**, **design = 0 bps**.
+Current committed default: **prism = 5000 bps**, **design = 5000 bps**.

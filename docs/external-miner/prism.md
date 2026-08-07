@@ -121,7 +121,7 @@ The global-best model is published to
 | `GET /v1/jobs` | Active/recent pods (ops) |
 | `GET /health` | Liveness |
 
-Emission share for prism is owner-controlled via the trust root. Until the design
-enablement ceremony, prism typically holds the full `10000` bps share — see
+Emission share for prism is owner-controlled via the trust root. Current split is
+`5000` bps prism / `5000` bps design (50/50) — see
 [`../runbooks/prism-enable-lium-and-emission.md`](../runbooks/prism-enable-lium-and-emission.md)
 and [`../runbooks/design-enable-and-emission.md`](../runbooks/design-enable-and-emission.md).

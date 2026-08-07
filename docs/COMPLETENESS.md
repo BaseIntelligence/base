@@ -58,7 +58,7 @@ Removed (replaced by design + prism HTTP paths; no Phala/CVM miner).
 | Binary (`bins/design-egress-proxy`) | done | Open egress proxy (internal blocklist) + budgeted LLM path. |
 | Spec + checklist | done | [`DESIGN_CHALLENGE.md`](DESIGN_CHALLENGE.md) + checklist; `xtask design-check`. |
 | Compose / images | in progress | deploy-wiring todo (port `28093` local). |
-| Emission | **0 bps** | Until owner ceremony; prism holds `10000` bps. |
+| Emission | **5000 bps** | Equal split with prism (50/50; sum `10000`). |
 
 ## prism-challenge
 
@@ -69,7 +69,7 @@ Removed (replaced by design + prism HTTP paths; no Phala/CVM miner).
 | Compose service | done | Added to `docker-compose.yml` on `:8092`. |
 | Dockerfile target | done | `deploy/Dockerfile` target `prism-challenge`. |
 | GHCR image | done | Added to `images.yml` matrix and `ghcr-public.yml`. |
-| Emission | **10000 bps** | Sole share until design enablement ceremony. |
+| Emission | **5000 bps** | Equal split with design (50/50; sum `10000`). |
 
 ## Infrastructure
 
@@ -117,7 +117,7 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | DCAP verify holds the attest mutex | A cold Intel PCS fetch (up to 20 s) serialises attestation submissions. |
 | DCAP error classification | Matches on `anyhow` message text; re-run `cargo test -p attest-policy --features dcap` after any `dcap-qvl` bump. |
 | Design compose/images | deploy-wiring in progress; local port `28093` documented. |
-| Design emission ceremony | Owner must keygen prod `design_sk`, set bps, re-sign trust root. |
+| Design emission ceremony | Emission live at 5000/5000 with design; optional prod `design_sk` / owner key rotation still pending. |
 | Mainnet (netuid 100) | Owner wallet not yet on this machine, so prod runs with `BASE_GATEWAY_REQUIRE_OWNER=0`. |
 | Prod pin placeholders | `deploy/pins/prod.json` still ships zero-digests until the first successful promote; registry mode rejects placeholders. |
 | Spaces backup secrets | First prod promote is fail-closed without `BASE_BACKUP_ENDPOINT` + `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (or AWS_* fallbacks) in GitHub. |

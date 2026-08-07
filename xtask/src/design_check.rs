@@ -28,8 +28,8 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("scoring_version", "challenge_scoring_version"),
     ("scoring_version_3", "u16 = 3"),
     ("bundle_protocol_version", "protocol_version = 1"),
-    ("emission_zero", "emission_share_bps = 0"),
-    ("prism_bps_sole", "10000"),
+    ("emission_share", "emission_share_bps = 5000"),
+    ("bps_sum", "10000"),
     ("SCORE_MAX", "1_000_000"),
     ("compose_port", "8093"),
     ("round_secs", "8_640"),
@@ -126,9 +126,11 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
         failures.push("content pin no_latest_ban: spec must mention :latest as forbidden".into());
     }
 
-    // Emission must stay zero until ceremony.
-    if !body.contains("emission_share_bps = 0") {
-        failures.push("content pin emission_posture: need explicit design emission 0 bps".into());
+    // Emission split must be explicit (50/50 with prism; sum 10000).
+    if !body.contains("emission_share_bps = 5000") {
+        failures.push(
+            "content pin emission_posture: need explicit design emission_share_bps = 5000".into(),
+        );
     }
 
     // CSP sandbox without allow-scripts is the viewer guarantee.
@@ -189,7 +191,7 @@ mod tests {
             .any(|(n, v)| *n == "challenge_id" && *v == "design"));
         assert!(CONTENT_PINS
             .iter()
-            .any(|(n, v)| *n == "emission_zero" && *v == "emission_share_bps = 0"));
+            .any(|(n, v)| *n == "emission_share" && *v == "emission_share_bps = 5000"));
         assert!(CONTENT_PINS
             .iter()
             .any(|(n, v)| *n == "bank_v1" && *v == "bank_v1.json"));

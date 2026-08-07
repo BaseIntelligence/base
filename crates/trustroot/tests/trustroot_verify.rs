@@ -347,15 +347,15 @@ fn s9_repo_config_loads_when_present() {
     let (ch, ms) = load_config_dir(&root, 0, 3).expect("committed config must verify");
     let primary = ch.primary().unwrap();
     assert_eq!(primary.body.challenges.len(), 2);
-    // Emission activated 2026-08-06 (v3.3.0): design 2000 / prism 8000.
+    // Emission 50/50 (2026-08-07): design 5000 / prism 5000 (was 2000/8000).
     let design = primary.body.get(b"design").expect("design row");
-    assert_eq!(design.emission_share_bps, 2000);
+    assert_eq!(design.emission_share_bps, 5000);
     assert_eq!(
         encode_hex(&design.public_key),
         "3e27f87d8330006a73174001120c3455f16b95fee098bb8c2bab9d5053840418"
     );
     let prism = primary.body.get(b"prism").expect("prism row");
-    assert_eq!(prism.emission_share_bps, BPS_DENOM - 2000);
+    assert_eq!(prism.emission_share_bps, BPS_DENOM - 5000);
     assert_eq!(
         encode_hex(&prism.public_key),
         "bcd50bb830e050ed4b011dd8f1d2f126fdb42dc55b45ece30a7d5c8ceb3c5219"
@@ -364,9 +364,9 @@ fn s9_repo_config_loads_when_present() {
     let shares = primary.body.emission_shares();
     assert_eq!(shares.len(), 2);
     assert_eq!(shares[0].0, b"design");
-    assert_eq!(shares[0].1, 2000);
+    assert_eq!(shares[0].1, 5000);
     assert_eq!(shares[1].0, b"prism");
-    assert_eq!(shares[1].1, BPS_DENOM - 2000);
+    assert_eq!(shares[1].1, BPS_DENOM - 5000);
     // base-agent CVM path removed — committed allowlist is empty (fail-closed).
     let entries = &ms.primary().unwrap().body.entries;
     assert!(
