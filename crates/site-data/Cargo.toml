@@ -1,6 +1,6 @@
 [package]
 name = "site-data"
-description = "Live data adapters for the site API: TAO quote cache, sealed weights, metrics frames"
+description = "Live data adapters for the site API: TAO quote cache, sealed weights, metrics frames, design/prism mappers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 bundle = { path = "../bundle" }
+hex = "0.4"
+keystore = { path = "../keystore" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_json = "1"
 site-types = { path = "../site-types" }

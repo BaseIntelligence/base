@@ -10,13 +10,13 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::map::{
-    activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
-    list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_telemetry,
-    prism_window,
-};
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
+use site_data::map::{
+    activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
+    leaderboard_matches_query, list_arenas, prism_arena_from_live, prism_bpb_leaderboard,
+    prism_submission, prism_telemetry, prism_window, submission_matches_query,
+};
 use site_types::coding_arena;
 use site_types::page_slice;
 use site_types::{
@@ -57,6 +57,8 @@ struct PageQuery {
     #[serde(rename = "pageSize")]
     page_size: Option<u32>,
     status: Option<String>,
+    /// Hotkey / handle / prompt substring filter (SS58 or hex).
+    q: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,7 +79,7 @@ fn now_iso() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
-    crate::map::ms_to_iso(ms)
+    site_data::map::ms_to_iso(ms)
 }
 
 async fn fetch_design_dash(st: &SiteState) -> Option<Value> {
@@ -217,7 +219,7 @@ async fn get_landing(State(st): State<SiteState>) -> impl IntoResponse {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let activity = activity_from_lives(&design_runs, &prism_rows, 10);
+    let activity = activity_from_lives(design.as_ref(), &design_runs, &prism_rows, 10);
     Json(LandingSummary {
         stats,
         arenas,
@@ -267,7 +269,12 @@ fn empty_leaderboard_json(page: u32, page_size: u32) -> Value {
     })
 }
 
-async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+async fn design_leaderboard_json(
+    st: &SiteState,
+    page: u32,
+    page_size: u32,
+    q: Option<&str>,
+) -> Value {
     let dash = fetch_design_dash(st).await;
     let round_id = dash
         .as_ref()
@@ -306,7 +313,10 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
         .and_then(|d| d.get("epoch"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let rows = design_leaderboard(&ratings, &previous, epoch);
+    let mut rows = design_leaderboard(&ratings, &previous, epoch);
+    if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
+        rows.retain(|r| leaderboard_matches_query(r, needle));
+    }
     let page_out = page_slice(&rows, page, page_size);
     let seconds_remaining = dash
         .as_ref()
@@ -316,7 +326,7 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
         .as_ref()
         .and_then(|d| d.pointer("/round/closes_at_secs"))
         .and_then(Value::as_u64)
-        .map(|s| crate::map::ms_to_iso(s.saturating_mul(1000)));
+        .map(|s| site_data::map::ms_to_iso(s.saturating_mul(1000)));
     json!({
         "items": page_out.items,
         "page": page_out.page,
@@ -331,7 +341,12 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
     })
 }
 
-async fn prism_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+async fn prism_leaderboard_json(
+    st: &SiteState,
+    page: u32,
+    page_size: u32,
+    q: Option<&str>,
+) -> Value {
     let status = fetch_prism_status(st).await;
     let epoch = status
         .as_ref()
@@ -344,7 +359,10 @@ async fn prism_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Va
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let board = prism_bpb_leaderboard(&rows, epoch);
+    let mut board = prism_bpb_leaderboard(&rows, epoch);
+    if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
+        board.retain(|r| leaderboard_matches_query(r, needle));
+    }
     let page_out = page_slice(&board, page, page_size);
     json!({
         "items": page_out.items,
@@ -368,13 +386,14 @@ async fn get_leaderboard(
     };
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(24);
+    let needle = q.q.as_deref();
     match slug {
         ArenaSlug::Coding => Json(empty_leaderboard_json(page, page_size)).into_response(),
         ArenaSlug::Design => {
-            Json(design_leaderboard_json(&st, page, page_size).await).into_response()
+            Json(design_leaderboard_json(&st, page, page_size, needle).await).into_response()
         }
         ArenaSlug::Prism => {
-            Json(prism_leaderboard_json(&st, page, page_size).await).into_response()
+            Json(prism_leaderboard_json(&st, page, page_size, needle).await).into_response()
         }
     }
 }
@@ -390,11 +409,14 @@ async fn get_submissions(
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(24);
     let status_filter = q.status.as_deref();
+    let needle = q.q.as_deref();
     match slug {
         ArenaSlug::Coding => {
             Json(page_slice::<crate::Submission>(&[], page, page_size)).into_response()
         }
-        ArenaSlug::Design => design_submissions_page(&st, page, page_size, status_filter).await,
+        ArenaSlug::Design => {
+            design_submissions_page(&st, page, page_size, status_filter, needle).await
+        }
         ArenaSlug::Prism => {
             let raw = fetch_prism_subs(&st, 500).await;
             let rows = raw
@@ -412,6 +434,9 @@ async fn get_submissions(
                     _ => true,
                 });
             }
+            if let Some(n) = needle.filter(|s| !s.trim().is_empty()) {
+                items.retain(|s| submission_matches_query(s, n));
+            }
             Json(page_slice(&items, page, page_size)).into_response()
         }
     }
@@ -422,6 +447,7 @@ async fn design_submissions_page(
     page: u32,
     page_size: u32,
     status_filter: Option<&str>,
+    q: Option<&str>,
 ) -> Response {
     let dash = fetch_design_dash(st).await;
     let epoch = dash
@@ -479,6 +505,9 @@ async fn design_submissions_page(
             "failed" => s.status == crate::SubmissionStatus::Failed,
             _ => true,
         });
+    }
+    if let Some(n) = q.filter(|s| !s.trim().is_empty()) {
+        items.retain(|s| submission_matches_query(s, n));
     }
     Json(page_slice(&items, page, page_size)).into_response()
 }
@@ -596,7 +625,12 @@ async fn get_activity(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    Json(activity_from_lives(&design_runs, &prism_rows, limit))
+    Json(activity_from_lives(
+        design.as_ref(),
+        &design_runs,
+        &prism_rows,
+        limit,
+    ))
 }
 
 async fn get_metrics(
@@ -900,9 +934,36 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
 
-        let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
+        let (s, v) = call(app.clone(), "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["total"], 0);
+
+        // Hotkey / prompt search (`?q=`) filters design submissions.
+        let expected_hk = keystore::ss58_encode(&[0xaa; 32], keystore::BITTENSOR_SS58_PREFIX);
+        let (s, v) = call(
+            app.clone(),
+            &format!("/v1/site/arenas/design/submissions?q={}", &expected_hk[..8]),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        let (s, v) = call(app.clone(), "/v1/site/arenas/design/submissions?q=nope-xyz").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 0, "{v}");
+
+        let (s, v) = call(app, "/v1/site/activity?limit=8").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let msgs: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("message").and_then(Value::as_str))
+            .collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Design evaluated") || m.contains("winner")),
+            "{msgs:?}"
+        );
     }
 
     #[tokio::test]
