@@ -94,6 +94,10 @@ constraint; accumulation would trade steps for tokens 1:1).
    shrinks it for staging/e2e — tiny overrides via ctx top-level keys or an
    `arch` dict: `vocab_size, d_model, n_layer, n_head, mlp_hidden,
    rope_theta, init_std`).
+7. G8 µP LR-transfer honors `ctx["prism_width_multiplier"]`: scales
+   `d_model` / `mlp_hidden` (and `n_head` to keep head_dim) so a 4×
+   build exceeds 1.5× base params. Multiplier `1.0` (default / absent)
+   leaves the anchor config unchanged (still ≤350M).
 
 ## lib.rs registration snippet (for the integrator — do NOT apply here)
 

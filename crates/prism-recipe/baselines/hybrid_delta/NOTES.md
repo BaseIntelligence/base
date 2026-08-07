@@ -40,6 +40,11 @@ MLP hidden is 2·d (vs 2.5·d in transformer_pp) because the delta mixer
 carries 6 square projections vs attention's 4; both baselines land at
 ~341M for a clean iso-param comparison.
 
+G8 µP LR-transfer honors `ctx["prism_width_multiplier"]`: scales
+`d_model` / `mlp_hidden` / `delta_{key,value}_dim` (and `attn_heads` to
+keep head_dim) so a 4× build exceeds 1.5× base params. Multiplier `1.0`
+(default / absent) leaves the anchor unchanged (still ≤350M).
+
 ## The delta block (canonical formulation, appendix 03 §2)
 
 Per head, state S ∈ R^{dv×dk}, l2-normalized keys, per-channel forget gate

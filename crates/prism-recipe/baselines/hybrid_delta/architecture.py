@@ -387,6 +387,26 @@ def _config_from_ctx(ctx):
         for k in _OVERRIDE_KEYS:
             if k in ctx:
                 cfg[k] = ctx[k]
+        # G8 µP LR-transfer sweep: scale width dims so 4× exceeds 1.5× params.
+        # Default 1.0 leaves the anchor config unchanged (≤350M).
+        mult = float(ctx.get("prism_width_multiplier", 1.0) or 1.0)
+        if abs(mult - 1.0) > 1e-12:
+            if mult <= 0:
+                raise ValueError("prism_width_multiplier must be > 0")
+            cfg["d_model"] = max(1, int(round(int(cfg["d_model"]) * mult)))
+            cfg["mlp_hidden"] = max(1, int(round(int(cfg["mlp_hidden"]) * mult)))
+            cfg["delta_key_dim"] = max(1, int(round(int(cfg["delta_key_dim"]) * mult)))
+            cfg["delta_value_dim"] = max(1, int(round(int(cfg["delta_value_dim"]) * mult)))
+            # Keep attention head_dim constant when possible.
+            attn_heads = int(cfg["attn_heads"])
+            head_dim = int(DEFAULTS["d_model"]) // int(DEFAULTS["attn_heads"])
+            if head_dim > 0 and cfg["d_model"] % head_dim == 0:
+                cfg["attn_heads"] = cfg["d_model"] // head_dim
+            elif cfg["d_model"] % attn_heads != 0:
+                h = min(attn_heads, cfg["d_model"])
+                while h > 1 and cfg["d_model"] % h != 0:
+                    h -= 1
+                cfg["attn_heads"] = h
     return cfg
 
 
@@ -395,6 +415,11 @@ def build_model(ctx):
 
     Optional overrides (test/tiny profiles): top-level ctx keys or an
     `arch` dict with any of DEFAULTS' keys.
+
+    Honors `ctx["prism_width_multiplier"]` (G8 µP sweep): scales d_model /
+    mlp_hidden / delta_{key,value}_dim (and attn_heads to keep head_dim)
+    so a 4× build exceeds 1.5× base params. Multiplier 1.0 (default) leaves
+    the anchor unchanged.
     """
     ctx = ctx if isinstance(ctx, dict) else {}
     torch.manual_seed(int(ctx.get("seed", 0)))

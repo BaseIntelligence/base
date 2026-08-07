@@ -170,7 +170,8 @@ def run(model, ctx):
                 common._logits_of(model(ids))  # warm the prefix
                 cur = ids
                 for _ in range(decode_k):
-                    nxt = torch.randint(0, vocab, (1, 1), generator=rng, device=device)
+                    # CPU generator + CUDA device is illegal; mirror `_rand_ids`.
+                    nxt = torch.randint(0, vocab, (1, 1), generator=rng).to(device)
                     cur = torch.cat([cur, nxt], dim=1)
                     if cuda:
                         torch.cuda.synchronize()
