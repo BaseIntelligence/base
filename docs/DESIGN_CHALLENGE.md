@@ -224,8 +224,23 @@ error, and `GET /v1/runs/{id}/bundle.json` no longer embeds page HTML (same
 `410 Gone` contract — use `/v1/runs/{id}/pages` for page metadata). Miner
 output reaches browsers exclusively as the captured `index.png` screenshot.
 
-The full lockdown header set remains as the **gateway-enforced floor** on
-every `/challenge/{id}/v1/view/*` response (defense in depth — below):
+**PNG screenshots** (`*.png`) leave the gateway with a light header floor so
+marketing UIs can load them with a **direct absolute URL** (no Vercel proxy of
+image bytes):
+
+```
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Cross-Origin-Resource-Policy: cross-origin
+Cache-Control: private, no-store
+```
+
+Example: `https://chain.joinbase.ai/challenge/design/v1/view/{run_id}/index.png`.
+JSON/site API calls may still use the site's `/gbase-api` rewrite; `<img src>`
+for screenshots should not.
+
+**Non-PNG** `/challenge/{id}/v1/view/*` responses (e.g. HTML `410 Gone`, or a
+stale upstream that still served miner HTML) keep the full lockdown floor:
 
 ```
 Content-Security-Policy: sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; font-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors <allowlist>
@@ -237,33 +252,19 @@ Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), m
 Cache-Control: private, no-store
 ```
 
-The `sandbox` directive is emitted **without** `allow-scripts` and without
+The `sandbox` directive is emitted without `allow-scripts` and without
 `allow-same-origin`: even if a stale or misbehaving challenge upstream served
 miner HTML through the gateway, it would run in an **opaque origin with script
-execution disabled**, unable to read the serving origin's cookies,
-storage, or DOM — even though joinbase.ai embeds view responses
-**same-origin** through the `/gbase-api` proxy. These responses **never carry
-`Set-Cookie`** (the gateway strips it); the endpoint stays public (`run_id` is
-the capability) and reads no auth cookie.
+execution disabled**, unable to read the serving origin's cookies, storage, or
+DOM. All view responses **never carry `Set-Cookie`** (the gateway strips it);
+the endpoint stays public (`run_id` is the capability) and reads no auth cookie.
 
 `frame-ancestors <allowlist>` defaults to
 `'self' https://joinbase.ai https://*.vercel.app http://localhost:*`
-(`DESIGN_FRAME_ANCESTORS` override): the public site, Vercel preview deploys,
-and local dev may embed the viewer; everyone else is refused. `'self'` covers
-same-origin proxy embedding at any host (including staging consoles).
+(`DESIGN_FRAME_ANCESTORS` / `BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override).
 
-**Defense in depth — gateway re-injection.** The gateway proxy re-applies the
-full lockdown header set (and strips any `Set-Cookie`) on every
-`/challenge/{id}/v1/view/*` response
-(`BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override, same default), so even a stale
-or misbehaving challenge upstream cannot serve miner HTML through the gateway
-without the sandbox floor. `Cross-Origin-Resource-Policy: same-origin` means
-cross-origin embedders get nothing: integrations must load screenshots through
-a same-origin proxy (as joinbase.ai does), not the bare gateway origin.
-
-CSP `sandbox` (without `allow-scripts`) neutralizes script even if an integrator
-omits the iframe `sandbox` attribute. Screenshots-only serving makes miner
-HTML unreachable in the first place; the header floor is the second line.
+Screenshots-only serving makes miner HTML unreachable in the first place; the
+non-PNG header floor is the second line.
 
 ### Full-page screenshot (`index.png`)
 
@@ -278,7 +279,10 @@ boundary plus the scriptless sanitized artifact is the sandbox. Two passes
 hard process timeout, one retry; failure never fails the run. The PNG is
 stored as the `index.png` artifact (base64) and served at
 `GET /v1/view/{run_id}/index.png` (`image/png`, `private, no-store`,
-`nosniff`); run detail exposes `screenshot_url` when the artifact exists.
+`nosniff`, `Cross-Origin-Resource-Policy: cross-origin`); run detail exposes
+`screenshot_url` when the artifact exists. Public sites should point `<img src>`
+at the absolute gateway host (e.g. `https://chain.joinbase.ai/challenge/design/...`)
+rather than proxying PNG bytes through a CDN edge.
 
 Backfill (idempotent; upserts on `(run_id, path)` so it can be re-run and can
 race a live capture safely):

@@ -152,3 +152,54 @@ async fn view_response_leaves_gateway_sandboxed_without_cookies() {
 
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn png_view_allows_cross_origin_resource_policy() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/view/run1/index.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                // Stale lockdown from an older gateway hop must not stick.
+                .insert_header("cross-origin-resource-policy", "same-origin")
+                .insert_header("content-security-policy", "sandbox; default-src 'none'")
+                .insert_header("set-cookie", "session=evil; Path=/")
+                .set_body_bytes(vec![0x89, 0x50, 0x4e, 0x47]),
+        )
+        .mount(&upstream)
+        .await;
+
+    let reg = Registry::shared(RegistryConfig {
+        failure_threshold: 2,
+        cooldown: Duration::from_millis(120),
+    });
+    reg.create(&CreateBackend {
+        challenge_id: "design".into(),
+        base_url: upstream.uri(),
+        weight: 1,
+    })
+    .unwrap();
+
+    let (addr, shutdown) = spawn_gateway(reg).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!(
+            "http://{addr}/challenge/design/v1/view/run1/index.png"
+        ))
+        .send()
+        .await
+        .expect("proxy png");
+    assert_eq!(resp.status().as_u16(), 200);
+    let headers = resp.headers();
+    assert!(headers.get("set-cookie").is_none());
+    assert!(headers.get("content-security-policy").is_none());
+    assert_eq!(
+        headers
+            .get("cross-origin-resource-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("cross-origin")
+    );
+
+    let _ = shutdown.send(());
+}
