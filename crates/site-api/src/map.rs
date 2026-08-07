@@ -90,12 +90,6 @@ pub fn map_prism_status(status: &str) -> SubmissionStatus {
     }
 }
 
-/// Design view URL on the public gateway proxy.
-#[must_use]
-pub fn design_view_url(run_id: &str) -> String {
-    format!("/challenge/design/v1/view/{run_id}/index.html")
-}
-
 /// Design full-page screenshot URL on the public gateway proxy.
 #[must_use]
 pub fn design_screenshot_url(run_id: &str) -> String {
@@ -279,6 +273,22 @@ pub fn design_leaderboard(
 }
 
 /// Map one design `recent_run` (+ optional harness/run detail) to a submission.
+/// Resolve the run's screenshot URL from run detail: the explicit
+/// `screenshot_url` field first, else the pages list when it has `index.png`.
+fn run_screenshot_url(run_id: &str, run_detail: Option<&Value>) -> Option<String> {
+    run_detail
+        .and_then(|d| d.get("screenshot_url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            let pages = run_detail?.get("pages")?.as_array()?;
+            pages
+                .iter()
+                .any(|p| p.get("path").and_then(Value::as_str) == Some("index.png"))
+                .then(|| design_screenshot_url(run_id))
+        })
+}
+
 #[must_use]
 pub fn design_submission(
     run: &Value,
@@ -349,21 +359,10 @@ pub fn design_submission(
         "sanitizing" => Some("sanitizing pages".into()),
         _ => None,
     });
-    let screenshot_url = run_detail
-        .and_then(|d| d.get("screenshot_url"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| {
-            // Prefer explicit pages list from run detail when present.
-            let pages = run_detail
-                .and_then(|d| d.get("pages"))
-                .and_then(Value::as_array);
-            pages.and_then(|arr| {
-                arr.iter()
-                    .any(|p| p.get("path").and_then(Value::as_str) == Some("index.png"))
-                    .then(|| design_screenshot_url(id))
-            })
-        });
+    // The public list shows only runs with a captured screenshot: the viewer
+    // is screenshots-only, so any run without `index.png` (failed, in flight,
+    // or html-only) has nothing viewable and would render a dead link.
+    let screenshot_url = run_screenshot_url(id, run_detail)?;
     Some(Submission {
         id: id.to_owned(),
         arena: ArenaSlug::Design,
@@ -371,8 +370,8 @@ pub fn design_submission(
         prompt_id: format!("#{prompt_id}"),
         prompt_title,
         title,
-        url: design_view_url(id),
-        screenshot_url,
+        url: None,
+        screenshot_url: Some(screenshot_url),
         status,
         stage,
         status_detail,
@@ -449,7 +448,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         prompt_id: format!("#epoch-{epoch}"),
         prompt_title: None,
         title: label.to_owned(),
-        url: format!("/challenge/prism/v1/submissions/{id}"),
+        url: Some(format!("/challenge/prism/v1/submissions/{id}")),
         screenshot_url: None,
         status,
         stage,
@@ -837,11 +836,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn design_view_url_shape() {
-        assert_eq!(
-            design_view_url("abc"),
-            "/challenge/design/v1/view/abc/index.html"
-        );
+    fn design_screenshot_url_shape() {
         assert_eq!(
             design_screenshot_url("abc"),
             "/challenge/design/v1/view/abc/index.png"
@@ -1056,11 +1051,58 @@ mod tests {
             "prompt_id": "p1",
             "updated_at_ms": 1_700_000_000_000_u64
         });
-        let sub = design_submission(&run, "aabbccdd", None, 1).unwrap();
+        let detail = json!({
+            "status": "agentic_review",
+            "screenshot_url": "/challenge/design/v1/view/r1/index.png"
+        });
+        let sub = design_submission(&run, "aabbccdd", Some(&detail), 1).unwrap();
         assert_eq!(sub.status, SubmissionStatus::Pending);
         assert_eq!(sub.stage, "agentic_review");
         assert!(sub.status_detail.as_deref().unwrap().contains("agentic"));
         assert!(sub.bpb.is_none());
+        // Screenshots-only viewer: no html url, only the screenshot link.
+        assert!(sub.url.is_none());
+        assert_eq!(
+            sub.screenshot_url.as_deref(),
+            Some("/challenge/design/v1/view/r1/index.png")
+        );
+    }
+
+    #[test]
+    fn design_submission_requires_screenshot() {
+        let run = |id| {
+            json!({
+                "id": id,
+                "status": "scored",
+                "prompt_id": "p1",
+                "updated_at_ms": 1_700_000_000_000_u64
+            })
+        };
+        // No run detail at all → no screenshot evidence → excluded.
+        assert!(design_submission(&run("r1"), "aabbccdd", None, 1).is_none());
+        // Detail with html pages but no index.png → excluded.
+        let no_png = json!({
+            "status": "scored",
+            "pages": [
+                {"path": "index.html", "bytes": 10, "raw_sha256": "aa"},
+                {"path": "pricing.html", "bytes": 10, "raw_sha256": "bb"}
+            ]
+        });
+        assert!(design_submission(&run("r2"), "aabbccdd", Some(&no_png), 1).is_none());
+        // Detail with a screenshot page → included.
+        let with_png = json!({
+            "status": "scored",
+            "pages": [
+                {"path": "index.html", "bytes": 10, "raw_sha256": "aa"},
+                {"path": "index.png", "bytes": 99, "raw_sha256": "cc"}
+            ]
+        });
+        let sub = design_submission(&run("r3"), "aabbccdd", Some(&with_png), 1).unwrap();
+        assert_eq!(
+            sub.screenshot_url.as_deref(),
+            Some("/challenge/design/v1/view/r3/index.png")
+        );
+        assert!(sub.url.is_none());
     }
 
     #[test]

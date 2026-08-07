@@ -746,7 +746,12 @@ mod tests {
                 "status": "scored",
                 "final_score": {"score": 1000},
                 "prompt_title": "SaaS PR review",
-                "prompt": "Build a three-page marketing site for a SaaS PR review tool."
+                "prompt": "Build a three-page marketing site for a SaaS PR review tool.",
+                "pages": [
+                    {"path": "index.html", "bytes": 128, "raw_sha256": "aa"},
+                    {"path": "index.png", "bytes": 4096, "raw_sha256": "bb"}
+                ],
+                "screenshot_url": "/challenge/design/v1/view/run1/index.png"
             })))
             .mount(design)
             .await;
@@ -839,9 +844,11 @@ mod tests {
             "Build a three-page marketing site for a SaaS PR review tool."
         );
         assert_eq!(v["items"][0]["promptTitle"], "SaaS PR review");
+        // Screenshots-only viewer: no html `url` key, only `screenshotUrl`.
+        assert!(v["items"][0].get("url").is_none());
         assert_eq!(
-            v["items"][0]["url"],
-            "/challenge/design/v1/view/run1/index.html"
+            v["items"][0]["screenshotUrl"],
+            "/challenge/design/v1/view/run1/index.png"
         );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/design/duels").await;
@@ -896,6 +903,68 @@ mod tests {
         let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn design_submissions_exclude_runs_without_screenshots() {
+        let (design, _prism, st) = setup().await;
+        // One scored run with a captured screenshot, one failed run that never
+        // produced pages (dead view link before the screenshots-only viewer).
+        Mock::given(method("GET"))
+            .and(path("/v1/dashboard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "epoch": 3,
+                "leaderboard": {"current_round": 9, "ratings": [], "previous_ratings": []},
+                "round": {"round_id": 9, "closes_at_secs": 1_700_000_100_u64, "seconds_remaining": 120},
+                "recent_runs": [
+                    {"id": "ok1", "status": "scored", "round_id": 9, "harness_id": "h1", "prompt_id": "p1", "error_detail": null, "updated_at_ms": 1_700_000_000_000_u64},
+                    {"id": "bad1", "status": "failed", "round_id": 9, "harness_id": "h1", "prompt_id": "p1", "error_detail": "agent crashed", "updated_at_ms": 1_700_000_001_000_u64}
+                ]
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/harness/h1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "h1",
+                "miner_hotkey": "aa".repeat(32)
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/runs/ok1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "ok1",
+                "status": "scored",
+                "final_score": {"score": 1000},
+                "pages": [{"path": "index.png", "bytes": 4096, "raw_sha256": "bb"}],
+                "screenshot_url": "/challenge/design/v1/view/ok1/index.png"
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/runs/bad1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "bad1",
+                "status": "failed",
+                "error_detail": "agent crashed",
+                "pages": []
+            })))
+            .mount(&design)
+            .await;
+        let app = site_router(st);
+
+        let (s, v) = call(app, "/v1/site/arenas/design/submissions").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{v}");
+        assert_eq!(items[0]["id"], "ok1");
+        assert!(items[0].get("url").is_none());
+        assert_eq!(
+            items[0]["screenshotUrl"],
+            "/challenge/design/v1/view/ok1/index.png"
+        );
     }
 
     #[tokio::test]

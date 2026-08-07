@@ -15,7 +15,6 @@ use design_harness::{
     encode_env_into_extras, harness_from_zip, harness_id, validate_bundle, HarnessBundle,
 };
 use design_prompts::{load_prompt_set, prompt_set_digest, select_prompts_for_round};
-use design_sanitize::viewer_headers;
 use design_store::{
     DesignStore, HarnessRow, RoundAward, RunStage, RunState, StageEvent, StoreError, StorePatch,
 };
@@ -99,6 +98,10 @@ pub fn design_router(state: Arc<AppState>) -> Router {
         .route("/v1/annotate", post(post_annotate))
         .route("/v1/admin/rounds/{id}/candidates", get(admin_candidates))
         .route("/v1/admin/rounds/{id}/winners", post(admin_winners))
+        .route(
+            "/v1/admin/rounds/current/requeue",
+            post(admin_requeue_current),
+        )
         .route("/v1/rounds/{id}/leaderboard", get(leaderboard))
         .with_state(state)
 }
@@ -738,30 +741,32 @@ async fn get_pages(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> R
     }
 }
 
-async fn get_bundle_json(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match st.store.list_pages(&id).await {
-        Ok(pages) => {
-            let mut map = BTreeMap::new();
-            for p in pages {
-                map.insert(p.path, p.sanitized_html);
-            }
-            Json(json!({"run_id": id, "pages": map})).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    }
+/// `bundle.json` used to embed every page's produced HTML. The viewer is
+/// screenshots-only now, so the route is retired with a pointer instead of
+/// serving a silently hollow bundle.
+async fn get_bundle_json() -> Response {
+    json_err(
+        StatusCode::GONE,
+        "gone",
+        "bundle.json no longer embeds produced HTML; use /v1/runs/{id}/pages for page metadata and /v1/view/{id}/index.png for the screenshot",
+    )
 }
 
+/// Screenshots-only viewer: produced HTML is never served. Only captured PNG
+/// artifacts (`index.png`) are public; any non-PNG page request is 410 Gone.
 async fn view_page(
     State(st): State<Arc<AppState>>,
     Path((id, page)): Path<(String, String)>,
 ) -> Response {
-    let path = if page.ends_with(".html") || page.ends_with(".png") {
-        page
-    } else {
-        format!("{page}.html")
-    };
-    match st.store.get_page(&id, &path).await {
-        Ok(Some(body)) if path.ends_with(".png") => {
+    if !page.ends_with(".png") {
+        return json_err(
+            StatusCode::GONE,
+            "gone",
+            "produced HTML is never served; fetch the index.png screenshot instead",
+        );
+    }
+    match st.store.get_page(&id, &page).await {
+        Ok(Some(body)) => {
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(body.trim()) else {
                 return json_err(StatusCode::INTERNAL_SERVER_ERROR, "artifact", "bad png b64");
             };
@@ -779,22 +784,6 @@ async fn view_page(
                 header::HeaderValue::from_static("nosniff"),
             );
             (StatusCode::OK, headers, bytes).into_response()
-        }
-        Ok(Some(html)) => {
-            let mut headers = HeaderMap::new();
-            for (k, v) in viewer_headers(&st.frame_ancestors) {
-                if let (Ok(name), Ok(val)) = (
-                    header::HeaderName::try_from(k),
-                    header::HeaderValue::try_from(v),
-                ) {
-                    headers.insert(name, val);
-                }
-            }
-            headers.insert(
-                header::CONTENT_TYPE,
-                header::HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            (StatusCode::OK, headers, html).into_response()
         }
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "page"),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
@@ -947,6 +936,48 @@ pub async fn mark_awaiting_admin(
 #[derive(Debug, Deserialize)]
 struct WinnersBody {
     harness_ids: Vec<String>,
+}
+
+/// Manually schedule every active harness into the CURRENT open round.
+///
+/// Operator escape hatch when a round opened with no/few runs (e.g. challenge
+/// restart). Idempotent for the current round: `schedule_harness_for_round`
+/// returns the existing run ids for a `(harness, round)` pair that already has
+/// runs, so a repeated call creates nothing and consumes no quota. Harnesses
+/// that fail scheduling (daily quota) are reported under `skipped`; one bad
+/// harness never blocks the rest.
+async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_admin(&st, &headers) {
+        return r;
+    }
+    let rid = round_id_at(now_secs());
+    let harnesses = match st.store.list_active_harnesses(rid).await {
+        Ok(h) => h,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let mut scheduled = Vec::new();
+    let mut skipped = Vec::new();
+    for harness in &harnesses {
+        match schedule_harness_for_round(st.store.as_ref(), harness, rid, st.netuid, epoch).await {
+            Ok(run_ids) => scheduled.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "run_ids": run_ids,
+            })),
+            Err(e) => skipped.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "reason": e,
+            })),
+        }
+    }
+    Json(json!({
+        "round_id": rid,
+        "scheduled": scheduled,
+        "skipped": skipped,
+    }))
+    .into_response()
 }
 
 async fn admin_candidates(
@@ -1204,21 +1235,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn view_page_serves_lockdown_headers_and_no_cookies() {
+    async fn view_page_serves_screenshots_only() {
         let (st, _g) = app_state(None);
         let run_id = "a".repeat(64);
-        // Store a script-laden page directly: even if sanitization were
-        // bypassed, the response headers must keep the payload inert.
+        // index.html exists in the store, but produced HTML is never served.
+        let png_bytes = [0x89, 0x50, 0x4E, 0x47];
         st.store
             .put_artifacts(
                 &run_id,
-                &[(
-                    "index.html".to_owned(),
-                    "<html><script>alert(1)</script>miner</html>".to_owned(),
-                    "raw".to_owned(),
-                    "00".repeat(32),
-                    42_u32,
-                )],
+                &[
+                    (
+                        "index.html".to_owned(),
+                        "<html><script>alert(1)</script>miner</html>".to_owned(),
+                        "raw".to_owned(),
+                        "00".repeat(32),
+                        42_u32,
+                    ),
+                    (
+                        "index.png".to_owned(),
+                        base64::engine::general_purpose::STANDARD.encode(png_bytes),
+                        "raw".to_owned(),
+                        "11".repeat(32),
+                        4_u32,
+                    ),
+                ],
             )
             .await
             .unwrap();
@@ -1232,35 +1272,153 @@ mod tests {
                 .oneshot(Request::get(&url).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
-            assert_eq!(res.status(), StatusCode::OK, "{url}");
-            let h = res.headers().clone();
-            let csp = h
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            assert!(csp.starts_with("sandbox;"), "{csp}");
-            assert!(!csp.contains("allow-scripts"), "{csp}");
-            assert!(!csp.contains("allow-same-origin"), "{csp}");
-            assert!(csp.contains("default-src 'none'"), "{csp}");
-            // app_state pins 'none'; prod default allows the public site.
-            assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
-            assert_eq!(
-                h.get(header::X_CONTENT_TYPE_OPTIONS)
-                    .and_then(|v| v.to_str().ok()),
-                Some("nosniff")
-            );
-            assert_eq!(
-                h.get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
-                Some("no-referrer")
-            );
-            assert_eq!(
-                h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
-                Some("text/html; charset=utf-8")
-            );
-            assert!(h.get(header::SET_COOKIE).is_none(), "{url} sets a cookie");
+            assert_eq!(res.status(), StatusCode::GONE, "{url}");
+            assert!(res.headers().get(header::SET_COOKIE).is_none());
             let bytes = res.into_body().collect().await.unwrap().to_bytes();
-            assert!(std::str::from_utf8(&bytes).unwrap().contains("miner"));
+            let v: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["error"], "gone", "{url}");
+            // The stored HTML must not leak into the 410 body.
+            assert!(!String::from_utf8_lossy(&bytes).contains("miner"), "{url}");
         }
+        // The PNG screenshot is served as image/png.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/view/{run_id}/index.png"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), &png_bytes);
+        // Unknown png → 404.
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/view/{run_id}/missing.png"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    }
+
+    #[tokio::test]
+    async fn bundle_json_is_gone() {
+        let (st, _g) = app_state(None);
+        let run_id = "b".repeat(64);
+        st.store
+            .put_artifacts(
+                &run_id,
+                &[(
+                    "index.html".to_owned(),
+                    "<html>miner</html>".to_owned(),
+                    "raw".to_owned(),
+                    "00".repeat(32),
+                    7_u32,
+                )],
+            )
+            .await
+            .unwrap();
+        let app = design_router(Arc::clone(&st));
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/runs/{run_id}/bundle.json"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::GONE, "{v}");
+        assert_eq!(v["error"], "gone");
+        // The stored HTML must not leak into the response body.
+        assert!(!v.to_string().contains("miner"));
+    }
+
+    #[tokio::test]
+    async fn admin_requeue_schedules_current_round_once() {
+        let admin_token = "test-admin-token";
+        let gating = Arc::new(MemoryGatingStore::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryDesignStore::new()),
+            epoch: std::sync::atomic::AtomicU64::new(0),
+            netuid: 541,
+            backend_mode: "memory",
+            annotator_token_hashes: vec![],
+            admin_token_hashes: vec![token_hash(admin_token)],
+            frame_ancestors: "'none'".into(),
+            retry_max: 2,
+            award_hook: None,
+            gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
+            metagraph: None,
+        });
+        let app = design_router(Arc::clone(&st));
+
+        // Operator-protected like the other admin routes.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/admin/rounds/current/requeue")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+
+        // Two active harnesses, each auto-scheduled into the NEXT round.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let (s, v) = post(app.clone(), submit_body(&hk(0xBB), "b")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let current = round_id_at(now_secs());
+        assert!(st.store.runs_for_round(current).await.unwrap().is_empty());
+
+        // First requeue schedules both harnesses into the current round.
+        let requeue = || {
+            Request::post("/v1/admin/rounds/current/requeue")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (s, v) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["round_id"], current);
+        assert_eq!(v["scheduled"].as_array().unwrap().len(), 2, "{v}");
+        assert!(v["skipped"].as_array().unwrap().is_empty(), "{v}");
+        let runs = st.store.runs_for_round(current).await.unwrap();
+        assert_eq!(runs.len(), 2 * design_challenge_task::prompts_per_round());
+        assert!(runs.iter().all(|r| r.status == RunStage::Queued));
+
+        // Second call is a no-op: same run ids, no new runs, quota untouched.
+        let (s, v2) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v2}");
+        assert_eq!(
+            v["scheduled"].as_array().unwrap(),
+            v2["scheduled"].as_array().unwrap(),
+            "idempotent requeue returns the same run ids"
+        );
+        assert_eq!(
+            st.store.runs_for_round(current).await.unwrap().len(),
+            runs.len()
+        );
+        let day = utc_day(now_secs());
+        let used = st.store.quota_get(&hk(0xAA), &day).await.unwrap();
+        assert_eq!(
+            usize::try_from(used).unwrap(),
+            2 * design_challenge_task::prompts_per_round(),
+            "next-round + current-round schedule only"
+        );
     }
 
     #[tokio::test]

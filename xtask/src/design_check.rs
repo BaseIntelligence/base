@@ -53,7 +53,7 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("network_mode", "design-sandbox-egress"),
     ("name_prefix", "base-design-"),
     ("csp_sandbox", "sandbox; default-src 'none'"),
-    ("raw_never_served", "Raw HTML is never served"),
+    ("html_never_served", "Produced HTML is never served"),
     ("agentic_review_stage", "AgenticReview"),
     ("admin_winners_route", "/v1/admin/rounds/{id}/winners"),
     ("admin_not_gateway", "not exposed via gateway"),

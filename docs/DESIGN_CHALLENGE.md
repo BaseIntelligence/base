@@ -38,9 +38,9 @@ Miner  --POST /v1/harness-->  design-challenge (:8093)
                            |
           +----------------+----------------+
           |                                 |
-   viewer (sanitized+CSP)     agentic review → admin winners (1|2)
-                                            |
-                              exact-E leaves → gateway /v1/weights/raw
+   viewer (index.png          agentic review → admin winners (1|2)
+   screenshots only;                       |
+   HTML never served)         exact-E leaves → gateway /v1/weights/raw
 ```
 
 | Process | Host | Holds `design_sk`? | Holds OpenRouter key? |
@@ -189,7 +189,10 @@ Floating tags (`:latest`) are **forbidden** for `design-runtime` / challenge ima
 
 ## 5. Sanitize rules
 
-Ingestion via `design-sanitize` (ammonia + CSS filter). **Raw HTML is never served.**
+Ingestion via `design-sanitize` (ammonia + CSS filter). **Produced HTML is
+never served** — sanitized pages are orchestrator input only (screenshot
+capture, anti-cheat review); the public viewer serves PNG screenshots
+only (§6).
 
 ### Stripped / rejected
 
@@ -208,7 +211,15 @@ missing required pages → automatic `Score(0)` at scoring gates.
 
 ## 6. Viewer headers and CSP
 
-`GET /v1/view/{run_id}/{page}` serves **sanitized** HTML only, with:
+`GET /v1/view/{run_id}/{page}` serves **PNG screenshots only** (`image/png`,
+`private, no-store`, `nosniff`). **Produced HTML is never served**: requests
+for `.html` pages (or bare page names) return `410 Gone` with a short JSON
+error, and `GET /v1/runs/{id}/bundle.json` no longer embeds page HTML (same
+`410 Gone` contract — use `/v1/runs/{id}/pages` for page metadata). Miner
+output reaches browsers exclusively as the captured `index.png` screenshot.
+
+The full lockdown header set remains as the **gateway-enforced floor** on
+every `/challenge/{id}/v1/view/*` response (defense in depth — below):
 
 ```
 Content-Security-Policy: sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; font-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors <allowlist>
@@ -221,13 +232,13 @@ Cache-Control: private, no-store
 ```
 
 The `sandbox` directive is emitted **without** `allow-scripts` and without
-`allow-same-origin`: the page runs in an **opaque origin with script execution
-disabled**, so miner HTML can never read the serving origin's cookies,
-storage, or DOM — even though joinbase.ai embeds it **same-origin** through
-the `/gbase-api` proxy. Miner pages are static HTML/CSS (the sanitizer strips
-`<script>` regardless), so no `allow-scripts` relaxation is needed or wanted.
-These responses **never carry `Set-Cookie`**; the endpoint stays public
-(`run_id` is the capability) and reads no auth cookie.
+`allow-same-origin`: even if a stale or misbehaving challenge upstream served
+miner HTML through the gateway, it would run in an **opaque origin with script
+execution disabled**, unable to read the serving origin's cookies,
+storage, or DOM — even though joinbase.ai embeds view responses
+**same-origin** through the `/gbase-api` proxy. These responses **never carry
+`Set-Cookie`** (the gateway strips it); the endpoint stays public (`run_id` is
+the capability) and reads no auth cookie.
 
 `frame-ancestors <allowlist>` defaults to
 `'self' https://joinbase.ai https://*.vercel.app http://localhost:*`
@@ -241,19 +252,19 @@ full lockdown header set (and strips any `Set-Cookie`) on every
 (`BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override, same default), so even a stale
 or misbehaving challenge upstream cannot serve miner HTML through the gateway
 without the sandbox floor. `Cross-Origin-Resource-Policy: same-origin` means
-cross-origin embedders get nothing: integrations must iframe through a
-same-origin proxy (as joinbase.ai does), not the bare gateway origin.
+cross-origin embedders get nothing: integrations must load screenshots through
+a same-origin proxy (as joinbase.ai does), not the bare gateway origin.
 
 CSP `sandbox` (without `allow-scripts`) neutralizes script even if an integrator
-omits the iframe `sandbox` attribute. Integrators should still use
-`<iframe sandbox="" src="...">` — no tokens — on a dedicated subdomain.
+omits the iframe `sandbox` attribute. Screenshots-only serving makes miner
+HTML unreachable in the first place; the header floor is the second line.
 
 ### Full-page screenshot (`index.png`)
 
 After sanitize, the orchestrator renders the sanitized `index.html` **artifact**
 (store → temp file → `file://`) in headless Chromium inside the
-design-challenge container — never the public `/v1/view` URL (its sandbox CSP
-is for browser embedding; the stored artifact is the capture source of truth).
+design-challenge container — never the public `/v1/view` URL (screenshots-only;
+the stored artifact is the capture source of truth).
 Chromium runs `--no-sandbox` because the renderer sandbox needs user
 namespaces / `CAP_SYS_ADMIN`, which Docker does not grant; the container
 boundary plus the scriptless sanitized artifact is the sandbox. Two passes
@@ -455,13 +466,16 @@ Harness stdout/stderr is appended as `stage = "log"` events with
 | `GET /v1/runs/{id}/events` | Append-only stage events |
 | `GET /v1/runs/{id}/logs` | Harness logs (`?since=` cursor, optional `?tail=`) |
 
-### Viewer
+### Viewer (screenshots-only)
+
+Produced HTML is never served; the viewer exposes captured PNG screenshots
+only (see §6).
 
 | Route | Purpose |
 |-------|---------|
-| `GET /v1/runs/{id}/pages` | Page list |
-| `GET /v1/view/{id}/{page}` | Sanitized HTML + hardened headers |
-| `GET /v1/runs/{id}/bundle.json` | Sanitized bundle JSON |
+| `GET /v1/runs/{id}/pages` | Page metadata list (path, bytes, sha256) |
+| `GET /v1/view/{id}/{page}` | PNG screenshots only (`index.png`); `.html`/bare page → `410 Gone` |
+| `GET /v1/runs/{id}/bundle.json` | `410 Gone` — no longer embeds produced HTML |
 
 ### Admin winners (operator bearer; master-local — not exposed via gateway)
 
@@ -473,6 +487,7 @@ returns 403). Operators hit `design-challenge:8093` on the master host
 |-------|---------|
 | `GET /v1/admin/rounds/{id}/candidates` | Clean `awaiting_admin` runs (pages + verdict) |
 | `POST /v1/admin/rounds/{id}/winners` | Body `{ "harness_ids": ["…"] }` length 1 or 2; awards + emits leaves |
+| `POST /v1/admin/rounds/current/requeue` | Schedule all active harnesses into the **current** open round (idempotent per harness; quota-blocked harnesses reported under `skipped`) |
 | `GET /v1/rounds/{id}/leaderboard` | Round ratings |
 
 ### Annotation (deprecated; unused on leaf path)
