@@ -442,7 +442,7 @@ pub struct Validator {
 }
 
 /// Activity severity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ActivitySeverity {
     /// Score event.

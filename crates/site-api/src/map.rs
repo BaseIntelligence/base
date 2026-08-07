@@ -729,46 +729,153 @@ pub fn prism_window(
     }
 }
 
-/// Activity lines from design `recent_runs` + prism submissions (bounded).
+/// Short run / harness id for ops-style log lines.
+fn short_id(id: &str) -> &str {
+    &id[..id.len().min(8)]
+}
+
+/// Prompt label for activity copy — title when known, else short run id.
+fn design_prompt_label(run: &Value, id: &str) -> String {
+    run.get("prompt_title")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map_or_else(|| format!("run {}", short_id(id)), str::to_owned)
+}
+
+/// One natural-English design activity line from a dashboard `recent_run`.
+fn design_activity_line(run: &Value) -> Option<(u64, String, ActivityEvent)> {
+    let id = run.get("id").and_then(Value::as_str).unwrap_or("?");
+    let status = run.get("status").and_then(Value::as_str).unwrap_or("");
+    let ms = run
+        .get("updated_at_ms")
+        .and_then(Value::as_u64)
+        .or_else(|| run.get("created_at_ms").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let title = design_prompt_label(run, id);
+    let rid = run.get("round_id").and_then(Value::as_u64);
+    let (sev, msg) = match status {
+        "scored" => (
+            ActivitySeverity::Score,
+            format!(
+                "Design evaluated for prompt «{title}» · run {}",
+                short_id(id)
+            ),
+        ),
+        "failed" => (
+            ActivitySeverity::Fail,
+            format!("Design run {} failed on «{title}»", short_id(id)),
+        ),
+        "rejected" => (
+            ActivitySeverity::Fail,
+            format!("Harness rejected for «{title}» · run {}", short_id(id)),
+        ),
+        "awaiting_admin" | "awaiting_annotation" => (
+            ActivitySeverity::Settle,
+            rid.map_or_else(
+                || format!("Candidate awaiting review · «{title}»"),
+                |r| format!("Round {r} candidate ready for review · «{title}»"),
+            ),
+        ),
+        "agentic_review" => (
+            ActivitySeverity::Assign,
+            format!("Anti-cheat review running on «{title}»"),
+        ),
+        "sanitizing" => (
+            ActivitySeverity::Prompt,
+            format!("Screenshot captured · sanitizing «{title}»"),
+        ),
+        "running" => (
+            ActivitySeverity::Assign,
+            format!("Harness generating pages for «{title}»"),
+        ),
+        "installing" => (
+            ActivitySeverity::Assign,
+            format!("Installing harness for «{title}»"),
+        ),
+        "queued" => (
+            ActivitySeverity::Prompt,
+            format!("Design queued · «{title}» · run {}", short_id(id)),
+        ),
+        _ => return None,
+    };
+    // Dedupe key collapses identical prompt+status spam (batch score floods).
+    let dedupe = format!("design:{status}:{title}");
+    Some((
+        ms,
+        dedupe,
+        ActivityEvent {
+            id: format!("design:{id}:{status}"),
+            at: ms_to_clock(ms),
+            severity: sev,
+            message: msg,
+        },
+    ))
+}
+
+/// Winner / rating settle lines from the design dashboard leaderboard.
+fn design_winner_events(dash: Option<&Value>) -> Vec<(u64, String, ActivityEvent)> {
+    let Some(dash) = dash else {
+        return Vec::new();
+    };
+    let rid = dash
+        .pointer("/leaderboard/current_round")
+        .and_then(Value::as_u64)
+        .or_else(|| dash.pointer("/round/round_id").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let ratings = dash
+        .pointer("/leaderboard/ratings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for r in ratings {
+        let wins = r.get("wins").and_then(Value::as_u64).unwrap_or(0);
+        if wins == 0 {
+            continue;
+        }
+        let hk = r.get("miner_hotkey").and_then(Value::as_str).unwrap_or("");
+        let agent = agent_from_hotkey(hk, 0);
+        let label = if agent.hotkey == "—" {
+            truncate_middle(hk)
+        } else {
+            agent.operator
+        };
+        // Prefer round close time when present so winners sort with the round.
+        let ms = dash
+            .pointer("/round/closes_at_secs")
+            .and_then(Value::as_u64)
+            .map_or(0, |s| s.saturating_mul(1000));
+        out.push((
+            ms,
+            format!("design:winner:{rid}:{hk}"),
+            ActivityEvent {
+                id: format!("design:winner:{rid}:{}", short_id(hk)),
+                at: ms_to_clock(ms),
+                severity: ActivitySeverity::Reward,
+                message: format!("Round {rid} winner selected · {label}"),
+            },
+        ));
+    }
+    out
+}
+
+/// Activity lines from design dashboard + prism submissions (bounded, deduped).
+///
+/// Copy is ops-style English tied to real run stages — not a cycling prompt
+/// title loop. Duplicate `(status, prompt)` lines collapse to the newest.
 #[must_use]
 pub fn activity_from_lives(
+    design_dash: Option<&Value>,
     design_runs: &[Value],
     prism_subs: &[Value],
     limit: usize,
 ) -> Vec<ActivityEvent> {
-    let mut events: Vec<(u64, ActivityEvent)> = Vec::new();
+    let mut events: Vec<(u64, String, ActivityEvent)> = Vec::new();
+    events.extend(design_winner_events(design_dash));
     for r in design_runs {
-        let id = r.get("id").and_then(Value::as_str).unwrap_or("?");
-        let status = r.get("status").and_then(Value::as_str).unwrap_or("");
-        let ms = r
-            .get("updated_at_ms")
-            .and_then(Value::as_u64)
-            .or_else(|| r.get("created_at_ms").and_then(Value::as_u64))
-            .unwrap_or(0);
-        // Label by the pinned-bank prompt title when known; else a short run id.
-        let label = r
-            .get("prompt_title")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .map_or_else(
-                || format!("design run {}", &id[..id.len().min(8)]),
-                str::to_owned,
-            );
-        let (sev, msg) = match status {
-            "scored" => (ActivitySeverity::Score, format!("{label} scored")),
-            "failed" => (ActivitySeverity::Fail, format!("{label} failed")),
-            "awaiting_admin" => (ActivitySeverity::Settle, format!("{label} awaiting admin")),
-            _ => continue,
-        };
-        events.push((
-            ms,
-            ActivityEvent {
-                id: format!("design:{id}:{status}"),
-                at: ms_to_clock(ms),
-                severity: sev,
-                message: msg,
-            },
-        ));
+        if let Some(ev) = design_activity_line(r) {
+            events.push(ev);
+        }
     }
     for r in prism_subs {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("?");
@@ -782,24 +889,29 @@ pub fn activity_from_lives(
             .get("label")
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
-            .map_or_else(
-                || format!("prism {}", &id[..id.len().min(8)]),
-                str::to_owned,
-            );
+            .map_or_else(|| format!("prism {}", short_id(id)), str::to_owned);
         let bpb = r.get("bpb").and_then(Value::as_f64);
         let (sev, msg) = match status {
             "terminated" => (
                 ActivitySeverity::Score,
                 bpb.map_or_else(
-                    || format!("{label} terminated"),
-                    |b| format!("{label} bpb {b:.4}"),
+                    || format!("Prism evaluated · {label}"),
+                    |b| format!("Prism evaluated · {label} · bpb {b:.4}"),
                 ),
             ),
-            "failed" => (ActivitySeverity::Fail, format!("{label} failed")),
+            "failed" => (
+                ActivitySeverity::Fail,
+                format!("Prism run {} failed · {label}", short_id(id)),
+            ),
+            "running" | "leased" => (
+                ActivitySeverity::Assign,
+                format!("Prism training · {label}"),
+            ),
             _ => continue,
         };
         events.push((
             ms,
+            format!("prism:{status}:{label}"),
             ActivityEvent {
                 id: format!("prism:{id}:{status}"),
                 at: ms_to_clock(ms),
@@ -809,7 +921,85 @@ pub fn activity_from_lives(
         ));
     }
     events.sort_by_key(|b| std::cmp::Reverse(b.0));
-    events.into_iter().take(limit).map(|(_, e)| e).collect()
+    // Keep the newest line per dedupe key so batch-scored identical prompts
+    // do not flood the live tail with the same sentence.
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::with_capacity(limit);
+    for (_, key, ev) in events {
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(ev);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Hex form of an SS58 hotkey when the address decodes; used so `?q=` can
+/// match either wire form miners paste.
+fn hex_from_ss58_hotkey(ss58: &str) -> Option<String> {
+    let (bytes, prefix) = keystore::ss58_decode(ss58).ok()?;
+    if prefix != BITTENSOR_SS58_PREFIX {
+        return None;
+    }
+    Some(hex::encode(bytes))
+}
+
+fn agent_matches_query(agent: &Agent, needle: &str) -> bool {
+    let hay: [&str; 4] = [
+        agent.hotkey.as_str(),
+        agent.operator.as_str(),
+        agent.slug.as_str(),
+        agent.handle.as_str(),
+    ];
+    if hay.iter().any(|h| h.to_ascii_lowercase().contains(needle)) {
+        return true;
+    }
+    // Full hex → SS58 equality (miners often paste the 64-char form).
+    if let Some(ss58) = ss58_from_hex(needle) {
+        if agent.hotkey.eq_ignore_ascii_case(&ss58) {
+            return true;
+        }
+    }
+    // Hex substring against the decoded SS58 payload.
+    if let Some(hex_hk) = hex_from_ss58_hotkey(&agent.hotkey) {
+        if hex_hk.contains(needle) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Case-insensitive substring match against hotkey (SS58/hex), operator, slug,
+/// handle, prompt title/id, or submission id — for `?q=` on list endpoints.
+#[must_use]
+pub fn submission_matches_query(sub: &Submission, q: &str) -> bool {
+    let needle = q.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    if agent_matches_query(&sub.agent, &needle) {
+        return true;
+    }
+    let hay: [&str; 4] = [
+        sub.prompt_id.as_str(),
+        sub.prompt_title.as_deref().unwrap_or(""),
+        sub.title.as_str(),
+        sub.id.as_str(),
+    ];
+    hay.iter().any(|h| h.to_ascii_lowercase().contains(&needle))
+}
+
+/// Leaderboard row match for `?q=` (hotkey / handle / slug / operator).
+#[must_use]
+pub fn leaderboard_matches_query(row: &LeaderboardRow, q: &str) -> bool {
+    let needle = q.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    agent_matches_query(&row.agent, &needle)
 }
 
 fn num_f64(v: &Value) -> Option<f64> {
@@ -1160,5 +1350,89 @@ mod tests {
         assert_eq!(a.round_id, Some(42));
         assert_eq!(a.seconds_remaining, Some(99));
         assert!(a.round_ends_at.as_ref().unwrap().starts_with("20"));
+    }
+
+    #[test]
+    fn activity_dedupes_identical_prompt_score_spam() {
+        let runs = vec![
+            json!({
+                "id": "aaa111",
+                "status": "scored",
+                "prompt_title": "Crypto on-ramp compliance",
+                "round_id": 9,
+                "updated_at_ms": 1_700_000_003_000_u64
+            }),
+            json!({
+                "id": "bbb222",
+                "status": "scored",
+                "prompt_title": "Crypto on-ramp compliance",
+                "round_id": 9,
+                "updated_at_ms": 1_700_000_002_000_u64
+            }),
+            json!({
+                "id": "ccc333",
+                "status": "running",
+                "prompt_title": "Farm sensor IoT",
+                "round_id": 9,
+                "updated_at_ms": 1_700_000_001_000_u64
+            }),
+        ];
+        let events = activity_from_lives(None, &runs, &[], 10);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(events[0].message.contains("Design evaluated"));
+        assert!(events[0].message.contains("Crypto on-ramp"));
+        assert!(events[1].message.contains("Harness generating"));
+        // Same prompt+status collapses — only the newest scored line survives.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.message.contains("Crypto on-ramp"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn activity_includes_winner_settle_lines() {
+        let dash = json!({
+            "round": {"round_id": 9, "closes_at_secs": 1_700_000_100_u64},
+            "leaderboard": {
+                "current_round": 9,
+                "ratings": [
+                    {"miner_hotkey": "aa".repeat(32), "rating": 1200, "wins": 1, "losses": 0}
+                ]
+            }
+        });
+        let events = activity_from_lives(Some(&dash), &[], &[], 10);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].message.contains("Round 9 winner selected"));
+        assert!(matches!(events[0].severity, ActivitySeverity::Reward));
+    }
+
+    #[test]
+    fn submission_query_matches_hotkey_and_prompt() {
+        let sub = design_submission(
+            &json!({
+                "id": "deadbeef01",
+                "status": "scored",
+                "prompt_id": "fin03",
+                "prompt_title": "Crypto on-ramp compliance",
+                "updated_at_ms": 1_700_000_000_000_u64
+            }),
+            &"aa".repeat(32),
+            Some(&json!({
+                "id": "deadbeef01",
+                "status": "scored",
+                "prompt_title": "Crypto on-ramp compliance",
+                "pages": [{"path": "index.png", "bytes": 1}]
+            })),
+            1,
+        )
+        .unwrap();
+        let ss58 = sub.agent.hotkey.clone();
+        assert!(submission_matches_query(&sub, &ss58[..8]));
+        assert!(submission_matches_query(&sub, "crypto"));
+        assert!(submission_matches_query(&sub, &"aa".repeat(8)));
+        assert!(!submission_matches_query(&sub, "no-such-miner"));
     }
 }

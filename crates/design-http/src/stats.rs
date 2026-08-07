@@ -189,22 +189,29 @@ pub async fn get_miner(State(st): State<Arc<AppState>>, Path(hotkey): Path<Strin
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
     let used = st.store.quota_get(&hk, &day).await.unwrap_or(0);
-    let round_runs = st.store.runs_for_round(rid).await.unwrap_or_default();
+    // All recent generations for this miner (not only the current round) so
+    // public agent history can list every design run the harness produced.
     let hid: std::collections::HashSet<_> = harnesses.iter().map(|h| h.id.clone()).collect();
-    let runs: Vec<Value> = round_runs
+    let recent = st.store.list_runs(None, 200).await.unwrap_or_default();
+    let runs: Vec<Value> = recent
         .into_iter()
         .filter(|r| hid.contains(&r.harness_id))
         .map(|r| {
+            let (prompt_title, _) = prompt_fields(&r.prompt_id);
             json!({
                 "id": r.id,
                 "status": r.status.as_str(),
                 "prompt_id": r.prompt_id,
+                "prompt_title": prompt_title,
+                "round_id": r.round_id,
                 "harness_id": r.harness_id,
                 "terminal": r.status.is_terminal()
                     || r.status == RunStage::AwaitingAdmin
                     || r.status == RunStage::AwaitingAnnotation,
                 "error_detail": r.error_detail,
                 "artifact_digest": r.artifact_digest,
+                "created_at_ms": r.created_at_ms,
+                "updated_at_ms": r.updated_at_ms,
             })
         })
         .collect();
@@ -263,10 +270,17 @@ pub async fn run_status_json(store: &dyn DesignStore, id: &str) -> Result<Value,
     let pages = store.list_pages(id).await.unwrap_or_default();
     let events = store.run_events(id).await.unwrap_or_default();
     let (prompt_title, prompt) = prompt_fields(&r.prompt_id);
+    let miner_hotkey = store
+        .get_harness(&r.harness_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|h| h.miner_hotkey);
     Ok(json!({
         "id": r.id,
         "round_id": r.round_id,
         "harness_id": r.harness_id,
+        "miner_hotkey": miner_hotkey,
         "prompt_id": r.prompt_id,
         "prompt_title": prompt_title,
         "prompt": prompt,
