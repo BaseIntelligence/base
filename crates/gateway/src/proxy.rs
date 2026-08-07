@@ -234,8 +234,11 @@ pub fn is_view_path(rest: &str) -> bool {
 
 /// Captured PNG screenshot under `/v1/view/{run}/{page}.png`.
 #[must_use]
-pub fn is_view_png_path(rest: &str) -> bool {
-    is_view_path(rest) && rest.trim_start_matches('/').ends_with(".png")
+pub fn is_view_png_path(path: &str) -> bool {
+    is_view_path(path)
+        && std::path::Path::new(path.trim_start_matches('/'))
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
 }
 
 /// Re-apply the viewer header floor at the last serving layer (defense in
@@ -244,10 +247,10 @@ pub fn is_view_png_path(rest: &str) -> bool {
 /// (`CORP: cross-origin`) so joinbase.ai can load them with a direct absolute
 /// URL and avoid proxying image bytes through Vercel. `Set-Cookie` is always
 /// stripped.
-fn apply_view_lockdown(resp: &mut Response, frame_ancestors: &str, rest: &str) {
+fn apply_view_lockdown(resp: &mut Response, frame_ancestors: &str, view_path: &str) {
     let headers = resp.headers_mut();
     headers.remove(header::SET_COOKIE);
-    let floor = if is_view_png_path(rest) {
+    let floor = if is_view_png_path(view_path) {
         // Drop HTML-only lockdown if a stale hop set them on a PNG response.
         headers.remove(header::CONTENT_SECURITY_POLICY);
         headers.remove(HeaderName::from_static("cross-origin-opener-policy"));
