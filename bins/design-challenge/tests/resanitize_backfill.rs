@@ -8,8 +8,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use design_challenge_bin::resanitize::backfill_resanitize;
 use design_challenge::screenshot::png_artifact_tuple;
+use design_challenge_bin::resanitize::backfill_resanitize;
 use design_store::{DesignStore, HarnessRow, MemoryDesignStore, RunStage, RunState};
 
 const FAKE_PNG_OLD: &[u8] = b"\x89PNG\r\n\x1a\nold-unstyled";

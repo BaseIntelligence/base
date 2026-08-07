@@ -12,12 +12,12 @@ use std::time::Duration;
 use challenge_agentic::{load_api_key_file, AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
-use design_challenge_bin::resanitize;
 use design_challenge::{
     design_router, force_sim_refusal_reason, host_sim_allowed, public_key_from_secret, AppState,
     DbDesignStore, DesignStore, GatewayClient, GatewayClientConfig, MemoryDesignStore,
     Orchestrator, OrchestratorConfig, CHALLENGE_ID, SCORING_VERSION,
 };
+use design_challenge_bin::resanitize;
 use design_sandbox::{DockerSandbox, SandboxBackend, SimSandbox};
 use review_docker::{DockerAgent, DockerAgentConfig};
 use sha2::{Digest, Sha256};
