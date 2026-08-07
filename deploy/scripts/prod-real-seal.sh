@@ -31,6 +31,11 @@ CHAIN_ENDPOINTS="${BASE_CHAIN_ENDPOINTS:-https://bittensor-finney.api.onfinality
 K_SUBNET_EPOCH_INDEX="658faa385070e074c85bf6b568cf05554f101d7a30ae31c7ab3099206c5ae12b"
 K_LAST_EPOCH_BLOCK="658faa385070e074c85bf6b568cf055590010c37124c14146041452f9ffba0df"
 
+# Substrate Identity hasher on u16 netuid = little-endian bytes (not printf %04x).
+netuid_le_hex() {
+  python3 -c 'import sys; print(int(sys.argv[1]).to_bytes(2, "little").hex())' "$1"
+}
+
 rpc_storage() {
   # $1 = 0x-prefixed storage key; prints little-endian integer or nothing.
   local key="$1" ep out raw
@@ -56,13 +61,13 @@ if ! flock -n 9; then
 fi
 
 {
-  netuid_hex="$(printf '%04x' "${NETUID}")"
+  netuid_hex="$(netuid_le_hex "${NETUID}")"
   epoch="$(rpc_storage "0x${K_SUBNET_EPOCH_INDEX}${netuid_hex}")" || {
-    echo "$(date -Is) chain read failed (epoch)"
+    echo "$(date -Is) chain read failed (epoch) key=0x${K_SUBNET_EPOCH_INDEX}${netuid_hex}"
     exit 1
   }
   leb="$(rpc_storage "0x${K_LAST_EPOCH_BLOCK}${netuid_hex}")" || {
-    echo "$(date -Is) chain read failed (last_epoch_block)"
+    echo "$(date -Is) chain read failed (last_epoch_block) key=0x${K_LAST_EPOCH_BLOCK}${netuid_hex}"
     exit 1
   }
   resp="$(curl -fsS -m 60 -X POST -H 'content-type: application/json' \
