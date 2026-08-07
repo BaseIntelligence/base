@@ -420,6 +420,9 @@ pub struct MetagraphView {
     pub fetched_at_secs: u64,
     /// Hotkeys in UID order.
     pub hotkeys: Vec<[u8; 32]>,
+    /// Coldkeys UID-aligned with [`Self::hotkeys`] (`SubtensorModule.Owner`).
+    /// All-zero entries mean unknown / chain default.
+    pub coldkeys: Vec<[u8; 32]>,
 }
 
 impl MetagraphView {
@@ -439,6 +442,17 @@ impl MetagraphView {
     pub fn contains_hex(&self, hotkey_hex: &str) -> bool {
         self.uid_of_hex(hotkey_hex).is_some()
     }
+
+    /// Lowercase-hex coldkey for a hotkey, when the Owner entry is non-zero.
+    #[must_use]
+    pub fn coldkey_hex_of(&self, hotkey_hex: &str) -> Option<String> {
+        let uid = self.uid_of_hex(hotkey_hex)? as usize;
+        let ck = self.coldkeys.get(uid)?;
+        if ck.iter().all(|&b| b == 0) {
+            return None;
+        }
+        Some(hex::encode(ck))
+    }
 }
 
 /// Cached metagraph snapshot refreshed by the watcher; intake reads only this
@@ -456,17 +470,27 @@ impl MetagraphCache {
     }
 
     /// Install a fresh snapshot from raw (possibly non-32-byte) hotkeys.
-    pub fn update(&self, netuid: u16, hotkeys: &[Vec<u8>]) {
+    ///
+    /// `coldkeys` should be UID-aligned with `hotkeys` when provided; shorter
+    /// / empty slices leave unknown (zero) coldkeys for missing UIDs.
+    pub fn update(&self, netuid: u16, hotkeys: &[Vec<u8>], coldkeys: &[Vec<u8>]) {
         let keys: Vec<[u8; 32]> = hotkeys
             .iter()
             .filter_map(|h| <[u8; 32]>::try_from(h.as_slice()).ok())
             .collect();
+        let mut cks: Vec<[u8; 32]> = coldkeys
+            .iter()
+            .take(keys.len())
+            .map(|c| <[u8; 32]>::try_from(c.as_slice()).unwrap_or([0; 32]))
+            .collect();
+        cks.resize(keys.len(), [0; 32]);
         let view = MetagraphView {
             netuid,
             fetched_at_secs: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             hotkeys: keys,
+            coldkeys: cks,
         };
         if let Ok(mut g) = self.inner.write() {
             *g = Some(view);
@@ -520,7 +544,7 @@ pub async fn watch_once<C: ChainClient + Send>(
     let mg = chain
         .metagraph_at(&hash)
         .map_err(|e| GatingError::Backend(format!("metagraph: {e}")))?;
-    cache.update(netuid, &mg.hotkeys);
+    cache.update(netuid, &mg.hotkeys, &mg.coldkeys);
     let Some(view) = cache.snapshot() else {
         return Ok(0);
     };
@@ -576,9 +600,11 @@ mod tests {
             netuid: 541,
             fetched_at_secs: 0,
             hotkeys: vec![[0xAA; 32], [0xBB; 32]],
+            coldkeys: vec![[0x11; 32], [0x22; 32]],
         };
         assert_eq!(view.uid_of_hex(&hk(0xAA)), Some(0));
         assert_eq!(view.uid_of_hex(&hk(0xBB)), Some(1));
+        assert_eq!(view.coldkey_hex_of(&hk(0xAA)), Some(hk(0x11)));
         assert!(!view.contains_hex(&hk(0xCC)));
         assert!(!view.contains_hex("not-hex"));
     }
@@ -596,6 +622,7 @@ mod tests {
             netuid: 541,
             fetched_at_secs: 0,
             hotkeys: vec![[0xAA; 32]], // 0xBB deregistered / replaced
+            coldkeys: vec![[0xAA; 32]],
         };
         let reset = reconcile_metagraph(&s, "design", &view).await.unwrap();
         assert_eq!(reset, vec![hk(0xBB)]);

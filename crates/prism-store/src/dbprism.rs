@@ -58,6 +58,7 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
     SubmissionState {
         id: r.id,
         miner_hotkey: r.miner_hotkey,
+        miner_coldkey: r.miner_coldkey,
         epoch: r.epoch.cast_unsigned(),
         netuid: u16::try_from(r.netuid).unwrap_or(0),
         status,
@@ -174,6 +175,7 @@ impl PrismStore for DbPrismStore {
             &dbs::NewPrismSubmission {
                 id: &row.id,
                 miner_hotkey: &row.miner_hotkey,
+                miner_coldkey: row.miner_coldkey.as_deref(),
                 epoch: i64::try_from(row.epoch).unwrap_or(i64::MAX),
                 netuid: i32::from(row.netuid),
                 label: row.label.as_deref(),

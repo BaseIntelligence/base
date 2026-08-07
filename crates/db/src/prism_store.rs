@@ -16,6 +16,8 @@ pub struct PrismSubmissionRow {
     pub id: String,
     /// Miner hotkey (lowercase 64 hex).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// Epoch at acceptance.
     pub epoch: i64,
     /// Netuid.
@@ -61,6 +63,8 @@ pub struct NewPrismSubmission<'a> {
     pub id: &'a str,
     /// miner hotkey.
     pub miner_hotkey: &'a str,
+    /// owning coldkey (optional).
+    pub miner_coldkey: Option<&'a str>,
     /// epoch.
     pub epoch: i64,
     /// netuid.
@@ -85,9 +89,9 @@ pub struct NewPrismStageEvent<'a> {
 }
 
 /// Column list shared by all row reads.
-const COLS: &str = "id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py, \
-    pod_id, pod_provider, receipt_json, metrics_json, bpb, review_json, similarity_json, kind, \
-    score, absence_reason, retry_count, error_detail";
+const COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
+    architecture_py, training_py, pod_id, pod_provider, receipt_json, metrics_json, bpb, \
+    review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
 
 /// Insert the queued row.
 ///
@@ -98,11 +102,13 @@ pub async fn insert_prism_submission(
     n: &NewPrismSubmission<'_>,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO prism_submission (id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py) \
-         VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7)",
+        "INSERT INTO prism_submission \
+         (id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, architecture_py, training_py) \
+         VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
+    .bind(n.miner_coldkey)
     .bind(n.epoch)
     .bind(n.netuid)
     .bind(n.label)

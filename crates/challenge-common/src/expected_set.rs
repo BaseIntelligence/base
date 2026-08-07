@@ -236,6 +236,11 @@ mod tests {
                 miner_hk().to_vec(),
                 validator_hk().to_vec(),
             ],
+            coldkeys: vec![
+                owner_hk().to_vec(),
+                miner_hk().to_vec(),
+                validator_hk().to_vec(),
+            ],
             owner_hotkey: owner_hk().to_vec(),
         }
     }
@@ -243,6 +248,7 @@ mod tests {
     fn meta_after_late_registration() -> Metagraph {
         let mut m = meta_at_block_b();
         m.hotkeys.push(late_miner_hk().to_vec());
+        m.coldkeys.push(late_miner_hk().to_vec());
         m
     }
 

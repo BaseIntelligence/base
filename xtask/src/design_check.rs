@@ -39,7 +39,10 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("scoring_window", "SCORING_WINDOW_ROUNDS = 10"),
     ("daily_quota", "MANUAL_DAILY_RUN_QUOTA = 10"),
     ("scheduled_quota", "DESIGN_SCHEDULED_DAILY_RUN_CAP"),
-    ("selfsim_excluded", "other hotkeys' prior art only"),
+    (
+        "selfsim_excluded",
+        "other hotkeys' and same-coldkey prior art only",
+    ),
     ("prompts_per_round", "3 prompts"),
     ("bank_v1", "bank_v1.json"),
     ("agent_py", "agent.py"),

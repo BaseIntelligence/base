@@ -132,10 +132,12 @@ fn decode_hotkey_option_some() {
 #[test]
 fn decode_metagraph_builds_correctly() {
     let keys = vec![vec![0xAA; 32], vec![0xBB; 32]];
+    let coldkeys = vec![vec![0x11; 32], vec![0x22; 32]];
     let owner = vec![0xCC; 32];
-    let mg = decode_metagraph(keys.clone(), owner.clone(), 1);
+    let mg = decode_metagraph(keys.clone(), coldkeys.clone(), owner.clone(), 1);
     assert_eq!(mg.netuid, 1);
     assert_eq!(mg.hotkeys, keys);
+    assert_eq!(mg.coldkeys, coldkeys);
     assert_eq!(mg.owner_hotkey, owner);
 }
 
@@ -653,6 +655,8 @@ async fn mock_metagraph_at() {
     assert_eq!(mg.hotkeys.len(), 2);
     assert_eq!(mg.hotkeys[0], vec![0xAA; 32]);
     assert_eq!(mg.hotkeys[1], vec![0xBB; 32]);
+    // Owner mock returns Keys-shaped changes; unmatched Owner keys stay zero.
+    assert_eq!(mg.coldkeys.len(), 2);
     assert_eq!(mg.owner_hotkey, vec![0xCC; 32]);
 }
 
@@ -673,6 +677,7 @@ async fn mount_metagraph_mocks(server: &MockServer, keys_paged_times: u64) {
         .mount(server)
         .await;
 
+    // Two batched reads per refresh: Keys values, then Owner(hotkey) coldkeys.
     Mock::given(method("POST"))
         .and(body_partial_json(json!({"method": "state_queryStorageAt"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -685,7 +690,7 @@ async fn mount_metagraph_mocks(server: &MockServer, keys_paged_times: u64) {
                 ]
             }]
         })))
-        .expect(keys_paged_times)
+        .expect(keys_paged_times.saturating_mul(2))
         .mount(server)
         .await;
 

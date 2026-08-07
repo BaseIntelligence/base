@@ -44,6 +44,7 @@ async fn setup() -> (Arc<MemoryDesignStore>, Arc<AppState>) {
             .insert_harness(&HarnessRow {
                 id: hid.into(),
                 miner_hotkey: miner.repeat(32),
+                miner_coldkey: None,
                 agent_py: "print(1)".into(),
                 pyproject_toml: "[project]\nname='x'\nversion='0'\n".into(),
                 extra_files: BTreeMap::default(),

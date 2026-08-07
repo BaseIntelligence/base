@@ -40,6 +40,7 @@ async fn seed_run(store: &MemoryDesignStore, id: &str, created_at_ms: u64) {
         .insert_harness(&HarnessRow {
             id: format!("h-{id}"),
             miner_hotkey: "cd".repeat(32),
+            miner_coldkey: None,
             agent_py: "def run(task, llm, out):\n    pass\n".into(),
             pyproject_toml: "[project]\nname='x'\nversion='0'\n".into(),
             extra_files: BTreeMap::new(),

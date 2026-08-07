@@ -64,6 +64,7 @@ fn scored_row(id: &str, hotkey: &str, accept_epoch: u64, score: FinalScore) -> S
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
+        miner_coldkey: None,
         epoch: accept_epoch,
         netuid: 541,
         status: Stage::Terminated,

@@ -108,6 +108,7 @@ fn row(
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
+        miner_coldkey: None,
         epoch: 7,
         netuid: 541,
         status: Stage::Queued,

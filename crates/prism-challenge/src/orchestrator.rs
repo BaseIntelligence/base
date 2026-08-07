@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bundle::NoScoreReasonCode;
 use chain::ChainClient;
-use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, GateCorpusEntry, VerdictKind};
+use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, VerdictKind};
 use challenge_common::{expected_set_at_chain, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
@@ -29,7 +29,7 @@ use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::agentic::{build_review_request, corpus_from_rows};
+use crate::agentic::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
 use crate::score::{combine_final, FinalOutcome};
 use crate::submit::GatewayClient;
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
@@ -452,15 +452,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             return false;
         }
         let recent = self.store.list(None, None, 64).await.unwrap_or_default();
-        let corpus: Vec<GateCorpusEntry> = recent
-            .into_iter()
-            .filter(|r| r.id != row.id)
-            .map(|r| GateCorpusEntry {
-                id: format!("subm:{}", r.id),
-                source: r.architecture_py,
-                created_at_ms: r.created_at_ms,
-            })
-            .collect();
+        let corpus = gate_corpus_from_rows(row, &recent);
         let Some(hit) = copy_gate(&row.architecture_py, row.created_at_ms, &corpus) else {
             return false;
         };
@@ -653,7 +645,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 prompt_version: prism_review::SIMILARITY_PROMPT_VERSION,
             });
         }
-        let corpus = self.similarity_corpus(id).await;
+        let corpus = self.similarity_corpus(row).await;
         self.reviewer
             .similarity(&row.architecture_py, &corpus)
             .await
@@ -686,7 +678,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         // Training-only rows: drop the referenced registry arch from the
         // corpus (byte-identity with it is by design, not a copy).
         let corpus = corpus_from_rows(
-            id,
+            row,
             &recent,
             row.arch_id
                 .is_some()
@@ -744,7 +736,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await;
     }
 
-    async fn similarity_corpus(&self, current_id: &str) -> Vec<SourceSnippet> {
+    async fn similarity_corpus(&self, candidate: &SubmissionState) -> Vec<SourceSnippet> {
         let recent = self
             .store
             .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
@@ -756,11 +748,16 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             training_py: BASELINE_TRAINING_PY.into(),
         }];
         for r in recent {
-            if r.id == current_id {
+            if r.id == candidate.id || same_miner(candidate, &r) {
                 continue;
             }
+            let label = if r.id.len() >= 8 {
+                format!("subm:{}", &r.id[..8])
+            } else {
+                format!("subm:{}", r.id)
+            };
             v.push(SourceSnippet {
-                label: format!("subm:{}", &r.id[..8]),
+                label,
                 architecture_py: r.architecture_py.clone(),
                 training_py: r.training_py.clone(),
             });

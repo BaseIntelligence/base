@@ -36,3 +36,22 @@ pub use types::{
 pub fn crate_name() -> &'static str {
     "challenge-agentic"
 }
+
+/// Same economic miner for copy/similarity corpora: matching hotkey, or both
+/// coldkeys known and equal (case-insensitive). Used when 1-max gating forces
+/// hotkey rotation under one coldkey.
+#[must_use]
+pub fn same_miner_identity(
+    hotkey_a: &str,
+    coldkey_a: Option<&str>,
+    hotkey_b: &str,
+    coldkey_b: Option<&str>,
+) -> bool {
+    if hotkey_a.eq_ignore_ascii_case(hotkey_b) {
+        return true;
+    }
+    match (coldkey_a, coldkey_b) {
+        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => a.eq_ignore_ascii_case(b),
+        _ => false,
+    }
+}

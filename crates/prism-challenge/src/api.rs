@@ -259,9 +259,16 @@ async fn post_submission(
         }
     };
     let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let miner_hotkey = req.miner_hotkey.trim().to_owned();
+    let miner_coldkey = st
+        .metagraph
+        .as_ref()
+        .and_then(|c| c.snapshot())
+        .and_then(|v| v.coldkey_hex_of(&miner_hotkey));
     let row = SubmissionState {
         id: id.clone(),
-        miner_hotkey: req.miner_hotkey.trim().to_owned(),
+        miner_hotkey,
+        miner_coldkey,
         epoch,
         netuid: st.netuid,
         status: Stage::Queued,
@@ -600,13 +607,9 @@ mod tests {
     ) -> (Arc<AppState>, Arc<submission_gating::MemoryGatingStore>) {
         let gating = Arc::new(submission_gating::MemoryGatingStore::new());
         let cache = Arc::new(MetagraphCache::new());
-        cache.update(
-            541,
-            &metagraph_hotkeys
-                .iter()
-                .map(|h| h.to_vec())
-                .collect::<Vec<_>>(),
-        );
+        let keys: Vec<Vec<u8>> = metagraph_hotkeys.iter().map(|h| h.to_vec()).collect();
+        // Tests that do not care about shared coldkeys: each hotkey owns itself.
+        cache.update(541, &keys, &keys);
         (
             Arc::new(AppState {
                 store: Arc::new(MemoryPrismStore::new()),

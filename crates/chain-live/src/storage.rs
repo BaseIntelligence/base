@@ -218,12 +218,34 @@ pub fn decode_hotkey(bytes: &[u8]) -> Result<Vec<u8>, ChainError> {
     }
 }
 
+/// Map key with the `Blake2_128Concat` hasher over an `AccountId32`.
+///
+/// Used by `SubtensorModule.Owner` (hotkey → coldkey). Layout:
+/// `Twox128(pallet) ++ Twox128(item) ++ blake2_128(account) ++ account`.
+#[must_use]
+pub fn storage_map_key_account_blake2(
+    pallet: &str,
+    item: &str,
+    account: &[u8; ACCOUNT_ID_LEN],
+) -> Vec<u8> {
+    let mut k = storage_key(pallet, item);
+    k.extend_from_slice(&blake2_128(account));
+    k.extend_from_slice(account);
+    k
+}
+
 /// Build a [`Metagraph`] from decoded storage values.
 #[must_use]
-pub fn decode_metagraph(keys: Vec<Vec<u8>>, owner: Vec<u8>, netuid: u16) -> Metagraph {
+pub fn decode_metagraph(
+    keys: Vec<Vec<u8>>,
+    coldkeys: Vec<Vec<u8>>,
+    owner: Vec<u8>,
+    netuid: u16,
+) -> Metagraph {
     Metagraph {
         netuid,
         hotkeys: keys,
+        coldkeys,
         owner_hotkey: owner,
     }
 }
