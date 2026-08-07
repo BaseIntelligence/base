@@ -538,7 +538,7 @@ body { margin: 0; background: var(--bg); }
     #[test]
     fn ie_behavior_still_nukes_block() {
         let (out, report) =
-            sanitize_html(r#"<style>body{behavior:url(evil.htc);color:red}</style><p>x</p>"#);
+            sanitize_html(r"<style>body{behavior:url(evil.htc);color:red}</style><p>x</p>");
         assert!(report.css_stripped, "{report:?}");
         assert!(!out.to_ascii_lowercase().contains("<style>"), "{out}");
         assert!(!out.contains("evil.htc"), "{out}");
