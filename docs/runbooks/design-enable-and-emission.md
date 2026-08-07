@@ -1,7 +1,7 @@
 # Design challenge — enable real backends + emission unlock
 
-Design ships with `emission_share_bps = 0` until an explicit owner ceremony.
-Until then **prism holds `10000` bps** (sole weight source). See
+Design emission is owner-controlled via the trust root. Current committed
+shares are **design = 5000 bps**, **prism = 5000 bps** (50/50). See
 [`config/challenges.toml`](../../config/challenges.toml) and
 [`DESIGN_CHALLENGE.md`](../DESIGN_CHALLENGE.md).
 
@@ -22,8 +22,8 @@ Until then **prism holds `10000` bps** (sole weight source). See
    ```json
    { "challenge_id": "design", "base_url": "http://design-challenge:8093", "weight": 1 }
    ```
-6. Keep `emission_share_bps = 0` for design until ceremony. Leaves still emit
-   (D24 exact-E); they simply carry zero emission share.
+6. Emission share is independent of bringing the service up: leaves still emit
+   (D24 exact-E) even at `0` bps. Current prod/staging shares are 5000/5000.
 
 ## B. Keygen (`design_sk`)
 
@@ -48,7 +48,7 @@ Goal: move weight from prism → design (sum must remain exactly **10000** bps).
 5. Do **not** change design `challenge_scoring_version` or freeze pins in the
    same ceremony unless intentionally bumping the scoring contract.
 
-Default until this ceremony: **design = 0 bps**, **prism = 10000 bps**.
+Current committed default: **design = 5000 bps**, **prism = 5000 bps**.
 
 ## D. Admin winners tokens + OpenRouter
 
@@ -69,6 +69,6 @@ approval; Elo annotate is deprecated / unused on the leaf path).
 
 ## E. Rollback emission
 
-Re-sign challenges.toml with previous bps (design 0 / prism 10000), roll
-validators. Challenge service can keep running; emission share alone changes
-aggregation weight.
+Re-sign challenges.toml with previous bps (e.g. design 2000 / prism 8000, or
+design 0 / prism 10000), roll validators. Challenge service can keep running;
+emission share alone changes aggregation weight.

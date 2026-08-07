@@ -96,7 +96,7 @@ mod tests {
         design.agents = 4;
         let mut prism = prism_frame();
         prism.agents = 8;
-        prism.emission_share = 0.8;
+        prism.emission_share = 0.5;
         let rows = population_rows(&[design, prism]);
         assert_eq!(rows[1]["agents"], 8);
         assert!((rows[0]["ratio"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);

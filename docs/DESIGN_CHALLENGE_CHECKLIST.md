@@ -13,7 +13,7 @@ pins without bumping `challenge_scoring_version`.
 |-----|-------------|-----------------|-------------------------------------|
 | (T) | Topology: master-only challenge + sandbox + egress; validator no exec | ## 1. What runs where (topology) | `## 1. What runs where (topology)` |
 | (I) | Identifiers and versions | ## 2. Identifiers and versions | `## 2. Identifiers and versions` |
-| (E) | Emission 0 bps posture | ## 2. Identifiers and versions | `emission_share_bps = 0` |
+| (E) | Emission 5000 bps (50/50 with prism) | ## 2. Identifiers and versions | `emission_share_bps = 5000` |
 | (H) | Miner harness contract (`agent.py` / `pyproject.toml`) | ## 3. Miner harness contract | `## 3. Miner harness contract` |
 | (S) | Sandbox hardening | ## 4. Sandbox hardening | `## 4. Sandbox hardening` |
 | (Z) | Sanitize rules | ## 5. Sanitize rules | `## 5. Sanitize rules` |
@@ -35,8 +35,8 @@ pins without bumping `challenge_scoring_version`.
 | scoring_version | `challenge_scoring_version` |
 | scoring_version_3 | `u16 = 3` |
 | bundle_protocol_version | `protocol_version = 1` |
-| emission_zero | `emission_share_bps = 0` |
-| prism_bps_sole | `10000` |
+| emission_share | `emission_share_bps = 5000` |
+| bps_sum | `10000` |
 | SCORE_MAX | `1_000_000` |
 | compose_port | `8093` |
 | round_secs | `8_640` |
