@@ -187,8 +187,10 @@ pub struct Submission {
     pub prompt_title: Option<String>,
     /// Title.
     pub title: String,
-    /// Preview or detail URL (gateway-relative for design view).
-    pub url: String,
+    /// Preview or detail URL. Absent for design: produced HTML is never
+    /// served, so design rows carry only `screenshot_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Full-page PNG screenshot URL when master captured one (design arena).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screenshot_url: Option<String>,
