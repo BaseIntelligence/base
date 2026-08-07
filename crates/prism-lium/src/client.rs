@@ -514,6 +514,12 @@ impl LiumClient {
     /// command extracts it, writes the client-generated `SECRET_SEED`, and
     /// finally touches `.ready` (last — the harness gate treats `.ready` as
     /// the go signal; `set -e` keeps a partial stage from ever touching it).
+    ///
+    /// The whole assets tree rides along, so the G5 natural-document packs
+    /// under [`prism_recipe::NATURAL_PACK_REL`] reach the pod on this same
+    /// path with no transport of their own; they are the largest thing in
+    /// the tree, which is what [`prism_recipe::MAX_EVAL_ASSETS_PACKED_BYTES`]
+    /// is measured against.
     async fn stage_eval_assets(
         &self,
         target: &SshTarget,
@@ -533,8 +539,8 @@ impl LiumClient {
                 truncate(&String::from_utf8_lossy(&tar.stderr), 200)
             )));
         }
-        if tar.stdout.len() > 64 * 1024 * 1024 {
-            return Err(LiumError::Exec("eval assets exceed 64 MiB packed".into()));
+        if tar.stdout.len() > prism_recipe::MAX_EVAL_ASSETS_PACKED_BYTES {
+            return Err(LiumError::Exec("eval assets exceed the packed cap".into()));
         }
         let seed = random_seed_hex()?;
         let cmd = format!(
@@ -1308,6 +1314,25 @@ mod tests {
         assert!(got.contains_key("cheatguard_patterns.json"));
         assert!(got.keys().any(|p| p.starts_with("prismlib/")));
         assert!(got.keys().any(|p| p.starts_with("eval/")));
+    }
+
+    #[test]
+    fn natural_packs_ride_the_post_train_assets_stage() {
+        // `stage_eval_assets` tars the operator assets dir wholesale, so the
+        // G5 natural packs need no transport of their own — but they must be
+        // addressed relative to that dir, and the on-pod adapter has to
+        // resolve the very same relative path.
+        let rel = std::path::Path::new(prism_recipe::NATURAL_PACK_REL);
+        assert!(rel.is_relative(), "pack path must be assets-dir relative");
+        let staged = std::path::Path::new(EVAL_ASSETS_POD_DIR).join(rel);
+        assert!(staged.starts_with(EVAL_ASSETS_POD_DIR));
+        // The harness resolves the same relative path on the pod.
+        let adapter = prism_recipe::HARNESS_FILES
+            .iter()
+            .find(|(p, _)| *p == "eval/natural_docs.py")
+            .map(|(_, c)| *c)
+            .expect("natural_docs.py is part of the harness package");
+        assert!(adapter.contains(prism_recipe::NATURAL_PACK_REL));
     }
 
     #[test]
