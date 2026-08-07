@@ -378,10 +378,11 @@ through to the LLM. Starting from the published miner **baseline** is never a
 cheat signal (baseline-zeroing fix); copying another *miner's* harness is.
 
 **Corpus rule (both the gate and the LLM review):** the comparison corpus is
-**other hotkeys' prior art only** — entries owned by the candidate's own
-`miner_hotkey` are excluded, and so is anything created at or after the
-candidate. A miner iterating on their own harness is therefore never scored
-against their own previous version. Selection lives in one place,
+**other hotkeys' and same-coldkey prior art only** — entries owned by the
+candidate's own `miner_hotkey` **or** `miner_coldkey` are excluded, and so is
+anything created at or after the candidate. After 1-max gating a miner iterates
+via a new hotkey under the same coldkey; those revisions must not be treated as
+cross-miner copies. Selection lives in one place,
 [`crates/design-challenge/src/corpus.rs`](../crates/design-challenge/src/corpus.rs),
 so the gate and the review can never disagree.
 

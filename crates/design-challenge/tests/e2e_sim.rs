@@ -35,6 +35,7 @@ async fn sim_pipeline_pages_and_admin_score() {
         .insert_harness(&HarnessRow {
             id: hid.clone(),
             miner_hotkey: bundle.miner_hotkey.clone(),
+            miner_coldkey: None,
             agent_py: bundle.agent_py.clone(),
             pyproject_toml: bundle.pyproject_toml.clone(),
             extra_files: BTreeMap::new(),

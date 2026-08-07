@@ -109,6 +109,7 @@ async fn baseline_arch_train_copy_scores_zero() {
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: "22".repeat(32),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,

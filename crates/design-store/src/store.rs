@@ -143,6 +143,8 @@ pub struct HarnessRow {
     pub id: String,
     /// Miner hotkey.
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// agent.py.
     pub agent_py: String,
     /// pyproject.toml.

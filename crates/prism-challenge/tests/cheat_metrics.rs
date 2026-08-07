@@ -115,6 +115,7 @@ def train(model, ctx):
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: "11".repeat(32),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,

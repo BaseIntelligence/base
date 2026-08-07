@@ -148,9 +148,10 @@ reviewer. A pre-LLM **copy gate** rejects a byte/AST copy of an *earlier*
 harness outright (`rejected`, `Score(0)`, no LLM call); `cheat` / `suspicious`
 from the LLM review → `Score(0)`. Starting from the published **baseline** is
 fine — copying another *miner's* harness is not. Both the copy gate and the LLM
-review compare you against **other hotkeys' earlier harnesses only**: your own
-previous versions are excluded from the corpus, so iterating on your own
-harness is never read as self-copying.
+review compare you against **other miners' earlier harnesses only**: your own
+previous versions (same hotkey **or** same coldkey) are excluded from the
+corpus, so iterating via a new hotkey under the same coldkey is never read as
+self-copying.
 
 Clean runs await **admin winners** (1 or 2 harnesses per round); each round win
 is one **point**. Rewards are **not** winner-take-all on a single round: the

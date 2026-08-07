@@ -48,6 +48,7 @@ fn harness_from(r: dbs::DesignHarnessRow) -> HarnessRow {
     HarnessRow {
         id: r.id,
         miner_hotkey: r.miner_hotkey,
+        miner_coldkey: r.miner_coldkey,
         agent_py: r.agent_py,
         pyproject_toml: r.pyproject_toml,
         extra_files: extras_from_value(&r.extra_files),
@@ -134,6 +135,7 @@ impl DesignStore for DbDesignStore {
             &dbs::NewDesignHarness {
                 id: &row.id,
                 miner_hotkey: &row.miner_hotkey,
+                miner_coldkey: row.miner_coldkey.as_deref(),
                 agent_py: &row.agent_py,
                 pyproject_toml: &row.pyproject_toml,
                 extra_files: extras,

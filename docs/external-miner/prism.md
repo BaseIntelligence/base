@@ -96,8 +96,11 @@ allowed.
 
 Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.
 Cheap similarity plus the shared **agentic** gate (AST + metrics/receipt) force
-hard-zero on `cheat` / `suspicious` (and cheap `Copied` / `Suspicious`);
-LLM quality is coherence-only, not a grader. **Competition:** per epoch you are
+hard-zero on `cheat` / `suspicious` (and cheap `Copied` / `Suspicious`).
+Copy/similarity corpora exclude your own prior art (same hotkey **or** same
+coldkey), so iterating via a new hotkey under the same coldkey is not treated
+as a cross-miner copy. LLM quality is coherence-only, not a grader.
+**Competition:** per epoch you are
 credited the max of (a) your own best training result and (b) for each arch you
 own, that arch's best result by *any* trainer — architecture owners are rewarded
 for architectures people win with. Scores first land in the leaf set emitted at the

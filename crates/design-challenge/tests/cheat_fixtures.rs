@@ -79,6 +79,7 @@ fn harness_row(id: &str, miner: &str, agent_py: &str, created_at_ms: u64) -> Har
     HarnessRow {
         id: id.into(),
         miner_hotkey: miner.into(),
+        miner_coldkey: None,
         agent_py: agent_py.into(),
         pyproject_toml: BASELINE_PYPROJECT.into(),
         extra_files: BTreeMap::new(),

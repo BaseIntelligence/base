@@ -63,6 +63,10 @@ pub struct Metagraph {
     pub netuid: u16,
     /// Neuron hotkeys in UID order.
     pub hotkeys: Vec<Vec<u8>>,
+    /// Coldkey owning each hotkey (`SubtensorModule.Owner`), UID-aligned with
+    /// [`Self::hotkeys`]. Empty when the backend did not resolve owners; an
+    /// all-zero entry means the chain default (unknown / unset).
+    pub coldkeys: Vec<Vec<u8>>,
     /// Owner hotkey for the subnet (may equal first neuron or a dedicated owner).
     pub owner_hotkey: Vec<u8>,
 }
@@ -404,6 +408,10 @@ pub struct FakeChainConfig {
     pub owner_hotkey: Vec<u8>,
     /// Neuron hotkeys (UID order).
     pub hotkeys: Vec<Vec<u8>>,
+    /// Optional coldkeys UID-aligned with [`Self::hotkeys`]. Empty → each
+    /// neuron is treated as self-owned (coldkey == hotkey) so tests that do
+    /// not care about shared coldkeys keep unique owners.
+    pub coldkeys: Vec<Vec<u8>>,
     /// Published axons as `(hotkey, info)`; hotkeys absent here have never served.
     pub axons: Vec<(Vec<u8>, AxonInfo)>,
     /// Number of subsequent weight submits that should return [`ChainError::RateLimited`].
@@ -426,6 +434,7 @@ impl Default for FakeChainConfig {
             blocks_since_last_step: fake_defaults::BLOCKS_SINCE_LAST_STEP,
             owner_hotkey: vec![0xA1; 32],
             hotkeys: vec![vec![0xA1; 32], vec![0xB2; 32], vec![0xC3; 32]],
+            coldkeys: Vec::new(),
             axons: Vec::new(),
             rate_limit_fails_remaining: 0,
         }
@@ -550,9 +559,16 @@ impl ChainClient for FakeChain {
         if !found {
             return Err(ChainError::UnknownMetagraph);
         }
+        let coldkeys = if self.cfg.coldkeys.is_empty() {
+            // Default: each hotkey owns itself (no shared-coldkey collisions).
+            self.cfg.hotkeys.clone()
+        } else {
+            self.cfg.coldkeys.clone()
+        };
         Ok(Metagraph {
             netuid: self.cfg.netuid,
             hotkeys: self.cfg.hotkeys.clone(),
+            coldkeys,
             owner_hotkey: self.cfg.owner_hotkey.clone(),
         })
     }

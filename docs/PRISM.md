@@ -172,16 +172,18 @@ absent/empty → publishing is a graceful no-op, scoring is unaffected.
 ## Agentic anti-cheat + AST + metrics gate
 
 Before any pod or LLM spend, the **pre-LLM copy gate** compares the
-candidate `architecture.py` against recent submissions (byte hash +
-`challenge-ast` fingerprints): a byte/AST copy of a **strictly-earlier**
-submission (`created_at` ordered) is terminal `rejected` with `Score(0)` —
-no pod, no LLM. Ties / unknown timestamps fall through to the LLM path; the
-published baseline is exempt (miners start from it). After measure and the
-cheap `prism-review` arch-only similarity/quality filters, the shared
-`challenge-agentic` loop inspects miner sources with read-only tools
+candidate `architecture.py` against recent submissions from **other miners**
+(byte hash + `challenge-ast` fingerprints; same-`miner_hotkey` and
+same-`miner_coldkey` prior art excluded): a byte/AST copy of a
+**strictly-earlier** submission (`created_at` ordered) is terminal `rejected`
+with `Score(0)` — no pod, no LLM. Ties / unknown timestamps fall through to
+the LLM path; the published baseline is exempt (miners start from it). After
+measure and the cheap `prism-review` arch-only similarity/quality filters, the
+shared `challenge-agentic` loop inspects miner sources with read-only tools
 (`list_dir`, `read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`)
-against an **architecture-only** corpus of baseline + recent submissions.
-Final judge is the mandatory `submit_verdict` function-call.
+against an **architecture-only** corpus of baseline + other miners' recent
+submissions (same hotkey/coldkey exclusion as the gate). Final judge is the
+mandatory `submit_verdict` function-call.
 
 | Verdict | Leaf effect |
 |---------|-------------|

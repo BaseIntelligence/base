@@ -361,9 +361,15 @@ async fn post_harness(
 
     let mut extras = req.extra_files;
     encode_env_into_extras(&mut extras, &req.env_vars);
+    let miner_coldkey = st
+        .metagraph
+        .as_ref()
+        .and_then(|c| c.snapshot())
+        .and_then(|v| v.coldkey_hex_of(&hotkey));
     let row = HarnessRow {
         id: id.clone(),
         miner_hotkey: hotkey.clone(),
+        miner_coldkey,
         agent_py: req.agent_py,
         pyproject_toml: req.pyproject_toml,
         extra_files: extras,
@@ -1161,7 +1167,8 @@ mod tests {
         let gating = Arc::new(MemoryGatingStore::new());
         let metagraph = metagraph_hotkeys.map(|keys| {
             let cache = Arc::new(MetagraphCache::new());
-            cache.update(541, &keys.iter().map(|h| h.to_vec()).collect::<Vec<_>>());
+            let raw: Vec<Vec<u8>> = keys.iter().map(|h| h.to_vec()).collect();
+            cache.update(541, &raw, &raw);
             cache
         });
         (
@@ -1225,6 +1232,7 @@ mod tests {
         HarnessRow {
             id: format!("harness-{marker}"),
             miner_hotkey: hotkey.to_owned(),
+            miner_coldkey: None,
             agent_py: format!("def run(task, llm, out):\n    pass  # {marker}\n"),
             pyproject_toml: "[project]\nname='x'\nversion='0.1.0'\n".into(),
             extra_files: BTreeMap::new(),

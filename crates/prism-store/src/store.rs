@@ -31,6 +31,8 @@ pub struct SubmissionState {
     pub id: SubmissionId,
     /// Miner hotkey hex (64).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// Chain epoch at acceptance.
     pub epoch: u64,
     /// Netuid.
@@ -813,6 +815,7 @@ mod tests {
         SubmissionState {
             id: id.into(),
             miner_hotkey: hotkey.into(),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,

@@ -25,8 +25,8 @@ pub use storage::{
     decode_axon_info, decode_bool, decode_double_map_account_k2, decode_double_map_k2,
     decode_hotkey, decode_metagraph, decode_u16, decode_u64, decode_vec_u64, decode_vec_vec_u8,
     storage_double_map_key_u16_account, storage_double_map_key_u16_u16,
-    storage_double_map_prefix_u16, storage_key, storage_map_key_identity, storage_map_key_twox64,
-    storage_map_key_u16, ACCOUNT_ID_LEN,
+    storage_double_map_prefix_u16, storage_key, storage_map_key_account_blake2,
+    storage_map_key_identity, storage_map_key_twox64, storage_map_key_u16, ACCOUNT_ID_LEN,
 };
 pub use tlock::encrypt_commit;
 
@@ -181,8 +181,42 @@ impl LiveChainClient {
             Some(block_hash)
         };
         let keys = self.enumerate_hotkeys(netuid, at)?;
+        let coldkeys = self.fetch_coldkeys_for_hotkeys(&keys, at)?;
         let owner = self.read_owner_hotkey(netuid, at)?;
-        Ok(storage::decode_metagraph(keys, owner, netuid))
+        Ok(storage::decode_metagraph(keys, coldkeys, owner, netuid))
+    }
+
+    /// Bulk-read `SubtensorModule.Owner(hotkey) → coldkey` for every hotkey.
+    ///
+    /// Uses batched `state_queryStorageAt` (same path as `Keys`), never
+    /// per-UID RPCs. Missing / default (all-zero) owners become zero vectors
+    /// so the UID alignment with `hotkeys` is preserved.
+    fn fetch_coldkeys_for_hotkeys(
+        &self,
+        hotkeys: &[Vec<u8>],
+        at: Option<&[u8; 32]>,
+    ) -> Result<Vec<Vec<u8>>, ChainError> {
+        if hotkeys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut storage_keys = Vec::with_capacity(hotkeys.len());
+        let mut index_of: HashMap<Vec<u8>, usize> = HashMap::with_capacity(hotkeys.len());
+        for (i, hk) in hotkeys.iter().enumerate() {
+            let account = account_id(hk)?;
+            let sk = storage::storage_map_key_account_blake2(PALLET_SUBTENSOR, "Owner", &account);
+            index_of.insert(sk.clone(), i);
+            storage_keys.push(sk);
+        }
+        let mut coldkeys = vec![vec![0_u8; ACCOUNT_ID_LEN]; hotkeys.len()];
+        for chunk in storage_keys.chunks(256) {
+            for (key, value) in self.rpc.state_query_storage_at(chunk, at)? {
+                let Some(&i) = index_of.get(&key) else {
+                    continue;
+                };
+                coldkeys[i] = storage::decode_hotkey(&value)?;
+            }
+        }
+        Ok(coldkeys)
     }
 
     /// Connect and load a signing key from a file (32 raw bytes or 64 hex chars).

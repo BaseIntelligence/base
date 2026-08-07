@@ -108,18 +108,19 @@ review still gates eligibility:
 ## Anti-copy review
 
 A **pre-LLM copy gate** first compares the candidate `architecture.py`
-against recent submissions (byte hash + AST fingerprints, `created_at`
-ordered): a byte/AST copy of a strictly-earlier architecture is terminal
-`rejected` with zero score — no pod time, no LLM spend. The baseline is
-exempt (everyone may start from it); created_at ties fall through to the LLM
-path below.
+against recent submissions from **other miners** (byte hash + AST
+fingerprints, `created_at` ordered; same-`miner_hotkey` and
+same-`miner_coldkey` prior art excluded): a byte/AST copy of a
+strictly-earlier architecture is terminal `rejected` with zero score — no pod
+time, no LLM spend. The baseline is exempt (everyone may start from it);
+created_at ties fall through to the LLM path below.
 
 Each remaining submission then faces an LLM review on the master
 (`OpenRouter` when the key file `/run/base/openrouter/api_key` exists, else
 the deterministic `SimReviewer`) over its **architecture only** vs. the
-recipe **baseline plus every earlier submission** (`prism_submission`
-history, capped at the 6 most recent records). Since similarity v2,
-`training.py` is exempt from both candidate and corpus: the same training
-script on two different architectures is legitimate. Verdicts: `Original` /
-`Suspicious` / `Copied`, with a similarity score and evidence line — all
-stored append-only in `prism_stage_event`.
+recipe **baseline plus earlier other-miner submissions** (`prism_submission`
+history, capped at the 6 most recent records; same hotkey/coldkey exclusion).
+Since similarity v2, `training.py` is exempt from both candidate and corpus:
+the same training script on two different architectures is legitimate.
+Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity score and
+evidence line — all stored append-only in `prism_stage_event`.

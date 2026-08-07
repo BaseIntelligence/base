@@ -14,6 +14,8 @@ pub struct DesignHarnessRow {
     pub id: String,
     /// Miner hotkey (lowercase 64 hex).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// agent.py source.
     pub agent_py: String,
     /// pyproject.toml.
@@ -164,6 +166,8 @@ pub struct NewDesignHarness<'a> {
     pub id: &'a str,
     /// miner.
     pub miner_hotkey: &'a str,
+    /// owning coldkey (optional).
+    pub miner_coldkey: Option<&'a str>,
     /// agent.py.
     pub agent_py: &'a str,
     /// pyproject.
@@ -259,7 +263,8 @@ pub struct NewDesignStageEvent<'a> {
 }
 
 const HARNESS_COLS: &str =
-    "id, miner_hotkey, agent_py, pyproject_toml, extra_files, active, eliminated_until_round, \
+    "id, miner_hotkey, miner_coldkey, agent_py, pyproject_toml, extra_files, active, \
+     eliminated_until_round, \
      (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
@@ -276,11 +281,13 @@ const RATING_COLS: &str =
 /// SQL error.
 pub async fn insert_design_harness(pool: &PgPool, n: &NewDesignHarness<'_>) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO design_harness (id, miner_hotkey, agent_py, pyproject_toml, extra_files) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO design_harness \
+         (id, miner_hotkey, miner_coldkey, agent_py, pyproject_toml, extra_files) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
+    .bind(n.miner_coldkey)
     .bind(n.agent_py)
     .bind(n.pyproject_toml)
     .bind(&n.extra_files)
