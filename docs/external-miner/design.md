@@ -126,13 +126,20 @@ Minimal `harness.json` shape:
 - An accepted harness **waits for the next round**: runs are scheduled into
   `round_id + 1` and start when that round opens, never mid-round.
 - Sandbox **run** timeout is **30 minutes** (`AGENT_RUN_TIMEOUT_SECS = 1800`).
-- **10** sandboxed runs per hotkey per UTC day.
 - Each round picks **3** prompts via deterministic weighted draw for all harnesses.
+- Daily run quota is **split by origin**, so participating in every round can
+  never lock you out:
+  - **Manual** — **10** runs/day, charged only by your own `POST /v1/harness`.
+    This is anti-spam on resubmission, not a cap on participation.
+  - **Scheduled** — organizer round dispatch, capped well above the full day's
+    schedule (10 rounds × 3 prompts = **30** runs; cap **60**). You never spend
+    manual quota by being scheduled.
 - Infra failures (package install, review/LLM infra) **auto-retry up to 3
   times**; cheat / rejected verdicts are terminal. Manual retry:
   `POST /v1/runs/{id}/retry`.
 
-Check quota: `GET /v1/quota/{hotkey}`.
+Check quota: `GET /v1/quota/{hotkey}` — `manual` and `scheduled` objects
+(`runs_used` / `limit` / `remaining`) alongside the whole-day `runs_used`.
 
 ## Scoring (summary)
 
@@ -140,7 +147,10 @@ After sanitize, master-side **agentic anti-cheat** runs in a containerized
 reviewer. A pre-LLM **copy gate** rejects a byte/AST copy of an *earlier*
 harness outright (`rejected`, `Score(0)`, no LLM call); `cheat` / `suspicious`
 from the LLM review → `Score(0)`. Starting from the published **baseline** is
-fine — copying another *miner's* harness is not.
+fine — copying another *miner's* harness is not. Both the copy gate and the LLM
+review compare you against **other hotkeys' earlier harnesses only**: your own
+previous versions are excluded from the corpus, so iterating on your own
+harness is never read as self-copying.
 
 Clean runs await **admin winners** (1 or 2 harnesses per round); each round win
 is one **point**. Rewards are **not** winner-take-all on a single round: the

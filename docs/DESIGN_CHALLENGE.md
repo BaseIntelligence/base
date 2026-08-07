@@ -318,7 +318,18 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
   deterministic weighted draw
   `SHA256(domain || round_id || bank_digest)` → 3 prompts per round;
   identical for every harness in that round.
-- **Quota**: **10** runs/day/hotkey (`DAILY_RUN_QUOTA = 10`; ~2–3 prompts/round × harness).
+- **Quota (two buckets, per hotkey per UTC day)** — an honest harness that runs
+  every round must never be locked out, so organizer-scheduled work does not
+  draw on the miner's anti-spam allowance:
+
+  | Bucket | Charged by | Cap | Override |
+  |--------|-----------|-----|----------|
+  | Manual | `POST /v1/harness` (miner-initiated) | `MANUAL_DAILY_RUN_QUOTA = 10` | `DESIGN_MANUAL_DAILY_RUN_QUOTA` |
+  | Scheduled | Round dispatch + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **60** at 10 rounds × 3 prompts) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
+
+  Enforcement is **per bucket**: exhausting manual submissions never stops the
+  round scheduler, and the scheduled cap is a runaway-scheduler guard, not a
+  participation limit. `GET /v1/quota/{hotkey}` reports both.
 - **Auto-retry**: infra-class failures (`install` / `ast_infra` / `llm_infra`)
   requeue up to 3 times (`DESIGN_AUTO_RETRY_MAX`), then terminal
   `NoScore(ChallengeInternal)` + gating `blocked`.
@@ -361,6 +372,14 @@ harness corpus (byte hash + AST fingerprint). A byte/AST copy
 LLM review is **skipped**. Unknown timestamps (baseline, legacy rows) fall
 through to the LLM. Starting from the published miner **baseline** is never a
 cheat signal (baseline-zeroing fix); copying another *miner's* harness is.
+
+**Corpus rule (both the gate and the LLM review):** the comparison corpus is
+**other hotkeys' prior art only** — entries owned by the candidate's own
+`miner_hotkey` are excluded, and so is anything created at or after the
+candidate. A miner iterating on their own harness is therefore never scored
+against their own previous version. Selection lives in one place,
+[`crates/design-challenge/src/corpus.rs`](../crates/design-challenge/src/corpus.rs),
+so the gate and the review can never disagree.
 
 ### Allowed inspiration
 

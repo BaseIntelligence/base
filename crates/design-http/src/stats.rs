@@ -7,7 +7,10 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use design_challenge_task::{round_id_at, round_secs, CHALLENGE_ID, DAILY_RUN_QUOTA};
+use design_challenge_task::{
+    daily_run_quota, manual_daily_run_quota, round_id_at, round_secs, scheduled_daily_run_cap,
+    CHALLENGE_ID,
+};
 use design_prompts::prompt_set_digest;
 use design_store::{DesignStore, RunStage};
 use serde_json::{json, Value};
@@ -92,7 +95,9 @@ pub async fn get_stats(State(st): State<Arc<AppState>>) -> Response {
         "ratings_count": ratings.len(),
         "elimination_signal_count": elim,
         "agents": st.store.count_harness_miners().await.unwrap_or(0),
-        "daily_run_quota": DAILY_RUN_QUOTA,
+        "daily_run_quota": daily_run_quota(),
+        "manual_daily_run_quota": manual_daily_run_quota(),
+        "scheduled_daily_run_cap": scheduled_daily_run_cap(),
     }))
     .into_response()
 }
@@ -172,7 +177,9 @@ pub async fn get_dashboard(State(st): State<Arc<AppState>>) -> Response {
             "previous_ratings": lb(&prev),
         },
         "recent_runs": jobs,
-        "daily_run_quota": DAILY_RUN_QUOTA,
+        "daily_run_quota": daily_run_quota(),
+        "manual_daily_run_quota": manual_daily_run_quota(),
+        "scheduled_daily_run_cap": scheduled_daily_run_cap(),
         "poll_hint_ms": 1000,
     }))
     .into_response()
@@ -188,7 +195,7 @@ pub async fn get_miner(State(st): State<Arc<AppState>>, Path(hotkey): Path<Strin
         Ok(h) => h,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
-    let used = st.store.quota_get(&hk, &day).await.unwrap_or(0);
+    let used = st.store.quota_get(&hk, &day).await.unwrap_or_default();
     // All recent generations for this miner (not only the current round) so
     // public agent history can list every design run the harness produced.
     let hid: std::collections::HashSet<_> = harnesses.iter().map(|h| h.id.clone()).collect();
@@ -225,12 +232,7 @@ pub async fn get_miner(State(st): State<Arc<AppState>>, Path(hotkey): Path<Strin
     Json(json!({
         "miner_hotkey": hk,
         "round_id": rid,
-        "quota": {
-            "day": day,
-            "runs_used": used,
-            "limit": DAILY_RUN_QUOTA,
-            "remaining": DAILY_RUN_QUOTA.saturating_sub(used),
-        },
+        "quota": crate::api::quota_json(&hk, &day, used),
         "harnesses": harnesses.iter().map(|h| json!({
             "id": h.id,
             "active": h.active,

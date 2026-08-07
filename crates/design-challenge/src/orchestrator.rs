@@ -8,8 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chain::ChainClient;
 use challenge_agentic::{
-    copy_gate, AgenticBackend, AgenticError, AgenticVerdict, CorpusEntry, GateCorpusEntry,
-    ReviewRequest, VerdictKind,
+    copy_gate, AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest, VerdictKind,
 };
 use challenge_common::{
     emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, ExpectedSet,
@@ -22,13 +21,14 @@ use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
 use design_sanitize::sanitize_bundle;
 use design_store::{
-    DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
+    DesignStore, FinalScore, RatingRow, RoundRow, RunOrigin, RunStage, StageEvent, StorePatch,
 };
 use serde_json::json;
 use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
+use crate::corpus;
 use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 use crate::screenshot::{capture_full_page_png, png_artifact_tuple};
 use crate::CHALLENGE_ID;
@@ -277,8 +277,15 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
             .unwrap_or(0);
         for h in harnesses {
-            match schedule_harness_for_round(self.store.as_ref(), &h, rid, self.cfg.netuid, epoch)
-                .await
+            match schedule_harness_for_round(
+                self.store.as_ref(),
+                &h,
+                rid,
+                self.cfg.netuid,
+                epoch,
+                RunOrigin::Scheduled,
+            )
+            .await
             {
                 Ok(ids) if !ids.is_empty() => {
                     info!(
@@ -291,7 +298,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    // Quota / elimination are expected; do not abort the loop.
+                    // Elimination cooldown is expected; do not abort the loop.
                     warn!(
                         harness_id = %h.id,
                         miner = %h.miner_hotkey,
@@ -789,11 +796,13 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let report = serde_json::to_value(&sanitized.report).unwrap_or_default();
 
-        // Pre-LLM copy gate: byte/AST copy of an *earlier* harness → terminal
-        // `rejected` without spending the LLM review.
-        let gate_corpus = self
-            .gate_corpus(&run.harness_id, &harness.miner_hotkey)
-            .await;
+        // Pre-LLM copy gate → terminal `rejected` (one fetch for gate + review).
+        let recent = self
+            .store
+            .list_recent_harnesses(64)
+            .await
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
+        let gate_corpus = corpus::gate_corpus(&harness, &recent);
         if let Some(hit) = copy_gate(&harness.agent_py, harness.created_at_ms, &gate_corpus) {
             warn!(
                 run_id = %run.id,
@@ -870,7 +879,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         self.pause_stage().await;
 
         let verdict = self
-            .run_agentic_review(run, &harness.agent_py, &pages, &report)
+            .run_agentic_review(run, &harness, &recent, &pages, &report)
             .await?;
         let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
         match verdict.verdict {
@@ -924,33 +933,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    /// Corpus for the pre-LLM copy gate (recent harnesses minus the candidate
-    /// and any prior revisions from the same miner hotkey).
-    async fn gate_corpus(
-        &self,
-        exclude_harness_id: &str,
-        exclude_miner_hotkey: &str,
-    ) -> Vec<GateCorpusEntry> {
-        let miner = exclude_miner_hotkey.to_ascii_lowercase();
-        self.store
-            .list_recent_harnesses(64)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|h| h.id != exclude_harness_id)
-            .filter(|h| h.miner_hotkey.to_ascii_lowercase() != miner)
-            .map(|h| GateCorpusEntry {
-                id: format!("harness:{}", h.id),
-                source: h.agent_py,
-                created_at_ms: h.created_at_ms,
-            })
-            .collect()
-    }
-
     async fn run_agentic_review(
         &self,
         run: &design_store::RunState,
-        agent_py: &str,
+        harness: &design_store::HarnessRow,
+        recent: &[design_store::HarnessRow],
         pages: &[(String, String, String, String, u32)],
         sanitize_report: &serde_json::Value,
     ) -> Result<AgenticVerdict, RunFailure> {
@@ -958,7 +945,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(work.join("pages"))
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
-        std::fs::write(work.join("agent.py"), agent_py)
+        std::fs::write(work.join("agent.py"), &harness.agent_py)
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         for (path, sanitized, _, _, _) in pages {
             let name = path.rsplit('/').next().unwrap_or(path.as_str());
@@ -971,47 +958,10 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         )
         .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
 
-        let recent = self
-            .store
-            .list_recent_harnesses(64)
-            .await
-            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
-        let cand = recent.iter().find(|h| h.id == run.harness_id);
-        let cand_created = cand.map(|h| h.created_at_ms).unwrap_or(0);
-        let cand_miner = cand
-            .map(|h| h.miner_hotkey.to_ascii_lowercase())
-            .unwrap_or_default();
-        let mut corpus: Vec<CorpusEntry> = vec![CorpusEntry {
-            // The published baseline is always in the corpus (same as prism):
-            // it anchors originality judgments and keeps an empty recent-set
-            // from producing incoherent verdicts.
-            id: "baseline".into(),
-            source: include_str!("../../../docs/external-miner/examples/design-baseline/agent.py")
-                .to_owned(),
-        }];
-        corpus.extend(
-            recent
-                .into_iter()
-                .filter(|h| h.id != run.harness_id)
-                // Same-hotkey revisions are self-improvement, not copying.
-                .filter(|h| {
-                    cand_miner.is_empty() || h.miner_hotkey.to_ascii_lowercase() != cand_miner
-                })
-                // Prior art only (created_at ordered like the pre-LLM gate): a
-                // later byte-copy must never poison the original's review.
-                .filter(|h| {
-                    cand_created == 0 || (h.created_at_ms > 0 && h.created_at_ms < cand_created)
-                })
-                .map(|h| CorpusEntry {
-                    id: format!("harness:{}", h.id),
-                    source: h.agent_py,
-                }),
-        );
-
         let req = ReviewRequest {
             workdir: work.clone(),
             primary_relpaths: vec!["agent.py".into()],
-            corpus,
+            corpus: corpus::review_corpus(harness, recent),
             metrics_relpath: None,
             pages_relpath: Some("pages".into()),
             sanitize_report_relpath: Some("sanitize_report.json".into()),

@@ -13,12 +13,13 @@ use challenge_agentic::{
     copy_gate, AgenticBackend, CheatCode, CorpusEntry, GateCorpusEntry, ReviewRequest, SimAgent,
     VerdictKind,
 };
+use design_challenge::corpus;
 use design_challenge::score::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_challenge::{host_sim_allowed, require_host_sim_for_force, SCORE_MAX};
 use design_harness::{validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
 use design_sanitize::sanitize_bundle;
-use design_store::FinalScore;
+use design_store::{FinalScore, HarnessRow};
 use tempfile::tempdir;
 
 const BASELINE_AGENT: &str =
@@ -72,6 +73,90 @@ fn window_plan(wins: &[(&str, u32)], participants: &[&str], cheat: &[&str]) -> W
         miners_with_harness: participants.iter().map(|s| (*s).to_owned()).collect(),
         cheat_miners: cheat.iter().map(|s| (*s).to_owned()).collect(),
     }
+}
+
+fn harness_row(id: &str, miner: &str, agent_py: &str, created_at_ms: u64) -> HarnessRow {
+    HarnessRow {
+        id: id.into(),
+        miner_hotkey: miner.into(),
+        agent_py: agent_py.into(),
+        pyproject_toml: BASELINE_PYPROJECT.into(),
+        extra_files: BTreeMap::new(),
+        active: true,
+        eliminated_until_round: 0,
+        created_at_ms,
+    }
+}
+
+/// A miner republishing their own harness must pass both anti-cheat stages,
+/// while the identical bytes coming from a *different* hotkey are rejected.
+/// Same inputs, same corpus builder — only the owning hotkey differs.
+#[tokio::test]
+async fn self_revision_is_clean_but_cross_hotkey_copy_is_a_copy() {
+    let miner_a = "aa".repeat(32);
+    let miner_b = "bb".repeat(32);
+    let original = harness_row("h-orig", &miner_a, BASELINE_AGENT, 1_000);
+
+    // Same hotkey, later revision of its own (here byte-identical) harness.
+    let own_revision = harness_row("h-rev", &miner_a, BASELINE_AGENT, 2_000);
+    // Different hotkey, same bytes: a copy of someone else's prior art.
+    let foreign_copy = harness_row("h-copy", &miner_b, BASELINE_AGENT, 2_000);
+
+    let recent = vec![foreign_copy.clone(), own_revision.clone(), original.clone()];
+
+    // Pre-LLM gate: the corpus for a self-revision has no victim to hit.
+    let own_gate = corpus::gate_corpus(&own_revision, &recent);
+    assert!(
+        copy_gate(
+            &own_revision.agent_py,
+            own_revision.created_at_ms,
+            &own_gate
+        )
+        .is_none(),
+        "a miner's own earlier harness must never trip the copy gate"
+    );
+    let foreign_gate = corpus::gate_corpus(&foreign_copy, &recent);
+    let hit = copy_gate(
+        &foreign_copy.agent_py,
+        foreign_copy.created_at_ms,
+        &foreign_gate,
+    )
+    .expect("cross-hotkey byte copy must still be rejected");
+    assert_eq!(hit.nearest_id, "harness:h-orig");
+    assert!(hit.byte_identical);
+
+    // LLM review: same asymmetry in the corpus handed to the reviewer.
+    let pages: &[(&str, &str)] = &[("index.html", "<html data-agent=\"design-baseline\"></html>")];
+    let own_dir = tempdir().unwrap();
+    let own_verdict = SimAgent::new()
+        .review(&review_req(
+            own_dir.path(),
+            &own_revision.agent_py,
+            corpus::review_corpus(&own_revision, &recent),
+            Some(pages),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        own_verdict.verdict,
+        VerdictKind::Clean,
+        "iterating on your own harness must not read as copying: {own_verdict:?}"
+    );
+
+    let copy_dir = tempdir().unwrap();
+    let copy_verdict = SimAgent::new()
+        .review(&review_req(
+            copy_dir.path(),
+            &foreign_copy.agent_py,
+            corpus::review_corpus(&foreign_copy, &recent),
+            Some(pages),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(copy_verdict.verdict, VerdictKind::Cheat);
+    assert!(copy_verdict
+        .cheat_codes
+        .contains(&CheatCode::NearIdenticalHarnessCopy));
 }
 
 #[tokio::test]

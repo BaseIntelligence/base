@@ -887,7 +887,7 @@ pub async fn design_scores_for_epoch(
     Ok(rows)
 }
 
-/// Get / bump daily quota. Returns `runs_used` after bump (0 bump = read).
+/// Bump daily quota. Returns `(runs_used, manual_runs_used)` after the write.
 ///
 /// # Errors
 /// SQL error.
@@ -896,18 +896,24 @@ pub async fn design_quota_bump(
     miner_hotkey: &str,
     day: &str,
     bump: i32,
-) -> Result<i32, DbError> {
-    let row: (i32,) = sqlx::query_as(
-        "INSERT INTO design_quota (miner_hotkey, day, runs_used) VALUES ($1, $2::date, $3) \
-         ON CONFLICT (miner_hotkey, day) DO UPDATE SET runs_used = design_quota.runs_used + $3 \
-         RETURNING runs_used",
+    manual: bool,
+) -> Result<(i32, i32), DbError> {
+    let manual_bump = if manual { bump } else { 0 };
+    let row: (i32, i32) = sqlx::query_as(
+        "INSERT INTO design_quota (miner_hotkey, day, runs_used, manual_runs_used) \
+         VALUES ($1, $2::date, $3, $4) \
+         ON CONFLICT (miner_hotkey, day) DO UPDATE SET \
+           runs_used = design_quota.runs_used + $3, \
+           manual_runs_used = design_quota.manual_runs_used + $4 \
+         RETURNING runs_used, manual_runs_used",
     )
     .bind(miner_hotkey)
     .bind(day)
     .bind(bump)
+    .bind(manual_bump)
     .fetch_one(pool)
     .await?;
-    Ok(row.0)
+    Ok(row)
 }
 
 /// Read quota without bump.
@@ -918,15 +924,16 @@ pub async fn design_quota_get(
     pool: &PgPool,
     miner_hotkey: &str,
     day: &str,
-) -> Result<i32, DbError> {
-    let n: Option<i32> = sqlx::query_scalar(
-        "SELECT runs_used FROM design_quota WHERE miner_hotkey = $1 AND day = $2::date",
+) -> Result<(i32, i32), DbError> {
+    let row: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT runs_used, manual_runs_used FROM design_quota \
+         WHERE miner_hotkey = $1 AND day = $2::date",
     )
     .bind(miner_hotkey)
     .bind(day)
     .fetch_optional(pool)
     .await?;
-    Ok(n.unwrap_or(0))
+    Ok(row.unwrap_or((0, 0)))
 }
 
 /// Append stage event.

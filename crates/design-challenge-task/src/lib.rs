@@ -49,7 +49,7 @@ pub const ROUNDS_PER_DAY: u64 = 10;
 /// (`DESIGN_AGENT_RUN_TIMEOUT_SECS` override).
 pub const AGENT_RUN_TIMEOUT_SECS: u64 = 1_800;
 
-/// Prompts selected per round (~2–3 × harness under daily quota).
+/// Prompts selected per round (each becomes one organizer-scheduled sandbox run).
 ///
 /// Default only — runtime code must use [`prompts_per_round`]
 /// (`DESIGN_PROMPTS_PER_ROUND` override).
@@ -60,8 +60,19 @@ pub const PROMPTS_PER_ROUND: usize = 3;
 /// [`SCORING_WINDOW_ROUNDS`] rounds, cheat excluded.
 pub const SCORING_WINDOW_ROUNDS: u64 = 10;
 
-/// Max sandboxed runs per hotkey per UTC day.
-pub const DAILY_RUN_QUOTA: u32 = 10;
+/// Anti-spam ceiling on **miner-initiated** sandbox runs per hotkey per UTC
+/// day — runs created by `POST /v1/harness`. Organizer-scheduled round runs
+/// draw on [`scheduled_daily_run_cap`] instead, so a harness that participates
+/// in every round of the day is never blocked from submitting.
+///
+/// Default only — runtime code must use [`manual_daily_run_quota`]
+/// (`DESIGN_MANUAL_DAILY_RUN_QUOTA` override).
+pub const MANUAL_DAILY_RUN_QUOTA: u32 = 10;
+
+/// Headroom multiplier on the derived organizer-scheduled daily run cap. The
+/// cap is a runaway-scheduler guard, not a participation limit, so it must
+/// stay comfortably above the full-day schedule volume.
+pub const SCHEDULED_DAILY_RUN_HEADROOM: u32 = 2;
 
 /// Minimum annotations required per pair before Elo consume.
 pub const MIN_ANNOTATIONS_PER_PAIR: u32 = 3;
@@ -105,6 +116,61 @@ pub fn prompts_per_round() -> usize {
         1,
     ))
     .unwrap_or(PROMPTS_PER_ROUND)
+}
+
+/// Rounds in a UTC day under the effective [`round_secs`]. Equals
+/// [`ROUNDS_PER_DAY`] in production; staging compresses rounds, so scheduling
+/// limits must derive from this and never from the constant.
+#[must_use]
+pub fn rounds_per_day_effective() -> u64 {
+    (86_400 / round_secs()).max(1)
+}
+
+/// Sandbox runs the organizer dispatches to one harness across a full UTC day
+/// (`rounds/day × prompts/round`). This is the volume an honest, fully
+/// participating harness must be allowed to execute.
+#[must_use]
+pub fn scheduled_runs_per_day() -> u32 {
+    let per_round = u64::try_from(prompts_per_round()).unwrap_or(PROMPTS_PER_ROUND as u64);
+    u32::try_from(rounds_per_day_effective().saturating_mul(per_round)).unwrap_or(u32::MAX)
+}
+
+/// Effective anti-spam ceiling on miner-initiated runs per hotkey per UTC day
+/// (`DESIGN_MANUAL_DAILY_RUN_QUOTA` override; default
+/// [`MANUAL_DAILY_RUN_QUOTA`]).
+#[must_use]
+pub fn manual_daily_run_quota() -> u32 {
+    u32::try_from(env_u64(
+        "DESIGN_MANUAL_DAILY_RUN_QUOTA",
+        u64::from(MANUAL_DAILY_RUN_QUOTA),
+        1,
+    ))
+    .unwrap_or(MANUAL_DAILY_RUN_QUOTA)
+}
+
+/// Effective ceiling on organizer-scheduled runs per hotkey per UTC day
+/// (`DESIGN_SCHEDULED_DAILY_RUN_CAP` override; default
+/// [`scheduled_runs_per_day`] × [`SCHEDULED_DAILY_RUN_HEADROOM`]).
+///
+/// The floor is [`scheduled_runs_per_day`]: an operator override can never sit
+/// below the day's own schedule, which is the bug this cap replaced.
+#[must_use]
+pub fn scheduled_daily_run_cap() -> u32 {
+    let floor = scheduled_runs_per_day();
+    let default = floor.saturating_mul(SCHEDULED_DAILY_RUN_HEADROOM);
+    u32::try_from(env_u64(
+        "DESIGN_SCHEDULED_DAILY_RUN_CAP",
+        u64::from(default),
+        u64::from(floor),
+    ))
+    .unwrap_or(default)
+}
+
+/// Total sandbox runs one hotkey may accumulate in a UTC day across both
+/// origins (display / dashboard value; enforcement is per-origin).
+#[must_use]
+pub fn daily_run_quota() -> u32 {
+    manual_daily_run_quota().saturating_add(scheduled_daily_run_cap())
 }
 
 /// Compute round id from unix seconds under an explicit round length.
@@ -160,6 +226,31 @@ mod tests {
         assert_eq!(round_secs(), ROUND_SECS);
         assert_eq!(agent_run_timeout_secs(), AGENT_RUN_TIMEOUT_SECS);
         assert_eq!(prompts_per_round(), PROMPTS_PER_ROUND);
+        assert_eq!(manual_daily_run_quota(), MANUAL_DAILY_RUN_QUOTA);
+    }
+
+    #[test]
+    fn scheduled_cap_covers_a_full_day_of_rounds() {
+        // The bug this replaced: a 10-run/day cap against a 10-round × 3-prompt
+        // schedule locked an honest harness out after ~3.3 rounds.
+        assert_eq!(rounds_per_day_effective(), ROUNDS_PER_DAY);
+        assert_eq!(
+            scheduled_runs_per_day(),
+            u32::try_from(ROUNDS_PER_DAY).unwrap() * u32::try_from(PROMPTS_PER_ROUND).unwrap()
+        );
+        assert_eq!(scheduled_runs_per_day(), 30);
+        assert!(scheduled_daily_run_cap() >= scheduled_runs_per_day());
+        assert_eq!(
+            scheduled_daily_run_cap(),
+            scheduled_runs_per_day() * SCHEDULED_DAILY_RUN_HEADROOM
+        );
+        assert!(daily_run_quota() > scheduled_runs_per_day());
+        // An operator override below the schedule clamps back up to it, so no
+        // env value can re-create the lockout. (Own var name: env is global.)
+        let floor = u64::from(scheduled_runs_per_day());
+        std::env::set_var("BASE_SCHEDULED_CAP_CLAMP_TEST", "1");
+        assert_eq!(env_u64("BASE_SCHEDULED_CAP_CLAMP_TEST", 60, floor), floor);
+        std::env::remove_var("BASE_SCHEDULED_CAP_CLAMP_TEST");
     }
 
     #[test]

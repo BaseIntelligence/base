@@ -7,8 +7,8 @@ use db::PgPool;
 use design_db as dbs;
 
 use crate::store::{
-    ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, RatingRow, RoundAward, RoundRow,
-    RunStage, RunState, StageEvent, StoreError, StorePatch,
+    ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, QuotaUsage, RatingRow, RoundAward,
+    RoundRow, RunOrigin, RunStage, RunState, StageEvent, StoreError, StorePatch,
 };
 
 /// SQL-backed production store.
@@ -633,21 +633,38 @@ impl DesignStore for DbDesignStore {
         )
     }
 
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError> {
-        Ok(u32::try_from(
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError> {
+        Ok(usage_from(
             dbs::design_quota_get(&self.pool, miner, day)
                 .await
                 .map_err(map_db)?,
-        )
-        .unwrap_or(0))
+        ))
     }
 
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError> {
-        Ok(u32::try_from(
-            dbs::design_quota_bump(&self.pool, miner, day, i32::try_from(bump).unwrap_or(0))
-                .await
-                .map_err(map_db)?,
-        )
-        .unwrap_or(0))
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError> {
+        Ok(usage_from(
+            dbs::design_quota_bump(
+                &self.pool,
+                miner,
+                day,
+                i32::try_from(bump).unwrap_or(0),
+                origin == RunOrigin::Manual,
+            )
+            .await
+            .map_err(map_db)?,
+        ))
+    }
+}
+
+fn usage_from((total, manual): (i32, i32)) -> QuotaUsage {
+    QuotaUsage {
+        total: u32::try_from(total).unwrap_or(0),
+        manual: u32::try_from(manual).unwrap_or(0),
     }
 }
