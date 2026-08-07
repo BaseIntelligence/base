@@ -376,7 +376,26 @@ async fn post_harness(
         Ok(None) => row,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
-    let run_ids = match schedule_runs(&st, &harness, fresh).await {
+    if fresh {
+        let _ = st
+            .store
+            .deactivate_other_harnesses(&hotkey, &harness.id)
+            .await;
+    }
+    // Always schedule into the next round when that round has no runs yet —
+    // including identical re-POST (idempotent digest) so rolling rounds keep
+    // receiving work without requiring a new harness digest.
+    let rid = round_id_at(now_secs()).saturating_add(1);
+    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let run_ids = match schedule_harness_for_round(
+        st.store.as_ref(),
+        &harness,
+        rid,
+        st.netuid,
+        epoch,
+    )
+    .await
+    {
         Ok(ids) => ids,
         Err(e) => return json_err(StatusCode::CONFLICT, "schedule", &e),
     };
@@ -389,7 +408,8 @@ async fn post_harness(
             }
         }
     }
-    let rid = round_id_at(now_secs()).saturating_add(1);
+    // Digest already known → idempotent OK; runs may still be created for a
+    // future round that had none yet (rolling auto-schedule path).
     let status = if fresh { "accepted" } else { "already-queued" };
     let code = if fresh {
         StatusCode::ACCEPTED
@@ -415,56 +435,54 @@ async fn post_harness(
         .into_response()
 }
 
-/// Schedule this harness for the **next** round. Accepted harnesses wait for
-/// the upcoming round — they never join the round already in flight.
-/// `create=false` (idempotent re-POST) only lists existing run ids.
-async fn schedule_runs(
-    st: &AppState,
+/// Schedule an active harness into `rid` (create missing queued runs).
+///
+/// Idempotent: if runs for `(harness, round)` already exist, returns those ids.
+/// Honours daily quota and elimination cooldown. Used by submit (next round)
+/// and by the orchestrator (every open round).
+pub async fn schedule_harness_for_round(
+    store: &dyn DesignStore,
     harness: &HarnessRow,
-    create: bool,
+    rid: u64,
+    netuid: u16,
+    epoch: u64,
 ) -> Result<Vec<String>, String> {
-    let secs = now_secs();
-    let rid = round_id_at(secs).saturating_add(1);
+    if !harness.active {
+        return Ok(vec![]);
+    }
     if harness.eliminated_until_round > rid {
         return Err(format!(
             "eliminated until round {}",
             harness.eliminated_until_round
         ));
     }
-    let existing = st
-        .store
-        .runs_for_round(rid)
-        .await
-        .map_err(|e| e.to_string())?;
+    let existing = store.runs_for_round(rid).await.map_err(|e| e.to_string())?;
     let run_ids: Vec<String> = existing
         .iter()
         .filter(|r| r.harness_id == harness.id)
         .map(|r| r.id.clone())
         .collect();
-    if !run_ids.is_empty() || !create {
+    if !run_ids.is_empty() {
         return Ok(run_ids);
     }
+    let secs = now_secs();
     let day = utc_day(secs);
-    let used = st
-        .store
+    let used = store
         .quota_get(&harness.miner_hotkey, &day)
         .await
         .map_err(|e| e.to_string())?;
-    // Ensure round row exists.
-    if st
-        .store
+    if store
         .get_round(rid)
         .await
         .map_err(|e| e.to_string())?
         .is_none()
     {
         let opens = rid * round_secs();
-        let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
-        st.store
+        store
             .insert_round(&design_store::RoundRow {
                 round_id: rid,
                 epoch,
-                netuid: st.netuid,
+                netuid,
                 prompt_set_digest: prompt_set_digest(),
                 status: "open".into(),
                 opens_at_secs: opens,
@@ -482,8 +500,7 @@ async fn schedule_runs(
     let n = (prompts.len() as u32).min(remaining);
     for p in prompts.into_iter().take(n as usize) {
         let run_id = make_run_id(rid, &harness.id, &p.id);
-        if st
-            .store
+        if store
             .get_run(&run_id)
             .await
             .map_err(|e| e.to_string())?
@@ -507,9 +524,8 @@ async fn schedule_runs(
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
         };
-        st.store.insert_run(&row).await.map_err(|e| e.to_string())?;
-        let _ = st
-            .store
+        store.insert_run(&row).await.map_err(|e| e.to_string())?;
+        let _ = store
             .apply_run(
                 &run_id,
                 &StorePatch::default(),
@@ -520,7 +536,7 @@ async fn schedule_runs(
                 }),
             )
             .await;
-        let _ = st.store.quota_bump(&harness.miner_hotkey, &day, 1).await;
+        let _ = store.quota_bump(&harness.miner_hotkey, &day, 1).await;
         run_ids.push(run_id);
     }
     Ok(run_ids)
@@ -739,12 +755,34 @@ async fn view_page(
     State(st): State<Arc<AppState>>,
     Path((id, page)): Path<(String, String)>,
 ) -> Response {
-    let path = if page.ends_with(".html") {
+    let path = if page.ends_with(".html") || page.ends_with(".png") {
         page
     } else {
         format!("{page}.html")
     };
     match st.store.get_page(&id, &path).await {
+        Ok(Some(body)) if path.ends_with(".png") => {
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(body.trim()) {
+                Ok(b) => b,
+                Err(_) => {
+                    return json_err(StatusCode::INTERNAL_SERVER_ERROR, "artifact", "bad png b64")
+                }
+            };
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("image/png"),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("private, no-store"),
+            );
+            headers.insert(
+                header::HeaderName::from_static("x-content-type-options"),
+                header::HeaderValue::from_static("nosniff"),
+            );
+            (StatusCode::OK, headers, bytes).into_response()
+        }
         Ok(Some(html)) => {
             let mut headers = HeaderMap::new();
             for (k, v) in viewer_headers(&st.frame_ancestors) {
@@ -1139,6 +1177,33 @@ mod tests {
         let (s, v) = post(app, submit_body(&hk(0xAA), "a")).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["status"], "already-queued");
+    }
+
+    #[tokio::test]
+    async fn same_digest_resubmit_schedules_missing_next_round() {
+        let (st, _g) = app_state(None);
+        let app = design_router(Arc::clone(&st));
+        let body = submit_body(&hk(0xAA), "agent-v1");
+        let (s, v) = post(app.clone(), body.clone()).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let rid = v["round_id"].as_u64().unwrap();
+        let harness_id = v["harness_id"].as_str().unwrap().to_owned();
+
+        // Simulate round rollover: clear next-round runs so a re-POST must
+        // recreate them (previous bug returned empty when create=false).
+        let runs = st.store.runs_for_round(rid).await.unwrap();
+        assert!(!runs.is_empty());
+        // Memory store has no delete — schedule a *later* round via the public helper.
+        let later = rid + 1;
+        let harness = st.store.get_harness(&harness_id).await.unwrap().unwrap();
+        let ids = schedule_harness_for_round(st.store.as_ref(), &harness, later, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), design_challenge_task::prompts_per_round());
+        let again = schedule_harness_for_round(st.store.as_ref(), &harness, later, 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(again, ids, "idempotent for the same round");
     }
 
     #[tokio::test]

@@ -97,6 +97,12 @@ pub fn design_view_url(run_id: &str) -> String {
     format!("/challenge/design/v1/view/{run_id}/index.html")
 }
 
+/// Design full-page screenshot URL on the public gateway proxy.
+#[must_use]
+pub fn design_screenshot_url(run_id: &str) -> String {
+    format!("/challenge/design/v1/view/{run_id}/index.png")
+}
+
 /// Enrich design arena frame from dashboard JSON.
 #[must_use]
 pub fn design_arena_from_dashboard(dash: Option<&Value>) -> Arena {
@@ -323,6 +329,18 @@ pub fn design_submission(
         "sanitizing" => Some("sanitizing pages".into()),
         _ => None,
     });
+    let screenshot_url = run_detail
+        .and_then(|d| d.get("screenshot_url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            // Prefer explicit pages list from run detail when present.
+            let pages = run_detail.and_then(|d| d.get("pages")).and_then(Value::as_array);
+            pages.and_then(|arr| {
+                arr.iter().any(|p| p.get("path").and_then(Value::as_str) == Some("index.png"))
+                    .then(|| design_screenshot_url(id))
+            })
+        });
     Some(Submission {
         id: id.to_owned(),
         arena: ArenaSlug::Design,
@@ -330,6 +348,7 @@ pub fn design_submission(
         prompt_id: format!("#{prompt_id}"),
         title: format!("design run {id}"),
         url: design_view_url(id),
+        screenshot_url,
         status,
         stage,
         status_detail,
@@ -339,6 +358,7 @@ pub fn design_submission(
             None
         },
         bpb: None,
+        params_m: None,
         failure_reason: if status == SubmissionStatus::Failed {
             failure_reason
         } else {
@@ -378,6 +398,10 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         }
     }
     let bpb = row.get("bpb").and_then(Value::as_f64);
+    let params_m = row
+        .get("n_params")
+        .and_then(Value::as_u64)
+        .map(|p| p as f64 / 1e6);
     let failure_reason = if status == SubmissionStatus::Failed {
         row.get("error_detail")
             .and_then(Value::as_str)
@@ -401,6 +425,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
         prompt_id: format!("#epoch-{epoch}"),
         title: label.to_owned(),
         url: format!("/challenge/prism/v1/submissions/{id}"),
+        screenshot_url: None,
         status,
         stage,
         status_detail,
@@ -410,6 +435,7 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
             None
         },
         bpb,
+        params_m,
         failure_reason,
         submitted_at: ms_to_iso(ms),
     })
@@ -529,11 +555,28 @@ pub fn prism_telemetry(detail: &Value) -> Option<PrismTelemetry> {
     })
 }
 
+/// Chart x-value for one telemetry point: prefer harness `layer_stats.tokens`
+/// (tokens seen) so the window plots against the egalitarian token axis;
+/// fall back to the optimizer step when tokens were not reported.
+fn telemetry_x(point: &PrismTelemetryPoint) -> u32 {
+    let tokens = point
+        .layer_stats
+        .as_ref()
+        .and_then(|ls| ls.get("tokens"))
+        .and_then(Value::as_f64)
+        .filter(|t| t.is_finite() && *t >= 0.0)
+        .map(|t| t as u64);
+    let x = tokens.unwrap_or(point.step);
+    u32::try_from(x).unwrap_or(u32::MAX)
+}
+
 /// Prism window from recipe + terminal scored submissions.
 ///
 /// Series carry the real miner-reported loss curves when `telemetry` has a
 /// payload for the submission id; otherwise they fall back to the minimal
 /// single-point `[final_bpb]` curve (pre-telemetry recipes, upstream miss).
+/// Params prefer telemetry `n_params`, then the list-row `n_params` so
+/// historical runs still surface a measured size when the detail blob is thin.
 #[must_use]
 pub fn prism_window(
     recipe: Option<&Value>,
@@ -566,6 +609,12 @@ pub fn prism_window(
         .and_then(|r| r.get("pin_hex"))
         .and_then(Value::as_str)
         .unwrap_or("—");
+    // Recipe publishes max_params in absolute count; site contract uses millions.
+    let param_ceiling = recipe
+        .and_then(|r| r.get("max_params"))
+        .and_then(Value::as_u64)
+        .map(|p| p / 1_000_000)
+        .unwrap_or(0);
     let mut series: Vec<(f64, LossSeries)> = Vec::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
@@ -585,7 +634,7 @@ pub fn prism_window(
                 t.points
                     .iter()
                     .map(|p| LossPoint {
-                        step: u32::try_from(p.step).unwrap_or(u32::MAX),
+                        step: telemetry_x(p),
                         loss: p.loss,
                     })
                     .collect::<Vec<_>>()
@@ -594,11 +643,13 @@ pub fn prism_window(
             .unwrap_or_else(|| vec![LossPoint { step: 0, loss: bpb }]);
         let params = tele
             .and_then(|t| t.n_params)
+            .or_else(|| row.get("n_params").and_then(Value::as_u64))
             .map_or(0.0, |p| p as f64 / 1e6);
         series.push((
             bpb,
             LossSeries {
                 architecture: label,
+                submission_id: Some(id.to_owned()),
                 params,
                 final_loss: bpb,
                 rank: 0,
@@ -607,7 +658,7 @@ pub fn prism_window(
         ));
     }
     series.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let series: Vec<LossSeries> = series
+    let mut series: Vec<LossSeries> = series
         .into_iter()
         .enumerate()
         .map(|(i, (_, mut s))| {
@@ -615,10 +666,25 @@ pub fn prism_window(
             s
         })
         .collect();
+    // Axis span = max tokens (or steps) observed across curves so lossPath can
+    // draw; single-point historical fallbacks (step 0) move to the right edge.
+    let token_budget = series
+        .iter()
+        .flat_map(|s| s.points.iter().map(|p| u64::from(p.step)))
+        .max()
+        .unwrap_or(0);
+    if token_budget > 0 {
+        let end = u32::try_from(token_budget).unwrap_or(u32::MAX);
+        for s in &mut series {
+            if s.points.len() == 1 && s.points[0].step == 0 {
+                s.points[0].step = end;
+            }
+        }
+    }
     PrismWindow {
         dataset,
         revision,
-        token_budget: 0,
+        token_budget,
         offset: "pinned".into(),
         rules_gate: RulesGate {
             provider,
@@ -634,7 +700,7 @@ pub fn prism_window(
             verified: 0,
             total: 0,
         },
-        param_ceiling: 0,
+        param_ceiling,
         series,
     }
 }
@@ -732,6 +798,10 @@ mod tests {
             design_view_url("abc"),
             "/challenge/design/v1/view/abc/index.html"
         );
+        assert_eq!(
+            design_screenshot_url("abc"),
+            "/challenge/design/v1/view/abc/index.png"
+        );
     }
 
     #[test]
@@ -763,7 +833,9 @@ mod tests {
         assert!((w.series[0].final_loss - 1.1).abs() < f64::EPSILON);
         assert_eq!(w.series[0].points.len(), 1);
         assert_eq!(w.offset, "pinned");
+        // No telemetry → single-point fallbacks stay at step 0; budget stays 0.
         assert_eq!(w.token_budget, 0);
+        assert_eq!(w.series[0].submission_id.as_deref(), Some("facefeed03"));
     }
 
     #[test]
@@ -811,6 +883,57 @@ mod tests {
         assert!((w.series[0].params - 12.0).abs() < f64::EPSILON);
         assert_eq!(w.series[1].points.len(), 1);
         assert!((w.series[1].params - 0.0).abs() < f64::EPSILON);
+        // Budget follows the max x across curves; single-point fallback sits at end.
+        assert_eq!(w.token_budget, 2);
+        assert_eq!(w.series[1].points[0].step, 2);
+    }
+
+    #[test]
+    fn prism_window_uses_tokens_and_list_n_params() {
+        let recipe = json!({"max_params": 350_000_000_u64, "dataset_ref": "ds"});
+        let subs = vec![json!({
+            "id":"deadbeef01",
+            "status":"terminated",
+            "bpb":1.5,
+            "label":"a",
+            "n_params": 24_000_000_u64
+        })];
+        let mut telemetry = HashMap::new();
+        telemetry.insert(
+            "deadbeef01".to_owned(),
+            PrismTelemetry {
+                submission_id: "deadbeef01".into(),
+                bpb: Some(1.5),
+                n_params: None, // force list-row fallback
+                val_rows: None,
+                gpu_type: None,
+                wall_clock_seconds: None,
+                finish_reason: Some("finish_evaluation".into()),
+                report_count: 2,
+                points: vec![
+                    PrismTelemetryPoint {
+                        step: 1,
+                        loss: 4.0,
+                        grad_norm: None,
+                        at_secs: None,
+                        layer_stats: Some(json!({"tokens": 100_000.0})),
+                    },
+                    PrismTelemetryPoint {
+                        step: 2,
+                        loss: 2.0,
+                        grad_norm: None,
+                        at_secs: None,
+                        layer_stats: Some(json!({"tokens": 2_000_000.0})),
+                    },
+                ],
+            },
+        );
+        let w = prism_window(Some(&recipe), None, &subs, &telemetry);
+        assert_eq!(w.param_ceiling, 350);
+        assert_eq!(w.token_budget, 2_000_000);
+        assert_eq!(w.series[0].points[0].step, 100_000);
+        assert_eq!(w.series[0].points[1].step, 2_000_000);
+        assert!((w.series[0].params - 24.0).abs() < f64::EPSILON);
     }
 
     #[test]

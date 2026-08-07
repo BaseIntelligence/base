@@ -67,10 +67,43 @@ fn ammonia_builder() -> ammonia::Builder<'static> {
     let _ = b.rm_tags([
         "script", "iframe", "object", "embed", "applet", "base", "form", "link",
     ]);
+    // Landing-page structure + CSS. Ammonia fragment parsing still unwraps
+    // html/head/body wrappers (see `rewrite_body_wrapper`); allow them anyway
+    // and keep presentation tags/attrs reviewers need.
+    let _ = b.add_tags([
+        "style", "main", "section", "body", "html", "head", "nav", "header", "footer",
+        "article", "aside", "figure", "figcaption",
+    ]);
+    // Default clean_content_tags includes `style` (content stripped). Keep the
+    // tag and its CSS after our `filter_css` pre-pass.
+    let _ = b.rm_clean_content_tags(["style"]);
+    let _ = b.add_generic_attributes(["class", "id", "style"]);
     let schemes: std::collections::HashSet<&'static str> =
         ["http", "https", "mailto"].into_iter().collect();
     let _ = b.url_schemes(schemes);
     b
+}
+
+/// Ammonia parses as an HTML fragment and unwraps `<body>` / `<html>` / `<head>`,
+/// dropping their attributes. Rewrite `<body …>` to a presentation `<div>` so
+/// body-level `class` / `id` / `style` survive for reviewers.
+fn rewrite_body_wrapper(html: &str) -> String {
+    let Ok(re_open) = Regex::new(r"(?i)<body(\s[^>]*)?>") else {
+        return html.to_owned();
+    };
+    let Ok(re_close) = Regex::new(r"(?i)</body\s*>") else {
+        return html.to_owned();
+    };
+    let with_open = re_open.replace_all(html, |caps: &regex::Captures<'_>| {
+        let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        // Marker class (ammonia strips unknown data-* attrs by default).
+        if attrs.to_ascii_lowercase().contains("class=") {
+            format!("<div{attrs}>")
+        } else {
+            format!("<div class=\"design-body\"{attrs}>")
+        }
+    });
+    re_close.replace_all(&with_open, "</div>").into_owned()
 }
 
 /// Filter dangerous CSS constructs from a style attribute / block.
@@ -111,8 +144,8 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         notes.push("meta_refresh".into());
     }
 
-    // Pre-strip style blocks with dangerous CSS.
-    let mut pre = raw.to_owned();
+    // Pre-strip style blocks with dangerous CSS; keep safe blocks for ammonia.
+    let mut pre = rewrite_body_wrapper(raw);
     if let Ok(re) = Regex::new(r"(?is)<style[^>]*>(.*?)</style>") {
         let mut stripped = false;
         let mut css_notes = Vec::new();
@@ -142,6 +175,14 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         }
     }
 
+    // Inline `style="…"` attrs are allowed; re-filter dangerous CSS constructs
+    // ammonia does not strip by default.
+    let (cleaned, inline_css_stripped) = filter_inline_styles(&cleaned);
+    css_stripped |= inline_css_stripped;
+    if inline_css_stripped {
+        notes.push("css_blocked_inline".into());
+    }
+
     (
         cleaned,
         SanitizeReport {
@@ -150,6 +191,33 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
             notes,
         },
     )
+}
+
+/// Drop or empty inline `style` attributes that fail [`filter_css`].
+fn filter_inline_styles(html: &str) -> (String, bool) {
+    let Ok(re) = Regex::new(r#"(?i)\sstyle\s*=\s*("([^"]*)"|'([^']*)')"#) else {
+        return (html.to_owned(), false);
+    };
+    let mut stripped = false;
+    let out = re
+        .replace_all(html, |caps: &regex::Captures<'_>| {
+            let val = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .map(|m| m.as_str())
+                .unwrap_or("");
+            let (filtered, bad) = filter_css(val);
+            if bad || filtered.is_empty() && !val.is_empty() {
+                stripped = true;
+                String::new()
+            } else if filtered == val {
+                caps[0].to_owned()
+            } else {
+                format!(" style=\"{filtered}\"")
+            }
+        })
+        .into_owned();
+    (out, stripped)
 }
 
 /// Validate required pages exist and sanitize them.
@@ -315,5 +383,48 @@ mod tests {
         assert!(fa.contains("https://joinbase.ai"), "{fa}");
         assert!(fa.contains("https://*.vercel.app"), "{fa}");
         assert!(!fa.contains("'none'"), "{fa}");
+    }
+
+    #[test]
+    fn preserves_presentation_css_and_layout_tags() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><style>.hero { color: #c00; margin: 0; }</style></head>
+<body class="page" id="top" style="margin:0;background:#fff">
+<main class="wrap"><section id="hero" class="hero" style="padding:2rem">Hello</section></main>
+</body>
+</html>"#;
+        let (out, report) = sanitize_html(html);
+        let low = out.to_ascii_lowercase();
+        assert!(!report.css_stripped, "safe CSS must not set css_stripped: {report:?}");
+        assert!(low.contains("<style>"), "style tag kept: {out}");
+        assert!(out.contains(".hero"), "CSS rules kept: {out}");
+        assert!(low.contains("<main"), "main kept: {out}");
+        assert!(low.contains("<section"), "section kept: {out}");
+        assert!(out.contains("class=\"hero\"") || out.contains("class='hero'"), "{out}");
+        assert!(out.contains("id=\"hero\"") || out.contains("id='hero'"), "{out}");
+        assert!(
+            out.contains("style=\"padding:2rem\"") || out.contains("style=\"padding: 2rem\""),
+            "inline style kept: {out}"
+        );
+        // body attrs survive via a wrapper div (ammonia unwraps <body>).
+        assert!(
+            out.contains("class=\"page\"") && out.contains("id=\"top\""),
+            "body presentation preserved: {out}"
+        );
+    }
+
+    #[test]
+    fn still_strips_script_and_dangerous_css() {
+        let (out, report) = sanitize_html(
+            r#"<style>@import url('https://evil.test/x.css');</style>
+<script>alert(1)</script><p class="ok" onclick="evil()">x</p>"#,
+        );
+        let low = out.to_ascii_lowercase();
+        assert!(!low.contains("<script"), "{out}");
+        assert!(!low.contains("onclick"), "{out}");
+        assert!(!out.contains("@import"), "{out}");
+        assert!(report.js_stripped || report.css_stripped);
+        assert!(out.contains("class=\"ok\"") || out.contains("class='ok'"), "{out}");
     }
 }

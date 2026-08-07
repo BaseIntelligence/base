@@ -272,6 +272,10 @@ pub async fn run_status_json(store: &dyn DesignStore, id: &str) -> Result<Value,
             "bytes": p.bytes,
             "raw_sha256": p.raw_sha256,
         })).collect::<Vec<_>>(),
+        "screenshot_url": pages
+            .iter()
+            .any(|p| p.path == "index.png")
+            .then(|| format!("/challenge/design/v1/view/{id}/index.png")),
         "event_count": events.len(),
         "admin_ready": r.status == RunStage::AwaitingAdmin,
         "annotation_ready": r.status == RunStage::AwaitingAnnotation,

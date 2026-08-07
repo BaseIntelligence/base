@@ -20,6 +20,7 @@
 pub mod host_sim;
 mod orchestrator;
 pub mod score;
+mod screenshot;
 
 pub use challenge_common::{
     emit_signed_leaf_set, public_key_from_secret, submit_signed_leaf_set, verify_leaf_sig,

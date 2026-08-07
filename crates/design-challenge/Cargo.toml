@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
 bundle = { path = "../bundle" }
 challenge-agentic = { path = "../challenge-agentic" }
 challenge-common = { path = "../challenge-common" }
@@ -24,6 +25,7 @@ design-store = { path = "../design-store" }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 submission-gating = { path = "../submission-gating" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = "0.1"

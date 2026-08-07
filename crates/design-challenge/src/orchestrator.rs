@@ -17,7 +17,8 @@ use challenge_common::{
 };
 use crypto::KEY_LEN;
 use design_challenge_task::{round_id_at, round_secs};
-use design_http::{mark_awaiting_admin, AdminAwardHook};
+use base64::Engine;
+use design_http::{mark_awaiting_admin, schedule_harness_for_round, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
 use design_sanitize::sanitize_bundle;
@@ -25,11 +26,13 @@ use design_store::{
     DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
+use crate::screenshot::capture_full_page_png;
 use crate::CHALLENGE_ID;
 
 /// Cap harness log payload stored in stage-event detail (JSON).
@@ -254,9 +257,60 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                     }
                 }
             }
-            // Ensure current round row exists.
+            // Ensure current round row exists and every active agent is queued.
             let _ = self.ensure_round(rid).await;
+            if let Err(e) = self.schedule_active_for_round(rid).await {
+                warn!(error = %e, round = rid, "schedule_active_for_round failed");
+            }
         }
+    }
+
+    /// Queue runs for every active (non-eliminated) harness in `rid`.
+    ///
+    /// Submit only schedules the *next* round once; this roll-forward keeps
+    /// registered agents participating across the rolling 10-round window.
+    async fn schedule_active_for_round(&self, rid: u64) -> Result<(), String> {
+        let harnesses = self
+            .store
+            .list_active_harnesses(rid)
+            .await
+            .map_err(|e| e.to_string())?;
+        let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
+            .unwrap_or(0);
+        for h in harnesses {
+            match schedule_harness_for_round(
+                self.store.as_ref(),
+                &h,
+                rid,
+                self.cfg.netuid,
+                epoch,
+            )
+            .await
+            {
+                Ok(ids) if !ids.is_empty() => {
+                    info!(
+                        harness_id = %h.id,
+                        miner = %h.miner_hotkey,
+                        round = rid,
+                        runs = ids.len(),
+                        "scheduled active harness for round"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // Quota / elimination are expected; do not abort the loop.
+                    warn!(
+                        harness_id = %h.id,
+                        miner = %h.miner_hotkey,
+                        round = rid,
+                        error = %e,
+                        "skip scheduling active harness"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Stuck sweeper.
@@ -705,7 +759,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         // Sanitize reject is the miner's fault: terminal, no auto-retry.
         let sanitized = sanitize_bundle(&out.pages)
             .map_err(|e| RunFailure::new(ErrorClass::Miner, e.to_string()))?;
-        let pages: Vec<_> = sanitized
+        let mut pages: Vec<_> = sanitized
             .pages
             .iter()
             .map(|p| {
@@ -718,6 +772,29 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 )
             })
             .collect();
+        // Best-effort full-page screenshot of the styled index for the site UI
+        // (replaces iframe previews). Failure never fails the run.
+        if let Some(index) = sanitized.pages.iter().find(|p| p.path == "index.html") {
+            let shot_dir = self.cfg.staging_root.join("screenshots").join(&run.id);
+            if let Some(png) = capture_full_page_png(&index.sanitized_html, &shot_dir) {
+                let mut h = Sha256::new();
+                h.update(&png);
+                let sha = hex::encode(h.finalize());
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+                let bytes = u32::try_from(png.len()).unwrap_or(u32::MAX);
+                pages.push((
+                    "index.png".into(),
+                    b64,
+                    String::new(),
+                    sha,
+                    bytes,
+                ));
+                info!(run_id = %run.id, bytes, "captured design page screenshot");
+            } else {
+                warn!(run_id = %run.id, "design page screenshot unavailable");
+            }
+            let _ = std::fs::remove_dir_all(&shot_dir);
+        }
         self.store
             .put_artifacts(&run.id, &pages)
             .await
@@ -726,7 +803,9 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
 
         // Pre-LLM copy gate: byte/AST copy of an *earlier* harness → terminal
         // `rejected` without spending the LLM review.
-        let gate_corpus = self.gate_corpus(&run.harness_id).await;
+        let gate_corpus = self
+            .gate_corpus(&run.harness_id, &harness.miner_hotkey)
+            .await;
         if let Some(hit) = copy_gate(&harness.agent_py, harness.created_at_ms, &gate_corpus) {
             warn!(
                 run_id = %run.id,
@@ -857,14 +936,21 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    /// Corpus for the pre-LLM copy gate (recent harnesses minus the candidate).
-    async fn gate_corpus(&self, exclude_harness_id: &str) -> Vec<GateCorpusEntry> {
+    /// Corpus for the pre-LLM copy gate (recent harnesses minus the candidate
+    /// and any prior revisions from the same miner hotkey).
+    async fn gate_corpus(
+        &self,
+        exclude_harness_id: &str,
+        exclude_miner_hotkey: &str,
+    ) -> Vec<GateCorpusEntry> {
+        let miner = exclude_miner_hotkey.to_ascii_lowercase();
         self.store
             .list_recent_harnesses(64)
             .await
             .unwrap_or_default()
             .into_iter()
             .filter(|h| h.id != exclude_harness_id)
+            .filter(|h| h.miner_hotkey.to_ascii_lowercase() != miner)
             .map(|h| GateCorpusEntry {
                 id: format!("harness:{}", h.id),
                 source: h.agent_py,
@@ -902,11 +988,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             .list_recent_harnesses(64)
             .await
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
-        let cand_created = recent
-            .iter()
-            .find(|h| h.id == run.harness_id)
-            .map(|h| h.created_at_ms)
-            .unwrap_or(0);
+        let cand = recent.iter().find(|h| h.id == run.harness_id);
+        let cand_created = cand.map(|h| h.created_at_ms).unwrap_or(0);
+        let cand_miner = cand
+            .map(|h| h.miner_hotkey.to_ascii_lowercase())
+            .unwrap_or_default();
         let mut corpus: Vec<CorpusEntry> = vec![CorpusEntry {
             // The published baseline is always in the corpus (same as prism):
             // it anchors originality judgments and keeps an empty recent-set
@@ -919,6 +1005,10 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             recent
                 .into_iter()
                 .filter(|h| h.id != run.harness_id)
+                // Same-hotkey revisions are self-improvement, not copying.
+                .filter(|h| {
+                    cand_miner.is_empty() || h.miner_hotkey.to_ascii_lowercase() != cand_miner
+                })
                 // Prior art only (created_at ordered like the pre-LLM gate): a
                 // later byte-copy must never poison the original's review.
                 .filter(|h| {

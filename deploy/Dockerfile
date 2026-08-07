@@ -131,8 +131,13 @@ ENTRYPOINT ["/usr/local/bin/prism-challenge"]
 
 FROM runtime-base AS design-challenge
 USER root
-RUN mkdir -p /var/lib/design/staging \
+# Headless Chromium for full-page design screenshots (DESIGN_CHROME_BIN).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends chromium fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/design/staging \
     && chown -R base:base /var/lib/design
+ENV DESIGN_CHROME_BIN=/usr/bin/chromium
 USER base
 COPY --from=artifacts --chown=base:base /out/design-challenge /usr/local/bin/design-challenge
 ENTRYPOINT ["/usr/local/bin/design-challenge"]

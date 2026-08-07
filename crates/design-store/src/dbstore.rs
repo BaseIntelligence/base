@@ -180,6 +180,28 @@ impl DesignStore for DbDesignStore {
         )
     }
 
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError> {
+        Ok(dbs::list_active_design_harnesses(
+            &self.pool,
+            i64::try_from(for_round).unwrap_or(i64::MAX),
+        )
+        .await
+        .map_err(map_db)?
+        .into_iter()
+        .map(harness_from)
+        .collect())
+    }
+
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError> {
+        dbs::deactivate_other_design_harnesses(&self.pool, miner_hotkey, keep_id)
+            .await
+            .map_err(map_db)
+    }
+
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError> {
         dbs::insert_design_round(
             &self.pool,

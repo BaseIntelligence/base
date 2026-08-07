@@ -278,6 +278,16 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn set_eliminated(&self, id: &str, until_round: u64) -> Result<(), StoreError>;
     /// Recent harnesses for agentic corpus (newest first).
     async fn list_recent_harnesses(&self, limit: u32) -> Result<Vec<HarnessRow>, StoreError>;
+    /// Active harnesses for automatic round scheduling (newest per miner).
+    ///
+    /// Includes rows with `eliminated_until_round <= for_round`.
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError>;
+    /// Deactivate every other harness for this miner (keep `keep_id` active).
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError>;
 
     /// Insert round.
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError>;
@@ -462,6 +472,44 @@ impl DesignStore for MemoryDesignStore {
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v.truncate(limit as usize);
         Ok(v)
+    }
+
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError> {
+        let mut by_miner: BTreeMap<String, HarnessRow> = BTreeMap::new();
+        for h in self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .values()
+        {
+            if !h.active || h.eliminated_until_round > for_round {
+                continue;
+            }
+            let replace = by_miner
+                .get(&h.miner_hotkey)
+                .is_none_or(|prev| h.created_at_ms >= prev.created_at_ms);
+            if replace {
+                by_miner.insert(h.miner_hotkey.clone(), h.clone());
+            }
+        }
+        Ok(by_miner.into_values().collect())
+    }
+
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut m = self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        for h in m.values_mut() {
+            if h.miner_hotkey == miner_hotkey && h.id != keep_id {
+                h.active = false;
+            }
+        }
+        Ok(())
     }
 
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError> {

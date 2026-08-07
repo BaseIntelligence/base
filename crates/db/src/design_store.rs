@@ -328,6 +328,47 @@ pub async fn list_recent_design_harnesses(
         .await?)
 }
 
+/// Active harnesses eligible for automatic per-round scheduling.
+///
+/// One row per miner (newest active), excluding eliminated-until-future rows.
+///
+/// # Errors
+/// SQL error.
+pub async fn list_active_design_harnesses(
+    pool: &PgPool,
+    max_eliminated_until_round: i64,
+) -> Result<Vec<DesignHarnessRow>, DbError> {
+    let q = format!(
+        "SELECT DISTINCT ON (miner_hotkey) {HARNESS_COLS} FROM design_harness \
+         WHERE active = TRUE AND eliminated_until_round <= $1 \
+         ORDER BY miner_hotkey ASC, created_at DESC"
+    );
+    Ok(sqlx::query_as::<_, DesignHarnessRow>(&q)
+        .bind(max_eliminated_until_round)
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Mark every other harness for this miner inactive (1 active agent per hotkey).
+///
+/// # Errors
+/// SQL error.
+pub async fn deactivate_other_design_harnesses(
+    pool: &PgPool,
+    miner_hotkey: &str,
+    keep_id: &str,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE design_harness SET active = FALSE, updated_at = now() \
+         WHERE miner_hotkey = $1 AND id <> $2 AND active = TRUE",
+    )
+    .bind(miner_hotkey)
+    .bind(keep_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Set elimination cooldown.
 ///
 /// # Errors

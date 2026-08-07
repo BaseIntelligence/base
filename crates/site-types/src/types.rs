@@ -182,6 +182,9 @@ pub struct Submission {
     pub title: String,
     /// Preview or detail URL (gateway-relative for design view).
     pub url: String,
+    /// Full-page PNG screenshot URL when master captured one (design arena).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_url: Option<String>,
     /// Coarse marketing status (`scored` | `pending` | `failed`).
     pub status: SubmissionStatus,
     /// Fine-grained upstream stage (`queued`, `installing`, `agentic_review`, …).
@@ -195,6 +198,9 @@ pub struct Submission {
     /// Prism validation BPB when measured (terminal or mid-flight if present).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bpb: Option<f64>,
+    /// Model parameters in millions when measured (Prism); absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_m: Option<f64>,
     /// Failure reason when failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
@@ -203,10 +209,13 @@ pub struct Submission {
 }
 
 /// Loss series point.
+///
+/// `step` is the chart x-value: prefer tokens-seen from harness
+/// `layer_stats.tokens` when present, else the optimizer step index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LossPoint {
-    /// Step index.
+    /// Tokens seen (preferred) or optimizer step index.
     pub step: u32,
     /// Loss / BPB.
     pub loss: f64,
@@ -218,6 +227,9 @@ pub struct LossPoint {
 pub struct LossSeries {
     /// Architecture label.
     pub architecture: String,
+    /// Upstream prism submission id (join key for the submissions table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<String>,
     /// Params in millions when known; 0 if unknown.
     pub params: f64,
     /// Final loss / BPB.
