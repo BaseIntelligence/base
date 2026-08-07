@@ -181,6 +181,13 @@ enum Cmd {
     Identity,
     /// Run server + workers.
     Serve,
+    /// (Re)capture missing run screenshots (`index.png`) against Postgres,
+    /// then exit. Idempotent: runs that already have a screenshot are skipped.
+    BackfillScreenshots {
+        /// Scan at most this many recent runs (newest first).
+        #[arg(long, env = "DESIGN_BACKFILL_LIMIT", default_value_t = 500)]
+        limit: u32,
+    },
 }
 
 fn main() -> ExitCode {
@@ -209,7 +216,36 @@ fn run(cli: Cli) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
+    let backfill_limit = match &cli.cmd {
+        Some(Cmd::BackfillScreenshots { limit }) => Some(*limit),
+        _ => None,
+    };
+    if let Some(limit) = backfill_limit {
+        return rt.block_on(cmd_backfill(&cli, limit));
+    }
     rt.block_on(cmd_serve(cli))
+}
+
+/// One-shot screenshot backfill: Postgres store + headless Chromium only (no
+/// chain, gateway, or challenge key needed).
+async fn cmd_backfill(cli: &Cli, limit: u32) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "backfill-screenshots requires BASE_DATABASE_URL".to_owned())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store = DbDesignStore::new(pool);
+    let s =
+        design_challenge::backfill::backfill_screenshots(&store, &cli.staging_root, limit).await?;
+    println!(
+        "screenshot backfill: scanned={} missing={} captured={} failed={}",
+        s.scanned, s.missing, s.captured, s.failed
+    );
+    if s.failed > 0 {
+        return Err(format!(
+            "{} screenshot capture(s) failed; re-run to retry",
+            s.failed
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_sk_path(cli_path: Option<&PathBuf>) -> Result<PathBuf, String> {

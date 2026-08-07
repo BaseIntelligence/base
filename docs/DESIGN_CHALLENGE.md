@@ -248,6 +248,31 @@ CSP `sandbox` (without `allow-scripts`) neutralizes script even if an integrator
 omits the iframe `sandbox` attribute. Integrators should still use
 `<iframe sandbox="" src="...">` — no tokens — on a dedicated subdomain.
 
+### Full-page screenshot (`index.png`)
+
+After sanitize, the orchestrator renders the sanitized `index.html` **artifact**
+(store → temp file → `file://`) in headless Chromium inside the
+design-challenge container — never the public `/v1/view` URL (its sandbox CSP
+is for browser embedding; the stored artifact is the capture source of truth).
+Chromium runs `--no-sandbox` because the renderer sandbox needs user
+namespaces / `CAP_SYS_ADMIN`, which Docker does not grant; the container
+boundary plus the scriptless sanitized artifact is the sandbox. Two passes
+(measure height via `--dump-dom`, then `--screenshot --window-size=1280×H`),
+hard process timeout, one retry; failure never fails the run. The PNG is
+stored as the `index.png` artifact (base64) and served at
+`GET /v1/view/{run_id}/index.png` (`image/png`, `private, no-store`,
+`nosniff`); run detail exposes `screenshot_url` when the artifact exists.
+
+Backfill (idempotent; upserts on `(run_id, path)` so it can be re-run and can
+race a live capture safely):
+
+```bash
+# on the master host, from the repo checkout (env comes from the container):
+docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-prod.yml exec design-challenge \
+  design-challenge backfill-screenshots --limit 500
+```
+
 ---
 
 ## 7. Rounds and quotas

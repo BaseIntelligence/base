@@ -17,10 +17,11 @@
 #![allow(clippy::case_sensitive_file_extension_comparisons)]
 #![allow(clippy::struct_field_names)]
 
+pub mod backfill;
 pub mod host_sim;
 mod orchestrator;
 pub mod score;
-mod screenshot;
+pub mod screenshot;
 
 pub use challenge_common::{
     emit_signed_leaf_set, public_key_from_secret, submit_signed_leaf_set, verify_leaf_sig,

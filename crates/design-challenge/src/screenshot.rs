@@ -1,30 +1,151 @@
 //! Full-page screenshots of sanitized design pages for the public site.
+//!
+//! The capturer renders the sanitized HTML **artifact** (store → temp file →
+//! `file://`) in headless Chromium inside the design-challenge container. It
+//! never loads the public `/v1/view` URL: view responses carry a locked-down
+//! sandbox CSP meant for browser embedding, and the stored artifact is the
+//! capture source of truth. `--no-sandbox` is required because Chromium's
+//! renderer sandbox needs user namespaces / `CAP_SYS_ADMIN`, which Docker
+//! containers do not grant; the container boundary plus the scriptless
+//! sanitized artifact is the sandbox.
 
-use std::path::Path;
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use sha2::{Digest, Sha256};
 use tracing::warn;
 
-/// Capture a full-page PNG of `html` (best-effort).
+/// Capture viewport width in px (matches the site preview column).
+const WIDTH: u32 = 1280;
+/// Floor for the measured page height in px.
+const MIN_HEIGHT: u32 = 480;
+/// Height used when the measure pass yields nothing (px).
+const FALLBACK_HEIGHT: u32 = 3_200;
+/// Default cap on full-page height in px (`DESIGN_SCREENSHOT_MAX_HEIGHT`).
+const DEFAULT_MAX_HEIGHT: u32 = 12_000;
+/// Default per-process timeout in secs (`DESIGN_SCREENSHOT_TIMEOUT_SECS`).
+const DEFAULT_TIMEOUT_SECS: u64 = 90;
+/// Virtual-time budget per render so remote images settle (ms).
+const VIRTUAL_TIME_BUDGET_MS: u32 = 10_000;
+/// Marker the height probe writes into `<title>`.
+const HEIGHT_MARKER: &str = "SHOTH=";
+/// Height probe appended to the throwaway capture document (never shipped).
+const MEASURE_SCRIPT: &str = "<script>addEventListener('load',function(){setTimeout(function(){var d=document,e=d.documentElement,b=d.body;d.title='SHOTH='+Math.max(e.scrollHeight,b?b.scrollHeight:0)},50)})</script>";
+
+/// Capture knobs resolved from env at call time (tests build them directly).
+#[derive(Debug, Clone)]
+struct CaptureConfig {
+    /// Browser binaries to try, in order (`DESIGN_CHROME_BIN` first).
+    chrome_bins: Vec<String>,
+    /// Per-process timeout.
+    timeout: Duration,
+    /// Full-page height cap.
+    max_height: u32,
+    /// Total attempts (initial + retries).
+    attempts: u32,
+}
+
+impl CaptureConfig {
+    fn from_env() -> Self {
+        let mut bins: Vec<String> = std::env::var("DESIGN_CHROME_BIN")
+            .ok()
+            .filter(|b| !b.is_empty())
+            .into_iter()
+            .collect();
+        bins.extend(
+            [
+                "chromium",
+                "chromium-browser",
+                "google-chrome",
+                "google-chrome-stable",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        Self {
+            chrome_bins: bins,
+            timeout: Duration::from_secs(env_u64(
+                "DESIGN_SCREENSHOT_TIMEOUT_SECS",
+                DEFAULT_TIMEOUT_SECS,
+            )),
+            max_height: env_u32("DESIGN_SCREENSHOT_MAX_HEIGHT", DEFAULT_MAX_HEIGHT),
+            attempts: 2,
+        }
+    }
+}
+
+/// Capture a full-page PNG of sanitized `html` (best-effort).
 ///
-/// Prefers the Playwright CLI (`playwright screenshot --full-page`), then
-/// falls back to headless Chrome viewport capture. Returns `None` when no
-/// browser tool is available or capture fails — runs must not fail for this.
+/// Two Chromium passes per attempt: measure the rendered height (probe script
+/// plus `--dump-dom`), then screenshot `WIDTH × height`. Returns `None` when
+/// no browser is available or every attempt fails — a run must never fail
+/// because its preview is missing.
+#[must_use]
 pub fn capture_full_page_png(html: &str, work_dir: &Path) -> Option<Vec<u8>> {
-    let _ = std::fs::create_dir_all(work_dir);
+    capture_with(&CaptureConfig::from_env(), html, work_dir)
+}
+
+/// Artifact row tuple for a captured PNG (`index.png`): base64 payload in the
+/// `sanitized_html` column (the viewer base64-decodes it), sha256 of the PNG.
+#[must_use]
+pub fn png_artifact_tuple(png: &[u8]) -> (String, String, String, String, u32) {
+    let mut h = Sha256::new();
+    h.update(png);
+    (
+        "index.png".into(),
+        base64::engine::general_purpose::STANDARD.encode(png),
+        String::new(),
+        hex::encode(h.finalize()),
+        u32::try_from(png.len()).unwrap_or(u32::MAX),
+    )
+}
+
+fn capture_with(cfg: &CaptureConfig, html: &str, work_dir: &Path) -> Option<Vec<u8>> {
+    std::fs::create_dir_all(work_dir).ok()?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let html_path = work_dir.join(format!("shot-{stamp}.html"));
-    let png_path = work_dir.join(format!("shot-{stamp}.png"));
-    if std::fs::write(&html_path, html).is_err() {
-        return None;
+        .map_or(0, |d| d.as_millis());
+    let html_path = work_dir.join(format!("shot-{stamp}-{}.html", std::process::id()));
+    std::fs::write(&html_path, render_doc(html)).ok()?;
+    let url = file_url(&html_path);
+    let mut out = None;
+    for attempt in 1..=cfg.attempts.max(1) {
+        if let Some(png) = capture_once(cfg, &url, work_dir, stamp, attempt) {
+            out = Some(png);
+            break;
+        }
+        if attempt < cfg.attempts {
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
-    let file_url = path_to_file_url(&html_path);
-    let ok = try_playwright(&file_url, &png_path) || try_chrome(&file_url, &png_path);
     let _ = std::fs::remove_file(&html_path);
+    out
+}
+
+fn capture_once(
+    cfg: &CaptureConfig,
+    url: &str,
+    work_dir: &Path,
+    stamp: u128,
+    attempt: u32,
+) -> Option<Vec<u8>> {
+    let height = measure_height(cfg, url, work_dir, stamp, attempt)
+        .map_or(FALLBACK_HEIGHT, |h| clamp_height(h, cfg.max_height));
+    let png_path = work_dir.join(format!("shot-{stamp}-{attempt}.png"));
+    let ok = cfg.chrome_bins.iter().any(|bin| {
+        shoot(
+            bin,
+            url,
+            &png_path,
+            height,
+            work_dir,
+            stamp,
+            attempt,
+            cfg.timeout,
+        )
+    });
     if !ok {
         let _ = std::fs::remove_file(&png_path);
         return None;
@@ -41,43 +162,308 @@ pub fn capture_full_page_png(html: &str, work_dir: &Path) -> Option<Vec<u8>> {
     }
 }
 
-fn path_to_file_url(path: &Path) -> String {
+fn measure_height(
+    cfg: &CaptureConfig,
+    url: &str,
+    work_dir: &Path,
+    stamp: u128,
+    attempt: u32,
+) -> Option<u32> {
+    let bin = cfg.chrome_bins.first()?;
+    let profile = profile_dir(work_dir, stamp, attempt, "dom");
+    let out = run_with_timeout(
+        Command::new(bin)
+            .args(base_args(&profile))
+            .arg("--dump-dom")
+            .arg(url),
+        cfg.timeout,
+    );
+    let _ = std::fs::remove_dir_all(&profile);
+    let out = out.filter(|o| o.status.success())?;
+    parse_height(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shoot(
+    bin: &str,
+    url: &str,
+    out: &Path,
+    height: u32,
+    work_dir: &Path,
+    stamp: u128,
+    attempt: u32,
+    timeout: Duration,
+) -> bool {
+    let profile = profile_dir(work_dir, stamp, attempt, "png");
+    let res = run_with_timeout(
+        Command::new(bin)
+            .args(base_args(&profile))
+            .arg(format!("--screenshot={}", out.display()))
+            .arg(format!("--window-size={WIDTH},{height}"))
+            .arg(url),
+        timeout,
+    );
+    let _ = std::fs::remove_dir_all(&profile);
+    matches!(res, Some(o) if o.status.success() && out.is_file())
+}
+
+/// Shared headless flags. `--no-sandbox`: the renderer sandbox needs userns /
+/// `CAP_SYS_ADMIN`, unavailable in Docker — the container plus the scriptless
+/// sanitized artifact is the security boundary. `--disable-dev-shm-usage`:
+/// Docker caps `/dev/shm` at 64MiB, which crashes tall renders.
+fn base_args(profile: &Path) -> Vec<String> {
+    [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-crash-reporter",
+        "--disable-breakpad",
+        "--no-first-run",
+        "--hide-scrollbars",
+        "--force-color-profile=srgb",
+        "--run-all-compositor-stages-before-draw",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain([
+        format!("--virtual-time-budget={VIRTUAL_TIME_BUDGET_MS}"),
+        format!("--user-data-dir={}", profile.display()),
+    ])
+    .collect()
+}
+
+/// Spawn → poll → kill on timeout. `Command::wait_timeout` is unstable, so
+/// poll `try_wait` on a short cadence; a hung browser must not wedge a worker.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// Wrap the sanitized fragment (ammonia unwraps the html/head/body shell)
+/// into a capture document. The only script is our own height probe.
+fn render_doc(fragment: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>shot</title></head><body>{fragment}{MEASURE_SCRIPT}</body></html>"
+    )
+}
+
+/// Height marker from a `--dump-dom` payload. The probe writes
+/// `<title>SHOTH=<px></title>` in `<head>`, ahead of the script's own source.
+fn parse_height(dump: &str) -> Option<u32> {
+    let start = dump.find(HEIGHT_MARKER)? + HEIGHT_MARKER.len();
+    let digits: String = dump[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn clamp_height(measured: u32, max_height: u32) -> u32 {
+    measured.clamp(MIN_HEIGHT, max_height.max(MIN_HEIGHT))
+}
+
+fn profile_dir(work_dir: &Path, stamp: u128, attempt: u32, kind: &str) -> PathBuf {
+    // Per-invocation profile: a killed browser leaves a SingletonLock behind,
+    // and concurrent workers must never share one profile dir.
+    work_dir.join(format!("prof-{stamp}-{attempt}-{kind}"))
+}
+
+fn file_url(path: &Path) -> String {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     format!("file://{}", abs.display())
 }
 
-fn try_playwright(url: &str, out: &Path) -> bool {
-    let bin = std::env::var("DESIGN_PLAYWRIGHT_BIN").unwrap_or_else(|_| "playwright".into());
-    let status = Command::new(&bin)
-        .args(["screenshot", "--full-page", url])
-        .arg(out)
-        .status();
-    matches!(status, Ok(s) if s.success() && out.is_file())
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
-fn try_chrome(url: &str, out: &Path) -> bool {
-    let candidates = [
-        std::env::var("DESIGN_CHROME_BIN").unwrap_or_default(),
-        "google-chrome".into(),
-        "google-chrome-stable".into(),
-        "chromium".into(),
-        "chromium-browser".into(),
-    ];
-    for bin in candidates.into_iter().filter(|b| !b.is_empty()) {
-        // Chrome `--screenshot` is viewport-sized; still better than no preview.
-        let status = Command::new(&bin)
-            .args([
-                "--headless=new",
-                "--disable-gpu",
-                "--hide-scrollbars",
-                "--window-size=1280,4000",
-                &format!("--screenshot={}", out.display()),
-                url,
-            ])
-            .status();
-        if matches!(status, Ok(s) if s.success() && out.is_file()) {
-            return true;
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::io::Write;
+
+    const FAKE_PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-pixels";
+
+    fn test_cfg(bin: &Path) -> CaptureConfig {
+        CaptureConfig {
+            chrome_bins: vec![bin.to_string_lossy().into_owned()],
+            timeout: Duration::from_secs(5),
+            max_height: DEFAULT_MAX_HEIGHT,
+            attempts: 1,
         }
     }
-    false
+
+    fn write_stub(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("chrome-stub.sh");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        drop(f);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    /// Stub that answers the measure pass and copies `fake.png` on capture.
+    fn ok_stub(dir: &Path) -> PathBuf {
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, FAKE_PNG).unwrap();
+        write_stub(
+            dir,
+            &format!(
+                "#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --screenshot=*) out=\"${{a#--screenshot=}}\";; esac; done\ncase \"$*\" in *--dump-dom*) echo '<title>SHOTH=2400</title>'; exit 0;; esac\nif [ -n \"$out\" ]; then cp \"{}\" \"$out\"; exit 0; fi\nexit 1\n",
+                fake.display()
+            ),
+        )
+    }
+
+    #[test]
+    fn capture_success_full_pipeline() {
+        let dir = std::env::temp_dir().join(format!("shot-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = ok_stub(&dir);
+        let png = capture_with(&test_cfg(&stub), "<p>hi</p>", &dir.join("work"));
+        assert_eq!(png.as_deref(), Some(FAKE_PNG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_falls_back_when_marker_missing() {
+        let dir = std::env::temp_dir().join(format!("shot-nomarker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, FAKE_PNG).unwrap();
+        let stub = write_stub(
+            &dir,
+            &format!(
+                "#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --screenshot=*) out=\"${{a#--screenshot=}}\";; esac; done\ncase \"$*\" in *--dump-dom*) echo '<html></html>'; exit 0;; esac\nif [ -n \"$out\" ]; then cp \"{}\" \"$out\"; exit 0; fi\nexit 1\n",
+                fake.display()
+            ),
+        );
+        let png = capture_with(&test_cfg(&stub), "<p>hi</p>", &dir.join("work"));
+        assert_eq!(png.as_deref(), Some(FAKE_PNG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_failure_returns_none() {
+        let dir = std::env::temp_dir().join(format!("shot-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = write_stub(&dir, "#!/bin/sh\nexit 1\n");
+        let mut cfg = test_cfg(&stub);
+        cfg.attempts = 2;
+        let png = capture_with(&cfg, "<p>hi</p>", &dir.join("work"));
+        assert!(png.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_timeout_kills_browser() {
+        let dir = std::env::temp_dir().join(format!("shot-hang-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = write_stub(&dir, "#!/bin/sh\nsleep 30\n");
+        let mut cfg = test_cfg(&stub);
+        cfg.timeout = Duration::from_secs(1);
+        let start = Instant::now();
+        let png = capture_with(&cfg, "<p>hi</p>", &dir.join("work"));
+        assert!(png.is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "hung stub must be killed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_png_output_rejected() {
+        let dir = std::env::temp_dir().join(format!("shot-notpng-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = write_stub(
+            &dir,
+            "#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --screenshot=*) out=\"${a#--screenshot=}\";; esac; done\ncase \"$*\" in *--dump-dom*) echo '<title>SHOTH=900</title>'; exit 0;; esac\nif [ -n \"$out\" ]; then echo notapng > \"$out\"; exit 0; fi\nexit 1\n",
+        );
+        let png = capture_with(&test_cfg(&stub), "<p>hi</p>", &dir.join("work"));
+        assert!(png.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_height_variants() {
+        assert_eq!(parse_height("<title>SHOTH=2400</title>"), Some(2400));
+        assert_eq!(parse_height("junk <title>shot</title>"), None);
+        assert_eq!(parse_height("SHOTH="), None);
+        assert_eq!(parse_height("SHOTH=12px"), Some(12));
+        assert_eq!(parse_height(""), None);
+    }
+
+    #[test]
+    fn clamp_height_bounds() {
+        assert_eq!(clamp_height(10, 12_000), MIN_HEIGHT);
+        assert_eq!(clamp_height(99_999, 12_000), 12_000);
+        assert_eq!(clamp_height(2_400, 12_000), 2_400);
+    }
+
+    #[test]
+    fn render_doc_wraps_fragment_with_probe() {
+        let doc = render_doc("<main>hello</main>");
+        assert!(doc.starts_with("<!DOCTYPE html>"));
+        assert!(doc.contains("<main>hello</main>"));
+        assert!(doc.contains("SHOTH="));
+        assert!(doc.ends_with("</body></html>"));
+    }
+
+    #[test]
+    fn png_tuple_sha_and_b64() {
+        let (path, b64, raw, sha, bytes) = png_artifact_tuple(FAKE_PNG);
+        assert_eq!(path, "index.png");
+        assert!(raw.is_empty());
+        assert_eq!(bytes as usize, FAKE_PNG.len());
+        assert_eq!(sha.len(), 64);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        assert_eq!(decoded, FAKE_PNG);
+    }
 }

@@ -721,19 +721,26 @@ impl DesignStore for MemoryDesignStore {
         run_id: &str,
         pages: &[(String, String, String, String, u32)],
     ) -> Result<(), StoreError> {
-        let list: Vec<ArtifactPage> = pages
-            .iter()
-            .map(|(path, sanitized, _raw, sha, bytes)| ArtifactPage {
+        // Upsert by path (matches the DB adapter's ON CONFLICT refresh): a
+        // screenshot-only put must not drop the run's HTML pages.
+        let mut guard = self
+            .pages
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let entry = guard.entry(run_id.to_owned()).or_default();
+        for (path, sanitized, _raw, sha, bytes) in pages {
+            let page = ArtifactPage {
                 path: path.clone(),
                 sanitized_html: sanitized.clone(),
                 raw_sha256: sha.clone(),
                 bytes: *bytes,
-            })
-            .collect();
-        self.pages
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .insert(run_id.to_owned(), list);
+            };
+            if let Some(existing) = entry.iter_mut().find(|p| p.path == *path) {
+                *existing = page;
+            } else {
+                entry.push(page);
+            }
+        }
         Ok(())
     }
 

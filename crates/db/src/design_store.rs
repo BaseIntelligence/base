@@ -623,7 +623,9 @@ pub async fn stuck_design_runs(
         .await?)
 }
 
-/// Insert artifact.
+/// Insert artifact. Idempotent on `(run_id, path)`: a retried run re-putting
+/// its pages (or a screenshot backfill racing a live capture) refreshes the
+/// row instead of failing on the unique key.
 ///
 /// # Errors
 /// SQL error.
@@ -633,7 +635,10 @@ pub async fn insert_design_artifact(
 ) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO design_artifact (run_id, path, sanitized_html, raw_html, raw_sha256, bytes) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (run_id, path) DO UPDATE SET sanitized_html = EXCLUDED.sanitized_html, \
+           raw_html = EXCLUDED.raw_html, raw_sha256 = EXCLUDED.raw_sha256, \
+           bytes = EXCLUDED.bytes",
     )
     .bind(n.run_id)
     .bind(n.path)
@@ -793,19 +798,6 @@ pub async fn design_annotations_for_round(
     .fetch_all(pool)
     .await?;
     Ok(rows)
-}
-
-/// Annotation count for a pair.
-///
-/// # Errors
-/// SQL error.
-pub async fn design_annotation_count(pool: &PgPool, pair_id: &str) -> Result<i64, DbError> {
-    let n: i64 =
-        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM design_annotation WHERE pair_id = $1")
-            .bind(pair_id)
-            .fetch_one(pool)
-            .await?;
-    Ok(n)
 }
 
 /// Upsert rating.

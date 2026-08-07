@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base64::Engine;
 use chain::ChainClient;
 use challenge_agentic::{
     copy_gate, AgenticBackend, AgenticError, AgenticVerdict, CorpusEntry, GateCorpusEntry,
@@ -26,13 +25,12 @@ use design_store::{
     DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
-use crate::screenshot::capture_full_page_png;
+use crate::screenshot::{capture_full_page_png, png_artifact_tuple};
 use crate::CHALLENGE_ID;
 
 /// Cap harness log payload stored in stage-event detail (JSON).
@@ -767,17 +765,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             })
             .collect();
         // Best-effort full-page screenshot of the styled index for the site UI
-        // (replaces iframe previews). Failure never fails the run.
+        // (replaces iframe previews). Failure never fails the run. The capture
+        // spawns Chromium, so keep it off the async worker threads.
         if let Some(index) = sanitized.pages.iter().find(|p| p.path == "index.html") {
             let shot_dir = self.cfg.staging_root.join("screenshots").join(&run.id);
-            if let Some(png) = capture_full_page_png(&index.sanitized_html, &shot_dir) {
-                let mut h = Sha256::new();
-                h.update(&png);
-                let sha = hex::encode(h.finalize());
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
-                let bytes = u32::try_from(png.len()).unwrap_or(u32::MAX);
-                pages.push(("index.png".into(), b64, String::new(), sha, bytes));
-                info!(run_id = %run.id, bytes, "captured design page screenshot");
+            let html = index.sanitized_html.clone();
+            let dir = shot_dir.clone();
+            let png = tokio::task::spawn_blocking(move || capture_full_page_png(&html, &dir))
+                .await
+                .ok()
+                .flatten();
+            if let Some(png) = png {
+                info!(run_id = %run.id, bytes = png.len(), "captured design page screenshot");
+                pages.push(png_artifact_tuple(&png));
             } else {
                 warn!(run_id = %run.id, "design page screenshot unavailable");
             }
