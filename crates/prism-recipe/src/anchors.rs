@@ -62,12 +62,20 @@ pub enum NormKind {
     StabilityBounded,
 }
 
+fn default_metric_weight() -> f64 {
+    1.0
+}
+
 /// One metric's anchor entry (normalization + provenance markers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricAnchor {
     /// Normalization descriptor.
     #[serde(flatten)]
     pub norm: NormKind,
+    /// Relative weight within the group (default 1 = equal mean).
+    /// G5 uses unequal internal weights (ruler/babilong/natural/…).
+    #[serde(default = "default_metric_weight")]
+    pub weight: f64,
     /// `"placeholder"` until measured on the reference baselines.
     #[serde(default)]
     pub status: Option<String>,
@@ -241,7 +249,15 @@ mod tests {
         assert!((set.gates.ci_half_width_delta - 0.05).abs() < f64::EPSILON);
         assert_eq!(set.gates.max_params, 350_000_000);
         assert!((set.gates.max_wall_s - 21_600.0).abs() < f64::EPSILON);
-        assert_eq!(set.mirror.groups, vec!["g2".to_string(), "g4".to_string()]);
+        assert_eq!(
+            set.mirror.groups,
+            vec!["g2".to_string(), "g4".to_string(), "g5".to_string()]
+        );
+        let g5 = set.groups.get("g5").expect("g5");
+        let ruler_w = g5.metrics.get("org.g5.ruler_acc").map(|m| m.weight);
+        assert_eq!(ruler_w, Some(0.35));
+        let lstar_w = g5.metrics.get("org.g5.lstar").map(|m| m.weight);
+        assert_eq!(lstar_w, Some(0.10));
         assert!(set.mirror.tau_m > 0.0);
         assert!(set.bootstrap.b >= 1000);
         assert!((set.bootstrap.lcb_z - 1.645).abs() < f64::EPSILON);

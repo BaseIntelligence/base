@@ -84,7 +84,9 @@ async fn real_harness_blob_drives_composite_and_persists_everything() {
     );
     let mirror_rows = store.eval_mirrors(&run.run_id).await.unwrap();
     assert_eq!(mirror_rows.len(), mirrors.len());
-    assert!(mirror_rows.iter().all(|m| m.grp == "g2" || m.grp == "g4"));
+    assert!(mirror_rows
+        .iter()
+        .all(|m| m.grp == "g2" || m.grp == "g4" || m.grp == "g5"));
     assert!(
         mirror_rows
             .iter()

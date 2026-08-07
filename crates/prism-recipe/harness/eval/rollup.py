@@ -23,12 +23,13 @@ Cluster values come from the battery's per-item side channel
 (`ItemRecorder`): cluster = template/variant id, the unit of
 randomization for the clustered bootstrap in the Rust composite.
 
-Mirror pairs (composite step 2.5, groups g2/g4): the same metric scored on
-the PUBLIC anchor family (published dev seed / public_dev jsonl anchors)
-vs the PRIVATE mirror family (operator secret seed / staged private
-mirrors). In the public_dev tier the two seeds coincide and no private
-assets exist, so each pair is degenerate (gap 0 — the run is its own
-mirror); in the private tier both families are scored for real.
+Mirror pairs (composite step 2.5, groups g2/g4/g5): the same metric scored
+on the PUBLIC anchor family (published dev seed / public_dev jsonl
+anchors) vs the PRIVATE mirror family (operator secret seed / staged
+private mirrors). In the public_dev tier the two seeds coincide and no
+private assets exist, so each pair is degenerate (gap 0 — the run is its
+own mirror); in the private tier both families are scored for real.
+G5 natural slices append pairs via `natural_docs.mirror_pairs`.
 """
 
 from prismlib import LN2
@@ -36,6 +37,7 @@ from prismlib import LN2
 from . import common
 from . import gen_reasoning as gr
 from . import g2_downstream as g2_mod
+from . import natural_docs
 
 # ---------------------------------------------------------------- org.* map
 
@@ -51,14 +53,15 @@ _G2_TASK_ORG = {
     "openbookqa": "obqa",
 }
 
-# G5 generator task id -> canonical anchor metric name.
-_G5_TASK_ORG = {
-    "niah": "niah",
-    "vt": "variable_tracking",
-    "freq": "freq_words",
-    "graph": "graphwalks",
-    "mrcr": "ordering",
-    "babi": "babilong_qa",
+# G5 scored-path rollup (recipe ≥ 1.4.0): protocol + natural adapters.
+# Internal key -> canonical org.* anchor name. Procedural gen_longctx
+# families are no longer mapped into the composite.
+_G5_DIRECT = {
+    "org.g5.ruler_acc": "g5.ruler.acc",
+    "org.g5.babilong_acc": "g5.babilong.acc",
+    "org.g5.natural_mcq_acc": "g5.natural_mcq.acc",
+    "org.g5.helmet_rag_acc": "g5.helmet_rag.acc",
+    "org.g5.lstar": "g5.lstar",
 }
 
 # Direct renames: org key -> (battery group, internal metric key).
@@ -177,15 +180,21 @@ def flatten_metrics(battery_groups, items=None):
             out[org_key] = _series(v, clusters)
 
     g5 = _group_metrics(battery_groups, "g5")
-    for task, org_task in _G5_TASK_ORG.items():
-        vals = [
-            v for k, v in sorted(g5.items())
-            if k.startswith(f"g5.{task}.L") and k.endswith(".acc")
-        ]
-        if vals:
-            org_key = f"org.g5.{org_task}_acc"
-            clusters = _cluster_means(items_dump, "g5.item.acc", f"{task}@", None)
-            out[org_key] = _series(sum(vals) / len(vals), clusters)
+    for org_key, internal in _G5_DIRECT.items():
+        value = g5.get(internal)
+        if value is None:
+            continue
+        if org_key == "org.g5.ruler_acc":
+            clusters = _cluster_means(items_dump, "g5.ruler.item.acc", None, None)
+        elif org_key == "org.g5.babilong_acc":
+            clusters = _cluster_means(items_dump, "g5.babilong.item.acc", None, None)
+        elif org_key == "org.g5.natural_mcq_acc":
+            clusters = _cluster_means(items_dump, "g5.item.acc", "natural_mcq@", None)
+        elif org_key == "org.g5.helmet_rag_acc":
+            clusters = _cluster_means(items_dump, "g5.item.acc", "helmet_rag@", None)
+        else:
+            clusters = {}
+        out[org_key] = _series(value, clusters)
 
     g8 = _group_metrics(battery_groups, "g8")
     # Bounded stability score: divergence-free fraction with a spike-rate
@@ -277,9 +286,10 @@ def build_mirrors(model, ctx):
     side = the resolved secret seed family (identical in the public_dev
     tier by construction). G2 (assets): public side = the shipped
     public_dev anchors, mirror side = the staged private mirrors when
-    present, else the same public anchors (degenerate gap 0). Bounded by
-    `PRISM_EVAL_MIRROR_BUDGET_S` (default 600 s); on expiry the pairs
-    collected so far are returned.
+    present, else the same public anchors (degenerate gap 0). G5 natural
+    slices: the same public_dev / private pack orientation via
+    `natural_docs.mirror_pairs`. Bounded by `PRISM_EVAL_MIRROR_BUDGET_S`
+    (default 600 s); on expiry the pairs collected so far are returned.
     """
     budget = common.Budget(common.float_env("PRISM_EVAL_MIRROR_BUDGET_S", 600.0))
     tiny = common.tiny_caps()
@@ -317,6 +327,9 @@ def build_mirrors(model, ctx):
         if public is not None and mirror is not None:
             org_key = f"org.g2.{_G2_TASK_ORG[task]}_acc"
             pairs.append({"group": "g2", "metric": org_key, "public": public, "mirror": mirror})
+
+    if budget.ok():
+        pairs.extend(natural_docs.mirror_pairs(model, ctx, budget=budget))
     return pairs
 
 

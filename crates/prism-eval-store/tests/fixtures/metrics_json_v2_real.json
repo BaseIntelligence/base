@@ -7,7 +7,7 @@
  "notes": "recipe-v2 val_ce->bpb (v3 eval phase)",
  "val_rows": 64,
  "n_params": 805136,
- "recipe": "1.3.0",
+ "recipe": "1.4.0",
  "metrics_version": 2,
  "netns": true,
  "harness_files_sha256": "4dcad7a5e5e6695cddd475610cae3864126212be8277449f966cc516d0ee7fc8",
@@ -54,7 +54,7 @@
   }
  ],
  "pod_manifest": {
-  "recipe_version": "1.3.0",
+  "recipe_version": "1.4.0",
   "torch": "2.13.0+cpu",
   "torch_cuda": null,
   "cuda_available": false,
@@ -176,7 +176,11 @@
      "g5.longctx.mean_acc": 0.23809523809523808,
      "g5.longctx.mean_nll": 23.22142000294695,
      "g5.lstar": 1024.0,
-     "g5.retention": 0.6000000000000001
+     "g5.retention": 0.6000000000000001,
+     "g5.ruler.acc": 0.0,
+     "g5.babilong.acc": 0.3333333333333333,
+     "g5.natural_mcq.acc": 0.25,
+     "g5.helmet_rag.acc": 0.0
     }
    },
    "g6": {
@@ -359,55 +363,37 @@
      "g2/openbookqa": 0.375
     }
    },
-   "org.g5.niah_acc": {
+   "org.g8.loss_spike_score": 1.0,
+   "org.g5.ruler_acc": {
     "value": 0.0,
     "clusters": {
-     "niah@512": 0.0,
-     "niah@1024": 0.0,
-     "niah@2048": 0.0
-    }
-   },
-   "org.g5.variable_tracking_acc": {
-    "value": 0.0,
-    "clusters": {
-     "vt@512": 0.0,
-     "vt@1024": 0.0,
+     "niah_mk@2048": 0.0,
      "vt@2048": 0.0
     }
    },
-   "org.g5.freq_words_acc": {
-    "value": 0.6666666666666666,
+   "org.g5.babilong_acc": {
+    "value": 0.3333333333333333,
     "clusters": {
-     "freq@512": 1.0,
-     "freq@1024": 1.0,
-     "freq@2048": 0.0
+     "qa1@2048": 0.0,
+     "qa2@2048": 0.4
     }
    },
-   "org.g5.graphwalks_acc": {
+   "org.g5.natural_mcq_acc": {
+    "value": 0.25,
+    "clusters": {
+     "natural_mcq@fixture": 0.25
+    }
+   },
+   "org.g5.helmet_rag_acc": {
     "value": 0.0,
     "clusters": {
-     "graph@512": 0.0,
-     "graph@1024": 0.0,
-     "graph@2048": 0.0
+     "helmet_rag@fixture": 0.0
     }
    },
-   "org.g5.ordering_acc": {
-    "value": 0.3333333333333333,
-    "clusters": {
-     "mrcr@512": 0.0,
-     "mrcr@1024": 1.0,
-     "mrcr@2048": 0.0
-    }
-   },
-   "org.g5.babilong_qa_acc": {
-    "value": 0.3333333333333333,
-    "clusters": {
-     "babi@512": 0.0,
-     "babi@1024": 0.4,
-     "babi@2048": 0.6
-    }
-   },
-   "org.g8.loss_spike_score": 1.0
+   "org.g5.lstar": {
+    "value": 1024.0,
+    "clusters": {}
+   }
   },
   "mirrors": [
    {

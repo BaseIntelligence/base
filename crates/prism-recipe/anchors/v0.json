@@ -1,8 +1,8 @@
 {
   "version": 0,
   "status": "placeholder",
-  "issued": "2026-08-06",
-  "notes": "PLACEHOLDER anchor set for Prism v3 composite scoring (research/12 §7). Every numeric anchor marked placeholder MUST be measured on the E6 reference baselines (Transformer++ and hybrid delta-net, <=350M params, 6h) and hash-committed (pre-registration) before any PRISM_SCORING_MODE=composite governance flip. chance bpb = log2|V| / bytes-per-token estimate; reference bpb = reference architecture bpb per domain; efficiency references/caps = reference-recipe operating points.",
+  "issued": "2026-08-07",
+  "notes": "PLACEHOLDER anchor set for Prism v3 composite scoring (research/12 §7). G5 keys (recipe ≥ 1.4.0): ruler_acc / babilong_acc / natural_mcq_acc / helmet_rag_acc / lstar with internal weights 0.35/0.25/0.15/0.15/0.10. Every numeric anchor marked placeholder MUST be measured on the E6 reference baselines (Transformer++ and hybrid delta-net, <=350M params, 6h; baselines pin gpt2 as their own tokenizer choice) and hash-committed (pre-registration) before any PRISM_SCORING_MODE=composite governance flip. chance bpb = log2|V| / bytes-per-token estimate; reference bpb = reference architecture bpb per domain; efficiency references/caps = reference-recipe operating points. org.g5.lstar is the highest length L (miner-tokenizer tokens) with pooled RULER+BABILong acc(L) ≥ 0.9×acc(L_min) and ≥ 0.25; normalized as efficiency_log_ratio over [4096, 65536].",
   "groups": {
     "g1": {
       "weight": 0.25,
@@ -50,12 +50,11 @@
     "g5": {
       "weight": 0.15,
       "metrics": {
-        "org.g5.niah_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
-        "org.g5.variable_tracking_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
-        "org.g5.freq_words_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
-        "org.g5.graphwalks_acc": { "kind": "accuracy", "chance": 0.25, "status": "placeholder" },
-        "org.g5.ordering_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" },
-        "org.g5.babilong_qa_acc": { "kind": "accuracy", "chance": 0.0, "status": "placeholder" }
+        "org.g5.ruler_acc": { "kind": "accuracy", "chance": 0.0, "weight": 0.35, "status": "placeholder", "note": "RULER niah_mk/mq/mv + vt + qa; lengths in miner-tokenizer tokens; 64k on niah_mk+vt" },
+        "org.g5.babilong_acc": { "kind": "accuracy", "chance": 0.0, "weight": 0.25, "status": "placeholder", "note": "BABILong QA1–QA5; 4k/8k/16k; short-answer logprob EM" },
+        "org.g5.natural_mcq_acc": { "kind": "accuracy", "chance": 0.25, "weight": 0.15, "status": "placeholder", "note": "LongBench-v2 MCQ ≤16k; 4-way logprob; mirrored" },
+        "org.g5.helmet_rag_acc": { "kind": "accuracy", "chance": 0.0, "weight": 0.15, "status": "placeholder", "note": "HELMET RAG few-shot base (non-chat); substring EM; mirrored" },
+        "org.g5.lstar": { "kind": "efficiency_log_ratio", "reference": 4096.0, "cap": 65536.0, "weight": 0.10, "status": "placeholder", "note": "Length capability L*: highest L with pooled protocol acc ≥ 0.9×acc(L_min) and ≥ 0.25" }
       }
     },
     "g6": {
@@ -92,7 +91,7 @@
   },
   "mirror": {
     "tau_m": 0.05,
-    "groups": ["g2", "g4"]
+    "groups": ["g2", "g4", "g5"]
   },
   "bootstrap": {
     "b": 1000,

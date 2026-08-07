@@ -1,4 +1,4 @@
-"""prismlib — library modules of the PRISM pod harness (recipe 1.3.0).
+"""prismlib — library modules of the PRISM pod harness (recipe 1.4.0).
 
 The harness is a multi-file package uploaded to the Lium pod by `prism-lium`:
 
@@ -12,7 +12,7 @@ Pure stdlib + torch + transformers + pyarrow (preinstalled pod image).
 """
 
 RECIPE_SEED = 0x00505249534D
-RECIPE_VERSION = "1.3.0"
+RECIPE_VERSION = "1.4.0"
 # Pinned FALLBACK tokenizer, used only when a submission declares none (see
 # `prismlib.tokenizer`). The tokenizer is part of the submission; this pin is
 # a default for legacy submissions and the reference baselines, never a rule.

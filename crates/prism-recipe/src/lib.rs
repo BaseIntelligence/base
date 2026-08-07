@@ -279,8 +279,15 @@ pub const BASELINE_TRAINING_PY: &str = include_str!("../baseline/training.py");
 /// with harness-owned scoring (the parent never imports miner code), seeded
 /// `ctx["train_stream"]` with an authoritative tokens-seen counter, G6
 /// intermediate probes fired from `prism_telemetry.report`, and
-/// `METRICS_JSON` v2 (additive over v1).
-pub const RECIPE_VERSION: &str = "1.3.0";
+/// `METRICS_JSON` v2 (additive over v1), to **1.4.0** for the G5 scored
+/// path: RULER + `BABILong` + natural-document slices (LongBench-v2 MCQ /
+/// HELMET RAG), lengths in tokens of the miner-submitted tokenizer,
+/// `org.g5.{ruler,babilong,natural_mcq,helmet_rag}_acc` + `org.g5.lstar`
+/// in the composite (group weight still 0.15; internal weights
+/// 0.35/0.25/0.15/0.15/0.10), and G5 mirror-gap for the natural packs.
+/// Scoring stays behind `PRISM_SCORING_MODE=shadow` until anchors are
+/// measured — this bump is the normative harness/anchor contract change.
+pub const RECIPE_VERSION: &str = "1.4.0";
 
 /// Maximum model parameters allowed after `build_model` (350M).
 pub const MAX_PARAMS: u64 = 350_000_000;

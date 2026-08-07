@@ -372,7 +372,10 @@ def check_full_battery():
         assert any(k.startswith(f"{group}.") for k in metrics), group
     assert results["g6"]["metrics"]["g6.points"] == 4.0
     assert "g2.core.mean_acc_norm" in results["g2"]["metrics"]
-    assert "g5.lstar" in results["g5"]["metrics"]
+    g5m = results["g5"]["metrics"]
+    assert "g5.lstar" in g5m
+    assert "g5.ruler.acc" in g5m or "g5.ruler.error" in g5m, sorted(g5m)
+    assert "g5.babilong.acc" in g5m or "g5.babilong.error" in g5m, sorted(g5m)
     assert results["g8"]["metrics"].get("g8.mup.stub") == 1.0
     print("full battery OK: all 8 groups emitted finite metrics on a tiny model")
     print(json.dumps({g: len(results[g]["metrics"]) for g in ok_groups}, indent=2))
@@ -385,6 +388,14 @@ def check_full_battery():
     assert flat and all(k.startswith("org.") for k in flat), sorted(flat)
     assert "org.g3.mqar_acc" in flat and "org.g4.arithmetic_acc" in flat, sorted(flat)
     assert "org.g6.auc_log_tokens" in flat, sorted(flat)
+    for key in (
+        "org.g5.ruler_acc",
+        "org.g5.babilong_acc",
+        "org.g5.natural_mcq_acc",
+        "org.g5.helmet_rag_acc",
+        "org.g5.lstar",
+    ):
+        assert key in flat, f"missing {key}: {sorted(flat)}"
     view = battery_rollup.rollup_battery(results, ctx, model=model)
     assert set(view) >= {"groups", "metrics", "mirrors", "tier"}
     assert view["tier"] == "public_dev"
@@ -582,19 +593,30 @@ def check_v3_flow(arch_src=STUB_ARCH, tokenizer_source="default", vocab_size=Non
             "org.g2.arc_challenge_acc",
             "org.g3.mqar_acc",
             "org.g4.arithmetic_acc",
-            "org.g5.niah_acc",
+            "org.g5.ruler_acc",
+            "org.g5.babilong_acc",
+            "org.g5.natural_mcq_acc",
+            "org.g5.lstar",
             "org.g6.auc_log_tokens",
         ):
             assert key in flat, f"missing {key}: {sorted(flat)}"
+        # helmet_rag is fail-soft: under a slow hook tokenizer the shared
+        # G5 natural budget can expire after MCQ; default-tok smoke still
+        # covers the key via check_full_battery.
+        if tokenizer_source == "default":
+            assert "org.g5.helmet_rag_acc" in flat, sorted(flat)
         mirrors = battery["mirrors"]
         assert mirrors, "battery.mirrors must not be empty"
         for pair in mirrors:
             assert set(pair) == {"group", "metric", "public", "mirror"}, pair
-            assert pair["group"] in ("g2", "g4") and pair["metric"].startswith("org.")
+            assert pair["group"] in ("g2", "g4", "g5") and pair["metric"].startswith(
+                "org."
+            )
             for side in ("public", "mirror"):
                 assert isinstance(pair[side]["value"], (int, float)), pair
         assert any(p["group"] == "g2" for p in mirrors), mirrors
         assert any(p["group"] == "g4" for p in mirrors), mirrors
+        assert any(p["group"] == "g5" for p in mirrors), mirrors
         print(
             "v3 two-phase flow OK (tokenizer=%s vocab=%d): battery + sealed v1 bpb "
             "via checkpoint handoff" % (tok_spec["source"], tok_spec["vocab_size"])

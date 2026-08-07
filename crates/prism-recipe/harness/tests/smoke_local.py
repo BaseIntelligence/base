@@ -195,7 +195,7 @@ def main():
             "telemetry",
         ):
             assert key in m, f"missing v1 key {key}"
-        assert m["recipe"] == "1.3.0"
+        assert m["recipe"] == "1.4.0"
         assert m["val_rows"] == TEST_VAL_ROWS
 
         # v2 keys.

@@ -40,9 +40,35 @@ fn clip01(x: f64) -> f64 {
     }
 }
 
+/// Default relative weight of a sub-metric inside its group (equal mean).
+fn default_metric_weight() -> f64 {
+    1.0
+}
+
+/// One group's sub-metric: normalization descriptor plus an optional
+/// relative weight (G5 uses unequal internal weights; others default to 1).
+///
+/// Extra JSON fields from the anchor set (`status`, `note`) are accepted and
+/// ignored so this view stays a pure scoring consumer of the same file
+/// `prism-recipe` embeds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricSpec {
+    /// Normalization descriptor (step 1).
+    #[serde(flatten)]
+    pub norm: NormDesc,
+    /// Relative weight within the group; group mean is weight-normalized.
+    #[serde(default = "default_metric_weight")]
+    pub weight: f64,
+    /// Provenance marker from the anchor JSON (`"placeholder"`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Free-form note from the anchor JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// Per-metric normalization descriptor (step 1). Mirrors the `kind`-tagged
-/// JSON schema of the anchor set; unknown JSON fields (e.g. the placeholder
-/// `status` marker) are ignored.
+/// JSON schema of the anchor set.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NormDesc {
@@ -112,7 +138,7 @@ pub struct GroupSpec {
     /// Composite weight `w_k` (Σ over groups = 1).
     pub weight: f64,
     /// Sub-metric anchors keyed `org.<group>.<name>`.
-    pub metrics: BTreeMap<String, NormDesc>,
+    pub metrics: BTreeMap<String, MetricSpec>,
 }
 
 /// Lexicographic gate thresholds (step 3).
@@ -532,7 +558,7 @@ fn norm_lookup(anchors: &CompositeAnchors) -> BTreeMap<&str, &NormDesc> {
     anchors
         .groups
         .values()
-        .flat_map(|g| g.metrics.iter().map(|(k, v)| (k.as_str(), v)))
+        .flat_map(|g| g.metrics.iter().map(|(k, v)| (k.as_str(), &v.norm)))
         .collect()
 }
 
@@ -587,22 +613,27 @@ fn run_groups(
             continue;
         };
         let mut acc = 0.0;
-        let mut n = 0usize;
-        for (mk, norm) in &spec.metrics {
+        let mut wsum = 0.0;
+        for (mk, mspec) in &spec.metrics {
             match sub.metrics.get(mk) {
                 Some(series) => {
-                    acc += norm.normalize(value_of(series, draw));
-                    n += 1;
+                    let w = if mspec.weight.is_finite() && mspec.weight > 0.0 {
+                        mspec.weight
+                    } else {
+                        0.0
+                    };
+                    acc += w * mspec.norm.normalize(value_of(series, draw));
+                    wsum += w;
                 }
                 None => failures.push(GateFailure::MissingMetric { key: mk.clone() }),
             }
         }
-        if n == 0 {
+        if wsum <= 0.0 {
             failures.push(GateFailure::MissingGroup {
                 group: (*key).to_string(),
             });
         } else {
-            g[idx] = acc / n as f64;
+            g[idx] = acc / wsum;
         }
         let p = mirror_penalty(sub, anchors, norms, key, draw);
         penalty[idx] = p;
@@ -802,7 +833,7 @@ mod tests {
             "g2": { "weight": 0.15,  "metrics": { "org.g2.lambada_acc": { "kind": "accuracy", "chance": 0.0 } } },
             "g3": { "weight": 0.10,  "metrics": { "org.g3.mqar_acc": { "kind": "accuracy", "chance": 0.0 } } },
             "g4": { "weight": 0.15,  "metrics": { "org.g4.arithmetic_acc": { "kind": "accuracy", "chance": 0.0 } } },
-            "g5": { "weight": 0.15,  "metrics": { "org.g5.niah_acc": { "kind": "accuracy", "chance": 0.0 } } },
+            "g5": { "weight": 0.15,  "metrics": { "org.g5.ruler_acc": { "kind": "accuracy", "chance": 0.0 } } },
             "g6": { "weight": 0.075, "metrics": { "org.g6.auc": { "kind": "accuracy", "chance": 0.0 } } },
             "g7": { "weight": 0.075, "metrics": { "org.g7.throughput": { "kind": "accuracy", "chance": 0.0 } } },
             "g8": { "weight": 0.05,  "metrics": { "org.g8.loss_spike": { "kind": "accuracy", "chance": 0.0 } } }
@@ -838,7 +869,7 @@ mod tests {
             "org.g2.lambada_acc",
             "org.g3.mqar_acc",
             "org.g4.arithmetic_acc",
-            "org.g5.niah_acc",
+            "org.g5.ruler_acc",
             "org.g6.auc",
             "org.g7.throughput",
             "org.g8.loss_spike",
@@ -1099,7 +1130,7 @@ mod tests {
     fn missing_metric_is_ineligible() {
         let anchors = test_anchors();
         let mut sub = uniform_submission(0.9);
-        sub.metrics.remove("org.g5.niah_acc");
+        sub.metrics.remove("org.g5.ruler_acc");
         let out = evaluate(&sub, &anchors, 5);
         match out {
             CompositeOutcome::Ineligible(i) => {
@@ -1130,7 +1161,7 @@ mod tests {
             "org.g1.bpb_code",
             "org.g2.lambada_acc",
             "org.g4.arithmetic_acc",
-            "org.g5.niah_acc",
+            "org.g5.ruler_acc",
             "org.g6.auc",
             "org.g7.throughput",
         ] {
