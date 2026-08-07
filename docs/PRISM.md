@@ -2,7 +2,7 @@
 
 **challenge_id:** `prism`  
 **scoring_version:** `2` live (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change). **v3 addition (opt-in):** composite scoring ships behind `PRISM_SCORING_MODE` (`shadow` default — v2 score bit-identical, composite observed; `composite` — v3 lattice becomes the score, rows carry `scoring_version 3`). See **v3 composite scoring** below.  
-**recipe_version:** `1.3.0` (telemetry hooks 1.1.0 + architecture registry 1.2.0 + **v3:** multi-file harness, source-tree submissions, G1–G8 eval battery, two-phase pod flow, cheatguard)  
+**recipe_version:** `1.4.0` (telemetry 1.1.0 + architecture registry 1.2.0 + v3 multi-file harness / source-tree / G1–G8 battery + **1.4.0:** miner-chosen tokenizer + G5 community protocols + natural docs, pretrain-only)  
 **port:** `8092`  
 **emission_share_bps:** `10000` (sole share until design enablement ceremony; then rebalanced with `design`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
@@ -213,17 +213,34 @@ Zone A `org.*` metrics):
 | G2 | commonsense/reading 0-shot core (LAMBADA, HellaSwag, PIQA, ARC, Winogrande, BoolQ, OBQA) | 0.15 |
 | G3 | retrieval/associative recall (MQAR, copying, induction, passkey — procedural, memorization-proof) | 0.10 |
 | G4 | reasoning at small scale (S5 permutations, arithmetic, ProofWriter, Dyck-k, modular, K&K) | 0.15 |
-| G5 | long-context (NIAH, RULER, BABILong, GraphWalks, MRCR, NoLiMa; self-normalized L*) | 0.15 |
+| G5 | long-context **pretrain-only** (RULER + BABILong + LongBench-v2 MCQ + HELMET RAG few-shot base; lengths in miner-tokenizer tokens; `org.g5.lstar`) — no IFT/chat/judge | 0.15 |
 | G6 | sample efficiency from the train-phase probe curve (AUC over log-tokens, tokens-to-threshold) | 0.075 |
 | G7 | inference efficiency (TTFT/TPOT/throughput, state card, joules/token) | 0.075 |
 | G8 | training stability + µP LR-transfer | 0.05 |
+
+**G5 scored keys (recipe ≥ 1.4.0).** The battery is an evaluation of
+**pretrained base LMs** — completion / few-shot base prompts, short EM or
+choice logprob only. No instruction-tuning, chat templates, free-form
+summarization, or LLM-as-judge on the ranked path. Length targets are
+tokens of the **miner-submitted** tokenizer (`ctx["tokenizer"]`; GPT-2 is
+a baseline/fallback default, not a rule). Canonical Zone A keys and
+internal G5 weights (group weight stays 0.15):
+
+| Key | Role | Internal weight |
+|-----|------|-----------------|
+| `org.g5.ruler_acc` | RULER `niah_mk/mq/mv` + `vt` + `qa` (4k–32k; **64k** on `niah_mk`+`vt`) | 0.35 |
+| `org.g5.babilong_acc` | BABILong QA1–QA5 (4k/8k/16k; short-answer EM) | 0.25 |
+| `org.g5.natural_mcq_acc` | LongBench-v2 MCQ ≤16k (4-way logprob; mirrored) | 0.15 |
+| `org.g5.helmet_rag_acc` | HELMET RAG few-shot base (substring EM; mirrored) | 0.15 |
+| `org.g5.lstar` | Length capability L*: highest L on pooled RULER+BABILong per-length means with `acc(L) ≥ 0.9×acc(L_min)` and `acc(L) ≥ 0.25` (else `0`); normalized as `efficiency_log_ratio` over `[4096, 65536]` | 0.10 |
 
 **Composite math** (`prism-pipeline::composite`, research/12 §7 steps 0–6):
 per-metric fixed-anchor normalization clipped to `[0,1]` against the
 pre-registered anchor set (`prism-recipe/anchors/v0.json`; versioned,
 hash-committed via `/v1/preregistration`, placeholder until measured on the
-baselines); two-level means → group scores; mirror-gap penalty
-`max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4; lexicographic
+baselines); two-level means → group scores (G5 uses the unequal internal
+weights above; other groups default equal); mirror-gap penalty
+`max(0, (x_public − x_mirror) − 0.05)` deducted from G2/G4/G5; lexicographic
 gates (`g3 ≥ 0.25`, `g8 ≥ 0.5`, budget caps `350M` params / `6h`, CI
 half-width ≤ `0.05`); weighted geometric mean `C = ∏ g_k^{w_k}`; clustered
 bootstrap (B = 1000) → `SE(C)`; **LCB ranking**:

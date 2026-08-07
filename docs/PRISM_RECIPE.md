@@ -1,11 +1,14 @@
-# PRISM recipe v1.0.2 — `prism-recipe-v1` (current harness `RECIPE_VERSION 1.3.0`)
+# PRISM recipe v1.0.2 — `prism-recipe-v1` (current harness `RECIPE_VERSION 1.4.0`)
 
 The official execution contract every miner submission is verified inside.
 Miners ship **two scripts only** (`architecture.py` + `training.py`) — or,
 since recipe **1.3.0**, a **source-tree ZIP** (see *Source-tree
 submissions* below); the harness and data pin are operator-owned. No
 offline weights, no network reach at pod runtime beyond the pinned dataset
-pull.
+pull. Recipe **1.4.0** makes the tokenizer miner-chosen and replaces the
+G5 long-context scored path with community protocols + natural documents
+under a **pretrain-only** rule (base LM completion / few-shot; no IFT,
+chat templates, or LLM judges on ranked metrics).
 
 ## Contract
 
@@ -170,6 +173,18 @@ metric names and the anchor set's `org.*` keys
 (`crates/prism-recipe/anchors/v0.json`); ingestion
 (`prism-eval-store/src/finalize.rs`) requires the flat map and skips the
 composite when it is absent (fail-closed in composite mode).
+
+**G5 long-context (recipe ≥ 1.4.0, pretrain-only).** Ranked metrics come
+from RULER + BABILong + LongBench-v2 MCQ + HELMET RAG few-shot base —
+short EM / choice logprob only. Length grids are in tokens of
+`ctx["tokenizer"]` (4k–32k; 64k on RULER `niah_mk`+`vt`). Canonical keys:
+`org.g5.ruler_acc` (0.35), `org.g5.babilong_acc` (0.25),
+`org.g5.natural_mcq_acc` (0.15), `org.g5.helmet_rag_acc` (0.15),
+`org.g5.lstar` (0.10). L* is the highest length L on pooled
+RULER+BABILong `L{N}.acc` means with `acc(L) ≥ 0.9×acc(L_min)` and
+`acc(L) ≥ 0.25` (else `0`), normalized as `efficiency_log_ratio` over
+`[4096, 65536]`. Natural slices participate in the G5 mirror gap. Open-gen
+sum/cite, chat, and judge protocols stay out of the ranked path.
 
 ## Reference baselines (recipe 1.3.0 — v3 anchors)
 

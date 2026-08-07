@@ -4,6 +4,7 @@
 
 **challenge_id:** `prism`  
 **scoring_version:** `2` live (bpb-only; LLM review is an anti-cheat gate, not a grader). **v3 (opt-in, shadow-by-default):** composite scoring runs alongside — your run is also measured on the G1–G8 battery; see *v3 scoring* below.  
+**recipe_version:** `1.4.0` (miner-chosen tokenizer; G5 = RULER + BABILong + natural docs, **pretrain-only**)  
 **Path:** HTTP only — **no Phala/CVM**
 
 Normative docs: [`../PRISM.md`](../PRISM.md), recipe [`../PRISM_RECIPE.md`](../PRISM_RECIPE.md).
@@ -153,7 +154,7 @@ The global-best model is published to
 
 ## v3 scoring (shadow-by-default)
 
-Recipe 1.3.0 harnesses run a **two-phase pod flow**: your code trains
+Recipe ≥ 1.3.0 harnesses run a **two-phase pod flow**: your code trains
 (`phase=train`), checkpoints, and only then does the operator stage private
 eval assets — the eval phase (`phase=eval`) is a fresh subprocess that runs
 the frozen-val bpb plus the **G1–G8 battery**: intrinsic fit (G1),
@@ -162,6 +163,18 @@ long-context (G5), sample efficiency from the train probe curve (G6),
 inference efficiency (G7), and training stability/µP (G8). Everything the
 battery reports is organizer-measured (**Zone A**, `org.*`) and is computed
 inside the harness — your code never emits it.
+
+**G5 is pretrain-only (recipe ≥ 1.4.0).** The long-context group scores a
+**base LM**, not an instruction-tuned chat model: completion-style /
+few-shot base prompts, short exact-match or multiple-choice logprob —
+no chat templates, no free-form summarization, no LLM-as-judge on the
+ranked path. Length targets are counted in tokens of **your** tokenizer
+(`ctx["tokenizer"]`). Scored keys (group weight 0.15 total):
+`org.g5.ruler_acc` (0.35), `org.g5.babilong_acc` (0.25),
+`org.g5.natural_mcq_acc` (0.15), `org.g5.helmet_rag_acc` (0.15),
+`org.g5.lstar` (0.10). L* is the highest length where pooled
+RULER+BABILong accuracy stays ≥ 90% of the shortest-grid accuracy and
+≥ 0.25 (else 0). Natural MCQ / HELMET RAG packs are mirrored like G2/G4.
 
 Your `train()` return dict (`train_metrics` in METRICS_JSON v2) is
 **Zone B**: participant-reported, displayed-but-labelled, validated at
