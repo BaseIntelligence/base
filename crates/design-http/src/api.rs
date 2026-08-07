@@ -762,11 +762,8 @@ async fn view_page(
     };
     match st.store.get_page(&id, &path).await {
         Ok(Some(body)) if path.ends_with(".png") => {
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(body.trim()) {
-                Ok(b) => b,
-                Err(_) => {
-                    return json_err(StatusCode::INTERNAL_SERVER_ERROR, "artifact", "bad png b64")
-                }
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(body.trim()) else {
+                return json_err(StatusCode::INTERNAL_SERVER_ERROR, "artifact", "bad png b64");
             };
             let mut headers = HeaderMap::new();
             headers.insert(
