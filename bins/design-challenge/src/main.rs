@@ -188,6 +188,26 @@ enum Cmd {
         #[arg(long, env = "DESIGN_BACKFILL_LIMIT", default_value_t = 500)]
         limit: u32,
     },
+    /// Re-sanitize from stored `raw_html` (current sanitizer), then force
+    /// re-capture `index.png`. Repairs runs where an older sanitizer wiped
+    /// `<style>` (existing `backfill-screenshots` cannot — it only re-renders
+    /// already-sanitized HTML and skips runs that already have a PNG).
+    BackfillResanitize {
+        /// Scan at most this many recent runs (newest first). Ignored when
+        /// `--run-id` is set.
+        #[arg(long, env = "DESIGN_BACKFILL_LIMIT", default_value_t = 500)]
+        limit: u32,
+        /// Specific run id(s) to repair (repeatable). When set, skips the
+        /// newest-N scan.
+        #[arg(long = "run-id")]
+        run_ids: Vec<String>,
+        /// Sleep between Chromium captures so live rounds are not starved.
+        #[arg(long, env = "DESIGN_BACKFILL_SLEEP_MS", default_value_t = 2_000)]
+        sleep_ms: u64,
+        /// List candidates / validate sanitize restore without writing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -216,19 +236,32 @@ fn run(cli: Cli) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let backfill_limit = match &cli.cmd {
-        Some(Cmd::BackfillScreenshots { limit }) => Some(*limit),
-        _ => None,
-    };
-    if let Some(limit) = backfill_limit {
-        return rt.block_on(cmd_backfill(&cli, limit));
+    match &cli.cmd {
+        Some(Cmd::BackfillScreenshots { limit }) => {
+            return rt.block_on(cmd_backfill_screenshots(&cli, *limit));
+        }
+        Some(Cmd::BackfillResanitize {
+            limit,
+            run_ids,
+            sleep_ms,
+            dry_run,
+        }) => {
+            return rt.block_on(cmd_backfill_resanitize(
+                &cli,
+                *limit,
+                run_ids.clone(),
+                *sleep_ms,
+                *dry_run,
+            ));
+        }
+        _ => {}
     }
     rt.block_on(cmd_serve(cli))
 }
 
 /// One-shot screenshot backfill: Postgres store + headless Chromium only (no
 /// chain, gateway, or challenge key needed).
-async fn cmd_backfill(cli: &Cli, limit: u32) -> Result<(), String> {
+async fn cmd_backfill_screenshots(cli: &Cli, limit: u32) -> Result<(), String> {
     let url = std::env::var("BASE_DATABASE_URL")
         .map_err(|_| "backfill-screenshots requires BASE_DATABASE_URL".to_owned())?;
     let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
@@ -242,6 +275,40 @@ async fn cmd_backfill(cli: &Cli, limit: u32) -> Result<(), String> {
     if s.failed > 0 {
         return Err(format!(
             "{} screenshot capture(s) failed; re-run to retry",
+            s.failed
+        ));
+    }
+    Ok(())
+}
+
+/// Re-sanitize from `raw_html` + force screenshot (see [`Cmd::BackfillResanitize`]).
+async fn cmd_backfill_resanitize(
+    cli: &Cli,
+    limit: u32,
+    run_ids: Vec<String>,
+    sleep_ms: u64,
+    dry_run: bool,
+) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "backfill-resanitize requires BASE_DATABASE_URL".to_owned())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store = DbDesignStore::new(pool);
+    let s = design_challenge::backfill::backfill_resanitize(
+        &store,
+        &cli.staging_root,
+        limit,
+        &run_ids,
+        sleep_ms,
+        dry_run,
+    )
+    .await?;
+    println!(
+        "resanitize backfill: scanned={} candidates={} resanitized={} screenshots={} failed={} skipped={} dry_run={dry_run}",
+        s.scanned, s.candidates, s.resanitized, s.screenshots, s.failed, s.skipped
+    );
+    if s.failed > 0 {
+        return Err(format!(
+            "{} resanitize/capture failure(s); re-run to retry",
             s.failed
         ));
     }

@@ -289,6 +289,19 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
   design-challenge backfill-screenshots --limit 500
 ```
 
+When historical rows were sanitized by a buggy filter that wiped `<style>`
+(raw still has CSS; sanitized does not), `backfill-screenshots` is not enough —
+it only re-renders the already-broken sanitized HTML and skips runs that already
+have `index.png`. Use re-sanitize from `raw_html` (throttled Chromium):
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-prod.yml exec design-challenge \
+  design-challenge backfill-resanitize --limit 500 --sleep-ms 2000
+# or pin specific runs:
+#   design-challenge backfill-resanitize --run-id <id> --run-id <id2> --sleep-ms 2000
+```
+
 ---
 
 ## 7. Rounds and quotas
