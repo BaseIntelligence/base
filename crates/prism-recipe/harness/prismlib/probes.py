@@ -11,6 +11,8 @@ telemetry state's `probe_curve`. A probe exception never kills training.
 
 import time
 
+from .tokenizer import encode_tensor
+
 PROBE_TEXT_COUNT = 8
 
 
@@ -29,9 +31,9 @@ def teacher_forced_ce(model, tok, texts, device, seq_len):
     try:
         with torch.no_grad():
             for txt in texts:
-                ids = tok(
-                    txt, return_tensors="pt", truncation=True, max_length=seq_len
-                ).input_ids.to(device)
+                ids = encode_tensor(
+                    tok, txt, device, truncation=True, max_length=seq_len
+                )
                 if ids.shape[1] < 2:
                     continue
                 out = model(ids[:, :-1])

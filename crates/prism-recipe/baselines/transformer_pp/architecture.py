@@ -18,8 +18,12 @@ Contract notes:
   test/tiny profiles.
 - `forward(ids)` returns an object with `.logits` AND sets `self.logits`
   (both harness read patterns: `out.logits if hasattr(out, "logits") else
-  out`). Logits cover the full GPT-2 vocab (50257) at every input position;
-  no self-truncation.
+  out`). Logits cover the whole vocab at every input position; no
+  self-truncation.
+- the tokenizer is part of a submission, so the embedding is sized from
+  `ctx["vocab_size"]` (the harness reports the resolved tokenizer's vocab).
+  The 50257 default below is the pinned fallback this baseline chooses, and
+  the figure `count_params.py` / NOTES.md do the cap math against.
 
 Pure stdlib + torch. Deterministic init under `ctx["seed"]`.
 """
@@ -32,7 +36,7 @@ import torch.nn.functional as F
 
 # Anchor configuration: 340,920,320 params (see NOTES.md for the math).
 DEFAULTS = {
-    "vocab_size": 50257,
+    "vocab_size": 50257,  # overridden by ctx["vocab_size"] (submitted tokenizer)
     "d_model": 1024,
     "n_layer": 24,
     "n_head": 16,

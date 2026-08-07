@@ -6,7 +6,10 @@ private eval assets have been staged by the operator (or not —
 public_dev tier).
 
 Reimports the miner's `architecture.py` (miner code only ever runs in
-the isolated child), rebuilds the model, loads `$PRISM_WORKDIR/
+the isolated child), re-resolves the submitted tokenizer through
+`prismlib.tokenizer` and asserts it matches the spec recorded in the
+checkpoint (fail-closed — a tokenizer that does not reconstruct identically
+is never scored), rebuilds the model, loads `$PRISM_WORKDIR/
 checkpoint.pt` (or the sharded index), then runs the v1 frozen-val bpb
 scoring plus the full G1–G8 battery via `eval.run_battery`. The secret
 generator seed arrives via env `PRISM_EVAL_SECRET_SEED` only — never via
@@ -20,7 +23,7 @@ import os
 import sys
 import traceback
 
-from . import RECIPE_SEED, TOKENIZER, TRAIN_ROWS, VAL_ROWS
+from . import RECIPE_SEED, TRAIN_ROWS, VAL_ROWS, tokenizer as tok_contract
 from .dataset import load_texts
 from .scoring import val_ce_bpb
 from .stream import SeededTrainStream
@@ -98,12 +101,21 @@ def _run(cfg, st):
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
-    st["stage"] = "tokenizer"
-    from transformers import GPT2TokenizerFast
+    st["stage"] = "contract"
+    arch = _load_mod("miner_architecture", cfg["arch_path"])
+    if not hasattr(arch, "build_model"):
+        raise RuntimeError("build_model missing")
 
-    tok = GPT2TokenizerFast.from_pretrained(TOKENIZER)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
+    # Same resolution path as the TRAIN child (files / build_tokenizer hook /
+    # pinned default) — this fresh subprocess must reconstruct exactly the
+    # tokenizer the checkpoint was trained with; verified below against the
+    # spec the TRAIN child stored in the checkpoint meta.
+    st["stage"] = "tokenizer"
+    tok, tok_spec = tok_contract.resolve(cfg, device, arch_mod=arch, log=_log)
+    _log(
+        f"tokenizer: source={tok_spec['source']} vocab={tok_spec['vocab_size']} "
+        f"fp={tok_spec['fingerprint'][:16]}"
+    )
 
     st["stage"] = "dataset"
     texts = load_texts(cfg["dataset_path"])
@@ -113,16 +125,15 @@ def _run(cfg, st):
     train_texts = texts[:train_rows] + texts[train_rows + val_rows :]
 
     st["stage"] = "rebuild"
-    arch = _load_mod("miner_architecture", cfg["arch_path"])
-    if not hasattr(arch, "build_model"):
-        raise RuntimeError("build_model missing")
     build_ctx = {k: v for k, v in cfg.items() if k not in _HARNESS_CTX_KEYS}
     build_ctx["device"] = device
     build_ctx["tokenizer"] = tok
+    build_ctx["vocab_size"] = tok_spec["vocab_size"]
     model = arch.build_model(build_ctx)
     if not isinstance(model, torch.nn.Module):
         raise TypeError("build_model must return nn.Module")
     meta = _load_checkpoint(model, cfg["workdir"], device)
+    tok_check = tok_contract.assert_matches(tok_spec, (meta or {}).get("tokenizer"))
     model = model.to(device)
     model.eval()
     n_params = sum(p.numel() for p in model.parameters())
@@ -166,7 +177,7 @@ def _run(cfg, st):
     battery = battery_rollup.rollup_battery(battery, eval_ctx, model=model)
 
     st["stage"] = "score"
-    ce, bpb, val_tokens = val_ce_bpb(model, tok, val_texts, device)
+    ce, bpb, val_tokens, bits_per_byte = val_ce_bpb(model, tok, val_texts, device)
 
     _emit(
         {
@@ -175,10 +186,12 @@ def _run(cfg, st):
             "phase": "eval",
             "bpb": bpb,
             "ce": ce,
+            "bits_per_byte": bits_per_byte,
             "val_rows": val_rows,
             "val_tokens": val_tokens,
             "n_params": int(n_params),
             "checkpoint_meta": meta,
+            "tokenizer": dict(tok_spec, cross_phase=tok_check),
             "eval_tier": cfg.get("eval_tier", "public_dev"),
             "battery": battery,
             "items": eval_ctx["items"].dump(),

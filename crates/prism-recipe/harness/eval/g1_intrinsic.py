@@ -1,5 +1,13 @@
 """G1 — intrinsic distributional fit (research/04 §6.1, research/05 §4).
 
+Unit note (modular tokenizer): the historical `g1.bpb.*` keys are CE / ln 2,
+i.e. bits per **token** of the submitted tokenizer — comparable within one
+tokenizer only. Each of them now ships a `g1.bits_per_byte.*` sibling: total
+bits over the UTF-8 bytes actually scored, the **tokenizer-neutral** unit
+that survives miners choosing different vocabularies. The anchor set still
+reads the `bpb_*` keys; promoting the per-byte siblings into `org.*` is the
+anchor-recalibration step, not this module's call.
+
 bpb on the harness frozen val cut (v1 semantics), bpb on multi-domain
 held-out assets + a fresh-crawl stream (private tier only — the
 unmemorizable-by-construction component), a harness-defined
@@ -23,7 +31,7 @@ _POS_EDGES = (128, 256, 384, 512)
 
 
 def _score_texts(model, tok, texts, device, budget, ctx, tag, out, prefix):
-    ces, key_ces = [], []
+    ces, key_ces, bpbytes = [], [], []
     bucket_vals = {}
     for txt in texts:
         if not budget.ok():
@@ -36,12 +44,13 @@ def _score_texts(model, tok, texts, device, budget, ctx, tag, out, prefix):
         if stats is None:
             continue
         ces.append(stats["ce"])
+        bpbytes.append(stats["bits_per_byte"])
         common.record(ctx, f"{prefix}.doc_ce", tag, stats["ce"])
         if stats["key_ce"] is not None:
             key_ces.append(stats["key_ce"])
         for b, v in stats["buckets"].items():
             bucket_vals.setdefault(b, []).append(v)
-    return ces, key_ces, bucket_vals
+    return ces, key_ces, bucket_vals, bpbytes
 
 
 def run(model, ctx):
@@ -50,12 +59,14 @@ def run(model, ctx):
     budget = common.Budget(common.group_budget_s("g1", 1800.0))
     out = {}
 
-    # 1) Frozen val cut — v1 bpb semantics (per-doc mean CE / ln 2).
+    # 1) Frozen val cut — v1 bpb semantics (per-doc mean CE / ln 2) plus the
+    # tokenizer-neutral bits-per-byte (see the module docstring).
     val = list(ctx.get("val_texts") or [])
-    ces, key_ces, buckets = _score_texts(
+    ces, key_ces, buckets, bpbytes = _score_texts(
         model, tok, val, device, budget, ctx, "val", out, "g1.val"
     )
     common.emit(out, "g1.bpb.val", common.bpb(common.mean(ces)))
+    common.emit(out, "g1.bits_per_byte.val", common.mean(bpbytes))
     common.emit(out, "g1.bpb.key_token", common.bpb(common.mean(key_ces)))
     for b, vals in sorted(buckets.items()):
         common.emit(out, f"g1.posloss.{b}", common.bpb(common.mean(vals)))
@@ -68,7 +79,7 @@ def run(model, ctx):
         d = os.path.join(str(base), "g1", "domains")
         if os.path.isdir(d):
             dom_names.update(f[: -len(".jsonl")] for f in os.listdir(d) if f.endswith(".jsonl"))
-    domain_bpb = []
+    domain_bpb, domain_bpbyte = [], []
     cap = 8 if common.tiny_caps() else 32
     for name in sorted(dom_names):
         path = common.assets_path(ctx, f"g1/domains/{name}.jsonl")
@@ -77,15 +88,21 @@ def run(model, ctx):
             continue
         texts = [r.get("text", "") for r in common.load_jsonl(path, cap=cap)]
         texts = [t for t in texts if t]
-        ces, _, _ = _score_texts(
+        ces, _, _, bpbytes = _score_texts(
             model, tok, texts, device, budget, ctx, f"domain/{name}", out, f"g1.domain.{name}"
         )
         v = common.bpb(common.mean(ces))
         common.emit(out, f"g1.bpb.domain.{name}", v)
+        vb = common.mean(bpbytes)
+        common.emit(out, f"g1.bits_per_byte.domain.{name}", vb)
         if v is not None:
             domain_bpb.append(v)
+        if vb is not None:
+            domain_bpbyte.append(vb)
     if domain_bpb:
         common.emit(out, "g1.bpb.multidomain", common.mean(domain_bpb))
+    if domain_bpbyte:
+        common.emit(out, "g1.bits_per_byte.multidomain", common.mean(domain_bpbyte))
     out["g1.assets.domains_present"] = float(len(domain_bpb))
 
     # 3) Fresh-crawl stream (private tier only — no public equivalent).
@@ -96,8 +113,9 @@ def run(model, ctx):
     if fresh_path and budget.ok():
         texts = [r.get("text", "") for r in common.load_jsonl(fresh_path, cap=cap)]
         texts = [t for t in texts if t]
-        ces, _, _ = _score_texts(
+        ces, _, _, bpbytes = _score_texts(
             model, tok, texts, device, budget, ctx, "fresh", out, "g1.fresh"
         )
         common.emit(out, "g1.bpb.fresh", common.bpb(common.mean(ces)))
+        common.emit(out, "g1.bits_per_byte.fresh", common.mean(bpbytes))
     return out

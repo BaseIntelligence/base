@@ -5,16 +5,26 @@ BABILong-like qa1–qa5 with same-grammar distractors, GraphWalks,
 MRCR-style same-distribution ordering, NoLiMa-style latent needles.
 Filler sentences share the task grammar (Context-Rot/BABILong design
 rule: the task must be recall/reasoning, not distribution-shift
-detection). Lengths are nominal token targets — the harness converts
-them to word budgets with WORDS_PER_TOKEN ≈ 0.75 (GPT-2 on this kind of
-synthetic text); exact token counts are not load-bearing because the
-length grid is self-normalized (L*).
+detection).
+
+**Length unit — pending G5 rework.** These generators still convert their
+nominal token targets to word budgets with WORDS_PER_TOKEN ≈ 0.75, an
+assumption about GPT-2 on this kind of synthetic text. It survives only
+because the current grid is self-normalized (L*), and it is *not* the
+tokenizer contract: with a miner-chosen tokenizer the honest measurement is
+`eval.common.fit_to_tokens(tok, segments, target_tokens, filler, ...)`,
+which pads/truncates to an exact token count of the submitted tokenizer.
+The G5 length-grid conversion to that helper (RULER/BABILong adapters +
+the 4k–32k grid) is the long-context rework's job; every NEW generator must
+take the tokenizer and use `fit_to_tokens` instead of word budgets.
 """
 
 import random
 
 from .generators import _item, digits, lexicon
 
+# Legacy word-budget approximation (GPT-2-shaped). See the module docstring:
+# new/reworked length grids must measure with `common.fit_to_tokens`.
 WORDS_PER_TOKEN = 0.75
 
 _NOUNS = [

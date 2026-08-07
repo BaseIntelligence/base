@@ -16,6 +16,18 @@
 //! ([`MAX_SOURCE_BYTES`]) so the two-script downstream projection keeps
 //! passing the legacy contract checks.
 //!
+//! # Tokenizer files (`tokenizer/`)
+//!
+//! The tokenizer is part of a submission (see the harness contract in
+//! `harness/prismlib/tokenizer.py`): a tree may declare one as a
+//! `build_tokenizer(ctx)` hook beside `build_model`, or as tokenizer files
+//! under `tokenizer/`. Intake bounds that directory with the caps mirrored
+//! from the harness ([`MAX_TOKENIZER_FILES`], [`MAX_TOKENIZER_TOTAL_BYTES`],
+//! [`TOKENIZER_EXTENSIONS`]) and then **rejects it**: the pod today receives
+//! only the two seam projections, so accepting tokenizer files would silently
+//! score the run on the pinned fallback tokenizer instead. The hook is the
+//! live path until the pod materializes whole trees.
+//!
 //! Vendored pure-Python deps are allowed via a root `vendor.lock`
 //! (sha256sum-style lines: `<64-hex sha256>  <path>`). Every file under
 //! `vendor/` must be locked and must be `*.py`; locked paths must exist and
@@ -67,6 +79,18 @@ const MAX_TREE_ZIP_BYTES: usize = 8 * 1024 * 1024;
 pub const TREE_MANIFEST_FILE: &str = "prism.toml";
 /// Vendor hash-lock manifest filename at the tree root.
 pub const VENDOR_LOCK_FILE: &str = "vendor.lock";
+/// Tree directory carrying submitted tokenizer files (harness:
+/// `prismlib.tokenizer.TOKENIZER_DIRNAME`).
+pub const TOKENIZER_DIR: &str = "tokenizer/";
+/// Max files under `tokenizer/` (harness: `MAX_TOKENIZER_FILES`).
+pub const MAX_TOKENIZER_FILES: usize = 8;
+/// Max total bytes under `tokenizer/` (harness: `MAX_TOKENIZER_BYTES`).
+pub const MAX_TOKENIZER_TOTAL_BYTES: usize = 1024 * 1024;
+/// Allowed tokenizer file extensions (harness: `ALLOWED_EXTENSIONS`).
+pub const TOKENIZER_EXTENSIONS: &[&str] = &["json", "txt", "model", "vocab", "merges", "bpe"];
+/// Miner tokenizer hook (harness: `prismlib.tokenizer.HOOK_NAME`); must sit
+/// beside `build_model` because the eval phase imports that module only.
+pub const TOKENIZER_HOOK: &str = "build_tokenizer";
 /// Default entry when no `prism.toml` manifest is present.
 pub const DEFAULT_TREE_ENTRY: &str = "train.py";
 
@@ -248,7 +272,62 @@ impl SourceTree {
         if train.len() > MAX_SOURCE_BYTES {
             return Err(ContractError::TrainingTooLarge(train.len()).into());
         }
+        self.validate_tokenizer(&arch, &train)?;
         self.validate_vendor_lock()
+    }
+
+    /// Tokenizer declaration checks (see the module docs § Tokenizer files).
+    ///
+    /// A `build_tokenizer` hook must sit in the architecture seam, never in
+    /// the training entry: the eval phase imports the architecture module
+    /// only, so a hook hiding in the entry would give train and eval two
+    /// different tokenizers. `tokenizer/` files are bounded and then refused
+    /// while the pod receives seam projections rather than the whole tree.
+    fn validate_tokenizer(&self, arch: &str, train: &str) -> Result<(), ZipSubmitError> {
+        let hook_marker = format!("def {TOKENIZER_HOOK}(");
+        if train.contains(&hook_marker) && !arch.contains(&hook_marker) {
+            return Err(ZipSubmitError::Invalid(format!(
+                "{TOKENIZER_HOOK}(ctx) must be defined beside build_model (architecture seam), \
+                 not in the training entry: the eval phase imports the architecture module only"
+            )));
+        }
+        let tok_files: Vec<&String> = self
+            .files
+            .keys()
+            .filter(|p| p.starts_with(TOKENIZER_DIR))
+            .collect();
+        if tok_files.is_empty() {
+            return Ok(());
+        }
+        if tok_files.len() > MAX_TOKENIZER_FILES {
+            return Err(ZipSubmitError::Invalid(format!(
+                "{TOKENIZER_DIR} has {} files (max {MAX_TOKENIZER_FILES})",
+                tok_files.len()
+            )));
+        }
+        let mut total = 0usize;
+        for path in &tok_files {
+            let ext = std::path::Path::new(path.as_str())
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            if !TOKENIZER_EXTENSIONS.contains(&ext.as_str()) {
+                return Err(ZipSubmitError::Invalid(format!(
+                    "{path}: tokenizer files must be one of {TOKENIZER_EXTENSIONS:?}"
+                )));
+            }
+            total = total.saturating_add(self.files.get(*path).map_or(0, Vec::len));
+        }
+        if total > MAX_TOKENIZER_TOTAL_BYTES {
+            return Err(ZipSubmitError::Invalid(format!(
+                "{TOKENIZER_DIR} is {total} bytes (max {MAX_TOKENIZER_TOTAL_BYTES})"
+            )));
+        }
+        Err(ZipSubmitError::Invalid(format!(
+            "{TOKENIZER_DIR} files do not reach the pod yet (only the architecture and training \
+             seams are staged), so the run would score on the pinned fallback tokenizer: declare \
+             your tokenizer with a {TOKENIZER_HOOK}(ctx) hook in architecture.py instead"
+        )))
     }
 
     /// `vendor.lock` coverage: every `vendor/` file locked + hash-matched +
@@ -1015,6 +1094,56 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("pure Python"));
+    }
+
+    #[test]
+    fn tree_tokenizer_hook_must_live_in_the_architecture_seam() {
+        let hook = "\ndef build_tokenizer(ctx):\n    return ctx\n";
+        // Beside build_model: accepted (this is the live declaration path).
+        let z = zip_of(&[
+            ("architecture.py", &format!("{ARCH}{hook}")),
+            ("train.py", TRAIN),
+            ("util.py", "x = 1\n"),
+        ]);
+        tree_from_zip(&z).unwrap();
+        // In the training entry only: rejected (eval imports arch only).
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", &format!("{TRAIN}{hook}")),
+            ("util.py", "x = 1\n"),
+        ]);
+        let err = tree_from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("architecture seam"), "{err}");
+    }
+
+    #[test]
+    fn tree_tokenizer_dir_is_bounded_then_refused() {
+        let vocab = "{\"a\": 0}\n";
+        // Well-formed but not stageable on the pod: pointed at the hook.
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", TRAIN),
+            ("tokenizer/tokenizer.json", vocab),
+        ]);
+        let err = tree_from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("build_tokenizer"), "{err}");
+        // Caps are checked first, so a malformed dir reports its own breach.
+        let z = zip_of(&[
+            ("architecture.py", ARCH),
+            ("train.py", TRAIN),
+            ("tokenizer/weights.bin", vocab),
+        ]);
+        let err = tree_from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("tokenizer files must be one of"), "{err}");
+        let many: Vec<(String, String)> = (0..=MAX_TOKENIZER_FILES)
+            .map(|i| (format!("tokenizer/part{i}.json"), vocab.to_owned()))
+            .collect();
+        let mut files: Vec<(&str, &str)> = vec![("architecture.py", ARCH), ("train.py", TRAIN)];
+        for (n, b) in &many {
+            files.push((n, b));
+        }
+        let err = tree_from_zip(&zip_of(&files)).unwrap_err().to_string();
+        assert!(err.contains("max 8"), "{err}");
     }
 
     #[test]

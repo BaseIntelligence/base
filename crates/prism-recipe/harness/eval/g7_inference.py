@@ -31,14 +31,9 @@ def _rand_ids(torch, n, vocab, device, rng):
 
 
 def _vocab_size(model, tok):
-    for attr in ("vocab_size", "n_vocab"):
-        v = getattr(model, attr, None) or getattr(getattr(model, "config", None), attr, None)
-        if isinstance(v, int) and v > 0:
-            return v
-    try:
-        return len(tok)
-    except Exception:  # noqa: BLE001
-        return 50257
+    """Model declaration first, else the submitted tokenizer's vocab (never
+    a hardcoded GPT-2 50257: the tokenizer is part of the submission)."""
+    return common.vocab_size(tok, model=model)
 
 
 def _nvidia_smi_power_w():

@@ -227,6 +227,10 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/prismlib/telemetry.py"),
     ),
     (
+        "prismlib/tokenizer.py",
+        include_str!("../harness/prismlib/tokenizer.py"),
+    ),
+    (
         "prismlib/train_v3.py",
         include_str!("../harness/prismlib/train_v3.py"),
     ),
@@ -554,6 +558,7 @@ mod tests {
             "prismlib/probes.py",
             "prismlib/scoring.py",
             "prismlib/telemetry.py",
+            "prismlib/tokenizer.py",
             "prismlib/manifest.py",
             "prismlib/dataset.py",
             "prismlib/envutil.py",
@@ -640,6 +645,15 @@ mod tests {
             "PRISM_TEST_TRAIN_ROWS",
             "PRISM_TEST_VAL_ROWS",
             "torch_seed",
+            // Modular tokenizer contract: the tokenizer is part of the
+            // submission, resolved once per phase and injected as
+            // ctx["tokenizer"] / ctx["vocab_size"] (additive — a submission
+            // that declares none still gets the pinned fallback).
+            "build_tokenizer",
+            "ctx[\"tokenizer\"]",
+            "vocab_size",
+            "fit_to_tokens",
+            "bits_per_byte",
         ] {
             assert!(all.contains(marker), "harness package missing {marker}");
         }

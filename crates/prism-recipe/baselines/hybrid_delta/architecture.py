@@ -32,7 +32,10 @@ handle arbitrary eval sequence lengths (G5 probes up to 32k).
 
 Contract notes: identical to the Transformer++ baseline — `build_model(ctx)`
 returns a CPU module (the harness moves it), forward returns an object with
-`.logits` AND sets `self.logits`, logits cover the full GPT-2 vocab.
+`.logits` AND sets `self.logits`, logits cover the whole vocab. The tokenizer
+is part of a submission, so the embedding is sized from `ctx["vocab_size"]`
+(resolved by the harness); the 50257 default is the pinned fallback this
+baseline chooses and the figure NOTES.md does the cap math against.
 """
 
 import math
@@ -44,7 +47,7 @@ from torch.utils.checkpoint import checkpoint as _activation_checkpoint
 
 # Anchor configuration: 341,309,696 params (see NOTES.md for the math).
 DEFAULTS = {
-    "vocab_size": 50257,
+    "vocab_size": 50257,  # overridden by ctx["vocab_size"] (submitted tokenizer)
     "d_model": 1024,
     "n_layer": 24,
     "attn_heads": 16,

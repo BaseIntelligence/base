@@ -7,11 +7,17 @@ Always runs (no deps):
      -> different items, and gold answers verify against independent
      recomputation for the verifiable families (dyck, modular, s5,
      boolean, arithmetic, knights&knaves).
+  3. Miner tokenizer contract (`prismlib.tokenizer`): validation and its
+     fail-closed paths, `tokenizer/` caps, the import-free declaration
+     probe, cross-phase spec equality, and exact token budgets from
+     `eval.common.fit_to_tokens`.
 
 When torch + transformers + pyarrow are importable, additionally:
-  3. Full-battery run on a tiny randomly-initialized model with a
+  4. Full-battery run on a tiny randomly-initialized model with a
      byte-level fake tokenizer (no HF download) under tiny caps.
-  4. Full v3 two-phase flow via main.py (PRISM_FLOW=v3) on a stub miner.
+  5. Full v3 two-phase flow via main.py (PRISM_FLOW=v3) on a stub miner —
+     once on the pinned default tokenizer, once on a submission that ships
+     its own via `build_tokenizer(ctx)`.
 
 Exit 2 = skipped the torch parts (box lacks the pod image deps);
 the pure-python parts always execute and assert.
@@ -131,11 +137,144 @@ def check_generator_determinism():
     print(f"generator determinism OK ({len(families)} families)")
 
 
+def check_tokenizer_contract():
+    """Miner tokenizer contract: validation, caps, declaration probe,
+    cross-phase spec equality, and the exact token-budget helper."""
+    import random
+
+    from eval import common
+    from prismlib import tokenizer as tok_contract
+
+    Err = tok_contract.TokenizerContractError
+
+    # 1) Validation of a conforming (byte-level) tokenizer + deterministic
+    # fingerprint across instances — that equality is what binds the eval
+    # phase to the train phase.
+    spec = tok_contract.validate(_ByteTok(), "hook", "byte")
+    assert spec["vocab_size"] == 260 and spec["source"] == "hook", spec
+    assert len(spec["fingerprint"]) == 64
+    assert tok_contract.validate(_ByteTok(), "hook", "byte") == spec
+
+    # 2) Fail-closed paths: no decode, ids outside the declared vocab,
+    # vocab under the floor.
+    class _NoDecode(_ByteTok):
+        decode = None
+
+    class _Overflow(_ByteTok):
+        def __len__(self):
+            return 300
+
+        def __call__(self, text, **kw):
+            out = super().__call__(text, **kw)
+            out["input_ids"] = [900] + list(out["input_ids"])
+            return out
+
+        def decode(self, ids):
+            return super().decode([i for i in ids if i < 300])
+
+    class _TinyVocab(_ByteTok):
+        def __len__(self):
+            return 4
+
+    for bad, needle in ((_NoDecode(), "decode"), (_Overflow(), "vocab"), (_TinyVocab(), "vocab")):
+        try:
+            tok_contract.validate(bad, "hook")
+        except Err as exc:
+            assert needle in str(exc), exc
+        else:
+            raise AssertionError(f"expected a contract error for {type(bad).__name__}")
+
+    # 3) Cross-phase equality: identical spec passes, any drift fails.
+    assert tok_contract.assert_matches(spec, spec)["checked"] is True
+    assert tok_contract.assert_matches(spec, None)["checked"] is False
+    try:
+        tok_contract.assert_matches(spec, dict(spec, fingerprint="0" * 64))
+    except Err as exc:
+        assert "not reproducible" in str(exc), exc
+    else:
+        raise AssertionError("expected a cross-phase tokenizer mismatch error")
+
+    # 4) Hook placement: `build_tokenizer` must sit beside `build_model`,
+    # because the EVAL child imports the architecture module only.
+    class _ArchMod:
+        @staticmethod
+        def build_tokenizer(_ctx):
+            return _ByteTok()
+
+    try:
+        tok_contract.resolve({}, "cpu", arch_mod=None, train_mod=_ArchMod)
+    except Err as exc:
+        assert "architecture.py" in str(exc), exc
+    else:
+        raise AssertionError("expected a misplaced-hook error")
+    hook_spec = tok_contract.resolve({}, "cpu", arch_mod=_ArchMod, train_mod=_ArchMod)[1]
+    assert hook_spec["source"] == "hook", hook_spec
+    assert hook_spec["fingerprint"] == spec["fingerprint"], hook_spec
+
+    # 5) `tokenizer/` source-tree caps + the import-free declaration probe.
+    with tempfile.TemporaryDirectory(prefix="prism_tok_") as tmp:
+        work = Path(tmp)
+        assert tok_contract.tokenizer_dir(work) is None
+        assert tok_contract.declared(work) is False
+        (work / "architecture.py").write_text("def build_tokenizer(ctx):\n    return None\n")
+        assert tok_contract.declared(work, str(work / "architecture.py")) is True
+        d = work / tok_contract.TOKENIZER_DIRNAME
+        d.mkdir()
+        for name, needle in (("weights.bin", "extension"), ("tokenizer.json", None)):
+            (d / name).write_text("{}")
+            if needle is None:
+                assert tok_contract.tokenizer_dir(work) == str(d)
+            else:
+                try:
+                    tok_contract.tokenizer_dir(work)
+                except Err as exc:
+                    assert needle in str(exc), exc
+                else:
+                    raise AssertionError(f"expected a cap error for {name}")
+                (d / name).unlink()
+        for i in range(tok_contract.MAX_TOKENIZER_FILES + 1):
+            (d / f"extra{i}.json").write_text("{}")
+        try:
+            tok_contract.tokenizer_dir(work)
+        except Err as exc:
+            assert "files" in str(exc), exc
+        else:
+            raise AssertionError("expected a file-count cap error")
+
+    # 6) Exact token budgets: `fit_to_tokens` is what the long-context
+    # adapters build contexts with (tokens of the SUBMITTED tokenizer).
+    tok = _ByteTok()
+    segments = ["the magic word for alpha is 471 .", "the magic word for beta is 908 ."]
+    suffix = " the magic word for alpha is"
+    rng = random.Random(11)
+    for target in (256, 1024, 4096):
+        text, n = common.fit_to_tokens(
+            tok, segments, target, lambda: "the falcon crossed the meadow near the harbor .",
+            rng=rng, suffix=suffix,
+        )
+        assert n == target, (target, n)
+        assert common.token_len(tok, text) == target
+        assert text.endswith(suffix), text[-80:]
+        for seg in segments:
+            assert seg in text, seg
+    # Over-budget segments are reported honestly, never silently cut.
+    text, n = common.fit_to_tokens(tok, segments, 8, lambda: "filler .", suffix=suffix)
+    assert n > 8 and segments[0] in text
+    assert common.truncate_tokens(tok, "abcdef", 3) == "abc"
+    assert common.vocab_size(tok) == 260
+    print("tokenizer contract OK: validation, caps, cross-phase spec, exact token budgets")
+
+
 # ---------------------------------------------------------------- torch parts
 
 
 class _ByteTok:
-    """Minimal tokenizer shim for battery smoke (no HF download)."""
+    """Minimal tokenizer shim for battery smoke (no HF download).
+
+    This is exactly the duck-typed surface `prismlib.tokenizer` requires of
+    a submitted tokenizer: `tok(text)["input_ids"]`, `decode`, `len`,
+    `eos_token_id`, `convert_ids_to_tokens`.
+    """
 
     def __init__(self):
         self.eos_token_id = 0
@@ -152,6 +291,9 @@ class _ByteTok:
 
             out["input_ids"] = torch.tensor([ids], dtype=torch.long)
         return out
+
+    def decode(self, ids):
+        return bytes(max(0, int(i) - 1) for i in ids).decode("utf-8", errors="replace")
 
     def convert_ids_to_tokens(self, ids):
         return ["ĠA" if i % 97 == 0 else chr(max(32, i - 1)) for i in ids]
@@ -282,6 +424,38 @@ def build_model(ctx):
     return Tiny()
 '''
 
+# Same stub plus the miner tokenizer hook: `build_tokenizer(ctx)` beside
+# `build_model`, returning a byte-level tokenizer built with no network.
+STUB_ARCH_TOKHOOK = STUB_ARCH + '''
+
+class ByteTokenizer:
+    eos_token_id = 0
+    pad_token = "<pad>"
+    eos_token = "<eos>"
+
+    def __call__(self, text, add_special_tokens=False, return_tensors=None,
+                 truncation=False, max_length=None):
+        ids = [b + 1 for b in text.encode("utf-8", errors="replace")]
+        if truncation and max_length:
+            ids = ids[:max_length]
+        if return_tensors == "pt":
+            return {"input_ids": torch.tensor([ids], dtype=torch.long)}
+        return {"input_ids": ids}
+
+    def decode(self, ids):
+        return bytes(max(0, int(i) - 1) for i in ids).decode("utf-8", errors="replace")
+
+    def convert_ids_to_tokens(self, ids):
+        return [chr(max(32, int(i) - 1)) for i in ids]
+
+    def __len__(self):
+        return 260
+
+
+def build_tokenizer(ctx):
+    return ByteTokenizer()
+'''
+
 STUB_TRAIN = '''
 import torch
 
@@ -314,7 +488,7 @@ def train(model, ctx):
 '''
 
 
-def check_v3_flow():
+def check_v3_flow(arch_src=STUB_ARCH, tokenizer_source="default", vocab_size=None):
     import hashlib
 
     import pyarrow as pa
@@ -333,7 +507,7 @@ def check_v3_flow():
 
         work = tmp / "work"
         work.mkdir()
-        (work / "architecture.py").write_text(STUB_ARCH)
+        (work / "architecture.py").write_text(arch_src)
         (work / "training.py").write_text(STUB_TRAIN)
 
         env = dict(os.environ)
@@ -378,6 +552,15 @@ def check_v3_flow():
         assert m["flow"] == "v3"
         assert m["eval_tier"] == "public_dev"
         assert m["bpb"] > 0
+        assert m["bits_per_byte"] > 0, m.get("bits_per_byte")
+        # Tokenizer contract: the resolved spec is reported, and the EVAL
+        # child proved it rebuilt the TRAIN child's tokenizer.
+        tok_spec = m["tokenizer"]
+        assert tok_spec["source"] == tokenizer_source, tok_spec
+        assert len(tok_spec["fingerprint"]) == 64, tok_spec
+        assert tok_spec["cross_phase"]["checked"] is True, tok_spec
+        if vocab_size is not None:
+            assert tok_spec["vocab_size"] == vocab_size, tok_spec
         assert m["tokens_seen"] == 4 * 2 * 64, m["tokens_seen"]
         assert "gate" in m and m["gate"]["survivors_after_train"] is False
         battery = m["battery"]
@@ -412,7 +595,10 @@ def check_v3_flow():
                 assert isinstance(pair[side]["value"], (int, float)), pair
         assert any(p["group"] == "g2" for p in mirrors), mirrors
         assert any(p["group"] == "g4" for p in mirrors), mirrors
-        print("v3 two-phase flow OK: battery + sealed v1 bpb via checkpoint handoff")
+        print(
+            "v3 two-phase flow OK (tokenizer=%s vocab=%d): battery + sealed v1 bpb "
+            "via checkpoint handoff" % (tok_spec["source"], tok_spec["vocab_size"])
+        )
         print(
             "battery contract OK: %d org.* metrics, %d mirror pairs"
             % (len(flat), len(mirrors))
@@ -422,6 +608,7 @@ def check_v3_flow():
 def main():
     check_py_compile()
     check_generator_determinism()
+    check_tokenizer_contract()
     try:
         import torch  # noqa: F401
         import transformers  # noqa: F401
@@ -431,6 +618,9 @@ def main():
         return 2
     check_full_battery()
     check_v3_flow()
+    # Same flow on a submission that ships its own tokenizer via the
+    # documented `build_tokenizer(ctx)` hook (no network, byte-level vocab).
+    check_v3_flow(STUB_ARCH_TOKHOOK, tokenizer_source="hook", vocab_size=260)
     print("BATTERY SMOKE OK")
     return 0
 

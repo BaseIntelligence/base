@@ -5,9 +5,10 @@ Usage: `python3 -m prismlib.miner_entry <ctx.json>` (usually wrapped in
 
 Reads the harness ctx JSON file, imports the miner's `architecture.py` /
 `training.py` (the only place miner code is ever imported — never in the
-parent), runs build/train under the telemetry shim + G6 probes, then scores
-the frozen val cut with the harness-owned loop and writes exactly one JSON
-result line to fd `$PRISM_RESULT_FD` (default 3).
+parent), resolves the submitted tokenizer (`prismlib.tokenizer`), runs
+build/train under the telemetry shim + G6 probes, then scores the frozen val
+cut with the harness-owned loop and writes exactly one JSON result line to fd
+`$PRISM_RESULT_FD` (default 3).
 
 stdout/stderr are streamed to the parent harness log; phase transitions are
 announced with `PRISM_PHASE=<build|train|score>` marker lines that drive
@@ -21,7 +22,7 @@ import sys
 import time
 import traceback
 
-from . import RECIPE_SEED, TOKENIZER, TRAIN_ROWS, VAL_ROWS
+from . import RECIPE_SEED, TRAIN_ROWS, VAL_ROWS, tokenizer as tok_contract
 from .dataset import load_texts
 from .probes import ProbeRunner, select_probe_texts
 from .scoring import val_ce_bpb
@@ -104,12 +105,29 @@ def _run(cfg, st):
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
-    st["stage"] = "tokenizer"
-    from transformers import GPT2TokenizerFast
+    # Miner-facing telemetry shim: registered before miner code loads so a
+    # top-level `import prism_telemetry` in training.py resolves.
+    telemetry_mod, state = build_telemetry_module(log=_log)
+    sys.modules["prism_telemetry"] = telemetry_mod
 
-    tok = GPT2TokenizerFast.from_pretrained(TOKENIZER)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
+    st["stage"] = "contract"
+    arch = _load_mod("miner_architecture", cfg["arch_path"])
+    if not hasattr(arch, "build_model"):
+        raise RuntimeError("build_model missing")
+    train_mod = _load_mod("miner_training", cfg["train_path"])
+    if not hasattr(train_mod, "train"):
+        raise RuntimeError("train missing")
+
+    # Submitted tokenizer (files / build_tokenizer hook / pinned default);
+    # miner code is already imported, so the hook can run here.
+    st["stage"] = "tokenizer"
+    tok, tok_spec = tok_contract.resolve(
+        cfg, device, arch_mod=arch, train_mod=train_mod, telemetry=telemetry_mod, log=_log
+    )
+    _log(
+        f"tokenizer: source={tok_spec['source']} vocab={tok_spec['vocab_size']} "
+        f"fp={tok_spec['fingerprint'][:16]}"
+    )
 
     st["stage"] = "dataset"
     texts = load_texts(cfg["dataset_path"])
@@ -130,24 +148,12 @@ def _run(cfg, st):
         seed=int(cfg.get("seed", RECIPE_SEED)),
     )
 
-    # Miner-facing telemetry shim: registered before miner code loads so a
-    # top-level `import prism_telemetry` in training.py resolves.
-    telemetry_mod, state = build_telemetry_module(log=_log)
-    sys.modules["prism_telemetry"] = telemetry_mod
-
     ctx = {k: v for k, v in cfg.items() if k not in _HARNESS_CTX_KEYS}
     ctx["device"] = device
     ctx["telemetry"] = telemetry_mod
     ctx["tokenizer"] = tok
+    ctx["vocab_size"] = tok_spec["vocab_size"]
     ctx["train_stream"] = stream
-
-    st["stage"] = "contract"
-    arch = _load_mod("miner_architecture", cfg["arch_path"])
-    if not hasattr(arch, "build_model"):
-        raise RuntimeError("build_model missing")
-    train_mod = _load_mod("miner_training", cfg["train_path"])
-    if not hasattr(train_mod, "train"):
-        raise RuntimeError("train missing")
 
     st["stage"] = "build"
     t0 = time.time()
@@ -199,7 +205,7 @@ def _run(cfg, st):
 
     st["stage"] = "score"
     _phase("score")
-    ce, bpb, val_tokens = val_ce_bpb(model, tok, val_texts, device)
+    ce, bpb, val_tokens, bits_per_byte = val_ce_bpb(model, tok, val_texts, device)
 
     tokens_seen = int(stream.tokens_seen)
     tokens_seen_source = "train_stream"
@@ -214,6 +220,7 @@ def _run(cfg, st):
             "status": "ok",
             "bpb": bpb,
             "ce": ce,
+            "bits_per_byte": bits_per_byte,
             "val_rows": val_rows,
             "val_tokens": val_tokens,
             "n_params": int(n_params),
@@ -221,6 +228,7 @@ def _run(cfg, st):
             "tokens_seen_source": tokens_seen_source,
             "wall_clock_seconds": train_s,
             "finish_reason": finish_reason,
+            "tokenizer": tok_spec,
             "telemetry": {
                 "finish_reason": finish_reason,
                 "report_count": state["reports"],
