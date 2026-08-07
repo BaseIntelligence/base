@@ -424,6 +424,26 @@ impl DesignStore for DbDesignStore {
             .map(|(_, html)| html))
     }
 
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError> {
+        Ok(dbs::design_artifacts(&self.pool, run_id)
+            .await
+            .map_err(map_db)?
+            .into_iter()
+            .map(|a| {
+                (
+                    a.path,
+                    a.sanitized_html,
+                    a.raw_html,
+                    a.raw_sha256,
+                    u32::try_from(a.bytes.max(0)).unwrap_or(u32::MAX),
+                )
+            })
+            .collect())
+    }
+
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError> {
         dbs::insert_design_pair(
             &self.pool,

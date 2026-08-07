@@ -339,6 +339,14 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn list_pages(&self, run_id: &str) -> Result<Vec<ArtifactPage>, StoreError>;
     /// One sanitized page.
     async fn get_page(&self, run_id: &str, path: &str) -> Result<Option<String>, StoreError>;
+    /// Ops/audit: artifacts including `raw_html`.
+    ///
+    /// Tuple is `(path, sanitized_html, raw_html, raw_sha256, bytes)`.
+    /// Must never be served on viewer routes — raw is audit-only.
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError>;
 
     /// Insert pair.
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError>;
@@ -400,6 +408,8 @@ pub struct MemoryDesignStore {
     runs: Mutex<VecDeque<RunState>>,
     events: Mutex<Vec<(String, StageEvent)>>,
     pages: Mutex<HashMap<String, Vec<ArtifactPage>>>,
+    /// `run_id` → `path` → raw HTML (audit; mirrors DB `raw_html`).
+    raw_html: Mutex<HashMap<String, HashMap<String, String>>>,
     pairs: Mutex<Vec<PairRow>>,
     annotations: Mutex<Vec<(String, String, String, u64)>>,
     ratings: Mutex<HashMap<(u64, String), RatingRow>>,
@@ -739,8 +749,13 @@ impl DesignStore for MemoryDesignStore {
             .pages
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut raw_guard = self
+            .raw_html
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
         let entry = guard.entry(run_id.to_owned()).or_default();
-        for (path, sanitized, _raw, sha, bytes) in pages {
+        let raw_entry = raw_guard.entry(run_id.to_owned()).or_default();
+        for (path, sanitized, raw, sha, bytes) in pages {
             let page = ArtifactPage {
                 path: path.clone(),
                 sanitized_html: sanitized.clone(),
@@ -752,6 +767,7 @@ impl DesignStore for MemoryDesignStore {
             } else {
                 entry.push(page);
             }
+            raw_entry.insert(path.clone(), raw.clone());
         }
         Ok(())
     }
@@ -778,6 +794,33 @@ impl DesignStore for MemoryDesignStore {
                     .find(|p| p.path == path)
                     .map(|p| p.sanitized_html.clone())
             }))
+    }
+
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError> {
+        let pages = self
+            .pages
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default();
+        let raws = self
+            .raw_html
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default();
+        Ok(pages
+            .into_iter()
+            .map(|p| {
+                let raw = raws.get(&p.path).cloned().unwrap_or_default();
+                (p.path, p.sanitized_html, raw, p.raw_sha256, p.bytes)
+            })
+            .collect())
     }
 
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError> {
