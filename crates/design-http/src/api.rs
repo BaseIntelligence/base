@@ -98,6 +98,10 @@ pub fn design_router(state: Arc<AppState>) -> Router {
         .route("/v1/annotate", post(post_annotate))
         .route("/v1/admin/rounds/{id}/candidates", get(admin_candidates))
         .route("/v1/admin/rounds/{id}/winners", post(admin_winners))
+        .route(
+            "/v1/admin/rounds/current/requeue",
+            post(admin_requeue_current),
+        )
         .route("/v1/rounds/{id}/leaderboard", get(leaderboard))
         .with_state(state)
 }
@@ -934,6 +938,48 @@ struct WinnersBody {
     harness_ids: Vec<String>,
 }
 
+/// Manually schedule every active harness into the CURRENT open round.
+///
+/// Operator escape hatch when a round opened with no/few runs (e.g. challenge
+/// restart). Idempotent for the current round: `schedule_harness_for_round`
+/// returns the existing run ids for a `(harness, round)` pair that already has
+/// runs, so a repeated call creates nothing and consumes no quota. Harnesses
+/// that fail scheduling (daily quota) are reported under `skipped`; one bad
+/// harness never blocks the rest.
+async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_admin(&st, &headers) {
+        return r;
+    }
+    let rid = round_id_at(now_secs());
+    let harnesses = match st.store.list_active_harnesses(rid).await {
+        Ok(h) => h,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let mut scheduled = Vec::new();
+    let mut skipped = Vec::new();
+    for harness in &harnesses {
+        match schedule_harness_for_round(st.store.as_ref(), harness, rid, st.netuid, epoch).await {
+            Ok(run_ids) => scheduled.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "run_ids": run_ids,
+            })),
+            Err(e) => skipped.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "reason": e,
+            })),
+        }
+    }
+    Json(json!({
+        "round_id": rid,
+        "scheduled": scheduled,
+        "skipped": skipped,
+    }))
+    .into_response()
+}
+
 async fn admin_candidates(
     State(st): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1299,6 +1345,80 @@ mod tests {
         assert_eq!(v["error"], "gone");
         // The stored HTML must not leak into the response body.
         assert!(!v.to_string().contains("miner"));
+    }
+
+    #[tokio::test]
+    async fn admin_requeue_schedules_current_round_once() {
+        let admin_token = "test-admin-token";
+        let gating = Arc::new(MemoryGatingStore::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryDesignStore::new()),
+            epoch: std::sync::atomic::AtomicU64::new(0),
+            netuid: 541,
+            backend_mode: "memory",
+            annotator_token_hashes: vec![],
+            admin_token_hashes: vec![token_hash(admin_token)],
+            frame_ancestors: "'none'".into(),
+            retry_max: 2,
+            award_hook: None,
+            gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
+            metagraph: None,
+        });
+        let app = design_router(Arc::clone(&st));
+
+        // Operator-protected like the other admin routes.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/admin/rounds/current/requeue")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+
+        // Two active harnesses, each auto-scheduled into the NEXT round.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let (s, v) = post(app.clone(), submit_body(&hk(0xBB), "b")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let current = round_id_at(now_secs());
+        assert!(st.store.runs_for_round(current).await.unwrap().is_empty());
+
+        // First requeue schedules both harnesses into the current round.
+        let requeue = || {
+            Request::post("/v1/admin/rounds/current/requeue")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (s, v) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["round_id"], current);
+        assert_eq!(v["scheduled"].as_array().unwrap().len(), 2, "{v}");
+        assert!(v["skipped"].as_array().unwrap().is_empty(), "{v}");
+        let runs = st.store.runs_for_round(current).await.unwrap();
+        assert_eq!(runs.len(), 2 * design_challenge_task::prompts_per_round());
+        assert!(runs.iter().all(|r| r.status == RunStage::Queued));
+
+        // Second call is a no-op: same run ids, no new runs, quota untouched.
+        let (s, v2) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v2}");
+        assert_eq!(
+            v["scheduled"].as_array().unwrap(),
+            v2["scheduled"].as_array().unwrap(),
+            "idempotent requeue returns the same run ids"
+        );
+        assert_eq!(
+            st.store.runs_for_round(current).await.unwrap().len(),
+            runs.len()
+        );
+        let day = utc_day(now_secs());
+        let used = st.store.quota_get(&hk(0xAA), &day).await.unwrap();
+        assert_eq!(
+            usize::try_from(used).unwrap(),
+            2 * design_challenge_task::prompts_per_round(),
+            "next-round + current-round schedule only"
+        );
     }
 
     #[tokio::test]
