@@ -117,7 +117,7 @@ async fn proxy_inner(
                 }
                 st.registry.record_success(backend.id);
                 if is_view_path(&rest) {
-                    apply_view_lockdown(&mut upstream_resp, &st.view_frame_ancestors);
+                    apply_view_lockdown(&mut upstream_resp, &st.view_frame_ancestors, &rest);
                 }
                 return upstream_resp;
             }
@@ -226,21 +226,37 @@ pub fn is_admin_path(rest: &str) -> bool {
     rest_norm.starts_with("v1/admin/") || rest_norm == "v1/admin"
 }
 
-/// Miner-controlled HTML viewer paths (`/challenge/{id}/v1/view/{run}/{page}`).
+/// Miner-controlled viewer paths (`/challenge/{id}/v1/view/{run}/{page}`).
 #[must_use]
 pub fn is_view_path(rest: &str) -> bool {
     rest.trim_start_matches('/').starts_with("v1/view/")
 }
 
-/// Re-apply the viewer lockdown header floor at the last serving layer
-/// (defense in depth): even a stale or misbehaving challenge upstream cannot
-/// serve miner HTML through the gateway without the CSP `sandbox` (opaque
-/// origin, no scripts), and `Set-Cookie` is stripped so these public
-/// capability-URL responses never touch origin cookies.
-fn apply_view_lockdown(resp: &mut Response, frame_ancestors: &str) {
+/// Captured PNG screenshot under `/v1/view/{run}/{page}.png`.
+#[must_use]
+pub fn is_view_png_path(rest: &str) -> bool {
+    is_view_path(rest) && rest.trim_start_matches('/').ends_with(".png")
+}
+
+/// Re-apply the viewer header floor at the last serving layer (defense in
+/// depth). Non-PNG paths get the full HTML lockdown (CSP `sandbox`, CORP
+/// same-origin). PNG screenshots get [`design_sanitize::screenshot_headers`]
+/// (`CORP: cross-origin`) so joinbase.ai can load them with a direct absolute
+/// URL and avoid proxying image bytes through Vercel. `Set-Cookie` is always
+/// stripped.
+fn apply_view_lockdown(resp: &mut Response, frame_ancestors: &str, rest: &str) {
     let headers = resp.headers_mut();
     headers.remove(header::SET_COOKIE);
-    for (k, v) in design_sanitize::viewer_headers(frame_ancestors) {
+    let floor = if is_view_png_path(rest) {
+        // Drop HTML-only lockdown if a stale hop set them on a PNG response.
+        headers.remove(header::CONTENT_SECURITY_POLICY);
+        headers.remove(HeaderName::from_static("cross-origin-opener-policy"));
+        headers.remove(HeaderName::from_static("permissions-policy"));
+        design_sanitize::screenshot_headers()
+    } else {
+        design_sanitize::viewer_headers(frame_ancestors)
+    };
+    for (k, v) in floor {
         if let (Ok(name), Ok(val)) = (HeaderName::try_from(k), HeaderValue::try_from(v.as_str())) {
             headers.insert(name, val);
         }
@@ -280,6 +296,8 @@ mod tests {
         assert!(!is_view_path("v1/runs/abc"));
         assert!(!is_view_path("v1/viewx/abc"));
         assert!(!is_view_path("v1/admin/view"));
+        assert!(is_view_png_path("v1/view/abc/index.png"));
+        assert!(!is_view_png_path("v1/view/abc/index.html"));
     }
 
     #[test]
@@ -291,7 +309,7 @@ mod tests {
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("default-src *"),
         );
-        apply_view_lockdown(&mut resp, "'none'");
+        apply_view_lockdown(&mut resp, "'none'", "v1/view/abc/index.html");
         let h = resp.headers();
         assert!(h.get(header::SET_COOKIE).is_none());
         let csp = h
@@ -306,6 +324,30 @@ mod tests {
             h.get(header::X_CONTENT_TYPE_OPTIONS)
                 .and_then(|v| v.to_str().ok()),
             Some("nosniff")
+        );
+    }
+
+    #[test]
+    fn png_view_lockdown_allows_cross_origin_img() {
+        let mut resp = Response::new(Body::from(vec![0x89_u8, 0x50, 0x4e, 0x47]));
+        let h = resp.headers_mut();
+        h.insert(header::SET_COOKIE, HeaderValue::from_static("session=evil"));
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox; default-src 'none'"),
+        );
+        h.insert(
+            HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-origin"),
+        );
+        apply_view_lockdown(&mut resp, "'none'", "v1/view/abc/index.png");
+        let h = resp.headers();
+        assert!(h.get(header::SET_COOKIE).is_none());
+        assert!(h.get(header::CONTENT_SECURITY_POLICY).is_none());
+        assert_eq!(
+            h.get("cross-origin-resource-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("cross-origin")
         );
     }
 }

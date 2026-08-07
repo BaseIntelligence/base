@@ -821,14 +821,14 @@ async fn view_page(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_static("image/png"),
             );
-            headers.insert(
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("private, no-store"),
-            );
-            headers.insert(
-                header::HeaderName::from_static("x-content-type-options"),
-                header::HeaderValue::from_static("nosniff"),
-            );
+            for (k, v) in design_sanitize::screenshot_headers() {
+                if let (Ok(name), Ok(val)) = (
+                    header::HeaderName::try_from(k),
+                    header::HeaderValue::try_from(v),
+                ) {
+                    headers.insert(name, val);
+                }
+            }
             (StatusCode::OK, headers, bytes).into_response()
         }
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "page"),
@@ -1467,6 +1467,12 @@ mod tests {
                 .get(header::X_CONTENT_TYPE_OPTIONS)
                 .and_then(|v| v.to_str().ok()),
             Some("nosniff")
+        );
+        assert_eq!(
+            res.headers()
+                .get("cross-origin-resource-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("cross-origin")
         );
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(bytes.as_ref(), &png_bytes);

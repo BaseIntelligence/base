@@ -320,12 +320,17 @@ pub fn default_frame_ancestors() -> &'static str {
     "'self' https://joinbase.ai https://*.vercel.app http://localhost:*"
 }
 
-/// Viewer response headers (CSP sandbox is the key guarantee).
+/// Viewer response headers for **non-PNG** `/v1/view/*` responses (CSP sandbox
+/// is the key guarantee against a stale upstream that still served miner HTML).
 ///
 /// The `sandbox` directive is emitted **without** `allow-scripts` and without
 /// `allow-same-origin`: the document runs in an opaque origin with script
 /// execution disabled, so miner HTML can never touch the serving origin's
 /// cookies, storage, or DOM — even when embedded same-origin through a proxy.
+///
+/// Public screenshots use [`screenshot_headers`] instead (`CORP: cross-origin`)
+/// so joinbase.ai can `<img src="https://chain.joinbase.ai/.../index.png">`
+/// without proxying PNG bytes through Vercel.
 #[must_use]
 pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
     let csp = format!(
@@ -336,8 +341,8 @@ pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
         ("Content-Security-Policy", csp),
         ("X-Content-Type-Options", "nosniff".into()),
         ("Referrer-Policy", "no-referrer".into()),
-        // Viewer responses are only ever embedded same-origin (site proxies
-        // the gateway under its own origin); cross-origin embedders get nothing.
+        // Non-PNG view responses stay same-origin only (defense in depth if
+        // HTML ever leaks through); PNGs use `screenshot_headers`.
         ("Cross-Origin-Resource-Policy", "same-origin".into()),
         ("Cross-Origin-Opener-Policy", "same-origin".into()),
         (
@@ -346,6 +351,21 @@ pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
              microphone=(), payment=(), usb=()"
                 .into(),
         ),
+        ("Cache-Control", "private, no-store".into()),
+    ]
+}
+
+/// Headers for public PNG screenshots (`index.png`).
+///
+/// `Cross-Origin-Resource-Policy: cross-origin` lets marketing/admin UIs load
+/// the image with a direct absolute URL to the gateway (no same-origin proxy
+/// required). PNGs are not executable documents; cookies are never set.
+#[must_use]
+pub fn screenshot_headers() -> Vec<(&'static str, String)> {
+    vec![
+        ("X-Content-Type-Options", "nosniff".into()),
+        ("Referrer-Policy", "no-referrer".into()),
+        ("Cross-Origin-Resource-Policy", "cross-origin".into()),
         ("Cache-Control", "private, no-store".into()),
     ]
 }
@@ -425,6 +445,16 @@ mod tests {
         assert_eq!(get("Cross-Origin-Resource-Policy"), Some("same-origin"));
         // No cookie may ever be set on miner-content responses.
         assert!(get("Set-Cookie").is_none());
+    }
+
+    #[test]
+    fn screenshot_headers_allow_cross_origin_img() {
+        let h = screenshot_headers();
+        let get = |name: &str| h.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("Cross-Origin-Resource-Policy"), Some("cross-origin"));
+        assert_eq!(get("X-Content-Type-Options"), Some("nosniff"));
+        assert!(get("Content-Security-Policy").is_none());
+        assert!(get("Cross-Origin-Opener-Policy").is_none());
     }
 
     #[test]

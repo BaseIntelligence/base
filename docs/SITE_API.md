@@ -15,8 +15,13 @@ frontend `BaseApi` contract (`types.ts` / `contract.ts`).
 | Coding arena | `status: "paused"`, empty submissions / matrix / leaderboard |
 
 Design submissions carry **no `url`** (produced HTML is never served); the
-public preview is `screenshotUrl` → `/challenge/design/v1/view/{runId}/index.png`,
-and runs without a captured screenshot are excluded from the submissions list.
+public preview is `screenshotUrl` → `/challenge/design/v1/view/{runId}/index.png`
+(relative path on the gateway). Marketing clients should resolve that path to the
+**absolute** gateway host for `<img src>` (e.g.
+`https://chain.joinbase.ai/challenge/design/v1/view/{runId}/index.png`) so PNG
+bytes are not proxied through the site's Vercel `/gbase-api` rewrite. JSON
+`/v1/site/*` calls may keep using the same-origin proxy. Runs without a captured
+screenshot are excluded from the submissions list.
 Leaderboard `elo` is the design
 `rating` field. Prism window series use real terminal `bpb` with a single
 `[final]` point when no step curve is stored.
