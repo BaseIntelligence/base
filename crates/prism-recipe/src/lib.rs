@@ -50,7 +50,8 @@ pub use zip_submit::{
 /// manifest, v3 two-phase entries, cheatguard screening), plus the
 /// `cheatguard_patterns.json` banned-pattern list, and `eval/` (G1–G8
 /// battery registry + battery modules + procedural generators + the
-/// public dev family).
+/// vendored community protocols (`vendor_*.py` + `VENDOR.md` provenance)
+/// + the public dev family).
 ///
 /// Keep sorted by path — [`harness_files_sha256`] and [`recipe_pin_hex`]
 /// hash the set in sorted-path order.
@@ -59,6 +60,7 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         "cheatguard_patterns.json",
         include_str!("../harness/cheatguard_patterns.json"),
     ),
+    ("eval/VENDOR.md", include_str!("../harness/eval/VENDOR.md")),
     (
         "eval/__init__.py",
         include_str!("../harness/eval/__init__.py"),
@@ -81,8 +83,16 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/eval/g4_reasoning.py"),
     ),
     (
+        "eval/g5_babilong.py",
+        include_str!("../harness/eval/g5_babilong.py"),
+    ),
+    (
         "eval/g5_longctx.py",
         include_str!("../harness/eval/g5_longctx.py"),
+    ),
+    (
+        "eval/g5_ruler.py",
+        include_str!("../harness/eval/g5_ruler.py"),
     ),
     (
         "eval/g6_curve.py",
@@ -157,6 +167,15 @@ pub const HARNESS_FILES: &[(&str, &str)] = &[
         include_str!("../harness/eval/public_dev/seeds.json"),
     ),
     ("eval/rollup.py", include_str!("../harness/eval/rollup.py")),
+    ("eval/toklen.py", include_str!("../harness/eval/toklen.py")),
+    (
+        "eval/vendor_babilong.py",
+        include_str!("../harness/eval/vendor_babilong.py"),
+    ),
+    (
+        "eval/vendor_ruler.py",
+        include_str!("../harness/eval/vendor_ruler.py"),
+    ),
     ("main.py", include_str!("../harness/main.py")),
     (
         "prismlib/__init__.py",
@@ -506,7 +525,13 @@ mod tests {
             "eval/g2_downstream.py",
             "eval/g3_recall.py",
             "eval/g4_reasoning.py",
+            "eval/g5_babilong.py",
             "eval/g5_longctx.py",
+            "eval/g5_ruler.py",
+            "eval/toklen.py",
+            "eval/vendor_babilong.py",
+            "eval/vendor_ruler.py",
+            "eval/VENDOR.md",
             "eval/g6_curve.py",
             "eval/g7_inference.py",
             "eval/g8_stability.py",

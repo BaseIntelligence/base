@@ -17,6 +17,14 @@ import pkgutil
 
 EXPECTED_GROUPS = ("g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8")
 
+# `gN_*` modules that expose `run(model, ctx, ...)` for a group entrypoint to
+# call rather than being the entrypoint themselves. Discovery walks
+# `pkgutil` in alphabetical order and the first `gN_*` module claims the
+# group, so a group with several modules must name its non-entrypoints here
+# (checked before the import, so an adapter that fails to import cannot
+# shadow the real group module either).
+ADAPTER_MODULES = frozenset({"g5_babilong", "g5_ruler"})
+
 
 def discover():
     """Map group id -> {"status", "module", ...} for present gN_* modules."""
@@ -25,6 +33,8 @@ def discover():
         name = info.name
         group = name.split("_", 1)[0]
         if group not in EXPECTED_GROUPS or group in found:
+            continue
+        if name in ADAPTER_MODULES:
             continue
         try:
             mod = importlib.import_module(f".{name}", __name__)
