@@ -15,6 +15,8 @@ const DEFAULT_URL: &str =
 const TTL: Duration = Duration::from_mins(10);
 /// Hard ceiling on one quote fetch — a hung upstream must not stall stats.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+/// Outbound identity: CoinGecko/Cloudflare 403 requests with no User-Agent.
+const USER_AGENT: &str = "base-site/3.3 (+https://joinbase.ai)";
 
 /// Cached TAO/USD quote.
 #[derive(Debug, Clone, Copy)]
@@ -68,10 +70,16 @@ async fn tao_price_from(client: &reqwest::Client, cache: &TaoPriceCache, url: &s
 }
 
 async fn fetch_once(client: &reqwest::Client, url: &str) -> Option<f64> {
-    let res = tokio::time::timeout(FETCH_TIMEOUT, client.get(url).send())
-        .await
-        .ok()?
-        .ok()?;
+    let res = tokio::time::timeout(
+        FETCH_TIMEOUT,
+        client
+            .get(url)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
     if !res.status().is_success() {
         return None;
     }
@@ -85,8 +93,30 @@ async fn fetch_once(client: &reqwest::Client, url: &str) -> Option<f64> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn sends_user_agent() {
+        let server = MockServer::start().await;
+        // CoinGecko/Cloudflare 403 header-less requests; the quote fetch must
+        // always identify itself.
+        Mock::given(method("GET"))
+            .and(path("/simple/price"))
+            .and(header("user-agent", USER_AGENT))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "bittensor": { "usd": 191.62 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        let cache = TaoPriceCache::new(None);
+        let url = format!("{}/simple/price", server.uri());
+
+        let v = tao_price_from(&client, &cache, &url).await;
+        assert!((v - 191.62).abs() < f64::EPSILON);
+    }
 
     #[tokio::test]
     async fn caches_and_fails_closed() {
