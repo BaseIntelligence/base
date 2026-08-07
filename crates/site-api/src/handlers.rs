@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::map::{
+use site_data::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
     leaderboard_matches_query, list_arenas, prism_arena_from_live, prism_bpb_leaderboard,
     prism_submission, prism_telemetry, prism_window, submission_matches_query,
@@ -79,7 +79,7 @@ fn now_iso() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
-    crate::map::ms_to_iso(ms)
+    site_data::map::ms_to_iso(ms)
 }
 
 async fn fetch_design_dash(st: &SiteState) -> Option<Value> {
@@ -326,7 +326,7 @@ async fn design_leaderboard_json(
         .as_ref()
         .and_then(|d| d.pointer("/round/closes_at_secs"))
         .and_then(Value::as_u64)
-        .map(|s| crate::map::ms_to_iso(s.saturating_mul(1000)));
+        .map(|s| site_data::map::ms_to_iso(s.saturating_mul(1000)));
     json!({
         "items": page_out.items,
         "page": page_out.page,

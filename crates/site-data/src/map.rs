@@ -68,7 +68,7 @@ pub fn agent_from_hotkey(hotkey: &str, joined_epoch: u64) -> Agent {
     }
 }
 
-pub use site_data::timefmt::{ms_to_clock, ms_to_iso};
+pub use crate::timefmt::{ms_to_clock, ms_to_iso};
 
 /// Map design run status → site submission status.
 #[must_use]

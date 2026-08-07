@@ -13,7 +13,6 @@
 #![allow(clippy::doc_markdown)]
 
 mod handlers;
-mod map;
 mod state;
 mod upstream;
 
