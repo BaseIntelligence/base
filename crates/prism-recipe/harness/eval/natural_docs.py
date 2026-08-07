@@ -26,12 +26,14 @@ template, no instruction turns, no judge, no long free-form generation:
 | `helmet_rag`  | HELMET RAG (kilt nq/triviaqa/hotpotqa/popqa) | HELMET's own **non-chat** few-shot template + bounded greedy decode + substring EM, plus a closed-set logprob ranking companion |
 
 Assets are raw text + choices + gold — **tokenizer-agnostic**. Every
-token-exact operation (length measurement, over-length truncation) runs
-on-pod against `ctx["tokenizer"]`, i.e. the tokenizer the miner submitted,
-and is funnelled through the `_encode` / `_tok_len` / `_fit_middle`
-wrappers at the top of this file so there is exactly one owner of token
-math. Over-length contexts use LongBench's official rule: keep the first
-and last half of the token budget, drop the middle.
+token-exact operation runs on-pod through the tokenizer contract
+(`common.tokenizer_of` / `encode` / `decode` / `token_len`), i.e. against
+the tokenizer the miner submitted. The one piece of token math this module
+owns is `_fit_middle`: LongBench's official over-length rule, keep the
+first and last half of the budget and drop the middle. `common`'s own
+`truncate_tokens` keeps a prefix instead, which would throw away the end of
+the document, and `fit_to_tokens` grows a context rather than shrinking a
+real one.
 
 Which pool rows are scored, the MCQ choice order, the few-shot demos and
 the ranking distractors are all redrawn from `PRISM_EVAL_SECRET_SEED` (via
@@ -83,50 +85,32 @@ _RAG_INSTRUCTION = (
 _PASSAGE = "Document (Title: {title}): {text}"
 
 
-# ------------------------------------------------------- tokenizer wrapper
-
-
-def _encode(tok, text):
-    """Token ids of `text` under the miner's tokenizer."""
-    return common.encode(tok, text)
-
-
-def _tok_len(tok, text):
-    """Length of `text` in miner-tokenizer tokens."""
-    return len(_encode(tok, text))
+# ------------------------------------------------------ token-exact cutting
 
 
 def _fit_middle(tok, text, max_tokens):
     """(text, n_tokens) truncated to `max_tokens` by dropping the middle.
 
     LongBench's official over-length rule (`pred.py`): decode the first and
-    last half of the budget and concatenate. Re-encoding a decoded cut can
-    come back a few tokens longer than the slice it came from (BPE merges
-    across the seam), so the budget is re-measured and the window shrunk
-    until it holds. A tokenizer without a usable `decode` falls back to the
-    same head+tail cut in characters, scaled by its measured
-    chars-per-token.
+    last half of the budget and concatenate. `common.truncate_tokens` is not
+    a substitute — it keeps a prefix, and the tail of a LongBench document
+    is where a good part of the evidence lives.
+
+    Re-encoding a decoded cut can come back a few tokens longer than the
+    slice it came from (BPE merges across the seam), so the length is
+    re-measured and the window shrunk until it holds.
     """
-    ids = _encode(tok, text)
+    ids = common.encode(tok, text)
     n = len(ids)
     if n <= max_tokens:
         return text, n
-    decode = getattr(tok, "decode", None)
-    budget = max_tokens
+    budget, cut, got = max_tokens, text, n
     for _ in range(4):
         half = budget // 2
-        if callable(decode):
-            try:
-                cut = decode(ids[:half]) + decode(ids[n - (budget - half) :])
-            except Exception:  # noqa: BLE001 — fall through to the char cut
-                decode = None
-                continue
-        else:
-            keep = max(1, half * len(text) // n)
-            cut = text[:keep] + text[-keep:]
-        got = _tok_len(tok, cut)
+        cut = common.decode(tok, ids[:half]) + common.decode(tok, ids[n - (budget - half) :])
+        got = common.token_len(tok, cut)
         if got <= max_tokens:
-            return cut, got
+            break
         budget -= max(1, (got - max_tokens) * 2)
     return cut, got
 
@@ -191,10 +175,10 @@ def _mcq_prompt(tok, row, secret):
     # `score_choices` forwards prompt + one answer, so the reserve is the
     # question plus the *longest* answer — measured, not assumed, because
     # the miner's tokenizer decides what those cost.
-    reserve = _tok_len(tok, tail) + max(_tok_len(tok, c) for c in scored)
+    reserve = common.token_len(tok, tail) + max(common.token_len(tok, c) for c in scored)
     body, _ = _fit_middle(tok, str(row.get("context", "")), max(256, MAX_TOKENS - reserve))
     prompt = body + tail
-    return prompt, scored, order.index(gold), _tok_len(tok, prompt)
+    return prompt, scored, order.index(gold), common.token_len(tok, prompt)
 
 
 def _documents(row):
@@ -214,10 +198,10 @@ def _rag_prompt(tok, row, demos):
     )
     head = _RAG_INSTRUCTION + shots
     tail = f"\n\nQuestion: {str(row.get('question', '')).strip()}\nAnswer:"
-    room = MAX_TOKENS - _tok_len(tok, head + tail) - _MAX_NEW_TOKENS
+    room = MAX_TOKENS - common.token_len(tok, head + tail) - _MAX_NEW_TOKENS
     body, _ = _fit_middle(tok, _documents(row), max(256, room))
     prompt = head + body + tail
-    return prompt, _tok_len(tok, prompt)
+    return prompt, common.token_len(tok, prompt)
 
 
 # ------------------------------------------------------------------ scoring
@@ -232,22 +216,21 @@ def _logits(out):
 def _greedy_line(model, tok, device, prompt):
     """Bounded greedy continuation: <= `_MAX_NEW_TOKENS`, first line only.
 
-    Returns None when the tokenizer cannot decode (EM is then skipped and
-    only the ranking companion is reported).
+    No KV cache — the miner's model is an arbitrary `nn.Module` and the
+    harness contract only promises `model(ids)`, so each step re-forwards,
+    the same trade `common.continuation_logprob` already makes. That is why
+    `_MAX_NEW_TOKENS` is small and a newline stops the loop early.
     """
     import torch
 
-    decode = getattr(tok, "decode", None)
-    if not callable(decode):
-        return None
-    ids = _encode(tok, prompt)
+    ids = common.encode(tok, prompt)
     grown, text = [], ""
     for _ in range(_MAX_NEW_TOKENS):
         batch = torch.tensor([ids + grown], dtype=torch.long, device=device)
         with torch.no_grad():
             step = _logits(model(batch))
         grown.append(int(step[0, -1].float().argmax().item()))
-        text = decode(grown)
+        text = common.decode(tok, grown)
         if "\n" in text:
             break
     return text.split("\n")[0]
@@ -269,7 +252,7 @@ def _substring_em(prediction, answers):
 
 def _mcq_series(model, ctx, rows, secret, budget, out, prefix):
     """Mean acc + per-cluster values over MCQ rows; emits detail into `out`."""
-    tok, device = ctx["tokenizer"], ctx["device"]
+    tok, device = common.tokenizer_of(ctx), ctx["device"]
     accs, nlls, clusters, per_bucket = [], [], {}, {}
     for row in rows:
         if not budget.ok():
@@ -310,7 +293,7 @@ def _rag_series(model, ctx, rows, demo_pool, secret, budget, out, prefix):
     at 100–350M) and then, while the budget allows, by bounded greedy
     decode + substring EM — the upstream HELMET RAG metric.
     """
-    tok, device = ctx["tokenizer"], ctx["device"]
+    tok, device = common.tokenizer_of(ctx), ctx["device"]
     ems, ranks, nlls, clusters, per_bucket = [], [], [], {}, {}
     for row in rows:
         if not budget.ok():

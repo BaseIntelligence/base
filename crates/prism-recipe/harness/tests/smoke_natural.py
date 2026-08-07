@@ -37,6 +37,7 @@ HARNESS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HARNESS_ROOT))
 
 from eval import common, natural_docs as nat  # noqa: E402
+from prismlib import tokenizer as tok_contract  # noqa: E402
 
 FIXTURES = HARNESS_ROOT / "eval" / "public_dev" / "g5" / "natural"
 SECRET = 987_654_321
@@ -160,13 +161,9 @@ def check_prompt_budget():
         "gold": 0,
         "context": long_ctx,
     }
-    # Tokenizer with `decode`, without it (char fallback), and one whose
-    # re-encode overshoots the cut (BPE seam) — all must land in budget.
-    for label, tok in (
-        ("decodable", ByteTok()),
-        ("no-decode", ByteTok(decodable=False)),
-        ("bpe-seam", SeamTok()),
-    ):
+    # A plain tokenizer and one whose re-encode overshoots the cut (BPE
+    # seam) must both land inside the budget.
+    for label, tok in (("plain", ByteTok()), ("bpe-seam", SeamTok())):
         prompt, choices, gold, n_tokens = nat._mcq_prompt(tok, row, SECRET)
         assert n_tokens <= nat.MAX_TOKENS, (label, n_tokens)
         assert choices[gold].strip() == "yes"
@@ -174,6 +171,16 @@ def check_prompt_budget():
         assert prompt.startswith(long_ctx[:64]), label
         assert "Question: Is the seal intact?\nAnswer:" in prompt, label
         assert len(prompt) < len(long_ctx), label
+
+    # A tokenizer without `decode` is a contract violation, not something to
+    # silently degrade around: the harness rejects it before the battery and
+    # this module must surface it the same way.
+    try:
+        nat._mcq_prompt(ByteTok(decodable=False), row, SECRET)
+    except tok_contract.TokenizerContractError:
+        pass
+    else:
+        raise AssertionError("a decode-less tokenizer must fail the contract")
 
     # A short context is passed through untouched.
     short = dict(row, id="synthetic-short", context="The seal is intact.")
