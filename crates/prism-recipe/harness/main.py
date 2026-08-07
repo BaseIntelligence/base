@@ -94,6 +94,35 @@ WORKDIR = os.environ.get("PRISM_WORKDIR", "/tmp/prism_eval")
 # then holds the post-train gate on `$PRISM_EVAL_ASSETS_DIR/.ready`.
 TRAIN_DONE_MARKER = os.environ.get("PRISM_TRAIN_DONE_MARKER", "PHASE_TRAIN_DONE")
 ASSETS_WAIT_S = float_env("PRISM_ASSETS_WAIT_S", 900.0)
+ENTRY_MARKER = ".prism_entry"
+
+
+def _resolve_miner_paths(workdir):
+    """Resolve architecture/training paths for two-script or source-tree layout.
+
+    Full trees land under `submission/` (see prism_tree::POD_SUBMISSION_DIR)
+    with a harness-owned `.prism_entry` naming the training entry module.
+    Legacy two-script uploads keep `architecture.py` / `training.py` at the
+    workdir root.
+    """
+    sub = os.path.join(workdir, "submission")
+    if os.path.isdir(sub):
+        entry = "training.py"
+        marker = os.path.join(sub, ENTRY_MARKER)
+        if os.path.isfile(marker):
+            with open(marker, "r", encoding="utf-8") as f:
+                entry = f.read().strip() or entry
+        arch = os.path.join(sub, "architecture.py")
+        train = os.path.join(sub, entry)
+        if not os.path.isfile(arch):
+            fail("contract", FileNotFoundError(f"missing {arch}"))
+        if not os.path.isfile(train):
+            fail("contract", FileNotFoundError(f"missing entry {train}"))
+        return arch, train
+    return (
+        os.path.join(workdir, "architecture.py"),
+        os.path.join(workdir, "training.py"),
+    )
 
 
 def _eval_battery_status():
@@ -385,8 +414,7 @@ def main():
     if device == "cuda":
         torch.cuda.manual_seed_all(RECIPE_SEED)
 
-    arch_path = os.path.join(WORKDIR, "architecture.py")
-    train_path = os.path.join(WORKDIR, "training.py")
+    arch_path, train_path = _resolve_miner_paths(WORKDIR)
     # Warm the HF cache from the parent (which has network) so the isolated
     # child can resolve the PINNED FALLBACK tokenizer offline from the same
     # cache. A submission that declares its own tokenizer (files in the

@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod review_tree;
 mod zip_submit;
 
 pub mod anchors;
@@ -37,9 +38,11 @@ pub mod attribution;
 pub mod baselines;
 
 pub use attribution::{build_attribution_runs, AttributionCell, AttributionError, AttributionRun};
+pub use review_tree::materialize_review_sources;
 pub use zip_submit::{
     probe_zip_kind, sources_from_zip, training_from_zip, tree_from_zip, SourceTree, ZipKind,
-    ZipSubmitError, DEFAULT_TREE_ENTRY, MAX_TREE_FILES, MAX_TREE_FILE_BYTES, MAX_TREE_TOTAL_BYTES,
+    ZipSubmitError, DEFAULT_TREE_ENTRY, MAX_TOKENIZER_FILES, MAX_TOKENIZER_TOTAL_BYTES,
+    MAX_TREE_FILES, MAX_TREE_FILE_BYTES, MAX_TREE_TOTAL_BYTES, TOKENIZER_DIR, TOKENIZER_EXTENSIONS,
     TREE_MANIFEST_FILE, VENDOR_LOCK_FILE,
 };
 

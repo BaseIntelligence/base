@@ -278,6 +278,10 @@ async fn post_submission(
         }
     };
     let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let tree_blob = match prism_pipeline::tree_blob_for(&req) {
+        Ok(b) => b,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "tree", &e),
+    };
     let row = SubmissionState {
         id: id.clone(),
         miner_hotkey: req.miner_hotkey.trim().to_owned(),
@@ -286,6 +290,7 @@ async fn post_submission(
         status: Stage::Queued,
         architecture_py: req.architecture_py.clone(),
         training_py: req.training_py.clone(),
+        tree_blob,
         label: req.label.clone(),
         pod_id: None,
         pod_provider: None,

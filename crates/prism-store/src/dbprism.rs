@@ -63,6 +63,7 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
         status,
         architecture_py: r.architecture_py,
         training_py: r.training_py,
+        tree_blob: r.tree_blob,
         label: r.label,
         pod_id: r.pod_id,
         pod_provider: r.pod_provider,
@@ -179,6 +180,7 @@ impl PrismStore for DbPrismStore {
                 label: row.label.as_deref(),
                 architecture_py: &row.architecture_py,
                 training_py: &row.training_py,
+                tree_blob: row.tree_blob.as_deref(),
             },
         )
         .await

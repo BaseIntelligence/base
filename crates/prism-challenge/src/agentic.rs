@@ -11,7 +11,7 @@ use prism_store::SubmissionState;
 /// Build a temp workdir + [`ReviewRequest`] for one Prism submission.
 ///
 /// # Errors
-/// IO failures writing sources / metrics / receipt.
+/// IO / materialize failures.
 pub fn build_review_request(
     workdir: &Path,
     row: &SubmissionState,
@@ -19,26 +19,32 @@ pub fn build_review_request(
     receipt: Option<&EvalReceipt>,
     corpus: Vec<CorpusEntry>,
 ) -> Result<ReviewRequest, String> {
-    fs::write(workdir.join("architecture.py"), &row.architecture_py)
-        .map_err(|e| format!("write architecture.py: {e}"))?;
-    fs::write(workdir.join("training.py"), &row.training_py)
-        .map_err(|e| format!("write training.py: {e}"))?;
-    let metrics_relpath = if let Some(m) = metrics {
-        let path = workdir.join("metrics.json");
-        let body = serde_json::to_vec(m).map_err(|e| format!("metrics json: {e}"))?;
-        fs::write(&path, body).map_err(|e| format!("write metrics.json: {e}"))?;
-        Some("metrics.json".into())
-    } else {
-        None
-    };
+    let primary_relpaths = prism_recipe::materialize_review_sources(
+        workdir,
+        &row.architecture_py,
+        &row.training_py,
+        row.tree_blob.as_deref(),
+    )?;
+    let metrics_relpath = metrics
+        .map(|m| {
+            fs::write(
+                workdir.join("metrics.json"),
+                serde_json::to_vec(m).map_err(|e| format!("metrics json: {e}"))?,
+            )
+            .map_err(|e| format!("write metrics.json: {e}"))?;
+            Ok::<_, String>("metrics.json".into())
+        })
+        .transpose()?;
     if let Some(r) = receipt {
-        let body = serde_json::to_vec(r).map_err(|e| format!("receipt json: {e}"))?;
-        fs::write(workdir.join("receipt.json"), body)
-            .map_err(|e| format!("write receipt.json: {e}"))?;
+        fs::write(
+            workdir.join("receipt.json"),
+            serde_json::to_vec(r).map_err(|e| format!("receipt json: {e}"))?,
+        )
+        .map_err(|e| format!("write receipt.json: {e}"))?;
     }
     Ok(ReviewRequest {
         workdir: workdir.to_path_buf(),
-        primary_relpaths: vec!["architecture.py".into(), "training.py".into()],
+        primary_relpaths,
         corpus,
         metrics_relpath,
         pages_relpath: None,
@@ -47,13 +53,7 @@ pub fn build_review_request(
     })
 }
 
-/// Baseline + recent terminated submissions as agentic corpus entries.
-///
-/// Corpus entries are **architecture.py only** (similarity v2): `training.py`
-/// is exempt from every copy/similarity comparison — the same training
-/// script on two different architectures is legitimate competition behavior.
-/// `exempt_arch` drops entries byte-equal to that source (training-only
-/// submissions on a registry architecture: the identity is by design).
+/// Architecture-only corpus (similarity v2); `exempt_arch` drops identities.
 #[must_use]
 pub fn corpus_from_rows(
     current_id: &str,
@@ -68,13 +68,8 @@ pub fn corpus_from_rows(
         if r.id == current_id || Some(r.architecture_py.as_str()) == exempt_arch {
             continue;
         }
-        let label = if r.id.len() >= 8 {
-            format!("subm:{}", &r.id[..8])
-        } else {
-            format!("subm:{}", r.id)
-        };
         v.push(CorpusEntry {
-            id: label,
+            id: format!("subm:{}", &r.id[..r.id.len().min(8)]),
             source: r.architecture_py.clone(),
         });
     }

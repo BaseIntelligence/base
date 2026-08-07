@@ -41,6 +41,9 @@ pub struct SubmissionState {
     pub architecture_py: String,
     /// training.py bytes.
     pub training_py: String,
+    /// Packed v3 source tree (`prism_tree::StagedTree::pack`), when the
+    /// submission was a multi-file ZIP. `None` for legacy two-script rows.
+    pub tree_blob: Option<Vec<u8>>,
     /// Optional human label.
     pub label: Option<String>,
     /// Lium pod id.
@@ -790,6 +793,7 @@ mod tests {
             status: Stage::Queued,
             architecture_py: "a".into(),
             training_py: "t".into(),
+            tree_blob: None,
             label: None,
             pod_id: None,
             pod_provider: None,

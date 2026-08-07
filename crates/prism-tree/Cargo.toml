@@ -1,6 +1,6 @@
 [package]
-name = "prism-recipe"
-description = "Normative PRISM recipe: miner code contract, full data access (fineweb-edu pin), caps, baseline, embedded pod harness"
+name = "prism-tree"
+description = "PRISM miner source-tree delivery: caps, manifest, content-addressed tar blob, deterministic pod staging layout"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,12 +10,13 @@ publish = false
 
 [dependencies]
 hex = "0.4"
-prism-tree = { path = "../prism-tree" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

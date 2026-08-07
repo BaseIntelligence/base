@@ -102,6 +102,7 @@ fn row(
         status,
         architecture_py: arch.into(),
         training_py: train.into(),
+        tree_blob: None,
         label: None,
         pod_id: None,
         pod_provider: None,

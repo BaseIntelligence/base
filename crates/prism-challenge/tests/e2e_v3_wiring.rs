@@ -114,6 +114,7 @@ impl EvalJobBackend for CapBackend {
         _instance_id: &str,
         _architecture_py: &str,
         _training_py: &str,
+        _tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError> {
         Ok(RemoteExecResult {
             bpb: 0.0,
@@ -178,6 +179,7 @@ async fn insert_queued(store: &Arc<MemoryPrismStore>, id: &str) {
             status: Stage::Queued,
             architecture_py: req.architecture_py.clone(),
             training_py: req.training_py.clone(),
+            tree_blob: None,
             label: req.label,
             pod_id: None,
             pod_provider: None,

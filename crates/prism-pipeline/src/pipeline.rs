@@ -83,6 +83,7 @@ pub async fn run_eval_pipeline(
             &pod_id,
             &input.request.architecture_py,
             &input.request.training_py,
+            None,
         )
         .await;
 
