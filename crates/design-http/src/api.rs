@@ -16,7 +16,8 @@ use design_harness::{
 };
 use design_prompts::{load_prompt_set, prompt_set_digest, select_prompts_for_round};
 use design_store::{
-    DesignStore, HarnessRow, RoundAward, RunStage, RunState, StageEvent, StoreError, StorePatch,
+    DesignStore, HarnessRow, RoundAward, RunOrigin, RunStage, RunState, StageEvent, StoreError,
+    StorePatch,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,7 +25,8 @@ use sha2::{Digest, Sha256};
 use submission_gating::{GatingState, GatingStore, MetagraphCache};
 
 use design_challenge_task::{
-    round_id_at, round_secs, CHALLENGE_ID, DAILY_RUN_QUOTA, MIN_ANNOTATIONS_PER_PAIR, RUN_ID_DOMAIN,
+    manual_daily_run_quota, round_id_at, round_secs, scheduled_daily_run_cap, CHALLENGE_ID,
+    MIN_ANNOTATIONS_PER_PAIR, RUN_ID_DOMAIN,
 };
 
 /// Hook invoked after admin persists winners (score + leaf emit).
@@ -396,6 +398,7 @@ async fn post_harness(
         rid,
         st.netuid,
         epoch,
+        RunOrigin::Manual,
     )
     .await
     {
@@ -441,14 +444,21 @@ async fn post_harness(
 /// Schedule an active harness into `rid` (create missing queued runs).
 ///
 /// Idempotent: if runs for `(harness, round)` already exist, returns those ids.
-/// Honours daily quota and elimination cooldown. Used by submit (next round)
-/// and by the orchestrator (every open round).
+/// Honours the elimination cooldown and the daily ceiling **for `origin`**.
+/// Used by submit ([`RunOrigin::Manual`], next round) and by the orchestrator
+/// ([`RunOrigin::Scheduled`], every open round).
+///
+/// The two origins never share a budget: the organizer dispatches
+/// `rounds/day × prompts/round` runs to every registered harness, so charging
+/// that volume to the miner's anti-spam quota would lock an honest harness out
+/// of most of its own day.
 pub async fn schedule_harness_for_round(
     store: &dyn DesignStore,
     harness: &HarnessRow,
     rid: u64,
     netuid: u16,
     epoch: u64,
+    origin: RunOrigin,
 ) -> Result<Vec<String>, String> {
     if !harness.active {
         return Ok(vec![]);
@@ -473,7 +483,8 @@ pub async fn schedule_harness_for_round(
     let used = store
         .quota_get(&harness.miner_hotkey, &day)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .used(origin);
     if store
         .get_round(rid)
         .await
@@ -496,12 +507,18 @@ pub async fn schedule_harness_for_round(
     }
     let prompts = select_prompts_for_round(rid).map_err(|e| e.to_string())?;
     let mut run_ids: Vec<String> = Vec::new();
-    if used >= DAILY_RUN_QUOTA {
-        return Err("daily quota exceeded".into());
+    let cap = origin_daily_cap(origin);
+    // All-or-nothing: a round that can only afford part of its prompt set would
+    // leave the harness permanently short for that round (re-scheduling is a
+    // no-op once any run exists), so refuse instead of degrading it.
+    let needed = u32::try_from(prompts.len()).unwrap_or(u32::MAX);
+    if used.saturating_add(needed) > cap {
+        return Err(format!(
+            "daily {} run quota exceeded ({used}+{needed}/{cap})",
+            origin.as_str()
+        ));
     }
-    let remaining = DAILY_RUN_QUOTA.saturating_sub(used);
-    let n = (prompts.len() as u32).min(remaining);
-    for p in prompts.into_iter().take(n as usize) {
+    for p in prompts {
         let run_id = make_run_id(rid, &harness.id, &p.id);
         if store
             .get_run(&run_id)
@@ -539,10 +556,20 @@ pub async fn schedule_harness_for_round(
                 }),
             )
             .await;
-        let _ = store.quota_bump(&harness.miner_hotkey, &day, 1).await;
+        let _ = store
+            .quota_bump(&harness.miner_hotkey, &day, 1, origin)
+            .await;
         run_ids.push(run_id);
     }
     Ok(run_ids)
+}
+
+/// Daily ceiling that applies to `origin`.
+fn origin_daily_cap(origin: RunOrigin) -> u32 {
+    match origin {
+        RunOrigin::Manual => manual_daily_run_quota(),
+        RunOrigin::Scheduled => scheduled_daily_run_cap(),
+    }
 }
 
 fn make_run_id(round_id: u64, harness_id: &str, prompt_id: &str) -> String {
@@ -593,15 +620,34 @@ async fn list_harness(State(st): State<Arc<AppState>>, Query(q): Query<MinerQuer
 async fn get_quota(State(st): State<Arc<AppState>>, Path(hotkey): Path<String>) -> Response {
     let day = utc_day(now_secs());
     match st.store.quota_get(&hotkey, &day).await {
-        Ok(used) => Json(json!({
-            "miner_hotkey": hotkey,
-            "day": day,
-            "runs_used": used,
-            "limit": DAILY_RUN_QUOTA,
-        }))
-        .into_response(),
+        Ok(used) => Json(quota_json(&hotkey, &day, used)).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
+}
+
+/// Per-origin quota view shared by `/v1/quota/{hotkey}` and `/v1/miners`.
+///
+/// `runs_used` / `limit` stay the whole-day totals for existing clients;
+/// enforcement is the per-origin pair below them.
+pub(crate) fn quota_json(hotkey: &str, day: &str, used: design_store::QuotaUsage) -> Value {
+    let manual_limit = manual_daily_run_quota();
+    let scheduled_limit = scheduled_daily_run_cap();
+    json!({
+        "miner_hotkey": hotkey,
+        "day": day,
+        "runs_used": used.total,
+        "limit": manual_limit.saturating_add(scheduled_limit),
+        "manual": {
+            "runs_used": used.manual,
+            "limit": manual_limit,
+            "remaining": manual_limit.saturating_sub(used.manual),
+        },
+        "scheduled": {
+            "runs_used": used.scheduled(),
+            "limit": scheduled_limit,
+            "remaining": scheduled_limit.saturating_sub(used.scheduled()),
+        },
+    })
 }
 
 async fn get_prompts() -> Response {
@@ -943,9 +989,10 @@ struct WinnersBody {
 /// Operator escape hatch when a round opened with no/few runs (e.g. challenge
 /// restart). Idempotent for the current round: `schedule_harness_for_round`
 /// returns the existing run ids for a `(harness, round)` pair that already has
-/// runs, so a repeated call creates nothing and consumes no quota. Harnesses
-/// that fail scheduling (daily quota) are reported under `skipped`; one bad
-/// harness never blocks the rest.
+/// runs, so a repeated call creates nothing and consumes no quota. This is
+/// organizer work, so it draws on the scheduled cap, never on the miner's
+/// submission quota. Harnesses that fail scheduling are reported under
+/// `skipped`; one bad harness never blocks the rest.
 async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(r) = check_admin(&st, &headers) {
         return r;
@@ -959,7 +1006,16 @@ async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderM
     let mut scheduled = Vec::new();
     let mut skipped = Vec::new();
     for harness in &harnesses {
-        match schedule_harness_for_round(st.store.as_ref(), harness, rid, st.netuid, epoch).await {
+        match schedule_harness_for_round(
+            st.store.as_ref(),
+            harness,
+            rid,
+            st.netuid,
+            epoch,
+            RunOrigin::Scheduled,
+        )
+        .await
+        {
             Ok(run_ids) => scheduled.push(json!({
                 "harness_id": harness.id,
                 "miner_hotkey": harness.miner_hotkey,
@@ -1156,6 +1212,115 @@ mod tests {
         .await
     }
 
+    async fn schedule(
+        store: &dyn DesignStore,
+        harness: &HarnessRow,
+        rid: u64,
+        origin: RunOrigin,
+    ) -> Result<Vec<String>, String> {
+        schedule_harness_for_round(store, harness, rid, 100, 0, origin).await
+    }
+
+    fn harness_row(hotkey: &str, marker: &str) -> HarnessRow {
+        HarnessRow {
+            id: format!("harness-{marker}"),
+            miner_hotkey: hotkey.to_owned(),
+            agent_py: format!("def run(task, llm, out):\n    pass  # {marker}\n"),
+            pyproject_toml: "[project]\nname='x'\nversion='0.1.0'\n".into(),
+            extra_files: BTreeMap::new(),
+            active: true,
+            eliminated_until_round: 0,
+            created_at_ms: 0,
+        }
+    }
+
+    /// A harness that participates in every round of a UTC day must never be
+    /// quota-blocked: the organizer dispatches `rounds/day × prompts/round`
+    /// runs, which used to overrun a shared 10-run/day ceiling after ~3 rounds.
+    #[tokio::test]
+    async fn full_day_of_scheduled_rounds_is_never_quota_blocked() {
+        let (st, _g) = app_state(None);
+        let harness = harness_row(&hk(0xAA), "day");
+        st.store.insert_harness(&harness).await.unwrap();
+
+        let per_round = design_challenge_task::prompts_per_round();
+        let rounds = design_challenge_task::rounds_per_day_effective();
+        let base = round_id_at(now_secs());
+        let mut total = 0usize;
+        for i in 0..rounds {
+            let ids = schedule(st.store.as_ref(), &harness, base + i, RunOrigin::Scheduled)
+                .await
+                .unwrap_or_else(|e| panic!("round {i} of {rounds} refused: {e}"));
+            assert_eq!(ids.len(), per_round, "round {i} scheduled a partial set");
+            total += ids.len();
+        }
+        assert_eq!(
+            total,
+            usize::try_from(rounds).unwrap() * per_round,
+            "every round of the day must run all its prompts"
+        );
+
+        let used = st
+            .store
+            .quota_get(&hk(0xAA), &utc_day(now_secs()))
+            .await
+            .unwrap();
+        assert_eq!(usize::try_from(used.total).unwrap(), total);
+        assert_eq!(used.manual, 0, "organizer work is not miner spend");
+        assert!(used.scheduled() <= scheduled_daily_run_cap());
+    }
+
+    /// The miner-facing intake keeps a hard anti-spam ceiling, and burning it
+    /// leaves organizer-scheduled rounds untouched.
+    #[tokio::test]
+    async fn manual_submissions_stay_rate_limited() {
+        let (st, _g) = app_state(None);
+        let per_round = u32::try_from(design_challenge_task::prompts_per_round()).unwrap();
+        let cap = manual_daily_run_quota();
+        let base = round_id_at(now_secs());
+
+        let mut manual_runs = 0u32;
+        let mut blocked = None;
+        for i in 0..(cap / per_round + 2) {
+            // A fresh digest per attempt: the worst case for intake spam.
+            let harness = harness_row(&hk(0xAA), &format!("spam{i}"));
+            st.store.insert_harness(&harness).await.unwrap();
+            match schedule(
+                st.store.as_ref(),
+                &harness,
+                base + u64::from(i),
+                RunOrigin::Manual,
+            )
+            .await
+            {
+                Ok(ids) => manual_runs += u32::try_from(ids.len()).unwrap(),
+                Err(e) => {
+                    blocked = Some(e);
+                    break;
+                }
+            }
+        }
+        let err = blocked.expect("manual submissions must hit the anti-spam ceiling");
+        assert!(err.contains("manual"), "{err}");
+        assert!(
+            manual_runs <= cap,
+            "{manual_runs} manual runs exceeded {cap}"
+        );
+
+        // The spent manual budget must not touch the organizer's schedule.
+        let harness = harness_row(&hk(0xAA), "day");
+        st.store.insert_harness(&harness).await.unwrap();
+        let ids = schedule(
+            st.store.as_ref(),
+            &harness,
+            base + 100,
+            RunOrigin::Scheduled,
+        )
+        .await
+        .expect("scheduled rounds must survive an exhausted manual quota");
+        assert_eq!(ids.len(), design_challenge_task::prompts_per_round());
+    }
+
     #[tokio::test]
     async fn accepted_runs_target_next_round() {
         let (st, _g) = app_state(None);
@@ -1224,11 +1389,11 @@ mod tests {
         // Memory store has no delete — schedule a *later* round via the public helper.
         let later = rid + 1;
         let harness = st.store.get_harness(&harness_id).await.unwrap().unwrap();
-        let ids = schedule_harness_for_round(st.store.as_ref(), &harness, later, 100, 0)
+        let ids = schedule(st.store.as_ref(), &harness, later, RunOrigin::Scheduled)
             .await
             .unwrap();
         assert_eq!(ids.len(), design_challenge_task::prompts_per_round());
-        let again = schedule_harness_for_round(st.store.as_ref(), &harness, later, 100, 0)
+        let again = schedule(st.store.as_ref(), &harness, later, RunOrigin::Scheduled)
             .await
             .unwrap();
         assert_eq!(again, ids, "idempotent for the same round");
@@ -1415,9 +1580,14 @@ mod tests {
         let day = utc_day(now_secs());
         let used = st.store.quota_get(&hk(0xAA), &day).await.unwrap();
         assert_eq!(
-            usize::try_from(used).unwrap(),
+            usize::try_from(used.total).unwrap(),
             2 * design_challenge_task::prompts_per_round(),
             "next-round + current-round schedule only"
+        );
+        assert_eq!(
+            usize::try_from(used.manual).unwrap(),
+            design_challenge_task::prompts_per_round(),
+            "only the miner's own submission is charged to the manual quota"
         );
     }
 

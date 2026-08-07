@@ -14,6 +14,7 @@ mod store;
 
 pub use dbstore::DbDesignStore;
 pub use store::{
-    ArtifactPage, DesignStore, FinalScore, HarnessRow, MemoryDesignStore, PairRow, RatingRow,
-    RoundAward, RoundRow, RunStage, RunState, StageEvent, StoreError, StorePatch,
+    ArtifactPage, DesignStore, FinalScore, HarnessRow, MemoryDesignStore, PairRow, QuotaUsage,
+    RatingRow, RoundAward, RoundRow, RunOrigin, RunStage, RunState, StageEvent, StoreError,
+    StorePatch,
 };

@@ -18,7 +18,7 @@ pins without bumping `challenge_scoring_version`.
 | (S) | Sandbox hardening | ## 4. Sandbox hardening | `## 4. Sandbox hardening` |
 | (Z) | Sanitize rules | ## 5. Sanitize rules | `## 5. Sanitize rules` |
 | (V) | Viewer headers / CSP sandbox | ## 6. Viewer headers and CSP | `## 6. Viewer headers and CSP` |
-| (R) | Rounds 8_640s (10/day) + bank_v1 auto + quota 10/day | ## 7. Rounds and quotas | `## 7. Rounds and quotas` |
+| (R) | Rounds 8_640s (10/day) + bank_v1 auto + split manual/scheduled quota | ## 7. Rounds and quotas | `## 7. Rounds and quotas` |
 | (L) | Admin winners 1\|2 + rolling 10-round points share + AgenticReview | ## 8. Admin winners + agentic anti-cheat | `## 8. Admin winners + agentic anti-cheat` |
 | (X) | Elimination bottom 20% + 10-round cooldown | ## 9. Elimination | `## 9. Elimination` |
 | (D) | D24 exact-E participant set | ## 10. Declared participant set and `NoScore` reasons (D24) | `## 10. Declared participant set and` |
@@ -44,7 +44,9 @@ pins without bumping `challenge_scoring_version`.
 | rounds_per_day | `10 rounds` |
 | agent_run_timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` |
 | scoring_window | `SCORING_WINDOW_ROUNDS = 10` |
-| daily_quota | `DAILY_RUN_QUOTA = 10` |
+| daily_quota | `MANUAL_DAILY_RUN_QUOTA = 10` |
+| scheduled_quota | `DESIGN_SCHEDULED_DAILY_RUN_CAP` |
+| selfsim_excluded | `other hotkeys' prior art only` |
 | prompts_per_round | `3 prompts` |
 | bank_v1 | `bank_v1.json` |
 | agent_py | `agent.py` |

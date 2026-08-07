@@ -5,19 +5,19 @@
 //! `challenge_id = "design"`.
 
 #![forbid(unsafe_code)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::duration_suboptimal_units)]
-#![allow(clippy::map_unwrap_or)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::result_large_err)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![allow(clippy::duration_suboptimal_units, clippy::map_unwrap_or)]
+#![allow(clippy::cast_possible_wrap, clippy::result_large_err)]
 #![allow(clippy::case_sensitive_file_extension_comparisons)]
 #![allow(clippy::struct_field_names)]
 
 pub mod backfill;
+pub mod corpus;
 pub mod host_sim;
 mod orchestrator;
 pub mod score;
@@ -28,8 +28,10 @@ pub use challenge_common::{
     GatewayClient, GatewayClientConfig, LeafEmitError,
 };
 pub use design_challenge_task::{
-    agent_run_timeout_secs, prompts_per_round, round_id_at, round_secs, CHALLENGE_ID,
-    CHALLENGE_ID_BYTES, DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUND_SECS, SCORE_MAX, SCORING_VERSION,
+    agent_run_timeout_secs, daily_run_quota, manual_daily_run_quota, prompts_per_round,
+    round_id_at, round_secs, rounds_per_day_effective, scheduled_daily_run_cap,
+    scheduled_runs_per_day, CHALLENGE_ID, CHALLENGE_ID_BYTES, MANUAL_DAILY_RUN_QUOTA,
+    PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS, SCORE_MAX, SCORING_VERSION,
     SCORING_WINDOW_ROUNDS,
 };
 pub use design_http::{

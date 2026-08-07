@@ -17,6 +17,56 @@ pub enum FinalScore {
     NoScore(u8),
 }
 
+/// Who asked for a run to exist.
+///
+/// The two origins draw on separate daily ceilings: a miner cannot spam the
+/// intake, and the organizer's own round schedule can never exhaust the
+/// miner's submission budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOrigin {
+    /// Created by the miner's `POST /v1/harness`.
+    Manual,
+    /// Created by the organizer's round scheduler (or an operator requeue).
+    Scheduled,
+}
+
+impl RunOrigin {
+    /// Label for errors / logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Scheduled => "scheduled",
+        }
+    }
+}
+
+/// Daily sandbox-run counters for one `(miner hotkey, UTC day)`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuotaUsage {
+    /// Runs created across both origins.
+    pub total: u32,
+    /// Subset created by the miner's own submissions.
+    pub manual: u32,
+}
+
+impl QuotaUsage {
+    /// Runs the organizer's scheduler created.
+    #[must_use]
+    pub const fn scheduled(self) -> u32 {
+        self.total.saturating_sub(self.manual)
+    }
+
+    /// Runs already charged to `origin`.
+    #[must_use]
+    pub const fn used(self, origin: RunOrigin) -> u32 {
+        match origin {
+            RunOrigin::Manual => self.manual,
+            RunOrigin::Scheduled => self.scheduled(),
+        }
+    }
+}
+
 /// Run lifecycle (DB CHECK mirrors this list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -394,10 +444,16 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
         to_round: u64,
     ) -> Result<Vec<RoundAward>, StoreError>;
 
-    /// Quota get.
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError>;
-    /// Quota bump; returns new total.
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError>;
+    /// Daily run counters for `(miner, UTC day)`.
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError>;
+    /// Charge `bump` runs of `origin`; returns the new counters.
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError>;
 }
 
 /// In-memory store.
@@ -414,7 +470,7 @@ pub struct MemoryDesignStore {
     annotations: Mutex<Vec<(String, String, String, u64)>>,
     ratings: Mutex<HashMap<(u64, String), RatingRow>>,
     awards: Mutex<HashMap<u64, RoundAward>>,
-    quota: Mutex<HashMap<(String, String), u32>>,
+    quota: Mutex<HashMap<(String, String), QuotaUsage>>,
 }
 
 impl MemoryDesignStore {
@@ -1003,22 +1059,34 @@ impl DesignStore for MemoryDesignStore {
         Ok(out)
     }
 
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError> {
-        Ok(*self
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError> {
+        Ok(self
             .quota
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .get(&(miner.to_owned(), day.to_owned()))
-            .unwrap_or(&0))
+            .copied()
+            .unwrap_or_default())
     }
 
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError> {
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError> {
         let mut m = self
             .quota
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
-        let e = m.entry((miner.to_owned(), day.to_owned())).or_insert(0);
-        *e = e.saturating_add(bump);
+        let e = m
+            .entry((miner.to_owned(), day.to_owned()))
+            .or_insert_with(QuotaUsage::default);
+        e.total = e.total.saturating_add(bump);
+        if origin == RunOrigin::Manual {
+            e.manual = e.manual.saturating_add(bump);
+        }
         Ok(*e)
     }
 }
@@ -1055,6 +1123,34 @@ mod tests {
         assert!(s.claim_next_run(1).await.unwrap().is_none());
         let future = s.claim_next_run(5).await.unwrap().unwrap();
         assert_eq!(future.id, "r2");
-        assert_eq!(s.quota_bump("aa", "2026-08-04", 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn quota_counts_origins_separately() {
+        let s = MemoryDesignStore::new();
+        let day = "2026-08-04";
+        assert_eq!(s.quota_get("aa", day).await.unwrap(), QuotaUsage::default());
+
+        let after_manual = s.quota_bump("aa", day, 1, RunOrigin::Manual).await.unwrap();
+        assert_eq!(after_manual.total, 1);
+        assert_eq!(after_manual.manual, 1);
+        assert_eq!(after_manual.scheduled(), 0);
+
+        let after_sched = s
+            .quota_bump("aa", day, 3, RunOrigin::Scheduled)
+            .await
+            .unwrap();
+        assert_eq!(after_sched.total, 4);
+        assert_eq!(after_sched.manual, 1, "scheduled work is not miner spend");
+        assert_eq!(after_sched.scheduled(), 3);
+        assert_eq!(after_sched.used(RunOrigin::Manual), 1);
+        assert_eq!(after_sched.used(RunOrigin::Scheduled), 3);
+
+        // Buckets are per (hotkey, day).
+        assert_eq!(s.quota_get("bb", day).await.unwrap(), QuotaUsage::default());
+        assert_eq!(
+            s.quota_get("aa", "2026-08-05").await.unwrap(),
+            QuotaUsage::default()
+        );
     }
 }

@@ -9,7 +9,7 @@
 | Symptom | Likely cause | What to check |
 |---------|--------------|---------------|
 | `400` on `POST /v1/harness` | Invalid bundle | `agent.py` defines `run`, `pyproject.toml` non-empty, size limits |
-| Quota exhausted | Daily cap 10 | `GET /v1/quota/{hotkey}`; wait until next UTC day |
+| `409 schedule` "daily manual run quota exceeded" | Manual anti-spam cap (10/day) — being scheduled into rounds does **not** spend it | `GET /v1/quota/{hotkey}` → `manual.remaining`; wait until next UTC day |
 | `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | `GET /v1/runs/{id}/logs` phase `install`; fix `pyproject.toml` deps |
 | Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
 | External call refused (`403`) | Target is internal-blocklisted (metadata IP, loopback, RFC1918/VPC, control plane) | Call public endpoints only; egress is otherwise open |
