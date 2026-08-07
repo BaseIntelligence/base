@@ -5,9 +5,10 @@
 //!     (append-only first-write-wins leaves + acceptance-epoch strict match);
 //! (b) a submission accepted in epoch X but finalized in X+k never scored.
 //!
-//! Post-fix semantics: one D24-complete set per chain epoch, batch = every
-//! row finalized since the previous emitted epoch, exactly-once via the
-//! `emitted_epoch` watermark + emit cursor.
+//! Post-fix semantics: one D24-complete set per chain epoch, fresh batch =
+//! every row finalized since the previous emitted epoch (exactly-once via
+//! the `emitted_epoch` watermark + emit cursor), unioned with active
+//! positive scores so winners keep weight until a better score supersedes.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -152,7 +153,8 @@ async fn independent_same_epoch_scorers_both_land() {
 }
 
 /// (b) A submission accepted in epoch X but finalized in X+3 lands in the
-/// next boundary's set (leaf epoch ≠ acceptance epoch), exactly once.
+/// next boundary's set (leaf epoch ≠ acceptance epoch). Outbox assignment
+/// is exactly-once; the positive score then carries into later epochs.
 #[tokio::test]
 async fn late_finalize_scores_exactly_once() {
     let store = Arc::new(MemoryPrismStore::new());
@@ -178,17 +180,17 @@ async fn late_finalize_scores_exactly_once() {
         "stamped with the emit epoch"
     );
 
-    // Next epoch: the row is already emitted — it must NOT score again.
+    // Next epoch: outbox is empty (already assigned), but the positive score carries.
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8 emits");
     assert_eq!(s8.batch, 0, "no new finals since epoch 7");
-    assert_not_attempted(&leaf_soa(&s8, 0xAA));
+    assert_score(&leaf_soa(&s8, 0xAA), 500_000);
     assert_eq!(store.emit_batch(541, 7).await.unwrap().len(), 1);
     assert!(store.emit_batch(541, 8).await.unwrap().is_empty());
     assert!(store.pending_emit_epochs(541).await.unwrap().is_empty());
 }
 
-/// No double-emission: a same-epoch tick is a no-op, and a later epoch's
-/// batch contains only rows finalized since (never a replay of old scores).
+/// Outbox assignment is exactly-once per finalize; positive scores still
+/// carry into later epochs alongside any new finals (lattice max).
 #[tokio::test]
 async fn no_double_emission_across_epochs() {
     let store = Arc::new(MemoryPrismStore::new());
@@ -212,7 +214,7 @@ async fn no_double_emission_across_epochs() {
         "same epoch is a no-op"
     );
 
-    // A second scorer finalizes during epoch 7; only that row is in the next batch.
+    // A second scorer finalizes during epoch 7; only that row is freshly assigned.
     store
         .insert_queued(&scored_row(
             "sub-b",
@@ -223,11 +225,50 @@ async fn no_double_emission_across_epochs() {
         .await
         .unwrap();
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8 emits");
-    assert_eq!(s8.batch, 1, "only the new row");
-    assert_not_attempted(&leaf_soa(&s8, 0xAA));
+    assert_eq!(s8.batch, 1, "only the new row is freshly assigned");
+    assert_score(&leaf_soa(&s8, 0xAA), 100_000);
     assert_score(&leaf_soa(&s8, 0xBB), 900_000);
     assert_eq!(store.emit_batch(541, 7).await.unwrap().len(), 1);
     assert_eq!(store.emit_batch(541, 8).await.unwrap().len(), 1);
+}
+
+/// Prod incident regression: winner emitted at epoch N, epoch N+1 seals with
+/// only a Score(0) reject — winner weights must still appear (no burn).
+#[tokio::test]
+async fn positive_score_carries_when_next_epoch_is_reject_only() {
+    let store = Arc::new(MemoryPrismStore::new());
+    store
+        .insert_queued(&scored_row(
+            "winner",
+            &hk(0xAA),
+            24353,
+            FinalScore::Score(800_000),
+        ))
+        .await
+        .unwrap();
+
+    let em = dry_emitter(&store);
+    let exp = expected(&[0xAA, 0xBB]);
+    let s = em.tick(24353, &exp).await.unwrap().expect("epoch 24353");
+    assert_eq!(s.batch, 1);
+    assert_score(&leaf_soa(&s, 0xAA), 800_000);
+
+    store
+        .insert_queued(&scored_row(
+            "reject",
+            &hk(0xBB),
+            24354,
+            FinalScore::Score(0),
+        ))
+        .await
+        .unwrap();
+    let s2 = em.tick(24354, &exp).await.unwrap().expect("epoch 24354");
+    assert_eq!(s2.batch, 1, "reject is freshly assigned once");
+    assert_score(&leaf_soa(&s2, 0xAA), 800_000);
+    assert_score(&leaf_soa(&s2, 0xBB), 0);
+    assert_eq!(store.emit_batch(541, 24353).await.unwrap().len(), 1);
+    assert_eq!(store.emit_batch(541, 24354).await.unwrap().len(), 1);
+    assert_eq!(store.active_score_rows(541).await.unwrap().len(), 1);
 }
 
 /// Competition credit semantics (prism-registry) are preserved through the
@@ -328,7 +369,8 @@ async fn crash_replays_sticky_assignment() {
     assert!(store.pending_emit_epochs(541).await.unwrap().is_empty());
     assert_eq!(s.epoch, 11);
     assert_eq!(s.batch, 0, "the backlog was already assigned to epoch 9");
-    assert_not_attempted(&leaf_soa(&s, 0xAA));
+    // Active positive score still carries into the live epoch after recovery.
+    assert_score(&leaf_soa(&s, 0xAA), 700_000);
     // The epoch-9 replay kept the score (sticky batch content).
     assert_eq!(store.emit_batch(541, 9).await.unwrap().len(), 1);
 }

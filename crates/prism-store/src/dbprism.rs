@@ -356,6 +356,10 @@ impl PrismStore for DbPrismStore {
         .await
     }
 
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError> {
+        crate::emit::active_score_rows(&self.pool, i32::from(netuid)).await
+    }
+
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
         crate::emit::emit_cursor(&self.pool, i32::from(netuid)).await
     }

@@ -311,6 +311,12 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// after a crash between submit and cursor advance).
     async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError>;
 
+    /// Positive lattice scores (`Score(v)` with `v > 0`) for competition
+    /// carry-forward across epochs. Outbox assignment stays exactly-once;
+    /// these rows are re-read every tick so a prior winner is not burned
+    /// when a later epoch's fresh batch is empty or reject-only.
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError>;
+
     /// Highest leaf epoch whose set fully landed (`None` = never emitted).
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError>;
 
@@ -633,6 +639,25 @@ impl PrismStore for MemoryPrismStore {
             .collect())
     }
 
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError> {
+        let rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(rows
+            .iter()
+            .filter(|r| r.netuid == netuid)
+            .filter_map(|r| match &r.final_score {
+                Some(FinalScore::Score(v)) if *v > 0 => Some(EpochScoreRow {
+                    miner_hotkey: r.miner_hotkey.clone(),
+                    arch_id: r.arch_id.clone(),
+                    final_score: FinalScore::Score(*v),
+                }),
+                _ => None,
+            })
+            .collect())
+    }
+
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
         Ok(self
             .cursors
@@ -936,6 +961,8 @@ mod tests {
         assert_eq!(s.pending_emit_epochs(541).await.unwrap(), vec![9]);
         s.set_emit_cursor(541, 9).await.unwrap();
         assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
+        // Positive scores remain active for carry after outbox assignment.
+        assert_eq!(s.active_score_rows(541).await.unwrap().len(), 1);
         // Monotonic: a stale cursor write never regresses.
         s.set_emit_cursor(541, 4).await.unwrap();
         assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
@@ -943,6 +970,11 @@ mod tests {
         // Unscored rows never enter a batch.
         s.insert_queued(&row("b", "22")).await.unwrap();
         assert!(s.assign_emit_batch(541, 10).await.unwrap().is_empty());
+        // Score(0) rejects are not active carry rows.
+        let mut zero = row("c", "33");
+        zero.final_score = Some(FinalScore::Score(0));
+        s.insert_queued(&zero).await.unwrap();
+        assert_eq!(s.active_score_rows(541).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -7,6 +7,8 @@
 //! Outbox contract (see `docs/PRISM.md` § Leaf emission):
 //! - [`assign_emit_batch`] stamps every scored-not-yet-emitted row with the
 //!   target leaf epoch and returns the batch (sticky assignment);
+//! - [`active_score_rows`] returns every positive lattice score for the netuid
+//!   so the emitter can re-include the live champion set each epoch (carry);
 //! - the emitter submits one D24-complete set for that epoch, then advances
 //!   [`set_emit_cursor`];
 //! - [`pending_emit_epochs`] finds assigned-but-incomplete epochs so a crash
@@ -74,6 +76,28 @@ pub(crate) async fn emit_batch(
     )
     .bind(netuid)
     .bind(epoch)
+    .fetch_all(pool)
+    .await
+    .map_err(backend)?;
+    Ok(rows_to_epoch(rows))
+}
+
+/// Positive lattice scores still eligible for epoch-close competition carry.
+///
+/// `Score(0)` rejects and `NoScore` absences are excluded — they must not
+/// displace a prior valid winner when an epoch's fresh outbox is empty or
+/// burn-only. Competition aggregation takes `max` over the union of the
+/// fresh batch and this set, so a better later score supersedes naturally.
+pub(crate) async fn active_score_rows(
+    pool: &PgPool,
+    netuid: i32,
+) -> Result<Vec<EpochScoreRow>, StoreError> {
+    let rows: Vec<EmitSqlRow> = sqlx::query_as(
+        "SELECT miner_hotkey, arch_id, kind, score, absence_reason \
+         FROM prism_submission \
+         WHERE netuid = $1 AND kind = 'score' AND score > 0",
+    )
+    .bind(netuid)
     .fetch_all(pool)
     .await
     .map_err(backend)?;
