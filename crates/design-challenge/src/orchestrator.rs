@@ -1085,7 +1085,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     async fn emit_leaves(&self) -> Result<(), String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        let epoch = chain::current_epoch_pre_run_coinbase(&state, state.current_block);
+        // Label with the *current* chain epoch (see the prism emitter for the
+        // full rationale): the expected set is pinned at `last_epoch_block`,
+        // so the label and the covered metagraph must refer to the same epoch
+        // or D24 exact-match against the other challenge 409s under churn.
+        let epoch = state.subnet_epoch_index;
         let block_hash = self
             .chain
             .block_hash(state.last_epoch_block)

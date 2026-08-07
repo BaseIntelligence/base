@@ -65,10 +65,23 @@ struct Args {
     #[arg(long)]
     block_b: Option<u64>,
 
+    /// Read the expected participant set (one hex hotkey per line) from a
+    /// file instead of the chain. Requires `--block-b` (used as the seal
+    /// block). Rate-limit-proof operator rescue path.
+    #[arg(long)]
+    expected_csv: Option<PathBuf>,
+
     /// Emit all `NoScore` leaves so aggregation burns 100% to uid 0.
     /// Prefer this on mainnet when sealing without real challenge scores.
     #[arg(long)]
     burn: bool,
+
+    /// Explicit `HOTKEY_HEX:SCORE` leaf (repeatable); every other participant
+    /// gets `NoScore(NotAttempted)`. Operator rescue path: re-post a corrected
+    /// scored set for an epoch without waiting on the challenge emitter (e.g.
+    /// after an anti-cheat false positive is overridden by the operator).
+    #[arg(long = "score", value_name = "HOTKEY_HEX:SCORE")]
+    score_overrides: Vec<String>,
 }
 
 #[tokio::main]
@@ -113,15 +126,33 @@ fn load_tip_meta(args: &Args) -> Result<TipMeta, String> {
     Ok(TipMeta { tip, expected })
 }
 
+fn parse_score_override(raw: &str) -> Result<([u8; KEY_LEN], u64), String> {
+    let (hk_hex, value) = raw
+        .split_once(':')
+        .ok_or_else(|| format!("--score {raw:?}: want HOTKEY_HEX:SCORE"))?;
+    let hk_bytes = hex::decode(hk_hex).map_err(|e| format!("--score hotkey hex: {e}"))?;
+    let hk: [u8; KEY_LEN] = hk_bytes
+        .try_into()
+        .map_err(|_| format!("--score hotkey length (want {KEY_LEN} bytes)"))?;
+    let value: u64 = value
+        .parse()
+        .map_err(|e| format!("--score value {value:?}: {e}"))?;
+    Ok((hk, value))
+}
+
 fn score_map(
     expected: &BTreeSet<[u8; KEY_LEN]>,
     burn: bool,
+    override_values: &BTreeMap<[u8; KEY_LEN], u64>,
 ) -> BTreeMap<[u8; KEY_LEN], ScoreOrAbsence> {
     let mut scores = BTreeMap::new();
     for (i, hk) in expected.iter().enumerate() {
         // Burn path: all absence → aggregation sinks 100% to uid 0.
         // Default smoke: mix score + absence so the seal path is not score-only.
-        let soa = if burn || i != 0 {
+        // Operator override: exactly the listed hotkeys score, rest NoScore.
+        let soa = if let Some(value) = override_values.get(hk) {
+            ScoreOrAbsence::Score { value: *value }
+        } else if !override_values.is_empty() || burn || i != 0 {
             ScoreOrAbsence::NoScore {
                 reason: NoScoreReasonCode::NotAttempted,
             }
@@ -193,6 +224,26 @@ async fn admin_seal_and_check_latest(
     Ok(())
 }
 
+fn load_expected_csv(path: &std::path::Path, tip: u64) -> Result<TipMeta, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("expected csv read: {e}"))?;
+    let mut expected = BTreeSet::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let bytes = hex::decode(line).map_err(|e| format!("expected csv line {}: {e}", n + 1))?;
+        let arr: [u8; KEY_LEN] = bytes
+            .try_into()
+            .map_err(|_| format!("expected csv line {}: want {KEY_LEN} bytes", n + 1))?;
+        expected.insert(arr);
+    }
+    if expected.is_empty() {
+        return Err("expected csv: empty participant set".into());
+    }
+    Ok(TipMeta { tip, expected })
+}
+
 async fn run() -> Result<(), String> {
     let args = Args::parse();
     let sk = load_challenge_secret(&args.challenge_sk).map_err(|e| e.to_string())?;
@@ -204,16 +255,39 @@ async fn run() -> Result<(), String> {
         args.gateway
     );
 
-    let TipMeta { tip, expected } = load_tip_meta(&args)?;
+    let TipMeta { tip, expected } = if let Some(csv) = &args.expected_csv {
+        let block_b = args
+            .block_b
+            .ok_or("--expected-csv requires --block-b (used as the seal block)")?;
+        load_expected_csv(csv, block_b)?
+    } else {
+        load_tip_meta(&args)?
+    };
     let epoch = args.epoch.unwrap_or(8_000_000 + tip % 1_000_000);
     eprintln!(
         "weights-smoke: tip={tip} epoch={epoch} participants={}",
         expected.len()
     );
 
-    let scores = score_map(&expected, args.burn);
+    let mut override_values = BTreeMap::new();
+    for raw in &args.score_overrides {
+        let (hk, value) = parse_score_override(raw)?;
+        if !expected.contains(&hk) {
+            return Err(format!(
+                "--score hotkey {raw:?} is not in the metagraph at tip={tip}"
+            ));
+        }
+        override_values.insert(hk, value);
+    }
+    let scores = score_map(&expected, args.burn, &override_values);
     if args.burn {
         eprintln!("weights-smoke: burn mode (all NoScore → uid0)");
+    }
+    if !override_values.is_empty() {
+        eprintln!(
+            "weights-smoke: score overrides ({} hotkeys, rest NoScore)",
+            override_values.len()
+        );
     }
     let leaves = emit_signed_leaf_set(&sk, args.challenge_id.as_bytes(), epoch, &expected, &scores)
         .map_err(|e| e.to_string())?;

@@ -440,3 +440,24 @@ async fn s4_http_bundle_routes_and_weights_latest() {
 
     let _ = shutdown.send(());
 }
+
+#[test]
+fn s5_latest_epoch_prefers_chain_scale_over_smoke_range() {
+    // Interim burn seals live at block-scale epochs (>= SMOKE_EPOCH_FLOOR);
+    // a real chain-epoch bundle must outrank them once it exists, while a
+    // smoke-only store still serves the freshest burn bundle.
+    let store = MemoryBundleStore::new();
+    store.put_if_absent(8_700_001, vec![0xA1]);
+    store.put_if_absent(8_700_002, vec![0xA2]);
+    assert_eq!(store.latest_epoch(), Some(8_700_002));
+    store.put_if_absent(24_354, vec![0xB1]);
+    assert_eq!(store.latest_epoch(), Some(24_354));
+    store.put_if_absent(8_700_003, vec![0xA3]);
+    assert_eq!(
+        store.latest_epoch(),
+        Some(24_354),
+        "a newer burn seal must not shadow the real chain-epoch bundle"
+    );
+    store.put_if_absent(24_355, vec![0xB2]);
+    assert_eq!(store.latest_epoch(), Some(24_355));
+}

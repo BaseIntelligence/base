@@ -30,7 +30,10 @@ pub use storage::{
 };
 pub use tlock::encrypt_commit;
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use parity_scale_codec::Encode;
 
@@ -58,7 +61,31 @@ const DEFAULT_WEIGHTS_RATE_LIMIT: u64 = 100;
 /// included in a block but never advances `LastUpdate`.
 const WEIGHT_CONFIRM_BLOCKS: u64 = 4;
 /// Poll interval while waiting for weight-submit dispatch confirmation.
-const WEIGHT_CONFIRM_POLL: std::time::Duration = std::time::Duration::from_secs(4);
+const WEIGHT_CONFIRM_POLL: Duration = Duration::from_secs(4);
+/// How long a successful [`LiveChainClient::metagraph_at`] snapshot is reused
+/// for the same `(netuid, block_hash)` before the next bulk RPC refresh.
+///
+/// Emitters and sealers pin the epoch-start metagraph for ~72 minutes; a
+/// 15-minute TTL collapses per-tick `state_getKeysPaged` /
+/// `state_queryStorageAt` storms on public Finney RPCs without changing the
+/// bulk enumeration path.
+const METAGRAPH_CACHE_TTL: Duration = Duration::from_mins(15);
+
+/// One cached metagraph snapshot keyed by `(netuid, block_hash)`.
+#[derive(Debug, Clone)]
+struct CachedMetagraph {
+    fetched_at: Instant,
+    metagraph: Metagraph,
+}
+
+/// In-process TTL cache for [`LiveChainClient::metagraph_at`].
+///
+/// The mutex is held across a cache-miss refresh so concurrent callers for the
+/// same key share a single bulk RPC (no thundering herd).
+#[derive(Debug, Default)]
+struct MetagraphCache {
+    entries: HashMap<(u16, [u8; 32]), CachedMetagraph>,
+}
 
 /// Live chain client with sr25519 signed extrinsic submission.
 pub struct LiveChainClient {
@@ -67,6 +94,9 @@ pub struct LiveChainClient {
     spec_version: u32,
     tx_version: u32,
     signing_key: Option<[u8; 32]>,
+    metagraph_cache: Mutex<MetagraphCache>,
+    /// Overrideable for tests; production always uses [`METAGRAPH_CACHE_TTL`].
+    metagraph_cache_ttl: Duration,
 }
 
 impl std::fmt::Debug for LiveChainClient {
@@ -103,7 +133,56 @@ impl LiveChainClient {
             spec_version: SPEC_VERSION,
             tx_version: TRANSACTION_VERSION,
             signing_key: None,
+            metagraph_cache: Mutex::new(MetagraphCache::default()),
+            metagraph_cache_ttl: METAGRAPH_CACHE_TTL,
         })
+    }
+
+    /// Override the metagraph cache TTL (tests only).
+    #[cfg(test)]
+    pub fn set_metagraph_cache_ttl(&mut self, ttl: Duration) {
+        self.metagraph_cache_ttl = ttl;
+    }
+
+    /// Fetch the metagraph at `block_hash`, serving from the in-process TTL
+    /// cache on hit. On miss/expiry runs the bulk `Keys` enumeration path
+    /// once while holding the cache lock so concurrent waiters reuse it.
+    fn metagraph_at_cached(&self, block_hash: &[u8; 32]) -> Result<Metagraph, ChainError> {
+        let key = (self.netuid, *block_hash);
+        let ttl = self.metagraph_cache_ttl;
+        let mut cache = self
+            .metagraph_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(hit) = cache.entries.get(&key) {
+            if hit.fetched_at.elapsed() < ttl {
+                return Ok(hit.metagraph.clone());
+            }
+        }
+        let mg = self.fetch_metagraph_bulk(block_hash)?;
+        cache.entries.insert(
+            key,
+            CachedMetagraph {
+                fetched_at: Instant::now(),
+                metagraph: mg.clone(),
+            },
+        );
+        Ok(mg)
+    }
+
+    /// Bulk metagraph read (no cache). Kept separate so the cache path can
+    /// hold the mutex across the refresh without recursion.
+    fn fetch_metagraph_bulk(&self, block_hash: &[u8; 32]) -> Result<Metagraph, ChainError> {
+        let netuid = self.netuid;
+        // A zero hash means "tip"; callers that do not track a block pass it.
+        let at = if block_hash == &[0_u8; 32] {
+            None
+        } else {
+            Some(block_hash)
+        };
+        let keys = self.enumerate_hotkeys(netuid, at)?;
+        let owner = self.read_owner_hotkey(netuid, at)?;
+        Ok(storage::decode_metagraph(keys, owner, netuid))
     }
 
     /// Connect and load a signing key from a file (32 raw bytes or 64 hex chars).
@@ -516,16 +595,7 @@ impl ChainClient for LiveChainClient {
     }
 
     fn metagraph_at(&self, block_hash: &[u8; 32]) -> Result<Metagraph, ChainError> {
-        let netuid = self.netuid;
-        // A zero hash means "tip"; callers that do not track a block pass it.
-        let at = if block_hash == &[0_u8; 32] {
-            None
-        } else {
-            Some(block_hash)
-        };
-        let keys = self.enumerate_hotkeys(netuid, at)?;
-        let owner = self.read_owner_hotkey(netuid, at)?;
-        Ok(storage::decode_metagraph(keys, owner, netuid))
+        self.metagraph_at_cached(block_hash)
     }
 
     fn subnet_owner_hotkey(&self, netuid: u16) -> Result<Vec<u8>, ChainError> {
