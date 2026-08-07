@@ -1,63 +1,63 @@
 {
-  "commit_sha": "0f42d63c4b0fb3636e6788024d623ab68ce16869",
+  "commit_sha": "4608b979ee5e0020b5e7060a098aa865a73207bf",
   "env": "staging",
   "previous": {
-    "commit_sha": "0f42d63c4b0fb3636e6788024d623ab68ce16869",
+    "commit_sha": "4608b979ee5e0020b5e7060a098aa865a73207bf",
     "services": {
       "design-challenge": {
-        "digest": "sha256:a73bcaadbc10b50deaeba6722d20330f7eca65661a5cdbf9485faa856a5803c4",
-        "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:a73bcaadbc10b50deaeba6722d20330f7eca65661a5cdbf9485faa856a5803c4",
+        "digest": "sha256:4bc029e6971de9e0819dc2cb6f328376aa6e51d33cda65458eff290390cd4552",
+        "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:4bc029e6971de9e0819dc2cb6f328376aa6e51d33cda65458eff290390cd4552",
         "repository": "ghcr.io/baseintelligence/base/design-challenge"
       },
       "gateway": {
-        "digest": "sha256:28725a1250eda045c3c01f49185bb4841d786627507c83b5eb070d1ed9ddca21",
-        "image": "ghcr.io/baseintelligence/base/gateway@sha256:28725a1250eda045c3c01f49185bb4841d786627507c83b5eb070d1ed9ddca21",
+        "digest": "sha256:8a7bd29472f1966b51ddcfef7b50033c087ff8c9f913d3dc3bbc93dc8513dfce",
+        "image": "ghcr.io/baseintelligence/base/gateway@sha256:8a7bd29472f1966b51ddcfef7b50033c087ff8c9f913d3dc3bbc93dc8513dfce",
         "repository": "ghcr.io/baseintelligence/base/gateway"
       },
       "prism-challenge": {
-        "digest": "sha256:90037f7db5d6f97d5e97dcfaf6142b8d75f45bb03689f59cc7caf2399ab66f48",
-        "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:90037f7db5d6f97d5e97dcfaf6142b8d75f45bb03689f59cc7caf2399ab66f48",
+        "digest": "sha256:95e814571153b9faa679860cb053c9dd654afbf2db482c4892c95438728a9fbb",
+        "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:95e814571153b9faa679860cb053c9dd654afbf2db482c4892c95438728a9fbb",
         "repository": "ghcr.io/baseintelligence/base/prism-challenge"
       },
       "updater": {
-        "digest": "sha256:f7a865fa5f560a12e8a4f5ea45eafea4ee0fdc408662090643dbdb612207c234",
-        "image": "ghcr.io/baseintelligence/base/updater@sha256:f7a865fa5f560a12e8a4f5ea45eafea4ee0fdc408662090643dbdb612207c234",
+        "digest": "sha256:980b9699435546e00253bca8c7ce1d503d4188e4af0fee333a51ec2d4c06eb2e",
+        "image": "ghcr.io/baseintelligence/base/updater@sha256:980b9699435546e00253bca8c7ce1d503d4188e4af0fee333a51ec2d4c06eb2e",
         "repository": "ghcr.io/baseintelligence/base/updater"
       },
       "validator": {
-        "digest": "sha256:33988faf22843c0f1da7f68f8cef992100a59b6ad92f20f258bd86976410162f",
-        "image": "ghcr.io/baseintelligence/base/validator@sha256:33988faf22843c0f1da7f68f8cef992100a59b6ad92f20f258bd86976410162f",
+        "digest": "sha256:4e150284facf3fe4f932923be27b3f9d5fb8cd47c325a6edc40bf26f8ab150dc",
+        "image": "ghcr.io/baseintelligence/base/validator@sha256:4e150284facf3fe4f932923be27b3f9d5fb8cd47c325a6edc40bf26f8ab150dc",
         "repository": "ghcr.io/baseintelligence/base/validator"
       }
     },
-    "updated_at": "2026-08-07T11:49:00Z"
+    "updated_at": "2026-08-07T13:41:28Z"
   },
   "services": {
     "design-challenge": {
-      "digest": "sha256:4bc029e6971de9e0819dc2cb6f328376aa6e51d33cda65458eff290390cd4552",
-      "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:4bc029e6971de9e0819dc2cb6f328376aa6e51d33cda65458eff290390cd4552",
+      "digest": "sha256:ac9a39d6bca467c92ad6bc3ddfd5b8ac526264de26d7244f1acd04a0388ea35d",
+      "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:ac9a39d6bca467c92ad6bc3ddfd5b8ac526264de26d7244f1acd04a0388ea35d",
       "repository": "ghcr.io/baseintelligence/base/design-challenge"
     },
     "gateway": {
-      "digest": "sha256:28725a1250eda045c3c01f49185bb4841d786627507c83b5eb070d1ed9ddca21",
-      "image": "ghcr.io/baseintelligence/base/gateway@sha256:28725a1250eda045c3c01f49185bb4841d786627507c83b5eb070d1ed9ddca21",
+      "digest": "sha256:8a7bd29472f1966b51ddcfef7b50033c087ff8c9f913d3dc3bbc93dc8513dfce",
+      "image": "ghcr.io/baseintelligence/base/gateway@sha256:8a7bd29472f1966b51ddcfef7b50033c087ff8c9f913d3dc3bbc93dc8513dfce",
       "repository": "ghcr.io/baseintelligence/base/gateway"
     },
     "prism-challenge": {
-      "digest": "sha256:90037f7db5d6f97d5e97dcfaf6142b8d75f45bb03689f59cc7caf2399ab66f48",
-      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:90037f7db5d6f97d5e97dcfaf6142b8d75f45bb03689f59cc7caf2399ab66f48",
+      "digest": "sha256:95e814571153b9faa679860cb053c9dd654afbf2db482c4892c95438728a9fbb",
+      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:95e814571153b9faa679860cb053c9dd654afbf2db482c4892c95438728a9fbb",
       "repository": "ghcr.io/baseintelligence/base/prism-challenge"
     },
     "updater": {
-      "digest": "sha256:f7a865fa5f560a12e8a4f5ea45eafea4ee0fdc408662090643dbdb612207c234",
-      "image": "ghcr.io/baseintelligence/base/updater@sha256:f7a865fa5f560a12e8a4f5ea45eafea4ee0fdc408662090643dbdb612207c234",
+      "digest": "sha256:980b9699435546e00253bca8c7ce1d503d4188e4af0fee333a51ec2d4c06eb2e",
+      "image": "ghcr.io/baseintelligence/base/updater@sha256:980b9699435546e00253bca8c7ce1d503d4188e4af0fee333a51ec2d4c06eb2e",
       "repository": "ghcr.io/baseintelligence/base/updater"
     },
     "validator": {
-      "digest": "sha256:33988faf22843c0f1da7f68f8cef992100a59b6ad92f20f258bd86976410162f",
-      "image": "ghcr.io/baseintelligence/base/validator@sha256:33988faf22843c0f1da7f68f8cef992100a59b6ad92f20f258bd86976410162f",
+      "digest": "sha256:4e150284facf3fe4f932923be27b3f9d5fb8cd47c325a6edc40bf26f8ab150dc",
+      "image": "ghcr.io/baseintelligence/base/validator@sha256:4e150284facf3fe4f932923be27b3f9d5fb8cd47c325a6edc40bf26f8ab150dc",
       "repository": "ghcr.io/baseintelligence/base/validator"
     }
   },
-  "updated_at": "2026-08-07T11:49:00Z"
+  "updated_at": "2026-08-07T13:41:28Z"
 }
