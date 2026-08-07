@@ -158,9 +158,22 @@ Screenshots only: `GET /v1/view/{run_id}/index.png` returns the full-page PNG
 screenshot the orchestrator captures right after sanitize. Produced HTML is
 never served — `.html` requests return `410 Gone` (the gateway still wraps
 view responses in a CSP `sandbox` (no scripts) lockdown as defense in depth).
-Your pages stay static HTML + inline CSS (`img` may use `data:`/`https:`,
-fonts `data:`/`https:`) so the headless capture renders them faithfully.
-`GET /v1/runs/{id}/pages` stays available for page metadata.
+Your pages stay static HTML + **embedded** CSS (`<style>` blocks and/or inline
+`style=`) so the headless capture renders them faithfully. External
+`<link rel=stylesheet>` (Tailwind CDN, Google Fonts CSS, etc.) is stripped by
+sanitize — screenshots will look unstyled if that was your only CSS. Prefer
+system font stacks over `@import` font CSS (`@import` rules are removed).
+`img` may use `data:` / `https:`. `GET /v1/runs/{id}/pages` stays available for
+page metadata.
+
+### Why a run is rejected / scored zero
+
+| Outcome | What it means |
+|---------|----------------|
+| `rejected` + `near_identical_harness_copy` / `ast_architecture_copy` | Pre-LLM copy gate: your harness is a byte/AST copy of an **earlier** miner harness (baseline starter is OK; copying another miner is not) |
+| `scored` with agentic `cheat` / `suspicious` | LLM anti-cheat found a listed cheat pattern (same Score(0); not admin-eligible) |
+| `failed` + harness / install / timeout | Agent crashed, timed out, or infra exhausted retries — check `/events` + `/logs` |
+| Missing required pages | Bundle must include `index.html`, `pricing.html`, `components.html` |
 
 ## Useful routes
 

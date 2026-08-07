@@ -117,19 +117,54 @@ fn rewrite_body_wrapper(html: &str) -> String {
     re_close.replace_all(&with_open, "</div>").into_owned()
 }
 
+/// True when `css` (already lowercased) contains the IE-only `behavior:`
+/// property, not a suffix like `scroll-behavior:`.
+fn has_ie_behavior_property(lower: &str) -> bool {
+    let mut start = 0;
+    while let Some(rel) = lower[start..].find("behavior:") {
+        let abs = start + rel;
+        if abs == 0 {
+            return true;
+        }
+        let prev = lower.as_bytes()[abs - 1];
+        // Property names may include `-` / `_` / alphanumerics (`scroll-behavior`).
+        if prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_' {
+            start = abs + "behavior:".len();
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 /// Filter dangerous CSS constructs from a style attribute / block.
+///
+/// Soft-strips `@import` rules (keeps the rest of the block). Hard-nukes the
+/// whole input for XSS-prone constructs (`expression(`, `url(javascript:`,
+/// IE `behavior:`, `-moz-binding`). `scroll-behavior:` is presentation CSS
+/// and must not match the IE `behavior:` check.
 #[must_use]
 pub fn filter_css(css: &str) -> (String, bool) {
-    let lower = css.to_ascii_lowercase();
-    let bad = lower.contains("@import")
-        || lower.contains("expression(")
+    let mut stripped = false;
+    let mut out = css.to_owned();
+    if out.to_ascii_lowercase().contains("@import") {
+        if let Ok(re) = Regex::new(r"(?i)@import[^;]*;?") {
+            let next = re.replace_all(&out, "");
+            if next.as_ref() != out {
+                stripped = true;
+                out = next.into_owned();
+            }
+        }
+    }
+    let lower = out.to_ascii_lowercase();
+    let hard_bad = lower.contains("expression(")
         || lower.contains("url(javascript:")
-        || lower.contains("behavior:")
+        || has_ie_behavior_property(&lower)
         || lower.contains("-moz-binding");
-    if bad {
+    if hard_bad {
         (String::new(), true)
     } else {
-        (css.to_owned(), false)
+        (out, stripped)
     }
 }
 
@@ -155,17 +190,21 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         notes.push("meta_refresh".into());
     }
 
-    // Pre-strip style blocks with dangerous CSS; keep safe blocks for ammonia.
+    // Pre-filter style blocks: soft-strip `@import`, hard-nuke XSS CSS.
     let mut pre = rewrite_body_wrapper(raw);
     if let Ok(re) = Regex::new(r"(?is)<style[^>]*>(.*?)</style>") {
         let mut stripped = false;
         let mut css_notes = Vec::new();
         pre = re
             .replace_all(&pre, |caps: &regex::Captures<'_>| {
-                let (filtered, bad) = filter_css(&caps[1]);
-                if bad {
+                let original = &caps[1];
+                let (filtered, touched) = filter_css(original);
+                if touched {
                     stripped = true;
                     css_notes.push("css_blocked".into());
+                }
+                // Hard-bad → empty filtered; soft-strip keeps remaining rules.
+                if filtered.is_empty() && !original.is_empty() {
                     String::new()
                 } else {
                     format!("<style>{filtered}</style>")
@@ -216,13 +255,14 @@ fn filter_inline_styles(html: &str) -> (String, bool) {
                 .get(2)
                 .or_else(|| caps.get(3))
                 .map_or("", |m| m.as_str());
-            let (filtered, bad) = filter_css(val);
-            if bad || filtered.is_empty() && !val.is_empty() {
+            let (filtered, touched) = filter_css(val);
+            if filtered.is_empty() && !val.is_empty() {
                 stripped = true;
                 String::new()
             } else if filtered == val {
                 caps[0].to_owned()
             } else {
+                stripped |= touched;
                 format!(" style=\"{filtered}\"")
             }
         })
@@ -448,5 +488,59 @@ mod tests {
             out.contains("class=\"ok\"") || out.contains("class='ok'"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn scroll_behavior_must_not_nuke_style_block() {
+        let html = r#"<style>
+html{scroll-behavior:smooth}
+body{margin:0;color:#172220;background:#f4f7f6}
+.hero{padding:2rem}
+</style><main class="hero">Hello</main>"#;
+        let (out, report) = sanitize_html(html);
+        assert!(
+            !report.css_stripped,
+            "scroll-behavior is safe presentation CSS: {report:?}"
+        );
+        assert!(
+            out.to_ascii_lowercase().contains("<style>"),
+            "style kept: {out}"
+        );
+        assert!(out.contains("scroll-behavior"), "{out}");
+        assert!(out.contains(".hero"), "{out}");
+    }
+
+    #[test]
+    fn amp_in_css_comment_must_not_drop_style() {
+        let html = r#"<style>
+/* --- RESET & VARIABLES --- */
+:root { --bg: #07090E; }
+body { margin: 0; background: var(--bg); }
+</style><p class="x">hi</p>"#;
+        let (out, report) = sanitize_html(html);
+        assert!(!report.css_stripped, "{report:?}");
+        assert!(out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(out.contains("--bg"), "{out}");
+    }
+
+    #[test]
+    fn import_soft_stripped_keeps_remaining_rules() {
+        let (out, report) = sanitize_html(
+            r#"<style>@import url('https://fonts.example/x.css');
+.hero{color:red}</style><p class="hero">x</p>"#,
+        );
+        assert!(report.css_stripped, "{report:?}");
+        assert!(!out.contains("@import"), "{out}");
+        assert!(out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(out.contains(".hero"), "{out}");
+    }
+
+    #[test]
+    fn ie_behavior_still_nukes_block() {
+        let (out, report) =
+            sanitize_html(r#"<style>body{behavior:url(evil.htc);color:red}</style><p>x</p>"#);
+        assert!(report.css_stripped, "{report:?}");
+        assert!(!out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(!out.contains("evil.htc"), "{out}");
     }
 }

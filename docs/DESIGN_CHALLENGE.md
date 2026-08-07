@@ -199,7 +199,12 @@ only (§6).
 - Tags: `script`, `iframe`, `object`, `embed`, `applet`, `base`, `form`, `meta[http-equiv=refresh]`, `link[rel=import]`, scriptable SVG
 - All `on*` event attributes
 - URL schemes: reject `javascript:`, `vbscript:`, `data:text/html`; allow `http`, `https`, `mailto`, `data:image/*`
-- CSS: reject `@import`, `expression(`, `url(javascript:`, `behavior:`, `-moz-binding`
+- CSS: soft-strip `@import …;` rules (remainder of the `<style>` block is kept);
+  hard-reject (drop the whole block/attr) for `expression(`, `url(javascript:`,
+  IE-only `behavior:` (not `scroll-behavior:`), `-moz-binding`
+- External `<link rel=stylesheet>` is stripped (no CDN / Tailwind CDN); miners
+  must embed presentation CSS in `<style>` or inline `style=` for screenshots
+  and the sandboxed viewer to look styled
 
 ### Annotator signal
 
