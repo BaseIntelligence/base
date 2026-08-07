@@ -1175,7 +1175,7 @@ mod tests {
         assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["params"], 12.0);
         assert_eq!(v["series"][0]["submissionId"], "x2");
-        assert_eq!(v["tokenBudget"], 2);
+        assert_eq!(v["tokenBudget"], 0);
         assert_eq!(v["series"][1]["points"].as_array().unwrap().len(), 1);
         assert_eq!(v["series"][1]["points"][0]["step"], 2);
     }

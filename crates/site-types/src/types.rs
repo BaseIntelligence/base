@@ -257,7 +257,10 @@ pub struct PrismWindow {
     pub dataset: String,
     /// Recipe revision / pin short.
     pub revision: String,
-    /// Token budget when known; 0 if the recipe does not publish one.
+    /// Fixed token budget when the recipe publishes one; **0** for prism
+    /// recipe ≥1.2 (egalitarian caps are wall-clock / steps / params + pinned
+    /// shard — not a fixed token quota). Chart axis span is derived from
+    /// series points, not this field.
     pub token_budget: u64,
     /// Always pinned.
     pub offset: String,

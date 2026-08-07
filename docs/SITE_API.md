@@ -30,7 +30,11 @@ Leaderboard `elo` is the design `rating` field. When the current round has no
 winners yet (`ratings: []`), `/v1/site/arenas/design/leaderboard` surfaces the
 previous round's standings (`roundId` = previous) rather than an empty board.
 Prism window series use real terminal `bpb` with a single `[final]` point when
-no step curve is stored.
+no step curve is stored. `PrismWindow.tokenBudget` is **0** unless a recipe
+publishes a fixed token quota (prism ≥1.2 does not — caps are wall-clock /
+steps / params). Chart x-values still come from miner telemetry
+(`layer_stats.tokens` when present); clients must not label the max observed
+x as an egalitarian “token window.”
 
 `GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,
