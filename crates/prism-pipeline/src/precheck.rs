@@ -115,7 +115,8 @@ pub fn same_miner(candidate: &SubmissionState, other: &SubmissionState) -> bool 
     )
 }
 
-/// Pre-LLM copy-gate corpus: other miners' prior art only (hotkey + coldkey).
+/// Pre-LLM copy-gate corpus: other miners' **champion** prior art only
+/// (caller should pass `PrismStore::list_champions`; hotkey + coldkey excluded).
 #[must_use]
 pub fn gate_corpus_from_rows(
     candidate: &SubmissionState,
@@ -132,7 +133,7 @@ pub fn gate_corpus_from_rows(
         .collect()
 }
 
-/// Baseline + recent terminated submissions as agentic corpus entries.
+/// Baseline + champion submissions as agentic corpus entries.
 ///
 /// Architecture.py only; same-hotkey and same-coldkey prior art excluded.
 #[must_use]

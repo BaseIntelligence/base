@@ -292,6 +292,11 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError>;
 
+    /// Champion corpus for copy/similarity/agentic gates: submissions with
+    /// `Score(v)` where `v > 0` (current top + historical WTA ex-tops).
+    /// Newest first. Does **not** include baseline (callers add that).
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError>;
+
     /// Ascending journal.
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError>;
 
@@ -577,6 +582,20 @@ impl PrismStore for MemoryPrismStore {
                     .as_ref()
                     .is_none_or(|m| r.miner_hotkey.to_ascii_lowercase() == *m)
             })
+            .cloned()
+            .collect();
+        v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
+        v.truncate(limit as usize);
+        Ok(v)
+    }
+
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError> {
+        let mut v: Vec<_> = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .iter()
+            .filter(|r| matches!(r.final_score, Some(FinalScore::Score(s)) if s > 0))
             .cloned()
             .collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
@@ -914,6 +933,23 @@ mod tests {
         let only_a = s.list(None, Some("aabbcc"), 10).await.unwrap();
         assert_eq!(only_a.len(), 1);
         assert_eq!(only_a[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn list_champions_score_positive_only() {
+        let s = MemoryPrismStore::new();
+        let mut winner = row("w", "11");
+        winner.status = Stage::Terminated;
+        winner.final_score = Some(FinalScore::Score(42));
+        let mut zero = row("z", "22");
+        zero.status = Stage::Terminated;
+        zero.final_score = Some(FinalScore::Score(0));
+        s.insert_queued(&winner).await.unwrap();
+        s.insert_queued(&zero).await.unwrap();
+        s.insert_queued(&row("q", "33")).await.unwrap();
+        let champs = s.list_champions(10).await.unwrap();
+        assert_eq!(champs.len(), 1);
+        assert_eq!(champs[0].id, "w");
     }
 
     #[tokio::test]

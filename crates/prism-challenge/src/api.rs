@@ -284,7 +284,7 @@ async fn post_precheck(
         &req.architecture_py,
         now_ms(),
     );
-    let recent = st.store.list(None, None, 64).await.unwrap_or_default();
+    let recent = st.store.list_champions(64).await.unwrap_or_default();
     let result = evaluate_copy_precheck(&candidate, &recent, quota);
     Json(precheck_json(&result)).into_response()
 }

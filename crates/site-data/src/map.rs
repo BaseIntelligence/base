@@ -476,17 +476,34 @@ pub fn prism_submission(row: &Value) -> Option<Submission> {
     })
 }
 
-/// Prism BPB leaderboard from terminal submissions (lower BPB ranks better).
+/// True when a prism list/detail row is a public champion (Score>0 top / ex-top).
+#[must_use]
+pub fn is_prism_champion_submission(row: &Value) -> bool {
+    row.get("score")
+        .and_then(|s| {
+            if s.get("kind").and_then(Value::as_str) != Some("score") {
+                return Some(false);
+            }
+            Some(s.get("value").and_then(Value::as_u64)? > 0)
+        })
+        .unwrap_or(false)
+}
+
+/// Prism BPB leaderboard from **champion** terminal submissions (Score>0).
 ///
-/// `elo` carries the BPB value so the existing leaderboard row contract can
-/// surface rankings without inventing Elo/duels; `bpb` / `paramsM` mirror the
-/// measured values explicitly for telemetry-aware clients.
+/// Non-top submissions are hidden from the public board. `elo` carries the BPB
+/// value so the existing leaderboard row contract can surface rankings without
+/// inventing Elo/duels; `bpb` / `paramsM` mirror the measured values explicitly
+/// for telemetry-aware clients.
 #[must_use]
 pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> {
     let mut best: HashMap<String, (f64, Option<u64>)> = HashMap::new();
     let mut counts: HashMap<String, u32> = HashMap::new();
     for row in subs {
         if row.get("status").and_then(Value::as_str) != Some("terminated") {
+            continue;
+        }
+        if !is_prism_champion_submission(row) {
             continue;
         }
         let Some(bpb) = row.get("bpb").and_then(Value::as_f64) else {
@@ -1234,8 +1251,10 @@ mod tests {
     #[test]
     fn prism_leaderboard_exposes_bpb_and_params_fields() {
         let subs = vec![
-            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa","n_params":12_000_000_u64}),
-            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb"}),
+            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa","n_params":12_000_000_u64,"score":{"kind":"score","value":100}}),
+            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb","score":{"kind":"score","value":200}}),
+            // Non-champion (Score 0) must stay off the public board.
+            json!({"id":"c","status":"terminated","bpb":0.5,"miner_hotkey":"cc","score":{"kind":"score","value":0}}),
         ];
         let rows = prism_bpb_leaderboard(&subs, 3);
         assert_eq!(rows.len(), 2);
@@ -1342,10 +1361,10 @@ mod tests {
     #[test]
     fn prism_bpb_leaderboard_ranks_lower_first() {
         let subs = vec![
-            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa"}),
-            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb"}),
-            json!({"id":"c","status":"queued","bpb":0.1,"miner_hotkey":"cc"}),
-            json!({"id":"d","status":"terminated","bpb":0.5,"miner_hotkey":"aa"}),
+            json!({"id":"a","status":"terminated","bpb":2.0,"miner_hotkey":"aa","score":{"kind":"score","value":10}}),
+            json!({"id":"b","status":"terminated","bpb":1.0,"miner_hotkey":"bb","score":{"kind":"score","value":20}}),
+            json!({"id":"c","status":"queued","bpb":0.1,"miner_hotkey":"cc","score":{"kind":"score","value":30}}),
+            json!({"id":"d","status":"terminated","bpb":0.5,"miner_hotkey":"aa","score":{"kind":"score","value":40}}),
         ];
         let rows = prism_bpb_leaderboard(&subs, 3);
         assert_eq!(rows.len(), 2);

@@ -56,7 +56,7 @@ pub struct OrchestratorConfig {
     pub emit_poll: Duration,
     /// Rent attempt budget before `failed`.
     pub max_attempts: u32,
-    /// Similarity corpus size (recent submissions + baseline).
+    /// Similarity / agentic corpus size (champions + baseline).
     pub similarity_corpus_limit: u32,
     /// Stuck sweep grace (seconds). Must exceed max healthy wall-clock of a
     /// live worker hold: `PRISM_SSH_RUNNING_TIMEOUT` (≤15m) + train cap (6h) +
@@ -457,10 +457,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 return None;
             }
         };
-        if matches!(
-            similarity.kind,
-            prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
-        ) {
+        // Only hard-reject LLM `Copied`. `Suspicious` is advisory — agentic
+        // (post-pod, AST-thresholded) is the primary judge. Generic LM tropes
+        // are coerced to Original in prism-review parsers.
+        if matches!(similarity.kind, prism_review::SimilarityKind::Copied) {
             let detail = format!("pre-pod similarity: {:?}", similarity.kind);
             self.reject_pre_pod(row, Some(similarity), None, detail)
                 .await;
@@ -472,7 +472,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     /// Pre-LLM copy gate on `architecture.py`. Returns `true` when the row was
     /// finalized terminal `rejected` (caller must stop processing).
     ///
-    /// The corpus is recent submissions (any status — prior art is prior art)
+    /// The corpus is **champions** (Score>0 current top + historical ex-tops),
     /// ordered by store `created_at`; the published baseline is exempt by id
     /// prefix inside [`copy_gate`]. Ties / unknown timestamps fall through to
     /// the LLM similarity review. Training-only rows (`arch_id` set) skip the
@@ -481,7 +481,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         if row.arch_id.is_some() {
             return false;
         }
-        let recent = self.store.list(None, None, 64).await.unwrap_or_default();
+        let recent = self
+            .store
+            .list_champions(self.cfg.similarity_corpus_limit.max(64))
+            .await
+            .unwrap_or_default();
         let corpus = gate_corpus_from_rows(row, &recent);
         let Some(hit) = copy_gate(&row.architecture_py, row.created_at_ms, &corpus) else {
             return false;
@@ -744,7 +748,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         };
         let recent = self
             .store
-            .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
+            .list_champions(self.cfg.similarity_corpus_limit)
             .await
             .unwrap_or_default();
         // Training-only rows: drop the referenced registry arch from the
@@ -811,7 +815,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     async fn similarity_corpus(&self, candidate: &SubmissionState) -> Vec<SourceSnippet> {
         let recent = self
             .store
-            .list(Some("terminated"), None, self.cfg.similarity_corpus_limit)
+            .list_champions(self.cfg.similarity_corpus_limit)
             .await
             .unwrap_or_default();
         let mut v = vec![SourceSnippet {

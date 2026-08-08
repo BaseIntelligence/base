@@ -14,8 +14,9 @@ use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
 use site_data::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
-    leaderboard_matches_query, list_arenas, prism_arena_from_live, prism_bpb_leaderboard,
-    prism_submission, prism_telemetry, prism_window, submission_matches_query,
+    is_prism_champion_submission, leaderboard_matches_query, list_arenas, prism_arena_from_live,
+    prism_bpb_leaderboard, prism_submission, prism_telemetry, prism_window,
+    submission_matches_query,
 };
 use site_types::coding_arena;
 use site_types::page_slice;
@@ -438,7 +439,12 @@ async fn get_submissions(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let mut items: Vec<_> = rows.iter().filter_map(prism_submission).collect();
+            // Public gallery: champions only (current top + Score>0 ex-tops).
+            let mut items: Vec<_> = rows
+                .iter()
+                .filter(|r| is_prism_champion_submission(r))
+                .filter_map(prism_submission)
+                .collect();
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
                     "scored" => s.status == crate::SubmissionStatus::Scored,

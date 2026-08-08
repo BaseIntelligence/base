@@ -286,6 +286,26 @@ pub async fn list_prism_submissions(
     Ok(rows)
 }
 
+/// Champion corpus: historical Score>0 WTA/leaf winners (current top + ex-tops).
+///
+/// # Errors
+/// SQL error.
+pub async fn list_prism_champions(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<PrismSubmissionRow>, DbError> {
+    let q = format!(
+        "SELECT {COLS} FROM prism_submission \
+         WHERE kind = 'score' AND score > 0 \
+         ORDER BY created_at DESC LIMIT $1"
+    );
+    let rows = sqlx::query_as::<_, PrismSubmissionRow>(&q)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
 /// Ascending event journal for one row.
 ///
 /// # Errors

@@ -34,7 +34,10 @@ no step curve is stored. `PrismWindow.tokenBudget` is **0** unless a recipe
 publishes a fixed token quota (prism ≥1.2 does not — caps are wall-clock /
 steps / params). Chart x-values still come from miner telemetry
 (`layer_stats.tokens` when present); clients must not label the max observed
-x as an egalitarian “token window.”
+x as an egalitarian “token window.” Prism public submissions + BPB
+leaderboard list **champions only** (`score.kind=score` and `value > 0` —
+current top and historical ex-tops); non-top rows stay on the operator
+challenge API.
 
 `GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,

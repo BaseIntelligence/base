@@ -317,6 +317,13 @@ impl PrismStore for DbPrismStore {
         states_filled(&self.pool, rows).await
     }
 
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError> {
+        let rows = dbs::list_prism_champions(&self.pool, i64::from(limit))
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        states_filled(&self.pool, rows).await
+    }
+
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError> {
         dbs::prism_stage_events(&self.pool, id)
             .await

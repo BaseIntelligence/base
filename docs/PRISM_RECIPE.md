@@ -126,25 +126,26 @@ verdict, quality notes and issues are kept as audit records
 review still gates eligibility:
 
 - similarity verdict `Copied` → hard **Score 0**
-- similarity verdict `Suspicious` → hard **Score 0** until reviewed
+- similarity verdict `Suspicious` → advisory only (not a hard zero; agentic is the judge)
 - harness/antipattern failure → `ChallengeInternal` maps to `NoScore` reason
 
 ## Anti-copy review
 
 A **pre-LLM copy gate** first compares the candidate `architecture.py`
-against recent submissions from **other miners** (byte hash + AST
-fingerprints, `created_at` ordered; same-`miner_hotkey` and
-same-`miner_coldkey` prior art excluded): a byte/AST copy of a
-strictly-earlier architecture is terminal `rejected` with zero score — no pod
-time, no LLM spend. The baseline is exempt (everyone may start from it);
-created_at ties fall through to the LLM path below.
+against **champion** submissions (Score>0 current top + historical ex-tops)
+from **other miners** (byte hash + AST fingerprints, `created_at` ordered;
+same-`miner_hotkey` and same-`miner_coldkey` prior art excluded): a byte/AST
+copy of a strictly-earlier champion architecture is terminal `rejected` with
+zero score — no pod time, no LLM spend. The baseline is exempt (everyone may
+start from it); created_at ties fall through to the LLM path below.
 
 Each remaining submission then faces an LLM review on the master
 (`OpenRouter` when the key file `/run/base/openrouter/api_key` exists, else
 the deterministic `SimReviewer`) over its **architecture only** vs. the
-recipe **baseline plus earlier other-miner submissions** (`prism_submission`
-history, capped at the 6 most recent records; same hotkey/coldkey exclusion).
-Since similarity v2, `training.py` is exempt from both candidate and corpus:
-the same training script on two different architectures is legitimate.
-Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity score and
-evidence line — all stored append-only in `prism_stage_event`.
+recipe **baseline plus champions** (capped; same hotkey/coldkey exclusion).
+Since similarity v2/v3, `training.py` is exempt from both candidate and
+corpus: the same training script on two different architectures is
+legitimate. Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity
+score and evidence line — all stored append-only in `prism_stage_event`.
+Generic modern-LM components (RMSNorm, RoPE, SwiGLU, …) must not appear as
+copy evidence; parsers coerce those false positives to `Original`.

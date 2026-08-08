@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 
+use crate::generic_arch::coerce_generic_similarity;
 use crate::prompts::{
-    REVIEW_PROMPT_V3, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V2, SIMILARITY_PROMPT_VERSION,
+    REVIEW_PROMPT_V3, REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_V3, SIMILARITY_PROMPT_VERSION,
 };
 use crate::types::{
     truncate_source, ReviewError, ReviewVerdict, SimilarityKind, SimilarityVerdict, SourceSnippet,
@@ -244,13 +245,13 @@ fn parse_similarity(text: &str) -> Result<SimilarityVerdict, ReviewError> {
                 .collect::<Vec<String>>()
         })
         .unwrap_or_default();
-    Ok(SimilarityVerdict {
+    Ok(coerce_generic_similarity(SimilarityVerdict {
         kind,
         score,
         closest,
         evidence,
         prompt_version: SIMILARITY_PROMPT_VERSION,
-    })
+    }))
 }
 
 /// Corpus rendering for the similarity prompt: **architectures only**
@@ -289,7 +290,7 @@ impl ReviewBackend for OpenRouterClient {
         architecture_py: &str,
         corpus: &[SourceSnippet],
     ) -> Result<SimilarityVerdict, ReviewError> {
-        let prompt = SIMILARITY_PROMPT_V2
+        let prompt = SIMILARITY_PROMPT_V3
             .replace("{ARCH}", &truncate_source(architecture_py))
             .replace("{CORPUS}", &corpus_block(corpus));
         let answer = self.chat(&prompt).await?;
@@ -331,6 +332,15 @@ mod tests {
         assert!(matches!(v.kind, SimilarityKind::Copied));
         assert!((v.score - 0.97).abs() < 1e-9);
         assert_eq!(v.closest.as_deref(), Some("baseline"));
+    }
+
+    #[test]
+    fn parse_similarity_coerces_generic_suspicious() {
+        let v = parse_similarity(
+            r#"{"kind":"suspicious","score":0.7,"closest":"subm:89e6273b","evidence":["RMSNorm usage","Rotary embeddings","Gated residual connections"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(v.kind, SimilarityKind::Original));
     }
 
     #[test]
