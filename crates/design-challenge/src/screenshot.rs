@@ -6,8 +6,16 @@
 //! sandbox CSP meant for browser embedding, and the stored artifact is the
 //! capture source of truth. `--no-sandbox` is required because Chromium's
 //! renderer sandbox needs user namespaces / `CAP_SYS_ADMIN`, which Docker
-//! containers do not grant; the container boundary plus the scriptless
-//! sanitized artifact is the sandbox.
+//! containers do not grant.
+//!
+//! Network isolation: Chromium shares the design-challenge netns (high-trust
+//! `base` network). All `http(s)` subresource / navigation attempts are forced
+//! through `design-egress-proxy` (`--proxy-server` + `--proxy-bypass-list=
+//! <-loopback>`) so the same internal-target blocklist that guards miner
+//! sandboxes also covers screenshot SSRF (gateway admin, metadata, postgres,
+//! socket-proxy). Capture documents also carry a nonce-locked CSP that blocks
+//! unintended scripts and navigations (CLI Chromium has no Playwright route
+//! hooks).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -29,10 +37,29 @@ const DEFAULT_MAX_HEIGHT: u32 = 12_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 90;
 /// Virtual-time budget per render so remote images settle (ms).
 const VIRTUAL_TIME_BUDGET_MS: u32 = 10_000;
+/// Default forward proxy for screenshot Chromium (`DESIGN_SCREENSHOT_PROXY`).
+const DEFAULT_SCREENSHOT_PROXY: &str = "http://design-egress-proxy:8094";
 /// Marker the height probe writes into `<title>`.
 const HEIGHT_MARKER: &str = "SHOTH=";
 /// Height probe appended to the throwaway capture document (never shipped).
-const MEASURE_SCRIPT: &str = "<script>addEventListener('load',function(){setTimeout(function(){var d=document,e=d.documentElement,b=d.body;d.title='SHOTH='+Math.max(e.scrollHeight,b?b.scrollHeight:0)},50)})</script>";
+/// Nonce `designshot1` must match `CAPTURE_CSP` `script-src`.
+const MEASURE_SCRIPT: &str = "<script nonce=\"designshot1\">addEventListener('load',function(){setTimeout(function(){var d=document,e=d.documentElement,b=d.body;d.title='SHOTH='+Math.max(e.scrollHeight,b?b.scrollHeight:0)},50)})</script>";
+/// Capture-document CSP: nonce script only; block connect/nav; allow public
+/// img/font/style so CDN assets still paint (they still traverse the egress
+/// proxy blocklist).
+const CAPTURE_CSP: &str = "default-src 'none'; \
+img-src data: https: http:; \
+style-src 'unsafe-inline' data: https: http:; \
+font-src data: https: http:; \
+script-src 'nonce-designshot1'; \
+connect-src 'none'; \
+frame-src 'none'; \
+object-src 'none'; \
+media-src 'none'; \
+worker-src 'none'; \
+base-uri 'none'; \
+form-action 'none'; \
+navigate-to 'none'";
 
 /// Capture knobs resolved from env at call time (tests build them directly).
 #[derive(Debug, Clone)]
@@ -45,6 +72,9 @@ struct CaptureConfig {
     max_height: u32,
     /// Total attempts (initial + retries).
     attempts: u32,
+    /// Forward proxy URL (`None` / empty = direct; prod compose always sets
+    /// `design-egress-proxy`).
+    proxy: Option<String>,
 }
 
 impl CaptureConfig {
@@ -72,7 +102,18 @@ impl CaptureConfig {
             )),
             max_height: env_u32("DESIGN_SCREENSHOT_MAX_HEIGHT", DEFAULT_MAX_HEIGHT),
             attempts: 2,
+            proxy: screenshot_proxy_from_env(),
         }
+    }
+}
+
+/// Resolve `DESIGN_SCREENSHOT_PROXY`. Unset → egress proxy default; empty
+/// string → disable (local stub tests / operators debugging without compose).
+fn screenshot_proxy_from_env() -> Option<String> {
+    match std::env::var("DESIGN_SCREENSHOT_PROXY") {
+        Ok(v) if v.is_empty() => None,
+        Ok(v) => Some(v),
+        Err(_) => Some(DEFAULT_SCREENSHOT_PROXY.to_owned()),
     }
 }
 
@@ -144,6 +185,7 @@ fn capture_once(
             stamp,
             attempt,
             cfg.timeout,
+            cfg.proxy.as_deref(),
         )
     });
     if !ok {
@@ -173,7 +215,7 @@ fn measure_height(
     let profile = profile_dir(work_dir, stamp, attempt, "dom");
     let out = run_with_timeout(
         Command::new(bin)
-            .args(base_args(&profile))
+            .args(base_args(&profile, cfg.proxy.as_deref()))
             .arg("--dump-dom")
             .arg(url),
         cfg.timeout,
@@ -193,11 +235,12 @@ fn shoot(
     stamp: u128,
     attempt: u32,
     timeout: Duration,
+    proxy: Option<&str>,
 ) -> bool {
     let profile = profile_dir(work_dir, stamp, attempt, "png");
     let res = run_with_timeout(
         Command::new(bin)
-            .args(base_args(&profile))
+            .args(base_args(&profile, proxy))
             .arg(format!("--screenshot={}", out.display()))
             .arg(format!("--window-size={WIDTH},{height}"))
             .arg(url),
@@ -208,11 +251,11 @@ fn shoot(
 }
 
 /// Shared headless flags. `--no-sandbox`: the renderer sandbox needs userns /
-/// `CAP_SYS_ADMIN`, unavailable in Docker — the container plus the scriptless
-/// sanitized artifact is the security boundary. `--disable-dev-shm-usage`:
-/// Docker caps `/dev/shm` at 64MiB, which crashes tall renders.
-fn base_args(profile: &Path) -> Vec<String> {
-    [
+/// `CAP_SYS_ADMIN`, unavailable in Docker — network isolation is the egress
+/// proxy + capture CSP below. `--disable-dev-shm-usage`: Docker caps
+/// `/dev/shm` at 64MiB, which crashes tall renders.
+fn base_args(profile: &Path, proxy: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
         "--headless=new",
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -220,10 +263,12 @@ fn base_args(profile: &Path) -> Vec<String> {
         "--disable-gpu",
         "--disable-crash-reporter",
         "--disable-breakpad",
+        "--disable-background-networking",
         "--no-first-run",
         "--hide-scrollbars",
         "--force-color-profile=srgb",
         "--run-all-compositor-stages-before-draw",
+        "--block-new-web-contents",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -231,7 +276,15 @@ fn base_args(profile: &Path) -> Vec<String> {
         format!("--virtual-time-budget={VIRTUAL_TIME_BUDGET_MS}"),
         format!("--user-data-dir={}", profile.display()),
     ])
-    .collect()
+    .collect();
+    if let Some(p) = proxy.filter(|s| !s.is_empty()) {
+        // Route all http(s) — including loopback / link-local — through the
+        // design-egress-proxy blocklist. `<-loopback>` removes Chrome's
+        // implicit bypass of localhost (and related) targets.
+        args.push(format!("--proxy-server={p}"));
+        args.push("--proxy-bypass-list=<-loopback>".into());
+    }
+    args
 }
 
 /// Spawn → poll → kill on timeout. `Command::wait_timeout` is unstable, so
@@ -259,10 +312,13 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
 }
 
 /// Wrap the sanitized fragment (ammonia unwraps the html/head/body shell)
-/// into a capture document. The only script is our own height probe.
+/// into a capture document. The only script is our own height probe (CSP
+/// nonce); capture CSP blocks other scripts and navigations.
 fn render_doc(fragment: &str) -> String {
     format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>shot</title></head><body>{fragment}{MEASURE_SCRIPT}</body></html>"
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+<meta http-equiv=\"Content-Security-Policy\" content=\"{CAPTURE_CSP}\">\
+<title>shot</title></head><body>{fragment}{MEASURE_SCRIPT}</body></html>"
     )
 }
 
@@ -325,6 +381,9 @@ mod tests {
             timeout: Duration::from_secs(5),
             max_height: DEFAULT_MAX_HEIGHT,
             attempts: 1,
+            // Stub browsers do not need a real proxy; empty env would still
+            // default to design-egress-proxy in from_env().
+            proxy: None,
         }
     }
 
@@ -451,7 +510,56 @@ mod tests {
         assert!(doc.starts_with("<!DOCTYPE html>"));
         assert!(doc.contains("<main>hello</main>"));
         assert!(doc.contains("SHOTH="));
+        assert!(doc.contains("Content-Security-Policy"));
+        assert!(doc.contains("nonce-designshot1"));
+        assert!(doc.contains("navigate-to 'none'"));
+        assert!(doc.contains("nonce=\"designshot1\""));
         assert!(doc.ends_with("</body></html>"));
+    }
+
+    #[test]
+    fn base_args_force_egress_proxy_including_loopback() {
+        let profile = PathBuf::from("/tmp/shot-profile");
+        let args = base_args(&profile, Some("http://design-egress-proxy:8094"));
+        assert!(args
+            .iter()
+            .any(|a| a == "--proxy-server=http://design-egress-proxy:8094"));
+        assert!(args.iter().any(|a| a == "--proxy-bypass-list=<-loopback>"));
+        assert!(args.iter().any(|a| a == "--block-new-web-contents"));
+        let direct = base_args(&profile, None);
+        assert!(direct.iter().all(|a| !a.starts_with("--proxy-server")));
+    }
+
+    #[test]
+    fn capture_passes_proxy_flags_to_browser() {
+        let dir = std::env::temp_dir().join(format!("shot-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, FAKE_PNG).unwrap();
+        let args_log = dir.join("args.log");
+        let stub = write_stub(
+            &dir,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{log}\"\nout=\"\"\nfor a in \"$@\"; do case \"$a\" in --screenshot=*) out=\"${{a#--screenshot=}}\";; esac; done\ncase \"$*\" in *--dump-dom*) echo '<title>SHOTH=900</title>'; exit 0;; esac\nif [ -n \"$out\" ]; then cp \"{png}\" \"$out\"; exit 0; fi\nexit 1\n",
+                log = args_log.display(),
+                png = fake.display()
+            ),
+        );
+        let mut cfg = test_cfg(&stub);
+        cfg.proxy = Some("http://design-egress-proxy:8094".into());
+        let png = capture_with(&cfg, "<p>hi</p>", &dir.join("work"));
+        assert_eq!(png.as_deref(), Some(FAKE_PNG));
+        let logged = std::fs::read_to_string(&args_log).unwrap();
+        assert!(
+            logged.contains("--proxy-server=http://design-egress-proxy:8094"),
+            "{logged}"
+        );
+        assert!(
+            logged.contains("--proxy-bypass-list=<-loopback>"),
+            "{logged}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

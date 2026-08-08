@@ -278,16 +278,31 @@ After sanitize, the orchestrator renders the sanitized `index.html` **artifact**
 design-challenge container — never the public `/v1/view` URL (screenshots-only;
 the stored artifact is the capture source of truth).
 Chromium runs `--no-sandbox` because the renderer sandbox needs user
-namespaces / `CAP_SYS_ADMIN`, which Docker does not grant; the container
-boundary plus the scriptless sanitized artifact is the sandbox. Two passes
-(measure height via `--dump-dom`, then `--screenshot --window-size=1280×H`),
-hard process timeout, one retry; failure never fails the run. The PNG is
-stored as the `index.png` artifact (base64) and served at
-`GET /v1/view/{run_id}/index.png` (`image/png`, `private, no-store`,
-`nosniff`, `Cross-Origin-Resource-Policy: cross-origin`); run detail exposes
-`screenshot_url` when the artifact exists. Public sites should point `<img src>`
-at the absolute gateway host (e.g. `https://chain.joinbase.ai/challenge/design/...`)
-rather than proxying PNG bytes through a CDN edge.
+namespaces / `CAP_SYS_ADMIN`, which Docker does not grant. Defense-in-depth for
+screenshot SSRF (sanitizer-missed script, or static `http(s)` / CSS `url(...)`
+to gateway / metadata / socket-proxy / postgres on the shared `base` network):
+
+1. **Sanitize** — ammonia strips scripts/handlers; `href`/`src` to control-plane
+   hostnames, link-local/metadata, and RFC1918 literals are rewritten to `#`.
+2. **Egress proxy** — Chromium is launched with
+   `--proxy-server=$DESIGN_SCREENSHOT_PROXY` (compose default
+   `http://design-egress-proxy:8094`) and `--proxy-bypass-list=<-loopback>` so
+   even loopback/metadata attempts traverse the same internal-target blocklist
+   as miner sandboxes (post-DNS IP deny). Empty `DESIGN_SCREENSHOT_PROXY`
+   disables the force (local stub tests only).
+3. **Capture CSP** — the throwaway `file://` document uses a nonce-locked
+   `script-src` (height probe only), `connect-src 'none'`, and
+   `navigate-to 'none'` (CLI Chromium has no Playwright route hooks).
+
+Produced HTML is still never served to browsers. Two passes (measure height via
+`--dump-dom`, then `--screenshot --window-size=1280×H`), hard process timeout,
+one retry; failure never fails the run. The PNG is stored as the `index.png`
+artifact (base64) and served at `GET /v1/view/{run_id}/index.png` (`image/png`,
+`private, no-store`, `nosniff`, `Cross-Origin-Resource-Policy: cross-origin`);
+run detail exposes `screenshot_url` when the artifact exists. Public sites
+should point `<img src>` at the absolute gateway host (e.g.
+`https://chain.joinbase.ai/challenge/design/...`) rather than proxying PNG
+bytes through a CDN edge.
 
 Backfill (idempotent; upserts on `(run_id, path)` so it can be re-run and can
 race a live capture safely):
