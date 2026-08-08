@@ -219,17 +219,37 @@ pub fn upstream_uri(base: &str, rest: &str, original: &Uri) -> String {
     upstream_url(base, rest, original.query())
 }
 
+/// Collapse `.` / empty / `..` segments the same way `url`/`reqwest` will before
+/// the upstream request — used so gateway gates cannot be skipped via `v1/./admin`.
+#[must_use]
+pub fn normalize_proxy_path(rest: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                let _ = out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.join("/")
+}
+
 /// Operator admin surfaces are master-local only (not on the public miner path).
+///
+/// Match after path normalization: raw `v1/./admin/…` must not bypass the gate
+/// when the HTTP client collapses `.` before dialing the challenge upstream.
 #[must_use]
 pub fn is_admin_path(rest: &str) -> bool {
-    let rest_norm = rest.trim_start_matches('/');
+    let rest_norm = normalize_proxy_path(rest);
     rest_norm.starts_with("v1/admin/") || rest_norm == "v1/admin"
 }
 
 /// Miner-controlled viewer paths (`/challenge/{id}/v1/view/{run}/{page}`).
 #[must_use]
 pub fn is_view_path(rest: &str) -> bool {
-    rest.trim_start_matches('/').starts_with("v1/view/")
+    normalize_proxy_path(rest).starts_with("v1/view/")
 }
 
 /// Captured PNG screenshot under `/v1/view/{run}/{page}.png`.
@@ -293,9 +313,22 @@ mod tests {
     }
 
     #[test]
+    fn admin_paths_blocked_despite_dot_segment_confusion() {
+        // axum preserves `./` in `{*rest}`; reqwest then collapses to /v1/admin/…
+        assert!(is_admin_path("v1/./admin/rounds/1/winners"));
+        assert!(is_admin_path("v1//admin/rounds/1/candidates"));
+        assert!(is_admin_path("./v1/admin/rounds/1/winners"));
+        assert!(is_admin_path("v1/admin/../admin/rounds/1/winners"));
+        assert!(is_admin_path("foo/../v1/admin/rounds/1/winners"));
+        assert!(!is_admin_path("v1/./harness"));
+        assert!(!is_admin_path("v1/not-admin/rounds/1/winners"));
+    }
+
+    #[test]
     fn view_paths_detected() {
         assert!(is_view_path("v1/view/abc/index.html"));
         assert!(is_view_path("/v1/view/abc/pricing.html"));
+        assert!(is_view_path("v1/./view/abc/index.html"));
         assert!(!is_view_path("v1/runs/abc"));
         assert!(!is_view_path("v1/viewx/abc"));
         assert!(!is_view_path("v1/admin/view"));
