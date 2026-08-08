@@ -323,10 +323,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let tempo = u64::from(state.tempo.max(1));
         // Prefer award_round's scored emit; only fill when ~last 48 blocks remain
         // (~tempo-48 … tempo) so mid-epoch winners are not locked behind NoScore.
-        let near_end = state
-            .blocks_since_last_step
-            .saturating_add(48)
-            >= tempo;
+        let near_end = state.blocks_since_last_step.saturating_add(48) >= tempo;
         if !near_end {
             return Ok(false);
         }
