@@ -83,7 +83,10 @@ pub fn apply_agent_uid(agent: &mut Agent, uid: Option<u16>) {
 
 /// Resolve a hotkey (hex or SS58) against a map keyed by lowercase hex + SS58.
 #[must_use]
-pub fn lookup_uid(uid_by_key: &HashMap<String, u16>, hotkey: &str) -> Option<u16> {
+pub fn lookup_uid<S: ::std::hash::BuildHasher>(
+    uid_by_key: &HashMap<String, u16, S>,
+    hotkey: &str,
+) -> Option<u16> {
     let hk = hotkey.trim();
     if hk.is_empty() || hk == "—" {
         return None;
@@ -123,7 +126,10 @@ pub fn uid_index_from_hotkeys(hotkeys: &[Vec<u8>]) -> HashMap<String, u16> {
 }
 
 /// Attach UID / miner number onto every leaderboard agent from a metagraph index.
-pub fn enrich_leaderboard_uids(rows: &mut [LeaderboardRow], uid_by_key: &HashMap<String, u16>) {
+pub fn enrich_leaderboard_uids<S: ::std::hash::BuildHasher>(
+    rows: &mut [LeaderboardRow],
+    uid_by_key: &HashMap<String, u16, S>,
+) {
     for row in rows {
         let uid = lookup_uid(uid_by_key, &row.agent.hotkey);
         apply_agent_uid(&mut row.agent, uid);
@@ -131,7 +137,10 @@ pub fn enrich_leaderboard_uids(rows: &mut [LeaderboardRow], uid_by_key: &HashMap
 }
 
 /// Attach UID / miner number onto every submission agent from a metagraph index.
-pub fn enrich_submission_uids(rows: &mut [Submission], uid_by_key: &HashMap<String, u16>) {
+pub fn enrich_submission_uids<S: ::std::hash::BuildHasher>(
+    rows: &mut [Submission],
+    uid_by_key: &HashMap<String, u16, S>,
+) {
     for row in rows {
         let uid = lookup_uid(uid_by_key, &row.agent.hotkey);
         apply_agent_uid(&mut row.agent, uid);
@@ -144,9 +153,9 @@ pub fn enrich_submission_uids(rows: &mut [Submission], uid_by_key: &HashMap<Stri
 /// `weight_by_hotkey` is keyed by SS58 (and optionally hex); shares are already
 /// normalised (sum ≈ 1). When `emission_per_day` is 0/unknown, `tao_per_day`
 /// stays unset so clients do not invent an absolute figure from a missing rate.
-pub fn enrich_leaderboard_weights(
+pub fn enrich_leaderboard_weights<S: ::std::hash::BuildHasher>(
     rows: &mut [LeaderboardRow],
-    weight_by_hotkey: &HashMap<String, f64>,
+    weight_by_hotkey: &HashMap<String, f64, S>,
     emission_per_day: f64,
 ) {
     for row in rows {
@@ -161,7 +170,10 @@ pub fn enrich_leaderboard_weights(
     }
 }
 
-fn lookup_weight(weight_by_hotkey: &HashMap<String, f64>, hotkey: &str) -> Option<f64> {
+fn lookup_weight<S: ::std::hash::BuildHasher>(
+    weight_by_hotkey: &HashMap<String, f64, S>,
+    hotkey: &str,
+) -> Option<f64> {
     let hk = hotkey.trim();
     if hk.is_empty() || hk == "—" {
         return None;
