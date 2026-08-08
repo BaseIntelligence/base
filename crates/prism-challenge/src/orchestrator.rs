@@ -535,8 +535,9 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         true
     }
 
-    /// Static source cheat screen (METRICS_JSON / telemetry hooks). Pre-pod.
-    /// Returns `true` when the row was finalized terminal `rejected`.
+    /// Static source cheat screen (`METRICS_JSON` / non-causal mix / telemetry
+    /// hooks). Pre-pod. Returns `true` when the row was finalized terminal
+    /// `rejected`.
     async fn static_source_step(&self, row: &SubmissionState) -> bool {
         let Some(hit) = static_source_cheat(&row.architecture_py, &row.training_py) else {
             return false;

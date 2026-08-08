@@ -1,17 +1,18 @@
 //! Deterministic offline agentic verifier (CI / local sim, no network).
 //!
 //! Heuristics: metrics forge / `METRICS_JSON` short-circuit → cheat; Prism
-//! training.py missing telemetry hooks → cheat; scrape-style famous-site HTML
-//! clones → cheat; byte-identical corpus hash → cheat; extreme AST similarity
-//! → cheat/suspicious; otherwise clean. Never invents scores — only verdicts.
+//! static source cheats (telemetry hooks, non-causal `TokenMix` label leak) →
+//! cheat; scrape-style famous-site HTML clones → cheat; byte-identical corpus
+//! hash → cheat; extreme AST similarity → cheat/suspicious; otherwise clean.
+//! Never invents scores — only verdicts.
 
 use std::fs;
 use std::path::Path;
 
 use async_trait::async_trait;
 use challenge_ast::{
-    fingerprint_source, similarity_bps, top_k_nearest, AST_CHEAT_BPS, AST_SUSPICIOUS_BPS,
-    BASELINE_CORPUS_PREFIX,
+    fingerprint_source, similarity_bps, static_source_cheat, top_k_nearest, AST_CHEAT_BPS,
+    AST_SUSPICIOUS_BPS, BASELINE_CORPUS_PREFIX, SourceCheatKind,
 };
 use serde_json::Value;
 
@@ -22,6 +23,9 @@ use crate::types::{
 
 /// BPB below this with near-zero tokens is treated as forged (sim heuristic).
 const SIM_IMPOSSIBLE_BPB: f64 = 0.2;
+/// Recipe-v1 GPT-2 BPE on fineweb: BPB below this is treated as label-leak /
+/// forge (impossible without seeing future tokens on the frozen val cut).
+const SIM_ABSURD_LOW_BPB: f64 = 1.0;
 
 /// AST similarity ≥ this → `cheat` (with corpus nearest).
 pub const SIM_CHEAT_BPS: u16 = AST_CHEAT_BPS;
@@ -75,7 +79,7 @@ impl AgenticBackend for SimAgent {
             return Ok(v);
         }
 
-        if let Some(v) = telemetry_hooks_verdict(req, &primaries) {
+        if let Some(v) = static_source_cheat_verdict(req, &primaries) {
             return Ok(v);
         }
 
@@ -175,27 +179,36 @@ impl AgenticBackend for SimAgent {
     }
 }
 
-/// Prism telemetry-hook contract (recipe >= 1.1.0): `training.py` must call
-/// the harness-provided hooks (`report` + `finish_evaluation`). Deterministic
-/// mirror of [`crate::PRISM_DOMAIN_RULES`] for the sim backend — the live LLM
-/// judges aliasing nuances; the sim requires the documented call shape.
-fn telemetry_hooks_verdict(
+/// Prism pre-pod static source cheats (telemetry hooks, non-causal `TokenMix`;
+/// `METRICS_JSON` already handled above). Keeps `SimAgent` aligned with
+/// `challenge_ast::static_source_cheat`.
+fn static_source_cheat_verdict(
     req: &ReviewRequest,
     primaries: &[(String, String)],
 ) -> Option<AgenticVerdict> {
     if !req.domain_rules.contains("Prism domain") {
         return None;
     }
-    let (path, src) = primaries.iter().find(|(p, _)| p.ends_with("training.py"))?;
-    if challenge_ast::training_has_telemetry_hooks(src) {
-        return None;
-    }
+    let arch = primaries
+        .iter()
+        .find(|(p, _)| p.ends_with("architecture.py"))
+        .map_or("", |(_, s)| s.as_str());
+    let train = primaries
+        .iter()
+        .find(|(p, _)| p.ends_with("training.py"))
+        .map_or("", |(_, s)| s.as_str());
+    let hit = static_source_cheat(arch, train)?;
+    let code = match hit.kind {
+        SourceCheatKind::EvalShortCircuit => CheatCode::EvalShortCircuit,
+        SourceCheatKind::MissingTelemetryHooks => CheatCode::MissingTelemetryHooks,
+        SourceCheatKind::NonCausalLabelLeak => CheatCode::NonCausalLabelLeak,
+    };
     Some(AgenticVerdict {
         verdict: VerdictKind::Cheat,
-        cheat_codes: vec![CheatCode::MissingTelemetryHooks],
+        cheat_codes: vec![code],
         nearest_id: None,
-        similarity_bps: 0,
-        rationale: format!("sim: {path} missing prism_telemetry report/finish_evaluation hooks"),
+        similarity_bps: 10_000,
+        rationale: format!("sim: {}", hit.rationale),
     })
 }
 
@@ -433,6 +446,19 @@ fn metrics_cheat_verdict(
             rationale: format!("sim: impossible bpb={bpb} tokens_seen={tokens}"),
         }));
     }
+    // Recipe-v1: sub-1.0 BPB on the frozen val cut is not attainable by real
+    // causal LMs at the allowed scale/budget — hallmark of label leak / forge.
+    if bpb < SIM_ABSURD_LOW_BPB {
+        return Ok(Some(AgenticVerdict {
+            verdict: VerdictKind::Cheat,
+            cheat_codes: vec![CheatCode::NonCausalLabelLeak],
+            nearest_id: None,
+            similarity_bps: 10_000,
+            rationale: format!(
+                "sim: absurdly low bpb={bpb} (< {SIM_ABSURD_LOW_BPB}) — label leak / forge"
+            ),
+        }));
+    }
     if wall < 0.01 && tokens > 10_000 {
         return Ok(Some(AgenticVerdict {
             verdict: VerdictKind::Cheat,
@@ -662,6 +688,76 @@ def train(model, ctx):
         req.domain_rules = crate::PRISM_DOMAIN_RULES.into();
         let v = SimAgent::new().review(&req).await.unwrap();
         assert_eq!(v.verdict, VerdictKind::Clean);
+    }
+
+    #[tokio::test]
+    async fn sim_prism_tokenmix_label_leak_is_cheat() {
+        // Sanitized prod class (`b99a7047`): dense `TokenMix` over time, no causal mask.
+        let dir = tempdir().unwrap();
+        let arch = r"
+import torch.nn as nn
+class TokenMix(nn.Module):
+    def __init__(self, seq, hidden):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(seq, hidden), nn.GELU(), nn.Linear(hidden, seq))
+    def forward(self, x):
+        return self.net(x.transpose(1, 2)).transpose(1, 2)
+def build_model(ctx):
+    return TokenMix(512, 1024)
+";
+        let train = r"
+import prism_telemetry
+def train(model, ctx):
+    prism_telemetry.report(loss=1.0, step=1)
+    prism_telemetry.finish_evaluation()
+    return {'loss': 1.0}
+";
+        fs::write(dir.path().join("architecture.py"), arch).unwrap();
+        fs::write(dir.path().join("training.py"), train).unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["architecture.py".into(), "training.py".into()],
+            corpus: vec![],
+            metrics_relpath: None,
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: crate::PRISM_DOMAIN_RULES.into(),
+        };
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+        assert!(v.cheat_codes.contains(&CheatCode::NonCausalLabelLeak));
+    }
+
+    #[tokio::test]
+    async fn sim_absurd_low_bpb_is_label_leak() {
+        let dir = tempdir().unwrap();
+        let arch = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
+        let train = r"
+import prism_telemetry
+def train(model, ctx):
+    prism_telemetry.report(loss=1.0, step=1)
+    prism_telemetry.finish_evaluation()
+    return {'loss': 1.0}
+";
+        fs::write(dir.path().join("architecture.py"), arch).unwrap();
+        fs::write(dir.path().join("training.py"), train).unwrap();
+        fs::write(
+            dir.path().join("metrics.json"),
+            r#"{"bpb":0.23,"tokens_seen":2048,"wall_clock_seconds":540.0,"notes":"recipe-v1"}"#,
+        )
+        .unwrap();
+        let req = ReviewRequest {
+            workdir: dir.path().to_path_buf(),
+            primary_relpaths: vec!["architecture.py".into(), "training.py".into()],
+            corpus: vec![],
+            metrics_relpath: Some("metrics.json".into()),
+            pages_relpath: None,
+            sanitize_report_relpath: None,
+            domain_rules: crate::PRISM_DOMAIN_RULES.into(),
+        };
+        let v = SimAgent::new().review(&req).await.unwrap();
+        assert_eq!(v.verdict, VerdictKind::Cheat);
+        assert!(v.cheat_codes.contains(&CheatCode::NonCausalLabelLeak));
     }
 
     #[tokio::test]

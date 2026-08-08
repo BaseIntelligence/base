@@ -640,6 +640,8 @@ fn parse_cheat_code(s: &str) -> Result<CheatCode, AgenticError> {
         "inconsistent_metrics" => CheatCode::InconsistentMetrics,
         "eval_short_circuit" => CheatCode::EvalShortCircuit,
         "ast_architecture_copy" => CheatCode::AstArchitectureCopy,
+        "missing_telemetry_hooks" => CheatCode::MissingTelemetryHooks,
+        "non_causal_label_leak" => CheatCode::NonCausalLabelLeak,
         other => return Err(AgenticError::Parse(format!("cheat_code: {other:?}"))),
     })
 }

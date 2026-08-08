@@ -192,8 +192,10 @@ in order and terminal-reject with `Score(0)` on hit:
    `POST /v1/submissions/precheck` (quota 3/coldkey/UTC day) without queuing
    a submission.
 2. **Static source cheat** (`challenge_agentic::static_source_cheat`) —
-   hardcoded `METRICS_JSON=` short-circuit; missing
-   `prism_telemetry.report` / `finish_evaluation` hooks in `training.py`.
+   hardcoded `METRICS_JSON=` short-circuit; non-causal dense sequence mixers
+   (MLP-Mixer / TokenMix over time without a causal mask — label leak into
+   next-token CE); missing `prism_telemetry.report` / `finish_evaluation`
+   hooks in `training.py`.
 3. **Cheap LLM similarity** (`prism-review` similarity-v3) — hard-zero on
    `Copied`, and on `Suspicious` when `score ≥ 0.9` with non-trope evidence
    (`combine_final` + pre-pod share [`cheap_similarity_hard_zeros`]).
@@ -226,6 +228,7 @@ Cheat taxonomy (Prism-relevant):
 | `ast_architecture_copy` | AST copy of another miner's architecture |
 | `near_identical_harness_copy` | Near-identical corpus copy |
 | `missing_telemetry_hooks` | `training.py` does not call `prism_telemetry.report` + `finish_evaluation` |
+| `non_causal_label_leak` | Dense time-axis mix (TokenMix / `t_mix` / `Linear(seq,…)`) without a causal mask, so next-token CE can see labels; also recipe-v1 `bpb < 1.0` |
 
 Cheap `Copied` from single-shot similarity remains a hard-zero first filter;
 cheap `Suspicious` uses the numeric score against
