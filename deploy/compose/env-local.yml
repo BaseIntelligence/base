@@ -39,6 +39,9 @@ services:
       - ./.local/trust-root:/etc/base/config:ro
 
   validator:
+    # role-master disables on-chain submit on droplet masters; local-e2e needs
+    # a co-located validator for Match/CRV4 smoke against the local gateway.
+    profiles: !override []
     # Avoid role-master 18080 — often taken by staging SSH tunnels on laptops.
     ports: !override
       - "127.0.0.1:${LOCAL_VALIDATOR_HOST_PORT:-28080}:8080"
