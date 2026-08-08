@@ -19,8 +19,8 @@ Terraform: [`terraform/`](terraform/). Firewall: SSH from operator IP; CI uses e
 
 | File | Purpose |
 |------|---------|
-| `compose/role-master.yml` | gateway profile, VPC publish |
-| `compose/role-validator.yml` | no gateway; external gateway endpoint |
+| `compose/role-master.yml` | gateway profile, VPC publish; **no validator** (avoids dual CRV4 submit) |
+| `compose/role-validator.yml` | no gateway; external gateway endpoint; sole on-chain submitter |
 | `compose/env-staging.yml` | testnet 541, faster coordination |
 | `compose/env-prod.yml` | mainnet, conservative intervals |
 | `compose/env-local.yml` | **local only** — ports/smoke knobs/tunnel env; always on top of `env-staging` |
@@ -120,7 +120,9 @@ Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary
 
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
-**Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Sole on-chain submitter for hotkey `5Gzi…` is the Rust validator on `192.81.218.11` — do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.
+**Sole on-chain submitter (mainnet hotkey `5Gzi…`):** Rust `base-validator-1` on **`base-prod-validator` (`192.81.218.11`) only**. `role-master.yml` profiles the validator under `never`; `remote-deploy.sh --role master` force-removes any leftover container. Do **not** run a second validator (or Python weight submitter) with the same wallet — dual submitters fight `WeightsSetRateLimit` and can leave CRV4 commits stuck while incentive still shows a prior monopoly UID.
+
+**Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.
 
 **Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → seal → `GET /v1/weights/latest` **`sealed: true`**. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
 

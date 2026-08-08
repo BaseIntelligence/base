@@ -416,23 +416,35 @@ fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE "\${UP_ARGS[@]}"
 # Profile-disabled services are not started, but an older compose project may
 # still be running them. On validator, force-remove master-only challenge
-# surfaces so smoke health does not see stale unhealthy containers.
+# surfaces so smoke health does not see stale unhealthy containers. On master,
+# force-remove the validator so a prior dual-submitter cannot fight the
+# validator-host wallet for WeightsSetRateLimit / CRV4 commits.
 if [[ '$ROLE' == 'validator' ]]; then
   docker compose ${COMPOSE_FILES[*]} rm -sf \
     prism-challenge design-challenge design-egress-proxy socket-proxy \
+    >/dev/null 2>&1 || true
+elif [[ '$ROLE' == 'master' ]]; then
+  docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} rm -sf validator \
     >/dev/null 2>&1 || true
 fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
 # Local health probes via published tunnels if present, else container exec.
 sleep 5
-if curl -fsS -m 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
-  echo "validator tunnel health: \$(curl -fsS -m 5 http://127.0.0.1:18080/healthz)"
-elif docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T validator curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
-  echo "validator health: ok (in-container)"
-else
-  echo "validator health: probe deferred (container may still be starting)"
+if [[ '$ROLE' == 'validator' ]]; then
+  if curl -fsS -m 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
+    echo "validator tunnel health: \$(curl -fsS -m 5 http://127.0.0.1:18080/healthz)"
+  elif docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T validator curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    echo "validator health: ok (in-container)"
+  else
+    echo "validator health: probe deferred (container may still be starting)"
+  fi
 fi
 if [[ '$ROLE' == 'master' ]]; then
+  if docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} ps --status running --services 2>/dev/null | grep -qx validator; then
+    echo "remote-deploy: ERROR: validator still running on master (dual submitter)" >&2
+    exit 1
+  fi
+  echo "master: validator absent (sole on-chain submitter is validator host)"
   if docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T gateway curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
     echo "gateway health: ok"
   else
