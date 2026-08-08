@@ -94,6 +94,9 @@ fn row(
     status: Stage,
     created_ms: u64,
 ) -> SubmissionState {
+    // Terminated priors used as copy-gate victims must be champions (Score>0);
+    // the gate corpus is tops + ex-tops only.
+    let final_score = matches!(status, Stage::Terminated).then_some(FinalScore::Score(1));
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
@@ -112,7 +115,7 @@ fn row(
         arch_id: None,
         review: None,
         similarity: None,
-        final_score: None,
+        final_score,
         retry_count: 0,
         error_detail: None,
         created_at_ms: created_ms,

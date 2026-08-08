@@ -30,8 +30,9 @@ pub enum FinalOutcome {
 /// The score is **pure bpb**: the LLM review is an anti-cheat / coherence
 /// GATE, never a grader — its quality vote and issues are recorded as audit
 /// events but never add nor remove points. Agentic `Cheat`/`Suspicious` and
-/// cheap similarity `Copied`/`Suspicious` are hard gates (miner-attributable
-/// `Score{0}`). Missing agentic verdict is fail-closed upstream as
+/// cheap similarity `Copied` are hard gates (miner-attributable `Score{0}`).
+/// Cheap LLM `Suspicious` is advisory only (agentic + AST thresholds are the
+/// primary judge). Missing agentic verdict is fail-closed upstream as
 /// [`FinalOutcome::ChallengeInternal`].
 ///
 /// # Panics
@@ -53,10 +54,7 @@ pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
             if matches!(agentic, VerdictKind::Cheat | VerdictKind::Suspicious) {
                 return FinalScore::Score(0);
             }
-            if matches!(
-                similarity,
-                prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
-            ) {
+            if matches!(similarity, prism_review::SimilarityKind::Copied) {
                 return FinalScore::Score(0);
             }
             FinalScore::Score(score_from_bpb(*bpb))
@@ -70,6 +68,7 @@ mod final_tests {
     use prism_challenge_task::SCORE_MAX;
     use prism_review::SimilarityKind::Copied;
     use prism_review::SimilarityKind::Original;
+    use prism_review::SimilarityKind::Suspicious;
 
     #[test]
     fn copied_is_hard_zero() {
@@ -80,6 +79,20 @@ mod final_tests {
             agentic: challenge_agentic::VerdictKind::Clean,
         };
         assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+    }
+
+    #[test]
+    fn cheap_suspicious_is_not_hard_zero() {
+        let o = FinalOutcome::Measured {
+            bpb: 1.0,
+            quality: 900,
+            similarity: Suspicious,
+            agentic: challenge_agentic::VerdictKind::Clean,
+        };
+        assert!(matches!(
+            combine_final(&o),
+            prism_store::FinalScore::Score(v) if v > 0
+        ));
     }
 
     #[test]

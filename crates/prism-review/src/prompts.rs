@@ -13,9 +13,15 @@ pub const REVIEW_PROMPT_V3: &str = include_str!("../prompts/review_v3.md");
 /// v2 scope change: similarity judges `architecture.py` ONLY — `training.py`
 /// is exempt from both the candidate and the corpus (the same training
 /// script on two different architectures is legitimate).
+///
+/// v3: corpus is champions (top + ex-tops) + baseline; hard ban on citing
+/// standard LM components (RMSNorm / RoPE / SwiGLU / …) as plagiarism evidence.
+#[allow(dead_code)] // retained for audit / diff against similarity-v3
 pub const SIMILARITY_PROMPT_V2: &str = include_str!("../prompts/similarity_v2.md");
+/// Current similarity prompt (v3).
+pub const SIMILARITY_PROMPT_V3: &str = include_str!("../prompts/similarity_v3.md");
 
 /// Version string for the review prompt.
 pub const REVIEW_PROMPT_VERSION: &str = "review-v3";
 /// Version string for the similarity prompt.
-pub const SIMILARITY_PROMPT_VERSION: &str = "similarity-v2";
+pub const SIMILARITY_PROMPT_VERSION: &str = "similarity-v3";

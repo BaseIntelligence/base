@@ -16,11 +16,13 @@
 
 #![forbid(unsafe_code)]
 
+mod generic_arch;
 mod llm;
 mod prompts;
 mod sim;
 mod types;
 
+pub use generic_arch::{coerce_generic_similarity, evidence_is_only_generic_tropes};
 pub use llm::{load_api_key_file, OpenRouterClient};
 pub use prompts::{REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_VERSION};
 pub use sim::SimReviewer;

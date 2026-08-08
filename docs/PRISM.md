@@ -15,23 +15,24 @@ plus **training-only submissions** (`training.py` + a published `arch_id`)
 for the architecture competition (see below). Each evaluation is executed
 for real on a Lium GPU pod rented by the operator master (Sim backend in CI
 only). A **pre-LLM copy gate** rejects byte/AST copies of strictly-earlier
-architectures (`created_at` ordered) without spending pod or LLM time.
-The code is then LLM-reviewed for coherence, then judged for architecture
-similarity (**`architecture.py` only** — `training.py` is exempt: the same
-training script on two different architectures is legitimate), then run
-through the shared **agentic** anti-cheat verifier (`challenge-agentic`:
-tools + AST + metrics/receipt; OpenRouter when keyed, `SimAgent` in CI).
-The LLM review also enforces the **telemetry contract**: `training.py` must
-call `prism_telemetry.report(...)` + `prism_telemetry.finish_evaluation()`;
-missing hooks are a hard contract violation (`missing_telemetry_hooks` →
-`Score(0)`, terminal). Cheap review/similarity stay as first filters;
-agentic is the primary anti-cheat judge. The LLM quality vote is a
-**coherence gate, never a grader**: the final score is pure bpb, with
-hard-zero on agentic `cheat`/`suspicious` and cheap `Copied`/`Suspicious`.
-Missing agentic verdict is fail-closed (`ChallengeInternal`). Leaves are
-D24-complete per chain epoch, emitted at epoch close from the finalized-since-
-last-epoch batch (see **Leaf emission** below). Review
-findings are audit events, not points.
+**champion** architectures (Score>0 top + ex-tops; `created_at` ordered)
+without spending pod or LLM time. The code is then LLM-reviewed for
+coherence, then judged for architecture similarity (**`architecture.py`
+only** — `training.py` is exempt: the same training script on two different
+architectures is legitimate), then run through the shared **agentic**
+anti-cheat verifier (`challenge-agentic`: tools + AST + metrics/receipt;
+OpenRouter when keyed, `SimAgent` in CI). The LLM review also enforces the
+**telemetry contract**: `training.py` must call `prism_telemetry.report(...)`
++ `prism_telemetry.finish_evaluation()`; missing hooks are a hard contract
+violation (`missing_telemetry_hooks` → `Score(0)`, terminal). Cheap
+`Copied` is a hard first filter; cheap `Suspicious` is advisory. Agentic is
+the primary anti-cheat judge and must not treat standard LM components as
+plagiarism. The LLM quality vote is a **coherence gate, never a grader**:
+the final score is pure bpb, with hard-zero on agentic `cheat`/`suspicious`
+and cheap `Copied`. Missing agentic verdict is fail-closed
+(`ChallengeInternal`). Leaves are D24-complete per chain epoch, emitted at
+epoch close from the finalized-since-last-epoch batch (see **Leaf emission**
+below). Review findings are audit events, not points.
 
 This is **not** agent-challenge Phala/TDX attestation and **not**
 hypertraining B300 tournament code.
@@ -181,28 +182,35 @@ absent/empty → publishing is a graceful no-op, scoring is unaffected.
 Before any pod rent, **pre-pod screens** (no GPU, no private eval assets) run
 in order and terminal-reject with `Score(0)` on hit:
 
-1. **Pre-LLM copy gate** — candidate `architecture.py` vs recent submissions
-   from **other miners** (byte hash + `challenge-ast`; same hotkey/coldkey
-   prior art excluded). Byte/AST copy of a **strictly-earlier** submission is
-   rejected. Ties / unknown timestamps fall through; baseline is exempt.
-   Miners may probe this gate via `POST /v1/submissions/precheck` (quota
-   3/coldkey/UTC day) without queuing a submission.
+1. **Pre-LLM copy gate** — candidate `architecture.py` vs **champions**
+   (current top + historical Score>0 ex-tops) from **other miners** (byte hash
+   + `challenge-ast`; same hotkey/coldkey prior art excluded). Byte/AST copy
+   of a **strictly-earlier** champion is rejected. Ties / unknown timestamps
+   fall through; baseline is exempt. Miners may probe this gate via
+   `POST /v1/submissions/precheck` (quota 3/coldkey/UTC day) without queuing
+   a submission.
 2. **Static source cheat** (`challenge_agentic::static_source_cheat`) —
    hardcoded `METRICS_JSON=` short-circuit; missing
    `prism_telemetry.report` / `finish_evaluation` hooks in `training.py`.
-3. **Cheap AST similarity** (`prism-review`) — `Copied` / `Suspicious` hard
-   zero before rent.
+3. **Cheap LLM similarity** (`prism-review` similarity-v3) — hard-zero on
+   `Copied` only before rent. `Suspicious` is advisory (does not reject).
+   Parsers coerce verdicts whose evidence is only standard LM components
+   (RMSNorm / RoPE / SwiGLU / LayerNorm / gated or parallel residual, …).
 
 After measure, the LLM quality review and the shared `challenge-agentic` loop
 inspect sources + metrics/receipt with read-only tools (`list_dir`,
 `read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`) against an
-**architecture-only** corpus of baseline + other miners' recent submissions.
-Final judge is the mandatory `submit_verdict` function-call.
+**architecture-only** corpus of baseline + champions. Final judge is the
+mandatory `submit_verdict` function-call. Agentic must not treat generic
+modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
+`≥9500` cheat) remain the structural copy thresholds.
 
 | Verdict | Leaf effect |
 |---------|-------------|
 | `clean` | proceed; score = pure bpb on `[0, SCORE_MAX]` |
-| `suspicious` / `cheat` | `Score(0)` via `combine_final` |
+| agentic `suspicious` / `cheat` | `Score(0)` via `combine_final` |
+| cheap LLM `Copied` | `Score(0)` |
+| cheap LLM `Suspicious` | advisory only (not a hard zero) |
 | missing / unparseable | `NoScore(ChallengeInternal)` (fail-closed) |
 
 Cheat taxonomy (Prism-relevant):
@@ -215,9 +223,11 @@ Cheat taxonomy (Prism-relevant):
 | `near_identical_harness_copy` | Near-identical corpus copy |
 | `missing_telemetry_hooks` | `training.py` does not call `prism_telemetry.report` + `finish_evaluation` |
 
-Cheap `Copied` / `Suspicious` from single-shot similarity remain hard-zero
-first filters; agentic is the **primary** anti-cheat judge. LLM quality stays
-audit-only for the bpb score (coherence gate, never a grader).
+Cheap `Copied` from single-shot similarity remains a hard-zero first filter;
+cheap `Suspicious` is advisory. Agentic is the **primary** anti-cheat judge.
+Public site gallery/leaderboard list **champions only** (Score>0); operators
+still see the full corpus via the challenge API. LLM quality stays audit-only
+for the bpb score (coherence gate, never a grader).
 
 ## Crates
 
