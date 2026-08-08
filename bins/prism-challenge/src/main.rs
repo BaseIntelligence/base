@@ -22,9 +22,15 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use challenge_agentic::{AgenticBackend, OpenRouterAgent, SimAgent};
 use challenge_keys::load_challenge_secret;
 use clap::{Parser, Subcommand};
+use lium_funding::{
+    funding_router, EligibilityChecker, EnvTaoOracle, FakeLiumAccount, FakeTaoVerifier,
+    FundingConfig, FundingError, FundingHttpState, FundingService, HttpLiumAccount,
+    LiumAccountClient, MemoryFundingStore, PrismFundingPolicy, TaoPaymentVerifier, TaoPriceOracle,
+};
 use prism_challenge::{
     submission_router, AppState, DbPrismStore, MemoryPrismStore, Orchestrator, OrchestratorConfig,
     PrismStore, CHALLENGE_ID, SCORING_VERSION,
@@ -361,6 +367,7 @@ fn build_topmodel() -> Option<Arc<prism_registry::TopModelPublisher>> {
     p
 }
 
+#[allow(clippy::too_many_lines)]
 async fn cmd_serve(cli: Cli) -> Result<(), String> {
     let path = resolve_sk_path(cli.challenge_sk_file.as_ref())?;
     if !path.is_file() {
@@ -398,7 +405,13 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         gating: gating_enabled.then(|| Arc::clone(&gating)),
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
     });
-    let app = submission_router(Arc::clone(&state));
+    let funding = build_funding(
+        Arc::clone(&store),
+        gating_enabled.then(|| Arc::clone(&metagraph)),
+    );
+    let app = submission_router(Arc::clone(&state)).merge(funding_router(FundingHttpState {
+        service: Arc::clone(&funding),
+    }));
 
     // Chain (for epoch/E): live only when endpoint configured; otherwise a
     // fixed epoch-0 (local sim posture documented in PRISM.md).
@@ -454,7 +467,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
             Duration::from_secs(cli.gating_watch_secs.max(15)),
         );
     }
-    let orchestrator = Arc::new(orchestrator);
+    let orchestrator = Arc::new(orchestrator.with_funding(funding));
     spawn_orchestrator(&cli, &orchestrator);
 
     let listener = TcpListener::bind(cli.bind)
@@ -498,6 +511,78 @@ fn spawn_epoch_feed(chain_ep: &str, state: &Arc<AppState>) {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
+}
+
+/// Prism funding eligibility: metagraph member + zero prior Prism submissions.
+struct PrismFundingElig {
+    store: Arc<dyn PrismStore>,
+    metagraph: Option<Arc<MetagraphCache>>,
+}
+
+#[async_trait]
+impl EligibilityChecker for PrismFundingElig {
+    async fn ensure_eligible(&self, hotkey: &str) -> Result<(), FundingError> {
+        let hk = hotkey.trim().to_ascii_lowercase();
+        if let Some(mg) = &self.metagraph {
+            match mg.snapshot() {
+                Some(view) if view.contains_hex(&hk) => {}
+                Some(_) => {
+                    return Err(FundingError::Ineligible(
+                        "hotkey not registered on subnet metagraph".into(),
+                    ));
+                }
+                None => {
+                    return Err(FundingError::Ineligible(
+                        "metagraph snapshot unavailable".into(),
+                    ));
+                }
+            }
+        }
+        let prior = self
+            .store
+            .list(None, Some(&hk), 1)
+            .await
+            .map_err(|e| FundingError::Store(e.to_string()))?;
+        if !prior.is_empty() {
+            return Err(FundingError::Ineligible(
+                "hotkey already has a Prism submission".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn build_funding(
+    store: Arc<dyn PrismStore>,
+    metagraph: Option<Arc<MetagraphCache>>,
+) -> Arc<FundingService> {
+    // Always mount the funding HTTP surface; rent gate stays off until
+    // PRISM_REQUIRE_LIUM_FUNDING=1 (see docs/LIUM_FUNDING.md).
+    let cfg = FundingConfig::from_env();
+    let elig: Arc<dyn EligibilityChecker> = Arc::new(PrismFundingElig { store, metagraph });
+    let policy = Arc::new(PrismFundingPolicy::new(elig).with_economics(cfg.economics));
+    let oracle: Arc<dyn TaoPriceOracle> = Arc::new(EnvTaoOracle {
+        fallback_usd_per_tao: 400.0,
+    });
+    let payments: Arc<dyn TaoPaymentVerifier> = Arc::new(FakeTaoVerifier::default());
+    let lium: Arc<dyn LiumAccountClient> = load_lium_api_key()
+        .and_then(|k| HttpLiumAccount::new(k).ok())
+        .map_or_else(
+            || Arc::new(FakeLiumAccount { balance_usd: 0.0 }) as Arc<dyn LiumAccountClient>,
+            |c| Arc::new(c) as Arc<dyn LiumAccountClient>,
+        );
+    tracing::info!(
+        require_funding = cfg.require_funding,
+        "lium-funding surface enabled (payment verifier=fake until on-chain watcher ships)"
+    );
+    Arc::new(FundingService::new(
+        cfg,
+        policy,
+        Arc::new(MemoryFundingStore::default()),
+        oracle,
+        payments,
+        lium,
+    ))
 }
 
 fn spawn_orchestrator(cli: &Cli, orchestrator: &Arc<Orchestrator<chain_live::LiveChainClient>>) {

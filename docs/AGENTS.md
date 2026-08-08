@@ -23,6 +23,7 @@ When a spike or evidence report conflicts with a frozen spec or runbook, the nor
 | [`runbooks/measurement-repin-socket-proxy.md`](runbooks/measurement-repin-socket-proxy.md) | Socket-proxy measurement re-pin |
 | [`runbooks/design-enable-and-emission.md`](runbooks/design-enable-and-emission.md) | Design keygen + emission unlock |
 | [`runbooks/prism-enable-lium-and-emission.md`](runbooks/prism-enable-lium-and-emission.md) | Prism Lium + emission |
+| [`LIUM_FUNDING.md`](LIUM_FUNDING.md) | Shared challenge GPU TAO prepay (scaffolding; Prism first) |
 
 Deploy topology and CI lanes: [`../deploy/README.md`](../deploy/README.md) and [`../deploy/AGENTS.md`](../deploy/AGENTS.md).  
 Repo-wide agent contract: [`../AGENTS.md`](../AGENTS.md).

@@ -5,7 +5,8 @@
 **recipe_version:** `1.2.0` (telemetry hooks 1.1.0 + architecture registry / training-only submissions 1.2.0)  
 **port:** `8092`  
 **emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
-**GPU path:** master-centralized **Lium** (no Phala CVM)
+**GPU path:** master-centralized **Lium** (no Phala CVM)  
+**GPU prepay (scaffolding):** shared [`LIUM_FUNDING.md`](LIUM_FUNDING.md) — quote/status under `/v1/funding/*`; rent gate `PRISM_REQUIRE_LIUM_FUNDING` default **off**
 
 ## What it is
 
@@ -221,6 +222,7 @@ audit-only for the bpb score (coherence gate, never a grader).
 |-------|------|
 | `prism-challenge-task` | Identity constants / domains |
 | `prism-lium` | Lium REST client, real recipe exec over SSH, `SimLiumBackend`, `EvalReceipt` |
+| `lium-funding` | Shared TAO prepay quote/credit ledger; Prism policy + orchestrator rent gate (flagged) |
 | `prism-recipe` | Contract validation, dataset pin, harness, baseline sources |
 | `prism-pipeline` | Intake contract (validation, `arch_id` rules, gating keys) + eval pipeline |
 | `prism-review` | OpenRouter LLM (quality + arch-only similarity) + deterministic sim fallback |

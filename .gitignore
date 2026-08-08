@@ -67,6 +67,9 @@ miner-runtime/
 !deploy/secrets/
 deploy/secrets/*
 !deploy/secrets/README.md
+!deploy/secrets/lium/
+deploy/secrets/lium/*
+!deploy/secrets/lium/README.md
 
 
 __pycache__/

@@ -18,6 +18,7 @@ challenge-keys = { path = "../../crates/challenge-keys" }
 chain = { path = "../../crates/chain" }
 chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }
+lium-funding = { path = "../../crates/lium-funding" }
 prism-challenge = { path = "../../crates/prism-challenge" }
 prism-lium = { path = "../../crates/prism-lium" }
 prism-recipe = { path = "../../crates/prism-recipe" }
@@ -29,6 +30,7 @@ db = { path = "../../crates/db" }
 telemetry = { path = "../../crates/telemetry" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 trustroot = { path = "../../crates/trustroot" }
+async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 tracing = "0.1"
 

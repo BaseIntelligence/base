@@ -3000,6 +3000,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
+name = "lium-funding"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "hex",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3746,6 +3765,7 @@ dependencies = [
  "db",
  "hex",
  "http-body-util",
+ "lium-funding",
  "prism-challenge-task",
  "prism-emit",
  "prism-lium",
@@ -3772,6 +3792,7 @@ name = "prism-challenge-bin"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "axum",
  "chain",
  "chain-live",
@@ -3780,6 +3801,7 @@ dependencies = [
  "clap",
  "crypto",
  "db",
+ "lium-funding",
  "predicates",
  "prism-challenge",
  "prism-lium",

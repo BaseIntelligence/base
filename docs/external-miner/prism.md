@@ -35,6 +35,15 @@ registry. Published archs and their best bpb: `GET /v1/architectures`.
 Evaluation runs on operator-rented Lium GPU pods (or `SimLiumBackend` in CI).
 You do **not** deploy a miner CVM.
 
+## GPU funding (optional / rolling out)
+
+When the operator enables TAO prepay, request a quote before your first
+submission (`POST`/`GET /v1/funding/quote?challenge_id=prism&hotkey=…`), send
+the quoted TAO to the deposit address (memo included), then poll
+`GET /v1/funding/status`. Eligibility: registered hotkey with **no prior**
+Prism submission. Normative design: [`../LIUM_FUNDING.md`](../LIUM_FUNDING.md).
+Until `PRISM_REQUIRE_LIUM_FUNDING=1`, funding is informational scaffolding only.
+
 ## Submit
 
 ```bash

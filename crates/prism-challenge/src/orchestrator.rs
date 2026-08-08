@@ -24,6 +24,7 @@ use challenge_agentic::{
 };
 use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
+use lium_funding::FundingService;
 use prism_emit::EpochEmitter;
 use prism_lium::{EvalJobBackend, InstanceSpec};
 use prism_pipeline::gating_key;
@@ -98,6 +99,8 @@ pub struct Orchestrator<C: ChainClient + Send> {
     emitter: EpochEmitter,
     gating: Option<Arc<dyn GatingStore>>,
     topmodel: Option<Arc<prism_registry::TopModelPublisher>>,
+    /// Optional Lium prepay gate (`PRISM_REQUIRE_LIUM_FUNDING`; default off).
+    funding: Option<Arc<FundingService>>,
 }
 
 impl<C: ChainClient + Send> Orchestrator<C> {
@@ -125,6 +128,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             emitter,
             gating: None,
             topmodel: None,
+            funding: None,
         }
     }
 
@@ -142,6 +146,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         publisher: Option<Arc<prism_registry::TopModelPublisher>>,
     ) -> Self {
         self.topmodel = publisher;
+        self
+    }
+
+    /// Attach shared Lium funding gate (feature-flagged inside the service).
+    #[must_use]
+    pub fn with_funding(mut self, funding: Arc<FundingService>) -> Self {
+        self.funding = Some(funding);
         self
     }
 
@@ -587,6 +598,12 @@ impl<C: ChainClient + Send> Orchestrator<C> {
     ) -> Result<(prism_lium::RemoteExecResult, prism_lium::EvalReceipt), String> {
         self.to_stage(id, Stage::Provisioning).await?;
 
+        if let Some(f) = &self.funding {
+            f.before_rent(&row.miner_hotkey)
+                .await
+                .map_err(|e| format!("funding: {e}"))?;
+        }
+
         let spec = InstanceSpec {
             name: format!("prism-{}", &id[..12]),
             max_lifetime_hours: self.cfg.max_lifetime_hours,
@@ -606,6 +623,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .provision(&spec)
             .await
             .map_err(|e| format!("provision: {e}"))?;
+        if let Some(f) = &self.funding {
+            if let Err(e) = f.consume_on_provision(&row.miner_hotkey).await {
+                warn!(error = %e, "funding credit consume failed after provision");
+            }
+        }
         let pod_id = inst.id.clone();
         let _ = self
             .store

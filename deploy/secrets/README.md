@@ -37,7 +37,7 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
 
 ## Other
 
-- `lium/` — prism Lium API + SSH keys (see prism runbook)
+- `lium/` — Lium API key + funding deposit wallet placeholders (see [`lium/README.md`](lium/README.md) and [`docs/LIUM_FUNDING.md`](../../docs/LIUM_FUNDING.md)); also prism SSH keys (prism runbook)
 - `wallets/` — btcli wallet trees for gateway owner / validator hotkeys
 - `github/token` — prism-challenge top-model publisher: fine-grained GitHub
   token with **contents:write** on `BaseIntelligence/prism` only. Read via

@@ -90,6 +90,7 @@ Match CI (`.github/workflows/ci.yml`):
 | Doc authority vs evidence | [`docs/AGENTS.md`](docs/AGENTS.md) |
 | Component status | [`docs/COMPLETENESS.md`](docs/COMPLETENESS.md) |
 | Frozen contracts | [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md), [`docs/DESIGN_CHALLENGE.md`](docs/DESIGN_CHALLENGE.md), [`docs/PRISM.md`](docs/PRISM.md) |
+| Shared Lium GPU prepay (scaffolding) | [`docs/LIUM_FUNDING.md`](docs/LIUM_FUNDING.md) · crate `lium-funding` · **off** in prod until wallet live (`PRISM_REQUIRE_LIUM_FUNDING=0`) |
 | Miner HTTP submit | [`docs/external-miner/`](docs/external-miner/) · public: [design-challenge](https://github.com/BaseIntelligence/design-challenge), [prism](https://github.com/BaseIntelligence/prism) |
 | Threat / operator checklist | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), [`docs/OPERATOR_SECURITY.md`](docs/OPERATOR_SECURITY.md) |
 

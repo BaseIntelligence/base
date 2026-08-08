@@ -8,6 +8,9 @@
 4. Run inventory probe → single rent smoke → terminate → `verify_terminated`.
 5. Prod default is `PRISM_MAX_CONCURRENT_EVALS=8` (orchestrator worker count /
    semaphore). Dial down only if the Lium lease pool cannot absorb the load.
+6. **Miner TAO prepay** (optional): see [`../LIUM_FUNDING.md`](../LIUM_FUNDING.md).
+   Keep `PRISM_REQUIRE_LIUM_FUNDING=0` until deposit wallet + oracle + watcher
+   are validated; secrets placeholders under `deploy/secrets/lium/`.
 
 ## Emission ceremony (shared with design)
 
