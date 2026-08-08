@@ -31,6 +31,11 @@ DESIGN_SK="${BASE_DESIGN_SK_FILE:-${BASE_HOME}/deploy/secrets/design_sk}"
 BIN="${WEIGHTS_SMOKE_BIN:-${BASE_HOME}/bin/weights-smoke}"
 LOG="${BURN_SEAL_LOG:-/var/log/base-burn-seal.log}"
 LOCK="${BURN_SEAL_LOCK:-/run/base-burn-seal.lock}"
+# Admin bearer for /v1/admin/seal (required once gateway enforces it).
+if [[ -z "${BASE_GATEWAY_ADMIN_TOKEN:-}" && -z "${BASE_GATEWAY_ADMIN_TOKEN_FILE:-}" \
+  && -f "${BASE_HOME}/deploy/secrets/gateway_admin_token" ]]; then
+  export BASE_GATEWAY_ADMIN_TOKEN_FILE="${BASE_HOME}/deploy/secrets/gateway_admin_token"
+fi
 
 exec 9>"${LOCK}"
 if ! flock -n 9; then

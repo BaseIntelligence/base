@@ -14,9 +14,17 @@ Bind-mounts use the file inode; directory mode 0700 is OK.
 | Path | Used by | Notes |
 |------|---------|-------|
 | `gateway_sk` | gateway | Bundle seal mini-secret (`BASE_GATEWAY_SK_FILE`) |
+| `gateway_admin_token` | gateway + seal scripts | Bearer for `/v1/admin/*` (`BASE_GATEWAY_ADMIN_TOKEN_FILE`). **Required** when `BASE_GATEWAY_REQUIRE_OWNER=1`. Mode **0400**, uid **65532** |
 | `prism_sk` | prism-challenge | PRISM challenge mini-secret |
 | `design_sk` | design-challenge **only** | Design challenge mini-secret; never mount on egress proxy |
 | `challenge_sk` | legacy placeholder | Prefer `prism_sk` / `design_sk`; do not reuse across challenges |
+
+```bash
+# Generate once per environment; never commit the bytes.
+openssl rand -hex 32 > deploy/secrets/gateway_admin_token
+chown 65532:65532 deploy/secrets/gateway_admin_token
+chmod 0400 deploy/secrets/gateway_admin_token
+```
 
 Local dummy for development: decrypt with age:
 `age -d -i ~/.base-secrets/age-identity.txt -o deploy/secrets/design_sk ~/.base-secrets/design-dummy.age`

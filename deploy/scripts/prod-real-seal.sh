@@ -70,7 +70,16 @@ fi
     echo "$(date -Is) chain read failed (last_epoch_block) key=0x${K_LAST_EPOCH_BLOCK}${netuid_hex}"
     exit 1
   }
+  auth_args=()
+  if [[ -n "${BASE_GATEWAY_ADMIN_TOKEN:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer ${BASE_GATEWAY_ADMIN_TOKEN}")
+  elif [[ -n "${BASE_GATEWAY_ADMIN_TOKEN_FILE:-}" && -f "${BASE_GATEWAY_ADMIN_TOKEN_FILE}" ]]; then
+    auth_args=(-H "Authorization: Bearer $(tr -d '[:space:]' <"${BASE_GATEWAY_ADMIN_TOKEN_FILE}")")
+  elif [[ -f "${BASE_HOME}/deploy/secrets/gateway_admin_token" ]]; then
+    auth_args=(-H "Authorization: Bearer $(tr -d '[:space:]' <"${BASE_HOME}/deploy/secrets/gateway_admin_token")")
+  fi
   resp="$(curl -fsS -m 60 -X POST -H 'content-type: application/json' \
+    ${auth_args[@]+"${auth_args[@]}"} \
     -d "{\"epoch\":${epoch},\"netuid\":${NETUID},\"block_b\":${leb}}" \
     "${GATEWAY}/v1/admin/seal" 2>&1)" && rc=0 || rc=$?
   if [[ ${rc} -eq 0 ]]; then

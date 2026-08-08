@@ -32,9 +32,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+resolve_admin_token() {
+  # Prefer env token; else file (prod: deploy/secrets/gateway_admin_token).
+  if [[ -n "${BASE_GATEWAY_ADMIN_TOKEN:-}" ]]; then
+    printf '%s' "${BASE_GATEWAY_ADMIN_TOKEN}"
+    return 0
+  fi
+  local f="${BASE_GATEWAY_ADMIN_TOKEN_FILE:-}"
+  if [[ -z "$f" && -f "${ROOT}/deploy/secrets/gateway_admin_token" ]]; then
+    f="${ROOT}/deploy/secrets/gateway_admin_token"
+  fi
+  if [[ -n "$f" && -f "$f" ]]; then
+    tr -d '[:space:]' <"$f"
+  fi
+}
+
 register_one() {
   local challenge_id="$1" base_url="$2"
-  local payload http body
+  local payload http body token
+  local -a auth=()
+  token="$(resolve_admin_token || true)"
+  if [[ -n "${token}" ]]; then
+    auth=(-H "Authorization: Bearer ${token}")
+  fi
   payload="$(printf '{"challenge_id":"%s","base_url":"%s","weight":1}' "$challenge_id" "$base_url")"
   if [[ "$COMPOSE_MODE" -eq 1 ]]; then
     body="$(docker compose -f docker-compose.yml \
@@ -42,10 +62,12 @@ register_one() {
       exec -T gateway \
       curl -sS -w '\n%{http_code}' -X POST http://127.0.0.1:8080/v1/admin/backends \
       -H 'content-type: application/json' \
+      ${auth[@]+"${auth[@]}"} \
       -d "$payload" 2>/dev/null || true)"
   else
     body="$(curl -sS -w '\n%{http_code}' -X POST "${GATEWAY_URL%/}/v1/admin/backends" \
       -H 'content-type: application/json' \
+      ${auth[@]+"${auth[@]}"} \
       -d "$payload" 2>/dev/null || true)"
   fi
   http="$(printf '%s' "$body" | tail -n1)"
