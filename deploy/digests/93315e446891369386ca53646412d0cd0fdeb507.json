@@ -1,0 +1,79 @@
+{
+  "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+  "created_at": "2026-08-08T11:04:50Z",
+  "images": {
+    "base-attest-helper": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:39b085307f76188fd00a3a644d64d78dde643625f9fd065951e41560311f52e8",
+      "image": "ghcr.io/baseintelligence/base/base-attest-helper@sha256:39b085307f76188fd00a3a644d64d78dde643625f9fd065951e41560311f52e8",
+      "repository": "ghcr.io/baseintelligence/base/base-attest-helper",
+      "service": "base-attest-helper",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "design-challenge": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:b1b76714b4d797d83befde73c8ce3f6fbfdc71286821a94ae643afe2ecf2499e",
+      "image": "ghcr.io/baseintelligence/base/design-challenge@sha256:b1b76714b4d797d83befde73c8ce3f6fbfdc71286821a94ae643afe2ecf2499e",
+      "repository": "ghcr.io/baseintelligence/base/design-challenge",
+      "service": "design-challenge",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "design-egress-proxy": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:e20daace0259f842e9b7e9dc1432072f11ea619928d00b36725034efe89f6596",
+      "image": "ghcr.io/baseintelligence/base/design-egress-proxy@sha256:e20daace0259f842e9b7e9dc1432072f11ea619928d00b36725034efe89f6596",
+      "repository": "ghcr.io/baseintelligence/base/design-egress-proxy",
+      "service": "design-egress-proxy",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "design-review": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:7aeea1b373ed4981eefada32a73a6b4f6256384855ba2644543f5fdb698872dd",
+      "image": "ghcr.io/baseintelligence/base/design-review@sha256:7aeea1b373ed4981eefada32a73a6b4f6256384855ba2644543f5fdb698872dd",
+      "repository": "ghcr.io/baseintelligence/base/design-review",
+      "service": "design-review",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "design-runtime": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:3be2256f83d1cfa4fa2fcdeddb840c093eccc13640abb00a6820a2de18ad4674",
+      "image": "ghcr.io/baseintelligence/base/design-runtime@sha256:3be2256f83d1cfa4fa2fcdeddb840c093eccc13640abb00a6820a2de18ad4674",
+      "repository": "ghcr.io/baseintelligence/base/design-runtime",
+      "service": "design-runtime",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "gateway": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:253832a7c86d7f0ac1ce8e1c125519cd2d22612d220b78d2ed34a89876f38fa8",
+      "image": "ghcr.io/baseintelligence/base/gateway@sha256:253832a7c86d7f0ac1ce8e1c125519cd2d22612d220b78d2ed34a89876f38fa8",
+      "repository": "ghcr.io/baseintelligence/base/gateway",
+      "service": "gateway",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "prism-challenge": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:63d4f060e4ae5489caca980494dafd31cd7febac03894909d32bd6829d3cbc04",
+      "image": "ghcr.io/baseintelligence/base/prism-challenge@sha256:63d4f060e4ae5489caca980494dafd31cd7febac03894909d32bd6829d3cbc04",
+      "repository": "ghcr.io/baseintelligence/base/prism-challenge",
+      "service": "prism-challenge",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "updater": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:6f28c38525358dcecd8cd6bdc088147608fb75d4f1afe09adb7fb38c09012a78",
+      "image": "ghcr.io/baseintelligence/base/updater@sha256:6f28c38525358dcecd8cd6bdc088147608fb75d4f1afe09adb7fb38c09012a78",
+      "repository": "ghcr.io/baseintelligence/base/updater",
+      "service": "updater",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    },
+    "validator": {
+      "commit_sha": "93315e446891369386ca53646412d0cd0fdeb507",
+      "digest": "sha256:9927acb660ca46632bf7f2c2949601a58e86e088f4516282ec3021e8508f1bb2",
+      "image": "ghcr.io/baseintelligence/base/validator@sha256:9927acb660ca46632bf7f2c2949601a58e86e088f4516282ec3021e8508f1bb2",
+      "repository": "ghcr.io/baseintelligence/base/validator",
+      "service": "validator",
+      "tag_sha": "93315e446891369386ca53646412d0cd0fdeb507"
+    }
+  },
+  "registry": "ghcr.io"
+}
