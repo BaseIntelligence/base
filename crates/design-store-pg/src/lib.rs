@@ -1,12 +1,18 @@
 //! `design-db` row layer → [`DesignStore`] adapter.
 
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::assigning_clones)]
+
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use db::PgPool;
 use design_db as dbs;
 
-use crate::store::{
+use design_store::{
     ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, QuotaUsage, RatingRow, RoundAward,
     RoundRow, RunOrigin, RunStage, RunState, StageEvent, StoreError, StorePatch,
 };
@@ -89,6 +95,9 @@ fn run_from(r: dbs::DesignRunRow) -> RunState {
         sanitize_report: r.sanitize_report,
         agentic_verdict: r.agentic_verdict,
         error_detail: r.error_detail,
+        reject_reason: r.reject_reason,
+        attempt_epoch: r.attempt_epoch.map(|e| e.max(0).cast_unsigned()),
+        awaiting_admin_epoch: r.awaiting_admin_epoch.map(|e| e.max(0).cast_unsigned()),
         final_score: final_from(r.kind.as_deref(), r.score, r.absence_reason),
         retry_count: u32::try_from(r.retry_count.max(0)).unwrap_or(u32::MAX),
         created_at_ms: r.created_at_ms.max(0).cast_unsigned(),
@@ -267,6 +276,9 @@ impl DesignStore for DbDesignStore {
                 round_id: i64::try_from(row.round_id).unwrap_or(i64::MAX),
                 harness_id: &row.harness_id,
                 prompt_id: &row.prompt_id,
+                attempt_epoch: row
+                    .attempt_epoch
+                    .map(|e| i64::try_from(e).unwrap_or(i64::MAX)),
             },
         )
         .await
@@ -304,6 +316,10 @@ impl DesignStore for DbDesignStore {
             patch.sanitize_report.clone(),
             patch.agentic_verdict.clone(),
             patch.error_detail.as_deref(),
+            patch.reject_reason.as_deref(),
+            patch
+                .awaiting_admin_epoch
+                .map(|e| i64::try_from(e).unwrap_or(i64::MAX)),
             kind,
             score,
             absence,

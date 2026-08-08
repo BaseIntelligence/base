@@ -115,22 +115,27 @@ proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
 `harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras || env)`.
 `POST /v1/harness` is idempotent on that digest.
 
-### Submission gating (1-max)
+### Submission gating (1-max) + one attempt
 
-- The miner hotkey must be **in the metagraph** (cached snapshot; no signature
-  added). Unknown hotkey → `403 hotkey_not_in_metagraph`; snapshot not ready →
+- The miner hotkey must be **in the metagraph** (bulk cached snapshot, **15m**
+  TTL fail-closed; no per-UID RPC on the request path). Unknown hotkey →
+  `403 hotkey_not_in_metagraph`; snapshot missing/stale →
   `503 metagraph_unavailable`.
 - **One accepted submission per `(challenge, hotkey)`** (`submission_gating`
   table). While the row is `registered` / `blocked` / `rejected`, a *different*
   harness from the same hotkey → `409 submission_gated`. The identical re-POST
   stays idempotent (`200 already-queued`).
+- **One sandbox attempt** per accepted harness: submit schedules
+  `round_id(now) + 1` once. The round loop does **not** auto-roll the harness
+  into later rounds. Infra auto-retry on the *same* run id (up to 3) is not a
+  new attempt. Ops may still `POST /v1/admin/rounds/current/requeue`.
 - **Auto-retry**: infra-class failures (`install`, `ast_infra`, `llm_infra`)
-  requeue automatically up to **3** times; `cheat` / `rejected` are terminal.
-  Budget exhaustion → `failed` + gating `blocked`. Manual
-  `POST /v1/runs/{id}/retry` is unchanged.
+  requeue automatically up to **3** times; `cheat` / `rejected` / admin reject /
+  unscored timeout are terminal. Budget exhaustion → `failed` + gating
+  `blocked`. Manual `POST /v1/runs/{id}/retry` is unchanged.
 - A metagraph **watcher** reopens eligibility (`open`) when the hotkey leaves
-  the metagraph (uid deregistered or hotkey replaced), so the owner may
-  resubmit under a new uid.
+  the metagraph (uid deregistered or hotkey replaced), so the **same hotkey**
+  may resubmit under a **new uid**. The hotkey is never permanently burned.
 - Miner env (`env_vars`) is **locked at submission** into the stored bundle;
   changing it requires a new digest (and a free gating slot).
 
@@ -320,16 +325,15 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
   for the sandbox run phase — not the round length).
 - **Prompts**: repo-pinned bank (`bank_v1.json`, no human approval API);
   deterministic weighted draw
-  `SHA256(domain || round_id || bank_digest)` → 3 prompts per round;
-  identical for every harness in that round.
-- **Quota (two buckets, per hotkey per UTC day)** — an honest harness that runs
-  every round must never be locked out, so organizer-scheduled work does not
-  draw on the miner's anti-spam allowance:
+  `SHA256(domain || round_id || bank_digest)` → **1 prompt** per round
+  (`PROMPTS_PER_ROUND = 1`); identical for every harness in that round.
+- **Quota (two buckets, per hotkey per UTC day)** — organizer-scheduled work
+  does not draw on the miner's anti-spam allowance:
 
   | Bucket | Charged by | Cap | Override |
   |--------|-----------|-----|----------|
   | Manual | `POST /v1/harness` (miner-initiated) | `MANUAL_DAILY_RUN_QUOTA = 10` | `DESIGN_MANUAL_DAILY_RUN_QUOTA` |
-  | Scheduled | Round dispatch + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **60** at 10 rounds × 3 prompts) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
+  | Scheduled | Submit next-round schedule + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **20** at 10 rounds × 1 prompt) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
 
   Enforcement is **per bucket**: exhausting manual submissions never stops the
   round scheduler, and the scheduled cap is a runaway-scheduler guard, not a
@@ -347,10 +351,21 @@ docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
 Stages after sanitize: **`AgenticReview` → `AwaitingAdmin`** (clean only).
 Cheat / suspicious → immediate `Score(0)` (not admin-eligible).
 
-Human role is **only** selecting **1 or 2** winner harnesses per round
-via `POST /v1/admin/rounds/{id}/winners` (no prompt approval, no page-pair
-Elo on the leaf path). Annotate endpoints are deprecated / unused for scoring.
-Prompt bank `bank_v1.json` is fully automatic — no human prompt validation.
+Human role is selecting **1 or 2** winner harnesses per round via
+`POST /v1/admin/rounds/{id}/winners`, or rejecting candidates via
+`POST /v1/admin/rounds/{id}/reject` with a miner-visible `reason`
+(no prompt approval, no page-pair Elo on the leaf path). Annotate endpoints
+are deprecated / unused for scoring. Prompt bank `bank_v1.json` is fully
+automatic — no human prompt validation.
+
+### Unscored timeout (`UNSCORED_EPOCH_LIMIT = 5`)
+
+Clean runs stamp `awaiting_admin_epoch` (chain epoch) when they enter
+`awaiting_admin`. If still unscored when
+`current_epoch - awaiting_admin_epoch >= 5`, the sweeper auto-rejects the run
+(`rejected`, `Score(0)`, `reject_reason` explaining the timeout) and sets
+gating `rejected`. The miner must register a **new UID** (hotkey may leave and
+re-enter the metagraph) before another submission is accepted.
 
 Shared verifier: `challenge-agentic` (tools + `challenge-ast` + pages /
 `sanitize_report`; OpenRouter when keyed, `SimAgent` in CI). Fail-closed:
@@ -530,7 +545,8 @@ returns 403). Operators hit `design-challenge:8093` on the master host
 |-------|---------|
 | `GET /v1/admin/rounds/{id}/candidates` | Clean `awaiting_admin` runs (pages + verdict) |
 | `POST /v1/admin/rounds/{id}/winners` | Body `{ "harness_ids": ["…"] }` length 1 or 2; awards + emits leaves |
-| `POST /v1/admin/rounds/current/requeue` | Schedule all active harnesses into the **current** open round (idempotent per harness; quota-blocked harnesses reported under `skipped`) |
+| `POST /v1/admin/rounds/{id}/reject` | Body `{ "harness_ids": ["…"], "reason": "…" }`; terminal `rejected` + miner-visible `reject_reason` on `GET /v1/runs/{id}`; gating closed until UID leave |
+| `POST /v1/admin/rounds/current/requeue` | Schedule all active harnesses into the **current** open round (ops escape hatch; idempotent per harness; quota-blocked harnesses reported under `skipped`) |
 | `GET /v1/rounds/{id}/leaderboard` | Round ratings |
 
 ### Annotation (deprecated; unused on leaf path)

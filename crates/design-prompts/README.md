@@ -9,7 +9,7 @@ bank evolution is a normal code PR.
 | Digest | `bank_digest()` / alias `prompt_set_digest()` — SHA-256 hex of bank JSON bytes |
 | Round length | `ROUND_SECS = 8_640` (10 rounds / UTC day) in `design-challenge-task` |
 | Selection | Weighted draw without replacement from `SHA256(domain ‖ round_id ‖ bank_digest)` |
-| Per round | `PROMPTS_PER_ROUND = 3` |
+| Per round | `PROMPTS_PER_ROUND = 1` |
 
 Each bank entry: `id`, `category`, `title`, `weight`, `temperature`, `prompt`
 (rich brief requiring `index.html` / `pricing.html` / `components.html`).

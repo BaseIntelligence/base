@@ -332,9 +332,14 @@ pub fn design_submission(
         .unwrap_or(0);
     let mut score = None;
     let mut failure_reason = run
-        .get("error_detail")
+        .get("reject_reason")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .or_else(|| {
+            run.get("error_detail")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
     if let Some(detail) = run_detail {
         if let Some(fs) = detail.get("final_score") {
             if let Some(v) = fs.get("score").and_then(num_f64_val) {
@@ -345,9 +350,15 @@ pub fn design_submission(
         }
         if failure_reason.is_none() {
             failure_reason = detail
-                .get("error_detail")
+                .get("reject_reason")
                 .and_then(Value::as_str)
-                .map(str::to_owned);
+                .map(str::to_owned)
+                .or_else(|| {
+                    detail
+                        .get("error_detail")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
         }
     }
     let status_detail = failure_reason.clone().or_else(|| match status_s {

@@ -27,6 +27,7 @@ design-sandbox = { path = "../../crates/design-sandbox" }
 design-sanitize = { path = "../../crates/design-sanitize" }
 serde_json = "1"
 design-store = { path = "../../crates/design-store" }
+design-store-pg = { path = "../../crates/design-store-pg" }
 design-harness = { path = "../../crates/design-harness" }
 review-docker = { path = "../../crates/review-docker" }
 submission-gating = { path = "../../crates/submission-gating" }

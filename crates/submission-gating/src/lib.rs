@@ -455,6 +455,9 @@ impl MetagraphView {
     }
 }
 
+/// Bulk metagraph snapshot max age (15m) before intake fail-closes.
+pub const METAGRAPH_CACHE_TTL_SECS: u64 = 900;
+
 /// Cached metagraph snapshot refreshed by the watcher; intake reads only this
 /// cache (no chain call on the request path).
 #[derive(Debug, Default)]
@@ -501,6 +504,19 @@ impl MetagraphCache {
     #[must_use]
     pub fn snapshot(&self) -> Option<MetagraphView> {
         self.inner.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Snapshot if younger than `max_age_secs`; else `None`.
+    #[must_use]
+    pub fn snapshot_fresh(&self, max_age_secs: u64) -> Option<MetagraphView> {
+        let view = self.snapshot()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if now.saturating_sub(view.fetched_at_secs) > max_age_secs {
+            return None;
+        }
+        Some(view)
     }
 }
 

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,13 +16,16 @@ use challenge_common::{
     GatewayClient, PinnedBlockHash,
 };
 use crypto::KEY_LEN;
-use design_challenge_task::{round_id_at, round_secs};
-use design_http::{mark_awaiting_admin, schedule_harness_for_round, AdminAwardHook};
+use design_challenge_task::{
+    awaiting_admin_unscored_expired, reject_awaiting_admin_run, round_id_at, round_secs,
+    UNSCORED_EPOCH_LIMIT,
+};
+use design_http::{mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
 use design_sanitize::sanitize_bundle;
 use design_store::{
-    DesignStore, FinalScore, RatingRow, RoundRow, RunOrigin, RunStage, StageEvent, StorePatch,
+    DesignStore, FinalScore, RatingRow, RoundRow, RunStage, StageEvent, StorePatch,
 };
 use serde_json::json;
 use submission_gating::{GatingState, GatingStore};
@@ -29,9 +33,9 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::corpus;
-use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 use crate::screenshot::{capture_full_page_png, png_artifact_tuple};
 use crate::CHALLENGE_ID;
+use design_challenge_task::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 
 /// Cap harness log payload stored in stage-event detail (JSON).
 const MAX_LOG_CHARS: usize = 65_536;
@@ -120,15 +124,10 @@ fn classify_agentic(e: &AgenticError) -> RunFailure {
 /// Design domain rules appended to the agentic system prompt.
 const DESIGN_AGENTIC_RULES: &str = r"
 Design challenge rules:
-- Allowed: PyPI deps via pyproject.toml, external APIs / MCP servers over the
-  sandbox egress proxy at run time (network use itself is NEVER a cheat signal),
-  Mobbin/Dribbble inspiration, image generation, UI libs.
-- The corpus entry labeled `baseline` is the published reference miner: starting
-  from it is explicitly allowed and is NOT a copy. Copying ANOTHER MINER's
-  harness is what counts as a copy.
-- Cheat: near-identical harness copy, trivial HTML republish, scrape-clone of a real site,
-  sanitize bypass / JS exfil, obfuscation to hide a copy.
-- suspicious and cheat both → Score(0), not eligible for admin winner selection.
+- Allowed: PyPI deps, external APIs/MCP over egress (network ≠ cheat), Mobbin/Dribbble, image gen, UI libs.
+- Corpus `baseline` is the published reference — starting from it is allowed; copying another miner is not.
+- Cheat: near-identical harness copy, HTML republish, scrape-clone, sanitize bypass/JS exfil, obfuscation to hide copy.
+- suspicious and cheat → Score(0), not admin-eligible.
 ";
 
 /// Orchestrator config.
@@ -176,6 +175,8 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
     gating: Option<Arc<dyn GatingStore>>,
+    /// Shared chain-epoch cache (HTTP `AppState.epoch` + sweeper clock).
+    epoch_cache: Option<Arc<AtomicU64>>,
 }
 
 impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
@@ -207,6 +208,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             chain,
             sk,
             gating: None,
+            epoch_cache: None,
         }
     }
 
@@ -215,6 +217,22 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
         self
+    }
+
+    #[must_use]
+    pub fn with_epoch_cache(mut self, epoch: Arc<AtomicU64>) -> Self {
+        self.epoch_cache = Some(epoch);
+        self
+    }
+
+    fn current_epoch(&self) -> u64 {
+        let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
+            .unwrap_or(0);
+        if let Some(cache) = &self.epoch_cache {
+            cache.store(epoch, Ordering::Relaxed);
+        }
+        epoch
     }
 
     /// Local/e2e: hold after publishing a stage so polls can photograph it.
@@ -255,67 +273,52 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                     }
                 }
             }
-            // Ensure current round row exists and every active agent is queued.
+            // One attempt: submit schedules next round only (no auto roll-forward).
             let _ = self.ensure_round(rid).await;
-            if let Err(e) = self.schedule_active_for_round(rid).await {
-                warn!(error = %e, round = rid, "schedule_active_for_round failed");
-            }
+            let _ = self.current_epoch();
         }
     }
 
-    /// Queue runs for every active (non-eliminated) harness in `rid`.
-    ///
-    /// Submit only schedules the *next* round once; this roll-forward keeps
-    /// registered agents participating across the rolling 10-round window.
-    async fn schedule_active_for_round(&self, rid: u64) -> Result<(), String> {
-        let harnesses = self
+    async fn sweep_unscored_timeouts(&self) -> Result<(), String> {
+        let current = self.current_epoch();
+        if current == 0 {
+            return Ok(());
+        }
+        let awaiting = self
             .store
-            .list_active_harnesses(rid)
+            .list_runs(Some("awaiting_admin"), 500)
             .await
             .map_err(|e| e.to_string())?;
-        let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
-            .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
-            .unwrap_or(0);
-        for h in harnesses {
-            match schedule_harness_for_round(
+        let gating = self.gating.as_deref();
+        for run in awaiting {
+            if !awaiting_admin_unscored_expired(&run, current) {
+                continue;
+            }
+            let start = run.awaiting_admin_epoch.or(run.attempt_epoch).unwrap_or(0);
+            let reason = format!(
+                "unscored_timeout: no admin score within {UNSCORED_EPOCH_LIMIT} epochs (since epoch {start})"
+            );
+            info!(run_id = %run.id, start_epoch = start, current_epoch = current, "auto-reject unscored");
+            reject_awaiting_admin_run(
                 self.store.as_ref(),
-                &h,
-                rid,
-                self.cfg.netuid,
-                epoch,
-                RunOrigin::Scheduled,
+                gating,
+                &run,
+                &reason,
+                "unscored_timeout",
             )
             .await
-            {
-                Ok(ids) if !ids.is_empty() => {
-                    info!(
-                        harness_id = %h.id,
-                        miner = %h.miner_hotkey,
-                        round = rid,
-                        runs = ids.len(),
-                        "scheduled active harness for round"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    // Elimination cooldown is expected; do not abort the loop.
-                    warn!(
-                        harness_id = %h.id,
-                        miner = %h.miner_hotkey,
-                        round = rid,
-                        error = %e,
-                        "skip scheduling active harness"
-                    );
-                }
-            }
+            .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
-    /// Stuck sweeper.
+    /// Stuck sweeper + unscored-timeout sweep.
     pub async fn run_sweeper(self: Arc<Self>) {
         loop {
             sleep(Duration::from_secs(60)).await;
+            if let Err(e) = self.sweep_unscored_timeouts().await {
+                warn!(error = %e, "unscored timeout sweep failed");
+            }
             if let Ok(stuck) = self.store.list_stuck_runs(self.cfg.stuck_grace_secs).await {
                 for r in stuck {
                     let _ = self
@@ -822,6 +825,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 "rationale": "pre-LLM copy gate: byte/AST copy of an earlier harness",
                 "gate": "copy_created_at",
             });
+            let copy_reason = if hit.byte_identical {
+                "near_identical_harness_copy"
+            } else {
+                "ast_architecture_copy"
+            };
             let _ = self
                 .store
                 .apply_run(
@@ -831,6 +839,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                         artifact_digest: Some(sanitized.artifact_digest.clone()),
                         sanitize_report: Some(report),
                         agentic_verdict: Some(verdict_json),
+                        reject_reason: Some(copy_reason.into()),
                         final_score: Some(FinalScore::Score(0)),
                         ..StorePatch::default()
                     },
@@ -840,6 +849,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                             "gate": "copy_created_at",
                             "nearest_id": hit.nearest_id,
                             "similarity_bps": hit.similarity_bps,
+                            "reject_reason": copy_reason,
                         })),
                         at_ms: now_ms(),
                     }),
@@ -884,12 +894,14 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
         match verdict.verdict {
             VerdictKind::Clean => {
+                let epoch = self.current_epoch();
                 mark_awaiting_admin(
                     self.store.as_ref(),
                     &run.id,
                     &sanitized.artifact_digest,
                     report,
                     verdict_json,
+                    epoch,
                 )
                 .await
                 .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;

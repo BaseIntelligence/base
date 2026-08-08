@@ -14,8 +14,8 @@ use challenge_agentic::{
     VerdictKind,
 };
 use design_challenge::corpus;
-use design_challenge::score::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_challenge::{host_sim_allowed, require_host_sim_for_force, SCORE_MAX};
+use design_challenge::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_harness::{validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
 use design_sanitize::sanitize_bundle;

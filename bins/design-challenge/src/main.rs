@@ -536,6 +536,7 @@ fn build_app_state(
     Arc<AppState>,
     Arc<Orchestrator<chain_live::LiveChainClient>>,
 ) {
+    let epoch = Arc::new(AtomicU64::new(0));
     let mut orch = Orchestrator::new(
         OrchestratorConfig {
             netuid: cli.netuid,
@@ -556,6 +557,7 @@ fn build_app_state(
     if gating_enabled {
         orch = orch.with_gating(Arc::clone(&gating));
     }
+    orch = orch.with_epoch_cache(Arc::clone(&epoch));
     let orch = Arc::new(orch);
 
     // Metagraph cache + watcher feed the intake membership check.
@@ -574,7 +576,7 @@ fn build_app_state(
     let admin_hashes = load_token_hashes(cli.admin_tokens_file.as_ref());
     let state = Arc::new(AppState {
         store,
-        epoch: AtomicU64::new(0),
+        epoch,
         netuid: cli.netuid,
         backend_mode,
         annotator_token_hashes: annotator_hashes,
