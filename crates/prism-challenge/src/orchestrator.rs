@@ -22,7 +22,7 @@ use chain::ChainClient;
 use challenge_agentic::{
     copy_gate, static_source_cheat, AgenticBackend, AgenticVerdict, VerdictKind,
 };
-use challenge_common::{expected_set_at_chain, PinnedBlockHash};
+use challenge_common::{expected_set_at_chain, GatewayClient, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
 use prism_lium::{EvalJobBackend, InstanceSpec};
@@ -35,7 +35,6 @@ use tracing::{info, warn};
 
 use crate::agentic::{build_review_request, corpus_from_rows, gate_corpus_from_rows, same_miner};
 use crate::score::{combine_final, FinalOutcome};
-use crate::submit::GatewayClient;
 use prism_store::{FinalScore, PrismStore, Stage, StageEvent, StatePatch, SubmissionState};
 
 /// Worker + emitter settings.
@@ -115,7 +114,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         chain: Arc<C>,
         sk: [u8; KEY_LEN],
     ) -> Self {
-        let emitter = EpochEmitter::new(Arc::clone(&store), sk, cfg.netuid, gateway.common());
+        let emitter = EpochEmitter::new(Arc::clone(&store), sk, cfg.netuid, gateway.clone());
         Self {
             cfg,
             store,
@@ -523,7 +522,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         };
         warn!(
             submission_id = %row.id,
-            code = ?hit.code,
+            kind = ?hit.kind,
             rationale = %hit.rationale,
             "static source cheat rejected (pod skipped)"
         );
@@ -532,7 +531,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             None,
             Some(serde_json::json!({
                 "gate": "static_source",
-                "cheat_code": format!("{:?}", hit.code),
+                "cheat_kind": format!("{:?}", hit.kind),
                 "rationale": hit.rationale,
             })),
             hit.rationale.clone(),

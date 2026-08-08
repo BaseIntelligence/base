@@ -79,10 +79,6 @@ impl AgenticBackend for SimAgent {
             return Ok(v);
         }
 
-        // Source-only screens are also available via [`crate::static_source_cheat`]
-        // for the pre-pod orchestrator path; sim keeps the in-review copies so
-        // metrics-relative checks and corpus AST still share one backend.
-
         if let Some(v) = pages_scrape_cheat_verdict(req)? {
             return Ok(v);
         }
@@ -191,7 +187,7 @@ fn telemetry_hooks_verdict(
         return None;
     }
     let (path, src) = primaries.iter().find(|(p, _)| p.ends_with("training.py"))?;
-    if crate::training_has_telemetry_hooks(src) {
+    if challenge_ast::training_has_telemetry_hooks(src) {
         return None;
     }
     Some(AgenticVerdict {

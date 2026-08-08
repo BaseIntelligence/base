@@ -18,16 +18,17 @@ mod agent;
 mod llm;
 mod prompts;
 mod sim;
-mod static_checks;
 mod tools;
 mod types;
 
 pub use agent::{AgentConfig, OpenRouterAgent};
-pub use challenge_ast::{copy_gate, CopyGateHit, GateCorpusEntry};
+pub use challenge_ast::{
+    copy_gate, static_source_cheat, training_has_telemetry_hooks, CopyGateHit, GateCorpusEntry,
+    SourceCheatHit, SourceCheatKind,
+};
 pub use llm::{load_api_key_file, DEFAULT_MODEL};
 pub use prompts::{AGENTIC_PROMPT_VERSION, DESIGN_DOMAIN_RULES, PRISM_DOMAIN_RULES};
 pub use sim::{SimAgent, SIM_CHEAT_BPS, SIM_SUSPICIOUS_BPS};
-pub use static_checks::{static_source_cheat, training_has_telemetry_hooks, StaticCheatHit};
 pub use types::{
     AgenticBackend, AgenticError, AgenticVerdict, CheatCode, ContainerReviewRequest, CorpusEntry,
     ReviewRequest, VerdictKind, OPENROUTER_API_BASE,

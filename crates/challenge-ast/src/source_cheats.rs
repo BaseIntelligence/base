@@ -1,40 +1,40 @@
 //! Cheap source-only cheat screens (no GPU, no private eval assets).
-//!
-//! Run these **before** renting a Lium pod so a bad submission fails fast
-//! instead of burning hours of GPU. Metrics/receipt consistency checks stay
-//! post-eval (they need harness output).
 
-use crate::types::CheatCode;
+/// Kind of static source hit (maps to agentic `CheatCode` at the call site).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCheatKind {
+    /// Hardcoded `METRICS_JSON=` short-circuit.
+    EvalShortCircuit,
+    /// Missing Prism telemetry hooks in `training.py`.
+    MissingTelemetryHooks,
+}
 
 /// One static source finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StaticCheatHit {
-    /// Cheat taxonomy code.
-    pub code: CheatCode,
+pub struct SourceCheatHit {
+    /// Cheat kind.
+    pub kind: SourceCheatKind,
     /// Human-readable reason (safe to surface in `error_detail`).
     pub rationale: String,
 }
 
 /// Scan miner sources for cheap, deterministic cheat patterns.
-///
-/// Order: hardcoded `METRICS_JSON=` short-circuit first, then missing Prism
-/// telemetry hooks in `training.py`. Returns the first hit.
 #[must_use]
-pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<StaticCheatHit> {
+pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<SourceCheatHit> {
     for (path, src) in [
         ("architecture.py", architecture_py),
         ("training.py", training_py),
     ] {
         if src.contains("METRICS_JSON=") {
-            return Some(StaticCheatHit {
-                code: CheatCode::EvalShortCircuit,
+            return Some(SourceCheatHit {
+                kind: SourceCheatKind::EvalShortCircuit,
                 rationale: format!("static: hardcoded METRICS_JSON in {path}"),
             });
         }
     }
     if !training_has_telemetry_hooks(training_py) {
-        return Some(StaticCheatHit {
-            code: CheatCode::MissingTelemetryHooks,
+        return Some(SourceCheatHit {
+            kind: SourceCheatKind::MissingTelemetryHooks,
             rationale: "static: training.py missing prism_telemetry report/finish_evaluation hooks"
                 .into(),
         });
@@ -48,9 +48,7 @@ pub fn training_has_telemetry_hooks(training_py: &str) -> bool {
     let imports_shim = training_py.contains("prism_telemetry")
         || training_py.contains("ctx[\"telemetry\"]")
         || training_py.contains("ctx['telemetry']");
-    let calls_report = training_py.contains(".report(");
-    let calls_finish = training_py.contains("finish_evaluation(");
-    imports_shim && calls_report && calls_finish
+    training_py.contains(".report(") && training_py.contains("finish_evaluation(") && imports_shim
 }
 
 #[cfg(test)]
@@ -64,7 +62,7 @@ mod tests {
             "def train(m, ctx):\n    print('METRICS_JSON={}')\n",
         )
         .expect("hit");
-        assert_eq!(hit.code, CheatCode::EvalShortCircuit);
+        assert_eq!(hit.kind, SourceCheatKind::EvalShortCircuit);
     }
 
     #[test]
@@ -74,7 +72,7 @@ mod tests {
             "def train(m, ctx):\n    return {}\n",
         )
         .expect("hit");
-        assert_eq!(hit.code, CheatCode::MissingTelemetryHooks);
+        assert_eq!(hit.kind, SourceCheatKind::MissingTelemetryHooks);
     }
 
     #[test]
