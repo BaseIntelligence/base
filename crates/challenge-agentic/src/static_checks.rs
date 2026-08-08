@@ -11,7 +11,7 @@ use crate::types::CheatCode;
 pub struct StaticCheatHit {
     /// Cheat taxonomy code.
     pub code: CheatCode,
-    /// Human-readable reason (safe to surface in error_detail).
+    /// Human-readable reason (safe to surface in `error_detail`).
     pub rationale: String,
 }
 
