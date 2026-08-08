@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Register challenge reverse-proxy backends with the gateway registry.
 #
-# The in-memory registry is empty after every gateway restart/redeploy.
-# Call this on master after `docker compose up` (remote-deploy hooks it).
+# Prefer compose `BASE_GATEWAY_BACKENDS` (gateway boot-seeds on start).
+# This script remains the manual / remote-deploy idempotent fallback when the
+# env seed is absent or you need to re-point URLs without restarting.
 #
 # Usage:
 #   GATEWAY_URL=http://127.0.0.1:8080 ./deploy/scripts/register-challenge-backends.sh

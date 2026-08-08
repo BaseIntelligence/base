@@ -47,12 +47,15 @@ docker exec $(docker ps -q --filter name=gateway) curl -fsS http://127.0.0.1:808
 # Returns SCALE-encoded sealed bundle
 ```
 
-## Register challenge backends (required after gateway restart)
+## Register challenge backends (boot seed + manual fallback)
 
-The gateway registry is **in-memory**. After every redeploy/restart, challenge
-proxy routes return `503 no healthy backends for challenge_id=…` until backends
-are registered. `remote-deploy.sh` (master) re-seeds automatically; to do it by
-hand:
+The gateway registry is **in-memory**, but compose sets `BASE_GATEWAY_BACKENDS`
+so the master gateway **boot-seeds** `prism` + `design` on every process start.
+A plain `docker compose restart gateway` must not leave `/challenge/*` at 503.
+
+`remote-deploy.sh` (master) still POSTs `/v1/admin/backends` (idempotent 409).
+Manual re-register only if the env seed was overridden empty or you need a
+non-default URL:
 
 ```bash
 # From this repo (against a reachable gateway):
