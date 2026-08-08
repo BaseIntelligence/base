@@ -58,7 +58,11 @@ pub struct OrchestratorConfig {
     pub max_attempts: u32,
     /// Similarity corpus size (recent submissions + baseline).
     pub similarity_corpus_limit: u32,
-    /// Stuck sweep grace (seconds).
+    /// Stuck sweep grace (seconds). Must exceed max healthy wall-clock of a
+    /// live worker hold: `PRISM_SSH_RUNNING_TIMEOUT` (≤15m) + train cap (6h) +
+    /// harness SSH margin (~65m) ≈ 7h20m. A prior 7h grace false-positive
+    /// swept a healthy ~7h19m train (`swept: stuck beyond grace`) with no
+    /// log harvest. Default 10h.
     pub stuck_grace_secs: u64,
     /// Local/e2e only: pause after each published stage so mid-flight is
     /// photographable. Zero in production (default).
@@ -80,7 +84,7 @@ impl Default for OrchestratorConfig {
             emit_poll: Duration::from_secs(15),
             max_attempts: 2,
             similarity_corpus_limit: 6,
-            stuck_grace_secs: 7 * 3600,
+            stuck_grace_secs: 10 * 3600,
             stage_delay: Duration::ZERO,
             auto_retry_max: 3,
         }
@@ -197,28 +201,32 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await
             .map_err(|e| e.to_string())?;
         for row in stuck {
+            // Harvest on-pod harness log **before** reclaim — otherwise the
+            // costly long attempt leaves only `swept: stuck beyond grace`.
+            let harvested = if let Some(pod) = row.pod_id.as_deref() {
+                self.backend.harvest_logs(pod).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
             if let Some(pod) = row.pod_id.clone() {
                 let _ = self.backend.terminate(&pod).await;
                 let _ = self.backend.verify_terminated(&pod).await;
             }
-            let id = row.id.clone();
-            let _ = self
-                .store
-                .apply(
-                    &id,
-                    &StatePatch {
-                        status: Some(Stage::Failed),
-                        error_detail: Some("swept: stuck beyond grace".into()),
-                        retry_bump: 1,
-                        ..StatePatch::default()
-                    },
-                    Some(&StageEvent {
-                        stage: Stage::Failed,
-                        detail: Some(serde_json::json!({"reason": "stuck-sweep"})),
-                        at_ms: 0,
-                    }),
+            let msg = if harvested.trim().is_empty() {
+                "swept: stuck beyond grace".into()
+            } else {
+                format!(
+                    "swept: stuck beyond grace; harvested: {}",
+                    prism_lium::truncate_tail(&harvested, prism_lium::HARNESS_LOG_RETAIN_BYTES)
                 )
-                .await;
+            };
+            // Infra-class: auto-retry while budget remains (do **not** burn a
+            // retry_bump without requeue — that previously exhausted manual
+            // retry while leaving gating `registered`).
+            if self.maybe_auto_retry(&row, "install", &msg).await {
+                continue;
+            }
+            self.fail_terminal(&row, "install", &msg).await;
         }
         Ok(())
     }

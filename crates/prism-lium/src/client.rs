@@ -10,9 +10,11 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::error::{CostGuardrailError, LiumError};
-use crate::ssh::{parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, SshTarget};
+use crate::ssh::{
+    parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, truncate_tail, SshTarget,
+};
 use crate::types::{GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
-use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
 /// Pod image: Lium-owned DinD variant pulses its own dockerd init and never
 /// Only `daturaai/*-dind` pods deliver a reachable sshd on this marketplace
@@ -433,12 +435,21 @@ echo '{harness_b64}' | base64 -d > /tmp/prism_eval/prism_harness.py
 echo '{arch_b64}' | base64 -d > /tmp/prism_eval/architecture.py
 echo '{train_b64}' | base64 -d > /tmp/prism_eval/training.py
 cd /tmp/prism_eval
+# Persist full harness output on-pod so timeout / stuck-sweep can harvest the
+# fatal tail even when the long-lived SSH session is killed without pipes.
+set +e
 PRISM_DATASET_URL='{dataset_url}' \
 PRISM_DATASET_SHA256='{dataset_sha}' \
 PRISM_MAX_TRAIN_STEPS='{steps}' \
 PRISM_TRAIN_HOURS_CAP='{train_hours}' \
 PRISM_GPU_TYPE='{gpu_type}' \
-{test_env}timeout --kill-after=60 {timeout_secs} python3 prism_harness.py\n",
+{test_env}timeout --kill-after=60 {timeout_secs} python3 prism_harness.py \
+  > /tmp/prism_eval/harness.log 2>&1
+ec=$?
+set -e
+# Surface the log tail on the SSH channel for the happy path + failure parse.
+tail -c 524288 /tmp/prism_eval/harness.log || true
+exit $ec\n",
             harness_b64 = harness_b64,
             arch_b64 = arch_b64,
             train_b64 = train_b64,
@@ -451,7 +462,7 @@ PRISM_GPU_TYPE='{gpu_type}' \
             timeout_secs = train_cap_secs.saturating_add(3600),
         );
 
-        let out = ssh_exec_allow_fail(
+        let out = match ssh_exec_allow_fail(
             &target,
             &key,
             &remote,
@@ -460,12 +471,36 @@ PRISM_GPU_TYPE='{gpu_type}' \
             train_cap_secs.saturating_add(3900),
         )
         .await
-        .map_err(|e| LiumError::Exec(format!("harness transport: {e}")))?;
+        {
+            Ok(o) => o,
+            Err(e) => {
+                // Session timed out / dropped — second SSH pulls the on-pod log.
+                let harvested = self
+                    .harvest_logs_inner(instance_id)
+                    .await
+                    .unwrap_or_default();
+                return Err(LiumError::Exec(format!(
+                    "harness transport: {e}; harvested: {}",
+                    truncate_tail(&harvested, HARNESS_LOG_RETAIN_BYTES)
+                )));
+            }
+        };
         if !out.stdout.contains("EVAL_OK") {
+            let mut detail = out.stdout.clone();
+            if !out.stderr.is_empty() {
+                detail.push_str("\n--- stderr ---\n");
+                detail.push_str(&out.stderr);
+            }
+            if detail.trim().is_empty() {
+                detail = self
+                    .harvest_logs_inner(instance_id)
+                    .await
+                    .unwrap_or_default();
+            }
             return Err(LiumError::Exec(format!(
                 "harness failed (code {}): {}",
                 out.returncode,
-                truncate(&out.stderr, 4000)
+                truncate_tail(&detail, HARNESS_LOG_RETAIN_BYTES)
             )));
         }
         let line = out
@@ -482,6 +517,17 @@ PRISM_GPU_TYPE='{gpu_type}' \
             )));
         }
         Ok(v)
+    }
+
+    /// SSH-fetch the on-pod harness log tail (empty when missing / unreachable).
+    async fn harvest_logs_inner(&self, instance_id: &str) -> Result<String, LiumError> {
+        let target = self.resolve_ssh_target(instance_id).await?;
+        let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        let cmd = format!(
+            "tail -c {HARNESS_LOG_RETAIN_BYTES} /tmp/prism_eval/harness.log 2>/dev/null || true"
+        );
+        let out = ssh_exec_allow_fail(&target, &key, &cmd, 1, self.ssh.ssh_retry_secs, 45).await?;
+        Ok(truncate_tail(&out.stdout, HARNESS_LOG_RETAIN_BYTES))
     }
 
     async fn gpu_smoke(&self, target: &SshTarget, key: &Path) -> Result<String, LiumError> {
@@ -842,6 +888,10 @@ impl EvalJobBackend for LiumClient {
     ) -> Result<RemoteExecResult, LiumError> {
         self.exec_eval_live(instance_id, architecture_py, training_py)
             .await
+    }
+
+    async fn harvest_logs(&self, instance_id: &str) -> Result<String, LiumError> {
+        self.harvest_logs_inner(instance_id).await
     }
 }
 

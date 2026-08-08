@@ -59,9 +59,11 @@ stateDiagram-v2
 ```
 
 All transitions are append-only events in `prism_stage_event`; the row state
-lives in `prism_submission`. The sweeper fails rows stuck past the 7h grace
-as `ChallengeInternal`, and `recover_on_boot` cleans pods referenced by
-interrupted rows.
+lives in `prism_submission`. The sweeper fails rows stuck past the **10h**
+grace (aligned above wait-RUNNING + 6h train + SSH margin; a prior 7h grace
+false-positive swept healthy ~7h19m trains) as `ChallengeInternal` after
+harvesting the on-pod harness log tail, and `recover_on_boot` cleans pods
+referenced by interrupted rows.
 
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.
