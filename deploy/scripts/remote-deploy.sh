@@ -442,11 +442,49 @@ if [[ '$ROLE' == 'master' ]]; then
   # The gateway races this script on boot, so retry until registration sticks,
   # then prove proxy routing end-to-end: a missed reseed leaves /challenge/*
   # at 503 while /healthz stays green. Both must fail the deploy loudly.
+  # Gateway /v1/admin/* requires Authorization: Bearer (gateway_admin_token).
   echo "remote-deploy: registering challenge backends"
   reseed_ok=0
   for attempt in \$(seq 1 15); do
     if python3 - <<'PY'
-import json, sys, urllib.request, urllib.error
+import json, os, sys, urllib.error, urllib.request
+from pathlib import Path
+
+def resolve_admin_token() -> str:
+    token = (os.environ.get("BASE_GATEWAY_ADMIN_TOKEN") or "").strip()
+    if token:
+        return token
+    candidates = []
+    env_file = (os.environ.get("BASE_GATEWAY_ADMIN_TOKEN_FILE") or "").strip()
+    if env_file:
+        candidates.append(Path(env_file))
+    # remote-deploy cds to REMOTE_DIR (/opt/base); secrets live beside the tree.
+    candidates.extend(
+        [
+            Path("deploy/secrets/gateway_admin_token"),
+            Path("/opt/base/deploy/secrets/gateway_admin_token"),
+        ]
+    )
+    for path in candidates:
+        if path.is_file():
+            token = path.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    return ""
+
+token = resolve_admin_token()
+if not token:
+    print(
+        "ERROR: gateway admin token missing "
+        "(set BASE_GATEWAY_ADMIN_TOKEN or deploy/secrets/gateway_admin_token)",
+        flush=True,
+    )
+    sys.exit(1)
+
+headers = {
+    "content-type": "application/json",
+    "Authorization": f"Bearer {token}",
+}
 backends = [
     ("prism", "http://prism-challenge:8092"),
     ("design", "http://design-challenge:8093"),
@@ -457,7 +495,7 @@ for cid, url in backends:
     req = urllib.request.Request(
         "http://127.0.0.1:8080/v1/admin/backends",
         data=payload,
-        headers={"content-type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
