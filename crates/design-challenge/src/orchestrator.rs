@@ -149,6 +149,8 @@ pub struct OrchestratorConfig {
     /// Auto-retry budget for infra-class failures (initial attempt + this
     /// many retries). Default 3; `cheat` / `rejected` are always terminal.
     pub auto_retry_max: u32,
+    /// D24 epoch-boundary emitter poll interval.
+    pub emit_poll: Duration,
 }
 
 impl Default for OrchestratorConfig {
@@ -161,6 +163,7 @@ impl Default for OrchestratorConfig {
             staging_root: PathBuf::from("/var/lib/design/staging"),
             stage_delay: Duration::ZERO,
             auto_retry_max: 3,
+            emit_poll: Duration::from_secs(15),
         }
     }
 }
@@ -177,6 +180,8 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     gating: Option<Arc<dyn GatingStore>>,
     /// Shared chain-epoch cache (HTTP `AppState.epoch` + sweeper clock).
     epoch_cache: Option<Arc<AtomicU64>>,
+    /// Last chain epoch for which [`Self::emit_leaves`] succeeded (D24 fill).
+    emitted_epoch: AtomicU64,
 }
 
 impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
@@ -209,6 +214,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             sk,
             gating: None,
             epoch_cache: None,
+            emitted_epoch: AtomicU64::new(0),
         }
     }
 
@@ -277,6 +283,60 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             let _ = self.ensure_round(rid).await;
             let _ = self.current_epoch();
         }
+    }
+
+    /// D24 epoch-boundary filler: ensure design posts a complete leaf set for
+    /// the current chain epoch even when no admin award fired.
+    ///
+    /// Waits until late in the tempo so `award_round` (which also emits) can
+    /// land Score leaves first. Gap epochs get `NotAttempted` coverage so
+    /// `base-real-seal` is not stuck on incomplete participant sets.
+    pub async fn run_emitter(self: Arc<Self>)
+    where
+        C: Sync,
+    {
+        loop {
+            if let Err(e) = self.emitter_tick().await {
+                warn!(error = %e, "design emitter tick error");
+            }
+            sleep(self.cfg.emit_poll).await;
+        }
+    }
+
+    /// One emitter tick. `Ok(true)` when a leaf set was submitted this tick.
+    ///
+    /// # Errors
+    /// Chain / sign / submit failures (retried next tick).
+    pub async fn emitter_tick(&self) -> Result<bool, String>
+    where
+        C: Sync,
+    {
+        let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map_err(|e| format!("schedule: {e}"))?;
+        let epoch = state.subnet_epoch_index;
+        if epoch == 0 {
+            return Ok(false);
+        }
+        if self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
+            return Ok(false);
+        }
+        let tempo = u64::from(state.tempo.max(1));
+        // Prefer award_round's scored emit; only fill when ~last 48 blocks remain
+        // (~tempo-48 … tempo) so mid-epoch winners are not locked behind NoScore.
+        let near_end = state
+            .blocks_since_last_step
+            .saturating_add(48)
+            >= tempo;
+        if !near_end {
+            return Ok(false);
+        }
+        self.emit_leaves().await?;
+        info!(
+            epoch,
+            blocks_since_last_step = state.blocks_since_last_step,
+            "design epoch leaf set emitted (D24 fill)"
+        );
+        Ok(true)
     }
 
     async fn sweep_unscored_timeouts(&self) -> Result<(), String> {
@@ -1089,6 +1149,13 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         submit_signed_leaf_set(self.gateway.as_ref(), &signed)
             .await
             .map_err(|e| e.to_string())?;
+        self.emitted_epoch.store(epoch, Ordering::Relaxed);
+        info!(
+            epoch,
+            participants = expected_set.len(),
+            last_epoch_block = state.last_epoch_block,
+            "design leaf set submitted"
+        );
         Ok(())
     }
 }
