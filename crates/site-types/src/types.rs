@@ -116,7 +116,8 @@ pub struct Agent {
     pub slug: String,
     /// Display handle.
     pub handle: String,
-    /// Printed miner number when known; `—` otherwise.
+    /// Printed miner number when known (`041`); `—` otherwise.
+    /// Mirrors [`Self::uid`] zero-padded when the metagraph lookup succeeds.
     pub miner_number: String,
     /// Declared model/stack when known; `—` otherwise.
     pub model: String,
@@ -126,6 +127,9 @@ pub struct Agent {
     /// raw upstream value; `—` when the miner is unknown. Copy targets read
     /// this, never the truncated `operator`.
     pub hotkey: String,
+    /// On-chain UID from the current metagraph when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u16>,
     /// Join epoch when known.
     pub joined_epoch: u64,
 }
@@ -156,6 +160,12 @@ pub struct LeaderboardRow {
     /// Model parameters in millions when the submission measured them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params_m: Option<f64>,
+    /// Normalised sealed weight share for this hotkey (0..1), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+    /// Estimated TAO/day = `weight × subnet_emission_per_day` when both known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tao_per_day: Option<f64>,
 }
 
 /// Submission status.

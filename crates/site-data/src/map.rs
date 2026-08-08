@@ -43,6 +43,9 @@ fn truncate_middle(v: &str) -> String {
 /// The display identity is the SS58 hotkey when the upstream hex decodes —
 /// `operator` carries the truncated form and `hotkey` the full value so
 /// clients can render a copyable address instead of a bare hex prefix.
+///
+/// UID / `miner_number` stay empty here; callers that hold a metagraph index
+/// apply them with [`apply_agent_uid`].
 #[must_use]
 pub fn agent_from_hotkey(hotkey: &str, joined_epoch: u64) -> Agent {
     let hk = hotkey.trim();
@@ -64,8 +67,116 @@ pub fn agent_from_hotkey(hotkey: &str, joined_epoch: u64) -> Agent {
         model: "—".into(),
         operator: truncate_middle(&display),
         hotkey: if known { display } else { "—".into() },
+        uid: None,
         joined_epoch,
     }
+}
+
+/// Attach an on-chain UID (and zero-padded `miner_number`) when known.
+pub fn apply_agent_uid(agent: &mut Agent, uid: Option<u16>) {
+    let Some(uid) = uid else {
+        return;
+    };
+    agent.uid = Some(uid);
+    agent.miner_number = format!("{uid:03}");
+}
+
+/// Resolve a hotkey (hex or SS58) against a map keyed by lowercase hex + SS58.
+#[must_use]
+pub fn lookup_uid(uid_by_key: &HashMap<String, u16>, hotkey: &str) -> Option<u16> {
+    let hk = hotkey.trim();
+    if hk.is_empty() || hk == "—" {
+        return None;
+    }
+    if let Some(uid) = uid_by_key.get(hk) {
+        return Some(*uid);
+    }
+    let lower = hk.to_ascii_lowercase();
+    if let Some(uid) = uid_by_key.get(&lower) {
+        return Some(*uid);
+    }
+    if let Some(ss58) = ss58_from_hex(hk) {
+        return uid_by_key.get(&ss58).copied();
+    }
+    None
+}
+
+/// Build a hotkey → UID index from a metagraph's UID-ordered hotkey list.
+///
+/// Keys include lowercase hex and SS58 so both challenge payloads and sealed
+/// bundle addresses resolve.
+#[must_use]
+pub fn uid_index_from_hotkeys(hotkeys: &[Vec<u8>]) -> HashMap<String, u16> {
+    let mut map = HashMap::with_capacity(hotkeys.len().saturating_mul(2));
+    for (i, hk) in hotkeys.iter().enumerate() {
+        let Ok(uid) = u16::try_from(i) else {
+            continue;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(hk.as_slice()) else {
+            continue;
+        };
+        let hex = hex::encode(arr);
+        map.insert(hex, uid);
+        map.insert(ss58_encode(&arr, BITTENSOR_SS58_PREFIX), uid);
+    }
+    map
+}
+
+/// Attach UID / miner number onto every leaderboard agent from a metagraph index.
+pub fn enrich_leaderboard_uids(rows: &mut [LeaderboardRow], uid_by_key: &HashMap<String, u16>) {
+    for row in rows {
+        let uid = lookup_uid(uid_by_key, &row.agent.hotkey);
+        apply_agent_uid(&mut row.agent, uid);
+    }
+}
+
+/// Attach UID / miner number onto every submission agent from a metagraph index.
+pub fn enrich_submission_uids(rows: &mut [Submission], uid_by_key: &HashMap<String, u16>) {
+    for row in rows {
+        let uid = lookup_uid(uid_by_key, &row.agent.hotkey);
+        apply_agent_uid(&mut row.agent, uid);
+    }
+}
+
+/// Attach sealed weight share + estimated TAO/day onto leaderboard rows.
+///
+/// Formula: `tao_per_day = weight_share × subnet_emission_per_day`.
+/// `weight_by_hotkey` is keyed by SS58 (and optionally hex); shares are already
+/// normalised (sum ≈ 1). When `emission_per_day` is 0/unknown, `tao_per_day`
+/// stays unset so clients do not invent an absolute figure from a missing rate.
+pub fn enrich_leaderboard_weights(
+    rows: &mut [LeaderboardRow],
+    weight_by_hotkey: &HashMap<String, f64>,
+    emission_per_day: f64,
+) {
+    for row in rows {
+        let w = lookup_weight(weight_by_hotkey, &row.agent.hotkey);
+        let Some(weight) = w else {
+            continue;
+        };
+        row.weight = Some(weight);
+        if emission_per_day > 0.0 {
+            row.tao_per_day = Some(weight * emission_per_day);
+        }
+    }
+}
+
+fn lookup_weight(weight_by_hotkey: &HashMap<String, f64>, hotkey: &str) -> Option<f64> {
+    let hk = hotkey.trim();
+    if hk.is_empty() || hk == "—" {
+        return None;
+    }
+    if let Some(w) = weight_by_hotkey.get(hk) {
+        return Some(*w);
+    }
+    let lower = hk.to_ascii_lowercase();
+    if let Some(w) = weight_by_hotkey.get(&lower) {
+        return Some(*w);
+    }
+    if let Some(ss58) = ss58_from_hex(hk) {
+        return weight_by_hotkey.get(&ss58).copied();
+    }
+    None
 }
 
 pub use crate::timefmt::{ms_to_clock, ms_to_iso};
@@ -267,6 +378,8 @@ pub fn design_leaderboard(
                 delta7d,
                 bpb: None,
                 params_m: None,
+                weight: None,
+                tao_per_day: None,
             },
         )
         .collect()
@@ -546,6 +659,8 @@ pub fn prism_bpb_leaderboard(subs: &[Value], epoch: u64) -> Vec<LeaderboardRow> 
             delta7d: 0.0,
             bpb: Some(bpb),
             params_m: n_params.map(|p| p as f64 / 1e6),
+            weight: None,
+            tao_per_day: None,
         })
         .collect()
 }
@@ -1077,6 +1192,37 @@ mod tests {
         assert!((rows[0].elo - 1200.0).abs() < f64::EPSILON);
         assert!((rows[0].delta7d - 100.0).abs() < f64::EPSILON);
         assert_eq!(rows[0].rank, 1);
+    }
+
+    #[test]
+    fn apply_agent_uid_zero_pads_miner_number() {
+        let mut agent = agent_from_hotkey("aa", 1);
+        apply_agent_uid(&mut agent, Some(41));
+        assert_eq!(agent.uid, Some(41));
+        assert_eq!(agent.miner_number, "041");
+    }
+
+    #[test]
+    fn uid_index_maps_hex_and_ss58() {
+        let hk = vec![0x11_u8; 32];
+        let map = uid_index_from_hotkeys(std::slice::from_ref(&hk));
+        assert_eq!(map.get(&hex::encode(&hk)).copied(), Some(0));
+        let ss58 = ss58_encode(hk.as_slice().try_into().unwrap(), BITTENSOR_SS58_PREFIX);
+        assert_eq!(map.get(&ss58).copied(), Some(0));
+    }
+
+    #[test]
+    fn enrich_leaderboard_weights_sets_tao_per_day() {
+        let mut rows = design_leaderboard(
+            &[json!({"miner_hotkey":"aa","rating":1.0,"wins":1,"losses":0})],
+            &[],
+            1,
+        );
+        let mut weights = HashMap::new();
+        weights.insert(rows[0].agent.hotkey.clone(), 0.25);
+        enrich_leaderboard_weights(&mut rows, &weights, 100.0);
+        assert!((rows[0].weight.unwrap() - 0.25).abs() < f64::EPSILON);
+        assert!((rows[0].tao_per_day.unwrap() - 25.0).abs() < f64::EPSILON);
     }
 
     #[test]
