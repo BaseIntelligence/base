@@ -41,11 +41,11 @@ hypertraining B300 tournament code.
 ```mermaid
 stateDiagram-v2
     [*] --> Queued: POST /v1/submissions
-    Queued --> Rejected: pre-LLM copy gate (arch copy of earlier submission)
-    Queued --> Provisioning: worker claims row
+    Queued --> Rejected: pre-pod screens (copy gate / static cheat / similarity)
+    Queued --> Provisioning: worker claims + pre-pod screens pass
     Provisioning --> Running: pod SSH + harness up
     Running --> Reviewing: METRICS_JSON collected
-    Reviewing --> AgenticReview: arch-only similarity + quality
+    Reviewing --> AgenticReview: quality + post-pod agentic
     AgenticReview --> Scoring: submit_verdict
     Scoring --> Terminated: finalized row enters the emission outbox
     Provisioning --> Failed: offer/rent timeout
@@ -132,15 +132,18 @@ before submit, the cursor advances only after the full set landed, and a crash
 mid-submit replays the identical assigned set on the next tick
 (first-write-wins with identical values converges). After assignment, a
 positive `Score(v>0)` keeps participating in every later epoch's competition
-set until a better/valid score supersedes it via lattice `max` (not WTA) — so
-an empty or reject-only fresh batch does not burn the prism share. `Score(0)`
-rejects and `NoScore` absences do not carry. A manually retried + re-scored
-row re-enters the outbox (`reset_for_retry` clears the watermark); its old
-leaf stays immutable history in its original epoch. Epochs during a master
-outage carry no *new* outbox rows; the first epoch after recovery still
-includes active positive scores plus any backlog (seals always pin fresh
-epochs — stale bundles can never Match on-chain). Run **exactly one**
-prism-challenge emitter instance per netuid (single master topology).
+set until a better/valid score supersedes it via lattice `max` — so an empty
+or reject-only fresh batch does not burn the prism share. Leaf emission then
+applies **winner-take-all** (`prism_registry::apply_wta`): only the single
+highest positive credit (lexicographically smallest hotkey on ties) receives a
+positive Score leaf; every other positive credit is zeroed. `Score(0)` rejects
+and `NoScore` absences do not carry. A manually retried + re-scored row
+re-enters the outbox (`reset_for_retry` clears the watermark); its old leaf
+stays immutable history in its original epoch. Epochs during a master outage
+carry no *new* outbox rows; the first epoch after recovery still includes
+active positive scores plus any backlog (seals always pin fresh epochs —
+stale bundles can never Match on-chain). Run **exactly one** prism-challenge
+emitter instance per netuid (single master topology).
 
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
 `SCORING_VERSION` stays 2 — the competition reallocates credits inside the
@@ -154,10 +157,12 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   credited to the arch's **owner** — owners are rewarded when anyone trains
   well on their architecture, including in a later epoch than their own
   submission.
-- *emission*: per hotkey `max(own credits, owner credits)` — **max, never
+- *per-hotkey credit*: `max(own credits, owner credits)` — **max, never
   summed**, so the lattice bound and the no-double-count property hold by
   construction. `Score(0)` rows (cheat/copy-gate) never set an arch's best;
   hotkeys whose rows are all `NoScore` keep their absence.
+- *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
+  Prism's emission share (50% of the subnet) goes entirely to that winner.
 
 **Top-model publish.** The master tracks the global best bpb across all
 scored submissions. On a new global best (≤ best ever and < last published),
@@ -171,19 +176,24 @@ absent/empty → publishing is a graceful no-op, scoring is unaffected.
 
 ## Agentic anti-cheat + AST + metrics gate
 
-Before any pod or LLM spend, the **pre-LLM copy gate** compares the
-candidate `architecture.py` against recent submissions from **other miners**
-(byte hash + `challenge-ast` fingerprints; same-`miner_hotkey` and
-same-`miner_coldkey` prior art excluded): a byte/AST copy of a
-**strictly-earlier** submission (`created_at` ordered) is terminal `rejected`
-with `Score(0)` — no pod, no LLM. Ties / unknown timestamps fall through to
-the LLM path; the published baseline is exempt (miners start from it). After
-measure and the cheap `prism-review` arch-only similarity/quality filters, the
-shared `challenge-agentic` loop inspects miner sources with read-only tools
-(`list_dir`, `read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`)
-against an **architecture-only** corpus of baseline + other miners' recent
-submissions (same hotkey/coldkey exclusion as the gate). Final judge is the
-mandatory `submit_verdict` function-call.
+Before any pod rent, **pre-pod screens** (no GPU, no private eval assets) run
+in order and terminal-reject with `Score(0)` on hit:
+
+1. **Pre-LLM copy gate** — candidate `architecture.py` vs recent submissions
+   from **other miners** (byte hash + `challenge-ast`; same hotkey/coldkey
+   prior art excluded). Byte/AST copy of a **strictly-earlier** submission is
+   rejected. Ties / unknown timestamps fall through; baseline is exempt.
+2. **Static source cheat** (`challenge_agentic::static_source_cheat`) —
+   hardcoded `METRICS_JSON=` short-circuit; missing
+   `prism_telemetry.report` / `finish_evaluation` hooks in `training.py`.
+3. **Cheap AST similarity** (`prism-review`) — `Copied` / `Suspicious` hard
+   zero before rent.
+
+After measure, the LLM quality review and the shared `challenge-agentic` loop
+inspect sources + metrics/receipt with read-only tools (`list_dir`,
+`read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`) against an
+**architecture-only** corpus of baseline + other miners' recent submissions.
+Final judge is the mandatory `submit_verdict` function-call.
 
 | Verdict | Leaf effect |
 |---------|-------------|

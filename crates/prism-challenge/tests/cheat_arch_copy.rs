@@ -83,7 +83,8 @@ async fn baseline_arch_train_copy_scores_zero() {
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -136,11 +137,13 @@ async fn baseline_arch_train_copy_scores_zero() {
 
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
-    assert!(
-        matches!(row.status, Stage::Terminated | Stage::Failed),
-        "status={:?}",
+    assert_eq!(
+        row.status,
+        Stage::Rejected,
+        "baseline arch copy must fail pre-pod similarity, got {:?}",
         row.status
     );
+    assert!(row.pod_id.is_none(), "arch copy must not rent a pod");
     assert_eq!(
         row.final_score,
         Some(FinalScore::Score(0)),

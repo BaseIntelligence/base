@@ -187,12 +187,7 @@ fn telemetry_hooks_verdict(
         return None;
     }
     let (path, src) = primaries.iter().find(|(p, _)| p.ends_with("training.py"))?;
-    let imports_shim = src.contains("prism_telemetry")
-        || src.contains("ctx[\"telemetry\"]")
-        || src.contains("ctx['telemetry']");
-    let calls_report = src.contains(".report(");
-    let calls_finish = src.contains("finish_evaluation(");
-    if imports_shim && calls_report && calls_finish {
+    if challenge_ast::training_has_telemetry_hooks(src) {
         return None;
     }
     Some(AgenticVerdict {

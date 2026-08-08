@@ -7,7 +7,7 @@ use challenge_common::{emit_signed_leaf_set as emit_signed_leaf_set_common, Hotk
 use crypto::KEY_LEN;
 use prism_challenge_task::CHALLENGE_ID_BYTES;
 
-pub use challenge_common::{public_key_from_secret, verify_leaf_sig, LeafEmitError};
+use challenge_common::LeafEmitError;
 
 /// Sign exactly one leaf per `h ∈ expected` under `prism`. Refuses subset/superset (D24).
 ///
@@ -27,6 +27,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use bundle::ScoreOrAbsence;
+    use challenge_common::{public_key_from_secret, verify_leaf_sig};
     use crypto::KEY_LEN;
 
     fn sk() -> [u8; KEY_LEN] {

@@ -20,6 +20,6 @@ mod competition;
 mod hooks;
 mod publish;
 
-pub use competition::competition_scores;
+pub use competition::{apply_wta, competition_scores};
 pub use hooks::post_score_hooks;
 pub use publish::{TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH};
