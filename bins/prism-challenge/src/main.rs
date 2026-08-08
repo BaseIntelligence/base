@@ -428,7 +428,8 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         emit_poll: Duration::from_secs(15),
         max_attempts: MAX_ATTEMPTS,
         similarity_corpus_limit: 6,
-        stuck_grace_secs: 7 * 3600,
+        // > wait_running(15m) + train(6h) + ssh margin(~65m) ≈ 7h20m.
+        stuck_grace_secs: 10 * 3600,
         stage_delay,
         auto_retry_max: cli.auto_retry_max,
     };

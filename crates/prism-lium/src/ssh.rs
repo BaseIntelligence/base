@@ -195,13 +195,13 @@ pub async fn ssh_exec(
                     return Ok(SshExecOutput {
                         returncode: out.status.code().unwrap_or(0),
                         stdout,
-                        stderr: truncate_str(&stderr, 4000),
+                        stderr: truncate_tail(&stderr, crate::HARNESS_LOG_RETAIN_BYTES),
                     });
                 }
                 last_err = format!(
                     "ssh exit {:?}: {}",
                     out.status.code(),
-                    truncate_str(&stderr, 200)
+                    truncate_tail(&stderr, 200)
                 );
             }
             Ok(Err(e)) => {
@@ -266,7 +266,7 @@ pub async fn ssh_exec_allow_fail(
                 return Ok(SshExecOutput {
                     returncode: out.status.code().unwrap_or(-1),
                     stdout,
-                    stderr: truncate_str(&stderr, 4000),
+                    stderr: truncate_tail(&stderr, crate::HARNESS_LOG_RETAIN_BYTES),
                 });
             }
             Ok(Err(e)) => {
@@ -292,18 +292,32 @@ pub struct SshExecOutput {
     pub stderr: String,
 }
 
-fn truncate_str(s: &str, n: usize) -> String {
+/// Keep the **tail** of a log (fatals / tracebacks), UTF-8 safe.
+#[must_use]
+pub fn truncate_tail(s: &str, n: usize) -> String {
     if s.len() <= n {
-        s.to_owned()
-    } else {
-        format!("{}…", &s[..n])
+        return s.to_owned();
     }
+    let mut start = s.len().saturating_sub(n);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn truncate_tail_keeps_suffix() {
+        let s = format!("{}FATAL_TRACEBACK", "x".repeat(100));
+        let t = truncate_tail(&s, 20);
+        assert!(t.starts_with('…'));
+        assert!(t.ends_with("FATAL_TRACEBACK"));
+        assert!(t.ends_with(&s[s.len() - 20..]));
+    }
 
     #[test]
     fn parse_ssh_connect_cmd() {
