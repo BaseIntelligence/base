@@ -149,7 +149,7 @@ pub struct OrchestratorConfig {
     /// Auto-retry budget for infra-class failures (initial attempt + this
     /// many retries). Default 3; `cheat` / `rejected` are always terminal.
     pub auto_retry_max: u32,
-    /// D24 epoch-boundary emitter poll interval.
+    /// Poll interval for the late-tempo D24 filler.
     pub emit_poll: Duration,
 }
 
@@ -180,7 +180,7 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     gating: Option<Arc<dyn GatingStore>>,
     /// Shared chain-epoch cache (HTTP `AppState.epoch` + sweeper clock).
     epoch_cache: Option<Arc<AtomicU64>>,
-    /// Last chain epoch for which [`Self::emit_leaves`] succeeded (D24 fill).
+    /// Last epoch successfully covered by [`Self::emit_leaves`].
     emitted_epoch: AtomicU64,
 }
 
@@ -285,12 +285,8 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// D24 epoch-boundary filler: ensure design posts a complete leaf set for
-    /// the current chain epoch even when no admin award fired.
-    ///
-    /// Waits until late in the tempo so `award_round` (which also emits) can
-    /// land Score leaves first. Gap epochs get `NotAttempted` coverage so
-    /// `base-real-seal` is not stuck on incomplete participant sets.
+    /// Late-tempo D24 filler: `NotAttempted` coverage when no admin award fired
+    /// (waits ~last 48 blocks so `award_round` can land Score leaves first).
     pub async fn run_emitter(self: Arc<Self>)
     where
         C: Sync,
@@ -314,25 +310,14 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
         let epoch = state.subnet_epoch_index;
-        if epoch == 0 {
-            return Ok(false);
-        }
-        if self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
+        if epoch == 0 || self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
             return Ok(false);
         }
         let tempo = u64::from(state.tempo.max(1));
-        // Prefer award_round's scored emit; only fill when ~last 48 blocks remain
-        // (~tempo-48 … tempo) so mid-epoch winners are not locked behind NoScore.
-        let near_end = state.blocks_since_last_step.saturating_add(48) >= tempo;
-        if !near_end {
+        if state.blocks_since_last_step.saturating_add(48) < tempo {
             return Ok(false);
         }
         self.emit_leaves().await?;
-        info!(
-            epoch,
-            blocks_since_last_step = state.blocks_since_last_step,
-            "design epoch leaf set emitted (D24 fill)"
-        );
         Ok(true)
     }
 
