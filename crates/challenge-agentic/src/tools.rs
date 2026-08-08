@@ -36,12 +36,9 @@ impl ToolContext {
         }
         let mut corpus = Vec::with_capacity(req.corpus.len());
         for entry in &req.corpus {
-            match fingerprint_source(&entry.source) {
-                Ok(fp) => corpus.push((entry.id.clone(), fp)),
-                Err(e) => {
-                    // Skip unparseable corpus entries; still usable for byte-hash sim.
-                    let _ = e;
-                }
+            // Skip unparseable corpus entries; still usable for byte-hash sim.
+            if let Ok(fp) = fingerprint_source(&entry.source) {
+                corpus.push((entry.id.clone(), fp));
             }
         }
         // `run_command` exists only inside the hardened review container (the
@@ -439,9 +436,8 @@ const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const RUN_COMMAND_MAX_OUT: usize = 16 * 1024;
 
 /// Sandboxed shell for the review container: fixed workdir cwd, scrubbed env
-/// (no API keys), hard timeout, truncated output. The container itself (no
-/// capabilities, read-only rootfs, no writable mounts besides /out + /tmp) is
-/// the security boundary; this tool adds cwd/env/time/output limits.
+/// (no API keys), hard timeout, truncated output; refuses procfs and
+/// review-secrets paths so file-mounted `OpenRouter` keys stay unread.
 fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
     if !ctx.enable_run_command {
         return Err(AgenticError::Tool(
@@ -454,6 +450,11 @@ fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticEr
         .ok_or_else(|| AgenticError::Tool("run_command: command required".into()))?;
     if cmd.is_empty() || cmd.len() > 1_000 || cmd.contains('\0') {
         return Err(AgenticError::Tool("run_command: bad command".into()));
+    }
+    // File-mounted OpenRouter key + parent environ must stay unread.
+    let c = cmd.to_ascii_lowercase().replace('\\', "/");
+    if c.contains("/proc") || c.contains("review-secrets") || c.contains("openrouter_api_key") {
+        return Err(AgenticError::Tool("run_command: forbidden path".into()));
     }
     let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let cwd = resolve_rel(&ctx.workdir, rel)?;
@@ -738,6 +739,17 @@ mod tests {
         assert!(out.contains("exit=0"), "out={out}");
         // Escape attempts fail via resolve_rel on cwd.
         assert!(tool_run_command(&ctx, &json!({"command": "ls", "path": ".."})).is_err());
+        // Parent environ / secrets exfil via shell is refused (defense-in-depth).
+        for bad in [
+            "cat /proc/1/environ",
+            "python -c 'open(\"//proc/self/environ\").read()'",
+            "cat /run/review-secrets/openrouter_api_key",
+        ] {
+            let err = tool_run_command(&ctx, &json!({"command": bad}))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("forbidden"), "cmd={bad} err={err}");
+        }
     }
 
     #[test]

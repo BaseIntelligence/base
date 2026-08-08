@@ -393,9 +393,14 @@ as the sandbox: `ReadonlyRootfs`, `CapDrop`, `no-new-privileges:true`, uid
 65532) built from `deploy/Dockerfile` target `design-review`
 (`challenge-agentic` + `challenge-ast`). The container mounts the submitted
 agent **and** the most-similar harness (`_similar/`) read-only; the LLM may
-use the sandboxed `run_command` tool (scrubbed env, cwd-pinned, 15s cap) for
-diffs / grep / AST probes. `DESIGN_REVIEW_BACKEND=inline` keeps the legacy
-in-process path for local/CI only.
+use the sandboxed `run_command` tool (scrubbed child env, cwd-pinned, 15s
+cap, procfs + review-secrets paths denied) for diffs / grep / AST probes.
+`AGENTIC_ENABLE_RUN_COMMAND=1` stays on in prod (essential for review
+quality). The OpenRouter key is file-mounted (`OPENROUTER_API_KEY_FILE` under
+`/run/review-secrets`) and is **never** placed in the container's process
+environ — Linux `/proc/<pid>/environ` is a boot-time snapshot and cannot be
+scrubbed. `DESIGN_REVIEW_BACKEND=inline` keeps the legacy in-process path for
+local/CI only.
 
 ### Pre-LLM copy gate (`created_at` ordered)
 
