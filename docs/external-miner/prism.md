@@ -131,12 +131,14 @@ submission and never rents a Lium pod.
 
 Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.
 The shared **agentic** gate (AST + metrics/receipt) hard-zeros `cheat` /
-`suspicious`. Cheap LLM similarity hard-zeros only `Copied` (`Suspicious` is
-advisory). Copy/similarity corpora are **champions only** (current top +
-historical Score>0 ex-tops) plus baseline — not every past submission — and
-still exclude your own prior art (same hotkey **or** same coldkey). Standard
-components (RMSNorm, RoPE, SwiGLU, LayerNorm, gated/parallel residual, …) are
-**not** plagiarism signals. LLM quality is coherence-only, not a grader.
+`suspicious`. Cheap LLM similarity hard-zeros `Copied`, and `Suspicious` only
+when confidence `≥ 0.9` with non-generic evidence (below that — e.g. 0.7 citing
+RMSNorm/SwiGLU/LayerNorm — does **not** wipe your score). Copy/similarity
+corpora are **champions only** (current top + historical Score>0 ex-tops) plus
+baseline — not every past submission — and still exclude your own prior art
+(same hotkey **or** same coldkey). Standard components (RMSNorm, RoPE, SwiGLU,
+LayerNorm, gated/parallel residual, …) are **not** plagiarism signals. LLM
+quality is coherence-only, not a grader.
 Public gallery/leaderboard show champions only.
 **Competition:** per epoch you are
 credited the max of (a) your own best training result and (b) for each arch you

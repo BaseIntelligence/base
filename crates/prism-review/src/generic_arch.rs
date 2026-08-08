@@ -2,6 +2,11 @@
 
 use crate::types::{SimilarityKind, SimilarityVerdict};
 
+/// Cheap LLM `Suspicious` hard-zeros at/above this confidence when evidence
+/// is not generic-trope-only. Shared by parse coercion, pre-pod reject, and
+/// [`cheap_similarity_hard_zeros`] / `combine_final`.
+pub const SUSPICIOUS_HARD_ZERO_THRESHOLD: f64 = 0.9;
+
 /// Substrings that are standard modern-LM vocabulary (case-insensitive).
 /// When *every* evidence line matches one of these (and nothing else
 /// substantive), a `suspicious` / soft-`copied` verdict is coerced to
@@ -50,6 +55,22 @@ pub fn evidence_is_only_generic_tropes(evidence: &[String]) -> bool {
     })
 }
 
+/// Whether cheap LLM similarity should wipe the leaf (`Score(0)`).
+///
+/// `Copied` always wipes. `Suspicious` wipes only when `score >=`
+/// [`SUSPICIOUS_HARD_ZERO_THRESHOLD`] and evidence is not generic-trope-only
+/// (`RMSNorm` / `SwiGLU` / `LayerNorm` / …). `Original` never wipes.
+#[must_use]
+pub fn cheap_similarity_hard_zeros(kind: SimilarityKind, score: f64, evidence: &[String]) -> bool {
+    match kind {
+        SimilarityKind::Copied => true,
+        SimilarityKind::Suspicious => {
+            score >= SUSPICIOUS_HARD_ZERO_THRESHOLD && !evidence_is_only_generic_tropes(evidence)
+        }
+        SimilarityKind::Original => false,
+    }
+}
+
 /// Coerce false-positive LLM similarity verdicts that cite only standard
 /// components. Hard `copied` with score ≥ 0.95 is left alone (near-verbatim
 /// copies can still mention shared blocks in evidence).
@@ -57,7 +78,7 @@ pub fn evidence_is_only_generic_tropes(evidence: &[String]) -> bool {
 pub fn coerce_generic_similarity(mut v: SimilarityVerdict) -> SimilarityVerdict {
     let only_generic = evidence_is_only_generic_tropes(&v.evidence);
     match v.kind {
-        SimilarityKind::Suspicious if only_generic || v.score < 0.9 => {
+        SimilarityKind::Suspicious if only_generic || v.score < SUSPICIOUS_HARD_ZERO_THRESHOLD => {
             v.kind = SimilarityKind::Original;
             if only_generic {
                 v.evidence.insert(
@@ -132,5 +153,40 @@ mod tests {
             &["same custom DualPathBlock wiring as subm:aabbccdd"],
         ));
         assert!(matches!(v.kind, SimilarityKind::Copied));
+    }
+
+    #[test]
+    fn hard_zeros_threshold_on_suspicious() {
+        let tropes = [
+            "RMSNorm usage".into(),
+            "SwiGLU feed-forward".into(),
+            "Layer normalization".into(),
+        ];
+        assert!(!cheap_similarity_hard_zeros(
+            SimilarityKind::Suspicious,
+            0.7,
+            &tropes
+        ));
+        assert!(!cheap_similarity_hard_zeros(
+            SimilarityKind::Suspicious,
+            0.99,
+            &tropes
+        ));
+        let real = ["same custom DualPathBlock wiring as subm:aabbccdd".into()];
+        assert!(!cheap_similarity_hard_zeros(
+            SimilarityKind::Suspicious,
+            0.7,
+            &real
+        ));
+        assert!(cheap_similarity_hard_zeros(
+            SimilarityKind::Suspicious,
+            0.99,
+            &real
+        ));
+        assert!(cheap_similarity_hard_zeros(
+            SimilarityKind::Copied,
+            0.5,
+            &[]
+        ));
     }
 }

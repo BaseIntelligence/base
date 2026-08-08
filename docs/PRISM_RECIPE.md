@@ -126,7 +126,9 @@ verdict, quality notes and issues are kept as audit records
 review still gates eligibility:
 
 - similarity verdict `Copied` → hard **Score 0**
-- similarity verdict `Suspicious` → advisory only (not a hard zero; agentic is the judge)
+- similarity verdict `Suspicious` → **Score 0** only when `score ≥ 0.9` and
+  evidence is not generic-trope-only (else no wipe; agentic remains the
+  structural judge)
 - harness/antipattern failure → `ChallengeInternal` maps to `NoScore` reason
 
 ## Anti-copy review

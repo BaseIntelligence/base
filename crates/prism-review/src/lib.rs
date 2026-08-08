@@ -22,7 +22,10 @@ mod prompts;
 mod sim;
 mod types;
 
-pub use generic_arch::{coerce_generic_similarity, evidence_is_only_generic_tropes};
+pub use generic_arch::{
+    cheap_similarity_hard_zeros, coerce_generic_similarity, evidence_is_only_generic_tropes,
+    SUSPICIOUS_HARD_ZERO_THRESHOLD,
+};
 pub use llm::{load_api_key_file, OpenRouterClient};
 pub use prompts::{REVIEW_PROMPT_VERSION, SIMILARITY_PROMPT_VERSION};
 pub use sim::SimReviewer;
