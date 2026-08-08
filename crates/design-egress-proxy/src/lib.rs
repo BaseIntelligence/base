@@ -55,6 +55,9 @@ const BLOCKED_HOSTNAMES: &[&str] = &[
     "updater",
     "site-api",
     "evil-gateway",
+    // Co-located on the master compose network; sandboxes must not reach it
+    // even when DNS resolves (post-resolution IP block is the real guard).
+    "validator",
 ];
 
 /// True when `host` names a loopback / internal control-plane target.
@@ -480,9 +483,21 @@ mod tests {
 
     #[test]
     fn control_plane_names_blocked() {
-        for name in ["gateway", "postgres", "socket-proxy", "design-challenge"] {
-            assert!(host_blocked_by_name(name));
+        for name in [
+            "gateway",
+            "postgres",
+            "socket-proxy",
+            "design-challenge",
+            "prism-challenge",
+            "design-egress-proxy",
+            "updater",
+            "site-api",
+            "evil-gateway",
+            "validator",
+        ] {
+            assert!(host_blocked_by_name(name), "{name} must be blocked");
         }
+        assert!(host_blocked_by_name("Validator")); // case-insensitive
         assert!(host_blocked_by_name("localhost"));
         assert!(host_blocked_by_name("foo.internal"));
         assert!(!host_blocked_by_name("pypi.org"));

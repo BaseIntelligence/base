@@ -3,9 +3,15 @@
 //! the most-similar harness mounted read-only, verdict written to `/out`.
 //!
 //! The container gets `AGENTIC_ENABLE_RUN_COMMAND=1` so the LLM may use the
-//! sandboxed `run_command` tool. With no `OpenRouter` key the inner agent is
-//! the deterministic `SimAgent` and the container runs with networking
-//! disabled.
+//! sandboxed `run_command` tool (required for diffs / grep / AST probes in
+//! prod). Mitigations against prompt-injected `OpenRouter` key theft:
+//! - key is mounted as a **file** (`OPENROUTER_API_KEY_FILE`), never put in
+//!   the container's initial process environ (`/proc/<pid>/environ` is a
+//!   boot-time snapshot and cannot be scrubbed by `unsetenv`);
+//! - `run_command` children get `env_clear` and refuse procfs + secrets paths.
+//!
+//! With no `OpenRouter` key the inner agent is the deterministic `SimAgent`
+//! and the container runs with networking disabled.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -25,6 +31,10 @@ pub const DEFAULT_REVIEW_IMAGE: &str = "design-review:0.1.0";
 pub const CONTAINER_REQUEST_PATH: &str = "/work/_review_request.json";
 /// Verdict output path inside the container.
 pub const CONTAINER_VERDICT_PATH: &str = "/out/verdict.json";
+/// `OpenRouter` key file path inside the container (RO secrets mount).
+pub const CONTAINER_KEY_FILE: &str = "/run/review-secrets/openrouter_api_key";
+/// Secrets mount point inside the container.
+pub const CONTAINER_SECRETS_MOUNT: &str = "/run/review-secrets";
 
 /// `DockerAgent` settings.
 #[derive(Debug, Clone)]
@@ -33,7 +43,7 @@ pub struct DockerAgentConfig {
     pub docker_base: String,
     /// Review image ref (digest-pinned in deploy).
     pub image: String,
-    /// `OpenRouter` key handed to the inner agent (env, never logged).
+    /// `OpenRouter` key handed to the inner agent (file mount, never logged).
     pub openrouter_key: Option<String>,
     /// Optional `OpenRouter` base override.
     pub openrouter_base: Option<String>,
@@ -75,15 +85,20 @@ impl DockerAgent {
         Ok(Self { client, cfg })
     }
 
-    /// Container env (key never logged by callers).
-    fn container_env(&self) -> Vec<String> {
+    /// Container env (key never logged by callers; never put the raw key in env).
+    ///
+    /// Prod keeps `AGENTIC_ENABLE_RUN_COMMAND=1`: agentic review needs shell
+    /// probes. Do not disable without an alternate inspection path; secrets
+    /// stay out of process environ and `run_command` denies procfs + the
+    /// secrets mount.
+    fn container_env(&self, key_file: bool) -> Vec<String> {
         let mut env = vec![
             "AGENTIC_ENABLE_RUN_COMMAND=1".to_owned(),
             format!("REVIEW_REQUEST_PATH={CONTAINER_REQUEST_PATH}"),
             format!("REVIEW_OUT_PATH={CONTAINER_VERDICT_PATH}"),
         ];
-        if let Some(k) = &self.cfg.openrouter_key {
-            env.push(format!("OPENROUTER_API_KEY={k}"));
+        if key_file {
+            env.push(format!("OPENROUTER_API_KEY_FILE={CONTAINER_KEY_FILE}"));
         }
         if let Some(b) = &self.cfg.openrouter_base {
             env.push(format!("OPENROUTER_BASE_URL={b}"));
@@ -94,7 +109,7 @@ impl DockerAgent {
         env
     }
 
-    fn build_spec(&self, work: &Path, out_dir: &Path) -> RunSpec {
+    fn build_spec(&self, work: &Path, out_dir: &Path, secrets_dir: Option<&Path>) -> RunSpec {
         let ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -110,11 +125,18 @@ impl DockerAgent {
             self.cfg.image.clone(),
             vec![],
         );
-        spec.binds = vec![
+        let mut binds = vec![
             format!("{}:/work:ro", work.display()),
             format!("{}:/out:rw", out_dir.display()),
         ];
-        spec.env = self.container_env();
+        if let Some(secrets) = secrets_dir {
+            binds.push(format!(
+                "{}:{CONTAINER_SECRETS_MOUNT}:ro",
+                secrets.display()
+            ));
+        }
+        spec.binds = binds;
+        spec.env = self.container_env(secrets_dir.is_some());
         spec.network_mode = None;
         // Sim inner agent needs no network at all.
         spec.network_disabled = self.cfg.openrouter_key.is_none();
@@ -161,6 +183,35 @@ pub fn stage_review_mounts(req: &ReviewRequest) -> Result<PathBuf, AgenticError>
     Ok(out_dir)
 }
 
+/// Stage the `OpenRouter` key into a host-side secrets dir (sibling of `out_dir`)
+/// for a RO bind into the review container. Never logs the key.
+///
+/// # Errors
+/// Staging I/O failures.
+pub fn stage_review_secrets(out_dir: &Path, key: &str) -> Result<PathBuf, AgenticError> {
+    let secrets = out_dir.with_file_name(format!(
+        "{}.secrets",
+        out_dir
+            .file_name()
+            .map_or_else(|| "review.out".into(), |n| n.to_string_lossy().into_owned())
+    ));
+    let _ = std::fs::remove_dir_all(&secrets);
+    std::fs::create_dir_all(&secrets).map_err(|e| AgenticError::Tool(format!("secrets: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o700));
+    }
+    let path = secrets.join("openrouter_api_key");
+    std::fs::write(&path, key).map_err(|e| AgenticError::Tool(format!("secrets: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400));
+    }
+    Ok(secrets)
+}
+
 fn most_similar(req: &ReviewRequest) -> Option<(String, String)> {
     let cand = req
         .primary_relpaths
@@ -187,7 +238,11 @@ fn most_similar(req: &ReviewRequest) -> Option<(String, String)> {
 impl AgenticBackend for DockerAgent {
     async fn review(&self, req: &ReviewRequest) -> Result<AgenticVerdict, AgenticError> {
         let out_dir = stage_review_mounts(req)?;
-        let spec = self.build_spec(&req.workdir, &out_dir);
+        let secrets_dir = match &self.cfg.openrouter_key {
+            Some(k) => Some(stage_review_secrets(&out_dir, k)?),
+            None => None,
+        };
+        let spec = self.build_spec(&req.workdir, &out_dir, secrets_dir.as_deref());
         let client = self.client.clone();
         let run = tokio::task::spawn_blocking(move || client.run_owned(&spec))
             .await
@@ -202,6 +257,9 @@ impl AgenticBackend for DockerAgent {
             ))
         })?;
         let _ = std::fs::remove_dir_all(&out_dir);
+        if let Some(s) = secrets_dir {
+            let _ = std::fs::remove_dir_all(&s);
+        }
         if run.status_code != 0 {
             return Err(AgenticError::Provider(format!(
                 "review exit={}: {}",
@@ -261,5 +319,70 @@ mod tests {
         assert_eq!(v["domain_rules"], "design");
         assert!(v.get("workdir").is_none());
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn container_env_uses_key_file_not_environ() {
+        let agent = DockerAgent::new(DockerAgentConfig {
+            openrouter_key: Some("sk-test-not-a-real-key".into()),
+            ..DockerAgentConfig::default()
+        })
+        .unwrap();
+        let env = agent.container_env(true);
+        assert!(env.iter().any(|e| e == "AGENTIC_ENABLE_RUN_COMMAND=1"));
+        let expected = format!("OPENROUTER_API_KEY_FILE={CONTAINER_KEY_FILE}");
+        assert!(
+            env.iter().any(|e| e == &expected),
+            "missing key-file env; got {env:?}"
+        );
+        assert!(
+            !env.iter().any(|e| e.starts_with("OPENROUTER_API_KEY=")),
+            "raw key must not enter container environ (proc environ is boot-fixed)"
+        );
+        assert!(!env.iter().any(|e| e.contains("sk-test-not-a-real-key")));
+    }
+
+    #[test]
+    fn stage_secrets_writes_key_file() {
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("agentic-run1.out");
+        std::fs::create_dir_all(&out).unwrap();
+        let secrets = stage_review_secrets(&out, "sk-test-not-a-real-key").unwrap();
+        let key_path = secrets.join("openrouter_api_key");
+        assert_eq!(
+            std::fs::read_to_string(&key_path).unwrap(),
+            "sk-test-not-a-real-key"
+        );
+        let _ = std::fs::remove_dir_all(&secrets);
+    }
+
+    #[test]
+    fn build_spec_binds_secrets_mount() {
+        let dir = tempdir().unwrap();
+        let work = dir.path().join("agentic-run1");
+        let out = dir.path().join("agentic-run1.out");
+        let secrets = dir.path().join("agentic-run1.out.secrets");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::create_dir_all(&secrets).unwrap();
+        let agent = DockerAgent::new(DockerAgentConfig {
+            openrouter_key: Some("sk-test-not-a-real-key".into()),
+            ..DockerAgentConfig::default()
+        })
+        .unwrap();
+        let spec = agent.build_spec(&work, &out, Some(&secrets));
+        assert!(spec
+            .binds
+            .iter()
+            .any(|b| b.contains(":ro") && b.contains(CONTAINER_SECRETS_MOUNT)));
+        assert!(spec
+            .env
+            .iter()
+            .any(|e| e.starts_with("OPENROUTER_API_KEY_FILE=")));
+        assert!(!spec
+            .env
+            .iter()
+            .any(|e| e.starts_with("OPENROUTER_API_KEY=")));
+        assert!(!spec.network_disabled);
     }
 }

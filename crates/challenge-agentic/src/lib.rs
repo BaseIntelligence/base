@@ -26,7 +26,7 @@ pub use challenge_ast::{
     arch_has_noncausal_seq_mix, copy_gate, static_source_cheat, training_has_telemetry_hooks,
     CopyGateHit, GateCorpusEntry, SourceCheatHit, SourceCheatKind,
 };
-pub use llm::{load_api_key_file, DEFAULT_MODEL};
+pub use llm::{load_api_key_file, take_openrouter_api_key, DEFAULT_MODEL};
 pub use prompts::{AGENTIC_PROMPT_VERSION, DESIGN_DOMAIN_RULES, PRISM_DOMAIN_RULES};
 pub use sim::{SimAgent, SIM_CHEAT_BPS, SIM_SUSPICIOUS_BPS};
 pub use types::{

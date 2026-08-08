@@ -21,6 +21,26 @@ pub fn load_api_key_file(path: &std::path::Path) -> Result<String, AgenticError>
     Ok(key)
 }
 
+/// Take `OPENROUTER_API_KEY` from the live process environment into memory and
+/// remove the env slot.
+///
+/// Prefer `OPENROUTER_API_KEY_FILE` in review containers: Linux
+/// `/proc/<pid>/environ` is a **boot-time snapshot**, so `unsetenv` cannot
+/// hide a key that was injected into the container's initial environ. This
+/// helper remains for legacy/local injects and for clearing the live environ
+/// map (e.g. accidental inheritance). Always removes the variable.
+#[must_use]
+pub fn take_openrouter_api_key() -> Option<String> {
+    let key = std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty());
+    // Single-threaded at challenge-review startup; libtest serializes the
+    // unit test that mutates this var.
+    std::env::remove_var("OPENROUTER_API_KEY");
+    key
+}
+
 /// HTTP client for `/chat/completions` with tools.
 pub struct ChatClient {
     http: reqwest::Client,
@@ -168,5 +188,26 @@ fn sanitize(msg: &str, key: &str) -> String {
         msg.to_owned()
     } else {
         msg.replace(key, "<redacted>")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialize tests that mutate `OPENROUTER_API_KEY`.
+    static OPENROUTER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn take_openrouter_api_key_scrubs_live_env() {
+        let _guard = OPENROUTER_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("OPENROUTER_API_KEY", "  sk-test-secret-value-xx  ");
+        let key = take_openrouter_api_key().expect("key");
+        assert_eq!(key, "sk-test-secret-value-xx");
+        assert!(std::env::var("OPENROUTER_API_KEY").is_err());
+        // Absent after scrub → None.
+        assert!(take_openrouter_api_key().is_none());
     }
 }

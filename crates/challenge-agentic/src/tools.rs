@@ -438,10 +438,52 @@ const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Output cap (combined stdout+stderr).
 const RUN_COMMAND_MAX_OUT: usize = 16 * 1024;
 
+/// Normalize path separators and collapse `//` for deny checks.
+fn normalize_cmd_paths(cmd: &str) -> String {
+    let lower = cmd.to_ascii_lowercase().replace('\\', "/");
+    let mut compact = String::with_capacity(lower.len());
+    let mut prev_slash = false;
+    for c in lower.chars() {
+        if c == '/' {
+            if !prev_slash {
+                compact.push(c);
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+            compact.push(c);
+        }
+    }
+    compact
+}
+
+/// True when `cmd` references procfs (any `/proc` path). Defense-in-depth
+/// against parent-environ exfil (`/proc/1/environ`) after `env_clear` on the child.
+#[must_use]
+pub(crate) fn command_touches_procfs(cmd: &str) -> bool {
+    let compact = normalize_cmd_paths(cmd);
+    compact.contains("/proc/")
+        || compact.contains("/proc ")
+        || compact.ends_with("/proc")
+        || compact.contains(" /proc")
+        || compact.starts_with("proc/")
+}
+
+/// True when `cmd` references the review-container secrets mount or key file.
+#[must_use]
+pub(crate) fn command_touches_review_secrets(cmd: &str) -> bool {
+    let compact = normalize_cmd_paths(cmd);
+    compact.contains("/run/review-secrets")
+        || compact.contains("review-secrets")
+        || compact.contains("openrouter_api_key")
+}
+
 /// Sandboxed shell for the review container: fixed workdir cwd, scrubbed env
 /// (no API keys), hard timeout, truncated output. The container itself (no
 /// capabilities, read-only rootfs, no writable mounts besides /out + /tmp) is
-/// the security boundary; this tool adds cwd/env/time/output limits.
+/// the security boundary; this tool adds cwd/env/time/output limits and
+/// refuses procfs + review-secrets paths so `OpenRouter` keys (file-mounted,
+/// never in process environ) cannot be read via prompt-injected shell.
 fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
     if !ctx.enable_run_command {
         return Err(AgenticError::Tool(
@@ -454,6 +496,16 @@ fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticEr
         .ok_or_else(|| AgenticError::Tool("run_command: command required".into()))?;
     if cmd.is_empty() || cmd.len() > 1_000 || cmd.contains('\0') {
         return Err(AgenticError::Tool("run_command: bad command".into()));
+    }
+    if command_touches_procfs(cmd) {
+        return Err(AgenticError::Tool(
+            "run_command: procfs paths forbidden".into(),
+        ));
+    }
+    if command_touches_review_secrets(cmd) {
+        return Err(AgenticError::Tool(
+            "run_command: review secrets paths forbidden".into(),
+        ));
     }
     let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let cwd = resolve_rel(&ctx.workdir, rel)?;
@@ -738,6 +790,42 @@ mod tests {
         assert!(out.contains("exit=0"), "out={out}");
         // Escape attempts fail via resolve_rel on cwd.
         assert!(tool_run_command(&ctx, &json!({"command": "ls", "path": ".."})).is_err());
+        // Parent environ / secrets exfil via shell is refused (defense-in-depth).
+        let err = tool_run_command(&ctx, &json!({"command": "cat /proc/1/environ"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("procfs"), "err={err}");
+        assert!(tool_run_command(
+            &ctx,
+            &json!({"command": "python -c 'open(\"//proc/self/environ\").read()'"})
+        )
+        .is_err());
+        let err = tool_run_command(
+            &ctx,
+            &json!({"command": "cat /run/review-secrets/openrouter_api_key"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("secrets"), "err={err}");
+    }
+
+    #[test]
+    fn procfs_and_secrets_touch_detectors() {
+        assert!(command_touches_procfs("cat /proc/1/environ"));
+        assert!(command_touches_procfs("cat //proc//self/environ"));
+        assert!(command_touches_procfs(r"type C:\proc\1\environ"));
+        assert!(command_touches_procfs("xxd /PROC/self/environ"));
+        assert!(!command_touches_procfs("cat agent.py"));
+        assert!(!command_touches_procfs("grep environ agent.py"));
+        assert!(!command_touches_procfs("ls /tmp"));
+        assert!(command_touches_review_secrets(
+            "cat /run/review-secrets/openrouter_api_key"
+        ));
+        assert!(command_touches_review_secrets(
+            "python -c 'open(\"/run/review-secrets/x\").read()'"
+        ));
+        assert!(!command_touches_review_secrets("cat agent.py"));
+        assert!(!command_touches_review_secrets("grep openrouter agent.py"));
     }
 
     #[test]
