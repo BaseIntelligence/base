@@ -334,34 +334,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         let id = row.id.clone();
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
-        // Phase 0: pre-pod cheap screens (no GPU, no private eval assets).
-        // Copy gate → static cheat patterns → AST similarity. Fail-fast with
-        // Score(0) so a bad submission never rents a Lium pod (~6h waste).
-        if self.copy_gate_step(&row).await {
+        // Phase 0: pre-pod cheap screens (no GPU / private eval assets).
+        let Some(similarity) = self.pre_pod_screens(&id, &row).await else {
             return Ok(());
-        }
-        if self.static_source_step(&row).await {
-            return Ok(());
-        }
-        let similarity = match self.similarity_step(&id, &row).await {
-            Ok(v) => v,
-            Err(e) => {
-                if self.maybe_auto_retry(&row, "ast_infra", &e).await {
-                    return Ok(());
-                }
-                self.fail_terminal(&row, "ast_infra", &e).await;
-                return Ok(());
-            }
         };
-        if matches!(
-            similarity.kind,
-            prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
-        ) {
-            let detail = format!("pre-pod similarity: {:?}", similarity.kind);
-            self.reject_pre_pod(&row, Some(similarity), None, detail)
-                .await;
-            return Ok(());
-        }
 
         // Phase 1: provision + recipe exec + terminate (always verified).
         // Lium/infra failures auto-retry (install class); budget exhaustion is
@@ -452,6 +428,38 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         }
         let _ = final_score;
         Ok(())
+    }
+
+    /// Pre-pod screens: copy gate → static cheat → AST similarity.
+    /// Returns `Some(similarity)` when the row may proceed to Lium rent;
+    /// `None` when already finalized (rejected / failed / retrying).
+    async fn pre_pod_screens(&self, id: &str, row: &SubmissionState) -> Option<SimilarityVerdict> {
+        if self.copy_gate_step(row).await {
+            return None;
+        }
+        if self.static_source_step(row).await {
+            return None;
+        }
+        let similarity = match self.similarity_step(id, row).await {
+            Ok(v) => v,
+            Err(e) => {
+                if self.maybe_auto_retry(row, "ast_infra", &e).await {
+                    return None;
+                }
+                self.fail_terminal(row, "ast_infra", &e).await;
+                return None;
+            }
+        };
+        if matches!(
+            similarity.kind,
+            prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
+        ) {
+            let detail = format!("pre-pod similarity: {:?}", similarity.kind);
+            self.reject_pre_pod(row, Some(similarity), None, detail)
+                .await;
+            return None;
+        }
+        Some(similarity)
     }
 
     /// Pre-LLM copy gate on `architecture.py`. Returns `true` when the row was
