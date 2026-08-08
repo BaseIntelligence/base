@@ -390,6 +390,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 bpb: b,
                 quality: review.quality_score,
                 similarity: similarity.kind,
+                similarity_score: similarity.score,
+                similarity_evidence: similarity.evidence.clone(),
                 agentic: agentic.verdict,
             },
             None => FinalOutcome::ChallengeInternal,
@@ -457,11 +459,18 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 return None;
             }
         };
-        // Only hard-reject LLM `Copied`. `Suspicious` is advisory — agentic
-        // (post-pod, AST-thresholded) is the primary judge. Generic LM tropes
-        // are coerced to Original in prism-review parsers.
-        if matches!(similarity.kind, prism_review::SimilarityKind::Copied) {
-            let detail = format!("pre-pod similarity: {:?}", similarity.kind);
+        // Hard-reject LLM `Copied`, and high-confidence `Suspicious`
+        // (score ≥ 0.9 with non-trope evidence). Below-threshold / trope-only
+        // Suspicious is not a wipe — parser coercion + combine_final agree.
+        if prism_review::cheap_similarity_hard_zeros(
+            similarity.kind,
+            similarity.score,
+            &similarity.evidence,
+        ) {
+            let detail = format!(
+                "pre-pod similarity: {:?} score={:.2}",
+                similarity.kind, similarity.score
+            );
             self.reject_pre_pod(row, Some(similarity), None, detail)
                 .await;
             return None;

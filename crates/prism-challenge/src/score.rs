@@ -6,6 +6,7 @@
 
 use bundle::NoScoreReasonCode;
 use prism_pipeline::score_from_bpb;
+use prism_review::cheap_similarity_hard_zeros;
 
 /// Final outcomes after LLM review + similarity + agentic gates (orchestrator v2).
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +19,11 @@ pub enum FinalOutcome {
         quality: u16,
         /// Cheap single-shot similarity class.
         similarity: prism_review::SimilarityKind,
+        /// Cheap LLM similarity confidence `0.0..1.0` (compared for
+        /// `Suspicious`; see [`prism_review::SUSPICIOUS_HARD_ZERO_THRESHOLD`]).
+        similarity_score: f64,
+        /// Cheap LLM evidence lines (trope-only → no Score wipe).
+        similarity_evidence: Vec<String>,
         /// Agentic anti-cheat verdict (primary gate).
         agentic: challenge_agentic::VerdictKind,
     },
@@ -29,10 +35,17 @@ pub enum FinalOutcome {
 ///
 /// The score is **pure bpb**: the LLM review is an anti-cheat / coherence
 /// GATE, never a grader — its quality vote and issues are recorded as audit
-/// events but never add nor remove points. Agentic `Cheat`/`Suspicious` and
-/// cheap similarity `Copied` are hard gates (miner-attributable `Score{0}`).
-/// Cheap LLM `Suspicious` is advisory only (agentic + AST thresholds are the
-/// primary judge). Missing agentic verdict is fail-closed upstream as
+/// events but never add nor remove points.
+///
+/// Hard gates (miner-attributable `Score{0}`):
+/// - Agentic `Cheat` / `Suspicious` (AST bands already applied upstream).
+/// - Cheap LLM `Copied`.
+/// - Cheap LLM `Suspicious` **only** when
+///   `similarity_score >=` [`prism_review::SUSPICIOUS_HARD_ZERO_THRESHOLD`]
+///   `(0.9)` **and** evidence is not generic-trope-only (RMSNorm / SwiGLU /
+///   LayerNorm / …). Below the threshold (e.g. 0.7 tropes) → no score wipe.
+///
+/// Missing agentic verdict is fail-closed upstream as
 /// [`FinalOutcome::ChallengeInternal`].
 ///
 /// # Panics
@@ -49,12 +62,14 @@ pub fn combine_final(outcome: &FinalOutcome) -> prism_store::FinalScore {
             bpb,
             quality: _,
             similarity,
+            similarity_score,
+            similarity_evidence,
             agentic,
         } => {
             if matches!(agentic, VerdictKind::Cheat | VerdictKind::Suspicious) {
                 return FinalScore::Score(0);
             }
-            if matches!(similarity, prism_review::SimilarityKind::Copied) {
+            if cheap_similarity_hard_zeros(*similarity, *similarity_score, similarity_evidence) {
                 return FinalScore::Score(0);
             }
             FinalScore::Score(score_from_bpb(*bpb))
@@ -70,25 +85,40 @@ mod final_tests {
     use prism_review::SimilarityKind::Original;
     use prism_review::SimilarityKind::Suspicious;
 
-    #[test]
-    fn copied_is_hard_zero() {
-        let o = FinalOutcome::Measured {
+    fn measured(
+        similarity: prism_review::SimilarityKind,
+        similarity_score: f64,
+        evidence: &[&str],
+        agentic: challenge_agentic::VerdictKind,
+    ) -> FinalOutcome {
+        FinalOutcome::Measured {
             bpb: 1.0,
             quality: 900,
-            similarity: Copied,
-            agentic: challenge_agentic::VerdictKind::Clean,
-        };
+            similarity,
+            similarity_score,
+            similarity_evidence: evidence.iter().map(|s| (*s).to_owned()).collect(),
+            agentic,
+        }
+    }
+
+    #[test]
+    fn copied_is_hard_zero() {
+        let o = measured(Copied, 0.5, &[], challenge_agentic::VerdictKind::Clean);
         assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
     }
 
     #[test]
-    fn cheap_suspicious_is_not_hard_zero() {
-        let o = FinalOutcome::Measured {
-            bpb: 1.0,
-            quality: 900,
-            similarity: Suspicious,
-            agentic: challenge_agentic::VerdictKind::Clean,
-        };
+    fn suspicious_0_7_tropes_not_hard_zero() {
+        let o = measured(
+            Suspicious,
+            0.7,
+            &[
+                "RMSNorm usage",
+                "SwiGLU feed-forward",
+                "Layer normalization",
+            ],
+            challenge_agentic::VerdictKind::Clean,
+        );
         assert!(matches!(
             combine_final(&o),
             prism_store::FinalScore::Score(v) if v > 0
@@ -96,13 +126,19 @@ mod final_tests {
     }
 
     #[test]
+    fn suspicious_0_99_real_copy_is_hard_zero() {
+        let o = measured(
+            Suspicious,
+            0.99,
+            &["same custom DualPathBlock wiring as subm:aabbccdd"],
+            challenge_agentic::VerdictKind::Clean,
+        );
+        assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
+    }
+
+    #[test]
     fn agentic_cheat_is_hard_zero() {
-        let o = FinalOutcome::Measured {
-            bpb: 1.0,
-            quality: 900,
-            similarity: Original,
-            agentic: challenge_agentic::VerdictKind::Cheat,
-        };
+        let o = measured(Original, 0.0, &[], challenge_agentic::VerdictKind::Cheat);
         assert_eq!(combine_final(&o), prism_store::FinalScore::Score(0));
     }
 
@@ -114,12 +150,16 @@ mod final_tests {
             bpb: 0.5,
             quality: 900,
             similarity: Original,
+            similarity_score: 0.0,
+            similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
         };
         let lo_same_bpb = FinalOutcome::Measured {
             bpb: 0.5,
             quality: 0,
             similarity: Original,
+            similarity_score: 0.0,
+            similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
         };
         assert_eq!(combine_final(&hi), combine_final(&lo_same_bpb));
@@ -128,6 +168,8 @@ mod final_tests {
             bpb: 4.0,
             quality: 1000,
             similarity: Original,
+            similarity_score: 0.0,
+            similarity_evidence: vec![],
             agentic: challenge_agentic::VerdictKind::Clean,
         };
         match (combine_final(&hi), combine_final(&worse_bpb)) {
