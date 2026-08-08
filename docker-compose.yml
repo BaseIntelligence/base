@@ -314,6 +314,10 @@ services:
       # Host path must equal bind source below (daemon resolves binds on host).
       DESIGN_STAGING_ROOT: ${BASE_STATE_DIR:-/var/lib/base}/design/staging
       DESIGN_LLM_PROXY: http://design-egress-proxy:8094
+      # Screenshot Chromium (--no-sandbox, file://) must not reach control-plane
+      # targets on the shared `base` network: force all http(s) through the
+      # egress proxy blocklist (incl. loopback/metadata via <-loopback>).
+      DESIGN_SCREENSHOT_PROXY: http://design-egress-proxy:8094
       DESIGN_ANNOTATOR_TOKENS_FILE: /run/base/design/annotator_tokens
       DESIGN_AGENTIC_OPENROUTER_KEY_FILE: /run/base/openrouter/api_key
       DESIGN_MAX_CONCURRENT: "${DESIGN_MAX_CONCURRENT:-2}"

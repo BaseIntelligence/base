@@ -122,8 +122,13 @@ for env_file in deploy/compose/env-staging.yml deploy/compose/env-prod.yml; do
   if echo "$rendered" | grep -qE 'DESIGN_FORCE_SIM:[[:space:]]*["'\'']?(1|true|TRUE|yes)["'\'']?'; then
     fail "$env_file enables DESIGN_FORCE_SIM (Docker-only on droplets)"
   fi
+  # Screenshot Chromium isolation: must force egress proxy (not empty / direct).
+  if ! echo "$rendered" | grep -qE 'DESIGN_SCREENSHOT_PROXY:[[:space:]]*http://design-egress-proxy:8094'; then
+    fail "$env_file master render missing DESIGN_SCREENSHOT_PROXY=http://design-egress-proxy:8094"
+  fi
 done
 echo "OK: staging/prod do not enable host SimSandbox"
+echo "OK: staging/prod force screenshot Chromium through design-egress-proxy"
 
 # --- prism-challenge + design-challenge present in default ---
 default_services=$(render \

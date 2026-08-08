@@ -61,6 +61,23 @@ pub struct SanitizeResult {
     pub artifact_digest: String,
 }
 
+/// Control-plane / metadata hostnames that must never be fetched from miner
+/// HTML (screenshot Chromium or a future viewer). Mirrors
+/// `design-egress-proxy::BLOCKED_HOSTNAMES` plus localhost aliases.
+const BLOCKED_URL_HOSTS: &[&str] = &[
+    "localhost",
+    "gateway",
+    "postgres",
+    "socket-proxy",
+    "design-challenge",
+    "prism-challenge",
+    "design-egress-proxy",
+    "updater",
+    "site-api",
+    "evil-gateway",
+    "metadata.google.internal",
+];
+
 fn ammonia_builder() -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     // Drop scriptable / navigational sinks; ammonia also strips on* handlers.
@@ -233,6 +250,14 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         notes.push("css_blocked_inline".into());
     }
 
+    // Neutralize http(s) href/src pointing at control-plane / metadata /
+    // RFC1918. Legitimate CDN URLs stay; residual CSS `url(...)` SSRF is
+    // covered by screenshot Chromium's egress-proxy force.
+    let (cleaned, ssrf_stripped) = neutralize_ssrf_urls(&cleaned);
+    if ssrf_stripped {
+        notes.push("ssrf_url_neutralized".into());
+    }
+
     (
         cleaned,
         SanitizeReport {
@@ -241,6 +266,125 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
             notes,
         },
     )
+}
+
+/// True when `host` names loopback, metadata, or a compose control-plane
+/// service (case-insensitive, trailing-dot tolerant).
+#[must_use]
+pub fn host_blocked_for_miner_url(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost"
+        || h.ends_with(".internal")
+        || h.ends_with(".localhost")
+        || BLOCKED_URL_HOSTS.contains(&h.as_str())
+}
+
+/// True when a literal IP is non-public (loopback, link-local/metadata,
+/// RFC1918, CGNAT, etc.).
+#[must_use]
+pub fn ip_blocked_for_miner_url(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 0
+                || o[0] == 10
+                || o[0] == 127
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || o[0] >= 224
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return ip_blocked_for_miner_url(&std::net::IpAddr::V4(mapped));
+            }
+            let seg = v6.segments();
+            v6.is_unspecified()
+                || v6.is_loopback()
+                || (seg[0] & 0xffc0) == 0xfe80
+                || (seg[0] & 0xfe00) == 0xfc00
+                || (seg[0] & 0xff00) == 0xff00
+        }
+    }
+}
+
+/// Extract host from an absolute or protocol-relative http(s) URL.
+fn http_url_host(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &trimmed["https://".len()..]
+    } else if lower.starts_with("http://") {
+        &trimmed["http://".len()..]
+    } else if lower.starts_with("//") {
+        &trimmed["//".len()..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return None;
+    }
+    // Drop userinfo.
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if hostport.starts_with('[') {
+        hostport
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_owned())
+    }
+}
+
+/// True when an http(s) / protocol-relative URL targets a blocked host or IP.
+#[must_use]
+pub fn url_looks_ssrf(url: &str) -> bool {
+    let Some(host) = http_url_host(url) else {
+        return false;
+    };
+    if host_blocked_for_miner_url(&host) {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip_blocked_for_miner_url(&ip);
+    }
+    false
+}
+
+/// Rewrite `href` / `src` (and a few cousins) that point at internal targets
+/// to `#` so screenshot Chromium never even queues the request. Public CDN
+/// URLs are left alone.
+fn neutralize_ssrf_urls(html: &str) -> (String, bool) {
+    let Ok(re) =
+        Regex::new(r#"(?i)\s(href|src|poster|cite|formaction|action)\s*=\s*("([^"]*)"|'([^']*)')"#)
+    else {
+        return (html.to_owned(), false);
+    };
+    let mut stripped = false;
+    let out = re
+        .replace_all(html, |caps: &regex::Captures<'_>| {
+            let attr = caps.get(1).map_or("href", |m| m.as_str());
+            let val = caps
+                .get(3)
+                .or_else(|| caps.get(4))
+                .map_or("", |m| m.as_str());
+            if url_looks_ssrf(val) {
+                stripped = true;
+                format!(" {attr}=\"#\"")
+            } else {
+                caps[0].to_owned()
+            }
+        })
+        .into_owned();
+    (out, stripped)
 }
 
 /// Drop or empty inline `style` attributes that fail [`filter_css`].
@@ -572,5 +716,35 @@ body { margin: 0; background: var(--bg); }
         assert!(report.css_stripped, "{report:?}");
         assert!(!out.to_ascii_lowercase().contains("<style>"), "{out}");
         assert!(!out.contains("evil.htc"), "{out}");
+    }
+
+    #[test]
+    fn ssrf_ish_hrefs_neutralized_public_kept() {
+        let html = r#"
+<a href="http://gateway:8080/v1/admin/seal">admin</a>
+<a href="http://169.254.169.254/latest/meta-data/">meta</a>
+<a href="http://socket-proxy:2375/containers/json">docker</a>
+<a href="http://10.1.2.3/secret">rfc1918</a>
+<a href="//postgres:5432/">pg</a>
+<img src="https://cdn.example/hero.png">
+<a href="https://fonts.googleapis.com/css">fonts</a>
+<a href="/relative/ok">rel</a>
+"#;
+        let (out, report) = sanitize_html(html);
+        assert!(
+            report.notes.iter().any(|n| n == "ssrf_url_neutralized"),
+            "{report:?}"
+        );
+        assert!(!out.contains("gateway:8080"), "{out}");
+        assert!(!out.contains("169.254.169.254"), "{out}");
+        assert!(!out.contains("socket-proxy"), "{out}");
+        assert!(!out.contains("10.1.2.3"), "{out}");
+        assert!(!out.contains("postgres:5432"), "{out}");
+        assert!(out.contains("https://cdn.example/hero.png"), "{out}");
+        assert!(out.contains("https://fonts.googleapis.com/css"), "{out}");
+        assert!(out.contains("/relative/ok"), "{out}");
+        assert!(url_looks_ssrf("http://127.0.0.1:8093/health"));
+        assert!(url_looks_ssrf("https://metadata.google.internal/"));
+        assert!(!url_looks_ssrf("https://cdn.example/x.png"));
     }
 }

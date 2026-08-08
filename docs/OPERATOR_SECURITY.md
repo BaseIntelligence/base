@@ -21,6 +21,8 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] Every image reference is digest-pinned (`repo@sha256:<64 hex>`). No `:latest`.
 - [ ] Exactly one mount of `/var/run/docker.sock`: on `socket-proxy` (read-only).
 - [ ] socket-proxy allowlist matches updater needs (`CONTAINERS`, `IMAGES`, `POST` as configured).
+- [ ] `design-challenge` sets `DESIGN_SCREENSHOT_PROXY=http://design-egress-proxy:8094` (screenshot Chromium must not talk direct to the `base` network).
+- [ ] Staging/prod never set `BASE_ALLOW_HOST_SIM` / `DESIGN_FORCE_SIM=true` (asserted by `assert-compose-matrix.sh`).
 - [ ] Gateway service uses compose profile **`master`** only on the owner host.
 - [ ] Profile `evil-gateway` is **absent** from prod hosts. Spot-check:
 
