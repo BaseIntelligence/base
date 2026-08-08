@@ -10,7 +10,7 @@ use crypto::KEY_LEN;
 use prism_challenge::{
     emit_signed_leaf_set, example_valid_request, run_sim_pipeline, score_from_pipeline,
     submit_signed_leaf_set, GatewayClient, GatewayClientConfig, PipelineInput, PipelineOutcome,
-    PrismConfig, SubmissionService, CHALLENGE_ID, SCORE_MAX,
+    PrismConfig, SubmissionService, SCORE_MAX,
 };
 use prism_lium::{EvalJobBackend, SimLiumBackend};
 
