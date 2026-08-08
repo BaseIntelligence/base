@@ -89,9 +89,7 @@ fn noncausal_seq_mix_reason(architecture_py: &str) -> Option<&'static str> {
         || src.contains("transpose(-1, -2)")
         || src.contains("transpose(-2, -1)")
         || src.contains(".mT")
-        || (src.contains("einops.rearrange")
-            && src.contains("b t d")
-            && src.contains("b d t"));
+        || (src.contains("einops.rearrange") && src.contains("b t d") && src.contains("b d t"));
 
     if !has_time_transpose {
         return None;
