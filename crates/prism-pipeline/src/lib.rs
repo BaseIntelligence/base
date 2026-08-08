@@ -11,12 +11,19 @@
 
 pub mod config;
 pub mod pipeline;
+pub mod precheck;
 pub mod score;
 pub mod submission;
 
 pub use config::PrismConfig;
 pub use pipeline::{
     run_eval_pipeline, run_sim_pipeline, PipelineError, PipelineInput, PipelineResult,
+};
+pub use precheck::{
+    corpus_from_rows, ephemeral_candidate, evaluate_copy_precheck, gate_corpus_from_rows,
+    precheck_json, precheck_quota_exceeded_json, precheck_skipped, quota_identity, quota_view,
+    same_miner, utc_day, PrecheckIdentityKind, PrecheckQuotaView, PrecheckResult,
+    PRECHECK_DAILY_LIMIT,
 };
 pub use score::{score_from_bpb, score_from_pipeline, PipelineOutcome};
 pub use submission::{

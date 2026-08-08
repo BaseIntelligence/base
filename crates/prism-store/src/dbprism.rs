@@ -433,4 +433,24 @@ impl PrismStore for DbPrismStore {
         arch::fill_arch_meta(&self.pool, &mut out).await?;
         Ok(out)
     }
+
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError> {
+        let n = dbs::prism_precheck_quota_get(&self.pool, identity, day)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError> {
+        let limit_i = i32::try_from(limit).unwrap_or(i32::MAX);
+        let n = dbs::prism_precheck_quota_try_consume(&self.pool, identity, day, limit_i)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(n.map(|v| u32::try_from(v).unwrap_or(u32::MAX)))
+    }
 }

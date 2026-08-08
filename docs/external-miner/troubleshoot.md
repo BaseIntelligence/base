@@ -23,6 +23,8 @@
 |---------|--------------|---------------|
 | Rejected submit | Recipe contract | `GET /v1/recipe` + baseline; follow [`PRISM_RECIPE.md`](../PRISM_RECIPE.md) |
 | Score 0 after review | `Copied` / `Suspicious` | Similarity gate; rewrite; do not paste baseline wholesale |
+| `similar: true` on precheck | Would hit intake copy gate | Rewrite `architecture.py`; baseline is fine to start from |
+| `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |
 | Stuck `Provisioning` | Lium market thinness | Ops-side; watch `GET /v1/jobs` / events |
 | Idempotent replay | Same `submission_id` | Expected — returns prior row |
 

@@ -4,6 +4,7 @@
 //! |-------|---------|
 //! | `GET  /health` | liveness |
 //! | `POST /v1/submissions` | accept a two-script recipe |
+//! | `POST /v1/submissions/precheck` | advisory copy-gate (quota 3/coldkey/UTC day) |
 //! | `GET  /v1/submissions` | list (`status` / `miner` filter, limit) |
 //! | `GET  /v1/submissions/{id}` | full detail + event timeline |
 //! | `GET  /v1/submissions/{id}/events` | journal only |
@@ -30,7 +31,11 @@ use submission_gating::{GatingState, GatingStore, MetagraphCache};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
 use crate::CHALLENGE_ID;
-use prism_pipeline::{SubmissionError, SubmissionRequest};
+use prism_pipeline::{
+    ephemeral_candidate, evaluate_copy_precheck, precheck_json, precheck_quota_exceeded_json,
+    precheck_skipped, quota_identity, quota_view, utc_day, SubmissionError, SubmissionRequest,
+    PRECHECK_DAILY_LIMIT,
+};
 use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
@@ -58,6 +63,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/submissions", post(post_submission))
+        .route("/v1/submissions/precheck", post(post_precheck))
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
         .route("/v1/submissions/{id}/events", get(get_events))
@@ -114,39 +120,37 @@ fn parse_submission_body(
     serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
 }
 
-/// Intake gates for a fresh submission: metagraph membership (fail closed
-/// when the cache has no snapshot) + one accepted submission per
-/// `(challenge, hotkey)`. `challenge` is `prism` for architecture
-/// submissions (1-max per hotkey) or `prism:train:<arch_id>` for
-/// training-only entries (1 accepted entry per `(hotkey, arch_id)`).
-/// Returns the metagraph uid on pass.
+/// Metagraph membership only (fail closed when configured but empty).
+#[allow(clippy::result_large_err)] // mirrors other intake helpers returning `Response`
+fn metagraph_uid(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
+    let Some(cache) = &st.metagraph else {
+        return Ok(None);
+    };
+    match cache.snapshot() {
+        Some(view) => match view.uid_of_hex(hotkey) {
+            Some(u) => Ok(Some(u)),
+            None => Err(json_err(
+                StatusCode::FORBIDDEN,
+                "hotkey_not_in_metagraph",
+                "miner hotkey is not registered on this subnet",
+            )),
+        },
+        None => Err(json_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "metagraph_unavailable",
+            "metagraph snapshot not ready; retry shortly",
+        )),
+    }
+}
+
+/// Intake gates: metagraph membership + one accepted submission per
+/// `(challenge, hotkey)`. Returns the metagraph uid on pass.
 async fn intake_gates(
     st: &AppState,
     hotkey: &str,
     challenge: &str,
 ) -> Result<Option<u32>, Response> {
-    let mut uid = None;
-    if let Some(cache) = &st.metagraph {
-        match cache.snapshot() {
-            Some(view) => match view.uid_of_hex(hotkey) {
-                Some(u) => uid = Some(u),
-                None => {
-                    return Err(json_err(
-                        StatusCode::FORBIDDEN,
-                        "hotkey_not_in_metagraph",
-                        "miner hotkey is not registered on this subnet",
-                    ));
-                }
-            },
-            None => {
-                return Err(json_err(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "metagraph_unavailable",
-                    "metagraph snapshot not ready; retry shortly",
-                ));
-            }
-        }
-    }
+    let uid = metagraph_uid(st, hotkey)?;
     gate_one_max(st, hotkey, challenge).await?;
     Ok(uid)
 }
@@ -211,6 +215,78 @@ async fn materialize_arch(st: &AppState, req: &mut SubmissionRequest) -> Result<
             &e.to_string(),
         )),
     }
+}
+
+/// `POST /v1/submissions/precheck` — advisory copy-gate (same logic as
+/// intake), no submission row, no 1-max gate, no Lium. Quota: 3/coldkey/UTC day.
+async fn post_precheck(
+    State(st): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: bytes::Bytes,
+) -> Response {
+    let mut req = match parse_submission_body(&headers, body.as_ref()) {
+        Ok(r) => r,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
+    };
+    if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
+        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
+    }
+    if let Err(e) = prism_pipeline::validate(&req) {
+        return map_submission_err(&e);
+    }
+    if let Err(resp) = materialize_arch(&st, &mut req).await {
+        return resp;
+    }
+    if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
+        return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
+    }
+    req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
+    if let Err(resp) = metagraph_uid(&st, &req.miner_hotkey) {
+        return resp;
+    }
+    let miner_coldkey = st
+        .metagraph
+        .as_ref()
+        .and_then(|c| c.snapshot())
+        .and_then(|v| v.coldkey_hex_of(&req.miner_hotkey));
+    let (identity, identity_kind) = quota_identity(&req.miner_hotkey, miner_coldkey.as_deref());
+    let day = utc_day(now_ms() / 1000);
+    let used = match st
+        .store
+        .precheck_quota_try_consume(&identity, &day, PRECHECK_DAILY_LIMIT)
+        .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => {
+            let used = st
+                .store
+                .precheck_quota_get(&identity, &day)
+                .await
+                .unwrap_or(PRECHECK_DAILY_LIMIT);
+            let q = quota_view(day, used, identity_kind);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(precheck_quota_exceeded_json(&q)),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string());
+        }
+    };
+    let quota = quota_view(day, used, identity_kind);
+    if req.arch_id.is_some() {
+        return Json(precheck_json(&precheck_skipped(quota))).into_response();
+    }
+    let candidate = ephemeral_candidate(
+        &req.miner_hotkey,
+        miner_coldkey,
+        &req.architecture_py,
+        now_ms(),
+    );
+    let recent = st.store.list(None, None, 64).await.unwrap_or_default();
+    let result = evaluate_copy_precheck(&candidate, &recent, quota);
+    Json(precheck_json(&result)).into_response()
 }
 
 /// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
@@ -1060,6 +1136,112 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["status"], "already-queued");
+    }
+
+    #[tokio::test]
+    async fn precheck_detects_copy_without_queuing() {
+        let st = state();
+        let victim_hk = "aa".repeat(32);
+        let mut victim = crate::example_valid_request();
+        victim.miner_hotkey = victim_hk;
+        let vid = prism_pipeline::submission_id(&victim);
+        let mut row = SubmissionState {
+            id: vid,
+            miner_hotkey: victim.miner_hotkey.clone(),
+            miner_coldkey: Some("11".repeat(32)),
+            epoch: 1,
+            netuid: 541,
+            status: Stage::Terminated,
+            architecture_py: victim.architecture_py.clone(),
+            training_py: victim.training_py.clone(),
+            label: None,
+            pod_id: None,
+            pod_provider: None,
+            receipt: None,
+            metrics_json: None,
+            bpb: Some(1.0),
+            arch_id: None,
+            review: None,
+            similarity: None,
+            final_score: Some(FinalScore::Score(1)),
+            retry_count: 0,
+            error_detail: None,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        };
+        // Ensure created_at is in the past relative to precheck `now_ms`.
+        row.created_at_ms = 1;
+        st.store.insert_queued(&row).await.unwrap();
+        // Force terminated without going through claim (memory insert is queued).
+        st.store
+            .apply(
+                &row.id,
+                &StatePatch {
+                    status: Some(Stage::Terminated),
+                    final_score: Some(FinalScore::Score(1)),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let app = submission_router(Arc::clone(&st));
+        let mut copy = crate::example_valid_request();
+        copy.miner_hotkey = "bb".repeat(32);
+        copy.architecture_py = victim.architecture_py;
+        let body = serde_json::to_vec(&copy).unwrap();
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/submissions/precheck")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["similar"], true);
+        assert_eq!(v["verdict"], "copied");
+        assert!(v["matched_against"].as_str().unwrap().starts_with("subm:"));
+        assert_eq!(v["quota"]["used"], 1);
+        assert_eq!(v["quota"]["remaining"], 2);
+        // No new submission row for the copier.
+        let listed = st.store.list(None, None, 50).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].miner_hotkey, "aa".repeat(32));
+    }
+
+    #[tokio::test]
+    async fn precheck_quota_is_three_then_429() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
+        for i in 1..=3 {
+            let (s, v) = call(
+                app.clone(),
+                Request::post("/v1/submissions/precheck")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "attempt {i}: {v}");
+            assert_eq!(v["similar"], false);
+            assert_eq!(v["verdict"], "clean");
+            assert_eq!(v["quota"]["used"], i);
+        }
+        let (s, v) = call(
+            app,
+            Request::post("/v1/submissions/precheck")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+        assert_eq!(v["code"], "precheck_quota_exceeded");
+        assert_eq!(v["quota"]["remaining"], 0);
+        assert_eq!(v["quota"]["used"], 3);
     }
 
     #[tokio::test]

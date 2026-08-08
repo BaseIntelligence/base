@@ -183,6 +183,8 @@ in order and terminal-reject with `Score(0)` on hit:
    from **other miners** (byte hash + `challenge-ast`; same hotkey/coldkey
    prior art excluded). Byte/AST copy of a **strictly-earlier** submission is
    rejected. Ties / unknown timestamps fall through; baseline is exempt.
+   Miners may probe this gate via `POST /v1/submissions/precheck` (quota
+   3/coldkey/UTC day) without queuing a submission.
 2. **Static source cheat** (`challenge_agentic::static_source_cheat`) —
    hardcoded `METRICS_JSON=` short-circuit; missing
    `prism_telemetry.report` / `finish_evaluation` hooks in `training.py`.
@@ -236,6 +238,7 @@ audit-only for the bpb score (coherence gate, never a grader).
 | Route | Purpose |
 |-------|---------|
 | `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py` |
+| `POST /v1/submissions/precheck` | Advisory copy-gate on the same payload shape (no queue, no pod, no 1-max spend) |
 | `GET /v1/submissions` | List (filter `?status=`, `?miner=`) — rows carry `arch_id` |
 | `GET /v1/submissions/{id}` | Full detail + receipt + scores |
 | `GET /v1/submissions/{id}/events` | Append-only transition timeline |
@@ -245,6 +248,26 @@ audit-only for the bpb score (coherence gate, never a grader).
 | `GET /v1/recipe` | Recipe descriptor (pinned URL/sha, budget, caps) |
 | `GET /v1/recipe/baseline` | Baseline `architecture.py` / `training.py` |
 | `GET /health` | Liveness |
+
+### Similarity precheck (`POST /v1/submissions/precheck`)
+
+Miners can dry-run the **pre-LLM copy gate** (byte/AST vs earlier
+`architecture.py` from other miners) before burning a real submission.
+Auth and payload match submit (JSON or ZIP + `X-Miner-Hotkey`); metagraph
+membership is required when the cache is configured. The call does **not**
+insert a `prism_submission` row, does **not** mark the 1-max gate, and does
+**not** rent a Lium pod or call OpenRouter.
+
+| Rule | Detail |
+|------|--------|
+| Logic | Same `copy_gate` + same-hotkey/**same-coldkey** corpus exclusion as intake |
+| Quota | **3 attempts per coldkey per UTC day** (hotkey fallback when Owner unknown) — rotating hotkeys does not reset the budget |
+| Exhausted | `429` + `code=precheck_quota_exceeded`, `quota.remaining=0` |
+| Training-only | `verdict=skipped` (registry arch is copy-exempt by design) |
+| Response | `{ similar, verdict, matched_against?, score?, message, quota }` — never returns competitor source |
+
+`similar: false` / `verdict: clean` is advisory for the cheap gate only; a
+real submit still runs static cheat, cheap similarity, and agentic review.
 
 Miners have **full read access to the recipe**: the dataset pin, the budget,
 the harness semantics listed above, and the baseline sources they may reuse.

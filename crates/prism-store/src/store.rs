@@ -361,6 +361,17 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
 
     /// Non-terminal rows beyond grace — for the stuck sweep.
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError>;
+
+    /// Precheck attempts used for `(coldkey_or_hotkey, UTC day)` (0 if none).
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError>;
+
+    /// Consume one precheck attempt when under `limit`. `Some(used)` or `None` if full.
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError>;
 }
 
 /// In-memory store (CI / sim).
@@ -375,6 +386,8 @@ pub struct MemoryPrismStore {
     emitted: Mutex<std::collections::BTreeMap<SubmissionId, u64>>,
     /// Emit cursor per netuid (highest fully-submitted leaf epoch).
     cursors: Mutex<std::collections::BTreeMap<u16, u64>>,
+    /// `(identity, UTC day)` → checks used for similarity precheck.
+    precheck_quota: Mutex<std::collections::HashMap<(String, String), u32>>,
 }
 
 impl MemoryPrismStore {
@@ -803,6 +816,37 @@ impl PrismStore for MemoryPrismStore {
             .filter(|r| !r.status.is_terminal() && r.updated_at_ms < cutoff)
             .cloned()
             .collect())
+    }
+
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError> {
+        let map = self
+            .precheck_quota
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(map
+            .get(&(identity.to_owned(), day.to_owned()))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError> {
+        let mut map = self
+            .precheck_quota
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let key = (identity.to_owned(), day.to_owned());
+        let used = map.get(&key).copied().unwrap_or(0);
+        if used >= limit {
+            return Ok(None);
+        }
+        let next = used + 1;
+        map.insert(key, next);
+        Ok(Some(next))
     }
 }
 
