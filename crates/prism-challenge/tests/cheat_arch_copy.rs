@@ -136,11 +136,13 @@ async fn baseline_arch_train_copy_scores_zero() {
 
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
-    assert!(
-        matches!(row.status, Stage::Terminated | Stage::Failed),
-        "status={:?}",
+    assert_eq!(
+        row.status,
+        Stage::Rejected,
+        "baseline arch copy must fail pre-pod similarity, got {:?}",
         row.status
     );
+    assert!(row.pod_id.is_none(), "arch copy must not rent a pod");
     assert_eq!(
         row.final_score,
         Some(FinalScore::Score(0)),

@@ -70,7 +70,7 @@ struct Cli {
     #[arg(
         long,
         env = "PRISM_MAX_CONCURRENT_EVALS",
-        default_value_t = 1,
+        default_value_t = 8,
         global = true
     )]
     max_concurrent_evals: u32,

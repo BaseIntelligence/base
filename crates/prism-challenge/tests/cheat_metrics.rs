@@ -141,10 +141,15 @@ def train(model, ctx):
 
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
-    assert!(
-        matches!(row.status, Stage::Terminated | Stage::Failed),
-        "status={:?}",
+    assert_eq!(
+        row.status,
+        Stage::Rejected,
+        "static METRICS_JSON screen must reject pre-pod, got {:?}",
         row.status
+    );
+    assert!(
+        row.pod_id.is_none(),
+        "hardcoded METRICS_JSON must not rent a pod"
     );
     assert_eq!(
         row.final_score,

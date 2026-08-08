@@ -147,7 +147,8 @@ async fn independent_same_epoch_scorers_both_land() {
     assert_eq!(s.epoch, 7);
     assert_eq!(s.leaves, 3, "D24-complete set");
     assert_eq!(s.batch, 2, "both scorers in one batch");
-    assert_score(&leaf_soa(&s, 0xAA), 100_000);
+    // WTA: only the argmax (BB=200k) keeps a positive Score leaf.
+    assert_score(&leaf_soa(&s, 0xAA), 0);
     assert_score(&leaf_soa(&s, 0xBB), 200_000);
     assert_not_attempted(&leaf_soa(&s, 0xCC));
     assert_eq!(store.emit_cursor(541).await.unwrap(), Some(7));
@@ -227,7 +228,8 @@ async fn no_double_emission_across_epochs() {
         .unwrap();
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8 emits");
     assert_eq!(s8.batch, 1, "only the new row is freshly assigned");
-    assert_score(&leaf_soa(&s8, 0xAA), 100_000);
+    // WTA: BB's 900k beats AA's carried 100k — only BB emits positive.
+    assert_score(&leaf_soa(&s8, 0xAA), 0);
     assert_score(&leaf_soa(&s8, 0xBB), 900_000);
     assert_eq!(store.emit_batch(541, 7).await.unwrap().len(), 1);
     assert_eq!(store.emit_batch(541, 8).await.unwrap().len(), 1);
@@ -304,16 +306,16 @@ async fn competition_credits_survive_batching() {
     assert_not_attempted(&leaf_soa(&s7, 0xBB));
 
     // Challenger trains the published arch and lands in a later epoch:
-    // owner credit flows to A, own best to B — max lattice, never summed.
+    // competition credits both to 900k; WTA tie-breaks to AA (lex smaller).
     let mut chall = scored_row("sub-chall", &hk(0xBB), 7, FinalScore::Score(900_000));
     chall.arch_id = Some("arch_0123456789abcdef".into());
     store.insert_queued(&chall).await.unwrap();
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8");
     assert_eq!(s8.batch, 1);
     assert_score(&leaf_soa(&s8, 0xAA), 900_000);
-    assert_score(&leaf_soa(&s8, 0xBB), 900_000);
+    assert_score(&leaf_soa(&s8, 0xBB), 0);
 
-    // Same-epoch variant: both rows in one batch → identical credits in one set.
+    // Same-epoch variant: both rows in one batch → same WTA outcome.
     let store2 = Arc::new(MemoryPrismStore::new());
     store2
         .publish_arch(&ArchitectureRecord {
@@ -333,7 +335,7 @@ async fn competition_credits_survive_batching() {
     let s = em2.tick(7, &exp).await.unwrap().expect("emit");
     assert_eq!(s.batch, 2);
     assert_score(&leaf_soa(&s, 0xAA), 900_000);
-    assert_score(&leaf_soa(&s, 0xBB), 900_000);
+    assert_score(&leaf_soa(&s, 0xBB), 0);
 }
 
 /// Crash recovery: a batch assigned but never cursor-completed (crashed

@@ -1,23 +1,27 @@
 //! Lium job orchestrator: DB-backed state machine, recovery, epoch emitter.
 //!
-//! Workers claim `queued` rows, rent + run the recipe, run master-side LLM
-//! review + cheap similarity + agentic anti-cheat, and compute the
+//! Workers claim `queued` rows, run cheap source screens (copy gate, static
+//! cheat patterns, AST similarity) **before** renting a Lium pod, then run
+//! the recipe + master-side LLM review + agentic anti-cheat, and compute the
 //! chain-facing score. Leaf emission is decoupled from finalizes: the
 //! epoch-close emitter ([`prism_emit::EpochEmitter`], driven by
 //! [`Orchestrator::run_emitter`]) assigns every newly-finalized row to the
 //! next chain-epoch boundary's D24 set via the emission outbox
 //! (`emitted_epoch` watermark + emit cursor), so independent same-epoch
 //! scorers all land and each scoring run is assigned exactly once. Positive
-//! scores then carry into later epochs' competition sets until superseded.
-//! All state lives in the store, so the API is a pure projection and restarts
-//! sweep orphans.
+//! scores then carry into later epochs' competition sets until superseded;
+//! leaf emission applies WTA so only the single best hotkey gets Prism's
+//! share. All state lives in the store, so the API is a pure projection and
+//! restarts sweep orphans.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use bundle::NoScoreReasonCode;
 use chain::ChainClient;
-use challenge_agentic::{copy_gate, AgenticBackend, AgenticVerdict, VerdictKind};
+use challenge_agentic::{
+    copy_gate, static_source_cheat, AgenticBackend, AgenticVerdict, VerdictKind,
+};
 use challenge_common::{expected_set_at_chain, PinnedBlockHash};
 use crypto::KEY_LEN;
 use prism_emit::EpochEmitter;
@@ -330,10 +334,32 @@ impl<C: ChainClient + Send> Orchestrator<C> {
         let id = row.id.clone();
         info!(submission_id = %id, miner = %row.miner_hotkey, "prism eval start");
 
-        // Phase 0: pre-LLM copy gate on architecture.py (created_at ordered).
-        // A byte/AST copy of a strictly-earlier architecture is terminal
-        // `rejected` with Score(0) — no pod time, no LLM spend.
+        // Phase 0: pre-pod cheap screens (no GPU, no private eval assets).
+        // Copy gate → static cheat patterns → AST similarity. Fail-fast with
+        // Score(0) so a bad submission never rents a Lium pod (~6h waste).
         if self.copy_gate_step(&row).await {
+            return Ok(());
+        }
+        if self.static_source_step(&row).await {
+            return Ok(());
+        }
+        let similarity = match self.similarity_step(&id, &row).await {
+            Ok(v) => v,
+            Err(e) => {
+                if self.maybe_auto_retry(&row, "ast_infra", &e).await {
+                    return Ok(());
+                }
+                self.fail_terminal(&row, "ast_infra", &e).await;
+                return Ok(());
+            }
+        };
+        if matches!(
+            similarity.kind,
+            prism_review::SimilarityKind::Copied | prism_review::SimilarityKind::Suspicious
+        ) {
+            let detail = format!("pre-pod similarity: {:?}", similarity.kind);
+            self.reject_pre_pod(&row, Some(similarity), None, detail)
+                .await;
             return Ok(());
         }
 
@@ -359,19 +385,8 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             return Ok(());
         };
 
-        // Phase 3: cheap similarity (AST infra → auto-retry, then terminal).
-        let similarity = match self.similarity_step(&id, &row).await {
-            Ok(v) => v,
-            Err(e) => {
-                if self.maybe_auto_retry(&row, "ast_infra", &e).await {
-                    return Ok(());
-                }
-                self.fail_terminal(&row, "ast_infra", &e).await;
-                return Ok(());
-            }
-        };
-
-        // Phase 4: agentic anti-cheat (LLM infra → auto-retry, then terminal).
+        // Phase 3: agentic anti-cheat (needs metrics/receipt; post-pod).
+        // Source-only screens already ran pre-pod; this catches metrics forge.
         let Some(agentic) = self
             .agentic_step(&id, &row, metrics.as_ref(), receipt.as_ref())
             .await
@@ -474,6 +489,59 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             }],
             prompt_version: prism_review::SIMILARITY_PROMPT_VERSION,
         };
+        self.reject_pre_pod(
+            row,
+            Some(similarity),
+            Some(serde_json::json!({
+                "gate": "copy_created_at",
+                "nearest_id": hit.nearest_id,
+                "similarity_bps": hit.similarity_bps,
+                "byte_identical": hit.byte_identical,
+            })),
+            format!(
+                "copy gate: architecture clones {} (bps={})",
+                hit.nearest_id, hit.similarity_bps
+            ),
+        )
+        .await;
+        true
+    }
+
+    /// Static source cheat screen (METRICS_JSON / telemetry hooks). Pre-pod.
+    /// Returns `true` when the row was finalized terminal `rejected`.
+    async fn static_source_step(&self, row: &SubmissionState) -> bool {
+        let Some(hit) = static_source_cheat(&row.architecture_py, &row.training_py) else {
+            return false;
+        };
+        warn!(
+            submission_id = %row.id,
+            code = ?hit.code,
+            rationale = %hit.rationale,
+            "static source cheat rejected (pod skipped)"
+        );
+        self.reject_pre_pod(
+            row,
+            None,
+            Some(serde_json::json!({
+                "gate": "static_source",
+                "cheat_code": format!("{:?}", hit.code),
+                "rationale": hit.rationale,
+            })),
+            hit.rationale.clone(),
+        )
+        .await;
+        true
+    }
+
+    /// Terminal Score(0) reject before any Lium rent. Shared by copy gate,
+    /// static screens, and pre-pod similarity.
+    async fn reject_pre_pod(
+        &self,
+        row: &SubmissionState,
+        similarity: Option<SimilarityVerdict>,
+        detail: Option<serde_json::Value>,
+        error_detail: String,
+    ) {
         let _ = self
             .store
             .apply(
@@ -481,21 +549,13 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 &StatePatch {
                     status: Some(Stage::Rejected),
                     final_score: Some(FinalScore::Score(0)),
-                    similarity: Some(similarity),
-                    error_detail: Some(format!(
-                        "copy gate: architecture clones {} (bps={})",
-                        hit.nearest_id, hit.similarity_bps
-                    )),
+                    similarity,
+                    error_detail: Some(error_detail),
                     ..StatePatch::default()
                 },
                 Some(&StageEvent {
                     stage: Stage::Rejected,
-                    detail: Some(serde_json::json!({
-                        "gate": "copy_created_at",
-                        "nearest_id": hit.nearest_id,
-                        "similarity_bps": hit.similarity_bps,
-                        "byte_identical": hit.byte_identical,
-                    })),
+                    detail,
                     at_ms: 0,
                 }),
             )
@@ -510,9 +570,6 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 )
                 .await;
         }
-        // The Score(0) enters the emission outbox; the epoch-close emitter
-        // lands it in the next boundary's D24 set.
-        true
     }
 
     /// Pod phase. Returns `(bpb, receipt)` on full success.

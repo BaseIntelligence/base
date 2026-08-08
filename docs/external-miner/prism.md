@@ -112,11 +112,13 @@ as a cross-miner copy. LLM quality is coherence-only, not a grader.
 **Competition:** per epoch you are
 credited the max of (a) your own best training result and (b) for each arch you
 own, that arch's best result by *any* trainer — architecture owners are rewarded
-for architectures people win with. Scores first land in the leaf set emitted at the
-first chain-epoch boundary **after** your run finalizes (a long train that
-crosses epochs is normal — outbox assignment is exactly once). Positive
-scores then keep participating in later epochs' competition sets until a
-better valid score supersedes them.
+for architectures people win with. Emission is **winner-take-all**: only the
+single highest credit that epoch receives Prism's share (50% of the subnet);
+ties break by lexicographically smallest hotkey. Scores first land in the leaf
+set emitted at the first chain-epoch boundary **after** your run finalizes (a
+long train that crosses epochs is normal — outbox assignment is exactly once).
+Positive scores then keep participating in later epochs' competition sets until
+a better valid score supersedes them (WTA still collapses to one leaf winner).
 The global-best model is published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/`. See [`PRISM.md`](../PRISM.md).

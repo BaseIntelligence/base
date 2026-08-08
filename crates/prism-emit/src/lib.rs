@@ -23,9 +23,10 @@
 //!   re-enter the outbox (`reset_for_retry` clears the watermark).
 //! - **Positive scores carry forward**: after outbox assignment, a
 //!   `Score(v>0)` row keeps participating in every later epoch's
-//!   competition set until a better/valid score supersedes it via `max`
-//!   (lattice-proportional — not WTA). Empty or reject-only fresh batches
-//!   therefore do not burn the prism share.
+//!   competition set until a better/valid score supersedes it via `max`.
+//!   Leaf emission then applies **WTA** ([`prism_registry::apply_wta`]) so
+//!   only the single best hotkey receives a positive Score leaf. Empty or
+//!   reject-only fresh batches therefore do not burn the prism share.
 //! - Epochs during a master outage carry no *new* outbox rows; the first
 //!   epoch after recovery still includes active positive scores plus any
 //!   backlog (the seal always pins fresh epochs — stale ones can never
@@ -207,7 +208,8 @@ pub fn build_epoch_leaves(
     batch: &[EpochScoreRow],
     arch_owners: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<Hotkey, LeafV1>, EmitError> {
-    let by_miner = prism_registry::competition_scores(batch, arch_owners);
+    let by_miner =
+        prism_registry::apply_wta(prism_registry::competition_scores(batch, arch_owners));
     let mut scores: BTreeMap<Hotkey, ScoreOrAbsence> = BTreeMap::new();
     let mut expected_set: BTreeSet<Hotkey> = BTreeSet::new();
     for p in &expected.participants {
@@ -295,9 +297,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(leaves.len(), 3);
+        // WTA: only the argmax (b=200) keeps a positive Score leaf.
         assert!(matches!(
             soa_of(&leaves, &a),
-            ScoreOrAbsence::Score { value: 100 }
+            ScoreOrAbsence::Score { value: 0 }
         ));
         assert!(matches!(
             soa_of(&leaves, &b),
