@@ -12,15 +12,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use challenge_agentic::{
-    load_api_key_file, take_openrouter_api_key, AgentConfig, AgenticBackend,
-    ContainerReviewRequest, OpenRouterAgent, SimAgent, DEFAULT_MODEL, OPENROUTER_API_BASE,
+    load_api_key_file, AgentConfig, AgenticBackend, ContainerReviewRequest, OpenRouterAgent,
+    SimAgent, DEFAULT_MODEL, OPENROUTER_API_BASE,
 };
 
 fn main() -> ExitCode {
-    // Prefer file mount (`OPENROUTER_API_KEY_FILE`) so the key never appears in
-    // the process's initial environ (`/proc/<pid>/environ` is boot-fixed).
-    // Legacy env inject is still accepted then scrubbed from the live environ
-    // map (does not rewrite `/proc/*/environ`).
+    // Prefer file mount so the key never appears in the process's initial
+    // environ (`/proc/<pid>/environ` is boot-fixed on Linux).
     let openrouter_key = load_openrouter_key();
     let req_path = std::env::var("REVIEW_REQUEST_PATH")
         .unwrap_or_else(|_| "/work/_review_request.json".to_owned());
@@ -41,7 +39,14 @@ fn load_openrouter_key() -> Option<String> {
             return Some(key);
         }
     }
-    take_openrouter_api_key()
+    // Legacy env inject: take into memory and clear the live environ map
+    // (does not rewrite `/proc/*/environ`).
+    let key = std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty());
+    std::env::remove_var("OPENROUTER_API_KEY");
+    key
 }
 
 fn run(req_path: &str, out_path: &str, openrouter_key: Option<String>) -> Result<(), String> {
