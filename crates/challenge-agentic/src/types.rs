@@ -66,6 +66,9 @@ pub enum CheatCode {
     /// Prism `training.py` does not call the harness telemetry hooks
     /// (`prism_telemetry.report` + `prism_telemetry.finish_evaluation`).
     MissingTelemetryHooks,
+    /// Architecture mixes across the time axis with a dense `Linear`/MLP and no
+    /// causal mask (MLP-Mixer / `TokenMix`), so next-token CE can see labels.
+    NonCausalLabelLeak,
 }
 
 /// One prior corpus submission for AST nearest-neighbor tools.

@@ -21,7 +21,8 @@ pub use similarity::{
     similarity_bps, structural_diff_summary, summarize_fingerprint, top_k_nearest, Neighbor,
 };
 pub use source_cheats::{
-    static_source_cheat, training_has_telemetry_hooks, SourceCheatHit, SourceCheatKind,
+    arch_has_noncausal_seq_mix, static_source_cheat, training_has_telemetry_hooks, SourceCheatHit,
+    SourceCheatKind,
 };
 
 /// Crate identity smoke.

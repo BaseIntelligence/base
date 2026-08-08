@@ -43,6 +43,15 @@ The harness captures the series into `METRICS_JSON.telemetry.loss_series`
 contract violation**: review fails the submission
 (`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
 
+## Causal next-token contract
+
+Val scoring is next-token CE → BPB on a frozen cut. Architectures that densify
+mix across the **full** time axis (MLP-Mixer `TokenMix` / `t_mix` /
+`nn.Linear(seq, …)` after `transpose(1, 2)`) without a causal mask let
+position `t` read the label at `t+1` — that is a hard cheat
+(`non_causal_label_leak`), caught by the pre-pod static screen before Lium
+rent. Channel mixers and masked causal attention / causal conv remain allowed.
+
 ## Training-only submissions (recipe 1.2.0)
 
 Instead of shipping both scripts, a miner may submit `training.py` +
