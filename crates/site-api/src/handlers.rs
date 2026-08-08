@@ -14,9 +14,10 @@ use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
 use site_data::map::{
     activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
+    enrich_leaderboard_uids, enrich_leaderboard_weights, enrich_submission_uids,
     is_prism_champion_submission, leaderboard_matches_query, list_arenas, prism_arena_from_live,
     prism_bpb_leaderboard, prism_submission, prism_telemetry, prism_window,
-    submission_matches_query,
+    submission_matches_query, uid_index_from_hotkeys,
 };
 use site_types::coding_arena;
 use site_types::page_slice;
@@ -150,6 +151,52 @@ fn hex_hotkey(bytes: &[u8]) -> String {
         s.push(HEX[(b & 0xf) as usize] as char);
     }
     s
+}
+
+/// Current metagraph hotkey → UID index (hex + SS58). Empty when chain is down.
+fn metagraph_uid_index(st: &SiteState) -> HashMap<String, u16> {
+    let Some(chain) = st.chain.as_ref() else {
+        return HashMap::new();
+    };
+    let block = chain.current_block().unwrap_or(0);
+    let Ok(hash) = chain.block_hash(block) else {
+        return HashMap::new();
+    };
+    let Ok(mg) = chain.metagraph_at(&hash) else {
+        return HashMap::new();
+    };
+    uid_index_from_hotkeys(&mg.hotkeys)
+}
+
+/// Sealed hotkey → normalised weight share (SS58 keys from the bundle).
+fn sealed_weight_index(st: &SiteState) -> HashMap<String, f64> {
+    site_data::weights::sealed_view(st.latest_sealed_bundle())
+        .map(|view| view.hotkeys.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Enrich leaderboard rows with on-chain UID + sealed weight / TAO/day.
+fn decorate_leaderboard(st: &SiteState, rows: &mut [crate::LeaderboardRow]) {
+    let uids = metagraph_uid_index(st);
+    if !uids.is_empty() {
+        enrich_leaderboard_uids(rows, &uids);
+    }
+    let weights = sealed_weight_index(st);
+    if !weights.is_empty() {
+        // `emission_per_day` is not yet hydrated from chain; pass 0 so we still
+        // surface `weight` and leave `taoPerDay` unset until the rate is known.
+        // Clients may also compute `weight × emissionPerDay` from /v1/weights/latest
+        // once network stats publish a non-zero emission.
+        enrich_leaderboard_weights(rows, &weights, 0.0);
+    }
+}
+
+/// Enrich submission agents with on-chain UID.
+fn decorate_submissions(st: &SiteState, rows: &mut [crate::Submission]) {
+    let uids = metagraph_uid_index(st);
+    if !uids.is_empty() {
+        enrich_submission_uids(rows, &uids);
+    }
 }
 
 async fn network_stats(st: &SiteState) -> NetworkStats {
@@ -328,6 +375,7 @@ async fn design_leaderboard_json(
             (ratings.as_slice(), previous.as_slice(), round_id)
         };
     let mut rows = design_leaderboard(board_ratings, board_previous, epoch);
+    decorate_leaderboard(st, &mut rows);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
         rows.retain(|r| leaderboard_matches_query(r, needle));
     }
@@ -374,6 +422,7 @@ async fn prism_leaderboard_json(
         .cloned()
         .unwrap_or_default();
     let mut board = prism_bpb_leaderboard(&rows, epoch);
+    decorate_leaderboard(st, &mut board);
     if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
         board.retain(|r| leaderboard_matches_query(r, needle));
     }
@@ -445,6 +494,7 @@ async fn get_submissions(
                 .filter(|r| is_prism_champion_submission(r))
                 .filter_map(prism_submission)
                 .collect();
+            decorate_submissions(&st, &mut items);
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
                     "scored" => s.status == crate::SubmissionStatus::Scored,
@@ -517,6 +567,7 @@ async fn design_submissions_page(
             items.push(sub);
         }
     }
+    decorate_submissions(st, &mut items);
     if let Some(st_f) = status_filter {
         items.retain(|s| match st_f {
             "scored" => s.status == crate::SubmissionStatus::Scored,
