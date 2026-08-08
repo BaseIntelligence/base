@@ -20,10 +20,7 @@ pub struct StaticCheatHit {
 /// Order: hardcoded `METRICS_JSON=` short-circuit first, then missing Prism
 /// telemetry hooks in `training.py`. Returns the first hit.
 #[must_use]
-pub fn static_source_cheat(
-    architecture_py: &str,
-    training_py: &str,
-) -> Option<StaticCheatHit> {
+pub fn static_source_cheat(architecture_py: &str, training_py: &str) -> Option<StaticCheatHit> {
     for (path, src) in [
         ("architecture.py", architecture_py),
         ("training.py", training_py),

@@ -202,10 +202,7 @@ mod tests {
 
     #[test]
     fn wta_keeps_only_the_argmax_score() {
-        let rows = vec![
-            row("aa", None, 177_155),
-            row("bb", Some("arch_x"), 111_595),
-        ];
+        let rows = vec![row("aa", None, 177_155), row("bb", Some("arch_x"), 111_595)];
         let credits = competition_scores(&rows, &owners(&[("arch_x", "cc")]));
         // Credits: aa=177155, bb=111595, cc=111595 (owner).
         let wta = apply_wta(credits);
