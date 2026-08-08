@@ -58,7 +58,7 @@ for banned in design-challenge design-egress-proxy prism-challenge socket-proxy;
 done
 echo "OK: validator role does not render gateway or challenge services"
 
-# --- master role: gateway + challenge services present ---
+# --- master role: gateway + challenge services present; no on-chain validator ---
 services=$(render \
   -f docker-compose.yml \
   -f deploy/compose/role-master.yml \
@@ -72,7 +72,10 @@ for required in design-challenge design-egress-proxy prism-challenge socket-prox
     fail "master role does not render $required (must)"
   fi
 done
-echo "OK: master role renders gateway and challenge services"
+if echo "$services" | grep -qx "validator"; then
+  fail "master role renders validator (dual submitter; must not — use validator host)"
+fi
+echo "OK: master role renders gateway and challenge services (no validator)"
 
 # --- evil-gateway not in default or master ---
 services=$(render \
@@ -206,6 +209,8 @@ local_services=$(render \
   config --services)
 echo "$local_services" | grep -qx "gateway" \
   || fail "env-local master stack does not render gateway"
+echo "$local_services" | grep -qx "validator" \
+  || fail "env-local master stack does not render co-located validator"
 echo "$local_services" | grep -qx "prism-challenge" \
   || fail "env-local master stack does not render prism-challenge"
 echo "$local_services" | grep -qx "design-challenge" \

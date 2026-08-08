@@ -546,6 +546,7 @@ fn build_app_state(
             staging_root: cli.staging_root.clone(),
             stage_delay,
             auto_retry_max: cli.auto_retry_max,
+            emit_poll: Duration::from_secs(15),
         },
         Arc::clone(&store),
         sandbox,
@@ -673,6 +674,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     }
     tokio::spawn(Arc::clone(&orch).run_round_loop());
     tokio::spawn(Arc::clone(&orch).run_sweeper());
+    tokio::spawn(Arc::clone(&orch).run_emitter());
 
     let app = design_router(state);
     let listener = TcpListener::bind(cli.bind)

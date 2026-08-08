@@ -474,7 +474,9 @@ Expected set `E` = all metagraph hotkeys for the pinned epoch (policy
 
 - Exactly one signed leaf per `h ∈ E`
 - **Refuses subset and superset** — Silence is a bug
-- Emit at round close and at each epoch boundary via `POST /v1/weights/raw`
+- Emit at round close (scored) and near each epoch boundary via `POST /v1/weights/raw`
+  (`Orchestrator::run_emitter` fills `NotAttempted` when no admin award fired, so
+  D24 seals keep advancing under 50/50 emission shares)
 
 Absence codes used on this path include `NotAttempted`, `Timeout`,
 `InvalidResponse`, `MinerError`, `RateLimited`, `ChallengeInternal` (bundle enum).
