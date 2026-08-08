@@ -101,6 +101,32 @@ architecture is fine, and training-only entries on a published arch are never
 "copies" by construction. Starting from the published baseline is always
 allowed.
 
+### Precheck before you submit (recommended)
+
+Dry-run the same pre-LLM copy gate **without** burning your 1-max slot or a
+GPU eval:
+
+```bash
+curl -sS -X POST "$GATEWAY/challenge/prism/v1/submissions/precheck" \
+  -H 'content-type: application/zip' \
+  -H "X-Miner-Hotkey: $HOTKEY" \
+  --data-binary @submission.zip
+```
+
+| Field | Meaning |
+|-------|---------|
+| `similar` | `true` → would hard-reject at intake copy gate |
+| `verdict` | `clean` / `copied` / `skipped` (training-only) |
+| `matched_against` | Corpus id only (never competitor source) |
+| `score` | Similarity in `[0,1]` when compared |
+| `quota` | `{ day, used, limit: 3, remaining, identity }` |
+
+**Quota: 3 attempts per coldkey per UTC day** (falls back to hotkey when the
+metagraph Owner coldkey is unknown). Rotating hotkeys under the same coldkey
+does **not** reset the budget. A 4th call returns `429` /
+`precheck_quota_exceeded` with `remaining=0`. Precheck never creates a scored
+submission and never rents a Lium pod.
+
 ## Scoring (summary)
 
 Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.
@@ -127,6 +153,7 @@ The global-best model is published to
 
 | Route | Use |
 |-------|-----|
+| `POST /v1/submissions/precheck` | Advisory copy-gate (3/coldkey/UTC day); no submit |
 | `GET /v1/status` | Backend mode, epoch, queue |
 | `GET /v1/submissions/{id}` | Detail + receipt + scores |
 | `GET /v1/submissions/{id}/events` | Stage timeline |

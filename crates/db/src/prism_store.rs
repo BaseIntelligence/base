@@ -322,3 +322,50 @@ pub async fn stuck_prism_before_grace(
     .await?;
     Ok(rows)
 }
+
+/// Read precheck attempts used for `(coldkey, UTC day)` (0 when absent).
+///
+/// # Errors
+/// SQL error.
+pub async fn prism_precheck_quota_get(
+    pool: &PgPool,
+    miner_coldkey: &str,
+    day: &str,
+) -> Result<i32, DbError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT checks_used FROM prism_precheck_quota \
+         WHERE miner_coldkey = $1 AND day = $2::date",
+    )
+    .bind(miner_coldkey)
+    .bind(day)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or(0, |r| r.0))
+}
+
+/// Atomically consume one precheck attempt when `checks_used < limit`.
+/// Returns `Some(checks_used)` after bump, or `None` when already at limit.
+///
+/// # Errors
+/// SQL error.
+pub async fn prism_precheck_quota_try_consume(
+    pool: &PgPool,
+    miner_coldkey: &str,
+    day: &str,
+    limit: i32,
+) -> Result<Option<i32>, DbError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "INSERT INTO prism_precheck_quota (miner_coldkey, day, checks_used) \
+         VALUES ($1, $2::date, 1) \
+         ON CONFLICT (miner_coldkey, day) DO UPDATE SET \
+           checks_used = prism_precheck_quota.checks_used + 1 \
+         WHERE prism_precheck_quota.checks_used < $3 \
+         RETURNING checks_used",
+    )
+    .bind(miner_coldkey)
+    .bind(day)
+    .bind(limit)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}

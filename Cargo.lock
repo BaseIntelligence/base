@@ -3837,10 +3837,12 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bundle",
+ "challenge-agentic",
  "hex",
  "prism-challenge-task",
  "prism-lium",
  "prism-recipe",
+ "prism-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
