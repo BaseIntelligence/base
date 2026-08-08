@@ -1,10 +1,8 @@
 //! Deterministic offline agentic verifier (CI / local sim, no network).
 //!
-//! Heuristics: metrics forge / `METRICS_JSON` short-circuit → cheat; Prism
-//! static source cheats (telemetry hooks, non-causal `TokenMix` label leak) →
-//! cheat; scrape-style famous-site HTML clones → cheat; byte-identical corpus
-//! hash → cheat; extreme AST similarity → cheat/suspicious; otherwise clean.
-//! Never invents scores — only verdicts.
+//! Heuristics: metrics forge / `METRICS_JSON` / Prism static source cheats
+//! (hooks, non-causal `TokenMix`) → cheat; scrape-style famous-site clones →
+//! cheat; byte-identical corpus / extreme AST → cheat/suspicious; else clean.
 
 use std::fs;
 use std::path::Path;
@@ -23,8 +21,7 @@ use crate::types::{
 
 /// BPB below this with near-zero tokens is treated as forged (sim heuristic).
 const SIM_IMPOSSIBLE_BPB: f64 = 0.2;
-/// Recipe-v1 GPT-2 BPE on fineweb: BPB below this is treated as label-leak /
-/// forge (impossible without seeing future tokens on the frozen val cut).
+/// Recipe-v1: BPB below this ⇒ label-leak / forge on the frozen val cut.
 const SIM_ABSURD_LOW_BPB: f64 = 1.0;
 
 /// AST similarity ≥ this → `cheat` (with corpus nearest).
@@ -34,6 +31,16 @@ pub const SIM_SUSPICIOUS_BPS: u16 = AST_SUSPICIOUS_BPS;
 
 fn is_baseline_entry(id: &str) -> bool {
     id.starts_with(BASELINE_CORPUS_PREFIX)
+}
+
+fn cheat_verdict(code: CheatCode, rationale: impl Into<String>) -> AgenticVerdict {
+    AgenticVerdict {
+        verdict: VerdictKind::Cheat,
+        cheat_codes: vec![code],
+        nearest_id: None,
+        similarity_bps: 10_000,
+        rationale: rationale.into(),
+    }
 }
 
 /// Offline deterministic agentic backend.
@@ -179,9 +186,7 @@ impl AgenticBackend for SimAgent {
     }
 }
 
-/// Prism pre-pod static source cheats (telemetry hooks, non-causal `TokenMix`;
-/// `METRICS_JSON` already handled above). Keeps `SimAgent` aligned with
-/// `challenge_ast::static_source_cheat`.
+/// Prism pre-pod static source cheats (`challenge_ast::static_source_cheat`).
 fn static_source_cheat_verdict(
     req: &ReviewRequest,
     primaries: &[(String, String)],
@@ -189,27 +194,19 @@ fn static_source_cheat_verdict(
     if !req.domain_rules.contains("Prism domain") {
         return None;
     }
-    let arch = primaries
-        .iter()
-        .find(|(p, _)| p.ends_with("architecture.py"))
-        .map_or("", |(_, s)| s.as_str());
-    let train = primaries
-        .iter()
-        .find(|(p, _)| p.ends_with("training.py"))
-        .map_or("", |(_, s)| s.as_str());
-    let hit = static_source_cheat(arch, train)?;
+    let pick = |suf: &str| {
+        primaries
+            .iter()
+            .find(|(p, _)| p.ends_with(suf))
+            .map_or("", |(_, s)| s.as_str())
+    };
+    let hit = static_source_cheat(pick("architecture.py"), pick("training.py"))?;
     let code = match hit.kind {
         SourceCheatKind::EvalShortCircuit => CheatCode::EvalShortCircuit,
         SourceCheatKind::MissingTelemetryHooks => CheatCode::MissingTelemetryHooks,
         SourceCheatKind::NonCausalLabelLeak => CheatCode::NonCausalLabelLeak,
     };
-    Some(AgenticVerdict {
-        verdict: VerdictKind::Cheat,
-        cheat_codes: vec![code],
-        nearest_id: None,
-        similarity_bps: 10_000,
-        rationale: format!("sim: {}", hit.rationale),
-    })
+    Some(cheat_verdict(code, format!("sim: {}", hit.rationale)))
 }
 
 /// Brand clusters for scrape-style famous-site clones (≥2 hits in one cluster).
@@ -383,13 +380,10 @@ fn metrics_cheat_verdict(
 ) -> Result<Option<AgenticVerdict>, AgenticError> {
     for (path, src) in primaries {
         if src.contains("METRICS_JSON=") {
-            return Ok(Some(AgenticVerdict {
-                verdict: VerdictKind::Cheat,
-                cheat_codes: vec![CheatCode::EvalShortCircuit],
-                nearest_id: None,
-                similarity_bps: 10_000,
-                rationale: format!("sim: hardcoded METRICS_JSON in {path}"),
-            }));
+            return Ok(Some(cheat_verdict(
+                CheatCode::EvalShortCircuit,
+                format!("sim: hardcoded METRICS_JSON in {path}"),
+            )));
         }
     }
     let Some(rel) = &req.metrics_relpath else {
@@ -404,13 +398,10 @@ fn metrics_cheat_verdict(
         return Ok(None);
     };
     let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::InconsistentMetrics],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: "sim: metrics json unparseable".into(),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::InconsistentMetrics,
+            "sim: metrics json unparseable",
+        )));
     };
     let bpb = v.get("bpb").and_then(Value::as_f64);
     let tokens = v.get("tokens_seen").and_then(Value::as_u64).unwrap_or(0);
@@ -419,54 +410,34 @@ fn metrics_cheat_verdict(
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
     let Some(bpb) = bpb else {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::InconsistentMetrics],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: "sim: metrics missing bpb".into(),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::InconsistentMetrics,
+            "sim: metrics missing bpb",
+        )));
     };
     if !bpb.is_finite() || bpb <= 0.0 {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::InconsistentMetrics],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: format!("sim: non-finite/non-positive bpb={bpb}"),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::InconsistentMetrics,
+            format!("sim: non-finite/non-positive bpb={bpb}"),
+        )));
     }
-    // Impossible: claimed BPB with no tokens, or absurdly low BPB on a tiny run.
     if tokens == 0 || (bpb < SIM_IMPOSSIBLE_BPB && tokens < 64) {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::InconsistentMetrics],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: format!("sim: impossible bpb={bpb} tokens_seen={tokens}"),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::InconsistentMetrics,
+            format!("sim: impossible bpb={bpb} tokens_seen={tokens}"),
+        )));
     }
-    // Recipe-v1: sub-1.0 BPB on the frozen val cut is not attainable by real
-    // causal LMs at the allowed scale/budget — hallmark of label leak / forge.
     if bpb < SIM_ABSURD_LOW_BPB {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::NonCausalLabelLeak],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: format!(
-                "sim: absurdly low bpb={bpb} (< {SIM_ABSURD_LOW_BPB}) — label leak / forge"
-            ),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::NonCausalLabelLeak,
+            format!("sim: absurd bpb={bpb} (<{SIM_ABSURD_LOW_BPB}) label leak/forge"),
+        )));
     }
     if wall < 0.01 && tokens > 10_000 {
-        return Ok(Some(AgenticVerdict {
-            verdict: VerdictKind::Cheat,
-            cheat_codes: vec![CheatCode::InconsistentMetrics],
-            nearest_id: None,
-            similarity_bps: 10_000,
-            rationale: format!("sim: impossible wall_clock={wall} tokens_seen={tokens}"),
-        }));
+        return Ok(Some(cheat_verdict(
+            CheatCode::InconsistentMetrics,
+            format!("sim: impossible wall_clock={wall} tokens_seen={tokens}"),
+        )));
     }
     Ok(None)
 }
