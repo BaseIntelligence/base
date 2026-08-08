@@ -52,9 +52,12 @@ register_one() {
   local payload http body token
   local -a auth=()
   token="$(resolve_admin_token || true)"
-  if [[ -n "${token}" ]]; then
-    auth=(-H "Authorization: Bearer ${token}")
+  if [[ -z "${token}" ]]; then
+    echo "register-challenge-backends: missing gateway admin token" >&2
+    echo "  set BASE_GATEWAY_ADMIN_TOKEN or deploy/secrets/gateway_admin_token" >&2
+    return 1
   fi
+  auth=(-H "Authorization: Bearer ${token}")
   payload="$(printf '{"challenge_id":"%s","base_url":"%s","weight":1}' "$challenge_id" "$base_url")"
   if [[ "$COMPOSE_MODE" -eq 1 ]]; then
     body="$(docker compose -f docker-compose.yml \
@@ -62,12 +65,12 @@ register_one() {
       exec -T gateway \
       curl -sS -w '\n%{http_code}' -X POST http://127.0.0.1:8080/v1/admin/backends \
       -H 'content-type: application/json' \
-      ${auth[@]+"${auth[@]}"} \
+      "${auth[@]}" \
       -d "$payload" 2>/dev/null || true)"
   else
     body="$(curl -sS -w '\n%{http_code}' -X POST "${GATEWAY_URL%/}/v1/admin/backends" \
       -H 'content-type: application/json' \
-      ${auth[@]+"${auth[@]}"} \
+      "${auth[@]}" \
       -d "$payload" 2>/dev/null || true)"
   fi
   http="$(printf '%s' "$body" | tail -n1)"
