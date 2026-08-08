@@ -47,7 +47,10 @@ pins without bumping `challenge_scoring_version`.
 | daily_quota | `MANUAL_DAILY_RUN_QUOTA = 10` |
 | scheduled_quota | `DESIGN_SCHEDULED_DAILY_RUN_CAP` |
 | selfsim_excluded | `other hotkeys' and same-coldkey prior art only` |
-| prompts_per_round | `3 prompts` |
+| prompts_per_round | `1 prompt` |
+| unscored_epoch_limit | `UNSCORED_EPOCH_LIMIT = 5` |
+| admin_reject_route | `/v1/admin/rounds/{id}/reject` |
+| metagraph_cache_ttl | `15m` |
 | bank_v1 | `bank_v1.json` |
 | agent_py | `agent.py` |
 | pyproject | `pyproject.toml` |

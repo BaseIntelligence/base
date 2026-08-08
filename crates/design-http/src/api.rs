@@ -22,11 +22,12 @@ use design_store::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use submission_gating::{GatingState, GatingStore, MetagraphCache};
+use submission_gating::{GatingState, GatingStore, MetagraphCache, METAGRAPH_CACHE_TTL_SECS};
 
 use design_challenge_task::{
-    manual_daily_run_quota, round_id_at, round_secs, scheduled_daily_run_cap, CHALLENGE_ID,
-    MIN_ANNOTATIONS_PER_PAIR, RUN_ID_DOMAIN,
+    manual_daily_run_quota, reject_awaiting_admin_run, round_id_at, round_secs,
+    sanitize_reject_reason, scheduled_daily_run_cap, CHALLENGE_ID, MIN_ANNOTATIONS_PER_PAIR,
+    RUN_ID_DOMAIN, UNSCORED_EPOCH_LIMIT,
 };
 
 /// Hook invoked after admin persists winners (score + leaf emit).
@@ -40,8 +41,8 @@ pub trait AdminAwardHook: Send + Sync + std::fmt::Debug {
 pub struct AppState {
     /// Store.
     pub store: Arc<dyn DesignStore>,
-    /// Chain epoch cache.
-    pub epoch: std::sync::atomic::AtomicU64,
+    /// Chain epoch cache (shared with the orchestrator sweeper).
+    pub epoch: Arc<std::sync::atomic::AtomicU64>,
     /// Netuid.
     pub netuid: u16,
     /// Backend label.
@@ -100,6 +101,7 @@ pub fn design_router(state: Arc<AppState>) -> Router {
         .route("/v1/annotate", post(post_annotate))
         .route("/v1/admin/rounds/{id}/candidates", get(admin_candidates))
         .route("/v1/admin/rounds/{id}/winners", post(admin_winners))
+        .route("/v1/admin/rounds/{id}/reject", post(admin_reject))
         .route(
             "/v1/admin/rounds/current/requeue",
             post(admin_requeue_current),
@@ -215,6 +217,9 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
         "round_id": round_id_at(now_secs()),
         "queued_runs": queued,
         "prompt_set_digest": prompt_set_digest(),
+        "prompts_per_round": design_challenge_task::prompts_per_round(),
+        "unscored_epoch_limit": UNSCORED_EPOCH_LIMIT,
+        "metagraph_cache_ttl_secs": METAGRAPH_CACHE_TTL_SECS,
     }))
     .into_response()
 }
@@ -318,7 +323,7 @@ async fn post_harness(
         // Metagraph membership (fail closed when a cache is configured but has
         // no snapshot yet).
         if let Some(cache) = &st.metagraph {
-            match cache.snapshot() {
+            match cache.snapshot_fresh(METAGRAPH_CACHE_TTL_SECS) {
                 Some(view) => match view.uid_of_hex(&hotkey) {
                     Some(u) => uid = Some(u),
                     None => {
@@ -333,7 +338,7 @@ async fn post_harness(
                     return json_err(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "metagraph_unavailable",
-                        "metagraph snapshot not ready; retry shortly",
+                        "metagraph snapshot not ready or older than 15m; retry shortly",
                     );
                 }
             }
@@ -545,6 +550,9 @@ pub async fn schedule_harness_for_round(
             sanitize_report: None,
             agentic_verdict: None,
             error_detail: None,
+            reject_reason: None,
+            attempt_epoch: Some(epoch),
+            awaiting_admin_epoch: None,
             final_score: None,
             retry_count: 0,
             created_at_ms: now_ms(),
@@ -957,13 +965,14 @@ pub async fn mark_awaiting(
     Ok(())
 }
 
-/// Mark run awaiting admin after clean agentic review.
+/// Mark clean run `awaiting_admin` and stamp the unscored-timeout epoch clock.
 pub async fn mark_awaiting_admin(
     store: &dyn DesignStore,
     run_id: &str,
     digest: &str,
     report: Value,
     verdict: Value,
+    epoch: u64,
 ) -> Result<(), StoreError> {
     store
         .apply_run(
@@ -973,11 +982,12 @@ pub async fn mark_awaiting_admin(
                 artifact_digest: Some(digest.to_owned()),
                 sanitize_report: Some(report),
                 agentic_verdict: Some(verdict),
+                awaiting_admin_epoch: Some(epoch),
                 ..StorePatch::default()
             },
             Some(&StageEvent {
                 stage: "awaiting_admin".into(),
-                detail: None,
+                detail: Some(json!({"epoch": epoch})),
                 at_ms: now_ms(),
             }),
         )
@@ -988,6 +998,13 @@ pub async fn mark_awaiting_admin(
 #[derive(Debug, Deserialize)]
 struct WinnersBody {
     harness_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RejectBody {
+    harness_ids: Vec<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// Manually schedule every active harness into the CURRENT open round.
@@ -1146,6 +1163,82 @@ async fn admin_winners(
         .into_response()
 }
 
+async fn admin_reject(
+    State(st): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    body: Result<Json<RejectBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if let Err(r) = check_admin(&st, &headers) {
+        return r;
+    }
+    let Json(req) = match body {
+        Ok(j) => j,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_json", &e.body_text()),
+    };
+    let mut ids = req.harness_ids;
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_reject",
+            "harness_ids must be non-empty",
+        );
+    }
+    let reason = sanitize_reject_reason(req.reason.as_deref(), "admin_reject");
+    let runs = match st.store.runs_for_round(id).await {
+        Ok(r) => r,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let mut rejected = Vec::new();
+    for hid in &ids {
+        let Some(run) = runs
+            .iter()
+            .find(|r| r.harness_id == *hid && r.status == RunStage::AwaitingAdmin)
+        else {
+            if let Some(run) = runs
+                .iter()
+                .find(|r| r.harness_id == *hid && r.status == RunStage::Rejected)
+            {
+                rejected.push(json!({
+                    "run_id": run.id,
+                    "harness_id": hid,
+                    "reject_reason": run.reject_reason.clone().unwrap_or_else(|| reason.clone()),
+                    "idempotent": true,
+                }));
+                continue;
+            }
+            return json_err(
+                StatusCode::BAD_REQUEST,
+                "not_candidate",
+                &format!("harness {hid} is not a clean awaiting_admin candidate"),
+            );
+        };
+        if let Err(e) = reject_awaiting_admin_run(
+            st.store.as_ref(),
+            st.gating.as_deref(),
+            run,
+            &reason,
+            "admin_reject",
+        )
+        .await
+        {
+            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "reject", &e.to_string());
+        }
+        rejected.push(json!({
+            "run_id": run.id,
+            "harness_id": hid,
+            "reject_reason": reason,
+        }));
+    }
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"status":"ok","round_id": id, "rejected": rejected})),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1174,7 +1267,7 @@ mod tests {
         (
             Arc::new(AppState {
                 store: Arc::new(MemoryDesignStore::new()),
-                epoch: std::sync::atomic::AtomicU64::new(0),
+                epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 netuid: 541,
                 backend_mode: "memory",
                 annotator_token_hashes: vec![],
@@ -1532,7 +1625,7 @@ mod tests {
         let gating = Arc::new(MemoryGatingStore::new());
         let st = Arc::new(AppState {
             store: Arc::new(MemoryDesignStore::new()),
-            epoch: std::sync::atomic::AtomicU64::new(0),
+            epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             netuid: 541,
             backend_mode: "memory",
             annotator_token_hashes: vec![],
@@ -1610,7 +1703,7 @@ mod tests {
         let gating = Arc::new(MemoryGatingStore::new());
         let st = Arc::new(AppState {
             store: Arc::new(MemoryDesignStore::new()),
-            epoch: std::sync::atomic::AtomicU64::new(0),
+            epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             netuid: 541,
             backend_mode: "memory",
             annotator_token_hashes: vec![],

@@ -1441,6 +1441,7 @@ dependencies = [
  "design-sandbox",
  "design-sanitize",
  "design-store",
+ "design-store-pg",
  "hex",
  "http-body-util",
  "serde",
@@ -1472,6 +1473,7 @@ dependencies = [
  "design-sandbox",
  "design-sanitize",
  "design-store",
+ "design-store-pg",
  "hex",
  "review-docker",
  "serde_json",
@@ -1487,6 +1489,12 @@ dependencies = [
 [[package]]
 name = "design-challenge-task"
 version = "0.1.0"
+dependencies = [
+ "bundle",
+ "design-store",
+ "serde_json",
+ "submission-gating",
+]
 
 [[package]]
 name = "design-db"
@@ -1621,12 +1629,21 @@ name = "design-store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "db",
- "design-db",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "design-store-pg"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "db",
+ "design-db",
+ "design-store",
+ "serde_json",
 ]
 
 [[package]]

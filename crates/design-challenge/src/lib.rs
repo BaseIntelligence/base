@@ -20,7 +20,6 @@ pub mod backfill;
 pub mod corpus;
 pub mod host_sim;
 mod orchestrator;
-pub mod score;
 pub mod screenshot;
 
 pub use challenge_common::{
@@ -28,23 +27,24 @@ pub use challenge_common::{
     GatewayClient, GatewayClientConfig, LeafEmitError,
 };
 pub use design_challenge_task::{
-    agent_run_timeout_secs, daily_run_quota, manual_daily_run_quota, prompts_per_round,
-    round_id_at, round_secs, rounds_per_day_effective, scheduled_daily_run_cap,
-    scheduled_runs_per_day, CHALLENGE_ID, CHALLENGE_ID_BYTES, MANUAL_DAILY_RUN_QUOTA,
-    PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS, SCORE_MAX, SCORING_VERSION,
-    SCORING_WINDOW_ROUNDS,
+    agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota,
+    manual_daily_run_quota, prompts_per_round, reject_awaiting_admin_run, round_id_at, round_secs,
+    round_win_delta, rounds_per_day_effective, scheduled_daily_run_cap, scheduled_runs_per_day,
+    score_window, unscored_epochs_elapsed, window_start, ScorePlan, WindowScorePlan, CHALLENGE_ID,
+    CHALLENGE_ID_BYTES, MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS,
+    SCORE_MAX, SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
 };
 pub use design_http::{
     design_router, mark_awaiting, mark_awaiting_admin, record_epoch, AdminAwardHook, AppState,
 };
 pub use design_store::{
-    DbDesignStore, DesignStore, FinalScore, MemoryDesignStore, RoundAward, RunStage, StoreError,
+    DesignStore, FinalScore, MemoryDesignStore, RoundAward, RunStage, StoreError,
 };
+pub use design_store_pg::DbDesignStore;
 pub use host_sim::{
     force_sim_refusal_reason, host_sim_allowed, is_prod_env, require_host_sim_for_force,
 };
 pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
-pub use score::{round_win_delta, score_window, window_start, ScorePlan, WindowScorePlan};
 
 /// Crate identity smoke.
 #[must_use]

@@ -65,6 +65,9 @@ async fn setup() -> (Arc<MemoryDesignStore>, Arc<AppState>) {
                 sanitize_report: None,
                 agentic_verdict: Some(serde_json::json!({"verdict":"clean"})),
                 error_detail: None,
+                reject_reason: None,
+                attempt_epoch: None,
+                awaiting_admin_epoch: None,
                 final_score: None,
                 retry_count: 0,
                 created_at_ms: 1,
@@ -89,7 +92,7 @@ async fn setup() -> (Arc<MemoryDesignStore>, Arc<AppState>) {
     let th = token_hash("secret-admin");
     let state = Arc::new(AppState {
         store: Arc::clone(&store) as Arc<dyn DesignStore>,
-        epoch: AtomicU64::new(0),
+        epoch: Arc::new(AtomicU64::new(0)),
         netuid: 1,
         backend_mode: "sim",
         annotator_token_hashes: vec![th.clone()],
@@ -153,4 +156,47 @@ async fn candidates_and_two_winners() {
         admin_token_hash: award.admin_token_hash,
     };
     let _ = FinalScore::Score(SCORE_MAX / 2);
+}
+
+#[tokio::test]
+async fn admin_reject_sets_reason_on_run() {
+    let (store, state) = setup().await;
+    let app = design_router(state);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/admin/rounds/7/reject")
+                .header("authorization", "Bearer secret-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"harness_ids":["h3"],"reason":"layout too thin"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+    let run = store.get_run("run-h3").await.unwrap().unwrap();
+    assert_eq!(run.status, RunStage::Rejected);
+    assert_eq!(run.reject_reason.as_deref(), Some("layout too thin"));
+    assert_eq!(run.final_score, Some(FinalScore::Score(0)));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runs/run-h3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["reject_reason"], "layout too thin");
 }

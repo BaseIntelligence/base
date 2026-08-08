@@ -20,3 +20,6 @@ pub use api::{
     AdminAwardHook, AppState,
 };
 pub use design_challenge_task::CHALLENGE_ID;
+pub use design_challenge_task::{
+    awaiting_admin_unscored_expired, reject_awaiting_admin_run, sanitize_reject_reason,
+};

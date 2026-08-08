@@ -105,18 +105,19 @@ Minimal `harness.json` shape:
 
 `POST /v1/harness` is **idempotent** on content digest (`harness_id`).
 
-## Submission gating (1-max)
+## Submission gating (1-max) + one attempt
 
 - Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
-  → `403 hotkey_not_in_metagraph`; the snapshot may lag a couple of minutes
-  after a fresh registration (`503 metagraph_unavailable` → retry shortly).
-- **One accepted submission per hotkey.** While yours is
-  `registered` / `blocked` / `rejected`, a *different* harness gets
-  `409 submission_gated`. Re-POSTing the **identical** bundle is always safe
-  (idempotent `200 already-queued`).
-- If your hotkey **leaves the metagraph** (deregistered or your uid's hotkey
-  changed), the watcher reopens your slot automatically — resubmit under your
-  new uid.
+  → `403 hotkey_not_in_metagraph`. Intake uses a bulk metagraph cache with a
+  **15 minute** fail-closed TTL (`503 metagraph_unavailable` → retry shortly).
+- **One accepted submission per hotkey** and **one sandbox attempt** for that
+  submission. While yours is `registered` / `blocked` / `rejected`, a
+  *different* harness gets `409 submission_gated`. Re-POSTing the **identical**
+  bundle is always safe (idempotent `200 already-queued`).
+- After your attempt finishes (score, cheat, admin reject, or unscored
+  timeout), you cannot submit again on the same hotkey until that hotkey
+  **leaves the metagraph** and you register a **new UID** (same hotkey is fine).
+- Infra auto-retries on the *same* run id (up to 3) are not a new attempt.
 - `env_vars` are **locked at submission**; changing them means a new digest,
   which requires a free slot.
 
@@ -124,19 +125,19 @@ Minimal `harness.json` shape:
 
 - **10 rounds per UTC day** (`ROUND_SECS = 8640`; `round_id = floor(unix / 8640)`).
 - An accepted harness **waits for the next round**: runs are scheduled into
-  `round_id + 1` and start when that round opens, never mid-round.
+  `round_id + 1` and start when that round opens, never mid-round. You are
+  **not** auto-scheduled into later rounds.
 - Sandbox **run** timeout is **30 minutes** (`AGENT_RUN_TIMEOUT_SECS = 1800`).
-- Each round picks **3** prompts via deterministic weighted draw for all harnesses.
-- Daily run quota is **split by origin**, so participating in every round can
-  never lock you out:
+- Each round picks **1 shared prompt** for every harness
+  (`PROMPTS_PER_ROUND = 1`).
+- Daily run quota is **split by origin**:
   - **Manual** — **10** runs/day, charged only by your own `POST /v1/harness`.
-    This is anti-spam on resubmission, not a cap on participation.
-  - **Scheduled** — organizer round dispatch, capped well above the full day's
-    schedule (10 rounds × 3 prompts = **30** runs; cap **60**). You never spend
-    manual quota by being scheduled.
+  - **Scheduled** — organizer next-round schedule / ops requeue (10 rounds × 1
+    prompt = **10** runs; cap **20**). You never spend manual quota by being
+    scheduled.
 - Infra failures (package install, review/LLM infra) **auto-retry up to 3
-  times**; cheat / rejected verdicts are terminal. Manual retry:
-  `POST /v1/runs/{id}/retry`.
+  times**; cheat / rejected / admin reject / unscored timeout are terminal.
+  Manual retry of a failed run: `POST /v1/runs/{id}/retry`.
 
 Check quota: `GET /v1/quota/{hotkey}` — `manual` and `scheduled` objects
 (`runs_used` / `limit` / `remaining`) alongside the whole-day `runs_used`.
@@ -161,6 +162,11 @@ automatic (`bank_v1.json`). Inspiration (Mobbin, image gen, UI libs) and
 **external API / MCP calls** are allowed; near-identical corpus copies /
 scrape-clones are not. Full rules in the freeze doc.
 
+If a clean run is still unscored **5 chain epochs** after it entered
+`awaiting_admin`, it is **auto-rejected** (`reject_reason` on
+`GET /v1/runs/{id}`). Admin may also reject with a reason string you can read
+on that same route. Either way you need a **new UID** before submitting again.
+
 Admin APIs are **master-local only** (not proxied on the public gateway).
 
 ## Viewer
@@ -182,6 +188,8 @@ page metadata.
 | Outcome | What it means |
 |---------|----------------|
 | `rejected` + `near_identical_harness_copy` / `ast_architecture_copy` | Pre-LLM copy gate: your harness is a byte/AST copy of an **earlier** miner harness (baseline starter is OK; copying another miner is not) |
+| `rejected` + `reject_reason` (admin) | Admin rejected the candidate; read `reject_reason` on `GET /v1/runs/{id}` |
+| `rejected` + `unscored_timeout…` | Still awaiting admin after **5 epochs** — auto-rejected; register a new UID to continue |
 | `scored` with agentic `cheat` / `suspicious` | LLM anti-cheat found a listed cheat pattern (same Score(0); not admin-eligible) |
 | `failed` + harness / install / timeout | Agent crashed, timed out, or infra exhausted retries — check `/events` + `/logs` |
 | Missing required pages | Bundle must include `index.html`, `pricing.html`, `components.html` |

@@ -199,6 +199,12 @@ pub struct RunState {
     pub agentic_verdict: Option<Value>,
     /// Error.
     pub error_detail: Option<String>,
+    /// Miner-visible reject reason.
+    pub reject_reason: Option<String>,
+    /// Attempt clock (chain epoch at insert).
+    pub attempt_epoch: Option<u64>,
+    /// Unscored clock (epoch at `awaiting_admin`).
+    pub awaiting_admin_epoch: Option<u64>,
     /// Final score.
     pub final_score: Option<FinalScore>,
     /// Retries.
@@ -291,6 +297,10 @@ pub struct StorePatch {
     pub agentic_verdict: Option<Value>,
     /// Error.
     pub error_detail: Option<String>,
+    /// Reject reason.
+    pub reject_reason: Option<String>,
+    /// Stamp awaiting-admin epoch.
+    pub awaiting_admin_epoch: Option<u64>,
     /// Score.
     pub final_score: Option<FinalScore>,
     /// Retry bump.
@@ -699,6 +709,12 @@ impl DesignStore for MemoryDesignStore {
         if let Some(v) = &patch.error_detail {
             row.error_detail = Some(v.clone());
         }
+        if let Some(v) = &patch.reject_reason {
+            row.reject_reason = Some(v.clone());
+        }
+        if let Some(v) = patch.awaiting_admin_epoch {
+            row.awaiting_admin_epoch = Some(v);
+        }
         if let Some(v) = &patch.final_score {
             row.final_score = Some(v.clone());
         }
@@ -727,6 +743,8 @@ impl DesignStore for MemoryDesignStore {
         row.status = RunStage::Queued;
         row.artifact_digest = None;
         row.sanitize_report = None;
+        row.reject_reason = None;
+        row.awaiting_admin_epoch = None;
         row.agentic_verdict = None;
         row.error_detail = None;
         row.final_score = None;
@@ -1111,6 +1129,9 @@ mod tests {
             sanitize_report: None,
             agentic_verdict: None,
             error_detail: None,
+            reject_reason: None,
+            attempt_epoch: None,
+            awaiting_admin_epoch: None,
             final_score: None,
             retry_count: 0,
             created_at_ms: 1,

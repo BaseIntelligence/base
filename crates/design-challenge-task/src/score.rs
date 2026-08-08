@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
-use design_challenge_task::{SCORE_MAX, SCORING_WINDOW_ROUNDS};
 use design_store::FinalScore;
+
+use crate::{SCORE_MAX, SCORING_WINDOW_ROUNDS};
 
 /// Inputs for closing / awarding a single round (win accounting).
 #[derive(Debug, Clone)]

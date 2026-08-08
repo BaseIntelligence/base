@@ -9,6 +9,18 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
+
+mod score;
+pub use score::{
+    not_attempted, round_win_delta, score_window, to_leaf, window_start, ScorePlan, WindowScorePlan,
+};
+
+use design_store::{
+    DesignStore, FinalScore, RunStage, RunState, StageEvent, StoreError, StorePatch,
+};
+use serde_json::json;
+use submission_gating::{GatingState, GatingStore};
 
 /// Normative challenge id (trust-root / leaf `challenge_id` string).
 pub const CHALLENGE_ID: &str = "design";
@@ -51,9 +63,112 @@ pub const AGENT_RUN_TIMEOUT_SECS: u64 = 1_800;
 
 /// Prompts selected per round (each becomes one organizer-scheduled sandbox run).
 ///
-/// Default only — runtime code must use [`prompts_per_round`]
-/// (`DESIGN_PROMPTS_PER_ROUND` override).
-pub const PROMPTS_PER_ROUND: usize = 3;
+/// Prod pin is **1**: every harness in a round executes the identical shared
+/// prompt. Default only — runtime code must use [`prompts_per_round`]
+/// (`DESIGN_PROMPTS_PER_ROUND` override; staging may raise this).
+pub const PROMPTS_PER_ROUND: usize = 1;
+
+/// Epochs a clean `awaiting_admin` run may wait before auto-reject.
+pub const UNSCORED_EPOCH_LIMIT: u64 = 5;
+
+/// `true` when `current_epoch - start_epoch >= UNSCORED_EPOCH_LIMIT`.
+#[must_use]
+pub const fn unscored_epochs_elapsed(start_epoch: u64, current_epoch: u64) -> bool {
+    current_epoch.saturating_sub(start_epoch) >= UNSCORED_EPOCH_LIMIT
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Miner-visible reject reason: trim, strip controls, cap length.
+#[must_use]
+pub fn sanitize_reject_reason(raw: Option<&str>, default: &str) -> String {
+    const MAX: usize = 500;
+    let fallback = if default.is_empty() {
+        "rejected"
+    } else {
+        default
+    };
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return fallback.to_owned();
+    };
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .take(MAX)
+        .collect();
+    if cleaned.trim().is_empty() {
+        fallback.to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// `awaiting_admin` past the unscored epoch budget.
+#[must_use]
+pub fn awaiting_admin_unscored_expired(run: &RunState, current_epoch: u64) -> bool {
+    let start = run
+        .awaiting_admin_epoch
+        .or(run.attempt_epoch)
+        .unwrap_or(current_epoch);
+    run.status == RunStage::AwaitingAdmin && unscored_epochs_elapsed(start, current_epoch)
+}
+
+/// Reject clean `awaiting_admin` run; gate hotkey `Rejected` until UID leave.
+pub async fn reject_awaiting_admin_run(
+    store: &dyn DesignStore,
+    gating: Option<&dyn GatingStore>,
+    run: &RunState,
+    reason: &str,
+    reason_code: &str,
+) -> Result<(), StoreError> {
+    if run.status == RunStage::Rejected {
+        return Ok(());
+    }
+    if run.status != RunStage::AwaitingAdmin {
+        return Err(StoreError::Backend(format!(
+            "not_candidate: run {} status={}",
+            run.id,
+            run.status.as_str()
+        )));
+    }
+    let reason = sanitize_reject_reason(Some(reason), reason_code);
+    store
+        .apply_run(
+            &run.id,
+            &StorePatch {
+                status: Some(RunStage::Rejected),
+                reject_reason: Some(reason.clone()),
+                final_score: Some(FinalScore::Score(0)),
+                ..StorePatch::default()
+            },
+            Some(&StageEvent {
+                stage: "rejected".into(),
+                detail: Some(json!({
+                    "reason": reason_code,
+                    "reject_reason": reason,
+                })),
+                at_ms: now_ms(),
+            }),
+        )
+        .await?;
+    if let Some(g) = gating {
+        if let Ok(Some(h)) = store.get_harness(&run.harness_id).await {
+            let _ = g
+                .set_terminal(
+                    CHALLENGE_ID,
+                    &h.miner_hotkey,
+                    GatingState::Rejected,
+                    Some(reason_code),
+                )
+                .await;
+        }
+    }
+    Ok(())
+}
 
 /// Rolling scoring window in rounds (`challenge_scoring_version = 3`): the leaf
 /// projection shares `SCORE_MAX` by round-win points over the last
@@ -230,15 +345,25 @@ mod tests {
     }
 
     #[test]
+    fn unscored_epoch_clock_rejects_at_limit() {
+        assert!(!unscored_epochs_elapsed(100, 104));
+        assert!(unscored_epochs_elapsed(100, 105));
+        assert!(unscored_epochs_elapsed(100, 200));
+        assert!(!unscored_epochs_elapsed(100, 100));
+    }
+
+    #[test]
     fn scheduled_cap_covers_a_full_day_of_rounds() {
-        // The bug this replaced: a 10-run/day cap against a 10-round × 3-prompt
-        // schedule locked an honest harness out after ~3.3 rounds.
+        // One shared prompt per round → 10 scheduled runs/day; the scheduled
+        // cap must still sit above that full-day volume.
         assert_eq!(rounds_per_day_effective(), ROUNDS_PER_DAY);
+        assert_eq!(PROMPTS_PER_ROUND, 1);
+        assert_eq!(UNSCORED_EPOCH_LIMIT, 5);
         assert_eq!(
             scheduled_runs_per_day(),
             u32::try_from(ROUNDS_PER_DAY).unwrap() * u32::try_from(PROMPTS_PER_ROUND).unwrap()
         );
-        assert_eq!(scheduled_runs_per_day(), 30);
+        assert_eq!(scheduled_runs_per_day(), 10);
         assert!(scheduled_daily_run_cap() >= scheduled_runs_per_day());
         assert_eq!(
             scheduled_daily_run_cap(),

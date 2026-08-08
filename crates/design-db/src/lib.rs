@@ -66,6 +66,12 @@ pub struct DesignRunRow {
     pub agentic_verdict: Option<Value>,
     /// Error detail.
     pub error_detail: Option<String>,
+    /// Miner-visible reject reason.
+    pub reject_reason: Option<String>,
+    /// Attempt clock epoch.
+    pub attempt_epoch: Option<i64>,
+    /// Awaiting-admin clock epoch.
+    pub awaiting_admin_epoch: Option<i64>,
     /// `score` | `no_score`.
     pub kind: Option<String>,
     /// Lattice score.
@@ -206,6 +212,8 @@ pub struct NewDesignRun<'a> {
     pub harness_id: &'a str,
     /// prompt.
     pub prompt_id: &'a str,
+    /// Attempt clock epoch.
+    pub attempt_epoch: Option<i64>,
 }
 
 /// New artifact.
@@ -268,7 +276,8 @@ const HARNESS_COLS: &str =
      (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
-    sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count, \
+    sanitize_report, agentic_verdict, error_detail, reject_reason, attempt_epoch, \
+    awaiting_admin_epoch, kind, score, absence_reason, retry_count, \
     (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms, (FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000))::BIGINT AS updated_at_ms";
 const ARTIFACT_COLS: &str = "run_id, path, sanitized_html, raw_html, raw_sha256, bytes";
 const PAIR_COLS: &str = "id, round_id, prompt_id, run_a_id, run_b_id";
@@ -468,13 +477,14 @@ pub async fn list_design_rounds(pool: &PgPool, limit: i64) -> Result<Vec<DesignR
 /// SQL error.
 pub async fn insert_design_run(pool: &PgPool, n: &NewDesignRun<'_>) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO design_run (id, round_id, harness_id, prompt_id, status) \
-         VALUES ($1, $2, $3, $4, 'queued')",
+        "INSERT INTO design_run (id, round_id, harness_id, prompt_id, status, attempt_epoch) \
+         VALUES ($1, $2, $3, $4, 'queued', $5)",
     )
     .bind(n.id)
     .bind(n.round_id)
     .bind(n.harness_id)
     .bind(n.prompt_id)
+    .bind(n.attempt_epoch)
     .execute(pool)
     .await?;
     Ok(())
@@ -527,6 +537,8 @@ pub async fn update_design_run(
     sanitize_report: Option<Value>,
     agentic_verdict: Option<Value>,
     error_detail: Option<&str>,
+    reject_reason: Option<&str>,
+    awaiting_admin_epoch: Option<i64>,
     kind: Option<&str>,
     score: Option<i64>,
     absence_reason: Option<i16>,
@@ -539,10 +551,12 @@ pub async fn update_design_run(
            sanitize_report = COALESCE($4, sanitize_report), \
            agentic_verdict = COALESCE($5, agentic_verdict), \
            error_detail = COALESCE($6, error_detail), \
-           kind = COALESCE($7, kind), \
-           score = COALESCE($8, score), \
-           absence_reason = COALESCE($9, absence_reason), \
-           retry_count = retry_count + $10, \
+           reject_reason = COALESCE($7, reject_reason), \
+           awaiting_admin_epoch = COALESCE($8, awaiting_admin_epoch), \
+           kind = COALESCE($9, kind), \
+           score = COALESCE($10, score), \
+           absence_reason = COALESCE($11, absence_reason), \
+           retry_count = retry_count + $12, \
            updated_at = now() \
          WHERE id = $1 RETURNING {RUN_COLS}"
     );
@@ -553,6 +567,8 @@ pub async fn update_design_run(
         .bind(sanitize_report)
         .bind(agentic_verdict)
         .bind(error_detail)
+        .bind(reject_reason)
+        .bind(awaiting_admin_epoch)
         .bind(kind)
         .bind(score)
         .bind(absence_reason)
@@ -569,6 +585,7 @@ pub async fn reset_design_run_for_retry(pool: &PgPool, id: &str) -> Result<Desig
     let q = format!(
         "UPDATE design_run SET status = 'queued', artifact_digest = NULL, \
            sanitize_report = NULL, agentic_verdict = NULL, error_detail = NULL, \
+           reject_reason = NULL, awaiting_admin_epoch = NULL, \
            kind = NULL, score = NULL, absence_reason = NULL, \
            retry_count = retry_count + 1, updated_at = now() \
          WHERE id = $1 RETURNING {RUN_COLS}"
