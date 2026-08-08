@@ -40,7 +40,7 @@ Compose always runs a digest-pinned `postgres` service (`base-pgdata` volume, he
 | Gateway raw weight leaves + sealed bundles | **Postgres** (`raw_weight_snapshot`, `epoch_bundle`, …) |
 | Validator attestations (when DB configured) | **Postgres** |
 | Design sandbox staging files | volume `${BASE_STATE_DIR}/design/staging` + `design-artifacts` |
-| Gateway challenge **backend registry** | **in-memory** — re-seed after gateway restart (`remote-deploy.sh` does this on master) |
+| Gateway challenge **backend registry** | **in-memory**, boot-seeded from `BASE_GATEWAY_BACKENDS` (compose default: prism+design DNS URLs); `remote-deploy.sh` POST reseed stays idempotent |
 | site-api (`GET /v1/site/*`) | no DB — proxies challenge upstreams via gateway |
 | Unit/integration tests | may construct `Memory*Store` directly; omit `BASE_DATABASE_URL` only there |
 

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use config::{Config, Role};
-use gateway_registry::RegistryConfig;
+use gateway_registry::{parse_backend_seed_list, CreateBackend, Registry, RegistryConfig};
 
 use crate::tls::TlsConfig;
 use crate::{GatewayError, DEFAULT_LISTEN};
@@ -31,6 +31,13 @@ pub mod keys {
     /// re-applies to `/challenge/*/v1/view/*` responses (defense in depth).
     /// Defaults to [`design_sanitize::default_frame_ancestors`].
     pub const VIEW_FRAME_ANCESTORS: &str = "BASE_GATEWAY_VIEW_FRAME_ANCESTORS";
+    /// Comma/newline-separated boot seed for the in-memory challenge registry:
+    /// `prism=http://prism-challenge:8092,design=http://design-challenge:8093`.
+    /// Applied on every process start so compose/prod restarts do not leave
+    /// `/challenge/*` at 503 until an operator POSTs `/v1/admin/backends`.
+    pub const BACKENDS: &str = "BASE_GATEWAY_BACKENDS";
+    /// Optional file whose contents are parsed like [`BACKENDS`] (wins when set).
+    pub const BACKENDS_FILE: &str = "BASE_GATEWAY_BACKENDS_FILE";
 
     pub use crate::tls::keys as tls;
 }
@@ -119,6 +126,54 @@ fn registry_config_from_env() -> Result<RegistryConfig, GatewayError> {
         cfg.cooldown = std::time::Duration::from_secs(secs);
     }
     Ok(cfg)
+}
+
+/// Load optional boot-seed backends from [`keys::BACKENDS_FILE`] or [`keys::BACKENDS`].
+///
+/// # Errors
+///
+/// Unreadable file or malformed seed list.
+pub fn load_backend_seed_from_env() -> Result<Vec<CreateBackend>, GatewayError> {
+    if let Ok(path) = std::env::var(keys::BACKENDS_FILE) {
+        let path = path.trim();
+        if !path.is_empty() {
+            let raw = std::fs::read_to_string(path).map_err(|e| {
+                GatewayError::Config(format!("read {} `{path}`: {e}", keys::BACKENDS_FILE))
+            })?;
+            return parse_backend_seed_list(&raw)
+                .map_err(|e| GatewayError::Config(format!("{}: {e}", keys::BACKENDS_FILE)));
+        }
+    }
+    match std::env::var(keys::BACKENDS) {
+        Ok(raw) if !raw.trim().is_empty() => parse_backend_seed_list(&raw)
+            .map_err(|e| GatewayError::Config(format!("{}: {e}", keys::BACKENDS))),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Apply [`load_backend_seed_from_env`] to an empty (or already-seeded) registry.
+///
+/// # Errors
+///
+/// Seed parse/load failures, or non-duplicate registry insert errors.
+pub fn seed_registry_from_env(registry: &Registry) -> Result<usize, GatewayError> {
+    let backends = load_backend_seed_from_env()?;
+    if backends.is_empty() {
+        return Ok(0);
+    }
+    let created = registry
+        .seed(&backends)
+        .map_err(|e| GatewayError::Config(format!("backend seed: {e}")))?;
+    for b in &backends {
+        tracing::info!(
+            event = "gateway_backend_seed",
+            challenge_id = %b.challenge_id,
+            base_url = %b.base_url,
+            weight = b.weight,
+            "challenge backend present from boot seed"
+        );
+    }
+    Ok(created)
 }
 
 /// Resolve the gateway hotkey from a Bittensor wallet, mnemonic file, or hex.

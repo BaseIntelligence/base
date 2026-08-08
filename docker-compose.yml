@@ -93,6 +93,9 @@ services:
       BASE_TRUST_ROOT_DIR: ${BASE_TRUST_ROOT_DIR:-/etc/base/config}
       # Bundle seal mini-secret (host file, never baked into image)
       BASE_GATEWAY_SK_FILE: ${BASE_GATEWAY_SK_FILE:-/run/secrets/gateway_sk}
+      # Durable boot seed for the in-memory challenge registry (survives
+      # gateway-only restarts; remote-deploy POST reseed stays idempotent).
+      BASE_GATEWAY_BACKENDS: "${BASE_GATEWAY_BACKENDS:-prism=http://prism-challenge:8092,design=http://design-challenge:8093}"
     volumes:
       - ./config:/etc/base/config:ro
       - ./deploy/secrets/gateway_sk:/run/secrets/gateway_sk:ro

@@ -38,13 +38,14 @@ pub use gateway_core::admin_attest::{
     admin_attest_grant_router, AttestGrantRequest, AttestGrantResponse, AttestGrantState,
     ATTEST_GRANT_ROUTE,
 };
+pub use gateway_registry::parse_backend_seed_list;
 pub use gateway_registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
     DEFAULT_FAILURE_THRESHOLD,
 };
 pub use gw_config::{
-    hotkey_hex, keys, parse_hotkey_hex, resolve_gateway_hotkey, GatewayConfig, OwnerCheck,
-    REQUIRE_OWNER_ENV,
+    hotkey_hex, keys, load_backend_seed_from_env, parse_hotkey_hex, resolve_gateway_hotkey,
+    seed_registry_from_env, GatewayConfig, OwnerCheck, REQUIRE_OWNER_ENV,
 };
 pub use sealer::{
     admin_seal_router, bundle_router, load_gateway_secret, seal_epoch, BundleStore,
@@ -381,6 +382,16 @@ where
     let metrics = init_metrics()?;
     // Prefer registry knobs from config when the shared handle was default-built.
     let _ = &config.registry;
+    // In-memory registry: seed from BASE_GATEWAY_BACKENDS(_FILE) so compose/prod
+    // restarts never leave /challenge/* at 503 until a manual admin POST.
+    let seeded = seed_registry_from_env(&registry)?;
+    if seeded > 0 {
+        tracing::info!(
+            event = "gateway_backends_seeded",
+            created = seeded,
+            "boot-seeded challenge backends into in-memory registry"
+        );
+    }
     let app = build_app(metrics, registry, chain, &config.tls, stores, extra)?;
 
     let listener = TcpListener::bind(config.listen)

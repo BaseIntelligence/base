@@ -43,5 +43,6 @@ challenge API.
 `?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,
 slug, operator, and (for submissions) prompt title / id / run id.
 
-Backends must be registered (same as challenge proxy), e.g.
+Backends come from the gateway registry (same as challenge proxy). Compose
+boot-seeds them via `BASE_GATEWAY_BACKENDS`; manual fallback:
 `deploy/scripts/register-challenge-backends.sh`.
