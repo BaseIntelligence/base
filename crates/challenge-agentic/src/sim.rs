@@ -11,8 +11,8 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use challenge_ast::{
-    fingerprint_source, similarity_bps, static_source_cheat, top_k_nearest, AST_CHEAT_BPS,
-    AST_SUSPICIOUS_BPS, BASELINE_CORPUS_PREFIX, SourceCheatKind,
+    fingerprint_source, similarity_bps, static_source_cheat, top_k_nearest, SourceCheatKind,
+    AST_CHEAT_BPS, AST_SUSPICIOUS_BPS, BASELINE_CORPUS_PREFIX,
 };
 use serde_json::Value;
 
