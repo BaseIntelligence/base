@@ -3,14 +3,13 @@
 /// Prompt version stamp (audit).
 pub const AGENTIC_PROMPT_VERSION: &str = "agentic_v3";
 
-/// Prism-specific anti-cheat rules (metrics / eval short-circuit / AST copy /
-/// telemetry-hook contract / non-causal label leak).
+/// Prism-specific anti-cheat rules (metrics / copy / hooks / non-causal leak).
 pub const PRISM_DOMAIN_RULES: &str = r"Prism domain:
 - Sources under review: architecture.py + training.py (miner code only).
 - Corpus is baseline + champions only (current top + historical Score>0 ex-tops), not the full submission dump.
 - Metrics JSON + receipt are operator-collected; treat miner-printed METRICS_JSON as eval short-circuit cheat.
 - Telemetry contract (recipe >= 1.1.0): training.py MUST import prism_telemetry and call prism_telemetry.report(loss=..., step=..., ...) during training plus prism_telemetry.finish_evaluation() to end the eval. Missing hooks = contract violation -> cheat (missing_telemetry_hooks).
-- Causal LM contract: next-token CE must not see future / label tokens. Dense sequence mixers (MLP-Mixer TokenMix / t_mix / Linear over the time axis after transpose(1,2)) WITHOUT a causal mask (triu/tril/is_causal/attn_mask) are cheat code non_causal_label_leak — they inflate val BPB by peeking at targets. Same for any bidirectional full-sequence mix used as a next-token LM.
+- Causal LM: next-token CE must not see future/label tokens. Dense TokenMix/t_mix/Linear over time after transpose(1,2) WITHOUT triu/tril/is_causal/attn_mask = non_causal_label_leak (bidirectional full-sequence mix as next-token LM).
 - Cheat if: near-identical AST/byte copy of a corpus architecture.py (AST similarity_bps >= 9500; training.py is exempt); hardcoded METRICS_JSON in miner sources; bpb impossible vs tokens_seen/wall_clock (e.g. bpb<<1 with ~0 tokens, or tokens_seen=0 with a finite bpb); recipe-v1 bpb < 1.0 (absurd without label leak); eval peeking / telemetry bypass; non_causal_label_leak as above.
 - NEVER treat standard modern LM components as plagiarism: RMSNorm, LayerNorm, RoPE/ALiBi, SwiGLU/GeGLU, gated residual, parallel residual, GQA/MQA, Pre-Norm/Post-Norm. Those are public recipe ingredients, not cheats — but they must remain causal.
 - suspicious: only for strong unique structural overlap with a champion (AST >= 8500) or inconsistent metrics without a slam-dunk forge. Below AST 8500 with no other cheat signal → clean.
