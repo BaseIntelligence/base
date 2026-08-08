@@ -15,7 +15,7 @@ pub const REVIEW_PROMPT_V3: &str = include_str!("../prompts/review_v3.md");
 /// script on two different architectures is legitimate).
 ///
 /// v3: corpus is champions (top + ex-tops) + baseline; hard ban on citing
-/// standard LM components (RMSNorm / RoPE / SwiGLU / …) as plagiarism evidence.
+/// standard LM components (`RMSNorm` / `RoPE` / `SwiGLU` / …) as plagiarism evidence.
 #[allow(dead_code)] // retained for audit / diff against similarity-v3
 pub const SIMILARITY_PROMPT_V2: &str = include_str!("../prompts/similarity_v2.md");
 /// Current similarity prompt (v3).
