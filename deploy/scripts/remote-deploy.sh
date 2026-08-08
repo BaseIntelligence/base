@@ -270,6 +270,7 @@ if [[ "$BUILD_FROM" == "prebuilt" ]]; then
     "$ROOT/target/release/prism-challenge" \
     "$ROOT/target/release/design-challenge" \
     "$ROOT/target/release/design-egress-proxy" \
+    "$ROOT/target/release/challenge-review" \
     "$HOST:$REMOTE_DIR/target/release/"
 fi
 
