@@ -53,6 +53,8 @@ cargo run -q -p trustroot-bin -- verify \
 ## 4. Gateway and TLS
 
 - [ ] Gateway hotkey equals on-chain `SubnetOwnerHotkey` (else process exits 2).
+- [ ] `BASE_GATEWAY_ADMIN_TOKEN_FILE` (or `BASE_GATEWAY_ADMIN_TOKEN`) is set whenever `BASE_GATEWAY_REQUIRE_OWNER=1` — `/v1/admin/*` must not be open on a public listener.
+- [ ] Spot-check from the public Internet: `GET /v1/admin/backends` → **401/403** (not 200). Localhost/VPC seal scripts still work with the bearer.
 - [ ] TLS terminates **only** in the gateway process (D20). No second reverse proxy claiming TLS.
 - [ ] `BASE_DOMAIN` is a real delegated zone when ACME is enabled (D25).
 - [ ] Manual failover procedure is known: [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md). HA is **not** claimed (R9).

@@ -33,10 +33,13 @@ use tokio::net::TcpListener;
 
 mod gw_config;
 
-pub use api::{GatewayState, SharedChain};
+pub use api::{registry_router, GatewayState, SharedChain};
 pub use gateway_core::admin_attest::{
     admin_attest_grant_router, AttestGrantRequest, AttestGrantResponse, AttestGrantState,
     ATTEST_GRANT_ROUTE,
+};
+pub use gateway_core::admin_auth::{
+    admin_auth_middleware, AdminAuth, AdminAuthError, ADMIN_TOKEN_ENV, ADMIN_TOKEN_FILE_ENV,
 };
 pub use gateway_registry::{
     Backend, BackendView, CreateBackend, Registry, RegistryConfig, RegistryError, DEFAULT_COOLDOWN,
@@ -283,10 +286,11 @@ pub fn build_app(
     )
     .map_err(GatewayError::HttpClient)?;
     let app = app::build_router(metrics, state, tls)?;
-    Ok(match extra {
+    let app = match extra {
         Some(extra) => app.merge(extra),
         None => app,
-    })
+    };
+    apply_admin_auth(app)
 }
 
 /// Like [`build_app`] with injected trust root and weight store (tests / hydrate).
@@ -329,7 +333,21 @@ pub fn build_app_with_bundles(
 ) -> Result<Router, GatewayError> {
     let state = GatewayState::with_parts(registry, chain, challenges, weights, bundles)
         .map_err(GatewayError::HttpClient)?;
-    app::build_router(metrics, state, tls)
+    let app = app::build_router(metrics, state, tls)?;
+    apply_admin_auth(app)
+}
+
+/// Attach `/v1/admin/*` bearer middleware.
+///
+/// # Errors
+///
+/// [`AdminAuth::from_env`] fail-closed config errors.
+pub fn apply_admin_auth(app: Router) -> Result<Router, GatewayError> {
+    let auth = AdminAuth::from_env().map_err(|e| GatewayError::Config(e.to_string()))?;
+    Ok(app.layer(axum::middleware::from_fn_with_state(
+        auth,
+        admin_auth_middleware,
+    )))
 }
 
 /// Master check → telemetry → bind → axum serve until `shutdown` completes.

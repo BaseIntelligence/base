@@ -28,6 +28,7 @@ Working branch: **`main`**. Prod ships from annotated tags `v*.*.*` cut on `main
 | Key | Who | Needed for |
 |-----|-----|------------|
 | `gateway_sk` | Gateway | Bundle **seal** signatures (`POST /v1/admin/seal`) |
+| `gateway_admin_token` | Gateway + seal scripts | Bearer for **`/v1/admin/*`** (seal, backends, attest-grant). **Required** when `BASE_GATEWAY_REQUIRE_OWNER=1` |
 | `prism_sk` / `design_sk` | Challenge / smoke | Signed leaves (`POST /v1/weights/raw`); pubs must match trust root |
 | Gateway owner wallet + `BASE_GATEWAY_REQUIRE_OWNER` | Gateway | Master-only **identity** check (live/prod). **Not** required to seal or serve `/v1/weights/latest` |
 | Validator wallet | Validator | On-chain weight **submit** only — validators *fetch* sealed weights; they do not need a gateway wallet |

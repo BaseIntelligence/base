@@ -82,6 +82,14 @@ struct Args {
     /// after an anti-cheat false positive is overridden by the operator).
     #[arg(long = "score", value_name = "HOTKEY_HEX:SCORE")]
     score_overrides: Vec<String>,
+
+    /// Admin bearer for `POST /v1/admin/seal` (prod requires this).
+    #[arg(long, env = "BASE_GATEWAY_ADMIN_TOKEN")]
+    admin_token: Option<String>,
+
+    /// File containing the admin bearer token (single line).
+    #[arg(long, env = "BASE_GATEWAY_ADMIN_TOKEN_FILE")]
+    admin_token_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -166,24 +174,49 @@ fn score_map(
     scores
 }
 
+fn load_admin_token(args: &Args) -> Result<Option<String>, String> {
+    if let Some(t) = args.admin_token.as_ref() {
+        let t = t.trim();
+        if t.is_empty() {
+            return Err("admin token is empty".into());
+        }
+        return Ok(Some(t.to_owned()));
+    }
+    if let Some(path) = args.admin_token_file.as_ref() {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read admin token file {}: {e}", path.display()))?;
+        let t = raw.trim();
+        if t.is_empty() {
+            return Err(format!("admin token file {} is empty", path.display()));
+        }
+        return Ok(Some(t.to_owned()));
+    }
+    Ok(None)
+}
+
 async fn admin_seal_and_check_latest(
     gateway: &str,
     epoch: u64,
     netuid: u16,
     tip: u64,
+    admin_token: Option<&str>,
 ) -> Result<(), String> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_mins(1))
         .build()
         .map_err(|e| e.to_string())?;
     let base = gateway.trim_end_matches('/');
-    let seal = http
+    let mut req = http
         .post(format!("{base}/v1/admin/seal"))
         .json(&serde_json::json!({
             "epoch": epoch,
             "netuid": netuid,
             "block_b": tip,
-        }))
+        }));
+    if let Some(token) = admin_token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let seal = req
         .send()
         .await
         .map_err(|e| format!("admin/seal transport: {e}"))?;
@@ -305,5 +338,13 @@ async fn run() -> Result<(), String> {
         outcomes.len()
     );
 
-    admin_seal_and_check_latest(&args.gateway, epoch, args.netuid, tip).await
+    let admin_token = load_admin_token(&args)?;
+    admin_seal_and_check_latest(
+        &args.gateway,
+        epoch,
+        args.netuid,
+        tip,
+        admin_token.as_deref(),
+    )
+    .await
 }
