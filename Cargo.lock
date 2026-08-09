@@ -3975,8 +3975,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "db",
- "prism-lium",
+ "prism-lium-types",
  "prism-review",
+ "prism-store-types",
  "prism-zoneb",
  "serde",
  "serde_json",
@@ -3984,6 +3985,17 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "prism-store-types"
+version = "0.1.0"
+dependencies = [
+ "prism-lium-types",
+ "prism-review",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

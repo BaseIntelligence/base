@@ -5,9 +5,9 @@
 //! challenge the same way `prism_stage_event` is.
 
 use db::PgPool;
-use prism_lium::TelemetryPoint;
+use prism_lium_types::TelemetryPoint;
 
-use crate::store::StoreError;
+use prism_store_types::StoreError;
 
 /// Replace the whole series for one submission (idempotent re-score/retry).
 ///

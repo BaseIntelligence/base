@@ -363,7 +363,8 @@ for the bpb score (coherence gate, never a grader).
 | `prism-pipeline` | Intake contract (validation, `arch_id` rules, gating keys) + eval pipeline + composite scoring + `ScoringMode` |
 | `prism-review` | OpenRouter LLM (quality + arch-only similarity) + deterministic sim fallback |
 | `challenge-agentic` | Tool-calling anti-cheat (AST + metrics); `SimAgent` for CI |
-| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal + emission outbox) + `eval::EvalStore` trait (v3) |
+| `prism-store-types` | Persistence data contract: submission row, stage lattice, patch, error taxonomy, registry / epoch / top-model records |
+| `prism-store` | `PrismStore` trait (submissions + arch registry + top-model journal + emission outbox) + `eval::EvalStore` trait (v3); re-exports `prism-store-types` |
 | `prism-registry` | Competition emission math, post-score hooks, top-model GitHub publisher |
 | `prism-emit` | Epoch-close D24 leaf emission engine (outbox batching, exactly-once cursor) |
 | `prism-zoneb` | Zone B contract types (envelope, metric kinds, verdicts) + validation lattice (`validate`) — v3 |

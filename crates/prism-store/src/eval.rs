@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use prism_zoneb::{PreparedReport, Verdict, VerdictReason};
 use serde_json::Value;
 
-use crate::store::StoreError;
+use prism_store_types::StoreError;
 
 /// `prism_eval_run` row: at most one per submission.
 ///

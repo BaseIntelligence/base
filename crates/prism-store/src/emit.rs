@@ -16,7 +16,7 @@
 
 use sqlx::PgPool;
 
-use crate::store::{EpochScoreRow, FinalScore, StoreError};
+use prism_store_types::{EpochScoreRow, FinalScore, StoreError};
 
 #[allow(clippy::needless_pass_by_value)] // map_err passes the error by value
 fn backend(e: sqlx::Error) -> StoreError {

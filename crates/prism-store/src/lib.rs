@@ -17,9 +17,11 @@ mod telemetry;
 
 pub use dbprism::DbPrismStore;
 pub use eval::EvalStore;
-pub use prism_lium::TelemetryPoint;
-pub use store::{
-    ArchitectureRecord, EpochScoreRow, FinalScore, MemoryPrismStore, PrismStore,
-    PublishArchOutcome, Stage, StageEvent, StatePatch, StoreError, SubmissionState,
-    TopModelPublication,
+pub use prism_lium_types::TelemetryPoint;
+pub use store::{MemoryPrismStore, PrismStore};
+// The data contract lives in `prism-store-types` (per-crate LOC cap); it is
+// re-exported wholesale so `prism_store::…` stays the single import path.
+pub use prism_store_types::{
+    ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome, Stage, StageEvent,
+    StatePatch, StoreError, SubmissionId, SubmissionState, TopModelPublication,
 };

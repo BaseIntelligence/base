@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use sqlx::PgPool;
 
-use crate::store::{
+use prism_store_types::{
     ArchitectureRecord, PublishArchOutcome, StoreError, SubmissionState, TopModelPublication,
 };
 

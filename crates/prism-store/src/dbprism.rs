@@ -3,13 +3,14 @@
 use async_trait::async_trait;
 use db::prism_store as dbs;
 use db::PgPool;
-use prism_lium::EvalReceipt;
+use prism_lium_types::EvalReceipt;
 use prism_review::{ReviewVerdict, SimilarityKind, SimilarityVerdict};
 
 use crate::arch;
-use crate::store::{
-    ArchitectureRecord, EpochScoreRow, FinalScore, PrismStore, PublishArchOutcome, Stage,
-    StageEvent, StatePatch, StoreError, SubmissionState, TopModelPublication,
+use crate::store::PrismStore;
+use prism_store_types::{
+    ArchitectureRecord, EpochScoreRow, FinalScore, PublishArchOutcome, Stage, StageEvent,
+    StatePatch, StoreError, SubmissionState, TopModelPublication,
 };
 
 /// SQL-backed production store.
@@ -338,7 +339,10 @@ impl PrismStore for DbPrismStore {
             .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    async fn telemetry(&self, id: &str) -> Result<Vec<prism_lium::TelemetryPoint>, StoreError> {
+    async fn telemetry(
+        &self,
+        id: &str,
+    ) -> Result<Vec<prism_lium_types::TelemetryPoint>, StoreError> {
         crate::telemetry::telemetry_for(&self.pool, id).await
     }
 
