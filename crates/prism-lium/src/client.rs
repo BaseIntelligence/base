@@ -9,13 +9,15 @@ use serde_json::Value;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{
     parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
     ssh_exec_streaming, truncate_tail, SshTarget,
 };
-use crate::types::{GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+use prism_lium_types::{CostGuardrailError, LiumError};
+use prism_lium_types::{
+    GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult,
+};
 
 /// Parent-emitted marker line: the train-phase process group is dead and
 /// the parent gate is (about to be) waiting for eval assets. Matched as an

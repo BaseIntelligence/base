@@ -29,20 +29,17 @@
 #![allow(clippy::manual_clamp)]
 
 mod client;
-mod error;
-mod receipt;
 mod sim;
 mod ssh;
-mod types;
 
 pub use client::LiumClient;
-pub use error::{CostGuardrailError, LiumError};
-pub use receipt::{EvalReceipt, NoScoreGate};
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
-pub use types::{
-    EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, ProbePoint,
-    RemoteExecResult, TelemetryPoint,
+// The data contract lives in `prism-lium-types` (per-crate LOC cap); it is
+// re-exported wholesale so `prism_lium::…` stays the single import path.
+pub use prism_lium_types::{
+    CostGuardrailError, EvalReceipt, EvalTelemetry, GpuPreference, Instance, InstanceSpec,
+    LiumError, LiumSshConfig, NoScoreGate, Offer, ProbePoint, RemoteExecResult, TelemetryPoint,
 };
 
 use async_trait::async_trait;

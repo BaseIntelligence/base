@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::error::LiumError;
+use prism_lium_types::LiumError;
 
 /// Parsed SSH connect target from Lium pod payload.
 #[derive(Debug, Clone, PartialEq, Eq)]

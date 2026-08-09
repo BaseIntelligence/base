@@ -6,9 +6,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::error::{CostGuardrailError, LiumError};
-use crate::types::{Instance, InstanceSpec, Offer, RemoteExecResult};
 use crate::{EvalJobBackend, MIN_LIFETIME_HOURS};
+use prism_lium_types::{CostGuardrailError, LiumError};
+use prism_lium_types::{Instance, InstanceSpec, Offer, RemoteExecResult};
 
 /// In-memory sim backend for CI / e2e without billable Lium.
 pub struct SimLiumBackend {
@@ -126,7 +126,7 @@ impl EvalJobBackend for SimLiumBackend {
         // telemetry plumbing (store rows, site-api series) as real Lium runs.
         let start = bpb + 2.0;
         let loss_series = (1..=5u64)
-            .map(|step| crate::types::TelemetryPoint {
+            .map(|step| prism_lium_types::TelemetryPoint {
                 step,
                 loss: start - (start - bpb) * (step as f64 / 5.0),
                 grad_norm: Some(1.0 / step as f64),
@@ -153,7 +153,7 @@ impl EvalJobBackend for SimLiumBackend {
             notes: format!("sim-eval{note_suffix}"),
             n_params: Some(12_000_000),
             val_rows: Some(256),
-            telemetry: Some(crate::types::EvalTelemetry {
+            telemetry: Some(prism_lium_types::EvalTelemetry {
                 loss_series,
                 finish_reason: Some("finish_evaluation".into()),
                 report_count: 5,
