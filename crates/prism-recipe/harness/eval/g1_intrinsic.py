@@ -87,7 +87,7 @@ def run(model, ctx):
         if os.path.isdir(d):
             dom_names.update(f[: -len(".jsonl")] for f in os.listdir(d) if f.endswith(".jsonl"))
     domain_bpb, domain_bpbyte = [], []
-    cap = 8 if common.tiny_caps() else 32
+    cap = common.eval_asset_cap(32, 8, env_key="PRISM_EVAL_G1_CAP")
     for name in sorted(dom_names):
         path = common.assets_path(ctx, f"g1/domains/{name}.jsonl")
         if path is None or not budget.ok():

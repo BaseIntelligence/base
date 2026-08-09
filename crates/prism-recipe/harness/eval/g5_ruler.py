@@ -169,7 +169,11 @@ def run(model, ctx, grid=None, n_items=None, probes=None, probe_grid=None, budge
     grid = tuple(grid or (GRID_TINY if tiny else GRID))
     probes = tuple(probes or PROBES)
     probe_grid = dict(probe_grid or {})
-    n_items = int(n_items if n_items is not None else (1 if tiny else 2))
+    n_items = int(
+        n_items
+        if n_items is not None
+        else common.eval_g5_n_items(default_full=2, default_tiny=1)
+    )
     budget = common.Budget(
         budget_s if budget_s is not None else common.group_budget_s("g5_ruler", 1200.0)
     )

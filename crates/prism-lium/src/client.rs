@@ -647,13 +647,12 @@ fn harness_upload_tar(
     .map_err(|e| LiumError::Exec(e.to_string()))
 }
 
-/// Harness env pairs for the pod run. `PRISM_TEST_TRAIN_MINUTES` /
-/// `PRISM_TEST_MAX_PARAMS` forward only when they parse as plain numerics —
-/// the remote string is shell, so anything else would be an injection
-/// vector. `PRISM_FLOW` forwards only the allowlisted tokens `v1`/`v3`
-/// (needed so pods can exercise the public_dev battery + checkpoint save
-/// without private asset packs). All other values are compile-time
-/// constants or quote-stripped.
+/// Harness env pairs for the pod run. Numeric test / eval knobs forward
+/// only when they parse as plain numerics — the remote string is shell, so
+/// anything else would be an injection vector. `PRISM_FLOW` forwards only
+/// the allowlisted tokens `v1`/`v3` (needed so pods can exercise the
+/// public_dev battery + checkpoint save without private asset packs). All
+/// other values are compile-time constants or quote-stripped.
 fn harness_env_pairs(
     train_hours_cap: f64,
     gpu_type: &str,
@@ -669,7 +668,32 @@ fn harness_env_pairs(
         ("PRISM_GPU_TYPE", gpu_type.replace('\'', "")),
         ("PRISM_HARNESS_FILES_SHA256", harness_sha),
     ];
-    for key in ["PRISM_TEST_TRAIN_MINUTES", "PRISM_TEST_MAX_PARAMS"] {
+    // Short-train / param-cap + battery compression knobs. `PRISM_TEST_EVAL_CAPS=0`
+    // keeps full G1–G8 grids (incl. G8 µP) while `PRISM_TEST_TRAIN_MINUTES`
+    // still shortens train — see harness `eval.common.tiny_caps`.
+    for key in [
+        "PRISM_TEST_TRAIN_MINUTES",
+        "PRISM_TEST_MAX_PARAMS",
+        "PRISM_TEST_EVAL_CAPS",
+        "PRISM_EVAL_N_ITEMS",
+        "PRISM_EVAL_G5_N_ITEMS",
+        "PRISM_EVAL_G1_CAP",
+        "PRISM_EVAL_G2_CAP",
+        "PRISM_EVAL_NATURAL_ITEMS",
+        "PRISM_EVAL_MIRROR_G2_CAP",
+        "PRISM_EVAL_G1_BUDGET_S",
+        "PRISM_EVAL_G2_BUDGET_S",
+        "PRISM_EVAL_G3_BUDGET_S",
+        "PRISM_EVAL_G4_BUDGET_S",
+        "PRISM_EVAL_G5_BUDGET_S",
+        "PRISM_EVAL_G7_BUDGET_S",
+        "PRISM_EVAL_G8_SWEEP_S",
+        "PRISM_EVAL_G8_SWEEP",
+        "PRISM_EVAL_MIRROR_BUDGET_S",
+        "PRISM_EVAL_G5_NATURAL_BUDGET_S",
+        "PRISM_EVAL_G5_RULER_PROBE_BUDGET_S",
+        "PRISM_EVAL_G5_BABILONG_PROBE_BUDGET_S",
+    ] {
         if let Ok(val) = std::env::var(key) {
             if val.trim().parse::<f64>().is_ok() {
                 v.push((key, val.trim().to_owned()));
@@ -1222,6 +1246,8 @@ mod tests {
     fn harness_env_pairs_forward_numeric_test_values_only() {
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
+        std::env::set_var("PRISM_TEST_EVAL_CAPS", "0");
+        std::env::set_var("PRISM_EVAL_G5_N_ITEMS", "1");
         std::env::set_var("PRISM_FLOW", "v3");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(pairs
@@ -1230,6 +1256,12 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_TEST_MAX_PARAMS" && v == "2000000"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_TEST_EVAL_CAPS" && v == "0"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_EVAL_G5_N_ITEMS" && v == "1"));
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
@@ -1242,6 +1274,8 @@ mod tests {
         assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_FLOW"));
         std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");
         std::env::remove_var("PRISM_TEST_MAX_PARAMS");
+        std::env::remove_var("PRISM_TEST_EVAL_CAPS");
+        std::env::remove_var("PRISM_EVAL_G5_N_ITEMS");
         std::env::remove_var("PRISM_FLOW");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090' OR '1", false);
         assert!(pairs

@@ -143,7 +143,11 @@ def run(
     grid = tuple(grid or (GRID_TINY if tiny else GRID))
     tasks = tuple(tasks or TASKS)
     task_grid = dict(task_grid or {})
-    n_items = int(n_items if n_items is not None else (1 if tiny else 2))
+    n_items = int(
+        n_items
+        if n_items is not None
+        else common.eval_g5_n_items(default_full=2, default_tiny=1)
+    )
     budget = common.Budget(
         budget_s if budget_s is not None else common.group_budget_s("g5_babilong", 900.0)
     )

@@ -35,7 +35,7 @@ def run(model, ctx):
     out, nlls = {}, []
     secret = common.resolve_secret_seed(ctx)
     tiny = common.tiny_caps()
-    n_items = 2 if tiny else 4
+    n_items = common.eval_n_items(default_full=4, default_tiny=2)
     family_means = []
 
     def sweep(name, gen, variants):

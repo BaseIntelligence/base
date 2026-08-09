@@ -34,7 +34,7 @@ def run(model, ctx):
     out = {}
     per_task = {}
     nlls = []
-    cap = 8 if common.tiny_caps() else 200
+    cap = common.eval_asset_cap(200, 8, env_key="PRISM_EVAL_G2_CAP")
     for task in TASKS:
         path = common.assets_path(ctx, f"g2/{task}.jsonl")
         if path is None:

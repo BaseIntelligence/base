@@ -293,8 +293,7 @@ def build_mirrors(model, ctx):
     (default 600 s); on expiry the pairs collected so far are returned.
     """
     budget = common.Budget(common.float_env("PRISM_EVAL_MIRROR_BUDGET_S", 600.0))
-    tiny = common.tiny_caps()
-    n_items = 2 if tiny else 4
+    n_items = common.eval_n_items(default_full=4, default_tiny=2)
     secret = common.resolve_secret_seed(ctx)
     pairs = []
 
@@ -306,7 +305,7 @@ def build_mirrors(model, ctx):
         if public is not None and mirror is not None:
             pairs.append({"group": "g4", "metric": org_key, "public": public, "mirror": mirror})
 
-    cap = 2 if tiny else 4
+    cap = common.eval_asset_cap(4, 2, env_key="PRISM_EVAL_MIRROR_G2_CAP")
     for task in g2_mod.TASKS:
         if not budget.ok():
             break

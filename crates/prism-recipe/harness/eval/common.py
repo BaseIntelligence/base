@@ -97,12 +97,44 @@ def eval_tier(ctx):
 
 
 def tiny_caps():
-    """Test-mode tiny caps (grids 512–2k, fewer items, sweeps stubbed)."""
-    if int_env("PRISM_TEST_EVAL_CAPS", 0) == 1:
-        return True
+    """Test-mode tiny caps (grids 512–2k, fewer items, µP sweep stubbed).
+
+    Explicit knob `PRISM_TEST_EVAL_CAPS`:
+      - `1` → always tiny (smoke / CPU battery).
+      - `0` → always full grids / non-stub µP, even when
+        `PRISM_TEST_TRAIN_MINUTES` or `PRISM_TEST_MAX_PARAMS` are set
+        (operator path: short train + complete G1–G8 on real Lium).
+
+    When the knob is unset, legacy behaviour is preserved: a positive
+    train-minutes cap or any `PRISM_TEST_MAX_PARAMS` still implies tiny.
+    """
+    explicit = os.environ.get("PRISM_TEST_EVAL_CAPS")
+    if explicit is not None and str(explicit).strip() != "":
+        return int_env("PRISM_TEST_EVAL_CAPS", 0) == 1
     if float_env("PRISM_TEST_TRAIN_MINUTES", 0.0) > 0:
         return True
     return os.environ.get("PRISM_TEST_MAX_PARAMS") is not None
+
+
+def eval_n_items(default_full=4, default_tiny=2):
+    """Procedural draw count (G3/G4). Overridable via `PRISM_EVAL_N_ITEMS`."""
+    if tiny_caps():
+        return default_tiny
+    return max(1, int_env("PRISM_EVAL_N_ITEMS", default_full))
+
+
+def eval_asset_cap(default_full, default_tiny, env_key="PRISM_EVAL_ASSET_CAP"):
+    """JSONL row cap (G1/G2). Overridable via `env_key` (default ASSET_CAP)."""
+    if tiny_caps():
+        return default_tiny
+    return max(1, int_env(env_key, default_full))
+
+
+def eval_g5_n_items(default_full=2, default_tiny=1):
+    """Per-(probe,length) draws for G5 protocols. `PRISM_EVAL_G5_N_ITEMS`."""
+    if tiny_caps():
+        return default_tiny
+    return max(1, int_env("PRISM_EVAL_G5_N_ITEMS", default_full))
 
 
 def group_budget_s(group, default):
