@@ -18,15 +18,15 @@ use prism_pipeline::composite::{
     MirrorPair, SubmissionMetrics,
 };
 use prism_pipeline::score::ScoringMode;
-use prism_pipeline::zone_b::{
-    is_valid_metric_name, prepare_report, Direction, GroundTruth, IngestReject, MetricKind,
-    ZoneBEnvelope, ZoneBMetric, MAX_SCALARS,
-};
 use prism_store::eval::{
     AnchorSetRecord, EvalGroupRecord, EvalMetricRecord, EvalRunRecord, EvalStore, MirrorPairRecord,
     PreregRecord,
 };
 use prism_store::StoreError;
+use prism_zoneb::{
+    is_valid_metric_name, prepare_report, Direction, GroundTruth, IngestReject, MetricKind,
+    ZoneBEnvelope, ZoneBMetric, MAX_SCALARS,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -430,7 +430,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::{eval_detail, MemoryEvalStore};
-    use prism_pipeline::zone_b::{Verdict, VerdictReason};
+    use prism_zoneb::{Verdict, VerdictReason};
     use serde_json::json;
 
     fn store() -> Arc<dyn EvalStore> {

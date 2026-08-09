@@ -4,7 +4,7 @@
 //! A miner posts a [`ZoneBEnvelope`] (`schema_version`, optional
 //! miner-chained `prev_hash`, `miner.<group>.<name>` metrics) for their own
 //! submission. The route runs the exact validation lattice of the internal
-//! `train_metrics` lift — `prism_pipeline::zone_b::prepare_report` with the
+//! `train_metrics` lift — `prism_zoneb::prepare_report` with the
 //! stored chain head, organizer ground truth from the submission's
 //! `METRICS_JSON` v2 blob, and the cross-miner cohort — then persists the
 //! prepared report to `zone_b_reports` via [`EvalStore`]. Verdicts
@@ -29,9 +29,9 @@ use axum::{Json, Router};
 use serde_json::json;
 
 use prism_eval_store::{ground_truth, prepare_cohort};
-use prism_pipeline::zone_b::{prepare_report, GroundTruth, IngestReject, ZoneBEnvelope};
 use prism_store::eval::EvalStore;
 use prism_store::PrismStore;
+use prism_zoneb::{prepare_report, GroundTruth, IngestReject, ZoneBEnvelope};
 
 /// Zone B intake state: the submission store (existence + ground truth)
 /// and the eval store (report chain).

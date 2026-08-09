@@ -3743,6 +3743,7 @@ dependencies = [
  "prism-pipeline",
  "prism-recipe",
  "prism-store",
+ "prism-zoneb",
  "serde",
  "serde_json",
  "tokio",
@@ -3887,7 +3888,6 @@ dependencies = [
  "prism-lium",
  "prism-recipe",
  "prism-store",
- "prism-zoneb",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3975,8 +3975,10 @@ dependencies = [
 name = "prism-zoneb"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 

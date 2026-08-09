@@ -15,7 +15,6 @@ pub mod pipeline;
 pub mod precheck;
 pub mod score;
 pub mod submission;
-pub mod zone_b;
 
 pub use composite::{
     evaluate, BootstrapInfo, BudgetFacts, CompositeAnchors, CompositeError, CompositeOutcome,

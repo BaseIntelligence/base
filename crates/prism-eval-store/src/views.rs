@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use prism_pipeline::zone_b::{series_hash, CohortMetric, MetricKind, Verdict, ZoneBMetric};
 use prism_store::eval::{
     AnchorSetRecord, EvalGroupRecord, EvalMetricRecord, EvalRunRecord, MetricReportRecord,
     MirrorPairRecord, PreregRecord,
 };
+use prism_zoneb::{series_hash, CohortMetric, MetricKind, Verdict, ZoneBMetric};
 use serde_json::{json, Value};
 
 /// `GET /v1/submissions/{id}` `eval` field: the stored `CompositeOutcome`
@@ -148,7 +148,7 @@ pub fn prepare_cohort(reports: &[MetricReportRecord]) -> BTreeMap<String, Cohort
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use prism_pipeline::zone_b::VerdictReason;
+    use prism_zoneb::VerdictReason;
 
     fn report(verdict: Verdict, metrics: &Value) -> MetricReportRecord {
         MetricReportRecord {

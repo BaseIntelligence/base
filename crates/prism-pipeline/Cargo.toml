@@ -17,7 +17,6 @@ prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }
 prism-recipe = { path = "../prism-recipe" }
 prism-store = { path = "../prism-store" }
-prism-zoneb = { path = "../prism-zoneb" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

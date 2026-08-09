@@ -8,16 +8,27 @@
 //! the payload at ingest and quarantine the report (kept as anti-cheat
 //! evidence — no retraction).
 //!
-//! This crate holds only the contract: envelope shape, caps, verdicts, and
-//! structured findings. The validation lattice lives in
-//! `prism_pipeline::zone_b`; storage I/O lives in `prism-eval-store`.
+//! The crate root holds the contract: envelope shape, caps, verdicts, and
+//! structured findings. [`validate`] holds the pure validation lattice;
+//! storage I/O lives in `prism-eval-store`.
 
 #![forbid(unsafe_code)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::doc_markdown)]
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod validate;
+
+pub use validate::{
+    prepare_report, series_hash, validate_envelope, MAD_K, MFU_CEILING, MIN_COHORT,
+    TERMINAL_BAND_HI, TERMINAL_BAND_LO, WALL_CLOCK_SLACK,
+};
 
 /// Max distinct scalar metrics per report.
 pub const MAX_SCALARS: usize = 64;

@@ -1,8 +1,8 @@
 //! Zone B participant-reported metrics: validation lattice
 //! (`docs/spikes/prism-v3/research/09-miner-metrics-leaderboards.md` §2–§3, §7).
 //!
-//! The contract types (envelope, verdicts, caps) live in `prism-zoneb` and
-//! are re-exported here; this module is the pure validation pipeline:
+//! The contract types (envelope, verdicts, caps) live in the crate root; this
+//! module is the pure validation pipeline:
 //!
 //! - `quarantined` — provable dishonesty or tamper evidence: organizer
 //!   ground-truth contradictions (token/step/wall-clock), physics-ceiling
@@ -18,12 +18,13 @@
 
 use std::collections::BTreeMap;
 
-pub use prism_zoneb::{
-    is_valid_metric_name, CohortMetric, Direction, GroundTruth, IngestReject, MetricKind,
-    PreparedReport, Verdict, VerdictReason, ZoneBEnvelope, ZoneBMetric, MAX_PAYLOAD_BYTES,
-    MAX_SCALARS, MAX_SERIES, MAX_SERIES_POINTS,
-};
 use sha2::{Digest, Sha256};
+
+use crate::{
+    is_valid_metric_name, CohortMetric, GroundTruth, IngestReject, MetricKind, PreparedReport,
+    Verdict, VerdictReason, ZoneBEnvelope, MAX_PAYLOAD_BYTES, MAX_SCALARS, MAX_SERIES,
+    MAX_SERIES_POINTS,
+};
 
 /// MFU ceiling: above this fraction of the GPU's dense FP16/BF16 peak a
 /// throughput claim is physically implausible (well-tuned H100 runs land
@@ -409,6 +410,7 @@ fn median_mad(xs: &[f64]) -> Option<(f64, f64)> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::ZoneBMetric;
 
     const SUB: &str = "subm-1";
 
