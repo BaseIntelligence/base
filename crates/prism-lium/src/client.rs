@@ -650,7 +650,10 @@ fn harness_upload_tar(
 /// Harness env pairs for the pod run. `PRISM_TEST_TRAIN_MINUTES` /
 /// `PRISM_TEST_MAX_PARAMS` forward only when they parse as plain numerics —
 /// the remote string is shell, so anything else would be an injection
-/// vector. All other values are compile-time constants or quote-stripped.
+/// vector. `PRISM_FLOW` forwards only the allowlisted tokens `v1`/`v3`
+/// (needed so pods can exercise the public_dev battery + checkpoint save
+/// without private asset packs). All other values are compile-time
+/// constants or quote-stripped.
 fn harness_env_pairs(
     train_hours_cap: f64,
     gpu_type: &str,
@@ -671,6 +674,14 @@ fn harness_env_pairs(
             if val.trim().parse::<f64>().is_ok() {
                 v.push((key, val.trim().to_owned()));
             }
+        }
+    }
+    // Allowlist only: never forward arbitrary operator strings into the
+    // remote shell env (quote-injection surface).
+    if let Ok(flow) = std::env::var("PRISM_FLOW") {
+        let flow = flow.trim().to_ascii_lowercase();
+        if flow == "v1" || flow == "v3" {
+            v.push(("PRISM_FLOW", flow));
         }
     }
     if assets_pending {
@@ -1206,6 +1217,7 @@ mod tests {
     fn harness_env_pairs_forward_numeric_test_values_only() {
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
         std::env::set_var("PRISM_TEST_MAX_PARAMS", "2000000");
+        std::env::set_var("PRISM_FLOW", "v3");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(pairs
             .iter()
@@ -1213,11 +1225,19 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_TEST_MAX_PARAMS" && v == "2000000"));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(!pairs.iter().any(|(_, v)| v.contains("rm -rf")));
+        // Reject non-allowlisted flow tokens (injection / typo surface).
+        std::env::set_var("PRISM_FLOW", "v3; rm -rf /");
+        let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
+        assert!(!pairs.iter().any(|(k, _)| *k == "PRISM_FLOW"));
         std::env::remove_var("PRISM_TEST_TRAIN_MINUTES");
         std::env::remove_var("PRISM_TEST_MAX_PARAMS");
+        std::env::remove_var("PRISM_FLOW");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090' OR '1", false);
         assert!(pairs
             .iter()
