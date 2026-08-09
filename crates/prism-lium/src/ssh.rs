@@ -342,12 +342,21 @@ pub async fn ssh_exec_streaming(
     timeout_secs: u64,
     on_line: &mut (dyn FnMut(&str) + Send),
 ) -> Result<SshExecOutput, LiumError> {
-    use tokio::io::AsyncBufReadExt as _;
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
     let run = async {
         let mut child = ssh_command(target, private_key, remote_cmd)
             .spawn()
             .map_err(|e| format!("ssh spawn: {e}"))?;
         let stdout = child.stdout.take().ok_or("ssh stdout pipe")?;
+        // Drain local ssh-client stderr (banners / keepalive noise). Leaving
+        // the pipe unread can fill the kernel buffer and stall the session
+        // mid-harness even when the remote merges 2>&1 into stdout.
+        let mut stderr = child.stderr.take().ok_or("ssh stderr pipe")?;
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf).await;
+            buf
+        });
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let mut acc = String::new();
         while let Some(line) = lines
@@ -360,13 +369,15 @@ pub async fn ssh_exec_streaming(
             acc.push('\n');
         }
         let status = child.wait().await.map_err(|e| format!("ssh wait: {e}"))?;
-        Ok((acc, status.code().unwrap_or(-1)))
+        let stderr_buf = stderr_task.await.unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&stderr_buf).into_owned();
+        Ok((acc, stderr, status.code().unwrap_or(-1)))
     };
     match tokio::time::timeout(Duration::from_secs(timeout_secs), run).await {
-        Ok(Ok((stdout, returncode))) => Ok(SshExecOutput {
+        Ok(Ok((stdout, stderr, returncode))) => Ok(SshExecOutput {
             returncode,
             stdout,
-            stderr: String::new(),
+            stderr,
         }),
         Ok(Err(e)) => Err(LiumError::Exec(e)),
         Err(_) => Err(LiumError::Exec("ssh timed out".into())),
