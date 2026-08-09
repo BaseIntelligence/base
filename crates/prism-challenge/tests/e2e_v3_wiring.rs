@@ -148,7 +148,8 @@ fn mk_orchestrator(
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -174,6 +175,7 @@ async fn insert_queued(store: &Arc<MemoryPrismStore>, id: &str) {
         .insert_queued(&SubmissionState {
             id: id.into(),
             miner_hotkey: req.miner_hotkey.clone(),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,

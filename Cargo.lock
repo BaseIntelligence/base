@@ -1428,6 +1428,7 @@ name = "design-challenge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bundle",
  "chain",
  "challenge-agentic",
@@ -1440,10 +1441,12 @@ dependencies = [
  "design-sandbox",
  "design-sanitize",
  "design-store",
+ "design-store-pg",
  "hex",
  "http-body-util",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "submission-gating",
  "tempfile",
  "tokio",
@@ -1457,6 +1460,7 @@ name = "design-challenge-bin"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chain",
  "chain-live",
  "challenge-agentic",
@@ -1465,13 +1469,18 @@ dependencies = [
  "crypto",
  "db",
  "design-challenge",
+ "design-harness",
  "design-sandbox",
  "design-sanitize",
+ "design-store",
+ "design-store-pg",
  "hex",
  "review-docker",
+ "serde_json",
  "sha2 0.10.9",
  "submission-gating",
  "telemetry",
+ "tempfile",
  "tokio",
  "tracing",
  "trustroot",
@@ -1480,6 +1489,21 @@ dependencies = [
 [[package]]
 name = "design-challenge-task"
 version = "0.1.0"
+dependencies = [
+ "bundle",
+ "design-store",
+ "serde_json",
+ "submission-gating",
+]
+
+[[package]]
+name = "design-db"
+version = "0.1.0"
+dependencies = [
+ "db",
+ "serde_json",
+ "sqlx",
+]
 
 [[package]]
 name = "design-egress-proxy"
@@ -1605,11 +1629,21 @@ name = "design-store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "db",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "design-store-pg"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "db",
+ "design-db",
+ "design-store",
+ "serde_json",
 ]
 
 [[package]]
@@ -2148,6 +2182,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tracing",
  "uuid",
 ]
 
@@ -3846,6 +3881,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bundle",
+ "challenge-agentic",
  "hex",
  "prism-challenge-task",
  "prism-lium",
@@ -4954,14 +4990,35 @@ dependencies = [
  "axum",
  "chain",
  "gateway-registry",
+ "hex",
  "http-body-util",
+ "keystore",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "site-data",
  "site-types",
  "tokio",
  "tower",
  "tracing",
+ "trustroot",
+ "weights-api",
+ "wiremock",
+]
+
+[[package]]
+name = "site-data"
+version = "0.1.0"
+dependencies = [
+ "bundle",
+ "hex",
+ "keystore",
+ "reqwest 0.12.28",
+ "serde_json",
+ "site-types",
+ "tokio",
+ "trustroot",
+ "weights-api",
  "wiremock",
 ]
 

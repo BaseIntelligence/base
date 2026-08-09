@@ -1,0 +1,23 @@
+[package]
+name = "design-db"
+description = "Postgres row shapes + queries for design-challenge tables (production path)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+db = { path = "../db" }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "time",
+    "json",
+    "macros",
+] }
+
+[lints]
+workspace = true

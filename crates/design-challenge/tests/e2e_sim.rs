@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use design_challenge::score::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_challenge::SCORE_MAX;
+use design_challenge::{round_win_delta, score_window, ScorePlan, WindowScorePlan};
 use design_harness::{harness_id, validate_bundle, HarnessBundle};
 use design_sandbox::{SandboxBackend, SimSandbox};
 use design_sanitize::sanitize_bundle;
@@ -35,6 +35,7 @@ async fn sim_pipeline_pages_and_admin_score() {
         .insert_harness(&HarnessRow {
             id: hid.clone(),
             miner_hotkey: bundle.miner_hotkey.clone(),
+            miner_coldkey: None,
             agent_py: bundle.agent_py.clone(),
             pyproject_toml: bundle.pyproject_toml.clone(),
             extra_files: BTreeMap::new(),
@@ -56,6 +57,9 @@ async fn sim_pipeline_pages_and_admin_score() {
             sanitize_report: None,
             agentic_verdict: None,
             error_detail: None,
+            reject_reason: None,
+            attempt_epoch: None,
+            awaiting_admin_epoch: None,
             final_score: None,
             retry_count: 0,
             created_at_ms: 1,

@@ -108,6 +108,7 @@ fn row(
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
+        miner_coldkey: None,
         epoch: 7,
         netuid: 541,
         status: Stage::Queued,
@@ -138,7 +139,8 @@ fn mk_orchestrator(
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );

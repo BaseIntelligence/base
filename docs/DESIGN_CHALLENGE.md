@@ -38,9 +38,9 @@ Miner  --POST /v1/harness-->  design-challenge (:8093)
                            |
           +----------------+----------------+
           |                                 |
-   viewer (sanitized+CSP)     agentic review → admin winners (1|2)
-                                            |
-                              exact-E leaves → gateway /v1/weights/raw
+   viewer (index.png          agentic review → admin winners (1|2)
+   screenshots only;                       |
+   HTML never served)         exact-E leaves → gateway /v1/weights/raw
 ```
 
 | Process | Host | Holds `design_sk`? | Holds OpenRouter key? |
@@ -69,7 +69,7 @@ Sandbox containers attach only to the internal Docker network
 | Listen port | `8093` (local overlay `28093`) |
 | Gateway proxy prefix | `/challenge/design/*` |
 | Bundle `protocol_version` | `1` ([`BUNDLE_SPEC.md`](./BUNDLE_SPEC.md)) |
-| `emission_share_bps` | **0** until owner ceremony (prism holds `10000`) |
+| `emission_share_bps` | **5000** (equal split with prism; sum `10000`) |
 | Policy | `all_metagraph_hotkeys` |
 | Round length | `ROUND_SECS = 8_640` (10 rounds / UTC day) |
 | Agent run timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` (30 min; distinct from round length) |
@@ -86,9 +86,10 @@ Staging knobs (defaults above are the prod pins and never change implicitly):
 override round length / run timeout / prompts per round (staging uses ~15-minute
 rounds; `env-staging.yml`).
 
-Emission posture: `emission_share_bps = 0` for design until the owner ceremony
-documented in [`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md).
-Until then prism is the sole non-zero share (`10000` bps).
+Emission posture: `emission_share_bps = 5000` for design and `5000` for prism
+(50/50; sum `10000`). Rebalance via the owner ceremony in
+[`runbooks/design-enable-and-emission.md`](./runbooks/design-enable-and-emission.md)
+and [`config/challenges.toml`](../config/challenges.toml).
 
 ---
 
@@ -114,22 +115,27 @@ proxy prefixes (`DESIGN_`, `HTTP_`, `PYTHON…`, …) are rejected. Values are
 `harness_id = sha256(base-design-submission-v1 || hotkey || agent || pyproject || extras || env)`.
 `POST /v1/harness` is idempotent on that digest.
 
-### Submission gating (1-max)
+### Submission gating (1-max) + one attempt
 
-- The miner hotkey must be **in the metagraph** (cached snapshot; no signature
-  added). Unknown hotkey → `403 hotkey_not_in_metagraph`; snapshot not ready →
+- The miner hotkey must be **in the metagraph** (bulk cached snapshot, **15m**
+  TTL fail-closed; no per-UID RPC on the request path). Unknown hotkey →
+  `403 hotkey_not_in_metagraph`; snapshot missing/stale →
   `503 metagraph_unavailable`.
 - **One accepted submission per `(challenge, hotkey)`** (`submission_gating`
   table). While the row is `registered` / `blocked` / `rejected`, a *different*
   harness from the same hotkey → `409 submission_gated`. The identical re-POST
   stays idempotent (`200 already-queued`).
+- **One sandbox attempt** per accepted harness: submit schedules
+  `round_id(now) + 1` once. The round loop does **not** auto-roll the harness
+  into later rounds. Infra auto-retry on the *same* run id (up to 3) is not a
+  new attempt. Ops may still `POST /v1/admin/rounds/current/requeue`.
 - **Auto-retry**: infra-class failures (`install`, `ast_infra`, `llm_infra`)
-  requeue automatically up to **3** times; `cheat` / `rejected` are terminal.
-  Budget exhaustion → `failed` + gating `blocked`. Manual
-  `POST /v1/runs/{id}/retry` is unchanged.
+  requeue automatically up to **3** times; `cheat` / `rejected` / admin reject /
+  unscored timeout are terminal. Budget exhaustion → `failed` + gating
+  `blocked`. Manual `POST /v1/runs/{id}/retry` is unchanged.
 - A metagraph **watcher** reopens eligibility (`open`) when the hotkey leaves
-  the metagraph (uid deregistered or hotkey replaced), so the owner may
-  resubmit under a new uid.
+  the metagraph (uid deregistered or hotkey replaced), so the **same hotkey**
+  may resubmit under a **new uid**. The hotkey is never permanently burned.
 - Miner env (`env_vars`) is **locked at submission** into the stored bundle;
   changing it requires a new digest (and a free gating slot).
 
@@ -189,14 +195,22 @@ Floating tags (`:latest`) are **forbidden** for `design-runtime` / challenge ima
 
 ## 5. Sanitize rules
 
-Ingestion via `design-sanitize` (ammonia + CSS filter). **Raw HTML is never served.**
+Ingestion via `design-sanitize` (ammonia + CSS filter). **Produced HTML is
+never served** — sanitized pages are orchestrator input only (screenshot
+capture, anti-cheat review); the public viewer serves PNG screenshots
+only (§6).
 
 ### Stripped / rejected
 
 - Tags: `script`, `iframe`, `object`, `embed`, `applet`, `base`, `form`, `meta[http-equiv=refresh]`, `link[rel=import]`, scriptable SVG
 - All `on*` event attributes
 - URL schemes: reject `javascript:`, `vbscript:`, `data:text/html`; allow `http`, `https`, `mailto`, `data:image/*`
-- CSS: reject `@import`, `expression(`, `url(javascript:`, `behavior:`, `-moz-binding`
+- CSS: soft-strip `@import …;` rules (remainder of the `<style>` block is kept);
+  hard-reject (drop the whole block/attr) for `expression(`, `url(javascript:`,
+  IE-only `behavior:` (not `scroll-behavior:`), `-moz-binding`
+- External `<link rel=stylesheet>` is stripped (no CDN / Tailwind CDN); miners
+  must embed presentation CSS in `<style>` or inline `style=` for screenshots
+  and the sandboxed viewer to look styled
 
 ### Annotator signal
 
@@ -208,7 +222,30 @@ missing required pages → automatic `Score(0)` at scoring gates.
 
 ## 6. Viewer headers and CSP
 
-`GET /v1/view/{run_id}/{page}` serves **sanitized** HTML only, with:
+`GET /v1/view/{run_id}/{page}` serves **PNG screenshots only** (`image/png`,
+`private, no-store`, `nosniff`). **Produced HTML is never served**: requests
+for `.html` pages (or bare page names) return `410 Gone` with a short JSON
+error, and `GET /v1/runs/{id}/bundle.json` no longer embeds page HTML (same
+`410 Gone` contract — use `/v1/runs/{id}/pages` for page metadata). Miner
+output reaches browsers exclusively as the captured `index.png` screenshot.
+
+**PNG screenshots** (`*.png`) leave the gateway with a light header floor so
+marketing UIs can load them with a **direct absolute URL** (no Vercel proxy of
+image bytes):
+
+```
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Cross-Origin-Resource-Policy: cross-origin
+Cache-Control: private, no-store
+```
+
+Example: `https://chain.joinbase.ai/challenge/design/v1/view/{run_id}/index.png`.
+JSON/site API calls may still use the site's `/gbase-api` rewrite; `<img src>`
+for screenshots should not.
+
+**Non-PNG** `/challenge/{id}/v1/view/*` responses (e.g. HTML `410 Gone`, or a
+stale upstream that still served miner HTML) keep the full lockdown floor:
 
 ```
 Content-Security-Policy: sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; font-src data: https:; base-uri 'none'; form-action 'none'; frame-ancestors <allowlist>
@@ -220,33 +257,75 @@ Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), m
 Cache-Control: private, no-store
 ```
 
-The `sandbox` directive is emitted **without** `allow-scripts` and without
-`allow-same-origin`: the page runs in an **opaque origin with script execution
-disabled**, so miner HTML can never read the serving origin's cookies,
-storage, or DOM — even though joinbase.ai embeds it **same-origin** through
-the `/gbase-api` proxy. Miner pages are static HTML/CSS (the sanitizer strips
-`<script>` regardless), so no `allow-scripts` relaxation is needed or wanted.
-These responses **never carry `Set-Cookie`**; the endpoint stays public
-(`run_id` is the capability) and reads no auth cookie.
+The `sandbox` directive is emitted without `allow-scripts` and without
+`allow-same-origin`: even if a stale or misbehaving challenge upstream served
+miner HTML through the gateway, it would run in an **opaque origin with script
+execution disabled**, unable to read the serving origin's cookies, storage, or
+DOM. All view responses **never carry `Set-Cookie`** (the gateway strips it);
+the endpoint stays public (`run_id` is the capability) and reads no auth cookie.
 
 `frame-ancestors <allowlist>` defaults to
 `'self' https://joinbase.ai https://*.vercel.app http://localhost:*`
-(`DESIGN_FRAME_ANCESTORS` override): the public site, Vercel preview deploys,
-and local dev may embed the viewer; everyone else is refused. `'self'` covers
-same-origin proxy embedding at any host (including staging consoles).
+(`DESIGN_FRAME_ANCESTORS` / `BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override).
 
-**Defense in depth — gateway re-injection.** The gateway proxy re-applies the
-full lockdown header set (and strips any `Set-Cookie`) on every
-`/challenge/{id}/v1/view/*` response
-(`BASE_GATEWAY_VIEW_FRAME_ANCESTORS` override, same default), so even a stale
-or misbehaving challenge upstream cannot serve miner HTML through the gateway
-without the sandbox floor. `Cross-Origin-Resource-Policy: same-origin` means
-cross-origin embedders get nothing: integrations must iframe through a
-same-origin proxy (as joinbase.ai does), not the bare gateway origin.
+Screenshots-only serving makes miner HTML unreachable in the first place; the
+non-PNG header floor is the second line.
 
-CSP `sandbox` (without `allow-scripts`) neutralizes script even if an integrator
-omits the iframe `sandbox` attribute. Integrators should still use
-`<iframe sandbox="" src="...">` — no tokens — on a dedicated subdomain.
+### Full-page screenshot (`index.png`)
+
+After sanitize, the orchestrator renders the sanitized `index.html` **artifact**
+(store → temp file → `file://`) in headless Chromium inside the
+design-challenge container — never the public `/v1/view` URL (screenshots-only;
+the stored artifact is the capture source of truth).
+Chromium runs `--no-sandbox` because the renderer sandbox needs user
+namespaces / `CAP_SYS_ADMIN`, which Docker does not grant. Defense-in-depth for
+screenshot SSRF (sanitizer-missed script, or static `http(s)` / CSS `url(...)`
+to gateway / metadata / socket-proxy / postgres on the shared `base` network):
+
+1. **Sanitize** — ammonia strips scripts/handlers; `href`/`src` to control-plane
+   hostnames, link-local/metadata, and RFC1918 literals are rewritten to `#`.
+2. **Egress proxy** — Chromium is launched with
+   `--proxy-server=$DESIGN_SCREENSHOT_PROXY` (compose default
+   `http://design-egress-proxy:8094`) and `--proxy-bypass-list=<-loopback>` so
+   even loopback/metadata attempts traverse the same internal-target blocklist
+   as miner sandboxes (post-DNS IP deny). Empty `DESIGN_SCREENSHOT_PROXY`
+   disables the force (local stub tests only).
+3. **Capture CSP** — the throwaway `file://` document uses a nonce-locked
+   `script-src` (height probe only), `connect-src 'none'`, and
+   `navigate-to 'none'` (CLI Chromium has no Playwright route hooks).
+
+Produced HTML is still never served to browsers. Two passes (measure height via
+`--dump-dom`, then `--screenshot --window-size=1280×H`), hard process timeout,
+one retry; failure never fails the run. The PNG is stored as the `index.png`
+artifact (base64) and served at `GET /v1/view/{run_id}/index.png` (`image/png`,
+`private, no-store`, `nosniff`, `Cross-Origin-Resource-Policy: cross-origin`);
+run detail exposes `screenshot_url` when the artifact exists. Public sites
+should point `<img src>` at the absolute gateway host (e.g.
+`https://chain.joinbase.ai/challenge/design/...`) rather than proxying PNG
+bytes through a CDN edge.
+
+Backfill (idempotent; upserts on `(run_id, path)` so it can be re-run and can
+race a live capture safely):
+
+```bash
+# on the master host, from the repo checkout (env comes from the container):
+docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-prod.yml exec design-challenge \
+  design-challenge backfill-screenshots --limit 500
+```
+
+When historical rows were sanitized by a buggy filter that wiped `<style>`
+(raw still has CSS; sanitized does not), `backfill-screenshots` is not enough —
+it only re-renders the already-broken sanitized HTML and skips runs that already
+have `index.png`. Use re-sanitize from `raw_html` (throttled Chromium):
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose/role-master.yml \
+  -f deploy/compose/env-prod.yml exec design-challenge \
+  design-challenge backfill-resanitize --limit 500 --sleep-ms 2000
+# or pin specific runs:
+#   design-challenge backfill-resanitize --run-id <id> --run-id <id2> --sleep-ms 2000
+```
 
 ---
 
@@ -261,9 +340,19 @@ omits the iframe `sandbox` attribute. Integrators should still use
   for the sandbox run phase — not the round length).
 - **Prompts**: repo-pinned bank (`bank_v1.json`, no human approval API);
   deterministic weighted draw
-  `SHA256(domain || round_id || bank_digest)` → 3 prompts per round;
-  identical for every harness in that round.
-- **Quota**: **10** runs/day/hotkey (`DAILY_RUN_QUOTA = 10`; ~2–3 prompts/round × harness).
+  `SHA256(domain || round_id || bank_digest)` → **1 prompt** per round
+  (`PROMPTS_PER_ROUND = 1`); identical for every harness in that round.
+- **Quota (two buckets, per hotkey per UTC day)** — organizer-scheduled work
+  does not draw on the miner's anti-spam allowance:
+
+  | Bucket | Charged by | Cap | Override |
+  |--------|-----------|-----|----------|
+  | Manual | `POST /v1/harness` (miner-initiated) | `MANUAL_DAILY_RUN_QUOTA = 10` | `DESIGN_MANUAL_DAILY_RUN_QUOTA` |
+  | Scheduled | Submit next-round schedule + `admin/rounds/current/requeue` | `rounds/day × prompts/round × SCHEDULED_DAILY_RUN_HEADROOM` (= **20** at 10 rounds × 1 prompt) | `DESIGN_SCHEDULED_DAILY_RUN_CAP` (clamped ≥ the day's own schedule) |
+
+  Enforcement is **per bucket**: exhausting manual submissions never stops the
+  round scheduler, and the scheduled cap is a runaway-scheduler guard, not a
+  participation limit. `GET /v1/quota/{hotkey}` reports both.
 - **Auto-retry**: infra-class failures (`install` / `ast_infra` / `llm_infra`)
   requeue up to 3 times (`DESIGN_AUTO_RETRY_MAX`), then terminal
   `NoScore(ChallengeInternal)` + gating `blocked`.
@@ -277,10 +366,21 @@ omits the iframe `sandbox` attribute. Integrators should still use
 Stages after sanitize: **`AgenticReview` → `AwaitingAdmin`** (clean only).
 Cheat / suspicious → immediate `Score(0)` (not admin-eligible).
 
-Human role is **only** selecting **1 or 2** winner harnesses per round
-via `POST /v1/admin/rounds/{id}/winners` (no prompt approval, no page-pair
-Elo on the leaf path). Annotate endpoints are deprecated / unused for scoring.
-Prompt bank `bank_v1.json` is fully automatic — no human prompt validation.
+Human role is selecting **1 or 2** winner harnesses per round via
+`POST /v1/admin/rounds/{id}/winners`, or rejecting candidates via
+`POST /v1/admin/rounds/{id}/reject` with a miner-visible `reason`
+(no prompt approval, no page-pair Elo on the leaf path). Annotate endpoints
+are deprecated / unused for scoring. Prompt bank `bank_v1.json` is fully
+automatic — no human prompt validation.
+
+### Unscored timeout (`UNSCORED_EPOCH_LIMIT = 5`)
+
+Clean runs stamp `awaiting_admin_epoch` (chain epoch) when they enter
+`awaiting_admin`. If still unscored when
+`current_epoch - awaiting_admin_epoch >= 5`, the sweeper auto-rejects the run
+(`rejected`, `Score(0)`, `reject_reason` explaining the timeout) and sets
+gating `rejected`. The miner must register a **new UID** (hotkey may leave and
+re-enter the metagraph) before another submission is accepted.
 
 Shared verifier: `challenge-agentic` (tools + `challenge-ast` + pages /
 `sanitize_report`; OpenRouter when keyed, `SimAgent` in CI). Fail-closed:
@@ -293,9 +393,14 @@ as the sandbox: `ReadonlyRootfs`, `CapDrop`, `no-new-privileges:true`, uid
 65532) built from `deploy/Dockerfile` target `design-review`
 (`challenge-agentic` + `challenge-ast`). The container mounts the submitted
 agent **and** the most-similar harness (`_similar/`) read-only; the LLM may
-use the sandboxed `run_command` tool (scrubbed env, cwd-pinned, 15s cap) for
-diffs / grep / AST probes. `DESIGN_REVIEW_BACKEND=inline` keeps the legacy
-in-process path for local/CI only.
+use the sandboxed `run_command` tool (scrubbed child env, cwd-pinned, 15s
+cap, procfs + review-secrets paths denied) for diffs / grep / AST probes.
+`AGENTIC_ENABLE_RUN_COMMAND=1` stays on in prod (essential for review
+quality). The OpenRouter key is file-mounted (`OPENROUTER_API_KEY_FILE` under
+`/run/review-secrets`) and is **never** placed in the container's process
+environ — Linux `/proc/<pid>/environ` is a boot-time snapshot and cannot be
+scrubbed. `DESIGN_REVIEW_BACKEND=inline` keeps the legacy in-process path for
+local/CI only.
 
 ### Pre-LLM copy gate (`created_at` ordered)
 
@@ -306,6 +411,15 @@ harness corpus (byte hash + AST fingerprint). A byte/AST copy
 LLM review is **skipped**. Unknown timestamps (baseline, legacy rows) fall
 through to the LLM. Starting from the published miner **baseline** is never a
 cheat signal (baseline-zeroing fix); copying another *miner's* harness is.
+
+**Corpus rule (both the gate and the LLM review):** the comparison corpus is
+**other hotkeys' and same-coldkey prior art only** — entries owned by the
+candidate's own `miner_hotkey` **or** `miner_coldkey` are excluded, and so is
+anything created at or after the candidate. After 1-max gating a miner iterates
+via a new hotkey under the same coldkey; those revisions must not be treated as
+cross-miner copies. Selection lives in one place,
+[`crates/design-challenge/src/corpus.rs`](../crates/design-challenge/src/corpus.rs),
+so the gate and the review can never disagree.
 
 ### Allowed inspiration
 
@@ -365,7 +479,9 @@ Expected set `E` = all metagraph hotkeys for the pinned epoch (policy
 
 - Exactly one signed leaf per `h ∈ E`
 - **Refuses subset and superset** — Silence is a bug
-- Emit at round close and at each epoch boundary via `POST /v1/weights/raw`
+- Emit at round close (scored) and near each epoch boundary via `POST /v1/weights/raw`
+  (`Orchestrator::run_emitter` fills `NotAttempted` when no admin award fired, so
+  D24 seals keep advancing under 50/50 emission shares)
 
 Absence codes used on this path include `NotAttempted`, `Timeout`,
 `InvalidResponse`, `MinerError`, `RateLimited`, `ChallengeInternal` (bundle enum).
@@ -430,13 +546,16 @@ Harness stdout/stderr is appended as `stage = "log"` events with
 | `GET /v1/runs/{id}/events` | Append-only stage events |
 | `GET /v1/runs/{id}/logs` | Harness logs (`?since=` cursor, optional `?tail=`) |
 
-### Viewer
+### Viewer (screenshots-only)
+
+Produced HTML is never served; the viewer exposes captured PNG screenshots
+only (see §6).
 
 | Route | Purpose |
 |-------|---------|
-| `GET /v1/runs/{id}/pages` | Page list |
-| `GET /v1/view/{id}/{page}` | Sanitized HTML + hardened headers |
-| `GET /v1/runs/{id}/bundle.json` | Sanitized bundle JSON |
+| `GET /v1/runs/{id}/pages` | Page metadata list (path, bytes, sha256) |
+| `GET /v1/view/{id}/{page}` | PNG screenshots only (`index.png`); `.html`/bare page → `410 Gone` |
+| `GET /v1/runs/{id}/bundle.json` | `410 Gone` — no longer embeds produced HTML |
 
 ### Admin winners (operator bearer; master-local — not exposed via gateway)
 
@@ -448,6 +567,8 @@ returns 403). Operators hit `design-challenge:8093` on the master host
 |-------|---------|
 | `GET /v1/admin/rounds/{id}/candidates` | Clean `awaiting_admin` runs (pages + verdict) |
 | `POST /v1/admin/rounds/{id}/winners` | Body `{ "harness_ids": ["…"] }` length 1 or 2; awards + emits leaves |
+| `POST /v1/admin/rounds/{id}/reject` | Body `{ "harness_ids": ["…"], "reason": "…" }`; terminal `rejected` + miner-visible `reject_reason` on `GET /v1/runs/{id}`; gating closed until UID leave |
+| `POST /v1/admin/rounds/current/requeue` | Schedule all active harnesses into the **current** open round (ops escape hatch; idempotent per harness; quota-blocked harnesses reported under `skipped`) |
 | `GET /v1/rounds/{id}/leaderboard` | Round ratings |
 
 ### Annotation (deprecated; unused on leaf path)

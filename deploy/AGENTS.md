@@ -19,8 +19,8 @@ Terraform: [`terraform/`](terraform/). Firewall: SSH from operator IP; CI uses e
 
 | File | Purpose |
 |------|---------|
-| `compose/role-master.yml` | gateway profile, VPC publish |
-| `compose/role-validator.yml` | no gateway; external gateway endpoint |
+| `compose/role-master.yml` | gateway profile, VPC publish; **no validator** (avoids dual CRV4 submit) |
+| `compose/role-validator.yml` | no gateway; external gateway endpoint; sole on-chain submitter |
 | `compose/env-staging.yml` | testnet 541, faster coordination |
 | `compose/env-prod.yml` | mainnet, conservative intervals |
 | `compose/env-local.yml` | **local only** — ports/smoke knobs/tunnel env; always on top of `env-staging` |
@@ -96,6 +96,14 @@ cargo run -q --release -p weights-smoke -- \
 
 A seal older than ~256 blocks can never be verified by the validator (public RPC prunes state) — if `GET /v1/weights/latest` shows `metagraph_block` lagging tip by thousands of blocks, check `systemctl status base-burn-seal.timer` and `/var/log/base-burn-seal.log` on the master.
 
+**Real-epoch sealer (post burn-seal retirement):** `base-real-seal.timer` (every 10 min) drives [`scripts/prod-real-seal.sh`](scripts/prod-real-seal.sh), which seals the **current chain epoch** with `block_b = LastEpochBlock` (the epoch's start block — exactly the metagraph both challenges pin their leaf sets against, so D24 participant matching holds by construction). The attempt 409s until both challenges have emitted for that epoch; that is the expected steady state. The gateway prefers chain-scale bundles over the reserved smoke range (`>= 8_000_000`), so once a real seal lands it outranks every interim burn bundle — retire the burn timer (`systemctl disable --now base-burn-seal.timer`) after the first real seal verifies end-to-end. Install:
+
+```bash
+install -m 0755 deploy/scripts/prod-real-seal.sh /opt/base/deploy/scripts/prod-real-seal.sh
+install -m 0644 deploy/systemd/base-real-seal.{service,timer} /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now base-real-seal.timer
+```
+
 ## Chain endpoint failover (`BASE_CHAIN_ENDPOINTS`)
 
 Public Finney RPCs rate-limit per source IP (entrypoint-finney: HTTP 429 `http_60s` policy, or HTTP 200 with `"Too many requests from this source."`). Every Rust consumer (gateway, validator, both challenges, `weights-smoke`) goes through `chain-live`, which accepts an **ordered comma-separated endpoint list** and cools a faulted endpoint (429 / `-32005` / transport error) for 60s before retrying it; request-level JSON-RPC errors never fail over.
@@ -106,13 +114,15 @@ Public Finney RPCs rate-limit per source IP (entrypoint-finney: HTTP 429 `http_6
 | `BASE_CHAIN_ENDPOINT` | same | Single endpoint; also accepts a comma list (legacy path). |
 | Cooldown | — | Fixed 60s in `chain-live` (matches the Finney `retry_after_seconds: 60`). |
 
-Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary, entrypoint-finney fallback — entrypoint 429'd the prod master IP on 2026-08-06. Flip the order back once entrypoint recovers (probe: `curl -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader","params":[]}' https://entrypoint-finney.opentensor.ai:443` from the host). Failover events surface as `chain endpoint fault; failing over` WARN lines in service logs. Staging (`env-staging.yml`): each service keeps its current primary and gains the other testnet host as fallback (validator: test.finney→test.chain; gateway/challenges: reverse).
+Prod (`env-prod.yml` + `base-burn-seal.service`): onfinality `public-ws` primary, entrypoint-finney fallback — entrypoint hard-429'd the prod master IP for ~3h on 2026-08-06 while onfinality only burst-429'd boot/submit spikes (free tier), which failover absorbed with zero seal/submit impact. Keep onfinality primary while entrypoint's per-IP standing is suspect — a 2026-08-07 flip-back attempt reverted within ~15 min: solo probes from the host were clean (15/15 HTTP 200 over ~2 min incl. a rapid burst) but full service load re-tripped entrypoint's http_60s budget (boot/submit storm ~385 faults over 4 min, then sustained ~1-2/min cooled-retry 429s), all absorbed by failover with zero tick/seal/submit impact. If onfinality's burst limits start failing whole ticks, flip the order (both directions are exercised in prod logs). Probe from the host: `curl -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getHeader","params":[]}' https://entrypoint-finney.opentensor.ai:443`. Failover events surface as `chain endpoint fault; failing over` WARN lines in service logs. Staging (`env-staging.yml`): each service keeps its current primary and gains the other testnet host as fallback (validator: test.finney→test.chain; gateway/challenges: reverse).
 
 **On-chain WeightsSetRateLimit vs smoke:** validators fail fast with `RateLimited` *before* pool-submitting when the hotkey is inside its 100-block window (no doomed extrinsic, no ~45s confirm block of the async runtime). Previously a restart inside the window re-stormed every tick and wedged `/healthz` past the healthcheck's retry budget — the staging validator smoke failure mode. A validator that logs `weights rate limited; retry after N blocks` immediately after a Match is inside the window, not broken; it submits when the window opens.
 
 Validator logs should show `Match epoch=` then `Match → submit_intent` / `submit_timelocked ok`. Keep legacy Python weight submit **stopped** to avoid double-commit.
 
-**Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Sole on-chain submitter for hotkey `5Gzi…` is the Rust validator on `192.81.218.11` — do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.
+**Sole on-chain submitter (mainnet hotkey `5Gzi…`):** Rust `base-validator-1` on **`base-prod-validator` (`192.81.218.11`) only**. `role-master.yml` profiles the validator under `never`; `remote-deploy.sh --role master` force-removes any leftover container. Do **not** run a second validator (or Python weight submitter) with the same wallet — dual submitters fight `WeightsSetRateLimit` and can leave CRV4 commits stuck while incentive still shows a prior monopoly UID.
+
+**Legacy Python agents (mainnet):** `validator-5gzi` (`95.133.252.120`) may point `master_url` / `weights_url` / `registry_url` at `https://chain.joinbase.ai` with **`submit_on_chain_enabled: false`**. Coordination shims live in `gateway-compat` (`/v1/validators/*`, `/v1/registry`, empty assignments). `GET /v1/weights/latest` refreshes `computed_at` / `expires_at` at serve time so Python pydantic clients accept sealed vectors older than 720s. Do **not** start `base-weight-submitter-5gzi` on `validator-root` unless CR ownership is moved off Rust.
 
 **Challenge verification:** on **master** only (validator has **no challenge exec**). Simulate submissions end-to-end — submit **baseline** + submit **cheat**, poll `/v1/runs/{id}` + `/events` + `/logs`, probe edges (bad harness, sanitize, quota, routes), then **admin winners** (`GET/POST /v1/admin/rounds/{id}/…` with bearer from `deploy/secrets/design/annotator_tokens`) and confirm leaf → seal → `GET /v1/weights/latest` **`sealed: true`**. **Never host Sim in staging/prod** (`BASE_ALLOW_HOST_SIM` / host `SimSandbox` are CI/local only). Healthz alone is insufficient.
 

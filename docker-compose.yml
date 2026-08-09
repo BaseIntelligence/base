@@ -205,7 +205,7 @@ services:
       LIUM_SSH_PUBLIC_KEY_FILE: /run/base/lium/ssh_ed25519.pub
       OPENROUTER_API_KEY_FILE: /run/base/openrouter/api_key
       BASE_CHALLENGE_GATEWAY_ENDPOINT: ${BASE_CHALLENGE_GATEWAY_ENDPOINT:-http://gateway:8080}
-      PRISM_MAX_CONCURRENT_EVALS: "${PRISM_MAX_CONCURRENT_EVALS:-1}"
+      PRISM_MAX_CONCURRENT_EVALS: "${PRISM_MAX_CONCURRENT_EVALS:-8}"
       # Pods need a while for sshd after RUNNING on the control plane.
       PRISM_SSH_ATTEMPTS: "${PRISM_SSH_ATTEMPTS:-30}"
       PRISM_SSH_RETRY_SECS: "${PRISM_SSH_RETRY_SECS:-10}"
@@ -314,6 +314,10 @@ services:
       # Host path must equal bind source below (daemon resolves binds on host).
       DESIGN_STAGING_ROOT: ${BASE_STATE_DIR:-/var/lib/base}/design/staging
       DESIGN_LLM_PROXY: http://design-egress-proxy:8094
+      # Screenshot Chromium (--no-sandbox, file://) must not reach control-plane
+      # targets on the shared `base` network: force all http(s) through the
+      # egress proxy blocklist (incl. loopback/metadata via <-loopback>).
+      DESIGN_SCREENSHOT_PROXY: http://design-egress-proxy:8094
       DESIGN_ANNOTATOR_TOKENS_FILE: /run/base/design/annotator_tokens
       DESIGN_AGENTIC_OPENROUTER_KEY_FILE: /run/base/openrouter/api_key
       DESIGN_MAX_CONCURRENT: "${DESIGN_MAX_CONCURRENT:-2}"

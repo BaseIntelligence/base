@@ -58,7 +58,7 @@ for banned in design-challenge design-egress-proxy prism-challenge socket-proxy;
 done
 echo "OK: validator role does not render gateway or challenge services"
 
-# --- master role: gateway + challenge services present ---
+# --- master role: gateway + challenge services present; no on-chain validator ---
 services=$(render \
   -f docker-compose.yml \
   -f deploy/compose/role-master.yml \
@@ -72,7 +72,10 @@ for required in design-challenge design-egress-proxy prism-challenge socket-prox
     fail "master role does not render $required (must)"
   fi
 done
-echo "OK: master role renders gateway and challenge services"
+if echo "$services" | grep -qx "validator"; then
+  fail "master role renders validator (dual submitter; must not — use validator host)"
+fi
+echo "OK: master role renders gateway and challenge services (no validator)"
 
 # --- evil-gateway not in default or master ---
 services=$(render \
@@ -122,8 +125,13 @@ for env_file in deploy/compose/env-staging.yml deploy/compose/env-prod.yml; do
   if echo "$rendered" | grep -qE 'DESIGN_FORCE_SIM:[[:space:]]*["'\'']?(1|true|TRUE|yes)["'\'']?'; then
     fail "$env_file enables DESIGN_FORCE_SIM (Docker-only on droplets)"
   fi
+  # Screenshot Chromium isolation: must force egress proxy (not empty / direct).
+  if ! echo "$rendered" | grep -qE 'DESIGN_SCREENSHOT_PROXY:[[:space:]]*http://design-egress-proxy:8094'; then
+    fail "$env_file master render missing DESIGN_SCREENSHOT_PROXY=http://design-egress-proxy:8094"
+  fi
 done
 echo "OK: staging/prod do not enable host SimSandbox"
+echo "OK: staging/prod force screenshot Chromium through design-egress-proxy"
 
 # --- prism-challenge + design-challenge present in default ---
 default_services=$(render \
@@ -201,6 +209,8 @@ local_services=$(render \
   config --services)
 echo "$local_services" | grep -qx "gateway" \
   || fail "env-local master stack does not render gateway"
+echo "$local_services" | grep -qx "validator" \
+  || fail "env-local master stack does not render co-located validator"
 echo "$local_services" | grep -qx "prism-challenge" \
   || fail "env-local master stack does not render prism-challenge"
 echo "$local_services" | grep -qx "design-challenge" \

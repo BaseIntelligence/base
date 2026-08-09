@@ -9,7 +9,7 @@
 | Symptom | Likely cause | What to check |
 |---------|--------------|---------------|
 | `400` on `POST /v1/harness` | Invalid bundle | `agent.py` defines `run`, `pyproject.toml` non-empty, size limits |
-| Quota exhausted | Daily cap 10 | `GET /v1/quota/{hotkey}`; wait until next UTC day |
+| `409 schedule` "daily manual run quota exceeded" | Manual anti-spam cap (10/day) — being scheduled into rounds does **not** spend it | `GET /v1/quota/{hotkey}` → `manual.remaining`; wait until next UTC day |
 | `auto_retry` events, class `install` | Dep won't install (bad name/version, heavy source build) | `GET /v1/runs/{id}/logs` phase `install`; fix `pyproject.toml` deps |
 | Run `failed` / Score 0 | Missing pages, timeout, crash | `GET /v1/runs/{id}/events`; ensure three required HTML pages |
 | External call refused (`403`) | Target is internal-blocklisted (metadata IP, loopback, RFC1918/VPC, control plane) | Call public endpoints only; egress is otherwise open |
@@ -25,7 +25,9 @@
 | Source-tree rejected on raw ZIP | Need `zip_base64` JSON intake | Multi-file trees (helpers/`kernels/`/`tokenizer/`) must use JSON `zip_base64`, not raw `application/zip` |
 | Tokenizer / hub errors on pod | No network; wrong declaration | Use `ctx["tokenizer"]`; declare via `tokenizer/` or `build_tokenizer` in `architecture.py` (not `training.py`). GPT-2 is fallback only |
 | `CAP_EXCEEDED` / Score 0 | Model > 350M params | Terminal — resize `build_model`; not auto-retried |
-| Score 0 after review | `Copied` / `Suspicious` | Similarity gate; rewrite; do not paste baseline wholesale |
+| Score 0 after review | `Copied` / high-confidence `Suspicious` (≥0.9, non-trope) | Similarity gate; rewrite unique structure; tropes alone are not plagiarism |
+| `similar: true` on precheck | Would hit intake copy gate | Rewrite `architecture.py`; baseline is fine to start from |
+| `429 precheck_quota_exceeded` | 3 prechecks/coldkey/UTC day used | Wait until next UTC day; rotating hotkeys does not reset |
 | Stuck `Provisioning` | Lium market thinness | Ops-side; watch `GET /v1/jobs` / events |
 | Idempotent replay | Same `submission_id` | Expected — returns prior row |
 

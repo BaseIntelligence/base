@@ -13,6 +13,7 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] Challenge signing secrets are **files** mounted into the challenge service, not env values (D11).
 - [ ] Owner and challenge mini-secrets never committed; only `*.pubkey` / TOML bodies + detached `.sig` in git.
 - [ ] Cloudflare / DO / Phala tokens live only in operator secret stores, not in docs or CI logs.
+- [ ] Design agentic review: OpenRouter key is mounted on `design-challenge` / `design-egress-proxy` as a **file**, never into miner sandboxes. The ephemeral `design-review` container must receive the key via a **file mount** (`OPENROUTER_API_KEY_FILE`), never as `OPENROUTER_API_KEY` in container env (`/proc/<pid>/environ` is boot-fixed). `run_command` must keep procfs and `/run/review-secrets` denied. Do not turn off `AGENTIC_ENABLE_RUN_COMMAND` in prod without a replacement inspection path.
 
 ---
 
@@ -21,6 +22,8 @@ Use this before every promote and after every incident. Architecture: [`ARCHITEC
 - [ ] Every image reference is digest-pinned (`repo@sha256:<64 hex>`). No `:latest`.
 - [ ] Exactly one mount of `/var/run/docker.sock`: on `socket-proxy` (read-only).
 - [ ] socket-proxy allowlist matches updater needs (`CONTAINERS`, `IMAGES`, `POST` as configured).
+- [ ] `design-challenge` sets `DESIGN_SCREENSHOT_PROXY=http://design-egress-proxy:8094` (screenshot Chromium must not talk direct to the `base` network).
+- [ ] Staging/prod never set `BASE_ALLOW_HOST_SIM` / `DESIGN_FORCE_SIM=true` (asserted by `assert-compose-matrix.sh`).
 - [ ] Gateway service uses compose profile **`master`** only on the owner host.
 - [ ] Profile `evil-gateway` is **absent** from prod hosts. Spot-check:
 
@@ -53,6 +56,8 @@ cargo run -q -p trustroot-bin -- verify \
 ## 4. Gateway and TLS
 
 - [ ] Gateway hotkey equals on-chain `SubnetOwnerHotkey` (else process exits 2).
+- [ ] `BASE_GATEWAY_ADMIN_TOKEN_FILE` (or `BASE_GATEWAY_ADMIN_TOKEN`) is set whenever `BASE_GATEWAY_REQUIRE_OWNER=1` — `/v1/admin/*` must not be open on a public listener.
+- [ ] Spot-check from the public Internet: `GET /v1/admin/backends` → **401/403** (not 200). Localhost/VPC seal scripts still work with the bearer.
 - [ ] TLS terminates **only** in the gateway process (D20). No second reverse proxy claiming TLS.
 - [ ] `BASE_DOMAIN` is a real delegated zone when ACME is enabled (D25).
 - [ ] Manual failover procedure is known: [`runbooks/gateway-failover.md`](./runbooks/gateway-failover.md). HA is **not** claimed (R9).

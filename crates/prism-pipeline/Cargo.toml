@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 base64 = "0.22"
 bundle = { path = "../bundle" }
+challenge-agentic = { path = "../challenge-agentic" }
 hex = "0.4"
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-lium = { path = "../prism-lium" }

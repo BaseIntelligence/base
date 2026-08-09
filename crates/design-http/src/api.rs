@@ -15,17 +15,19 @@ use design_harness::{
     encode_env_into_extras, harness_from_zip, harness_id, validate_bundle, HarnessBundle,
 };
 use design_prompts::{load_prompt_set, prompt_set_digest, select_prompts_for_round};
-use design_sanitize::viewer_headers;
 use design_store::{
-    DesignStore, HarnessRow, RoundAward, RunStage, RunState, StageEvent, StoreError, StorePatch,
+    DesignStore, HarnessRow, RoundAward, RunOrigin, RunStage, RunState, StageEvent, StoreError,
+    StorePatch,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use submission_gating::{GatingState, GatingStore, MetagraphCache};
+use submission_gating::{GatingState, GatingStore, MetagraphCache, METAGRAPH_CACHE_TTL_SECS};
 
 use design_challenge_task::{
-    round_id_at, round_secs, CHALLENGE_ID, DAILY_RUN_QUOTA, MIN_ANNOTATIONS_PER_PAIR, RUN_ID_DOMAIN,
+    manual_daily_run_quota, reject_awaiting_admin_run, round_id_at, round_secs,
+    sanitize_reject_reason, scheduled_daily_run_cap, CHALLENGE_ID, MIN_ANNOTATIONS_PER_PAIR,
+    RUN_ID_DOMAIN, UNSCORED_EPOCH_LIMIT,
 };
 
 /// Hook invoked after admin persists winners (score + leaf emit).
@@ -39,8 +41,8 @@ pub trait AdminAwardHook: Send + Sync + std::fmt::Debug {
 pub struct AppState {
     /// Store.
     pub store: Arc<dyn DesignStore>,
-    /// Chain epoch cache.
-    pub epoch: std::sync::atomic::AtomicU64,
+    /// Chain epoch cache (shared with the orchestrator sweeper).
+    pub epoch: Arc<std::sync::atomic::AtomicU64>,
     /// Netuid.
     pub netuid: u16,
     /// Backend label.
@@ -99,6 +101,11 @@ pub fn design_router(state: Arc<AppState>) -> Router {
         .route("/v1/annotate", post(post_annotate))
         .route("/v1/admin/rounds/{id}/candidates", get(admin_candidates))
         .route("/v1/admin/rounds/{id}/winners", post(admin_winners))
+        .route("/v1/admin/rounds/{id}/reject", post(admin_reject))
+        .route(
+            "/v1/admin/rounds/current/requeue",
+            post(admin_requeue_current),
+        )
         .route("/v1/rounds/{id}/leaderboard", get(leaderboard))
         .with_state(state)
 }
@@ -210,6 +217,9 @@ async fn get_status(State(st): State<Arc<AppState>>) -> Response {
         "round_id": round_id_at(now_secs()),
         "queued_runs": queued,
         "prompt_set_digest": prompt_set_digest(),
+        "prompts_per_round": design_challenge_task::prompts_per_round(),
+        "unscored_epoch_limit": UNSCORED_EPOCH_LIMIT,
+        "metagraph_cache_ttl_secs": METAGRAPH_CACHE_TTL_SECS,
     }))
     .into_response()
 }
@@ -313,7 +323,7 @@ async fn post_harness(
         // Metagraph membership (fail closed when a cache is configured but has
         // no snapshot yet).
         if let Some(cache) = &st.metagraph {
-            match cache.snapshot() {
+            match cache.snapshot_fresh(METAGRAPH_CACHE_TTL_SECS) {
                 Some(view) => match view.uid_of_hex(&hotkey) {
                     Some(u) => uid = Some(u),
                     None => {
@@ -328,7 +338,7 @@ async fn post_harness(
                     return json_err(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "metagraph_unavailable",
-                        "metagraph snapshot not ready; retry shortly",
+                        "metagraph snapshot not ready or older than 15m; retry shortly",
                     );
                 }
             }
@@ -356,9 +366,15 @@ async fn post_harness(
 
     let mut extras = req.extra_files;
     encode_env_into_extras(&mut extras, &req.env_vars);
+    let miner_coldkey = st
+        .metagraph
+        .as_ref()
+        .and_then(|c| c.snapshot())
+        .and_then(|v| v.coldkey_hex_of(&hotkey));
     let row = HarnessRow {
         id: id.clone(),
         miner_hotkey: hotkey.clone(),
+        miner_coldkey,
         agent_py: req.agent_py,
         pyproject_toml: req.pyproject_toml,
         extra_files: extras,
@@ -376,7 +392,27 @@ async fn post_harness(
         Ok(None) => row,
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     };
-    let run_ids = match schedule_runs(&st, &harness, fresh).await {
+    if fresh {
+        let _ = st
+            .store
+            .deactivate_other_harnesses(&hotkey, &harness.id)
+            .await;
+    }
+    // Always schedule into the next round when that round has no runs yet —
+    // including identical re-POST (idempotent digest) so rolling rounds keep
+    // receiving work without requiring a new harness digest.
+    let rid = round_id_at(now_secs()).saturating_add(1);
+    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let run_ids = match schedule_harness_for_round(
+        st.store.as_ref(),
+        &harness,
+        rid,
+        st.netuid,
+        epoch,
+        RunOrigin::Manual,
+    )
+    .await
+    {
         Ok(ids) => ids,
         Err(e) => return json_err(StatusCode::CONFLICT, "schedule", &e),
     };
@@ -389,7 +425,8 @@ async fn post_harness(
             }
         }
     }
-    let rid = round_id_at(now_secs()).saturating_add(1);
+    // Digest already known → idempotent OK; runs may still be created for a
+    // future round that had none yet (rolling auto-schedule path).
     let status = if fresh { "accepted" } else { "already-queued" };
     let code = if fresh {
         StatusCode::ACCEPTED
@@ -415,56 +452,62 @@ async fn post_harness(
         .into_response()
 }
 
-/// Schedule this harness for the **next** round. Accepted harnesses wait for
-/// the upcoming round — they never join the round already in flight.
-/// `create=false` (idempotent re-POST) only lists existing run ids.
-async fn schedule_runs(
-    st: &AppState,
+/// Schedule an active harness into `rid` (create missing queued runs).
+///
+/// Idempotent: if runs for `(harness, round)` already exist, returns those ids.
+/// Honours the elimination cooldown and the daily ceiling **for `origin`**.
+/// Used by submit ([`RunOrigin::Manual`], next round) and by the orchestrator
+/// ([`RunOrigin::Scheduled`], every open round).
+///
+/// The two origins never share a budget: the organizer dispatches
+/// `rounds/day × prompts/round` runs to every registered harness, so charging
+/// that volume to the miner's anti-spam quota would lock an honest harness out
+/// of most of its own day.
+pub async fn schedule_harness_for_round(
+    store: &dyn DesignStore,
     harness: &HarnessRow,
-    create: bool,
+    rid: u64,
+    netuid: u16,
+    epoch: u64,
+    origin: RunOrigin,
 ) -> Result<Vec<String>, String> {
-    let secs = now_secs();
-    let rid = round_id_at(secs).saturating_add(1);
+    if !harness.active {
+        return Ok(vec![]);
+    }
     if harness.eliminated_until_round > rid {
         return Err(format!(
             "eliminated until round {}",
             harness.eliminated_until_round
         ));
     }
-    let existing = st
-        .store
-        .runs_for_round(rid)
-        .await
-        .map_err(|e| e.to_string())?;
+    let existing = store.runs_for_round(rid).await.map_err(|e| e.to_string())?;
     let run_ids: Vec<String> = existing
         .iter()
         .filter(|r| r.harness_id == harness.id)
         .map(|r| r.id.clone())
         .collect();
-    if !run_ids.is_empty() || !create {
+    if !run_ids.is_empty() {
         return Ok(run_ids);
     }
+    let secs = now_secs();
     let day = utc_day(secs);
-    let used = st
-        .store
+    let used = store
         .quota_get(&harness.miner_hotkey, &day)
         .await
-        .map_err(|e| e.to_string())?;
-    // Ensure round row exists.
-    if st
-        .store
+        .map_err(|e| e.to_string())?
+        .used(origin);
+    if store
         .get_round(rid)
         .await
         .map_err(|e| e.to_string())?
         .is_none()
     {
         let opens = rid * round_secs();
-        let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
-        st.store
+        store
             .insert_round(&design_store::RoundRow {
                 round_id: rid,
                 epoch,
-                netuid: st.netuid,
+                netuid,
                 prompt_set_digest: prompt_set_digest(),
                 status: "open".into(),
                 opens_at_secs: opens,
@@ -475,15 +518,20 @@ async fn schedule_runs(
     }
     let prompts = select_prompts_for_round(rid).map_err(|e| e.to_string())?;
     let mut run_ids: Vec<String> = Vec::new();
-    if used >= DAILY_RUN_QUOTA {
-        return Err("daily quota exceeded".into());
+    let cap = origin_daily_cap(origin);
+    // All-or-nothing: a round that can only afford part of its prompt set would
+    // leave the harness permanently short for that round (re-scheduling is a
+    // no-op once any run exists), so refuse instead of degrading it.
+    let needed = u32::try_from(prompts.len()).unwrap_or(u32::MAX);
+    if used.saturating_add(needed) > cap {
+        return Err(format!(
+            "daily {} run quota exceeded ({used}+{needed}/{cap})",
+            origin.as_str()
+        ));
     }
-    let remaining = DAILY_RUN_QUOTA.saturating_sub(used);
-    let n = (prompts.len() as u32).min(remaining);
-    for p in prompts.into_iter().take(n as usize) {
+    for p in prompts {
         let run_id = make_run_id(rid, &harness.id, &p.id);
-        if st
-            .store
+        if store
             .get_run(&run_id)
             .await
             .map_err(|e| e.to_string())?
@@ -502,14 +550,16 @@ async fn schedule_runs(
             sanitize_report: None,
             agentic_verdict: None,
             error_detail: None,
+            reject_reason: None,
+            attempt_epoch: Some(epoch),
+            awaiting_admin_epoch: None,
             final_score: None,
             retry_count: 0,
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
         };
-        st.store.insert_run(&row).await.map_err(|e| e.to_string())?;
-        let _ = st
-            .store
+        store.insert_run(&row).await.map_err(|e| e.to_string())?;
+        let _ = store
             .apply_run(
                 &run_id,
                 &StorePatch::default(),
@@ -520,10 +570,20 @@ async fn schedule_runs(
                 }),
             )
             .await;
-        let _ = st.store.quota_bump(&harness.miner_hotkey, &day, 1).await;
+        let _ = store
+            .quota_bump(&harness.miner_hotkey, &day, 1, origin)
+            .await;
         run_ids.push(run_id);
     }
     Ok(run_ids)
+}
+
+/// Daily ceiling that applies to `origin`.
+fn origin_daily_cap(origin: RunOrigin) -> u32 {
+    match origin {
+        RunOrigin::Manual => manual_daily_run_quota(),
+        RunOrigin::Scheduled => scheduled_daily_run_cap(),
+    }
 }
 
 fn make_run_id(round_id: u64, harness_id: &str, prompt_id: &str) -> String {
@@ -574,15 +634,34 @@ async fn list_harness(State(st): State<Arc<AppState>>, Query(q): Query<MinerQuer
 async fn get_quota(State(st): State<Arc<AppState>>, Path(hotkey): Path<String>) -> Response {
     let day = utc_day(now_secs());
     match st.store.quota_get(&hotkey, &day).await {
-        Ok(used) => Json(json!({
-            "miner_hotkey": hotkey,
-            "day": day,
-            "runs_used": used,
-            "limit": DAILY_RUN_QUOTA,
-        }))
-        .into_response(),
+        Ok(used) => Json(quota_json(&hotkey, &day, used)).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
+}
+
+/// Per-origin quota view shared by `/v1/quota/{hotkey}` and `/v1/miners`.
+///
+/// `runs_used` / `limit` stay the whole-day totals for existing clients;
+/// enforcement is the per-origin pair below them.
+pub(crate) fn quota_json(hotkey: &str, day: &str, used: design_store::QuotaUsage) -> Value {
+    let manual_limit = manual_daily_run_quota();
+    let scheduled_limit = scheduled_daily_run_cap();
+    json!({
+        "miner_hotkey": hotkey,
+        "day": day,
+        "runs_used": used.total,
+        "limit": manual_limit.saturating_add(scheduled_limit),
+        "manual": {
+            "runs_used": used.manual,
+            "limit": manual_limit,
+            "remaining": manual_limit.saturating_sub(used.manual),
+        },
+        "scheduled": {
+            "runs_used": used.scheduled(),
+            "limit": scheduled_limit,
+            "remaining": scheduled_limit.saturating_sub(used.scheduled()),
+        },
+    })
 }
 
 async fn get_prompts() -> Response {
@@ -722,32 +801,41 @@ async fn get_pages(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> R
     }
 }
 
-async fn get_bundle_json(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match st.store.list_pages(&id).await {
-        Ok(pages) => {
-            let mut map = BTreeMap::new();
-            for p in pages {
-                map.insert(p.path, p.sanitized_html);
-            }
-            Json(json!({"run_id": id, "pages": map})).into_response()
-        }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    }
+/// `bundle.json` used to embed every page's produced HTML. The viewer is
+/// screenshots-only now, so the route is retired with a pointer instead of
+/// serving a silently hollow bundle.
+async fn get_bundle_json() -> Response {
+    json_err(
+        StatusCode::GONE,
+        "gone",
+        "bundle.json no longer embeds produced HTML; use /v1/runs/{id}/pages for page metadata and /v1/view/{id}/index.png for the screenshot",
+    )
 }
 
+/// Screenshots-only viewer: produced HTML is never served. Only captured PNG
+/// artifacts (`index.png`) are public; any non-PNG page request is 410 Gone.
 async fn view_page(
     State(st): State<Arc<AppState>>,
     Path((id, page)): Path<(String, String)>,
 ) -> Response {
-    let path = if page.ends_with(".html") {
-        page
-    } else {
-        format!("{page}.html")
-    };
-    match st.store.get_page(&id, &path).await {
-        Ok(Some(html)) => {
+    if !page.ends_with(".png") {
+        return json_err(
+            StatusCode::GONE,
+            "gone",
+            "produced HTML is never served; fetch the index.png screenshot instead",
+        );
+    }
+    match st.store.get_page(&id, &page).await {
+        Ok(Some(body)) => {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(body.trim()) else {
+                return json_err(StatusCode::INTERNAL_SERVER_ERROR, "artifact", "bad png b64");
+            };
             let mut headers = HeaderMap::new();
-            for (k, v) in viewer_headers(&st.frame_ancestors) {
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("image/png"),
+            );
+            for (k, v) in design_sanitize::screenshot_headers() {
                 if let (Ok(name), Ok(val)) = (
                     header::HeaderName::try_from(k),
                     header::HeaderValue::try_from(v),
@@ -755,11 +843,7 @@ async fn view_page(
                     headers.insert(name, val);
                 }
             }
-            headers.insert(
-                header::CONTENT_TYPE,
-                header::HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            (StatusCode::OK, headers, html).into_response()
+            (StatusCode::OK, headers, bytes).into_response()
         }
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "page"),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
@@ -881,13 +965,14 @@ pub async fn mark_awaiting(
     Ok(())
 }
 
-/// Mark run awaiting admin after clean agentic review.
+/// Mark clean run `awaiting_admin` and stamp the unscored-timeout epoch clock.
 pub async fn mark_awaiting_admin(
     store: &dyn DesignStore,
     run_id: &str,
     digest: &str,
     report: Value,
     verdict: Value,
+    epoch: u64,
 ) -> Result<(), StoreError> {
     store
         .apply_run(
@@ -897,11 +982,12 @@ pub async fn mark_awaiting_admin(
                 artifact_digest: Some(digest.to_owned()),
                 sanitize_report: Some(report),
                 agentic_verdict: Some(verdict),
+                awaiting_admin_epoch: Some(epoch),
                 ..StorePatch::default()
             },
             Some(&StageEvent {
                 stage: "awaiting_admin".into(),
-                detail: None,
+                detail: Some(json!({"epoch": epoch})),
                 at_ms: now_ms(),
             }),
         )
@@ -912,6 +998,65 @@ pub async fn mark_awaiting_admin(
 #[derive(Debug, Deserialize)]
 struct WinnersBody {
     harness_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RejectBody {
+    harness_ids: Vec<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Manually schedule every active harness into the CURRENT open round.
+///
+/// Operator escape hatch when a round opened with no/few runs (e.g. challenge
+/// restart). Idempotent for the current round: `schedule_harness_for_round`
+/// returns the existing run ids for a `(harness, round)` pair that already has
+/// runs, so a repeated call creates nothing and consumes no quota. This is
+/// organizer work, so it draws on the scheduled cap, never on the miner's
+/// submission quota. Harnesses that fail scheduling are reported under
+/// `skipped`; one bad harness never blocks the rest.
+async fn admin_requeue_current(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_admin(&st, &headers) {
+        return r;
+    }
+    let rid = round_id_at(now_secs());
+    let harnesses = match st.store.list_active_harnesses(rid).await {
+        Ok(h) => h,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let epoch = st.epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let mut scheduled = Vec::new();
+    let mut skipped = Vec::new();
+    for harness in &harnesses {
+        match schedule_harness_for_round(
+            st.store.as_ref(),
+            harness,
+            rid,
+            st.netuid,
+            epoch,
+            RunOrigin::Scheduled,
+        )
+        .await
+        {
+            Ok(run_ids) => scheduled.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "run_ids": run_ids,
+            })),
+            Err(e) => skipped.push(json!({
+                "harness_id": harness.id,
+                "miner_hotkey": harness.miner_hotkey,
+                "reason": e,
+            })),
+        }
+    }
+    Json(json!({
+        "round_id": rid,
+        "scheduled": scheduled,
+        "skipped": skipped,
+    }))
+    .into_response()
 }
 
 async fn admin_candidates(
@@ -1018,6 +1163,82 @@ async fn admin_winners(
         .into_response()
 }
 
+async fn admin_reject(
+    State(st): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    body: Result<Json<RejectBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if let Err(r) = check_admin(&st, &headers) {
+        return r;
+    }
+    let Json(req) = match body {
+        Ok(j) => j,
+        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_json", &e.body_text()),
+    };
+    let mut ids = req.harness_ids;
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_reject",
+            "harness_ids must be non-empty",
+        );
+    }
+    let reason = sanitize_reject_reason(req.reason.as_deref(), "admin_reject");
+    let runs = match st.store.runs_for_round(id).await {
+        Ok(r) => r,
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
+    };
+    let mut rejected = Vec::new();
+    for hid in &ids {
+        let Some(run) = runs
+            .iter()
+            .find(|r| r.harness_id == *hid && r.status == RunStage::AwaitingAdmin)
+        else {
+            if let Some(run) = runs
+                .iter()
+                .find(|r| r.harness_id == *hid && r.status == RunStage::Rejected)
+            {
+                rejected.push(json!({
+                    "run_id": run.id,
+                    "harness_id": hid,
+                    "reject_reason": run.reject_reason.clone().unwrap_or_else(|| reason.clone()),
+                    "idempotent": true,
+                }));
+                continue;
+            }
+            return json_err(
+                StatusCode::BAD_REQUEST,
+                "not_candidate",
+                &format!("harness {hid} is not a clean awaiting_admin candidate"),
+            );
+        };
+        if let Err(e) = reject_awaiting_admin_run(
+            st.store.as_ref(),
+            st.gating.as_deref(),
+            run,
+            &reason,
+            "admin_reject",
+        )
+        .await
+        {
+            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "reject", &e.to_string());
+        }
+        rejected.push(json!({
+            "run_id": run.id,
+            "harness_id": hid,
+            "reject_reason": reason,
+        }));
+    }
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"status":"ok","round_id": id, "rejected": rejected})),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1039,13 +1260,14 @@ mod tests {
         let gating = Arc::new(MemoryGatingStore::new());
         let metagraph = metagraph_hotkeys.map(|keys| {
             let cache = Arc::new(MetagraphCache::new());
-            cache.update(541, &keys.iter().map(|h| h.to_vec()).collect::<Vec<_>>());
+            let raw: Vec<Vec<u8>> = keys.iter().map(|h| h.to_vec()).collect();
+            cache.update(541, &raw, &raw);
             cache
         });
         (
             Arc::new(AppState {
                 store: Arc::new(MemoryDesignStore::new()),
-                epoch: std::sync::atomic::AtomicU64::new(0),
+                epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 netuid: 541,
                 backend_mode: "memory",
                 annotator_token_hashes: vec![],
@@ -1088,6 +1310,116 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    async fn schedule(
+        store: &dyn DesignStore,
+        harness: &HarnessRow,
+        rid: u64,
+        origin: RunOrigin,
+    ) -> Result<Vec<String>, String> {
+        schedule_harness_for_round(store, harness, rid, 100, 0, origin).await
+    }
+
+    fn harness_row(hotkey: &str, marker: &str) -> HarnessRow {
+        HarnessRow {
+            id: format!("harness-{marker}"),
+            miner_hotkey: hotkey.to_owned(),
+            miner_coldkey: None,
+            agent_py: format!("def run(task, llm, out):\n    pass  # {marker}\n"),
+            pyproject_toml: "[project]\nname='x'\nversion='0.1.0'\n".into(),
+            extra_files: BTreeMap::new(),
+            active: true,
+            eliminated_until_round: 0,
+            created_at_ms: 0,
+        }
+    }
+
+    /// A harness that participates in every round of a UTC day must never be
+    /// quota-blocked: the organizer dispatches `rounds/day × prompts/round`
+    /// runs, which used to overrun a shared 10-run/day ceiling after ~3 rounds.
+    #[tokio::test]
+    async fn full_day_of_scheduled_rounds_is_never_quota_blocked() {
+        let (st, _g) = app_state(None);
+        let harness = harness_row(&hk(0xAA), "day");
+        st.store.insert_harness(&harness).await.unwrap();
+
+        let per_round = design_challenge_task::prompts_per_round();
+        let rounds = design_challenge_task::rounds_per_day_effective();
+        let base = round_id_at(now_secs());
+        let mut total = 0usize;
+        for i in 0..rounds {
+            let ids = schedule(st.store.as_ref(), &harness, base + i, RunOrigin::Scheduled)
+                .await
+                .unwrap_or_else(|e| panic!("round {i} of {rounds} refused: {e}"));
+            assert_eq!(ids.len(), per_round, "round {i} scheduled a partial set");
+            total += ids.len();
+        }
+        assert_eq!(
+            total,
+            usize::try_from(rounds).unwrap() * per_round,
+            "every round of the day must run all its prompts"
+        );
+
+        let used = st
+            .store
+            .quota_get(&hk(0xAA), &utc_day(now_secs()))
+            .await
+            .unwrap();
+        assert_eq!(usize::try_from(used.total).unwrap(), total);
+        assert_eq!(used.manual, 0, "organizer work is not miner spend");
+        assert!(used.scheduled() <= scheduled_daily_run_cap());
+    }
+
+    /// The miner-facing intake keeps a hard anti-spam ceiling, and burning it
+    /// leaves organizer-scheduled rounds untouched.
+    #[tokio::test]
+    async fn manual_submissions_stay_rate_limited() {
+        let (st, _g) = app_state(None);
+        let per_round = u32::try_from(design_challenge_task::prompts_per_round()).unwrap();
+        let cap = manual_daily_run_quota();
+        let base = round_id_at(now_secs());
+
+        let mut manual_runs = 0u32;
+        let mut blocked = None;
+        for i in 0..(cap / per_round + 2) {
+            // A fresh digest per attempt: the worst case for intake spam.
+            let harness = harness_row(&hk(0xAA), &format!("spam{i}"));
+            st.store.insert_harness(&harness).await.unwrap();
+            match schedule(
+                st.store.as_ref(),
+                &harness,
+                base + u64::from(i),
+                RunOrigin::Manual,
+            )
+            .await
+            {
+                Ok(ids) => manual_runs += u32::try_from(ids.len()).unwrap(),
+                Err(e) => {
+                    blocked = Some(e);
+                    break;
+                }
+            }
+        }
+        let err = blocked.expect("manual submissions must hit the anti-spam ceiling");
+        assert!(err.contains("manual"), "{err}");
+        assert!(
+            manual_runs <= cap,
+            "{manual_runs} manual runs exceeded {cap}"
+        );
+
+        // The spent manual budget must not touch the organizer's schedule.
+        let harness = harness_row(&hk(0xAA), "day");
+        st.store.insert_harness(&harness).await.unwrap();
+        let ids = schedule(
+            st.store.as_ref(),
+            &harness,
+            base + 100,
+            RunOrigin::Scheduled,
+        )
+        .await
+        .expect("scheduled rounds must survive an exhausted manual quota");
+        assert_eq!(ids.len(), design_challenge_task::prompts_per_round());
     }
 
     #[tokio::test]
@@ -1142,21 +1474,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn view_page_serves_lockdown_headers_and_no_cookies() {
+    async fn same_digest_resubmit_schedules_missing_next_round() {
+        let (st, _g) = app_state(None);
+        let app = design_router(Arc::clone(&st));
+        let body = submit_body(&hk(0xAA), "agent-v1");
+        let (s, v) = post(app.clone(), body.clone()).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let rid = v["round_id"].as_u64().unwrap();
+        let harness_id = v["harness_id"].as_str().unwrap().to_owned();
+
+        // Simulate round rollover: clear next-round runs so a re-POST must
+        // recreate them (previous bug returned empty when create=false).
+        let runs = st.store.runs_for_round(rid).await.unwrap();
+        assert!(!runs.is_empty());
+        // Memory store has no delete — schedule a *later* round via the public helper.
+        let later = rid + 1;
+        let harness = st.store.get_harness(&harness_id).await.unwrap().unwrap();
+        let ids = schedule(st.store.as_ref(), &harness, later, RunOrigin::Scheduled)
+            .await
+            .unwrap();
+        assert_eq!(ids.len(), design_challenge_task::prompts_per_round());
+        let again = schedule(st.store.as_ref(), &harness, later, RunOrigin::Scheduled)
+            .await
+            .unwrap();
+        assert_eq!(again, ids, "idempotent for the same round");
+    }
+
+    #[tokio::test]
+    async fn view_page_serves_screenshots_only() {
         let (st, _g) = app_state(None);
         let run_id = "a".repeat(64);
-        // Store a script-laden page directly: even if sanitization were
-        // bypassed, the response headers must keep the payload inert.
+        // index.html exists in the store, but produced HTML is never served.
+        let png_bytes = [0x89, 0x50, 0x4E, 0x47];
         st.store
             .put_artifacts(
                 &run_id,
-                &[(
-                    "index.html".to_owned(),
-                    "<html><script>alert(1)</script>miner</html>".to_owned(),
-                    "raw".to_owned(),
-                    "00".repeat(32),
-                    42_u32,
-                )],
+                &[
+                    (
+                        "index.html".to_owned(),
+                        "<html><script>alert(1)</script>miner</html>".to_owned(),
+                        "raw".to_owned(),
+                        "00".repeat(32),
+                        42_u32,
+                    ),
+                    (
+                        "index.png".to_owned(),
+                        base64::engine::general_purpose::STANDARD.encode(png_bytes),
+                        "raw".to_owned(),
+                        "11".repeat(32),
+                        4_u32,
+                    ),
+                ],
             )
             .await
             .unwrap();
@@ -1170,35 +1538,164 @@ mod tests {
                 .oneshot(Request::get(&url).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
-            assert_eq!(res.status(), StatusCode::OK, "{url}");
-            let h = res.headers().clone();
-            let csp = h
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            assert!(csp.starts_with("sandbox;"), "{csp}");
-            assert!(!csp.contains("allow-scripts"), "{csp}");
-            assert!(!csp.contains("allow-same-origin"), "{csp}");
-            assert!(csp.contains("default-src 'none'"), "{csp}");
-            // app_state pins 'none'; prod default allows the public site.
-            assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
-            assert_eq!(
-                h.get(header::X_CONTENT_TYPE_OPTIONS)
-                    .and_then(|v| v.to_str().ok()),
-                Some("nosniff")
-            );
-            assert_eq!(
-                h.get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
-                Some("no-referrer")
-            );
-            assert_eq!(
-                h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
-                Some("text/html; charset=utf-8")
-            );
-            assert!(h.get(header::SET_COOKIE).is_none(), "{url} sets a cookie");
+            assert_eq!(res.status(), StatusCode::GONE, "{url}");
+            assert!(res.headers().get(header::SET_COOKIE).is_none());
             let bytes = res.into_body().collect().await.unwrap().to_bytes();
-            assert!(std::str::from_utf8(&bytes).unwrap().contains("miner"));
+            let v: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["error"], "gone", "{url}");
+            // The stored HTML must not leak into the 410 body.
+            assert!(!String::from_utf8_lossy(&bytes).contains("miner"), "{url}");
         }
+        // The PNG screenshot is served as image/png.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/view/{run_id}/index.png"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            res.headers()
+                .get("cross-origin-resource-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("cross-origin")
+        );
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), &png_bytes);
+        // Unknown png → 404.
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/view/{run_id}/missing.png"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    }
+
+    #[tokio::test]
+    async fn bundle_json_is_gone() {
+        let (st, _g) = app_state(None);
+        let run_id = "b".repeat(64);
+        st.store
+            .put_artifacts(
+                &run_id,
+                &[(
+                    "index.html".to_owned(),
+                    "<html>miner</html>".to_owned(),
+                    "raw".to_owned(),
+                    "00".repeat(32),
+                    7_u32,
+                )],
+            )
+            .await
+            .unwrap();
+        let app = design_router(Arc::clone(&st));
+        let (s, v) = call(
+            app,
+            Request::get(format!("/v1/runs/{run_id}/bundle.json"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::GONE, "{v}");
+        assert_eq!(v["error"], "gone");
+        // The stored HTML must not leak into the response body.
+        assert!(!v.to_string().contains("miner"));
+    }
+
+    #[tokio::test]
+    async fn admin_requeue_schedules_current_round_once() {
+        let admin_token = "test-admin-token";
+        let gating = Arc::new(MemoryGatingStore::new());
+        let st = Arc::new(AppState {
+            store: Arc::new(MemoryDesignStore::new()),
+            epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            netuid: 541,
+            backend_mode: "memory",
+            annotator_token_hashes: vec![],
+            admin_token_hashes: vec![token_hash(admin_token)],
+            frame_ancestors: "'none'".into(),
+            retry_max: 2,
+            award_hook: None,
+            gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
+            metagraph: None,
+        });
+        let app = design_router(Arc::clone(&st));
+
+        // Operator-protected like the other admin routes.
+        let (s, v) = call(
+            app.clone(),
+            Request::post("/v1/admin/rounds/current/requeue")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+
+        // Two active harnesses, each auto-scheduled into the NEXT round.
+        let (s, v) = post(app.clone(), submit_body(&hk(0xAA), "a")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let (s, v) = post(app.clone(), submit_body(&hk(0xBB), "b")).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+        let current = round_id_at(now_secs());
+        assert!(st.store.runs_for_round(current).await.unwrap().is_empty());
+
+        // First requeue schedules both harnesses into the current round.
+        let requeue = || {
+            Request::post("/v1/admin/rounds/current/requeue")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (s, v) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["round_id"], current);
+        assert_eq!(v["scheduled"].as_array().unwrap().len(), 2, "{v}");
+        assert!(v["skipped"].as_array().unwrap().is_empty(), "{v}");
+        let runs = st.store.runs_for_round(current).await.unwrap();
+        assert_eq!(runs.len(), 2 * design_challenge_task::prompts_per_round());
+        assert!(runs.iter().all(|r| r.status == RunStage::Queued));
+
+        // Second call is a no-op: same run ids, no new runs, quota untouched.
+        let (s, v2) = call(app.clone(), requeue()).await;
+        assert_eq!(s, StatusCode::OK, "{v2}");
+        assert_eq!(
+            v["scheduled"].as_array().unwrap(),
+            v2["scheduled"].as_array().unwrap(),
+            "idempotent requeue returns the same run ids"
+        );
+        assert_eq!(
+            st.store.runs_for_round(current).await.unwrap().len(),
+            runs.len()
+        );
+        let day = utc_day(now_secs());
+        let used = st.store.quota_get(&hk(0xAA), &day).await.unwrap();
+        assert_eq!(
+            usize::try_from(used.total).unwrap(),
+            2 * design_challenge_task::prompts_per_round(),
+            "next-round + current-round schedule only"
+        );
+        assert_eq!(
+            usize::try_from(used.manual).unwrap(),
+            design_challenge_task::prompts_per_round(),
+            "only the miner's own submission is charged to the manual quota"
+        );
     }
 
     #[tokio::test]
@@ -1206,7 +1703,7 @@ mod tests {
         let gating = Arc::new(MemoryGatingStore::new());
         let st = Arc::new(AppState {
             store: Arc::new(MemoryDesignStore::new()),
-            epoch: std::sync::atomic::AtomicU64::new(0),
+            epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             netuid: 541,
             backend_mode: "memory",
             annotator_token_hashes: vec![],

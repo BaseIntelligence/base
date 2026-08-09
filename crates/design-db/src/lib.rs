@@ -5,7 +5,7 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::DbError;
+use db::DbError;
 
 /// `design_harness` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -14,6 +14,8 @@ pub struct DesignHarnessRow {
     pub id: String,
     /// Miner hotkey (lowercase 64 hex).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// agent.py source.
     pub agent_py: String,
     /// pyproject.toml.
@@ -64,6 +66,12 @@ pub struct DesignRunRow {
     pub agentic_verdict: Option<Value>,
     /// Error detail.
     pub error_detail: Option<String>,
+    /// Miner-visible reject reason.
+    pub reject_reason: Option<String>,
+    /// Attempt clock epoch.
+    pub attempt_epoch: Option<i64>,
+    /// Awaiting-admin clock epoch.
+    pub awaiting_admin_epoch: Option<i64>,
     /// `score` | `no_score`.
     pub kind: Option<String>,
     /// Lattice score.
@@ -72,6 +80,10 @@ pub struct DesignRunRow {
     pub absence_reason: Option<i16>,
     /// Retry count.
     pub retry_count: i32,
+    /// Creation unix ms.
+    pub created_at_ms: i64,
+    /// Last update unix ms.
+    pub updated_at_ms: i64,
 }
 
 /// `design_round_award` row.
@@ -160,6 +172,8 @@ pub struct NewDesignHarness<'a> {
     pub id: &'a str,
     /// miner.
     pub miner_hotkey: &'a str,
+    /// owning coldkey (optional).
+    pub miner_coldkey: Option<&'a str>,
     /// agent.py.
     pub agent_py: &'a str,
     /// pyproject.
@@ -198,6 +212,8 @@ pub struct NewDesignRun<'a> {
     pub harness_id: &'a str,
     /// prompt.
     pub prompt_id: &'a str,
+    /// Attempt clock epoch.
+    pub attempt_epoch: Option<i64>,
 }
 
 /// New artifact.
@@ -255,11 +271,14 @@ pub struct NewDesignStageEvent<'a> {
 }
 
 const HARNESS_COLS: &str =
-    "id, miner_hotkey, agent_py, pyproject_toml, extra_files, active, eliminated_until_round, \
+    "id, miner_hotkey, miner_coldkey, agent_py, pyproject_toml, extra_files, active, \
+     eliminated_until_round, \
      (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms";
 const ROUND_COLS: &str = "round_id, epoch, netuid, prompt_set_digest, status";
 const RUN_COLS: &str = "id, round_id, harness_id, prompt_id, status, artifact_digest, \
-    sanitize_report, agentic_verdict, error_detail, kind, score, absence_reason, retry_count";
+    sanitize_report, agentic_verdict, error_detail, reject_reason, attempt_epoch, \
+    awaiting_admin_epoch, kind, score, absence_reason, retry_count, \
+    (FLOOR(EXTRACT(EPOCH FROM created_at) * 1000))::BIGINT AS created_at_ms, (FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000))::BIGINT AS updated_at_ms";
 const ARTIFACT_COLS: &str = "run_id, path, sanitized_html, raw_html, raw_sha256, bytes";
 const PAIR_COLS: &str = "id, round_id, prompt_id, run_a_id, run_b_id";
 const RATING_COLS: &str =
@@ -271,11 +290,13 @@ const RATING_COLS: &str =
 /// SQL error.
 pub async fn insert_design_harness(pool: &PgPool, n: &NewDesignHarness<'_>) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO design_harness (id, miner_hotkey, agent_py, pyproject_toml, extra_files) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO design_harness \
+         (id, miner_hotkey, miner_coldkey, agent_py, pyproject_toml, extra_files) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
+    .bind(n.miner_coldkey)
     .bind(n.agent_py)
     .bind(n.pyproject_toml)
     .bind(&n.extra_files)
@@ -326,6 +347,47 @@ pub async fn list_recent_design_harnesses(
         .bind(limit)
         .fetch_all(pool)
         .await?)
+}
+
+/// Active harnesses eligible for automatic per-round scheduling.
+///
+/// One row per miner (newest active), excluding eliminated-until-future rows.
+///
+/// # Errors
+/// SQL error.
+pub async fn list_active_design_harnesses(
+    pool: &PgPool,
+    max_eliminated_until_round: i64,
+) -> Result<Vec<DesignHarnessRow>, DbError> {
+    let q = format!(
+        "SELECT DISTINCT ON (miner_hotkey) {HARNESS_COLS} FROM design_harness \
+         WHERE active = TRUE AND eliminated_until_round <= $1 \
+         ORDER BY miner_hotkey ASC, created_at DESC"
+    );
+    Ok(sqlx::query_as::<_, DesignHarnessRow>(&q)
+        .bind(max_eliminated_until_round)
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Mark every other harness for this miner inactive (1 active agent per hotkey).
+///
+/// # Errors
+/// SQL error.
+pub async fn deactivate_other_design_harnesses(
+    pool: &PgPool,
+    miner_hotkey: &str,
+    keep_id: &str,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE design_harness SET active = FALSE, updated_at = now() \
+         WHERE miner_hotkey = $1 AND id <> $2 AND active = TRUE",
+    )
+    .bind(miner_hotkey)
+    .bind(keep_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Set elimination cooldown.
@@ -415,13 +477,14 @@ pub async fn list_design_rounds(pool: &PgPool, limit: i64) -> Result<Vec<DesignR
 /// SQL error.
 pub async fn insert_design_run(pool: &PgPool, n: &NewDesignRun<'_>) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO design_run (id, round_id, harness_id, prompt_id, status) \
-         VALUES ($1, $2, $3, $4, 'queued')",
+        "INSERT INTO design_run (id, round_id, harness_id, prompt_id, status, attempt_epoch) \
+         VALUES ($1, $2, $3, $4, 'queued', $5)",
     )
     .bind(n.id)
     .bind(n.round_id)
     .bind(n.harness_id)
     .bind(n.prompt_id)
+    .bind(n.attempt_epoch)
     .execute(pool)
     .await?;
     Ok(())
@@ -474,6 +537,8 @@ pub async fn update_design_run(
     sanitize_report: Option<Value>,
     agentic_verdict: Option<Value>,
     error_detail: Option<&str>,
+    reject_reason: Option<&str>,
+    awaiting_admin_epoch: Option<i64>,
     kind: Option<&str>,
     score: Option<i64>,
     absence_reason: Option<i16>,
@@ -486,10 +551,12 @@ pub async fn update_design_run(
            sanitize_report = COALESCE($4, sanitize_report), \
            agentic_verdict = COALESCE($5, agentic_verdict), \
            error_detail = COALESCE($6, error_detail), \
-           kind = COALESCE($7, kind), \
-           score = COALESCE($8, score), \
-           absence_reason = COALESCE($9, absence_reason), \
-           retry_count = retry_count + $10, \
+           reject_reason = COALESCE($7, reject_reason), \
+           awaiting_admin_epoch = COALESCE($8, awaiting_admin_epoch), \
+           kind = COALESCE($9, kind), \
+           score = COALESCE($10, score), \
+           absence_reason = COALESCE($11, absence_reason), \
+           retry_count = retry_count + $12, \
            updated_at = now() \
          WHERE id = $1 RETURNING {RUN_COLS}"
     );
@@ -500,6 +567,8 @@ pub async fn update_design_run(
         .bind(sanitize_report)
         .bind(agentic_verdict)
         .bind(error_detail)
+        .bind(reject_reason)
+        .bind(awaiting_admin_epoch)
         .bind(kind)
         .bind(score)
         .bind(absence_reason)
@@ -516,6 +585,7 @@ pub async fn reset_design_run_for_retry(pool: &PgPool, id: &str) -> Result<Desig
     let q = format!(
         "UPDATE design_run SET status = 'queued', artifact_digest = NULL, \
            sanitize_report = NULL, agentic_verdict = NULL, error_detail = NULL, \
+           reject_reason = NULL, awaiting_admin_epoch = NULL, \
            kind = NULL, score = NULL, absence_reason = NULL, \
            retry_count = retry_count + 1, updated_at = now() \
          WHERE id = $1 RETURNING {RUN_COLS}"
@@ -582,7 +652,9 @@ pub async fn stuck_design_runs(
         .await?)
 }
 
-/// Insert artifact.
+/// Insert artifact. Idempotent on `(run_id, path)`: a retried run re-putting
+/// its pages (or a screenshot backfill racing a live capture) refreshes the
+/// row instead of failing on the unique key.
 ///
 /// # Errors
 /// SQL error.
@@ -592,7 +664,10 @@ pub async fn insert_design_artifact(
 ) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO design_artifact (run_id, path, sanitized_html, raw_html, raw_sha256, bytes) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (run_id, path) DO UPDATE SET sanitized_html = EXCLUDED.sanitized_html, \
+           raw_html = EXCLUDED.raw_html, raw_sha256 = EXCLUDED.raw_sha256, \
+           bytes = EXCLUDED.bytes",
     )
     .bind(n.run_id)
     .bind(n.path)
@@ -754,19 +829,6 @@ pub async fn design_annotations_for_round(
     Ok(rows)
 }
 
-/// Annotation count for a pair.
-///
-/// # Errors
-/// SQL error.
-pub async fn design_annotation_count(pool: &PgPool, pair_id: &str) -> Result<i64, DbError> {
-    let n: i64 =
-        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM design_annotation WHERE pair_id = $1")
-            .bind(pair_id)
-            .fetch_one(pool)
-            .await?;
-    Ok(n)
-}
-
 /// Upsert rating.
 ///
 /// # Errors
@@ -849,7 +911,7 @@ pub async fn design_scores_for_epoch(
     Ok(rows)
 }
 
-/// Get / bump daily quota. Returns `runs_used` after bump (0 bump = read).
+/// Bump daily quota. Returns `(runs_used, manual_runs_used)` after the write.
 ///
 /// # Errors
 /// SQL error.
@@ -858,18 +920,24 @@ pub async fn design_quota_bump(
     miner_hotkey: &str,
     day: &str,
     bump: i32,
-) -> Result<i32, DbError> {
-    let row: (i32,) = sqlx::query_as(
-        "INSERT INTO design_quota (miner_hotkey, day, runs_used) VALUES ($1, $2::date, $3) \
-         ON CONFLICT (miner_hotkey, day) DO UPDATE SET runs_used = design_quota.runs_used + $3 \
-         RETURNING runs_used",
+    manual: bool,
+) -> Result<(i32, i32), DbError> {
+    let manual_bump = if manual { bump } else { 0 };
+    let row: (i32, i32) = sqlx::query_as(
+        "INSERT INTO design_quota (miner_hotkey, day, runs_used, manual_runs_used) \
+         VALUES ($1, $2::date, $3, $4) \
+         ON CONFLICT (miner_hotkey, day) DO UPDATE SET \
+           runs_used = design_quota.runs_used + $3, \
+           manual_runs_used = design_quota.manual_runs_used + $4 \
+         RETURNING runs_used, manual_runs_used",
     )
     .bind(miner_hotkey)
     .bind(day)
     .bind(bump)
+    .bind(manual_bump)
     .fetch_one(pool)
     .await?;
-    Ok(row.0)
+    Ok(row)
 }
 
 /// Read quota without bump.
@@ -880,15 +948,16 @@ pub async fn design_quota_get(
     pool: &PgPool,
     miner_hotkey: &str,
     day: &str,
-) -> Result<i32, DbError> {
-    let n: Option<i32> = sqlx::query_scalar(
-        "SELECT runs_used FROM design_quota WHERE miner_hotkey = $1 AND day = $2::date",
+) -> Result<(i32, i32), DbError> {
+    let row: Option<(i32, i32)> = sqlx::query_as(
+        "SELECT runs_used, manual_runs_used FROM design_quota \
+         WHERE miner_hotkey = $1 AND day = $2::date",
     )
     .bind(miner_hotkey)
     .bind(day)
     .fetch_optional(pool)
     .await?;
-    Ok(n.unwrap_or(0))
+    Ok(row.unwrap_or((0, 0)))
 }
 
 /// Append stage event.

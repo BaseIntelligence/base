@@ -4,6 +4,4 @@
 //! per-crate non-test LOC cap); this shim keeps the
 //! `prism_challenge::leaf_emit::*` path stable.
 
-pub use prism_emit::leaf_emit::{
-    emit_signed_leaf_set, public_key_from_secret, verify_leaf_sig, LeafEmitError,
-};
+pub use prism_emit::leaf_emit::emit_signed_leaf_set;

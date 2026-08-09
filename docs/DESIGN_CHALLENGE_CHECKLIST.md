@@ -13,12 +13,12 @@ pins without bumping `challenge_scoring_version`.
 |-----|-------------|-----------------|-------------------------------------|
 | (T) | Topology: master-only challenge + sandbox + egress; validator no exec | ## 1. What runs where (topology) | `## 1. What runs where (topology)` |
 | (I) | Identifiers and versions | ## 2. Identifiers and versions | `## 2. Identifiers and versions` |
-| (E) | Emission 0 bps posture | ## 2. Identifiers and versions | `emission_share_bps = 0` |
+| (E) | Emission 5000 bps (50/50 with prism) | ## 2. Identifiers and versions | `emission_share_bps = 5000` |
 | (H) | Miner harness contract (`agent.py` / `pyproject.toml`) | ## 3. Miner harness contract | `## 3. Miner harness contract` |
 | (S) | Sandbox hardening | ## 4. Sandbox hardening | `## 4. Sandbox hardening` |
 | (Z) | Sanitize rules | ## 5. Sanitize rules | `## 5. Sanitize rules` |
 | (V) | Viewer headers / CSP sandbox | ## 6. Viewer headers and CSP | `## 6. Viewer headers and CSP` |
-| (R) | Rounds 8_640s (10/day) + bank_v1 auto + quota 10/day | ## 7. Rounds and quotas | `## 7. Rounds and quotas` |
+| (R) | Rounds 8_640s (10/day) + bank_v1 auto + split manual/scheduled quota | ## 7. Rounds and quotas | `## 7. Rounds and quotas` |
 | (L) | Admin winners 1\|2 + rolling 10-round points share + AgenticReview | ## 8. Admin winners + agentic anti-cheat | `## 8. Admin winners + agentic anti-cheat` |
 | (X) | Elimination bottom 20% + 10-round cooldown | ## 9. Elimination | `## 9. Elimination` |
 | (D) | D24 exact-E participant set | ## 10. Declared participant set and `NoScore` reasons (D24) | `## 10. Declared participant set and` |
@@ -35,8 +35,8 @@ pins without bumping `challenge_scoring_version`.
 | scoring_version | `challenge_scoring_version` |
 | scoring_version_3 | `u16 = 3` |
 | bundle_protocol_version | `protocol_version = 1` |
-| emission_zero | `emission_share_bps = 0` |
-| prism_bps_sole | `10000` |
+| emission_share | `emission_share_bps = 5000` |
+| bps_sum | `10000` |
 | SCORE_MAX | `1_000_000` |
 | compose_port | `8093` |
 | round_secs | `8_640` |
@@ -44,8 +44,13 @@ pins without bumping `challenge_scoring_version`.
 | rounds_per_day | `10 rounds` |
 | agent_run_timeout | `AGENT_RUN_TIMEOUT_SECS = 1_800` |
 | scoring_window | `SCORING_WINDOW_ROUNDS = 10` |
-| daily_quota | `DAILY_RUN_QUOTA = 10` |
-| prompts_per_round | `3 prompts` |
+| daily_quota | `MANUAL_DAILY_RUN_QUOTA = 10` |
+| scheduled_quota | `DESIGN_SCHEDULED_DAILY_RUN_CAP` |
+| selfsim_excluded | `other hotkeys' and same-coldkey prior art only` |
+| prompts_per_round | `1 prompt` |
+| unscored_epoch_limit | `UNSCORED_EPOCH_LIMIT = 5` |
+| admin_reject_route | `/v1/admin/rounds/{id}/reject` |
+| metagraph_cache_ttl | `15m` |
 | bank_v1 | `bank_v1.json` |
 | agent_py | `agent.py` |
 | pyproject | `pyproject.toml` |
@@ -60,7 +65,7 @@ pins without bumping `challenge_scoring_version`.
 | network_mode | `design-sandbox-egress` |
 | name_prefix | `base-design-` |
 | csp_sandbox | `sandbox; default-src 'none'` |
-| raw_never_served | `Raw HTML is never served` |
+| html_never_served | `Produced HTML is never served` |
 | agentic_review_stage | `AgenticReview` |
 | admin_winners_route | `/v1/admin/rounds/{id}/winners` |
 | admin_not_gateway | `not exposed via gateway` |

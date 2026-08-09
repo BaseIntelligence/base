@@ -61,31 +61,127 @@ pub struct SanitizeResult {
     pub artifact_digest: String,
 }
 
+/// Control-plane / metadata hostnames that must never be fetched from miner
+/// HTML (screenshot Chromium or a future viewer). Mirrors
+/// `design-egress-proxy::BLOCKED_HOSTNAMES` plus localhost aliases.
+const BLOCKED_URL_HOSTS: &[&str] = &[
+    "localhost",
+    "gateway",
+    "postgres",
+    "socket-proxy",
+    "design-challenge",
+    "prism-challenge",
+    "design-egress-proxy",
+    "updater",
+    "site-api",
+    "evil-gateway",
+    "metadata.google.internal",
+];
+
 fn ammonia_builder() -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     // Drop scriptable / navigational sinks; ammonia also strips on* handlers.
     let _ = b.rm_tags([
         "script", "iframe", "object", "embed", "applet", "base", "form", "link",
     ]);
+    // Landing-page structure + CSS. Ammonia fragment parsing still unwraps
+    // html/head/body wrappers (see `rewrite_body_wrapper`); allow them anyway
+    // and keep presentation tags/attrs reviewers need.
+    let _ = b.add_tags([
+        "style",
+        "main",
+        "section",
+        "body",
+        "html",
+        "head",
+        "nav",
+        "header",
+        "footer",
+        "article",
+        "aside",
+        "figure",
+        "figcaption",
+    ]);
+    // Default clean_content_tags includes `style` (content stripped). Keep the
+    // tag and its CSS after our `filter_css` pre-pass.
+    let _ = b.rm_clean_content_tags(["style"]);
+    let _ = b.add_generic_attributes(["class", "id", "style"]);
     let schemes: std::collections::HashSet<&'static str> =
         ["http", "https", "mailto"].into_iter().collect();
     let _ = b.url_schemes(schemes);
     b
 }
 
+/// Ammonia parses as an HTML fragment and unwraps `<body>` / `<html>` / `<head>`,
+/// dropping their attributes. Rewrite `<body …>` to a presentation `<div>` so
+/// body-level `class` / `id` / `style` survive for reviewers.
+fn rewrite_body_wrapper(html: &str) -> String {
+    let Ok(re_open) = Regex::new(r"(?i)<body(\s[^>]*)?>") else {
+        return html.to_owned();
+    };
+    let Ok(re_close) = Regex::new(r"(?i)</body\s*>") else {
+        return html.to_owned();
+    };
+    let with_open = re_open.replace_all(html, |caps: &regex::Captures<'_>| {
+        let attrs = caps.get(1).map_or("", |m| m.as_str());
+        // Marker class (ammonia strips unknown data-* attrs by default).
+        if attrs.to_ascii_lowercase().contains("class=") {
+            format!("<div{attrs}>")
+        } else {
+            format!("<div class=\"design-body\"{attrs}>")
+        }
+    });
+    re_close.replace_all(&with_open, "</div>").into_owned()
+}
+
+/// True when `css` (already lowercased) contains the IE-only `behavior:`
+/// property, not a suffix like `scroll-behavior:`.
+fn has_ie_behavior_property(lower: &str) -> bool {
+    let mut start = 0;
+    while let Some(rel) = lower[start..].find("behavior:") {
+        let abs = start + rel;
+        if abs == 0 {
+            return true;
+        }
+        let prev = lower.as_bytes()[abs - 1];
+        // Property names may include `-` / `_` / alphanumerics (`scroll-behavior`).
+        if prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_' {
+            start = abs + "behavior:".len();
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 /// Filter dangerous CSS constructs from a style attribute / block.
+///
+/// Soft-strips `@import` rules (keeps the rest of the block). Hard-nukes the
+/// whole input for XSS-prone constructs (`expression(`, `url(javascript:`,
+/// IE `behavior:`, `-moz-binding`). `scroll-behavior:` is presentation CSS
+/// and must not match the IE `behavior:` check.
 #[must_use]
 pub fn filter_css(css: &str) -> (String, bool) {
-    let lower = css.to_ascii_lowercase();
-    let bad = lower.contains("@import")
-        || lower.contains("expression(")
+    let mut stripped = false;
+    let mut out = css.to_owned();
+    if out.to_ascii_lowercase().contains("@import") {
+        if let Ok(re) = Regex::new(r"(?i)@import[^;]*;?") {
+            let next = re.replace_all(&out, "");
+            if next.as_ref() != out {
+                stripped = true;
+                out = next.into_owned();
+            }
+        }
+    }
+    let lower = out.to_ascii_lowercase();
+    let hard_bad = lower.contains("expression(")
         || lower.contains("url(javascript:")
-        || lower.contains("behavior:")
+        || has_ie_behavior_property(&lower)
         || lower.contains("-moz-binding");
-    if bad {
+    if hard_bad {
         (String::new(), true)
     } else {
-        (css.to_owned(), false)
+        (out, stripped)
     }
 }
 
@@ -111,17 +207,21 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         notes.push("meta_refresh".into());
     }
 
-    // Pre-strip style blocks with dangerous CSS.
-    let mut pre = raw.to_owned();
+    // Pre-filter style blocks: soft-strip `@import`, hard-nuke XSS CSS.
+    let mut pre = rewrite_body_wrapper(raw);
     if let Ok(re) = Regex::new(r"(?is)<style[^>]*>(.*?)</style>") {
         let mut stripped = false;
         let mut css_notes = Vec::new();
         pre = re
             .replace_all(&pre, |caps: &regex::Captures<'_>| {
-                let (filtered, bad) = filter_css(&caps[1]);
-                if bad {
+                let original = &caps[1];
+                let (filtered, touched) = filter_css(original);
+                if touched {
                     stripped = true;
                     css_notes.push("css_blocked".into());
+                }
+                // Hard-bad → empty filtered; soft-strip keeps remaining rules.
+                if filtered.is_empty() && !original.is_empty() {
                     String::new()
                 } else {
                     format!("<style>{filtered}</style>")
@@ -142,6 +242,22 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
         }
     }
 
+    // Inline `style="…"` attrs are allowed; re-filter dangerous CSS constructs
+    // ammonia does not strip by default.
+    let (cleaned, inline_css_stripped) = filter_inline_styles(&cleaned);
+    css_stripped |= inline_css_stripped;
+    if inline_css_stripped {
+        notes.push("css_blocked_inline".into());
+    }
+
+    // Neutralize http(s) href/src pointing at control-plane / metadata /
+    // RFC1918. Legitimate CDN URLs stay; residual CSS `url(...)` SSRF is
+    // covered by screenshot Chromium's egress-proxy force.
+    let (cleaned, ssrf_stripped) = neutralize_ssrf_urls(&cleaned);
+    if ssrf_stripped {
+        notes.push("ssrf_url_neutralized".into());
+    }
+
     (
         cleaned,
         SanitizeReport {
@@ -150,6 +266,152 @@ pub fn sanitize_html(raw: &str) -> (String, SanitizeReport) {
             notes,
         },
     )
+}
+
+/// True when `host` names loopback, metadata, or a compose control-plane
+/// service (case-insensitive, trailing-dot tolerant).
+#[must_use]
+pub fn host_blocked_for_miner_url(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost"
+        || h.ends_with(".internal")
+        || h.ends_with(".localhost")
+        || BLOCKED_URL_HOSTS.contains(&h.as_str())
+}
+
+/// True when a literal IP is non-public (loopback, link-local/metadata,
+/// RFC1918, CGNAT, etc.).
+#[must_use]
+pub fn ip_blocked_for_miner_url(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 0
+                || o[0] == 10
+                || o[0] == 127
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+                || (o[0] == 169 && o[1] == 254)
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || o[0] >= 224
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return ip_blocked_for_miner_url(&std::net::IpAddr::V4(mapped));
+            }
+            let seg = v6.segments();
+            v6.is_unspecified()
+                || v6.is_loopback()
+                || (seg[0] & 0xffc0) == 0xfe80
+                || (seg[0] & 0xfe00) == 0xfc00
+                || (seg[0] & 0xff00) == 0xff00
+        }
+    }
+}
+
+/// Extract host from an absolute or protocol-relative http(s) URL.
+fn http_url_host(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &trimmed["https://".len()..]
+    } else if lower.starts_with("http://") {
+        &trimmed["http://".len()..]
+    } else if lower.starts_with("//") {
+        &trimmed["//".len()..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return None;
+    }
+    // Drop userinfo.
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if hostport.starts_with('[') {
+        hostport
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_owned())
+    }
+}
+
+/// True when an http(s) / protocol-relative URL targets a blocked host or IP.
+#[must_use]
+pub fn url_looks_ssrf(url: &str) -> bool {
+    let Some(host) = http_url_host(url) else {
+        return false;
+    };
+    if host_blocked_for_miner_url(&host) {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip_blocked_for_miner_url(&ip);
+    }
+    false
+}
+
+/// Rewrite `href` / `src` (and a few cousins) that point at internal targets
+/// to `#` so screenshot Chromium never even queues the request. Public CDN
+/// URLs are left alone.
+fn neutralize_ssrf_urls(html: &str) -> (String, bool) {
+    let Ok(re) =
+        Regex::new(r#"(?i)\s(href|src|poster|cite|formaction|action)\s*=\s*("([^"]*)"|'([^']*)')"#)
+    else {
+        return (html.to_owned(), false);
+    };
+    let mut stripped = false;
+    let out = re
+        .replace_all(html, |caps: &regex::Captures<'_>| {
+            let attr = caps.get(1).map_or("href", |m| m.as_str());
+            let val = caps
+                .get(3)
+                .or_else(|| caps.get(4))
+                .map_or("", |m| m.as_str());
+            if url_looks_ssrf(val) {
+                stripped = true;
+                format!(" {attr}=\"#\"")
+            } else {
+                caps[0].to_owned()
+            }
+        })
+        .into_owned();
+    (out, stripped)
+}
+
+/// Drop or empty inline `style` attributes that fail [`filter_css`].
+fn filter_inline_styles(html: &str) -> (String, bool) {
+    let Ok(re) = Regex::new(r#"(?i)\sstyle\s*=\s*("([^"]*)"|'([^']*)')"#) else {
+        return (html.to_owned(), false);
+    };
+    let mut stripped = false;
+    let out = re
+        .replace_all(html, |caps: &regex::Captures<'_>| {
+            let val = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .map_or("", |m| m.as_str());
+            let (filtered, touched) = filter_css(val);
+            if filtered.is_empty() && !val.is_empty() {
+                stripped = true;
+                String::new()
+            } else if filtered == val {
+                caps[0].to_owned()
+            } else {
+                stripped |= touched;
+                format!(" style=\"{filtered}\"")
+            }
+        })
+        .into_owned();
+    (out, stripped)
 }
 
 /// Validate required pages exist and sanitize them.
@@ -202,12 +464,17 @@ pub fn default_frame_ancestors() -> &'static str {
     "'self' https://joinbase.ai https://*.vercel.app http://localhost:*"
 }
 
-/// Viewer response headers (CSP sandbox is the key guarantee).
+/// Viewer response headers for **non-PNG** `/v1/view/*` responses (CSP sandbox
+/// is the key guarantee against a stale upstream that still served miner HTML).
 ///
 /// The `sandbox` directive is emitted **without** `allow-scripts` and without
 /// `allow-same-origin`: the document runs in an opaque origin with script
 /// execution disabled, so miner HTML can never touch the serving origin's
 /// cookies, storage, or DOM — even when embedded same-origin through a proxy.
+///
+/// Public screenshots use [`screenshot_headers`] instead (`CORP: cross-origin`)
+/// so joinbase.ai can `<img src="https://chain.joinbase.ai/.../index.png">`
+/// without proxying PNG bytes through Vercel.
 #[must_use]
 pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
     let csp = format!(
@@ -218,8 +485,8 @@ pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
         ("Content-Security-Policy", csp),
         ("X-Content-Type-Options", "nosniff".into()),
         ("Referrer-Policy", "no-referrer".into()),
-        // Viewer responses are only ever embedded same-origin (site proxies
-        // the gateway under its own origin); cross-origin embedders get nothing.
+        // Non-PNG view responses stay same-origin only (defense in depth if
+        // HTML ever leaks through); PNGs use `screenshot_headers`.
         ("Cross-Origin-Resource-Policy", "same-origin".into()),
         ("Cross-Origin-Opener-Policy", "same-origin".into()),
         (
@@ -228,6 +495,21 @@ pub fn viewer_headers(frame_ancestors: &str) -> Vec<(&'static str, String)> {
              microphone=(), payment=(), usb=()"
                 .into(),
         ),
+        ("Cache-Control", "private, no-store".into()),
+    ]
+}
+
+/// Headers for public PNG screenshots (`index.png`).
+///
+/// `Cross-Origin-Resource-Policy: cross-origin` lets marketing/admin UIs load
+/// the image with a direct absolute URL to the gateway (no same-origin proxy
+/// required). PNGs are not executable documents; cookies are never set.
+#[must_use]
+pub fn screenshot_headers() -> Vec<(&'static str, String)> {
+    vec![
+        ("X-Content-Type-Options", "nosniff".into()),
+        ("Referrer-Policy", "no-referrer".into()),
+        ("Cross-Origin-Resource-Policy", "cross-origin".into()),
         ("Cache-Control", "private, no-store".into()),
     ]
 }
@@ -310,10 +592,159 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_headers_allow_cross_origin_img() {
+        let h = screenshot_headers();
+        let get = |name: &str| h.iter().find(|(k, _)| *k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("Cross-Origin-Resource-Policy"), Some("cross-origin"));
+        assert_eq!(get("X-Content-Type-Options"), Some("nosniff"));
+        assert!(get("Content-Security-Policy").is_none());
+        assert!(get("Cross-Origin-Opener-Policy").is_none());
+    }
+
+    #[test]
     fn default_frame_ancestors_allowlist() {
         let fa = default_frame_ancestors();
         assert!(fa.contains("https://joinbase.ai"), "{fa}");
         assert!(fa.contains("https://*.vercel.app"), "{fa}");
         assert!(!fa.contains("'none'"), "{fa}");
+    }
+
+    #[test]
+    fn preserves_presentation_css_and_layout_tags() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><style>.hero { color: #c00; margin: 0; }</style></head>
+<body class="page" id="top" style="margin:0;background:#fff">
+<main class="wrap"><section id="hero" class="hero" style="padding:2rem">Hello</section></main>
+</body>
+</html>"#;
+        let (out, report) = sanitize_html(html);
+        let low = out.to_ascii_lowercase();
+        assert!(
+            !report.css_stripped,
+            "safe CSS must not set css_stripped: {report:?}"
+        );
+        assert!(low.contains("<style>"), "style tag kept: {out}");
+        assert!(out.contains(".hero"), "CSS rules kept: {out}");
+        assert!(low.contains("<main"), "main kept: {out}");
+        assert!(low.contains("<section"), "section kept: {out}");
+        assert!(
+            out.contains("class=\"hero\"") || out.contains("class='hero'"),
+            "{out}"
+        );
+        assert!(
+            out.contains("id=\"hero\"") || out.contains("id='hero'"),
+            "{out}"
+        );
+        assert!(
+            out.contains("style=\"padding:2rem\"") || out.contains("style=\"padding: 2rem\""),
+            "inline style kept: {out}"
+        );
+        // body attrs survive via a wrapper div (ammonia unwraps <body>).
+        assert!(
+            out.contains("class=\"page\"") && out.contains("id=\"top\""),
+            "body presentation preserved: {out}"
+        );
+    }
+
+    #[test]
+    fn still_strips_script_and_dangerous_css() {
+        let (out, report) = sanitize_html(
+            r#"<style>@import url('https://evil.test/x.css');</style>
+<script>alert(1)</script><p class="ok" onclick="evil()">x</p>"#,
+        );
+        let low = out.to_ascii_lowercase();
+        assert!(!low.contains("<script"), "{out}");
+        assert!(!low.contains("onclick"), "{out}");
+        assert!(!out.contains("@import"), "{out}");
+        assert!(report.js_stripped || report.css_stripped);
+        assert!(
+            out.contains("class=\"ok\"") || out.contains("class='ok'"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn scroll_behavior_must_not_nuke_style_block() {
+        let html = r#"<style>
+html{scroll-behavior:smooth}
+body{margin:0;color:#172220;background:#f4f7f6}
+.hero{padding:2rem}
+</style><main class="hero">Hello</main>"#;
+        let (out, report) = sanitize_html(html);
+        assert!(
+            !report.css_stripped,
+            "scroll-behavior is safe presentation CSS: {report:?}"
+        );
+        assert!(
+            out.to_ascii_lowercase().contains("<style>"),
+            "style kept: {out}"
+        );
+        assert!(out.contains("scroll-behavior"), "{out}");
+        assert!(out.contains(".hero"), "{out}");
+    }
+
+    #[test]
+    fn amp_in_css_comment_must_not_drop_style() {
+        let html = r#"<style>
+/* --- RESET & VARIABLES --- */
+:root { --bg: #07090E; }
+body { margin: 0; background: var(--bg); }
+</style><p class="x">hi</p>"#;
+        let (out, report) = sanitize_html(html);
+        assert!(!report.css_stripped, "{report:?}");
+        assert!(out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(out.contains("--bg"), "{out}");
+    }
+
+    #[test]
+    fn import_soft_stripped_keeps_remaining_rules() {
+        let (out, report) = sanitize_html(
+            r#"<style>@import url('https://fonts.example/x.css');
+.hero{color:red}</style><p class="hero">x</p>"#,
+        );
+        assert!(report.css_stripped, "{report:?}");
+        assert!(!out.contains("@import"), "{out}");
+        assert!(out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(out.contains(".hero"), "{out}");
+    }
+
+    #[test]
+    fn ie_behavior_still_nukes_block() {
+        let (out, report) =
+            sanitize_html(r"<style>body{behavior:url(evil.htc);color:red}</style><p>x</p>");
+        assert!(report.css_stripped, "{report:?}");
+        assert!(!out.to_ascii_lowercase().contains("<style>"), "{out}");
+        assert!(!out.contains("evil.htc"), "{out}");
+    }
+
+    #[test]
+    fn ssrf_ish_hrefs_neutralized_public_kept() {
+        let html = r#"
+<a href="http://gateway:8080/v1/admin/seal">admin</a>
+<a href="http://169.254.169.254/latest/meta-data/">meta</a>
+<a href="http://socket-proxy:2375/containers/json">docker</a>
+<a href="http://10.1.2.3/secret">rfc1918</a>
+<a href="//postgres:5432/">pg</a>
+<img src="https://cdn.example/hero.png">
+<a href="https://fonts.googleapis.com/css">fonts</a>
+<a href="/relative/ok">rel</a>
+"#;
+        let (out, report) = sanitize_html(html);
+        assert!(
+            report.notes.iter().any(|n| n == "ssrf_url_neutralized"),
+            "{report:?}"
+        );
+        assert!(!out.contains("gateway:8080"), "{out}");
+        assert!(!out.contains("169.254.169.254"), "{out}");
+        assert!(!out.contains("socket-proxy"), "{out}");
+        assert!(!out.contains("10.1.2.3"), "{out}");
+        assert!(!out.contains("postgres:5432"), "{out}");
+        assert!(out.contains("https://cdn.example/hero.png"), "{out}");
+        assert!(out.contains("https://fonts.googleapis.com/css"), "{out}");
+        assert!(out.contains("/relative/ok"), "{out}");
+        assert!(url_looks_ssrf("http://127.0.0.1:8093/health"));
+        assert!(url_looks_ssrf("https://metadata.google.internal/"));
+        assert!(!url_looks_ssrf("https://cdn.example/x.png"));
     }
 }

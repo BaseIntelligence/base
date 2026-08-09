@@ -58,6 +58,7 @@ fn row_to_state(r: dbs::PrismSubmissionRow) -> SubmissionState {
     SubmissionState {
         id: r.id,
         miner_hotkey: r.miner_hotkey,
+        miner_coldkey: r.miner_coldkey,
         epoch: r.epoch.cast_unsigned(),
         netuid: u16::try_from(r.netuid).unwrap_or(0),
         status,
@@ -175,6 +176,7 @@ impl PrismStore for DbPrismStore {
             &dbs::NewPrismSubmission {
                 id: &row.id,
                 miner_hotkey: &row.miner_hotkey,
+                miner_coldkey: row.miner_coldkey.as_deref(),
                 epoch: i64::try_from(row.epoch).unwrap_or(i64::MAX),
                 netuid: i32::from(row.netuid),
                 label: row.label.as_deref(),
@@ -314,6 +316,13 @@ impl PrismStore for DbPrismStore {
         states_filled(&self.pool, rows).await
     }
 
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError> {
+        let rows = dbs::list_prism_champions(&self.pool, i64::from(limit))
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        states_filled(&self.pool, rows).await
+    }
+
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError> {
         dbs::prism_stage_events(&self.pool, id)
             .await
@@ -353,6 +362,10 @@ impl PrismStore for DbPrismStore {
             i64::try_from(epoch).unwrap_or(i64::MAX),
         )
         .await
+    }
+
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError> {
+        crate::emit::active_score_rows(&self.pool, i32::from(netuid)).await
     }
 
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError> {
@@ -425,5 +438,25 @@ impl PrismStore for DbPrismStore {
         }
         arch::fill_arch_meta(&self.pool, &mut out).await?;
         Ok(out)
+    }
+
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError> {
+        let n = dbs::prism_precheck_quota_get(&self.pool, identity, day)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError> {
+        let limit_i = i32::try_from(limit).unwrap_or(i32::MAX);
+        let n = dbs::prism_precheck_quota_try_consume(&self.pool, identity, day, limit_i)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(n.map(|v| u32::try_from(v).unwrap_or(u32::MAX)))
     }
 }

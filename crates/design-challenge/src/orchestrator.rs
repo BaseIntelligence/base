@@ -2,21 +2,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chain::ChainClient;
 use challenge_agentic::{
-    copy_gate, AgenticBackend, AgenticError, AgenticVerdict, CorpusEntry, GateCorpusEntry,
-    ReviewRequest, VerdictKind,
+    copy_gate, AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest, VerdictKind,
 };
 use challenge_common::{
     emit_signed_leaf_set, expected_set_at_chain, submit_signed_leaf_set, ExpectedSet,
     GatewayClient, PinnedBlockHash,
 };
 use crypto::KEY_LEN;
-use design_challenge_task::{round_id_at, round_secs};
+use design_challenge_task::{
+    awaiting_admin_unscored_expired, reject_awaiting_admin_run, round_id_at, round_secs,
+    UNSCORED_EPOCH_LIMIT,
+};
 use design_http::{mark_awaiting_admin, AdminAwardHook};
 use design_prompts::{prompt_set_digest, select_prompts_for_round};
 use design_sandbox::{SandboxBackend, SandboxError};
@@ -29,8 +32,10 @@ use submission_gating::{GatingState, GatingStore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::score::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
+use crate::corpus;
+use crate::screenshot::{capture_full_page_png, png_artifact_tuple};
 use crate::CHALLENGE_ID;
+use design_challenge_task::{not_attempted, score_window, to_leaf, window_start, WindowScorePlan};
 
 /// Cap harness log payload stored in stage-event detail (JSON).
 const MAX_LOG_CHARS: usize = 65_536;
@@ -119,15 +124,10 @@ fn classify_agentic(e: &AgenticError) -> RunFailure {
 /// Design domain rules appended to the agentic system prompt.
 const DESIGN_AGENTIC_RULES: &str = r"
 Design challenge rules:
-- Allowed: PyPI deps via pyproject.toml, external APIs / MCP servers over the
-  sandbox egress proxy at run time (network use itself is NEVER a cheat signal),
-  Mobbin/Dribbble inspiration, image generation, UI libs.
-- The corpus entry labeled `baseline` is the published reference miner: starting
-  from it is explicitly allowed and is NOT a copy. Copying ANOTHER MINER's
-  harness is what counts as a copy.
-- Cheat: near-identical harness copy, trivial HTML republish, scrape-clone of a real site,
-  sanitize bypass / JS exfil, obfuscation to hide a copy.
-- suspicious and cheat both → Score(0), not eligible for admin winner selection.
+- Allowed: PyPI deps, external APIs/MCP over egress (network ≠ cheat), Mobbin/Dribbble, image gen, UI libs.
+- Corpus `baseline` is the published reference — starting from it is allowed; copying another miner is not.
+- Cheat: near-identical harness copy, HTML republish, scrape-clone, sanitize bypass/JS exfil, obfuscation to hide copy.
+- suspicious and cheat → Score(0), not admin-eligible.
 ";
 
 /// Orchestrator config.
@@ -149,6 +149,8 @@ pub struct OrchestratorConfig {
     /// Auto-retry budget for infra-class failures (initial attempt + this
     /// many retries). Default 3; `cheat` / `rejected` are always terminal.
     pub auto_retry_max: u32,
+    /// Poll interval for the late-tempo D24 filler.
+    pub emit_poll: Duration,
 }
 
 impl Default for OrchestratorConfig {
@@ -161,6 +163,7 @@ impl Default for OrchestratorConfig {
             staging_root: PathBuf::from("/var/lib/design/staging"),
             stage_delay: Duration::ZERO,
             auto_retry_max: 3,
+            emit_poll: Duration::from_secs(15),
         }
     }
 }
@@ -175,6 +178,10 @@ pub struct Orchestrator<C: ChainClient + Send + Sync> {
     chain: Arc<C>,
     sk: [u8; KEY_LEN],
     gating: Option<Arc<dyn GatingStore>>,
+    /// Shared chain-epoch cache (HTTP `AppState.epoch` + sweeper clock).
+    epoch_cache: Option<Arc<AtomicU64>>,
+    /// Last epoch successfully covered by [`Self::emit_leaves`].
+    emitted_epoch: AtomicU64,
 }
 
 impl<C: ChainClient + Send + Sync> std::fmt::Debug for Orchestrator<C> {
@@ -206,6 +213,8 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
             chain,
             sk,
             gating: None,
+            epoch_cache: None,
+            emitted_epoch: AtomicU64::new(0),
         }
     }
 
@@ -214,6 +223,22 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     pub fn with_gating(mut self, gating: Arc<dyn GatingStore>) -> Self {
         self.gating = Some(gating);
         self
+    }
+
+    #[must_use]
+    pub fn with_epoch_cache(mut self, epoch: Arc<AtomicU64>) -> Self {
+        self.epoch_cache = Some(epoch);
+        self
+    }
+
+    fn current_epoch(&self) -> u64 {
+        let epoch = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map(|s| chain::current_epoch_pre_run_coinbase(&s, s.current_block))
+            .unwrap_or(0);
+        if let Some(cache) = &self.epoch_cache {
+            cache.store(epoch, Ordering::Relaxed);
+        }
+        epoch
     }
 
     /// Local/e2e: hold after publishing a stage so polls can photograph it.
@@ -254,15 +279,88 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                     }
                 }
             }
-            // Ensure current round row exists.
+            // One attempt: submit schedules next round only (no auto roll-forward).
             let _ = self.ensure_round(rid).await;
+            let _ = self.current_epoch();
         }
     }
 
-    /// Stuck sweeper.
+    /// Late-tempo D24 filler: `NotAttempted` coverage when no admin award fired
+    /// (waits ~last 48 blocks so `award_round` can land Score leaves first).
+    pub async fn run_emitter(self: Arc<Self>)
+    where
+        C: Sync,
+    {
+        loop {
+            if let Err(e) = self.emitter_tick().await {
+                warn!(error = %e, "design emitter tick error");
+            }
+            sleep(self.cfg.emit_poll).await;
+        }
+    }
+
+    /// One emitter tick. `Ok(true)` when a leaf set was submitted this tick.
+    ///
+    /// # Errors
+    /// Chain / sign / submit failures (retried next tick).
+    pub async fn emitter_tick(&self) -> Result<bool, String>
+    where
+        C: Sync,
+    {
+        let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
+            .map_err(|e| format!("schedule: {e}"))?;
+        let epoch = state.subnet_epoch_index;
+        if epoch == 0 || self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
+            return Ok(false);
+        }
+        let tempo = u64::from(state.tempo.max(1));
+        if state.blocks_since_last_step.saturating_add(48) < tempo {
+            return Ok(false);
+        }
+        self.emit_leaves().await?;
+        Ok(true)
+    }
+
+    async fn sweep_unscored_timeouts(&self) -> Result<(), String> {
+        let current = self.current_epoch();
+        if current == 0 {
+            return Ok(());
+        }
+        let awaiting = self
+            .store
+            .list_runs(Some("awaiting_admin"), 500)
+            .await
+            .map_err(|e| e.to_string())?;
+        let gating = self.gating.as_deref();
+        for run in awaiting {
+            if !awaiting_admin_unscored_expired(&run, current) {
+                continue;
+            }
+            let start = run.awaiting_admin_epoch.or(run.attempt_epoch).unwrap_or(0);
+            let reason = format!(
+                "unscored_timeout: no admin score within {UNSCORED_EPOCH_LIMIT} epochs (since epoch {start})"
+            );
+            info!(run_id = %run.id, start_epoch = start, current_epoch = current, "auto-reject unscored");
+            reject_awaiting_admin_run(
+                self.store.as_ref(),
+                gating,
+                &run,
+                &reason,
+                "unscored_timeout",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Stuck sweeper + unscored-timeout sweep.
     pub async fn run_sweeper(self: Arc<Self>) {
         loop {
             sleep(Duration::from_secs(60)).await;
+            if let Err(e) = self.sweep_unscored_timeouts().await {
+                warn!(error = %e, "unscored timeout sweep failed");
+            }
             if let Ok(stuck) = self.store.list_stuck_runs(self.cfg.stuck_grace_secs).await {
                 for r in stuck {
                     let _ = self
@@ -705,7 +803,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         // Sanitize reject is the miner's fault: terminal, no auto-retry.
         let sanitized = sanitize_bundle(&out.pages)
             .map_err(|e| RunFailure::new(ErrorClass::Miner, e.to_string()))?;
-        let pages: Vec<_> = sanitized
+        let mut pages: Vec<_> = sanitized
             .pages
             .iter()
             .map(|p| {
@@ -718,15 +816,38 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 )
             })
             .collect();
+        // Best-effort full-page screenshot of the styled index for the site UI
+        // (replaces iframe previews). Failure never fails the run. The capture
+        // spawns Chromium, so keep it off the async worker threads.
+        if let Some(index) = sanitized.pages.iter().find(|p| p.path == "index.html") {
+            let shot_dir = self.cfg.staging_root.join("screenshots").join(&run.id);
+            let html = index.sanitized_html.clone();
+            let dir = shot_dir.clone();
+            let png = tokio::task::spawn_blocking(move || capture_full_page_png(&html, &dir))
+                .await
+                .ok()
+                .flatten();
+            if let Some(png) = png {
+                info!(run_id = %run.id, bytes = png.len(), "captured design page screenshot");
+                pages.push(png_artifact_tuple(&png));
+            } else {
+                warn!(run_id = %run.id, "design page screenshot unavailable");
+            }
+            let _ = std::fs::remove_dir_all(&shot_dir);
+        }
         self.store
             .put_artifacts(&run.id, &pages)
             .await
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         let report = serde_json::to_value(&sanitized.report).unwrap_or_default();
 
-        // Pre-LLM copy gate: byte/AST copy of an *earlier* harness → terminal
-        // `rejected` without spending the LLM review.
-        let gate_corpus = self.gate_corpus(&run.harness_id).await;
+        // Pre-LLM copy gate → terminal `rejected` (one fetch for gate + review).
+        let recent = self
+            .store
+            .list_recent_harnesses(64)
+            .await
+            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
+        let gate_corpus = corpus::gate_corpus(&harness, &recent);
         if let Some(hit) = copy_gate(&harness.agent_py, harness.created_at_ms, &gate_corpus) {
             warn!(
                 run_id = %run.id,
@@ -746,6 +867,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                 "rationale": "pre-LLM copy gate: byte/AST copy of an earlier harness",
                 "gate": "copy_created_at",
             });
+            let copy_reason = if hit.byte_identical {
+                "near_identical_harness_copy"
+            } else {
+                "ast_architecture_copy"
+            };
             let _ = self
                 .store
                 .apply_run(
@@ -755,6 +881,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                         artifact_digest: Some(sanitized.artifact_digest.clone()),
                         sanitize_report: Some(report),
                         agentic_verdict: Some(verdict_json),
+                        reject_reason: Some(copy_reason.into()),
                         final_score: Some(FinalScore::Score(0)),
                         ..StorePatch::default()
                     },
@@ -764,6 +891,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
                             "gate": "copy_created_at",
                             "nearest_id": hit.nearest_id,
                             "similarity_bps": hit.similarity_bps,
+                            "reject_reason": copy_reason,
                         })),
                         at_ms: now_ms(),
                     }),
@@ -803,17 +931,19 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         self.pause_stage().await;
 
         let verdict = self
-            .run_agentic_review(run, &harness.agent_py, &pages, &report)
+            .run_agentic_review(run, &harness, &recent, &pages, &report)
             .await?;
         let verdict_json = serde_json::to_value(&verdict).unwrap_or_default();
         match verdict.verdict {
             VerdictKind::Clean => {
+                let epoch = self.current_epoch();
                 mark_awaiting_admin(
                     self.store.as_ref(),
                     &run.id,
                     &sanitized.artifact_digest,
                     report,
                     verdict_json,
+                    epoch,
                 )
                 .await
                 .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
@@ -857,26 +987,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         Ok(())
     }
 
-    /// Corpus for the pre-LLM copy gate (recent harnesses minus the candidate).
-    async fn gate_corpus(&self, exclude_harness_id: &str) -> Vec<GateCorpusEntry> {
-        self.store
-            .list_recent_harnesses(64)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|h| h.id != exclude_harness_id)
-            .map(|h| GateCorpusEntry {
-                id: format!("harness:{}", h.id),
-                source: h.agent_py,
-                created_at_ms: h.created_at_ms,
-            })
-            .collect()
-    }
-
     async fn run_agentic_review(
         &self,
         run: &design_store::RunState,
-        agent_py: &str,
+        harness: &design_store::HarnessRow,
+        recent: &[design_store::HarnessRow],
         pages: &[(String, String, String, String, u32)],
         sanitize_report: &serde_json::Value,
     ) -> Result<AgenticVerdict, RunFailure> {
@@ -884,7 +999,7 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(work.join("pages"))
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
-        std::fs::write(work.join("agent.py"), agent_py)
+        std::fs::write(work.join("agent.py"), &harness.agent_py)
             .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
         for (path, sanitized, _, _, _) in pages {
             let name = path.rsplit('/').next().unwrap_or(path.as_str());
@@ -897,43 +1012,10 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         )
         .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
 
-        let recent = self
-            .store
-            .list_recent_harnesses(64)
-            .await
-            .map_err(|e| RunFailure::new(ErrorClass::AstInfra, e.to_string()))?;
-        let cand_created = recent
-            .iter()
-            .find(|h| h.id == run.harness_id)
-            .map(|h| h.created_at_ms)
-            .unwrap_or(0);
-        let mut corpus: Vec<CorpusEntry> = vec![CorpusEntry {
-            // The published baseline is always in the corpus (same as prism):
-            // it anchors originality judgments and keeps an empty recent-set
-            // from producing incoherent verdicts.
-            id: "baseline".into(),
-            source: include_str!("../../../docs/external-miner/examples/design-baseline/agent.py")
-                .to_owned(),
-        }];
-        corpus.extend(
-            recent
-                .into_iter()
-                .filter(|h| h.id != run.harness_id)
-                // Prior art only (created_at ordered like the pre-LLM gate): a
-                // later byte-copy must never poison the original's review.
-                .filter(|h| {
-                    cand_created == 0 || (h.created_at_ms > 0 && h.created_at_ms < cand_created)
-                })
-                .map(|h| CorpusEntry {
-                    id: format!("harness:{}", h.id),
-                    source: h.agent_py,
-                }),
-        );
-
         let req = ReviewRequest {
             workdir: work.clone(),
             primary_relpaths: vec!["agent.py".into()],
-            corpus,
+            corpus: corpus::review_corpus(harness, recent),
             metrics_relpath: None,
             pages_relpath: Some("pages".into()),
             sanitize_report_relpath: Some("sanitize_report.json".into()),
@@ -1007,7 +1089,11 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     async fn emit_leaves(&self) -> Result<(), String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        let epoch = chain::current_epoch_pre_run_coinbase(&state, state.current_block);
+        // Label with the *current* chain epoch (see the prism emitter for the
+        // full rationale): the expected set is pinned at `last_epoch_block`,
+        // so the label and the covered metagraph must refer to the same epoch
+        // or D24 exact-match against the other challenge 409s under churn.
+        let epoch = state.subnet_epoch_index;
         let block_hash = self
             .chain
             .block_hash(state.last_epoch_block)
@@ -1045,6 +1131,13 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         submit_signed_leaf_set(self.gateway.as_ref(), &signed)
             .await
             .map_err(|e| e.to_string())?;
+        self.emitted_epoch.store(epoch, Ordering::Relaxed);
+        info!(
+            epoch,
+            participants = expected_set.len(),
+            last_epoch_block = state.last_epoch_block,
+            "design leaf set submitted"
+        );
         Ok(())
     }
 }

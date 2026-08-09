@@ -55,16 +55,20 @@ are registered. `remote-deploy.sh` (master) re-seeds automatically; to do it by
 hand:
 
 ```bash
-# From this repo (against a reachable gateway):
+# From this repo (against a reachable gateway; reads deploy/secrets/gateway_admin_token):
 GATEWAY_URL=http://staging.api.joinbase.ai ./deploy/scripts/register-challenge-backends.sh
 
-# Or on the droplet:
+# Or on the droplet (admin bearer required after #100):
+TOKEN=$(tr -d '[:space:]' </opt/base/deploy/secrets/gateway_admin_token)
 curl -fsS -X POST http://127.0.0.1:8080/v1/admin/backends \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer ${TOKEN}" \
   -d '{"challenge_id":"prism","base_url":"http://prism-challenge:8092","weight":1}'
 curl -fsS -X POST http://127.0.0.1:8080/v1/admin/backends \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer ${TOKEN}" \
   -d '{"challenge_id":"design","base_url":"http://design-challenge:8093","weight":1}'
+unset TOKEN
 curl -fsS http://staging.api.joinbase.ai/challenge/prism/health
 curl -fsS http://staging.api.joinbase.ai/challenge/design/health
 ```

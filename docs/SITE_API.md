@@ -11,12 +11,37 @@ frontend `BaseApi` contract (`types.ts` / `contract.ts`).
 | `/v1/site/arenas/prism/*` | Registry pick `challenge_id=prism` → `/v1/status`, `/v1/submissions`, `/v1/recipe` |
 | `/v1/site/network`, `/validators` | Chain tip / metagraph when available; numeric unknowns are `0` or omitted — never invented TAO price/emission |
 | `/v1/site/arenas/design/duels` | Always `[]` (admin winners model; no fabricated matchups) |
+| `/v1/site/activity` | Design `recent_runs` + round winners + prism submissions → ops-style English lines (deduped) |
 | Coding arena | `status: "paused"`, empty submissions / matrix / leaderboard |
 
-Design submission `url` is the public proxy path
-`/challenge/design/v1/view/{runId}/index.html`. Leaderboard `elo` is the design
-`rating` field. Prism window series use real terminal `bpb` with a single
-`[final]` point when no step curve is stored.
+Design submissions carry **no `url`** (produced HTML is never served); the
+public preview is `screenshotUrl` → `/challenge/design/v1/view/{runId}/index.png`
+(relative path on the gateway). Marketing clients should resolve that path to the
+**absolute** gateway host for `<img src>` (e.g.
+`https://chain.joinbase.ai/challenge/design/v1/view/{runId}/index.png`) so PNG
+bytes are not proxied through the site's Vercel `/gbase-api` rewrite. JSON
+`/v1/site/*` calls may keep using the same-origin proxy. Runs without a captured
+screenshot are excluded from the submissions list. Design `GET /v1/dashboard`
+`recent_runs` therefore prioritizes post-sanitize stages (`awaiting_admin`,
+`scored`, …) over a flood of brand-new `queued` rows so the site gallery is not
+starved.
+
+Leaderboard `elo` is the design `rating` field. When the current round has no
+winners yet (`ratings: []`), `/v1/site/arenas/design/leaderboard` surfaces the
+previous round's standings (`roundId` = previous) rather than an empty board.
+Prism window series use real terminal `bpb` with a single `[final]` point when
+no step curve is stored. `PrismWindow.tokenBudget` is **0** unless a recipe
+publishes a fixed token quota (prism ≥1.2 does not — caps are wall-clock /
+steps / params). Chart x-values still come from miner telemetry
+(`layer_stats.tokens` when present); clients must not label the max observed
+x as an egalitarian “token window.” Prism public submissions + BPB
+leaderboard list **champions only** (`score.kind=score` and `value > 0` —
+current top and historical ex-tops); non-top rows stay on the operator
+challenge API.
+
+`GET /v1/site/arenas/{slug}/submissions` and `/leaderboard` accept optional
+`?q=` — case-insensitive substring over miner hotkey (SS58 or hex), handle,
+slug, operator, and (for submissions) prompt title / id / run id.
 
 Backends must be registered (same as challenge proxy), e.g.
 `deploy/scripts/register-challenge-backends.sh`.

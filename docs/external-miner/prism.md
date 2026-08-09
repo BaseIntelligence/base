@@ -109,6 +109,15 @@ curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe"
 curl -sS "$BASE_GATEWAY/challenge/prism/v1/recipe/baseline"
 ```
 
+Live production (recipe **1.2.0**) advertises `train_rows: 2048`,
+`val_rows: 256`, `train_hours_cap: 6.0`, `max_train_steps: 20000`,
+`max_params: 350000000`, and `pin_hex` (sha over version + caps + dataset +
+harness). The sealed baseline only trains on the 2048-row cut (~2M GPT-2
+tokens) and scores poorly by design; competitive entries may stream the full
+pinned FineWeb-Edu shard for up to 6h. Site chart labels that show “~2.6B
+tokens · single pass” were **observed leader telemetry**, not a fixed recipe
+quota — trust `/v1/recipe`, not the chart meta line.
+
 `POST /v1/submissions` is idempotent by `submission_id`.
 
 ## Submission gating (1-max)
@@ -139,17 +148,66 @@ architecture is fine, and training-only entries on a published arch are never
 "copies" by construction. Starting from the published baseline is always
 allowed.
 
+## Causal LM contract (banned: non-causal label leak)
+
+Prism scores **next-token** cross-entropy → BPB. Architectures must not let
+position `t` read tokens `t+1…` (including the label). Dense sequence mixers —
+MLP-Mixer-style `TokenMix` / `t_mix` / `nn.Linear` over the full time axis
+after `transpose(1, 2)` — **without** a causal mask (`triu` / `tril` /
+`is_causal` / attention mask) are a hard ban (`non_causal_label_leak`,
+`Score(0)`, terminal, often caught **before** GPU rent). Channel mixing and
+causal attention / causal conv are fine; bidirectional full-sequence mixes
+used as a next-token LM are not.
+
+### Precheck before you submit (recommended)
+
+Dry-run the same pre-LLM copy gate **without** burning your 1-max slot or a
+GPU eval:
+
+```bash
+curl -sS -X POST "$GATEWAY/challenge/prism/v1/submissions/precheck" \
+  -H 'content-type: application/zip' \
+  -H "X-Miner-Hotkey: $HOTKEY" \
+  --data-binary @submission.zip
+```
+
+| Field | Meaning |
+|-------|---------|
+| `similar` | `true` → would hard-reject at intake copy gate |
+| `verdict` | `clean` / `copied` / `skipped` (training-only) |
+| `matched_against` | Corpus id only (never competitor source) |
+| `score` | Similarity in `[0,1]` when compared |
+| `quota` | `{ day, used, limit: 3, remaining, identity }` |
+
+**Quota: 3 attempts per coldkey per UTC day** (falls back to hotkey when the
+metagraph Owner coldkey is unknown). Rotating hotkeys under the same coldkey
+does **not** reset the budget. A 4th call returns `429` /
+`precheck_quota_exceeded` with `remaining=0`. Precheck never creates a scored
+submission and never rents a Lium pod.
+
 ## Scoring (summary)
 
 Final leaf score is pure bits-per-byte (bpb) on the lattice `[0, SCORE_MAX]`.
-Cheap similarity plus the shared **agentic** gate (AST + metrics/receipt) force
-hard-zero on `cheat` / `suspicious` (and cheap `Copied` / `Suspicious`);
-LLM quality is coherence-only, not a grader. **Competition:** per epoch you are
+The shared **agentic** gate (AST + metrics/receipt) hard-zeros `cheat` /
+`suspicious`. Cheap LLM similarity hard-zeros `Copied`, and `Suspicious` only
+when confidence `≥ 0.9` with non-generic evidence (below that — e.g. 0.7 citing
+RMSNorm/SwiGLU/LayerNorm — does **not** wipe your score). Copy/similarity
+corpora are **champions only** (current top + historical Score>0 ex-tops) plus
+baseline — not every past submission — and still exclude your own prior art
+(same hotkey **or** same coldkey). Standard components (RMSNorm, RoPE, SwiGLU,
+LayerNorm, gated/parallel residual, …) are **not** plagiarism signals. LLM
+quality is coherence-only, not a grader.
+Public gallery/leaderboard show champions only.
+**Competition:** per epoch you are
 credited the max of (a) your own best training result and (b) for each arch you
 own, that arch's best result by *any* trainer — architecture owners are rewarded
-for architectures people win with. Scores land in the leaf set emitted at the
-first chain-epoch boundary **after** your run finalizes (a long train that
-crosses epochs is normal — it scores exactly once, in the next boundary's set).
+for architectures people win with. Emission is **winner-take-all**: only the
+single highest credit that epoch receives Prism's share (50% of the subnet);
+ties break by lexicographically smallest hotkey. Scores first land in the leaf
+set emitted at the first chain-epoch boundary **after** your run finalizes (a
+long train that crosses epochs is normal — outbox assignment is exactly once).
+Positive scores then keep participating in later epochs' competition sets until
+a better valid score supersedes them (WTA still collapses to one leaf winner).
 The global-best model is published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/`. See [`PRISM.md`](../PRISM.md).
@@ -210,6 +268,7 @@ registry and pre-registration commits at `GET /v1/anchors` and
 
 | Route | Use |
 |-------|-----|
+| `POST /v1/submissions/precheck` | Advisory copy-gate (3/coldkey/UTC day); no submit |
 | `GET /v1/status` | Backend mode, epoch, queue |
 | `GET /v1/submissions/{id}` | Detail + receipt + scores + composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Stage timeline |
@@ -223,7 +282,7 @@ registry and pre-registration commits at `GET /v1/anchors` and
 | `GET /v1/jobs` | Active/recent pods (ops) |
 | `GET /health` | Liveness |
 
-Emission share for prism is owner-controlled via the trust root. Until the design
-enablement ceremony, prism typically holds the full `10000` bps share — see
+Emission share for prism is owner-controlled via the trust root. Current split is
+`5000` bps prism / `5000` bps design (50/50) — see
 [`../runbooks/prism-enable-lium-and-emission.md`](../runbooks/prism-enable-lium-and-emission.md)
 and [`../runbooks/design-enable-and-emission.md`](../runbooks/design-enable-and-emission.md).

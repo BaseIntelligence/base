@@ -48,6 +48,15 @@ The harness captures the series into `METRICS_JSON.telemetry.loss_series`
 contract violation**: review fails the submission
 (`missing_telemetry_hooks` cheat code, zero score, terminal — no retry).
 
+## Causal next-token contract
+
+Val scoring is next-token CE → BPB on a frozen cut. Architectures that densify
+mix across the **full** time axis (MLP-Mixer `TokenMix` / `t_mix` /
+`nn.Linear(seq, …)` after `transpose(1, 2)`) without a causal mask let
+position `t` read the label at `t+1` — that is a hard cheat
+(`non_causal_label_leak`), caught by the pre-pod static screen before Lium
+rent. Channel mixers and masked causal attention / causal conv remain allowed.
+
 ## Tokenizer (submitted, not imposed)
 
 The tokenizer is **part of the submission**. The harness resolves it once per
@@ -228,6 +237,30 @@ score.
 | Hard step cap | 20 000 (config may only lower) |
 | Source size | 128 KiB per script (two-script intake); tree budgets per `zip_submit` |
 | Model parameters | ≤ **350 000 000** after `build_model` (`MAX_PARAMS`) |
+| `train_rows` (descriptor) | **2048** — baseline / default cut advertised on `GET /v1/recipe` |
+| `val_rows` | **256** — frozen val cut scored by the harness (not miner-chosen) |
+
+### What `train_rows` means (and what it does not)
+
+`train_rows: 2048` is the **baseline cut** and the value injected into
+`ctx["train_rows"]`. The sealed baseline (`training.py`) reads that many texts
+from the pinned parquet (~2M GPT-2 tokens for that slice — **not** billions).
+
+Egalitarian constraints are the **pinned shard + seed + wall/step/param caps**.
+The harness hands miners `ctx["dataset_path"]` to the **full** verified
+parquet; competitive `training.py` may stream or multi-pass that shard until
+the 6h / 20k-step guard fires. Token throughput therefore depends on the miner
+loop and the rented GPU — a ~6h RTX 5090 run can report on the order of
+**~2.6B** tokens in telemetry. That figure is **observed throughput**, not a
+recipe-published “2.6B token window.”
+
+Do not treat the marketing site’s loss-chart axis (or a leader’s telemetry
+peak) as the recipe contract — always trust `GET /v1/recipe` + this doc.
+
+**Harness note (follow-up, do not hot-fix mid-flight):** `METRICS_JSON.tokens_seen`
+currently echoes `TRAIN_ROWS` (2048) even when telemetry `layer_stats.tokens`
+shows billions. Changing that field would alter the recipe pin (harness bytes
+are hashed) — coordinate a version bump if/when fixing it.
 
 Caps are **unchanged** in v3 (350M params, 6h). The parameter-cap breach
 semantics changed in 1.3.0: it is a terminal `Score(0)` (`CAP_EXCEEDED`),
@@ -260,24 +293,28 @@ verdict, quality notes and issues are kept as audit records
 review still gates eligibility:
 
 - similarity verdict `Copied` → hard **Score 0**
-- similarity verdict `Suspicious` → hard **Score 0** until reviewed
+- similarity verdict `Suspicious` → **Score 0** only when `score ≥ 0.9` and
+  evidence is not generic-trope-only (else no wipe; agentic remains the
+  structural judge)
 - harness/antipattern failure → `ChallengeInternal` maps to `NoScore` reason
 
 ## Anti-copy review
 
 A **pre-LLM copy gate** first compares the candidate `architecture.py`
-against recent submissions (byte hash + AST fingerprints, `created_at`
-ordered): a byte/AST copy of a strictly-earlier architecture is terminal
-`rejected` with zero score — no pod time, no LLM spend. The baseline is
-exempt (everyone may start from it); created_at ties fall through to the LLM
-path below.
+against **champion** submissions (Score>0 current top + historical ex-tops)
+from **other miners** (byte hash + AST fingerprints, `created_at` ordered;
+same-`miner_hotkey` and same-`miner_coldkey` prior art excluded): a byte/AST
+copy of a strictly-earlier champion architecture is terminal `rejected` with
+zero score — no pod time, no LLM spend. The baseline is exempt (everyone may
+start from it); created_at ties fall through to the LLM path below.
 
 Each remaining submission then faces an LLM review on the master
 (`OpenRouter` when the key file `/run/base/openrouter/api_key` exists, else
 the deterministic `SimReviewer`) over its **architecture only** vs. the
-recipe **baseline plus every earlier submission** (`prism_submission`
-history, capped at the 6 most recent records). Since similarity v2,
-`training.py` is exempt from both candidate and corpus: the same training
-script on two different architectures is legitimate. Verdicts: `Original` /
-`Suspicious` / `Copied`, with a similarity score and evidence line — all
-stored append-only in `prism_stage_event`.
+recipe **baseline plus champions** (capped; same hotkey/coldkey exclusion).
+Since similarity v2/v3, `training.py` is exempt from both candidate and
+corpus: the same training script on two different architectures is
+legitimate. Verdicts: `Original` / `Suspicious` / `Copied`, with a similarity
+score and evidence line — all stored append-only in `prism_stage_event`.
+Generic modern-LM components (RMSNorm, RoPE, SwiGLU, …) must not appear as
+copy evidence; parsers coerce those false positives to `Original`.

@@ -116,12 +116,20 @@ pub struct Agent {
     pub slug: String,
     /// Display handle.
     pub handle: String,
-    /// Printed miner number when known; `—` otherwise.
+    /// Printed miner number when known (`041`); `—` otherwise.
+    /// Mirrors [`Self::uid`] zero-padded when the metagraph lookup succeeds.
     pub miner_number: String,
     /// Declared model/stack when known; `—` otherwise.
     pub model: String,
     /// Operator label (truncated hotkey).
     pub operator: String,
+    /// Full miner hotkey — SS58 when the upstream hex decodes, otherwise the
+    /// raw upstream value; `—` when the miner is unknown. Copy targets read
+    /// this, never the truncated `operator`.
+    pub hotkey: String,
+    /// On-chain UID from the current metagraph when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u16>,
     /// Join epoch when known.
     pub joined_epoch: u64,
 }
@@ -152,6 +160,12 @@ pub struct LeaderboardRow {
     /// Model parameters in millions when the submission measured them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params_m: Option<f64>,
+    /// Normalised sealed weight share for this hotkey (0..1), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+    /// Estimated TAO/day = `weight × subnet_emission_per_day` when both known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tao_per_day: Option<f64>,
 }
 
 /// Submission status.
@@ -178,10 +192,18 @@ pub struct Submission {
     pub agent: Agent,
     /// Prompt / issue id.
     pub prompt_id: String,
+    /// Short prompt title from the pinned bank when known (design arena).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_title: Option<String>,
     /// Title.
     pub title: String,
-    /// Preview or detail URL (gateway-relative for design view).
-    pub url: String,
+    /// Preview or detail URL. Absent for design: produced HTML is never
+    /// served, so design rows carry only `screenshot_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Full-page PNG screenshot URL when master captured one (design arena).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot_url: Option<String>,
     /// Coarse marketing status (`scored` | `pending` | `failed`).
     pub status: SubmissionStatus,
     /// Fine-grained upstream stage (`queued`, `installing`, `agentic_review`, …).
@@ -195,6 +217,9 @@ pub struct Submission {
     /// Prism validation BPB when measured (terminal or mid-flight if present).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bpb: Option<f64>,
+    /// Model parameters in millions when measured (Prism); absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params_m: Option<f64>,
     /// Failure reason when failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
@@ -203,10 +228,13 @@ pub struct Submission {
 }
 
 /// Loss series point.
+///
+/// `step` is the chart x-value: prefer tokens-seen from harness
+/// `layer_stats.tokens` when present, else the optimizer step index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LossPoint {
-    /// Step index.
+    /// Tokens seen (preferred) or optimizer step index.
     pub step: u32,
     /// Loss / BPB.
     pub loss: f64,
@@ -218,6 +246,9 @@ pub struct LossPoint {
 pub struct LossSeries {
     /// Architecture label.
     pub architecture: String,
+    /// Upstream prism submission id (join key for the submissions table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<String>,
     /// Params in millions when known; 0 if unknown.
     pub params: f64,
     /// Final loss / BPB.
@@ -236,7 +267,10 @@ pub struct PrismWindow {
     pub dataset: String,
     /// Recipe revision / pin short.
     pub revision: String,
-    /// Token budget when known; 0 if the recipe does not publish one.
+    /// Fixed token budget when the recipe publishes one; **0** for prism
+    /// recipe ≥1.2 (egalitarian caps are wall-clock / steps / params + pinned
+    /// shard — not a fixed token quota). Chart axis span is derived from
+    /// series points, not this field.
     pub token_budget: u64,
     /// Always pinned.
     pub offset: String,
@@ -352,6 +386,52 @@ pub struct NetworkStats {
     pub total_stake: Option<f64>,
 }
 
+/// One arena's configured emission share (from the owner-signed trust root).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmissionShare {
+    /// Arena slug (`design`, `prism`, `coding`).
+    pub arena: String,
+    /// Share of subnet miner emission, 0..1.
+    pub share: f64,
+}
+
+/// One hotkey's sealed weight entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyWeight {
+    /// Miner hotkey (SS58).
+    pub hotkey: String,
+    /// Normalised weight, 0..1 (burn uid excluded).
+    pub weight: f64,
+}
+
+/// Sealed weight vector + configured emission split (`GET /v1/site/weights`).
+///
+/// Reads the same sealed bundle the gateway serves on `/v1/weights/latest`;
+/// `sealed: false` means no bundle exists yet and only the trust-root shares
+/// are real (hotkey list empty, burn share 1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteWeights {
+    /// Whether a sealed epoch bundle exists.
+    pub sealed: bool,
+    /// Sealed epoch when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// Subnet netuid.
+    pub netuid: u16,
+    /// Configured per-arena emission shares (trust root), 0..1 each.
+    pub emission_shares: Vec<EmissionShare>,
+    /// Sealed per-hotkey weights (SS58), sorted by weight desc.
+    pub hotkey_weights: Vec<HotkeyWeight>,
+    /// Fraction of the sealed vector on the burn uid (1 when unsealed).
+    pub burn_share: f64,
+    /// ISO-8601 seal time when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<String>,
+}
+
 /// Validator row (honest fields only; stake/trust 0 when chain lacks them).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -375,7 +455,7 @@ pub struct Validator {
 }
 
 /// Activity severity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ActivitySeverity {
     /// Score event.

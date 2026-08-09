@@ -8,5 +8,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+bundle = { path = "../bundle" }
+design-store = { path = "../design-store" }
+serde_json = "1"
+submission-gating = { path = "../submission-gating" }
+
 [lints]
 workspace = true

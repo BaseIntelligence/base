@@ -364,10 +364,33 @@ PY
 else
   # Build service images from current tree (source) or prebuilt binaries.
   docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} build
+  # Sandbox runtime + anti-cheat review images are not compose services; build
+  # them explicitly. BUILD_FROM must match the compose build — without it these
+  # silently fell back to a source compile even on prebuilt deploys, so the
+  # review image could stay byte-identical (BuildKit cache) while the rest of
+  # the stack moved to new binaries. --iidfile + inspect prove the tag moved
+  # to the just-built image; a no-op build that leaves the tag on an old image
+  # must fail the deploy, not report success.
+  build_local_image() {
+    local target="\$1" tag="\$2" iid before after built
+    iid="\$(mktemp)"
+    before="\$(docker image inspect "\$tag" --format '{{.Id}}' 2>/dev/null || echo none)"
+    docker build -f deploy/Dockerfile --target "\$target" \
+      --build-arg BUILD_FROM="\$BUILD_FROM" \
+      --iidfile "\$iid" -t "\$tag" .
+    built="\$(cat "\$iid")"
+    rm -f "\$iid"
+    after="\$(docker image inspect "\$tag" --format '{{.Id}}')"
+    echo "remote-deploy: \$tag \$before -> \$after"
+    if [[ -z "\$built" || "\$after" != "\$built" ]]; then
+      echo "remote-deploy: ERROR: \$tag resolves to \$after but the build produced \$built — refusing to continue" >&2
+      exit 1
+    fi
+  }
   # Sandbox runtime image (not a long-running compose service).
-  docker build -f deploy/Dockerfile --target design-runtime -t design-runtime:0.1.0 .
+  build_local_image design-runtime design-runtime:0.1.0
   # Anti-cheat review image (one-shot containers spawned by design-challenge).
-  docker build -f deploy/Dockerfile --target design-review -t design-review:0.1.0 .
+  build_local_image design-review design-review:0.1.0
 fi
 
 # The updater can only pull from a registry. Enable it only when the desired
@@ -393,42 +416,98 @@ fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE "\${UP_ARGS[@]}"
 # Profile-disabled services are not started, but an older compose project may
 # still be running them. On validator, force-remove master-only challenge
-# surfaces so smoke health does not see stale unhealthy containers.
+# surfaces so smoke health does not see stale unhealthy containers. On master,
+# force-remove the validator so a prior dual-submitter cannot fight the
+# validator-host wallet for WeightsSetRateLimit / CRV4 commits.
 if [[ '$ROLE' == 'validator' ]]; then
   docker compose ${COMPOSE_FILES[*]} rm -sf \
     prism-challenge design-challenge design-egress-proxy socket-proxy \
+    >/dev/null 2>&1 || true
+elif [[ '$ROLE' == 'master' ]]; then
+  docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} rm -sf validator \
     >/dev/null 2>&1 || true
 fi
 docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} \$UP_PROFILE ps
 # Local health probes via published tunnels if present, else container exec.
 sleep 5
-if curl -fsS -m 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
-  echo "validator tunnel health: \$(curl -fsS -m 5 http://127.0.0.1:18080/healthz)"
-elif docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T validator curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
-  echo "validator health: ok (in-container)"
-else
-  echo "validator health: probe deferred (container may still be starting)"
+if [[ '$ROLE' == 'validator' ]]; then
+  if curl -fsS -m 5 http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
+    echo "validator tunnel health: \$(curl -fsS -m 5 http://127.0.0.1:18080/healthz)"
+  elif docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T validator curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    echo "validator health: ok (in-container)"
+  else
+    echo "validator health: probe deferred (container may still be starting)"
+  fi
 fi
 if [[ '$ROLE' == 'master' ]]; then
+  if docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} ps --status running --services 2>/dev/null | grep -qx validator; then
+    echo "remote-deploy: ERROR: validator still running on master (dual submitter)" >&2
+    exit 1
+  fi
+  echo "master: validator absent (sole on-chain submitter is validator host)"
   if docker compose ${COMPOSE_FILES[*]} ${PROFILE_ARGS[*]} exec -T gateway curl -fsS -m 5 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
     echo "gateway health: ok"
   else
     echo "gateway health: probe deferred"
   fi
   # Registry is in-memory — re-seed challenge backends after every redeploy.
+  # The gateway races this script on boot, so retry until registration sticks,
+  # then prove proxy routing end-to-end: a missed reseed leaves /challenge/*
+  # at 503 while /healthz stays green. Both must fail the deploy loudly.
+  # Gateway /v1/admin/* requires Authorization: Bearer (gateway_admin_token).
   echo "remote-deploy: registering challenge backends"
-  python3 - <<'PY'
-import json, urllib.request, urllib.error
+  reseed_ok=0
+  for attempt in \$(seq 1 15); do
+    if python3 - <<'PY'
+import json, os, sys, urllib.error, urllib.request
+from pathlib import Path
+
+def resolve_admin_token() -> str:
+    token = (os.environ.get("BASE_GATEWAY_ADMIN_TOKEN") or "").strip()
+    if token:
+        return token
+    candidates = []
+    env_file = (os.environ.get("BASE_GATEWAY_ADMIN_TOKEN_FILE") or "").strip()
+    if env_file:
+        candidates.append(Path(env_file))
+    # remote-deploy cds to REMOTE_DIR (/opt/base); secrets live beside the tree.
+    candidates.extend(
+        [
+            Path("deploy/secrets/gateway_admin_token"),
+            Path("/opt/base/deploy/secrets/gateway_admin_token"),
+        ]
+    )
+    for path in candidates:
+        if path.is_file():
+            token = path.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    return ""
+
+token = resolve_admin_token()
+if not token:
+    print(
+        "ERROR: gateway admin token missing "
+        "(set BASE_GATEWAY_ADMIN_TOKEN or deploy/secrets/gateway_admin_token)",
+        flush=True,
+    )
+    sys.exit(1)
+
+headers = {
+    "content-type": "application/json",
+    "Authorization": f"Bearer {token}",
+}
 backends = [
     ("prism", "http://prism-challenge:8092"),
     ("design", "http://design-challenge:8093"),
 ]
+failed = False
 for cid, url in backends:
     payload = json.dumps({"challenge_id": cid, "base_url": url, "weight": 1}).encode()
     req = urllib.request.Request(
         "http://127.0.0.1:8080/v1/admin/backends",
         data=payload,
-        headers={"content-type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -440,13 +519,40 @@ for cid, url in backends:
             print(f"backend {cid} → {url} (HTTP 409 already present)")
         else:
             print(f"backend {cid} register failed HTTP {e.code}: {body}", flush=True)
+            failed = True
     except Exception as e:
         print(f"backend {cid} register failed: {e}", flush=True)
+        failed = True
+sys.exit(1 if failed else 0)
 PY
-  curl -fsS -m 5 http://127.0.0.1:8080/challenge/prism/health >/dev/null \
-    && curl -fsS -m 5 http://127.0.0.1:8080/challenge/design/health >/dev/null \
-    && echo "challenge proxy health: ok" \
-    || echo "challenge proxy health: deferred (backends may still be starting)"
+    then
+      reseed_ok=1
+      echo "remote-deploy: challenge backends registered (attempt \$attempt)"
+      break
+    fi
+    echo "remote-deploy: reseed attempt \$attempt failed; retrying in 5s"
+    sleep 5
+  done
+  if [[ "\$reseed_ok" != 1 ]]; then
+    echo "remote-deploy: ERROR: challenge backend reseed failed after 15 attempts" >&2
+    exit 1
+  fi
+  route_ok=0
+  for attempt in \$(seq 1 15); do
+    prism_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/prism/health 2>/dev/null || echo 000)
+    design_code=\$(curl -sS -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/challenge/design/health 2>/dev/null || echo 000)
+    echo "remote-deploy: challenge routing probe prism=\$prism_code design=\$design_code (attempt \$attempt)"
+    if [[ "\$prism_code" == "200" && "\$design_code" == "200" ]]; then
+      route_ok=1
+      break
+    fi
+    sleep 5
+  done
+  if [[ "\$route_ok" != 1 ]]; then
+    echo "remote-deploy: ERROR: challenge routing smoke failed (want 200/200; 503 = backends not registered)" >&2
+    exit 1
+  fi
+  echo "challenge proxy health: ok"
 fi
 EOS
 

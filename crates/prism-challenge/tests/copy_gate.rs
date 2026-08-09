@@ -94,9 +94,13 @@ fn row(
     status: Stage,
     created_ms: u64,
 ) -> SubmissionState {
+    // Terminated priors used as copy-gate victims must be champions (Score>0);
+    // the gate corpus is tops + ex-tops only.
+    let final_score = matches!(status, Stage::Terminated).then_some(FinalScore::Score(1));
     SubmissionState {
         id: id.into(),
         miner_hotkey: hotkey.into(),
+        miner_coldkey: None,
         epoch: 7,
         netuid: 541,
         status,
@@ -112,7 +116,7 @@ fn row(
         arch_id: None,
         review: None,
         similarity: None,
-        final_score: None,
+        final_score,
         retry_count: 0,
         error_detail: None,
         created_at_ms: created_ms,
@@ -127,7 +131,8 @@ fn mk_orchestrator(
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -239,9 +244,10 @@ async fn ast_copy_with_renames_is_rejected() {
 }
 
 #[tokio::test]
-async fn same_arch_same_timestamp_passes_the_gate() {
+async fn same_arch_same_timestamp_passes_copy_gate_then_similarity() {
     // created_at ties cannot be ordered → the copy gate must NOT reject;
-    // the row proceeds to the normal pipeline (sim: terminates with a score).
+    // pre-pod cheap similarity still catches the identical architecture
+    // (Score(0), no pod) before any Lium rent.
     let store = Arc::new(MemoryPrismStore::new());
     let chain = Arc::new(LockedFake(Mutex::new(fake_chain())));
     let orch = Arc::new(mk_orchestrator(&store, &chain));
@@ -275,10 +281,11 @@ async fn same_arch_same_timestamp_passes_the_gate() {
         .await
         .unwrap()
         .expect("row b");
-    assert_ne!(b.status, Stage::Rejected, "tie must not hard-reject");
-    // The LLM similarity path (SimReviewer, arch-only) still judges the copy.
+    assert_eq!(b.status, Stage::Rejected, "status={:?}", b.status);
+    assert!(b.pod_id.is_none(), "tie copy must not rent a pod");
     assert_eq!(b.final_score, Some(FinalScore::Score(0)));
-    assert!(matches!(b.status, Stage::Terminated | Stage::Failed));
+    let sim = b.similarity.expect("similarity recorded");
+    assert!(matches!(sim.kind, prism_review::SimilarityKind::Copied));
 }
 
 #[tokio::test]

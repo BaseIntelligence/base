@@ -28,8 +28,8 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("scoring_version", "challenge_scoring_version"),
     ("scoring_version_3", "u16 = 3"),
     ("bundle_protocol_version", "protocol_version = 1"),
-    ("emission_zero", "emission_share_bps = 0"),
-    ("prism_bps_sole", "10000"),
+    ("emission_share", "emission_share_bps = 5000"),
+    ("bps_sum", "10000"),
     ("SCORE_MAX", "1_000_000"),
     ("compose_port", "8093"),
     ("round_secs", "8_640"),
@@ -37,8 +37,16 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("rounds_per_day", "10 rounds"),
     ("agent_run_timeout", "AGENT_RUN_TIMEOUT_SECS = 1_800"),
     ("scoring_window", "SCORING_WINDOW_ROUNDS = 10"),
-    ("daily_quota", "DAILY_RUN_QUOTA = 10"),
-    ("prompts_per_round", "3 prompts"),
+    ("daily_quota", "MANUAL_DAILY_RUN_QUOTA = 10"),
+    ("scheduled_quota", "DESIGN_SCHEDULED_DAILY_RUN_CAP"),
+    (
+        "selfsim_excluded",
+        "other hotkeys' and same-coldkey prior art only",
+    ),
+    ("prompts_per_round", "1 prompt"),
+    ("unscored_epoch_limit", "UNSCORED_EPOCH_LIMIT = 5"),
+    ("admin_reject_route", "/v1/admin/rounds/{id}/reject"),
+    ("metagraph_cache_ttl", "15m"),
     ("bank_v1", "bank_v1.json"),
     ("agent_py", "agent.py"),
     ("pyproject", "pyproject.toml"),
@@ -53,7 +61,7 @@ const CONTENT_PINS: &[(&str, &str)] = &[
     ("network_mode", "design-sandbox-egress"),
     ("name_prefix", "base-design-"),
     ("csp_sandbox", "sandbox; default-src 'none'"),
-    ("raw_never_served", "Raw HTML is never served"),
+    ("html_never_served", "Produced HTML is never served"),
     ("agentic_review_stage", "AgenticReview"),
     ("admin_winners_route", "/v1/admin/rounds/{id}/winners"),
     ("admin_not_gateway", "not exposed via gateway"),
@@ -126,9 +134,11 @@ pub fn run(workspace_root: &Path) -> Result<(), String> {
         failures.push("content pin no_latest_ban: spec must mention :latest as forbidden".into());
     }
 
-    // Emission must stay zero until ceremony.
-    if !body.contains("emission_share_bps = 0") {
-        failures.push("content pin emission_posture: need explicit design emission 0 bps".into());
+    // Emission split must be explicit (50/50 with prism; sum 10000).
+    if !body.contains("emission_share_bps = 5000") {
+        failures.push(
+            "content pin emission_posture: need explicit design emission_share_bps = 5000".into(),
+        );
     }
 
     // CSP sandbox without allow-scripts is the viewer guarantee.
@@ -189,7 +199,7 @@ mod tests {
             .any(|(n, v)| *n == "challenge_id" && *v == "design"));
         assert!(CONTENT_PINS
             .iter()
-            .any(|(n, v)| *n == "emission_zero" && *v == "emission_share_bps = 0"));
+            .any(|(n, v)| *n == "emission_share" && *v == "emission_share_bps = 5000"));
         assert!(CONTENT_PINS
             .iter()
             .any(|(n, v)| *n == "bank_v1" && *v == "bank_v1.json"));

@@ -158,6 +158,7 @@ mod tests {
             .insert_queued(&SubmissionState {
                 id: id.to_owned(),
                 miner_hotkey: "ab".repeat(32),
+                miner_coldkey: None,
                 epoch: 7,
                 netuid: 541,
                 status: Stage::Queued,

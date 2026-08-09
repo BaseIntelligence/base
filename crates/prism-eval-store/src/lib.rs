@@ -2,7 +2,7 @@
 //!
 //! Implements [`prism_store::eval::EvalStore`] twice ([`MemoryEvalStore`]
 //! for offline tests/sim, [`DbEvalStore`] for production Postgres over
-//! migration 0013) and hosts the measurement→composite→storage glue
+//! migration 0017) and hosts the measurement→composite→storage glue
 //! ([`finalize_composite`]), the legacy `train_metrics` Zone B lift, and the
 //! API JSON views. Split out of `prism-store` / `prism-challenge` for the
 //! per-crate non-test LOC cap (the repo's standard crate-split pattern, same

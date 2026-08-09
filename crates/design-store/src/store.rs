@@ -17,6 +17,56 @@ pub enum FinalScore {
     NoScore(u8),
 }
 
+/// Who asked for a run to exist.
+///
+/// The two origins draw on separate daily ceilings: a miner cannot spam the
+/// intake, and the organizer's own round schedule can never exhaust the
+/// miner's submission budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOrigin {
+    /// Created by the miner's `POST /v1/harness`.
+    Manual,
+    /// Created by the organizer's round scheduler (or an operator requeue).
+    Scheduled,
+}
+
+impl RunOrigin {
+    /// Label for errors / logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Scheduled => "scheduled",
+        }
+    }
+}
+
+/// Daily sandbox-run counters for one `(miner hotkey, UTC day)`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuotaUsage {
+    /// Runs created across both origins.
+    pub total: u32,
+    /// Subset created by the miner's own submissions.
+    pub manual: u32,
+}
+
+impl QuotaUsage {
+    /// Runs the organizer's scheduler created.
+    #[must_use]
+    pub const fn scheduled(self) -> u32 {
+        self.total.saturating_sub(self.manual)
+    }
+
+    /// Runs already charged to `origin`.
+    #[must_use]
+    pub const fn used(self, origin: RunOrigin) -> u32 {
+        match origin {
+            RunOrigin::Manual => self.manual,
+            RunOrigin::Scheduled => self.scheduled(),
+        }
+    }
+}
+
 /// Run lifecycle (DB CHECK mirrors this list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +143,8 @@ pub struct HarnessRow {
     pub id: String,
     /// Miner hotkey.
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// agent.py.
     pub agent_py: String,
     /// pyproject.toml.
@@ -147,6 +199,12 @@ pub struct RunState {
     pub agentic_verdict: Option<Value>,
     /// Error.
     pub error_detail: Option<String>,
+    /// Miner-visible reject reason.
+    pub reject_reason: Option<String>,
+    /// Attempt clock (chain epoch at insert).
+    pub attempt_epoch: Option<u64>,
+    /// Unscored clock (epoch at `awaiting_admin`).
+    pub awaiting_admin_epoch: Option<u64>,
     /// Final score.
     pub final_score: Option<FinalScore>,
     /// Retries.
@@ -239,6 +297,10 @@ pub struct StorePatch {
     pub agentic_verdict: Option<Value>,
     /// Error.
     pub error_detail: Option<String>,
+    /// Reject reason.
+    pub reject_reason: Option<String>,
+    /// Stamp awaiting-admin epoch.
+    pub awaiting_admin_epoch: Option<u64>,
     /// Score.
     pub final_score: Option<FinalScore>,
     /// Retry bump.
@@ -278,6 +340,18 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn set_eliminated(&self, id: &str, until_round: u64) -> Result<(), StoreError>;
     /// Recent harnesses for agentic corpus (newest first).
     async fn list_recent_harnesses(&self, limit: u32) -> Result<Vec<HarnessRow>, StoreError>;
+    /// Distinct miner hotkeys that registered at least one harness.
+    async fn count_harness_miners(&self) -> Result<u64, StoreError>;
+    /// Active harnesses for automatic round scheduling (newest per miner).
+    ///
+    /// Includes rows with `eliminated_until_round <= for_round`.
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError>;
+    /// Deactivate every other harness for this miner (keep `keep_id` active).
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError>;
 
     /// Insert round.
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError>;
@@ -327,6 +401,14 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
     async fn list_pages(&self, run_id: &str) -> Result<Vec<ArtifactPage>, StoreError>;
     /// One sanitized page.
     async fn get_page(&self, run_id: &str, path: &str) -> Result<Option<String>, StoreError>;
+    /// Ops/audit: artifacts including `raw_html`.
+    ///
+    /// Tuple is `(path, sanitized_html, raw_html, raw_sha256, bytes)`.
+    /// Must never be served on viewer routes — raw is audit-only.
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError>;
 
     /// Insert pair.
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError>;
@@ -374,10 +456,16 @@ pub trait DesignStore: Send + Sync + std::fmt::Debug {
         to_round: u64,
     ) -> Result<Vec<RoundAward>, StoreError>;
 
-    /// Quota get.
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError>;
-    /// Quota bump; returns new total.
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError>;
+    /// Daily run counters for `(miner, UTC day)`.
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError>;
+    /// Charge `bump` runs of `origin`; returns the new counters.
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError>;
 }
 
 /// In-memory store.
@@ -388,11 +476,13 @@ pub struct MemoryDesignStore {
     runs: Mutex<VecDeque<RunState>>,
     events: Mutex<Vec<(String, StageEvent)>>,
     pages: Mutex<HashMap<String, Vec<ArtifactPage>>>,
+    /// `run_id` → `path` → raw HTML (audit; mirrors DB `raw_html`).
+    raw_html: Mutex<HashMap<String, HashMap<String, String>>>,
     pairs: Mutex<Vec<PairRow>>,
     annotations: Mutex<Vec<(String, String, String, u64)>>,
     ratings: Mutex<HashMap<(u64, String), RatingRow>>,
     awards: Mutex<HashMap<u64, RoundAward>>,
-    quota: Mutex<HashMap<(String, String), u32>>,
+    quota: Mutex<HashMap<(String, String), QuotaUsage>>,
 }
 
 impl MemoryDesignStore {
@@ -441,6 +531,16 @@ impl DesignStore for MemoryDesignStore {
             .collect())
     }
 
+    async fn count_harness_miners(&self) -> Result<u64, StoreError> {
+        let m = self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let miners: std::collections::BTreeSet<&str> =
+            m.values().map(|h| h.miner_hotkey.as_str()).collect();
+        Ok(u64::try_from(miners.len()).unwrap_or(u64::MAX))
+    }
+
     async fn set_eliminated(&self, id: &str, until_round: u64) -> Result<(), StoreError> {
         let mut m = self
             .harnesses
@@ -462,6 +562,44 @@ impl DesignStore for MemoryDesignStore {
         v.sort_by(|a, b| a.id.cmp(&b.id));
         v.truncate(limit as usize);
         Ok(v)
+    }
+
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError> {
+        let mut by_miner: BTreeMap<String, HarnessRow> = BTreeMap::new();
+        for h in self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .values()
+        {
+            if !h.active || h.eliminated_until_round > for_round {
+                continue;
+            }
+            let replace = by_miner
+                .get(&h.miner_hotkey)
+                .is_none_or(|prev| h.created_at_ms >= prev.created_at_ms);
+            if replace {
+                by_miner.insert(h.miner_hotkey.clone(), h.clone());
+            }
+        }
+        Ok(by_miner.into_values().collect())
+    }
+
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut m = self
+            .harnesses
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        for h in m.values_mut() {
+            if h.miner_hotkey == miner_hotkey && h.id != keep_id {
+                h.active = false;
+            }
+        }
+        Ok(())
     }
 
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError> {
@@ -571,6 +709,12 @@ impl DesignStore for MemoryDesignStore {
         if let Some(v) = &patch.error_detail {
             row.error_detail = Some(v.clone());
         }
+        if let Some(v) = &patch.reject_reason {
+            row.reject_reason = Some(v.clone());
+        }
+        if let Some(v) = patch.awaiting_admin_epoch {
+            row.awaiting_admin_epoch = Some(v);
+        }
         if let Some(v) = &patch.final_score {
             row.final_score = Some(v.clone());
         }
@@ -599,6 +743,8 @@ impl DesignStore for MemoryDesignStore {
         row.status = RunStage::Queued;
         row.artifact_digest = None;
         row.sanitize_report = None;
+        row.reject_reason = None;
+        row.awaiting_admin_epoch = None;
         row.agentic_verdict = None;
         row.error_detail = None;
         row.final_score = None;
@@ -673,19 +819,32 @@ impl DesignStore for MemoryDesignStore {
         run_id: &str,
         pages: &[(String, String, String, String, u32)],
     ) -> Result<(), StoreError> {
-        let list: Vec<ArtifactPage> = pages
-            .iter()
-            .map(|(path, sanitized, _raw, sha, bytes)| ArtifactPage {
+        // Upsert by path (matches the DB adapter's ON CONFLICT refresh): a
+        // screenshot-only put must not drop the run's HTML pages.
+        let mut guard = self
+            .pages
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let mut raw_guard = self
+            .raw_html
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let entry = guard.entry(run_id.to_owned()).or_default();
+        let raw_entry = raw_guard.entry(run_id.to_owned()).or_default();
+        for (path, sanitized, raw, sha, bytes) in pages {
+            let page = ArtifactPage {
                 path: path.clone(),
                 sanitized_html: sanitized.clone(),
                 raw_sha256: sha.clone(),
                 bytes: *bytes,
-            })
-            .collect();
-        self.pages
-            .lock()
-            .map_err(|_| StoreError::Backend("poison".into()))?
-            .insert(run_id.to_owned(), list);
+            };
+            if let Some(existing) = entry.iter_mut().find(|p| p.path == *path) {
+                *existing = page;
+            } else {
+                entry.push(page);
+            }
+            raw_entry.insert(path.clone(), raw.clone());
+        }
         Ok(())
     }
 
@@ -711,6 +870,33 @@ impl DesignStore for MemoryDesignStore {
                     .find(|p| p.path == path)
                     .map(|p| p.sanitized_html.clone())
             }))
+    }
+
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError> {
+        let pages = self
+            .pages
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default();
+        let raws = self
+            .raw_html
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default();
+        Ok(pages
+            .into_iter()
+            .map(|p| {
+                let raw = raws.get(&p.path).cloned().unwrap_or_default();
+                (p.path, p.sanitized_html, raw, p.raw_sha256, p.bytes)
+            })
+            .collect())
     }
 
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError> {
@@ -893,22 +1079,34 @@ impl DesignStore for MemoryDesignStore {
         Ok(out)
     }
 
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError> {
-        Ok(*self
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError> {
+        Ok(self
             .quota
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?
             .get(&(miner.to_owned(), day.to_owned()))
-            .unwrap_or(&0))
+            .copied()
+            .unwrap_or_default())
     }
 
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError> {
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError> {
         let mut m = self
             .quota
             .lock()
             .map_err(|_| StoreError::Backend("poison".into()))?;
-        let e = m.entry((miner.to_owned(), day.to_owned())).or_insert(0);
-        *e = e.saturating_add(bump);
+        let e = m
+            .entry((miner.to_owned(), day.to_owned()))
+            .or_insert_with(QuotaUsage::default);
+        e.total = e.total.saturating_add(bump);
+        if origin == RunOrigin::Manual {
+            e.manual = e.manual.saturating_add(bump);
+        }
         Ok(*e)
     }
 }
@@ -931,6 +1129,9 @@ mod tests {
             sanitize_report: None,
             agentic_verdict: None,
             error_detail: None,
+            reject_reason: None,
+            attempt_epoch: None,
+            awaiting_admin_epoch: None,
             final_score: None,
             retry_count: 0,
             created_at_ms: 1,
@@ -945,6 +1146,34 @@ mod tests {
         assert!(s.claim_next_run(1).await.unwrap().is_none());
         let future = s.claim_next_run(5).await.unwrap().unwrap();
         assert_eq!(future.id, "r2");
-        assert_eq!(s.quota_bump("aa", "2026-08-04", 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn quota_counts_origins_separately() {
+        let s = MemoryDesignStore::new();
+        let day = "2026-08-04";
+        assert_eq!(s.quota_get("aa", day).await.unwrap(), QuotaUsage::default());
+
+        let after_manual = s.quota_bump("aa", day, 1, RunOrigin::Manual).await.unwrap();
+        assert_eq!(after_manual.total, 1);
+        assert_eq!(after_manual.manual, 1);
+        assert_eq!(after_manual.scheduled(), 0);
+
+        let after_sched = s
+            .quota_bump("aa", day, 3, RunOrigin::Scheduled)
+            .await
+            .unwrap();
+        assert_eq!(after_sched.total, 4);
+        assert_eq!(after_sched.manual, 1, "scheduled work is not miner spend");
+        assert_eq!(after_sched.scheduled(), 3);
+        assert_eq!(after_sched.used(RunOrigin::Manual), 1);
+        assert_eq!(after_sched.used(RunOrigin::Scheduled), 3);
+
+        // Buckets are per (hotkey, day).
+        assert_eq!(s.quota_get("bb", day).await.unwrap(), QuotaUsage::default());
+        assert_eq!(
+            s.quota_get("aa", "2026-08-05").await.unwrap(),
+            QuotaUsage::default()
+        );
     }
 }

@@ -31,6 +31,8 @@ pub struct SubmissionState {
     pub id: SubmissionId,
     /// Miner hotkey hex (64).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// Chain epoch at acceptance.
     pub epoch: u64,
     /// Netuid.
@@ -295,6 +297,11 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
         limit: u32,
     ) -> Result<Vec<SubmissionState>, StoreError>;
 
+    /// Champion corpus for copy/similarity/agentic gates: submissions with
+    /// `Score(v)` where `v > 0` (current top + historical WTA ex-tops).
+    /// Newest first. Does **not** include baseline (callers add that).
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError>;
+
     /// Ascending journal.
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError>;
 
@@ -315,6 +322,12 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// Sticky re-read of the batch assigned to `epoch` (recovery resubmit
     /// after a crash between submit and cursor advance).
     async fn emit_batch(&self, netuid: u16, epoch: u64) -> Result<Vec<EpochScoreRow>, StoreError>;
+
+    /// Positive lattice scores (`Score(v)` with `v > 0`) for competition
+    /// carry-forward across epochs. Outbox assignment stays exactly-once;
+    /// these rows are re-read every tick so a prior winner is not burned
+    /// when a later epoch's fresh batch is empty or reject-only.
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError>;
 
     /// Highest leaf epoch whose set fully landed (`None` = never emitted).
     async fn emit_cursor(&self, netuid: u16) -> Result<Option<u64>, StoreError>;
@@ -358,6 +371,17 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
 
     /// Non-terminal rows beyond grace — for the stuck sweep.
     async fn list_stuck(&self, grace_secs: u64) -> Result<Vec<SubmissionState>, StoreError>;
+
+    /// Precheck attempts used for `(coldkey_or_hotkey, UTC day)` (0 if none).
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError>;
+
+    /// Consume one precheck attempt when under `limit`. `Some(used)` or `None` if full.
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError>;
 }
 
 /// In-memory store (CI / sim).
@@ -372,6 +396,8 @@ pub struct MemoryPrismStore {
     emitted: Mutex<std::collections::BTreeMap<SubmissionId, u64>>,
     /// Emit cursor per netuid (highest fully-submitted leaf epoch).
     cursors: Mutex<std::collections::BTreeMap<u16, u64>>,
+    /// `(identity, UTC day)` → checks used for similarity precheck.
+    precheck_quota: Mutex<std::collections::HashMap<(String, String), u32>>,
 }
 
 impl MemoryPrismStore {
@@ -563,6 +589,20 @@ impl PrismStore for MemoryPrismStore {
         Ok(v)
     }
 
+    async fn list_champions(&self, limit: u32) -> Result<Vec<SubmissionState>, StoreError> {
+        let mut v: Vec<_> = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .iter()
+            .filter(|r| matches!(r.final_score, Some(FinalScore::Score(s)) if s > 0))
+            .cloned()
+            .collect();
+        v.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
+        v.truncate(limit as usize);
+        Ok(v)
+    }
+
     async fn events(&self, id: &str) -> Result<Vec<StageEvent>, StoreError> {
         Ok(self
             .events
@@ -629,6 +669,25 @@ impl PrismStore for MemoryPrismStore {
                 miner_hotkey: r.miner_hotkey.clone(),
                 arch_id: r.arch_id.clone(),
                 final_score: r.final_score.clone().unwrap_or(FinalScore::Score(0)),
+            })
+            .collect())
+    }
+
+    async fn active_score_rows(&self, netuid: u16) -> Result<Vec<EpochScoreRow>, StoreError> {
+        let rows = self
+            .rows
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(rows
+            .iter()
+            .filter(|r| r.netuid == netuid)
+            .filter_map(|r| match &r.final_score {
+                Some(FinalScore::Score(v)) if *v > 0 => Some(EpochScoreRow {
+                    miner_hotkey: r.miner_hotkey.clone(),
+                    arch_id: r.arch_id.clone(),
+                    final_score: FinalScore::Score(*v),
+                }),
+                _ => None,
             })
             .collect())
     }
@@ -777,6 +836,37 @@ impl PrismStore for MemoryPrismStore {
             .cloned()
             .collect())
     }
+
+    async fn precheck_quota_get(&self, identity: &str, day: &str) -> Result<u32, StoreError> {
+        let map = self
+            .precheck_quota
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        Ok(map
+            .get(&(identity.to_owned(), day.to_owned()))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    async fn precheck_quota_try_consume(
+        &self,
+        identity: &str,
+        day: &str,
+        limit: u32,
+    ) -> Result<Option<u32>, StoreError> {
+        let mut map = self
+            .precheck_quota
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?;
+        let key = (identity.to_owned(), day.to_owned());
+        let used = map.get(&key).copied().unwrap_or(0);
+        if used >= limit {
+            return Ok(None);
+        }
+        let next = used + 1;
+        map.insert(key, next);
+        Ok(Some(next))
+    }
 }
 
 #[cfg(test)]
@@ -788,6 +878,7 @@ mod tests {
         SubmissionState {
             id: id.into(),
             miner_hotkey: hotkey.into(),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,
@@ -843,6 +934,23 @@ mod tests {
         let only_a = s.list(None, Some("aabbcc"), 10).await.unwrap();
         assert_eq!(only_a.len(), 1);
         assert_eq!(only_a[0].id, "a");
+    }
+
+    #[tokio::test]
+    async fn list_champions_score_positive_only() {
+        let s = MemoryPrismStore::new();
+        let mut winner = row("w", "11");
+        winner.status = Stage::Terminated;
+        winner.final_score = Some(FinalScore::Score(42));
+        let mut zero = row("z", "22");
+        zero.status = Stage::Terminated;
+        zero.final_score = Some(FinalScore::Score(0));
+        s.insert_queued(&winner).await.unwrap();
+        s.insert_queued(&zero).await.unwrap();
+        s.insert_queued(&row("q", "33")).await.unwrap();
+        let champs = s.list_champions(10).await.unwrap();
+        assert_eq!(champs.len(), 1);
+        assert_eq!(champs[0].id, "w");
     }
 
     #[tokio::test]
@@ -940,6 +1048,8 @@ mod tests {
         assert_eq!(s.pending_emit_epochs(541).await.unwrap(), vec![9]);
         s.set_emit_cursor(541, 9).await.unwrap();
         assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
+        // Positive scores remain active for carry after outbox assignment.
+        assert_eq!(s.active_score_rows(541).await.unwrap().len(), 1);
         // Monotonic: a stale cursor write never regresses.
         s.set_emit_cursor(541, 4).await.unwrap();
         assert_eq!(s.emit_cursor(541).await.unwrap(), Some(9));
@@ -947,6 +1057,11 @@ mod tests {
         // Unscored rows never enter a batch.
         s.insert_queued(&row("b", "22")).await.unwrap();
         assert!(s.assign_emit_batch(541, 10).await.unwrap().is_empty());
+        // Score(0) rejects are not active carry rows.
+        let mut zero = row("c", "33");
+        zero.final_score = Some(FinalScore::Score(0));
+        s.insert_queued(&zero).await.unwrap();
+        assert_eq!(s.active_score_rows(541).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

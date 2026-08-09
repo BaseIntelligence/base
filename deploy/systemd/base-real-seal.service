@@ -1,0 +1,12 @@
+[Unit]
+Description=BASE prod real-epoch sealer (seal current chain epoch once both challenges' leaf sets exist)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/base/deploy/scripts/prod-real-seal.sh
+Nice=10
+TimeoutStartSec=120
+# Ordered chain endpoint failover (same policy as base-burn-seal).
+Environment=BASE_CHAIN_ENDPOINTS=https://bittensor-finney.api.onfinality.io/public-ws,https://entrypoint-finney.opentensor.ai:443

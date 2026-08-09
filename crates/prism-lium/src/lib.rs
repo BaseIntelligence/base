@@ -39,7 +39,7 @@ pub use client::LiumClient;
 pub use error::{CostGuardrailError, LiumError};
 pub use receipt::{EvalReceipt, NoScoreGate};
 pub use sim::SimLiumBackend;
-pub use ssh::{parse_ssh_target, resolve_private_key, SshTarget};
+pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
 pub use types::{
     EvalTelemetry, GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, ProbePoint,
     RemoteExecResult, TelemetryPoint,
@@ -75,7 +75,23 @@ pub trait EvalJobBackend: Send + Sync {
         training_py: &str,
         tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError>;
+
+    /// Best-effort tail of the on-pod harness log (before terminate/reclaim).
+    ///
+    /// Default is empty — Sim has nothing to fetch. Live backends SSH
+    /// `tail` of `/tmp/prism_eval/harness.log` so stuck-sweep / timeout
+    /// paths retain the fatal end of a multi-hour train instead of a blank
+    /// `swept: stuck beyond grace`.
+    async fn harvest_logs(&self, _instance_id: &str) -> Result<String, LiumError> {
+        Ok(String::new())
+    }
 }
+
+/// Bytes retained when surfacing harness stderr / harvested logs into
+/// `error_detail` / stage events. Prefer the **tail** (fatals land at the
+/// end); a prior 4 KiB head cap ate inductor autotune spam and dropped the
+/// real traceback (~4054 chars stored).
+pub const HARNESS_LOG_RETAIN_BYTES: usize = 32_768;
 
 /// Default Lium API base URL.
 pub const LIUM_API_BASE_URL: &str = "https://lium.io/api";

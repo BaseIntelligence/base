@@ -16,6 +16,8 @@ pub struct PrismSubmissionRow {
     pub id: String,
     /// Miner hotkey (lowercase 64 hex).
     pub miner_hotkey: String,
+    /// Owning coldkey (lowercase 64 hex), when known at intake.
+    pub miner_coldkey: Option<String>,
     /// Epoch at acceptance.
     pub epoch: i64,
     /// Netuid.
@@ -28,7 +30,7 @@ pub struct PrismSubmissionRow {
     pub architecture_py: String,
     /// training.py.
     pub training_py: String,
-    /// Packed source-tree blob (migration 0014); null for two-script rows.
+    /// Packed source-tree blob (migration 0018); null for two-script rows.
     pub tree_blob: Option<Vec<u8>>,
     /// Pod id.
     pub pod_id: Option<String>,
@@ -63,6 +65,8 @@ pub struct NewPrismSubmission<'a> {
     pub id: &'a str,
     /// miner hotkey.
     pub miner_hotkey: &'a str,
+    /// owning coldkey (optional).
+    pub miner_coldkey: Option<&'a str>,
     /// epoch.
     pub epoch: i64,
     /// netuid.
@@ -89,9 +93,9 @@ pub struct NewPrismStageEvent<'a> {
 }
 
 /// Column list shared by all row reads.
-const COLS: &str = "id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py, \
-    tree_blob, pod_id, pod_provider, receipt_json, metrics_json, bpb, review_json, similarity_json, \
-    kind, score, absence_reason, retry_count, error_detail";
+const COLS: &str = "id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, \
+    architecture_py, training_py, tree_blob, pod_id, pod_provider, receipt_json, metrics_json, \
+    bpb, review_json, similarity_json, kind, score, absence_reason, retry_count, error_detail";
 
 /// Insert the queued row.
 ///
@@ -103,11 +107,13 @@ pub async fn insert_prism_submission(
 ) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO prism_submission \
-         (id, miner_hotkey, epoch, netuid, status, label, architecture_py, training_py, tree_blob) \
-         VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8)",
+         (id, miner_hotkey, miner_coldkey, epoch, netuid, status, label, architecture_py, \
+          training_py, tree_blob) \
+         VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9)",
     )
     .bind(n.id)
     .bind(n.miner_hotkey)
+    .bind(n.miner_coldkey)
     .bind(n.epoch)
     .bind(n.netuid)
     .bind(n.label)
@@ -285,6 +291,26 @@ pub async fn list_prism_submissions(
     Ok(rows)
 }
 
+/// Champion corpus: historical Score>0 WTA/leaf winners (current top + ex-tops).
+///
+/// # Errors
+/// SQL error.
+pub async fn list_prism_champions(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<PrismSubmissionRow>, DbError> {
+    let q = format!(
+        "SELECT {COLS} FROM prism_submission \
+         WHERE kind = 'score' AND score > 0 \
+         ORDER BY created_at DESC LIMIT $1"
+    );
+    let rows = sqlx::query_as::<_, PrismSubmissionRow>(&q)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
 /// Ascending event journal for one row.
 ///
 /// # Errors
@@ -320,4 +346,51 @@ pub async fn stuck_prism_before_grace(
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// Read precheck attempts used for `(coldkey, UTC day)` (0 when absent).
+///
+/// # Errors
+/// SQL error.
+pub async fn prism_precheck_quota_get(
+    pool: &PgPool,
+    miner_coldkey: &str,
+    day: &str,
+) -> Result<i32, DbError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT checks_used FROM prism_precheck_quota \
+         WHERE miner_coldkey = $1 AND day = $2::date",
+    )
+    .bind(miner_coldkey)
+    .bind(day)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or(0, |r| r.0))
+}
+
+/// Atomically consume one precheck attempt when `checks_used < limit`.
+/// Returns `Some(checks_used)` after bump, or `None` when already at limit.
+///
+/// # Errors
+/// SQL error.
+pub async fn prism_precheck_quota_try_consume(
+    pool: &PgPool,
+    miner_coldkey: &str,
+    day: &str,
+    limit: i32,
+) -> Result<Option<i32>, DbError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "INSERT INTO prism_precheck_quota (miner_coldkey, day, checks_used) \
+         VALUES ($1, $2::date, 1) \
+         ON CONFLICT (miner_coldkey, day) DO UPDATE SET \
+           checks_used = prism_precheck_quota.checks_used + 1 \
+         WHERE prism_precheck_quota.checks_used < $3 \
+         RETURNING checks_used",
+    )
+    .bind(miner_coldkey)
+    .bind(day)
+    .bind(limit)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
 }

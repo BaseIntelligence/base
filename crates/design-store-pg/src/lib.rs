@@ -1,14 +1,20 @@
-//! `db::design_store` → [`DesignStore`] adapter.
+//! `design-db` row layer → [`DesignStore`] adapter.
+
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::assigning_clones)]
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use db::design_store as dbs;
 use db::PgPool;
+use design_db as dbs;
 
-use crate::store::{
-    ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, RatingRow, RoundAward, RoundRow,
-    RunStage, RunState, StageEvent, StoreError, StorePatch,
+use design_store::{
+    ArtifactPage, DesignStore, FinalScore, HarnessRow, PairRow, QuotaUsage, RatingRow, RoundAward,
+    RoundRow, RunOrigin, RunStage, RunState, StageEvent, StoreError, StorePatch,
 };
 
 /// SQL-backed production store.
@@ -48,6 +54,7 @@ fn harness_from(r: dbs::DesignHarnessRow) -> HarnessRow {
     HarnessRow {
         id: r.id,
         miner_hotkey: r.miner_hotkey,
+        miner_coldkey: r.miner_coldkey,
         agent_py: r.agent_py,
         pyproject_toml: r.pyproject_toml,
         extra_files: extras_from_value(&r.extra_files),
@@ -88,10 +95,13 @@ fn run_from(r: dbs::DesignRunRow) -> RunState {
         sanitize_report: r.sanitize_report,
         agentic_verdict: r.agentic_verdict,
         error_detail: r.error_detail,
+        reject_reason: r.reject_reason,
+        attempt_epoch: r.attempt_epoch.map(|e| e.max(0).cast_unsigned()),
+        awaiting_admin_epoch: r.awaiting_admin_epoch.map(|e| e.max(0).cast_unsigned()),
         final_score: final_from(r.kind.as_deref(), r.score, r.absence_reason),
         retry_count: u32::try_from(r.retry_count.max(0)).unwrap_or(u32::MAX),
-        created_at_ms: 0,
-        updated_at_ms: 0,
+        created_at_ms: r.created_at_ms.max(0).cast_unsigned(),
+        updated_at_ms: r.updated_at_ms.max(0).cast_unsigned(),
     }
 }
 
@@ -134,6 +144,7 @@ impl DesignStore for DbDesignStore {
             &dbs::NewDesignHarness {
                 id: &row.id,
                 miner_hotkey: &row.miner_hotkey,
+                miner_coldkey: row.miner_coldkey.as_deref(),
                 agent_py: &row.agent_py,
                 pyproject_toml: &row.pyproject_toml,
                 extra_files: extras,
@@ -178,6 +189,38 @@ impl DesignStore for DbDesignStore {
                 .map(harness_from)
                 .collect(),
         )
+    }
+
+    async fn count_harness_miners(&self) -> Result<u64, StoreError> {
+        // `list_active_design_harnesses` returns one row per miner (newest
+        // active); with `i64::MAX` as the round horizon even eliminated rows
+        // qualify, so the row count is the distinct registered-miner count.
+        let rows = dbs::list_active_design_harnesses(&self.pool, i64::MAX)
+            .await
+            .map_err(map_db)?;
+        Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX))
+    }
+
+    async fn list_active_harnesses(&self, for_round: u64) -> Result<Vec<HarnessRow>, StoreError> {
+        Ok(dbs::list_active_design_harnesses(
+            &self.pool,
+            i64::try_from(for_round).unwrap_or(i64::MAX),
+        )
+        .await
+        .map_err(map_db)?
+        .into_iter()
+        .map(harness_from)
+        .collect())
+    }
+
+    async fn deactivate_other_harnesses(
+        &self,
+        miner_hotkey: &str,
+        keep_id: &str,
+    ) -> Result<(), StoreError> {
+        dbs::deactivate_other_design_harnesses(&self.pool, miner_hotkey, keep_id)
+            .await
+            .map_err(map_db)
     }
 
     async fn insert_round(&self, row: &RoundRow) -> Result<(), StoreError> {
@@ -233,6 +276,9 @@ impl DesignStore for DbDesignStore {
                 round_id: i64::try_from(row.round_id).unwrap_or(i64::MAX),
                 harness_id: &row.harness_id,
                 prompt_id: &row.prompt_id,
+                attempt_epoch: row
+                    .attempt_epoch
+                    .map(|e| i64::try_from(e).unwrap_or(i64::MAX)),
             },
         )
         .await
@@ -270,6 +316,10 @@ impl DesignStore for DbDesignStore {
             patch.sanitize_report.clone(),
             patch.agentic_verdict.clone(),
             patch.error_detail.as_deref(),
+            patch.reject_reason.as_deref(),
+            patch
+                .awaiting_admin_epoch
+                .map(|e| i64::try_from(e).unwrap_or(i64::MAX)),
             kind,
             score,
             absence,
@@ -390,6 +440,26 @@ impl DesignStore for DbDesignStore {
             .await
             .map_err(map_db)?
             .map(|(_, html)| html))
+    }
+
+    async fn list_artifacts_with_raw(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<(String, String, String, String, u32)>, StoreError> {
+        Ok(dbs::design_artifacts(&self.pool, run_id)
+            .await
+            .map_err(map_db)?
+            .into_iter()
+            .map(|a| {
+                (
+                    a.path,
+                    a.sanitized_html,
+                    a.raw_html,
+                    a.raw_sha256,
+                    u32::try_from(a.bytes.max(0)).unwrap_or(u32::MAX),
+                )
+            })
+            .collect())
     }
 
     async fn insert_pair(&self, pair: &PairRow) -> Result<(), StoreError> {
@@ -581,21 +651,38 @@ impl DesignStore for DbDesignStore {
         )
     }
 
-    async fn quota_get(&self, miner: &str, day: &str) -> Result<u32, StoreError> {
-        Ok(u32::try_from(
+    async fn quota_get(&self, miner: &str, day: &str) -> Result<QuotaUsage, StoreError> {
+        Ok(usage_from(
             dbs::design_quota_get(&self.pool, miner, day)
                 .await
                 .map_err(map_db)?,
-        )
-        .unwrap_or(0))
+        ))
     }
 
-    async fn quota_bump(&self, miner: &str, day: &str, bump: u32) -> Result<u32, StoreError> {
-        Ok(u32::try_from(
-            dbs::design_quota_bump(&self.pool, miner, day, i32::try_from(bump).unwrap_or(0))
-                .await
-                .map_err(map_db)?,
-        )
-        .unwrap_or(0))
+    async fn quota_bump(
+        &self,
+        miner: &str,
+        day: &str,
+        bump: u32,
+        origin: RunOrigin,
+    ) -> Result<QuotaUsage, StoreError> {
+        Ok(usage_from(
+            dbs::design_quota_bump(
+                &self.pool,
+                miner,
+                day,
+                i32::try_from(bump).unwrap_or(0),
+                origin == RunOrigin::Manual,
+            )
+            .await
+            .map_err(map_db)?,
+        ))
+    }
+}
+
+fn usage_from((total, manual): (i32, i32)) -> QuotaUsage {
+    QuotaUsage {
+        total: u32::try_from(total).unwrap_or(0),
+        manual: u32::try_from(manual).unwrap_or(0),
     }
 }

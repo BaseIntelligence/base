@@ -7,10 +7,11 @@
 //! `verified` attestation row with `quote = NULL` and an explicit
 //! `reason: admin-exempt: …`, under the gateway's own control-plane hotkey.
 //!
-//! Access control matches `/v1/admin/seal`: the route is only mounted on the
-//! master-plane gateway, which deploys bind it to the internal network / VPC
-//! only — possession of shell access on the master is the credential. The
-//! written row is auditable in `attestation.reason`.
+//! Access control matches `/v1/admin/seal`: Bearer token via
+//! `BASE_GATEWAY_ADMIN_TOKEN` / `_FILE` (required when
+//! `BASE_GATEWAY_REQUIRE_OWNER=1`). Do not treat network placement alone as
+//! auth — production historically published these routes on `:80`/`:443`.
+//! The written row is auditable in `attestation.reason`.
 
 use axum::extract::State;
 use axum::http::StatusCode;

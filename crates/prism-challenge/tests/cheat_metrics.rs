@@ -82,7 +82,8 @@ async fn hardcoded_metrics_json_scores_zero() {
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -115,6 +116,7 @@ def train(model, ctx):
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: "11".repeat(32),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,
@@ -141,10 +143,15 @@ def train(model, ctx):
 
     assert!(orch.cycle_once().await.unwrap());
     let row = store.get(&id).await.unwrap().expect("row");
-    assert!(
-        matches!(row.status, Stage::Terminated | Stage::Failed),
-        "status={:?}",
+    assert_eq!(
+        row.status,
+        Stage::Rejected,
+        "static METRICS_JSON screen must reject pre-pod, got {:?}",
         row.status
+    );
+    assert!(
+        row.pod_id.is_none(),
+        "hardcoded METRICS_JSON must not rent a pod"
     );
     assert_eq!(
         row.final_score,

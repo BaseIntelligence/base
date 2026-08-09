@@ -105,18 +105,19 @@ Minimal `harness.json` shape:
 
 `POST /v1/harness` is **idempotent** on content digest (`harness_id`).
 
-## Submission gating (1-max)
+## Submission gating (1-max) + one attempt
 
 - Your hotkey must be **registered on the subnet** (metagraph). Unknown hotkey
-  → `403 hotkey_not_in_metagraph`; the snapshot may lag a couple of minutes
-  after a fresh registration (`503 metagraph_unavailable` → retry shortly).
-- **One accepted submission per hotkey.** While yours is
-  `registered` / `blocked` / `rejected`, a *different* harness gets
-  `409 submission_gated`. Re-POSTing the **identical** bundle is always safe
-  (idempotent `200 already-queued`).
-- If your hotkey **leaves the metagraph** (deregistered or your uid's hotkey
-  changed), the watcher reopens your slot automatically — resubmit under your
-  new uid.
+  → `403 hotkey_not_in_metagraph`. Intake uses a bulk metagraph cache with a
+  **15 minute** fail-closed TTL (`503 metagraph_unavailable` → retry shortly).
+- **One accepted submission per hotkey** and **one sandbox attempt** for that
+  submission. While yours is `registered` / `blocked` / `rejected`, a
+  *different* harness gets `409 submission_gated`. Re-POSTing the **identical**
+  bundle is always safe (idempotent `200 already-queued`).
+- After your attempt finishes (score, cheat, admin reject, or unscored
+  timeout), you cannot submit again on the same hotkey until that hotkey
+  **leaves the metagraph** and you register a **new UID** (same hotkey is fine).
+- Infra auto-retries on the *same* run id (up to 3) are not a new attempt.
 - `env_vars` are **locked at submission**; changing them means a new digest,
   which requires a free slot.
 
@@ -124,15 +125,22 @@ Minimal `harness.json` shape:
 
 - **10 rounds per UTC day** (`ROUND_SECS = 8640`; `round_id = floor(unix / 8640)`).
 - An accepted harness **waits for the next round**: runs are scheduled into
-  `round_id + 1` and start when that round opens, never mid-round.
+  `round_id + 1` and start when that round opens, never mid-round. You are
+  **not** auto-scheduled into later rounds.
 - Sandbox **run** timeout is **30 minutes** (`AGENT_RUN_TIMEOUT_SECS = 1800`).
-- **10** sandboxed runs per hotkey per UTC day.
-- Each round picks **3** prompts via deterministic weighted draw for all harnesses.
+- Each round picks **1 shared prompt** for every harness
+  (`PROMPTS_PER_ROUND = 1`).
+- Daily run quota is **split by origin**:
+  - **Manual** — **10** runs/day, charged only by your own `POST /v1/harness`.
+  - **Scheduled** — organizer next-round schedule / ops requeue (10 rounds × 1
+    prompt = **10** runs; cap **20**). You never spend manual quota by being
+    scheduled.
 - Infra failures (package install, review/LLM infra) **auto-retry up to 3
-  times**; cheat / rejected verdicts are terminal. Manual retry:
-  `POST /v1/runs/{id}/retry`.
+  times**; cheat / rejected / admin reject / unscored timeout are terminal.
+  Manual retry of a failed run: `POST /v1/runs/{id}/retry`.
 
-Check quota: `GET /v1/quota/{hotkey}`.
+Check quota: `GET /v1/quota/{hotkey}` — `manual` and `scheduled` objects
+(`runs_used` / `limit` / `remaining`) alongside the whole-day `runs_used`.
 
 ## Scoring (summary)
 
@@ -140,7 +148,11 @@ After sanitize, master-side **agentic anti-cheat** runs in a containerized
 reviewer. A pre-LLM **copy gate** rejects a byte/AST copy of an *earlier*
 harness outright (`rejected`, `Score(0)`, no LLM call); `cheat` / `suspicious`
 from the LLM review → `Score(0)`. Starting from the published **baseline** is
-fine — copying another *miner's* harness is not.
+fine — copying another *miner's* harness is not. Both the copy gate and the LLM
+review compare you against **other miners' earlier harnesses only**: your own
+previous versions (same hotkey **or** same coldkey) are excluded from the
+corpus, so iterating via a new hotkey under the same coldkey is never read as
+self-copying.
 
 Clean runs await **admin winners** (1 or 2 harnesses per round); each round win
 is one **point**. Rewards are **not** winner-take-all on a single round: the
@@ -150,16 +162,37 @@ automatic (`bank_v1.json`). Inspiration (Mobbin, image gen, UI libs) and
 **external API / MCP calls** are allowed; near-identical corpus copies /
 scrape-clones are not. Full rules in the freeze doc.
 
+If a clean run is still unscored **5 chain epochs** after it entered
+`awaiting_admin`, it is **auto-rejected** (`reject_reason` on
+`GET /v1/runs/{id}`). Admin may also reject with a reason string you can read
+on that same route. Either way you need a **new UID** before submitting again.
+
 Admin APIs are **master-local only** (not proxied on the public gateway).
 
 ## Viewer
 
-Sanitized HTML only: `GET /v1/view/{run_id}/{page}` with CSP `sandbox` (no
-scripts). Raw HTML is never served. Pages render in an **opaque-origin
-sandbox**: no JavaScript, no cookies, no local storage, no top navigation —
-design for static HTML + inline CSS (`img` may use `data:`/`https:`, fonts
-`data:`/`https:`). The public site embeds the viewer in a fully sandboxed
-iframe; `frame-ancestors` limits which origins may frame it.
+Screenshots only: `GET /v1/view/{run_id}/index.png` returns the full-page PNG
+screenshot the orchestrator captures right after sanitize. Produced HTML is
+never served — `.html` requests return `410 Gone` (the gateway still wraps
+view responses in a CSP `sandbox` (no scripts) lockdown as defense in depth).
+Your pages stay static HTML + **embedded** CSS (`<style>` blocks and/or inline
+`style=`) so the headless capture renders them faithfully. External
+`<link rel=stylesheet>` (Tailwind CDN, Google Fonts CSS, etc.) is stripped by
+sanitize — screenshots will look unstyled if that was your only CSS. Prefer
+system font stacks over `@import` font CSS (`@import` rules are removed).
+`img` may use `data:` / `https:`. `GET /v1/runs/{id}/pages` stays available for
+page metadata.
+
+### Why a run is rejected / scored zero
+
+| Outcome | What it means |
+|---------|----------------|
+| `rejected` + `near_identical_harness_copy` / `ast_architecture_copy` | Pre-LLM copy gate: your harness is a byte/AST copy of an **earlier** miner harness (baseline starter is OK; copying another miner is not) |
+| `rejected` + `reject_reason` (admin) | Admin rejected the candidate; read `reject_reason` on `GET /v1/runs/{id}` |
+| `rejected` + `unscored_timeout…` | Still awaiting admin after **5 epochs** — auto-rejected; register a new UID to continue |
+| `scored` with agentic `cheat` / `suspicious` | LLM anti-cheat found a listed cheat pattern (same Score(0); not admin-eligible) |
+| `failed` + harness / install / timeout | Agent crashed, timed out, or infra exhausted retries — check `/events` + `/logs` |
+| Missing required pages | Bundle must include `index.html`, `pricing.html`, `components.html` |
 
 ## Useful routes
 
@@ -170,7 +203,7 @@ iframe; `frame-ancestors` limits which origins may frame it.
 | `GET /v1/rounds` | Round list |
 | `GET /v1/runs/{id}` | Run status |
 | `GET /v1/runs/{id}/events` | Stage timeline |
-| `GET /v1/runs/{id}/pages` | Sanitized page list |
-| `GET /v1/view/{run_id}/{page}` | CSP viewer (sanitized HTML) |
+| `GET /v1/runs/{id}/pages` | Page metadata list |
+| `GET /v1/view/{run_id}/index.png` | Full-page PNG screenshot |
 | `GET /v1/stats` | Aggregate stats |
 | `GET /v1/dashboard` | Operator dashboard JSON |

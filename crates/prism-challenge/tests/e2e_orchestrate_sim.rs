@@ -94,7 +94,8 @@ fn mk_orchestrator(
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -127,6 +128,7 @@ async fn orchestrator_completes_one_submission_and_emits() {
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: req.miner_hotkey.clone(),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,
@@ -190,6 +192,7 @@ async fn submission_detail_exposes_metrics_over_http() {
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: req.miner_hotkey.clone(),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,
@@ -273,6 +276,7 @@ async fn emit_and_submit_covers_expected_set() {
         .insert_queued(&SubmissionState {
             id: "seed".into(),
             miner_hotkey: hex::encode(hk),
+            miner_coldkey: None,
             epoch: 3,
             netuid: 541,
             status: Stage::Terminated,

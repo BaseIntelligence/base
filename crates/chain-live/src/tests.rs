@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Unit tests for chain-live (wiremock + pure fixture tests).
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use crate::{
     commit_timelocked_call, decode_axon_info, decode_bool, decode_double_map_account_k2,
     decode_double_map_k2, decode_hotkey, decode_metagraph, decode_u16, decode_u64,
@@ -129,10 +132,12 @@ fn decode_hotkey_option_some() {
 #[test]
 fn decode_metagraph_builds_correctly() {
     let keys = vec![vec![0xAA; 32], vec![0xBB; 32]];
+    let coldkeys = vec![vec![0x11; 32], vec![0x22; 32]];
     let owner = vec![0xCC; 32];
-    let mg = decode_metagraph(keys.clone(), owner.clone(), 1);
+    let mg = decode_metagraph(keys.clone(), coldkeys.clone(), owner.clone(), 1);
     assert_eq!(mg.netuid, 1);
     assert_eq!(mg.hotkeys, keys);
+    assert_eq!(mg.coldkeys, coldkeys);
     assert_eq!(mg.owner_hotkey, owner);
 }
 
@@ -650,7 +655,124 @@ async fn mock_metagraph_at() {
     assert_eq!(mg.hotkeys.len(), 2);
     assert_eq!(mg.hotkeys[0], vec![0xAA; 32]);
     assert_eq!(mg.hotkeys[1], vec![0xBB; 32]);
+    // Owner mock returns Keys-shaped changes; unmatched Owner keys stay zero.
+    assert_eq!(mg.coldkeys.len(), 2);
     assert_eq!(mg.owner_hotkey, vec![0xCC; 32]);
+}
+
+/// Mount the bulk `Keys` + `SubnetOwnerHotkey` responses used by `metagraph_at`.
+async fn mount_metagraph_mocks(server: &MockServer, keys_paged_times: u64) {
+    let uid0_key = storage_double_map_key_u16_u16("SubtensorModule", "Keys", 1, 0);
+    let uid1_key = storage_double_map_key_u16_u16("SubtensorModule", "Keys", 1, 1);
+    let uid0_hex = format!("0x{}", hex::encode(&uid0_key));
+    let uid1_hex = format!("0x{}", hex::encode(&uid1_key));
+
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "state_getKeysPaged"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": [uid1_hex.clone(), uid0_hex.clone()]
+        })))
+        .expect(keys_paged_times)
+        .mount(server)
+        .await;
+
+    // Two batched reads per refresh: Keys values, then Owner(hotkey) coldkeys.
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "state_queryStorageAt"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": [{
+                "block": format!("0x{}", hex::encode([0u8; 32])),
+                "changes": [
+                    [uid1_hex, format!("0x{}", hex::encode([0xBB_u8; 32]))],
+                    [uid0_hex, format!("0x{}", hex::encode([0xAA_u8; 32]))]
+                ]
+            }]
+        })))
+        .expect(keys_paged_times.saturating_mul(2))
+        .mount(server)
+        .await;
+
+    let owner_key = storage_map_key_u16("SubtensorModule", "SubnetOwnerHotkey", 1);
+    let owner_key_hex = format!("0x{}", hex::encode(&owner_key));
+    let owner_hex = format!("0x{}", hex::encode([0xCC_u8; 32]));
+
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({
+            "method": "state_getStorage",
+            "params": [owner_key_hex]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": owner_hex
+        })))
+        .expect(keys_paged_times)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn metagraph_cache_hit_skips_rpc_within_ttl() {
+    let server = MockServer::start().await;
+    // Two sequential calls within TTL → exactly one bulk refresh.
+    mount_metagraph_mocks(&server, 1).await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let client = LiveChainClient::connect(&uri).expect("connect");
+        // Zero hash = tip; same cache key for both calls.
+        let hash = [0_u8; 32];
+        let a = client.metagraph_at(&hash).expect("first");
+        let b = client.metagraph_at(&hash).expect("second (cache hit)");
+        assert_eq!(a, b);
+        assert_eq!(a.hotkeys.len(), 2);
+    })
+    .await
+    .expect("spawn_blocking");
+}
+
+#[tokio::test]
+async fn metagraph_cache_refreshes_after_ttl() {
+    let server = MockServer::start().await;
+    // TTL expiry forces a second bulk refresh.
+    mount_metagraph_mocks(&server, 2).await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut client = LiveChainClient::connect(&uri).expect("connect");
+        client.set_metagraph_cache_ttl(Duration::from_millis(40));
+        let hash = [0_u8; 32];
+        let _ = client.metagraph_at(&hash).expect("first");
+        std::thread::sleep(Duration::from_millis(60));
+        let _ = client.metagraph_at(&hash).expect("after ttl");
+    })
+    .await
+    .expect("spawn_blocking");
+}
+
+#[tokio::test]
+async fn metagraph_cache_singleflight_under_concurrency() {
+    let server = MockServer::start().await;
+    // Eight concurrent callers share one bulk refresh (mutex held across fetch).
+    mount_metagraph_mocks(&server, 1).await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let client = Arc::new(LiveChainClient::connect(&uri).expect("connect"));
+        let hash = [0_u8; 32];
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = Arc::clone(&client);
+            handles.push(std::thread::spawn(move || c.metagraph_at(&hash)));
+        }
+        for h in handles {
+            let mg = h.join().expect("join").expect("metagraph");
+            assert_eq!(mg.hotkeys.len(), 2);
+        }
+    })
+    .await
+    .expect("spawn_blocking");
 }
 
 // ---------------------------------------------------------------------------

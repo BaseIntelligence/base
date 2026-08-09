@@ -58,7 +58,7 @@ Removed (replaced by design + prism HTTP paths; no Phala/CVM miner).
 | Binary (`bins/design-egress-proxy`) | done | Open egress proxy (internal blocklist) + budgeted LLM path. |
 | Spec + checklist | done | [`DESIGN_CHALLENGE.md`](DESIGN_CHALLENGE.md) + checklist; `xtask design-check`. |
 | Compose / images | in progress | deploy-wiring todo (port `28093` local). |
-| Emission | **0 bps** | Until owner ceremony; prism holds `10000` bps. |
+| Emission | **5000 bps** | Equal split with prism (50/50; sum `10000`). |
 
 ## prism-challenge
 
@@ -69,7 +69,7 @@ Removed (replaced by design + prism HTTP paths; no Phala/CVM miner).
 | Compose service | done | Added to `docker-compose.yml` on `:8092`. |
 | Dockerfile target | done | `deploy/Dockerfile` target `prism-challenge`. |
 | GHCR image | done | Added to `images.yml` matrix and `ghcr-public.yml`. |
-| Emission | **10000 bps** | Sole share until design enablement ceremony. |
+| Emission | **5000 bps** | Equal split with design (50/50; sum `10000`). |
 
 ## Infrastructure
 
@@ -104,17 +104,17 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | design rating / elimination | done | Integer Elo (K=32), bottom 20% / 4-round cooldown, exact-E leaves. |
 | design API | done | Harness/quota/runs/viewer/annotate/ops on `:8093`. |
 | prism Lium backend | done | `PRISM_FORCE_SIM=false` in staging; the binary logs `eval_backend=lium`. API key is mounted from a file so it never appears in `docker inspect`. |
-| prism orchestration | done | DB-backed claim/execute/review/similarity/score state machine (`prism_submission` + append-only `prism_stage_event`), sweeper (7h grace), boot recovery, epoch-close batched D24 leaf emission (`prism-emit` outbox: `emitted_epoch` watermark + `prism_emit_cursor`, migration 0012). |
+| prism orchestration | done | DB-backed claim/execute/review/similarity/score state machine (`prism_submission` + append-only `prism_stage_event`), pre-pod screens (copy gate + static cheat + AST similarity) before Lium rent, sweeper (10h grace + pre-reclaim log harvest), boot recovery, epoch-close batched D24 leaf emission with **WTA** (`prism-emit` outbox: `emitted_epoch` watermark + `prism_emit_cursor` + positive-score carry + `apply_wta`, migration 0012). `PRISM_MAX_CONCURRENT_EVALS` default/prod = 8. |
 | prism recipe v1 | done | `prism-recipe` contract, fineweb-edu pinned shard (URL + SHA-256, harness re-verifies), 6h train / 7h pod caps, baseline sources, recipe pin hex on the API. |
 | prism v3 harness | done (branch `prism-better`) | Multi-file harness package (`main.py` + `prismlib/`, miner code in `unshare --net` subprocess), seeded train stream with authoritative token counter, G6 probes, `prismlib/cheatguard.py` AST audit, METRICS_JSON v2, miner-chosen tokenizer, G5 RULER/BABILong/natural (pretrain-only), `RECIPE_VERSION 1.4.0`. |
 | prism v3 eval battery | done (branch `prism-better`) | G1–G8 under `harness/eval/` (intrinsic, downstream, recall, reasoning, long-context, curve, inference, stability) + `eval/public_dev/` anchors family + `tests/smoke_battery.py`. |
 | prism v3 two-phase pod flow | done (branch `prism-better`) | `PHASE_TRAIN_DONE` marker → post-train staging of private assets + secret seed (SSH on Lium, dir on Sim) → `.ready` gate (fail-closed) → eval phase. Private tier recorded as `eval_tier`. |
 | prism v3 composite scoring | done, shadow-default (branch `prism-better`) | `prism-pipeline::composite` (anchor normalization, gates, weighted geometric mean, bootstrap CIs, LCB) + `ScoringMode` (`PRISM_SCORING_MODE`; `shadow` keeps v2 bit-identical, `composite` flips to `scoring_version 3`). Orchestrator persists the battery via `EvalStore` and attaches the composite; parameter-cap breach is terminal `Score(0)` (`CAP_EXCEEDED`). |
-| prism v3 eval store + Zone B | done (branch `prism-better`) | Migration 0013 (7 tables), `prism_store::eval::EvalStore`, memory + Postgres impls (`prism-eval-store`), composite finalization glue, `prism-zoneb` contract types; Zone B validated, labelled, never scored. |
+| prism v3 eval store + Zone B | done (branch `prism-better`) | Migration 0017 (7 tables), `prism_store::eval::EvalStore`, memory + Postgres impls (`prism-eval-store`), composite finalization glue, `prism-zoneb` contract types; Zone B validated, labelled, never scored. |
 | prism v3 attribution | done (branch `prism-better`) | `prism_recipe::attribution` 2×2 matrix builder + `POST /v1/submissions/{id}/attribution` returning run plans as JSON (operator-triggered execution); the route lives in `crates/prism-attribution` (split for the per-crate LOC cap). |
 | prism v3 baselines | done (branch `prism-better`) | `crates/prism-recipe/baselines/` Transformer++ + hybrid delta reference trees embedded as `prism_recipe::baselines`; anchor set `anchors/v0.json` is **placeholder** until measured + pre-registered. |
-| prism LLM review | done | `prism-review` quality + similarity prompts (versioned), OpenRouter client (key file only, never env), deterministic sim fallback; anti-copy forces `Copied`/`Suspicious` → Score 0. |
-| prism API | done | Full status surface: submissions list/detail/events/status/jobs/recipe/baseline, idempotent accept; v3: `metrics?zone=a\|b`, `/anchors`, `/preregistration`, `/attribution`. |
+| prism LLM review | done | `prism-review` quality + similarity-v3 prompts (versioned), OpenRouter client (key file only, never env), deterministic sim fallback; cheap `Copied` hard-zeros; cheap `Suspicious` hard-zeros only at `score ≥ 0.9` with non-trope evidence (`SUSPICIOUS_HARD_ZERO_THRESHOLD`); generic LM tropes coerced; copy/similarity/agentic corpus = champions (Score>0) + baseline. |
+| prism API | done | Full status surface: submissions list/detail/events/status/jobs/recipe/baseline, idempotent accept, advisory `/precheck`; v3: `metrics?zone=a\|b`, `/anchors`, `/preregistration`, `/attribution`. |
 | Phala / agent-v1 miner path | removed | External miners use HTTP submit only ([`external-miner/`](external-miner/)). |
 
 ## Known gaps
@@ -124,7 +124,7 @@ Agent/operator contracts: root [`AGENTS.md`](../AGENTS.md), [`deploy/AGENTS.md`]
 | DCAP verify holds the attest mutex | A cold Intel PCS fetch (up to 20 s) serialises attestation submissions. |
 | DCAP error classification | Matches on `anyhow` message text; re-run `cargo test -p attest-policy --features dcap` after any `dcap-qvl` bump. |
 | Design compose/images | deploy-wiring in progress; local port `28093` documented. |
-| Design emission ceremony | Owner must keygen prod `design_sk`, set bps, re-sign trust root. |
+| Design emission ceremony | Emission live at 5000/5000 with design; optional prod `design_sk` / owner key rotation still pending. |
 | Mainnet (netuid 100) | Owner wallet not yet on this machine, so prod runs with `BASE_GATEWAY_REQUIRE_OWNER=0`. |
 | Prod pin placeholders | `deploy/pins/prod.json` still ships zero-digests until the first successful promote; registry mode rejects placeholders. |
 | Spaces backup secrets | First prod promote is fail-closed without `BASE_BACKUP_ENDPOINT` + `SPACES_ACCESS_KEY_ID` / `SPACES_SECRET_ACCESS_KEY` (or AWS_* fallbacks) in GitHub. |

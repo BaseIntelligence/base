@@ -1,4 +1,4 @@
-//! Postgres [`EvalStore`] over migration 0013.
+//! Postgres [`EvalStore`] over migration 0017.
 //!
 //! The SQL lives in this crate — not in `db::prism_store` — because the `db`
 //! package is at its non-test LOC cap (same pattern as

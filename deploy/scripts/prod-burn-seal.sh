@@ -13,11 +13,11 @@
 # challenge mini-secrets stay at $BASE_CHALLENGE_SK_FILE / $BASE_DESIGN_SK_FILE
 # (mode 0400).
 #
-# D24 (exact-E): since the 2000/8000 trust-root activation, sealing requires a
-# complete leaf set from EVERY >0-bps challenge at the seal epoch. The design
-# pass therefore emits NoScore leaves first; its own seal attempt 409s until
-# the prism pass lands (tolerated), and the prism pass then seals the complete
-# set. All-NoScore still aggregates to the uid-0 burn vector.
+# D24 (exact-E): with both challenges at >0 bps (currently 5000/5000), sealing
+# requires a complete leaf set from EVERY >0-bps challenge at the seal epoch.
+# The design pass therefore emits NoScore leaves first; its own seal attempt
+# 409s until the prism pass lands (tolerated), and the prism pass then seals
+# the complete set. All-NoScore still aggregates to the uid-0 burn vector.
 set -euo pipefail
 
 BASE_HOME="${BASE_HOME:-/opt/base}"
@@ -31,6 +31,11 @@ DESIGN_SK="${BASE_DESIGN_SK_FILE:-${BASE_HOME}/deploy/secrets/design_sk}"
 BIN="${WEIGHTS_SMOKE_BIN:-${BASE_HOME}/bin/weights-smoke}"
 LOG="${BURN_SEAL_LOG:-/var/log/base-burn-seal.log}"
 LOCK="${BURN_SEAL_LOCK:-/run/base-burn-seal.lock}"
+# Admin bearer for /v1/admin/seal (required once gateway enforces it).
+if [[ -z "${BASE_GATEWAY_ADMIN_TOKEN:-}" && -z "${BASE_GATEWAY_ADMIN_TOKEN_FILE:-}" \
+  && -f "${BASE_HOME}/deploy/secrets/gateway_admin_token" ]]; then
+  export BASE_GATEWAY_ADMIN_TOKEN_FILE="${BASE_HOME}/deploy/secrets/gateway_admin_token"
+fi
 
 exec 9>"${LOCK}"
 if ! flock -n 9; then

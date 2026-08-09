@@ -4,7 +4,7 @@
 **scoring_version:** `2` live (bpb-only; v1 blended a 0.3 LLM quality vote; the architecture competition below reallocates credits *inside* this same lattice — no chain-facing version change). **v3 addition (opt-in):** composite scoring ships behind `PRISM_SCORING_MODE` (`shadow` default — v2 score bit-identical, composite observed; `composite` — v3 lattice becomes the score, rows carry `scoring_version 3`). See **v3 composite scoring** below.  
 **recipe_version:** `1.4.0` (telemetry 1.1.0 + architecture registry 1.2.0 + v3 multi-file harness / source-tree / G1–G8 battery + **1.4.0:** miner-chosen tokenizer + G5 community protocols + natural docs, pretrain-only)  
 **port:** `8092`  
-**emission_share_bps:** `10000` (sole share until design enablement ceremony; then rebalanced with `design`)  
+**emission_share_bps:** `5000` (equal split with `design`; sum `10000`)  
 **GPU path:** master-centralized **Lium** (no Phala CVM)
 
 ## What it is
@@ -15,23 +15,26 @@ plus **training-only submissions** (`training.py` + a published `arch_id`)
 for the architecture competition (see below). Each evaluation is executed
 for real on a Lium GPU pod rented by the operator master (Sim backend in CI
 only). A **pre-LLM copy gate** rejects byte/AST copies of strictly-earlier
-architectures (`created_at` ordered) without spending pod or LLM time.
-The code is then LLM-reviewed for coherence, then judged for architecture
-similarity (**`architecture.py` only** — `training.py` is exempt: the same
-training script on two different architectures is legitimate), then run
-through the shared **agentic** anti-cheat verifier (`challenge-agentic`:
-tools + AST + metrics/receipt; OpenRouter when keyed, `SimAgent` in CI).
-The LLM review also enforces the **telemetry contract**: `training.py` must
-call `prism_telemetry.report(...)` + `prism_telemetry.finish_evaluation()`;
-missing hooks are a hard contract violation (`missing_telemetry_hooks` →
-`Score(0)`, terminal). Cheap review/similarity stay as first filters;
-agentic is the primary anti-cheat judge. The LLM quality vote is a
+**champion** architectures (Score>0 top + ex-tops; `created_at` ordered)
+without spending pod or LLM time. The code is then LLM-reviewed for
+coherence, then judged for architecture similarity (**`architecture.py`
+only** — `training.py` is exempt: the same training script on two different
+architectures is legitimate), then run through the shared **agentic**
+anti-cheat verifier (`challenge-agentic`: tools + AST + metrics/receipt;
+OpenRouter when keyed, `SimAgent` in CI). The LLM review also enforces the
+**telemetry contract**: `training.py` must call `prism_telemetry.report(...)`
++ `prism_telemetry.finish_evaluation()`; missing hooks are a hard contract
+violation (`missing_telemetry_hooks` → `Score(0)`, terminal). Cheap
+`Copied` is a hard first filter; cheap `Suspicious` hard-zeros only when
+`score ≥ 0.9` (`SUSPICIOUS_HARD_ZERO_THRESHOLD`) and evidence is not
+generic-trope-only. Agentic is the primary anti-cheat judge and must not
+treat standard LM components as plagiarism. The LLM quality vote is a
 **coherence gate, never a grader**: the final score is pure bpb, with
-hard-zero on agentic `cheat`/`suspicious` and cheap `Copied`/`Suspicious`.
-Missing agentic verdict is fail-closed (`ChallengeInternal`). Leaves are
-D24-complete per chain epoch, emitted at epoch close from the finalized-since-
-last-epoch batch (see **Leaf emission** below). Review
-findings are audit events, not points.
+hard-zero on agentic `cheat`/`suspicious` and cheap `Copied` / high-confidence
+`Suspicious`. Missing agentic verdict is fail-closed (`ChallengeInternal`).
+Leaves are D24-complete per chain epoch, emitted at
+epoch close from the finalized-since-last-epoch batch (see **Leaf emission**
+below). Review findings are audit events, not points.
 
 This is **not** agent-challenge Phala/TDX attestation and **not**
 hypertraining B300 tournament code.
@@ -41,11 +44,11 @@ hypertraining B300 tournament code.
 ```mermaid
 stateDiagram-v2
     [*] --> Queued: POST /v1/submissions
-    Queued --> Rejected: pre-LLM copy gate (arch copy of earlier submission)
-    Queued --> Provisioning: worker claims row
+    Queued --> Rejected: pre-pod screens (copy gate / static cheat / similarity)
+    Queued --> Provisioning: worker claims + pre-pod screens pass
     Provisioning --> Running: pod SSH + harness up
     Running --> Reviewing: METRICS_JSON collected
-    Reviewing --> AgenticReview: arch-only similarity + quality
+    Reviewing --> AgenticReview: quality + post-pod agentic
     AgenticReview --> Scoring: submit_verdict
     Scoring --> Terminated: finalized row enters the emission outbox
     Provisioning --> Failed: offer/rent timeout
@@ -59,9 +62,11 @@ stateDiagram-v2
 ```
 
 All transitions are append-only events in `prism_stage_event`; the row state
-lives in `prism_submission`. The sweeper fails rows stuck past the 7h grace
-as `ChallengeInternal`, and `recover_on_boot` cleans pods referenced by
-interrupted rows.
+lives in `prism_submission`. The sweeper fails rows stuck past the **10h**
+grace (aligned above wait-RUNNING + 6h train + SSH margin; a prior 7h grace
+false-positive swept healthy ~7h19m trains) as `ChallengeInternal` after
+harvesting the on-pod harness log tail, and `recover_on_boot` cleans pods
+referenced by interrupted rows.
 
 Evaluation (Lium / Sim, review, agentic, leaf emit) is **master-only**.
 Validators never run `prism-challenge` — they fetch sealed weights only.
@@ -113,28 +118,39 @@ the telemetry-hooks rule and metrics forge checks still apply. Gating:
 `prism:train:<arch_id>` as above — one accepted entry per
 `(hotkey, arch_id)`, retries same rules.
 
-**Leaf emission (epoch-close, exactly-once).** A submission row's acceptance
-epoch (`prism_submission.epoch`) is intake metadata only. A dedicated emitter
-loop (`prism-emit`, one tick per chain epoch) emits **one D24-complete leaf
-set per chain epoch**: the first tick that observes epoch `E` assigns every
-submission finalized since the previously emitted epoch — the outbox batch,
-`kind IS NOT NULL AND emitted_epoch IS NULL` — to `E`, signs the full expected
-set (batch scores competition-aggregated; `NoScore(NotAttempted)` for everyone
-else), submits it, and advances the per-netuid emit cursor
-(`prism_emit_cursor`, migration 0012). This fixes the two acceptance-epoch
-bugs: independent scorers finalized in the same epoch used to lock each other
-out (gateway leaves are append-only first-write-wins per
-`(challenge, epoch, hotkey)`), and a submission accepted in epoch `X` but
-finalized in `X+k` (prod trains up to 6h ≫ 72-min epochs) never scored at all.
+**Leaf emission (epoch-close, exactly-once outbox + score carry).** A
+submission row's acceptance epoch (`prism_submission.epoch`) is intake
+metadata only. A dedicated emitter loop (`prism-emit`, one tick per chain
+epoch) emits **one D24-complete leaf set per chain epoch**: the first tick
+that observes epoch `E` assigns every submission finalized since the
+previously emitted epoch — the outbox batch,
+`kind IS NOT NULL AND emitted_epoch IS NULL` — to `E`, competition-aggregates
+that batch **unioned with every still-active positive lattice score**
+(`kind = 'score' AND score > 0`), signs the full expected set
+(`NoScore(NotAttempted)` for everyone else), submits it, and advances the
+per-netuid emit cursor (`prism_emit_cursor`, migration 0012). This fixes the
+two acceptance-epoch bugs: independent scorers finalized in the same epoch
+used to lock each other out (gateway leaves are append-only first-write-wins
+per `(challenge, epoch, hotkey)`), and a submission accepted in epoch `X` but
+finalized in `X+k` (prod trains up to 6h ≫ 72-min epochs) never scored at
+all.
 
-Exactly-once per scoring run: batch assignment is sticky before submit, the
-cursor advances only after the full set landed, and a crash mid-submit replays
-the identical assigned set on the next tick (first-write-wins with identical
-values converges). A manually retried + re-scored row re-enters the outbox
-(`reset_for_retry` clears the watermark); its old leaf stays immutable history
-in its original epoch. Epochs during a master outage carry no set; the first
-epoch after recovery carries the whole backlog (seals always pin fresh epochs
-— stale bundles can never Match on-chain). Run **exactly one** prism-challenge
+Exactly-once **outbox assignment** per scoring run: batch assignment is sticky
+before submit, the cursor advances only after the full set landed, and a crash
+mid-submit replays the identical assigned set on the next tick
+(first-write-wins with identical values converges). After assignment, a
+positive `Score(v>0)` keeps participating in every later epoch's competition
+set until a better/valid score supersedes it via lattice `max` — so an empty
+or reject-only fresh batch does not burn the prism share. Leaf emission then
+applies **winner-take-all** (`prism_registry::apply_wta`): only the single
+highest positive credit (lexicographically smallest hotkey on ties) receives a
+positive Score leaf; every other positive credit is zeroed. `Score(0)` rejects
+and `NoScore` absences do not carry. A manually retried + re-scored row
+re-enters the outbox (`reset_for_retry` clears the watermark); its old leaf
+stays immutable history in its original epoch. Epochs during a master outage
+carry no *new* outbox rows; the first epoch after recovery still includes
+active positive scores plus any backlog (seals always pin fresh epochs —
+stale bundles can never Match on-chain). Run **exactly one** prism-challenge
 emitter instance per netuid (single master topology).
 
 **Competition scoring (epoch-local, SCORE_MAX lattice preserved; prism
@@ -149,10 +165,12 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   credited to the arch's **owner** — owners are rewarded when anyone trains
   well on their architecture, including in a later epoch than their own
   submission.
-- *emission*: per hotkey `max(own credits, owner credits)` — **max, never
+- *per-hotkey credit*: `max(own credits, owner credits)` — **max, never
   summed**, so the lattice bound and the no-double-count property hold by
   construction. `Score(0)` rows (cheat/copy-gate) never set an arch's best;
   hotkeys whose rows are all `NoScore` keep their absence.
+- *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
+  Prism's emission share (50% of the subnet) goes entirely to that winner.
 
 **Top-model publish.** The master tracks the global best bpb across all
 scored submissions. On a new global best (≤ best ever and < last published),
@@ -277,22 +295,42 @@ still recorded on every v3 run (it is a G1 input and the shadow score).
 
 ## Agentic anti-cheat + AST + metrics gate
 
-Before any pod or LLM spend, the **pre-LLM copy gate** compares the
-candidate `architecture.py` against recent submissions (byte hash +
-`challenge-ast` fingerprints): a byte/AST copy of a **strictly-earlier**
-submission (`created_at` ordered) is terminal `rejected` with `Score(0)` —
-no pod, no LLM. Ties / unknown timestamps fall through to the LLM path; the
-published baseline is exempt (miners start from it). After measure and the
-cheap `prism-review` arch-only similarity/quality filters, the shared
-`challenge-agentic` loop inspects miner sources with read-only tools
-(`list_dir`, `read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`)
-against an **architecture-only** corpus of baseline + recent submissions.
-Final judge is the mandatory `submit_verdict` function-call.
+Before any pod rent, **pre-pod screens** (no GPU, no private eval assets) run
+in order and terminal-reject with `Score(0)` on hit:
+
+1. **Pre-LLM copy gate** — candidate `architecture.py` vs **champions**
+   (current top + historical Score>0 ex-tops) from **other miners** (byte hash
+   + `challenge-ast`; same hotkey/coldkey prior art excluded). Byte/AST copy
+   of a **strictly-earlier** champion is rejected. Ties / unknown timestamps
+   fall through; baseline is exempt. Miners may probe this gate via
+   `POST /v1/submissions/precheck` (quota 3/coldkey/UTC day) without queuing
+   a submission.
+2. **Static source cheat** (`challenge_agentic::static_source_cheat`) —
+   hardcoded `METRICS_JSON=` short-circuit; non-causal dense sequence mixers
+   (MLP-Mixer / TokenMix over time without a causal mask — label leak into
+   next-token CE); missing `prism_telemetry.report` / `finish_evaluation`
+   hooks in `training.py`.
+3. **Cheap LLM similarity** (`prism-review` similarity-v3) — hard-zero on
+   `Copied`, and on `Suspicious` when `score ≥ 0.9` with non-trope evidence
+   (`combine_final` + pre-pod share [`cheap_similarity_hard_zeros`]).
+   Below-threshold `Suspicious` (e.g. 0.7) does not wipe. Parsers coerce
+   verdicts whose evidence is only standard LM components (RMSNorm / RoPE /
+   SwiGLU / LayerNorm / gated or parallel residual, …).
+
+After measure, the LLM quality review and the shared `challenge-agentic` loop
+inspect sources + metrics/receipt with read-only tools (`list_dir`,
+`read_file`, `ast_summary`, `ast_diff_nearest`, `read_metrics`) against an
+**architecture-only** corpus of baseline + champions. Final judge is the
+mandatory `submit_verdict` function-call. Agentic must not treat generic
+modern-LM components as plagiarism; AST bands (`≥8500` suspicious /
+`≥9500` cheat) remain the structural copy thresholds.
 
 | Verdict | Leaf effect |
 |---------|-------------|
 | `clean` | proceed; score = pure bpb on `[0, SCORE_MAX]` |
-| `suspicious` / `cheat` | `Score(0)` via `combine_final` |
+| agentic `suspicious` / `cheat` | `Score(0)` via `combine_final` |
+| cheap LLM `Copied` | `Score(0)` |
+| cheap LLM `Suspicious` | `Score(0)` iff `score ≥ 0.9` and evidence not trope-only; else no wipe |
 | missing / unparseable | `NoScore(ChallengeInternal)` (fail-closed) |
 
 Cheat taxonomy (Prism-relevant):
@@ -304,10 +342,15 @@ Cheat taxonomy (Prism-relevant):
 | `ast_architecture_copy` | AST copy of another miner's architecture |
 | `near_identical_harness_copy` | Near-identical corpus copy |
 | `missing_telemetry_hooks` | `training.py` does not call `prism_telemetry.report` + `finish_evaluation` |
+| `non_causal_label_leak` | Dense time-axis mix (TokenMix / `t_mix` / `Linear(seq,…)`) without a causal mask, so next-token CE can see labels; also recipe-v1 `bpb < 1.0` |
 
-Cheap `Copied` / `Suspicious` from single-shot similarity remain hard-zero
-first filters; agentic is the **primary** anti-cheat judge. LLM quality stays
-audit-only for the bpb score (coherence gate, never a grader).
+Cheap `Copied` from single-shot similarity remains a hard-zero first filter;
+cheap `Suspicious` uses the numeric score against
+`SUSPICIOUS_HARD_ZERO_THRESHOLD` (0.9) plus trope coercion. Agentic is the
+**primary** anti-cheat judge.
+Public site gallery/leaderboard list **champions only** (Score>0); operators
+still see the full corpus via the challenge API. LLM quality stays audit-only
+for the bpb score (coherence gate, never a grader).
 
 ## Crates
 
@@ -332,7 +375,8 @@ audit-only for the bpb score (coherence gate, never a grader).
 
 | Route | Purpose |
 |-------|---------|
-| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py`; **v3:** source-tree ZIP via `zip_base64` or `application/zip` + `prism.toml` |
+| `POST /v1/submissions` | Accept a submission (idempotent by `submission_id`); training-only via `arch_id` + `training.py`; **v3:** source-tree ZIP via the JSON `zip_base64` field + `prism.toml` (raw `application/zip` carries two scripts only and rejects trees) |
+| `POST /v1/submissions/precheck` | Advisory copy-gate on the same payload shape (no queue, no pod, no 1-max spend) |
 | `GET /v1/submissions` | List (filter `?status=`, `?miner=`) — rows carry `arch_id` |
 | `GET /v1/submissions/{id}` | Full detail + receipt + scores + `eval` composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Append-only transition timeline |
@@ -346,6 +390,26 @@ audit-only for the bpb score (coherence gate, never a grader).
 | `GET /v1/recipe` | Recipe descriptor (pinned URL/sha, budget, caps) |
 | `GET /v1/recipe/baseline` | Baseline `architecture.py` / `training.py` |
 | `GET /health` | Liveness |
+
+### Similarity precheck (`POST /v1/submissions/precheck`)
+
+Miners can dry-run the **pre-LLM copy gate** (byte/AST vs earlier
+`architecture.py` from other miners) before burning a real submission.
+Auth and payload match submit (JSON or ZIP + `X-Miner-Hotkey`); metagraph
+membership is required when the cache is configured. The call does **not**
+insert a `prism_submission` row, does **not** mark the 1-max gate, and does
+**not** rent a Lium pod or call OpenRouter.
+
+| Rule | Detail |
+|------|--------|
+| Logic | Same `copy_gate` + same-hotkey/**same-coldkey** corpus exclusion as intake |
+| Quota | **3 attempts per coldkey per UTC day** (hotkey fallback when Owner unknown) — rotating hotkeys does not reset the budget |
+| Exhausted | `429` + `code=precheck_quota_exceeded`, `quota.remaining=0` |
+| Training-only | `verdict=skipped` (registry arch is copy-exempt by design) |
+| Response | `{ similar, verdict, matched_against?, score?, message, quota }` — never returns competitor source |
+
+`similar: false` / `verdict: clean` is advisory for the cheap gate only; a
+real submit still runs static cheat, cheap similarity, and agentic review.
 
 Miners have **full read access to the recipe**: the dataset pin, the budget,
 the harness semantics listed above, and the baseline sources they may reuse.
@@ -450,8 +514,9 @@ cargo test -p prism-challenge-task -p prism-lium -p prism-recipe \
 Wiremocks: Lium REST client (offers/rent) + OpenRouter chat roundtrip.
 Sim orchestrator e2e: claim → run → review → score → epoch-close leaf dry-run.
 Epoch semantics (`prism-emit/tests/epoch_semantics.rs`): independent
-same-epoch scorers co-land, cross-epoch evals score exactly once, no
-double-emission, competition credits intact, crash recovery replays.
+same-epoch scorers co-land, cross-epoch evals assign once then carry,
+reject-only follow-up epochs keep prior winners, competition credits
+intact, crash recovery replays.
 
 ## Must not
 

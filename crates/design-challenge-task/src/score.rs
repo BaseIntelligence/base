@@ -1,16 +1,12 @@
-//! Round + window scoring: admin round wins → rolling 10-round points share.
-//!
-//! Elo / pairwise annotation is no longer on the on-chain leaf path.
-//! `challenge_scoring_version = 3`: miners share `SCORE_MAX` in proportion to
-//! their round-win points over the last [`SCORING_WINDOW_ROUNDS`] rounds
-//! (rolling window, cheat excluded). Replaces the v2 daily ≥2-wins equal
-//! share.
+//! Round + window scoring: admin wins → rolling [`SCORING_WINDOW_ROUNDS`] share.
+//! `challenge_scoring_version = 3`: proportional `SCORE_MAX` by window points.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use bundle::{NoScoreReasonCode, ScoreOrAbsence};
-use design_challenge_task::{SCORE_MAX, SCORING_WINDOW_ROUNDS};
 use design_store::FinalScore;
+
+use crate::{SCORE_MAX, SCORING_WINDOW_ROUNDS};
 
 /// Inputs for closing / awarding a single round (win accounting).
 #[derive(Debug, Clone)]

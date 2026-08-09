@@ -63,9 +63,10 @@ pub enum CheatCode {
     EvalShortCircuit,
     /// AST copy of another miner's architecture/training.
     AstArchitectureCopy,
-    /// Prism `training.py` does not call the harness telemetry hooks
-    /// (`prism_telemetry.report` + `prism_telemetry.finish_evaluation`).
+    /// Prism `training.py` missing `prism_telemetry.report` / `finish_evaluation`.
     MissingTelemetryHooks,
+    /// Non-causal time-axis mix (`TokenMix` / dense `Linear`) ⇒ label leak.
+    NonCausalLabelLeak,
     /// Fallback for reviewer-emitted codes outside the normative taxonomy:
     /// parsing coerces unknown strings here (never a parse error) and notes
     /// the raw code in the rationale. Non-AST; the verdict is preserved.

@@ -1,10 +1,12 @@
 # Master role — gateway enabled, published on VPC for validator peers.
 # Used with: docker compose -f docker-compose.yml -f deploy/compose/role-master.yml --profile master
+#
+# On-chain weight submit must NOT run here (sole submitter = validator host).
+# Co-located validator is local-e2e only — env-local.yml clears the profile.
 services:
   gateway:
     profiles: ["master"]
     ports:
       - "8080:8080"
   validator:
-    ports:
-      - "127.0.0.1:18080:8080"
+    profiles: ["never"]

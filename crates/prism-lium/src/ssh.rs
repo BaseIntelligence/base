@@ -156,11 +156,13 @@ fn ssh_command(target: &SshTarget, private_key: &Path, remote_cmd: &str) -> Comm
 /// Retry driver shared by the exec variants. `stdin` is streamed to the
 /// child (then closed) when present — keep remote stdout/stderr small while
 /// stdin is in flight (no concurrent drain until the write finishes).
+#[allow(clippy::too_many_arguments)]
 async fn exec_with_retries(
     target: &SshTarget,
     private_key: &Path,
     remote_cmd: &str,
     stdin: Option<&[u8]>,
+    allow_fail: bool,
     attempts: u32,
     retry_secs: u64,
     timeout_secs: u64,
@@ -197,17 +199,17 @@ async fn exec_with_retries(
                     stdout_len = stdout.len(),
                     "ssh exec finished"
                 );
-                if out.status.success() {
+                if allow_fail || out.status.success() {
                     return Ok(SshExecOutput {
-                        returncode: out.status.code().unwrap_or(0),
+                        returncode: out.status.code().unwrap_or(-1),
                         stdout,
-                        stderr: truncate_str(&stderr, 4000),
+                        stderr: truncate_tail(&stderr, crate::HARNESS_LOG_RETAIN_BYTES),
                     });
                 }
                 last_err = format!(
                     "ssh exit {:?}: {}",
                     out.status.code(),
-                    truncate_str(&stderr, 200)
+                    truncate_tail(&stderr, 200)
                 );
             }
             Ok(Err(e)) => last_err = e,
@@ -234,6 +236,31 @@ pub async fn ssh_exec(
         private_key,
         remote_cmd,
         None,
+        false,
+        attempts,
+        retry_secs,
+        timeout_secs,
+    )
+    .await
+}
+
+/// Run SSH and return stdout/stderr even when the remote exit code is
+/// non-zero. Still errors on spawn failure / timeout after retries; used when
+/// the caller interprets remote failure itself (best-effort log harvest).
+pub async fn ssh_exec_allow_fail(
+    target: &SshTarget,
+    private_key: &Path,
+    remote_cmd: &str,
+    attempts: u32,
+    retry_secs: u64,
+    timeout_secs: u64,
+) -> Result<SshExecOutput, LiumError> {
+    exec_with_retries(
+        target,
+        private_key,
+        remote_cmd,
+        None,
+        true,
         attempts,
         retry_secs,
         timeout_secs,
@@ -257,6 +284,7 @@ pub async fn ssh_exec_stdin(
         private_key,
         remote_cmd,
         Some(stdin),
+        false,
         attempts,
         retry_secs,
         timeout_secs,
@@ -315,18 +343,32 @@ pub struct SshExecOutput {
     pub stderr: String,
 }
 
-fn truncate_str(s: &str, n: usize) -> String {
+/// Keep the **tail** of a log (fatals / tracebacks), UTF-8 safe.
+#[must_use]
+pub fn truncate_tail(s: &str, n: usize) -> String {
     if s.len() <= n {
-        s.to_owned()
-    } else {
-        format!("{}…", &s[..n])
+        return s.to_owned();
     }
+    let mut start = s.len().saturating_sub(n);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn truncate_tail_keeps_suffix() {
+        let s = format!("{}FATAL_TRACEBACK", "x".repeat(100));
+        let t = truncate_tail(&s, 20);
+        assert!(t.starts_with('…'));
+        assert!(t.ends_with("FATAL_TRACEBACK"));
+        assert!(t.ends_with(&s[s.len() - 20..]));
+    }
 
     #[test]
     fn parse_ssh_connect_cmd() {

@@ -11,9 +11,11 @@ services:
       BASE_NETUID: "100"
       BASE_CHAIN_ENDPOINT: "wss://entrypoint-finney.opentensor.ai:443"
       # Ordered failover (comma-separated): onfinality primary — entrypoint
-      # rate-limits this host's IP (HTTP 429, http_60s policy, observed
-      # 2026-08-06). chain-live cools a faulted endpoint for 60s and tries
-      # the next in order. Flip the order once entrypoint recovers.
+      # rate-limits this host's IP (HTTP 429, http_60s policy): hard window
+      # 2026-08-06; retested 2026-08-07 — solo probes were clean but the
+      # host's aggregate service load re-tripped http_60s within minutes,
+      # so the flip-back was reverted. chain-live cools a faulted endpoint
+      # for 60s and tries the next in order.
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
       BASE_COORDINATION_INTERVAL_SECS: "10"
       # Prod master gateway over VPC. Pin here — never rely on the
@@ -38,15 +40,22 @@ services:
       BASE_GATEWAY_WALLET_HOTKEY: default
       # Owner hotkey 5Gzi… installed; fail-closed master-only check.
       BASE_GATEWAY_REQUIRE_OWNER: "1"
+      # Required whenever REQUIRE_OWNER=1 — gates /v1/admin/* (seal, backends, …).
+      BASE_GATEWAY_ADMIN_TOKEN_FILE: /run/secrets/gateway_admin_token
     # Serve chain.joinbase.ai without forcing clients onto :8080 (8080 is VPC-only).
+    # Note: cleartext :80 publishes the full gateway surface; pair with host Caddy
+    # path filters / DOCKER-USER drops until ACME owns :80. Prefer HTTPS clients.
     ports:
       - "8080:8080"
       - "80:8080"
     volumes:
       - ./deploy/secrets/wallets:/run/base/wallets:ro
+      - ./deploy/secrets/gateway_admin_token:/run/secrets/gateway_admin_token:ro
   prism-challenge:
     environment:
       PRISM_FORCE_SIM: "false"
+      # Horizontal scale: N orchestrator workers each claim_next under a semaphore.
+      PRISM_MAX_CONCURRENT_EVALS: "8"
       # Emitter/gating/epoch-feed chain reads share the gateway failover list.
       BASE_CHAIN_ENDPOINTS: "wss://bittensor-finney.api.onfinality.io/public-ws,wss://entrypoint-finney.opentensor.ai:443"
   design-challenge:

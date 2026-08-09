@@ -3,25 +3,34 @@
 //! Semantics (normative: `docs/PRISM.md` § Leaf emission):
 //!
 //! - **One D24-complete leaf set per chain epoch**, emitted by the first
-//!   emitter tick that observes the epoch. The set carries every submission
-//!   finalized since the previously emitted epoch — the outbox batch
-//!   (`kind IS NOT NULL AND emitted_epoch IS NULL`) — competition-aggregated
+//!   emitter tick that observes the epoch. The competition input is the
+//!   union of (a) every submission finalized since the previously emitted
+//!   epoch — the outbox batch (`kind IS NOT NULL AND emitted_epoch IS NULL`)
+//!   — and (b) every still-active positive lattice score
+//!   (`kind = 'score' AND score > 0`), competition-aggregated
 //!   (`prism-registry`), plus `NoScore(NotAttempted)` for every other
 //!   expected participant so the epoch is sealable on its own.
 //! - A row's acceptance epoch (`prism_submission.epoch`) is **intake
 //!   metadata only**: a submission that finalizes after an epoch boundary
-//!   (prod trains up to 6h ≫ 72-min epochs) lands in the set emitted at the
+//!   (prod trains up to 6h ≫ 72-min epochs) first enters the outbox at the
 //!   next boundary, never in its acceptance epoch.
-//! - **Exactly-once per scoring run**: the batch is assigned
-//!   (`emitted_epoch = E`, sticky) before the submit, and the per-netuid
-//!   emit cursor advances only after the full set landed. A crash between
-//!   submit and cursor advance replays the sticky assigned set on the next
-//!   tick; gateway leaves are first-write-wins with identical values under
-//!   replay, so the retry converges. Retried/re-scored rows re-enter the
-//!   outbox (`reset_for_retry` clears the watermark).
-//! - Epochs during a master outage carry no set; the first epoch after
-//!   recovery includes the whole backlog (the seal always pins fresh
-//!   epochs — stale ones can never Match on-chain anyway).
+//! - **Exactly-once outbox assignment per scoring run**: the fresh batch is
+//!   assigned (`emitted_epoch = E`, sticky) before the submit, and the
+//!   per-netuid emit cursor advances only after the full set landed. A crash
+//!   between submit and cursor advance replays the sticky assigned set on
+//!   the next tick; gateway leaves are first-write-wins with identical
+//!   values under replay, so the retry converges. Retried/re-scored rows
+//!   re-enter the outbox (`reset_for_retry` clears the watermark).
+//! - **Positive scores carry forward**: after outbox assignment, a
+//!   `Score(v>0)` row keeps participating in every later epoch's
+//!   competition set until a better/valid score supersedes it via `max`.
+//!   Leaf emission then applies **WTA** ([`prism_registry::apply_wta`]) so
+//!   only the single best hotkey receives a positive Score leaf. Empty or
+//!   reject-only fresh batches therefore do not burn the prism share.
+//! - Epochs during a master outage carry no *new* outbox rows; the first
+//!   epoch after recovery still includes active positive scores plus any
+//!   backlog (the seal always pins fresh epochs — stale ones can never
+//!   Match on-chain anyway).
 
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
@@ -61,7 +70,7 @@ pub struct EmitSummary {
     pub epoch: u64,
     /// Full D24 set size (== `|expected|`).
     pub leaves: usize,
-    /// Scored rows the set was computed from (0 = pure `NoScore` fill).
+    /// Fresh outbox rows assigned to this epoch (0 = carry-only or empty).
     pub batch: usize,
     /// The submitted signed leaves (test introspection).
     pub signed: BTreeMap<Hotkey, LeafV1>,
@@ -159,9 +168,11 @@ impl EpochEmitter {
         expected: &ExpectedSet,
     ) -> Result<EmitSummary, EmitError> {
         let n = batch.len();
+        let active = self.store.active_score_rows(self.netuid).await?;
+        let competition = merge_competition_rows(&batch, &active);
         let owners: BTreeMap<String, String> =
             self.store.arch_owners().await?.into_iter().collect();
-        let signed = build_epoch_leaves(&self.sk, epoch, expected, &batch, &owners)?;
+        let signed = build_epoch_leaves(&self.sk, epoch, expected, &competition, &owners)?;
         challenge_common::submit_signed_leaf_set(&self.gateway, &signed)
             .await
             .map_err(|e| EmitError::Submit(e.to_string()))?;
@@ -176,6 +187,18 @@ impl EpochEmitter {
     }
 }
 
+/// Union of the fresh outbox batch and active positive scores for competition.
+///
+/// Duplicates (a just-assigned `Score(v>0)` row also appears in `active`) are
+/// harmless: [`prism_registry::competition_scores`] takes per-hotkey/`arch`
+/// maxima.
+fn merge_competition_rows(batch: &[EpochScoreRow], active: &[EpochScoreRow]) -> Vec<EpochScoreRow> {
+    let mut out = Vec::with_capacity(batch.len().saturating_add(active.len()));
+    out.extend_from_slice(batch);
+    out.extend_from_slice(active);
+    out
+}
+
 /// Build the signed D24 set for `epoch`: the batch competition-aggregated
 /// (owner + challenger credits, max lattice) plus `NoScore(NotAttempted)`
 /// for every expected participant without a score this epoch. Batch rows
@@ -188,7 +211,8 @@ pub fn build_epoch_leaves(
     batch: &[EpochScoreRow],
     arch_owners: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<Hotkey, LeafV1>, EmitError> {
-    let by_miner = prism_registry::competition_scores(batch, arch_owners);
+    let by_miner =
+        prism_registry::apply_wta(prism_registry::competition_scores(batch, arch_owners));
     let mut scores: BTreeMap<Hotkey, ScoreOrAbsence> = BTreeMap::new();
     let mut expected_set: BTreeSet<Hotkey> = BTreeSet::new();
     for p in &expected.participants {
@@ -276,9 +300,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(leaves.len(), 3);
+        // WTA: only the argmax (b=200) keeps a positive Score leaf.
         assert!(matches!(
             soa_of(&leaves, &a),
-            ScoreOrAbsence::Score { value: 100 }
+            ScoreOrAbsence::Score { value: 0 }
         ));
         assert!(matches!(
             soa_of(&leaves, &b),

@@ -1,4 +1,4 @@
-//! PRISM v3 eval persistence contract (migration 0013): composite runs,
+//! PRISM v3 eval persistence contract (migration 0017): composite runs,
 //! Zone A metric/mirror rows, the anchor registry, pre-registration
 //! hash-commits, and Zone B participant metric reports.
 //!

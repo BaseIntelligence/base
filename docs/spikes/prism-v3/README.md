@@ -10,7 +10,7 @@
 > subprocess + seeded train stream + METRICS_JSON v2 (`RECIPE_VERSION
 > 1.3.0`); **E2** G1–G8 battery + `eval/public_dev/` anchors family +
 > cheatguard patterns; **E3** `prism-pipeline::composite` + `ScoringMode` +
-> `FinalOutcome::Measured.composite`; **E4** migration 0013 + `prism-zoneb`
+> `FinalOutcome::Measured.composite`; **E4** migration 0017 + `prism-zoneb`
 > + `prism-eval-store` + API extensions; **E5** source-tree intake +
 > post-train asset staging + `prismlib/cheatguard.py` +
 > `prism_recipe::attribution`; **E6** reference baselines

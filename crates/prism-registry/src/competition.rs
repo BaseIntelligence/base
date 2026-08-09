@@ -12,11 +12,14 @@
 //!   best epoch result (`max(Score)` over all rows linked to that arch, any
 //!   trainer) is credited to the arch's owner — the owner is rewarded when
 //!   *anyone* trains well on their architecture.
-//! - **Emission**: per hotkey `max(own credits, owner credits)` — never
+//! - **Per-hotkey credit**: `max(own credits, owner credits)` — never
 //!   summed, so the SCORE_MAX lattice bound and the no-double-count property
 //!   hold by construction. Hotkeys whose rows are all `NoScore` keep their
 //!   absence; `Score(0)` rows (cheat / copy-gate reject) emit 0 and never
 //!   set an arch's best.
+//! - **WTA leaf emission**: [`apply_wta`] collapses the credit map to a
+//!   single positive `Score` (argmax; lexicographically smallest hotkey on
+//!   ties). Prism's emission share goes to that one winner.
 
 use std::collections::BTreeMap;
 
@@ -77,6 +80,35 @@ pub fn competition_scores(
         }
     }
     out
+}
+
+/// Winner-take-all collapse: keep only the single highest positive score.
+///
+/// Ties break by lexicographically smallest hotkey (stable, hex-encoded).
+/// Non-positive `Score(0)` and `NoScore` rows are preserved unchanged;
+/// every other positive `Score` is zeroed so the aggregator cannot soft-
+/// allocate Prism's share across multiple hotkeys.
+#[must_use]
+pub fn apply_wta(scores: BTreeMap<String, FinalScore>) -> BTreeMap<String, FinalScore> {
+    let winner = scores
+        .iter()
+        .filter_map(|(hk, s)| match s {
+            FinalScore::Score(v) if *v > 0 => Some((hk.as_str(), *v)),
+            _ => None,
+        })
+        // Higher score wins; on equal score prefer the smaller hotkey.
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(hk, _)| hk.to_owned());
+    let Some(winner) = winner else {
+        return scores;
+    };
+    scores
+        .into_iter()
+        .map(|(hk, s)| match &s {
+            FinalScore::Score(v) if *v > 0 && hk != winner => (hk, FinalScore::Score(0)),
+            _ => (hk, s),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -166,5 +198,26 @@ mod tests {
         assert_eq!(out.get("aa"), Some(&FinalScore::Score(800_000)));
         // Y's epoch best is 800k (by A) → credited to Y's owner C.
         assert_eq!(out.get("cc"), Some(&FinalScore::Score(800_000)));
+    }
+
+    #[test]
+    fn wta_keeps_only_the_argmax_score() {
+        let rows = vec![row("aa", None, 177_155), row("bb", Some("arch_x"), 111_595)];
+        let credits = competition_scores(&rows, &owners(&[("arch_x", "cc")]));
+        // Credits: aa=177155, bb=111595, cc=111595 (owner).
+        let wta = apply_wta(credits);
+        assert_eq!(wta.get("aa"), Some(&FinalScore::Score(177_155)));
+        assert_eq!(wta.get("bb"), Some(&FinalScore::Score(0)));
+        assert_eq!(wta.get("cc"), Some(&FinalScore::Score(0)));
+    }
+
+    #[test]
+    fn wta_tie_breaks_by_lexicographically_smallest_hotkey() {
+        let mut credits = BTreeMap::new();
+        credits.insert("bb".into(), FinalScore::Score(900_000));
+        credits.insert("aa".into(), FinalScore::Score(900_000));
+        let wta = apply_wta(credits);
+        assert_eq!(wta.get("aa"), Some(&FinalScore::Score(900_000)));
+        assert_eq!(wta.get("bb"), Some(&FinalScore::Score(0)));
     }
 }

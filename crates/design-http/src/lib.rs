@@ -16,6 +16,10 @@ mod api;
 mod stats;
 
 pub use api::{
-    design_router, mark_awaiting, mark_awaiting_admin, record_epoch, AdminAwardHook, AppState,
+    design_router, mark_awaiting, mark_awaiting_admin, record_epoch, schedule_harness_for_round,
+    AdminAwardHook, AppState,
 };
 pub use design_challenge_task::CHALLENGE_ID;
+pub use design_challenge_task::{
+    awaiting_admin_unscored_expired, reject_awaiting_admin_run, sanitize_reject_reason,
+};

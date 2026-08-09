@@ -1,12 +1,16 @@
-//! Workdir + corpus helpers for the Prism agentic anti-cheat gate.
+//! Workdir helpers for the Prism agentic anti-cheat gate.
+//!
+//! Corpus builders live in [`prism_pipeline::precheck`] (LOC split); this
+//! module only materializes the review workdir.
 
 use std::fs;
 use std::path::Path;
 
 use challenge_agentic::{CorpusEntry, ReviewRequest, PRISM_DOMAIN_RULES};
 use prism_lium::{EvalReceipt, RemoteExecResult};
-use prism_recipe::BASELINE_ARCHITECTURE_PY;
 use prism_store::SubmissionState;
+
+pub use prism_pipeline::{corpus_from_rows, gate_corpus_from_rows, same_miner};
 
 /// Build a temp workdir + [`ReviewRequest`] for one Prism submission.
 ///
@@ -51,27 +55,4 @@ pub fn build_review_request(
         sanitize_report_relpath: None,
         domain_rules: PRISM_DOMAIN_RULES.into(),
     })
-}
-
-/// Architecture-only corpus (similarity v2); `exempt_arch` drops identities.
-#[must_use]
-pub fn corpus_from_rows(
-    current_id: &str,
-    recent: &[prism_store::SubmissionState],
-    exempt_arch: Option<&str>,
-) -> Vec<CorpusEntry> {
-    let mut v = vec![CorpusEntry {
-        id: "baseline".into(),
-        source: BASELINE_ARCHITECTURE_PY.into(),
-    }];
-    for r in recent {
-        if r.id == current_id || Some(r.architecture_py.as_str()) == exempt_arch {
-            continue;
-        }
-        v.push(CorpusEntry {
-            id: format!("subm:{}", &r.id[..r.id.len().min(8)]),
-            source: r.architecture_py.clone(),
-        });
-    }
-    v
 }

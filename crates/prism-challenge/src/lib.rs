@@ -17,10 +17,13 @@ pub mod eval_finalize;
 mod leaf_emit;
 pub mod orchestrator;
 mod score;
-mod submit;
 
 pub use api::{record_epoch, submission_router, AppState};
-pub use leaf_emit::{emit_signed_leaf_set, public_key_from_secret, verify_leaf_sig, LeafEmitError};
+pub use challenge_common::{
+    public_key_from_secret, submit_signed_leaf_set, verify_leaf_sig, GatewayClient,
+    GatewayClientConfig, LeafEmitError, SubmitError, SubmitOutcome,
+};
+pub use leaf_emit::emit_signed_leaf_set;
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
 pub use prism_challenge_task::{
     CHALLENGE_ID, CHALLENGE_ID_BYTES, SCORE_MAX, SCORING_VERSION, TASK_ID_DOMAIN,
@@ -42,9 +45,6 @@ pub use prism_store::{
     StoreError, SubmissionState,
 };
 pub use score::{combine_final, FinalOutcome};
-pub use submit::{
-    submit_signed_leaf_set, GatewayClient, GatewayClientConfig, SubmitError, SubmitOutcome,
-};
 
 pub use bundle::{LeafV1, NoScoreReasonCode, ScoreOrAbsence};
 pub use crypto::KEY_LEN;

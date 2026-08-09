@@ -17,6 +17,7 @@ use design_challenge::{
     DbDesignStore, DesignStore, GatewayClient, GatewayClientConfig, MemoryDesignStore,
     Orchestrator, OrchestratorConfig, CHALLENGE_ID, SCORING_VERSION,
 };
+use design_challenge_bin::resanitize;
 use design_sandbox::{DockerSandbox, SandboxBackend, SimSandbox};
 use review_docker::{DockerAgent, DockerAgentConfig};
 use sha2::{Digest, Sha256};
@@ -181,6 +182,33 @@ enum Cmd {
     Identity,
     /// Run server + workers.
     Serve,
+    /// (Re)capture missing run screenshots (`index.png`) against Postgres,
+    /// then exit. Idempotent: runs that already have a screenshot are skipped.
+    BackfillScreenshots {
+        /// Scan at most this many recent runs (newest first).
+        #[arg(long, env = "DESIGN_BACKFILL_LIMIT", default_value_t = 500)]
+        limit: u32,
+    },
+    /// Re-sanitize from stored `raw_html` (current sanitizer), then force
+    /// re-capture `index.png`. Repairs runs where an older sanitizer wiped
+    /// `<style>` (existing `backfill-screenshots` cannot — it only re-renders
+    /// already-sanitized HTML and skips runs that already have a PNG).
+    BackfillResanitize {
+        /// Scan at most this many recent runs (newest first). Ignored when
+        /// `--run-id` is set.
+        #[arg(long, env = "DESIGN_BACKFILL_LIMIT", default_value_t = 500)]
+        limit: u32,
+        /// Specific run id(s) to repair (repeatable). When set, skips the
+        /// newest-N scan.
+        #[arg(long = "run-id")]
+        run_ids: Vec<String>,
+        /// Sleep between Chromium captures so live rounds are not starved.
+        #[arg(long, env = "DESIGN_BACKFILL_SLEEP_MS", default_value_t = 2_000)]
+        sleep_ms: u64,
+        /// List candidates / validate sanitize restore without writing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -209,7 +237,83 @@ fn run(cli: Cli) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
+    match &cli.cmd {
+        Some(Cmd::BackfillScreenshots { limit }) => {
+            return rt.block_on(cmd_backfill_screenshots(&cli, *limit));
+        }
+        Some(Cmd::BackfillResanitize {
+            limit,
+            run_ids,
+            sleep_ms,
+            dry_run,
+        }) => {
+            return rt.block_on(cmd_backfill_resanitize(
+                &cli,
+                *limit,
+                run_ids.clone(),
+                *sleep_ms,
+                *dry_run,
+            ));
+        }
+        _ => {}
+    }
     rt.block_on(cmd_serve(cli))
+}
+
+/// One-shot screenshot backfill: Postgres store + headless Chromium only (no
+/// chain, gateway, or challenge key needed).
+async fn cmd_backfill_screenshots(cli: &Cli, limit: u32) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "backfill-screenshots requires BASE_DATABASE_URL".to_owned())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store = DbDesignStore::new(pool);
+    let s =
+        design_challenge::backfill::backfill_screenshots(&store, &cli.staging_root, limit).await?;
+    println!(
+        "screenshot backfill: scanned={} missing={} captured={} failed={}",
+        s.scanned, s.missing, s.captured, s.failed
+    );
+    if s.failed > 0 {
+        return Err(format!(
+            "{} screenshot capture(s) failed; re-run to retry",
+            s.failed
+        ));
+    }
+    Ok(())
+}
+
+/// Re-sanitize from `raw_html` + force screenshot (see [`Cmd::BackfillResanitize`]).
+async fn cmd_backfill_resanitize(
+    cli: &Cli,
+    limit: u32,
+    run_ids: Vec<String>,
+    sleep_ms: u64,
+    dry_run: bool,
+) -> Result<(), String> {
+    let url = std::env::var("BASE_DATABASE_URL")
+        .map_err(|_| "backfill-resanitize requires BASE_DATABASE_URL".to_owned())?;
+    let pool = db::connect(&url).await.map_err(|e| e.to_string())?;
+    let store = DbDesignStore::new(pool);
+    let s = resanitize::backfill_resanitize(
+        &store,
+        &cli.staging_root,
+        limit,
+        &run_ids,
+        sleep_ms,
+        dry_run,
+    )
+    .await?;
+    println!(
+        "resanitize backfill: scanned={} candidates={} resanitized={} screenshots={} failed={} skipped={} dry_run={dry_run}",
+        s.scanned, s.candidates, s.resanitized, s.screenshots, s.failed, s.skipped
+    );
+    if s.failed > 0 {
+        return Err(format!(
+            "{} resanitize/capture failure(s); re-run to retry",
+            s.failed
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_sk_path(cli_path: Option<&PathBuf>) -> Result<PathBuf, String> {
@@ -432,6 +536,7 @@ fn build_app_state(
     Arc<AppState>,
     Arc<Orchestrator<chain_live::LiveChainClient>>,
 ) {
+    let epoch = Arc::new(AtomicU64::new(0));
     let mut orch = Orchestrator::new(
         OrchestratorConfig {
             netuid: cli.netuid,
@@ -441,6 +546,7 @@ fn build_app_state(
             staging_root: cli.staging_root.clone(),
             stage_delay,
             auto_retry_max: cli.auto_retry_max,
+            emit_poll: Duration::from_secs(15),
         },
         Arc::clone(&store),
         sandbox,
@@ -452,6 +558,7 @@ fn build_app_state(
     if gating_enabled {
         orch = orch.with_gating(Arc::clone(&gating));
     }
+    orch = orch.with_epoch_cache(Arc::clone(&epoch));
     let orch = Arc::new(orch);
 
     // Metagraph cache + watcher feed the intake membership check.
@@ -470,7 +577,7 @@ fn build_app_state(
     let admin_hashes = load_token_hashes(cli.admin_tokens_file.as_ref());
     let state = Arc::new(AppState {
         store,
-        epoch: AtomicU64::new(0),
+        epoch,
         netuid: cli.netuid,
         backend_mode,
         annotator_token_hashes: annotator_hashes,
@@ -567,6 +674,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
     }
     tokio::spawn(Arc::clone(&orch).run_round_loop());
     tokio::spawn(Arc::clone(&orch).run_sweeper());
+    tokio::spawn(Arc::clone(&orch).run_emitter());
 
     let app = design_router(state);
     let listener = TcpListener::bind(cli.bind)

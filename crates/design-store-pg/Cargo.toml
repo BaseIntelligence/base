@@ -1,0 +1,19 @@
+[package]
+name = "design-store-pg"
+description = "Postgres DesignStore adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+db = { path = "../db" }
+design-db = { path = "../design-db" }
+design-store = { path = "../design-store" }
+serde_json = "1"
+
+[lints]
+workspace = true

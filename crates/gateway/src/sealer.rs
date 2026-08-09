@@ -41,6 +41,12 @@ pub trait BundleStore: Send + Sync {
     fn seal_record(&self, epoch: u64) -> Option<SealRecord>;
 }
 
+/// Reserved floor for smoke/burn seal epochs (`weights-smoke` derives
+/// `8_000_000 + tip % 1_000_000`). Chain epochs are far below this; bundles
+/// at or above it are interim artifacts that must never shadow a real
+/// chain-epoch bundle (mirrors `db::latest_bundle_epoch`).
+pub const SMOKE_EPOCH_FLOOR: u64 = 8_000_000;
+
 /// In-memory sealed-bundle store.
 #[derive(Debug, Default)]
 pub struct MemoryBundleStore {
@@ -90,7 +96,15 @@ impl BundleStore for MemoryBundleStore {
     }
 
     fn latest_epoch(&self) -> Option<u64> {
-        self.by_epoch.read().keys().next_back().copied()
+        let by_epoch = self.by_epoch.read();
+        // Prefer chain-scale epochs: smoke/burn seals occupy the reserved
+        // block-scale range and must not shadow a real chain-epoch bundle.
+        by_epoch
+            .range(..SMOKE_EPOCH_FLOOR)
+            .next_back()
+            .map(|(epoch, _)| epoch)
+            .or_else(|| by_epoch.keys().next_back())
+            .copied()
     }
 
     fn seal_record(&self, epoch: u64) -> Option<SealRecord> {

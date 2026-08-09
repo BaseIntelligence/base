@@ -11,10 +11,11 @@ use tracing::{debug, info, warn};
 
 use crate::error::{CostGuardrailError, LiumError};
 use crate::ssh::{
-    parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_stdin, ssh_exec_streaming, SshTarget,
+    parse_ssh_target, resolve_private_key, ssh_exec, ssh_exec_allow_fail, ssh_exec_stdin,
+    ssh_exec_streaming, truncate_tail, SshTarget,
 };
 use crate::types::{GpuPreference, Instance, InstanceSpec, LiumSshConfig, Offer, RemoteExecResult};
-use crate::{EvalJobBackend, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
+use crate::{EvalJobBackend, HARNESS_LOG_RETAIN_BYTES, LIUM_API_BASE_URL, MIN_LIFETIME_HOURS};
 
 /// Parent-emitted marker line: the train-phase process group is dead and
 /// the parent gate is (about to be) waiting for eval assets. Matched as an
@@ -439,6 +440,7 @@ impl LiumClient {
             format!("{HARNESS_BOOTSTRAP}cd /tmp/prism_eval\n{env}timeout --kill-after=60 {timeout_secs} python3 main.py");
 
         self.exec_eval_stream(
+            instance_id,
             &target,
             &key,
             &remote,
@@ -456,6 +458,7 @@ impl LiumClient {
     /// reports a non-private tier, is rejected.
     async fn exec_eval_stream(
         &self,
+        instance_id: &str,
         target: &SshTarget,
         key: &Path,
         remote: &str,
@@ -485,7 +488,19 @@ impl LiumClient {
                         info!("eval assets staged post-train (seed written, .ready touched)");
                     }
                 }
-                r = &mut run => break r.map_err(|e| LiumError::Exec(format!("harness transport: {e}")))?,
+                r = &mut run => match r {
+                    Ok(o) => break o,
+                    Err(e) => {
+                        // Session timed out / dropped — a second ssh pulls the
+                        // on-pod log so the fatal tail survives the dead pipe.
+                        let h = self.harvest_logs_inner(instance_id).await.unwrap_or_default();
+                        return Err(LiumError::Exec(if h.trim().is_empty() {
+                            format!("harness transport: {e}")
+                        } else {
+                            format!("harness transport: {e}; harvested: {h}")
+                        }));
+                    }
+                },
             }
         };
         let tail: String = out
@@ -495,6 +510,15 @@ impl LiumClient {
             .take(40)
             .collect::<Vec<_>>()
             .join("\n");
+        // Nothing came back over the channel: fall back to the on-pod log so the
+        // failure detail is not an empty string.
+        let tail = if tail.trim().is_empty() {
+            self.harvest_logs_inner(instance_id)
+                .await
+                .unwrap_or_default()
+        } else {
+            tail
+        };
         let res = parse_metrics_output(&out.stdout, out.returncode, &tail)?;
         if assets.is_some() && !staged {
             return Err(LiumError::Exec(
@@ -550,6 +574,17 @@ impl LiumClient {
         let (att, rty) = (self.ssh.ssh_attempts, self.ssh.ssh_retry_secs);
         ssh_exec_stdin(target, key, &cmd, &tar.stdout, att, rty, 300).await?;
         Ok(())
+    }
+
+    /// SSH-fetch the on-pod harness log tail (empty when missing / unreachable).
+    async fn harvest_logs_inner(&self, instance_id: &str) -> Result<String, LiumError> {
+        let target = self.resolve_ssh_target(instance_id).await?;
+        let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        let cmd = format!(
+            "tail -c {HARNESS_LOG_RETAIN_BYTES} /tmp/prism_eval/harness.log 2>/dev/null || true"
+        );
+        let out = ssh_exec_allow_fail(&target, &key, &cmd, 1, self.ssh.ssh_retry_secs, 45).await?;
+        Ok(truncate_tail(&out.stdout, HARNESS_LOG_RETAIN_BYTES))
     }
 
     async fn gpu_smoke(&self, target: &SshTarget, key: &Path) -> Result<String, LiumError> {
@@ -963,6 +998,10 @@ impl EvalJobBackend for LiumClient {
     ) -> Result<RemoteExecResult, LiumError> {
         self.exec_eval_live(instance_id, architecture_py, training_py, tree_blob)
             .await
+    }
+
+    async fn harvest_logs(&self, instance_id: &str) -> Result<String, LiumError> {
+        self.harvest_logs_inner(instance_id).await
     }
 }
 

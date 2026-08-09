@@ -153,7 +153,8 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
     let gateway = Arc::new(
         GatewayClient::new(GatewayClientConfig {
             base_url: "dry-run".into(),
-            max_retries: 0,
+            max_attempts: 1,
+            backoff: std::time::Duration::from_millis(1),
         })
         .unwrap(),
     );
@@ -177,12 +178,21 @@ async fn agentic_infra_retry_resumes_without_remeasure() {
     );
 
     let architecture_py = "import torch\ndef build_model(ctx):\n    return torch.nn.Linear(8, 8)\n";
-    let training_py = "def train(model, ctx):\n    return {\"loss\": 1.0}\n";
+    // Telemetry hooks keep the pre-pod static screen out of the way: this test
+    // is about the review-stage retry, not the contract.
+    let training_py = concat!(
+        "import prism_telemetry\n",
+        "def train(model, ctx):\n",
+        "    prism_telemetry.report(loss=1.0, step=1)\n",
+        "    prism_telemetry.finish_evaluation()\n",
+        "    return {'loss': 1.0}\n",
+    );
     let id = "agentic-retry-resume".to_owned();
     store
         .insert_queued(&SubmissionState {
             id: id.clone(),
             miner_hotkey: "11".repeat(32),
+            miner_coldkey: None,
             epoch: 7,
             netuid: 541,
             status: Stage::Queued,

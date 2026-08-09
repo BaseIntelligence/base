@@ -10,7 +10,7 @@ use crypto::KEY_LEN;
 use prism_challenge::{
     emit_signed_leaf_set, example_valid_request, run_sim_pipeline, score_from_pipeline,
     submit_signed_leaf_set, GatewayClient, GatewayClientConfig, PipelineInput, PipelineOutcome,
-    PrismConfig, SubmissionService, CHALLENGE_ID, SCORE_MAX,
+    PrismConfig, SubmissionService, SCORE_MAX,
 };
 use prism_lium::{EvalJobBackend, SimLiumBackend};
 
@@ -64,15 +64,14 @@ async fn e2e_sim_happy_path_scores_and_emits_d24() {
 
     let gw = GatewayClient::new(GatewayClientConfig {
         base_url: "dry-run".into(),
-        max_retries: 0,
+        max_attempts: 1,
+        backoff: std::time::Duration::from_millis(1),
     })
     .expect("gw");
-    let out = submit_signed_leaf_set(&gw, CHALLENGE_ID, 7, &leaves)
-        .await
-        .expect("submit");
+    let out = submit_signed_leaf_set(&gw, &leaves).await.expect("submit");
     assert!(matches!(
-        out,
-        prism_challenge::SubmitOutcome::DryRun { leaf_count: 1 }
+        out.as_slice(),
+        [prism_challenge::SubmitOutcome::DryRun { leaf_count: 1 }]
     ));
 }
 

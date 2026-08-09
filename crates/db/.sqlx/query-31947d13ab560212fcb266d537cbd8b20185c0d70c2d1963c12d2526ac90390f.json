@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(\n               (SELECT MAX(epoch) FROM epoch_bundle WHERE epoch < 8000000),\n               (SELECT MAX(epoch) FROM epoch_bundle)\n           )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "coalesce",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "31947d13ab560212fcb266d537cbd8b20185c0d70c2d1963c12d2526ac90390f"
+}

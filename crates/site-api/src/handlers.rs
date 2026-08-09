@@ -10,13 +10,15 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::map::{
-    activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
-    list_arenas, prism_arena_from_live, prism_bpb_leaderboard, prism_submission, prism_telemetry,
-    prism_window,
-};
 use crate::state::SiteState;
 use crate::upstream::{self, DESIGN, PRISM};
+use site_data::map::{
+    activity_from_lives, design_arena_from_dashboard, design_leaderboard, design_submission,
+    enrich_leaderboard_uids, enrich_leaderboard_weights, enrich_submission_uids,
+    is_prism_champion_submission, leaderboard_matches_query, list_arenas, prism_arena_from_live,
+    prism_bpb_leaderboard, prism_submission, prism_telemetry, prism_window,
+    submission_matches_query, uid_index_from_hotkeys,
+};
 use site_types::coding_arena;
 use site_types::page_slice;
 use site_types::{
@@ -44,6 +46,7 @@ pub fn site_router(state: SiteState) -> Router {
             get(get_prism_submission_telemetry),
         )
         .route("/v1/site/validators", get(get_validators))
+        .route("/v1/site/weights", get(get_site_weights))
         .route("/v1/site/activity", get(get_activity))
         .route("/v1/site/metrics", get(get_metrics))
         .route("/v1/site/governance", get(get_governance))
@@ -56,6 +59,8 @@ struct PageQuery {
     #[serde(rename = "pageSize")]
     page_size: Option<u32>,
     status: Option<String>,
+    /// Hotkey / handle / prompt substring filter (SS58 or hex).
+    q: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +81,7 @@ fn now_iso() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
-    crate::map::ms_to_iso(ms)
+    site_data::map::ms_to_iso(ms)
 }
 
 async fn fetch_design_dash(st: &SiteState) -> Option<Value> {
@@ -96,10 +101,18 @@ async fn fetch_prism_recipe(st: &SiteState) -> Option<Value> {
 }
 
 fn epoch_from_lives(design: Option<&Value>, prism: Option<&Value>, chain_epoch: u64) -> u64 {
+    // Challenge payloads report 0 when their own chain read never hydrated —
+    // treat 0 as "unknown" so the chain-derived epoch wins.
     design
         .and_then(|d| d.get("epoch"))
         .and_then(Value::as_u64)
-        .or_else(|| prism.and_then(|p| p.get("epoch")).and_then(Value::as_u64))
+        .filter(|e| *e > 0)
+        .or_else(|| {
+            prism
+                .and_then(|p| p.get("epoch"))
+                .and_then(Value::as_u64)
+                .filter(|e| *e > 0)
+        })
         .unwrap_or(chain_epoch)
 }
 
@@ -140,24 +153,96 @@ fn hex_hotkey(bytes: &[u8]) -> String {
     s
 }
 
+/// Current metagraph hotkey → UID index (hex + SS58). Empty when chain is down.
+fn metagraph_uid_index(st: &SiteState) -> HashMap<String, u16> {
+    let Some(chain) = st.chain.as_ref() else {
+        return HashMap::new();
+    };
+    let block = chain.current_block().unwrap_or(0);
+    let Ok(hash) = chain.block_hash(block) else {
+        return HashMap::new();
+    };
+    let Ok(mg) = chain.metagraph_at(&hash) else {
+        return HashMap::new();
+    };
+    uid_index_from_hotkeys(&mg.hotkeys)
+}
+
+/// Sealed hotkey → normalised weight share (SS58 keys from the bundle).
+fn sealed_weight_index(st: &SiteState) -> HashMap<String, f64> {
+    site_data::weights::sealed_view(st.latest_sealed_bundle())
+        .map(|view| view.hotkeys.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Enrich leaderboard rows with on-chain UID + sealed weight / TAO/day.
+fn decorate_leaderboard(st: &SiteState, rows: &mut [crate::LeaderboardRow]) {
+    let uids = metagraph_uid_index(st);
+    if !uids.is_empty() {
+        enrich_leaderboard_uids(rows, &uids);
+    }
+    let weights = sealed_weight_index(st);
+    if !weights.is_empty() {
+        // `emission_per_day` is not yet hydrated from chain; pass 0 so we still
+        // surface `weight` and leave `taoPerDay` unset until the rate is known.
+        // Clients may also compute `weight × emissionPerDay` from /v1/weights/latest
+        // once network stats publish a non-zero emission.
+        enrich_leaderboard_weights(rows, &weights, 0.0);
+    }
+}
+
+/// Enrich submission agents with on-chain UID.
+fn decorate_submissions(st: &SiteState, rows: &mut [crate::Submission]) {
+    let uids = metagraph_uid_index(st);
+    if !uids.is_empty() {
+        enrich_submission_uids(rows, &uids);
+    }
+}
+
 async fn network_stats(st: &SiteState) -> NetworkStats {
     let (block, chain_epoch, validators) = chain_snapshot(st);
     let design = fetch_design_dash(st).await;
     let prism = fetch_prism_status(st).await;
     let prism_subs = fetch_prism_subs(st, 200).await;
-    let arenas = list_arenas(design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let arenas = arenas_with_emission(st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
     let agents: u32 = arenas.iter().map(|a| a.agents).sum();
+    let tao_price = site_data::price::tao_price_usd(&st.client, &st.tao_price).await;
     NetworkStats {
         epoch: epoch_from_lives(design.as_ref(), prism.as_ref(), chain_epoch),
         agents,
         validators: u32::try_from(validators.len()).unwrap_or(0),
         arenas: 3,
         emission_per_day: 0.0,
-        tao_price: 0.0,
+        tao_price,
         block_height: block,
         updated_at: now_iso(),
         total_stake: None,
     }
+}
+
+/// Apply trust-root emission share + sealed-vector weight to one arena.
+fn apply_emission(st: &SiteState, arena: &mut site_types::Arena) {
+    let slug = arena.slug.as_str();
+    let shares = site_data::weights::configured_shares(st.trust_root());
+    if let Some((_, share)) = shares.iter().find(|(s, _)| s == slug) {
+        arena.emission_share = *share;
+    }
+    arena.weight =
+        site_data::weights::arena_weight(st.trust_root(), st.latest_sealed_bundle(), slug);
+}
+
+/// Arena list with trust-root emission shares + sealed-vector weights applied.
+fn arenas_with_emission(
+    st: &SiteState,
+    design: Option<&Value>,
+    prism: Option<&Value>,
+    prism_subs: Option<&Value>,
+) -> Vec<site_types::Arena> {
+    let mut arenas = list_arenas(design, prism, prism_subs);
+    for arena in &mut arenas {
+        apply_emission(st, arena);
+    }
+    arenas
 }
 
 async fn get_network(State(st): State<SiteState>) -> impl IntoResponse {
@@ -169,7 +254,7 @@ async fn get_landing(State(st): State<SiteState>) -> impl IntoResponse {
     let prism = fetch_prism_status(&st).await;
     let prism_subs = fetch_prism_subs(&st, 200).await;
     let stats = network_stats(&st).await;
-    let arenas = list_arenas(design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let arenas = arenas_with_emission(&st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
     let design_runs = design
         .as_ref()
         .and_then(|d| d.get("recent_runs"))
@@ -182,7 +267,7 @@ async fn get_landing(State(st): State<SiteState>) -> impl IntoResponse {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let activity = activity_from_lives(&design_runs, &prism_rows, 10);
+    let activity = activity_from_lives(design.as_ref(), &design_runs, &prism_rows, 10);
     Json(LandingSummary {
         stats,
         arenas,
@@ -194,7 +279,8 @@ async fn get_arenas(State(st): State<SiteState>) -> impl IntoResponse {
     let design = fetch_design_dash(&st).await;
     let prism = fetch_prism_status(&st).await;
     let prism_subs = fetch_prism_subs(&st, 200).await;
-    Json(list_arenas(
+    Json(arenas_with_emission(
+        &st,
         design.as_ref(),
         prism.as_ref(),
         prism_subs.as_ref(),
@@ -205,7 +291,7 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
     let Some(slug) = ArenaSlug::parse(&slug) else {
         return json_err(StatusCode::NOT_FOUND, "not_found", "unknown arena");
     };
-    let arena = match slug {
+    let mut arena = match slug {
         ArenaSlug::Coding => coding_arena(),
         ArenaSlug::Design => design_arena_from_dashboard(fetch_design_dash(&st).await.as_ref()),
         ArenaSlug::Prism => {
@@ -214,6 +300,7 @@ async fn get_arena(State(st): State<SiteState>, Path(slug): Path<String>) -> Res
             prism_arena_from_live(status.as_ref(), subs.as_ref())
         }
     };
+    apply_emission(&st, &mut arena);
     Json(arena).into_response()
 }
 
@@ -230,7 +317,12 @@ fn empty_leaderboard_json(page: u32, page_size: u32) -> Value {
     })
 }
 
-async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+async fn design_leaderboard_json(
+    st: &SiteState,
+    page: u32,
+    page_size: u32,
+    q: Option<&str>,
+) -> Value {
     let dash = fetch_design_dash(st).await;
     let round_id = dash
         .as_ref()
@@ -264,12 +356,29 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let previous_round = dash
+        .as_ref()
+        .and_then(|d| d.pointer("/leaderboard/previous_round"))
+        .and_then(Value::as_u64)
+        .or_else(|| round_id.map(|r| r.saturating_sub(1)));
     let epoch = dash
         .as_ref()
         .and_then(|d| d.get("epoch"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let rows = design_leaderboard(&ratings, &previous, epoch);
+    // Mid-round before admin winners: current ratings are empty. Surface the
+    // previous round's standings so the marketing board is not blank.
+    let (board_ratings, board_previous, board_round_id) =
+        if ratings.is_empty() && !previous.is_empty() {
+            (previous.as_slice(), &[][..], previous_round)
+        } else {
+            (ratings.as_slice(), previous.as_slice(), round_id)
+        };
+    let mut rows = design_leaderboard(board_ratings, board_previous, epoch);
+    decorate_leaderboard(st, &mut rows);
+    if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
+        rows.retain(|r| leaderboard_matches_query(r, needle));
+    }
     let page_out = page_slice(&rows, page, page_size);
     let seconds_remaining = dash
         .as_ref()
@@ -279,7 +388,7 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
         .as_ref()
         .and_then(|d| d.pointer("/round/closes_at_secs"))
         .and_then(Value::as_u64)
-        .map(|s| crate::map::ms_to_iso(s.saturating_mul(1000)));
+        .map(|s| site_data::map::ms_to_iso(s.saturating_mul(1000)));
     json!({
         "items": page_out.items,
         "page": page_out.page,
@@ -287,14 +396,19 @@ async fn design_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> V
         "total": page_out.total,
         "pageCount": page_out.page_count,
         "epoch": epoch,
-        "roundId": round_id,
+        "roundId": board_round_id,
         "roundEndsAt": round_ends_at,
         "secondsRemaining": seconds_remaining,
         "updatedAt": now_iso(),
     })
 }
 
-async fn prism_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Value {
+async fn prism_leaderboard_json(
+    st: &SiteState,
+    page: u32,
+    page_size: u32,
+    q: Option<&str>,
+) -> Value {
     let status = fetch_prism_status(st).await;
     let epoch = status
         .as_ref()
@@ -307,7 +421,11 @@ async fn prism_leaderboard_json(st: &SiteState, page: u32, page_size: u32) -> Va
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let board = prism_bpb_leaderboard(&rows, epoch);
+    let mut board = prism_bpb_leaderboard(&rows, epoch);
+    decorate_leaderboard(st, &mut board);
+    if let Some(needle) = q.filter(|s| !s.trim().is_empty()) {
+        board.retain(|r| leaderboard_matches_query(r, needle));
+    }
     let page_out = page_slice(&board, page, page_size);
     json!({
         "items": page_out.items,
@@ -331,13 +449,14 @@ async fn get_leaderboard(
     };
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(24);
+    let needle = q.q.as_deref();
     match slug {
         ArenaSlug::Coding => Json(empty_leaderboard_json(page, page_size)).into_response(),
         ArenaSlug::Design => {
-            Json(design_leaderboard_json(&st, page, page_size).await).into_response()
+            Json(design_leaderboard_json(&st, page, page_size, needle).await).into_response()
         }
         ArenaSlug::Prism => {
-            Json(prism_leaderboard_json(&st, page, page_size).await).into_response()
+            Json(prism_leaderboard_json(&st, page, page_size, needle).await).into_response()
         }
     }
 }
@@ -353,11 +472,14 @@ async fn get_submissions(
     let page = q.page.unwrap_or(1);
     let page_size = q.page_size.unwrap_or(24);
     let status_filter = q.status.as_deref();
+    let needle = q.q.as_deref();
     match slug {
         ArenaSlug::Coding => {
             Json(page_slice::<crate::Submission>(&[], page, page_size)).into_response()
         }
-        ArenaSlug::Design => design_submissions_page(&st, page, page_size, status_filter).await,
+        ArenaSlug::Design => {
+            design_submissions_page(&st, page, page_size, status_filter, needle).await
+        }
         ArenaSlug::Prism => {
             let raw = fetch_prism_subs(&st, 500).await;
             let rows = raw
@@ -366,7 +488,13 @@ async fn get_submissions(
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let mut items: Vec<_> = rows.iter().filter_map(prism_submission).collect();
+            // Public gallery: champions only (current top + Score>0 ex-tops).
+            let mut items: Vec<_> = rows
+                .iter()
+                .filter(|r| is_prism_champion_submission(r))
+                .filter_map(prism_submission)
+                .collect();
+            decorate_submissions(&st, &mut items);
             if let Some(st_f) = status_filter {
                 items.retain(|s| match st_f {
                     "scored" => s.status == crate::SubmissionStatus::Scored,
@@ -374,6 +502,9 @@ async fn get_submissions(
                     "failed" => s.status == crate::SubmissionStatus::Failed,
                     _ => true,
                 });
+            }
+            if let Some(n) = needle.filter(|s| !s.trim().is_empty()) {
+                items.retain(|s| submission_matches_query(s, n));
             }
             Json(page_slice(&items, page, page_size)).into_response()
         }
@@ -385,6 +516,7 @@ async fn design_submissions_page(
     page: u32,
     page_size: u32,
     status_filter: Option<&str>,
+    q: Option<&str>,
 ) -> Response {
     let dash = fetch_design_dash(st).await;
     let epoch = dash
@@ -435,6 +567,7 @@ async fn design_submissions_page(
             items.push(sub);
         }
     }
+    decorate_submissions(st, &mut items);
     if let Some(st_f) = status_filter {
         items.retain(|s| match st_f {
             "scored" => s.status == crate::SubmissionStatus::Scored,
@@ -442,6 +575,9 @@ async fn design_submissions_page(
             "failed" => s.status == crate::SubmissionStatus::Failed,
             _ => true,
         });
+    }
+    if let Some(n) = q.filter(|s| !s.trim().is_empty()) {
+        items.retain(|s| submission_matches_query(s, n));
     }
     Json(page_slice(&items, page, page_size)).into_response()
 }
@@ -531,6 +667,15 @@ async fn get_validators(
     Json(page)
 }
 
+/// Sealed weight vector + configured emission split (trust root + bundle).
+async fn get_site_weights(State(st): State<SiteState>) -> impl IntoResponse {
+    Json(site_data::weights::site_weights(
+        st.netuid,
+        st.trust_root(),
+        st.latest_sealed_bundle(),
+    ))
+}
+
 async fn get_activity(
     State(st): State<SiteState>,
     Query(q): Query<LimitQuery>,
@@ -550,7 +695,12 @@ async fn get_activity(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    Json(activity_from_lives(&design_runs, &prism_rows, limit))
+    Json(activity_from_lives(
+        design.as_ref(),
+        &design_runs,
+        &prism_rows,
+        limit,
+    ))
 }
 
 async fn get_metrics(
@@ -558,14 +708,26 @@ async fn get_metrics(
     Query(q): Query<MetricsQuery>,
 ) -> impl IntoResponse {
     let range = q.range.unwrap_or_else(|| "30".into());
-    let stats = network_stats(&st).await;
+    let (block, chain_epoch, validators) = chain_snapshot(&st);
+    let design = fetch_design_dash(&st).await;
+    let prism = fetch_prism_status(&st).await;
+    let prism_subs = fetch_prism_subs(&st, 200).await;
+    let arenas = arenas_with_emission(&st, design.as_ref(), prism.as_ref(), prism_subs.as_ref());
+    let epoch = epoch_from_lives(design.as_ref(), prism.as_ref(), chain_epoch);
+    let agents: u32 = arenas.iter().map(|a| a.agents).sum();
+    let tao_price = site_data::price::tao_price_usd(&st.client, &st.tao_price).await;
+    let weights =
+        site_data::weights::site_weights(st.netuid, st.trust_root(), st.latest_sealed_bundle());
+
     Json(NetworkMetrics {
         range,
-        epoch: stats.epoch,
-        kpis: Vec::new(),
+        epoch,
+        kpis: site_data::metrics::kpis(agents, validators.len(), tao_price, block, &weights),
         emission: MetricsEmission {
+            // No epoch-close history store yet — points stay empty rather than
+            // invented; the configured split above is the honest current frame.
             points: Vec::new(),
-            shares: Vec::new(),
+            shares: site_data::metrics::emission_shares(&arenas),
             total_this_epoch: 0.0,
         },
         pass_rate: MetricsPassRate {
@@ -573,7 +735,7 @@ async fn get_metrics(
             latest: Vec::new(),
         },
         population: MetricsPopulation {
-            rows: Vec::new(),
+            rows: site_data::metrics::population_rows(&arenas),
             new_this_epoch: 0,
         },
         ledger: Vec::new(),
@@ -686,7 +848,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "run1",
                 "status": "scored",
-                "final_score": {"score": 1000}
+                "final_score": {"score": 1000},
+                "prompt_title": "SaaS PR review",
+                "prompt": "Build a three-page marketing site for a SaaS PR review tool.",
+                "pages": [
+                    {"path": "index.html", "bytes": 128, "raw_sha256": "aa"},
+                    {"path": "index.png", "bytes": 4096, "raw_sha256": "bb"}
+                ],
+                "screenshot_url": "/challenge/design/v1/view/run1/index.png"
             })))
             .mount(design)
             .await;
@@ -773,9 +942,17 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["items"][0]["stage"], "scored");
         assert_eq!(v["items"][0]["score"], 1000.0);
+        // The full prompt brief is the public run label, not "design run <id>".
         assert_eq!(
-            v["items"][0]["url"],
-            "/challenge/design/v1/view/run1/index.html"
+            v["items"][0]["title"],
+            "Build a three-page marketing site for a SaaS PR review tool."
+        );
+        assert_eq!(v["items"][0]["promptTitle"], "SaaS PR review");
+        // Screenshots-only viewer: no html `url` key, only `screenshotUrl`.
+        assert!(v["items"][0].get("url").is_none());
+        assert_eq!(
+            v["items"][0]["screenshotUrl"],
+            "/challenge/design/v1/view/run1/index.png"
         );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/design/duels").await;
@@ -786,6 +963,17 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["items"][0]["stage"], "terminated");
         assert_eq!(v["items"][0]["bpb"], 1.25);
+        assert_eq!(v["items"][0]["paramsM"], 12.0);
+        let expected_hk = keystore::ss58_encode(&[0xbb; 32], keystore::BITTENSOR_SS58_PREFIX);
+        assert_eq!(v["items"][0]["agent"]["hotkey"], expected_hk);
+        assert_eq!(
+            v["items"][0]["agent"]["operator"],
+            format!(
+                "{}…{}",
+                &expected_hk[..8],
+                &expected_hk[expected_hk.len() - 4..]
+            )
+        );
 
         let (s, v) = call(app.clone(), "/v1/site/arenas/prism/leaderboard").await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -816,9 +1004,169 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
 
-        let (s, v) = call(app, "/v1/site/arenas/coding/submissions").await;
+        let (s, v) = call(app.clone(), "/v1/site/arenas/coding/submissions").await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["total"], 0);
+
+        // Hotkey / prompt search (`?q=`) filters design submissions.
+        let expected_hk = keystore::ss58_encode(&[0xaa; 32], keystore::BITTENSOR_SS58_PREFIX);
+        let (s, v) = call(
+            app.clone(),
+            &format!("/v1/site/arenas/design/submissions?q={}", &expected_hk[..8]),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        let (s, v) = call(app.clone(), "/v1/site/arenas/design/submissions?q=nope-xyz").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 0, "{v}");
+
+        let (s, v) = call(app, "/v1/site/activity?limit=8").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let msgs: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("message").and_then(Value::as_str))
+            .collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Design evaluated") || m.contains("winner")),
+            "{msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn design_submissions_exclude_runs_without_screenshots() {
+        let (design, _prism, st) = setup().await;
+        // One scored run with a captured screenshot, one failed run that never
+        // produced pages (dead view link before the screenshots-only viewer).
+        Mock::given(method("GET"))
+            .and(path("/v1/dashboard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "epoch": 3,
+                "leaderboard": {"current_round": 9, "ratings": [], "previous_ratings": []},
+                "round": {"round_id": 9, "closes_at_secs": 1_700_000_100_u64, "seconds_remaining": 120},
+                "recent_runs": [
+                    {"id": "ok1", "status": "scored", "round_id": 9, "harness_id": "h1", "prompt_id": "p1", "error_detail": null, "updated_at_ms": 1_700_000_000_000_u64},
+                    {"id": "bad1", "status": "failed", "round_id": 9, "harness_id": "h1", "prompt_id": "p1", "error_detail": "agent crashed", "updated_at_ms": 1_700_000_001_000_u64}
+                ]
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/harness/h1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "h1",
+                "miner_hotkey": "aa".repeat(32)
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/runs/ok1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "ok1",
+                "status": "scored",
+                "final_score": {"score": 1000},
+                "pages": [{"path": "index.png", "bytes": 4096, "raw_sha256": "bb"}],
+                "screenshot_url": "/challenge/design/v1/view/ok1/index.png"
+            })))
+            .mount(&design)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/runs/bad1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "bad1",
+                "status": "failed",
+                "error_detail": "agent crashed",
+                "pages": []
+            })))
+            .mount(&design)
+            .await;
+        let app = site_router(st);
+
+        let (s, v) = call(app, "/v1/site/arenas/design/submissions").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{v}");
+        assert_eq!(items[0]["id"], "ok1");
+        assert!(items[0].get("url").is_none());
+        assert_eq!(
+            items[0]["screenshotUrl"],
+            "/challenge/design/v1/view/ok1/index.png"
+        );
+    }
+
+    #[tokio::test]
+    async fn design_leaderboard_falls_back_to_previous_round() {
+        let (design, _prism, st) = setup().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/dashboard"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "epoch": 3,
+                "leaderboard": {
+                    "current_round": 9,
+                    "previous_round": 8,
+                    "ratings": [],
+                    "previous_ratings": [
+                        {"miner_hotkey": "aa".repeat(32), "rating": 250, "wins": 1, "losses": 0}
+                    ]
+                },
+                "round": {
+                    "round_id": 9,
+                    "closes_at_secs": 1_700_000_100_u64,
+                    "seconds_remaining": 120
+                },
+                "recent_runs": []
+            })))
+            .mount(&design)
+            .await;
+        let app = site_router(st);
+
+        let (s, v) = call(app, "/v1/site/arenas/design/leaderboard").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["total"], 1, "{v}");
+        assert_eq!(v["roundId"], 8, "{v}");
+        assert_eq!(v["items"][0]["elo"], 250.0);
+    }
+
+    #[tokio::test]
+    async fn arenas_carry_trust_root_shares_and_weights_endpoint() {
+        use std::sync::Arc;
+        use trustroot::{ChallengeEntry, ChallengesBody, ParticipantPolicy};
+        let (design, prism, st) = setup().await;
+        mount_site_mocks(&design, &prism).await;
+        let entry = |id: &str, bps: u16| ChallengeEntry {
+            id: id.as_bytes().to_vec(),
+            public_key: [7u8; 32],
+            emission_share_bps: bps,
+            policy: ParticipantPolicy::AllMetagraphHotkeys,
+        };
+        let st = st.with_weights(
+            Arc::new(ChallengesBody {
+                challenges: vec![entry("design", 5_000), entry("prism", 5_000)],
+            }),
+            Arc::new(|| None),
+        );
+        let app = site_router(st);
+
+        let (s, v) = call(app.clone(), "/v1/site/arenas").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v[1]["emissionShare"], 0.5);
+        assert_eq!(v[2]["emissionShare"], 0.5);
+        // Unsealed: effective weights stay 0.
+        assert_eq!(v[1]["weight"], 0.0);
+        assert_eq!(v[2]["weight"], 0.0);
+
+        let (s, v) = call(app.clone(), "/v1/site/weights").await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["sealed"], false);
+        assert_eq!(v["burnShare"], 1.0);
+        assert_eq!(v["emissionShares"][0]["arena"], "design");
+        assert_eq!(v["emissionShares"][0]["share"], 0.5);
+        assert_eq!(v["emissionShares"][1]["arena"], "prism");
+        assert!(v["hotkeyWeights"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -880,9 +1228,12 @@ mod tests {
         assert_eq!(v["series"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["finalLoss"], 1.0);
         // x2 has a detail payload → real curve + params; x1 (no detail mock)
-        // falls back to the single-point bpb curve.
+        // falls back to the single-point bpb curve at the axis end.
         assert_eq!(v["series"][0]["points"].as_array().unwrap().len(), 2);
         assert_eq!(v["series"][0]["params"], 12.0);
+        assert_eq!(v["series"][0]["submissionId"], "x2");
+        assert_eq!(v["tokenBudget"], 0);
         assert_eq!(v["series"][1]["points"].as_array().unwrap().len(), 1);
+        assert_eq!(v["series"][1]["points"][0]["step"], 2);
     }
 }

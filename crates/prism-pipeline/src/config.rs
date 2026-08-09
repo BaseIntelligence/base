@@ -9,7 +9,7 @@ pub struct PrismConfig {
     pub max_price_per_hour: f64,
     /// Max lifetime hours (≥ 1).
     pub max_lifetime_hours: f64,
-    /// Global concurrent Lium evals (v1 = 1).
+    /// Global concurrent Lium evals (horizontal scale; prod default 8).
     pub max_concurrent_evals: u32,
     /// SSH public keys for Real Lium rent (empty for Sim).
     pub ssh_public_keys: Vec<String>,
@@ -37,7 +37,7 @@ impl PrismConfig {
             require_image_digest: false, // pin when operator supplies digest
             max_price_per_hour: 2.5,
             max_lifetime_hours: 2.0,
-            max_concurrent_evals: 1,
+            max_concurrent_evals: 8,
             ssh_public_keys: vec![],
             default_image_digest: None,
             preferred_offer_id: None,
@@ -53,7 +53,7 @@ impl PrismConfig {
             require_image_digest: false,
             max_price_per_hour: 1.5,
             max_lifetime_hours: 1.0,
-            max_concurrent_evals: 1,
+            max_concurrent_evals: 8,
             ssh_public_keys: vec![],
             default_image_digest: None,
             preferred_offer_id: None,
