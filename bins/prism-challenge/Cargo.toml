@@ -20,6 +20,7 @@ chain-live = { path = "../../crates/chain-live" }
 clap = { version = "4", features = ["derive", "env"] }
 prism-attribution = { path = "../../crates/prism-attribution" }
 prism-challenge = { path = "../../crates/prism-challenge" }
+prism-intake = { path = "../../crates/prism-intake" }
 prism-lium = { path = "../../crates/prism-lium" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-registry = { path = "../../crates/prism-registry" }

@@ -213,6 +213,12 @@ services:
       # Top-model GitHub publish (BaseIntelligence/prism top-model/): no-op
       # when the token file is absent/empty.
       PRISM_TOPMODEL_GITHUB_TOKEN_FILE: /run/base/github/token
+      # Require harvested checkpoint for top-model journal (set 0 for source-only).
+      PRISM_TOPMODEL_REQUIRE_WEIGHTS: "${PRISM_TOPMODEL_REQUIRE_WEIGHTS:-1}"
+      # Parked checkpoints harvested from Lium pods (master-local).
+      PRISM_ARTIFACT_DIR: /var/lib/prism/artifacts
+      # Operator bearer (retry + playground + gating reset). Empty → 503.
+      PRISM_ADMIN_TOKENS_FILE: /run/base/prism/admin_tokens
     env_file:
       # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose
       # fails closed (binaries would otherwise fall back to in-memory store).
@@ -225,6 +231,8 @@ services:
       - ./deploy/secrets/lium:/run/base/lium:ro
       - ./deploy/secrets/openrouter:/run/base/openrouter:ro
       - ./deploy/secrets/github:/run/base/github:ro
+      - ./deploy/secrets/prism:/run/base/prism:ro
+      - prism-artifacts:/var/lib/prism/artifacts
     expose:
       - "8092"
     healthcheck:
@@ -393,6 +401,7 @@ volumes:
   base-pgdata:
   base-updater-state:
   design-artifacts:
+  prism-artifacts:
 
 networks:
   base:

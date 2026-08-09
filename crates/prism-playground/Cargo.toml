@@ -1,0 +1,22 @@
+[package]
+name = "prism-playground"
+description = "PRISM operator playground: prompt + logprobs against parked top-model weights"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+prism-artifacts = { path = "../prism-artifacts" }
+prism-intake = { path = "../prism-intake" }
+prism-store = { path = "../prism-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

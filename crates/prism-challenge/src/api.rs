@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -39,7 +40,7 @@ use crate::CHALLENGE_ID;
 use prism_eval_store::{detail_view, eval_json, list_view};
 use prism_intake::{
     coldkey_of, json_err, map_submission_err, materialize_arch, metagraph_uid, now_ms,
-    parse_submission_body,
+    parse_submission_body, require_bearer, BearerGate,
 };
 use prism_pipeline::SubmissionRequest;
 use prism_store::eval::EvalStore;
@@ -65,10 +66,30 @@ pub struct AppState {
     /// Cached metagraph snapshot for intake membership. `None` disables the
     /// membership check (tests/dev).
     pub metagraph: Option<Arc<MetagraphCache>>,
+    /// Operator bearer hashes. Empty → retry/admin/playground answer 503.
+    pub admin_token_hashes: Vec<String>,
 }
 
 /// Router over the full API surface.
 pub fn submission_router(state: Arc<AppState>) -> Router {
+    let admin: BearerGate = (state.admin_token_hashes.clone().into(), "admin");
+    if admin.0.is_empty() {
+        tracing::warn!(
+            event = "prism_admin_auth_unconfigured",
+            "no admin bearer tokens: retry + playground answer 503"
+        );
+    }
+    let operator = Router::new()
+        .route("/v1/submissions/{id}/retry", post(post_retry))
+        .route(
+            "/v1/admin/playground/complete",
+            prism_playground::playground_route(prism_playground::PlaygroundState {
+                store: Arc::clone(&state.store),
+                infer_script: prism_playground::default_infer_script(),
+            }),
+        )
+        .route("/v1/admin/gating/{hotkey}/reset", post(admin_reset_gating))
+        .route_layer(from_fn_with_state(admin, require_bearer));
     Router::new()
         .route("/health", get(health))
         .route("/v1/submissions", post(post_submission))
@@ -95,7 +116,6 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
             "/v1/submissions/{id}/attribution",
             prism_attribution::attribution_route(Arc::clone(&state.store)),
         )
-        .route("/v1/submissions/{id}/retry", post(post_retry))
         .route(
             "/v1/anchors",
             prism_attribution::anchors_route(Arc::clone(&state.eval_store)),
@@ -109,6 +129,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         .route("/v1/recipe", get(get_recipe))
         .route("/v1/recipe/baseline", get(get_recipe_baseline))
         .route("/v1/architectures", get(get_architectures))
+        .merge(operator)
         .with_state(state)
 }
 
@@ -316,6 +337,24 @@ async fn get_events(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> 
     }
 }
 
+/// `POST /v1/admin/gating/{hotkey}/reset` — clear 1-max open slot (operator).
+async fn admin_reset_gating(
+    State(st): State<Arc<AppState>>,
+    Path(hotkey): Path<String>,
+) -> Response {
+    let Some(gating) = &st.gating else {
+        return json_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "gating_disabled",
+            "submission gating is not enabled",
+        );
+    };
+    match gating.reset_open(CHALLENGE_ID, &hotkey).await {
+        Ok(()) => Json(json!({"ok": true, "hotkey": hotkey})).into_response(),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "gating", &e.to_string()),
+    }
+}
+
 /// `POST /v1/submissions/{id}/retry` — requeue a failed row (guard: max attempts).
 async fn post_retry(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let row = match st.store.get(&id).await {
@@ -461,6 +500,7 @@ mod tests {
             retry_max: 2,
             gating: None,
             metagraph: None,
+            admin_token_hashes: vec![],
         })
     }
 
@@ -482,6 +522,7 @@ mod tests {
                 retry_max: 2,
                 gating: Some(Arc::clone(&gating) as Arc<dyn GatingStore>),
                 metagraph: Some(cache),
+                admin_token_hashes: vec![],
             }),
             gating,
         )
@@ -489,7 +530,21 @@ mod tests {
 
     #[tokio::test]
     async fn retry_requeues_failed_then_guard_blocks() {
-        let st = state();
+        const ADMIN: &str = "test-admin-token";
+        let mut st = state();
+        // Rebuild with a configured admin bearer (fail-closed otherwise).
+        let inner = Arc::new(AppState {
+            store: Arc::clone(&st.store),
+            eval_store: Arc::clone(&st.eval_store),
+            epoch: std::sync::atomic::AtomicU64::new(7),
+            netuid: 541,
+            backend_mode: "sim",
+            retry_max: 2,
+            gating: None,
+            metagraph: None,
+            admin_token_hashes: vec![prism_intake::token_hash(ADMIN)],
+        });
+        st = inner;
         let app = submission_router(Arc::clone(&st));
         let id = prism_pipeline::submission_id(&crate::example_valid_request());
         // Seed via POST.
@@ -518,6 +573,7 @@ mod tests {
         let (s, v) = call(
             app.clone(),
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -538,6 +594,7 @@ mod tests {
         let (s, _v) = call(
             app.clone(),
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -557,6 +614,7 @@ mod tests {
         let (s, _v) = call(
             app,
             Request::post(format!("/v1/submissions/{id}/retry"))
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1045,6 +1103,7 @@ mod tests {
             retry_max: 2,
             gating: Some(gating as Arc<dyn GatingStore>),
             metagraph: Some(Arc::new(MetagraphCache::new())),
+            admin_token_hashes: vec![],
         });
         let app = submission_router(st);
         let body = serde_json::to_vec(&crate::example_valid_request()).unwrap();
@@ -1084,7 +1143,7 @@ mod tests {
             "n_params": 125_000_000_u64,
             "recipe": "1.3.0",
             "train_metrics": { "miner.train.loss": 0.7 },
-            "battery": { "metrics": { "org.g1.bpb_code": 1.0 } },
+            "battery": { "metrics": { "org.g1.bits_per_byte_code": 1.0 } },
         })
     }
 
@@ -1155,7 +1214,7 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["provenance"], "organizer-measured");
-        assert_eq!(v["metrics"][0]["key"], "org.g1.bpb_code");
+        assert_eq!(v["metrics"][0]["key"], "org.g1.bits_per_byte_code");
 
         let (s, v) = call(
             app.clone(),

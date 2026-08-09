@@ -26,6 +26,7 @@ prism-eval-store = { path = "../prism-eval-store" }
 prism-intake = { path = "../prism-intake" }
 prism-lium = { path = "../prism-lium" }
 prism-pipeline = { path = "../prism-pipeline" }
+prism-playground = { path = "../prism-playground" }
 prism-recipe = { path = "../prism-recipe" }
 prism-registry = { path = "../prism-registry" }
 prism-review = { path = "../prism-review" }

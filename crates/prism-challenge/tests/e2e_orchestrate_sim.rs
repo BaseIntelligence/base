@@ -227,6 +227,7 @@ async fn submission_detail_exposes_metrics_over_http() {
         retry_max: 2,
         gating: None,
         metagraph: None,
+        admin_token_hashes: vec![],
     });
     let app = prism_challenge::submission_router(state);
     let res = tower::ServiceExt::oneshot(

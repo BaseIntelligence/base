@@ -105,6 +105,9 @@ struct Cli {
         global = true
     )]
     gating_watch_secs: u64,
+    /// Operator bearer tokens file. Unset → retry/admin/playground answer 503.
+    #[arg(long, env = "PRISM_ADMIN_TOKENS_FILE", global = true)]
+    admin_tokens_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -430,6 +433,7 @@ async fn cmd_serve(cli: Cli) -> Result<(), String> {
         retry_max: MAX_ATTEMPTS,
         gating: gating_enabled.then(|| Arc::clone(&gating)),
         metagraph: gating_enabled.then(|| Arc::clone(&metagraph)),
+        admin_token_hashes: prism_intake::load_token_hashes(cli.admin_tokens_file.as_deref()),
     });
     // Zone B miner self-report intake: split into `prism-attribution` for
     // the per-crate LOC cap (same pattern as the attribution planner,

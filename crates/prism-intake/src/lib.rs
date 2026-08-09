@@ -22,6 +22,12 @@
 // worth a prose `# Errors` section (same choice as `prism-attribution`).
 #![allow(clippy::missing_errors_doc)]
 
+mod bearer;
+
+pub use bearer::{
+    hash_matches, load_token_hashes, require_bearer, token_hash, BearerGate, CallerToken,
+};
+
 use std::sync::Arc;
 
 use axum::extract::State;

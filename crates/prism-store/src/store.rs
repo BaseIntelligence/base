@@ -117,6 +117,9 @@ pub trait PrismStore: Send + Sync + std::fmt::Debug {
     /// published).
     async fn last_publication_bpb(&self) -> Result<Option<f64>, StoreError>;
 
+    /// Most recent top-model publication row (`None` = never published).
+    async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError>;
+
     /// Best (lowest) bpb across all scored submissions ever (global top-model
     /// trigger baseline).
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError>;
@@ -564,6 +567,15 @@ impl PrismStore for MemoryPrismStore {
             .map_err(|_| StoreError::Backend("poison".into()))?
             .last()
             .map(|p| p.bpb))
+    }
+
+    async fn last_publication(&self) -> Result<Option<TopModelPublication>, StoreError> {
+        Ok(self
+            .publications
+            .lock()
+            .map_err(|_| StoreError::Backend("poison".into()))?
+            .last()
+            .cloned())
     }
 
     async fn best_scored_bpb(&self) -> Result<Option<f64>, StoreError> {

@@ -173,14 +173,18 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
   Prism's emission share (50% of the subnet) goes entirely to that winner.
 
 **Top-model publish.** The master tracks the global best bpb across all
-scored submissions. On a new global best (≤ best ever and < last published),
-it publishes `architecture.py` + `training.py` + `METRICS.json` + a
-`README.md` block to the public
+scored submissions. After a successful Lium eval it **harvests
+`checkpoint.pt`** from the pod into `$PRISM_ARTIFACT_DIR/<submission_id>/`
+**before** terminate. On a new global best (≤ best ever and < last
+published), it publishes `architecture.py` + `training.py` + `METRICS.json`
++ `ARTIFACT.json` + a `README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo
-under `top-model/` via the GitHub contents API, and journals the publication
-(`prism_topmodel_publication`). The token is read from the deploy secret
-file `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
-absent/empty → publishing is a graceful no-op, scoring is unaffected.
+under `top-model/` via the GitHub contents API; large checkpoints upload as
+a mutable Release tag `prism-top-model`. The publication is journaled
+(`prism_topmodel_publication`). Token:
+`PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
+absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
+(default), a missing parked checkpoint fails the publish (no journal).
 
 ## v3 composite scoring (versioned addition — opt-in)
 
@@ -227,7 +231,7 @@ Zone A `org.*` metrics):
 
 | Group | Axis | Weight |
 |-------|------|--------|
-| G1 | intrinsic fit (frozen-val bpb + multi-domain/fresh-crawl bpb + key-token variant) | 0.25 |
+| G1 | intrinsic fit (tokenizer-neutral `org.g1.bits_per_byte_*` + debug per-token `g1.bpb.*`) | 0.25 |
 | G2 | commonsense/reading 0-shot core (LAMBADA, HellaSwag, PIQA, ARC, Winogrande, BoolQ, OBQA) | 0.15 |
 | G3 | retrieval/associative recall (MQAR, copying, induction, passkey — procedural, memorization-proof) | 0.10 |
 | G4 | reasoning at small scale (S5 permutations, arithmetic, ProofWriter, Dyck-k, modular, K&K) | 0.15 |
@@ -370,8 +374,9 @@ for the bpb score (coherence gate, never a grader).
 | `prism-emit` | Epoch-close D24 leaf emission engine (outbox batching, exactly-once cursor) |
 | `prism-zoneb` | Zone B contract types (envelope, metric kinds, verdicts) + validation lattice (`validate`) — v3 |
 | `prism-eval-store` | `EvalStore` memory/Postgres impls + composite finalization glue — v3 |
-| `prism-intake` | Shared HTTP intake front-end (body parse, arch materialization, metagraph membership, error envelope) + advisory `POST /v1/submissions/precheck`; split for the per-crate LOC cap |
+| `prism-intake` | Shared HTTP intake front-end (body parse, arch materialization, metagraph membership, error envelope, admin Bearer) + advisory `POST /v1/submissions/precheck`; split for the per-crate LOC cap |
 | `prism-attribution` | v3 routes split for the per-crate LOC cap: `POST /v1/submissions/{id}/attribution` planner (2×2 run plans as JSON), `POST .../zone-b` intake, and the read-only `GET .../metrics`, `/v1/anchors`, `/v1/preregistration` |
+| `prism-playground` | Operator `POST /v1/admin/playground/complete` (text + logprobs against parked checkpoints) |
 | `prism-challenge` | API surface, orchestrator, scoring v2 + v3 finalize wiring, emitter loop, gateway client |
 | `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection, `PRISM_SCORING_MODE`) |
 
@@ -393,7 +398,15 @@ for the bpb score (coherence gate, never a grader).
 | `GET /v1/jobs` | One row per active/recent pod (ops) |
 | `GET /v1/recipe` | Recipe descriptor (pinned URL/sha, budget, caps) |
 | `GET /v1/recipe/baseline` | Baseline `architecture.py` / `training.py` |
+| `POST /v1/submissions/{id}/retry` | Operator retry (Bearer `PRISM_ADMIN_TOKENS_FILE`; fail-closed 503 if unset) |
+| `POST /v1/admin/gating/{hotkey}/reset` | Operator 1-max reset (same Bearer) |
+| `POST /v1/admin/playground/complete` | Operator prompt playground: text + logprobs against parked top/specified checkpoint (same Bearer) |
 | `GET /health` | Liveness |
+
+Operator Bearer tokens: one per line in `deploy/secrets/prism/admin_tokens`
+(`PRISM_ADMIN_TOKENS_FILE`). Empty/missing → admin routes answer
+**503 `auth_unconfigured`** (never open). Gateway miner path blocks
+`/v1/admin/*`.
 
 ### Similarity precheck (`POST /v1/submissions/precheck`)
 

@@ -208,7 +208,8 @@ set emitted at the first chain-epoch boundary **after** your run finalizes (a
 long train that crosses epochs is normal — outbox assignment is exactly once).
 Positive scores then keep participating in later epochs' competition sets until
 a better valid score supersedes them (WTA still collapses to one leaf winner).
-The global-best model is published to
+The global-best model (sources + `ARTIFACT.json` / checkpoint release) is
+published to
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism)
 `top-model/`. See [`PRISM.md`](../PRISM.md).
 
