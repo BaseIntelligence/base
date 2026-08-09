@@ -2,16 +2,16 @@
   "version": 0,
   "status": "placeholder",
   "issued": "2026-08-07",
-  "notes": "PLACEHOLDER anchor set for Prism v3 composite scoring (research/12 §7). G5 keys (recipe ≥ 1.4.0): ruler_acc / babilong_acc / natural_mcq_acc / helmet_rag_acc / lstar with internal weights 0.35/0.25/0.15/0.15/0.10. Every numeric anchor marked placeholder MUST be measured on the E6 reference baselines (Transformer++ and hybrid delta-net, <=350M params, 6h; baselines pin gpt2 as their own tokenizer choice) and hash-committed (pre-registration) before any PRISM_SCORING_MODE=composite governance flip. chance bpb = log2|V| / bytes-per-token estimate; reference bpb = reference architecture bpb per domain; efficiency references/caps = reference-recipe operating points. org.g5.lstar is the highest length L (miner-tokenizer tokens) with pooled RULER+BABILong acc(L) ≥ 0.9×acc(L_min) and ≥ 0.25; normalized as efficiency_log_ratio over [4096, 65536].",
+  "notes": "PLACEHOLDER anchor set for Prism v3 composite scoring (research/12 §7). G1 scored keys are tokenizer-neutral bits_per_byte (UTF-8), not per-token bpb — see g1_intrinsic.py / calibrate_anchors.py. G5 keys (recipe ≥ 1.4.0): ruler_acc / babilong_acc / natural_mcq_acc / helmet_rag_acc / lstar with internal weights 0.35/0.25/0.15/0.15/0.10. Every numeric anchor marked placeholder MUST be measured on the E6 reference baselines (Transformer++ and hybrid delta-net, <=350M params, 6h) and hash-committed (pre-registration) before any PRISM_SCORING_MODE=composite governance flip. G1 chance/reference are bits/byte operating points (not bits/token); efficiency references/caps = reference-recipe operating points. org.g5.lstar is the highest length L (miner-tokenizer tokens) with pooled RULER+BABILong acc(L) ≥ 0.9×acc(L_min) and ≥ 0.25; normalized as efficiency_log_ratio over [4096, 65536]. Numeric G1 values below are pre-measure placeholders in bits/byte scale — replace via harness/eval/calibrate_anchors.py after baseline GPU runs.",
   "groups": {
     "g1": {
       "weight": 0.25,
       "metrics": {
-        "org.g1.bpb_code": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.05, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
-        "org.g1.bpb_prose": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.0, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
-        "org.g1.bpb_math": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.15, "status": "placeholder", "note": "PLACEHOLDER: measure on Transformer++/hybrid refs" },
-        "org.g1.bpb_fresh_crawl": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.1, "status": "placeholder", "note": "PLACEHOLDER: measure on private fresh-crawl stream" },
-        "org.g1.bpb_key_token": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.2, "status": "placeholder", "note": "PLACEHOLDER: key-token-weighted variant" }
+        "org.g1.bits_per_byte_code": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.05, "status": "placeholder", "note": "PLACEHOLDER bits/byte: measure on Transformer++/hybrid refs (promoted from org.g1.bpb_code)" },
+        "org.g1.bits_per_byte_prose": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.0, "status": "placeholder", "note": "PLACEHOLDER bits/byte: measure on Transformer++/hybrid refs (promoted from org.g1.bpb_prose)" },
+        "org.g1.bits_per_byte_math": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.15, "status": "placeholder", "note": "PLACEHOLDER bits/byte: measure on Transformer++/hybrid refs (promoted from org.g1.bpb_math)" },
+        "org.g1.bits_per_byte_fresh_crawl": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.1, "status": "placeholder", "note": "PLACEHOLDER bits/byte: measure on private fresh-crawl stream (promoted from org.g1.bpb_fresh_crawl)" },
+        "org.g1.bits_per_byte_key_token": { "kind": "bpb_log_ratio", "chance": 3.6, "reference": 1.2, "status": "placeholder", "note": "PLACEHOLDER bits/byte: key-token contribution (promoted from org.g1.bpb_key_token)" }
       }
     },
     "g2": {

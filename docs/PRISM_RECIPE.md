@@ -97,12 +97,12 @@ tok.eos_token_id -> int | None        # document separator in the train stream
 comparison: the tokenizer-neutral number is **bits per byte** — total bits
 over the UTF-8 bytes of the scored region — reported as `bits_per_byte` in
 `METRICS_JSON` and as `g1.bits_per_byte.*` beside every `g1.bpb.*` key in the
-battery group view. The scored `bpb` (and the `org.g1.bpb_*` anchor keys)
-stay bits *per token* (`CE / ln 2`) so earlier leaves and the anchor set keep
-their meaning; they are only comparable across submissions that share a
-tokenizer, and promoting the per-byte siblings into the anchor set is an
-anchor-recalibration decision, not a harness one. Long-context length targets
-are counted in tokens of the submitted tokenizer.
+battery group view. Scored G1 composite anchors are `org.g1.bits_per_byte_*`
+(roll-up maps those internals). Historical per-token `g1.bpb.*` stays in the
+group view for debugging; leaf v2 `bpb` is still bits/token. Fill measured
+`reference` values with `harness/eval/calibrate_anchors.py` after E6 baseline
+GPU runs. Long-context length targets are counted in tokens of the submitted
+tokenizer.
 
 ## Training-only submissions (recipe 1.2.0)
 

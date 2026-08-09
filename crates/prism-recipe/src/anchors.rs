@@ -13,7 +13,9 @@
 //! The shipped v0 set is a **placeholder**: every numeric anchor is marked
 //! `"status": "placeholder"` in the JSON and must be measured on the E6
 //! reference baselines (Transformer++ / hybrid delta-net) before any
-//! `PRISM_SCORING_MODE=composite` governance flip.
+//! `PRISM_SCORING_MODE=composite` governance flip. G1 scored keys are
+//! tokenizer-neutral `org.g1.bits_per_byte_*` (see harness
+//! `eval/calibrate_anchors.py` to fill references from baseline METRICS).
 
 #![allow(clippy::module_name_repetitions)]
 

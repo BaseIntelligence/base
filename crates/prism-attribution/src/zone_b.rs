@@ -240,7 +240,7 @@ mod tests {
             "schema_version": "1.3.0",
             "metrics": {
                 "miner.train.loss": { "kind": "scalar", "value": 1.4 },
-                "org.g1.bpb_code": { "kind": "scalar", "value": 0.01 },
+                "org.g1.bits_per_byte_code": { "kind": "scalar", "value": 0.01 },
             },
         });
         let (s, v) = call(app.clone(), post("zb-1", &forged)).await;

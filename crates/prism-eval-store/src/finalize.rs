@@ -582,7 +582,7 @@ mod tests {
     async fn persists_ineligible_outcome() {
         let st = store();
         let mut blob = v2_blob();
-        blob["battery"] = json!({ "metrics": { "org.g1.bpb_code": 1.0 } });
+        blob["battery"] = json!({ "metrics": { "org.g1.bits_per_byte_code": 1.0 } });
         let out = finalize_composite(&st, "sub-3", &blob, &AnchorInput::v0_placeholder())
             .await
             .unwrap()

@@ -829,7 +829,7 @@ mod tests {
     const TEST_ANCHORS_JSON: &str = r#"{
         "version": 0,
         "groups": {
-            "g1": { "weight": 0.25,  "metrics": { "org.g1.bpb_code": { "kind": "accuracy", "chance": 0.0 } } },
+            "g1": { "weight": 0.25,  "metrics": { "org.g1.bits_per_byte_code": { "kind": "accuracy", "chance": 0.0 } } },
             "g2": { "weight": 0.15,  "metrics": { "org.g2.lambada_acc": { "kind": "accuracy", "chance": 0.0 } } },
             "g3": { "weight": 0.10,  "metrics": { "org.g3.mqar_acc": { "kind": "accuracy", "chance": 0.0 } } },
             "g4": { "weight": 0.15,  "metrics": { "org.g4.arithmetic_acc": { "kind": "accuracy", "chance": 0.0 } } },
@@ -865,7 +865,7 @@ mod tests {
     fn uniform_submission(v: f64) -> SubmissionMetrics {
         let mut metrics = BTreeMap::new();
         for key in [
-            "org.g1.bpb_code",
+            "org.g1.bits_per_byte_code",
             "org.g2.lambada_acc",
             "org.g3.mqar_acc",
             "org.g4.arithmetic_acc",
@@ -1158,7 +1158,7 @@ mod tests {
             mirrors: Vec::new(),
         };
         for key in [
-            "org.g1.bpb_code",
+            "org.g1.bits_per_byte_code",
             "org.g2.lambada_acc",
             "org.g4.arithmetic_acc",
             "org.g5.ruler_acc",
@@ -1197,7 +1197,7 @@ mod tests {
         // Give g1 real (tight) clusters so the bootstrap resamples something
         // while staying under the CI-sufficiency gate.
         sub.metrics.insert(
-            "org.g1.bpb_code".to_string(),
+            "org.g1.bits_per_byte_code".to_string(),
             series(0.5, &[0.49, 0.50, 0.51, 0.505, 0.495]),
         );
         let anchors = test_anchors();

@@ -673,7 +673,7 @@ mod tests {
             "cantor",
             "prism_width_multiplier",
             "cheatguard",
-            "org.g1.bpb_code",
+            "org.g1.bits_per_byte_code",
             "mirrors",
             "natural_mcq",
             "helmet_rag",

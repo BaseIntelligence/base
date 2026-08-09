@@ -289,7 +289,7 @@ mod tests {
     fn zone_a_view_is_labelled_organizer_measured() {
         let v = zone_a_view(
             &[EvalMetricRecord {
-                key: "org.g1.bpb_code".into(),
+                key: "org.g1.bits_per_byte_code".into(),
                 value: 1.0,
                 clusters: Some(json!({"c0": 1.0})),
             }],
@@ -297,6 +297,6 @@ mod tests {
         );
         assert_eq!(v["zone"], "a");
         assert_eq!(v["provenance"], "organizer-measured");
-        assert_eq!(v["metrics"][0]["key"], "org.g1.bpb_code");
+        assert_eq!(v["metrics"][0]["key"], "org.g1.bits_per_byte_code");
     }
 }

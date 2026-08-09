@@ -66,12 +66,13 @@ _G5_DIRECT = {
 
 # Direct renames: org key -> (battery group, internal metric key).
 _DIRECT = {
-    # G1 — intrinsic fit (bpb values).
-    "org.g1.bpb_code": ("g1", "g1.bpb.domain.code"),
-    "org.g1.bpb_prose": ("g1", "g1.bpb.domain.prose"),
-    "org.g1.bpb_math": ("g1", "g1.bpb.domain.math"),
-    "org.g1.bpb_fresh_crawl": ("g1", "g1.bpb.fresh"),
-    "org.g1.bpb_key_token": ("g1", "g1.bpb.key_token"),
+    # G1 — intrinsic fit (tokenizer-neutral bits/byte; per-token g1.bpb.*
+    # siblings remain in the group view for debugging only).
+    "org.g1.bits_per_byte_code": ("g1", "g1.bits_per_byte.domain.code"),
+    "org.g1.bits_per_byte_prose": ("g1", "g1.bits_per_byte.domain.prose"),
+    "org.g1.bits_per_byte_math": ("g1", "g1.bits_per_byte.domain.math"),
+    "org.g1.bits_per_byte_fresh_crawl": ("g1", "g1.bits_per_byte.fresh"),
+    "org.g1.bits_per_byte_key_token": ("g1", "g1.bits_per_byte.key_token"),
     # G3 — recall probes (family means / single-variant accuracies).
     "org.g3.mqar_acc": ("g3", "g3.mqar.acc"),
     "org.g3.copying_acc": ("g3", "g3.copy.acc"),
@@ -99,10 +100,10 @@ _DIRECT = {
 # ItemRecorder metric name -> (org key, required cluster prefix, value
 # transform). Cluster values are per-cluster means of the recorded items.
 _ITEM_CLUSTERS = {
-    "org.g1.bpb_code": ("g1.domain.code.doc_ce", None, "bpb"),
-    "org.g1.bpb_prose": ("g1.domain.prose.doc_ce", None, "bpb"),
-    "org.g1.bpb_math": ("g1.domain.math.doc_ce", None, "bpb"),
-    "org.g1.bpb_fresh_crawl": ("g1.fresh.doc_ce", None, "bpb"),
+    "org.g1.bits_per_byte_code": ("g1.domain.code.bits_per_byte", None, None),
+    "org.g1.bits_per_byte_prose": ("g1.domain.prose.bits_per_byte", None, None),
+    "org.g1.bits_per_byte_math": ("g1.domain.math.bits_per_byte", None, None),
+    "org.g1.bits_per_byte_fresh_crawl": ("g1.fresh.bits_per_byte", None, None),
     "org.g3.mqar_acc": ("g3.item.acc", "mqar/", None),
     "org.g3.copying_acc": ("g3.item.acc", "copy/", None),
     "org.g3.induction_acc": ("g3.item.acc", "induction/", None),

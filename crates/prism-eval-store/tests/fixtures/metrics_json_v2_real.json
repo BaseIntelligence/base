@@ -228,7 +228,7 @@
    }
   },
   "metrics": {
-   "org.g1.bpb_code": {
+   "org.g1.bits_per_byte_code": {
     "value": 29.973278106074602,
     "clusters": {
      "domain/code": 29.973278106074602

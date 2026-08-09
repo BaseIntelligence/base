@@ -430,12 +430,18 @@ def doc_loss_stats(model, tok, text, device, position_edges=(128, 256, 384, 512)
     # Bytes of the scored region: the model may self-truncate, so the doc's
     # UTF-8 length is prorated by the fraction of targets actually scored.
     scored_bytes = utf8_bytes(text) * (n / float(avail))
+    denom = max(1.0, scored_bytes)
+    bits_per_byte = float(losses.sum().item()) / LN2 / denom
+    key_bits_per_byte = (
+        float(losses[key_mask].sum().item()) / LN2 / denom if key_mask.any() else None
+    )
     return {
         "ce": mean_ce,
         "key_ce": key_ce,
         "buckets": buckets,
         "n_tokens": n,
-        "bits_per_byte": float(losses.sum().item()) / LN2 / max(1.0, scored_bytes),
+        "bits_per_byte": bits_per_byte,
+        "key_bits_per_byte": key_bits_per_byte,
     }
 
 
@@ -457,7 +463,7 @@ def emit(out, key, value):
 
 
 def bpb(ce):
-    """CE (nats/token) -> bits/token. Historical `g1.bpb.*` /
-    `org.g1.bpb_*` unit; comparable only within one tokenizer. The
-    tokenizer-neutral number is `doc_loss_stats(...)["bits_per_byte"]`."""
+    """CE (nats/token) -> bits/token. Historical `g1.bpb.*` debug unit;
+    comparable only within one tokenizer. Scored `org.g1.bits_per_byte_*`
+    anchors use `doc_loss_stats(...)["bits_per_byte"]` instead."""
     return ce / LN2 if ce is not None else None

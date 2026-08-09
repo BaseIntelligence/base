@@ -2,11 +2,11 @@
 
 Unit note (modular tokenizer): the historical `g1.bpb.*` keys are CE / ln 2,
 i.e. bits per **token** of the submitted tokenizer — comparable within one
-tokenizer only. Each of them now ships a `g1.bits_per_byte.*` sibling: total
+tokenizer only. Each of them ships a `g1.bits_per_byte.*` sibling: total
 bits over the UTF-8 bytes actually scored, the **tokenizer-neutral** unit
-that survives miners choosing different vocabularies. The anchor set still
-reads the `bpb_*` keys; promoting the per-byte siblings into `org.*` is the
-anchor-recalibration step, not this module's call.
+that survives miners choosing different vocabularies. The scored `org.g1.*`
+anchor keys read the per-byte siblings (`org.g1.bits_per_byte_*`); per-token
+`g1.bpb.*` remain in the battery group view for debugging only.
 
 bpb on the harness frozen val cut (v1 semantics), bpb on multi-domain
 held-out assets + a fresh-crawl stream (private tier only — the
@@ -31,7 +31,7 @@ _POS_EDGES = (128, 256, 384, 512)
 
 
 def _score_texts(model, tok, texts, device, budget, ctx, tag, out, prefix):
-    ces, key_ces, bpbytes = [], [], []
+    ces, key_ces, bpbytes, key_bpbytes = [], [], [], []
     bucket_vals = {}
     for txt in texts:
         if not budget.ok():
@@ -46,11 +46,17 @@ def _score_texts(model, tok, texts, device, budget, ctx, tag, out, prefix):
         ces.append(stats["ce"])
         bpbytes.append(stats["bits_per_byte"])
         common.record(ctx, f"{prefix}.doc_ce", tag, stats["ce"])
+        common.record(ctx, f"{prefix}.bits_per_byte", tag, stats["bits_per_byte"])
         if stats["key_ce"] is not None:
             key_ces.append(stats["key_ce"])
+        if stats.get("key_bits_per_byte") is not None:
+            key_bpbytes.append(stats["key_bits_per_byte"])
+            common.record(
+                ctx, f"{prefix}.key_bits_per_byte", tag, stats["key_bits_per_byte"]
+            )
         for b, v in stats["buckets"].items():
             bucket_vals.setdefault(b, []).append(v)
-    return ces, key_ces, bucket_vals, bpbytes
+    return ces, key_ces, bucket_vals, bpbytes, key_bpbytes
 
 
 def run(model, ctx):
@@ -62,12 +68,13 @@ def run(model, ctx):
     # 1) Frozen val cut — v1 bpb semantics (per-doc mean CE / ln 2) plus the
     # tokenizer-neutral bits-per-byte (see the module docstring).
     val = list(ctx.get("val_texts") or [])
-    ces, key_ces, buckets, bpbytes = _score_texts(
+    ces, key_ces, buckets, bpbytes, key_bpbytes = _score_texts(
         model, tok, val, device, budget, ctx, "val", out, "g1.val"
     )
     common.emit(out, "g1.bpb.val", common.bpb(common.mean(ces)))
     common.emit(out, "g1.bits_per_byte.val", common.mean(bpbytes))
     common.emit(out, "g1.bpb.key_token", common.bpb(common.mean(key_ces)))
+    common.emit(out, "g1.bits_per_byte.key_token", common.mean(key_bpbytes))
     for b, vals in sorted(buckets.items()):
         common.emit(out, f"g1.posloss.{b}", common.bpb(common.mean(vals)))
 
@@ -88,7 +95,7 @@ def run(model, ctx):
             continue
         texts = [r.get("text", "") for r in common.load_jsonl(path, cap=cap)]
         texts = [t for t in texts if t]
-        ces, _, _, bpbytes = _score_texts(
+        ces, _, _, bpbytes, _ = _score_texts(
             model, tok, texts, device, budget, ctx, f"domain/{name}", out, f"g1.domain.{name}"
         )
         v = common.bpb(common.mean(ces))
@@ -113,7 +120,7 @@ def run(model, ctx):
     if fresh_path and budget.ok():
         texts = [r.get("text", "") for r in common.load_jsonl(fresh_path, cap=cap)]
         texts = [t for t in texts if t]
-        ces, _, _, bpbytes = _score_texts(
+        ces, _, _, bpbytes, _ = _score_texts(
             model, tok, texts, device, budget, ctx, "fresh", out, "g1.fresh"
         )
         common.emit(out, "g1.bpb.fresh", common.bpb(common.mean(ces)))
