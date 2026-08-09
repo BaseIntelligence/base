@@ -76,7 +76,7 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
     if admin.0.is_empty() {
         tracing::warn!(
             event = "prism_admin_auth_unconfigured",
-            "no admin bearer tokens: retry + playground answer 503"
+            "no admin bearer tokens: retry + playground + artifacts answer 503"
         );
     }
     let operator = Router::new()
@@ -87,6 +87,14 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
                 store: Arc::clone(&state.store),
                 infer_script: prism_playground::default_infer_script(),
             }),
+        )
+        .route(
+            "/v1/admin/artifacts/{submission_id}/receive",
+            prism_artifacts::artifact_receive_route(),
+        )
+        .route(
+            "/v1/admin/artifacts/{submission_id}",
+            prism_artifacts::artifact_get_route(),
         )
         .route("/v1/admin/gating/{hotkey}/reset", post(admin_reset_gating))
         .route_layer(from_fn_with_state(admin, require_bearer));

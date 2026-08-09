@@ -172,19 +172,26 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
   Prism's emission share (50% of the subnet) goes entirely to that winner.
 
-**Top-model publish.** The master tracks the global best bpb across all
-scored submissions. After a successful Lium eval it **harvests
-`checkpoint.pt`** from the pod into `$PRISM_ARTIFACT_DIR/<submission_id>/`
-**before** terminate. On a new global best (≤ best ever and < last
-published), it publishes `architecture.py` + `training.py` + `METRICS.json`
-+ `ARTIFACT.json` + a `README.md` block to the public
+**Top-model publish + secure receive.** The master tracks the global best
+bpb across all scored submissions. After a successful Lium eval it
+**pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
+never pushes) and stages it through the secure receive hook into
+`$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging
+fail-closes on size > 2 GiB, unexpected tar members, path traversal /
+symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256). Top-model
+publish calls `verify_parked` and refuses weights without a valid receipt.
+On a new global best (≤ best ever and < last published), it publishes
+`architecture.py` + `training.py` + `METRICS.json` + `ARTIFACT.json` + a
+`README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo
 under `top-model/` via the GitHub contents API; large checkpoints upload as
 a mutable Release tag `prism-top-model`. The publication is journaled
 (`prism_topmodel_publication`). Token:
 `PRISM_TOPMODEL_GITHUB_TOKEN_FILE` (`deploy/secrets/github/token`);
 absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
-(default), a missing parked checkpoint fails the publish (no journal).
+(default), a missing/invalid receipt fails the publish (no journal).
+Operators may re-stage via `POST /v1/admin/artifacts/{id}/receive` (same
+admin Bearer; requires `X-Prism-Sha256`) — never an open pod upload.
 
 ## v3 composite scoring (versioned addition — opt-in)
 
@@ -376,6 +383,7 @@ for the bpb score (coherence gate, never a grader).
 | `prism-eval-store` | `EvalStore` memory/Postgres impls + composite finalization glue — v3 |
 | `prism-intake` | Shared HTTP intake front-end (body parse, arch materialization, metagraph membership, error envelope, admin Bearer) + advisory `POST /v1/submissions/precheck`; split for the per-crate LOC cap |
 | `prism-attribution` | v3 routes split for the per-crate LOC cap: `POST /v1/submissions/{id}/attribution` planner (2×2 run plans as JSON), `POST .../zone-b` intake, and the read-only `GET .../metrics`, `/v1/anchors`, `/v1/preregistration` |
+| `prism-artifacts` | Master park paths + secure receive (`receive_tar_bytes` / admin upload) + receipt verify |
 | `prism-playground` | Operator `POST /v1/admin/playground/complete` (text + logprobs against parked checkpoints) |
 | `prism-challenge` | API surface, orchestrator, scoring v2 + v3 finalize wiring, emitter loop, gateway client |
 | `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection, `PRISM_SCORING_MODE`) |
@@ -401,6 +409,8 @@ for the bpb score (coherence gate, never a grader).
 | `POST /v1/submissions/{id}/retry` | Operator retry (Bearer `PRISM_ADMIN_TOKENS_FILE`; fail-closed 503 if unset) |
 | `POST /v1/admin/gating/{hotkey}/reset` | Operator 1-max reset (same Bearer) |
 | `POST /v1/admin/playground/complete` | Operator prompt playground: text + logprobs against parked top/specified checkpoint (same Bearer) |
+| `POST /v1/admin/artifacts/{id}/receive` | Operator re-stage checkpoint (`X-Prism-Sha256` required; optional `X-Prism-Filename`; same Bearer) |
+| `GET /v1/admin/artifacts/{id}` | Verified receipt JSON for a parked checkpoint (same Bearer) |
 | `GET /health` | Liveness |
 
 Operator Bearer tokens: one per line in `deploy/secrets/prism/admin_tokens`

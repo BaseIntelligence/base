@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 base64 = "0.22"
 hex = "0.4"
+prism-artifacts = { path = "../prism-artifacts" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-store = { path = "../prism-store" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

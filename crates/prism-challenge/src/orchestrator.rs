@@ -735,9 +735,10 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
             .await;
 
-        // Pull trained weights to master BEFORE terminate so top-model publish
-        // / playground can load them. Fail-soft on harvest: scoring continues,
-        // but post_score_hooks refuse weight publish without a parked file.
+        // Secure receive: master pulls checkpoint over SSH, then stages via
+        // prism-artifacts (allowlist + hash receipt) BEFORE terminate.
+        // Fail-soft on harvest: scoring continues; top-model publish requires
+        // verify_parked (RECEIPT.json) and refuses without it.
         if metrics.is_ok() {
             let dest = prism_lium::artifact_dir_for(id);
             match self
@@ -746,9 +747,11 @@ impl<C: ChainClient + Send> Orchestrator<C> {
                 .await
             {
                 Ok(path) => {
-                    info!(submission_id = %id, path = %path.display(), "checkpoint harvested");
+                    info!(submission_id = %id, path = %path.display(), "checkpoint secure-received");
                 }
-                Err(e) => warn!(submission_id = %id, error = %e, "checkpoint harvest failed"),
+                Err(e) => {
+                    warn!(submission_id = %id, error = %e, "checkpoint secure receive failed");
+                }
             }
         }
 

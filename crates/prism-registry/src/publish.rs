@@ -153,7 +153,7 @@ impl TopModelPublisher {
             );
         } else if require_weights {
             return Err(PublishError::Transport(
-                "checkpoint missing: harvest before terminate or set PRISM_TOPMODEL_REQUIRE_WEIGHTS=0"
+                "checkpoint missing: secure receive (SSH harvest or admin /v1/admin/artifacts/.../receive) required, or set PRISM_TOPMODEL_REQUIRE_WEIGHTS=0"
                     .into(),
             ));
         }

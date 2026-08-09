@@ -1012,12 +1012,17 @@ impl EvalJobBackend for LiumClient {
         dest_dir: &Path,
         _seed: &[u8],
     ) -> Result<PathBuf, LiumError> {
+        let submission_id = dest_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| LiumError::Integrity("park dir missing submission_id".into()))?;
         let target = self.resolve_ssh_target(instance_id).await?;
         let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
         crate::artifacts::harvest_checkpoint_ssh(
             &target,
             &key,
             dest_dir,
+            submission_id,
             self.ssh.ssh_attempts,
             self.ssh.ssh_retry_secs,
         )

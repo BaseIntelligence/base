@@ -83,7 +83,8 @@ pub async fn post_score_hooks(
         }
     }
 
-    // (3) Top-model publish on a new global best.
+    // (3) Top-model publish on a new global best — only after secure receive
+    // (RECEIPT.json + sha256 match). Missing/bad receipt ⇒ no weight publish.
     let Some(publisher) = publisher else { return };
     let last = store.last_publication_bpb().await.unwrap_or(None);
     let global = store.best_scored_bpb().await.unwrap_or(None);
@@ -92,22 +93,25 @@ pub async fn post_score_hooks(
     if !(is_global_best && beats_published) {
         return;
     }
-    let ckpt = {
-        let p = std::path::PathBuf::from(
-            std::env::var("PRISM_ARTIFACT_DIR")
-                .unwrap_or_else(|_| "/var/lib/prism/artifacts".into()),
-        )
-        .join(&row.id)
-        .join("checkpoint.pt");
-        p.is_file().then_some(p).or_else(|| {
-            let idx = std::path::PathBuf::from(
-                std::env::var("PRISM_ARTIFACT_DIR")
-                    .unwrap_or_else(|_| "/var/lib/prism/artifacts".into()),
-            )
-            .join(&row.id)
-            .join("checkpoint.pt.index");
-            idx.is_file().then_some(idx)
-        })
+    let ckpt = match prism_artifacts::verify_parked(&row.id) {
+        Ok(receipt) => {
+            let p = prism_artifacts::artifact_dir_for(&row.id).join(&receipt.path);
+            info!(
+                submission_id = %row.id,
+                sha = %receipt.sha256,
+                source = %receipt.source,
+                "top-model: verified artifact receipt"
+            );
+            Some(p)
+        }
+        Err(e) => {
+            warn!(
+                submission_id = %row.id,
+                error = %e,
+                "top-model: secure receive missing/invalid (refusing weight publish)"
+            );
+            None
+        }
     };
     let req = TopModelRequest {
         submission_id: row.id.clone(),

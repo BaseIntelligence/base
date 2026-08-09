@@ -217,7 +217,7 @@ services:
       PRISM_TOPMODEL_REQUIRE_WEIGHTS: "${PRISM_TOPMODEL_REQUIRE_WEIGHTS:-1}"
       # Parked checkpoints harvested from Lium pods (master-local).
       PRISM_ARTIFACT_DIR: /var/lib/prism/artifacts
-      # Operator bearer (retry + playground + gating reset). Empty → 503.
+      # Operator bearer (retry + playground + gating + artifacts). Empty → 503.
       PRISM_ADMIN_TOKENS_FILE: /run/base/prism/admin_tokens
     env_file:
       # Required: BASE_DATABASE_URL (+ BASE_NETUID). Missing file → compose

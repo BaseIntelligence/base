@@ -54,7 +54,8 @@ chmod 0400 deploy/secrets/design/annotator_tokens deploy/secrets/openrouter/api_
   empty file = top-model publish silently disabled. Mode **0400**, uid
   **65532** — never commit it.
 - `prism/admin_tokens` — one operator bearer per line for Prism
-  `/v1/submissions/{id}/retry`, `POST /v1/admin/playground/complete`, and
-  `POST /v1/admin/gating/{hotkey}/reset`. Read via `PRISM_ADMIN_TOKENS_FILE`
+  `/v1/submissions/{id}/retry`, `POST /v1/admin/playground/complete`,
+  `POST /v1/admin/gating/{hotkey}/reset`, and
+  `POST|GET /v1/admin/artifacts/...`. Read via `PRISM_ADMIN_TOKENS_FILE`
   (`/run/base/prism/admin_tokens`). Empty/missing → those routes answer
   **503 `auth_unconfigured`** (fail-closed). Mode **0400**, uid **65532**.

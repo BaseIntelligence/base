@@ -3745,10 +3745,13 @@ dependencies = [
 name = "prism-artifacts"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "hex",
  "prism-lium-types",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
@@ -3787,6 +3790,7 @@ dependencies = [
  "db",
  "hex",
  "http-body-util",
+ "prism-artifacts",
  "prism-attribution",
  "prism-challenge-task",
  "prism-emit",
@@ -3983,6 +3987,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
+ "prism-artifacts",
  "prism-pipeline",
  "prism-store",
  "reqwest 0.12.28",

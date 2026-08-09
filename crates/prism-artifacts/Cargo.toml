@@ -1,6 +1,6 @@
 [package]
 name = "prism-artifacts"
-description = "PRISM master-side checkpoint parking paths + Sim stubs"
+description = "PRISM master-side checkpoint parking + secure receive hook"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,10 +9,13 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 hex = "0.4"
 prism-lium-types = { path = "../prism-lium-types" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
