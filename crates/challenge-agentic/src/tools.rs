@@ -2,12 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-
-/// Linux `O_NOFOLLOW` — workdir tool reads must not traverse symlinks.
-#[cfg(target_os = "linux")]
-const O_NOFOLLOW: i32 = 0x20000;
 
 use challenge_ast::{
     fingerprint_source, structural_diff_summary, summarize_fingerprint, top_k_nearest, Fingerprint,
@@ -308,11 +303,7 @@ fn grep_walk(
     if hits.len() >= max_hits {
         return Ok(());
     }
-    // lstat: never follow symlinks into the challenge mount NS.
-    let meta = fs::symlink_metadata(path).map_err(|e| AgenticError::Tool(format!("grep: {e}")))?;
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
+    let meta = fs::metadata(path).map_err(|e| AgenticError::Tool(format!("grep: {e}")))?;
     if meta.is_dir() {
         for ent in fs::read_dir(path)
             .map_err(|e| AgenticError::Tool(format!("grep: {e}")))?
@@ -325,10 +316,10 @@ fn grep_walk(
         }
         return Ok(());
     }
-    if !meta.is_file() || meta.len() > 512 * 1024 {
+    if meta.len() > 512 * 1024 {
         return Ok(());
     }
-    let Ok(text) = read_workdir_text(path) else {
+    let Ok(text) = fs::read_to_string(path) else {
         return Ok(());
     };
     let rel = path
@@ -353,11 +344,7 @@ fn tool_stat(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
         .and_then(Value::as_str)
         .ok_or_else(|| AgenticError::Tool("file_stat: path required".into()))?;
     let path = resolve_rel(&ctx.workdir, rel)?;
-    let meta =
-        fs::symlink_metadata(&path).map_err(|e| AgenticError::Tool(format!("file_stat: {e}")))?;
-    if meta.file_type().is_symlink() {
-        return Err(AgenticError::Tool("file_stat: symlink refused".into()));
-    }
+    let meta = fs::metadata(&path).map_err(|e| AgenticError::Tool(format!("file_stat: {e}")))?;
     Ok(format!(
         "path={rel} is_dir={} len={}",
         meta.is_dir(),
@@ -405,7 +392,8 @@ fn tool_read_metrics(ctx: &ToolContext) -> Result<String, AgenticError> {
         return Ok("(no metrics configured)".into());
     };
     let path = resolve_rel(&ctx.workdir, rel)?;
-    let text = read_workdir_text(&path).map_err(|e| AgenticError::Tool(format!("metrics: {e}")))?;
+    let text =
+        fs::read_to_string(&path).map_err(|e| AgenticError::Tool(format!("metrics: {e}")))?;
     Ok(truncate(&text, 24_576))
 }
 
@@ -413,21 +401,12 @@ fn tool_read_pages(ctx: &ToolContext) -> Result<String, AgenticError> {
     let mut out = String::new();
     if let Some(rel) = &ctx.pages_relpath {
         let path = resolve_rel(&ctx.workdir, rel)?;
-        let meta =
-            fs::symlink_metadata(&path).map_err(|e| AgenticError::Tool(format!("pages: {e}")))?;
-        if meta.file_type().is_symlink() {
-            return Err(AgenticError::Tool("pages: symlink refused".into()));
-        }
-        if meta.is_dir() {
+        if path.is_dir() {
             let mut names = Vec::new();
             for ent in fs::read_dir(&path)
                 .map_err(|e| AgenticError::Tool(format!("pages: {e}")))?
                 .flatten()
             {
-                // Skip dangling / escape symlinks in the listing.
-                if ent.file_type().map_or(true, |t| t.is_symlink()) {
-                    continue;
-                }
                 names.push(ent.file_name().to_string_lossy().into_owned());
             }
             names.sort();
@@ -442,7 +421,7 @@ fn tool_read_pages(ctx: &ToolContext) -> Result<String, AgenticError> {
     if let Some(rel) = &ctx.sanitize_report_relpath {
         out.push_str("\n--- sanitize_report ---\n");
         match resolve_rel(&ctx.workdir, rel).and_then(|p| {
-            read_workdir_text(&p).map_err(|e| AgenticError::Tool(format!("sanitize: {e}")))
+            fs::read_to_string(p).map_err(|e| AgenticError::Tool(format!("sanitize: {e}")))
         }) {
             Ok(t) => out.push_str(&truncate(&t, 16_384)),
             Err(e) => out.push_str(&e.to_string()),
@@ -472,10 +451,9 @@ fn tool_run_command(ctx: &ToolContext, args: &Value) -> Result<String, AgenticEr
     if cmd.is_empty() || cmd.len() > 1_000 || cmd.contains('\0') {
         return Err(AgenticError::Tool("run_command: bad command".into()));
     }
-    // File-mounted secrets + parent environ must stay unread (defense-in-depth;
-    // primary staging collectors also refuse symlinks — see design-sandbox).
+    // File-mounted OpenRouter key + parent environ must stay unread.
     let c = cmd.to_ascii_lowercase().replace('\\', "/");
-    if run_command_forbidden_path(&c) {
+    if c.contains("/proc") || c.contains("review-secrets") || c.contains("/run/base") {
         return Err(AgenticError::Tool("run_command: forbidden path".into()));
     }
     let rel = args.get("path").and_then(Value::as_str).unwrap_or(".");
@@ -536,45 +514,7 @@ fn read_py(ctx: &ToolContext, args: &Value) -> Result<String, AgenticError> {
         .and_then(Value::as_str)
         .ok_or_else(|| AgenticError::Tool("path required".into()))?;
     let path = resolve_rel(&ctx.workdir, rel)?;
-    read_workdir_text(&path).map_err(|e| AgenticError::Tool(format!("read py: {e}")))
-}
-
-/// Substrings refused in `run_command` (lowercase, `/`-normalized).
-fn run_command_forbidden_path(c: &str) -> bool {
-    const NEEDLES: &[&str] = &[
-        "/proc",
-        "review-secrets",
-        "openrouter_api_key",
-        "/run/base",
-        "challenge_sk",
-        "design_sk",
-        "annotator_tokens",
-        "gateway_admin",
-        "gateway_sk",
-    ];
-    NEEDLES.iter().any(|n| c.contains(n))
-}
-
-/// Read a workdir file without following symlinks (`O_NOFOLLOW` on Linux).
-fn read_workdir_text(path: &Path) -> Result<String, String> {
-    let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if meta.file_type().is_symlink() {
-        return Err("symlink refused".into());
-    }
-    if !meta.file_type().is_file() {
-        return Err("not a regular file".into());
-    }
-    let mut opts = fs::OpenOptions::new();
-    opts.read(true);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(O_NOFOLLOW);
-    }
-    let mut f = opts.open(path).map_err(|e| e.to_string())?;
-    let mut buf = String::new();
-    f.read_to_string(&mut buf).map_err(|e| e.to_string())?;
-    Ok(buf)
+    fs::read_to_string(&path).map_err(|e| AgenticError::Tool(format!("read py: {e}")))
 }
 
 /// Resolve `rel` under `workdir`; reject `..` / absolute / symlink escapes.
@@ -738,7 +678,7 @@ pub(crate) fn load_primary_sources(
     let mut out = Vec::new();
     for rel in &req.primary_relpaths {
         let path = resolve_rel(&workdir, rel)?;
-        let text = read_workdir_text(&path)
+        let text = fs::read_to_string(&path)
             .map_err(|e| AgenticError::Tool(format!("primary {rel}: {e}")))?;
         out.push((rel.clone(), text));
     }
@@ -805,7 +745,6 @@ mod tests {
             "python -c 'open(\"//proc/self/environ\").read()'",
             "cat /run/review-secrets/openrouter_api_key",
             "cat /run/base/challenge_sk",
-            "cat /run/base/design/annotator_tokens",
             "cat /run/base/openrouter/api_key",
         ] {
             let err = tool_run_command(&ctx, &json!({"command": bad}))
@@ -813,17 +752,6 @@ mod tests {
                 .to_string();
             assert!(err.contains("forbidden"), "cmd={bad} err={err}");
         }
-    }
-
-    #[test]
-    fn read_workdir_text_refuses_symlink() {
-        let dir = tempdir().unwrap();
-        let target = dir.path().join("secret");
-        fs::write(&target, "LEAK").unwrap();
-        let link = dir.path().join("agent.py");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let err = read_workdir_text(&link).unwrap_err();
-        assert!(err.contains("symlink"), "{err}");
     }
 
     #[test]

@@ -108,11 +108,8 @@ fn classify_sandbox(e: &SandboxError) -> RunFailure {
         }
         SandboxError::Docker(msg) => RunFailure::new(ErrorClass::Install, format!("docker: {msg}")),
         SandboxError::Io(e) => RunFailure::new(ErrorClass::AstInfra, format!("io: {e}")),
-        SandboxError::MissingOutput(m) => {
-            RunFailure::new(ErrorClass::Miner, format!("missing output: {m}"))
-        }
-        SandboxError::UnsafeOutput(m) => {
-            RunFailure::new(ErrorClass::Miner, format!("unsafe output: {m}"))
+        e @ (SandboxError::MissingOutput(_) | SandboxError::UnsafeOutput(_)) => {
+            RunFailure::new(ErrorClass::Miner, e.to_string())
         }
     }
 }

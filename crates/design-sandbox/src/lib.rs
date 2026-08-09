@@ -56,13 +56,11 @@ pub enum SandboxError {
     UnsafeOutput(String),
 }
 
-/// Read a miner-staging path without following symlinks.
+/// Read a staging path without following symlinks (`O_NOFOLLOW` on Linux).
 ///
-/// After the sandbox exits, `out/pages/*` is attacker-controlled. A harness can
-/// replace required HTML with symlinks into the **design-challenge** mount NS
-/// (`/run/base/challenge_sk`, OpenRouter key, annotator tokens, `/proc/1/environ`).
-/// Collectors must refuse symlinks / non-regular files and prefer `O_NOFOLLOW`.
-pub(crate) fn read_staged_bytes(path: &Path) -> Result<Vec<u8>, SandboxError> {
+/// Miner `out/pages/*` may be symlinks into the design-challenge mount NS
+/// (`/run/base/*`, `/proc/1/environ`); collectors must not follow them (R15).
+pub fn read_staged_bytes(path: &Path) -> Result<Vec<u8>, SandboxError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -96,8 +94,8 @@ pub(crate) fn read_staged_bytes(path: &Path) -> Result<Vec<u8>, SandboxError> {
     Ok(buf)
 }
 
-/// UTF-8 staging read; same symlink / regular-file gates as [`read_staged_bytes`].
-pub(crate) fn read_staged_text(path: &Path) -> Result<String, SandboxError> {
+/// UTF-8 staging read; same gates as [`read_staged_bytes`].
+pub fn read_staged_text(path: &Path) -> Result<String, SandboxError> {
     let bytes = read_staged_bytes(path)?;
     String::from_utf8(bytes).map_err(|_| {
         let label = path.file_name().map_or_else(
