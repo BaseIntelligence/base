@@ -170,6 +170,15 @@ impl EvalJobBackend for SimLiumBackend {
             extra: std::collections::BTreeMap::new(),
         })
     }
+
+    async fn harvest_artifacts(
+        &self,
+        _instance_id: &str,
+        dest_dir: &std::path::Path,
+        seed: &[u8],
+    ) -> Result<std::path::PathBuf, LiumError> {
+        prism_artifacts::write_sim_checkpoint(dest_dir, seed)
+    }
 }
 
 #[cfg(test)]

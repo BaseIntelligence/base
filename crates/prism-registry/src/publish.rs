@@ -9,9 +9,6 @@
 //! publisher is `None` and the orchestrator skips publishing entirely
 //! (graceful no-op).
 
-use base64::Engine;
-use serde::Deserialize;
-
 /// Repo directory that always mirrors the current global top model.
 pub const TOPMODEL_REPO_PATH: &str = "top-model";
 
@@ -48,14 +45,17 @@ pub struct TopModelRequest {
     pub training_py: String,
     /// Harness metrics blob (telemetry summary extracted for the README).
     pub metrics_json: Option<serde_json::Value>,
+    /// Master-parked checkpoint path (harvested from the Lium pod).
+    /// When absent and weights are required, publish is refused.
+    pub checkpoint_path: Option<std::path::PathBuf>,
 }
 
 /// GitHub contents-API publisher. Token is never `Debug`/`Display`'d.
 pub struct TopModelPublisher {
-    http: reqwest::Client,
-    api_base: String,
-    repo: String,
-    branch: String,
+    pub(crate) http: reqwest::Client,
+    pub(crate) api_base: String,
+    pub(crate) repo: String,
+    pub(crate) branch: String,
 }
 
 impl std::fmt::Debug for TopModelPublisher {
@@ -68,21 +68,6 @@ impl std::fmt::Debug for TopModelPublisher {
             .field("http", &"<redacted>")
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ContentGet {
-    sha: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContentPut {
-    commit: CommitInfo,
-}
-
-#[derive(Debug, Deserialize)]
-struct CommitInfo {
-    sha: String,
 }
 
 impl TopModelPublisher {
@@ -129,7 +114,8 @@ impl TopModelPublisher {
         );
         let http = reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(std::time::Duration::from_secs(30))
+            // Checkpoint uploads can be large; keep a generous ceiling.
+            .timeout(std::time::Duration::from_mins(10))
             .build()
             .map_err(|e| PublishError::Transport(e.to_string()))?;
         Ok(Self {
@@ -140,9 +126,37 @@ impl TopModelPublisher {
         })
     }
 
-    /// Publish the four `top-model/` files; returns the last commit sha.
+    /// Publish `top-model/` sources (+ optional checkpoint). Returns last commit sha.
+    ///
+    /// When `PRISM_TOPMODEL_REQUIRE_WEIGHTS` is unset/true (default), a missing
+    /// or unloadable checkpoint fails the publish (no journal). Set the env to
+    /// `0`/`false` to allow source-only publish (legacy / tests).
     pub async fn publish(&self, req: &TopModelRequest) -> Result<String, PublishError> {
         let arch = req.arch_id.as_deref().unwrap_or("arch-unregistered");
+        let require_weights = !matches!(
+            std::env::var("PRISM_TOPMODEL_REQUIRE_WEIGHTS")
+                .unwrap_or_else(|_| "1".into())
+                .trim(),
+            "0" | "false" | "FALSE" | "no" | "NO"
+        );
+        let mut weight_note = String::new();
+        if let Some(path) = &req.checkpoint_path {
+            let meta = self.publish_checkpoint(path, arch, req.bpb).await?;
+            weight_note = format!(
+                "checkpoint sha256=`{}` ({} bytes){}",
+                meta.sha256,
+                meta.bytes,
+                meta.release_tag
+                    .as_deref()
+                    .map(|t| format!(" release=`{t}`"))
+                    .unwrap_or_default()
+            );
+        } else if require_weights {
+            return Err(PublishError::Transport(
+                "checkpoint missing: harvest before terminate or set PRISM_TOPMODEL_REQUIRE_WEIGHTS=0"
+                    .into(),
+            ));
+        }
         let files: Vec<(String, String)> = vec![
             (
                 format!("{TOPMODEL_REPO_PATH}/architecture.py"),
@@ -156,65 +170,18 @@ impl TopModelPublisher {
                 format!("{TOPMODEL_REPO_PATH}/METRICS.json"),
                 serde_json::to_string_pretty(&metrics_blob(req)).unwrap_or_else(|_| "{}".into()),
             ),
-            (format!("{TOPMODEL_REPO_PATH}/README.md"), readme_block(req)),
+            (
+                format!("{TOPMODEL_REPO_PATH}/README.md"),
+                readme_block(req, &weight_note),
+            ),
         ];
         let mut last_sha = String::new();
         for (path, body) in files {
-            last_sha = self.put_file(&path, &body, arch, req.bpb).await?;
+            last_sha = self
+                .put_file_public(&path, body.as_bytes(), arch, req.bpb)
+                .await?;
         }
         Ok(last_sha)
-    }
-
-    /// Create-or-update one file via the contents API.
-    async fn put_file(
-        &self,
-        path: &str,
-        body: &str,
-        arch: &str,
-        bpb: f64,
-    ) -> Result<String, PublishError> {
-        let url = format!("{}/repos/{}/contents/{}", self.api_base, self.repo, path);
-        let existing_sha: Option<String> = match self
-            .http
-            .get(&url)
-            .query(&[("ref", self.branch.as_str())])
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                resp.json::<ContentGet>().await.ok().map(|c| c.sha)
-            }
-            Ok(_) => None, // 404 → create
-            Err(e) => return Err(PublishError::Transport(e.to_string())),
-        };
-        let mut put = serde_json::json!({
-            "message": format!("top-model: {arch} bpb={bpb:.4} ({path})"),
-            "content": base64::engine::general_purpose::STANDARD.encode(body),
-            "branch": self.branch,
-        });
-        if let Some(sha) = existing_sha {
-            put["sha"] = serde_json::Value::String(sha);
-        }
-        let resp = self
-            .http
-            .put(&url)
-            .json(&put)
-            .send()
-            .await
-            .map_err(|e| PublishError::Transport(e.to_string()))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(PublishError::Api(format!(
-                "{status}: {}",
-                &text.chars().take(200).collect::<String>()
-            )));
-        }
-        let out: ContentPut = resp
-            .json()
-            .await
-            .map_err(|e| PublishError::Transport(e.to_string()))?;
-        Ok(out.commit.sha)
     }
 }
 
@@ -235,7 +202,7 @@ fn metrics_blob(req: &TopModelRequest) -> serde_json::Value {
     })
 }
 
-fn readme_block(req: &TopModelRequest) -> String {
+fn readme_block(req: &TopModelRequest, weight_note: &str) -> String {
     let series_len = req
         .metrics_json
         .as_ref()
@@ -254,6 +221,11 @@ fn readme_block(req: &TopModelRequest) -> String {
         .and_then(|m| m.get("n_params"))
         .and_then(serde_json::Value::as_u64)
         .map_or("unknown".into(), |n| n.to_string());
+    let weights = if weight_note.is_empty() {
+        "source-only (no checkpoint parked on master)".to_owned()
+    } else {
+        weight_note.to_owned()
+    };
     format!(
         "# PRISM top model\n\n\
          Published by the Base master on every new global-best bpb. This\n\
@@ -265,9 +237,11 @@ fn readme_block(req: &TopModelRequest) -> String {
          | n_params | {} |\n\
          | submission | `{}` |\n\
          | telemetry points | {} |\n\
-         | finish reason | `{}` |\n\n\
-         Files: `architecture.py`, `training.py`, `METRICS.json` (full harness\n\
-         metrics incl. telemetry loss series).\n",
+         | finish reason | `{}` |\n\
+         | weights | {} |\n\n\
+         Files: `architecture.py`, `training.py`, `METRICS.json`, `ARTIFACT.json`\n\
+         (checkpoint sha / release pointer). Large weights ship on the\n\
+         `prism-top-model` GitHub Release when they exceed the contents API.\n",
         req.arch_id.as_deref().unwrap_or("arch-unregistered"),
         req.owner_hotkey.chars().take(12).collect::<String>(),
         req.bpb,
@@ -275,6 +249,7 @@ fn readme_block(req: &TopModelRequest) -> String {
         req.submission_id,
         series_len,
         finish,
+        weights,
     )
 }
 
@@ -297,11 +272,13 @@ mod tests {
                 "n_params": 12_000_000,
                 "telemetry": {"finish_reason": "finish_evaluation", "loss_series": [{"step": 1, "loss": 2.0}]},
             })),
+            checkpoint_path: None,
         }
     }
 
     #[tokio::test]
     async fn publishes_all_files_and_returns_commit_sha() {
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         for f in [
             "architecture.py",
@@ -335,6 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_error_is_typed() {
+        std::env::set_var("PRISM_TOPMODEL_REQUIRE_WEIGHTS", "0");
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(404))
@@ -351,7 +329,7 @@ mod tests {
 
     #[test]
     fn readme_summarizes_metrics() {
-        let md = readme_block(&req());
+        let md = readme_block(&req(), "");
         assert!(md.contains("arch_0123456789abcdef"));
         assert!(md.contains("1.234000"));
         assert!(md.contains("finish_evaluation"));

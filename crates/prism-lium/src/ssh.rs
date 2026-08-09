@@ -268,6 +268,45 @@ pub async fn ssh_exec_allow_fail(
     .await
 }
 
+/// Run a remote command and return **raw stdout bytes** (for binary tar /
+/// checkpoint harvest). Errors on non-zero exit after retries.
+pub async fn ssh_exec_bytes(
+    target: &SshTarget,
+    private_key: &Path,
+    remote_cmd: &str,
+    attempts: u32,
+    retry_secs: u64,
+    timeout_secs: u64,
+) -> Result<Vec<u8>, LiumError> {
+    let mut last_err = String::new();
+    for attempt in 1..=attempts.max(1) {
+        let mut cmd = ssh_command(target, private_key, remote_cmd);
+        let run = async move {
+            let child = cmd.spawn().map_err(|e| format!("ssh spawn: {e}"))?;
+            child
+                .wait_with_output()
+                .await
+                .map_err(|e| format!("ssh wait: {e}"))
+        };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), run).await {
+            Ok(Ok(out)) if out.status.success() => return Ok(out.stdout),
+            Ok(Ok(out)) => {
+                last_err = format!(
+                    "ssh exit {:?}: {}",
+                    out.status.code(),
+                    truncate_tail(&String::from_utf8_lossy(&out.stderr), 200)
+                );
+            }
+            Ok(Err(e)) => last_err = e,
+            Err(_) => last_err = "ssh timed out".into(),
+        }
+        if attempt < attempts {
+            sleep(Duration::from_secs(retry_secs)).await;
+        }
+    }
+    Err(LiumError::Exec(last_err))
+}
+
 /// Run a remote command streaming `stdin` bytes (e.g. a tar archive for
 /// post-train eval-asset staging); errors on non-zero exit after retries.
 pub async fn ssh_exec_stdin(

@@ -1,0 +1,18 @@
+[package]
+name = "prism-artifacts"
+description = "PRISM master-side checkpoint parking paths + Sim stubs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hex = "0.4"
+prism-lium-types = { path = "../prism-lium-types" }
+serde_json = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true

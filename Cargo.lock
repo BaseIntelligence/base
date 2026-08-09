@@ -3742,6 +3742,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-artifacts"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prism-lium-types",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "prism-attribution"
 version = "0.1.0"
 dependencies = [
@@ -3784,6 +3794,7 @@ dependencies = [
  "prism-intake",
  "prism-lium",
  "prism-pipeline",
+ "prism-playground",
  "prism-recipe",
  "prism-registry",
  "prism-review",
@@ -3817,6 +3828,7 @@ dependencies = [
  "predicates",
  "prism-attribution",
  "prism-challenge",
+ "prism-intake",
  "prism-lium",
  "prism-recipe",
  "prism-registry",
@@ -3875,10 +3887,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "crypto",
+ "hex",
  "prism-pipeline",
  "prism-recipe",
  "prism-store",
  "serde_json",
+ "sha2 0.10.9",
  "submission-gating",
 ]
 
@@ -3888,6 +3903,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hex",
+ "prism-artifacts",
  "prism-lium-types",
  "prism-recipe",
  "prism-tree",
@@ -3935,6 +3951,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-playground"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "prism-artifacts",
+ "prism-intake",
+ "prism-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "prism-recipe"
 version = "0.1.0"
 dependencies = [
@@ -3952,11 +3982,13 @@ name = "prism-registry"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "prism-pipeline",
  "prism-store",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

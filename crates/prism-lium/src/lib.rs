@@ -28,11 +28,17 @@
 #![allow(clippy::duration_suboptimal_units)]
 #![allow(clippy::manual_clamp)]
 
+mod artifacts;
 mod client;
 mod sim;
 mod ssh;
 
+pub use artifacts::harvest_checkpoint_ssh;
 pub use client::LiumClient;
+pub use prism_artifacts::{
+    artifact_dir_for, artifact_root, checkpoint_path_for, write_sim_checkpoint,
+    MAX_CHECKPOINT_BYTES, POD_WORKDIR,
+};
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
 // The data contract lives in `prism-lium-types` (per-crate LOC cap); it is
@@ -81,6 +87,23 @@ pub trait EvalJobBackend: Send + Sync {
     /// `swept: stuck beyond grace`.
     async fn harvest_logs(&self, _instance_id: &str) -> Result<String, LiumError> {
         Ok(String::new())
+    }
+
+    /// Pull trained weights from the pod into `dest_dir` **before** terminate.
+    ///
+    /// Default errors — callers that need artifacts must use a backend that
+    /// implements harvest (live Lium or Sim stub). Fail-closed: missing
+    /// checkpoint → `Err` (orchestrator may still score but must not claim
+    /// a top-model weight publish).
+    async fn harvest_artifacts(
+        &self,
+        _instance_id: &str,
+        _dest_dir: &std::path::Path,
+        _seed: &[u8],
+    ) -> Result<std::path::PathBuf, LiumError> {
+        Err(LiumError::Exec(
+            "artifact harvest not supported on this backend".into(),
+        ))
     }
 }
 

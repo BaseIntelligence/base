@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+prism-artifacts = { path = "../prism-artifacts" }
 prism-lium-types = { path = "../prism-lium-types" }
 prism-recipe = { path = "../prism-recipe" }
 prism-tree = { path = "../prism-tree" }

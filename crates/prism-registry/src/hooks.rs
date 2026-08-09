@@ -24,6 +24,7 @@ use tracing::{info, warn};
 use crate::publish::{TopModelPublisher, TopModelRequest, TOPMODEL_REPO_PATH};
 
 /// Run registry + top-model bookkeeping for one finalized row.
+#[allow(clippy::too_many_lines)]
 pub async fn post_score_hooks(
     store: &Arc<dyn PrismStore>,
     publisher: Option<&TopModelPublisher>,
@@ -91,6 +92,23 @@ pub async fn post_score_hooks(
     if !(is_global_best && beats_published) {
         return;
     }
+    let ckpt = {
+        let p = std::path::PathBuf::from(
+            std::env::var("PRISM_ARTIFACT_DIR")
+                .unwrap_or_else(|_| "/var/lib/prism/artifacts".into()),
+        )
+        .join(&row.id)
+        .join("checkpoint.pt");
+        p.is_file().then_some(p).or_else(|| {
+            let idx = std::path::PathBuf::from(
+                std::env::var("PRISM_ARTIFACT_DIR")
+                    .unwrap_or_else(|_| "/var/lib/prism/artifacts".into()),
+            )
+            .join(&row.id)
+            .join("checkpoint.pt.index");
+            idx.is_file().then_some(idx)
+        })
+    };
     let req = TopModelRequest {
         submission_id: row.id.clone(),
         arch_id: arch_id.clone(),
@@ -99,6 +117,7 @@ pub async fn post_score_hooks(
         architecture_py: row.architecture_py.clone(),
         training_py: row.training_py.clone(),
         metrics_json: row.metrics_json.clone(),
+        checkpoint_path: ckpt,
     };
     match publisher.publish(&req).await {
         Ok(sha) => {

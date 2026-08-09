@@ -735,6 +735,23 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .exec_eval(&pod_id, &row.architecture_py, &row.training_py, row.tree_blob.as_deref())
             .await;
 
+        // Pull trained weights to master BEFORE terminate so top-model publish
+        // / playground can load them. Fail-soft on harvest: scoring continues,
+        // but post_score_hooks refuse weight publish without a parked file.
+        if metrics.is_ok() {
+            let dest = prism_lium::artifact_dir_for(id);
+            match self
+                .backend
+                .harvest_artifacts(&pod_id, &dest, id.as_bytes())
+                .await
+            {
+                Ok(path) => {
+                    info!(submission_id = %id, path = %path.display(), "checkpoint harvested");
+                }
+                Err(e) => warn!(submission_id = %id, error = %e, "checkpoint harvest failed"),
+            }
+        }
+
         // Always terminate + verify (billing guard, receipt gate).
         if let Err(e) = self.backend.terminate(&pod_id).await {
             warn!(error = %e, %pod_id, "terminate failed");

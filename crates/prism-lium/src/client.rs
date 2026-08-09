@@ -1005,6 +1005,24 @@ impl EvalJobBackend for LiumClient {
     async fn harvest_logs(&self, instance_id: &str) -> Result<String, LiumError> {
         self.harvest_logs_inner(instance_id).await
     }
+
+    async fn harvest_artifacts(
+        &self,
+        instance_id: &str,
+        dest_dir: &Path,
+        _seed: &[u8],
+    ) -> Result<PathBuf, LiumError> {
+        let target = self.resolve_ssh_target(instance_id).await?;
+        let key = resolve_private_key(self.ssh.private_key_path.as_deref())?;
+        crate::artifacts::harvest_checkpoint_ssh(
+            &target,
+            &key,
+            dest_dir,
+            self.ssh.ssh_attempts,
+            self.ssh.ssh_retry_secs,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
