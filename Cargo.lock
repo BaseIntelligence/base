@@ -759,6 +759,7 @@ name = "challenge-agentic"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "challenge-agentic-types",
  "challenge-ast",
  "hex",
  "reqwest 0.12.28",
@@ -769,6 +770,15 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "challenge-agentic-types"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

@@ -10,7 +10,9 @@ use challenge_ast::{
 };
 use serde_json::{json, Value};
 
-use crate::types::{AgenticError, AgenticVerdict, CheatCode, ReviewRequest, VerdictKind};
+use challenge_agentic_types::{
+    AgenticError, AgenticVerdict, CheatCode, ReviewRequest, VerdictKind,
+};
 
 /// Precomputed corpus fingerprints for AST tools.
 #[derive(Debug, Clone)]

@@ -15,7 +15,7 @@ use challenge_ast::{
 use serde_json::Value;
 
 use crate::tools::{load_primary_sources, resolve_rel, source_hash_hex};
-use crate::types::{
+use challenge_agentic_types::{
     AgenticBackend, AgenticError, AgenticVerdict, CheatCode, ReviewRequest, VerdictKind,
 };
 
@@ -446,7 +446,7 @@ fn metrics_cheat_verdict(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::types::CorpusEntry;
+    use challenge_agentic_types::CorpusEntry;
     use std::fs;
     use tempfile::tempdir;
 

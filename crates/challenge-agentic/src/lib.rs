@@ -19,7 +19,6 @@ mod llm;
 mod prompts;
 mod sim;
 mod tools;
-mod types;
 
 pub use agent::{AgentConfig, OpenRouterAgent};
 pub use challenge_ast::{
@@ -29,7 +28,10 @@ pub use challenge_ast::{
 pub use llm::{load_api_key_file, DEFAULT_MODEL};
 pub use prompts::{AGENTIC_PROMPT_VERSION, DESIGN_DOMAIN_RULES, PRISM_DOMAIN_RULES};
 pub use sim::{SimAgent, SIM_CHEAT_BPS, SIM_SUSPICIOUS_BPS};
-pub use types::{
+// The review contract lives in `challenge-agentic-types` (per-crate LOC cap);
+// it is re-exported wholesale so `challenge_agentic::…` stays the single
+// import path.
+pub use challenge_agentic_types::{
     AgenticBackend, AgenticError, AgenticVerdict, CheatCode, ContainerReviewRequest, CorpusEntry,
     ReviewRequest, VerdictKind, OPENROUTER_API_BASE,
 };

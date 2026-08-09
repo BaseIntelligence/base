@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::llm::ChatClient;
 use crate::prompts::system_prompt;
 use crate::tools::{dispatch, tool_schemas, ToolContext};
-use crate::types::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest};
+use challenge_agentic_types::{AgenticBackend, AgenticError, AgenticVerdict, ReviewRequest};
 
 /// Loop budgets.
 #[derive(Debug, Clone)]
@@ -192,7 +192,7 @@ impl AgenticBackend for OpenRouterAgent {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::types::VerdictKind;
+    use challenge_agentic_types::VerdictKind;
     use std::fs;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
