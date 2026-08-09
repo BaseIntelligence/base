@@ -2,7 +2,7 @@
 //!
 //! Trust model: the Lium pod is untrusted (miner code ran there). Master
 //! **pulls** a tar over SSH, then stages through [`receive_tar_bytes`] which
-//! enforces the FP32×1.5 size budget ([`checkpoint_byte_budget`]),
+//! enforces the FP32×2×1.5 size budget ([`checkpoint_byte_budget`]),
 //! path-traversal refusal, filename allowlist, and a hashed
 //! [`ArtifactReceipt`]. Top-model publish must call [`verify_parked`].
 //!
@@ -21,7 +21,8 @@ pub use receive::{
     checkpoint_byte_budget, receive_bytes, receive_tar_bytes, resolve_checkpoint_budget,
     validate_submission_id, verify_parked, write_sim_checkpoint, ArtifactReceipt, ReceiveSource,
     ALLOWED_FILENAMES, BF16_BYTES_PER_PARAM, CHECKPOINT_OVERHEAD_DEN, CHECKPOINT_OVERHEAD_NUM,
-    MAX_CHECKPOINT_BYTES, POD_WORKDIR, RECEIPT_FILE, RECIPE_MAX_PARAMS,
+    FP32_BYTES_PER_PARAM, MAX_CHECKPOINT_BYTES, POD_WORKDIR, RECEIPT_FILE, RECIPE_MAX_PARAMS,
+    STATE_DICT_TYING_FACTOR,
 };
 
 use std::path::PathBuf;

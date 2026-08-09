@@ -1,7 +1,7 @@
 //! SSH harvest of trained checkpoints (pod → master).
 //!
 //! Pull is master-initiated; staging goes through `prism_artifacts::receive_tar_bytes`
-//! (BF16×1.5 size budget, tar member allowlist, path-traversal refuse, hashed receipt).
+//! (FP32×2×1.5 size budget, tar member allowlist, path-traversal refuse, hashed receipt).
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ use prism_artifacts::{receive_tar_bytes, resolve_checkpoint_budget, ReceiveSourc
 /// SSH-tar `checkpoint.pt` (or sharded index) from the pod into `dest_dir`.
 ///
 /// `n_params` should be the harness-measured count. When `None`, falls back to
-/// `prism_recipe::max_params()` (recipe ceiling × BF16 × 1.5) so older harness
+/// `prism_recipe::max_params()` (recipe ceiling × FP32 × 2 × 1.5) so older harness
 /// builds still harvest; prefer measured params when available.
 pub async fn harvest_checkpoint_ssh(
     target: &SshTarget,
@@ -43,7 +43,8 @@ pub async fn harvest_checkpoint_ssh(
     .await?;
     if packed.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint pack exceeds budget ({max_bytes} bytes; n_params={used_params} FP32×1.5)"
+            "checkpoint pack exceeds budget (packed={} max={max_bytes} bytes; n_params={used_params} FP32×2×1.5)",
+            packed.len()
         )));
     }
     let sid = submission_id.to_owned();

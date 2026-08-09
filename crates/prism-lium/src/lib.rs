@@ -91,7 +91,7 @@ pub trait EvalJobBackend: Send + Sync {
 
     /// Pull trained weights from the pod into `dest_dir` **before** terminate.
     ///
-    /// `n_params` is the harness-measured count (drives BF16×1.5 size budget).
+    /// `n_params` is the harness-measured count (drives FP32×2×1.5 size budget).
     /// Default errors — callers that need artifacts must use a backend that
     /// implements harvest (live Lium or Sim stub). Fail-closed: missing
     /// checkpoint → `Err` (orchestrator may still score but must not claim

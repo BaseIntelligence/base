@@ -3,7 +3,7 @@
 //! Mounted under the same `PRISM_ADMIN_TOKENS_FILE` bearer gate as retry /
 //! playground. Empty tokens → 503 (never open).
 //!
-//! Size budget: FP32 × 1.5 = `n_params * 6` bytes ([`checkpoint_byte_budget`]).
+//! Size budget: FP32 × 2 × 1.5 = `n_params * 12` bytes ([`checkpoint_byte_budget`]).
 //! `n_params` is resolved from the submission store, else `X-Prism-N-Params`;
 //! unknown → reject (fail-closed). HTTP body ceiling stays at recipe max
 //! ([`MAX_CHECKPOINT_BYTES`]); the per-receive check is tighter.

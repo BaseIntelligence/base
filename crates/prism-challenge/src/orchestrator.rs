@@ -736,7 +736,7 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await;
 
         // Secure receive: master pulls checkpoint over SSH, then stages via
-        // prism-artifacts (BF16×1.5 budget from measured n_params + allowlist
+        // prism-artifacts (FP32×2×1.5 budget from measured n_params + allowlist
         // + hash receipt) BEFORE terminate.
         // Fail-soft on harvest: scoring continues; top-model publish requires
         // verify_parked (RECEIPT.json) and refuses without it.

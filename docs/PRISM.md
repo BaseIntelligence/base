@@ -180,15 +180,17 @@ never pushes) and stages it through the secure receive hook into
 fail-closes on oversized packs, unexpected tar members, path traversal /
 symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256).
 
-**Size budget (FP32 × 1.5).** Cap = `n_params × 4 × 1.5` bytes =
-`n_params × 6` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).
-The v3 harness parks FP32 `torch.save` state_dicts, so BF16×1.5 is too tight.
+**Size budget (FP32 × 2 × 1.5).** Cap = `n_params × 4 × 2 × 1.5` bytes =
+`n_params × 12` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).
+The v3 harness parks FP32 `torch.save` state_dicts; `n_params` dedupes tied
+weights (embed ↔ lm_head) but the pickle can materialize each state_dict key,
+so the budget includes a 2× tying factor on top of 1.5× pickle/tar overhead.
 Harvest uses the harness-measured `n_params` from `METRICS_JSON`; when
 missing (older harness), it falls back to `prism_recipe::max_params()`
 (350M, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
 `POST /v1/admin/artifacts/{id}/receive` resolves `n_params` from the
 submission store, else requires `X-Prism-N-Params` (fail-closed if
-unknown). HTTP body ceiling is recipe-max × 3 (~1.05 GiB); the per-receive
+unknown). HTTP body ceiling is recipe-max × 12 (~3.91 GiB); the per-receive
 check is tighter when measured params are known. Oversized payloads are
 refused **before** writing.
 
