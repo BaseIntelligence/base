@@ -180,8 +180,9 @@ never pushes) and stages it through the secure receive hook into
 fail-closes on oversized packs, unexpected tar members, path traversal /
 symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256).
 
-**Size budget (BF16 × 1.5).** Cap = `n_params × 2 × 1.5` bytes =
-`n_params × 3` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).
+**Size budget (FP32 × 1.5).** Cap = `n_params × 4 × 1.5` bytes =
+`n_params × 6` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).
+The v3 harness parks FP32 `torch.save` state_dicts, so BF16×1.5 is too tight.
 Harvest uses the harness-measured `n_params` from `METRICS_JSON`; when
 missing (older harness), it falls back to `prism_recipe::max_params()`
 (350M, or `PRISM_TEST_MAX_PARAMS` in staging). Admin

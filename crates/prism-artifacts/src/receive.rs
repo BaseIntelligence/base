@@ -11,11 +11,14 @@ use sha2::{Digest, Sha256};
 /// Remote workdir used by the v3 harness (`PRISM_WORKDIR` default).
 pub const POD_WORKDIR: &str = "/tmp/prism_eval";
 
-/// BF16 storage = 2 bytes/param. Secure-receive size budget is BF16 × 1.5
-/// overhead → **3 bytes/param** (`n_params * 2 * 3/2 = n_params * 3`).
-pub const BF16_BYTES_PER_PARAM: u64 = 2;
+/// Train dtype storage = 4 bytes/param (FP32). The v3 harness `torch.save`s
+/// CPU `state_dict` tensors as-trained — typically FP32 — so the receive
+/// budget must cover FP32, not BF16. (Alias kept for older call sites.)
+pub const BF16_BYTES_PER_PARAM: u64 = 4;
+/// Preferred name for the per-param train-dtype width used in the budget.
+pub const FP32_BYTES_PER_PARAM: u64 = 4;
 
-/// Numerator of the 1.5× overhead factor applied on top of BF16.
+/// Numerator of the 1.5× overhead factor (pickle / tar / meta).
 pub const CHECKPOINT_OVERHEAD_NUM: u64 = 3;
 /// Denominator of the 1.5× overhead factor (with [`CHECKPOINT_OVERHEAD_NUM`] → 3/2).
 pub const CHECKPOINT_OVERHEAD_DEN: u64 = 2;
@@ -25,29 +28,30 @@ pub const CHECKPOINT_OVERHEAD_DEN: u64 = 2;
 /// `n_params` is missing (older harness). Prefer measured `n_params`.
 pub const RECIPE_MAX_PARAMS: u64 = 350_000_000;
 
-/// Absolute max packed/upload bytes = [`RECIPE_MAX_PARAMS`] × BF16 × 1.5.
+/// Absolute max packed/upload bytes = [`RECIPE_MAX_PARAMS`] × FP32 × 1.5.
 /// Per-receive budgets are tighter when measured `n_params` is known.
-pub const MAX_CHECKPOINT_BYTES: usize = 1_050_000_000; // 350_000_000 * 3
+pub const MAX_CHECKPOINT_BYTES: usize = 2_100_000_000; // 350_000_000 * 6
 
-const _: () = assert!(RECIPE_MAX_PARAMS * 3 == MAX_CHECKPOINT_BYTES as u64);
+const _: () = assert!(RECIPE_MAX_PARAMS * 6 == MAX_CHECKPOINT_BYTES as u64);
 
 /// Byte budget for a checkpoint given measured (or recipe-ceiling) param count.
 ///
-/// Formula: `ceil(n_params * BF16_BYTES_PER_PARAM * 1.5)` = `n_params * 3`
-/// (exact integer). Rejects `n_params == 0` and u64 overflow (fail-closed).
+/// Formula: `n_params * FP32_BYTES_PER_PARAM * 1.5` = `n_params * 6`
+/// (exact integer). Live e2e showed BF16×1.5 (×3) refuses legitimate FP32
+/// `torch.save` packs. Rejects `n_params == 0` and u64 overflow (fail-closed).
 pub fn checkpoint_byte_budget(n_params: u64) -> Result<usize, LiumError> {
     if n_params == 0 {
         return Err(LiumError::Integrity(
             "checkpoint budget: n_params must be > 0".into(),
         ));
     }
-    // n_params * 2 * 3/2 == n_params * 3 (exact; avoids float).
+    // n_params * 4 * 3/2 == n_params * 6 (exact; avoids float).
     debug_assert_eq!(
-        BF16_BYTES_PER_PARAM * CHECKPOINT_OVERHEAD_NUM / CHECKPOINT_OVERHEAD_DEN,
-        3
+        FP32_BYTES_PER_PARAM * CHECKPOINT_OVERHEAD_NUM / CHECKPOINT_OVERHEAD_DEN,
+        6
     );
-    let bytes = n_params.checked_mul(3).ok_or_else(|| {
-        LiumError::Integrity("checkpoint budget: n_params * 3 overflows u64".into())
+    let bytes = n_params.checked_mul(6).ok_or_else(|| {
+        LiumError::Integrity("checkpoint budget: n_params * 6 overflows u64".into())
     })?;
     usize::try_from(bytes)
         .map_err(|_| LiumError::Integrity("checkpoint budget: exceeds usize".into()))
@@ -293,7 +297,7 @@ fn finalize_park(
     }
     if bytes.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint exceeds budget ({max_bytes} bytes; BF16×1.5)"
+            "checkpoint exceeds budget ({max_bytes} bytes; FP32×1.5)"
         )));
     }
     let sha = write_manifest_inner(&primary, &bytes)?;
@@ -316,7 +320,7 @@ fn finalize_park(
 
 /// Stage raw checkpoint bytes (admin upload / single-file path).
 ///
-/// `max_bytes` is the BF16×1.5 budget from [`checkpoint_byte_budget`].
+/// `max_bytes` is the FP32×1.5 budget from [`checkpoint_byte_budget`].
 /// Oversized payloads are refused **before** writing.
 pub fn receive_bytes(
     submission_id: &str,
@@ -339,7 +343,7 @@ pub fn receive_bytes(
     }
     if bytes.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "upload exceeds budget ({max_bytes} bytes; BF16×1.5)"
+            "upload exceeds budget ({max_bytes} bytes; FP32×1.5)"
         )));
     }
     let got = sha256_hex(bytes);
@@ -364,7 +368,7 @@ pub fn receive_bytes(
 
 /// List tar members, refuse unsafe paths, extract, audit, write receipt.
 ///
-/// `max_bytes` is the BF16×1.5 budget from [`checkpoint_byte_budget`].
+/// `max_bytes` is the FP32×1.5 budget from [`checkpoint_byte_budget`].
 /// Oversized packs are refused **before** extract/write.
 pub fn receive_tar_bytes(
     submission_id: &str,
@@ -379,7 +383,7 @@ pub fn receive_tar_bytes(
     }
     if packed.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint pack exceeds budget ({max_bytes} bytes; BF16×1.5)"
+            "checkpoint pack exceeds budget ({max_bytes} bytes; FP32×1.5)"
         )));
     }
     // List members first (fail-closed before extract).
@@ -548,11 +552,11 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_budget_bf16_times_1_5() {
-        // n_params * 2 * 1.5 == n_params * 3
-        assert_eq!(checkpoint_byte_budget(1).unwrap(), 3);
-        assert_eq!(checkpoint_byte_budget(10).unwrap(), 30);
-        assert_eq!(checkpoint_byte_budget(12_000_000).unwrap(), 36_000_000);
+    fn checkpoint_budget_fp32_times_1_5() {
+        // n_params * 4 * 1.5 == n_params * 6
+        assert_eq!(checkpoint_byte_budget(1).unwrap(), 6);
+        assert_eq!(checkpoint_byte_budget(10).unwrap(), 60);
+        assert_eq!(checkpoint_byte_budget(12_000_000).unwrap(), 72_000_000);
         assert_eq!(
             checkpoint_byte_budget(RECIPE_MAX_PARAMS).unwrap(),
             MAX_CHECKPOINT_BYTES
@@ -562,7 +566,7 @@ mod tests {
         // At-cap ok, over refuse (via resolve + receive).
         let (cap, params) = resolve_checkpoint_budget(Some(100), 0).unwrap();
         assert_eq!(params, 100);
-        assert_eq!(cap, 300);
+        assert_eq!(cap, 600);
         assert!(resolve_checkpoint_budget(Some(0), RECIPE_MAX_PARAMS).is_err());
         assert!(resolve_checkpoint_budget(None, 0).is_err());
         let (fb, p) = resolve_checkpoint_budget(None, RECIPE_MAX_PARAMS).unwrap();
@@ -575,8 +579,8 @@ mod tests {
         let dir = tmp("budget");
         let sid = "aabb00112233445566778899aabbccddeeff00112233445566778899aabbccdd";
         let park = dir.join(sid);
-        let body = vec![b'w'; 30]; // exactly 30 bytes
-        let max = checkpoint_byte_budget(10).unwrap(); // 30
+        let body = vec![b'w'; 60]; // exactly 60 bytes
+        let max = checkpoint_byte_budget(10).unwrap(); // 60
         receive_bytes(
             sid,
             &park,
@@ -587,7 +591,7 @@ mod tests {
             max,
         )
         .unwrap();
-        let over = vec![b'w'; 31];
+        let over = vec![b'w'; 61];
         let err = receive_bytes(
             sid,
             &park,

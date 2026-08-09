@@ -2,7 +2,7 @@
 //!
 //! Trust model: the Lium pod is untrusted (miner code ran there). Master
 //! **pulls** a tar over SSH, then stages through [`receive_tar_bytes`] which
-//! enforces the BF16×1.5 size budget ([`checkpoint_byte_budget`]),
+//! enforces the FP32×1.5 size budget ([`checkpoint_byte_budget`]),
 //! path-traversal refusal, filename allowlist, and a hashed
 //! [`ArtifactReceipt`]. Top-model publish must call [`verify_parked`].
 //!

@@ -43,7 +43,7 @@ pub async fn harvest_checkpoint_ssh(
     .await?;
     if packed.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint pack exceeds budget ({max_bytes} bytes; n_params={used_params} BF16×1.5)"
+            "checkpoint pack exceeds budget ({max_bytes} bytes; n_params={used_params} FP32×1.5)"
         )));
     }
     let sid = submission_id.to_owned();
