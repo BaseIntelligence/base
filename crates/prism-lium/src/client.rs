@@ -29,18 +29,11 @@ const DEFAULT_TRAIN_DONE_MARKER: &str = "PHASE_TRAIN_DONE";
 /// the same path via its pod-side `PRISM_EVAL_ASSETS_DIR`).
 const EVAL_ASSETS_POD_DIR: &str = "/tmp/prism_eval/eval-assets";
 
-/// Pod image: Lium-owned DinD variant pulses its own dockerd init and never
-/// Only `daturaai/*-dind` pods deliver a reachable sshd on this marketplace
-/// (vanilla pytorch has none; cu12.8-dinD needs `service ssh start`, whose
-/// process-exit kills sshd when the startup job ends — metachar rejection
-/// makes keep-alive chains impossible). The cuda**13.0.2**-dinD tag runs sshd
-/// from its own init: sleeps keep ssh alive across verify + exec phases.
+// cu13.0.2-dinD: sshd from image init (empty startup). Other marketplace
+// images lack a stable sshd under Lium's metachar-free startup rules.
 const RECIPES_TEMPLATE_IMAGE: &str = "daturaai/pytorch";
 const RECIPES_TEMPLATE_TAG: &str = "2.12.0-py3.12-cuda13.0.2-devel-ubuntu24.04-dind";
-/// Recipe template ns (v9: the cu13 DinD shape that ssh-verifies with an
-/// EMPTY startup script; proven ssh-stable ≥7 min on a 5070 Ti pod).
 const RECIPES_TEMPLATE_NAME: &str = "prism-recipe-v9";
-/// Boot: nothing — sshd comes up by itself in the cu13 dinD image.
 const RECIPES_TEMPLATE_STARTUP: &str = "";
 
 const RUNNING_STATUSES: &[&str] = &["RUNNING", "RUNNING_SSH", "READY"];
@@ -358,21 +351,28 @@ impl LiumClient {
         }
     }
 
-    async fn cleanup_after_rent(&self, pod_id: Option<&str>) {
-        if let Some(id) = pod_id {
-            if let Err(e) = self.terminate(id).await {
-                warn!(error = %e, "lium cleanup terminate failed");
-            }
-            let _ = self.verify_terminated(id).await;
+    async fn cleanup_after_rent(&self, id: &str) {
+        if let Err(e) = self.terminate(id).await {
+            warn!(error = %e, pod_id = %id, "lium cleanup terminate failed");
         }
+        let _ = self.verify_terminated(id).await;
     }
 
-    /// Rent responses without an id: recover by matching `pod_name` in /pods.
     async fn find_pod_id_by_name(&self, name: &str) -> Option<String> {
         self.list_pods_raw().await.ok()?.into_iter().find_map(|p| {
             (get_str(&p, &["pod_name", "name"]).unwrap_or("") == name)
                 .then(|| get_str(&p, &["id"]).map(str::to_owned))?
         })
+    }
+
+    /// Terminate every pod still listed under `name` (429/orphan storms).
+    async fn reclaim_pods_named(&self, name: &str) {
+        for _ in 0..8 {
+            let Some(id) = self.find_pod_id_by_name(name).await else {
+                return;
+            };
+            self.cleanup_after_rent(&id).await;
+        }
     }
 
     async fn resolve_ssh_target(&self, instance_id: &str) -> Result<SshTarget, LiumError> {
@@ -945,8 +945,6 @@ impl EvalJobBackend for LiumClient {
                 %template_id,
                 "lium rent"
             );
-            // Try the requested split first; on "no GPU splitting allowed"
-            // retry the whole node (per-GPU price is unchanged).
             let mut split_choices = vec![spec.gpu_count];
             if selected.gpu_count != spec.gpu_count {
                 split_choices.push(selected.gpu_count);
@@ -967,39 +965,37 @@ impl EvalJobBackend for LiumClient {
                 }
                 break;
             }
-            let mut pod_id: Option<String> = None;
             match rented {
                 Ok(v) => {
-                    pod_id = extract_pod_id(&v);
-                    if pod_id.is_none() {
-                        pod_id = self.find_pod_id_by_name(&spec.name).await;
-                    }
-                    let Some(id) = pod_id.clone() else {
+                    let id = match extract_pod_id(&v) {
+                        Some(id) => Some(id),
+                        None => self.find_pod_id_by_name(&spec.name).await,
+                    };
+                    let Some(id) = id else {
                         last_err = "could not determine provisioned pod id from rent".into();
-                        self.cleanup_after_rent(None).await;
+                        self.reclaim_pods_named(&spec.name).await;
                         continue;
                     };
-                    // Wait for RUNNING here so a CREATION_FAILED offer falls
-                    // through to the next candidate instead of poisoning exec.
                     match self.wait_until_running(&id).await {
                         Ok(inst) => return Ok(inst),
                         Err(e) => {
                             last_err = format!("offer {} wait_running: {e}", selected.id);
-                            self.cleanup_after_rent(Some(&id)).await;
+                            self.cleanup_after_rent(&id).await;
+                            self.reclaim_pods_named(&spec.name).await;
                         }
                     }
                 }
                 Err(e) => {
                     last_err = e.to_string();
-                    self.cleanup_after_rent(pod_id.as_deref()).await;
-                    // Lium allows ~3 requests / 5s; rapid candidate walks
-                    // otherwise burn the budget and leave orphan PENDING pods.
+                    // 429/transport can still leave a PENDING pod under our name.
+                    self.reclaim_pods_named(&spec.name).await;
                     if last_err.contains("429") || last_err.to_ascii_lowercase().contains("rate") {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                 }
             }
         }
+        self.reclaim_pods_named(&spec.name).await;
         if last_err == "no offer tried" {
             return Err(CostGuardrailError::NoCapacity.into());
         }
@@ -1242,6 +1238,54 @@ mod tests {
         assert_eq!(inst.id, "pod-h100");
     }
 
+    #[tokio::test]
+    async fn provision_reclaims_orphan_pod_on_429() {
+        // Rent 429 must still terminate any PENDING pod under our name
+        // (dd4343ae backoff alone left orphans billing).
+        let server = MockServer::start().await;
+        mount_common(
+            &server,
+            serde_json::json!([{
+                "id": "only",
+                "gpu_type": "NVIDIA GeForce RTX 5090",
+                "gpu_count": 1,
+                "price_per_hour": 1.0
+            }]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/executors/only/rent"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pods"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "orphan-1", "pod_name": "x", "status": "PENDING"}
+            ])))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/pods"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let _delete = Mock::given(method("DELETE"))
+            .and(path("/pods/orphan-1"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount_as_scoped(&server)
+            .await;
+        let c = LiumClient::with_base_url("test-key", server.uri()).unwrap();
+        let err = c.provision(&provision_spec()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("429")
+                || err.to_string().to_ascii_lowercase().contains("rate"),
+            "got {err}"
+        );
+    }
+
     #[test]
     fn harness_env_pairs_forward_numeric_test_values_only() {
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15");
@@ -1262,9 +1306,7 @@ mod tests {
         assert!(pairs
             .iter()
             .any(|(k, v)| *k == "PRISM_EVAL_G5_N_ITEMS" && v == "1"));
-        assert!(pairs
-            .iter()
-            .any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
+        assert!(pairs.iter().any(|(k, v)| *k == "PRISM_FLOW" && v == "v3"));
         std::env::set_var("PRISM_TEST_TRAIN_MINUTES", "15'; rm -rf /; '");
         let pairs = harness_env_pairs(6.0, "NVIDIA GeForce RTX 5090", false);
         assert!(!pairs.iter().any(|(_, v)| v.contains("rm -rf")));

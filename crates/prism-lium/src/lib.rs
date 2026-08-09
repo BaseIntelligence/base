@@ -36,8 +36,8 @@ mod ssh;
 pub use artifacts::harvest_checkpoint_ssh;
 pub use client::LiumClient;
 pub use prism_artifacts::{
-    artifact_dir_for, artifact_root, checkpoint_path_for, write_sim_checkpoint,
-    MAX_CHECKPOINT_BYTES, POD_WORKDIR,
+    artifact_dir_for, artifact_root, checkpoint_path_for, ensure_artifact_root,
+    write_sim_checkpoint, MAX_CHECKPOINT_BYTES, POD_WORKDIR,
 };
 pub use sim::SimLiumBackend;
 pub use ssh::{parse_ssh_target, resolve_private_key, truncate_tail, SshTarget};
@@ -65,12 +65,7 @@ pub trait EvalJobBackend: Send + Sync {
     /// True when the instance is absent from the provider.
     async fn verify_terminated(&self, instance_id: &str) -> Result<bool, LiumError>;
 
-    /// Run a sealed PRISM eval payload on the instance and return metrics.
-    ///
-    /// Sim backends ignore `instance_id` and compute from payload bytes.
-    /// Real backends wait RUNNING, SSH GPU-attest, then emit metrics.
-    /// `tree_blob` is a packed `prism_tree::StagedTree` for v3 source-tree
-    /// submissions (`None` for legacy two-script rows).
+    /// Sealed eval on the instance (`tree_blob` = v3 staged tree, else `None`).
     async fn exec_eval(
         &self,
         instance_id: &str,
@@ -79,23 +74,10 @@ pub trait EvalJobBackend: Send + Sync {
         tree_blob: Option<&[u8]>,
     ) -> Result<RemoteExecResult, LiumError>;
 
-    /// Best-effort tail of the on-pod harness log (before terminate/reclaim).
-    ///
-    /// Default is empty — Sim has nothing to fetch. Live backends SSH
-    /// `tail` of `/tmp/prism_eval/harness.log` so stuck-sweep / timeout
-    /// paths retain the fatal end of a multi-hour train instead of a blank
-    /// `swept: stuck beyond grace`.
     async fn harvest_logs(&self, _instance_id: &str) -> Result<String, LiumError> {
         Ok(String::new())
     }
 
-    /// Pull trained weights from the pod into `dest_dir` **before** terminate.
-    ///
-    /// `n_params` is the harness-measured count (drives FP32×2×1.5 size budget).
-    /// Default errors — callers that need artifacts must use a backend that
-    /// implements harvest (live Lium or Sim stub). Fail-closed: missing
-    /// checkpoint → `Err` (orchestrator may still score but must not claim
-    /// a top-model weight publish).
     async fn harvest_artifacts(
         &self,
         _instance_id: &str,
@@ -109,37 +91,23 @@ pub trait EvalJobBackend: Send + Sync {
     }
 }
 
-/// Bytes retained when surfacing harness stderr / harvested logs into
-/// `error_detail` / stage events. Prefer the **tail** (fatals land at the
-/// end); a prior 4 KiB head cap ate inductor autotune spam and dropped the
-/// real traceback (~4054 chars stored).
+/// Tail bytes retained for harness stderr / harvested logs in error_detail.
 pub const HARNESS_LOG_RETAIN_BYTES: usize = 32_768;
-
 /// Default Lium API base URL.
 pub const LIUM_API_BASE_URL: &str = "https://lium.io/api";
-
-/// Floor for `max_lifetime_hours` (Lium `termination_hours` is 1-hour granularity).
+/// Floor for `max_lifetime_hours` (Lium `termination_hours` is 1h granularity).
 pub const MIN_LIFETIME_HOURS: f64 = 1.0;
 
 /// Serializes tests that mutate `PRISM_EVAL_ASSETS_DIR` (client + sim).
 #[cfg(test)]
 pub(crate) static ASSETS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Crate identity smoke.
-#[must_use]
-pub fn crate_name() -> &'static str {
-    "prism-lium"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn crate_name_ok() {
-        assert_eq!(crate_name(), "prism-lium");
-        // Floor is a named constant; compare via binding so clippy does not
-        // treat it as a pure constant assertion.
+    fn lifetime_floor_is_one_hour() {
         let floor = MIN_LIFETIME_HOURS;
         assert!((floor - 1.0).abs() < f64::EPSILON || floor > 1.0);
     }

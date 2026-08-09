@@ -46,21 +46,16 @@ impl SimLiumBackend {
 #[async_trait]
 impl EvalJobBackend for SimLiumBackend {
     async fn list_offers(&self, max_price_per_hour: Option<f64>) -> Result<Vec<Offer>, LiumError> {
+        let mk = |id: &str, gpu: &str, price: f64| Offer {
+            id: id.into(),
+            gpu_type: gpu.into(),
+            gpu_count: 1,
+            price_per_hour: price,
+            provider: "sim".into(),
+        };
         let mut offers = vec![
-            Offer {
-                id: "sim-blackwell".into(),
-                gpu_type: "NVIDIA RTX BLACKWELL B200".into(),
-                gpu_count: 1,
-                price_per_hour: 1.2,
-                provider: "sim".into(),
-            },
-            Offer {
-                id: "sim-a100".into(),
-                gpu_type: "NVIDIA A100-SXM4-80GB".into(),
-                gpu_count: 1,
-                price_per_hour: 0.5,
-                provider: "sim".into(),
-            },
+            mk("sim-blackwell", "NVIDIA RTX BLACKWELL B200", 1.2),
+            mk("sim-a100", "NVIDIA A100-SXM4-80GB", 0.5),
         ];
         if let Some(max) = max_price_per_hour {
             offers.retain(|o| o.price_per_hour <= max);
