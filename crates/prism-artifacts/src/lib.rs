@@ -37,6 +37,34 @@ pub fn artifact_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/var/lib/prism/artifacts"))
 }
 
+/// Ensure [`artifact_root`] exists and is writable by this process.
+///
+/// Live failure mode (2026-08-09 private e2e): challenge runs as uid 65532
+/// (`base`) while `/var/lib/prism/artifacts` was missing / root-owned →
+/// `create_dir_all` → `Permission denied`. Call before SSH harvest so the
+/// error names the path and the operator knobs (`PRISM_ARTIFACT_DIR`,
+/// image/volume ownership) instead of a bare `mkdir: …`.
+pub fn ensure_artifact_root() -> Result<PathBuf, prism_lium_types::LiumError> {
+    let root = artifact_root();
+    std::fs::create_dir_all(&root).map_err(|e| {
+        prism_lium_types::LiumError::Exec(format!(
+            "mkdir {}: {e} (PRISM_ARTIFACT_DIR must exist and be writable by the challenge user)",
+            root.display()
+        ))
+    })?;
+    let probe = root.join(".prism_write_probe");
+    match std::fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(root)
+        }
+        Err(e) => Err(prism_lium_types::LiumError::Exec(format!(
+            "artifact root {} not writable: {e} (fix volume ownership or PRISM_ARTIFACT_DIR)",
+            root.display()
+        ))),
+    }
+}
+
 /// Park directory for one submission's harvested weights.
 #[must_use]
 pub fn artifact_dir_for(submission_id: &str) -> PathBuf {

@@ -1,7 +1,4 @@
 //! SSH harvest of trained checkpoints (pod → master).
-//!
-//! Pull is master-initiated; staging goes through `prism_artifacts::receive_tar_bytes`
-//! (FP32×2×1.5 size budget, tar member allowlist, path-traversal refuse, hashed receipt).
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +11,7 @@ use prism_artifacts::{receive_tar_bytes, resolve_checkpoint_budget, ReceiveSourc
 /// SSH-tar `checkpoint.pt` (or sharded index) from the pod into `dest_dir`.
 ///
 /// `n_params` should be the harness-measured count. When `None`, falls back to
-/// `prism_recipe::max_params()` (recipe ceiling × FP32 × 2 × 1.5) so older harness
-/// builds still harvest; prefer measured params when available.
+/// `prism_recipe::max_params()` so older harness builds still harvest.
 pub async fn harvest_checkpoint_ssh(
     target: &SshTarget,
     private_key: &Path,
@@ -25,6 +21,7 @@ pub async fn harvest_checkpoint_ssh(
     ssh_retry_secs: u64,
     n_params: Option<u64>,
 ) -> Result<PathBuf, LiumError> {
+    let _ = prism_artifacts::ensure_artifact_root()?;
     let (max_bytes, used_params) = resolve_checkpoint_budget(n_params, prism_recipe::max_params())?;
     let remote = format!(
         "set -e; cd {POD_WORKDIR}; \
@@ -54,14 +51,6 @@ pub async fn harvest_checkpoint_ssh(
     })
     .await
     .map_err(|e| LiumError::Exec(format!("receive join: {e}")))??;
-    info!(
-        path = %primary.display(),
-        bytes = receipt.bytes,
-        sha = %receipt.sha256,
-        source = %receipt.source,
-        n_params = used_params,
-        max_bytes,
-        "secure receive: harvested prism checkpoint"
-    );
+    info!(path = %primary.display(), bytes = receipt.bytes, sha = %receipt.sha256, source = %receipt.source, n_params = used_params, max_bytes, "secure receive: harvested prism checkpoint");
     Ok(primary)
 }

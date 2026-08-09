@@ -179,6 +179,12 @@ never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging
 fail-closes on oversized packs, unexpected tar members, path traversal /
 symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256).
+Default park root is `/var/lib/prism/artifacts` (compose volume
+`prism-artifacts`); the image pre-creates it owned by uid **65532** (`base`).
+Harvest calls `ensure_artifact_root` first — a missing/unwritable root
+surfaces as `lium exec: mkdir <path>: Permission denied …` (not a silent
+skip). Re-create or `chown 65532` the volume if an older empty root-owned
+volume was already provisioned.
 
 **Size budget (FP32 × 2 × 1.5).** Cap = `n_params × 4 × 2 × 1.5` bytes =
 `n_params × 12` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).

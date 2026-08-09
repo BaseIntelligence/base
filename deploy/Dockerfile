@@ -121,10 +121,16 @@ ENTRYPOINT ["/usr/local/bin/updater"]
 
 FROM runtime-base AS prism-challenge
 # prism-lium drives pod exec over the `ssh` binary; runtime-base has none.
+# Pre-create the checkpoint park root as uid 65532 so a fresh named volume
+# inherits ownership (Docker copies image dir perms into empty volumes).
+# Without this, `base` cannot mkdir under /var/lib/prism → harvest fails with
+# `lium exec: mkdir: Permission denied` after a successful eval.
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssh-client \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/prism/artifacts \
+    && chown -R base:base /var/lib/prism
 USER base
 COPY --from=artifacts --chown=base:base /out/prism-challenge /usr/local/bin/prism-challenge
 ENTRYPOINT ["/usr/local/bin/prism-challenge"]

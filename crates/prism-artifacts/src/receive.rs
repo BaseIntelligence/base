@@ -19,9 +19,9 @@ pub const BF16_BYTES_PER_PARAM: u64 = 4;
 pub const FP32_BYTES_PER_PARAM: u64 = 4;
 
 /// Weight-tying expansion factor. `nn.Module.parameters()` / harness
-/// `n_params` dedupe shared storages (embed ↔ lm_head), but
+/// `n_params` dedupe shared storages (embed ↔ `lm_head`), but
 /// `torch.save({"state_dict": ...})` on some torch builds materializes
-/// each state_dict key separately → up to 2× raw FP32 bytes on disk.
+/// each `state_dict` key separately → up to 2× raw FP32 bytes on disk.
 pub const STATE_DICT_TYING_FACTOR: u64 = 2;
 
 /// Numerator of the 1.5× overhead factor (pickle / tar / meta).
@@ -368,7 +368,8 @@ pub fn receive_bytes(
     if dest_dir.exists() {
         std::fs::remove_dir_all(dest_dir).map_err(|e| LiumError::Exec(format!("wipe: {e}")))?;
     }
-    std::fs::create_dir_all(dest_dir).map_err(|e| LiumError::Exec(format!("mkdir: {e}")))?;
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| LiumError::Exec(format!("mkdir {}: {e}", dest_dir.display())))?;
     let primary = dest_dir.join(filename);
     std::fs::write(&primary, bytes).map_err(|e| LiumError::Exec(format!("write: {e}")))?;
     finalize_park(dest_dir, submission_id, source, max_bytes)
@@ -435,7 +436,8 @@ pub fn receive_tar_bytes(
     if dest_dir.exists() {
         std::fs::remove_dir_all(dest_dir).map_err(|e| LiumError::Exec(format!("wipe: {e}")))?;
     }
-    std::fs::create_dir_all(dest_dir).map_err(|e| LiumError::Exec(format!("mkdir: {e}")))?;
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| LiumError::Exec(format!("mkdir {}: {e}", dest_dir.display())))?;
     let extract = Command::new("tar")
         .args(["-x", "-C"])
         .arg(dest_dir)
@@ -540,6 +542,10 @@ pub fn write_sim_checkpoint(dest_dir: &Path, seed: &[u8]) -> Result<PathBuf, Liu
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate `PRISM_ARTIFACT_DIR`.
+    static ARTIFACT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -620,7 +626,7 @@ mod tests {
     }
 
     fn with_artifact_root<T>(root: &Path, f: impl FnOnce() -> T) -> T {
-        // Safety: unit tests are single-threaded per process for this env key.
+        let _guard = ARTIFACT_ENV_LOCK.lock().unwrap();
         std::env::set_var("PRISM_ARTIFACT_DIR", root);
         let out = f();
         std::env::remove_var("PRISM_ARTIFACT_DIR");
@@ -672,6 +678,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("sha256"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_artifact_root_writable_and_names_path_on_deny() {
+        let dir = tmp("ensure-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        with_artifact_root(&dir, || {
+            let root = crate::ensure_artifact_root().unwrap();
+            assert_eq!(root, dir);
+            assert!(root.is_dir());
+        });
+        // Parent path is a file → create_dir_all fails even as root; error must
+        // name the configured park root (the live Permission denied case).
+        let parent = tmp("ensure-deny");
+        std::fs::create_dir_all(&parent).unwrap();
+        let file_parent = parent.join("not-a-dir");
+        std::fs::write(&file_parent, b"x").unwrap();
+        let blocked = file_parent.join("artifacts");
+        with_artifact_root(&blocked, || {
+            let err = crate::ensure_artifact_root().unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("mkdir") && msg.contains("artifacts"),
+                "expected path-qualified mkdir error, got {msg}"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&parent);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
