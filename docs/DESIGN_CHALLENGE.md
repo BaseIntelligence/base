@@ -185,6 +185,11 @@ DNS resolution** (DNS-rebinding safe).
 - `User: 65532:65532`
 - Wall-clock timeout → stop/rm
 
+After the sandbox exits, host-side collection of `out/pages/*` (and other
+staging reads) **refuses symlinks and non-regular files** (`O_NOFOLLOW` on
+Linux). A harness must not exfiltrate design-challenge secret mounts into
+stored artifacts by replacing required HTML with links (threat model R15).
+
 Host `SimSandbox` is fail-closed outside explicit non-prod/CI opt-in
 (`BASE_ALLOW_HOST_SIM=1` + non-prod, typically via `env-local.yml` or e2e).
 Staging/prod paths are Docker-only via `socket-proxy` — no silent fallback.

@@ -17,6 +17,7 @@
 //! unintended scripts and navigations (CLI Chromium has no Playwright route
 //! hooks).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +25,30 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use tracing::warn;
+
+/// Linux `O_NOFOLLOW` — screenshot staging reads must not follow symlinks.
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0x20000;
+
+/// Read bytes from a screenshot staging path without following symlinks.
+fn read_staging_bytes(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+        warn!(path = %path.display(), "screenshot staging: refused non-regular file");
+        return None;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(O_NOFOLLOW);
+    }
+    let mut f = opts.open(path).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
 
 /// Capture viewport width in px (matches the site preview column).
 const WIDTH: u32 = 1280;
@@ -192,7 +217,7 @@ fn capture_once(
         let _ = std::fs::remove_file(&png_path);
         return None;
     }
-    let bytes = std::fs::read(&png_path).ok();
+    let bytes = read_staging_bytes(&png_path);
     let _ = std::fs::remove_file(&png_path);
     match bytes {
         Some(b) if !b.is_empty() && b.starts_with(b"\x89PNG") => Some(b),
@@ -247,7 +272,12 @@ fn shoot(
         timeout,
     );
     let _ = std::fs::remove_dir_all(&profile);
-    matches!(res, Some(o) if o.status.success() && out.is_file())
+    let ok = matches!(res, Some(o) if o.status.success());
+    if !ok {
+        return false;
+    }
+    // Refuse symlink / non-regular outputs (defense-in-depth vs staging escape).
+    std::fs::symlink_metadata(out).is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
 }
 
 /// Shared headless flags. `--no-sandbox`: the renderer sandbox needs userns /
@@ -421,6 +451,23 @@ mod tests {
         let stub = ok_stub(&dir);
         let png = capture_with(&test_cfg(&stub), "<p>hi</p>", &dir.join("work"));
         assert_eq!(png.as_deref(), Some(FAKE_PNG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_staging_bytes_refuses_symlink() {
+        let dir = std::env::temp_dir().join(format!("shot-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("secret.bin");
+        std::fs::write(&target, b"LEAK").unwrap();
+        let link = dir.join("shot.png");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(read_staging_bytes(&link).is_none());
+        assert_eq!(
+            read_staging_bytes(&target).as_deref(),
+            Some(b"LEAK".as_slice())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

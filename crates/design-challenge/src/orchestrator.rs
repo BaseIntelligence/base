@@ -111,6 +111,9 @@ fn classify_sandbox(e: &SandboxError) -> RunFailure {
         SandboxError::MissingOutput(m) => {
             RunFailure::new(ErrorClass::Miner, format!("missing output: {m}"))
         }
+        SandboxError::UnsafeOutput(m) => {
+            RunFailure::new(ErrorClass::Miner, format!("unsafe output: {m}"))
+        }
     }
 }
 
