@@ -78,7 +78,7 @@
       "weight": 0.05,
       "metrics": {
         "org.g8.loss_spike_score": { "kind": "stability_bounded", "status": "placeholder", "note": "PLACEHOLDER: fraction of seeds without divergence minus spike penalty, pre-bounded [0,1]" },
-        "org.g8.mup_lr_stability": { "kind": "stability_bounded", "status": "placeholder", "note": "PLACEHOLDER: muP LR-sweep survival fraction, pre-bounded [0,1]" }
+        "org.g8.mup_lr_stability": { "kind": "stability_bounded", "status": "placeholder", "note": "PLACEHOLDER: 1/(1+|log2 best_lr_wide/best_lr_base|); fail-closed 0.0 when µP sweep runs but diverges/fails (never omit after a real sweep)" }
       }
     }
   },

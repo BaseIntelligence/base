@@ -269,6 +269,12 @@ Zone A `org.*` metrics):
 | G7 | inference efficiency (TTFT/TPOT/throughput, state card, joules/token) | 0.075 |
 | G8 | training stability + µP LR-transfer | 0.05 |
 
+**G8 `org.g8.mup_lr_stability`.** Rollup of the µP width×LR micro-sweep:
+`1/(1+|log2(best_lr_wide/best_lr_base)|)` when the sweep converges; **0.0
+fail-closed** when the sweep path runs but diverges / build fails / width
+knob unsupported / budget cuts it short (so the G8 composite always sees
+the key after a real sweep). Tiny-caps test skips omit the key.
+
 **G5 scored keys (recipe ≥ 1.4.0).** The battery is an evaluation of
 **pretrained base LMs** — completion / few-shot base prompts, short EM or
 choice logprob only. No instruction-tuning, chat templates, free-form

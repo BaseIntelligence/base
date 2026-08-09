@@ -17,7 +17,8 @@ reconcile with the canonical `org.*` keys of the pre-registered anchor set
 (`crates/prism-recipe/anchors/v0.json` — the Rust anchor definitions are
 the authority). A metric that was never measured is simply ABSENT (the
 composite then records a `missing_metric` gate failure) — nothing is
-fabricated.
+fabricated, except fail-closed floors that *are* measurements (e.g.
+`org.g8.mup_lr_stability = 0.0` when the µP sweep ran and diverged).
 
 Cluster values come from the battery's per-item side channel
 (`ItemRecorder`): cluster = template/variant id, the unit of
@@ -31,6 +32,8 @@ private assets exist, so each pair is degenerate (gap 0 — the run is its
 own mirror); in the private tier both families are scored for real.
 G5 natural slices append pairs via `natural_docs.mirror_pairs`.
 """
+
+import math
 
 from prismlib import LN2
 
@@ -211,10 +214,16 @@ def flatten_metrics(battery_groups, items=None):
         spikes = g8.get("g8.spikes.per_1k_steps") or 0.0
         score = (1.0 - max(nan_fracs)) / (1.0 + max(0.0, spikes))
         out["org.g8.loss_spike_score"] = max(0.0, min(1.0, score))
-    # µP LR-transfer stability: 1/(1+|log2 ratio|) — 1.0 at perfect
-    # transfer, decaying toward 0 as the best LR drifts across widths.
-    # Only when the sweep actually ran (stub stays absent).
-    if g8.get("g8.mup.stub") == 0.0:
+    # µP LR-transfer stability (anchors/v0.json org.g8.mup_lr_stability):
+    # - g8.mup.stability present → use it (success path or fail-closed 0.0)
+    # - else legacy: stub==0 + lr_ratio_log2_abs → 1/(1+|ratio|)
+    # Tiny-caps skips omit the key (sweep never entered). A diverged/
+    # failed sweep MUST emit 0.0 so the G8 composite stays complete.
+    if "g8.mup.stability" in g8:
+        stab = g8.get("g8.mup.stability")
+        if isinstance(stab, (int, float)) and math.isfinite(stab):
+            out["org.g8.mup_lr_stability"] = max(0.0, min(1.0, float(stab)))
+    elif g8.get("g8.mup.stub") == 0.0:
         ratio = g8.get("g8.mup.lr_ratio_log2_abs")
         if ratio is not None:
             out["org.g8.mup_lr_stability"] = 1.0 / (1.0 + max(0.0, ratio))

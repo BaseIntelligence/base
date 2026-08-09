@@ -8,9 +8,14 @@ fresh 1× and 4×-width builds of the miner's architecture (via the
 `prism_width_multiplier` ctx knob, documented for miners) trained for a
 handful of steps at 3 LRs each on the harness micro stream; the metric
 is |log2(best_lr_wide / best_lr_base)| — 0 means perfect LR transfer.
-Skipped under tiny test caps or when the architecture ignores the width
-knob → explicit stub keys with a machine-readable reason (never an
-error, never silent).
+
+Semantics for `org.g8.mup_lr_stability` (via rollup):
+- sweep succeeds → `1/(1+|log2 ratio|)` in [0, 1]
+- sweep **ran** but diverged / build failed / width unsupported / budget →
+  **0.0** (fail-closed floor; composite always receives the org key)
+- tiny_caps skip (tests) → stub only; org key omitted
+
+Never silent-omit after a real sweep attempt (that made G8 incomplete).
 """
 
 import math
@@ -161,7 +166,11 @@ def run(model, ctx):
     if ratio is None:
         out["g8.mup.stub"] = 1.0
         out[f"g8.mup.stub_reason_{reason}"] = 1.0
+        # Fail-closed floor signal for rollup → org.g8.mup_lr_stability = 0.0
+        # when the sweep path was entered (not a tiny_caps skip).
+        out["g8.mup.stability"] = 0.0
     else:
         out["g8.mup.stub"] = 0.0
         common.emit(out, "g8.mup.lr_ratio_log2_abs", ratio)
+        out["g8.mup.stability"] = 1.0 / (1.0 + max(0.0, ratio))
     return out
