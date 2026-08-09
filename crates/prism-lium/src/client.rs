@@ -968,6 +968,11 @@ impl EvalJobBackend for LiumClient {
                 Err(e) => {
                     last_err = e.to_string();
                     self.cleanup_after_rent(pod_id.as_deref()).await;
+                    // Lium allows ~3 requests / 5s; rapid candidate walks
+                    // otherwise burn the budget and leave orphan PENDING pods.
+                    if last_err.contains("429") || last_err.to_ascii_lowercase().contains("rate") {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
                 }
             }
         }
