@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use base64::Engine;
+use prism_store::{Stage, SubmissionState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -315,6 +316,48 @@ pub fn submission_id(req: &SubmissionRequest) -> SubmissionId {
         h.update(req.training_py.as_bytes());
     }
     hex::encode(h.finalize())
+}
+
+/// The `queued` row for an accepted submission.
+///
+/// `miner_coldkey` comes from the caller's live metagraph snapshot (`None`
+/// off-chain), so quota / corpus dedup can key on the owner rather than a
+/// rotatable hotkey.
+#[must_use]
+pub fn queued_row(
+    req: &SubmissionRequest,
+    id: SubmissionId,
+    miner_coldkey: Option<String>,
+    tree_blob: Option<Vec<u8>>,
+    epoch: u64,
+    netuid: u16,
+    now_ms: u64,
+) -> SubmissionState {
+    SubmissionState {
+        id,
+        miner_hotkey: req.miner_hotkey.trim().to_owned(),
+        miner_coldkey,
+        epoch,
+        netuid,
+        status: Stage::Queued,
+        architecture_py: req.architecture_py.clone(),
+        training_py: req.training_py.clone(),
+        tree_blob,
+        label: req.label.clone(),
+        pod_id: None,
+        pod_provider: None,
+        receipt: None,
+        metrics_json: None,
+        bpb: None,
+        arch_id: req.arch_id.clone(),
+        review: None,
+        similarity: None,
+        final_score: None,
+        retry_count: 0,
+        error_detail: None,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+    }
 }
 
 /// Fixture request for tests (contract-conformant incl. telemetry hooks).

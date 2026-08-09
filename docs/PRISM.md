@@ -367,7 +367,8 @@ for the bpb score (coherence gate, never a grader).
 | `prism-emit` | Epoch-close D24 leaf emission engine (outbox batching, exactly-once cursor) |
 | `prism-zoneb` | Zone B contract types (envelope, metric kinds, verdicts) + validation lattice (`validate`) — v3 |
 | `prism-eval-store` | `EvalStore` memory/Postgres impls + composite finalization glue — v3 |
-| `prism-attribution` | `POST /v1/submissions/{id}/attribution` planner route (2×2 run plans as JSON) — v3; split for the per-crate LOC cap |
+| `prism-intake` | Shared HTTP intake front-end (body parse, arch materialization, metagraph membership, error envelope) + advisory `POST /v1/submissions/precheck`; split for the per-crate LOC cap |
+| `prism-attribution` | v3 routes split for the per-crate LOC cap: `POST /v1/submissions/{id}/attribution` planner (2×2 run plans as JSON), `POST .../zone-b` intake, and the read-only `GET .../metrics`, `/v1/anchors`, `/v1/preregistration` |
 | `prism-challenge` | API surface, orchestrator, scoring v2 + v3 finalize wiring, emitter loop, gateway client |
 | `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection, `PRISM_SCORING_MODE`) |
 

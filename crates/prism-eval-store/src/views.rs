@@ -1,15 +1,97 @@
-//! API JSON views over eval records (additive shapes; Zone B is always
-//! labelled participant-reported) plus the cohort projection used by the
-//! Zone B validators.
+//! API JSON views over submission and eval records (additive shapes; Zone B
+//! is always labelled participant-reported) plus the cohort projection used
+//! by the Zone B validators.
 
 use std::collections::BTreeMap;
 
 use prism_store::eval::{
-    AnchorSetRecord, EvalGroupRecord, EvalMetricRecord, EvalRunRecord, MetricReportRecord,
-    MirrorPairRecord, PreregRecord,
+    AnchorSetRecord, EvalGroupRecord, EvalMetricRecord, EvalRunRecord, EvalStore,
+    MetricReportRecord, MirrorPairRecord, PreregRecord,
 };
+use prism_store::{FinalScore, SubmissionState};
 use prism_zoneb::{series_hash, CohortMetric, MetricKind, Verdict, ZoneBMetric};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+/// `GET /v1/submissions` row: identity, stage, and the final verdict.
+#[must_use]
+pub fn list_view(r: &SubmissionState) -> Value {
+    json!({
+        "id": r.id,
+        "miner_hotkey": r.miner_hotkey,
+        "epoch": r.epoch,
+        "status": r.status.as_str(),
+        "label": r.label,
+        "bpb": r.bpb,
+        "arch_id": r.arch_id,
+        "n_params": r.n_params(),
+        "score": r.final_score.as_ref().map(|f| match f {
+            FinalScore::Score(v) => json!({"kind":"score","value":v}),
+            FinalScore::NoScore(c) => json!({"kind":"no_score","reason":c}),
+        }),
+        "created_at_ms": r.created_at_ms,
+        "updated_at_ms": r.updated_at_ms,
+    })
+}
+
+/// `GET /v1/submissions/{id}` `submission` field: [`list_view`] plus source
+/// digests, pod provenance, receipt, metrics, and review verdicts.
+#[must_use]
+pub fn detail_view(r: &SubmissionState) -> Value {
+    let mut v = list_view(r);
+    if let Value::Object(m) = &mut v {
+        m.insert(
+            "architecture_sha256".into(),
+            json!(sha256_hex(&r.architecture_py)),
+        );
+        m.insert("training_sha256".into(), json!(sha256_hex(&r.training_py)));
+        m.insert("pod_id".into(), json!(r.pod_id));
+        m.insert("pod_provider".into(), json!(r.pod_provider));
+        m.insert(
+            "receipt".into(),
+            r.receipt.as_ref().map_or(Value::Null, |x| json!(x)),
+        );
+        m.insert("metrics".into(), json!(r.metrics_json));
+        m.insert(
+            "review".into(),
+            r.review.as_ref().map_or(Value::Null, |x| {
+                json!({
+                    "quality_score": x.quality_score,
+                    "issues": x.issues,
+                    "prompt_version": x.prompt_version,
+                })
+            }),
+        );
+        m.insert(
+            "similarity".into(),
+            r.similarity.as_ref().map_or(Value::Null, |x| {
+                json!({
+                    "kind": format!("{:?}", x.kind),
+                    "score": x.score,
+                    "closest": x.closest,
+                    "evidence": x.evidence,
+                    "prompt_version": x.prompt_version,
+                })
+            }),
+        );
+        m.insert("error_detail".into(), json!(r.error_detail));
+    }
+    v
+}
+
+/// The `eval` field for the detail view: the stored composite outcome + run
+/// provenance, `null` when the run has no finalized eval (v2 path).
+pub async fn eval_json(eval: &dyn EvalStore, id: &str) -> Value {
+    let Ok(Some(run)) = eval.eval_run(id).await else {
+        return Value::Null;
+    };
+    let groups = eval.eval_groups(&run.run_id).await.unwrap_or_default();
+    eval_detail(&run, &groups)
+}
+
+fn sha256_hex(s: &str) -> String {
+    hex::encode(Sha256::digest(s.as_bytes()))
+}
 
 /// `GET /v1/submissions/{id}` `eval` field: the stored `CompositeOutcome`
 /// blob plus run provenance, with groups projected from the normalized

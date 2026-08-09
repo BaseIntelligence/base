@@ -23,6 +23,7 @@ prism-attribution = { path = "../prism-attribution" }
 prism-challenge-task = { path = "../prism-challenge-task" }
 prism-emit = { path = "../prism-emit" }
 prism-eval-store = { path = "../prism-eval-store" }
+prism-intake = { path = "../prism-intake" }
 prism-lium = { path = "../prism-lium" }
 prism-pipeline = { path = "../prism-pipeline" }
 prism-recipe = { path = "../prism-recipe" }

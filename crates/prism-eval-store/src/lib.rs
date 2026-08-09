@@ -27,4 +27,7 @@ pub use finalize::{
     FinalizeError,
 };
 pub use memory::MemoryEvalStore;
-pub use views::{anchors_view, eval_detail, prepare_cohort, prereg_view, zone_a_view, zone_b_view};
+pub use views::{
+    anchors_view, detail_view, eval_detail, eval_json, list_view, prepare_cohort, prereg_view,
+    zone_a_view, zone_b_view,
+};

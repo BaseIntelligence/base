@@ -1,0 +1,19 @@
+[package]
+name = "prism-intake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+bytes = "1"
+prism-pipeline = { path = "../prism-pipeline" }
+prism-recipe = { path = "../prism-recipe" }
+prism-store = { path = "../prism-store" }
+serde_json = "1"
+submission-gating = { path = "../submission-gating" }
+
+[lints]
+workspace = true

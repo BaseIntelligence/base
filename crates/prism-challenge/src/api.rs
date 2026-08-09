@@ -36,14 +36,14 @@ use submission_gating::{GatingState, GatingStore, MetagraphCache};
 use prism_recipe::{BASELINE_ARCHITECTURE_PY, BASELINE_TRAINING_PY};
 
 use crate::CHALLENGE_ID;
-use prism_eval_store::{anchors_view, eval_detail, prereg_view, zone_a_view, zone_b_view};
-use prism_pipeline::{
-    ephemeral_candidate, evaluate_copy_precheck, precheck_json, precheck_quota_exceeded_json,
-    precheck_skipped, quota_identity, quota_view, utc_day, SubmissionError, SubmissionRequest,
-    PRECHECK_DAILY_LIMIT,
+use prism_eval_store::{detail_view, eval_json, list_view};
+use prism_intake::{
+    coldkey_of, json_err, map_submission_err, materialize_arch, metagraph_uid, now_ms,
+    parse_submission_body,
 };
+use prism_pipeline::SubmissionRequest;
 use prism_store::eval::EvalStore;
-use prism_store::{FinalScore, PrismStore, Stage, StoreError, SubmissionState};
+use prism_store::{PrismStore, Stage, StoreError, SubmissionState};
 
 /// Shared HTTP app state.
 #[derive(Debug)]
@@ -72,21 +72,38 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/submissions", post(post_submission))
-        .route("/v1/submissions/precheck", post(post_precheck))
+        // Advisory copy-gate: shares the intake front-end but writes no row,
+        // so it lives in `prism-intake` with its own narrow state.
+        .route(
+            "/v1/submissions/precheck",
+            prism_intake::precheck_route(Arc::clone(&state.store), state.metagraph.clone()),
+        )
         .route("/v1/submissions", get(list_submissions))
         .route("/v1/submissions/{id}", get(get_submission))
         .route("/v1/submissions/{id}/events", get(get_events))
-        .route("/v1/submissions/{id}/metrics", get(get_submission_metrics))
-        // Attribution planner (2×2 matrix run plans): split into the
-        // `prism-attribution` crate for the per-crate LOC cap; the route
-        // carries its own state (the submission store).
+        // Attribution planner (2×2 matrix run plans) and the v3 read-only
+        // eval surface: split into the `prism-attribution` crate for the
+        // per-crate LOC cap; each route carries its own narrow state.
+        .route(
+            "/v1/submissions/{id}/metrics",
+            prism_attribution::metrics_route(
+                Arc::clone(&state.store),
+                Arc::clone(&state.eval_store),
+            ),
+        )
         .route(
             "/v1/submissions/{id}/attribution",
             prism_attribution::attribution_route(Arc::clone(&state.store)),
         )
         .route("/v1/submissions/{id}/retry", post(post_retry))
-        .route("/v1/anchors", get(get_anchors))
-        .route("/v1/preregistration", get(get_preregistration))
+        .route(
+            "/v1/anchors",
+            prism_attribution::anchors_route(Arc::clone(&state.eval_store)),
+        )
+        .route(
+            "/v1/preregistration",
+            prism_attribution::prereg_route(Arc::clone(&state.eval_store)),
+        )
         .route("/v1/status", get(get_status))
         .route("/v1/jobs", get(get_jobs))
         .route("/v1/recipe", get(get_recipe))
@@ -102,66 +119,6 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-fn parse_submission_body(
-    headers: &axum::http::HeaderMap,
-    body: &[u8],
-) -> Result<SubmissionRequest, String> {
-    let ct = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if ct.contains("application/zip") || ct.contains("application/x-zip-compressed") {
-        let hk = headers
-            .get("x-miner-hotkey")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| "X-Miner-Hotkey required for application/zip".to_owned())?;
-        let arch_id = headers
-            .get("x-prism-arch-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        let (architecture_py, training_py) = if arch_id.is_some() {
-            (
-                String::new(),
-                prism_recipe::training_from_zip(body).map_err(|e| e.to_string())?,
-            )
-        } else {
-            prism_recipe::sources_from_zip(body).map_err(|e| e.to_string())?
-        };
-        return Ok(SubmissionRequest {
-            miner_hotkey: hk.to_owned(),
-            architecture_py,
-            training_py,
-            zip_base64: None,
-            arch_id,
-            label: None,
-        });
-    }
-    serde_json::from_slice(body).map_err(|e| format!("invalid_json: {e}"))
-}
-
-/// Metagraph membership only (fail closed when configured but empty).
-#[allow(clippy::result_large_err)] // mirrors other intake helpers returning `Response`
-fn metagraph_uid(st: &AppState, hotkey: &str) -> Result<Option<u32>, Response> {
-    let Some(cache) = &st.metagraph else {
-        return Ok(None);
-    };
-    match cache.snapshot() {
-        Some(view) => match view.uid_of_hex(hotkey) {
-            Some(u) => Ok(Some(u)),
-            None => Err(json_err(
-                StatusCode::FORBIDDEN,
-                "hotkey_not_in_metagraph",
-                "miner hotkey is not registered on this subnet",
-            )),
-        },
-        None => Err(json_err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "metagraph_unavailable",
-            "metagraph snapshot not ready; retry shortly",
-        )),
-    }
-}
-
 /// Intake gates: metagraph membership + one accepted submission per
 /// `(challenge, hotkey)`. Returns the metagraph uid on pass.
 async fn intake_gates(
@@ -169,7 +126,7 @@ async fn intake_gates(
     hotkey: &str,
     challenge: &str,
 ) -> Result<Option<u32>, Response> {
-    let uid = metagraph_uid(st, hotkey)?;
+    let uid = metagraph_uid(st.metagraph.as_deref(), hotkey)?;
     gate_one_max(st, hotkey, challenge).await?;
     Ok(uid)
 }
@@ -206,148 +163,24 @@ async fn gate_one_max(
     Ok(None)
 }
 
-/// Materialize a training-only request's architecture from the registry
-/// (`Ok(())` for architecture submissions — nothing to pull).
-async fn materialize_arch(st: &AppState, req: &mut SubmissionRequest) -> Result<(), Response> {
-    let Some(arch_id) = req
-        .arch_id
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-    else {
-        return Ok(());
-    };
-    match st.store.get_arch(&arch_id).await {
-        Ok(Some(rec)) => {
-            req.architecture_py = rec.architecture_py;
-            req.arch_id = Some(arch_id);
-            Ok(())
-        }
-        Ok(None) => Err(json_err(
-            StatusCode::NOT_FOUND,
-            "unknown_arch",
-            "arch_id is not in the published architecture registry",
-        )),
-        Err(e) => Err(json_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store",
-            &e.to_string(),
-        )),
-    }
-}
-
-/// `POST /v1/submissions/precheck` — advisory copy-gate (same logic as
-/// intake), no submission row, no 1-max gate, no Lium. Quota: 3/coldkey/UTC day.
-async fn post_precheck(
-    State(st): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-    body: bytes::Bytes,
-) -> Response {
-    let mut req = match parse_submission_body(&headers, body.as_ref()) {
-        Ok(r) => r,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, "invalid_submission", &e),
-    };
-    if let Err(e) = prism_pipeline::expand_zip_fields(&mut req) {
-        return json_err(StatusCode::BAD_REQUEST, "zip", &e);
-    }
-    if let Err(e) = prism_pipeline::validate(&req) {
-        return map_submission_err(&e);
-    }
-    if let Err(resp) = materialize_arch(&st, &mut req).await {
-        return resp;
-    }
-    if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
-        return json_err(StatusCode::BAD_REQUEST, "contract", &e.to_string());
-    }
-    req.miner_hotkey = req.miner_hotkey.trim().to_ascii_lowercase();
-    if let Err(resp) = metagraph_uid(&st, &req.miner_hotkey) {
-        return resp;
-    }
-    let miner_coldkey = st
-        .metagraph
-        .as_ref()
-        .and_then(|c| c.snapshot())
-        .and_then(|v| v.coldkey_hex_of(&req.miner_hotkey));
-    let (identity, identity_kind) = quota_identity(&req.miner_hotkey, miner_coldkey.as_deref());
-    let day = utc_day(now_ms() / 1000);
-    let used = match st
-        .store
-        .precheck_quota_try_consume(&identity, &day, PRECHECK_DAILY_LIMIT)
-        .await
-    {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            let used = st
-                .store
-                .precheck_quota_get(&identity, &day)
-                .await
-                .unwrap_or(PRECHECK_DAILY_LIMIT);
-            let q = quota_view(day, used, identity_kind);
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(precheck_quota_exceeded_json(&q)),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string());
-        }
-    };
-    let quota = quota_view(day, used, identity_kind);
-    if req.arch_id.is_some() {
-        return Json(precheck_json(&precheck_skipped(quota))).into_response();
-    }
-    let candidate = ephemeral_candidate(
-        &req.miner_hotkey,
-        miner_coldkey,
-        &req.architecture_py,
-        now_ms(),
-    );
-    let recent = st.store.list_champions(64).await.unwrap_or_default();
-    let result = evaluate_copy_precheck(&candidate, &recent, quota);
-    Json(precheck_json(&result)).into_response()
-}
-
-/// Queued row for an accepted submission. The coldkey comes from the live
-/// metagraph snapshot (None off-chain), so quota / corpus dedup can key on the
-/// owner rather than a rotatable hotkey.
+/// [`prism_pipeline::queued_row`] with the coldkey resolved from the live
+/// metagraph snapshot (`None` off-chain).
 fn queued_row(
     st: &AppState,
     req: &SubmissionRequest,
     id: String,
     tree_blob: Option<Vec<u8>>,
 ) -> SubmissionState {
-    let miner_hotkey = req.miner_hotkey.trim().to_owned();
-    let miner_coldkey = st
-        .metagraph
-        .as_ref()
-        .and_then(|c| c.snapshot())
-        .and_then(|v| v.coldkey_hex_of(&miner_hotkey));
-    SubmissionState {
+    let coldkey = coldkey_of(st.metagraph.as_deref(), req.miner_hotkey.trim());
+    prism_pipeline::queued_row(
+        req,
         id,
-        miner_hotkey,
-        miner_coldkey,
-        epoch: st.epoch.load(std::sync::atomic::Ordering::Relaxed),
-        netuid: st.netuid,
-        status: Stage::Queued,
-        architecture_py: req.architecture_py.clone(),
-        training_py: req.training_py.clone(),
+        coldkey,
         tree_blob,
-        label: req.label.clone(),
-        pod_id: None,
-        pod_provider: None,
-        receipt: None,
-        metrics_json: None,
-        bpb: None,
-        arch_id: req.arch_id.clone(),
-        review: None,
-        similarity: None,
-        final_score: None,
-        retry_count: 0,
-        error_detail: None,
-        created_at_ms: now_ms(),
-        updated_at_ms: now_ms(),
-    }
+        st.epoch.load(std::sync::atomic::Ordering::Relaxed),
+        st.netuid,
+        now_ms(),
+    )
 }
 
 /// POST body: JSON sources, JSON+`zip_base64`, or raw `application/zip`
@@ -371,7 +204,7 @@ async fn post_submission(
     // source is rejected by validate above, so the registry is the only
     // source of truth — this is what makes the pre-LLM copy gate safe to
     // skip on these rows).
-    if let Err(resp) = materialize_arch(&st, &mut req).await {
+    if let Err(resp) = materialize_arch(st.store.as_ref(), &mut req).await {
         return resp;
     }
     if let Err(e) = prism_recipe::check_contract(&req.architecture_py, &req.training_py) {
@@ -463,7 +296,7 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
             let events = st.store.events(&id).await.unwrap_or_default();
             let mut detail = detail_view(&row);
             if let Value::Object(m) = &mut detail {
-                m.insert("eval".into(), eval_json(&st, &id).await);
+                m.insert("eval".into(), eval_json(st.eval_store.as_ref(), &id).await);
             }
             Json(json!({
                 "submission": detail,
@@ -472,85 +305,6 @@ async fn get_submission(State(st): State<Arc<AppState>>, Path(id): Path<String>)
             .into_response()
         }
         Ok(None) => json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    }
-}
-
-/// The `eval` field for the detail view: the stored composite outcome +
-/// run provenance, `null` when the run has no finalized eval (v2 path).
-async fn eval_json(st: &AppState, id: &str) -> Value {
-    let Ok(Some(run)) = st.eval_store.eval_run(id).await else {
-        return Value::Null;
-    };
-    let groups = st
-        .eval_store
-        .eval_groups(&run.run_id)
-        .await
-        .unwrap_or_default();
-    eval_detail(&run, &groups)
-}
-
-#[derive(Debug, Deserialize)]
-struct MetricsQuery {
-    /// `a` (organizer-measured `org.*` rows) | `b` (participant-reported
-    /// chain); default `a`.
-    zone: Option<String>,
-}
-
-/// `GET /v1/submissions/{id}/metrics?zone=a|b` — raw metric rows. Zone B is
-/// always labelled participant-reported and never feeds scoring.
-async fn get_submission_metrics(
-    State(st): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Query(q): Query<MetricsQuery>,
-) -> Response {
-    match st.store.get(&id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return json_err(StatusCode::NOT_FOUND, "not_found", "submission not found"),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    }
-    match q.zone.as_deref().unwrap_or("a") {
-        "a" => {
-            let run = st.eval_store.eval_run(&id).await;
-            let (metrics, mirrors) = match run {
-                Ok(Some(r)) => (
-                    st.eval_store
-                        .eval_metrics(&r.run_id)
-                        .await
-                        .unwrap_or_default(),
-                    st.eval_store
-                        .eval_mirrors(&r.run_id)
-                        .await
-                        .unwrap_or_default(),
-                ),
-                _ => (Vec::new(), Vec::new()),
-            };
-            Json(zone_a_view(&metrics, &mirrors)).into_response()
-        }
-        "b" => match st.eval_store.metric_reports(&id).await {
-            Ok(reports) => Json(zone_b_view(&reports)).into_response(),
-            Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-        },
-        other => json_err(
-            StatusCode::BAD_REQUEST,
-            "invalid_zone",
-            &format!("zone must be 'a' or 'b', got '{other}'"),
-        ),
-    }
-}
-
-/// `GET /v1/anchors` — every known anchor set with status.
-async fn get_anchors(State(st): State<Arc<AppState>>) -> Response {
-    match st.eval_store.anchor_sets().await {
-        Ok(sets) => Json(anchors_view(&sets)).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
-    }
-}
-
-/// `GET /v1/preregistration` — anchor pre-registration hash-commits.
-async fn get_preregistration(State(st): State<Arc<AppState>>) -> Response {
-    match st.eval_store.preregistrations().await {
-        Ok(entries) => Json(prereg_view(&entries)).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "store", &e.to_string()),
     }
 }
@@ -686,93 +440,6 @@ pub fn record_epoch(st: &AppState, epoch: u64) {
     st.epoch.store(epoch, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn list_view(r: &SubmissionState) -> Value {
-    json!({
-        "id": r.id,
-        "miner_hotkey": r.miner_hotkey,
-        "epoch": r.epoch,
-        "status": r.status.as_str(),
-        "label": r.label,
-        "bpb": r.bpb,
-        "arch_id": r.arch_id,
-        "n_params": r.n_params(),
-        "score": r.final_score.as_ref().map(|f| match f {
-            FinalScore::Score(v) => json!({"kind":"score","value":v}),
-            FinalScore::NoScore(c) => json!({"kind":"no_score","reason":c}),
-        }),
-        "created_at_ms": r.created_at_ms,
-        "updated_at_ms": r.updated_at_ms,
-    })
-}
-
-fn detail_view(r: &SubmissionState) -> Value {
-    let mut v = list_view(r);
-    if let Value::Object(m) = &mut v {
-        m.insert(
-            "architecture_sha256".into(),
-            json!(sha256_hex(&r.architecture_py)),
-        );
-        m.insert("training_sha256".into(), json!(sha256_hex(&r.training_py)));
-        m.insert("pod_id".into(), json!(r.pod_id));
-        m.insert("pod_provider".into(), json!(r.pod_provider));
-        m.insert(
-            "receipt".into(),
-            r.receipt.as_ref().map_or(Value::Null, |x| json!(x)),
-        );
-        m.insert("metrics".into(), json!(r.metrics_json));
-        m.insert(
-            "review".into(),
-            r.review.as_ref().map_or(Value::Null, |x| {
-                json!({
-                    "quality_score": x.quality_score,
-                    "issues": x.issues,
-                    "prompt_version": x.prompt_version,
-                })
-            }),
-        );
-        m.insert(
-            "similarity".into(),
-            r.similarity.as_ref().map_or(Value::Null, |x| {
-                json!({
-                    "kind": format!("{:?}", x.kind),
-                    "score": x.score,
-                    "closest": x.closest,
-                    "evidence": x.evidence,
-                    "prompt_version": x.prompt_version,
-                })
-            }),
-        );
-        m.insert("error_detail".into(), json!(r.error_detail));
-    }
-    v
-}
-
-fn sha256_hex(s: &str) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(s.as_bytes()))
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
-fn map_submission_err(err: &SubmissionError) -> Response {
-    json_err(StatusCode::BAD_REQUEST, "invalid_request", &err.to_string())
-}
-
-fn json_err(status: StatusCode, code: &str, message: &str) -> Response {
-    (
-        status,
-        Json(json!({
-            "error": message,
-            "code": code,
-        })),
-    )
-        .into_response()
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -781,7 +448,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
-    use prism_store::{MemoryPrismStore, StatePatch};
+    use prism_store::{FinalScore, MemoryPrismStore, StatePatch};
     use tower::ServiceExt;
 
     fn state() -> Arc<AppState> {

@@ -33,6 +33,8 @@ use prism_store::eval::EvalStore;
 use prism_store::PrismStore;
 use prism_zoneb::{prepare_report, GroundTruth, IngestReject, ZoneBEnvelope};
 
+use crate::json_err;
+
 /// Zone B intake state: the submission store (existence + ground truth)
 /// and the eval store (report chain).
 #[derive(Debug, Clone)]
@@ -122,17 +124,6 @@ async fn post_zone_b(
             "report_hash": prepared.report_hash,
             "verdict": prepared.verdict,
             "reasons": prepared.reasons,
-        })),
-    )
-        .into_response()
-}
-
-fn json_err(status: StatusCode, code: &str, message: &str) -> Response {
-    (
-        status,
-        Json(json!({
-            "error": message,
-            "code": code,
         })),
     )
         .into_response()

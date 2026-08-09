@@ -3771,6 +3771,7 @@ dependencies = [
  "prism-challenge-task",
  "prism-emit",
  "prism-eval-store",
+ "prism-intake",
  "prism-lium",
  "prism-pipeline",
  "prism-recipe",
@@ -3856,6 +3857,19 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "prism-intake"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "prism-pipeline",
+ "prism-recipe",
+ "prism-store",
+ "serde_json",
+ "submission-gating",
 ]
 
 [[package]]

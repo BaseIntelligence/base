@@ -1,5 +1,5 @@
-//! `prism-attribution` — two `POST /v1/submissions/{id}/*` routes split out
-//! of `prism-challenge` for the per-crate non-test LOC cap:
+//! `prism-attribution` — the v3 routes split out of `prism-challenge` for
+//! the per-crate non-test LOC cap:
 //!
 //! - `POST /v1/submissions/{id}/attribution` — planner for the 2×2
 //!   attribution matrix off-diagonal runs (submission arch × reference
@@ -7,6 +7,9 @@
 //!   `prism_recipe::attribution`.
 //! - `POST /v1/submissions/{id}/zone-b` — external Zone B miner self-report
 //!   intake (see [`zone_b`]).
+//! - `GET /v1/submissions/{id}/metrics`, `GET /v1/anchors`,
+//!   `GET /v1/preregistration` — the read-only eval surface (see
+//!   [`eval_views`]).
 //!
 //! Documented choice (E7): the [`prism_recipe::AttributionRun`] plans are
 //! RETURNED as JSON, not enqueued — attribution runs are operator-triggered
@@ -24,8 +27,10 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
 
+mod eval_views;
 mod zone_b;
 
+pub use eval_views::{anchors_route, eval_views_router, metrics_route, prereg_route, MetricsState};
 pub use zone_b::{zone_b_route, zone_b_router, ZoneBState};
 
 use std::sync::Arc;
