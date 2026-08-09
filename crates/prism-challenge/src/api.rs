@@ -90,7 +90,9 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/v1/admin/artifacts/{submission_id}/receive",
-            prism_artifacts::artifact_receive_route(),
+            prism_artifacts::artifact_receive_route(prism_artifacts::ArtifactReceiveState {
+                store: Arc::clone(&state.store),
+            }),
         )
         .route(
             "/v1/admin/artifacts/{submission_id}",

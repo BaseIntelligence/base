@@ -2,8 +2,9 @@
 //!
 //! Trust model: the Lium pod is untrusted (miner code ran there). Master
 //! **pulls** a tar over SSH, then stages through [`receive_tar_bytes`] which
-//! enforces size caps, path-traversal refusal, filename allowlist, and a
-//! hashed [`ArtifactReceipt`]. Top-model publish must call [`verify_parked`].
+//! enforces the BF16×1.5 size budget ([`checkpoint_byte_budget`]),
+//! path-traversal refusal, filename allowlist, and a hashed
+//! [`ArtifactReceipt`]. Top-model publish must call [`verify_parked`].
 //!
 //! Operators may re-stage via `POST /v1/admin/artifacts/{id}/receive` (admin
 //! bearer, fail-closed) — never an open upload from the pod.
@@ -15,11 +16,12 @@
 mod http;
 mod receive;
 
-pub use http::{artifact_get_route, artifact_receive_route};
+pub use http::{artifact_get_route, artifact_receive_route, ArtifactReceiveState};
 pub use receive::{
-    receive_bytes, receive_tar_bytes, validate_submission_id, verify_parked, write_sim_checkpoint,
-    ArtifactReceipt, ReceiveSource, ALLOWED_FILENAMES, MAX_CHECKPOINT_BYTES, POD_WORKDIR,
-    RECEIPT_FILE,
+    checkpoint_byte_budget, receive_bytes, receive_tar_bytes, resolve_checkpoint_budget,
+    validate_submission_id, verify_parked, write_sim_checkpoint, ArtifactReceipt, ReceiveSource,
+    ALLOWED_FILENAMES, BF16_BYTES_PER_PARAM, CHECKPOINT_OVERHEAD_DEN, CHECKPOINT_OVERHEAD_NUM,
+    MAX_CHECKPOINT_BYTES, POD_WORKDIR, RECEIPT_FILE, RECIPE_MAX_PARAMS,
 };
 
 use std::path::PathBuf;

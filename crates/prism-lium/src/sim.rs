@@ -176,6 +176,7 @@ impl EvalJobBackend for SimLiumBackend {
         _instance_id: &str,
         dest_dir: &std::path::Path,
         seed: &[u8],
+        _n_params: Option<u64>,
     ) -> Result<std::path::PathBuf, LiumError> {
         prism_artifacts::write_sim_checkpoint(dest_dir, seed)
     }

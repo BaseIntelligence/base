@@ -1,7 +1,7 @@
 //! SSH harvest of trained checkpoints (pod → master).
 //!
 //! Pull is master-initiated; staging goes through `prism_artifacts::receive_tar_bytes`
-//! (size cap, tar member allowlist, path-traversal refuse, hashed receipt).
+//! (BF16×1.5 size budget, tar member allowlist, path-traversal refuse, hashed receipt).
 
 use std::path::{Path, PathBuf};
 
@@ -9,9 +9,13 @@ use tracing::info;
 
 use crate::ssh::{ssh_exec_bytes, SshTarget};
 use crate::LiumError;
-use prism_artifacts::{receive_tar_bytes, ReceiveSource, MAX_CHECKPOINT_BYTES, POD_WORKDIR};
+use prism_artifacts::{receive_tar_bytes, resolve_checkpoint_budget, ReceiveSource, POD_WORKDIR};
 
 /// SSH-tar `checkpoint.pt` (or sharded index) from the pod into `dest_dir`.
+///
+/// `n_params` should be the harness-measured count. When `None`, falls back to
+/// `prism_recipe::max_params()` (recipe ceiling × BF16 × 1.5) so older harness
+/// builds still harvest; prefer measured params when available.
 pub async fn harvest_checkpoint_ssh(
     target: &SshTarget,
     private_key: &Path,
@@ -19,7 +23,9 @@ pub async fn harvest_checkpoint_ssh(
     submission_id: &str,
     ssh_attempts: u32,
     ssh_retry_secs: u64,
+    n_params: Option<u64>,
 ) -> Result<PathBuf, LiumError> {
+    let (max_bytes, used_params) = resolve_checkpoint_budget(n_params, prism_recipe::max_params())?;
     let remote = format!(
         "set -e; cd {POD_WORKDIR}; \
          if [ -f checkpoint.pt ]; then tar -c checkpoint.pt; \
@@ -35,15 +41,15 @@ pub async fn harvest_checkpoint_ssh(
         600,
     )
     .await?;
-    if packed.len() > MAX_CHECKPOINT_BYTES {
+    if packed.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint pack exceeds {MAX_CHECKPOINT_BYTES} bytes"
+            "checkpoint pack exceeds budget ({max_bytes} bytes; n_params={used_params} BF16×1.5)"
         )));
     }
     let sid = submission_id.to_owned();
     let dest = dest_dir.to_path_buf();
     let (primary, receipt) = tokio::task::spawn_blocking(move || {
-        receive_tar_bytes(&sid, &dest, &packed, ReceiveSource::SshHarvest)
+        receive_tar_bytes(&sid, &dest, &packed, ReceiveSource::SshHarvest, max_bytes)
     })
     .await
     .map_err(|e| LiumError::Exec(format!("receive join: {e}")))??;
@@ -52,6 +58,8 @@ pub async fn harvest_checkpoint_ssh(
         bytes = receipt.bytes,
         sha = %receipt.sha256,
         source = %receipt.source,
+        n_params = used_params,
+        max_bytes,
         "secure receive: harvested prism checkpoint"
     );
     Ok(primary)

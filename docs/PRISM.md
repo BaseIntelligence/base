@@ -177,12 +177,24 @@ bpb across all scored submissions. After a successful Lium eval it
 **pulls** `checkpoint.pt` from the pod over SSH (master-initiated; the pod
 never pushes) and stages it through the secure receive hook into
 `$PRISM_ARTIFACT_DIR/<submission_id>/` **before** terminate. Staging
-fail-closes on size > 2 GiB, unexpected tar members, path traversal /
-symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256). Top-model
-publish calls `verify_parked` and refuses weights without a valid receipt.
-On a new global best (≤ best ever and < last published), it publishes
-`architecture.py` + `training.py` + `METRICS.json` + `ARTIFACT.json` + a
-`README.md` block to the public
+fail-closes on oversized packs, unexpected tar members, path traversal /
+symlinks, and writes `MANIFEST.json` + `RECEIPT.json` (sha256).
+
+**Size budget (BF16 × 1.5).** Cap = `n_params × 2 × 1.5` bytes =
+`n_params × 3` (exact integer; see `prism_artifacts::checkpoint_byte_budget`).
+Harvest uses the harness-measured `n_params` from `METRICS_JSON`; when
+missing (older harness), it falls back to `prism_recipe::max_params()`
+(350M, or `PRISM_TEST_MAX_PARAMS` in staging). Admin
+`POST /v1/admin/artifacts/{id}/receive` resolves `n_params` from the
+submission store, else requires `X-Prism-N-Params` (fail-closed if
+unknown). HTTP body ceiling is recipe-max × 3 (~1.05 GiB); the per-receive
+check is tighter when measured params are known. Oversized payloads are
+refused **before** writing.
+
+Top-model publish calls `verify_parked` and refuses weights without a
+valid receipt. On a new global best (≤ best ever and < last published), it
+publishes `architecture.py` + `training.py` + `METRICS.json` +
+`ARTIFACT.json` + a `README.md` block to the public
 [`BaseIntelligence/prism`](https://github.com/BaseIntelligence/prism) repo
 under `top-model/` via the GitHub contents API; large checkpoints upload as
 a mutable Release tag `prism-top-model`. The publication is journaled
@@ -191,7 +203,8 @@ a mutable Release tag `prism-top-model`. The publication is journaled
 absent/empty → publish no-op. With `PRISM_TOPMODEL_REQUIRE_WEIGHTS=1`
 (default), a missing/invalid receipt fails the publish (no journal).
 Operators may re-stage via `POST /v1/admin/artifacts/{id}/receive` (same
-admin Bearer; requires `X-Prism-Sha256`) — never an open pod upload.
+admin Bearer; requires `X-Prism-Sha256`; `n_params` from store or
+`X-Prism-N-Params`) — never an open pod upload.
 
 ## v3 composite scoring (versioned addition — opt-in)
 
@@ -409,7 +422,7 @@ for the bpb score (coherence gate, never a grader).
 | `POST /v1/submissions/{id}/retry` | Operator retry (Bearer `PRISM_ADMIN_TOKENS_FILE`; fail-closed 503 if unset) |
 | `POST /v1/admin/gating/{hotkey}/reset` | Operator 1-max reset (same Bearer) |
 | `POST /v1/admin/playground/complete` | Operator prompt playground: text + logprobs against parked top/specified checkpoint (same Bearer) |
-| `POST /v1/admin/artifacts/{id}/receive` | Operator re-stage checkpoint (`X-Prism-Sha256` required; optional `X-Prism-Filename`; same Bearer) |
+| `POST /v1/admin/artifacts/{id}/receive` | Operator re-stage checkpoint (`X-Prism-Sha256` required; size budget = `n_params×3` from store or `X-Prism-N-Params`; optional `X-Prism-Filename`; same Bearer) |
 | `GET /v1/admin/artifacts/{id}` | Verified receipt JSON for a parked checkpoint (same Bearer) |
 | `GET /health` | Liveness |
 

@@ -11,8 +11,72 @@ use sha2::{Digest, Sha256};
 /// Remote workdir used by the v3 harness (`PRISM_WORKDIR` default).
 pub const POD_WORKDIR: &str = "/tmp/prism_eval";
 
-/// Max packed / uploaded checkpoint bytes (fail-closed above this).
-pub const MAX_CHECKPOINT_BYTES: usize = 2 * 1024 * 1024 * 1024; // 2 GiB
+/// BF16 storage = 2 bytes/param. Secure-receive size budget is BF16 × 1.5
+/// overhead → **3 bytes/param** (`n_params * 2 * 3/2 = n_params * 3`).
+pub const BF16_BYTES_PER_PARAM: u64 = 2;
+
+/// Numerator of the 1.5× overhead factor applied on top of BF16.
+pub const CHECKPOINT_OVERHEAD_NUM: u64 = 3;
+/// Denominator of the 1.5× overhead factor (with [`CHECKPOINT_OVERHEAD_NUM`] → 3/2).
+pub const CHECKPOINT_OVERHEAD_DEN: u64 = 2;
+
+/// Recipe parameter cap (`prism_recipe::MAX_PARAMS` = 350M). Used as the
+/// absolute HTTP body ceiling and as the harvest fallback when measured
+/// `n_params` is missing (older harness). Prefer measured `n_params`.
+pub const RECIPE_MAX_PARAMS: u64 = 350_000_000;
+
+/// Absolute max packed/upload bytes = [`RECIPE_MAX_PARAMS`] × BF16 × 1.5.
+/// Per-receive budgets are tighter when measured `n_params` is known.
+pub const MAX_CHECKPOINT_BYTES: usize = 1_050_000_000; // 350_000_000 * 3
+
+const _: () = assert!(RECIPE_MAX_PARAMS * 3 == MAX_CHECKPOINT_BYTES as u64);
+
+/// Byte budget for a checkpoint given measured (or recipe-ceiling) param count.
+///
+/// Formula: `ceil(n_params * BF16_BYTES_PER_PARAM * 1.5)` = `n_params * 3`
+/// (exact integer). Rejects `n_params == 0` and u64 overflow (fail-closed).
+pub fn checkpoint_byte_budget(n_params: u64) -> Result<usize, LiumError> {
+    if n_params == 0 {
+        return Err(LiumError::Integrity(
+            "checkpoint budget: n_params must be > 0".into(),
+        ));
+    }
+    // n_params * 2 * 3/2 == n_params * 3 (exact; avoids float).
+    debug_assert_eq!(
+        BF16_BYTES_PER_PARAM * CHECKPOINT_OVERHEAD_NUM / CHECKPOINT_OVERHEAD_DEN,
+        3
+    );
+    let bytes = n_params.checked_mul(3).ok_or_else(|| {
+        LiumError::Integrity("checkpoint budget: n_params * 3 overflows u64".into())
+    })?;
+    usize::try_from(bytes)
+        .map_err(|_| LiumError::Integrity("checkpoint budget: exceeds usize".into()))
+}
+
+/// Resolve receive budget: prefer measured `n_params`, else `fallback_params`
+/// (typically [`RECIPE_MAX_PARAMS`] / `prism_recipe::max_params()`).
+pub fn resolve_checkpoint_budget(
+    n_params: Option<u64>,
+    fallback_params: u64,
+) -> Result<(usize, u64), LiumError> {
+    let params = match n_params {
+        Some(0) => {
+            return Err(LiumError::Integrity(
+                "checkpoint budget: n_params must be > 0".into(),
+            ));
+        }
+        Some(n) => n,
+        None => {
+            if fallback_params == 0 {
+                return Err(LiumError::Integrity(
+                    "checkpoint budget: n_params unknown and no fallback".into(),
+                ));
+            }
+            fallback_params
+        }
+    };
+    Ok((checkpoint_byte_budget(params)?, params))
+}
 
 /// Receipt filename written next to the checkpoint after a successful stage.
 pub const RECEIPT_FILE: &str = "RECEIPT.json";
@@ -220,15 +284,16 @@ fn finalize_park(
     dest_dir: &Path,
     submission_id: &str,
     source: ReceiveSource,
+    max_bytes: usize,
 ) -> Result<(PathBuf, ArtifactReceipt), LiumError> {
     let primary = audit_park_dir(dest_dir)?;
     let bytes = std::fs::read(&primary).map_err(|e| LiumError::Exec(format!("read: {e}")))?;
     if bytes.is_empty() {
         return Err(LiumError::Integrity("empty checkpoint".into()));
     }
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
+    if bytes.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint exceeds {MAX_CHECKPOINT_BYTES} bytes"
+            "checkpoint exceeds budget ({max_bytes} bytes; BF16×1.5)"
         )));
     }
     let sha = write_manifest_inner(&primary, &bytes)?;
@@ -250,6 +315,9 @@ fn finalize_park(
 }
 
 /// Stage raw checkpoint bytes (admin upload / single-file path).
+///
+/// `max_bytes` is the BF16×1.5 budget from [`checkpoint_byte_budget`].
+/// Oversized payloads are refused **before** writing.
 pub fn receive_bytes(
     submission_id: &str,
     dest_dir: &Path,
@@ -257,6 +325,7 @@ pub fn receive_bytes(
     bytes: &[u8],
     expected_sha256: Option<&str>,
     source: ReceiveSource,
+    max_bytes: usize,
 ) -> Result<(PathBuf, ArtifactReceipt), LiumError> {
     validate_submission_id(submission_id)?;
     refuse_member_path(filename)?;
@@ -268,9 +337,9 @@ pub fn receive_bytes(
     if bytes.is_empty() {
         return Err(LiumError::Integrity("empty upload".into()));
     }
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
+    if bytes.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "upload exceeds {MAX_CHECKPOINT_BYTES} bytes"
+            "upload exceeds budget ({max_bytes} bytes; BF16×1.5)"
         )));
     }
     let got = sha256_hex(bytes);
@@ -290,23 +359,27 @@ pub fn receive_bytes(
     std::fs::create_dir_all(dest_dir).map_err(|e| LiumError::Exec(format!("mkdir: {e}")))?;
     let primary = dest_dir.join(filename);
     std::fs::write(&primary, bytes).map_err(|e| LiumError::Exec(format!("write: {e}")))?;
-    finalize_park(dest_dir, submission_id, source)
+    finalize_park(dest_dir, submission_id, source, max_bytes)
 }
 
 /// List tar members, refuse unsafe paths, extract, audit, write receipt.
+///
+/// `max_bytes` is the BF16×1.5 budget from [`checkpoint_byte_budget`].
+/// Oversized packs are refused **before** extract/write.
 pub fn receive_tar_bytes(
     submission_id: &str,
     dest_dir: &Path,
     packed: &[u8],
     source: ReceiveSource,
+    max_bytes: usize,
 ) -> Result<(PathBuf, ArtifactReceipt), LiumError> {
     validate_submission_id(submission_id)?;
     if packed.is_empty() {
         return Err(LiumError::Integrity("empty checkpoint harvest".into()));
     }
-    if packed.len() > MAX_CHECKPOINT_BYTES {
+    if packed.len() > max_bytes {
         return Err(LiumError::Integrity(format!(
-            "checkpoint pack exceeds {MAX_CHECKPOINT_BYTES} bytes"
+            "checkpoint pack exceeds budget ({max_bytes} bytes; BF16×1.5)"
         )));
     }
     // List members first (fail-closed before extract).
@@ -373,7 +446,7 @@ pub fn receive_tar_bytes(
             String::from_utf8_lossy(&extract.stderr)
         )));
     }
-    match finalize_park(dest_dir, submission_id, source) {
+    match finalize_park(dest_dir, submission_id, source, max_bytes) {
         Ok(v) => Ok(v),
         Err(e) => {
             let _ = std::fs::remove_dir_all(dest_dir);
@@ -437,6 +510,8 @@ pub fn write_sim_checkpoint(dest_dir: &Path, seed: &[u8]) -> Result<PathBuf, Liu
     let dig = h.finalize();
     let mut body = b"PRISM_SIM_CKPT\n".to_vec();
     body.extend_from_slice(&dig);
+    // Sim stub is not a real weight tensor; budget = stub length (exact fit).
+    let max_bytes = body.len();
     let (path, _) = receive_bytes(
         submission_id,
         dest_dir,
@@ -444,6 +519,7 @@ pub fn write_sim_checkpoint(dest_dir: &Path, seed: &[u8]) -> Result<PathBuf, Liu
         &body,
         None,
         ReceiveSource::Sim,
+        max_bytes,
     )?;
     Ok(path)
 }
@@ -469,6 +545,64 @@ mod tests {
         assert!(validate_submission_id("../etc").is_err());
         assert!(validate_submission_id("a/b").is_err());
         assert!(validate_submission_id("").is_err());
+    }
+
+    #[test]
+    fn checkpoint_budget_bf16_times_1_5() {
+        // n_params * 2 * 1.5 == n_params * 3
+        assert_eq!(checkpoint_byte_budget(1).unwrap(), 3);
+        assert_eq!(checkpoint_byte_budget(10).unwrap(), 30);
+        assert_eq!(checkpoint_byte_budget(12_000_000).unwrap(), 36_000_000);
+        assert_eq!(
+            checkpoint_byte_budget(RECIPE_MAX_PARAMS).unwrap(),
+            MAX_CHECKPOINT_BYTES
+        );
+        assert!(checkpoint_byte_budget(0).is_err());
+        assert!(checkpoint_byte_budget(u64::MAX).is_err());
+        // At-cap ok, over refuse (via resolve + receive).
+        let (cap, params) = resolve_checkpoint_budget(Some(100), 0).unwrap();
+        assert_eq!(params, 100);
+        assert_eq!(cap, 300);
+        assert!(resolve_checkpoint_budget(Some(0), RECIPE_MAX_PARAMS).is_err());
+        assert!(resolve_checkpoint_budget(None, 0).is_err());
+        let (fb, p) = resolve_checkpoint_budget(None, RECIPE_MAX_PARAMS).unwrap();
+        assert_eq!(p, RECIPE_MAX_PARAMS);
+        assert_eq!(fb, MAX_CHECKPOINT_BYTES);
+    }
+
+    #[test]
+    fn receive_bytes_enforces_budget_edges() {
+        let dir = tmp("budget");
+        let sid = "aabb00112233445566778899aabbccddeeff00112233445566778899aabbccdd";
+        let park = dir.join(sid);
+        let body = vec![b'w'; 30]; // exactly 30 bytes
+        let max = checkpoint_byte_budget(10).unwrap(); // 30
+        receive_bytes(
+            sid,
+            &park,
+            "checkpoint.pt",
+            &body,
+            None,
+            ReceiveSource::AdminUpload,
+            max,
+        )
+        .unwrap();
+        let over = vec![b'w'; 31];
+        let err = receive_bytes(
+            sid,
+            &park,
+            "checkpoint.pt",
+            &over,
+            None,
+            ReceiveSource::AdminUpload,
+            max,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("budget"),
+            "expected budget refuse, got {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn with_artifact_root<T>(root: &Path, f: impl FnOnce() -> T) -> T {
@@ -502,6 +636,7 @@ mod tests {
         let park = dir.join(sid);
         let body = b"weights-v1";
         let good = sha256_hex(body);
+        let max = checkpoint_byte_budget(1024).unwrap();
         receive_bytes(
             sid,
             &park,
@@ -509,6 +644,7 @@ mod tests {
             body,
             Some(&good),
             ReceiveSource::AdminUpload,
+            max,
         )
         .unwrap();
         let err = receive_bytes(
@@ -518,6 +654,7 @@ mod tests {
             body,
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
             ReceiveSource::AdminUpload,
+            max,
         )
         .unwrap_err();
         assert!(format!("{err}").contains("sha256"));
@@ -540,8 +677,11 @@ mod tests {
             .unwrap();
         assert!(packed.status.success());
         with_artifact_root(&dir, || {
+            // Tar headers inflate the pack well above the bare file size.
+            let max = checkpoint_byte_budget(64 * 1024).unwrap();
             let (path, receipt) =
-                receive_tar_bytes(sid, &park, &packed.stdout, ReceiveSource::SshHarvest).unwrap();
+                receive_tar_bytes(sid, &park, &packed.stdout, ReceiveSource::SshHarvest, max)
+                    .unwrap();
             assert!(path.ends_with("checkpoint.pt"));
             assert_eq!(receipt.source, "ssh_harvest");
             verify_parked(sid).unwrap();

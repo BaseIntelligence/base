@@ -736,18 +736,24 @@ impl<C: ChainClient + Send> Orchestrator<C> {
             .await;
 
         // Secure receive: master pulls checkpoint over SSH, then stages via
-        // prism-artifacts (allowlist + hash receipt) BEFORE terminate.
+        // prism-artifacts (BF16×1.5 budget from measured n_params + allowlist
+        // + hash receipt) BEFORE terminate.
         // Fail-soft on harvest: scoring continues; top-model publish requires
         // verify_parked (RECEIPT.json) and refuses without it.
-        if metrics.is_ok() {
+        if let Ok(ref m) = metrics {
             let dest = prism_lium::artifact_dir_for(id);
             match self
                 .backend
-                .harvest_artifacts(&pod_id, &dest, id.as_bytes())
+                .harvest_artifacts(&pod_id, &dest, id.as_bytes(), m.n_params)
                 .await
             {
                 Ok(path) => {
-                    info!(submission_id = %id, path = %path.display(), "checkpoint secure-received");
+                    info!(
+                        submission_id = %id,
+                        path = %path.display(),
+                        n_params = ?m.n_params,
+                        "checkpoint secure-received"
+                    );
                 }
                 Err(e) => {
                     warn!(submission_id = %id, error = %e, "checkpoint secure receive failed");

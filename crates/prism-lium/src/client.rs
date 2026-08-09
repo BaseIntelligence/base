@@ -1011,6 +1011,7 @@ impl EvalJobBackend for LiumClient {
         instance_id: &str,
         dest_dir: &Path,
         _seed: &[u8],
+        n_params: Option<u64>,
     ) -> Result<PathBuf, LiumError> {
         let submission_id = dest_dir
             .file_name()
@@ -1025,6 +1026,7 @@ impl EvalJobBackend for LiumClient {
             submission_id,
             self.ssh.ssh_attempts,
             self.ssh.ssh_retry_secs,
+            n_params,
         )
         .await
     }
