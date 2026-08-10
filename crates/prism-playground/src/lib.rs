@@ -8,6 +8,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::module_name_repetitions)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,11 +129,61 @@ async fn post_complete(
         );
     }
     match run_infer(&st.infer_script, &resolved, &body).await {
-        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Ok(v) => {
+            append_playground_journal(&resolved.submission_id, &body, &v);
+            (StatusCode::OK, Json(v)).into_response()
+        }
         Err(e) => {
             warn!(error = %e, "playground infer failed");
             json_err(StatusCode::SERVICE_UNAVAILABLE, "inference_unavailable", &e)
         }
+    }
+}
+
+/// Append one playground completion to the submission artifact journal
+/// (`playground_journal.jsonl`) for the operator complete-view. Best-effort;
+/// never fails the HTTP response. Caps each prompt/text field; no secrets.
+fn append_playground_journal(submission_id: &str, body: &CompleteRequest, resp: &Value) {
+    let dir = prism_artifacts::artifact_dir_for(submission_id);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!(error = %e, "playground journal mkdir failed");
+        return;
+    }
+    let path = dir.join("playground_journal.jsonl");
+    let prompt: String = body.prompt.chars().take(4000).collect();
+    let text = resp
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(1024)
+        .collect::<String>();
+    let entry = json!({
+        "kind": "playground",
+        "at_ms": prism_intake::now_ms(),
+        "submission_id": submission_id,
+        "prompt": prompt,
+        "prompt_truncated": body.prompt.len() > 4000,
+        "max_tokens": body.max_tokens,
+        "temperature": body.temperature,
+        "text": text,
+        "n_tokens": resp.get("tokens").and_then(|t| t.as_array()).map(std::vec::Vec::len),
+        "n_logprobs": resp.get("logprobs").and_then(|t| t.as_array()).map(std::vec::Vec::len),
+    });
+    let Ok(line) = serde_json::to_string(&entry) else {
+        return;
+    };
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            if let Err(e) = writeln!(f, "{line}") {
+                warn!(error = %e, "playground journal write failed");
+            }
+        }
+        Err(e) => warn!(error = %e, "playground journal open failed"),
     }
 }
 

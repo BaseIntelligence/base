@@ -137,13 +137,29 @@ def _score_slots(model, ctx, prompt, slots):
     accs, nlls = [], []
     for j, slot in enumerate(slots):
         sep = " " if j == 0 else ", "
-        acc, nll = common.score_choices(
-            model,
-            ctx["tokenizer"],
-            ctx["device"],
-            prefix,
-            [sep + c for c in slot["choices"]],
-            slot["gold"],
+        choices = [sep + c for c in slot["choices"]]
+        detail = common.score_choices_detail(
+            model, ctx["tokenizer"], ctx["device"], prefix, choices, slot["gold"]
+        )
+        acc, nll = detail["acc"], detail["gold_nll"]
+        # Trace only here — bootstrap cluster is the item mean (`probe@L`).
+        common.record_trace(
+            ctx,
+            {
+                "kind": "mc",
+                "group": "g5",
+                "task": "ruler",
+                "metric": "g5.ruler.item.acc",
+                "cluster": f"slot{j}",
+                "prompt": prefix,
+                "choices": choices,
+                "gold": int(slot["gold"]),
+                "selected": detail["selected"],
+                "value": acc,
+                "gold_nll": nll,
+                "choice_logprobs": detail["choice_logprobs"],
+                "meta": {"slot": j},
+            },
         )
         accs.append(acc)
         nlls.append(nll)
@@ -220,6 +236,7 @@ def run(model, ctx, grid=None, n_items=None, probes=None, probe_grid=None, budge
                 accs.extend(item_accs)
                 nlls.extend(item_nlls)
                 value = sum(item_accs) / len(item_accs)
+                # Cluster bootstrap mean (trace already recorded per-slot above).
                 common.record(ctx, "g5.ruler.item.acc", f"{probe}@{length}", value)
             value = common.mean(accs)
             common.emit(out, f"g5.ruler.{probe}.L{length}.acc", value)

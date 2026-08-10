@@ -267,11 +267,21 @@ def check_no_gold_leak_and_chance_level():
 
 def run_with_scorer(rows, pick):
     """Score `rows` through `natural_docs` with a prompt-blind scorer."""
-    real = common.score_choices
-    common.score_choices = lambda model, tok, device, prompt, choices, gold: (
-        1.0 if pick(prompt, choices) == gold else 0.0,
-        1.0,
-    )
+    real = common.score_choices_detail
+
+    def fake_detail(model, tok, device, prompt, choices, gold):
+        sel = pick(prompt, choices)
+        return {
+            "acc": 1.0 if sel == gold else 0.0,
+            "gold_nll": 1.0,
+            "selected": int(sel),
+            "choice_logprobs": [
+                {"i": i, "sum_lp": 0.0, "n_tok": 1, "norm_lp": 0.0}
+                for i in range(len(choices))
+            ],
+        }
+
+    common.score_choices_detail = fake_detail
     try:
         ctx = fixture_ctx()
         out = {}
@@ -279,7 +289,7 @@ def run_with_scorer(rows, pick):
         assert out["g5.natural_mcq.n"] == float(len(rows)), out
         return series["value"]
     finally:
-        common.score_choices = real
+        common.score_choices_detail = real
 
 
 # ------------------------------------------------------- 5+6. run / mirrors
@@ -346,11 +356,21 @@ def staged_assets(tmp):
 
 
 def check_run_and_mirrors():
-    real_score, real_greedy = common.score_choices, nat._greedy_line
-    common.score_choices = lambda model, tok, device, prompt, choices, gold: (
-        1.0 if choices[gold].strip().startswith("the archive") else 0.0,
-        2.5,
-    )
+    real_score, real_greedy = common.score_choices_detail, nat._greedy_line
+
+    def fake_detail(model, tok, device, prompt, choices, gold):
+        hit = choices[gold].strip().startswith("the archive")
+        return {
+            "acc": 1.0 if hit else 0.0,
+            "gold_nll": 2.5,
+            "selected": int(gold) if hit else (0 if gold != 0 else 1),
+            "choice_logprobs": [
+                {"i": i, "sum_lp": 0.0, "n_tok": 1, "norm_lp": 0.0}
+                for i in range(len(choices))
+            ],
+        }
+
+    common.score_choices_detail = fake_detail
     nat._greedy_line = fake_greedy
     try:
         with tempfile.TemporaryDirectory(prefix="prism_nat_") as tmp:
@@ -414,7 +434,7 @@ def check_run_and_mirrors():
                 assert pair["public"]["value"] == pair["mirror"]["value"], pair
             print(f"public_dev tier OK: {len(dev)} metrics, gap-0 mirrors on fixtures")
     finally:
-        common.score_choices = real_score
+        common.score_choices_detail = real_score
         nat._greedy_line = real_greedy
         os.environ.pop("PRISM_TEST_EVAL_CAPS", None)
         os.environ.pop("PRISM_EVAL_NATURAL_ITEMS", None)

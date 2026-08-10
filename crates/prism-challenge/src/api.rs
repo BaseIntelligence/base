@@ -11,6 +11,7 @@
 //! | `POST /v1/submissions/{id}/attribution` | 2×2 attribution run plans (JSON) |
 //! | `POST /v1/submissions/{id}/zone-b` | Zone B self-report intake (mounted by the service bin from `prism-attribution`) |
 //! | `GET  /v1/submissions/{id}/metrics?zone=a\|b` | Zone A rows / Zone B chain |
+//! | `GET  /v1/submissions/{id}/inference` | Battery inference traces (+ playground journal) |
 //! | `GET  /v1/anchors` | anchor-set registry with status |
 //! | `GET  /v1/preregistration` | anchor pre-registration hash-commits |
 //! | `GET  /v1/status` | queue sizes + backend + recipe pin |
@@ -121,6 +122,10 @@ pub fn submission_router(state: Arc<AppState>) -> Router {
                 Arc::clone(&state.store),
                 Arc::clone(&state.eval_store),
             ),
+        )
+        .route(
+            "/v1/submissions/{id}/inference",
+            prism_attribution::inference_route(Arc::clone(&state.store)),
         )
         .route(
             "/v1/submissions/{id}/attribution",
@@ -1251,6 +1256,81 @@ mod tests {
         let (s, _) = call(
             app,
             Request::get("/v1/submissions/nope/metrics?zone=a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn inference_traces_paginated_from_metrics_json() {
+        let st = state();
+        let app = submission_router(Arc::clone(&st));
+        let id = post_one(&app).await;
+        let traces = json!({
+            "version": 1,
+            "truncated": false,
+            "n_items": 2,
+            "bytes_approx": 120,
+            "caps": { "global": 2500 },
+            "items": [
+                {
+                    "kind": "mc",
+                    "group": "g2",
+                    "task": "hellaswag",
+                    "cluster": "g2/hellaswag",
+                    "prompt": "The dog",
+                    "choices": [" barked", " flew"],
+                    "gold": 0,
+                    "selected": 0,
+                    "value": 1.0,
+                    "choice_logprobs": [{"i": 0, "sum_lp": -0.1, "n_tok": 1, "norm_lp": -0.01}]
+                },
+                {
+                    "kind": "mc",
+                    "group": "g3",
+                    "cluster": "mqar/n4",
+                    "prompt": "k1 v1",
+                    "choices": [" v1", " v9"],
+                    "gold": 0,
+                    "selected": 1,
+                    "value": 0.0
+                }
+            ]
+        });
+        st.store
+            .apply(
+                &id,
+                &StatePatch {
+                    metrics_json: Some(json!({
+                        "bpb": 1.5,
+                        "inference_traces": traces,
+                    })),
+                    ..StatePatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (s, v) = call(
+            app.clone(),
+            Request::get(format!("/v1/submissions/{id}/inference?group=g2&limit=10"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["provenance"], "organizer-measured");
+        assert_eq!(v["battery"]["total"], 1);
+        assert_eq!(v["battery"]["items"][0]["prompt"], "The dog");
+        assert_eq!(v["battery"]["items"][0]["choices"][0], " barked");
+        assert_eq!(v["battery"]["items"][0]["selected"], 0);
+
+        let (s, _) = call(
+            app,
+            Request::get("/v1/submissions/nope/inference")
                 .body(Body::empty())
                 .unwrap(),
         )

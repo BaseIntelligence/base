@@ -372,6 +372,7 @@ def _run_v3(ctx, ctx_path, manifest, t_start, netns):
         "gate": gate,
         "battery": epayload.get("battery", {}),
         "items": epayload.get("items", {}),
+        "inference_traces": epayload.get("inference_traces") or {},
     }
     _cheatguard_call("post_eval", out)
     print("METRICS_JSON=" + json.dumps(out))

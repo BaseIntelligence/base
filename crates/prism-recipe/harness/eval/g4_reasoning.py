@@ -19,14 +19,23 @@ def _score(model, ctx, items, budget, out, nlls):
             out["g4.partial"] = 1.0
             break
         try:
-            acc, nll = common.score_choices(
-                model, ctx["tokenizer"], ctx["device"], it["prompt"], it["choices"], it["gold"]
+            acc, nll = common.score_and_record(
+                ctx,
+                "g4.item.acc",
+                it["cluster"],
+                model,
+                ctx["tokenizer"],
+                ctx["device"],
+                it["prompt"],
+                it["choices"],
+                it["gold"],
+                group="g4",
+                task=it.get("task"),
             )
         except Exception:  # noqa: BLE001
             continue
         accs.append(acc)
         nlls.append(nll)
-        common.record(ctx, "g4.item.acc", it["cluster"], acc)
     return accs
 
 

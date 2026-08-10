@@ -10,6 +10,8 @@
 //! - `GET /v1/submissions/{id}/metrics`, `GET /v1/anchors`,
 //!   `GET /v1/preregistration` — the read-only eval surface (see
 //!   [`eval_views`]).
+//! - `GET /v1/submissions/{id}/inference` — battery inference traces +
+//!   optional playground journal (see [`inference`]).
 //!
 //! Documented choice (E7): the [`prism_recipe::AttributionRun`] plans are
 //! RETURNED as JSON, not enqueued — attribution runs are operator-triggered
@@ -28,9 +30,11 @@
 #![allow(clippy::missing_errors_doc)]
 
 mod eval_views;
+mod inference;
 mod zone_b;
 
 pub use eval_views::{anchors_route, eval_views_router, metrics_route, prereg_route, MetricsState};
+pub use inference::{inference_route, InferenceState};
 pub use zone_b::{zone_b_route, zone_b_router, ZoneBState};
 
 use std::sync::Arc;

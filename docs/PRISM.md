@@ -311,6 +311,19 @@ scalars/series/histograms, caps 64 scalars / 16 series / 10k points /
 scoring path**; miner-emitted `org.*` keys quarantine the report as
 anti-cheat evidence. Read paths: `GET /v1/submissions/{id}/metrics?zone=a|b`.
 
+**Inference traces (operator complete-view).** Battery MC / generative items
+(G2–G5; G1 stores short loss excerpts) also persist an additive
+`inference_traces` blob inside METRICS_JSON v2: prompt text, choices + gold,
+selected choice / generated text, and per-choice logprobs (`sum_lp` /
+`n_tok` / `norm_lp`). Caps (echoed in the blob): 2500 items global, 400 per
+group, prompt ≤4000 chars, choices ≤512 chars, generated ≤1024 chars,
+~4 MiB total — overflow sets `truncated: true`. Scoring never reads this
+channel. Optional sidecar: set `PRISM_INFERENCE_TRACES_PATH` in-pod.
+Read path: `GET /v1/submissions/{id}/inference?offset=&limit=&group=&source=battery|playground|all`
+(public at this layer, same as `/metrics`; paginated, default limit 50 /
+max 200). Playground completions append
+`{artifact_dir}/playground_journal.jsonl` (admin Bearer to invoke).
+
 **Attribution (v3).** `POST /v1/submissions/{id}/attribution` builds the
 2×2 matrix off-diagonal run plans (`submission arch × reference kernels`,
 `reference arch × submission kernels`) via `prism_recipe::attribution`,
@@ -410,9 +423,9 @@ for the bpb score (coherence gate, never a grader).
 | `prism-zoneb` | Zone B contract types (envelope, metric kinds, verdicts) + validation lattice (`validate`) — v3 |
 | `prism-eval-store` | `EvalStore` memory/Postgres impls + composite finalization glue — v3 |
 | `prism-intake` | Shared HTTP intake front-end (body parse, arch materialization, metagraph membership, error envelope, admin Bearer) + advisory `POST /v1/submissions/precheck`; split for the per-crate LOC cap |
-| `prism-attribution` | v3 routes split for the per-crate LOC cap: `POST /v1/submissions/{id}/attribution` planner (2×2 run plans as JSON), `POST .../zone-b` intake, and the read-only `GET .../metrics`, `/v1/anchors`, `/v1/preregistration` |
+| `prism-attribution` | v3 routes split for the per-crate LOC cap: `POST /v1/submissions/{id}/attribution` planner (2×2 run plans as JSON), `POST .../zone-b` intake, and the read-only `GET .../metrics`, `GET .../inference`, `/v1/anchors`, `/v1/preregistration` |
 | `prism-artifacts` | Master park paths + secure receive (`receive_tar_bytes` / admin upload) + receipt verify |
-| `prism-playground` | Operator `POST /v1/admin/playground/complete` (text + logprobs against parked checkpoints) |
+| `prism-playground` | Operator `POST /v1/admin/playground/complete` (text + logprobs against parked checkpoints; journals to artifact dir) |
 | `prism-challenge` | API surface, orchestrator, scoring v2 + v3 finalize wiring, emitter loop, gateway client |
 | `bins/prism-challenge` | Operator binary `:8092` (backend/reviewer/agentic/store selection, `PRISM_SCORING_MODE`) |
 
@@ -426,6 +439,7 @@ for the bpb score (coherence gate, never a grader).
 | `GET /v1/submissions/{id}` | Full detail + receipt + scores + `eval` composite block (v3) |
 | `GET /v1/submissions/{id}/events` | Append-only transition timeline |
 | `GET /v1/submissions/{id}/metrics?zone=a\|b` | **v3:** Zone A organizer rows / Zone B participant-reported chain (labelled; never scored) |
+| `GET /v1/submissions/{id}/inference` | **v3:** paginated battery inference traces (+ optional playground journal); organizer-measured; never scored |
 | `POST /v1/submissions/{id}/attribution` | **v3:** 2×2 attribution run plans (JSON; operator-triggered execution) |
 | `GET /v1/anchors` | **v3:** anchor-set registry with status (`placeholder` / `active`) |
 | `GET /v1/preregistration` | **v3:** anchor pre-registration hash-commits |

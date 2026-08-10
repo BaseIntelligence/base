@@ -49,12 +49,23 @@ def run(model, ctx):
             if not prompt or not choices or gold is None:
                 continue
             try:
-                acc, nll = common.score_choices(model, tok, device, prompt, choices, int(gold))
+                acc, nll = common.score_and_record(
+                    ctx,
+                    f"g2.{task}.acc",
+                    f"g2/{task}",
+                    model,
+                    tok,
+                    device,
+                    prompt,
+                    choices,
+                    int(gold),
+                    group="g2",
+                    task=task,
+                )
             except Exception:  # noqa: BLE001
                 continue
             accs.append(acc)
             nlls.append(nll)
-            common.record(ctx, f"g2.{task}.acc", f"g2/{task}", acc)
         v = common.mean(accs)
         common.emit(out, f"g2.{task}.acc_norm", v)
         if v is not None:

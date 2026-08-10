@@ -47,6 +47,20 @@ def _score_texts(model, tok, texts, device, budget, ctx, tag, out, prefix):
         bpbytes.append(stats["bits_per_byte"])
         common.record(ctx, f"{prefix}.doc_ce", tag, stats["ce"])
         common.record(ctx, f"{prefix}.bits_per_byte", tag, stats["bits_per_byte"])
+        # G1 stays summary-first: short prompt excerpt only (cheap completeness).
+        common.record_trace(
+            ctx,
+            {
+                "kind": "loss",
+                "group": "g1",
+                "task": prefix,
+                "metric": f"{prefix}.bits_per_byte",
+                "cluster": tag,
+                "prompt_excerpt": txt,
+                "value": stats["bits_per_byte"],
+                "meta": {"ce": stats["ce"], "n_tokens": stats.get("n_tokens")},
+            },
+        )
         if stats["key_ce"] is not None:
             key_ces.append(stats["key_ce"])
         if stats.get("key_bits_per_byte") is not None:

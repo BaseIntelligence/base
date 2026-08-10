@@ -177,13 +177,18 @@ def run(
                     item = _item(tok, seed, qa, length, docs)
                     if item is None:
                         continue
-                    acc, nll = common.score_choices(
+                    acc, nll = common.score_and_record(
+                        ctx,
+                        "g5.babilong.item.acc",
+                        f"qa{qa}@{length}",
                         model,
                         tok,
                         ctx["device"],
                         item["prompt"],
                         item["choices"],
                         item["gold"],
+                        group="g5",
+                        task=f"babilong/qa{qa}",
                     )
                 except Exception:  # noqa: BLE001 — e.g. forward OOM at this length
                     continue
@@ -195,7 +200,6 @@ def run(
                 shots.append(float(item["n_shots"]))
                 accs.append(acc)
                 nlls.append(nll)
-                common.record(ctx, "g5.babilong.item.acc", f"qa{qa}@{length}", acc)
             value = common.mean(accs)
             common.emit(out, f"g5.babilong.qa{qa}.L{length}.acc", value)
             if value is not None:

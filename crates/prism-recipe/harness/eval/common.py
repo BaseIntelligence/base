@@ -22,7 +22,10 @@ the continuation normalized per character), which keeps every metric
 smooth at 100M–350M scale (Schaeffer 2304.15004 design rule). The
 per-item side channel (ItemRecorder) stores {cluster, value} records —
 cluster = template/variant id, the unit of randomization for the
-clustered bootstrap in the Rust composite.
+clustered bootstrap in the Rust composite — plus an additive
+`inference_traces` channel (prompt / choices / gold / selected /
+choice logprobs / generated text) for operator complete-view. Scoring
+math is unchanged; traces are observation only and size-capped.
 
 Every length in this battery is measured in tokens of the **submitted**
 tokenizer (`prismlib.tokenizer`), reached through [`tokenizer_of`] /
@@ -45,6 +48,14 @@ PUBLIC_DEV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "publi
 PUBLIC_DEV_SEED = 2654435761  # published dev seed; mirrors public_dev/seeds.json
 ITEM_CAP_PER_METRIC = 2000
 ITEM_CAP_GLOBAL = 30000
+# Inference-trace budget (operator complete-view). Documented in PRISM.md.
+TRACE_CAP_GLOBAL = 2500
+TRACE_CAP_PER_GROUP = 400
+TRACE_PROMPT_CHARS = 4000
+TRACE_CHOICE_CHARS = 512
+TRACE_GEN_CHARS = 1024
+TRACE_EXCERPT_CHARS = 256
+TRACE_BYTES_BUDGET = 4 * 1024 * 1024  # ~4 MiB JSON payload
 
 
 # ---------------------------------------------------------------- seeds / env
@@ -158,12 +169,32 @@ class Budget:
         return True
 
 
+def _clip(text, n):
+    s = "" if text is None else str(text)
+    if len(s) <= n:
+        return s, False
+    return s[:n], True
+
+
 class ItemRecorder:
-    """Per-item {cluster, value} side channel (≤2000/metric, global cap)."""
+    """Per-item {cluster, value} side channel + capped inference traces.
+
+    Bootstrap channel (`dump`): ≤2000/metric, global 30k — unchanged.
+    Trace channel (`dump_traces`): prompt/choices/answers/logprobs for
+    operator complete-view. Caps (also echoed in the dump):
+      - TRACE_CAP_GLOBAL (2500 items), TRACE_CAP_PER_GROUP (400)
+      - TRACE_PROMPT_CHARS / TRACE_CHOICE_CHARS / TRACE_GEN_CHARS
+      - TRACE_BYTES_BUDGET (~4 MiB serialized)
+    Overflow sets `truncated: true` and per-field `*_truncated` flags.
+    """
 
     def __init__(self):
         self.items = {}
         self.total = 0
+        self.traces = []
+        self.trace_bytes = 0
+        self.trace_truncated = False
+        self._traces_per_group = {}
 
     def add(self, metric, cluster, value):
         if self.total >= ITEM_CAP_GLOBAL:
@@ -178,14 +209,134 @@ class ItemRecorder:
         recs.append({"cluster": str(cluster)[:128], "value": v})
         self.total += 1
 
+    def add_trace(self, trace):
+        """Append one inference trace dict (mutates a shallow copy)."""
+        if not isinstance(trace, dict):
+            return
+        if len(self.traces) >= TRACE_CAP_GLOBAL:
+            self.trace_truncated = True
+            return
+        group = str(trace.get("group") or "unknown")[:32]
+        n_g = self._traces_per_group.get(group, 0)
+        if n_g >= TRACE_CAP_PER_GROUP:
+            self.trace_truncated = True
+            return
+        row = dict(trace)
+        row["group"] = group
+        if "cluster" in row:
+            row["cluster"] = str(row["cluster"])[:128]
+        if "task" in row and row["task"] is not None:
+            row["task"] = str(row["task"])[:128]
+        if "metric" in row and row["metric"] is not None:
+            row["metric"] = str(row["metric"])[:128]
+        for key, limit in (
+            ("prompt", TRACE_PROMPT_CHARS),
+            ("generated", TRACE_GEN_CHARS),
+            ("prompt_excerpt", TRACE_EXCERPT_CHARS),
+        ):
+            if key in row and row[key] is not None:
+                clipped, trunc = _clip(row[key], limit)
+                row[key] = clipped
+                if trunc:
+                    row[f"{key}_truncated"] = True
+        if isinstance(row.get("choices"), list):
+            clipped_ch, any_trunc = [], False
+            for c in row["choices"][:32]:
+                s, t = _clip(c, TRACE_CHOICE_CHARS)
+                clipped_ch.append(s)
+                any_trunc = any_trunc or t
+            row["choices"] = clipped_ch
+            if any_trunc:
+                row["choices_truncated"] = True
+        if isinstance(row.get("gold_answers"), list):
+            row["gold_answers"] = [
+                _clip(a, TRACE_CHOICE_CHARS)[0] for a in row["gold_answers"][:16]
+            ]
+        try:
+            nbytes = len(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+        except (TypeError, ValueError):
+            return
+        if self.trace_bytes + nbytes > TRACE_BYTES_BUDGET:
+            self.trace_truncated = True
+            return
+        self.traces.append(row)
+        self.trace_bytes += nbytes
+        self._traces_per_group[group] = n_g + 1
+
     def dump(self):
         return self.items
+
+    def dump_traces(self):
+        return {
+            "version": 1,
+            "truncated": bool(self.trace_truncated),
+            "n_items": len(self.traces),
+            "bytes_approx": int(self.trace_bytes),
+            "caps": {
+                "global": TRACE_CAP_GLOBAL,
+                "per_group": TRACE_CAP_PER_GROUP,
+                "prompt_chars": TRACE_PROMPT_CHARS,
+                "choice_chars": TRACE_CHOICE_CHARS,
+                "gen_chars": TRACE_GEN_CHARS,
+                "excerpt_chars": TRACE_EXCERPT_CHARS,
+                "bytes_budget": TRACE_BYTES_BUDGET,
+            },
+            "items": list(self.traces),
+        }
 
 
 def record(ctx, metric, cluster, value):
     rec = ctx.get("items")
     if rec is not None and hasattr(rec, "add"):
         rec.add(metric, cluster, value)
+
+
+def record_trace(ctx, trace):
+    rec = ctx.get("items")
+    if rec is not None and hasattr(rec, "add_trace"):
+        rec.add_trace(trace)
+
+
+def score_and_record(
+    ctx,
+    metric,
+    cluster,
+    model,
+    tok,
+    device,
+    prompt,
+    choices,
+    gold,
+    *,
+    group,
+    task=None,
+    meta=None,
+):
+    """Score one MC item, record bootstrap value + rich inference trace.
+
+    Returns (acc01, gold_answer_nll_per_token) — identical to score_choices.
+    """
+    detail = score_choices_detail(model, tok, device, prompt, choices, gold)
+    acc, nll = detail["acc"], detail["gold_nll"]
+    record(ctx, metric, cluster, acc)
+    trace = {
+        "kind": "mc",
+        "group": group,
+        "task": task,
+        "metric": metric,
+        "cluster": cluster,
+        "prompt": prompt,
+        "choices": list(choices),
+        "gold": int(gold),
+        "selected": detail["selected"],
+        "value": acc,
+        "gold_nll": nll,
+        "choice_logprobs": detail["choice_logprobs"],
+    }
+    if meta:
+        trace["meta"] = meta
+    record_trace(ctx, trace)
+    return acc, nll
 
 
 # ---------------------------------------------------------------- assets
@@ -385,20 +536,44 @@ def continuation_logprob(model, tok, device, prompt, continuation):
     return float(token_lp.sum().item()), k
 
 
+def score_choices_detail(model, tok, device, prompt, choices, gold):
+    """OLMES-style acc_norm with per-choice logprobs (observation detail).
+
+    Scoring math matches [`score_choices`]. Returns:
+      {acc, gold_nll, selected, choice_logprobs:[{i,sum_lp,n_tok,norm_lp}]}
+    """
+    best, best_score, gold_nll = -1, -float("inf"), 0.0
+    choice_logprobs = []
+    for i, choice in enumerate(choices):
+        lp, ntok = continuation_logprob(model, tok, device, prompt, choice)
+        norm = lp / max(1, len(choice))
+        choice_logprobs.append(
+            {
+                "i": int(i),
+                "sum_lp": float(lp),
+                "n_tok": int(ntok),
+                "norm_lp": float(norm),
+            }
+        )
+        if norm > best_score:
+            best, best_score = i, norm
+        if i == gold:
+            gold_nll = -lp / max(1, ntok)
+    return {
+        "acc": 1.0 if best == gold else 0.0,
+        "gold_nll": float(gold_nll),
+        "selected": int(best),
+        "choice_logprobs": choice_logprobs,
+    }
+
+
 def score_choices(model, tok, device, prompt, choices, gold):
     """OLMES-style acc_norm: argmax over choices of sum_logprob / chars.
 
     Returns (acc01, gold_answer_nll_per_token).
     """
-    best, best_score, gold_nll = -1, -float("inf"), 0.0
-    for i, choice in enumerate(choices):
-        lp, ntok = continuation_logprob(model, tok, device, prompt, choice)
-        norm = lp / max(1, len(choice))
-        if norm > best_score:
-            best, best_score = i, norm
-        if i == gold:
-            gold_nll = -lp / max(1, ntok)
-    return (1.0 if best == gold else 0.0), gold_nll
+    d = score_choices_detail(model, tok, device, prompt, choices, gold)
+    return d["acc"], d["gold_nll"]
 
 
 def is_key_token_id(tok, tok_id, _cache={}):

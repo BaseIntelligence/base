@@ -262,17 +262,30 @@ def _mcq_series(model, ctx, rows, secret, budget, out, prefix):
         if built is None:
             continue
         prompt, choices, gold, n_tokens = built
+        cluster = str(row.get("cluster") or "unknown")
         try:
-            acc, nll = common.score_choices(model, tok, device, prompt, choices, gold)
+            if prefix:
+                acc, nll = common.score_and_record(
+                    ctx,
+                    "g5.item.acc",
+                    f"{MCQ}@{cluster}",
+                    model,
+                    tok,
+                    device,
+                    prompt,
+                    choices,
+                    gold,
+                    group="g5",
+                    task=MCQ,
+                )
+            else:
+                acc, nll = common.score_choices(model, tok, device, prompt, choices, gold)
         except Exception:  # noqa: BLE001 — one OOM item never kills the slice
             continue
-        cluster = str(row.get("cluster") or "unknown")
         accs.append(acc)
         nlls.append(nll)
         clusters.setdefault(cluster, []).append(acc)
         per_bucket.setdefault(_bucket(n_tokens), []).append(acc)
-        if prefix:
-            common.record(ctx, "g5.item.acc", f"{MCQ}@{cluster}", acc)
     if prefix:
         for b, vals in sorted(per_bucket.items()):
             common.emit(out, f"{prefix}.L{b}.acc", common.mean(vals))
@@ -325,10 +338,13 @@ def _rag_series(model, ctx, rows, demo_pool, secret, budget, out, prefix):
         choices = [answers[0]] + _sample(pool, _DISTRACTORS, secret, f"g5/natural/rag/distract/{rid}")
         order = list(range(len(choices)))
         _rng(secret, f"g5/natural/rag/order/{rid}").shuffle(order)
+        scored_choices = [" " + choices[i] for i in order]
+        gold_i = order.index(0)
         try:
-            rank, nll = common.score_choices(
-                model, tok, device, prompt, [" " + choices[i] for i in order], order.index(0)
+            detail = common.score_choices_detail(
+                model, tok, device, prompt, scored_choices, gold_i
             )
+            rank, nll = detail["acc"], detail["gold_nll"]
         except Exception:  # noqa: BLE001
             continue
         # A cluster too small to supply distractors would score 1.0 for
@@ -336,6 +352,7 @@ def _rag_series(model, ctx, rows, demo_pool, secret, budget, out, prefix):
         if len(choices) > 1:
             ranks.append(rank)
         nlls.append(nll)
+        line = None
         if budget.ok():
             try:
                 line = _greedy_line(model, tok, device, prompt)
@@ -348,6 +365,27 @@ def _rag_series(model, ctx, rows, demo_pool, secret, budget, out, prefix):
                 per_bucket.setdefault(_bucket(n_tokens), []).append(em)
                 if prefix:
                     common.record(ctx, "g5.item.acc", f"{RAG}@{cluster}", em)
+        if prefix:
+            common.record_trace(
+                ctx,
+                {
+                    "kind": "generative",
+                    "group": "g5",
+                    "task": RAG,
+                    "metric": "g5.item.acc",
+                    "cluster": f"{RAG}@{cluster}",
+                    "prompt": prompt,
+                    "choices": scored_choices,
+                    "gold": gold_i,
+                    "selected": detail["selected"],
+                    "generated": line,
+                    "gold_answers": answers,
+                    "value": ems[-1] if line is not None and ems else rank,
+                    "gold_nll": nll,
+                    "choice_logprobs": detail["choice_logprobs"],
+                    "meta": {"rank_acc": rank},
+                },
+            )
     if prefix:
         for b, vals in sorted(per_bucket.items()):
             common.emit(out, f"{prefix}.L{b}.acc", common.mean(vals))

@@ -195,8 +195,18 @@ def _run(cfg, st):
             "eval_tier": cfg.get("eval_tier", "public_dev"),
             "battery": battery,
             "items": eval_ctx["items"].dump(),
+            "inference_traces": eval_ctx["items"].dump_traces(),
         }
     )
+    # Optional sidecar for operators who harvest artifact dirs (METRICS_JSON
+    # remains the authoritative store copy on master).
+    side = os.environ.get("PRISM_INFERENCE_TRACES_PATH")
+    if side:
+        try:
+            with open(side, "w", encoding="utf-8") as f:
+                json.dump(eval_ctx["items"].dump_traces(), f, ensure_ascii=False)
+        except OSError:
+            pass
     return 0
 
 
