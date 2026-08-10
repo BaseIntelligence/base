@@ -85,6 +85,18 @@ mod tests {
     }
 
     #[test]
+    fn emit_plan_cold_start_emits_current_immediately() {
+        let p = design_emit_plan(0, 24424, 10, 360, 8_816_047).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 24424,
+                pin_block: 8_816_047
+            }
+        );
+    }
+
+    #[test]
     fn emit_plan_noop_when_already_emitted_current() {
         assert!(design_emit_plan(11, 11, 350, 360, 1000).is_none());
     }
