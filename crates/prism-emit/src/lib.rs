@@ -25,10 +25,11 @@
 //!   `Score(v>0)` row keeps participating in every later epoch's
 //!   competition set until a better/valid score supersedes it via `max`.
 //!   Leaf emission then applies **WTA** ([`prism_registry::apply_wta`]) so
-//!   only the single best hotkey receives a positive Score leaf. Architecture-
-//!   owner credit is temporarily off ([`prism_registry::OWNER_ARCH_CREDIT_ENABLED`])
-//!   so WTA follows own BPB-derived scores. Empty or reject-only fresh batches
-//!   therefore do not burn the prism share.
+//!   only the single best **submitter** receives a positive Score leaf.
+//!   Architecture-owner credit stays off
+//!   ([`prism_registry::OWNER_ARCH_CREDIT_ENABLED`] = `false`) — WTA follows
+//!   the miner hotkey that posted the best-BPB run. Empty or reject-only
+//!   fresh batches therefore do not burn the prism share (active carry).
 //! - Epochs during a master outage carry no *new* outbox rows; the first
 //!   epoch after recovery still includes active positive scores plus any
 //!   backlog (the seal always pins fresh epochs — stale ones can never
@@ -198,11 +199,11 @@ fn merge_competition_rows(batch: &[EpochScoreRow], active: &[EpochScoreRow]) -> 
     out
 }
 
-/// Build the signed D24 set for `epoch`: the batch competition-aggregated
-/// (owner + challenger credits, max lattice) plus `NoScore(NotAttempted)`
-/// for every expected participant without a score this epoch. Batch rows
-/// whose hotkey left the metagraph are dropped from the set (D24 forbids
-/// extra leaves) but stay assigned.
+/// Build the signed D24 set for `epoch`: competition-aggregated submitter
+/// credits (own BPB lattice → WTA; arch-owner credit disabled) plus
+/// `NoScore(NotAttempted)` for every expected participant without a score
+/// this epoch. Batch rows whose hotkey left the metagraph are dropped from
+/// the set (D24 forbids extra leaves) but stay assigned.
 pub fn build_epoch_leaves(
     secret: &[u8; KEY_LEN],
     epoch: u64,

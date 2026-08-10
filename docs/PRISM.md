@@ -161,18 +161,20 @@ emitter instance per netuid (single master topology).
 existing lattice, and epoch-close batching changes only *which* epoch a score
 lands in, not the leaf format or the math).** Per emitted epoch set:
 
-- *challenger credit*: a hotkey's own best lattice score across its rows in
-  the epoch's batch (its own best training result per arch, then across archs).
-- *architecture-owner credit*: **temporarily disabled**
-  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`). When re-enabled,
-  each registered arch's best batch result (`max(Score)` over all batch rows
-  linked to that arch, any trainer) is credited to the arch's **owner**.
-- *per-hotkey credit*: while owner credit is off, **own score only** (so the
-  best-BPB trainer wins WTA). When re-enabled: `max(own, owner)` — never
-  summed. `Score(0)` rows (cheat/copy-gate) never set an arch's best; hotkeys
-  whose rows are all `NoScore` keep their absence.
+- *submitter credit* (normative): a hotkey's own best lattice score across its
+  rows in the epoch's competition set (fresh outbox + active carry). Credit
+  attaches to `miner_hotkey` on the scored submission — the UID that **posted**
+  the run — never to the architecture registry owner.
+- *architecture-owner credit*: **disabled for emission**
+  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`). Arch ownership
+  still exists for top-model / publish bookkeeping, but it must **not** divert
+  Prism weight. Do not re-enable without an explicit product change.
+- *per-hotkey credit*: **own score only** (best-BPB submitter). `Score(0)`
+  rows (cheat/copy-gate) never win; hotkeys whose rows are all `NoScore` keep
+  their absence.
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
-  Prism's emission share (50% of the subnet) goes entirely to that winner.
+  Prism's emission share (50% of the subnet) goes entirely to that **submitter**
+  (best BPB → that submission's miner UID).
 
 **Top-model publish.** The master tracks the global best bpb across all
 scored submissions. On a new global best (≤ best ever and < last published),

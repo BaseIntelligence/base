@@ -1,42 +1,35 @@
-//! Architecture competition emission math (epoch-local, lattice-preserving).
+//! Prism emission competition math (epoch-local, lattice-preserving).
 //!
-//! Exact rule (mirrors `docs/PRISM.md` § Architecture competition):
+//! Exact rule (mirrors `docs/PRISM.md` § competition / WTA):
 //!
-//! - Input: every scored submission row of the epoch (multiple rows per
-//!   hotkey are possible: 1 architecture submission + 1 training-only entry
-//!   per published arch) plus the registry ownership map.
-//! - **Challenger credit**: a hotkey's own rows — its best lattice score,
-//!   i.e. `max(Score)` over its submissions this epoch (own best training
-//!   result per arch, then across archs).
-//! - **Architecture-owner credit** *(temporarily disabled — see
-//!   [`OWNER_ARCH_CREDIT_ENABLED`])*: for each registered arch, the arch's
-//!   best epoch result (`max(Score)` over all rows linked to that arch, any
-//!   trainer) is credited to the arch's owner — the owner is rewarded when
-//!   *anyone* trains well on their architecture.
-//! - **Per-hotkey credit**: while owner credit is disabled, this is own
-//!   credit only. When re-enabled: `max(own credits, owner credits)` —
-//!   never summed, so the SCORE_MAX lattice bound and the no-double-count
-//!   property hold by construction. Hotkeys whose rows are all `NoScore`
-//!   keep their absence; `Score(0)` rows (cheat / copy-gate reject) emit 0
-//!   and never set an arch's best.
-//! - **WTA leaf emission**: [`apply_wta`] collapses the credit map to a
-//!   single positive `Score` (argmax; lexicographically smallest hotkey on
-//!   ties). Prism's emission share goes to that one winner.
+//! - Input: every scored submission row in the competition set (fresh outbox
+//!   + active positive carry). Multiple rows per hotkey are possible.
+//! - **Submitter credit** (normative): a hotkey's own rows — `max(Score)`
+//!   over submissions posted by that `miner_hotkey`. Best BPB ⇒ highest
+//!   lattice score ⇒ that **submitter** wins.
+//! - **Architecture-owner credit**: gated off by
+//!   [`OWNER_ARCH_CREDIT_ENABLED`] (`false`). Arch owners must not receive
+//!   emission credit for challenger trains; the dead path remains only so a
+//!   future explicit product flip can restore it.
+//! - **Per-hotkey credit**: own score only while the flag is false.
+//! - **WTA leaf emission**: [`apply_wta`] keeps a single positive `Score`
+//!   (argmax; lexicographically smallest hotkey on ties). Prism's emission
+//!   share goes to that submitter.
 
 use std::collections::BTreeMap;
 
 use prism_store::{EpochScoreRow, FinalScore};
 
-/// Temporary kill-switch for architecture-owner emission credit.
+/// Architecture-owner emission credit — **must stay `false`**.
 ///
-/// When `false` (current prod intent): leaf emission uses **own BPB-derived
-/// lattice scores only**. An arch owner is not credited when a challenger
-/// trains well on their architecture, so the BPB winner keeps the WTA leaf
-/// (and Prism's weight share) instead of losing a lex tie to a non-training
-/// owner — including owners who have left the metagraph.
+/// Product rule: Prism WTA goes to the **submitter** of the best-BPB run
+/// (`miner_hotkey` on the scored row), never the architecture registry owner.
+/// With this flag `false`, leaf emission uses own BPB-derived lattice scores
+/// only, so a non-training / off-metagraph arch owner cannot steal or burn
+/// Prism's share via lex-tie.
 ///
-/// Flip back to `true` to restore the architecture-competition owner credit
-/// documented in `docs/PRISM.md`.
+/// Do not flip to `true` without an explicit product decision; `docs/PRISM.md`
+/// documents owner credit as disabled for emission.
 pub const OWNER_ARCH_CREDIT_ENABLED: bool = false;
 
 /// Compute per-hotkey emission for one epoch.
