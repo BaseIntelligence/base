@@ -276,6 +276,9 @@ pub struct WeightsLatestView {
     /// IP) fails loudly instead of surfacing as an opaque bundle verify error.
     #[serde(default)]
     pub netuid: Option<u16>,
+    /// Metagraph block pinned by the seal (for prune / lag pressure checks).
+    #[serde(default)]
+    pub metagraph_block: Option<u64>,
 }
 
 impl WeightsLatestView {

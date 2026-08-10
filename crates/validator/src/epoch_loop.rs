@@ -270,6 +270,39 @@ where
         // Fail-closed burn (sealed=false) or incomplete legacy body — no Match path.
         return Ok(None);
     };
+    // Pressure / verify: sealed vector must stay near the live chain epoch.
+    // A stuck real-seal (D24 incomplete) leaves `/v1/weights/latest` on an old
+    // chain-scale bundle; Match can still succeed while emission is stale.
+    if let Some(cfg) = submit {
+        if let Ok(chain_epoch) = chain.subnet_epoch_index(cfg.netuid) {
+            let lag = chain_epoch.saturating_sub(epoch);
+            if lag > 1 {
+                warn!(
+                    event = "validator_seal_lag",
+                    sealed_epoch = epoch,
+                    chain_epoch,
+                    lag_epochs = lag,
+                    metagraph_block = ?latest.metagraph_block,
+                    "pressure verify: sealed weights lag chain epoch; check design/prism emit + base-real-seal"
+                );
+            }
+        }
+        if let (Ok(tip), Some(mg_block)) = (chain.current_block(), latest.metagraph_block) {
+            let block_lag = tip.saturating_sub(mg_block);
+            // Public Finney RPC prunes ~256 blocks; beyond that Match cannot
+            // re-fetch the seal's metagraph on a cold RPC (ops red line).
+            if block_lag > 256 {
+                warn!(
+                    event = "validator_seal_metagraph_stale",
+                    sealed_epoch = epoch,
+                    metagraph_block = mg_block,
+                    tip_block = tip,
+                    block_lag,
+                    "pressure verify: seal metagraph_block outside ~256-block prune window"
+                );
+            }
+        }
+    }
     let outcome = fetch_and_compare(client, epoch, chain, trust).await;
     match &outcome {
         ComparisonOutcome::Match {
@@ -707,5 +740,45 @@ mod tests {
         let dedupe = EpochSubmitDedupe::new();
         maybe_submit_match(&outcome, &chain, &ReadyDrand, None, &dedupe);
         assert!(chain.call_log().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tick_pressure_verify_allows_match_when_seal_lags_chain() {
+        // Same metagraph as the sealed fixture, but chain epoch/tip far ahead —
+        // pressure-verify warns (validator_seal_lag) yet Match must still proceed.
+        let epoch = 77u64;
+        let (client, _chain, trust, merkle_root, _) = sealed_match_fixture(epoch).await;
+        let miner = [0xA1u8; 32];
+        let chain = FakeChain::new(FakeChainConfig {
+            current_block: 10_000,
+            subnet_epoch_index: epoch + 11,
+            hotkeys: vec![miner.to_vec()],
+            owner_hotkey: miner.to_vec(),
+            commit_reveal_enabled: true,
+            last_epoch_block: 500,
+            ..FakeChainConfig::default()
+        });
+        let dedupe = EpochSubmitDedupe::new();
+        let submit = CoordinationSubmitConfig {
+            netuid: 1,
+            hotkey: vec![0xBBu8; 32],
+            version_key: 3,
+            epoch_length: 360,
+        };
+        let out = coordination_compare_once(&client, &chain, &trust, Some(&submit), &dedupe)
+            .await
+            .expect("ok")
+            .expect("some");
+        match out {
+            ComparisonOutcome::Match {
+                epoch: e,
+                merkle_root: root,
+                ..
+            } => {
+                assert_eq!(e, epoch);
+                assert_eq!(root, merkle_root);
+            }
+            other => panic!("expected Match despite seal lag, got {other:?}"),
+        }
     }
 }

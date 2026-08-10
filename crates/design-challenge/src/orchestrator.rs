@@ -285,8 +285,8 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         }
     }
 
-    /// Late-tempo D24 filler: `NotAttempted` coverage when no admin award fired
-    /// (waits ~last 48 blocks so `award_round` can land Score leaves first).
+    /// D24 filler + catch-up: covers epochs with no admin award, and repairs
+    /// gaps left by the end-of-epoch boundary race (see [`design_emit_plan`]).
     pub async fn run_emitter(self: Arc<Self>)
     where
         C: Sync,
@@ -310,14 +310,21 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
         let epoch = state.subnet_epoch_index;
-        if epoch == 0 || self.emitted_epoch.load(Ordering::Relaxed) >= epoch {
-            return Ok(false);
-        }
         let tempo = u64::from(state.tempo.max(1));
-        if state.blocks_since_last_step.saturating_add(48) < tempo {
+        let last = self.emitted_epoch.load(Ordering::Relaxed);
+        let Some(plan) = design_emit_plan(
+            last,
+            epoch,
+            state.blocks_since_last_step,
+            tempo,
+            state.last_epoch_block,
+        ) else {
             return Ok(false);
-        }
-        self.emit_leaves().await?;
+        };
+        // Pin epoch + block from this tick's schedule snapshot — do **not**
+        // re-read chain inside emit (end-of-epoch flip used to relabel the set
+        // as E+1 and permanently skip E, starving real-seal with D24 409s).
+        self.emit_leaves_at(plan.epoch, plan.pin_block).await?;
         Ok(true)
     }
 
@@ -1089,15 +1096,22 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
     async fn emit_leaves(&self) -> Result<(), String> {
         let state = chain::gather_schedule_state(self.chain.as_ref(), self.cfg.netuid)
             .map_err(|e| format!("schedule: {e}"))?;
-        // Label with the *current* chain epoch (see the prism emitter for the
-        // full rationale): the expected set is pinned at `last_epoch_block`,
-        // so the label and the covered metagraph must refer to the same epoch
-        // or D24 exact-match against the other challenge 409s under churn.
-        let epoch = state.subnet_epoch_index;
+        self.emit_leaves_at(state.subnet_epoch_index, state.last_epoch_block)
+            .await
+    }
+
+    /// Submit a D24-complete design leaf set for a pinned `(epoch, pin_block)`.
+    ///
+    /// `pin_block` must be that epoch's start block (`LastEpochBlock` while the
+    /// epoch is current, or `current_last_epoch_block - k*tempo` when catching up).
+    async fn emit_leaves_at(&self, epoch: u64, pin_block: u64) -> Result<(), String> {
+        if epoch == 0 {
+            return Err("refuse emit for epoch 0".into());
+        }
         let block_hash = self
             .chain
-            .block_hash(state.last_epoch_block)
-            .map_err(|e| format!("block_hash: {e}"))?;
+            .block_hash(pin_block)
+            .map_err(|e| format!("block_hash@{pin_block}: {e}"))?;
         let expected: ExpectedSet = expected_set_at_chain(
             &trustroot::ParticipantPolicy::AllMetagraphHotkeys,
             PinnedBlockHash::new(block_hash),
@@ -1131,15 +1145,72 @@ impl<C: ChainClient + Send + Sync + 'static> Orchestrator<C> {
         submit_signed_leaf_set(self.gateway.as_ref(), &signed)
             .await
             .map_err(|e| e.to_string())?;
-        self.emitted_epoch.store(epoch, Ordering::Relaxed);
+        self.emitted_epoch.fetch_max(epoch, Ordering::Relaxed);
         info!(
             epoch,
             participants = expected_set.len(),
-            last_epoch_block = state.last_epoch_block,
+            pin_block,
             "design leaf set submitted"
         );
         Ok(())
     }
+}
+
+/// How many blocks before epoch end the NotAttempted filler may run.
+///
+/// Wider than the historical 48-block window so `base-real-seal` (10 min) still
+/// has time to seal after design emits, while leaving most of the epoch for
+/// `award_round` to land Score leaves first (first-write-wins).
+pub const DESIGN_EMIT_LATE_BLOCKS: u64 = 96;
+
+/// Planned design leaf emission for one emitter tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesignEmitPlan {
+    /// Epoch label for the leaf set.
+    pub epoch: u64,
+    /// Metagraph pin block (epoch start).
+    pub pin_block: u64,
+}
+
+/// Decide whether/which epoch the design filler should emit.
+///
+/// - Catch up `last_emitted+1` when behind by more than one epoch (repairs the
+///   end-of-epoch relabel race that skipped alternate epochs in prod).
+/// - Otherwise wait until the last [`DESIGN_EMIT_LATE_BLOCKS`] of the current
+///   epoch so admin awards can submit Score leaves first.
+#[must_use]
+pub fn design_emit_plan(
+    last_emitted: u64,
+    current_epoch: u64,
+    blocks_since_last_step: u64,
+    tempo: u64,
+    current_last_epoch_block: u64,
+) -> Option<DesignEmitPlan> {
+    if current_epoch == 0 {
+        return None;
+    }
+    let tempo = tempo.max(1);
+    if last_emitted >= current_epoch {
+        return None;
+    }
+    // Sequential catch-up for skipped epochs (award path / boundary race).
+    if last_emitted + 1 < current_epoch {
+        let target = last_emitted + 1;
+        let epochs_back = current_epoch.saturating_sub(target);
+        let pin_block = current_last_epoch_block.saturating_sub(epochs_back.saturating_mul(tempo));
+        return Some(DesignEmitPlan {
+            epoch: target,
+            pin_block,
+        });
+    }
+    // Current epoch: late-tempo filler only.
+    if blocks_since_last_step.saturating_add(DESIGN_EMIT_LATE_BLOCKS) < tempo {
+        return None;
+    }
+    Some(DesignEmitPlan {
+        epoch: current_epoch,
+        pin_block: current_last_epoch_block,
+    })
 }
 
 #[async_trait]

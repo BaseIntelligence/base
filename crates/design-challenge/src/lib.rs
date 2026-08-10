@@ -44,7 +44,10 @@ pub use design_store_pg::DbDesignStore;
 pub use host_sim::{
     force_sim_refusal_reason, host_sim_allowed, is_prod_env, require_host_sim_for_force,
 };
-pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
+pub use orchestrator::{
+    design_emit_plan, DesignEmitPlan, ErrorClass, Orchestrator, OrchestratorConfig,
+    DESIGN_EMIT_LATE_BLOCKS,
+};
 
 /// Crate identity smoke.
 #[must_use]
@@ -61,5 +64,31 @@ mod tests {
         assert_eq!(crate_name(), "design-challenge");
         assert_eq!(CHALLENGE_ID, "design");
         assert_eq!(SCORING_VERSION, 3);
+    }
+
+    #[test]
+    fn emit_plan_waits_until_late_tempo_for_current_epoch() {
+        assert!(design_emit_plan(10, 11, 200, 360, 1000).is_none());
+        let p = design_emit_plan(10, 11, 360 - DESIGN_EMIT_LATE_BLOCKS, 360, 1000).unwrap();
+        assert_eq!(
+            p,
+            DesignEmitPlan {
+                epoch: 11,
+                pin_block: 1000
+            }
+        );
+    }
+
+    #[test]
+    fn emit_plan_catches_up_skipped_epochs_without_waiting() {
+        // Prod failure mode: award/boundary race skipped 24413 while chain is 24423.
+        let p = design_emit_plan(24412, 24423, 50, 360, 8_815_687).unwrap();
+        assert_eq!(p.epoch, 24413);
+        assert_eq!(p.pin_block, 8_815_687 - (24423 - 24413) * 360);
+    }
+
+    #[test]
+    fn emit_plan_noop_when_already_emitted_current() {
+        assert!(design_emit_plan(11, 11, 350, 360, 1000).is_none());
     }
 }
