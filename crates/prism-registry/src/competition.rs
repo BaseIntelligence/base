@@ -157,10 +157,12 @@ mod tests {
 
     #[test]
     fn owner_arch_credit_temporarily_disabled() {
-        assert!(
-            !OWNER_ARCH_CREDIT_ENABLED,
-            "flip this test when restoring owner-arch credit"
-        );
+        const {
+            assert!(
+                !OWNER_ARCH_CREDIT_ENABLED,
+                "flip this test when restoring owner-arch credit"
+            );
+        }
         // Challenger BB trains owner AA's arch to 900k. With owner credit
         // off, AA keeps only their own 400k — BB (best BPB/score) wins WTA.
         let rows = vec![
@@ -182,7 +184,7 @@ mod tests {
             row("cc", Some("arch_y"), 500_000),
         ];
         let out = competition_scores(&rows, &owners(&[("arch_x", "aa"), ("arch_y", "aa")]));
-        assert!(out.get("aa").is_none());
+        assert!(!out.contains_key("aa"));
         assert_eq!(out.get("bb"), Some(&FinalScore::Score(300_000)));
         assert_eq!(out.get("cc"), Some(&FinalScore::Score(500_000)));
     }
@@ -228,7 +230,7 @@ mod tests {
         let out = competition_scores(&rows, &owners(&[("arch_x", "aa"), ("arch_y", "cc")]));
         assert_eq!(out.get("aa"), Some(&FinalScore::Score(800_000)));
         assert_eq!(out.get("bb"), Some(&FinalScore::Score(300_000)));
-        assert!(out.get("cc").is_none());
+        assert!(!out.contains_key("cc"));
     }
 
     #[test]
@@ -239,7 +241,7 @@ mod tests {
         let wta = apply_wta(credits);
         assert_eq!(wta.get("aa"), Some(&FinalScore::Score(177_155)));
         assert_eq!(wta.get("bb"), Some(&FinalScore::Score(0)));
-        assert!(wta.get("cc").is_none());
+        assert!(!wta.contains_key("cc"));
     }
 
     #[test]
