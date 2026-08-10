@@ -1,8 +1,10 @@
 # Production environment — Bittensor mainnet (Finney), netuid 100.
 #
-# Netuid 100's on-chain owner is 5GziQCcRpN8NCJktX343brnfuVe3w6gUYieeStXPD1Dag2At.
-# Drop that wallet into deploy/secrets/wallets/base-owner before deploying, then
-# flip BASE_GATEWAY_REQUIRE_OWNER to "1" to make the owner check fail-closed.
+# Wallet on disk (`base-owner` → 5GziQCc…) is NOT the current on-chain
+# SubnetOwnerHotkey (as of 2026-08-10: 5HdSGJgs… / f623c6…). With
+# REQUIRE_OWNER=1 the gateway refuses to bind (exit 2) and Caddy serves 502.
+# Keep advisory (0) until the live owner wallet is installed under
+# deploy/secrets/wallets/base-owner, then flip to "1".
 #
 # Conservative intervals, no evil-gateway, no e2e overrides.
 services:
@@ -38,8 +40,8 @@ services:
       BT_WALLETS_PATH: /run/base/wallets
       BASE_GATEWAY_WALLET: base-owner
       BASE_GATEWAY_WALLET_HOTKEY: default
-      # Owner hotkey 5Gzi… installed; fail-closed master-only check.
-      BASE_GATEWAY_REQUIRE_OWNER: "1"
+      # Advisory until wallet matches live SubnetOwnerHotkey (see header).
+      BASE_GATEWAY_REQUIRE_OWNER: "0"
       # Required whenever REQUIRE_OWNER=1 — gates /v1/admin/* (seal, backends, …).
       BASE_GATEWAY_ADMIN_TOKEN_FILE: /run/secrets/gateway_admin_token
     # Serve chain.joinbase.ai without forcing clients onto :8080 (8080 is VPC-only).
