@@ -27,12 +27,13 @@ pub use challenge_common::{
     GatewayClient, GatewayClientConfig, LeafEmitError,
 };
 pub use design_challenge_task::{
-    agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota,
+    agent_run_timeout_secs, awaiting_admin_unscored_expired, daily_run_quota, design_emit_plan,
     manual_daily_run_quota, prompts_per_round, reject_awaiting_admin_run, round_id_at, round_secs,
     round_win_delta, rounds_per_day_effective, scheduled_daily_run_cap, scheduled_runs_per_day,
-    score_window, unscored_epochs_elapsed, window_start, ScorePlan, WindowScorePlan, CHALLENGE_ID,
-    CHALLENGE_ID_BYTES, MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS,
-    SCORE_MAX, SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
+    score_window, unscored_epochs_elapsed, window_start, DesignEmitPlan, ScorePlan,
+    WindowScorePlan, CHALLENGE_ID, CHALLENGE_ID_BYTES, DESIGN_EMIT_LATE_BLOCKS,
+    MANUAL_DAILY_RUN_QUOTA, PROMPTS_PER_ROUND, ROUNDS_PER_DAY, ROUND_SECS, SCORE_MAX,
+    SCORING_VERSION, SCORING_WINDOW_ROUNDS, UNSCORED_EPOCH_LIMIT,
 };
 pub use design_http::{
     design_router, mark_awaiting, mark_awaiting_admin, record_epoch, AdminAwardHook, AppState,
@@ -44,12 +45,8 @@ pub use design_store_pg::DbDesignStore;
 pub use host_sim::{
     force_sim_refusal_reason, host_sim_allowed, is_prod_env, require_host_sim_for_force,
 };
-pub use orchestrator::{
-    design_emit_plan, DesignEmitPlan, ErrorClass, Orchestrator, OrchestratorConfig,
-    DESIGN_EMIT_LATE_BLOCKS,
-};
+pub use orchestrator::{ErrorClass, Orchestrator, OrchestratorConfig};
 
-/// Crate identity smoke.
 #[must_use]
 pub fn crate_name() -> &'static str {
     "design-challenge"

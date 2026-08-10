@@ -11,7 +11,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
+mod emit;
 mod score;
+pub use emit::{design_emit_plan, DesignEmitPlan, DESIGN_EMIT_LATE_BLOCKS};
 pub use score::{
     not_attempted, round_win_delta, score_window, to_leaf, window_start, ScorePlan, WindowScorePlan,
 };
@@ -77,7 +79,8 @@ pub const fn unscored_epochs_elapsed(start_epoch: u64, current_epoch: u64) -> bo
     current_epoch.saturating_sub(start_epoch) >= UNSCORED_EPOCH_LIMIT
 }
 
-fn now_ms() -> u64 {
+#[must_use]
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -318,6 +321,24 @@ pub const fn day_index_for_round(round_id: u64) -> u64 {
 pub const fn rounds_for_day(day_index: u64) -> (u64, u64) {
     let start = day_index * ROUNDS_PER_DAY;
     (start, start + ROUNDS_PER_DAY - 1)
+}
+
+/// Cap harness log payload stored in stage-event detail (JSON).
+pub const MAX_LOG_CHARS: usize = 65_536;
+
+#[must_use]
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+#[must_use]
+pub fn clip_logs(text: &str) -> String {
+    if text.len() <= MAX_LOG_CHARS {
+        return text.to_owned();
+    }
+    format!("...[truncated]\n{}", &text[text.len() - MAX_LOG_CHARS..])
 }
 
 #[cfg(test)]
