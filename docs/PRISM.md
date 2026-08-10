@@ -163,15 +163,14 @@ lands in, not the leaf format or the math).** Per emitted epoch set:
 
 - *challenger credit*: a hotkey's own best lattice score across its rows in
   the epoch's batch (its own best training result per arch, then across archs).
-- *architecture-owner credit*: each registered arch's best batch result
-  (`max(Score)` over all batch rows linked to that arch, any trainer) is
-  credited to the arch's **owner** — owners are rewarded when anyone trains
-  well on their architecture, including in a later epoch than their own
-  submission.
-- *per-hotkey credit*: `max(own credits, owner credits)` — **max, never
-  summed**, so the lattice bound and the no-double-count property hold by
-  construction. `Score(0)` rows (cheat/copy-gate) never set an arch's best;
-  hotkeys whose rows are all `NoScore` keep their absence.
+- *architecture-owner credit*: **temporarily disabled**
+  (`OWNER_ARCH_CREDIT_ENABLED = false` in `prism-registry`). When re-enabled,
+  each registered arch's best batch result (`max(Score)` over all batch rows
+  linked to that arch, any trainer) is credited to the arch's **owner**.
+- *per-hotkey credit*: while owner credit is off, **own score only** (so the
+  best-BPB trainer wins WTA). When re-enabled: `max(own, owner)` — never
+  summed. `Score(0)` rows (cheat/copy-gate) never set an arch's best; hotkeys
+  whose rows are all `NoScore` keep their absence.
 - *WTA emission*: argmax over positive per-hotkey credits → one Score leaf;
   Prism's emission share (50% of the subnet) goes entirely to that winner.
 

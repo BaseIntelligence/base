@@ -305,15 +305,19 @@ async fn competition_credits_survive_batching() {
     assert_score(&leaf_soa(&s7, 0xAA), 400_000);
     assert_not_attempted(&leaf_soa(&s7, 0xBB));
 
-    // Challenger trains the published arch and lands in a later epoch:
-    // competition credits both to 900k; WTA tie-breaks to AA (lex smaller).
+    // Challenger trains the published arch and lands in a later epoch.
+    // TEMP: owner-arch credit off → WTA goes to the BPB/score winner (BB).
     let mut chall = scored_row("sub-chall", &hk(0xBB), 7, FinalScore::Score(900_000));
     chall.arch_id = Some("arch_0123456789abcdef".into());
     store.insert_queued(&chall).await.unwrap();
     let s8 = em.tick(8, &exp).await.unwrap().expect("epoch 8");
     assert_eq!(s8.batch, 1);
-    assert_score(&leaf_soa(&s8, 0xAA), 900_000);
-    assert_score(&leaf_soa(&s8, 0xBB), 0);
+    assert!(
+        !prism_registry::OWNER_ARCH_CREDIT_ENABLED,
+        "update expectations when restoring owner-arch credit"
+    );
+    assert_score(&leaf_soa(&s8, 0xBB), 900_000);
+    assert_score(&leaf_soa(&s8, 0xAA), 0);
 
     // Same-epoch variant: both rows in one batch → same WTA outcome.
     let store2 = Arc::new(MemoryPrismStore::new());
@@ -334,8 +338,8 @@ async fn competition_credits_survive_batching() {
     let em2 = dry_emitter(&store2);
     let s = em2.tick(7, &exp).await.unwrap().expect("emit");
     assert_eq!(s.batch, 2);
-    assert_score(&leaf_soa(&s, 0xAA), 900_000);
-    assert_score(&leaf_soa(&s, 0xBB), 0);
+    assert_score(&leaf_soa(&s, 0xBB), 900_000);
+    assert_score(&leaf_soa(&s, 0xAA), 0);
 }
 
 /// Crash recovery: a batch assigned but never cursor-completed (crashed
